@@ -1,0 +1,15 @@
+node_modules/
+dist/
+
+# Runtime env (local / docker-compose env_file)
+.env
+
+# Vite env files (build-time)
+env.vite/.env
+env.vite/.env.*
+!env.vite/.env.example
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

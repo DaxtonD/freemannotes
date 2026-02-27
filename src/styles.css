@@ -1,0 +1,95 @@
+
+.test-harness-root {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 12px;
+	box-sizing: border-box;
+}
+
+.top-actions {
+	display: flex;
+	gap: 8px;
+}
+
+.editor-panel {
+	border: 1px solid rgba(0, 0, 0, 0.1);
+	border-radius: 6px;
+	padding: 12px;
+}
+
+.note-card {
+	border: 1px solid rgba(0, 0, 0, 0.12);
+	border-radius: 6px;
+	padding: 8px;
+}
+
+.note-header {
+	cursor: grab;
+	touch-action: none;
+	user-select: none;
+}
+
+.note-header:active {
+	cursor: grabbing;
+}
+
+.note-body {
+	/* Branch: keep body clickable without selecting text while dragging. */
+	user-select: none;
+}
+
+.note-body * {
+	/* Branch: allow selecting/copying within inputs if you add them later. */
+	user-select: text;
+}
+
+/*
+ * Phase 6 (Muuri removed): CSS-grid “masonry-style” layout.
+ * dnd-kit works with CSS grid without any manual layout calls.
+ */
+.note-grid-section {
+	width: 100%;
+}
+
+.note-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+	gap: 16px;
+	align-items: start;
+}
+
+.note-grid-item {
+	/* Branch: keep transforms smooth and predictable while dragging. */
+	will-change: transform;
+}
+
+.note-grid-item-selected {
+	outline: 2px solid rgba(0, 0, 0, 0.35);
+	border-radius: 6px;
+}
+
+/* Responsive rules requested (CSS-only; no JS column computation). */
+@media (min-width: 1024px) {
+	.note-grid {
+		grid-template-columns: repeat(4, minmax(250px, 1fr));
+	}
+}
+
+@media (min-width: 768px) and (max-width: 1023px) {
+	.note-grid {
+		grid-template-columns: repeat(3, minmax(250px, 1fr));
+	}
+}
+
+@media (max-width: 767px) {
+	.note-grid {
+		grid-template-columns: repeat(2, minmax(250px, 1fr));
+	}
+}
+
+@media (max-width: 767px) and (orientation: landscape) and (min-width: 640px) {
+	.note-grid {
+		grid-template-columns: repeat(3, minmax(250px, 1fr));
+	}
+}
