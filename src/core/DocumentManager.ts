@@ -12,6 +12,7 @@ export type NoteRegistryItem = {
 };
 
 export class DocumentManager {
+	// In-memory caches for active Yjs docs and their persistence/sync providers.
 	private readonly docs = new Map<string, Y.Doc>();
 	private readonly providers = new Map<string, IndexeddbPersistence>();
 	private readonly websocketProviders = new Map<string, WebsocketProvider>();
@@ -20,6 +21,7 @@ export class DocumentManager {
 	private readonly websocketUrl: string;
 
 	public constructor(websocketUrl = 'ws://localhost:1234') {
+		// Normalize trailing slashes to avoid duplicate room URLs.
 		this.websocketUrl = String(websocketUrl || 'ws://localhost:1234').replace(/\/+$/, '');
 	}
 
@@ -108,6 +110,7 @@ export class DocumentManager {
 	}
 
 	public async createNote(noteId: string, title = ''): Promise<void> {
+		// Registry + order are maintained independently for efficient list rendering and DnD updates.
 		const key = this.normalizeNoteId(noteId);
 		const notesList = await this.getNotesList();
 		const noteOrder = await this.getNoteOrder();
@@ -138,6 +141,7 @@ export class DocumentManager {
 	}
 
 	public async deleteNote(noteId: string, destroyNoteDoc = true): Promise<void> {
+		// Remove from both user-visible registry and order list.
 		const key = this.normalizeNoteId(noteId);
 		const notesList = await this.getNotesList();
 		const noteOrder = await this.getNoteOrder();
@@ -194,7 +198,6 @@ export class DocumentManager {
 		// Re-running this method is safe and will not create duplicates.
 		doc.transact(() => {
 			doc.getText('title');
-			doc.getText('content');
 			doc.getArray<Y.Map<any>>('checklist');
 			doc.getMap<any>('metadata');
 		});
@@ -212,6 +215,7 @@ export class DocumentManager {
 			);
 		}
 
+		// One IndexedDB room per note ID.
 		const provider = new IndexeddbPersistence(noteId, doc);
 		this.providers.set(noteId, provider);
 

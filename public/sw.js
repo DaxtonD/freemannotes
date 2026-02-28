@@ -1,5 +1,7 @@
-const CACHE_NAME = 'freemannotes-shell-v1';
-const CORE_ASSETS = ['/', '/index.html'];
+const CACHE_NAME = 'freemannotes-shell-v2';
+// Cache the canonical app shell entry only.
+// Caching '/' can get sticky across proxy setups and makes upgrades harder.
+const CORE_ASSETS = ['/index.html'];
 
 async function getBuildAssetsFromIndexHtml() {
 	// For production builds, index.html references hashed assets under /assets/.
@@ -78,10 +80,34 @@ self.addEventListener('fetch', (event) => {
 
 	if (request.mode === 'navigate') {
 		event.respondWith(
-			fetch(request)
+			fetch(request.url, { cache: 'no-store' })
 				.then((response) => {
+					// If the origin/proxy returns an error page (e.g. 502 Bad Gateway),
+					// treat it like offline and fall back to the cached app shell.
+					if (!response || !response.ok) {
+						throw new Error(`Navigation fetch failed: ${response ? response.status : 'no-response'}`);
+					}
 					const clone = response.clone();
-					caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', clone));
+					caches.open(CACHE_NAME).then(async (cache) => {
+						// Refresh shell.
+						await cache.put('/index.html', clone);
+						// Refresh hashed build assets in the background so upgrades take effect
+						// even if the previous build is fully cached.
+						const buildAssets = await getBuildAssetsFromIndexHtml();
+						if (buildAssets.length > 0) {
+							await cache.addAll(buildAssets);
+							// Cleanup old cached assets not referenced by the current build.
+							const keep = new Set(buildAssets);
+							const keys = await cache.keys();
+							await Promise.all(
+								keys
+									.map((req) => new URL(req.url))
+									.filter((u) => u.origin === self.location.origin && u.pathname.startsWith('/assets/'))
+									.filter((u) => !keep.has(u.pathname))
+									.map((u) => cache.delete(u.pathname))
+							);
+						}
+					});
 					return response;
 				})
 				.catch(async () => {

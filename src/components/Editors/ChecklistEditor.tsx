@@ -1,28 +1,30 @@
 import React from 'react';
-import type { ChecklistItem } from './core/bindings';
+import type { ChecklistItem } from '../../core/bindings';
+import styles from './Editors.module.css';
 
-export type ChecklistNoteEditorProps = {
+export type ChecklistEditorProps = {
 	onSave: (args: { title: string; items: ChecklistItem[] }) => void | Promise<void>;
 	onCancel: () => void;
 };
 
 type DraftChecklistItem = ChecklistItem;
 
+// Local-only draft ID generator used before data is persisted to Yjs.
 function makeId(): string {
-	// Branch: modern browsers.
 	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
 		return crypto.randomUUID();
 	}
-	// Branch: fallback for environments without randomUUID.
 	return `item-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function ChecklistNoteEditor(props: ChecklistNoteEditorProps): React.JSX.Element {
+export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element {
+	// Local draft state until user presses Save.
 	const [title, setTitle] = React.useState('');
 	const [items, setItems] = React.useState<DraftChecklistItem[]>([]);
 	const [saving, setSaving] = React.useState(false);
 
 	const addItem = React.useCallback((): void => {
+		// Append a new draft checklist row.
 		setItems((prev) => [...prev, { id: makeId(), text: '', completed: false }]);
 	}, []);
 
@@ -35,8 +37,8 @@ export function ChecklistNoteEditor(props: ChecklistNoteEditorProps): React.JSX.
 	}, []);
 
 	const onSubmit = async (event: React.FormEvent): Promise<void> => {
+		// Submission delegates persistence to parent App handlers.
 		event.preventDefault();
-		// Branch: prevent duplicate saves while async write is in progress.
 		if (saving) return;
 		setSaving(true);
 		try {
@@ -47,12 +49,12 @@ export function ChecklistNoteEditor(props: ChecklistNoteEditorProps): React.JSX.
 	};
 
 	return (
-		<form onSubmit={onSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-			<div style={{ fontWeight: 600 }}>New Checklist Note</div>
+		<form onSubmit={onSubmit} className={styles.form}>
+			<div className={styles.title}>New Checklist Note</div>
 			<input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
-			<div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+			<div className={styles.column}>
 				{items.map((item) => (
-					<div key={item.id} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+					<div key={item.id} className={styles.checklistItem}>
 						<input
 							type="checkbox"
 							checked={item.completed}
@@ -62,7 +64,7 @@ export function ChecklistNoteEditor(props: ChecklistNoteEditorProps): React.JSX.
 							value={item.text}
 							onChange={(e) => updateItem(item.id, { text: e.target.value })}
 							placeholder="Checklist item"
-							style={{ flex: 1 }}
+							className={styles.grow}
 						/>
 						<button type="button" onClick={() => removeItem(item.id)}>
 							Remove
@@ -70,7 +72,7 @@ export function ChecklistNoteEditor(props: ChecklistNoteEditorProps): React.JSX.
 					</div>
 				))}
 			</div>
-			<div style={{ display: 'flex', gap: 8 }}>
+			<div className={styles.row}>
 				<button type="button" onClick={addItem} disabled={saving}>
 					Add Item
 				</button>

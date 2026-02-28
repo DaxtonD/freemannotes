@@ -96,9 +96,14 @@ const server = http.createServer((req, res) => {
 		}
 
 		res.setHeader('Content-Type', contentTypeFor(filePath));
-		// Cache immutable build assets aggressively.
+		// Cache policy:
+		// - Hashed build assets: immutable
+		// - Service worker + HTML shell: no-store (fast updates; SW handles offline)
+		// - Everything else: revalidate
 		if (filePath.includes(path.sep + 'assets' + path.sep)) {
 			res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+		} else if (path.basename(filePath) === 'sw.js' || path.extname(filePath).toLowerCase() === '.html') {
+			res.setHeader('Cache-Control', 'no-store');
 		} else {
 			res.setHeader('Cache-Control', 'no-cache');
 		}

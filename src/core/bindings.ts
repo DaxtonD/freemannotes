@@ -8,6 +8,7 @@ export interface TextLikeEditor {
 	onChange(handler: (next: string, source: TextChangeSource) => void): () => void;
 }
 
+// Minimal headless editor abstraction used to bridge Yjs text with React inputs.
 export class HeadlessTextEditor implements TextLikeEditor {
 	private text = '';
 	private readonly handlers = new Set<(next: string, source: TextChangeSource) => void>();
@@ -40,6 +41,8 @@ export type TextBindingChange = {
 	source: TextChangeSource | 'init';
 };
 
+// Two-way binding between a Y.Text and a TextLikeEditor.
+// Source tagging prevents local echo loops.
 export class TextBinding {
 	private readonly ytext: Y.Text;
 	private readonly editor: TextLikeEditor;
@@ -173,6 +176,7 @@ export class ChecklistModel {
 	}
 
 	public toArray(): ChecklistItem[] {
+		// Materialize immutable plain objects for UI rendering.
 		return this.yarray
 			.toArray()
 			.map((m) => ({
@@ -265,6 +269,7 @@ export class ChecklistBinding {
 		this.onUpdate({ items: initial, source: 'init' });
 		this.emit();
 
+		// observeDeep catches inserts/deletes/field updates inside the checklist item maps.
 		const deepObserver = (_events: Array<Y.YEvent<any>>, transaction: Y.Transaction): void => {
 			if (this.destroyed) return;
 			// Avoid double notifications for local changes that already notified synchronously.

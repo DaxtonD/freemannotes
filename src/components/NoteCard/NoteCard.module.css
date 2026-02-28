@@ -1,0 +1,69 @@
+.card {
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	padding: var(--space-2);
+	background-color: var(--color-surface);
+	max-height: var(--note-card-max-height);
+	overflow: hidden;
+}
+
+.header {
+	cursor: grab;
+	touch-action: none;
+	user-select: none;
+	font-weight: 600;
+	margin-bottom: 6px;
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+}
+
+.header:active {
+	cursor: grabbing;
+}
+
+.headerTitle {
+	flex: 1;
+}
+
+.headerType {
+	font-size: var(--font-size-xs);
+	opacity: 0.6;
+}
+
+.body {
+	user-select: none;
+}
+
+.body * {
+	user-select: text;
+}
+
+.contentPreview {
+	white-space: pre-wrap;
+	overflow: hidden;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	line-clamp: var(--note-content-line-clamp, 8);
+	-webkit-line-clamp: var(--note-content-line-clamp, 8);
+}
+
+.checklist {
+	list-style: none;
+	padding: 0;
+	margin: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.checklistItem {
+	display: flex;
+	gap: var(--space-2);
+	align-items: center;
+}
+
+.checklistMore {
+	opacity: 0.7;
+	font-size: var(--font-size-xs);
+}

@@ -1,0 +1,23 @@
+:root {
+	--color-surface: #fff;
+	--color-border: rgba(0, 0, 0, 0.12);
+	--color-outline: rgba(0, 0, 0, 0.35);
+	--color-text-muted: rgba(0, 0, 0, 0.6);
+
+	--font-size-xs: 12px;
+	--font-size-sm: 14px;
+	--font-size-md: 16px;
+
+	--space-1: 4px;
+	--space-2: 8px;
+	--space-3: 12px;
+	--space-4: 16px;
+
+	--radius-sm: 6px;
+	--transition-fast: 120ms;
+
+	--note-card-width: 250px;
+	--note-card-max-height: 300px;
+	--grid-gap: 16px;
+	--grid-row-unit: 25px;
+}

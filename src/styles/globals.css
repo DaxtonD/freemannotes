@@ -1,0 +1,16 @@
+* {
+	box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+	margin: 0;
+	padding: 0;
+	width: 100%;
+}
+
+body {
+	font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+	font-size: var(--font-size-sm);
+}

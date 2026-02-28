@@ -3,8 +3,12 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
-import './styles.css';
+import './styles/variables.css';
+import './styles/globals.css';
+import './styles/layout.css';
 
+// Resolves default WS endpoint from current origin so desktop/mobile behave consistently
+// in local and proxied environments.
 function getDefaultWsUrl(): string {
 	if (typeof window === 'undefined') return 'ws://localhost:1234';
 
@@ -21,6 +25,7 @@ function getDefaultWsUrl(): string {
 
 const wsUrl = (import.meta as any).env?.VITE_WS_URL || getDefaultWsUrl();
 
+// Singleton manager owns Yjs docs + persistence providers for the entire app session.
 const manager = new DocumentManager(wsUrl);
 
 const rootEl = document.getElementById('root');
@@ -36,6 +41,7 @@ createRoot(rootEl).render(
 	</React.StrictMode>
 );
 
+// Service worker registration + dev cleanup strategy.
 if ('serviceWorker' in navigator) {
 	if (import.meta.env.DEV) {
 		// Branch: clear any stale SW/caches from previous runs,

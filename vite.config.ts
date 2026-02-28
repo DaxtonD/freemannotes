@@ -6,7 +6,7 @@ import react from '@vitejs/plugin-react';
 // a reverse proxy forwards only :27015 (HTTP) but not a separate :1234 (WS).
 //
 // NOTE: Vite also uses a websocket (/) for HMR. We only handle upgrades for /yjs.
-import { WebSocketServer } from 'ws';
+import { WebSocketServer, type WebSocket } from 'ws';
 import { setupWSConnection } from 'y-websocket/bin/utils';
 import type { Plugin } from 'vite';
 
@@ -34,7 +34,7 @@ function yjsWebsocketPlugin(): Plugin {
 				console.info(`[yjs-ws-dev] upgrade ${url}`);
 
 				try {
-					wss.handleUpgrade(req, socket, head, (conn) => {
+					wss.handleUpgrade(req, socket, head, (conn: WebSocket) => {
 						wss.emit('connection', conn, req);
 					});
 				} catch {

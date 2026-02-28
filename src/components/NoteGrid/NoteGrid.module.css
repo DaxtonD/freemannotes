@@ -1,0 +1,38 @@
+.section {
+	width: 100%;
+	min-width: 0;
+	overflow-x: hidden;
+}
+
+.grid {
+	display: grid;
+	width: 100%;
+	min-width: 0;
+	gap: var(--grid-gap);
+	justify-content: start;
+	grid-template-columns: repeat(var(--grid-columns, 2), var(--note-card-width));
+}
+
+.column {
+	display: flex;
+	flex-direction: column;
+	gap: var(--grid-gap);
+}
+
+.item {
+	width: var(--note-card-width);
+	min-width: var(--note-card-width);
+	max-width: var(--note-card-width);
+	position: relative;
+	will-change: transform;
+}
+
+.itemSelected {
+	outline: 2px solid var(--color-outline);
+	outline-offset: -2px;
+	border-radius: var(--radius-sm);
+}
+
+.overlay {
+	pointer-events: none;
+}
