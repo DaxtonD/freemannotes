@@ -1,6 +1,7 @@
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
+import { touchUpdatedAt } from './noteModel';
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const NOTES_LIST_KEY = 'notesList';
@@ -20,6 +21,10 @@ export type ConnectionSnapshot = {
 	// was disconnected. This is intentionally note-scoped (not global) so UI can place
 	// sync indicators on individual cards and avoid misleading global "pending" states.
 	pendingSyncNoteIds: readonly string[];
+	// True once the notes registry Y.Doc has been hydrated from IndexedDB.
+	// UI can gate grid rendering on this flag to avoid flash-of-empty-content
+	// and ensure noteOrder is available before the first paint.
+	registryReady: boolean;
 };
 
 export class DocumentManager {
@@ -37,12 +42,24 @@ export class DocumentManager {
 	private readonly websocketReadyPromises = new Map<string, Promise<void>>();
 	private readonly websocketUrl: string;
 	private readonly internalOrigin = Symbol('DocumentManagerInternal');
+	// Dedicated origin for automatic updatedAt timestamp writes.
+	// Used to tag afterTransaction callbacks so they do not recursively re-trigger
+	// themselves or get confused with user-initiated edits.
+	private readonly updatedAtOrigin = Symbol('DocumentManagerUpdatedAt');
+	// Tracks which note docs already have an afterTransaction listener attached
+	// for automatic updatedAt stamping. Prevents double-attaching if getDoc()
+	// is called multiple times for the same noteId.
+	private readonly updatedAtDocs = new Set<string>();
 	private connectionState: ConnectionState = 'connecting';
 	private browserOnline = typeof navigator === 'undefined' ? true : navigator.onLine;
+	// Becomes true once the notes registry doc has been fully hydrated from
+	// IndexedDB plus websocket provider wiring has been established.
+	private registryHydrated = false;
 	private connectionSnapshot: ConnectionSnapshot = {
 		state: 'connecting',
 		hasPendingSync: false,
 		pendingSyncNoteIds: [],
+		registryReady: false,
 	};
 
 	public constructor(websocketUrl = 'ws://localhost:1234') {
@@ -67,6 +84,11 @@ export class DocumentManager {
 
 		this.updateConnectionState();
 		this.emitConnectionStatus();
+
+		// Eagerly kick off registry hydration so noteOrder is available as early
+		// as possible. This runs in the background; subsequent calls to
+		// getNotesRegistryDoc() reuse the same cached doc and providers.
+		this.initializeRegistry();
 	}
 
 	public hasDoc(noteId: string): boolean {
@@ -101,6 +123,7 @@ export class DocumentManager {
 
 		this.ensureStructure(doc);
 		this.ensureProvider(key, doc);
+		this.ensureUpdatedAtTracking(key, doc);
 		return doc;
 	}
 
@@ -185,7 +208,7 @@ export class DocumentManager {
 		if (!noteOrder.toArray().includes(key)) {
 			const registryDoc = (noteOrder as any).doc as Y.Doc | undefined | null;
 			const run = (): void => {
-				noteOrder.push([key]);
+				noteOrder.insert(0, [key]);
 			};
 			if (registryDoc) registryDoc.transact(run);
 			else run();
@@ -242,6 +265,8 @@ export class DocumentManager {
 		this.readyPromises.delete(key);
 		this.websocketReadyPromises.delete(key);
 		this.pendingSyncRooms.delete(key);
+		// Remove updatedAt tracking registration so a future getDoc() re-attaches cleanly.
+		this.updatedAtDocs.delete(key);
 
 		this.wsCleanup.get(key)?.();
 		this.docCleanup.get(key)?.();
@@ -259,8 +284,11 @@ export class DocumentManager {
 	private ensureStructure(doc: Y.Doc): void {
 		// Yjs root types are created on first access and are stable thereafter.
 		// Re-running this method is safe and will not create duplicates.
+		// All four root types that constitute the canonical note shape are
+		// pre-initialized here so downstream code can assume they exist.
 		doc.transact(() => {
 			doc.getText('title');
+			doc.getText('content');
 			doc.getArray<Y.Map<any>>('checklist');
 			doc.getMap<any>('metadata');
 		}, this.internalOrigin);
@@ -403,6 +431,7 @@ export class DocumentManager {
 		if (
 			this.connectionSnapshot.state === this.connectionState &&
 			this.connectionSnapshot.hasPendingSync === nextHasPendingSync &&
+			this.connectionSnapshot.registryReady === this.registryHydrated &&
 			pendingUnchanged
 		) {
 			return;
@@ -412,6 +441,7 @@ export class DocumentManager {
 			state: this.connectionState,
 			hasPendingSync: nextHasPendingSync,
 			pendingSyncNoteIds: nextPendingSyncNoteIds,
+			registryReady: this.registryHydrated,
 		};
 
 		for (const listener of this.connectionSubscribers) {
@@ -491,6 +521,62 @@ export class DocumentManager {
 			throw new TypeError('noteId must be a non-empty string');
 		}
 		return trimmed;
+	}
+
+	/**
+	 * Attach an afterTransaction listener on a note doc that automatically
+	 * stamps `metadata.updatedAt` with the current epoch-ms on every local
+	 * mutation. This covers all edit paths (title, content, checklist items)
+	 * without requiring individual editors to manually call touchUpdatedAt.
+	 *
+	 * The listener is:
+	 *   - Skipped for the notes registry doc (registry writes are not user content).
+	 *   - Skipped for transactions originated by DocumentManager internals.
+	 *   - Skipped for transactions originated by this listener itself (prevents recursion).
+	 *   - Only attached once per noteId (tracked via updatedAtDocs set).
+	 */
+	private ensureUpdatedAtTracking(noteId: string, doc: Y.Doc): void {
+		/* Registry doc does not represent user content – no timestamp needed. */
+		if (noteId === NOTES_REGISTRY_ID) return;
+		/* Already wired for this noteId – avoid double-attach. */
+		if (this.updatedAtDocs.has(noteId)) return;
+		this.updatedAtDocs.add(noteId);
+
+		const handler = (tx: Y.Transaction): void => {
+			/* Only stamp for local user edits, not remote sync or internal writes. */
+			if (!tx.local) return;
+			if (tx.origin === this.internalOrigin) return;
+			if (tx.origin === this.updatedAtOrigin) return;
+			/* Use the model-layer touchUpdatedAt so the timestamp format is canonical. */
+			touchUpdatedAt(doc, this.updatedAtOrigin);
+		};
+		doc.on('afterTransaction', handler);
+
+		/* Register cleanup so destroyDoc() detaches the listener. */
+		const existingCleanup = this.docCleanup.get(noteId);
+		this.docCleanup.set(noteId, () => {
+			doc.off('afterTransaction', handler);
+			existingCleanup?.();
+		});
+	}
+
+	/**
+	 * Eagerly initialize the notes registry doc (IndexedDB hydration + WS wiring).
+	 *
+	 * Called once from the constructor so downstream getNotesRegistryDoc() calls
+	 * reuse the same cached doc/providers. Sets registryHydrated = true once
+	 * IndexedDB syncing completes and emits a connection status update so UI
+	 * components gating on registryReady can render.
+	 */
+	private initializeRegistry(): void {
+		this.getNotesRegistryDoc()
+			.then(() => {
+				this.registryHydrated = true;
+				this.emitConnectionStatus();
+			})
+			.catch((err) => {
+				console.error('[DocumentManager] Registry initialization failed:', err);
+			});
 	}
 }
 

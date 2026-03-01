@@ -1,23 +1,40 @@
 services:
+  # ─── FreemanNotes app (Node.js + Yjs WebSocket + REST API) ───────────────
   freemannotes:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: freemannotes
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: 27015
       # Set this to your public URL for clearer startup logs only.
-      # APP_URL: https://mydomain.com
-      # Keep empty to disable server-side LevelDB persistence.
-      # YPERSISTENCE: ""
-      YPERSISTENCE: /data/yjs
+      # APP_URL: https://dev.freeman.daxtond.com
+
+      # ── PostgreSQL persistence (required for Phase 8) ──────────────────
+      # The connection string points to the companion postgres service below.
+      DATABASE_URL: postgresql://freemannotes:freemannotes@postgres:5432/freemannotes?schema=public
+
+      # ── Redis caching (optional) ──────────────────────────────────────
+      # Uncomment to enable Redis doc-state caching and multi-instance pub/sub.
+      # REDIS_URL: redis://redis:6379
+
+      # ── PostgreSQL Timezone ────────────────────────────────────────────
+      # IANA timezone for timestamp display in API responses.
+      # Internal storage remains UTC; only affects presentation.
+      # PGTIMEZONE: America/Regina
+
+      # ── Legacy LevelDB persistence (now superseded by PostgreSQL) ──────
+      # Keep empty when using PostgreSQL. Can still be used as a fallback
+      # if DATABASE_URL is unset.
+      # YPERSISTENCE: /data/yjs
     ports:
       - "27015:27015"
-    volumes:
-      - freemannotes-yjs:/data/yjs
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:27015/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
@@ -25,5 +42,43 @@ services:
       retries: 5
       start_period: 20s
 
+  # ─── PostgreSQL database ─────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: freemannotes-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: freemannotes
+      POSTGRES_PASSWORD: freemannotes
+      POSTGRES_DB: freemannotes
+    volumes:
+      - freemannotes-pgdata:/var/lib/postgresql/data
+    ports:
+      # Expose for local development / administration only.
+      # In production behind a firewall, you can remove this.
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U freemannotes -d freemannotes"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ─── Redis (optional — uncomment to enable caching layer) ────────────────
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: freemannotes-redis
+  #   restart: unless-stopped
+  #   volumes:
+  #     - freemannotes-redis:/data
+  #   ports:
+  #     - "6379:6379"
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+
 volumes:
-  freemannotes-yjs:
+  freemannotes-pgdata:
+  # freemannotes-redis:
