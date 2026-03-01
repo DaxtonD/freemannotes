@@ -19,3 +19,7 @@ yarn-error.log*
 
 # Local troubleshooting captures
 screenjitter.mp4
+
+# Prisma generated client (regenerated on npm install / prisma generate)
+# The schema.prisma file IS tracked; the generated output is NOT.
+node_modules/.prisma/

@@ -2,6 +2,48 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.3 - 2026-03-01
+
+### Added
+- **Automatic database provisioning** — server now creates the PostgreSQL database
+  on first boot if it does not exist (connects to the `postgres` admin DB, runs
+  `CREATE DATABASE`). No manual `createdb` or pgAdmin step required.
+- **Automatic schema sync on startup** — `prisma db push --skip-generate` runs on
+  every boot to apply new tables/columns without data loss. Destructive changes are
+  rejected and flagged for manual resolution.
+- New `server/dbInit.js` module (database existence check + schema sync) and
+  `server/dbInitCli.js` standalone CLI entry point.
+- `npm run db:init` script for manual database provisioning.
+- `npm run dev` now auto-provisions the database before starting Vite.
+- **Configurable timezone (`PGTIMEZONE`)** — IANA timezone name (e.g.
+  `America/Regina`) read from `.env`. PostgreSQL session timezone is set on boot;
+  all REST API timestamps (Prisma `timestamptz` fields and Yjs epoch-ms metadata)
+  are formatted in the configured timezone. Internal storage remains UTC.
+- New `server/timezone.js` utility module using `Intl.DateTimeFormat` for
+  zero-dependency timezone-aware ISO-8601 formatting.
+- `GET /api/timezone` endpoint returns configured timezone and current server time
+  in both UTC and local tz.
+- All REST API responses (`/api/workspace`, `/api/docs`, `/api/docs/:docId`) now
+  include a `timezone` field and format timestamps through the timezone formatter.
+- `pg` (node-postgres) added as a production dependency for admin-level DB
+  creation (Prisma cannot run `CREATE DATABASE`).
+
+### Changed
+- Server boot sequence restructured into an async `boot()` function that runs
+  database provisioning → timezone SET → workspace init → listen, guaranteeing
+  the backend is fully ready before accepting traffic.
+- `Dockerfile` CMD simplified to `node server.js` — the server handles all
+  migration/provisioning internally.
+- `docker-compose.yml` updated with `PGTIMEZONE` env var documentation.
+
+### Fixed
+- **"Loading…" stuck on remote note creation** — NoteGrid doc-loading effect used
+  a `cancelled` flag in its cleanup that raced with rapid Yjs observer re-fires.
+  When the effect re-ran before the async doc load resolved, the cancelled closure
+  discarded the result and `pendingDocLoadsRef` blocked retries. Removed the
+  `cancelled` flag; dedup is now handled solely by `pendingDocLoadsRef` and the
+  idempotent `setDocsById` functional updater.
+
 ## 1.0.2 - 2026-02-28
 
 ### Added
