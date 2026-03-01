@@ -106,4 +106,35 @@ export function runNoteGuards(
 			itemIdSet.add(itemId);
 		}
 	}
+
+	// ── 6. Trashed notes still visible in the main grid ──────────────────
+	// If a note's metadata has trashed === true but it's still showing in
+	// the main grid (i.e. in registryIds/orderIds), that indicates the UI
+	// is not properly filtering trashed notes.
+	for (const [noteId, doc] of Object.entries(docsById)) {
+		const metadata = doc.getMap<any>('metadata');
+		const trashed = Boolean(metadata.get('trashed'));
+		if (trashed && (registrySet.has(noteId) || orderSet.has(noteId))) {
+			console.warn(
+				`[dev-guard] Note "${noteId}" is trashed but still present in the ` +
+				`note registry/order. The UI should filter trashed notes from the main grid.`
+			);
+		}
+	}
+
+	// ── 7. Inconsistent trash state (trashed without trashedAt) ──────────
+	// If a note has trashed === true, it must also have an ISO-8601 string
+	// trashedAt timestamp. Missing trashedAt would prevent the server-side
+	// cleanup from calculating the retention expiry.
+	for (const [noteId, doc] of Object.entries(docsById)) {
+		const metadata = doc.getMap<any>('metadata');
+		const trashed = Boolean(metadata.get('trashed'));
+		const trashedAt = metadata.get('trashedAt');
+		if (trashed && (typeof trashedAt !== 'string' || trashedAt.length === 0)) {
+			console.warn(
+				`[dev-guard] Note "${noteId}" has trashed=true but missing/invalid trashedAt. ` +
+				`Server cleanup cannot determine retention expiry.`
+			);
+		}
+	}
 }

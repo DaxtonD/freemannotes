@@ -2,6 +2,61 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.4 - 2026-03-01
+
+### Added
+- **Move to Trash (soft-delete)** — notes are now soft-deleted via a `trashed` /
+  `trashedAt` flag stored inside the Yjs document metadata. Trashed notes are
+  hidden from the main grid but remain persisted in PostgreSQL until the
+  server-side cleanup process permanently removes them.
+- `setNoteTrashed()` and `readTrashState()` helpers in `noteModel.ts` for
+  toggling and reading trash state inside a Y.Doc.
+- `DocumentManager.trashNote()`, `.restoreNote()`, `.isNoteTrashed()`, and
+  `.permanentlyDeleteNote()` public API for trash lifecycle management.
+- **Server-side trash cleanup scheduler** (`server/trashCleanup.js`) —
+  periodically scans all persisted Yjs documents, identifies notes where
+  `trashed === true` and `trashedAt` exceeds the user's `deleteAfterDays`
+  retention preference, and permanently deletes them from PostgreSQL, Redis,
+  and the notes registry CRDT.
+- **User preferences backend** — new `UserPreference` Prisma model
+  (`prisma/schema.prisma`) and REST API (`server/preferencesRouter.js`):
+  - `GET /api/user/preferences` — returns preferences (upserts defaults).
+  - `POST /api/user/preferences` — updates `deleteAfterDays` (1–365 range).
+- `GET /api/trash` endpoint in `apiRouter.js` — lists all trashed notes with
+  title, type, `trashedAt`, and size, sorted by most recently trashed.
+- **Dev guards #6 and #7** (`devGuards.ts`) — warn in development when trashed
+  notes leak into the visible grid or when `trashed=true` lacks a valid
+  `trashedAt` timestamp.
+- **Cross-tab trash reactivity** — `NoteGrid` now observes each loaded note's
+  `metadata` Y.Map. When a remote tab trashes/restores a note, the metadata
+  observer bumps a `metadataVersion` counter, `visibleIds` recomputes, and the
+  note appears/disappears without a page refresh.
+- **Mobile WebSocket resilience**:
+  - `visibilitychange` + `focus` event handlers in `DocumentManager` —
+    force-disconnect and reconnect all WebSocket providers when the tab returns
+    to the foreground, recovering from silent connection death on mobile OS
+    background suspension.
+  - `online` event handler triggers the same reconnect cycle on network recovery.
+  - `resyncInterval: 30_000` enabled on every `WebsocketProvider` — periodically
+    re-sends Yjs Sync Step 1 to catch silently dropped frames on flaky networks.
+  - `maxBackoffTime: 5_000` — caps reconnect exponential backoff at 5 seconds.
+- **Server-side WebSocket ping/pong keep-alive** (`server.js`) — pings every
+  client every 30 seconds; terminates connections that fail to respond, cleaning
+  up dead mobile sockets before the 30-second y-websocket idle timeout.
+- `npm test` script using Node.js built-in test runner (`node --test tests/`).
+- 14 tests covering trash toggle, offline sync round-trip, CRDT convergence,
+  cleanup expiry identification, preference validation, and metadata schema.
+
+### Changed
+- `App.tsx` — delete action now calls `manager.trashNote()` (soft-delete)
+  instead of `manager.deleteNote()` (hard-delete).
+- `trashedAt` stored as ISO-8601 string (e.g. `"2026-03-01T16:07:09.460Z"`)
+  instead of epoch-ms number, for human readability and consistent formatting.
+- `NoteGrid` drag and cross-tab-cancel logic now operates on `visibleIds`
+  (filtered by trash state) instead of raw `orderedIds`.
+- Server boot sequence extended: Step 3 starts trash cleanup scheduler;
+  graceful shutdown stops the scheduler before flushing persistence.
+
 ## 1.0.3 - 2026-03-01
 
 ### Added

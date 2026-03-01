@@ -19,6 +19,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
+import { readTrashState } from '../../core/noteModel';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import styles from './NoteGrid.module.css';
 
@@ -403,11 +404,56 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const getSnapshot = React.useCallback(() => versionRef.current, []);
 	const storeVersion = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
+	// ── Observe per-note metadata changes (cross-tab trash reactivity) ────
+	// The storeVersion counter only fires for registry/order array mutations.
+	// Trashing modifies the *note's own* metadata Y.Map — which is a
+	// separate Y.Doc from the registry. Without this observer, a remote
+	// tab's trash operation would update the note doc silently and the
+	// grid would never re-filter.
+	//
+	// We attach a Y.Map observer on each loaded doc's metadata. When any
+	// metadata key changes (trashed, trashedAt, updatedAt, etc.), we bump
+	// metadataVersion and visibleIds recomputes — removing or showing the
+	// note without a page refresh.
+	const [metadataVersion, setMetadataVersion] = React.useState(0);
+
+	React.useEffect(() => {
+		const entries = Object.entries(docsById);
+		if (entries.length === 0) return;
+
+		const cleanups: (() => void)[] = [];
+		for (const [, doc] of entries) {
+			const metadata = doc.getMap('metadata');
+			const handler = (): void => {
+				setMetadataVersion((v) => v + 1);
+			};
+			metadata.observe(handler);
+			cleanups.push(() => metadata.unobserve(handler));
+		}
+		return () => {
+			for (const cleanup of cleanups) cleanup();
+		};
+	}, [docsById]);
+
 	const orderedIds = React.useMemo<string[]>(() => {
 		if (!noteOrder) return [];
 		return readOrderIds(noteOrder);
 	}, [noteOrder, storeVersion]);
-	const renderedIds = dragOrderIds ?? orderedIds;
+
+	// ── Filter out trashed notes from the main grid ──────────────────────
+	// The trash state lives in each note's Yjs metadata map. Docs are lazy-loaded,
+	// so a note whose doc hasn't loaded yet is assumed to be NOT trashed (it will
+	// be re-evaluated once its doc arrives and docsById is updated). This prevents
+	// a flash of trashed cards that would vanish once the doc loads.
+	const visibleIds = React.useMemo<string[]>(() => {
+		return orderedIds.filter((id) => {
+			const doc = docsById[id];
+			if (!doc) return true; // doc not loaded yet → show until we know
+			return !readTrashState(doc).trashed;
+		});
+	}, [orderedIds, docsById, metadataVersion]);
+
+	const renderedIds = dragOrderIds ?? visibleIds;
 	const orderedNotes = React.useMemo<Note[]>(() => renderedIds.map((id) => ({ id })), [renderedIds]);
 	const noteById = React.useMemo(() => {
 		const map = new Map<string, Note>();
@@ -507,10 +553,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// sensor/overlay state is fully reset. No reorder is attempted.
 	React.useEffect(() => {
 		if (!activeDragId) return;
-		const stillExists = orderedIds.includes(activeDragId);
+		const stillExists = visibleIds.includes(activeDragId);
 		if (stillExists) return;
 
-		// The dragged note was deleted remotely — abort the drag immediately.
+		// The dragged note was deleted/trashed remotely — abort the drag immediately.
 		isTouchDragRef.current = false;
 		pendingTouchIntentRef.current = false;
 		touchScrollDetectedRef.current = false;
@@ -525,9 +571,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		layoutRectsRef.current.clear();
 		hasMeasuredLayoutRef.current = false;
 		// Remount DndContext so dnd-kit drops all internal references to the
-		// now-deleted item (active sensor, overlay node, collision rects).
+		// now-deleted/trashed item (active sensor, overlay node, collision rects).
 		setDndContextKey((prev) => prev + 1);
-	}, [activeDragId, orderedIds]);
+	}, [activeDragId, visibleIds]);
 
 	React.useEffect(() => {
 		// Keep noteOrder CRDT in sync with registry: backfill missing IDs, remove
@@ -671,7 +717,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// Any user interaction after startup can safely use transitions.
 		suppressReflowAnimationsRef.current = false;
 		setActiveDragId(activeId);
-		setDragOrderIds(orderedIds);
+		setDragOrderIds(visibleIds);
 		lastOverIdRef.current = null;
 		// Primary source: dnd-kit rect snapshot.
 		const rect =
@@ -699,7 +745,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		}
 
 		setActiveDragSize(null);
-	}, [orderedIds]);
+	}, [visibleIds]);
 
 	const onDragMove = React.useCallback((event: any) => {
 		if (!isTouchDragRef.current || touchReorderUnlockedRef.current) return;
