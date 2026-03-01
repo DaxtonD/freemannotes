@@ -72,8 +72,10 @@ export function App(): React.JSX.Element {
 
 	const onDeleteSelectedNote = React.useCallback(
 		async (noteId: string) => {
-			// Delete from registry + note order + optional note doc/provider teardown.
-			await manager.deleteNote(noteId, true);
+			// Soft-delete: mark as trashed in the Yjs metadata. The note stays
+			// in the registry and order arrays but is hidden from the main grid.
+			// Server-side cleanup permanently removes it after deleteAfterDays.
+			await manager.trashNote(noteId);
 			setSelectedNoteId((prev) => (prev === noteId ? null : prev));
 			setOpenDocId((prevId) => {
 				if (prevId !== noteId) return prevId;

@@ -79,6 +79,12 @@ let persistAdapter = null;
 /** @type {ReturnType<import('./server/apiRouter').createApiRouter> | null} */
 let apiRouter = null;
 
+/** @type {ReturnType<import('./server/preferencesRouter').createPreferencesRouter> | null} */
+let preferencesRouter = null;
+
+/** @type {ReturnType<import('./server/trashCleanup').createTrashCleanup> | null} */
+let trashCleanup = null;
+
 if (DATABASE_URL.length > 0) {
 	// ── PostgreSQL via Prisma ─────────────────────────────────────────────
 	try {
@@ -138,10 +144,15 @@ if (DATABASE_URL.length > 0) {
 			const { createApiRouter } = require('./server/apiRouter');
 			apiRouter = createApiRouter({ prisma, adapter: persistAdapter, timezone: PGTIMEZONE || null });
 			console.info('[server] REST API router initialized');
+
+			const { createPreferencesRouter } = require('./server/preferencesRouter');
+			preferencesRouter = createPreferencesRouter({ prisma, timezone: PGTIMEZONE || null });
+			console.info('[server] Preferences API router initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize persistence adapter:', err.message);
 			persistAdapter = null;
 			apiRouter = null;
+			preferencesRouter = null;
 		}
 	}
 } else {
@@ -238,6 +249,12 @@ const server = http.createServer((req, res) => {
 			return;
 		}
 
+		// ── Preferences API router ───────────────────────────────────────
+		// Handles /api/user/preferences GET and POST endpoints.
+		if (preferencesRouter && preferencesRouter(req, res)) {
+			return;
+		}
+
 		// ── Method guard ─────────────────────────────────────────────────
 		if (req.method !== 'GET' && req.method !== 'HEAD') {
 			res.writeHead(405);
@@ -321,9 +338,45 @@ server.on('error', (err) => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WebSocket server for Yjs, attached to same HTTP server.
+//
+// Server-side ping/pong keep-alive:
+//   Every 30 s the server sends a WebSocket ping frame to each connected
+//   client. If no pong is received within 10 s the connection is considered
+//   dead and is terminated. This is critical for mobile clients on cellular
+//   networks where TCP connections can die silently (NAT timeout, cell tower
+//   handoff) without either side receiving a FIN. Without server-side pings
+//   the dead socket would linger until y-websocket's internal 30 s idle
+//   check fires, wasting memory and blocking Yjs awareness cleanup.
+//
+//   The `ws` library (v8+) handles pong responses automatically on the
+//   client side — no application-level code needed.
 // ─────────────────────────────────────────────────────────────────────────────
 
+const WS_PING_INTERVAL_MS = 30_000;
+const WS_PONG_TIMEOUT_MS = 10_000;
+
 const wss = new WebSocket.Server({ noServer: true });
+
+// ── Server-side ping/pong keep-alive ─────────────────────────────────────
+// Track liveness per connection so we can terminate unresponsive clients.
+const wsAliveMap = new WeakMap();
+
+const wsPingInterval = setInterval(() => {
+	for (const ws of wss.clients) {
+		if (wsAliveMap.get(ws) === false) {
+			// No pong received since last ping — connection is dead.
+			ws.terminate();
+			continue;
+		}
+		wsAliveMap.set(ws, false);
+		ws.ping();
+	}
+}, WS_PING_INTERVAL_MS);
+
+// Clean up the interval when the WebSocket server closes.
+wss.on('close', () => {
+	clearInterval(wsPingInterval);
+});
 
 server.on('upgrade', (req, socket, head) => {
 	socket.on('error', () => {
@@ -347,6 +400,16 @@ server.on('upgrade', (req, socket, head) => {
 });
 
 wss.on('connection', (conn, req) => {
+	// ── Ping/pong liveness tracking ──────────────────────────────────────
+	// Mark this connection as alive. The wsPingInterval periodically sets
+	// alive=false then sends a ping; if no pong arrives before the next
+	// cycle the connection is terminated.
+	wsAliveMap.set(conn, true);
+	conn.on('pong', () => {
+		wsAliveMap.set(conn, true);
+	});
+
+	// ── Yjs WebSocket setup ──────────────────────────────────────────────
 	// Client connects to /yjs/<room>; y-websocket expects /<room>
 	req.url = String(req.url || '/').replace(/^\/yjs/, '') || '/';
 	setupWSConnection(conn, req, { gc: true });
@@ -365,7 +428,16 @@ wss.on('connection', (conn, req) => {
 async function gracefulShutdown(signal) {
 	console.info(`[server] ${signal} received — starting graceful shutdown...`);
 
-	// 1. Flush all active docs to PostgreSQL.
+	// 1. Stop the trash cleanup scheduler (no more periodic cycles).
+	if (trashCleanup) {
+		try {
+			trashCleanup.stop();
+		} catch (err) {
+			console.error('[server] Error stopping trash cleanup:', err.message);
+		}
+	}
+
+	// 2. Flush all active docs to PostgreSQL.
 	if (persistAdapter) {
 		try {
 			await persistAdapter.destroy();
@@ -375,7 +447,7 @@ async function gracefulShutdown(signal) {
 		}
 	}
 
-	// 2. Disconnect Prisma client.
+	// 3. Disconnect Prisma client.
 	if (prisma) {
 		try {
 			await prisma.$disconnect();
@@ -385,7 +457,7 @@ async function gracefulShutdown(signal) {
 		}
 	}
 
-	// 3. Close the HTTP + WebSocket server.
+	// 4. Close the HTTP + WebSocket server.
 	try {
 		wss.close();
 		server.close(() => {
@@ -462,7 +534,28 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 		}
 	}
 
-	// ── Step 3: Start the HTTP + WebSocket server ──────────────────────
+	// ── Step 3: Start the trash cleanup scheduler ──────────────────────
+	// Automatically deletes notes where trashed=true and trashedAt is older
+	// than the user's deleteAfterDays preference. Runs periodically in the
+	// background. Must start after workspace initialization so the adapter
+	// has a valid workspace ID.
+	if (persistAdapter && prisma) {
+		try {
+			const { createTrashCleanup } = require('./server/trashCleanup');
+			trashCleanup = createTrashCleanup({
+				prisma,
+				adapter: persistAdapter,
+				redis: redis || null,
+				// Default: run every 60 minutes. Can be overridden via env var.
+				intervalMs: Number(process.env.TRASH_CLEANUP_INTERVAL_MS) || 60 * 60 * 1000,
+			});
+			console.info('[server] Trash cleanup scheduler initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize trash cleanup:', err.message);
+		}
+	}
+
+	// ── Step 4: Start the HTTP + WebSocket server ──────────────────────
 	server.listen(PORT, HOST, () => {
 		const publicBaseUrl = normalizedAppUrl();
 		console.log(`[server] listening on ${HOST}:${PORT}`);

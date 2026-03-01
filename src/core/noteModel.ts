@@ -54,6 +54,21 @@ export interface Note {
 	createdAt: number;
 	/** Epoch-ms timestamp of the most recent local mutation. */
 	updatedAt: number;
+	/**
+	 * Soft-delete flag. When true the note has been "moved to trash" and
+	 * should be hidden from the main grid. The note is not physically
+	 * deleted from Yjs or Postgres — a server-side cleanup process
+	 * permanently removes it after `deleteAfterDays` have elapsed.
+	 */
+	trashed: boolean;
+	/**
+	 * ISO-8601 timestamp recording when the note was moved to trash.
+	 * null when the note is not trashed (trashed === false).
+	 * Stored as a string (e.g. "2026-03-01T12:00:00.000Z") inside the
+	 * Yjs metadata map and persisted through the normal Yjs→Postgres
+	 * pipeline. Used by the server-side cleanup to determine retention expiry.
+	 */
+	trashedAt: string | null;
 	/** Plain-text body. Present only when type === 'text'. */
 	content?: string;
 	/** Checklist rows. Present only when type === 'checklist'. */
@@ -112,11 +127,13 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string): void {
 		yContent.delete(0, yContent.length);
 		yContent.insert(0, body);
 
-		/* Metadata map – type discriminator + creation/update timestamps. */
+		/* Metadata map – type discriminator + creation/update timestamps + trash state. */
 		const metadata = doc.getMap<any>('metadata');
 		metadata.set('type', 'text');
 		metadata.set('createdAt', now);
 		metadata.set('updatedAt', now);
+		metadata.set('trashed', false);
+		metadata.set('trashedAt', null);
 	});
 }
 
@@ -150,11 +167,13 @@ export function initChecklistNoteDoc(
 		yTitle.delete(0, yTitle.length);
 		yTitle.insert(0, title);
 
-		/* Metadata – type discriminator + timestamps. */
+		/* Metadata – type discriminator + timestamps + trash state. */
 		const metadata = doc.getMap<any>('metadata');
 		metadata.set('type', 'checklist');
 		metadata.set('createdAt', now);
 		metadata.set('updatedAt', now);
+		metadata.set('trashed', false);
+		metadata.set('trashedAt', null);
 
 		/* Clear any pre-existing checklist data (safety net for re-initialization). */
 		if (yChecklist.length > 0) {
@@ -196,7 +215,12 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	/* Fall back to createdAt if updatedAt is not yet populated (legacy notes). */
 	const updatedAt = Number(metadata.get('updatedAt') ?? createdAt);
 
-	const base: Note = { id, type, title, createdAt, updatedAt };
+	/* Trash state — default to not-trashed for legacy notes that pre-date this field. */
+	const trashed = Boolean(metadata.get('trashed'));
+	const rawTrashedAt = metadata.get('trashedAt');
+	const trashedAt = typeof rawTrashedAt === 'string' ? rawTrashedAt : null;
+
+	const base: Note = { id, type, title, createdAt, updatedAt, trashed, trashedAt };
 
 	if (type === 'text') {
 		base.content = doc.getText('content').toString();
@@ -240,4 +264,52 @@ export function touchUpdatedAt(doc: Y.Doc, origin?: symbol): void {
 	} else {
 		doc.transact(run);
 	}
+}
+
+/**
+ * Toggle the soft-delete ("trash") state of a note.
+ *
+ * When `trashed` is true (or omitted), the note is marked as trashed with
+ * the current epoch-ms timestamp. When false, the note is restored (un-trashed)
+ * and `trashedAt` is cleared to null.
+ *
+ * The trash state lives inside the note's Yjs `metadata` map so it is
+ * automatically replicated across all connected tabs/clients via CRDT sync
+ * and persisted through the normal Yjs→Postgres pipeline. No separate
+ * server RPC is needed to toggle trash — the change propagates like any
+ * other Yjs mutation.
+ *
+ * @param doc     - The Yjs document whose trash state to toggle.
+ * @param trashed - Whether the note should be trashed (default: true).
+ * @param origin  - Optional transaction origin for observer filtering.
+ */
+export function setNoteTrashed(doc: Y.Doc, trashed = true, origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const run = (): void => {
+		metadata.set('trashed', trashed);
+		metadata.set('trashedAt', trashed ? new Date().toISOString() : null);
+		/* Also bump updatedAt so the change is visible in timestamps. */
+		metadata.set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
+}
+
+/**
+ * Read only the trash-related fields from a live Y.Doc without building
+ * a full Note snapshot. Useful for lightweight checks (e.g. filtering
+ * the note grid) without the overhead of readNoteFromDoc.
+ *
+ * @param doc - The Yjs document to inspect.
+ * @returns Object with `trashed` boolean and `trashedAt` epoch-ms or null.
+ */
+export function readTrashState(doc: Y.Doc): { trashed: boolean; trashedAt: string | null } {
+	const metadata = doc.getMap<any>('metadata');
+	const trashed = Boolean(metadata.get('trashed'));
+	const rawTrashedAt = metadata.get('trashedAt');
+	const trashedAt = typeof rawTrashedAt === 'string' ? rawTrashedAt : null;
+	return { trashed, trashedAt };
 }

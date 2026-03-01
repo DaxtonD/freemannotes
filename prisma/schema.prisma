@@ -103,3 +103,37 @@ model YjsDocument {
   @@index([workspaceId, docId])
   @@map("yjs_document")
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// UserPreference – per-user configurable settings.
+//
+// Stores user-level preferences that influence server-side behaviour
+// (e.g. how long trashed notes are retained before permanent deletion).
+// The table is keyed by `userId` — a free-form string that will map to
+// a future auth identity. Until authentication is implemented, the
+// server uses a deterministic default user ID (e.g. "default").
+//
+// Design choice: one row per user (not per-preference) with nullable
+// columns for each setting. This makes reads cheap (single row) and
+// allows future settings to be added as new columns without a schema
+// migration for every preference key.
+// ─────────────────────────────────────────────────────────────────────────
+model UserPreference {
+  /// Primary key — auto-generated UUID.
+  id String @id @default(uuid()) @db.Uuid
+
+  /// User identifier. Until auth is implemented, the server uses a
+  /// fixed default value (e.g. "default"). Must be unique per user.
+  userId String @unique @map("user_id")
+
+  /// Number of days a trashed note is retained before automatic
+  /// permanent deletion. Must be a positive integer.
+  /// Default: 30 days.
+  deleteAfterDays Int @default(30) @map("delete_after_days")
+
+  /// Timestamps for auditing.
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("user_preference")
+}

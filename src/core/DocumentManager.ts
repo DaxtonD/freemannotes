@@ -1,7 +1,7 @@
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
-import { touchUpdatedAt } from './noteModel';
+import { touchUpdatedAt, setNoteTrashed, readTrashState } from './noteModel';
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const NOTES_LIST_KEY = 'notesList';
@@ -61,6 +61,10 @@ export class DocumentManager {
 		pendingSyncNoteIds: [],
 		registryReady: false,
 	};
+	// Cleanup function for the global visibility/focus lifecycle listeners that
+	// trigger reconnect-on-foreground behavior. Stored so the manager can be
+	// torn down cleanly in tests or hot-module-replacement scenarios.
+	private readonly lifecycleCleanup: (() => void) | null = null;
 
 	public constructor(websocketUrl = 'ws://localhost:1234') {
 		// Normalize trailing slashes to avoid duplicate room URLs.
@@ -71,6 +75,10 @@ export class DocumentManager {
 				this.browserOnline = true;
 				this.updateConnectionState();
 				this.emitConnectionStatus();
+				// Mobile networks often silently kill WebSocket connections during
+				// offline→online transitions (cell tower handoff, tunnel exit, etc).
+				// Force-reconnect all providers so pending Yjs updates sync immediately.
+				this.reconnectAllProviders('online-event');
 			};
 			const onOffline = (): void => {
 				this.browserOnline = false;
@@ -80,6 +88,50 @@ export class DocumentManager {
 
 			window.addEventListener('online', onOnline);
 			window.addEventListener('offline', onOffline);
+
+			// ── Visibility / focus lifecycle ─────────────────────────────
+			// Mobile browsers (iOS Safari, Android Chrome) aggressively suspend
+			// background tabs, silently closing WebSocket connections without
+			// firing `close` events. When the user returns to the tab, the Yjs
+			// provider thinks it is still connected but the underlying socket
+			// is dead. We detect the tab returning to the foreground via the
+			// Page Visibility API and `focus` event, then force-disconnect and
+			// reconnect every WebSocket provider so that:
+			//   1. The provider re-establishes a fresh TCP/TLS connection.
+			//   2. The Yjs sync protocol re-runs Step 1 (full state vector
+			//      exchange) on the new connection, fetching any updates the
+			//      client missed while backgrounded.
+			//   3. The reconnect counter is reset so backoff doesn't accumulate
+			//      across foreground/background cycles.
+			//
+			// This is intentionally aggressive (disconnect + reconnect every
+			// provider) rather than subtle (check individual provider state)
+			// because mobile OS suspension behavior is unpredictable and
+			// provider-level `wsconnected` flags can be stale.
+			const onVisibilityChange = (): void => {
+				if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+					this.reconnectAllProviders('visibilitychange');
+				}
+			};
+			const onFocus = (): void => {
+				// Redundant with visibilitychange on most browsers, but some
+				// mobile WebViews only fire `focus` (not visibility events).
+				this.reconnectAllProviders('focus');
+			};
+
+			if (typeof document !== 'undefined') {
+				document.addEventListener('visibilitychange', onVisibilityChange);
+			}
+			window.addEventListener('focus', onFocus);
+
+			this.lifecycleCleanup = () => {
+				window.removeEventListener('online', onOnline);
+				window.removeEventListener('offline', onOffline);
+				window.removeEventListener('focus', onFocus);
+				if (typeof document !== 'undefined') {
+					document.removeEventListener('visibilitychange', onVisibilityChange);
+				}
+			};
 		}
 
 		this.updateConnectionState();
@@ -249,6 +301,65 @@ export class DocumentManager {
 		}
 	}
 
+	// ─── Trash (soft-delete) API ──────────────────────────────────────────
+
+	/**
+	 * Move a note to trash (soft-delete).
+	 *
+	 * Sets `metadata.trashed = true` and `metadata.trashedAt = Date.now()`
+	 * inside the note's Yjs document. The note is NOT removed from the
+	 * registry or ordering arrays — the change propagates through normal
+	 * CRDT sync and the UI filters trashed notes out of the main grid.
+	 *
+	 * The note doc and its providers remain alive so the trash state change
+	 * syncs to the server and other tabs. Physical deletion (registry
+	 * removal + doc destroy) is handled by the server-side cleanup process
+	 * once the retention period expires, or immediately via permanentlyDeleteNote().
+	 */
+	public async trashNote(noteId: string): Promise<void> {
+		const key = this.normalizeNoteId(noteId);
+		const doc = await this.getDocWithSync(key);
+		setNoteTrashed(doc, true);
+	}
+
+	/**
+	 * Restore a trashed note (un-trash / undo soft-delete).
+	 *
+	 * Sets `metadata.trashed = false` and clears `metadata.trashedAt` to null.
+	 * The note reappears in the main grid for all connected clients.
+	 */
+	public async restoreNote(noteId: string): Promise<void> {
+		const key = this.normalizeNoteId(noteId);
+		const doc = await this.getDocWithSync(key);
+		setNoteTrashed(doc, false);
+	}
+
+	/**
+	 * Check whether a specific note is currently trashed.
+	 *
+	 * Reads the `trashed` flag directly from the note's Yjs metadata map.
+	 * Returns false for notes that pre-date the trash feature (legacy notes
+	 * with no `trashed` field in their metadata).
+	 */
+	public async isNoteTrashed(noteId: string): Promise<boolean> {
+		const key = this.normalizeNoteId(noteId);
+		const doc = await this.getDocWithSync(key);
+		return readTrashState(doc).trashed;
+	}
+
+	/**
+	 * Permanently delete a note — removes from registry, order, and destroys
+	 * the Yjs document and all its providers. This is irreversible.
+	 *
+	 * Use this for:
+	 *   - Immediate permanent deletion (skip trash).
+	 *   - Server-side cleanup of expired trashed notes.
+	 *   - User-initiated "empty trash" / "delete permanently" actions.
+	 */
+	public async permanentlyDeleteNote(noteId: string): Promise<void> {
+		await this.deleteNote(noteId, true);
+	}
+
 	public destroyDoc(noteId: string): void {
 		const key = this.normalizeNoteId(noteId);
 		const doc = this.docs.get(key);
@@ -332,8 +443,22 @@ export class DocumentManager {
 		}
 
 		// Attach only after IndexedDB hydration has completed (enforced by getDocWithSync).
+		// ── Mobile-resilient provider configuration ──────────────────────
+		//   resyncInterval: 30 000 ms (30 s) — periodically re-sends Yjs
+		//     Sync Step 1 to the server, causing it to reply with any updates
+		//     the client is missing. This covers silent message loss on flaky
+		//     mobile networks where the WS connection stays alive but
+		//     individual frames are dropped by intermediate proxies/NAT.
+		//   maxBackoffTime: 5 000 ms — caps the exponential reconnect delay
+		//     to 5 seconds. The default 2.5 s is fine for desktop; 5 s gives
+		//     mobile radios a bit more time to come back up after a cell
+		//     tower switch without making the user wait too long.
+		//   disableBc: false (default) — BroadcastChannel remains enabled
+		//     for same-origin same-browser cross-tab sync (instant, no WS).
 		const wsProvider = new WebsocketProvider(this.websocketUrl, noteId, doc, {
 			connect: true,
+			resyncInterval: 30_000,
+			maxBackoffTime: 5_000,
 		});
 
 		const onStatus = (event: { status: string }): void => {
@@ -391,6 +516,70 @@ export class DocumentManager {
 		if (!this.websocketReadyPromises.has(noteId)) {
 			this.websocketReadyPromises.set(noteId, this.waitForWebsocketConnected(wsProvider));
 		}
+		this.updateConnectionState();
+		this.emitConnectionStatus();
+	}
+
+	// ─── Reconnect-on-foreground ─────────────────────────────────────────
+
+	/**
+	 * Force-disconnect and reconnect every active WebSocket provider.
+	 *
+	 * This is the primary mechanism for ensuring mobile browsers receive
+	 * instant CRDT updates after returning from a suspended/backgrounded
+	 * state. Mobile OS behaviour (iOS, Android) silently drops WebSocket
+	 * connections when tabs go to the background but does NOT fire the
+	 * standard `close` event, leaving y-websocket believing it is still
+	 * connected. The Yjs awareness heartbeat (15 s) eventually detects the
+	 * dead socket but only after 30 s of `messageReconnectTimeout` — during
+	 * which all new remote edits are invisible to the user.
+	 *
+	 * By explicitly calling `disconnect()` then `connect()` on each
+	 * provider we:
+	 *   1. Tear down the dead underlying WebSocket immediately.
+	 *   2. Reset the reconnect backoff counter (`wsUnsuccessfulReconnects`).
+	 *   3. Open a fresh TCP/TLS connection.
+	 *   4. Run Yjs Sync Step 1 on the new connection, which brings the
+	 *      entire Y.Doc up to date in a single round-trip.
+	 *
+	 * The method uses a short 150 ms debounce so that rapid successive
+	 * events (e.g. both `visibilitychange` and `focus` firing at the same
+	 * instant) only trigger a single reconnect cycle.
+	 *
+	 * @param reason — Human-readable tag for log output (e.g. "visibilitychange").
+	 */
+	private reconnectDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+	private reconnectAllProviders(reason: string): void {
+		// Debounce: collapse rapid-fire events into a single reconnect pass.
+		if (this.reconnectDebounceTimer !== null) return;
+		this.reconnectDebounceTimer = setTimeout(() => {
+			this.reconnectDebounceTimer = null;
+		}, 150);
+
+		const providers = Array.from(this.websocketProviders.values());
+		if (providers.length === 0) return;
+
+		console.info(
+			`[yjs-ws] reconnectAllProviders reason=${reason} providers=${providers.length}`
+		);
+
+		for (const provider of providers) {
+			try {
+				// disconnect() closes the WS, sets shouldConnect=false, clears timers.
+				provider.disconnect();
+				// Reset backoff so the next connect() fires immediately instead of
+				// waiting for the accumulated exponential delay.
+				(provider as any).wsUnsuccessfulReconnects = 0;
+				// connect() sets shouldConnect=true and calls setupWS() which opens
+				// a new WebSocket + runs Sync Step 1 on open.
+				provider.connect();
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				console.warn(`[yjs-ws] reconnect failed for room=${provider.roomname}: ${msg}`);
+			}
+		}
+
 		this.updateConnectionState();
 		this.emitConnectionStatus();
 	}

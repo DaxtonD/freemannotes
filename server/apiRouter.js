@@ -260,6 +260,76 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 			return true;
 		}
 
+		// ── List trashed notes ───────────────────────────────────────────
+		// GET /api/trash — returns a list of all notes where metadata.trashed === true.
+		// Each entry includes the docId, title, trashedAt timestamp, and size.
+		// This endpoint decodes every persisted Yjs doc to inspect its metadata,
+		// which is acceptable for the expected volume of trashed notes.
+		if (pathname === '/api/trash' && method === 'GET') {
+			(async () => {
+				try {
+					const workspaceId = adapter.getWorkspaceId();
+					if (!workspaceId) {
+						jsonResponse(res, 503, { error: 'Workspace not initialized yet' });
+						return;
+					}
+
+					const allDocs = await prisma.yjsDocument.findMany({
+						where: { workspaceId },
+						select: { docId: true, state: true, updatedAt: true, createdAt: true },
+					});
+
+					const trashedNotes = [];
+					for (const row of allDocs) {
+						// Skip the notes registry — it's not a user note.
+						if (row.docId === '__notes_registry__') continue;
+						if (!row.state || row.state.length === 0) continue;
+
+						try {
+							const tempDoc = new Y.Doc();
+							Y.applyUpdate(tempDoc, new Uint8Array(row.state));
+							const metadata = tempDoc.getMap('metadata');
+							const trashed = Boolean(metadata.get('trashed'));
+
+							if (trashed) {
+								const trashedAt = metadata.get('trashedAt');
+								const title = tempDoc.getText('title').toString();
+								const noteType = String(metadata.get('type') ?? 'text');
+
+								trashedNotes.push({
+									docId: row.docId,
+									title,
+									type: noteType,
+									trashedAt: typeof trashedAt === 'string' ? trashedAt : null,
+									trashedAtRaw: typeof trashedAt === 'string' ? new Date(trashedAt).getTime() : null,
+									sizeBytes: row.state.length,
+									updatedAt: fmt(row.updatedAt),
+									createdAt: fmt(row.createdAt),
+								});
+							}
+
+							tempDoc.destroy();
+						} catch (decodeErr) {
+							console.warn(`[api] GET /api/trash — failed to decode doc ${row.docId}:`, decodeErr.message);
+						}
+					}
+
+					// Sort by trashedAt descending (most recently trashed first).
+					trashedNotes.sort((a, b) => (b.trashedAtRaw || 0) - (a.trashedAtRaw || 0));
+
+					jsonResponse(res, 200, {
+						notes: trashedNotes,
+						count: trashedNotes.length,
+						timezone: timezone || 'UTC',
+					});
+				} catch (err) {
+					console.error('[api] GET /api/trash error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		// ── Not handled by this router → fall through ────────────────────
 		return false;
 	}
