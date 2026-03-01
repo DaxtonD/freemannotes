@@ -9,7 +9,7 @@
 
 .header {
 	cursor: grab;
-	touch-action: none;
+	touch-action: manipulation;
 	user-select: none;
 	font-weight: 600;
 	margin-bottom: 6px;
@@ -29,6 +29,14 @@
 .headerType {
 	font-size: var(--font-size-xs);
 	opacity: 0.6;
+}
+
+.pendingSync {
+	display: inline-flex;
+	align-items: center;
+	font-size: var(--font-size-sm);
+	line-height: 1;
+	color: var(--color-text-muted);
 }
 
 .body {

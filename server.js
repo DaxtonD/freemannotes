@@ -12,6 +12,18 @@ try {
 	// Optional. Loads .env into process.env for local/dev parity.
 	// In Docker, you can pass env vars directly or via docker-compose env_file.
 	require('dotenv').config();
+
+	// dotenv omits empty assignments, so detect explicit `YPERSISTENCE=` from .env.
+	const fsLocal = require('fs');
+	const pathLocal = require('path');
+	const envFilePath = pathLocal.join(__dirname, '.env');
+	if (fsLocal.existsSync(envFilePath)) {
+		const envText = fsLocal.readFileSync(envFilePath, 'utf8');
+		const match = envText.match(/^\s*YPERSISTENCE\s*=\s*(.*)\s*$/m);
+		if (match) {
+			process.env.YPERSISTENCE = String(match[1] ?? '');
+		}
+	}
 } catch {
 	// ignore if dotenv isn't installed
 }
@@ -19,11 +31,48 @@ try {
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const YPERSISTENCE = String(process.env.YPERSISTENCE || '').trim();
+
+// y-websocket reads process.env.YPERSISTENCE at import time.
+// Normalize empty/whitespace values before requiring it.
+if (YPERSISTENCE.length > 0) {
+	process.env.YPERSISTENCE = YPERSISTENCE;
+} else {
+	delete process.env.YPERSISTENCE;
+}
+
 const WebSocket = require('ws');
 const { setupWSConnection } = require('y-websocket/bin/utils');
 
 const PORT = Number(process.env.PORT || 27015);
+const HOST = String(process.env.HOST || '0.0.0.0').trim() || '0.0.0.0';
+const APP_URL = String(process.env.APP_URL || '').trim();
 const DIST_DIR = path.join(__dirname, 'dist');
+
+function normalizedAppUrl() {
+	if (APP_URL.length === 0) {
+		return `http://localhost:${PORT}`;
+	}
+	try {
+		const u = new URL(APP_URL);
+		u.pathname = '/';
+		u.search = '';
+		u.hash = '';
+		return String(u).replace(/\/$/, '');
+	} catch {
+		return `http://localhost:${PORT}`;
+	}
+}
+
+function wsUrlFromAppUrl(baseUrl) {
+	try {
+		const u = new URL(baseUrl);
+		const wsProtocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+		return `${wsProtocol}//${u.host}/yjs/<room>`;
+	} catch {
+		return `ws://localhost:${PORT}/yjs/<room>`;
+	}
+}
 
 function safePathFromUrl(urlPathname) {
 	const pathname = decodeURIComponent(urlPathname.split('?')[0]);
@@ -160,11 +209,13 @@ wss.on('connection', (conn, req) => {
 	setupWSConnection(conn, req, { gc: true });
 });
 
-server.listen(PORT, () => {
-	console.log(`[server] http://localhost:${PORT}`);
-	console.log(`[server] yjs websocket ws://localhost:${PORT}/yjs/<room>`);
-	if (process.env.YPERSISTENCE) {
-		console.log(`[server] YPERSISTENCE enabled at ${process.env.YPERSISTENCE}`);
+server.listen(PORT, HOST, () => {
+	const publicBaseUrl = normalizedAppUrl();
+	console.log(`[server] listening on ${HOST}:${PORT}`);
+	console.log(`[server] http ${publicBaseUrl}`);
+	console.log(`[server] yjs websocket ${wsUrlFromAppUrl(publicBaseUrl)}`);
+	if (YPERSISTENCE.length > 0) {
+		console.log(`[server] YPERSISTENCE enabled at ${YPERSISTENCE}`);
 	} else {
 		console.log('[server] YPERSISTENCE not set (relay-only server)');
 	}

@@ -4,7 +4,8 @@ import {
 	closestCenter,
 	DndContext,
 	DragOverlay,
-	PointerSensor,
+	MouseSensor,
+	TouchSensor,
 	useSensor,
 	useSensors,
 } from '@dnd-kit/core';
@@ -17,6 +18,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
+import { useConnectionStatus } from '../../core/useConnectionStatus';
 import styles from './NoteGrid.module.css';
 
 type Note = { id: string };
@@ -156,6 +158,7 @@ function splitIntoColumns(ids: readonly string[], columnCount: number): string[]
 type SortableNoteCardProps = {
 	note: Note;
 	doc: Y.Doc;
+	hasPendingSync: boolean;
 	selected: boolean;
 	onOpen: () => void;
 	maxCardHeightPx: number;
@@ -184,6 +187,7 @@ function SortableNoteCard(props: SortableNoteCardProps): React.JSX.Element {
 				<NoteCard
 					noteId={props.note.id}
 					doc={props.doc}
+					hasPendingSync={props.hasPendingSync}
 					maxCardHeightPx={props.maxCardHeightPx}
 					onOpen={props.onOpen}
 					dragHandleRef={setActivatorNodeRef}
@@ -196,10 +200,43 @@ function SortableNoteCard(props: SortableNoteCardProps): React.JSX.Element {
 
 export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// DnD state: active item, overlay size, and live in-drag order.
+	const [dndContextKey, setDndContextKey] = React.useState(0);
 	const [activeDragId, setActiveDragId] = React.useState<string | null>(null);
 	const [activeDragSize, setActiveDragSize] = React.useState<{ width: number; height: number } | null>(null);
 	const [dragOrderIds, setDragOrderIds] = React.useState<string[] | null>(null);
+	// Tracks whether the currently active drag originated from a touch gesture.
+	// This is intentionally separate from activeDragId because we need to decide when
+	// browser-native touch behaviors (scrolling/overscroll) should be temporarily disabled.
+	// Desktop drags should never pay this cost.
+	const [isTouchDragging, setIsTouchDragging] = React.useState(false);
+	// Captures and restores document-level touch-action/overscroll styles while a touch drag is active.
+	// Chrome Android can continue attempting native scroll even after dnd activation, so we store the
+	// exact inline style values and restore them verbatim on cleanup.
+	const touchStartPointRef = React.useRef<{ x: number; y: number } | null>(null);
+	const touchDragStyleRestoreRef = React.useRef<
+		| {
+				htmlTouchAction: string;
+				htmlOverscrollBehavior: string;
+				bodyTouchAction: string;
+				bodyOverscrollBehavior: string;
+		  }
+		| null
+	>(null);
 	const lastOverIdRef = React.useRef<string | null>(null);
+	const isTouchDragRef = React.useRef(false);
+	const activeDragIdRef = React.useRef<string | null>(null);
+	// Indicates that a touch began on a note card and could become a drag if no scroll intent appears.
+	// This allows us to arbitrate "scroll intent vs drag intent" before dnd-kit's delayed activation fires.
+	const pendingTouchIntentRef = React.useRef(false);
+	const touchScrollDetectedRef = React.useRef(false);
+	// Short-lived backoff that prevents delayed drag activation from "catching up" after the user
+	// has already started scrolling. This specifically targets Chrome behavior where delayed activation
+	// may still trigger shortly after a native scroll gesture begins.
+	const suppressTouchDragUntilRef = React.useRef(0);
+	const touchReorderUnlockedRef = React.useRef(false);
+	// Skip the next FLIP pass immediately after drag activation to avoid pickup jitter where all cards
+	// briefly animate as if a reflow happened before the drag settles.
+	const skipNextFlipRef = React.useRef(false);
 	const [columnCount, setColumnCount] = React.useState<number>(() => 2);
 	// Mobile-only runtime width override. Null means use desktop/root --note-card-width.
 	const [mobileCardWidthPx, setMobileCardWidthPx] = React.useState<number | null>(null);
@@ -211,6 +248,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Suppress startup animations after hard refresh to avoid "cards animating into place" flash.
 	const suppressReflowAnimationsRef = React.useRef(true);
 	const manager = useDocumentManager();
+	const connection = useConnectionStatus();
+	const pendingSyncNoteIds = React.useMemo(() => new Set(connection.pendingSyncNoteIds), [connection.pendingSyncNoteIds]);
 
 	const [notesList, setNotesList] = React.useState<Y.Array<Y.Map<unknown>> | null>(null);
 	const [noteOrder, setNoteOrder] = React.useState<Y.Array<string> | null>(null);
@@ -259,6 +298,76 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			observer?.disconnect();
 		};
 	}, [recalculateColumnCount]);
+
+	React.useEffect(() => {
+		activeDragIdRef.current = activeDragId;
+	}, [activeDragId]);
+
+	React.useEffect(() => {
+		// Global scroll listener used only for pre-activation intent arbitration.
+		// If the page scrolls before drag activation completes, we treat that gesture as scroll-first,
+		// cancel pending drag activation by remounting DndContext, and apply a brief suppression window.
+		// Capture phase ensures we observe scroll transitions consistently across browsers.
+		const onScroll = (): void => {
+			if (!pendingTouchIntentRef.current) return;
+			if (activeDragIdRef.current) return;
+			touchScrollDetectedRef.current = true;
+			pendingTouchIntentRef.current = false;
+			touchStartPointRef.current = null;
+			suppressTouchDragUntilRef.current = Date.now() + 400;
+			setDndContextKey((prev) => prev + 1);
+		};
+
+		window.addEventListener('scroll', onScroll, { passive: true, capture: true });
+		return () => {
+			window.removeEventListener('scroll', onScroll, true);
+		};
+	}, []);
+
+	React.useEffect(() => {
+		if (!isTouchDragging) return;
+		if (typeof document === 'undefined') return;
+
+		const html = document.documentElement;
+		const body = document.body;
+		touchDragStyleRestoreRef.current = {
+			htmlTouchAction: html.style.touchAction,
+			htmlOverscrollBehavior: html.style.overscrollBehavior,
+			bodyTouchAction: body.style.touchAction,
+			bodyOverscrollBehavior: body.style.overscrollBehavior,
+		};
+		html.style.touchAction = 'none';
+		html.style.overscrollBehavior = 'none';
+		body.style.touchAction = 'none';
+		body.style.overscrollBehavior = 'none';
+
+		const onTouchMove = (event: TouchEvent): void => {
+			// Explicitly block native touch scroll while touch-drag is active.
+			// This prevents "drag + page scroll" from running concurrently.
+			event.preventDefault();
+		};
+		const onPointerMove = (event: PointerEvent): void => {
+			if (event.pointerType !== 'touch') return;
+			// Chrome may route movement through pointer events; prevent default here as well
+			// so the drag remains the single source of motion during active touch-drag.
+			event.preventDefault();
+		};
+
+		window.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+		window.addEventListener('pointermove', onPointerMove, { passive: false, capture: true });
+		return () => {
+			window.removeEventListener('touchmove', onTouchMove, true);
+			window.removeEventListener('pointermove', onPointerMove, true);
+
+			const previous = touchDragStyleRestoreRef.current;
+			if (!previous) return;
+			html.style.touchAction = previous.htmlTouchAction;
+			html.style.overscrollBehavior = previous.htmlOverscrollBehavior;
+			body.style.touchAction = previous.bodyTouchAction;
+			body.style.overscrollBehavior = previous.bodyOverscrollBehavior;
+			touchDragStyleRestoreRef.current = null;
+		};
+	}, [isTouchDragging]);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -321,6 +430,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			nextRects.set(id, node.getBoundingClientRect());
 		}
 
+		if (skipNextFlipRef.current) {
+			skipNextFlipRef.current = false;
+			layoutRectsRef.current = nextRects;
+			return;
+		}
+
 		// First measurement seeds rect cache only; avoids bogus first-pass animation.
 		if (!hasMeasuredLayoutRef.current) {
 			hasMeasuredLayoutRef.current = true;
@@ -328,6 +443,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			return;
 		}
 
+		const flipDeltas: Array<{ node: HTMLElement; dx: number; dy: number }> = [];
 		// FLIP for non-active cards (drag swaps + responsive reflow).
 		for (const node of nodes) {
 			const id = node.dataset.noteId;
@@ -341,6 +457,27 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			const dx = previous.left - current.left;
 			const dy = previous.top - current.top;
 			if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+			flipDeltas.push({ node, dx, dy });
+		}
+
+		const hasUniformGlobalShift =
+			flipDeltas.length >= 2 &&
+			flipDeltas.every(({ dx, dy }) => {
+				const base = flipDeltas[0];
+				return Math.abs(dx - base.dx) <= 1.5 && Math.abs(dy - base.dy) <= 1.5;
+			});
+
+		if (hasUniformGlobalShift) {
+			for (const { node } of flipDeltas) {
+				const content = (node.querySelector('[data-note-content="true"]') as HTMLElement | null) ?? node;
+				content.style.transition = 'none';
+				content.style.transform = 'translate(0px, 0px)';
+			}
+			layoutRectsRef.current = nextRects;
+			return;
+		}
+
+		for (const { node, dx, dy } of flipDeltas) {
 
 			const content = (node.querySelector('[data-note-content="true"]') as HTMLElement | null) ?? node;
 			if (suppressReflowAnimationsRef.current) {
@@ -400,10 +537,34 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, [manager, noteOrder, orderedIds]);
 
-	const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+	const sensors = useSensors(
+		useSensor(MouseSensor, {
+			activationConstraint: { distance: 6 },
+		}),
+		useSensor(TouchSensor, {
+			activationConstraint: { delay: 220, tolerance: 10 },
+		})
+	);
 
 	const onDragStart = React.useCallback((event: any) => {
 		const activeId = normalizeId(event.active.id);
+		const activatorType = String(event?.activatorEvent?.type ?? '').toLowerCase();
+		isTouchDragRef.current = activatorType.startsWith('touch');
+		if (isTouchDragRef.current && (touchScrollDetectedRef.current || Date.now() < suppressTouchDragUntilRef.current)) {
+			touchScrollDetectedRef.current = false;
+			pendingTouchIntentRef.current = false;
+			touchStartPointRef.current = null;
+			setDndContextKey((prev) => prev + 1);
+			return;
+		}
+		pendingTouchIntentRef.current = false;
+		touchStartPointRef.current = null;
+		setIsTouchDragging(isTouchDragRef.current);
+		if (isTouchDragRef.current && typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+			navigator.vibrate(12);
+		}
+		touchReorderUnlockedRef.current = !isTouchDragRef.current;
+		skipNextFlipRef.current = true;
 		// Any user interaction after startup can safely use transitions.
 		suppressReflowAnimationsRef.current = false;
 		setActiveDragId(activeId);
@@ -437,7 +598,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		setActiveDragSize(null);
 	}, [orderedIds]);
 
+	const onDragMove = React.useCallback((event: any) => {
+		if (!isTouchDragRef.current || touchReorderUnlockedRef.current) return;
+		const dx = Number(event?.delta?.x ?? 0);
+		const dy = Number(event?.delta?.y ?? 0);
+		if (!Number.isFinite(dx) || !Number.isFinite(dy)) return;
+		// Do not apply swap-over reorder updates until the touch drag has moved
+		// enough to be intentional. This suppresses oscillation/bobbing right at pickup.
+		if (dx * dx + dy * dy >= 64) {
+			touchReorderUnlockedRef.current = true;
+		}
+	}, []);
+
 	const onDragOver = React.useCallback((event: any) => {
+		if (isTouchDragRef.current && !touchReorderUnlockedRef.current) return;
 		const activeId = normalizeId(event.active.id);
 		const overId = event.over ? normalizeId(event.over.id) : '';
 		if (!activeId || !overId || activeId === overId) {
@@ -456,6 +630,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, []);
 
 	const onDragCancel = React.useCallback((_event: any) => {
+		isTouchDragRef.current = false;
+		pendingTouchIntentRef.current = false;
+		touchScrollDetectedRef.current = false;
+		touchStartPointRef.current = null;
+		setIsTouchDragging(false);
+		touchReorderUnlockedRef.current = false;
+		skipNextFlipRef.current = false;
 		setActiveDragId(null);
 		setActiveDragSize(null);
 		setDragOrderIds(null);
@@ -466,6 +647,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	const onDragEnd = React.useCallback(
 		(event: any) => {
+			isTouchDragRef.current = false;
+			pendingTouchIntentRef.current = false;
+			touchScrollDetectedRef.current = false;
+			touchStartPointRef.current = null;
+			setIsTouchDragging(false);
+			touchReorderUnlockedRef.current = false;
+			skipNextFlipRef.current = false;
 			if (!noteOrder) return;
 			const current = readOrderIds(noteOrder);
 			const next = dragOrderIds ?? current;
@@ -488,15 +676,62 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	const activeDoc = activeDragId ? docsById[activeDragId] : undefined;
 	const activeNote = activeDragId ? orderedNotes.find((n) => n.id === activeDragId) : undefined;
+	const activeHasPendingSync = activeNote ? pendingSyncNoteIds.has(activeNote.id) : false;
 	const overlayWidth = activeDragSize?.width ?? mobileCardWidthPx ?? undefined;
 	const overlayHeight = activeDragSize && activeDragSize.height > 0 ? activeDragSize.height : undefined;
 
 	return (
-		<section ref={sectionRef} aria-label="Notes" className={styles.section}>
+		<section
+			ref={sectionRef}
+			aria-label="Notes"
+			className={styles.section}
+			onTouchStartCapture={(event) => {
+				const target = event.target as HTMLElement | null;
+				if (!target?.closest('[data-note-card="true"]')) return;
+				const touch = event.touches[0];
+				// Record initial touch point for gesture classification. We intentionally do this
+				// at the card container level so future card UI complexity (icons/badges/metadata)
+				// does not require introducing a dedicated visual drag handle.
+				pendingTouchIntentRef.current = true;
+				touchScrollDetectedRef.current = false;
+				touchStartPointRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+			}}
+			onTouchMoveCapture={(event) => {
+				if (!pendingTouchIntentRef.current) return;
+				if (activeDragIdRef.current) return;
+				const start = touchStartPointRef.current;
+				const touch = event.touches[0];
+				if (!start || !touch) return;
+				const dx = touch.clientX - start.x;
+				const dy = touch.clientY - start.y;
+				// Vertical-dominant motion above threshold is treated as scroll intent.
+				// Once detected, we immediately cancel pending drag activation and enter
+				// a brief suppression window so delayed drag activation cannot re-trigger.
+				if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) >= 8) {
+					touchScrollDetectedRef.current = true;
+					pendingTouchIntentRef.current = false;
+					touchStartPointRef.current = null;
+					suppressTouchDragUntilRef.current = Date.now() + 400;
+					setDndContextKey((prev) => prev + 1);
+				}
+			}}
+			onTouchEndCapture={() => {
+				pendingTouchIntentRef.current = false;
+				touchScrollDetectedRef.current = false;
+				touchStartPointRef.current = null;
+			}}
+			onTouchCancelCapture={() => {
+				pendingTouchIntentRef.current = false;
+				touchScrollDetectedRef.current = false;
+				touchStartPointRef.current = null;
+			}}
+		>
 			<DndContext
+				key={dndContextKey}
 				sensors={sensors}
 				collisionDetection={closestCenter}
 				onDragStart={onDragStart}
+				onDragMove={onDragMove}
 				onDragOver={onDragOver}
 				onDragCancel={onDragCancel}
 				onDragEnd={onDragEnd}
@@ -531,6 +766,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 											key={note.id}
 											note={note}
 											doc={doc}
+											hasPendingSync={pendingSyncNoteIds.has(note.id)}
 											selected={props.selectedNoteId === note.id}
 											onOpen={() => props.onSelectNote(note.id)}
 											maxCardHeightPx={props.maxCardHeightPx}
@@ -552,7 +788,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								height: overlayHeight,
 							}}
 						>
-							<NoteCard noteId={activeNote.id} doc={activeDoc} maxCardHeightPx={props.maxCardHeightPx} />
+							<NoteCard
+								noteId={activeNote.id}
+								doc={activeDoc}
+								hasPendingSync={activeHasPendingSync}
+								maxCardHeightPx={props.maxCardHeightPx}
+							/>
 						</div>
 					) : null}
 				</DragOverlay>

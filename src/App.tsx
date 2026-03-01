@@ -6,6 +6,7 @@ import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid } from './components/NoteGrid/NoteGrid';
 import { ChecklistBinding, type ChecklistItem } from './core/bindings';
 import { useDocumentManager } from './core/DocumentManagerContext';
+import { useConnectionStatus } from './core/useConnectionStatus';
 
 type EditorMode = 'none' | 'text' | 'checklist';
 
@@ -77,6 +78,7 @@ function saveChecklistToDoc(doc: Y.Doc, title: string, items: readonly Checklist
 
 export function App(): React.JSX.Element {
 	const manager = useDocumentManager();
+	const connection = useConnectionStatus();
 	// UI mode for the "new note" panel.
 	const [editorMode, setEditorMode] = React.useState<EditorMode>('none');
 	// The currently selected note in the grid/editor area.
@@ -174,6 +176,12 @@ export function App(): React.JSX.Element {
 
 	return (
 		<div className="test-harness-root">
+			<div className="connection-indicator" aria-live="polite" title={`Connection: ${connection.state}`}>
+				<span aria-hidden="true" className="connection-dot">
+					{connection.state === 'connected' ? '🟢' : connection.state === 'connecting' ? '🟡' : '🔴'}
+				</span>
+			</div>
+
 			{/* Live style control for card max height (used by grid previews + editor summaries). */}
 			<section className="editor-panel" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
 				<label htmlFor="max-height-slider" style={{ fontSize: 12, opacity: 0.85 }}>

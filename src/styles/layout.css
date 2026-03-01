@@ -16,3 +16,26 @@
 	border-radius: 0;
 	padding: 0;
 }
+
+.connection-indicator {
+	position: fixed;
+	top: var(--space-2);
+	left: var(--space-2);
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-1);
+	padding: 2px 6px;
+	font-size: var(--font-size-xs);
+	line-height: 1;
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: 999px;
+	z-index: 50;
+	opacity: 0.9;
+	pointer-events: none;
+}
+
+.connection-dot {
+	display: inline-flex;
+	align-items: center;
+}

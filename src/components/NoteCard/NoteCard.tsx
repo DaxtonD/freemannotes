@@ -6,6 +6,7 @@ import styles from './NoteCard.module.css';
 export type NoteCardProps = {
 	noteId: string;
 	doc: Y.Doc;
+	hasPendingSync?: boolean;
 	onOpen?: () => void;
 	shouldSuppressOpen?: () => boolean;
 	dragHandleRef?: (node: HTMLDivElement | null) => void;
@@ -155,6 +156,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			>
 				<span className={styles.headerTitle}>{title.trim().length > 0 ? title : '(untitled)'}</span>
 				<span className={styles.headerType}>{type}</span>
+				{props.hasPendingSync ? (
+					<span aria-label="Pending sync" title="Pending sync" className={styles.pendingSync}>
+						↻
+					</span>
+				) : null}
 			</div>
 
 			<div className={styles.body}>

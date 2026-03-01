@@ -2,6 +2,35 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.2 - 2026-02-28
+
+### Added
+- Per-note pending sync status in the connection snapshot model (`pendingSyncNoteIds`) so UI can render sync state at the card level instead of a global icon.
+- New connection status hook (`src/core/useConnectionStatus.ts`) using `useSyncExternalStore` for stable subscription semantics.
+- Docker/compose deployment artifacts for simplified self-hosted setup:
+  - `Dockerfile`
+  - `.dockerignore`
+  - `docker-compose.yml`
+  - `DEPLOYMENT.md`
+
+### Changed
+- Connection indicator UX now shows only connection state globally (green/yellow/red) while pending sync is displayed per note card.
+- Note cards now support a local pending-sync badge that appears only for notes edited while offline.
+- Touch drag interaction in the note grid was reworked for mobile reliability:
+  - Long-press touch activation for drag start.
+  - Scroll-vs-drag intent arbitration so vertical page scroll wins when detected before drag activation.
+  - Browser-level touch/pointer suppression only during active touch drag to prevent simultaneous native scroll + drag.
+  - Reorder gating and FLIP stabilization around pickup to reduce mobile "bobbing" and startup jitter.
+
+### Fixed
+- False pending-sync state after refresh/startup by filtering non-user/internal registry writes from pending-sync tracking.
+- React production runtime instability (`useSyncExternalStore` snapshot identity) by emitting stable snapshots and change-only notifications.
+- Connection-state misclassification by distinguishing browser offline state from reconnecting state.
+- Mobile drag jitter and mixed drag/scroll race conditions observed on Android browsers.
+- Server/runtime configuration clarity:
+  - `YPERSISTENCE` normalization and empty-value handling.
+  - startup logging improvements for `HOST`/`APP_URL`/Yjs websocket URL reporting.
+
 ## 1.0.0 - 2026-02-27
 
 ### Added
