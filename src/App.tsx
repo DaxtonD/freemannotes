@@ -4,77 +4,12 @@ import { ChecklistEditor } from './components/Editors/ChecklistEditor';
 import { NoteEditor } from './components/Editors/NoteEditor';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid } from './components/NoteGrid/NoteGrid';
-import { ChecklistBinding, type ChecklistItem } from './core/bindings';
+import { type ChecklistItem } from './core/bindings';
 import { useDocumentManager } from './core/DocumentManagerContext';
+import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId } from './core/noteModel';
 import { useConnectionStatus } from './core/useConnectionStatus';
 
 type EditorMode = 'none' | 'text' | 'checklist';
-
-// Utility: generate stable note IDs in both modern and legacy browser environments.
-function makeId(prefix: string): string {
-	// Branch: modern browsers.
-	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-		return crypto.randomUUID();
-	}
-	// Branch: fallback for environments without randomUUID.
-	return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-// Persist text-note fields into the Yjs document shape expected by NoteCard/NoteEditor.
-function saveTextToDoc(doc: Y.Doc, title: string, body: string): void {
-	const yTitle = doc.getText('title');
-	const yContent = doc.getText('content');
-	const metadata = doc.getMap<any>('metadata');
-
-	doc.transact(() => {
-		yTitle.delete(0, yTitle.length);
-		yTitle.insert(0, title);
-
-		yContent.delete(0, yContent.length);
-		yContent.insert(0, body);
-
-		metadata.set('type', 'text');
-		metadata.set('createdAt', Date.now());
-	});
-}
-
-// Persist checklist-note fields into Yjs. Checklist items live in a dedicated Y.Array.
-function saveChecklistToDoc(doc: Y.Doc, title: string, items: readonly ChecklistItem[]): void {
-	const yTitle = doc.getText('title');
-	const metadata = doc.getMap<any>('metadata');
-	const yChecklist = doc.getArray<Y.Map<any>>('checklist');
-
-	doc.transact(() => {
-		yTitle.delete(0, yTitle.length);
-		yTitle.insert(0, title);
-
-		metadata.set('type', 'checklist');
-		metadata.set('createdAt', Date.now());
-
-		if (yChecklist.length > 0) {
-			yChecklist.delete(0, yChecklist.length);
-		}
-	});
-
-	const binding = new ChecklistBinding({
-		yarray: yChecklist,
-		onUpdate: () => {
-			// Branch: this write-only binding is only for checklist item creation.
-		},
-	});
-
-	try {
-		for (const item of items) {
-			binding.add({
-				id: item.id,
-				text: item.text,
-				completed: item.completed,
-			});
-		}
-	} finally {
-		binding.destroy();
-	}
-}
 
 export function App(): React.JSX.Element {
 	const manager = useDocumentManager();
@@ -109,10 +44,10 @@ export function App(): React.JSX.Element {
 
 	const onSaveText = React.useCallback(
 		async (args: { title: string; body: string }) => {
-			// Create note doc first, then add registry entry.
-			const id = makeId('text-note');
+			// All note creation goes through the canonical noteModel factory functions.
+			const id = makeNoteId('text-note');
 			const doc = await manager.getDocWithSync(id);
-			saveTextToDoc(doc, args.title, args.body);
+			initTextNoteDoc(doc, args.title, args.body);
 			await manager.createNote(id, args.title);
 			setEditorMode('none');
 			// Branch: auto-open newly created note.
@@ -123,10 +58,10 @@ export function App(): React.JSX.Element {
 
 	const onSaveChecklist = React.useCallback(
 		async (args: { title: string; items: ChecklistItem[] }) => {
-			// Create note doc first, then add registry entry.
-			const id = makeId('checklist-note');
+			// All note creation goes through the canonical noteModel factory functions.
+			const id = makeNoteId('checklist-note');
 			const doc = await manager.getDocWithSync(id);
-			saveChecklistToDoc(doc, args.title, args.items);
+			initChecklistNoteDoc(doc, args.title, args.items);
 			await manager.createNote(id, args.title);
 			setEditorMode('none');
 			// Branch: auto-open newly created note.

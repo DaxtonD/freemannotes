@@ -18,6 +18,7 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
+import { runNoteGuards } from '../../core/devGuards';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import styles from './NoteGrid.module.css';
 
@@ -496,11 +497,46 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		layoutRectsRef.current = nextRects;
 	}, [columns, docsById, activeDragId]);
 
+	// ── Cross-tab drag cancellation ──────────────────────────────────────
+	// If a note is deleted remotely (e.g. Tab B) while it is being dragged
+	// here (Tab A), the Yjs noteOrder update will cause orderedIds to
+	// re-derive without the deleted ID. This effect detects that the
+	// actively-dragged note has disappeared from the CRDT-driven order and
+	// immediately aborts the drag: clearing all transient drag state and
+	// remounting DndContext via key increment to ensure dnd-kit's internal
+	// sensor/overlay state is fully reset. No reorder is attempted.
 	React.useEffect(() => {
-		// Keep noteOrder CRDT in sync with registry additions (backfill missing IDs only).
+		if (!activeDragId) return;
+		const stillExists = orderedIds.includes(activeDragId);
+		if (stillExists) return;
+
+		// The dragged note was deleted remotely — abort the drag immediately.
+		isTouchDragRef.current = false;
+		pendingTouchIntentRef.current = false;
+		touchScrollDetectedRef.current = false;
+		touchStartPointRef.current = null;
+		setIsTouchDragging(false);
+		touchReorderUnlockedRef.current = false;
+		skipNextFlipRef.current = false;
+		setActiveDragId(null);
+		setActiveDragSize(null);
+		setDragOrderIds(null);
+		lastOverIdRef.current = null;
+		layoutRectsRef.current.clear();
+		hasMeasuredLayoutRef.current = false;
+		// Remount DndContext so dnd-kit drops all internal references to the
+		// now-deleted item (active sensor, overlay node, collision rects).
+		setDndContextKey((prev) => prev + 1);
+	}, [activeDragId, orderedIds]);
+
+	React.useEffect(() => {
+		// Keep noteOrder CRDT in sync with registry: backfill missing IDs, remove
+		// orphans (IDs in order but not registry), and deduplicate entries.
 		if (!notesList || !noteOrder) return;
 		const registryIds = readRegistryIds(notesList);
 		const current = readOrderIds(noteOrder);
+
+		// Bootstrap: if noteOrder is empty but registry has entries, seed it.
 		if (current.length === 0 && registryIds.length > 0) {
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
 			ydoc.transact(() => {
@@ -508,12 +544,83 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			});
 			return;
 		}
+
+		// Backfill any registry IDs that are missing from the order.
 		ensureOrderContainsAllRegistryIds(noteOrder, registryIds);
+
+		// ── Orphan cleanup ─────────────────────────────────────────────────
+		// Remove noteOrder entries that reference IDs no longer in the registry.
+		// This can happen if a note was deleted on another tab/device and the
+		// registry deletion arrived before the order deletion.
+		const registrySet = new Set(registryIds);
+		const rawOrder = noteOrder.toArray();
+		const orphanIndices: number[] = [];
+		for (let i = rawOrder.length - 1; i >= 0; i--) {
+			const id = normalizeId(rawOrder[i]);
+			if (id && !registrySet.has(id)) {
+				orphanIndices.push(i);
+			}
+		}
+		if (orphanIndices.length > 0) {
+			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
+			ydoc.transact(() => {
+				// Delete in reverse-index order to keep indices stable.
+				for (const idx of orphanIndices) {
+					noteOrder.delete(idx, 1);
+				}
+			});
+		}
+
+		// ── Duplicate cleanup ──────────────────────────────────────────────
+		// If CRDT merges introduced duplicate entries in noteOrder, keep only
+		// the first occurrence of each ID.
+		const seen = new Set<string>();
+		const dupeIndices: number[] = [];
+		const dedupeOrder = noteOrder.toArray();
+		for (let i = 0; i < dedupeOrder.length; i++) {
+			const id = normalizeId(dedupeOrder[i]);
+			if (seen.has(id)) {
+				dupeIndices.push(i);
+			} else {
+				seen.add(id);
+			}
+		}
+		if (dupeIndices.length > 0) {
+			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
+			ydoc.transact(() => {
+				for (let i = dupeIndices.length - 1; i >= 0; i--) {
+					noteOrder.delete(dupeIndices[i], 1);
+				}
+			});
+		}
 	}, [notesList, noteOrder, storeVersion]);
+
+	// ── Dev-only structural integrity guards ─────────────────────────────
+	// Run diagnostic checks whenever the registry/order/docs change during
+	// development. These are tree-shaken in production builds via the
+	// import.meta.env.DEV gate inside runNoteGuards.
+	React.useEffect(() => {
+		if (!notesList || !noteOrder) return;
+		const registryIds = readRegistryIds(notesList);
+		const orderIds = readOrderIds(noteOrder);
+		runNoteGuards(registryIds, orderIds, docsById);
+	}, [notesList, noteOrder, storeVersion, docsById]);
 
 	React.useEffect(() => {
 		// Lazy-load each note doc as it appears in order; cache loaded docs by noteId.
-		let cancelled = false;
+		//
+		// IMPORTANT: We intentionally do NOT use a `cancelled` flag tied to the effect
+		// cleanup here. When a remote note arrives via Yjs sync, multiple rapid observer
+		// callbacks can cause this effect to re-run before the async `getDocWithSync`
+		// promise resolves. If we set `cancelled = true` in cleanup, the original
+		// promise would be silently discarded and `pendingDocLoadsRef` would incorrectly
+		// gate any retry — permanently leaving the note stuck in "Loading…" state.
+		//
+		// Instead we rely on two safe dedup mechanisms:
+		//   1. `pendingDocLoadsRef` prevents starting duplicate concurrent loads.
+		//   2. The `setDocsById` functional updater is idempotent (prev[id] check).
+		// React 19 silently ignores state updates on unmounted components, so there is
+		// no risk of "set state after unmount" warnings.
 		if (!noteOrder) return;
 		for (const id of orderedIds) {
 			if (docsByIdRef.current[id]) continue;
@@ -522,7 +629,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			void manager
 				.getDocWithSync(id)
 				.then((doc) => {
-					if (cancelled) return;
 					setDocsById((prev) => (prev[id] ? prev : { ...prev, [id]: doc }));
 				})
 				.catch((err) => {
@@ -532,9 +638,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					pendingDocLoadsRef.current.delete(id);
 				});
 		}
-		return () => {
-			cancelled = true;
-		};
 	}, [manager, noteOrder, orderedIds]);
 
 	const sensors = useSensors(
@@ -663,6 +766,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			lastOverIdRef.current = null;
 			layoutRectsRef.current.clear();
 			hasMeasuredLayoutRef.current = false;
+
+			// Guard: if the dragged note was deleted remotely during the drag,
+			// the cross-tab cancellation effect already cleared state. The
+			// activeId extracted from the dnd-kit event may reference a note
+			// that no longer exists — skip reorder entirely to prevent writing
+			// a stale ID back into noteOrder.
+			const activeId = normalizeId(event?.active?.id);
+			if (activeId && !current.includes(activeId)) return;
+
 			// Persist only when order actually changed.
 			if (next.length === current.length && next.every((id, index) => id === current[index])) return;
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
