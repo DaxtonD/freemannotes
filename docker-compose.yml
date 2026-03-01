@@ -10,7 +10,7 @@ services:
       HOST: 0.0.0.0
       PORT: 27015
       # Set this to your public URL for clearer startup logs only.
-      # APP_URL: https://dev.freeman.daxtond.com
+      # APP_URL: https://mydomain.com
       # Keep empty to disable server-side LevelDB persistence.
       # YPERSISTENCE: ""
       YPERSISTENCE: /data/yjs
