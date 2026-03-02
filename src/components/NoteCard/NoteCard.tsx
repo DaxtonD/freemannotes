@@ -1,7 +1,11 @@
 import React from 'react';
 import * as Y from 'yjs';
 import { ChecklistBinding, type ChecklistItem } from '../../core/bindings';
+import { normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
+import { useI18n } from '../../core/i18n';
 import styles from './NoteCard.module.css';
+
+const completedExpandedByNoteId = new Map<string, boolean>();
 
 export type NoteCardProps = {
 	noteId: string;
@@ -54,6 +58,7 @@ function useChecklistItems(binding: ChecklistBinding): readonly ChecklistItem[] 
 }
 
 export function NoteCard(props: NoteCardProps): React.JSX.Element {
+	const { t } = useI18n();
 	// metadata.type controls note rendering mode.
 	const metadata = React.useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const typeValue = useMetadataString(metadata, 'type');
@@ -82,11 +87,14 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [checklistBinding]);
 
 	const checklistItems = useChecklistItems(checklistBinding);
-	// Preview item count scales with card max-height preference.
-	const checklistPreviewLimit = React.useMemo(() => {
-		const maxHeight = props.maxCardHeightPx ?? 300;
-		return Math.max(3, Math.floor((maxHeight - 52) / 28));
-	}, [props.maxCardHeightPx]);
+	const normalizedItems = React.useMemo(() => normalizeChecklistHierarchy(checklistItems), [checklistItems]);
+	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => completedExpandedByNoteId.get(props.noteId) ?? false);
+
+	React.useEffect(() => {
+		setShowCompleted(completedExpandedByNoteId.get(props.noteId) ?? false);
+	}, [props.noteId]);
+	const activeChecklistItems = React.useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
+	const completedChecklistItems = React.useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);
 
@@ -96,9 +104,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		props.onOpen();
 	}, [props]);
 
+	const toggleCompletedSection = React.useCallback((): void => {
+		setShowCompleted((prev) => {
+			const next = !prev;
+			completedExpandedByNoteId.set(props.noteId, next);
+			return next;
+		});
+	}, [props.noteId]);
+
 	return (
 		<article
-			className={styles.card}
+			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}`}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
 			role={props.onOpen ? 'button' : undefined}
@@ -154,37 +170,74 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					e.stopPropagation();
 				}}
 			>
-				<span className={styles.headerTitle}>{title.trim().length > 0 ? title : '(untitled)'}</span>
-				<span className={styles.headerType}>{type}</span>
+				<span className={styles.headerTitle}>{title.trim().length > 0 ? title : t('note.untitled')}</span>
 				{props.hasPendingSync ? (
-					<span aria-label="Pending sync" title="Pending sync" className={styles.pendingSync}>
+					<span aria-label={t('note.pendingSync')} title={t('note.pendingSync')} className={styles.pendingSync}>
 						↻
 					</span>
 				) : null}
 			</div>
 
-			<div className={styles.body}>
-				{type === 'text' ? (
+			{type === 'text' ? (
+				<div className={styles.body}>
 					<div className={styles.contentPreview}>{content}</div>
-				) : (
-					<ul className={styles.checklist}>
-						{checklistItems.slice(0, checklistPreviewLimit).map((item) => (
-							<li key={item.id} className={styles.checklistItem}>
-								<input
-									type="checkbox"
-									checked={item.completed}
-									onPointerDown={(e) => e.stopPropagation()}
-									onPointerUp={(e) => e.stopPropagation()}
-									onClick={(e) => e.stopPropagation()}
-									onChange={(e) => checklistBinding.updateById(item.id, { completed: e.target.checked })}
-								/>
-								<span style={{ textDecoration: item.completed ? 'line-through' : 'none' }}>{item.text}</span>
-							</li>
-						))}
-						{checklistItems.length > checklistPreviewLimit ? <li className={styles.checklistMore}>…</li> : null}
-					</ul>
-				)}
-			</div>
+				</div>
+			) : (
+				<>
+					<div className={styles.body}>
+						<ul className={styles.checklist}>
+							{activeChecklistItems.map((item) => (
+								<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childItem}` : ''}`}>
+									<input
+										type="checkbox"
+										className={styles.checklistCheckbox}
+										checked={item.completed}
+										onPointerDown={(e) => e.stopPropagation()}
+										onPointerUp={(e) => e.stopPropagation()}
+										onClick={(e) => e.stopPropagation()}
+										onChange={(e) => checklistBinding.updateById(item.id, { completed: e.target.checked })}
+									/>
+									<span className={styles.checklistText}>{item.text}</span>
+								</li>
+							))}
+						</ul>
+					</div>
+
+					{completedChecklistItems.length > 0 ? (
+						<div className={styles.completedSection}>
+							<button
+								type="button"
+								className={styles.completedToggle}
+								onPointerDown={(e) => e.stopPropagation()}
+								onClick={(e) => {
+									e.stopPropagation();
+									toggleCompletedSection();
+								}}
+							>
+								{showCompleted ? '▾' : '▸'} {completedChecklistItems.length} {t('editors.completedItems')}
+							</button>
+							{showCompleted ? (
+								<ul className={styles.checklist}>
+									{completedChecklistItems.map((item) => (
+										<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childItem}` : ''}`}>
+											<input
+												type="checkbox"
+												className={styles.checklistCheckbox}
+												checked={item.completed}
+												onPointerDown={(e) => e.stopPropagation()}
+												onPointerUp={(e) => e.stopPropagation()}
+												onClick={(e) => e.stopPropagation()}
+												onChange={(e) => checklistBinding.updateById(item.id, { completed: e.target.checked })}
+											/>
+											<span className={styles.checklistTextCompleted}>{item.text}</span>
+										</li>
+									))}
+								</ul>
+							) : null}
+						</div>
+					) : null}
+				</>
+			)}
 		</article>
 	);
 }

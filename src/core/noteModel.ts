@@ -32,6 +32,8 @@ export interface ChecklistItemData {
 	text: string;
 	/** Whether the item has been marked as done. */
 	completed: boolean;
+	/** Optional parent row id for one-level nesting. */
+	parentId: string | null;
 }
 
 /**
@@ -186,6 +188,7 @@ export function initChecklistNoteDoc(
 			m.set('id', item.id);
 			m.set('text', item.text);
 			m.set('completed', item.completed);
+			m.set('parentId', typeof item.parentId === 'string' && item.parentId.trim().length > 0 ? item.parentId : null);
 			yChecklist.push([m]);
 		}
 	});
@@ -232,6 +235,10 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 				id: String(m.get('id') ?? ''),
 				text: String(m.get('text') ?? ''),
 				completed: Boolean(m.get('completed')),
+				parentId:
+					typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
+						? String(m.get('parentId')).trim()
+						: null,
 			}))
 			.filter((item) => item.id.length > 0);
 	}
