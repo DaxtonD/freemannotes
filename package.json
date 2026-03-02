@@ -1,6 +1,6 @@
 {
   "name": "freemannotes",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "main": "index.js",
   "scripts": {
     "dev": "node server/dbInitCli.js && vite --host",
@@ -11,6 +11,8 @@
     "build": "vite build",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:status": "prisma migrate status",
     "db:push": "prisma db push",
     "postinstall": "prisma generate || true",
     "release:patch": "npm version patch -m \"chore(release): v%s\" && git push && git push --tags",
