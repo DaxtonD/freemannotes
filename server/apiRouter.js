@@ -155,7 +155,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 						jsonResponse(res, 503, { error: 'Workspace not initialized yet' });
 						return;
 					}
-					const docs = await prisma.yjsDocument.findMany({
+					const docs = await prisma.document.findMany({
 						where: { workspaceId },
 						select: {
 							docId: true,
@@ -172,7 +172,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 					// so we re-query with raw SQL for sizes.
 					const sizes = await prisma.$queryRaw`
 						SELECT doc_id, octet_length(state) as size_bytes
-						FROM yjs_document
+						FROM document
 						WHERE workspace_id = ${workspaceId}::uuid
 					`;
 					const sizeMap = new Map(
@@ -211,10 +211,8 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 						jsonResponse(res, 503, { error: 'Workspace not initialized yet' });
 						return;
 					}
-					const row = await prisma.yjsDocument.findUnique({
-						where: {
-							workspaceId_docId: { workspaceId, docId },
-						},
+					const row = await prisma.document.findUnique({
+						where: { docId },
 						select: { state: true, updatedAt: true, createdAt: true },
 					});
 					if (!row || !row.state) {
@@ -274,7 +272,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 						return;
 					}
 
-					const allDocs = await prisma.yjsDocument.findMany({
+					const allDocs = await prisma.document.findMany({
 						where: { workspaceId },
 						select: { docId: true, state: true, updatedAt: true, createdAt: true },
 					});

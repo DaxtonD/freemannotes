@@ -1,15 +1,21 @@
 // ─────────────────────────────────────────────────────────────────────────
-// Prisma schema for FreemanNotes server-side Yjs document persistence.
+// Prisma schema for FreemanNotes – Phase 10 (Production Persistence Layer)
 //
-// This schema stores workspace-scoped Yjs document snapshots in PostgreSQL.
-// Each row in `yjs_document` holds the binary state vector for one Yjs room
-// (either a note doc or the __notes_registry__ meta-doc). The `workspace`
-// table provides a lightweight identity boundary so a single server instance
-// can host multiple independent note collections.
+// PostgreSQL is the canonical source of truth for all document state.
+// Yjs in-memory docs are ephemeral runtime state only.
+// Redis remains a pub/sub + cache layer only.
+// IndexedDB remains client-side cache only.
 //
-// Migrations are generated with:  npx prisma migrate dev --name <label>
-// Production push (no migration):  npx prisma db push
-// Client regeneration:             npx prisma generate
+// Design constraints:
+//   - System is anonymous (no auth yet) — ready for Phase 11 auth.
+//   - No language columns — locale is a client concern.
+//   - No markdown-specific schema — metadata lives inside the Yjs map.
+//   - Horizontally scalable: multiple app instances share Postgres + Redis.
+//
+// Migrations:
+//   Dev:        npx prisma migrate dev --name <label>
+//   Production: npx prisma migrate deploy
+//   Client:     npx prisma generate
 // ─────────────────────────────────────────────────────────────────────────
 
 generator client {
@@ -30,8 +36,8 @@ datasource db {
 //
 // Every note collection belongs to exactly one workspace. The default setup
 // creates a single "default" workspace automatically (seeded on first boot).
-// Future multi-tenant support can create additional workspaces associated
-// with different users or organizations.
+// Future multi-tenant support (Phase 11) can create additional workspaces
+// associated with different users or organizations.
 // ─────────────────────────────────────────────────────────────────────────
 model Workspace {
   /// Primary key — auto-generated UUID.
@@ -40,7 +46,7 @@ model Workspace {
   /// Human-readable workspace name (e.g. "My Notes", "Team Alpha").
   name String @default("default")
 
-  /// Optional: owner/creator user ID for future auth integration.
+  /// Optional: owner/creator user ID for future auth integration (Phase 11).
   /// Not enforced at DB level — purely informational until auth is added.
   ownerUserId String? @map("owner_user_id")
 
@@ -48,8 +54,8 @@ model Workspace {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  /// One workspace owns many Yjs document snapshots.
-  documents YjsDocument[]
+  /// One workspace owns many documents.
+  documents Document[]
 
   // Enforce unique workspace names to prevent accidental duplicates.
   @@unique([name])
@@ -57,18 +63,22 @@ model Workspace {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// YjsDocument – persisted Yjs document state (binary snapshot).
+// Document – persisted Yjs document state (binary snapshot).
 //
-// Each Yjs room (identified by `docId`) maps to one row per workspace.
-// The `state` column stores the full Yjs document as `Y.encodeStateAsUpdate`
-// output (Uint8Array → Postgres BYTEA). The server writes this column on
-// a debounced schedule and on client disconnect, ensuring durable storage
+// Each Yjs room (identified by `docId`) maps to one row. The `state`
+// column stores the full Yjs document as `Y.encodeStateAsUpdate` output
+// (Uint8Array → Postgres BYTEA). The server writes this column on a
+// debounced schedule and on client disconnect, ensuring durable storage
 // that survives server restarts.
 //
-// The optional `stateVector` column stores `Y.encodeStateVector` output
-// for efficient incremental sync when clients reconnect.
+// `stateVector` stores `Y.encodeStateVector` output for efficient
+// incremental sync when clients reconnect.
+//
+// All note metadata (title, type, trashedAt, etc.) is stored INSIDE the
+// Yjs document's metadata Y.Map — not as separate SQL columns. This
+// keeps the schema stable as features are added.
 // ─────────────────────────────────────────────────────────────────────────
-model YjsDocument {
+model Document {
   /// Primary key — auto-generated UUID.
   id String @id @default(uuid()) @db.Uuid
 
@@ -78,30 +88,29 @@ model YjsDocument {
   /// Yjs room name — matches the room name used by y-websocket.
   /// For individual notes this is the noteId (e.g. "abc123").
   /// For the notes registry this is "__notes_registry__".
-  docId String @map("doc_id")
+  /// Globally unique — one room name maps to exactly one persisted doc.
+  docId String @unique @map("doc_id")
 
   /// Full Yjs document state as Y.encodeStateAsUpdate(doc) output.
   /// This is a binary blob (Uint8Array serialized to Postgres BYTEA).
   state Bytes
 
-  /// Optional Yjs state vector for efficient delta sync.
+  /// Yjs state vector for efficient delta sync.
   /// Stored as Y.encodeStateVector(doc) output.
-  stateVector Bytes? @map("state_vector")
-
-  /// Timestamp of the last successful persistence write.
-  updatedAt DateTime @updatedAt @map("updated_at")
+  stateVector Bytes @map("state_vector")
 
   /// Timestamp of the initial creation.
   createdAt DateTime @default(now()) @map("created_at")
 
+  /// Timestamp of the last successful persistence write.
+  updatedAt DateTime @updatedAt @map("updated_at")
+
   /// Relation to the parent workspace.
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
-  // Compound unique: one doc per workspace (prevents duplicate room entries).
-  @@unique([workspaceId, docId])
-  // Index for fast lookup by docId within a workspace.
-  @@index([workspaceId, docId])
-  @@map("yjs_document")
+  // Index for fast workspace-scoped queries (list all docs in a workspace).
+  @@index([workspaceId])
+  @@map("document")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -110,13 +119,8 @@ model YjsDocument {
 // Stores user-level preferences that influence server-side behaviour
 // (e.g. how long trashed notes are retained before permanent deletion).
 // The table is keyed by `userId` — a free-form string that will map to
-// a future auth identity. Until authentication is implemented, the
-// server uses a deterministic default user ID (e.g. "default").
-//
-// Design choice: one row per user (not per-preference) with nullable
-// columns for each setting. This makes reads cheap (single row) and
-// allows future settings to be added as new columns without a schema
-// migration for every preference key.
+// a future auth identity (Phase 11). Until then, the server uses a
+// deterministic default user ID (e.g. "default").
 // ─────────────────────────────────────────────────────────────────────────
 model UserPreference {
   /// Primary key — auto-generated UUID.

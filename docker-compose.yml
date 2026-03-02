@@ -16,7 +16,7 @@ services:
       # Set this to your public URL for clearer startup logs only.
       # APP_URL: https://dev.freeman.daxtond.com
 
-      # ── PostgreSQL persistence (required for Phase 8) ──────────────────
+      # ── PostgreSQL persistence (required) ────────────────────────────────
       # The connection string points to the companion postgres service below.
       DATABASE_URL: postgresql://freemannotes:freemannotes@postgres:5432/freemannotes?schema=public
 

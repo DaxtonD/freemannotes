@@ -57,6 +57,47 @@ All notable changes to this project are documented in this file.
 - Server boot sequence extended: Step 3 starts trash cleanup scheduler;
   graceful shutdown stops the scheduler before flushing persistence.
 
+## 1.0.6 - 2026-03-01
+
+### Changed — Phase 10: Production Persistence Layer
+
+- **Prisma model rename**: `YjsDocument` → `Document` (table: `document`).
+  All server code (`YjsPersistenceAdapter`, `apiRouter`, `trashCleanup`) updated
+  to use `prisma.document` accessor and simplified `{ docId }` where clauses.
+- **`stateVector` now required** (`Bytes`, was `Bytes?`). Every persisted
+  document stores both the full state and its state vector for efficient delta
+  sync on client reconnect.
+- **`docId` globally unique** (`@unique`, was compound `@@unique([workspaceId, docId])`).
+  Simplifies lookups — a single `docId` maps to exactly one persisted document.
+  Workspace index (`@@index([workspaceId])`) retained for scoped queries.
+- **Formal migration system**: Initial migration created (`20260301234035_phase10_init`).
+  Existing databases managed by `prisma db push` are baselined automatically.
+  - Production (`NODE_ENV=production`): `prisma migrate deploy` on boot.
+  - Development: `prisma db push` on boot (unchanged).
+- **New npm scripts**: `db:migrate:deploy`, `db:migrate:status` for production
+  migration workflows.
+- **Dockerfile**: Runtime comment updated to document auto-migration on boot.
+- **docker-compose.yml**: Comment updated (Phase 8 → generic).
+- **README.md**: Added comprehensive setup docs:
+  - Docker Compose quick start (managed Postgres)
+  - Unraid / external database setup
+  - Local development workflow
+  - Database migration commands and workflow
+- **server.js**: Header comments updated to Phase 10.
+- **dbInit.js**: Dual-mode schema sync — automatically selects `prisma migrate deploy`
+  (production) or `prisma db push` (development) based on `NODE_ENV`.
+
+### Migration Notes
+- **Existing databases**: If your database was created with `prisma db push`
+  (pre-1.0.6), the old `yjs_document` table must be renamed to `document`
+  before running the new migration. The easiest path is to drop and recreate
+  the database (no data loss for Yjs docs — they are ephemeral and resync from
+  connected clients). Alternatively, run:
+  ```sql
+  ALTER TABLE yjs_document RENAME TO document;
+  ```
+  Then baseline: `npx prisma migrate resolve --applied 20260301234035_phase10_init`
+
 ## 1.0.5 - 2026-03-01
 
 ### Changed

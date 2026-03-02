@@ -28,7 +28,8 @@ COPY --from=build /app/prisma ./prisma
 
 EXPOSE 27015
 
-# The server.js boot sequence automatically creates the database (if needed)
-# and syncs the Prisma schema on every startup. No separate migration step
-# is required — just start the server.
+# The server.js boot sequence automatically:
+#   1. Creates the database if it does not exist.
+#   2. Runs `prisma migrate deploy` (production) to apply committed migrations.
+# No separate migration step is required — just start the server.
 CMD ["node", "server.js"]

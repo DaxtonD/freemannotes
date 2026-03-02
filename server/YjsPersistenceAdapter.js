@@ -3,6 +3,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // YjsPersistenceAdapter – server-side Yjs document persistence via PostgreSQL.
 //
+// Phase 10: PostgreSQL is the canonical source of truth for all document state.
+// Yjs in-memory docs are ephemeral runtime state only. Redis remains a cache.
+//
 // This adapter plugs into y-websocket's `setupWSConnection` persistence
 // callback interface. It provides two main operations:
 //
@@ -151,10 +154,10 @@ class YjsPersistenceAdapter {
 		// ── PostgreSQL load (authoritative source) ───────────────────────────
 		if (!loaded) {
 			try {
-				const row = await this._prisma.yjsDocument.findUnique({
-					where: {
-						workspaceId_docId: { workspaceId, docId: docName },
-					},
+				// Query the Document table by the globally-unique docId.
+				// PostgreSQL is the authoritative source of truth; Redis is just a cache.
+				const row = await this._prisma.document.findUnique({
+					where: { docId: docName },
 					select: { state: true },
 				});
 				if (row && row.state && row.state.length > 0) {
@@ -270,10 +273,12 @@ class YjsPersistenceAdapter {
 		const stateVector = Buffer.from(Y.encodeStateVector(yDoc));
 
 		try {
-			await this._prisma.yjsDocument.upsert({
-				where: {
-					workspaceId_docId: { workspaceId, docId: docName },
-				},
+			// Atomic upsert: create the Document row if it doesn't exist, or
+			// update the existing row's state + stateVector. The upsert is keyed
+			// on the globally-unique docId so concurrent writes to different
+			// rooms never collide.
+			await this._prisma.document.upsert({
+				where: { docId: docName },
 				update: {
 					state,
 					stateVector,

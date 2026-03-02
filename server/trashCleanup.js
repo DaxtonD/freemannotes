@@ -127,7 +127,7 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 		// ── Step 2: Fetch all persisted docs for the workspace ──────────
 		let allDocs;
 		try {
-			allDocs = await prisma.yjsDocument.findMany({
+			allDocs = await prisma.document.findMany({
 				where: { workspaceId },
 				select: { id: true, docId: true, state: true },
 			});
@@ -183,7 +183,7 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 		// ── Step 4: Permanently delete expired docs from PostgreSQL ─────
 		let deletedCount = 0;
 		try {
-			const result = await prisma.yjsDocument.deleteMany({
+			const result = await prisma.document.deleteMany({
 				where: { id: { in: expiredDocIds } },
 			});
 			deletedCount = result.count;
@@ -209,10 +209,8 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 		// notes, and write the updated state back to PostgreSQL. This ensures
 		// that when clients next sync, they receive the removal.
 		try {
-			const registryRow = await prisma.yjsDocument.findUnique({
-				where: {
-					workspaceId_docId: { workspaceId, docId: NOTES_REGISTRY_ID },
-				},
+			const registryRow = await prisma.document.findUnique({
+				where: { docId: NOTES_REGISTRY_ID },
 				select: { state: true },
 			});
 
@@ -252,10 +250,8 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 				if (registryModified) {
 					const updatedState = Buffer.from(Y.encodeStateAsUpdate(registryDoc));
 					const updatedVector = Buffer.from(Y.encodeStateVector(registryDoc));
-					await prisma.yjsDocument.update({
-						where: {
-							workspaceId_docId: { workspaceId, docId: NOTES_REGISTRY_ID },
-						},
+					await prisma.document.update({
+						where: { docId: NOTES_REGISTRY_ID },
 						data: {
 							state: updatedState,
 							stateVector: updatedVector,
@@ -276,7 +272,7 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 				registryDoc.destroy();
 			}
 		} catch (err) {
-			// Non-fatal: the rows are already deleted from the yjs_document table.
+			// Non-fatal: the rows are already deleted from the document table.
 			// The registry will be cleaned up on the next cycle or when clients
 			// interact with the stale entries.
 			console.warn('[trash-cleanup] Failed to update notes registry:', err.message);

@@ -1,7 +1,7 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FreemanNotes – Automatic Database Initialization & Schema Sync
+// FreemanNotes – Automatic Database Initialization & Schema Sync (Phase 10)
 //
 // This module ensures the PostgreSQL database exists and the Prisma schema is
 // up-to-date every time the server starts. It is called early in the server
@@ -13,16 +13,19 @@
 //   2. Connect to the default "postgres" admin database (which always exists).
 //   3. Check if the target database exists (pg_database catalog lookup).
 //   4. CREATE DATABASE if it does not exist.
-//   5. Run `prisma db push --skip-generate` to apply any pending schema
-//      changes WITHOUT data loss (no --accept-data-loss flag).
+//   5. Sync the schema:
+//      - Production (NODE_ENV=production): `prisma migrate deploy` applies
+//        only committed migration files from prisma/migrations/.
+//      - Development (all other values):   `prisma db push --skip-generate`
+//        applies schema changes directly (no migration history).
 //
 // Design decisions:
 //   - Uses the lightweight "pg" package for the admin-level connection because
 //     Prisma's own client is generated for the target DB's schema and cannot
 //     run `CREATE DATABASE` (PostgreSQL forbids it inside a transaction).
-//   - `prisma db push` (not `migrate deploy`) is used because the project does
-//     not maintain a migration history yet. When a migrations directory is
-//     added, this can be swapped to `prisma migrate deploy`.
+//   - Production uses `prisma migrate deploy` for safe, repeatable deployments.
+//     Development uses `prisma db push` for rapid iteration without migration
+//     files. This dual-mode approach ensures dev convenience AND prod safety.
 //   - All operations are idempotent: running them repeatedly on an already-
 //     provisioned database is a harmless no-op.
 //   - Errors are surfaced as warnings, not fatal crashes, so the server can
@@ -111,26 +114,32 @@ async function ensureDatabaseExists(adminUrl, dbName) {
 }
 
 /**
- * Runs `prisma db push --skip-generate` to synchronize the Prisma schema
- * with the database. This applies any new tables, columns, or indexes
- * without dropping existing data.
+ * Synchronizes the Prisma schema with the database.
  *
- * Key flags:
- *   --skip-generate : Skip client regeneration (already done at install time).
- *   (No --accept-data-loss) : Prisma will refuse destructive changes and
- *     return a non-zero exit code instead. This protects production data.
+ * Mode selection (based on NODE_ENV):
+ *   - Production: `prisma migrate deploy` — applies only committed migration
+ *     files from prisma/migrations/. Safe for production use; never auto-
+ *     generates migrations or drops data.
+ *   - Development: `prisma db push --skip-generate` — applies schema changes
+ *     directly without migration files. Convenient for rapid iteration.
  *
  * @param {string} databaseUrl — Full PostgreSQL connection string for the
  *   target database (not the admin "postgres" database).
  */
 function syncSchema(databaseUrl) {
-	console.info('[dbInit] Syncing Prisma schema with database (prisma db push)...');
+	const isProduction = process.env.NODE_ENV === 'production';
+	const command = isProduction
+		? 'npx prisma migrate deploy 2>&1'
+		: 'npx prisma db push --skip-generate 2>&1';
+	const label = isProduction ? 'prisma migrate deploy' : 'prisma db push';
+
+	console.info(`[dbInit] Syncing schema with database (${label})...`);
 
 	try {
-		// ── Execute prisma db push as a child process ────────────────────
+		// ── Execute the chosen Prisma command as a child process ─────────
 		// We pass DATABASE_URL explicitly in the environment to ensure Prisma
 		// reads the correct connection string regardless of .env file state.
-		const output = execSync('npx prisma db push --skip-generate 2>&1', {
+		const output = execSync(command, {
 			cwd: path.resolve(__dirname, '..'),
 			stdio: 'pipe',
 			timeout: 60000, // 60-second timeout for slow first-run migrations.
@@ -142,9 +151,9 @@ function syncSchema(databaseUrl) {
 
 		// ── Parse and log the output ─────────────────────────────────────
 		const text = output.toString().trim();
-		if (text.includes('already in sync')) {
+		if (text.includes('already in sync') || text.includes('No pending migrations')) {
 			console.info('[dbInit] Schema is already in sync — no changes applied');
-		} else if (text.includes('applied')) {
+		} else if (text.includes('applied') || text.includes('migration')) {
 			console.info('[dbInit] Schema changes applied successfully');
 			// Log the full output so the user can see what changed.
 			console.info('[dbInit] Prisma output:\n' + text);
@@ -152,20 +161,24 @@ function syncSchema(databaseUrl) {
 			console.info('[dbInit] Schema sync complete');
 		}
 	} catch (err) {
-		// ── Handle prisma db push failure ────────────────────────────────
-		// Without --accept-data-loss, Prisma exits non-zero when a schema
-		// change would drop data. This is intentional — we log the warning
-		// and let the operator decide how to proceed manually.
+		// ── Handle failure ───────────────────────────────────────────────
 		const stderr = err.stderr ? err.stderr.toString().trim() : '';
 		const stdout = err.stdout ? err.stdout.toString().trim() : '';
 		const message = stderr || stdout || err.message;
 
 		console.warn('[dbInit] Schema sync encountered an issue:');
 		console.warn('[dbInit] ' + message);
-		console.warn('[dbInit] If this is a destructive schema change, run manually:');
-		console.warn('[dbInit]   npx prisma db push --accept-data-loss');
-		console.warn('[dbInit] Or create a proper migration:');
-		console.warn('[dbInit]   npx prisma migrate dev --name <label>');
+
+		if (isProduction) {
+			console.warn('[dbInit] Production mode uses `prisma migrate deploy`.');
+			console.warn('[dbInit] Ensure migration files exist in prisma/migrations/.');
+			console.warn('[dbInit] To create a migration: npx prisma migrate dev --name <label>');
+		} else {
+			console.warn('[dbInit] If this is a destructive schema change, run manually:');
+			console.warn('[dbInit]   npx prisma db push --accept-data-loss');
+			console.warn('[dbInit] Or create a proper migration:');
+			console.warn('[dbInit]   npx prisma migrate dev --name <label>');
+		}
 	}
 }
 
