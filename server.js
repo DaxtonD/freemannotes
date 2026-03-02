@@ -1,12 +1,11 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// FreemanNotes – Production Runtime Server (Phase 8)
+// FreemanNotes – Production Runtime Server (Phase 10)
 //
 // Serves the Vite build output, hosts the Yjs WebSocket sync endpoint, and
-// integrates optional PostgreSQL persistence (via Prisma) with optional Redis
-// caching. All persistence is backward-compatible: the server still works as
-// a relay-only WebSocket bridge when DATABASE_URL is not configured.
+// integrates PostgreSQL persistence (via Prisma) as the canonical source of
+// truth for all document state. Optional Redis for caching + pub/sub.
 //
 // Architecture:
 //   HTTP (same port) ─┬─ Static files from ./dist (SPA fallback)
@@ -19,11 +18,15 @@
 //   3. PostgreSQL (DATABASE_URL=...) — Prisma-based durable persistence.
 //      Optional: REDIS_URL for fast doc-state caching layer.
 //
+// Prisma schema uses the `Document` model (mapped to the `document` table)
+// to store Yjs binary state. Workspace scoping provides a lightweight
+// tenant boundary ready for Phase 11 auth.
+//
 // Docker / Unraid:
 //   - Set DATABASE_URL to your PostgreSQL connection string.
 //   - Optionally set REDIS_URL for Redis caching.
-//   - Run `npx prisma migrate deploy` or `npx prisma db push` on first boot.
-//   - Mount volumes as needed for LevelDB fallback if desired.
+//   - Production: `npx prisma migrate deploy` runs automatically on boot.
+//   - Dev: `prisma db push` auto-syncs the schema.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
