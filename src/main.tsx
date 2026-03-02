@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
+import { I18nProvider } from './core/i18n';
 import './styles/variables.css';
 import './styles/globals.css';
 import './styles/layout.css';
@@ -35,9 +36,11 @@ if (!rootEl) {
 
 createRoot(rootEl).render(
 	<React.StrictMode>
-		<DocumentManagerProvider manager={manager}>
-			<App />
-		</DocumentManagerProvider>
+		<I18nProvider>
+			<DocumentManagerProvider manager={manager}>
+				<App />
+			</DocumentManagerProvider>
+		</I18nProvider>
 	</React.StrictMode>
 );
 

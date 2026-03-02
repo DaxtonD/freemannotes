@@ -1,5 +1,7 @@
 .section {
 	width: 100%;
+	width: calc(100% + (var(--mobile-section-bleed, 0px) * 2));
+	margin-inline: calc(var(--mobile-section-bleed, 0px) * -1);
 	min-width: 0;
 	overflow-x: hidden;
 }

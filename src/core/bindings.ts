@@ -160,6 +160,7 @@ export type ChecklistItem = {
 	id: string;
 	text: string;
 	completed: boolean;
+	parentId: string | null;
 };
 
 export class ChecklistModel {
@@ -183,6 +184,10 @@ export class ChecklistModel {
 				id: String(m.get('id') ?? ''),
 				text: String(m.get('text') ?? ''),
 				completed: Boolean(m.get('completed')),
+				parentId:
+					typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
+						? String(m.get('parentId')).trim()
+						: null,
 			}))
 			.filter((item) => item.id.length > 0);
 	}
@@ -193,6 +198,7 @@ export class ChecklistModel {
 			m.set('id', item.id);
 			m.set('text', item.text);
 			m.set('completed', item.completed);
+			m.set('parentId', item.parentId);
 			this.yarray.push([m]);
 		});
 	}
@@ -211,6 +217,7 @@ export class ChecklistModel {
 			if (!m) return;
 			if (patch.text !== undefined) m.set('text', patch.text);
 			if (patch.completed !== undefined) m.set('completed', patch.completed);
+			if (patch.parentId !== undefined) m.set('parentId', patch.parentId);
 		});
 	}
 
@@ -294,7 +301,7 @@ export class ChecklistBinding {
 		return this.itemsCache;
 	}
 
-	public add(item: { id: string; text: string; completed: boolean }): void {
+	public add(item: { id: string; text: string; completed: boolean; parentId?: string | null }): void {
 		if (this.destroyed) return;
 		const id = typeof item.id === 'string' ? item.id.trim() : '';
 		if (id.length === 0) {
@@ -305,6 +312,7 @@ export class ChecklistBinding {
 			m.set('id', id);
 			m.set('text', String(item.text ?? ''));
 			m.set('completed', Boolean(item.completed));
+			m.set('parentId', typeof item.parentId === 'string' && item.parentId.trim().length > 0 ? item.parentId.trim() : null);
 			this.yarray.push([m]);
 		});
 		// Ensure immediate notification (without relying on observeDeep timing).
@@ -326,7 +334,7 @@ export class ChecklistBinding {
 
 	public update(
 		index: number,
-		partial: Partial<{ id: string; text: string; completed: boolean }>
+		partial: Partial<{ id: string; text: string; completed: boolean; parentId: string | null }>
 	): void {
 		if (this.destroyed) return;
 		const idx = this.normalizeIndex(index);
@@ -356,7 +364,7 @@ export class ChecklistBinding {
 
 	public updateById(
 		id: string,
-		partial: Partial<{ id: string; text: string; completed: boolean }>
+		partial: Partial<{ id: string; text: string; completed: boolean; parentId: string | null }>
 	): void {
 		if (this.destroyed) return;
 		const normalizedId = String(id ?? '').trim();
@@ -381,6 +389,10 @@ export class ChecklistBinding {
 			}
 			if (partial.completed !== undefined) {
 				m.set('completed', Boolean(partial.completed));
+			}
+			if (partial.parentId !== undefined) {
+				const parentId = typeof partial.parentId === 'string' ? partial.parentId.trim() : null;
+				m.set('parentId', parentId && parentId.length > 0 ? parentId : null);
 			}
 		});
 		this.itemsCache = this.model.toArray();

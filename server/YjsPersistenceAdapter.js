@@ -38,7 +38,33 @@ const DEBOUNCE_MS = 2000;
 /** Default workspace name created on first boot if none exists. */
 const DEFAULT_WORKSPACE_NAME = 'default';
 
+/**
+ * Maximum time (ms) to wait for a Redis operation before giving up.
+ * Since maxRetriesPerRequest is null (commands queue forever), we apply our
+ * own timeout so persistence is never blocked by an unreachable Redis.
+ */
+const REDIS_TIMEOUT_MS = 3000;
+
 // ─── Adapter class ──────────────────────────────────────────────────────────
+
+/**
+ * Wraps a Redis promise with a timeout. If the operation doesn't complete
+ * within `ms` milliseconds, the returned promise rejects with a timeout error.
+ * This prevents the server from hanging when Redis is unreachable and commands
+ * are queued indefinitely in the ioredis offline queue.
+ *
+ * @template T
+ * @param {Promise<T>} promise — Redis command promise.
+ * @param {number} ms — Timeout in milliseconds.
+ * @returns {Promise<T>}
+ */
+function withTimeout(promise, ms) {
+	let timer;
+	const timeout = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error('Redis operation timed out')), ms);
+	});
+	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 class YjsPersistenceAdapter {
 	/**
@@ -107,7 +133,10 @@ class YjsPersistenceAdapter {
 		let loaded = false;
 		if (this._redis) {
 			try {
-				const cached = await this._redis.getBuffer(this._redisKey(docName));
+				const cached = await withTimeout(
+					this._redis.getBuffer(this._redisKey(docName)),
+					REDIS_TIMEOUT_MS
+				);
 				if (cached && cached.length > 0) {
 					Y.applyUpdate(yDoc, new Uint8Array(cached));
 					loaded = true;
@@ -294,7 +323,10 @@ class YjsPersistenceAdapter {
 			const key = this._redisKey(docName);
 			// Store with 24-hour TTL. The TTL is a safety net — active docs are
 			// refreshed on every debounced write, so the cache stays warm.
-			await this._redis.set(key, Buffer.from(state), 'EX', 86400);
+			await withTimeout(
+				this._redis.set(key, Buffer.from(state), 'EX', 86400),
+				REDIS_TIMEOUT_MS
+			);
 		} catch (err) {
 			console.warn(`[persist] Redis write failed for room=${docName}:`, err.message);
 		}

@@ -19,6 +19,7 @@ import { CSS } from '@dnd-kit/utilities';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
+import { useI18n } from '../../core/i18n';
 import { readTrashState } from '../../core/noteModel';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import styles from './NoteGrid.module.css';
@@ -98,16 +99,29 @@ function getGridLayoutForViewport(
 	containerWidth: number,
 	viewportWidth: number,
 	viewportHeight: number
-): { columnCount: number; mobileCardWidthPx: number | null } {
+): {
+	columnCount: number;
+	mobileCardWidthPx: number | null;
+	mobileGapPx: number | null;
+	mobileSectionBleedPx: number;
+} {
 	// Desktop/base card width token (fixed-width cards by design).
 	const noteCardWidth = readCssPxVariable('--note-card-width', 280);
 	const gap = readCssPxVariable('--grid-gap', 16);
+	const appSidePadding = readCssPxVariable('--space-3', 12);
 
 	const isMobile = isMobileLikeDevice(viewportWidth);
 	const isPortrait = viewportHeight >= viewportWidth;
 
 	let mobileCardWidthPx: number | null = null;
+	let mobileGapPx: number | null = null;
+	let mobileSectionBleedPx = 0;
 	if (isMobile) {
+		if (isPortrait) {
+			mobileGapPx = 8;
+			const desiredEdgeMargin = 4;
+			mobileSectionBleedPx = Math.max(0, Math.round(appSidePadding - desiredEdgeMargin));
+		}
 		// Use stable short side for mobile sizing so browser chrome show/hide while scrolling
 		// does not cause width jitter (especially in mobile landscape).
 		const stableShortSide =
@@ -115,20 +129,22 @@ function getGridLayoutForViewport(
 				? Math.min(window.screen.width, window.screen.height)
 				: Math.min(viewportWidth, viewportHeight);
 		// Keep card width consistent between portrait and landscape on mobile.
-		const twoColumnBasis = Math.min(containerWidth, stableShortSide);
-		mobileCardWidthPx = Math.max(140, Math.floor((twoColumnBasis - gap) / 2));
+		const effectiveContainerWidth = containerWidth + mobileSectionBleedPx * 2;
+		const twoColumnBasis = Math.min(effectiveContainerWidth, stableShortSide);
+		mobileCardWidthPx = Math.max(140, Math.floor((twoColumnBasis - (mobileGapPx ?? gap)) / 2));
 	}
 
 	// Effective width is either fixed desktop token or mobile override.
 	const effectiveCardWidth = mobileCardWidthPx ?? noteCardWidth;
-	const maxByWidth = Math.max(1, Math.floor((containerWidth + gap) / (effectiveCardWidth + gap)));
+	const effectiveGap = mobileGapPx ?? gap;
+	const maxByWidth = Math.max(1, Math.floor((containerWidth + effectiveGap) / (effectiveCardWidth + effectiveGap)));
 
 	// Portrait mobile is explicitly locked to 2 columns to maximize visible content density.
 	if (mobileCardWidthPx !== null && isPortrait) {
-		return { columnCount: 2, mobileCardWidthPx };
+		return { columnCount: 2, mobileCardWidthPx, mobileGapPx, mobileSectionBleedPx };
 	}
 
-	return { columnCount: maxByWidth, mobileCardWidthPx };
+	return { columnCount: maxByWidth, mobileCardWidthPx, mobileGapPx, mobileSectionBleedPx };
 }
 
 // Swap semantics: only active + over IDs exchange positions.
@@ -170,7 +186,8 @@ function SortableNoteCard(props: SortableNoteCardProps): React.JSX.Element {
 	const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } =
 		useSortable({
 			id: props.note.id,
-			animateLayoutChanges: (args) => defaultAnimateLayoutChanges({ ...args, wasDragging: true }),
+			animateLayoutChanges: (args: any) =>
+				defaultAnimateLayoutChanges({ ...args, wasDragging: true }),
 		});
 
 	const transformNoScale = transform ? { ...transform, scaleX: 1, scaleY: 1 } : null;
@@ -201,6 +218,7 @@ function SortableNoteCard(props: SortableNoteCardProps): React.JSX.Element {
 }
 
 export function NoteGrid(props: NoteGridProps): React.JSX.Element {
+	const { t } = useI18n();
 	// DnD state: active item, overlay size, and live in-drag order.
 	const [dndContextKey, setDndContextKey] = React.useState(0);
 	const [activeDragId, setActiveDragId] = React.useState<string | null>(null);
@@ -242,6 +260,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [columnCount, setColumnCount] = React.useState<number>(() => 2);
 	// Mobile-only runtime width override. Null means use desktop/root --note-card-width.
 	const [mobileCardWidthPx, setMobileCardWidthPx] = React.useState<number | null>(null);
+	const [mobileGridGapPx, setMobileGridGapPx] = React.useState<number | null>(null);
+	const [mobileSectionBleedPx, setMobileSectionBleedPx] = React.useState<number>(0);
 	const sectionRef = React.useRef<HTMLElement | null>(null);
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	// FLIP animation bookkeeping across renders.
@@ -271,6 +291,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const next = getGridLayoutForViewport(containerWidth, window.innerWidth, window.innerHeight);
 		setColumnCount((previous) => (previous === next.columnCount ? previous : next.columnCount));
 		setMobileCardWidthPx((previous) => (previous === next.mobileCardWidthPx ? previous : next.mobileCardWidthPx));
+		setMobileGridGapPx((previous) => (previous === next.mobileGapPx ? previous : next.mobileGapPx));
+		setMobileSectionBleedPx((previous) => (previous === next.mobileSectionBleedPx ? previous : next.mobileSectionBleedPx));
 	}, []);
 
 	React.useEffect(() => {
@@ -841,8 +863,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	return (
 		<section
 			ref={sectionRef}
-			aria-label="Notes"
+			aria-label={t('grid.notes')}
 			className={styles.section}
+			style={
+				mobileSectionBleedPx > 0
+					? { ['--mobile-section-bleed' as any]: `${mobileSectionBleedPx}px` }
+					: undefined
+			}
 			onTouchStartCapture={(event) => {
 				const target = event.target as HTMLElement | null;
 				if (!target?.closest('[data-note-card="true"]')) return;
@@ -898,12 +925,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					<div
 						ref={gridRef}
 						className={styles.grid}
-						aria-label="Notes Grid"
+						aria-label={t('grid.notesGrid')}
 						style={{
 							['--grid-columns' as any]: String(columnCount),
 							// This is the runtime override for mobile card width.
 							// Set to null in getGridLayoutForViewport to revert to root --note-card-width.
 							...(mobileCardWidthPx !== null ? { ['--note-card-width' as any]: `${mobileCardWidthPx}px` } : {}),
+							...(mobileGridGapPx !== null ? { ['--grid-gap' as any]: `${mobileGridGapPx}px` } : {}),
 						}}
 					>
 						{columns.map((columnIds, columnIndex) => (
@@ -915,7 +943,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									if (!doc) {
 										return (
 											<div key={note.id} className={styles.item} data-note-id={note.id}>
-												<div>Loading…</div>
+												<div>{t('common.loading')}</div>
 											</div>
 										);
 									}

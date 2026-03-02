@@ -48,6 +48,24 @@ const NOTES_REGISTRY_ID = '__notes_registry__';
 /** Default retention period if no user preference exists (30 days). */
 const DEFAULT_DELETE_AFTER_DAYS = 30;
 
+/** Maximum time (ms) to wait for a Redis operation before giving up. */
+const REDIS_TIMEOUT_MS = 3000;
+
+/**
+ * Wraps a promise with a timeout so Redis calls don't hang indefinitely.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @returns {Promise<T>}
+ */
+function withTimeout(promise, ms) {
+	let timer;
+	const timeout = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error('Redis operation timed out')), ms);
+	});
+	return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -179,7 +197,7 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 			for (const noteId of expiredNoteIds) {
 				try {
 					const key = `fn:yjs:${adapter._workspaceName || 'default'}:${noteId}`;
-					await redis.del(key);
+					await withTimeout(redis.del(key), REDIS_TIMEOUT_MS);
 				} catch (err) {
 					console.warn(`[trash-cleanup] Failed to invalidate Redis cache for ${noteId}:`, err.message);
 				}
@@ -248,7 +266,7 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 					if (redis) {
 						try {
 							const key = `fn:yjs:${adapter._workspaceName || 'default'}:${NOTES_REGISTRY_ID}`;
-							await redis.set(key, updatedState, 'EX', 86400);
+							await withTimeout(redis.set(key, updatedState, 'EX', 86400), REDIS_TIMEOUT_MS);
 						} catch (err) {
 							console.warn('[trash-cleanup] Failed to update Redis cache for registry:', err.message);
 						}

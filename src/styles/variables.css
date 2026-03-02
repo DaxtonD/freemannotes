@@ -1,8 +1,17 @@
 :root {
+	--color-app-bg: #f5f7fb;
 	--color-surface: #fff;
+	--color-surface-2: #f0f3f7;
 	--color-border: rgba(0, 0, 0, 0.12);
 	--color-outline: rgba(0, 0, 0, 0.35);
+	--color-text: #111827;
 	--color-text-muted: rgba(0, 0, 0, 0.6);
+	--color-button-bg: #fff;
+	--color-button-text: #111827;
+	--color-input-bg: #fff;
+	--color-input-text: #111827;
+	--color-accent: #2f5af4;
+	--color-overlay: rgba(15, 23, 42, 0.45);
 
 	--font-size-xs: 12px;
 	--font-size-sm: 14px;
@@ -14,6 +23,7 @@
 	--space-4: 16px;
 
 	--radius-sm: 6px;
+	--radius-md: 10px;
 	--transition-fast: 120ms;
 
 	--note-card-width: 250px;
