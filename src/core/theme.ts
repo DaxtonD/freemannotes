@@ -44,6 +44,108 @@ function makeNordTheme(
 	};
 }
 
+// ── Catppuccin theme factory ────────────────────────────────────────────────
+// Official palette: https://github.com/catppuccin/catppuccin
+// Each flavor provides: base, mantle, crust, text, subtext0/1, surface0/1/2,
+// overlay0/1/2, and accent colors. We map them to our CSS variable system.
+
+type CatppuccinPalette = {
+	base: string;
+	mantle: string;
+	crust: string;
+	surface0: string;
+	surface1: string;
+	text: string;
+	subtext0: string;
+	overlay0: string;
+	lavender: string;
+	blue: string;
+	borderAlpha: string; // rgba border color tuned per flavor
+	overlayAlpha: string; // rgba overlay color tuned per flavor
+};
+
+function makeCatppuccinTheme(id: string, labelKey: string, p: CatppuccinPalette): ThemeDefinition {
+	return {
+		id,
+		labelKey,
+		variables: {
+			'--color-app-bg': p.base,
+			'--color-surface': p.mantle,
+			'--color-surface-2': p.surface0,
+			'--color-border': p.borderAlpha,
+			'--color-outline': `${p.lavender}cc`,
+			'--color-text': p.text,
+			'--color-text-muted': p.subtext0,
+			'--color-button-bg': p.surface0,
+			'--color-button-text': p.text,
+			'--color-input-bg': p.crust,
+			'--color-input-text': p.text,
+			'--color-accent': p.blue,
+			'--color-overlay': p.overlayAlpha,
+		},
+	};
+}
+
+const catppuccinLatte: CatppuccinPalette = {
+	base: '#eff1f5',
+	mantle: '#e6e9ef',
+	crust: '#dce0e8',
+	surface0: '#ccd0da',
+	surface1: '#bcc0cc',
+	text: '#4c4f69',
+	subtext0: '#6c6f85',
+	overlay0: '#9ca0b0',
+	lavender: '#7287fd',
+	blue: '#1e66f5',
+	borderAlpha: 'rgba(76, 79, 105, 0.15)',
+	overlayAlpha: 'rgba(76, 79, 105, 0.42)',
+};
+
+const catppuccinFrappe: CatppuccinPalette = {
+	base: '#303446',
+	mantle: '#292c3c',
+	crust: '#232634',
+	surface0: '#414559',
+	surface1: '#51576d',
+	text: '#c6d0f5',
+	subtext0: '#a5adce',
+	overlay0: '#737994',
+	lavender: '#babbf1',
+	blue: '#8caaee',
+	borderAlpha: 'rgba(198, 208, 245, 0.18)',
+	overlayAlpha: 'rgba(35, 38, 52, 0.72)',
+};
+
+const catppuccinMacchiato: CatppuccinPalette = {
+	base: '#24273a',
+	mantle: '#1e2030',
+	crust: '#181926',
+	surface0: '#363a4f',
+	surface1: '#494d64',
+	text: '#cad3f5',
+	subtext0: '#a5adcb',
+	overlay0: '#6e738d',
+	lavender: '#b7bdf8',
+	blue: '#8aadf4',
+	borderAlpha: 'rgba(202, 211, 245, 0.18)',
+	overlayAlpha: 'rgba(24, 25, 38, 0.74)',
+};
+
+const catppuccinMocha: CatppuccinPalette = {
+	base: '#1e1e2e',
+	mantle: '#181825',
+	crust: '#11111b',
+	surface0: '#313244',
+	surface1: '#45475a',
+	text: '#cdd6f4',
+	subtext0: '#a6adc8',
+	overlay0: '#6c7086',
+	lavender: '#b4befe',
+	blue: '#89b4fa',
+	borderAlpha: 'rgba(205, 214, 244, 0.18)',
+	overlayAlpha: 'rgba(17, 17, 27, 0.76)',
+};
+
 export const THEMES: readonly ThemeDefinition[] = [
 	{
 		id: 'light',
@@ -241,11 +343,30 @@ export const THEMES: readonly ThemeDefinition[] = [
 		'#3c314a',
 		'rgba(43, 34, 54, 0.76)'
 	),
+	// ── Catppuccin ──────────────────────────────────────────────────────────
+	makeCatppuccinTheme('catppuccin-latte', 'theme.catppuccinLatte', catppuccinLatte),
+	makeCatppuccinTheme('catppuccin-frappe', 'theme.catppuccinFrappe', catppuccinFrappe),
+	makeCatppuccinTheme('catppuccin-macchiato', 'theme.catppuccinMacchiato', catppuccinMacchiato),
+	makeCatppuccinTheme('catppuccin-mocha', 'theme.catppuccinMocha', catppuccinMocha),
 ];
 
 export type ThemeId = (typeof THEMES)[number]['id'];
 
 const fallbackThemeId: ThemeId = 'dark';
+
+/** IDs of themes that use a light background (need dark icons/text). */
+const LIGHT_THEME_IDS: ReadonlySet<string> = new Set([
+	'light',
+	'nord-snow-storm-1',
+	'nord-snow-storm-2',
+	'nord-snow-storm-3',
+	'catppuccin-latte',
+]);
+
+/** Returns true if the given theme has a light background. */
+export function isLightTheme(themeId: ThemeId): boolean {
+	return LIGHT_THEME_IDS.has(themeId);
+}
 
 export function getTheme(themeId: ThemeId): ThemeDefinition {
 	return THEMES.find((theme) => theme.id === themeId) ?? THEMES.find((theme) => theme.id === fallbackThemeId)!;

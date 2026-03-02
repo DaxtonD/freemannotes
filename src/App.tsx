@@ -11,7 +11,7 @@ import { type ChecklistItem } from './core/bindings';
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
 import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId } from './core/noteModel';
-import { applyTheme, getStoredThemeId, persistThemeId, THEMES, type ThemeId } from './core/theme';
+import { applyTheme, getStoredThemeId, isLightTheme, persistThemeId, THEMES, type ThemeId } from './core/theme';
 import { useConnectionStatus } from './core/useConnectionStatus';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 
@@ -51,7 +51,7 @@ export function App(): React.JSX.Element {
 	}, [locales]);
 
 	const fabIconSrc = React.useMemo(() => {
-		return themeId === 'light' ? fabIconDark : fabIconLight;
+		return isLightTheme(themeId) ? fabIconDark : fabIconLight;
 	}, [themeId]);
 
 	const sidebarSections = React.useMemo(
