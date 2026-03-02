@@ -114,13 +114,28 @@ if (DATABASE_URL.length > 0) {
 		try {
 			const Redis = require('ioredis');
 			redis = new Redis(REDIS_URL, {
-				// Reconnect automatically with exponential backoff.
-				retryStrategy: (times) => Math.min(times * 200, 5000),
-				// Don't throw on connection failure — persistence still works via PG.
+				// Reconnect automatically with exponential backoff (max 10 s).
+				retryStrategy: (times) => Math.min(times * 200, 10_000),
+				// ── Key resilience settings ──
+				// null = commands queue indefinitely until Redis reconnects instead
+				// of failing after N attempts. This prevents unhandled rejections
+				// from crashing the process during transient network outages.
+				maxRetriesPerRequest: null,
+				// Keep the offline queue enabled (default true) — pending commands are
+				// buffered and replayed automatically once the connection is restored.
+				enableOfflineQueue: true,
 				lazyConnect: false,
-				maxRetriesPerRequest: 3,
+				// Automatically reconnect when the server sends a read-only or
+				// connection-reset error (ECONNRESET, READONLY, etc.).
+				reconnectOnError: (err) => {
+					const msg = err.message || '';
+					return msg.includes('READONLY') || msg.includes('ECONNRESET');
+				},
 			});
 			redis.on('connect', () => console.info('[server] Redis connected'));
+			redis.on('ready', () => console.info('[server] Redis ready'));
+			redis.on('close', () => console.warn('[server] Redis connection closed'));
+			redis.on('reconnecting', (ms) => console.info(`[server] Redis reconnecting in ${ms}ms`));
 			redis.on('error', (err) => console.warn('[server] Redis error:', err.message));
 			console.info('[server] Redis client initialized (REDIS_URL is set)');
 		} catch (err) {
@@ -477,6 +492,14 @@ async function gracefulShutdown(signal) {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// ── Safety net: prevent unhandled rejections from crashing the process ────
+// Redis (and other async subsystems) can produce promise rejections that
+// escape all try/catch guards during edge-case timing scenarios. Since Redis
+// is a non-critical cache layer, these should never bring down the server.
+process.on('unhandledRejection', (reason) => {
+	console.error('[server] Unhandled promise rejection (server continues):', reason);
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Start listening

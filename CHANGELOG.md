@@ -57,6 +57,27 @@ All notable changes to this project are documented in this file.
 - Server boot sequence extended: Step 3 starts trash cleanup scheduler;
   graceful shutdown stops the scheduler before flushing persistence.
 
+## 1.0.5 - 2026-03-01
+
+### Changed
+- Note cards now use fixed max heights by pointer type (desktop vs coarse/mobile);
+  the max-height slider UI was removed.
+- Note card previews no longer clamp text or truncate checklist previews.
+- Note cards no longer show internal scrollbars when content exceeds max height;
+  content clips instead.
+- Checklist note cards keep the completed-items toggle visible by pinning it as
+  a footer section even when the checklist body is clipped.
+- Editors moved to a fixed-header + scrollable-body layout so mobile can scroll
+  checklist items while keeping title/actions visible; text editor content now
+  stretches to the bottom of the screen.
+
+### Fixed
+- Desktop checklist drag ghost sizing/visuals: width measurement is captured
+  pre-drag and the ghost shadow stays dark across themes.
+- Mobile checklist reordering now handles extreme variable-height items by using
+  50% crossover semantics against neighbour midpoints (instead of closest-center),
+  with hysteresis to prevent direction-flip jitter.
+
 ## 1.0.3 - 2026-03-01
 
 ### Added
