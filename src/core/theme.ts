@@ -46,10 +46,10 @@ function makeNordTheme(
 
 // ── Catppuccin theme factory ────────────────────────────────────────────────
 // Official palette: https://github.com/catppuccin/catppuccin
-// Each flavor provides: base, mantle, crust, text, subtext0/1, surface0/1/2,
-// overlay0/1/2, and accent colors. We map them to our CSS variable system.
+// Each flavor (Latte, Frappé, Macchiato, Mocha) × 14 accent colors = 56 themes.
+// Background/surface/text are shared per flavor; accent varies per sub-variant.
 
-type CatppuccinPalette = {
+type CatppuccinFlavor = {
 	base: string;
 	mantle: string;
 	crust: string;
@@ -58,93 +58,129 @@ type CatppuccinPalette = {
 	text: string;
 	subtext0: string;
 	overlay0: string;
-	lavender: string;
-	blue: string;
-	borderAlpha: string; // rgba border color tuned per flavor
-	overlayAlpha: string; // rgba overlay color tuned per flavor
+	borderAlpha: string;
+	overlayAlpha: string;
+	accents: Record<string, string>;
 };
 
-function makeCatppuccinTheme(id: string, labelKey: string, p: CatppuccinPalette): ThemeDefinition {
+function makeCatppuccinTheme(
+	flavorSlug: string,
+	flavorLabelKey: string,
+	accentSlug: string,
+	accentLabelKey: string,
+	accentColor: string,
+	f: CatppuccinFlavor
+): ThemeDefinition {
 	return {
-		id,
-		labelKey,
+		id: `catppuccin-${flavorSlug}-${accentSlug}`,
+		labelKey: `theme.catppuccin${flavorLabelKey}${accentLabelKey}`,
 		variables: {
-			'--color-app-bg': p.base,
-			'--color-surface': p.mantle,
-			'--color-surface-2': p.surface0,
-			'--color-border': p.borderAlpha,
-			'--color-outline': `${p.lavender}cc`,
-			'--color-text': p.text,
-			'--color-text-muted': p.subtext0,
-			'--color-button-bg': p.surface0,
-			'--color-button-text': p.text,
-			'--color-input-bg': p.crust,
-			'--color-input-text': p.text,
-			'--color-accent': p.blue,
-			'--color-overlay': p.overlayAlpha,
+			'--color-app-bg': f.base,
+			'--color-surface': f.mantle,
+			'--color-surface-2': f.surface0,
+			'--color-border': f.borderAlpha,
+			'--color-outline': `${accentColor}cc`,
+			'--color-text': f.text,
+			'--color-text-muted': f.subtext0,
+			'--color-button-bg': f.surface0,
+			'--color-button-text': f.text,
+			'--color-input-bg': f.crust,
+			'--color-input-text': f.text,
+			'--color-accent': accentColor,
+			'--color-overlay': f.overlayAlpha,
 		},
 	};
 }
 
-const catppuccinLatte: CatppuccinPalette = {
-	base: '#eff1f5',
-	mantle: '#e6e9ef',
-	crust: '#dce0e8',
-	surface0: '#ccd0da',
-	surface1: '#bcc0cc',
-	text: '#4c4f69',
-	subtext0: '#6c6f85',
-	overlay0: '#9ca0b0',
-	lavender: '#7287fd',
-	blue: '#1e66f5',
+// ── Accent color definitions (slug → label key suffix) ──────────────────────
+const ACCENT_KEYS: readonly { slug: string; labelKey: string }[] = [
+	{ slug: 'rosewater', labelKey: 'Rosewater' },
+	{ slug: 'flamingo', labelKey: 'Flamingo' },
+	{ slug: 'pink', labelKey: 'Pink' },
+	{ slug: 'mauve', labelKey: 'Mauve' },
+	{ slug: 'red', labelKey: 'Red' },
+	{ slug: 'maroon', labelKey: 'Maroon' },
+	{ slug: 'peach', labelKey: 'Peach' },
+	{ slug: 'yellow', labelKey: 'Yellow' },
+	{ slug: 'green', labelKey: 'Green' },
+	{ slug: 'teal', labelKey: 'Teal' },
+	{ slug: 'sky', labelKey: 'Sky' },
+	{ slug: 'sapphire', labelKey: 'Sapphire' },
+	{ slug: 'blue', labelKey: 'Blue' },
+	{ slug: 'lavender', labelKey: 'Lavender' },
+];
+
+// ── Flavor definitions (official Catppuccin hex values) ─────────────────────
+
+const catppuccinLatte: CatppuccinFlavor = {
+	base: '#eff1f5', mantle: '#e6e9ef', crust: '#dce0e8',
+	surface0: '#ccd0da', surface1: '#bcc0cc',
+	text: '#4c4f69', subtext0: '#6c6f85', overlay0: '#9ca0b0',
 	borderAlpha: 'rgba(76, 79, 105, 0.15)',
 	overlayAlpha: 'rgba(76, 79, 105, 0.42)',
+	accents: {
+		rosewater: '#dc8a78', flamingo: '#dd7878', pink: '#ea76cb', mauve: '#8839ef',
+		red: '#d20f39', maroon: '#e64553', peach: '#fe640b', yellow: '#df8e1d',
+		green: '#40a02b', teal: '#179299', sky: '#04a5e5', sapphire: '#209fb5',
+		blue: '#1e66f5', lavender: '#7287fd',
+	},
 };
 
-const catppuccinFrappe: CatppuccinPalette = {
-	base: '#303446',
-	mantle: '#292c3c',
-	crust: '#232634',
-	surface0: '#414559',
-	surface1: '#51576d',
-	text: '#c6d0f5',
-	subtext0: '#a5adce',
-	overlay0: '#737994',
-	lavender: '#babbf1',
-	blue: '#8caaee',
+const catppuccinFrappe: CatppuccinFlavor = {
+	base: '#303446', mantle: '#292c3c', crust: '#232634',
+	surface0: '#414559', surface1: '#51576d',
+	text: '#c6d0f5', subtext0: '#a5adce', overlay0: '#737994',
 	borderAlpha: 'rgba(198, 208, 245, 0.18)',
 	overlayAlpha: 'rgba(35, 38, 52, 0.72)',
+	accents: {
+		rosewater: '#f2d5cf', flamingo: '#eebebe', pink: '#f4b8e4', mauve: '#ca9ee6',
+		red: '#e78284', maroon: '#ea999c', peach: '#ef9f76', yellow: '#e5c890',
+		green: '#a6d189', teal: '#81c8be', sky: '#99d1db', sapphire: '#85c1dc',
+		blue: '#8caaee', lavender: '#babbf1',
+	},
 };
 
-const catppuccinMacchiato: CatppuccinPalette = {
-	base: '#24273a',
-	mantle: '#1e2030',
-	crust: '#181926',
-	surface0: '#363a4f',
-	surface1: '#494d64',
-	text: '#cad3f5',
-	subtext0: '#a5adcb',
-	overlay0: '#6e738d',
-	lavender: '#b7bdf8',
-	blue: '#8aadf4',
+const catppuccinMacchiato: CatppuccinFlavor = {
+	base: '#24273a', mantle: '#1e2030', crust: '#181926',
+	surface0: '#363a4f', surface1: '#494d64',
+	text: '#cad3f5', subtext0: '#a5adcb', overlay0: '#6e738d',
 	borderAlpha: 'rgba(202, 211, 245, 0.18)',
 	overlayAlpha: 'rgba(24, 25, 38, 0.74)',
+	accents: {
+		rosewater: '#f4dbd6', flamingo: '#f0c6c6', pink: '#f5bde6', mauve: '#c6a0f6',
+		red: '#ed8796', maroon: '#ee99a0', peach: '#f5a97f', yellow: '#eed49f',
+		green: '#a6da95', teal: '#8bd5ca', sky: '#91d7e3', sapphire: '#7dc4e4',
+		blue: '#8aadf4', lavender: '#b7bdf8',
+	},
 };
 
-const catppuccinMocha: CatppuccinPalette = {
-	base: '#1e1e2e',
-	mantle: '#181825',
-	crust: '#11111b',
-	surface0: '#313244',
-	surface1: '#45475a',
-	text: '#cdd6f4',
-	subtext0: '#a6adc8',
-	overlay0: '#6c7086',
-	lavender: '#b4befe',
-	blue: '#89b4fa',
+const catppuccinMocha: CatppuccinFlavor = {
+	base: '#1e1e2e', mantle: '#181825', crust: '#11111b',
+	surface0: '#313244', surface1: '#45475a',
+	text: '#cdd6f4', subtext0: '#a6adc8', overlay0: '#6c7086',
 	borderAlpha: 'rgba(205, 214, 244, 0.18)',
 	overlayAlpha: 'rgba(17, 17, 27, 0.76)',
+	accents: {
+		rosewater: '#f5e0dc', flamingo: '#f2cdcd', pink: '#f5c2e7', mauve: '#cba6f7',
+		red: '#f38ba8', maroon: '#eba0ac', peach: '#fab387', yellow: '#f9e2af',
+		green: '#a6e3a1', teal: '#94e2d5', sky: '#89dceb', sapphire: '#74c7ec',
+		blue: '#89b4fa', lavender: '#b4befe',
+	},
 };
+
+// ── Generate all 56 Catppuccin themes (4 flavors × 14 accents) ──────────────
+const CATPPUCCIN_FLAVORS: readonly { slug: string; labelKey: string; flavor: CatppuccinFlavor }[] = [
+	{ slug: 'latte', labelKey: 'Latte', flavor: catppuccinLatte },
+	{ slug: 'frappe', labelKey: 'Frappe', flavor: catppuccinFrappe },
+	{ slug: 'macchiato', labelKey: 'Macchiato', flavor: catppuccinMacchiato },
+	{ slug: 'mocha', labelKey: 'Mocha', flavor: catppuccinMocha },
+];
+
+const catppuccinThemes: ThemeDefinition[] = CATPPUCCIN_FLAVORS.flatMap(({ slug, labelKey, flavor }) =>
+	ACCENT_KEYS.map(({ slug: accentSlug, labelKey: accentLabelKey }) =>
+		makeCatppuccinTheme(slug, labelKey, accentSlug, accentLabelKey, flavor.accents[accentSlug], flavor)
+	)
+);
 
 export const THEMES: readonly ThemeDefinition[] = [
 	{
@@ -343,11 +379,8 @@ export const THEMES: readonly ThemeDefinition[] = [
 		'#3c314a',
 		'rgba(43, 34, 54, 0.76)'
 	),
-	// ── Catppuccin ──────────────────────────────────────────────────────────
-	makeCatppuccinTheme('catppuccin-latte', 'theme.catppuccinLatte', catppuccinLatte),
-	makeCatppuccinTheme('catppuccin-frappe', 'theme.catppuccinFrappe', catppuccinFrappe),
-	makeCatppuccinTheme('catppuccin-macchiato', 'theme.catppuccinMacchiato', catppuccinMacchiato),
-	makeCatppuccinTheme('catppuccin-mocha', 'theme.catppuccinMocha', catppuccinMocha),
+	// ── Catppuccin (4 flavors × 14 accents = 56 themes) ────────────────────
+	...catppuccinThemes,
 ];
 
 export type ThemeId = (typeof THEMES)[number]['id'];
@@ -360,7 +393,8 @@ const LIGHT_THEME_IDS: ReadonlySet<string> = new Set([
 	'nord-snow-storm-1',
 	'nord-snow-storm-2',
 	'nord-snow-storm-3',
-	'catppuccin-latte',
+	// All Catppuccin Latte variants (light flavor)
+	...ACCENT_KEYS.map(({ slug }) => `catppuccin-latte-${slug}`),
 ]);
 
 /** Returns true if the given theme has a light background. */
