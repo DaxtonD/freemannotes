@@ -96,6 +96,13 @@ class YjsPersistenceAdapter {
 		 * @type {string | null}
 		 */
 		this._workspaceId = null;
+		/**
+		 * Per-room workspace mapping. Populated by the WebSocket auth layer
+		 * before calling setupWSConnection so persistence always writes into
+		 * the correct tenant.
+		 * @type {Map<string, string>}
+		 */
+		this._docWorkspaceId = new Map();
 
 		/**
 		 * Debounce timers for auto-persistence. Keyed by Yjs room name (docName).
@@ -127,7 +134,7 @@ class YjsPersistenceAdapter {
 	 * @returns {Promise<void>}
 	 */
 	async bindState(docName, yDoc) {
-		const workspaceId = await this._ensureWorkspace();
+		const workspaceId = await this._workspaceIdForDocName(docName);
 
 		// Track the active doc for debounced writes.
 		this._activeDocs.set(docName, yDoc);
@@ -137,7 +144,7 @@ class YjsPersistenceAdapter {
 		if (this._redis) {
 			try {
 				const cached = await withTimeout(
-					this._redis.getBuffer(this._redisKey(docName)),
+					this._redis.getBuffer(this._redisKey(docName, workspaceId)),
 					REDIS_TIMEOUT_MS
 				);
 				if (cached && cached.length > 0) {
@@ -154,12 +161,37 @@ class YjsPersistenceAdapter {
 		// ── PostgreSQL load (authoritative source) ───────────────────────────
 		if (!loaded) {
 			try {
-				// Query the Document table by the globally-unique docId.
 				// PostgreSQL is the authoritative source of truth; Redis is just a cache.
-				const row = await this._prisma.document.findUnique({
-					where: { docId: docName },
-					select: { state: true },
+				// Multi-tenant: always scope reads to the authenticated workspace.
+				let row = await this._prisma.document.findFirst({
+					where: { docId: docName, workspaceId },
+					select: { id: true, state: true, docId: true },
 				});
+
+				// Backward-compat: legacy installs stored un-namespaced docIds.
+				// If the current docName looks like "<workspaceId>:<rawDocId>" and no
+				// row exists yet, attempt to load the rawDocId and migrate it in-place.
+				if (!row) {
+					const idx = docName.indexOf(':');
+					if (idx > 0) {
+						const legacyDocId = docName.slice(idx + 1);
+						if (legacyDocId) {
+							const legacy = await this._prisma.document.findFirst({
+								where: { docId: legacyDocId, workspaceId },
+								select: { id: true, state: true },
+							});
+							if (legacy && legacy.state && legacy.state.length > 0) {
+								// Migrate by renaming docId to the namespaced value.
+								await this._prisma.document.update({
+									where: { id: legacy.id },
+									data: { docId: docName },
+								});
+								row = { id: legacy.id, state: legacy.state, docId: docName };
+								console.info(`[persist] migrated legacy docId: ${legacyDocId} -> ${docName}`);
+							}
+						}
+					}
+				}
 				if (row && row.state && row.state.length > 0) {
 					Y.applyUpdate(yDoc, new Uint8Array(row.state));
 					loaded = true;
@@ -167,7 +199,7 @@ class YjsPersistenceAdapter {
 
 					// Warm the Redis cache so subsequent loads are faster.
 					if (this._redis) {
-						this._cacheToRedis(docName, row.state).catch(() => {});
+						this._cacheToRedis(docName, workspaceId, row.state).catch(() => {});
 					}
 				}
 			} catch (err) {
@@ -218,6 +250,19 @@ class YjsPersistenceAdapter {
 
 		// Remove from active tracking.
 		this._activeDocs.delete(docName);
+		this._docWorkspaceId.delete(docName);
+	}
+
+	/**
+	 * Registers a workspaceId for a given Yjs room name.
+	 * Call this before setupWSConnection so bindState/writeState are scoped.
+	 *
+	 * @param {string} docName
+	 * @param {string} workspaceId
+	 */
+	registerDocWorkspace(docName, workspaceId) {
+		if (!docName || !workspaceId) return;
+		this._docWorkspaceId.set(docName, workspaceId);
 	}
 
 	// ─── Workspace management ─────────────────────────────────────────────────
@@ -246,6 +291,20 @@ class YjsPersistenceAdapter {
 	}
 
 	/**
+	 * Resolves workspaceId for a given docName.
+	 *
+	 * Multi-tenant mode: the WebSocket auth layer registers a workspaceId.
+	 * Legacy mode: falls back to the adapter's single configured workspace.
+	 *
+	 * @param {string} docName
+	 */
+	async _workspaceIdForDocName(docName) {
+		const mapped = this._docWorkspaceId.get(docName);
+		if (mapped) return mapped;
+		return this._ensureWorkspace();
+	}
+
+	/**
 	 * Returns the resolved workspace ID (or null if not yet resolved).
 	 * Useful for REST endpoints that need the workspace UUID.
 	 *
@@ -266,30 +325,35 @@ class YjsPersistenceAdapter {
 	 * @returns {Promise<void>}
 	 */
 	async _persistDoc(docName, yDoc) {
-		const workspaceId = await this._ensureWorkspace();
+		const workspaceId = await this._workspaceIdForDocName(docName);
 
 		// Encode the full document state as a single binary blob.
 		const state = Buffer.from(Y.encodeStateAsUpdate(yDoc));
 		const stateVector = Buffer.from(Y.encodeStateVector(yDoc));
 
 		try {
-			// Atomic upsert: create the Document row if it doesn't exist, or
-			// update the existing row's state + stateVector. The upsert is keyed
-			// on the globally-unique docId so concurrent writes to different
-			// rooms never collide.
-			await this._prisma.document.upsert({
+			const existing = await this._prisma.document.findUnique({
 				where: { docId: docName },
-				update: {
-					state,
-					stateVector,
-				},
-				create: {
-					workspaceId,
-					docId: docName,
-					state,
-					stateVector,
-				},
+				select: { id: true, workspaceId: true },
 			});
+
+			if (existing && existing.workspaceId !== workspaceId) {
+				console.error(
+					`[persist] refused to write cross-workspace doc: room=${docName} expected=${workspaceId} actual=${existing.workspaceId}`
+				);
+				return;
+			}
+
+			if (existing) {
+				await this._prisma.document.update({
+					where: { id: existing.id },
+					data: { state, stateVector },
+				});
+			} else {
+				await this._prisma.document.create({
+					data: { workspaceId, docId: docName, state, stateVector },
+				});
+			}
 			console.info(`[persist] saved to PostgreSQL: room=${docName} bytes=${state.length}`);
 		} catch (err) {
 			console.error(`[persist] PostgreSQL write failed for room=${docName}:`, err.message);
@@ -298,7 +362,7 @@ class YjsPersistenceAdapter {
 
 		// Refresh Redis cache (best-effort, non-blocking).
 		if (this._redis) {
-			this._cacheToRedis(docName, state).catch(() => {});
+			this._cacheToRedis(docName, workspaceId, state).catch(() => {});
 		}
 	}
 
@@ -311,8 +375,8 @@ class YjsPersistenceAdapter {
 	 * @param {string} docName — Yjs room name.
 	 * @returns {string} Redis key string.
 	 */
-	_redisKey(docName) {
-		return `fn:yjs:${this._workspaceName}:${docName}`;
+	_redisKey(docName, workspaceId) {
+		return `fn:yjs:${workspaceId || this._workspaceName}:${docName}`;
 	}
 
 	/**
@@ -323,9 +387,9 @@ class YjsPersistenceAdapter {
 	 * @param {Buffer | Uint8Array} state — Binary doc state.
 	 * @returns {Promise<void>}
 	 */
-	async _cacheToRedis(docName, state) {
+	async _cacheToRedis(docName, workspaceId, state) {
 		try {
-			const key = this._redisKey(docName);
+			const key = this._redisKey(docName, workspaceId);
 			// Store with 24-hour TTL. The TTL is a safety net — active docs are
 			// refreshed on every debounced write, so the cache stays warm.
 			await withTimeout(

@@ -76,6 +76,36 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 		const pathname = url.pathname;
 		const method = req.method || 'GET';
 
+		function getSessionWorkspaceId() {
+			return req.auth && typeof req.auth.workspaceId === 'string' && req.auth.workspaceId.length > 0
+				? req.auth.workspaceId
+				: null;
+		}
+
+		function requireAuthWorkspace() {
+			const workspaceId = getSessionWorkspaceId();
+			if (!req.auth || !req.auth.userId) {
+				jsonResponse(res, 401, { error: 'Not authenticated' });
+				return null;
+			}
+			if (!workspaceId) {
+				jsonResponse(res, 400, { error: 'No active workspace' });
+				return null;
+			}
+			return workspaceId;
+		}
+
+		function namespacedDocId(workspaceId, rawDocId) {
+			return `${workspaceId}:${rawDocId}`;
+		}
+
+		function stripDocNamespace(workspaceId, storedDocId) {
+			const prefix = `${workspaceId}:`;
+			return String(storedDocId).startsWith(prefix)
+				? String(storedDocId).slice(prefix.length)
+				: storedDocId;
+		}
+
 		// ── Health endpoint ──────────────────────────────────────────────
 		// Kept here as well as in server.js for backward compatibility.
 		// Returns 200 "ok" for reverse-proxy health checks.
@@ -117,11 +147,18 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 		if (pathname === '/api/workspace' && method === 'GET') {
 			(async () => {
 				try {
-					const workspaceId = adapter.getWorkspaceId();
-					if (!workspaceId) {
-						jsonResponse(res, 503, { error: 'Workspace not initialized yet' });
+					const workspaceId = requireAuthWorkspace();
+					if (!workspaceId) return;
+
+					const member = await prisma.workspaceMember.findUnique({
+						where: { userId_workspaceId: { userId: req.auth.userId, workspaceId } },
+						select: { role: true },
+					});
+					if (!member) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
+
 					const workspace = await prisma.workspace.findUnique({
 						where: { id: workspaceId },
 					});
@@ -133,6 +170,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 						id: workspace.id,
 						name: workspace.name,
 						ownerUserId: workspace.ownerUserId,
+						role: member.role,
 						createdAt: fmt(workspace.createdAt),
 						updatedAt: fmt(workspace.updatedAt),
 						timezone: timezone || 'UTC',
@@ -150,11 +188,18 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 		if (pathname === '/api/docs' && method === 'GET') {
 			(async () => {
 				try {
-					const workspaceId = adapter.getWorkspaceId();
-					if (!workspaceId) {
-						jsonResponse(res, 503, { error: 'Workspace not initialized yet' });
+					const workspaceId = requireAuthWorkspace();
+					if (!workspaceId) return;
+
+					const member = await prisma.workspaceMember.findUnique({
+						where: { userId_workspaceId: { userId: req.auth.userId, workspaceId } },
+						select: { id: true },
+					});
+					if (!member) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
+
 					const docs = await prisma.document.findMany({
 						where: { workspaceId },
 						select: {
@@ -181,12 +226,15 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 						)
 					);
 
-					const result = docs.map((doc) => ({
-						docId: doc.docId,
+					const result = docs.map((doc) => {
+						const rawDocId = stripDocNamespace(workspaceId, doc.docId);
+						return {
+							docId: rawDocId,
 						sizeBytes: sizeMap.get(doc.docId) || 0,
 						updatedAt: fmt(doc.updatedAt),
 						createdAt: fmt(doc.createdAt),
-					}));
+					};
+					});
 
 					jsonResponse(res, 200, { docs: result, count: result.length, timezone: timezone || 'UTC' });
 				} catch (err) {
@@ -206,15 +254,31 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 			const docId = decodeURIComponent(docMatch[1]);
 			(async () => {
 				try {
-					const workspaceId = adapter.getWorkspaceId();
-					if (!workspaceId) {
-						jsonResponse(res, 503, { error: 'Workspace not initialized yet' });
+					const workspaceId = requireAuthWorkspace();
+					if (!workspaceId) return;
+
+					const member = await prisma.workspaceMember.findUnique({
+						where: { userId_workspaceId: { userId: req.auth.userId, workspaceId } },
+						select: { id: true },
+					});
+					if (!member) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
-					const row = await prisma.document.findUnique({
-						where: { docId },
+
+					const storedDocId = namespacedDocId(workspaceId, docId);
+					let row = await prisma.document.findFirst({
+						where: { docId: storedDocId, workspaceId },
 						select: { state: true, updatedAt: true, createdAt: true },
 					});
+
+					// Backward-compat: legacy docs (un-namespaced docId)
+					if (!row) {
+						row = await prisma.document.findFirst({
+							where: { docId, workspaceId },
+						select: { state: true, updatedAt: true, createdAt: true },
+					});
+					}
 					if (!row || !row.state) {
 						jsonResponse(res, 404, { error: 'Document not found', docId });
 						return;

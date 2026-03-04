@@ -37,6 +37,12 @@ export type PreferencesModalProps = {
 	onLanguageChange: (nextLanguage: LocaleCode) => void;
 	themeOptions: readonly { id: ThemeId; label: string }[];
 	languageOptions: readonly { code: LocaleCode; label: string }[];
+	// Optional admin/session actions.
+	// These are injected by the App so Preferences can stay a mostly-presentational
+	// component and not depend directly on auth/admin service logic.
+	onUserManagement?: () => void;
+	onSendInvite?: () => void;
+	onSignOut?: () => void;
 };
 
 type SectionModalProps = {
@@ -142,13 +148,13 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					<button type="button" className={styles.footerButton} onClick={props.onClose}>
 						{props.t('common.close')}
 					</button>
-					<button type="button" className={styles.footerButton}>
+					<button type="button" className={styles.footerButton} onClick={props.onUserManagement}>
 						{props.t('prefs.userManagement')}
 					</button>
-					<button type="button" className={styles.footerButton}>
+					<button type="button" className={styles.footerButton} onClick={props.onSendInvite}>
 						{props.t('prefs.sendInvite')}
 					</button>
-					<button type="button" className={styles.footerButton}>
+					<button type="button" className={styles.footerButton} onClick={props.onSignOut}>
 						{props.t('prefs.signOut')}
 					</button>
 				</footer>

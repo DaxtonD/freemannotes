@@ -12,10 +12,19 @@ import {
 	DndContext,
 	DragOverlay,
 	PointerSensor,
-	type CollisionDetection,
 	useSensor,
 	useSensors,
 } from '@dnd-kit/core';
+
+// NOTE: We intentionally import this type from the concrete declaration file
+// rather than `@dnd-kit/core`'s root re-export.
+//
+// In this repo's TS/Vite setup, the TS server occasionally resolves the root
+// `CollisionDetection` symbol as a namespace/value instead of a type, which
+// breaks `React.useCallback<CollisionDetection>(...)` typing and cascades into
+// implicit-any destructuring errors. Importing from the leaf `.d.ts` avoids that
+// ambiguity while keeping runtime output unchanged (type-only import).
+import type { CollisionDetection as DndKitCollisionDetection } from '@dnd-kit/core/dist/utilities/algorithms/types';
 import {
 	SortableContext,
 	defaultAnimateLayoutChanges,
@@ -395,7 +404,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		[activeItems, captureDragGhostMetrics, vibrateIfAvailable]
 	);
 
-	const mobileVariableHeightCollisionDetection = React.useCallback<CollisionDetection>(({ active, collisionRect, droppableContainers, droppableRects }) => {
+	const mobileVariableHeightCollisionDetection = React.useCallback<DndKitCollisionDetection>(({ active, collisionRect, droppableContainers, droppableRects }) => {
 		// Mobile variable-height checklist collision detection.
 		//
 		// Why we need this:

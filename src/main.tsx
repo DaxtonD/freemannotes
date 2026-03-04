@@ -27,7 +27,9 @@ function getDefaultWsUrl(): string {
 const wsUrl = (import.meta as any).env?.VITE_WS_URL || getDefaultWsUrl();
 
 // Singleton manager owns Yjs docs + persistence providers for the entire app session.
-const manager = new DocumentManager(wsUrl);
+// Websocket sync starts disabled because the App now gates sync behind auth.
+// Once authenticated, App calls `manager.setWebsocketEnabled(true)`.
+const manager = new DocumentManager(wsUrl, { enableWebsocketSync: false });
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
