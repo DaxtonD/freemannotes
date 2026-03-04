@@ -27,6 +27,24 @@ export type ConnectionSnapshot = {
 	registryReady: boolean;
 };
 
+export type DocumentManagerOptions = {
+	/**
+	 * When false, WebSocket providers are created with connect=false and the
+	 * manager will not attempt automatic reconnects.
+	 *
+	 * Primary use-case in this app:
+	 *   - During the auth gate (not authenticated), we want IndexedDB + local
+	 *     editing UI to exist, but we must not connect to the Yjs websocket layer
+	 *     because there is no authorized workspace yet.
+	 *
+	 * When toggled from false -> true:
+	 *   - Existing providers are connected and normal reconnect behavior resumes.
+	 * When toggled from true -> false:
+	 *   - Existing providers are disconnected and reconnect logic is suppressed.
+	 */
+	enableWebsocketSync?: boolean;
+};
+
 export class DocumentManager {
 	// In-memory caches for active Yjs docs and their persistence/sync providers.
 	private readonly docs = new Map<string, Y.Doc>();
@@ -41,6 +59,7 @@ export class DocumentManager {
 	private readonly readyPromises = new Map<string, Promise<void>>();
 	private readonly websocketReadyPromises = new Map<string, Promise<void>>();
 	private readonly websocketUrl: string;
+	private websocketEnabled: boolean;
 	private readonly internalOrigin = Symbol('DocumentManagerInternal');
 	// Dedicated origin for automatic updatedAt timestamp writes.
 	// Used to tag afterTransaction callbacks so they do not recursively re-trigger
@@ -66,9 +85,10 @@ export class DocumentManager {
 	// torn down cleanly in tests or hot-module-replacement scenarios.
 	private readonly lifecycleCleanup: (() => void) | null = null;
 
-	public constructor(websocketUrl = 'ws://localhost:1234') {
+	public constructor(websocketUrl = 'ws://localhost:1234', options?: DocumentManagerOptions) {
 		// Normalize trailing slashes to avoid duplicate room URLs.
 		this.websocketUrl = String(websocketUrl || 'ws://localhost:1234').replace(/\/+$/, '');
+		this.websocketEnabled = options?.enableWebsocketSync ?? true;
 
 		if (typeof window !== 'undefined') {
 			const onOnline = (): void => {
@@ -141,6 +161,33 @@ export class DocumentManager {
 		// as possible. This runs in the background; subsequent calls to
 		// getNotesRegistryDoc() reuse the same cached doc and providers.
 		this.initializeRegistry();
+	}
+
+	public setWebsocketEnabled(enabled: boolean): void {
+		// This is intentionally idempotent and safe to call frequently.
+		// The App uses it to turn sync on/off based on authentication state.
+		const next = enabled === true;
+		if (this.websocketEnabled === next) return;
+		this.websocketEnabled = next;
+
+		for (const provider of this.websocketProviders.values()) {
+			try {
+				if (next) {
+					// Reset internal reconnect counters so a previously-disconnected
+					// provider doesn't stay in a "give up" state.
+					(provider as any).wsUnsuccessfulReconnects = 0;
+					provider.connect();
+				} else {
+					// Hard disconnect and prevent reconnect attempts.
+					provider.disconnect();
+				}
+			} catch {
+				// ignore
+			}
+		}
+
+		this.updateConnectionState();
+		this.emitConnectionStatus();
 	}
 
 	public hasDoc(noteId: string): boolean {
@@ -456,7 +503,7 @@ export class DocumentManager {
 		//   disableBc: false (default) — BroadcastChannel remains enabled
 		//     for same-origin same-browser cross-tab sync (instant, no WS).
 		const wsProvider = new WebsocketProvider(this.websocketUrl, noteId, doc, {
-			connect: true,
+			connect: this.websocketEnabled,
 			resyncInterval: 30_000,
 			maxBackoffTime: 5_000,
 		});
@@ -551,6 +598,8 @@ export class DocumentManager {
 	private reconnectDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 	private reconnectAllProviders(reason: string): void {
+		if (!this.websocketEnabled) return;
+
 		// Debounce: collapse rapid-fire events into a single reconnect pass.
 		if (this.reconnectDebounceTimer !== null) return;
 		this.reconnectDebounceTimer = setTimeout(() => {

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'freemannotes-shell-v2';
+const CACHE_NAME = 'freemannotes-shell-v4';
 // Cache the canonical app shell entry only.
 // Caching '/' can get sticky across proxy setups and makes upgrades harder.
 const CORE_ASSETS = ['/index.html'];
@@ -64,6 +64,11 @@ self.addEventListener('fetch', (event) => {
 
 	const url = new URL(request.url);
 	if (url.origin !== self.location.origin) return;
+
+	// Never cache API responses or uploads. They change frequently and must stay fresh.
+	if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/uploads/')) {
+		return;
+	}
 
 	// Branch: Vite dev server requests must NOT be cached.
 	// If these are cached, HMR and module loading can break badly.

@@ -14,10 +14,10 @@
 //   3. Check if the target database exists (pg_database catalog lookup).
 //   4. CREATE DATABASE if it does not exist.
 //   5. Sync the schema:
-//      - Production (NODE_ENV=production): `prisma migrate deploy` applies
-//        only committed migration files from prisma/migrations/.
-//      - Development (all other values):   `prisma db push --skip-generate`
-//        applies schema changes directly (no migration history).
+//      - Default: prefers `prisma migrate deploy` whenever committed
+//        migrations exist (prisma/migrations/*). This makes boot-time
+//        behavior consistent across environments.
+//      - Override: set DB_SCHEMA_SYNC=deploy|push|none.
 //
 // Design decisions:
 //   - Uses the lightweight "pg" package for the admin-level connection because
@@ -28,8 +28,9 @@
 //     files. This dual-mode approach ensures dev convenience AND prod safety.
 //   - All operations are idempotent: running them repeatedly on an already-
 //     provisioned database is a harmless no-op.
-//   - Errors are surfaced as warnings, not fatal crashes, so the server can
-//     still start in relay-only mode if PostgreSQL is temporarily unreachable.
+//   - In deploy mode, migration failures are treated as fatal (they throw),
+//     because continuing startup typically causes confusing runtime errors.
+//     In push mode, failures are logged as warnings.
 //
 // Usage:
 //   const { ensureDatabase } = require('./server/dbInit');
@@ -37,7 +38,38 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const path = require('path');
+const fs = require('fs');
 const { execSync } = require('child_process');
+
+function getRepoRoot() {
+	return path.resolve(__dirname, '..');
+}
+
+function hasCommittedMigrations() {
+	try {
+		const migrationsDir = path.join(getRepoRoot(), 'prisma', 'migrations');
+		if (!fs.existsSync(migrationsDir)) return false;
+		const entries = fs.readdirSync(migrationsDir, { withFileTypes: true });
+		return entries.some((e) => e.isDirectory());
+	} catch {
+		return false;
+	}
+}
+
+function resolveSchemaSyncMode() {
+	// Allows explicit overrides for ops:
+	//   DB_SCHEMA_SYNC=deploy|push|none
+	const raw = String(process.env.DB_SCHEMA_SYNC || '').trim().toLowerCase();
+	if (raw === 'deploy' || raw === 'push' || raw === 'none') return raw;
+
+	// Default behavior:
+	// - If the repo contains committed migrations, prefer `migrate deploy` even
+	//   in development so boot-time schema matches production.
+	// - Otherwise keep the legacy dev convenience of `db push`.
+	if (hasCommittedMigrations()) return 'deploy';
+
+	return process.env.NODE_ENV === 'production' ? 'deploy' : 'push';
+}
 
 /**
  * Parses a PostgreSQL connection URL and returns its component parts.
@@ -116,22 +148,27 @@ async function ensureDatabaseExists(adminUrl, dbName) {
 /**
  * Synchronizes the Prisma schema with the database.
  *
- * Mode selection (based on NODE_ENV):
- *   - Production: `prisma migrate deploy` — applies only committed migration
- *     files from prisma/migrations/. Safe for production use; never auto-
- *     generates migrations or drops data.
- *   - Development: `prisma db push --skip-generate` — applies schema changes
- *     directly without migration files. Convenient for rapid iteration.
+ * Mode selection:
+ *   - Default: if the repo contains committed migrations, uses
+ *     `prisma migrate deploy` so schema updates are applied automatically on
+ *     startup (idempotent).
+ *   - Override with DB_SCHEMA_SYNC=deploy|push|none.
  *
  * @param {string} databaseUrl — Full PostgreSQL connection string for the
  *   target database (not the admin "postgres" database).
  */
 function syncSchema(databaseUrl) {
-	const isProduction = process.env.NODE_ENV === 'production';
-	const command = isProduction
-		? 'npx prisma migrate deploy 2>&1'
-		: 'npx prisma db push --skip-generate 2>&1';
-	const label = isProduction ? 'prisma migrate deploy' : 'prisma db push';
+	const mode = resolveSchemaSyncMode();
+	if (mode === 'none') {
+		console.info('[dbInit] Schema sync disabled (DB_SCHEMA_SYNC=none)');
+		return;
+	}
+
+	const isDeploy = mode === 'deploy';
+	const command = isDeploy
+		? 'npx prisma migrate deploy'
+		: 'npx prisma db push --skip-generate';
+	const label = isDeploy ? 'prisma migrate deploy' : 'prisma db push';
 
 	console.info(`[dbInit] Syncing schema with database (${label})...`);
 
@@ -140,9 +177,9 @@ function syncSchema(databaseUrl) {
 		// We pass DATABASE_URL explicitly in the environment to ensure Prisma
 		// reads the correct connection string regardless of .env file state.
 		const output = execSync(command, {
-			cwd: path.resolve(__dirname, '..'),
+			cwd: getRepoRoot(),
 			stdio: 'pipe',
-			timeout: 60000, // 60-second timeout for slow first-run migrations.
+			timeout: 300000, // 5-minute timeout for slow first-run migrations.
 			env: {
 				...process.env,
 				DATABASE_URL: databaseUrl,
@@ -169,10 +206,13 @@ function syncSchema(databaseUrl) {
 		console.warn('[dbInit] Schema sync encountered an issue:');
 		console.warn('[dbInit] ' + message);
 
-		if (isProduction) {
-			console.warn('[dbInit] Production mode uses `prisma migrate deploy`.');
+		if (isDeploy) {
+			console.warn('[dbInit] This run was using `prisma migrate deploy`.');
 			console.warn('[dbInit] Ensure migration files exist in prisma/migrations/.');
 			console.warn('[dbInit] To create a migration: npx prisma migrate dev --name <label>');
+			// In deploy mode, a schema mismatch is fatal: continuing startup will
+			// usually crash later with confusing runtime errors.
+			throw new Error(message);
 		} else {
 			console.warn('[dbInit] If this is a destructive schema change, run manually:');
 			console.warn('[dbInit]   npx prisma db push --accept-data-loss');

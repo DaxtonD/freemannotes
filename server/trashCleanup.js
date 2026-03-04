@@ -110,10 +110,17 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 		// ── Step 1: Read the user's deleteAfterDays preference ──────────
 		let deleteAfterDays = DEFAULT_DELETE_AFTER_DAYS;
 		try {
-			const pref = await prisma.userPreference.findUnique({
-				where: { userId: 'default' },
-				select: { deleteAfterDays: true },
+			const ws = await prisma.workspace.findUnique({
+				where: { id: workspaceId },
+				select: { ownerUserId: true },
 			});
+			const ownerUserId = ws?.ownerUserId || null;
+			const pref = ownerUserId
+				? await prisma.userPreference.findUnique({
+					where: { userId: ownerUserId },
+					select: { deleteAfterDays: true },
+				})
+				: null;
 			if (pref && typeof pref.deleteAfterDays === 'number' && pref.deleteAfterDays > 0) {
 				deleteAfterDays = pref.deleteAfterDays;
 			}

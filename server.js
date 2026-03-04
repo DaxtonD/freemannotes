@@ -25,8 +25,8 @@
 // Docker / Unraid:
 //   - Set DATABASE_URL to your PostgreSQL connection string.
 //   - Optionally set REDIS_URL for Redis caching.
-//   - Production: `npx prisma migrate deploy` runs automatically on boot.
-//   - Dev: `prisma db push` auto-syncs the schema.
+//   - Startup automatically syncs schema (defaults to `npx prisma migrate deploy`
+//     when prisma/migrations exist). Override with DB_SCHEMA_SYNC=deploy|push|none.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -51,6 +51,7 @@ const HOST = String(process.env.HOST || '0.0.0.0').trim() || '0.0.0.0';
 const APP_URL = String(process.env.APP_URL || '').trim();
 const PGTIMEZONE = String(process.env.PGTIMEZONE || '').trim();
 const DIST_DIR = path.join(__dirname, 'dist');
+const UPLOAD_DIR = String(process.env.UPLOAD_DIR || path.join(__dirname, 'uploads')).trim();
 
 // ── y-websocket LevelDB persistence normalization ────────────────────────
 // y-websocket reads process.env.YPERSISTENCE at import time.
@@ -64,6 +65,9 @@ if (YPERSISTENCE.length > 0) {
 // ── WebSocket + y-websocket ──────────────────────────────────────────────
 const WebSocket = require('ws');
 const { setupWSConnection } = require('y-websocket/bin/utils');
+
+// ── Phase 11 auth helpers (JWT cookie sessions) ───────────────────────
+const { getSessionFromRequest } = require('./server/auth');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Prisma + Redis initialization (conditional — only when DATABASE_URL is set).
@@ -81,6 +85,24 @@ let persistAdapter = null;
 
 /** @type {ReturnType<import('./server/apiRouter').createApiRouter> | null} */
 let apiRouter = null;
+
+/** @type {ReturnType<import('./server/authRouter').createApiAuthRouter> | null} */
+let authRouter = null;
+
+/** @type {ReturnType<import('./server/workspaceRouter').createWorkspaceRouter> | null} */
+let workspaceRouter = null;
+
+/** @type {ReturnType<import('./server/inviteRouter').createInviteRouter> | null} */
+let inviteRouter = null;
+
+/** @type {ReturnType<import('./server/shareRouter').createShareRouter> | null} */
+let shareRouter = null;
+
+/** @type {ReturnType<import('./server/profileRouter').createProfileRouter> | null} */
+let profileRouter = null;
+
+/** @type {ReturnType<import('./server/adminRouter').createAdminRouter> | null} */
+let adminRouter = null;
 
 /** @type {ReturnType<import('./server/preferencesRouter').createPreferencesRouter> | null} */
 let preferencesRouter = null;
@@ -150,6 +172,8 @@ if (DATABASE_URL.length > 0) {
 
 	// ── Persistence adapter + API router (only with valid Prisma) ────────
 	if (prisma) {
+		// Persistence adapter is optional; auth/workspaces should still work even
+		// if persistence fails to initialize.
 		try {
 			const { YjsPersistenceAdapter } = require('./server/YjsPersistenceAdapter');
 			persistAdapter = new YjsPersistenceAdapter(prisma, {
@@ -158,18 +182,84 @@ if (DATABASE_URL.length > 0) {
 				debounceMs: 2000,
 			});
 			console.info('[server] YjsPersistenceAdapter initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize persistence adapter:', err && err.stack ? err.stack : err.message);
+			persistAdapter = null;
+		}
 
-			const { createApiRouter } = require('./server/apiRouter');
-			apiRouter = createApiRouter({ prisma, adapter: persistAdapter, timezone: PGTIMEZONE || null });
-			console.info('[server] REST API router initialized');
+		// REST API router requires persistence adapter.
+		if (persistAdapter) {
+			try {
+				const { createApiRouter } = require('./server/apiRouter');
+				apiRouter = createApiRouter({ prisma, adapter: persistAdapter, timezone: PGTIMEZONE || null });
+				console.info('[server] REST API router initialized');
+			} catch (err) {
+				console.error('[server] Failed to initialize REST API router:', err.message);
+				apiRouter = null;
+			}
+		}
 
+		// Auth + tenancy routers should come up whenever Prisma is available.
+		try {
+			const { createApiAuthRouter } = require('./server/authRouter');
+			authRouter = createApiAuthRouter({ prisma });
+			console.info('[server] Auth API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Auth API router:', err.message);
+			authRouter = null;
+		}
+
+		try {
+			const { createWorkspaceRouter } = require('./server/workspaceRouter');
+			workspaceRouter = createWorkspaceRouter({ prisma });
+			console.info('[server] Workspace API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Workspace API router:', err.message);
+			workspaceRouter = null;
+		}
+
+		try {
+			const { createInviteRouter } = require('./server/inviteRouter');
+			inviteRouter = createInviteRouter({ prisma });
+			console.info('[server] Invite API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Invite API router:', err.message);
+			inviteRouter = null;
+		}
+
+		try {
+			const { createShareRouter } = require('./server/shareRouter');
+			shareRouter = createShareRouter({ prisma, timezone: PGTIMEZONE || null });
+			console.info('[server] Share API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Share API router:', err.message);
+			shareRouter = null;
+		}
+
+		try {
+			const { createProfileRouter } = require('./server/profileRouter');
+			profileRouter = createProfileRouter({ prisma, uploadDir: UPLOAD_DIR });
+			console.info('[server] Profile API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Profile API router:', err.message);
+			profileRouter = null;
+		}
+
+		try {
+			const { createAdminRouter } = require('./server/adminRouter');
+			adminRouter = createAdminRouter({ prisma });
+			console.info('[server] Admin API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Admin API router:', err.message);
+			adminRouter = null;
+		}
+
+		try {
 			const { createPreferencesRouter } = require('./server/preferencesRouter');
 			preferencesRouter = createPreferencesRouter({ prisma, timezone: PGTIMEZONE || null });
 			console.info('[server] Preferences API router initialized');
 		} catch (err) {
-			console.error('[server] Failed to initialize persistence adapter:', err.message);
-			persistAdapter = null;
-			apiRouter = null;
+			console.error('[server] Failed to initialize Preferences API router:', err.message);
 			preferencesRouter = null;
 		}
 	}
@@ -259,7 +349,40 @@ function contentTypeFor(filePath) {
 
 const server = http.createServer((req, res) => {
 	try {
+		// Attach auth context (if session cookie is present).
+		req.auth = getSessionFromRequest(req);
+
 		const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+		// ── Auth API router ──────────────────────────────────────────────
+		if (authRouter && authRouter(req, res)) {
+			return;
+		}
+
+		// ── Workspaces API router ───────────────────────────────────────
+		if (workspaceRouter && workspaceRouter(req, res)) {
+			return;
+		}
+
+		// ── Invites API router ──────────────────────────────────────────
+		if (inviteRouter && inviteRouter(req, res)) {
+			return;
+		}
+
+		// ── Share API router ────────────────────────────────────────────
+		if (shareRouter && shareRouter(req, res)) {
+			return;
+		}
+
+		// ── Profile API router ──────────────────────────────────────────
+		if (profileRouter && profileRouter(req, res)) {
+			return;
+		}
+
+		// ── Admin API router ────────────────────────────────────────────
+		if (adminRouter && adminRouter(req, res)) {
+			return;
+		}
 
 		// ── REST API router (when PostgreSQL persistence is active) ──────
 		// Try the API router first. If it handles the request, we're done.
@@ -288,6 +411,42 @@ const server = http.createServer((req, res) => {
 		}
 
 		// ── Static file serving from dist ────────────────────────────────
+		if (url.pathname.startsWith('/uploads/')) {
+			// Serve uploaded profile images from UPLOAD_DIR.
+			const resolved = path.resolve(UPLOAD_DIR, '.' + decodeURIComponent(url.pathname.slice('/uploads'.length)));
+			const base = path.resolve(UPLOAD_DIR);
+			if (!resolved.startsWith(base + path.sep) && resolved !== base) {
+				res.writeHead(400);
+				res.end('Bad Request');
+				return;
+			}
+			if (!fs.existsSync(resolved)) {
+				res.writeHead(404);
+				res.end('Not Found');
+				return;
+			}
+			const stat = fs.statSync(resolved);
+			if (!stat.isFile()) {
+				res.writeHead(404);
+				res.end('Not Found');
+				return;
+			}
+			res.setHeader('Content-Type', contentTypeFor(resolved));
+			res.setHeader('Cache-Control', 'public, max-age=86400');
+			if (req.method === 'HEAD') {
+				res.writeHead(200);
+				res.end();
+				return;
+			}
+			fs.createReadStream(resolved)
+				.on('error', () => {
+					res.writeHead(500);
+					res.end('Internal Server Error');
+				})
+				.pipe(res);
+			return;
+		}
+
 		let filePath = safePathFromUrl(url.pathname);
 		if (!filePath) {
 			res.writeHead(400);
@@ -340,13 +499,27 @@ const server = http.createServer((req, res) => {
 
 		fs.createReadStream(filePath)
 			.on('error', () => {
+				// If the stream errors after we've started sending the file,
+				// we cannot change headers/status. Just terminate the response.
+				if (res.headersSent || res.writableEnded) {
+					try {
+						res.destroy();
+					} catch {
+						// ignore
+					}
+					return;
+				}
 				res.writeHead(500);
 				res.end('Internal Server Error');
 			})
 			.pipe(res);
 	} catch {
-		res.writeHead(500);
-		res.end('Internal Server Error');
+		if (!res.headersSent) {
+			res.writeHead(500);
+		}
+		if (!res.writableEnded) {
+			res.end('Internal Server Error');
+		}
 	}
 });
 
@@ -427,10 +600,94 @@ wss.on('connection', (conn, req) => {
 		wsAliveMap.set(conn, true);
 	});
 
-	// ── Yjs WebSocket setup ──────────────────────────────────────────────
-	// Client connects to /yjs/<room>; y-websocket expects /<room>
-	req.url = String(req.url || '/').replace(/^\/yjs/, '') || '/';
-	setupWSConnection(conn, req, { gc: true });
+	// ── Yjs WebSocket setup (Phase 11: auth + workspace isolation) ───────
+	(async () => {
+		try {
+			const cookieHeader = String(req.headers.cookie || '');
+			const session = getSessionFromRequest(req);
+			if (!session || !session.userId || !session.workspaceId) {
+				console.warn(
+					'[ws] close unauthorized',
+					JSON.stringify({
+						hasCookie: cookieHeader.length > 0,
+						userId: session && session.userId ? String(session.userId) : null,
+						workspaceId: session && session.workspaceId ? String(session.workspaceId) : null,
+						path: String(req.url || ''),
+					})
+				);
+				conn.close(1008, 'unauthorized');
+				return;
+			}
+			if (!prisma) {
+				console.warn(
+					'[ws] close server not ready',
+					JSON.stringify({
+						hasPrisma: false,
+						hasPersistAdapter: Boolean(persistAdapter),
+						userId: session.userId,
+						workspaceId: session.workspaceId,
+						path: String(req.url || ''),
+					})
+				);
+				conn.close(1011, 'server not ready');
+				return;
+			}
+			if (!persistAdapter) {
+				console.warn(
+					'[ws] persistence adapter unavailable; running relay-only for this connection',
+					JSON.stringify({
+						userId: session.userId,
+						workspaceId: session.workspaceId,
+						path: String(req.url || ''),
+					})
+				);
+			}
+
+			// Extract raw room from /yjs/<room>
+			const raw = String(req.url || '/').replace(/^\/yjs\/?/, '').replace(/^\/+/, '');
+			if (!raw) {
+				console.warn('[ws] close invalid room', JSON.stringify({ path: String(req.url || '') }));
+				conn.close(1008, 'invalid room');
+				return;
+			}
+
+			// Verify workspace membership.
+			const member = await prisma.workspaceMember.findUnique({
+				where: {
+					userId_workspaceId: { userId: session.userId, workspaceId: session.workspaceId },
+				},
+				select: { role: true },
+			});
+			if (!member) {
+				console.warn(
+					'[ws] close forbidden',
+					JSON.stringify({
+						userId: session.userId,
+						workspaceId: session.workspaceId,
+						rawRoom: raw,
+					})
+				);
+				conn.close(1008, 'forbidden');
+				return;
+			}
+
+			// Namespace the room so shared IDs like "__notes_registry__" don't collide
+			// across workspaces.
+			const docName = `${session.workspaceId}:${raw}`;
+			persistAdapter?.registerDocWorkspace(docName, session.workspaceId);
+
+			// y-websocket expects req.url === '/<room>'
+			req.url = `/${docName}`;
+			setupWSConnection(conn, req, { gc: true });
+		} catch (err) {
+			console.error('[ws] connection setup error:', err.message);
+			try {
+				conn.close(1011, 'internal error');
+			} catch {
+				// ignore
+			}
+		}
+	})();
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -528,6 +785,10 @@ process.on('unhandledRejection', (reason) => {
 			await ensureDatabase(DATABASE_URL);
 		} catch (err) {
 			console.error('[server] Database initialization failed:', err.message);
+			if (process.env.NODE_ENV === 'production') {
+				console.error('[server] Production startup requires a valid, migrated database. Exiting.');
+				process.exit(1);
+			}
 			console.error('[server] The server will start, but persistence may not work.');
 		}
 

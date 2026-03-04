@@ -28,7 +28,7 @@ datasource db {
   provider = "postgresql"
   // DATABASE_URL is read from the environment (.env or docker-compose).
   // Format: postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public
-  url = env("DATABASE_URL")
+  url      = env("DATABASE_URL")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -57,9 +57,98 @@ model Workspace {
   /// One workspace owns many documents.
   documents Document[]
 
+  /// Phase 11: workspace memberships.
+  members WorkspaceMember[]
+
+  /// Phase 11: invite tokens for onboarding.
+  invites InviteToken[]
+
   // Enforce unique workspace names to prevent accidental duplicates.
   @@unique([name])
   @@map("workspace")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Phase 11 — Identity, RBAC, invites, and share tokens.
+//
+// Notes:
+//   - WorkspaceMember provides multi-tenant isolation.
+//   - GlobalRole is for system-wide admin.
+//   - WorkspaceRole is per-workspace role used for document access.
+//   - UserPreference is now authenticated-user scoped, but we keep the
+//     existing deleteAfterDays retention preference for Phase 9.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum GlobalRole {
+  USER
+  ADMIN
+}
+
+enum WorkspaceRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  name         String
+  passwordHash String     @map("password_hash")
+  role         GlobalRole @default(USER)
+  profileImage String?    @map("profile_image")
+  disabled     Boolean    @default(false)
+  lastLogin    DateTime?  @map("last_login")
+  createdAt    DateTime   @default(now()) @map("created_at")
+
+  memberships WorkspaceMember[]
+  preferences UserPreference?
+
+  @@map("user")
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid()) @db.Uuid
+  userId      String        @map("user_id") @db.Uuid
+  workspaceId String        @map("workspace_id") @db.Uuid
+  role        WorkspaceRole @default(MEMBER)
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+  @@map("workspace_member")
+}
+
+model InviteToken {
+  id          String        @id @default(uuid()) @db.Uuid
+  email       String
+  workspaceId String        @map("workspace_id") @db.Uuid
+  role        WorkspaceRole
+  token       String        @unique
+  expiresAt   DateTime      @map("expires_at")
+  used        Boolean       @default(false)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([email])
+  @@map("invite_token")
+}
+
+model ShareToken {
+  id        String        @id @default(uuid()) @db.Uuid
+  docId     String        @map("doc_id")
+  token     String        @unique
+  expiresAt DateTime      @map("expires_at")
+  role      WorkspaceRole
+
+  // Optional relation to Document by docId (docId is globally unique).
+  document Document? @relation(fields: [docId], references: [docId], onDelete: Cascade)
+
+  @@index([docId])
+  @@map("share_token")
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -106,7 +195,8 @@ model Document {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   /// Relation to the parent workspace.
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace  Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  ShareToken ShareToken[]
 
   // Index for fast workspace-scoped queries (list all docs in a workspace).
   @@index([workspaceId])
@@ -126,9 +216,13 @@ model UserPreference {
   /// Primary key — auto-generated UUID.
   id String @id @default(uuid()) @db.Uuid
 
-  /// User identifier. Until auth is implemented, the server uses a
-  /// fixed default value (e.g. "default"). Must be unique per user.
-  userId String @unique @map("user_id")
+  /// Phase 11: authenticated user identifier.
+  /// Nullable to allow migration from pre-auth installs.
+  userId String? @unique @map("user_id") @db.Uuid
+
+  /// Phase 11: theme + language are persisted server-side.
+  theme    String?
+  language String?
 
   /// Number of days a trashed note is retained before automatic
   /// permanent deletion. Must be a positive integer.
@@ -138,6 +232,8 @@ model UserPreference {
   /// Timestamps for auditing.
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_preference")
 }

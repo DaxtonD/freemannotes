@@ -4,9 +4,8 @@
 // User Preferences REST API router for FreemanNotes.
 //
 // Provides endpoints for reading and updating per-user preference values.
-// Until authentication is implemented, all requests use a deterministic
-// default user ID ("default"). The API is designed so a future auth layer
-// only needs to swap in the real user ID — no endpoint changes required.
+// Phase 11: preferences are scoped to the authenticated user (UUID userId).
+// Requests without a valid session return 401.
 //
 // Endpoints:
 //   GET  /api/user/preferences  — Returns all preferences for the current user.
@@ -23,9 +22,6 @@
 const { createTimestampFormatter } = require('./timezone');
 
 // ── Default values ──────────────────────────────────────────────────────────
-
-/** Default user ID used when no authentication is in place. */
-const DEFAULT_USER_ID = 'default';
 
 /** Default number of days a trashed note is retained before permanent deletion. */
 const DEFAULT_DELETE_AFTER_DAYS = 30;
@@ -98,11 +94,23 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 	function formatPreference(row) {
 		return {
 			userId: row.userId,
+			theme: row.theme ?? null,
+			language: row.language ?? null,
 			deleteAfterDays: row.deleteAfterDays,
 			createdAt: fmt(row.createdAt),
 			updatedAt: fmt(row.updatedAt),
 			timezone: timezone || 'UTC',
 		};
+	}
+
+	/**
+	 * Returns authenticated userId (UUID) or null.
+	 * @param {import('http').IncomingMessage} req
+	 */
+	function getUserId(req) {
+		return req.auth && typeof req.auth.userId === 'string' && req.auth.userId.length > 0
+			? req.auth.userId
+			: null;
 	}
 
 	/**
@@ -123,14 +131,20 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 		if (pathname === '/api/user/preferences' && method === 'GET') {
 			(async () => {
 				try {
+					const userId = getUserId(req);
+					if (!userId) {
+						jsonResponse(res, 401, { error: 'Not authenticated' });
+						return;
+					}
+
 					// Upsert: create with defaults if missing, return existing if present.
 					// This ensures the first GET always returns a valid preference object
 					// without requiring a separate "initialize" step.
 					const pref = await prisma.userPreference.upsert({
-						where: { userId: DEFAULT_USER_ID },
+						where: { userId },
 						update: {},
 						create: {
-							userId: DEFAULT_USER_ID,
+							userId,
 							deleteAfterDays: DEFAULT_DELETE_AFTER_DAYS,
 						},
 					});
@@ -151,6 +165,12 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 		if (pathname === '/api/user/preferences' && method === 'POST') {
 			(async () => {
 				try {
+					const userId = getUserId(req);
+					if (!userId) {
+						jsonResponse(res, 401, { error: 'Not authenticated' });
+						return;
+					}
+
 					const body = await readJsonBody(req);
 					if (!body || typeof body !== 'object') {
 						jsonResponse(res, 400, { error: 'Request body must be a JSON object' });
@@ -175,13 +195,36 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						updateData.deleteAfterDays = days;
 					}
 
+					// ── Persist theme/language (optional) ─────────────────────
+					if ('theme' in body) {
+						if (body.theme == null || body.theme === '') {
+							updateData.theme = null;
+						} else if (typeof body.theme !== 'string' || body.theme.length > 80) {
+							jsonResponse(res, 400, { error: 'theme must be a string up to 80 chars' });
+							return;
+						} else {
+							updateData.theme = body.theme;
+						}
+					}
+
+					if ('language' in body) {
+						if (body.language == null || body.language === '') {
+							updateData.language = null;
+						} else if (typeof body.language !== 'string' || body.language.length > 20) {
+							jsonResponse(res, 400, { error: 'language must be a string up to 20 chars' });
+							return;
+						} else {
+							updateData.language = body.language;
+						}
+					}
+
 					// If no recognized fields were provided, return the current state.
 					if (Object.keys(updateData).length === 0) {
 						const current = await prisma.userPreference.upsert({
-							where: { userId: DEFAULT_USER_ID },
+							where: { userId },
 							update: {},
 							create: {
-								userId: DEFAULT_USER_ID,
+								userId,
 								deleteAfterDays: DEFAULT_DELETE_AFTER_DAYS,
 							},
 						});
@@ -191,11 +234,13 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 
 					// Upsert: create with provided values if missing, update if present.
 					const pref = await prisma.userPreference.upsert({
-						where: { userId: DEFAULT_USER_ID },
+						where: { userId },
 						update: updateData,
 						create: {
-							userId: DEFAULT_USER_ID,
+							userId,
 							deleteAfterDays: updateData.deleteAfterDays ?? DEFAULT_DELETE_AFTER_DAYS,
+							theme: updateData.theme ?? null,
+							language: updateData.language ?? null,
 						},
 					});
 
@@ -219,4 +264,4 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 	return handleRequest;
 }
 
-module.exports = { createPreferencesRouter, DEFAULT_USER_ID, DEFAULT_DELETE_AFTER_DAYS };
+module.exports = { createPreferencesRouter, DEFAULT_DELETE_AFTER_DAYS };
