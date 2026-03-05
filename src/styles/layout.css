@@ -521,7 +521,7 @@
 		gap: 0;
 		position: sticky;
 		/* Reserve space for the below-header search row (which is absolutely positioned). */
-		padding-bottom: calc(var(--space-2) + 40px);
+		padding-bottom: calc(var(--space-2) + 45px);
 		transition: padding-bottom 240ms ease;
 	}
 
