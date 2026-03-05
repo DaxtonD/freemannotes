@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.62 - 2026-03-05
+
+### Fixed
+- Checklist outdent/un-indent now animates row movement (FLIP) to avoid the
+  “teleport” feeling when items change indentation.
+- Mobile checklist drag reliability: pointer capture keeps the pending drag
+  gesture from being stolen by scroll/overscroll on first interaction.
+- Checklist drag ghost now matches multi-line items more precisely by sizing
+  the clone using the measured text element width (prevents re-wrapping).
+- Checklist drag ghost styling is opaque with a solid background for clearer
+  visibility while dragging.
+
+### Changed
+- Indenting a top-level checklist item that has children now preserves the
+  max-1-level nesting rule by re-parenting its children to the new parent.
+- Textarea auto-sizing is re-triggered on window resize so wrapped checklist
+  rows don’t end up with stale heights after layout changes.
+
 ## 1.0.4 - 2026-03-01
 
 ### Added

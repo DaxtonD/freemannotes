@@ -8,34 +8,16 @@ import {
 	type DragUpdate,
 	type DropResult,
 } from '@hello-pangea/dnd';
-import {
-	DndContext,
-	DragOverlay,
-	PointerSensor,
-	type CollisionDetection,
-	type Modifier,
-	type DragStartEvent as DndKitDragStartEvent,
-	type DragMoveEvent as DndKitDragMoveEvent,
-	type DragEndEvent as DndKitDragEndEvent,
-	useSensor,
-	useSensors,
-} from '@dnd-kit/core';
-import {
-	SortableContext,
-	defaultAnimateLayoutChanges,
-	useSortable,
-	verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faGripVertical } from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
-import { ChecklistBinding, HeadlessTextEditor, TextBinding, type ChecklistItem } from '../../core/bindings';
+import QRCode from 'qrcode';
+import type { ChecklistItem } from '../../core/bindings';
 import { applyChecklistDragToItems, normalizeChecklistHierarchy, removeChecklistItemWithChildren } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
+import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
-import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
@@ -47,102 +29,56 @@ export type NoteEditorProps = {
 
 type NoteType = 'text' | 'checklist';
 
-type TextBindingBundle = {
-	ytext: Y.Text;
-	editor: HeadlessTextEditor;
-	binding: TextBinding;
-};
-
 const EMPTY_ITEMS: readonly ChecklistItem[] = [];
-type MobileAxisLock = 'none' | 'vertical' | 'horizontal';
 
-type MobileChecklistRowProps = {
-	item: ChecklistItem;
-	isChildHiddenWithParent: boolean;
-	isDraggingParentChild: boolean;
-	onToggleCompleted: (id: string, checked: boolean) => void;
-	onTextChange: (id: string, text: string, textarea: HTMLTextAreaElement) => void;
-	onTextInput: (textarea: HTMLTextAreaElement) => void;
-	onTextKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>, id: string) => void;
-	onRemove: (id: string) => void;
-	setRowInputRef: (id: string, node: HTMLTextAreaElement | null) => void;
-	setRowContainerRef: (id: string, node: HTMLLIElement | null) => void;
-	removeLabel: string;
-	dragHandleLabel: string;
-	axisLock: MobileAxisLock;
-};
-
-function MobileChecklistRow(props: MobileChecklistRowProps): React.JSX.Element {
-	const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
-		id: props.item.id,
-		animateLayoutChanges: (args) => defaultAnimateLayoutChanges(args),
-		transition: {
-			duration: 180,
-			easing: 'cubic-bezier(0.2, 0, 0, 1)',
-		},
-	});
-	const lockedTransform =
-		isDragging && transform
-			? props.axisLock === 'vertical'
-				? { ...transform, x: 0 }
-				: props.axisLock === 'horizontal'
-					? { ...transform, x: 0, y: 0 }
-					: transform
-			: transform;
-
-	return (
-		<li
-			ref={(node) => {
-				setNodeRef(node);
-				props.setRowContainerRef(props.item.id, node);
-			}}
-			className={`${styles.checklistItem}${props.item.parentId ? ` ${styles.childRow}` : ''}${isDragging || props.isDraggingParentChild ? ` ${styles.rowDragging}` : ''}${props.isChildHiddenWithParent ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
-			aria-label={props.dragHandleLabel}
-			style={{
-				transform: CSS.Transform.toString(lockedTransform),
-				transition: transition ?? 'transform 180ms cubic-bezier(0.2, 0, 0, 1)',
-				zIndex: isDragging ? 80 : 1,
-				opacity: isDragging && props.axisLock !== 'horizontal' ? 0 : 1,
-				willChange: 'transform',
-			}}
-		>
-			<button
-				type="button"
-				className={styles.dragHandle}
-				aria-label={props.dragHandleLabel}
-				title={props.dragHandleLabel}
-				{...attributes}
-				{...listeners}
-			>
-				<FontAwesomeIcon icon={faGripVertical} />
-			</button>
-			<input
-				type="checkbox"
-				className={styles.checklistCheckbox}
-				checked={props.item.completed}
-				onChange={(event) => props.onToggleCompleted(props.item.id, event.target.checked)}
-			/>
-			<textarea
-				ref={(node) => props.setRowInputRef(props.item.id, node)}
-				value={props.item.text}
-				onChange={(event) => props.onTextChange(props.item.id, event.target.value, event.currentTarget)}
-				onInput={(event) => props.onTextInput(event.currentTarget)}
-				onKeyDown={(event) => props.onTextKeyDown(event, props.item.id)}
-				className={styles.rowTextArea}
-				rows={1}
-			/>
-			<button
-				type="button"
-				className={styles.rowRemoveButton}
-				onClick={() => props.onRemove(props.item.id)}
-				aria-label={props.removeLabel}
-				title={props.removeLabel}
-			>
-				×
-			</button>
-		</li>
-	);
+function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
+	return yarray
+		.toArray()
+		.map((m) => ({
+			id: String(m.get('id') ?? ''),
+			text: String(m.get('text') ?? ''),
+			completed: Boolean(m.get('completed')),
+			parentId:
+				typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
+					? String(m.get('parentId')).trim()
+					: null,
+		}))
+		.filter((item) => item.id.length > 0);
 }
+
+function updateChecklistItemById(
+	yarray: Y.Array<Y.Map<any>>,
+	id: string,
+	patch: Partial<Omit<ChecklistItem, 'id'>>
+): void {
+	const normalizedId = String(id ?? '').trim();
+	if (!normalizedId) return;
+
+	const arr = yarray.toArray();
+	let idx = -1;
+	for (let i = 0; i < arr.length; i++) {
+		if (String(arr[i].get('id') ?? '').trim() === normalizedId) {
+			idx = i;
+			break;
+		}
+	}
+	if (idx === -1) return;
+
+	const doc = (yarray as any).doc as Y.Doc | null | undefined;
+	const apply = (): void => {
+		const m = yarray.get(idx);
+		if (!m) return;
+		if (patch.text !== undefined) m.set('text', String(patch.text));
+		if (patch.completed !== undefined) m.set('completed', Boolean(patch.completed));
+		if (patch.parentId !== undefined) {
+			const parentId = typeof patch.parentId === 'string' ? patch.parentId.trim() : null;
+			m.set('parentId', parentId && parentId.length > 0 ? parentId : null);
+		}
+	};
+	if (doc) doc.transact(apply);
+	else apply();
+}
+
 
 function autoResizeTextarea(textarea: HTMLTextAreaElement | null): void {
 	if (!textarea) return;
@@ -232,95 +168,140 @@ function useMetadataString(metadata: Y.Map<any>, key: string): string {
 }
 
 // Checklist subscription helper for conditional checklist notes.
-function useOptionalChecklistItems(binding: ChecklistBinding | null): readonly ChecklistItem[] {
+function useOptionalChecklistItems(yarray: Y.Array<Y.Map<any>> | null): readonly ChecklistItem[] {
+	const cacheRef = React.useRef<{
+		yarray: Y.Array<Y.Map<any>> | null;
+		items: readonly ChecklistItem[];
+	}>(
+		// Initialize with a stable empty reference so React can compare snapshots.
+		{ yarray: null, items: EMPTY_ITEMS }
+	);
+
 	return useSyncExternalStore(
 		(onStoreChange) => {
-			if (!binding) return () => {};
-			return binding.subscribe(onStoreChange);
+			if (!yarray) return () => {};
+			// Prime cache on first subscription (and whenever the yarray instance changes).
+			if (cacheRef.current.yarray !== yarray) {
+				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
+			}
+
+			const observer = (): void => {
+				// Update the cached snapshot BEFORE notifying React.
+				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
+				onStoreChange();
+			};
+			yarray.observeDeep(observer);
+			return () => yarray.unobserveDeep(observer);
 		},
-		() => binding?.getItems() ?? EMPTY_ITEMS,
-		() => binding?.getItems() ?? EMPTY_ITEMS
+		() => {
+			if (!yarray) return EMPTY_ITEMS;
+			if (cacheRef.current.yarray !== yarray) {
+				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
+			}
+			return cacheRef.current.items;
+		},
+		() => {
+			if (!yarray) return EMPTY_ITEMS;
+			if (cacheRef.current.yarray !== yarray) {
+				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
+			}
+			return cacheRef.current.items;
+		}
 	);
 }
 
 export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const { t } = useI18n();
 	const [isDeleting, setIsDeleting] = React.useState(false);
+	const [isShareOpen, setIsShareOpen] = React.useState(false);
+	const [shareBusy, setShareBusy] = React.useState(false);
+	const [shareError, setShareError] = React.useState<string | null>(null);
+	const [shareUrl, setShareUrl] = React.useState<string | null>(null);
+	const [shareQrDataUrl, setShareQrDataUrl] = React.useState<string | null>(null);
+	const [shareRequestedForOpen, setShareRequestedForOpen] = React.useState(false);
 	const [showCompleted, setShowCompleted] = React.useState(false);
 	const checklistArray = useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 	const rowInputsRef = React.useRef<Map<string, HTMLTextAreaElement | null>>(new Map());
 	const rowContainersRef = React.useRef<Map<string, HTMLLIElement | null>>(new Map());
-	const dragGhostMetricsRef = React.useRef<{ rowWidth: number | null; textHeight: number | null }>({ rowWidth: null, textHeight: null });
+	const dragGhostMetricsRef = React.useRef<{ rowWidth: number | null; rowHeight: number | null; textHeight: number | null; textWidth: number | null }>({
+		rowWidth: null,
+		rowHeight: null,
+		textHeight: null,
+		textWidth: null,
+	});
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const lastOverIndexRef = React.useRef<number | null>(null);
 	const [draggingParentId, setDraggingParentId] = React.useState<string | null>(null);
-	const [mobileActiveId, setMobileActiveId] = React.useState<string | null>(null);
-	const [mobileAxisLock, setMobileAxisLock] = React.useState<MobileAxisLock>('none');
 	const [isChecklistDragging, setIsChecklistDragging] = React.useState(false);
-	const lastMobileCollisionTopRef = React.useRef<number | null>(null);
-	const lastMobileCollisionDirectionRef = React.useRef<'up' | 'down'>('down');
-	const lastMobileCollisionDirectionChangeTopRef = React.useRef<number | null>(null);
-	const mobileDeltaRef = React.useRef({ x: 0, y: 0 });
-	const mobileAxisLockRef = React.useRef<MobileAxisLock>('none');
-	const mobileHorizontalDirectionRef = React.useRef<'left' | 'right' | null>(null);
-	const isCoarsePointer = useIsCoarsePointer();
-	const useMobileDndKit = isCoarsePointer;
+
+	const createShareLink = React.useCallback(async () => {
+		if (shareBusy) return;
+		setShareBusy(true);
+		setShareError(null);
+		try {
+			const res = await fetch(`/api/docs/${encodeURIComponent(props.noteId)}/share`, {
+				method: 'POST',
+				credentials: 'include',
+			});
+			const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+			const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
+			if (!res.ok) {
+				const message = body && typeof body.error === 'string' ? body.error : t('share.createFailed');
+				throw new Error(message);
+			}
+			const nextUrl = body?.shareUrl ? String(body.shareUrl) : '';
+			if (!nextUrl) throw new Error(t('share.createFailed'));
+			setShareUrl(nextUrl);
+			try {
+				const qr = await QRCode.toDataURL(nextUrl, { width: 240, margin: 1 });
+				setShareQrDataUrl(qr);
+			} catch {
+				setShareQrDataUrl(null);
+			}
+		} catch (err) {
+			setShareError(err instanceof Error ? err.message : t('share.createFailed'));
+			setShareUrl(null);
+			setShareQrDataUrl(null);
+		} finally {
+			setShareBusy(false);
+		}
+	}, [props.noteId, shareBusy, t]);
+
+	React.useEffect(() => {
+		// Only attempt once per open. If the request fails (404, offline, etc),
+		// avoid auto-retrying in a tight loop (console spam).
+		if (!isShareOpen) {
+			setShareRequestedForOpen(false);
+			return;
+		}
+		if (shareRequestedForOpen) return;
+		setShareRequestedForOpen(true);
+		void createShareLink();
+	}, [createShareLink, isShareOpen, shareRequestedForOpen]);
 	// metadata.type controls which editor body is rendered.
 	const metadata = useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
 
-	const titleBundle = useMemo<TextBindingBundle>(() => {
-		// HeadlessTextEditor + TextBinding keeps inputs synchronized with Yjs text.
-		const ytext = props.doc.getText('title');
-		const editor = new HeadlessTextEditor();
-		const binding = new TextBinding({ ytext, editor, onUpdate: () => {} });
-		return { ytext, editor, binding };
-	}, [props.doc]);
-
-	const contentBundle = useMemo<TextBindingBundle | null>(() => {
-		// Only text notes expose a content field.
-		if (type !== 'text') return null;
-		const ytext = props.doc.getText('content');
-		const editor = new HeadlessTextEditor();
-		const binding = new TextBinding({ ytext, editor, onUpdate: () => {} });
-		return { ytext, editor, binding };
-	}, [props.doc, type]);
-
-	const checklist = useMemo(() => {
-		// Only checklist notes expose checklist items.
-		if (type !== 'checklist') return null;
-		return new ChecklistBinding({ yarray: props.doc.getArray<Y.Map<any>>('checklist'), onUpdate: () => {} });
-	}, [props.doc, type]);
-
-	React.useEffect(() => {
-		return () => {
-			titleBundle.binding.destroy();
-			contentBundle?.binding.destroy();
-			checklist?.destroy();
-		};
-	}, [titleBundle, contentBundle, checklist]);
-
-	const title = useYTextValue(titleBundle.ytext);
-	const content = useOptionalYTextValue(contentBundle?.ytext ?? null);
-	const items = useOptionalChecklistItems(checklist);
+	const titleYText = useMemo(() => props.doc.getText('title'), [props.doc]);
+	const contentYText = useMemo(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type]);
+	const title = useYTextValue(titleYText);
+	const content = useOptionalYTextValue(contentYText);
+	const items = useOptionalChecklistItems(type === 'checklist' ? checklistArray : null);
 	const normalizedItems = useMemo(() => normalizeChecklistHierarchy(items), [items]);
 	const activeItems = useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedItems = useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
-	const mobileSensors = useSensors(
-		useSensor(PointerSensor, {
-			activationConstraint: { distance: 6 },
-		})
-	);
-	const mobileModifiers = React.useMemo<Modifier[]>(() => {
-		if (mobileAxisLock === 'vertical') {
-			return [({ transform }) => ({ ...transform, x: 0 })];
-		}
-		if (mobileAxisLock === 'horizontal') {
-			return [({ transform }) => ({ ...transform, x: 0, y: 0 })];
-		}
-		return [];
-	}, [mobileAxisLock]);
+
+	// FLIP animation helper for checklist indent/un-indent (horizontal snap):
+	// When we indent/unindent we mutate the *flat* list (parentId changes + regrouping),
+	// which can visually look like items “teleport” to a new place.
+	//
+	// The hook gives us a `capturePositions()` callback: call it immediately BEFORE we
+	// apply the hierarchy mutation so the next render can animate items from their
+	// previous rects to their new rects.
+	const { capturePositions: captureFlipPositions } = useChecklistFlip(rowContainersRef, normalizedItems);
+	const captureFlipPositionsRef = React.useRef(captureFlipPositions);
+	captureFlipPositionsRef.current = captureFlipPositions;
 
 	React.useEffect(() => {
 		if (!focusRowId) return;
@@ -336,9 +317,36 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		}
 	}, [items, showCompleted]);
 
-	// Horizontal snap handler — bypass the drag library entirely for indent/unindent.
-	// Refs are initialised with null and assigned on every render so the snap
-	// handler callback always sees the latest values without re-registering.
+	// Re-measure textarea heights when the container width changes (window resize):
+	// Checklist rows use auto-growing textareas where height depends on text wrapping.
+	// Without a resize listener, shrinking/growing the editor can change wrapping but
+	// leave stale heights, causing clipped text until the user types.
+	//
+	// We rAF-debounce to avoid forced layout on every resize event.
+	React.useEffect(() => {
+		let rafId = 0;
+		const onResize = (): void => {
+			cancelAnimationFrame(rafId);
+			rafId = requestAnimationFrame(() => {
+				for (const textarea of rowInputsRef.current.values()) {
+					autoResizeTextarea(textarea);
+				}
+			});
+		};
+		window.addEventListener('resize', onResize);
+		return () => {
+			window.removeEventListener('resize', onResize);
+			cancelAnimationFrame(rafId);
+		};
+	}, []);
+
+	// Horizontal snap handler — bypass the drag library entirely for indent/unindent:
+	// We detect a deliberate horizontal gesture (see `dndSensors.ts`) and then perform
+	// the hierarchy mutation directly. This keeps the vertical drag library focused on
+	// reorder only, and prevents the “drag started then got cancelled” flicker.
+	//
+	// We store current values in refs so the handler stays registered once, but still
+	// reads fresh `normalizedItems` and `replaceChecklistItems` on every invocation.
 	const normalizedItemsRef = React.useRef<readonly ChecklistItem[]>(normalizedItems);
 	normalizedItemsRef.current = normalizedItems;
 	const replaceChecklistItemsRef = React.useRef<((next: readonly ChecklistItem[]) => void) | null>(null);
@@ -346,6 +354,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	React.useEffect(() => {
 		if (type !== 'checklist') return;
 		return registerHorizontalSnapHandler((draggableId, direction) => {
+			// Capture pre-mutation layout for FLIP before we change parentId/grouping.
+			captureFlipPositionsRef.current();
 			const currentItems = normalizedItemsRef.current;
 			const currentActive = currentItems.filter((item) => !item.completed);
 			const sourceIndex = currentActive.findIndex((item) => item.id === draggableId);
@@ -400,7 +410,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	const addChecklistItem = React.useCallback(
 		(index?: number): void => {
-			if (!checklist) return;
+			if (type !== 'checklist') return;
 			const nextId =
 				typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
 					? crypto.randomUUID()
@@ -421,7 +431,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			else apply();
 			setFocusRowId(nextId);
 		},
-		[checklist, checklistArray, items.length]
+		[checklistArray, items.length, type]
 	);
 
 	const replaceChecklistItems = React.useCallback(
@@ -451,20 +461,20 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	const toggleChecklistCompleted = React.useCallback(
 		(id: string, checked: boolean): void => {
-			if (!checklist) return;
+			if (type !== 'checklist') return;
 			const childIds = new Set(normalizedItems.filter((item) => item.parentId === id).map((item) => item.id));
 			for (const item of normalizedItems) {
 				if (item.id === id || childIds.has(item.id)) {
-					checklist.updateById(item.id, { completed: checked });
+					updateChecklistItemById(checklistArray, item.id, { completed: checked });
 				}
 			}
 		},
-		[checklist, normalizedItems]
+		[checklistArray, normalizedItems, type]
 	);
 
 	const removeChecklistItem = React.useCallback(
 		(id: string): void => {
-			if (!checklist) return;
+			if (type !== 'checklist') return;
 			const index = normalizedItems.findIndex((row) => row.id === id);
 			const previousId = index > 0 ? normalizedItems[index - 1]?.id ?? null : null;
 			const nextId = normalizedItems[index + 1]?.id ?? null;
@@ -472,7 +482,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			replaceChecklistItems(nextItems);
 			setFocusRowId(previousId ?? nextId);
 		},
-		[checklist, normalizedItems, replaceChecklistItems]
+		[normalizedItems, replaceChecklistItems, type]
 	);
 
 	const onChecklistDragEnd = React.useCallback(
@@ -489,20 +499,55 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			});
 			replaceChecklistItems(nextItems);
 			setDraggingParentId(null);
-			dragGhostMetricsRef.current = { rowWidth: null, textHeight: null };
+			dragGhostMetricsRef.current = { rowWidth: null, rowHeight: null, textHeight: null, textWidth: null };
 			resetChecklistDragAxis();
 		},
 		[normalizedItems, replaceChecklistItems]
 	);
 
+	// Drag-ghost measurement (desktop + mobile):
+	// The drag “clone” should match what the user picked up pixel-perfectly.
+	// Multi-line checklist items are especially sensitive because wrapping depends
+	// on the *exact* text container width.
+	//
+	// We measure both the overall row width and the text element width:
+	// - `rowWidth` sizes the outer <li> so padding/controls match.
+	// - `textWidth` sizes the text block so wrapping matches, preventing the
+	//   “ghost is wider/narrower and wraps differently” regressions.
 	const captureDragGhostMetrics = React.useCallback((id: string): void => {
 		const rowNode = rowContainersRef.current.get(id);
 		const textNode = rowInputsRef.current.get(id);
 		const rowRect = rowNode?.getBoundingClientRect();
+		const textRect = textNode?.getBoundingClientRect();
 		dragGhostMetricsRef.current = {
 			rowWidth: rowRect ? Math.ceil(rowRect.width) : null,
+			rowHeight: rowRect ? Math.ceil(rowRect.height) : null,
 			textHeight: textNode ? Math.max(26, Math.ceil(textNode.scrollHeight) + 2) : null,
+			textWidth: textRect ? Math.ceil(textRect.width) : null,
 		};
+	}, []);
+
+	const clearChecklistRowSelection = React.useCallback((): void => {
+		const active = document.activeElement;
+		if (active instanceof HTMLElement) {
+			active.blur();
+		}
+		window.getSelection?.()?.removeAllRanges();
+	}, []);
+
+	const measureChecklistRowIsMultiline = React.useCallback((id: string): boolean => {
+		const node = rowInputsRef.current.get(id);
+		if (!node) return false;
+		const style = window.getComputedStyle(node);
+		const fontSize = Number.parseFloat(style.fontSize || '0') || 16;
+		const parsedLineHeight = Number.parseFloat(style.lineHeight || '0') || 0;
+		const lineHeight = parsedLineHeight > 0 ? parsedLineHeight : fontSize * 1.35;
+		const paddingTop = Number.parseFloat(style.paddingTop || '0') || 0;
+		const paddingBottom = Number.parseFloat(style.paddingBottom || '0') || 0;
+		// Heuristic: treat the row as multi-line if its scrollHeight is meaningfully
+		// larger than the expected single-line height.
+		const expectedSingleLine = Math.ceil(lineHeight + paddingTop + paddingBottom + 2);
+		return node.scrollHeight > expectedSingleLine + 6;
 	}, []);
 
 	const vibrateIfAvailable = React.useCallback((ms: number): void => {
@@ -513,6 +558,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const onChecklistDragStart = React.useCallback(
 		(event: DragStart): void => {
 			setIsChecklistDragging(true);
+			clearChecklistRowSelection();
 			// Desktop ghost sizing notes:
 			// - @hello-pangea/dnd can apply inline styles at drag start that subtly
 			//   change the measured width/height of the dragged row (especially with
@@ -535,7 +581,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			lastOverIndexRef.current = null;
 			vibrateIfAvailable(12);
 		},
-		[activeItems, captureDragGhostMetrics, vibrateIfAvailable]
+		[activeItems, captureDragGhostMetrics, clearChecklistRowSelection, vibrateIfAvailable]
 	);
 
 	const onChecklistBeforeCapture = React.useCallback(
@@ -557,196 +603,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			vibrateIfAvailable(6);
 		},
 		[vibrateIfAvailable]
-	);
-
-	const clearMobileDragState = React.useCallback((): void => {
-		setIsChecklistDragging(false);
-		setMobileActiveId(null);
-		setMobileAxisLock('none');
-		mobileAxisLockRef.current = 'none';
-		mobileDeltaRef.current = { x: 0, y: 0 };
-		mobileHorizontalDirectionRef.current = null;
-		setDraggingParentId(null);
-		dragGhostMetricsRef.current = { rowWidth: null, textHeight: null };
-		lastMobileCollisionTopRef.current = null;
-		lastMobileCollisionDirectionRef.current = 'down';
-		lastMobileCollisionDirectionChangeTopRef.current = null;
-	}, []);
-
-	const onMobileChecklistDragStart = React.useCallback(
-		(event: DndKitDragStartEvent): void => {
-			setIsChecklistDragging(true);
-			lastMobileCollisionTopRef.current = null;
-			lastMobileCollisionDirectionRef.current = 'down';
-			lastMobileCollisionDirectionChangeTopRef.current = null;
-			const draggableId = String(event.active.id);
-			captureDragGhostMetrics(draggableId);
-			setMobileActiveId(draggableId);
-			setMobileAxisLock('none');
-			mobileAxisLockRef.current = 'none';
-			mobileDeltaRef.current = { x: 0, y: 0 };
-			mobileHorizontalDirectionRef.current = null;
-			const dragged = activeItems.find((item) => item.id === draggableId) ?? null;
-			if (dragged && !dragged.parentId) {
-				const hasChildren = activeItems.some((item) => item.parentId === dragged.id);
-				setDraggingParentId(hasChildren ? dragged.id : null);
-			} else {
-				setDraggingParentId(null);
-			}
-			vibrateIfAvailable(12);
-		},
-		[activeItems, captureDragGhostMetrics, vibrateIfAvailable]
-	);
-
-	const mobileVariableHeightCollisionDetection = React.useCallback<CollisionDetection>(({ active, collisionRect, droppableContainers, droppableRects }) => {
-		// Mobile variable-height checklist collision detection.
-		//
-		// Why we need this:
-		// - `closestCenter` works nicely when all items are roughly the same height.
-		// - With extreme multi-line items, the dragged item's center can be far away
-		//   from where the user's finger/intent is, which causes "neighbour shift"
-		//   decisions to happen at the wrong time.
-		//
-		// Behaviour we want (50% crossover semantics):
-		// - When dragging UP: once the *top* of the dragged item crosses above the
-		//   midpoint of the item above, that item should shift down.
-		// - When dragging DOWN: once the *bottom* of the dragged item crosses below
-		//   the midpoint of the item below, that item should shift up.
-		//
-		// Implementation strategy:
-		// - Track "direction" (up/down) so we can use either top or bottom edge.
-		// - Compare that reference edge against each item's midpoint.
-		// - Return exactly one collision result: the item whose midpoint threshold
-		//   has been crossed based on the current direction.
-		if (!collisionRect) return [];
-
-		const previousTop = lastMobileCollisionTopRef.current;
-		if (typeof previousTop === 'number') {
-			const dy = collisionRect.top - previousTop;
-			// Direction changes during drag can cause chaos (the chosen edge switches
-			// from top->bottom or bottom->top). To prevent "micro oscillations" when
-			// the user jitters their finger, we require a minimum movement to flip
-			// direction AND a minimum distance since the last flip.
-			const directionThresholdPx = 6;
-			const directionChangeHysteresisPx = 12;
-			const lastChangeTop = lastMobileCollisionDirectionChangeTopRef.current;
-			const distanceSinceChange = typeof lastChangeTop === 'number' ? Math.abs(collisionRect.top - lastChangeTop) : Number.POSITIVE_INFINITY;
-
-			if (dy <= -directionThresholdPx && lastMobileCollisionDirectionRef.current !== 'up' && distanceSinceChange >= directionChangeHysteresisPx) {
-				lastMobileCollisionDirectionRef.current = 'up';
-				lastMobileCollisionDirectionChangeTopRef.current = collisionRect.top;
-			} else if (dy >= directionThresholdPx && lastMobileCollisionDirectionRef.current !== 'down' && distanceSinceChange >= directionChangeHysteresisPx) {
-				lastMobileCollisionDirectionRef.current = 'down';
-				lastMobileCollisionDirectionChangeTopRef.current = collisionRect.top;
-			}
-		}
-		lastMobileCollisionTopRef.current = collisionRect.top;
-
-		const direction = lastMobileCollisionDirectionRef.current;
-		// Use the edge that matches the intent:
-		// - moving up -> compare the dragged TOP edge against neighbour midpoints
-		// - moving down -> compare the dragged BOTTOM edge against neighbour midpoints
-		const referenceY = direction === 'up' ? collisionRect.top : collisionRect.bottom;
-
-		const entries: Array<{ id: string; midY: number }> = [];
-		for (const container of droppableContainers) {
-			if (String(container.id) === String(active.id)) continue;
-			const rect = droppableRects.get(container.id);
-			if (!rect) continue;
-			entries.push({ id: String(container.id), midY: rect.top + rect.height / 2 });
-		}
-
-		entries.sort((a, b) => a.midY - b.midY);
-		if (entries.length === 0) return [];
-
-		// Use a 50% threshold relative to neighbours' midpoints.
-		//
-		// Subtle but important detail:
-		// - When moving DOWN, we must NOT pick "the next item" as soon as we start
-		//   approaching it. We only advance once the dragged BOTTOM has crossed that
-		//   neighbour's midpoint. That means we pick the LAST midpoint we've crossed.
-		// - When moving UP, we symmetrically pick the FIRST midpoint above the dragged
-		//   TOP edge.
-		let overId: string;
-		if (direction === 'down') {
-			overId = entries[0]!.id;
-			for (const entry of entries) {
-				if (entry.midY < referenceY) overId = entry.id;
-				else break;
-			}
-		} else {
-			overId = entries[entries.length - 1]!.id;
-			for (const entry of entries) {
-				if (entry.midY > referenceY) {
-					overId = entry.id;
-					break;
-				}
-			}
-		}
-		return [{ id: overId, data: { value: 0 } }];
-	}, []);
-
-	const onMobileChecklistDragMove = React.useCallback(
-		(event: DndKitDragMoveEvent): void => {
-			mobileDeltaRef.current = { x: event.delta.x, y: event.delta.y };
-			if (mobileAxisLockRef.current === 'none') {
-				const absX = Math.abs(event.delta.x);
-				const absY = Math.abs(event.delta.y);
-				if (absX >= 8 || absY >= 8) {
-					const nextLock: MobileAxisLock = absX > absY * 1.1 ? 'horizontal' : 'vertical';
-					mobileAxisLockRef.current = nextLock;
-					if (nextLock === 'horizontal') {
-						mobileHorizontalDirectionRef.current = event.delta.x >= 0 ? 'right' : 'left';
-					}
-					setMobileAxisLock(nextLock);
-				}
-			}
-			const overId = event.over?.id ? String(event.over.id) : null;
-			if (!overId) return;
-			const nextIndex = activeItems.findIndex((item) => item.id === overId);
-			if (nextIndex === -1 || lastOverIndexRef.current === nextIndex) return;
-			lastOverIndexRef.current = nextIndex;
-			if (mobileAxisLockRef.current !== 'horizontal') vibrateIfAvailable(6);
-		},
-		[activeItems, vibrateIfAvailable]
-	);
-
-	const onMobileChecklistDragEnd = React.useCallback(
-		(event: DndKitDragEndEvent): void => {
-			const activeId = String(event.active.id);
-			const sourceIndex = activeItems.findIndex((item) => item.id === activeId);
-			const overId = event.over?.id ? String(event.over.id) : null;
-			const destinationIndex = overId ? activeItems.findIndex((item) => item.id === overId) : -1;
-
-			const horizontalDirection = mobileHorizontalDirectionRef.current;
-			const isHorizontal = mobileAxisLockRef.current === 'horizontal' && horizontalDirection !== null;
-
-			if (sourceIndex !== -1) {
-				if (isHorizontal) {
-					const nextItems = applyChecklistDragToItems({
-						items: normalizedItems,
-						sourceIndex,
-						destinationIndex: sourceIndex,
-						axis: 'horizontal',
-						horizontalDirection,
-					});
-					replaceChecklistItems(nextItems);
-				} else if (destinationIndex !== -1) {
-					const nextItems = applyChecklistDragToItems({
-						items: normalizedItems,
-						sourceIndex,
-						destinationIndex,
-						axis: 'vertical',
-						horizontalDirection: null,
-					});
-					replaceChecklistItems(nextItems);
-				}
-			}
-
-			lastOverIndexRef.current = null;
-			clearMobileDragState();
-		},
-		[activeItems, clearMobileDragState, normalizedItems, replaceChecklistItems]
 	);
 
 	const onChecklistKeyDown = React.useCallback(
@@ -787,20 +643,27 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			rubric: import('@hello-pangea/dnd').DraggableRubric
 		): React.JSX.Element => {
 			const dragged = activeItems.find((item) => item.id === rubric.draggableId) ?? null;
-			const { rowWidth, textHeight } = dragGhostMetricsRef.current;
+			const { rowWidth, textHeight, textWidth } = dragGhostMetricsRef.current;
 
 			return (
 				<li
 					ref={dragProvided.innerRef}
 					{...dragProvided.draggableProps}
 					className={`${styles.checklistItem} ${styles.rowDragging} ${styles.dragGhost}`}
-					style={{ ...(dragProvided.draggableProps.style ?? {}), zIndex: 120, width: rowWidth ?? undefined, boxSizing: 'border-box' }}
+					style={{ ...(dragProvided.draggableProps.style ?? {}), width: rowWidth ?? undefined, boxSizing: 'border-box' }}
 				>
 					<button type="button" className={styles.dragHandle} aria-label={t('editors.dragHandle')} {...dragProvided.dragHandleProps}>
 						<FontAwesomeIcon icon={faGripVertical} />
 					</button>
 					<input type="checkbox" className={styles.checklistCheckbox} checked={Boolean(dragged?.completed)} readOnly />
-					<textarea value={dragged?.text ?? ''} className={styles.rowTextArea} rows={1} style={{ height: textHeight ?? undefined }} readOnly />
+					{/*
+						Clone sizing:
+						- Fixing width prevents re-wrapping relative to the original row.
+						- Fixing height prevents the clone from shrinking/expanding mid-drag.
+					*/}
+					<div className={styles.dragPreviewText} style={{ height: textHeight ?? undefined, width: textWidth ?? undefined, flex: '0 0 auto' }}>
+						{dragged?.text ?? ''}
+					</div>
 				</li>
 			);
 		},
@@ -819,6 +682,19 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						{t('editors.editing')}: {props.noteId}
 					</div>
 					<div className={styles.fullscreenActions}>
+						<button
+							type="button"
+							onClick={() => {
+								setIsShareOpen(true);
+								setShareError(null);
+								setShareUrl(null);
+								setShareQrDataUrl(null);
+								setShareRequestedForOpen(false);
+							}}
+							disabled={isDeleting}
+						>
+							{t('share.share')}
+						</button>
 						<button type="button" onClick={handleDelete} disabled={isDeleting}>
 							{isDeleting ? t('editors.deleting') : t('editors.delete')}
 						</button>
@@ -828,21 +704,52 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</div>
 				</div>
 
+				{isShareOpen ? (
+					<div className={styles.shareOverlay} role="presentation" onClick={() => setIsShareOpen(false)}>
+						<section
+							className={styles.shareModal}
+							role="dialog"
+							aria-modal="true"
+							aria-label={t('share.title')}
+							onClick={(e) => e.stopPropagation()}
+						>
+							<header className={styles.shareHeader}>
+								<h3 className={styles.shareTitle}>{t('share.title')}</h3>
+								<button type="button" className={styles.shareClose} onClick={() => setIsShareOpen(false)} aria-label={t('common.close')}>
+									✕
+								</button>
+							</header>
+
+							{shareError ? <div className={styles.shareError}>{shareError}</div> : null}
+
+							<div className={styles.shareBody}>
+								{shareQrDataUrl ? (
+									<div className={styles.shareQrWrap}>
+										<img className={styles.shareQr} src={shareQrDataUrl} alt={t('share.qrAlt')} />
+									</div>
+								) : shareBusy ? (
+									<div>{t('common.loading')}</div>
+								) : null}
+							</div>
+						</section>
+					</div>
+				) : null}
+
 				<label className={styles.field}>
 					<span>{t('editors.title')}</span>
 					<input
 						value={title}
-						onChange={(e) => setYTextValue(titleBundle.ytext, e.target.value)}
+						onChange={(e) => setYTextValue(titleYText, e.target.value)}
 						placeholder={t('editors.untitled')}
 					/>
 				</label>
 
-				{type === 'text' && contentBundle ? (
+				{type === 'text' && contentYText ? (
 					<label className={`${styles.field} ${styles.fullBodyFieldContainer}`}>
 						<span>{t('editors.content')}</span>
 						<textarea
 							value={content}
-							onChange={(e) => setYTextValue(contentBundle.ytext, e.target.value)}
+							onChange={(e) => setYTextValue(contentYText, e.target.value)}
 							rows={10}
 							placeholder={t('editors.startTyping')}
 							className={styles.fullBodyField}
@@ -850,7 +757,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</label>
 				) : null}
 
-				{type === 'checklist' && checklist ? (
+				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 						<div className={styles.editorHeader}>
 							<span>{t('editors.checklist')}</span>
@@ -860,68 +767,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						</div>
 
 						<div className={styles.checklistScrollArea}>
-
-						{useMobileDndKit ? (
-							<DndContext
-								sensors={mobileSensors}
-								collisionDetection={mobileVariableHeightCollisionDetection}
-								modifiers={mobileModifiers}
-								onDragStart={onMobileChecklistDragStart}
-								onDragMove={onMobileChecklistDragMove}
-								onDragEnd={onMobileChecklistDragEnd}
-								onDragCancel={() => {
-									lastOverIndexRef.current = null;
-									clearMobileDragState();
-								}}
-							>
-								<SortableContext items={activeItems.map((item) => item.id)} strategy={verticalListSortingStrategy}>
-									<ul className={`${styles.checklistList}${isChecklistDragging ? ` ${styles.listDragging}` : ''}`}>
-										{activeItems.map((item) => {
-											const isParentChild = draggingParentId !== null && item.parentId === draggingParentId;
-											return (
-												<MobileChecklistRow
-													key={item.id}
-													item={item}
-													isDraggingParentChild={isParentChild}
-													isChildHiddenWithParent={isParentChild}
-													onToggleCompleted={toggleChecklistCompleted}
-													onTextChange={(id, text, textarea) => {
-														checklist.updateById(id, { text });
-														autoResizeTextarea(textarea);
-													}}
-													onTextInput={autoResizeTextarea}
-													onTextKeyDown={onChecklistKeyDown}
-													onRemove={removeChecklistItem}
-													setRowInputRef={(id, node) => rowInputsRef.current.set(id, node)}
-													setRowContainerRef={(id, node) => rowContainersRef.current.set(id, node)}
-													removeLabel={t('editors.remove')}
-													dragHandleLabel={t('editors.dragHandle')}
-													axisLock={mobileAxisLock}
-												/>
-											);
-										})}
-									</ul>
-								</SortableContext>
-								<DragOverlay>
-									{mobileActiveId && mobileAxisLock !== 'horizontal' ? (
-										(() => {
-											const dragged = activeItems.find((item) => item.id === mobileActiveId) ?? null;
-											const { rowWidth, textHeight } = dragGhostMetricsRef.current;
-											if (!dragged) return null;
-											return (
-												<li className={`${styles.checklistItem} ${styles.rowDragging} ${styles.dragGhost}`} style={{ zIndex: 120, width: rowWidth ?? undefined, boxSizing: 'border-box' }}>
-													<button type="button" className={styles.dragHandle} aria-label={t('editors.dragHandle')}>
-														<FontAwesomeIcon icon={faGripVertical} />
-													</button>
-													<input type="checkbox" className={styles.checklistCheckbox} checked={Boolean(dragged.completed)} readOnly />
-													<textarea value={dragged.text} className={styles.rowTextArea} rows={1} style={{ height: textHeight ?? undefined }} readOnly />
-												</li>
-											);
-										})()
-									) : null}
-								</DragOverlay>
-							</DndContext>
-						) : (
 							<DragDropContext
 								enableDefaultSensors={false}
 								sensors={immediateChecklistSensors}
@@ -952,7 +797,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 															aria-label={t('editors.dragHandle')}
 															style={{
 																...(dragProvided.draggableProps.style ?? {}),
-																zIndex: snapshot.isDragging ? 80 : 1,
 															}}
 														>
 															<button
@@ -974,7 +818,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																ref={(node) => rowInputsRef.current.set(item.id, node)}
 																value={item.text}
 																onChange={(event) => {
-																	checklist.updateById(item.id, { text: event.target.value });
+																	updateChecklistItemById(checklistArray, item.id, { text: event.target.value });
 																	autoResizeTextarea(event.currentTarget);
 																}}
 																onInput={(event) => autoResizeTextarea(event.currentTarget)}
@@ -1000,7 +844,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									)}
 								</Droppable>
 							</DragDropContext>
-						)}
+							
 
 						{completedItems.length > 0 ? (
 							<section className={styles.completedSection}>
@@ -1027,7 +871,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 												<textarea
 													value={item.text}
 													onChange={(event) => {
-														checklist.updateById(item.id, { text: event.target.value });
+															updateChecklistItemById(checklistArray, item.id, { text: event.target.value });
 														autoResizeTextarea(event.currentTarget);
 													}}
 													onInput={(event) => autoResizeTextarea(event.currentTarget)}
