@@ -40,9 +40,19 @@ type DraggingState = {
 type SensorState = IdleState | PendingState | DraggingState;
 
 const idleState: IdleState = { type: 'idle' };
+// Gesture classification thresholds:
+// While we're in `pending` we haven't started a library drag yet — we're watching
+// early movement to decide whether the user intends:
+// - vertical reorder (start a normal @hello-pangea/dnd drag), OR
+// - horizontal indent/unindent (fire our snap callback and abort the library drag).
+//
+// Small jitter is ignored so click/tap doesn't accidentally become a drag.
 const axisThresholdPx = 6;
-// On touch devices fingers are wide — require a stronger horizontal signal
-// before classifying as indent/unindent so vertical drag isn't mis-detected.
+
+// On touch devices fingers are wide and initial movement is noisier.
+// We require a stronger horizontal signal (dx must beat dy by this factor)
+// before we treat the gesture as indent/unindent. This prevents accidental
+// un-indents when the intent was a vertical reorder.
 const touchHorizontalBias = 1.8;
 
 function shouldDebugLog(): boolean {
@@ -112,6 +122,24 @@ type TouchSensorState = TouchIdleState | TouchPendingState | TouchDraggingState;
 
 const touchIdleState: TouchIdleState = { type: 'idle' };
 
+function findDragHandleElement(target: Element | null): Element | null {
+	if (!target) return null;
+	return (
+		target.closest('[data-rfd-drag-handle-draggable-id]') ??
+		target.closest('[data-rbd-drag-handle-draggable-id]') ??
+		null
+	);
+}
+
+function getDragHandleDraggableId(handle: Element | null): string | null {
+	if (!handle) return null;
+	return (
+		handle.getAttribute('data-rfd-drag-handle-draggable-id') ??
+		handle.getAttribute('data-rbd-drag-handle-draggable-id') ??
+		null
+	);
+}
+
 function useImmediateTouchSensor(api: SensorAPI): void {
 	const apiRef = React.useRef(api);
 	apiRef.current = api;
@@ -159,6 +187,10 @@ function useImmediateTouchSensor(api: SensorAPI): void {
 			const onTouchMove = (event: TouchEvent): void => {
 				const phase = stateRef.current;
 				if (phase.type === 'idle') return;
+				if (!phase.actions.isActive()) {
+					reset();
+					return;
+				}
 				const touch = getTouchById(event, phase.touchId);
 				if (!touch) return;
 
@@ -212,6 +244,10 @@ function useImmediateTouchSensor(api: SensorAPI): void {
 				const phase = stateRef.current;
 				if (phase.type === 'idle') return;
 				event.preventDefault();
+				if (!phase.actions.isActive()) {
+					reset();
+					return;
+				}
 				if (phase.type === 'pending') {
 					phase.actions.abort();
 					reset();
@@ -249,7 +285,6 @@ function useImmediateTouchSensor(api: SensorAPI): void {
 			document.addEventListener('touchcancel', onTouchCancel, options);
 			window.addEventListener('keydown', onKeyDown, options);
 			window.addEventListener('contextmenu', onContextMenu, options);
-			window.addEventListener('resize', onVisibilityChange, options);
 			document.addEventListener('visibilitychange', onVisibilityChange, options);
 
 			unbindRef.current = (): void => {
@@ -261,7 +296,6 @@ function useImmediateTouchSensor(api: SensorAPI): void {
 				document.removeEventListener('touchcancel', onTouchCancel, options);
 				window.removeEventListener('keydown', onKeyDown, options);
 				window.removeEventListener('contextmenu', onContextMenu, options);
-				window.removeEventListener('resize', onVisibilityChange, options);
 				document.removeEventListener('visibilitychange', onVisibilityChange, options);
 			};
 		},
@@ -283,10 +317,12 @@ function useImmediateTouchSensor(api: SensorAPI): void {
 
 			const currentApi = apiRef.current;
 			const rawTarget = event.target instanceof Element ? event.target : null;
-			const domDraggableId =
-				rawTarget?.closest('[data-rbd-drag-handle-draggable-id]')?.getAttribute('data-rbd-drag-handle-draggable-id') ??
-				rawTarget?.closest('[data-rbd-draggable-id]')?.getAttribute('data-rbd-draggable-id') ??
-				null;
+			const domDragHandle = findDragHandleElement(rawTarget);
+			if (!domDragHandle) {
+				if (shouldDebugLog()) console.log('[DND sensor] touchstart ignored: outside drag handle');
+				return;
+			}
+			const domDraggableId = getDragHandleDraggableId(domDragHandle);
 			const apiDraggableId = currentApi.findClosestDraggableId(event);
 			const draggableId = domDraggableId ?? apiDraggableId;
 			if (!draggableId) {
@@ -398,6 +434,13 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 				});
 			}
 
+			// Pointer capture (critical on mobile):
+			// On some browsers the first touch-drag can get “stolen” by scrolling/overscroll,
+			// and we stop receiving pointermove events while the library is still in its
+			// pre-drag phase. Capturing the pointer keeps move/up events routed to our
+			// handler until we either:
+			// - abort (horizontal snap / click), or
+			// - lift into a real drag.
 			if (captureTarget && 'setPointerCapture' in captureTarget) {
 				try {
 					(captureTarget as HTMLElement).setPointerCapture(pointerId);
@@ -410,6 +453,11 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 				const phase = stateRef.current;
 				if (phase.type === 'idle') return;
 				if (event.pointerId !== phase.pointerId) return;
+				if (!phase.actions.isActive()) {
+					if (phase.type !== 'idle') releasePointerCapture(phase);
+					reset();
+					return;
+				}
 
 				if (phase.type === 'pending') {
 					event.preventDefault();
@@ -461,6 +509,11 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 				const phase = stateRef.current;
 				if (phase.type === 'idle') return;
 				if (event.pointerId !== phase.pointerId) return;
+				if (!phase.actions.isActive()) {
+					releasePointerCapture(phase);
+					reset();
+					return;
+				}
 
 				if (phase.type === 'pending') {
 					phase.actions.abort();
@@ -518,7 +571,6 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 			}
 			window.addEventListener('keydown', onKeyDown, options);
 			window.addEventListener('contextmenu', onContextMenu, options);
-			window.addEventListener('resize', onVisibilityChange, options);
 			document.addEventListener('visibilitychange', onVisibilityChange, options);
 
 			unbindRef.current = (): void => {
@@ -529,7 +581,6 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 				}
 				window.removeEventListener('keydown', onKeyDown, options);
 				window.removeEventListener('contextmenu', onContextMenu, options);
-				window.removeEventListener('resize', onVisibilityChange, options);
 				document.removeEventListener('visibilitychange', onVisibilityChange, options);
 			};
 		},
@@ -548,17 +599,17 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 					tag: rawTarget ? (rawTarget as HTMLElement).tagName : null,
 				});
 			}
-			// Touch pointers use the TouchEvent sensor to avoid Android pointercancel.
-			if (event.pointerType === 'touch') return;
 			// For mouse, only left button should start drag.
 			if (event.pointerType === 'mouse' && event.button !== 0) return;
 			const rawTarget = event.target instanceof Element ? event.target : null;
+			const domDragHandle = findDragHandleElement(rawTarget);
+			if (!domDragHandle) {
+				if (shouldDebugLog()) console.log('[DND sensor] pointerdown ignored: outside drag handle');
+				return;
+			}
 
 			const currentApi = apiRef.current;
-			const domDraggableId =
-				rawTarget?.closest('[data-rbd-drag-handle-draggable-id]')?.getAttribute('data-rbd-drag-handle-draggable-id') ??
-				rawTarget?.closest('[data-rbd-draggable-id]')?.getAttribute('data-rbd-draggable-id') ??
-				null;
+			const domDraggableId = getDragHandleDraggableId(domDragHandle);
 			const apiDraggableId = currentApi.findClosestDraggableId(event);
 			const draggableId = domDraggableId ?? apiDraggableId;
 			if (!draggableId) {
@@ -587,10 +638,7 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 			// Prefer capturing on the actual drag-handle element so:
 			// - `touch-action: none` on the handle reliably applies
 			// - pointer capture doesn't attach to inner SVG/path nodes
-			const handleTarget =
-				rawTarget?.closest('[data-rbd-drag-handle-draggable-id]') ??
-				rawTarget?.closest('[data-rbd-draggable-id]') ??
-				rawTarget;
+			const handleTarget = domDragHandle;
 			const captureTarget = handleTarget;
 			startPending(
 				actions,
@@ -615,4 +663,27 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 	}, [onPointerDownCapture, setState, stopListening]);
 }
 
-export const immediateChecklistSensors: Sensor[] = [useImmediateTouchSensor, useImmediatePointerSensor, useKeyboardSensor];
+/**
+ * Prevent native touch behaviours (scroll, pull-to-refresh) on drag handles
+ * so the PointerEvent sensor can capture the gesture reliably.
+ * We listen at the document level in the capture phase and call preventDefault
+ * when the touch lands on a recognised drag handle.
+ */
+function usePreventNativeTouchOnHandle(_api: SensorAPI): void {
+	const handler = React.useCallback((event: TouchEvent): void => {
+		const target = event.target instanceof Element ? event.target : null;
+		if (findDragHandleElement(target)) {
+			event.preventDefault();
+		}
+	}, []);
+
+	React.useLayoutEffect(() => {
+		const options: AddEventListenerOptions = { capture: true, passive: false };
+		document.addEventListener('touchstart', handler, options);
+		return () => {
+			document.removeEventListener('touchstart', handler, options);
+		};
+	}, [handler]);
+}
+
+export const immediateChecklistSensors: Sensor[] = [usePreventNativeTouchOnHandle, useImmediatePointerSensor, useKeyboardSensor];

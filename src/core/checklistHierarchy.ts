@@ -116,18 +116,29 @@ function applyHorizontalDrag(
 		// Already a child → can't nest deeper (max 1 level).
 		if (dragged.parentId) return items;
 
-		// A parent with children can't be indented (would exceed 1-deep).
-		if (getChildIds(items, dragged.id).length > 0) return items;
-
 		// Find the nearest top-level parent to attach to.
 		const above = items[sourceIndex - 1];
 		if (!above) return items;
 		const parentId = above.parentId ?? above.id;
 		if (parentId === dragged.id) return items; // self-parent guard
 
-		return items.map((item) =>
-			item.id === dragged.id ? { ...item, parentId } : item,
-		);
+		// Indenting a “parent” that already has children:
+		// The UI supports at most one nesting level (parent → child). If we simply
+		// set `dragged.parentId = parentId` while leaving its existing children
+		// pointing at `dragged.id`, we would create a 2-deep chain
+		// (grandparent → dragged → children) that the rest of the editor does not
+		// represent or render correctly.
+		//
+		// Instead, when a top-level item with children is indented, we keep the
+		// hierarchy 1-deep by re-parenting *its* children to the new parent as well
+		// (the “grandparent” from the dragged item’s perspective).
+		const childIds = new Set(getChildIds(items, dragged.id));
+
+		return items.map((item) => {
+			if (item.id === dragged.id) return { ...item, parentId };
+			if (childIds.has(item.id)) return { ...item, parentId };
+			return item;
+		});
 	}
 
 	if (direction === 'left') {

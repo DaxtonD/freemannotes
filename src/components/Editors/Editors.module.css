@@ -62,12 +62,11 @@
 	display: flex;
 	gap: var(--space-2);
 	align-items: flex-start;
-	padding: 3px 6px;
+	padding: 6px;
 	width: 100%;
 	box-sizing: border-box;
 	border-radius: var(--radius-md);
 	background: transparent;
-	touch-action: pan-y;
 	user-select: none;
 	-webkit-user-select: none;
 	transition: background-color var(--transition-fast);
@@ -84,23 +83,103 @@
 
 .fullscreenOverlay {
 	position: fixed;
-	inset: 0;
-	z-index: 105;
+	left: 0;
+	right: 0;
+	top: 0;
+	bottom: 0;
+	/*
+		Must sit above the sticky app header (z-index ~120) and the mobile sidebar
+		drawer/backdrop (z-index ~129-130). If you introduce new fixed layers,
+		keep this above them so editors are always top-most.
+	*/
+	z-index: 220;
 	background: var(--color-overlay);
-	display: flex;
-	justify-content: center;
+	/* Subtle background blur so the app behind reads as inactive. */
+	backdrop-filter: blur(6px);
+	-webkit-backdrop-filter: blur(6px);
+	/*
+		Use CSS grid instead of flex so desktop can reserve a fixed top offset row
+		(header + create buttons), and the editor occupies the remaining viewport.
+		This avoids checklist editor overflow issues that can happen with padding +
+		percentage/viewport height math.
+	*/
+	display: grid;
+	grid-template-columns: 1fr;
+	grid-template-rows: 1fr;
+	justify-items: center;
 	align-items: stretch;
+	overflow: hidden;
 }
 
 .fullscreenEditor {
 	width: min(960px, 100%);
+	grid-row: 1;
 	height: 100%;
+	max-height: 100%;
+	/*
+		Critical for preventing bottom overflow:
+		Grid/flex children default to `min-height: auto`, which can make the item refuse
+		to shrink and instead overflow past the viewport (checklist editor is the most
+		visible case). For scrollable editor bodies, we must allow shrinking.
+	*/
+	min-height: 0;
+	box-sizing: border-box;
 	background: var(--color-surface);
 	padding: 16px;
 	display: flex;
 	flex-direction: column;
 	gap: 12px;
 	overflow: hidden;
+}
+
+@media (max-width: 900px) {
+	.fullscreenOverlay {
+		/* Mobile: editors must cover everything (header/search/sidebar). */
+		/* iOS notch / safe area */
+		padding-top: env(safe-area-inset-top, 0px);
+		padding-bottom: env(safe-area-inset-bottom, 0px);
+	}
+
+	.fullscreenEditor {
+		/*
+			Use dynamic viewport units so the editor never runs past the visible
+			viewport on desktop-as-narrow-window and mobile browsers with dynamic
+			UI chrome. Percentage heights inside fixed/grid containers can drift.
+		*/
+		height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+	}
+}
+
+@media (min-width: 901px) {
+	.fullscreenOverlay {
+		/*
+			Desktop: keep the app header and creation buttons visible.
+			`--app-editor-top-offset` is measured in App.tsx as the bottom of `.top-actions`.
+			Important: the overlay itself stays full-viewport so it can:
+			- disable clicks everywhere outside the editor
+			- apply a blur to the entire app background
+		*/
+		/*
+			Desktop layout:
+			- Row 1: reserved space above the editor (header only)
+			- Row 2: editor fills the remaining viewport height
+			
+			This guarantees the editor bottom never runs past the window.
+		*/
+		padding-top: 0;
+		grid-template-rows: var(--app-header-offset, 0px) minmax(0, 1fr);
+	}
+
+	.fullscreenEditor {
+		grid-row: 2;
+		/*
+			Clamp editor size to the viewport explicitly so heavy checklist DOM
+			can't accidentally force an overflow past the bottom edge.
+		*/
+		height: calc(100dvh - var(--app-header-offset, 0px));
+		max-height: calc(100dvh - var(--app-header-offset, 0px));
+	}
 }
 
 .fullscreenHeader {
@@ -118,6 +197,99 @@
 .fullscreenActions {
 	display: flex;
 	gap: var(--space-2);
+}
+
+.shareOverlay {
+	position: fixed;
+	inset: 0;
+	/* Must sit above the fullscreen editor overlay. */
+	z-index: 240;
+	background: color-mix(in srgb, var(--color-overlay) 80%, transparent);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+}
+
+.shareModal {
+	width: min(720px, 100%);
+	background: linear-gradient(180deg, var(--color-surface), var(--color-surface-2));
+	border: 1px solid var(--color-border);
+	border-radius: 14px;
+	box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
+	padding: 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.shareHeader {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.shareTitle {
+	margin: 0;
+	font-size: 18px;
+}
+
+.shareClose {
+	border: 0;
+	font-size: 22px;
+	line-height: 1;
+	padding: 0;
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	cursor: pointer;
+	background: transparent;
+	color: var(--color-text);
+}
+
+.shareError {
+	border: 1px solid color-mix(in srgb, var(--color-danger) 55%, var(--color-border));
+	background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+	border-radius: 10px;
+	padding: 10px 12px;
+	color: var(--color-text);
+}
+
+.shareBody {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.shareUrlRow {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.shareUrlInput {
+	flex: 1;
+	min-width: 0;
+	height: 36px;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	background: var(--color-surface);
+	color: var(--color-input-text);
+	padding: 0 10px;
+}
+
+.shareQrWrap {
+	display: flex;
+	justify-content: center;
+}
+
+.shareQr {
+	width: 240px;
+	height: 240px;
+	border-radius: 12px;
+	border: 1px solid var(--color-border);
+	background: white;
 }
 
 .fullBodyField {
@@ -145,6 +317,7 @@
 	min-height: 0;
 	overflow-y: auto;
 	overflow-x: hidden;
+	overscroll-behavior-y: contain;
 	padding-bottom: 6px;
 }
 
@@ -158,17 +331,23 @@
 	width: 100%;
 }
 
+/*
+Checklist row layout (multiline-friendly):
+- Use `align-items: flex-start` so the drag handle + checkbox visually align to
+  the first line of text when items wrap.
+- Keep everything in a single flex row so the width we measure for the drag
+  clone matches the on-screen row.
+*/
 .checklistComposerRow {
 	display: flex;
 	align-items: flex-start;
 	gap: 8px;
-	padding: 3px 6px;
+	padding: 6px;
 	width: 100%;
 	box-sizing: border-box;
 	border: 0;
 	border-radius: var(--radius-md);
 	background: transparent;
-	touch-action: pan-y;
 	user-select: none;
 	-webkit-user-select: none;
 	transition: background-color var(--transition-fast);
@@ -182,21 +361,31 @@
 	background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
 }
 
+/*
+Drag handle:
+- `touch-action: none` and pointer-based sensors (see `dndSensors.ts`) work
+  together to prevent scroll from stealing the first drag on mobile.
+- `padding-top` is tuned so the grip icon aligns with the first text line.
+*/
 .dragHandle {
-	width: 20px;
-	height: 20px;
-	min-width: 20px;
+	width: 36px;
+	height: 36px;
+	min-width: 36px;
 	display: inline-flex;
-	align-items: center;
+	align-items: flex-start;
 	justify-content: center;
+	padding-top: 7px;
+	box-sizing: border-box;
 	border: 0;
 	border-radius: var(--radius-sm);
 	background: transparent;
 	font-size: 14px;
 	cursor: grab;
 	touch-action: none;
+	-webkit-touch-callout: none;
+	-webkit-tap-highlight-color: transparent;
 	user-select: none;
-	margin-top: 4px;
+	margin-top: 0;
 }
 
 .dragHandle svg {
@@ -216,9 +405,9 @@
 	width: 20px;
 	height: 20px;
 	min-width: 20px;
+	margin-top: 3px;
 	accent-color: var(--color-accent);
 	cursor: pointer;
-	margin-top: 4px;
 }
 
 .rowRemoveButton {
@@ -249,6 +438,12 @@
 
 .rowTextArea {
 	flex: 1;
+	/*
+	Allow wrapping inside a flex row:
+	`min-width: 0` is required so long text can wrap instead of forcing the row
+	to overflow, and so the drag clone width calculations remain stable.
+	*/
+	min-width: 0;
 	min-height: 26px;
 	padding: 4px 6px;
 	line-height: 1.35;
@@ -279,8 +474,15 @@
 	background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
 }
 
+/*
+Drag ghost:
+- Keep opacity at 1 with a solid background so the clone is legible and doesn't
+  visually blend into underlying rows.
+- Shadow is intentionally strong to separate the dragged item from the list.
+*/
 .dragGhost {
 	opacity: 1;
+	background: var(--color-surface-2);
 	box-shadow: 0 12px 28px -10px rgba(0, 0, 0, 0.75);
 }
 
@@ -289,6 +491,11 @@
 .listDragging .checklistItem:hover,
 .listDragging .checklistItem:focus-within {
 	background: transparent;
+}
+
+.listDragging {
+	touch-action: none;
+	overscroll-behavior: contain;
 }
 
 .childRow {
