@@ -1,9 +1,100 @@
 .test-harness-root {
+	--app-header-height: 56px;
+	--app-safe-top: env(safe-area-inset-top, 0px);
+	--app-header-total-height: calc(var(--app-header-height) + var(--app-safe-top));
 	display: flex;
 	flex-direction: column;
-	gap: var(--space-3);
-	padding: calc(var(--space-3) + 36px) var(--space-3) var(--space-3) var(--space-3);
+	min-height: 100dvh;
+	padding: 0;
 	box-sizing: border-box;
+	overscroll-behavior-x: contain;
+}
+
+.app-header {
+	position: sticky;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 120;
+	padding-top: var(--app-safe-top);
+	padding-left: var(--space-3);
+	padding-right: var(--space-3);
+	padding-bottom: var(--space-2);
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-2);
+	background: var(--color-app-bg);
+}
+
+.app-header-toprow {
+	height: var(--app-header-height);
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--space-3);
+	transition: opacity 180ms ease, transform 180ms ease, height 180ms ease;
+}
+
+.app-header-left {
+	display: inline-flex;
+	align-items: center;
+	gap: var(--space-2);
+}
+
+.app-header-logo {
+	width: 40px;
+	height: 40px;
+	object-fit: contain;
+	display: block;
+}
+
+
+.app-header-search {
+	min-width: 0;
+	display: flex;
+	justify-content: center;
+}
+
+.app-header-searchrow {
+	min-width: 0;
+	display: flex;
+	justify-content: center;
+	transition: transform 180ms ease;
+}
+
+.app-header-search-input {
+	width: min(560px, 100%);
+	height: 40px;
+	padding: 0 12px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface);
+	color: var(--color-input-text);
+	min-width: 0;
+}
+
+.app-header-right {
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: var(--space-2);
+}
+
+.app-icon-button {
+	width: 40px;
+	height: 40px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: var(--color-surface-2);
+	color: var(--color-text);
+}
+
+.app-icon-button svg {
+	width: 18px;
+	height: 18px;
 }
 
 .auth-shell {
@@ -111,55 +202,31 @@
 }
 
 .app-shell {
+	flex: 1 1 auto;
+	min-height: 0;
 	display: grid;
-	grid-template-columns: 220px minmax(0, 1fr);
-	gap: var(--space-3);
-	min-height: calc(100dvh - (var(--space-3) * 2) - 36px);
+	grid-template-columns: 260px minmax(0, 1fr);
+	gap: 0;
 }
 
 .app-shell.sidebar-collapsed {
-	grid-template-columns: 60px minmax(0, 1fr);
+	grid-template-columns: 72px minmax(0, 1fr);
 }
 
 .app-sidebar {
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-2);
-	border-right: 1px solid var(--color-border);
-	padding-right: var(--space-2);
+	border-right: 0;
+	padding: var(--space-3) var(--space-2);
 	min-width: 0;
+	background: var(--color-app-bg);
 }
 
 .app-sidebar.is-collapsed {
-	grid-template-columns: 60px;
-	width: 60px;
-}
-
-.app-sidebar-header {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: var(--space-2);
-	min-height: 36px;
-}
-
-.app-sidebar-toggle {
-	width: 32px;
-	height: 32px;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-sm);
-	background: var(--color-surface-2);
-	color: var(--color-text);
-}
-
-.app-sidebar-logo {
-	font-weight: 700;
-	font-size: var(--font-size-md);
-	letter-spacing: 0.04em;
-	color: var(--color-text);
+	width: 72px;
+	padding-left: 10px;
+	padding-right: 10px;
 }
 
 .app-sidebar-nav {
@@ -173,19 +240,60 @@
 	align-items: center;
 	width: 100%;
 	border: 0;
-	padding: 8px 10px;
+	padding: 10px 12px;
 	border-radius: var(--radius-sm);
 	background: transparent;
 	color: var(--color-text);
 	text-align: left;
+	gap: 10px;
 }
 
 .app-sidebar-link:hover {
 	background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
 }
 
-.app-sidebar.is-collapsed .app-sidebar-logo,
+.sidebar-disclosure {
+	width: 14px;
+	display: inline-flex;
+	justify-content: center;
+}
+
+.sidebar-disclosure-icon {
+	display: inline-flex;
+	transition: transform 160ms ease;
+	opacity: 0.8;
+}
+
+.sidebar-disclosure-icon.is-open {
+	transform: rotate(90deg);
+}
+
+.sidebar-icon {
+	width: 20px;
+	display: none;
+	align-items: center;
+	justify-content: center;
+}
+
+.sidebar-label {
+	min-width: 0;
+}
+
 .app-sidebar.is-collapsed .app-sidebar-link {
+	justify-content: center;
+	padding: 10px 8px;
+}
+
+.app-sidebar.is-collapsed .sidebar-label,
+.app-sidebar.is-collapsed .sidebar-disclosure {
+	display: none;
+}
+
+.app-sidebar.is-collapsed .sidebar-icon {
+	display: inline-flex;
+}
+
+.app-sidebar:not(.is-collapsed) .sidebar-icon {
 	display: none;
 }
 
@@ -194,35 +302,8 @@
 	flex-direction: column;
 	gap: var(--space-3);
 	min-width: 0;
-}
-
-.app-topbar {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
-	align-items: center;
-	gap: var(--space-3);
-}
-
-.app-topbar-search-wrap {
-	display: flex;
-	justify-content: center;
-	min-width: 0;
-}
-
-.app-topbar-search {
-	width: min(560px, 100%);
-	height: 34px;
-	padding: 0 10px;
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-sm);
-	background: var(--color-surface);
-	color: var(--color-input-text);
-}
-
-.app-topbar-right {
-	display: inline-flex;
-	align-items: center;
-	gap: var(--space-2);
+	padding: var(--space-3);
+	overscroll-behavior-x: contain;
 }
 
 .top-actions {
@@ -268,22 +349,52 @@
 }
 
 .avatar-trigger {
-	width: 34px;
-	height: 34px;
+	width: 40px;
+	height: 40px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	border-radius: 50%;
+	border-radius: var(--radius-sm);
 	border: 1px solid var(--color-border);
 	background: var(--color-surface-2);
+	overflow: hidden;
+	padding: 0;
 }
 
 .avatar-img {
 	width: 100%;
 	height: 100%;
-	border-radius: 50%;
+	border-radius: var(--radius-sm);
 	object-fit: cover;
 	display: block;
+}
+
+.mobile-sidebar-backdrop {
+	position: fixed;
+	inset: 0;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	border: 0;
+	padding: 0;
+	margin: 0;
+	background: color-mix(in srgb, var(--color-app-bg) 48%, transparent);
+	backdrop-filter: blur(4px);
+	-webkit-backdrop-filter: blur(4px);
+	z-index: 129;
+}
+
+.mobile-swipe-zone {
+	position: fixed;
+	left: 0;
+	top: var(--app-header-offset, var(--app-header-total-height));
+	bottom: 0;
+	width: 18px;
+	z-index: 100;
+	background: transparent;
+	touch-action: pan-y;
+	-webkit-user-select: none;
+	user-select: none;
 }
 
 .mobile-fab-backdrop {
@@ -378,30 +489,155 @@
 }
 
 @media (max-width: 900px) {
-	.test-harness-root {
-		padding-top: var(--space-3);
+	/*
+		Mobile header/search morph implementation notes
+		-----------------------------------------------
+		Goal: animate the *same* search input from the row below the header into the
+		top header row when the user scrolls.
+
+		Key design choices (browser stability):
+		- We absolutely position the mobile search row inside the header so moving it
+		  does NOT reflow the document content.
+		- Collapsed mode reduces header padding-bottom (because the search lives in
+		  the top row). This does change layout height, which can be a source of scroll
+		  jitter in Chrome; the JS uses a scroll-delta model + a short lock to prevent
+		  oscillation.
+
+		Where to tune per-browser:
+		- Search insets in collapsed mode: left/right values in
+		  `.mobile-header-collapsed .app-header-searchrow.mobile-searchrow`
+		- Optical vertical centering: `--mobile-header-vshift`
+		- Transition speeds: the `transition:` rules on the mobile elements
+	*/
+
+	:root {
+		/* Optical centering tweak for mobile header controls. */
+		--mobile-header-vshift: 7px;
 	}
 
-	.app-shell {
-		display: flex;
-		flex-direction: column;
-		min-height: auto;
+	.app-header {
+		padding-left: var(--space-2);
+		padding-right: var(--space-2);
+		gap: 0;
+		position: sticky;
+		/* Reserve space for the below-header search row (which is absolutely positioned). */
+		padding-bottom: calc(var(--space-2) + 40px);
+		transition: padding-bottom 240ms ease;
 	}
 
-	.app-sidebar {
-		display: none;
-	}
-
-	.app-topbar {
-		grid-template-columns: minmax(0, 1fr);
-	}
-
-	.app-topbar-search {
+	.app-header-search-input {
 		width: 100%;
 	}
 
-	.app-topbar-right {
-		justify-content: flex-end;
+	.app-header-toprow.mobile-toprow {
+		position: relative;
+		height: var(--app-header-height);
+		display: block;
+	}
+
+	.mobile-sidebar-btn {
+		position: absolute;
+		left: 0;
+		top: calc(50% + var(--mobile-header-vshift));
+		transform: translateY(-50%);
+	}
+
+	.mobile-app-icon {
+		position: absolute;
+		left: calc(40px + var(--space-2));
+		top: calc(50% + var(--mobile-header-vshift));
+		transform: translateY(-50%);
+		transition: opacity 220ms ease, transform 220ms ease;
+		transform-origin: left center;
+	}
+
+	.mobile-appgrid-btn {
+		position: absolute;
+		right: calc(40px + var(--space-2));
+		top: calc(50% + var(--mobile-header-vshift));
+		transform: translateY(-50%) translateX(0);
+		transition: transform 240ms ease;
+	}
+
+	.mobile-avatar-btn {
+		position: absolute;
+		right: 0;
+		top: calc(50% + var(--mobile-header-vshift));
+		transform: translateY(-50%) translateX(0);
+		transition: opacity 220ms ease, transform 220ms ease;
+	}
+
+	.app-header-searchrow.mobile-searchrow {
+		/*
+			Important for Chrome/Safari stability:
+			- The search row is positioned within the header so it can animate without
+			  pushing/pulling page content (minimizes scroll jitter).
+			- We move it by animating `top/left/right` which is deterministic and aligns
+			  with the other absolutely positioned header controls.
+		*/
+		position: absolute;
+		left: 0;
+		right: 0;
+		top: calc(var(--app-header-height) + var(--space-2));
+		transition: top 240ms ease, left 240ms ease, right 240ms ease;
+		will-change: top, left, right;
+	}
+
+	.test-harness-root.mobile-header-collapsed .app-header {
+		/* In collapsed mode, search lives in the top row, so we don't need the full reserved space. */
+		padding-bottom: 8px;
+	}
+
+	.test-harness-root.mobile-header-collapsed .mobile-app-icon {
+		opacity: 0;
+		transform: translateY(-50%) translateX(-6px) scale(0.96);
+		pointer-events: none;
+	}
+
+	.test-harness-root.mobile-header-collapsed .mobile-avatar-btn {
+		opacity: 0;
+		transform: translateY(-50%) translateX(12px);
+		pointer-events: none;
+	}
+
+	/* Slide app-grid into the avatar's slot as avatar disappears. */
+	.test-harness-root.mobile-header-collapsed .mobile-appgrid-btn {
+		transform: translateY(-50%) translateX(calc(40px + var(--space-2)));
+	}
+
+	/* Morph the search bar into the header between sidebar and app-grid. */
+	.test-harness-root.mobile-header-collapsed .app-header-searchrow.mobile-searchrow {
+		/* Center vertically within the header with a touch more breathing room. */
+		top: calc((var(--app-header-height) - 40px) / 2 + var(--mobile-header-vshift));
+		/* Extra inset so the search isn't tight to the edges. */
+		left: calc(40px + var(--space-3));
+		right: calc(40px + var(--space-3));
+	}
+
+	.app-shell {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.app-sidebar {
+		position: fixed;
+		top: 0;
+		left: 0;
+		bottom: 0;
+		width: min(86vw, 320px);
+		transform: translateX(-105%);
+		transition: transform 220ms ease;
+		z-index: 130;
+		box-shadow: 24px 0 40px -30px color-mix(in srgb, var(--color-text) 55%, transparent);
+		border-right: 0;
+		padding-top: calc(var(--app-safe-top) + var(--space-3));
+	}
+
+	.app-sidebar.is-mobile-open {
+		transform: translateX(0);
+	}
+
+	.app-main {
+		padding: var(--space-3);
 	}
 
 	.top-actions {
@@ -410,6 +646,32 @@
 }
 
 @media (min-width: 901px) {
+	.app-header {
+		height: var(--app-header-total-height);
+		padding-bottom: 0;
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.app-header-toprow {
+		height: auto;
+		display: contents;
+		transition: none;
+	}
+
+	.app-header-searchrow {
+		grid-column: 2;
+		justify-content: center;
+		transition: none;
+		transform: none;
+	}
+
+	.mobile-swipe-zone {
+		display: none;
+	}
+
 	.mobile-fab,
 	.mobile-fab-stack,
 	.mobile-fab-backdrop {

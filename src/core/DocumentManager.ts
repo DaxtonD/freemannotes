@@ -60,6 +60,16 @@ export class DocumentManager {
 	private readonly websocketReadyPromises = new Map<string, Promise<void>>();
 	private readonly websocketUrl: string;
 	private websocketEnabled: boolean;
+	// Active workspace ID used to namespace Yjs room names.
+	//
+	// Why namespacing matters:
+	// - The server persists documents by Yjs room name (docId) and the schema
+	//   enforces docId uniqueness globally.
+	// - Multi-workspace support therefore requires room names to be unique per
+	//   workspace (e.g. "<workspaceId>:__notes_registry__").
+	// - Namespacing the room name also keeps the client-side IndexedDB cache
+	//   separated per workspace.
+	private activeWorkspaceId: string | null = null;
 	private readonly internalOrigin = Symbol('DocumentManagerInternal');
 	// Dedicated origin for automatic updatedAt timestamp writes.
 	// Used to tag afterTransaction callbacks so they do not recursively re-trigger
@@ -163,6 +173,22 @@ export class DocumentManager {
 		this.initializeRegistry();
 	}
 
+	public setActiveWorkspaceId(workspaceId: string | null): void {
+		const normalized = typeof workspaceId === 'string' ? workspaceId.trim() : '';
+		const next = normalized.length > 0 ? normalized : null;
+		if (this.activeWorkspaceId === next) return;
+
+		// Workspace switching must hard-reset all room-level resources.
+		// IndexedDB room names + WebSocket room names are derived from the active
+		// workspace ID, so reusing providers across workspaces would mix data.
+		this.teardownAllRooms();
+		this.activeWorkspaceId = next;
+		this.registryHydrated = false;
+		this.updateConnectionState();
+		this.emitConnectionStatus();
+		this.initializeRegistry();
+	}
+
 	public setWebsocketEnabled(enabled: boolean): void {
 		// This is intentionally idempotent and safe to call frequently.
 		// The App uses it to turn sync on/off based on authentication state.
@@ -191,7 +217,8 @@ export class DocumentManager {
 	}
 
 	public hasDoc(noteId: string): boolean {
-		return this.docs.has(this.normalizeNoteId(noteId));
+		const raw = this.normalizeNoteId(noteId);
+		return this.docs.has(this.roomNameFor(raw));
 	}
 
 	public subscribeConnectionStatus(listener: () => void): () => void {
@@ -206,7 +233,8 @@ export class DocumentManager {
 	}
 
 	public getDoc(noteId: string): Y.Doc {
-		const key = this.normalizeNoteId(noteId);
+		const raw = this.normalizeNoteId(noteId);
+		const key = this.roomNameFor(raw);
 
 		const existing = this.docs.get(key);
 		if (existing) {
@@ -227,8 +255,9 @@ export class DocumentManager {
 	}
 
 	public async getDocReady(noteId: string): Promise<Y.Doc> {
-		const key = this.normalizeNoteId(noteId);
-		const doc = this.getDoc(key);
+		const raw = this.normalizeNoteId(noteId);
+		const doc = this.getDoc(raw);
+		const key = this.roomNameFor(raw);
 		const ready = this.readyPromises.get(key);
 		if (!ready) {
 			// getDoc() should always install a provider + ready promise.
@@ -239,9 +268,9 @@ export class DocumentManager {
 	}
 
 	public async getDocWithSync(noteId: string): Promise<Y.Doc> {
-		const key = this.normalizeNoteId(noteId);
-		const doc = await this.getDocReady(key);
-		this.ensureWebsocketProvider(key, doc);
+		const raw = this.normalizeNoteId(noteId);
+		const doc = await this.getDocReady(raw);
+		this.ensureWebsocketProvider(this.roomNameFor(raw), doc);
 		// Offline-first behavior: return once the document is hydrated from IndexedDB
 		// and websocket wiring exists. Connection establishment can happen asynchronously.
 		return doc;
@@ -408,35 +437,55 @@ export class DocumentManager {
 	}
 
 	public destroyDoc(noteId: string): void {
-		const key = this.normalizeNoteId(noteId);
-		const doc = this.docs.get(key);
-		if (!doc) {
-			return;
+		const raw = this.normalizeNoteId(noteId);
+		this.destroyRoom(this.roomNameFor(raw));
+	}
+
+	private destroyRoom(roomName: string): void {
+		const doc = this.docs.get(roomName);
+		if (!doc) return;
+
+		const wsProvider = this.websocketProviders.get(roomName);
+		const provider = this.providers.get(roomName);
+
+		this.docs.delete(roomName);
+		this.providers.delete(roomName);
+		this.websocketProviders.delete(roomName);
+		this.readyPromises.delete(roomName);
+		this.websocketReadyPromises.delete(roomName);
+		this.pendingSyncRooms.delete(roomName);
+		this.updatedAtDocs.delete(roomName);
+
+		this.wsCleanup.get(roomName)?.();
+		this.docCleanup.get(roomName)?.();
+		this.wsCleanup.delete(roomName);
+		this.docCleanup.delete(roomName);
+
+		try {
+			wsProvider?.disconnect?.();
+			wsProvider?.destroy?.();
+		} catch {
+			// ignore
 		}
-
-		const wsProvider = this.websocketProviders.get(key);
-		const provider = this.providers.get(key);
-
-		this.docs.delete(key);
-		this.providers.delete(key);
-		this.websocketProviders.delete(key);
-		this.readyPromises.delete(key);
-		this.websocketReadyPromises.delete(key);
-		this.pendingSyncRooms.delete(key);
-		// Remove updatedAt tracking registration so a future getDoc() re-attaches cleanly.
-		this.updatedAtDocs.delete(key);
-
-		this.wsCleanup.get(key)?.();
-		this.docCleanup.get(key)?.();
-		this.wsCleanup.delete(key);
-		this.docCleanup.delete(key);
-
-		wsProvider?.destroy();
-		// Provider must be destroyed before the doc in case it is still syncing.
-		provider?.destroy();
+		try {
+			provider?.destroy?.();
+		} catch {
+			// ignore
+		}
 		doc.destroy();
 		this.updateConnectionState();
 		this.emitConnectionStatus();
+	}
+
+	private teardownAllRooms(): void {
+		// Copy keys first since destroyRoom mutates the map.
+		const rooms = Array.from(this.docs.keys());
+		for (const roomName of rooms) {
+			this.destroyRoom(roomName);
+		}
+		this.pendingSyncRooms.clear();
+		this.updatedAtDocs.clear();
+		this.registryHydrated = false;
 	}
 
 	private ensureStructure(doc: Y.Doc): void {
@@ -452,8 +501,8 @@ export class DocumentManager {
 		}, this.internalOrigin);
 	}
 
-	private ensureProvider(noteId: string, doc: Y.Doc): void {
-		if (this.providers.has(noteId)) {
+	private ensureProvider(roomName: string, doc: Y.Doc): void {
+		if (this.providers.has(roomName)) {
 			return;
 		}
 
@@ -464,20 +513,20 @@ export class DocumentManager {
 			);
 		}
 
-		// One IndexedDB room per note ID.
-		const provider = new IndexeddbPersistence(noteId, doc);
-		this.providers.set(noteId, provider);
+		// One IndexedDB room per Yjs room name.
+		const provider = new IndexeddbPersistence(roomName, doc);
+		this.providers.set(roomName, provider);
 
-		if (!this.readyPromises.has(noteId)) {
-			this.readyPromises.set(noteId, this.waitForSynced(provider));
+		if (!this.readyPromises.has(roomName)) {
+			this.readyPromises.set(roomName, this.waitForSynced(provider));
 		}
 	}
 
-	private ensureWebsocketProvider(noteId: string, doc: Y.Doc): void {
-		const existing = this.websocketProviders.get(noteId);
+	private ensureWebsocketProvider(roomName: string, doc: Y.Doc): void {
+		const existing = this.websocketProviders.get(roomName);
 		if (existing) {
-			if (!this.websocketReadyPromises.has(noteId)) {
-				this.websocketReadyPromises.set(noteId, this.waitForWebsocketConnected(existing));
+			if (!this.websocketReadyPromises.has(roomName)) {
+				this.websocketReadyPromises.set(roomName, this.waitForWebsocketConnected(existing));
 			}
 			return;
 		}
@@ -502,44 +551,44 @@ export class DocumentManager {
 		//     tower switch without making the user wait too long.
 		//   disableBc: false (default) — BroadcastChannel remains enabled
 		//     for same-origin same-browser cross-tab sync (instant, no WS).
-		const wsProvider = new WebsocketProvider(this.websocketUrl, noteId, doc, {
+		const wsProvider = new WebsocketProvider(this.websocketUrl, roomName, doc, {
 			connect: this.websocketEnabled,
 			resyncInterval: 30_000,
 			maxBackoffTime: 5_000,
 		});
 
 		const onStatus = (event: { status: string }): void => {
-			console.info(`[yjs-ws] room=${noteId} status=${event.status} url=${this.websocketUrl}`);
+			console.info(`[yjs-ws] room=${roomName} status=${event.status} url=${this.websocketUrl}`);
 			this.updateConnectionState();
 			this.emitConnectionStatus();
 		};
 		const onConnectionClose = (): void => {
-			console.info(`[yjs-ws] room=${noteId} connection-close url=${this.websocketUrl}`);
+			console.info(`[yjs-ws] room=${roomName} connection-close url=${this.websocketUrl}`);
 			this.updateConnectionState();
 			this.emitConnectionStatus();
 		};
 		const onConnectionError = (err: unknown): void => {
 			const msg = err instanceof Error ? err.message : String(err);
-			console.warn(`[yjs-ws] room=${noteId} connection-error=${msg} url=${this.websocketUrl}`);
+			console.warn(`[yjs-ws] room=${roomName} connection-error=${msg} url=${this.websocketUrl}`);
 			this.updateConnectionState();
 			this.emitConnectionStatus();
 		};
 		const onSync = (isSynced: boolean): void => {
 			if (isSynced) {
-				this.pendingSyncRooms.delete(noteId);
+				this.pendingSyncRooms.delete(roomName);
 				this.emitConnectionStatus();
 			}
 		};
 		const onAfterTransaction = (tx: Y.Transaction): void => {
 			if (!tx.local) return;
 			if (tx.origin === this.internalOrigin) return;
-				// Registry room writes (order/title metadata) should not produce per-note pending badges.
-				// Without this filter, routine registry mutations could produce false-positive sync indicators
-				// after refresh/startup even when no actual note content edits occurred offline.
-			if (noteId === NOTES_REGISTRY_ID) return;
+			// Registry room writes (order/title metadata) should not produce per-note pending badges.
+			// Without this filter, routine registry mutations could produce false-positive sync indicators
+			// after refresh/startup even when no actual note content edits occurred offline.
+			if (this.isNotesRegistryRoom(roomName)) return;
 			const connected = (wsProvider as any).wsconnected === true;
 			if (!connected) {
-				this.pendingSyncRooms.add(noteId);
+				this.pendingSyncRooms.add(roomName);
 				this.emitConnectionStatus();
 			}
 		};
@@ -550,18 +599,18 @@ export class DocumentManager {
 		(wsProvider as any).on?.('sync', onSync);
 		doc.on('afterTransaction', onAfterTransaction);
 
-		this.websocketProviders.set(noteId, wsProvider);
-		this.wsCleanup.set(noteId, () => {
+		this.websocketProviders.set(roomName, wsProvider);
+		this.wsCleanup.set(roomName, () => {
 			(wsProvider as any).off?.('status', onStatus);
 			(wsProvider as any).off?.('connection-close', onConnectionClose);
 			(wsProvider as any).off?.('connection-error', onConnectionError);
 			(wsProvider as any).off?.('sync', onSync);
 		});
-		this.docCleanup.set(noteId, () => {
+		this.docCleanup.set(roomName, () => {
 			doc.off('afterTransaction', onAfterTransaction);
 		});
-		if (!this.websocketReadyPromises.has(noteId)) {
-			this.websocketReadyPromises.set(noteId, this.waitForWebsocketConnected(wsProvider));
+		if (!this.websocketReadyPromises.has(roomName)) {
+			this.websocketReadyPromises.set(roomName, this.waitForWebsocketConnected(wsProvider));
 		}
 		this.updateConnectionState();
 		this.emitConnectionStatus();
@@ -660,7 +709,8 @@ export class DocumentManager {
 		// Stable ordering prevents unnecessary React external-store emissions and keeps
 		// subscribe/update behavior deterministic across browsers.
 		const nextPendingSyncNoteIds = Array.from(this.pendingSyncRooms)
-			.filter((roomId) => roomId !== NOTES_REGISTRY_ID)
+			.filter((roomId) => !this.isNotesRegistryRoom(roomId))
+			.map((roomId) => this.rawNoteIdFromRoomName(roomId))
 			.sort();
 		const nextHasPendingSync = nextPendingSyncNoteIds.length > 0;
 		const pendingUnchanged =
@@ -761,6 +811,27 @@ export class DocumentManager {
 		return trimmed;
 	}
 
+	private roomNameFor(rawNoteId: string): string {
+		// Room names are globally unique across workspaces.
+		// If no active workspace is set yet (auth gate), fall back to raw IDs.
+		if (!this.activeWorkspaceId) return rawNoteId;
+		return `${this.activeWorkspaceId}:${rawNoteId}`;
+	}
+
+	private rawNoteIdFromRoomName(roomName: string): string {
+		if (!this.activeWorkspaceId) {
+			// Best-effort: if the room looks namespaced, strip the first segment.
+			const idx = roomName.indexOf(':');
+			return idx > 0 ? roomName.slice(idx + 1) : roomName;
+		}
+		const prefix = `${this.activeWorkspaceId}:`;
+		return roomName.startsWith(prefix) ? roomName.slice(prefix.length) : roomName;
+	}
+
+	private isNotesRegistryRoom(roomName: string): boolean {
+		return roomName === NOTES_REGISTRY_ID || roomName.endsWith(`:${NOTES_REGISTRY_ID}`);
+	}
+
 	/**
 	 * Attach an afterTransaction listener on a note doc that automatically
 	 * stamps `metadata.updatedAt` with the current epoch-ms on every local
@@ -775,7 +846,7 @@ export class DocumentManager {
 	 */
 	private ensureUpdatedAtTracking(noteId: string, doc: Y.Doc): void {
 		/* Registry doc does not represent user content – no timestamp needed. */
-		if (noteId === NOTES_REGISTRY_ID) return;
+		if (this.isNotesRegistryRoom(noteId)) return;
 		/* Already wired for this noteId – avoid double-attach. */
 		if (this.updatedAtDocs.has(noteId)) return;
 		this.updatedAtDocs.add(noteId);

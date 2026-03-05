@@ -29,6 +29,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const { createRateLimiter, getClientIp } = require('./rateLimit');
 const {
 	appendSetCookie,
@@ -155,7 +156,9 @@ function createApiAuthRouter({ prisma }) {
 							select: { id: true, email: true, name: true, role: true, disabled: true, createdAt: true },
 						});
 
-						const workspaceName = `user-${user.id}`;
+						// Workspace names are globally unique in the DB schema.
+						// Using the full user UUID guarantees uniqueness while staying human-readable.
+						const workspaceName = `Personal (${user.id})`;
 						const workspace = await tx.workspace.create({
 							data: { name: workspaceName, ownerUserId: user.id },
 							select: { id: true, name: true },

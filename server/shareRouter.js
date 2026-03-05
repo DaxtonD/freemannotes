@@ -99,6 +99,29 @@ function createShareRouter({ prisma, timezone = null }) {
 							select: { docId: true },
 						});
 					}
+					// Backward-compat: earlier builds accidentally double-namespaced room IDs
+					// ("<ws>:<ws>:<docId>"). Try to find and migrate to the canonical
+					// single-namespaced form ("<ws>:<docId>") so shares work immediately.
+					if (!doc) {
+						const doubleStored = namespacedDocId(session.workspaceId, stored);
+						const legacy = await prisma.document.findFirst({
+							where: { docId: doubleStored, workspaceId: session.workspaceId },
+							select: { id: true, docId: true },
+						});
+						if (legacy) {
+							try {
+								await prisma.document.update({
+									where: { id: legacy.id },
+									data: { docId: stored },
+								});
+								doc = { docId: stored };
+								console.info(`[share] migrated double docId: ${doubleStored} -> ${stored}`);
+							} catch {
+								// If a canonical row already exists, keep using the legacy ID.
+								doc = { docId: legacy.docId };
+							}
+						}
+					}
 					if (!doc) {
 						jsonResponse(res, 404, { error: 'Document not found' });
 						return;
