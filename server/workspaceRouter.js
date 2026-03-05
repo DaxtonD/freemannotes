@@ -9,6 +9,8 @@
 //       currently active workspaceId from the session (if any).
 //   - POST /api/workspaces
 //       Creates a new workspace owned by the authenticated user.
+//   - PATCH /api/workspaces/:id
+//       Renames a workspace (OWNER/ADMIN only).
 //   - POST /api/workspaces/:id/activate
 //       Switches the active workspace by issuing a fresh session cookie with
 //       the selected workspaceId embedded.
@@ -117,7 +119,7 @@ function createWorkspaceRouter({ prisma }) {
 					}
 
 					const name = String(body.name || '').trim();
-					const wsName = name.length > 0 ? name : `ws-${crypto.randomBytes(6).toString('hex')}`;
+					const wsName = name.length > 0 ? name : `Workspace ${crypto.randomBytes(6).toString('hex')}`;
 
 					const created = await prisma.$transaction(async (tx) => {
 						const workspace = await tx.workspace.create({
@@ -137,6 +139,54 @@ function createWorkspaceRouter({ prisma }) {
 						return;
 					}
 					console.error('[workspace] create error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		// PATCH /api/workspaces/:id
+		const renameMatch = pathname.match(/^\/api\/workspaces\/([^/]+)$/);
+		if (renameMatch && method === 'PATCH') {
+			const workspaceId = decodeURIComponent(renameMatch[1]);
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+
+					const member = await prisma.workspaceMember.findUnique({
+						where: { userId_workspaceId: { userId: session.userId, workspaceId } },
+						select: { role: true },
+					});
+					if (!member || (member.role !== 'OWNER' && member.role !== 'ADMIN')) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					const body = await readJsonBody(req);
+					if (!body || typeof body !== 'object') {
+						jsonResponse(res, 400, { error: 'Request body must be a JSON object' });
+						return;
+					}
+					const name = String(body.name || '').trim();
+					if (!name || name.length < 1 || name.length > 120) {
+						jsonResponse(res, 400, { error: 'Invalid workspace name' });
+						return;
+					}
+
+					const updated = await prisma.workspace.update({
+						where: { id: workspaceId },
+						data: { name },
+						select: { id: true, name: true, createdAt: true },
+					});
+
+					jsonResponse(res, 200, { workspace: { ...updated, createdAt: updated.createdAt.toISOString() } });
+				} catch (err) {
+					if (String(err.code || '') === 'P2002') {
+						jsonResponse(res, 409, { error: 'Workspace name already exists' });
+						return;
+					}
+					console.error('[workspace] rename error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
 				}
 			})();

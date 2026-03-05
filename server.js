@@ -673,7 +673,28 @@ wss.on('connection', (conn, req) => {
 
 			// Namespace the room so shared IDs like "__notes_registry__" don't collide
 			// across workspaces.
-			const docName = `${session.workspaceId}:${raw}`;
+			//
+			// The client may already namespace the room ("<workspaceId>:<docId>") so
+			// we must avoid double-prefixing ("<ws>:<ws>:<docId>").
+			let docName = raw;
+			const expectedPrefix = `${session.workspaceId}:`;
+			const hasNamespace = raw.includes(':');
+			if (hasNamespace) {
+				if (!raw.startsWith(expectedPrefix)) {
+					console.warn(
+						'[ws] close forbidden namespace',
+						JSON.stringify({
+							userId: session.userId,
+							workspaceId: session.workspaceId,
+							rawRoom: raw,
+						})
+					);
+					conn.close(1008, 'forbidden');
+					return;
+				}
+			} else {
+				docName = `${session.workspaceId}:${raw}`;
+			}
 			persistAdapter?.registerDocWorkspace(docName, session.workspaceId);
 
 			// y-websocket expects req.url === '/<room>'

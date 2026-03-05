@@ -1,0 +1,135 @@
+.overlay {
+	position: fixed;
+	inset: 0;
+	background: var(--color-overlay);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+	z-index: 130;
+}
+
+.modal {
+	width: min(720px, 100%);
+	background: linear-gradient(180deg, var(--color-surface), var(--color-surface-2));
+	border: 1px solid var(--color-border);
+	border-radius: 14px;
+	padding: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
+	max-height: calc(100vh - 40px);
+}
+
+.header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.title {
+	margin: 0;
+	font-size: 20px;
+}
+
+.iconButton {
+	border: 0;
+	font-size: 22px;
+	line-height: 1;
+	padding: 0;
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	cursor: pointer;
+	background: transparent;
+	color: var(--color-text);
+}
+
+.error {
+	border: 1px solid color-mix(in srgb, var(--color-danger) 55%, var(--color-border));
+	background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+	border-radius: 10px;
+	padding: 10px 12px;
+	color: var(--color-text);
+}
+
+.list {
+	overflow: auto;
+	border: 1px solid var(--color-border);
+	border-radius: 12px;
+	background: var(--color-surface);
+}
+
+.row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--color-border);
+}
+
+.row:last-child {
+	border-bottom: 0;
+}
+
+.meta {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.name {
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sub {
+	font-size: var(--font-size-xs);
+	opacity: 0.8;
+}
+
+.actions {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.renameInput {
+	width: min(260px, 38vw);
+	min-width: 140px;
+	height: 32px;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	background: var(--color-surface);
+	color: var(--color-input-text);
+	padding: 0 10px;
+}
+
+.form {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+}
+
+.input {
+	flex: 1;
+	min-width: 0;
+	height: 36px;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	background: var(--color-surface);
+	color: var(--color-input-text);
+	padding: 0 10px;
+}
+
+.footer {
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+}

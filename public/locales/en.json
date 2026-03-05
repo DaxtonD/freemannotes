@@ -74,6 +74,45 @@
     "notes": "Notes",
     "notesGrid": "Notes Grid"
   },
+  "workspace": {
+    "title": "Workspaces",
+    "unnamed": "Personal",
+    "listAria": "Workspace list",
+    "none": "No workspaces found",
+    "active": "active",
+    "role": "Role",
+    "activate": "Activate",
+    "rename": "Rename",
+    "renamePlaceholder": "Workspace name",
+    "saveName": "Save",
+    "renameInvalid": "Workspace name is required",
+    "renameFailed": "Failed to rename workspace",
+    "namePlaceholder": "New workspace name",
+    "create": "Create",
+    "loadFailed": "Failed to load workspaces",
+    "activateFailed": "Failed to activate workspace",
+    "createFailed": "Failed to create workspace"
+  },
+  "invite": {
+    "title": "Send Invite",
+    "email": "Email",
+    "role": "Role",
+    "roleMember": "Member",
+    "roleAdmin": "Admin",
+    "send": "Send",
+    "sent": "Invite sent",
+    "sendFailed": "Failed to send invite",
+    "noWorkspace": "No active workspace"
+  },
+  "share": {
+    "share": "Share",
+    "title": "Share note",
+    "copy": "Copy",
+    "open": "Open",
+    "refresh": "Refresh",
+    "qrAlt": "QR code for share link",
+    "createFailed": "Failed to create share link"
+  },
   "theme": {
     "light": "Light",
     "dark": "Dark",

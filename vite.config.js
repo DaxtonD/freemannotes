@@ -52,15 +52,41 @@ module.exports = defineConfig(({ mode }) => {
 	const envDir = './env.vite';
 	const env = loadEnv(mode, envDir, 'VITE_');
 	const devPort = Number(env.VITE_DEV_PORT || 5173);
+	const apiProxyTarget = String(env.VITE_API_PROXY_TARGET || 'http://localhost:27015').trim();
+	const embedYjs = String(env.VITE_YJS_EMBED || '').trim() === '1';
 
 	return {
 		envDir,
-		plugins: [react(), yjsWebsocketPlugin()],
+		plugins: [react(), ...(embedYjs ? [yjsWebsocketPlugin()] : [])],
 		server: {
 			host: true,
 			port: devPort,
 			strictPort: true,
 			allowedHosts: true,
+			proxy: {
+				// Proxy API + uploads to the Node server so cookie-based auth remains same-origin.
+				'/api': {
+					target: apiProxyTarget,
+					changeOrigin: true,
+					xfwd: true,
+				},
+				'/uploads': {
+					target: apiProxyTarget,
+					changeOrigin: true,
+					xfwd: true,
+				},
+				// Proxy Yjs websocket rooms to the Node server so dev can see persisted notes.
+				...(embedYjs
+					? {}
+					: {
+						'/yjs': {
+							target: apiProxyTarget,
+							ws: true,
+							changeOrigin: true,
+							xfwd: true,
+						},
+					}),
+			},
 		},
 		preview: {
 			host: true,

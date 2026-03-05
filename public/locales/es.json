@@ -74,6 +74,45 @@
     "notes": "Notas",
     "notesGrid": "Cuadrícula de notas"
   },
+  "workspace": {
+    "title": "Espacios de trabajo",
+    "unnamed": "Personal",
+    "listAria": "Lista de espacios de trabajo",
+    "none": "No se encontraron espacios de trabajo",
+    "active": "activo",
+    "role": "Rol",
+    "activate": "Activar",
+    "rename": "Renombrar",
+    "renamePlaceholder": "Nombre del espacio de trabajo",
+    "saveName": "Guardar",
+    "renameInvalid": "El nombre del espacio de trabajo es obligatorio",
+    "renameFailed": "No se pudo renombrar el espacio de trabajo",
+    "namePlaceholder": "Nombre del nuevo espacio de trabajo",
+    "create": "Crear",
+    "loadFailed": "No se pudieron cargar los espacios de trabajo",
+    "activateFailed": "No se pudo activar el espacio de trabajo",
+    "createFailed": "No se pudo crear el espacio de trabajo"
+  },
+  "invite": {
+    "title": "Enviar invitación",
+    "email": "Correo",
+    "role": "Rol",
+    "roleMember": "Miembro",
+    "roleAdmin": "Admin",
+    "send": "Enviar",
+    "sent": "Invitación enviada",
+    "sendFailed": "No se pudo enviar la invitación",
+    "noWorkspace": "No hay un espacio de trabajo activo"
+  },
+  "share": {
+    "share": "Compartir",
+    "title": "Compartir nota",
+    "copy": "Copiar",
+    "open": "Abrir",
+    "refresh": "Actualizar",
+    "qrAlt": "Código QR del enlace compartido",
+    "createFailed": "No se pudo crear el enlace para compartir"
+  },
   "theme": {
     "light": "Claro",
     "dark": "Oscuro",
