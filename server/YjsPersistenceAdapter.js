@@ -174,6 +174,27 @@ class YjsPersistenceAdapter {
 				if (!row) {
 					const idx = docName.indexOf(':');
 					if (idx > 0) {
+						// Backward-compat: earlier builds accidentally double-namespaced room IDs
+						// ("<ws>:<ws>:<docId>"). If a row exists under the double-id, migrate it
+						// to the canonical single-namespaced id.
+						const doubleDocId = `${workspaceId}:${docName}`;
+						const double = await this._prisma.document.findFirst({
+							where: { docId: doubleDocId, workspaceId },
+							select: { id: true, state: true },
+						});
+						if (double && double.state && double.state.length > 0) {
+							try {
+								await this._prisma.document.update({
+									where: { id: double.id },
+									data: { docId: docName },
+								});
+								row = { id: double.id, state: double.state, docId: docName };
+								console.info(`[persist] migrated double docId: ${doubleDocId} -> ${docName}`);
+							} catch {
+								// If it can't be migrated (unique constraint), ignore and fall through.
+							}
+						}
+
 						const legacyDocId = docName.slice(idx + 1);
 						if (legacyDocId) {
 							const legacy = await this._prisma.document.findFirst({

@@ -1,6 +1,6 @@
 import React from 'react';
 import * as Y from 'yjs';
-import { ChecklistBinding, type ChecklistItem } from '../../core/bindings';
+import type { ChecklistItem } from '../../core/bindings';
 import { normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
 import { useI18n } from '../../core/i18n';
 import styles from './NoteCard.module.css';
@@ -19,6 +19,11 @@ export type NoteCardProps = {
 };
 
 type NoteType = 'text' | 'checklist';
+
+function isInteractiveTarget(target: EventTarget | null): boolean {
+	if (!target || !(target instanceof HTMLElement)) return false;
+	return Boolean(target.closest('input, button, textarea, select, a, [role="textbox"]'));
+}
 
 // Subscribe to an optional Y.Text and always return a string snapshot.
 function useOptionalYTextValue(getYText: () => Y.Text | null): string {
@@ -49,11 +54,84 @@ function useMetadataString(metadata: Y.Map<any>, key: string): string {
 }
 
 // Subscribe to checklist binding updates from Y.Array.
-function useChecklistItems(binding: ChecklistBinding): readonly ChecklistItem[] {
+function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
+	return yarray
+		.toArray()
+		.map((m) => ({
+			id: String(m.get('id') ?? ''),
+			text: String(m.get('text') ?? ''),
+			completed: Boolean(m.get('completed')),
+			parentId:
+				typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
+					? String(m.get('parentId')).trim()
+					: null,
+		}))
+		.filter((item) => item.id.length > 0);
+}
+
+function updateChecklistItemById(
+	yarray: Y.Array<Y.Map<any>>,
+	id: string,
+	patch: Partial<Omit<ChecklistItem, 'id'>>
+): void {
+	const normalizedId = String(id ?? '').trim();
+	if (!normalizedId) return;
+
+	const arr = yarray.toArray();
+	let idx = -1;
+	for (let i = 0; i < arr.length; i++) {
+		if (String(arr[i].get('id') ?? '').trim() === normalizedId) {
+			idx = i;
+			break;
+		}
+	}
+	if (idx === -1) return;
+
+	const doc = (yarray as any).doc as Y.Doc | null | undefined;
+	const apply = (): void => {
+		const m = yarray.get(idx);
+		if (!m) return;
+		if (patch.text !== undefined) m.set('text', String(patch.text));
+		if (patch.completed !== undefined) m.set('completed', Boolean(patch.completed));
+		if (patch.parentId !== undefined) {
+			const parentId = typeof patch.parentId === 'string' ? patch.parentId.trim() : null;
+			m.set('parentId', parentId && parentId.length > 0 ? parentId : null);
+		}
+	};
+	if (doc) doc.transact(apply);
+	else apply();
+}
+
+function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
+	const cacheRef = React.useRef<{
+		yarray: Y.Array<Y.Map<any>>;
+		items: readonly ChecklistItem[];
+	} | null>(null);
+
 	return React.useSyncExternalStore(
-		(onStoreChange) => binding.subscribe(onStoreChange),
-		() => binding.getItems(),
-		() => binding.getItems()
+		(onStoreChange) => {
+			if (!cacheRef.current || cacheRef.current.yarray !== yarray) {
+				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
+			}
+			const observer = (): void => {
+				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
+				onStoreChange();
+			};
+			yarray.observeDeep(observer);
+			return () => yarray.unobserveDeep(observer);
+		},
+		() => {
+			if (!cacheRef.current || cacheRef.current.yarray !== yarray) {
+				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
+			}
+			return cacheRef.current.items;
+		},
+		() => {
+			if (!cacheRef.current || cacheRef.current.yarray !== yarray) {
+				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
+			}
+			return cacheRef.current.items;
+		}
 	);
 }
 
@@ -68,25 +146,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const content = useOptionalYTextValue(
 		React.useCallback(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type])
 	);
-
-	const checklistBinding = React.useMemo(
-		() =>
-			new ChecklistBinding({
-				yarray: props.doc.getArray<Y.Map<any>>('checklist'),
-				onUpdate: () => {
-					// React updates via useSyncExternalStore.
-				},
-			}),
-		[props.doc]
-	);
-
-	React.useEffect(() => {
-		return () => {
-			checklistBinding.destroy();
-		};
-	}, [checklistBinding]);
-
-	const checklistItems = useChecklistItems(checklistBinding);
+	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
+	const checklistItems = useChecklistItems(checklistArray);
 	const normalizedItems = React.useMemo(() => normalizeChecklistHierarchy(checklistItems), [checklistItems]);
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => completedExpandedByNoteId.get(props.noteId) ?? false);
 
@@ -122,6 +183,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			onPointerDown={(e) => {
 				// Track initial point; open action is decided on pointer up if movement stayed small.
 				if (!props.onOpen) return;
+				if (isInteractiveTarget(e.target)) return;
 				pointerDownRef.current = {
 					x: e.clientX,
 					y: e.clientY,
@@ -147,6 +209,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				if (!state) return;
 				if (state.pointerId !== e.pointerId) return;
 				if (state.moved) return;
+				if (isInteractiveTarget(e.target)) return;
 				tryOpen();
 			}}
 			onPointerCancel={() => {
@@ -195,7 +258,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 										onPointerDown={(e) => e.stopPropagation()}
 										onPointerUp={(e) => e.stopPropagation()}
 										onClick={(e) => e.stopPropagation()}
-										onChange={(e) => checklistBinding.updateById(item.id, { completed: e.target.checked })}
+										onChange={(e) => updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked })}
 									/>
 									<span className={styles.checklistText}>{item.text}</span>
 								</li>
@@ -227,7 +290,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 												onPointerDown={(e) => e.stopPropagation()}
 												onPointerUp={(e) => e.stopPropagation()}
 												onClick={(e) => e.stopPropagation()}
-												onChange={(e) => checklistBinding.updateById(item.id, { completed: e.target.checked })}
+											onChange={(e) => updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked })}
 											/>
 											<span className={styles.checklistTextCompleted}>{item.text}</span>
 										</li>

@@ -873,6 +873,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			onTouchStartCapture={(event) => {
 				const target = event.target as HTMLElement | null;
 				if (!target?.closest('[data-note-card="true"]')) return;
+				// Taps on interactive controls inside a card (checkboxes, buttons, inputs)
+				// should not be treated as a potential drag/scroll gesture.
+				if (target.closest('input, button, textarea, select, a, [role="textbox"]')) return;
 				const touch = event.touches[0];
 				// Record initial touch point for gesture classification. We intentionally do this
 				// at the card container level so future card UI complexity (icons/badges/metadata)

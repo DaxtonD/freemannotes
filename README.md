@@ -127,9 +127,21 @@ docker compose up postgres -d
 cp .env.example .env
 # Edit DATABASE_URL if needed
 
-# Run dev server (auto-syncs schema + starts Vite)
+# Terminal A: start the backend API server
+# (cookie auth + /api/* endpoints)
+npm start
+
+# Terminal B: start Vite (frontend) on http://localhost:5173
+# Vite proxies /api/* and /uploads/* to the backend so auth stays same-origin.
 npm run dev
 ```
+
+### Dev notes (auth + proxy)
+
+- The frontend uses same-origin `fetch('/api/...')`. In dev, Vite proxies `/api`, `/uploads`, and `/yjs` (WebSocket) to the Node server.
+- Optional: run both servers together with `npm run dev:full`.
+- If your backend is not on `http://localhost:27015`, set `VITE_API_PROXY_TARGET` in `env.vite/.env.development`.
+- If you *intentionally* want an in-memory Yjs backend inside Vite (no persistence), set `VITE_YJS_EMBED=1`.
 
 ### Database Commands
 

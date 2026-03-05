@@ -1,12 +1,30 @@
 import React from 'react';
 import type * as Y from 'yjs';
 import Cropper from 'react-easy-crop';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import {
+	faArrowDownWideShort,
+	faBars,
+	faBell,
+	faBoxArchive,
+	faChevronRight,
+	faFileLines,
+	faFolder,
+	faGrip,
+	faImage,
+	faTag,
+	faTrash,
+} from '@fortawesome/free-solid-svg-icons';
 import fabIconDark from '../version.png';
 import fabIconLight from '../version-light.png';
+import appIconDark from '../darkicon.png';
+import appIconLight from '../lighticon.png';
 import { ChecklistEditor } from './components/Editors/ChecklistEditor';
 import { NoteEditor } from './components/Editors/NoteEditor';
 import { UserManagementModal } from './components/Admin/UserManagementModal';
 import { PreferencesModal } from './components/Preferences/PreferencesModal';
+import { SendInviteModal } from './components/Invites/SendInviteModal';
+import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid } from './components/NoteGrid/NoteGrid';
 import { type ChecklistItem } from './core/bindings';
@@ -18,6 +36,50 @@ import { useConnectionStatus } from './core/useConnectionStatus';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 
 type EditorMode = 'none' | 'text' | 'checklist';
+
+type AuthCacheV1 = {
+	v: 1;
+	userId: string;
+	workspaceId: string;
+	profileImage: string | null;
+};
+
+const AUTH_CACHE_KEY = 'freemannotes.auth.cache.v1';
+
+function readAuthCache(): AuthCacheV1 | null {
+	if (typeof window === 'undefined') return null;
+	try {
+		const raw = window.localStorage.getItem(AUTH_CACHE_KEY);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as Partial<AuthCacheV1>;
+		if (parsed?.v !== 1) return null;
+		const userId = typeof parsed.userId === 'string' ? parsed.userId : '';
+		const workspaceId = typeof parsed.workspaceId === 'string' ? parsed.workspaceId : '';
+		const profileImage = typeof parsed.profileImage === 'string' ? parsed.profileImage : null;
+		if (!userId || !workspaceId) return null;
+		return { v: 1, userId, workspaceId, profileImage };
+	} catch {
+		return null;
+	}
+}
+
+function writeAuthCache(next: AuthCacheV1): void {
+	if (typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(next));
+	} catch {
+		// ignore
+	}
+}
+
+function clearAuthCache(): void {
+	if (typeof window === 'undefined') return;
+	try {
+		window.localStorage.removeItem(AUTH_CACHE_KEY);
+	} catch {
+		// ignore
+	}
+}
 
 // Cropper callback provides pixel coordinates in the *source image*.
 // We store these so we can produce a deterministic 1:1 square avatar later.
@@ -71,16 +133,36 @@ export function App(): React.JSX.Element {
 	const [authBusy, setAuthBusy] = React.useState(false);
 	const [authUserId, setAuthUserId] = React.useState<string | null>(null);
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(null);
+	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(null);
+	const [authOfflineMode, setAuthOfflineMode] = React.useState(false);
 	const [registerAvatarUrl, setRegisterAvatarUrl] = React.useState<string | null>(null);
 	const [registerAvatarCrop, setRegisterAvatarCrop] = React.useState({ x: 0, y: 0 });
 	const [registerAvatarZoom, setRegisterAvatarZoom] = React.useState(1);
 	const [registerAvatarAreaPixels, setRegisterAvatarAreaPixels] = React.useState<CropAreaPixels | null>(null);
 	const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
+	const [isMobileSidebarOpen, setIsMobileSidebarOpen] = React.useState(false);
+	const [isMobileHeaderCollapsed, setIsMobileHeaderCollapsed] = React.useState(false);
+	const [isMobileViewport, setIsMobileViewport] = React.useState(() => {
+		if (typeof window === 'undefined') return false;
+		return window.matchMedia('(max-width: 900px)').matches;
+	});
+	const headerRef = React.useRef<HTMLElement | null>(null);
+	const topActionsRef = React.useRef<HTMLDivElement | null>(null);
+	const mobileSwipeZoneRef = React.useRef<HTMLDivElement | null>(null);
+	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>({
+		reminders: false,
+		labels: false,
+		sorting: false,
+		collections: false,
+	});
 	// UI mode for the "new note" panel.
 	const [editorMode, setEditorMode] = React.useState<EditorMode>('none');
 	// Phase 10 preferences shell entry point opened from top-right avatar.
 	const [isPreferencesOpen, setIsPreferencesOpen] = React.useState(false);
 	const [isUserManagementOpen, setIsUserManagementOpen] = React.useState(false);
+	const [isSendInviteOpen, setIsSendInviteOpen] = React.useState(false);
+	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(false);
+	const [activeWorkspaceName, setActiveWorkspaceName] = React.useState<string | null>(null);
 	// The currently selected note in the grid/editor area.
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(null);
 	// Loaded Y.Doc for the selected note.
@@ -97,20 +179,48 @@ export function App(): React.JSX.Element {
 		persistThemeId(themeId);
 	}, [themeId]);
 
+	const refreshActiveWorkspace = React.useCallback(async () => {
+		if (!authWorkspaceId) {
+			setActiveWorkspaceName(null);
+			return;
+		}
+		try {
+			const res = await fetch('/api/workspace', { credentials: 'include' });
+			const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+			if (!res.ok || !contentType.includes('application/json')) {
+				setActiveWorkspaceName(null);
+				return;
+			}
+			const body = await res.json().catch(() => null);
+			const name = body?.name ? String(body.name) : null;
+			setActiveWorkspaceName(name);
+		} catch {
+			setActiveWorkspaceName(null);
+		}
+	}, [authWorkspaceId]);
+
 	React.useEffect(() => {
-		// Session probe on app start:
-		// - If authenticated, enable websocket sync.
-		// - If not authenticated, keep the app in an auth gate and disable websocket
-		//   sync (so we don't attempt to sync against a workspace we can't access).
-		let cancelled = false;
-		(async () => {
+		if (authStatus !== 'authed') return;
+		void refreshActiveWorkspace();
+	}, [authStatus, authWorkspaceId, refreshActiveWorkspace]);
+
+	const probeSession = React.useCallback(
+		async (opts?: { allowOfflineRestore?: boolean }) => {
+			// Session probe:
+			// - If authenticated, enable websocket sync.
+			// - If offline and we have a cached session+workspace, restore it so the
+			//   user can access their offline IndexedDB notes.
+			const allowOfflineRestore = opts?.allowOfflineRestore ?? true;
 			try {
 				const res = await fetch('/api/auth/me', { credentials: 'include' });
-				if (cancelled) return;
-
 				const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 				if (!res.ok || !contentType.includes('application/json')) {
 					setAuthStatus('unauth');
+					setAuthUserId(null);
+					setAuthProfileImage(null);
+					setAuthWorkspaceId(null);
+					setAuthOfflineMode(false);
+					manager.setActiveWorkspaceId(null);
 					manager.setWebsocketEnabled(false);
 					return;
 				}
@@ -123,6 +233,9 @@ export function App(): React.JSX.Element {
 					setAuthStatus('unauth');
 					setAuthUserId(null);
 					setAuthProfileImage(null);
+					setAuthWorkspaceId(null);
+					setAuthOfflineMode(false);
+					manager.setActiveWorkspaceId(null);
 					manager.setWebsocketEnabled(false);
 					return;
 				}
@@ -130,19 +243,64 @@ export function App(): React.JSX.Element {
 				setAuthStatus('authed');
 				setAuthUserId(userId);
 				setAuthProfileImage(profileImage);
+				setAuthWorkspaceId(workspaceId);
+				setAuthOfflineMode(false);
+				manager.setActiveWorkspaceId(workspaceId);
 				manager.setWebsocketEnabled(true);
+				writeAuthCache({ v: 1, userId, workspaceId, profileImage });
 			} catch {
-				if (cancelled) return;
+				// Network failure (offline, captive portal, DNS, etc). Only restore cached
+				// auth when the browser is offline (or when explicitly allowed).
+				const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+				if (allowOfflineRestore && isOffline) {
+					const cached = readAuthCache();
+					if (cached) {
+						setAuthStatus('authed');
+						setAuthUserId(cached.userId);
+						setAuthProfileImage(cached.profileImage);
+						setAuthWorkspaceId(cached.workspaceId);
+						setAuthOfflineMode(true);
+						manager.setActiveWorkspaceId(cached.workspaceId);
+						// Stay offline: IndexedDB works, websocket waits until we re-probe online.
+						manager.setWebsocketEnabled(false);
+						return;
+					}
+				}
+
 				setAuthStatus('unauth');
 				setAuthUserId(null);
 				setAuthProfileImage(null);
+				setAuthWorkspaceId(null);
+				setAuthOfflineMode(false);
+				manager.setActiveWorkspaceId(null);
 				manager.setWebsocketEnabled(false);
 			}
+		},
+		[manager]
+	);
+
+	React.useEffect(() => {
+		let cancelled = false;
+		(async () => {
+			await probeSession({ allowOfflineRestore: true });
+			if (cancelled) return;
 		})();
 		return () => {
 			cancelled = true;
 		};
-	}, [manager]);
+	}, [probeSession]);
+
+	React.useEffect(() => {
+		// If we booted offline (restored from cache), re-probe once connectivity returns.
+		if (!authOfflineMode || typeof window === 'undefined') return;
+		const onOnline = () => {
+			void probeSession({ allowOfflineRestore: false });
+		};
+		window.addEventListener('online', onOnline);
+		return () => {
+			window.removeEventListener('online', onOnline);
+		};
+	}, [authOfflineMode, probeSession]);
 
 	const signOut = React.useCallback(async () => {
 		// Logout is best-effort: even if the request fails (offline), we clear local
@@ -155,10 +313,29 @@ export function App(): React.JSX.Element {
 		setAuthStatus('unauth');
 		setAuthUserId(null);
 		setAuthProfileImage(null);
+		setAuthWorkspaceId(null);
+		setAuthOfflineMode(false);
+		clearAuthCache();
+		manager.setActiveWorkspaceId(null);
 		manager.setWebsocketEnabled(false);
 		setIsUserManagementOpen(false);
 		setIsPreferencesOpen(false);
+		setIsSendInviteOpen(false);
+		setIsWorkspaceSwitcherOpen(false);
 	}, [manager]);
+
+	const handleWorkspaceActivated = React.useCallback(
+		(workspaceId: string) => {
+			setAuthWorkspaceId(workspaceId);
+			manager.setActiveWorkspaceId(workspaceId);
+			setSelectedNoteId(null);
+			setOpenDoc(null);
+			setOpenDocId(null);
+			setEditorMode('none');
+			void refreshActiveWorkspace();
+		},
+		[manager, refreshActiveWorkspace]
+	);
 
 	React.useEffect(() => {
 		// Switching away from registration should clear any staged avatar/crop state
@@ -246,14 +423,24 @@ export function App(): React.JSX.Element {
 					const meBody = await meRes.json().catch(() => null);
 					const userId = meBody?.user?.id ? String(meBody.user.id) : null;
 					const profileImage = meBody?.user?.profileImage ? String(meBody.user.profileImage) : null;
+					const workspaceId = meBody?.workspaceId ? String(meBody.workspaceId) : null;
 					setAuthUserId(userId);
 					setAuthProfileImage(profileImage);
+					if (workspaceId) {
+						setAuthWorkspaceId(workspaceId);
+						manager.setActiveWorkspaceId(workspaceId);
+					}
+					setAuthOfflineMode(false);
+					if (userId && workspaceId) {
+						writeAuthCache({ v: 1, userId, workspaceId, profileImage });
+					}
 				}
 			} catch {
 				// ignore
 			}
 
 			setAuthStatus('authed');
+			setAuthOfflineMode(false);
 			manager.setWebsocketEnabled(true);
 		} catch {
 			setAuthError('Authentication failed');
@@ -418,19 +605,311 @@ export function App(): React.JSX.Element {
 		return isLightTheme(themeId) ? fabIconDark : fabIconLight;
 	}, [themeId]);
 
-	const sidebarSections = React.useMemo(
+	const headerIconSrc = React.useMemo(() => {
+		return isLightTheme(themeId) ? appIconLight : appIconDark;
+	}, [themeId]);
+
+	type SidebarEntry = {
+		id: string;
+		label: string;
+		icon: unknown;
+		kind: 'link' | 'group';
+	};
+
+	const sidebarEntries: SidebarEntry[] = React.useMemo(
 		() => [
-			t('app.sidebarNotes'),
-			t('app.sidebarImages'),
-			t('app.sidebarReminders'),
-			t('app.sidebarLabels'),
-			t('app.sidebarSorting'),
-			t('app.sidebarCollections'),
-			t('app.sidebarArchive'),
-			t('app.sidebarTrash'),
+			{ id: 'workspaces', label: t('workspace.title'), icon: faGrip, kind: 'link' },
+			{ id: 'notes', label: t('app.sidebarNotes'), icon: faFileLines, kind: 'link' },
+			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
+			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
+			{ id: 'labels', label: t('app.sidebarLabels'), icon: faTag, kind: 'group' },
+			{ id: 'sorting', label: t('app.sidebarSorting'), icon: faArrowDownWideShort, kind: 'group' },
+			{ id: 'collections', label: t('app.sidebarCollections'), icon: faFolder, kind: 'group' },
+			{ id: 'archive', label: t('app.sidebarArchive'), icon: faBoxArchive, kind: 'link' },
+			{ id: 'trash', label: t('app.sidebarTrash'), icon: faTrash, kind: 'link' },
 		],
 		[t]
 	);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const mql = window.matchMedia('(max-width: 900px)');
+		const onChange = () => setIsMobileViewport(mql.matches);
+		onChange();
+		// Safari < 14 uses addListener/removeListener
+		if (typeof mql.addEventListener === 'function') {
+			mql.addEventListener('change', onChange);
+			return () => mql.removeEventListener('change', onChange);
+		}
+		mql.addListener(onChange);
+		return () => mql.removeListener(onChange);
+	}, []);
+
+	React.useEffect(() => {
+		// Keep mobile drawer state consistent when resizing.
+		if (!isMobileViewport) {
+			setIsMobileSidebarOpen(false);
+			setIsMobileHeaderCollapsed(false);
+		}
+	}, [isMobileViewport]);
+
+	React.useEffect(() => {
+		// Desktop editor overlay offset:
+		//
+		// On mobile, editors must cover *everything* (including the header/search).
+		// On desktop, the desired UX keeps the header and the "create" buttons visible,
+		// so editor overlays should start below those controls.
+		//
+		// We compute an absolute pixel offset from the viewport top by measuring the
+		// bottom edge of the `.top-actions` row. This is written to a CSS variable and
+		// consumed by the editor overlay styles.
+		if (typeof window === 'undefined') return;
+		if (isMobileViewport) return;
+
+		const editorOverlayOpen = editorMode !== 'none' || Boolean(selectedNoteId);
+		if (!editorOverlayOpen) {
+			document.documentElement.style.removeProperty('--app-editor-top-offset');
+			return;
+		}
+
+		let raf = 0;
+		const compute = () => {
+			cancelAnimationFrame(raf);
+			raf = requestAnimationFrame(() => {
+				const actions = topActionsRef.current;
+				const header = headerRef.current;
+				const headerBottom = header ? Math.round(header.getBoundingClientRect().bottom) : 0;
+				let offset = headerBottom;
+				if (actions) {
+					const rect = actions.getBoundingClientRect();
+					// If the actions row is offscreen (user scrolled far down), fall back to header.
+					if (rect.bottom > headerBottom + 4) offset = Math.round(rect.bottom);
+				}
+				// Small breathing room between the buttons row and the editor overlay.
+				offset = Math.max(0, offset + 8);
+				document.documentElement.style.setProperty('--app-editor-top-offset', `${offset}px`);
+			});
+		};
+
+		compute();
+		window.addEventListener('resize', compute, { passive: true });
+		window.addEventListener('scroll', compute, { passive: true });
+		return () => {
+			cancelAnimationFrame(raf);
+			window.removeEventListener('resize', compute);
+			window.removeEventListener('scroll', compute);
+			document.documentElement.style.removeProperty('--app-editor-top-offset');
+		};
+	}, [editorMode, isMobileViewport, selectedNoteId]);
+
+	React.useEffect(() => {
+		// Expose current header height as a CSS variable so fixed overlays (editors,
+		// mobile drawer) can sit below or above it reliably.
+		if (typeof window === 'undefined') return;
+		const header = headerRef.current;
+		if (!header) return;
+		let raf = 0;
+
+		const setVar = () => {
+			cancelAnimationFrame(raf);
+			raf = requestAnimationFrame(() => {
+				const height = Math.max(0, Math.round(header.getBoundingClientRect().height));
+				document.documentElement.style.setProperty('--app-header-offset', `${height}px`);
+			});
+		};
+
+		setVar();
+		if (typeof (window as unknown as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver === 'function') {
+			const ro = new ResizeObserver(() => setVar());
+			ro.observe(header);
+			return () => {
+				cancelAnimationFrame(raf);
+				ro.disconnect();
+				document.documentElement.style.removeProperty('--app-header-offset');
+			};
+		}
+
+		window.addEventListener('resize', setVar, { passive: true });
+		return () => {
+			cancelAnimationFrame(raf);
+			window.removeEventListener('resize', setVar);
+			document.documentElement.style.removeProperty('--app-header-offset');
+		};
+	}, [isMobileViewport]);
+
+	React.useEffect(() => {
+		// Best-effort edge-swipe gesture:
+		// - Swipe right from the left edge opens the sidebar.
+		// Implemented on a dedicated swipe zone to maximize Chrome/Safari consistency.
+		if (!isMobileViewport || typeof window === 'undefined') return;
+		const zone = mobileSwipeZoneRef.current;
+		if (!zone) return;
+
+		let tracking = false;
+		let startX = 0;
+		let startY = 0;
+		const TRIGGER_DX = 42;
+		const MAX_DY = 18;
+
+		const onTouchStart = (event: TouchEvent) => {
+			if (isMobileSidebarOpen) return;
+			if (event.touches.length !== 1) return;
+			const touch = event.touches[0];
+			startX = touch.clientX;
+			startY = touch.clientY;
+			tracking = true;
+			if (event.cancelable) event.preventDefault();
+		};
+
+		const onTouchMove = (event: TouchEvent) => {
+			if (!tracking || isMobileSidebarOpen || event.touches.length !== 1) return;
+			const touch = event.touches[0];
+			const dx = touch.clientX - startX;
+			const dy = touch.clientY - startY;
+			if (Math.abs(dy) > MAX_DY) return;
+			if (dx > TRIGGER_DX) {
+				setIsMobileSidebarOpen(true);
+				tracking = false;
+				if (event.cancelable) event.preventDefault();
+			}
+		};
+
+		const onTouchEnd = () => {
+			tracking = false;
+		};
+
+		zone.addEventListener('touchstart', onTouchStart, { passive: false });
+		zone.addEventListener('touchmove', onTouchMove, { passive: false });
+		zone.addEventListener('touchend', onTouchEnd, { passive: true });
+		zone.addEventListener('touchcancel', onTouchEnd, { passive: true });
+		return () => {
+			zone.removeEventListener('touchstart', onTouchStart);
+			zone.removeEventListener('touchmove', onTouchMove);
+			zone.removeEventListener('touchend', onTouchEnd);
+			zone.removeEventListener('touchcancel', onTouchEnd);
+		};
+	}, [isMobileViewport, isMobileSidebarOpen]);
+
+	React.useEffect(() => {
+		// Mobile header morph (MOBILE ONLY):
+		//
+		// UX spec:
+		// - Normal: top header row shows sidebar button + app icon + app-grid + avatar;
+		//   a search input sits *below* that header row.
+		// - On scroll (content moves up): app icon fades out, avatar slides right + fades,
+		//   app-grid slides into the avatar slot, and the search input morphs into the
+		//   top row (between sidebar button and app-grid).
+		// - On reverse scroll: everything returns.
+		//
+		// Browser notes:
+		// - Chrome can oscillate rapidly if the collapse/expand state is driven purely
+		//   by scrollTop thresholds while the header height is animating (layout shifts
+		//   can change scrollTop mid-frame). To avoid this:
+		//   1) we base toggling on scroll direction + accumulated delta, not a single threshold
+		//   2) we apply a short "lock" after toggling so bounce/elastic scroll doesn't flip it back
+		if (!isMobileViewport || typeof window === 'undefined') return;
+		let raf = 0;
+		let lastScrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+		let accumDown = 0;
+		let accumUp = 0;
+		// Tuning knobs:
+		// - COLLAPSE_DELTA_PX: how far you must scroll "down" before collapsing.
+		// - EXPAND_DELTA_PX: how far you must scroll "up" before expanding.
+		// - MIN_SCROLL_TO_COLLAPSE_PX: prevents collapsing from tiny jitters near scrollTop=0.
+		//
+		// If a specific browser feels too eager/too sluggish, these are the values to adjust.
+		const COLLAPSE_DELTA_PX = 18;
+		const EXPAND_DELTA_PX = 10;
+		const MIN_SCROLL_TO_COLLAPSE_PX = 12;
+		let lockUntil = 0;
+
+		const setCollapsedWithLock = (nextCollapsed: boolean) => {
+			setIsMobileHeaderCollapsed((prev) => {
+				if (prev === nextCollapsed) return prev;
+				// Chrome-specific stability guard:
+				// After toggling, give the layout/scroll position time to settle. Without this,
+				// Chrome can bounce scrollTop by a few pixels during the header transition,
+				// which would otherwise immediately re-trigger the opposite state.
+				lockUntil = performance.now() + 260;
+				return nextCollapsed;
+			});
+		};
+		const onScroll = () => {
+			cancelAnimationFrame(raf);
+			raf = requestAnimationFrame(() => {
+				const now = performance.now();
+				if (now < lockUntil) {
+					lastScrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+					return;
+				}
+				const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+				const delta = scrollTop - lastScrollTop;
+				lastScrollTop = scrollTop;
+
+				// Always expand at the very top.
+				if (scrollTop <= 0) {
+					accumDown = 0;
+					accumUp = 0;
+					setCollapsedWithLock(false);
+					return;
+				}
+
+				if (delta > 0) {
+					accumDown += delta;
+					accumUp = 0;
+					if (scrollTop > MIN_SCROLL_TO_COLLAPSE_PX && accumDown >= COLLAPSE_DELTA_PX) {
+						accumDown = 0;
+						setCollapsedWithLock(true);
+					}
+				} else if (delta < 0) {
+					accumUp += -delta;
+					accumDown = 0;
+					// Expand as soon as the user scrolls back (downward gesture).
+					if (accumUp >= EXPAND_DELTA_PX) {
+						accumUp = 0;
+						setCollapsedWithLock(false);
+					}
+				}
+			});
+		};
+		onScroll();
+		window.addEventListener('scroll', onScroll, { passive: true });
+		return () => {
+			cancelAnimationFrame(raf);
+			window.removeEventListener('scroll', onScroll);
+		};
+	}, [isMobileViewport]);
+
+	React.useEffect(() => {
+		// Chrome/PWA swipe-back can close the app. In standalone mode only,
+		// map a back gesture to toggling the sidebar instead of exiting.
+		if (!isMobileViewport || typeof window === 'undefined') return;
+		const isStandalone =
+			window.matchMedia?.('(display-mode: standalone)')?.matches ||
+			// iOS Safari
+			Boolean((window.navigator as unknown as { standalone?: boolean }).standalone);
+		if (!isStandalone) return;
+
+		let armed = false;
+		const pushGuardState = () => {
+			try {
+				window.history.pushState({ sidebarGuard: true }, '');
+				armed = true;
+			} catch {
+				// ignore
+			}
+		};
+
+		if (!armed) pushGuardState();
+		const onPopState = () => {
+			setIsMobileSidebarOpen((prev) => !prev);
+			pushGuardState();
+		};
+		window.addEventListener('popstate', onPopState);
+		return () => {
+			window.removeEventListener('popstate', onPopState);
+		};
+	}, [isMobileViewport]);
 
 	React.useEffect(() => {
 		// Keep card max-height token in sync with responsive desktop/mobile defaults.
@@ -440,6 +919,24 @@ export function App(): React.JSX.Element {
 			root.style.removeProperty('--note-card-max-height');
 		};
 	}, [maxCardHeightPx]);
+
+	React.useEffect(() => {
+		// When an editor is open, the rest of the app should be visually/background-inactive.
+		// The editor overlay blocks clicks; this additionally prevents background scroll
+		// (wheel/trackpad) on desktop and elastic scroll on mobile.
+		if (typeof document === 'undefined') return;
+		const editorOpen = editorMode !== 'none' || Boolean(selectedNoteId);
+		if (!editorOpen) return;
+
+		const prevOverflow = document.body.style.overflow;
+		const prevOverscroll = (document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior;
+		document.body.style.overflow = 'hidden';
+		(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
+		return () => {
+			document.body.style.overflow = prevOverflow;
+			(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = prevOverscroll || '';
+		};
+	}, [editorMode, selectedNoteId]);
 
 	const onSaveText = React.useCallback(
 		async (args: { title: string; body: string }) => {
@@ -514,8 +1011,26 @@ export function App(): React.JSX.Element {
 		return authGateView;
 	}
 
+	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
+	const toggleSidebar = () => {
+		if (isMobileViewport) {
+			setIsMobileSidebarOpen((prev) => !prev);
+			return;
+		}
+		setIsSidebarCollapsed((prev) => !prev);
+	};
+
+	const closeMobileSidebar = () => {
+		setIsMobileSidebarOpen(false);
+	};
+
 	return (
-		<div className={`test-harness-root${isFabOpen ? ' fab-open' : ''}`}>
+		<div
+			className={`test-harness-root${isFabOpen ? ' fab-open' : ''}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${
+				isMobileSidebarOpen ? ' mobile-sidebar-open' : ''
+			}${isMobileHeaderCollapsed ? ' mobile-header-collapsed' : ''}`}
+		>
+			{isMobileViewport && !isMobileSidebarOpen ? <div ref={mobileSwipeZoneRef} className="mobile-swipe-zone" aria-hidden="true" /> : null}
 			{isFabOpen ? (
 				<button
 					type="button"
@@ -524,50 +1039,82 @@ export function App(): React.JSX.Element {
 					aria-label={t('app.closeQuickCreate')}
 				/>
 			) : null}
-			<div className={`app-shell${isSidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
-				<aside className={`app-sidebar${isSidebarCollapsed ? ' is-collapsed' : ''}`}>
-					<div className="app-sidebar-header">
-						<button
-							type="button"
-							className="app-sidebar-toggle"
-							onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-							aria-label={isSidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')}
-							title={isSidebarCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')}
-						>
-							☰
-						</button>
-						<span className="app-sidebar-logo" aria-hidden="true">
-							FA
-						</span>
-					</div>
-
-					<nav className="app-sidebar-nav" aria-label={t('grid.notes')}>
-						{sidebarSections.map((entry) => (
-							<button key={entry} type="button" className="app-sidebar-link">
-								{entry}
+			<header ref={headerRef} className="app-header">
+				{isMobileViewport ? (
+					<>
+						<div className="app-header-toprow mobile-toprow">
+							<button
+								type="button"
+								className="app-icon-button mobile-sidebar-btn"
+								onClick={toggleSidebar}
+								aria-label={isMobileSidebarOpen ? t('common.close') : t('app.expandSidebar')}
+								title={isMobileSidebarOpen ? t('common.close') : t('app.expandSidebar')}
+							>
+								<FontAwesomeIcon icon={faBars} />
 							</button>
-						))}
-					</nav>
-				</aside>
-
-				<main className="app-main">
-					<header className="app-topbar">
-						<div className="app-topbar-search-wrap">
+							<img className="app-header-logo mobile-app-icon" src={headerIconSrc} alt="" aria-hidden="true" />
+							<button
+								type="button"
+								className="app-icon-button mobile-appgrid-btn"
+								aria-label={t('app.globalSearchPlaceholder')}
+								title={t('app.globalSearchPlaceholder')}
+							>
+								<FontAwesomeIcon icon={faGrip} />
+							</button>
+							<button
+								type="button"
+								className="avatar-trigger mobile-avatar-btn"
+								onClick={() => setIsPreferencesOpen(true)}
+								aria-label={t('prefs.title')}
+								title={t('prefs.title')}
+							>
+								{authProfileImage ? <img className="avatar-img" src={authProfileImage} alt="" /> : <span aria-hidden="true">👤</span>}
+							</button>
+						</div>
+						<div className="app-header-searchrow mobile-searchrow">
 							<input
 								type="search"
-								className="app-topbar-search"
+								className="app-header-search-input"
 								value={searchQuery}
 								onChange={(event) => setSearchQuery(event.target.value)}
 								placeholder={t('app.globalSearchPlaceholder')}
 								aria-label={t('app.globalSearchPlaceholder')}
 							/>
 						</div>
-						<div className="app-topbar-right">
-							<div className="connection-indicator" aria-live="polite" title={`Connection: ${connection.state}`}>
-								<span aria-hidden="true" className="connection-dot">
-									{connection.state === 'connected' ? '🟢' : connection.state === 'connecting' ? '🟡' : '🔴'}
-								</span>
-							</div>
+					</>
+				) : (
+					<>
+						<div className="app-header-left">
+							<button
+								type="button"
+								className="app-icon-button"
+								onClick={toggleSidebar}
+								aria-label={sidebarIsCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')}
+								title={sidebarIsCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')}
+							>
+								<FontAwesomeIcon icon={faBars} />
+							</button>
+							<img className="app-header-logo" src={headerIconSrc} alt="" aria-hidden="true" />
+						</div>
+						<div className="app-header-search">
+							<input
+								type="search"
+								className="app-header-search-input"
+								value={searchQuery}
+								onChange={(event) => setSearchQuery(event.target.value)}
+								placeholder={t('app.globalSearchPlaceholder')}
+								aria-label={t('app.globalSearchPlaceholder')}
+							/>
+						</div>
+						<div className="app-header-right">
+							<button
+								type="button"
+								className="app-icon-button"
+								aria-label={t('app.globalSearchPlaceholder')}
+								title={t('app.globalSearchPlaceholder')}
+							>
+								<FontAwesomeIcon icon={faGrip} />
+							</button>
 							<button
 								type="button"
 								className="avatar-trigger"
@@ -578,9 +1125,68 @@ export function App(): React.JSX.Element {
 								{authProfileImage ? <img className="avatar-img" src={authProfileImage} alt="" /> : <span aria-hidden="true">👤</span>}
 							</button>
 						</div>
-					</header>
+					</>
+				)}
+			</header>
 
-					<div className="top-actions">
+			{isMobileViewport && isMobileSidebarOpen ? (
+				<button
+					type="button"
+					className="mobile-sidebar-backdrop"
+					onClick={closeMobileSidebar}
+					aria-label={t('common.close')}
+				/>
+			) : null}
+
+			<div className={`app-shell${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}`}>
+				<aside className={`app-sidebar${sidebarIsCollapsed ? ' is-collapsed' : ''}${isMobileSidebarOpen ? ' is-mobile-open' : ''}`}>
+					<nav className="app-sidebar-nav" aria-label={t('grid.notes')}>
+						{sidebarEntries.map((entry) => {
+							const isGroup = entry.kind === 'group';
+							const isOpen = Boolean(sidebarGroupsOpen[entry.id]);
+							const label =
+								entry.id === 'workspaces'
+									? `${t('workspace.title')}: ${activeWorkspaceName || t('workspace.unnamed')}`
+									: entry.label;
+							return (
+								<button
+									key={entry.id}
+									type="button"
+									className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}`}
+									onClick={() => {
+										if (entry.id === 'workspaces') {
+											setIsWorkspaceSwitcherOpen(true);
+											if (isMobileViewport) closeMobileSidebar();
+											return;
+										}
+										if (isGroup) {
+											setSidebarGroupsOpen((prev) => ({ ...prev, [entry.id]: !Boolean(prev[entry.id]) }));
+										}
+										if (isMobileViewport) closeMobileSidebar();
+									}}
+									title={sidebarIsCollapsed ? label : undefined}
+									aria-label={label}
+								>
+									<span className="sidebar-disclosure" aria-hidden="true">
+										{isGroup ? (
+											<span className={`sidebar-disclosure-icon${isOpen ? ' is-open' : ''}`}>
+												<FontAwesomeIcon icon={faChevronRight} />
+											</span>
+										) : null}
+									</span>
+									<span className="sidebar-icon" aria-hidden="true">
+										<FontAwesomeIcon icon={entry.icon as never} />
+									</span>
+									<span className="sidebar-label">{label}</span>
+								</button>
+							);
+						})}
+					</nav>
+				</aside>
+
+				<main className="app-main">
+
+					<div ref={topActionsRef} className="top-actions">
 						<button type="button" className="top-action-card" onClick={() => setEditorMode('text')}>
 							{t('app.createNewNote')}
 						</button>
@@ -599,6 +1205,7 @@ export function App(): React.JSX.Element {
 					</section>
 
 					<NoteGrid
+						key={authWorkspaceId || 'no-workspace'}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
 						selectedNoteId={selectedNoteId}
 						maxCardHeightPx={maxCardHeightPx}
@@ -670,7 +1277,26 @@ export function App(): React.JSX.Element {
 					setIsPreferencesOpen(false);
 					setIsUserManagementOpen(true);
 				}}
+				onSendInvite={() => {
+					setIsPreferencesOpen(false);
+					setIsSendInviteOpen(true);
+				}}
 				onSignOut={() => void signOut()}
+			/>
+
+			<SendInviteModal
+				isOpen={isSendInviteOpen}
+				onClose={() => setIsSendInviteOpen(false)}
+				t={t}
+				workspaceId={authWorkspaceId}
+			/>
+
+			<WorkspaceSwitcherModal
+				isOpen={isWorkspaceSwitcherOpen}
+				onClose={() => setIsWorkspaceSwitcherOpen(false)}
+				t={t}
+				onWorkspaceActivated={handleWorkspaceActivated}
+				onActiveWorkspaceRenamed={() => void refreshActiveWorkspace()}
 			/>
 
 			<UserManagementModal
