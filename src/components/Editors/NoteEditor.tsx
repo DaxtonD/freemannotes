@@ -9,15 +9,33 @@ import {
 	type DropResult,
 } from '@hello-pangea/dnd';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faGripVertical } from '@fortawesome/free-solid-svg-icons';
+import {
+	faAlignCenter,
+	faAlignLeft,
+	faAlignRight,
+	faBell,
+	faBold,
+	faImage,
+	faEllipsisVertical,
+	faGripVertical,
+	faItalic,
+	faListOl,
+	faListUl,
+	faLink,
+	faPalette,
+	faUnderline,
+	faUserPlus,
+} from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
-import QRCode from 'qrcode';
+import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
 import { applyChecklistDragToItems, normalizeChecklistHierarchy, removeChecklistItemWithChildren } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
+import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
+import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
@@ -211,14 +229,85 @@ function useOptionalChecklistItems(yarray: Y.Array<Y.Map<any>> | null): readonly
 }
 
 export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
+	const getInitialInteractionGuardState = (): boolean => {
+		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+		return window.matchMedia('(pointer: coarse)').matches;
+	};
 	const { t } = useI18n();
-	const [isDeleting, setIsDeleting] = React.useState(false);
-	const [isShareOpen, setIsShareOpen] = React.useState(false);
-	const [shareBusy, setShareBusy] = React.useState(false);
-	const [shareError, setShareError] = React.useState<string | null>(null);
-	const [shareUrl, setShareUrl] = React.useState<string | null>(null);
-	const [shareQrDataUrl, setShareQrDataUrl] = React.useState<string | null>(null);
-	const [shareRequestedForOpen, setShareRequestedForOpen] = React.useState(false);
+	const [isModified, setIsModified] = React.useState(false);
+	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
+	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
+	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
+	const isCoarsePointer = useIsCoarsePointer();
+	const isMobileLandscape = useIsMobileLandscape();
+	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
+	React.useEffect(() => {
+		isMobileLandscapeRef.current = isMobileLandscape;
+		// Landscape branch: force media dock closed to keep editing chrome stable.
+		if (isMobileLandscape) setMediaDockOpen(false);
+	}, [isMobileLandscape]);
+	React.useEffect(() => {
+		// Coarse-pointer branch: start with a longer guard window because this
+		// editor has dense interactive checklist controls near the tap origin.
+		if (!isCoarsePointer || typeof window === 'undefined') return;
+		setInteractionGuardActive(true);
+		const timeoutId = window.setTimeout(() => setInteractionGuardActive(false), 700);
+		return () => window.clearTimeout(timeoutId);
+	}, [isCoarsePointer]);
+	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
+		if (!interactionGuardActive) return;
+		event.preventDefault();
+		event.stopPropagation();
+	}, [interactionGuardActive]);
+	const handleTouchStart = React.useCallback((event: React.TouchEvent): void => {
+		const t0 = event.touches[0];
+		if (!t0) return;
+		event.stopPropagation();
+		dockTouchStartRef.current = { x: t0.clientX, y: t0.clientY };
+	}, []);
+	const handleDockTouchMove = React.useCallback((event: React.TouchEvent): void => {
+		if (!dockTouchStartRef.current) return;
+		event.stopPropagation();
+		if (event.cancelable) event.preventDefault();
+	}, []);
+	const handleHandleTouchEnd = React.useCallback(
+		(event: React.TouchEvent): void => {
+			// Landscape branch: never open/close media via vertical swipes.
+			if (isMobileLandscapeRef.current) return;
+			const start = dockTouchStartRef.current;
+			const t0 = event.changedTouches[0];
+			if (!start || !t0) return;
+			event.stopPropagation();
+			if (event.cancelable) event.preventDefault();
+			dockTouchStartRef.current = null;
+			const dx = t0.clientX - start.x;
+			const dy = t0.clientY - start.y;
+			if (Math.abs(dy) < 28 || Math.abs(dy) < Math.abs(dx)) return;
+			if (dy < 0) setMediaDockOpen(true);
+			if (dy > 0) setMediaDockOpen(false);
+		},
+		[]
+	);
+	const handleDockSwipeEnd = React.useCallback(
+		(event: React.TouchEvent): void => {
+			// Landscape branch: horizontal media tab swipe is disabled.
+			if (isMobileLandscapeRef.current) return;
+			const start = dockTouchStartRef.current;
+			const t0 = event.changedTouches[0];
+			if (!start || !t0) return;
+			event.stopPropagation();
+			dockTouchStartRef.current = null;
+			const dx = t0.clientX - start.x;
+			const dy = t0.clientY - start.y;
+			if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
+			setMediaDockTab((prev) => {
+				if (dx < 0) return (prev === 0 ? 1 : prev);
+				return (prev === 1 ? 0 : prev);
+			});
+		},
+		[]
+	);
 	const [showCompleted, setShowCompleted] = React.useState(false);
 	const checklistArray = useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 	const rowInputsRef = React.useRef<Map<string, HTMLTextAreaElement | null>>(new Map());
@@ -229,55 +318,24 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		textHeight: null,
 		textWidth: null,
 	});
+
+	React.useEffect(() => {
+		setIsModified(false);
+		const onAfterTransaction = (tr: Y.Transaction): void => {
+			if (!tr.local) return;
+			setIsModified(true);
+		};
+		props.doc.on('afterTransaction', onAfterTransaction);
+		return () => {
+			props.doc.off('afterTransaction', onAfterTransaction);
+		};
+	}, [props.doc, props.noteId]);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const lastOverIndexRef = React.useRef<number | null>(null);
 	const [draggingParentId, setDraggingParentId] = React.useState<string | null>(null);
 	const [isChecklistDragging, setIsChecklistDragging] = React.useState(false);
 
-	const createShareLink = React.useCallback(async () => {
-		if (shareBusy) return;
-		setShareBusy(true);
-		setShareError(null);
-		try {
-			const res = await fetch(`/api/docs/${encodeURIComponent(props.noteId)}/share`, {
-				method: 'POST',
-				credentials: 'include',
-			});
-			const contentType = String(res.headers.get('content-type') || '').toLowerCase();
-			const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
-			if (!res.ok) {
-				const message = body && typeof body.error === 'string' ? body.error : t('share.createFailed');
-				throw new Error(message);
-			}
-			const nextUrl = body?.shareUrl ? String(body.shareUrl) : '';
-			if (!nextUrl) throw new Error(t('share.createFailed'));
-			setShareUrl(nextUrl);
-			try {
-				const qr = await QRCode.toDataURL(nextUrl, { width: 240, margin: 1 });
-				setShareQrDataUrl(qr);
-			} catch {
-				setShareQrDataUrl(null);
-			}
-		} catch (err) {
-			setShareError(err instanceof Error ? err.message : t('share.createFailed'));
-			setShareUrl(null);
-			setShareQrDataUrl(null);
-		} finally {
-			setShareBusy(false);
-		}
-	}, [props.noteId, shareBusy, t]);
 
-	React.useEffect(() => {
-		// Only attempt once per open. If the request fails (404, offline, etc),
-		// avoid auto-retrying in a tight loop (console spam).
-		if (!isShareOpen) {
-			setShareRequestedForOpen(false);
-			return;
-		}
-		if (shareRequestedForOpen) return;
-		setShareRequestedForOpen(true);
-		void createShareLink();
-	}, [createShareLink, isShareOpen, shareRequestedForOpen]);
 	// metadata.type controls which editor body is rendered.
 	const metadata = useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const typeValue = useMetadataString(metadata, 'type');
@@ -380,7 +438,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			window.getSelection?.()?.removeAllRanges();
 		};
 
-		const suppressUntil = performance.now() + 220;
+		// Focus suppression branch:
+		// - coarse pointer: use longer suppression to outlast delayed compat events
+		// - fine pointer: keep tight to avoid interfering with normal desktop focus
+		const suppressUntil = performance.now() + (isCoarsePointer ? 700 : 220);
 		const onFocusIn = (event: FocusEvent): void => {
 			if (performance.now() > suppressUntil) return;
 			const target = event.target;
@@ -398,7 +459,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		document.addEventListener('focusin', onFocusIn, true);
 		const timeoutId = window.setTimeout(() => {
 			document.removeEventListener('focusin', onFocusIn, true);
-		}, 220);
+		}, isCoarsePointer ? 700 : 220);
 
 		return () => {
 			window.cancelAnimationFrame(rafIdA);
@@ -406,7 +467,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			window.clearTimeout(timeoutId);
 			document.removeEventListener('focusin', onFocusIn, true);
 		};
-	}, [props.noteId]);
+	}, [isCoarsePointer, props.noteId]);
 
 	const addChecklistItem = React.useCallback(
 		(index?: number): void => {
@@ -624,18 +685,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		[activeItems, addChecklistItem, removeChecklistItem]
 	);
 
-	const handleDelete = React.useCallback(async () => {
-		// Prevent duplicate delete actions and keep button state explicit.
-		if (isDeleting) return;
-		setIsDeleting(true);
-		try {
-			await props.onDelete(props.noteId);
-		} catch (error) {
-			console.error('[CRDT] Failed to delete note:', props.noteId, error);
-			setIsDeleting(false);
-		}
-	}, [isDeleting, props]);
-
 	const renderChecklistClone = React.useCallback(
 		(
 			dragProvided: import('@hello-pangea/dnd').DraggableProvided,
@@ -671,82 +720,78 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 
 	return (
-		<div className={styles.fullscreenOverlay} role="presentation" onClick={props.onClose}>
+		<div className={styles.fullscreenOverlay} role="presentation" onClick={mediaDockOpen ? undefined : props.onClose}>
 			<section
 				aria-label={`Editor ${props.noteId}`}
-				className={`${styles.fullscreenEditor} ${styles.editorContainer}`}
+				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}`}
 				onClick={(event) => event.stopPropagation()}
 			>
-				<div className={styles.fullscreenHeader}>
-					<div className={styles.editorMeta}>
-						{t('editors.editing')}: {props.noteId}
-					</div>
-					<div className={styles.fullscreenActions}>
-						<button
-							type="button"
-							onClick={() => {
-								setIsShareOpen(true);
-								setShareError(null);
-								setShareUrl(null);
-								setShareQrDataUrl(null);
-								setShareRequestedForOpen(false);
-							}}
-							disabled={isDeleting}
-						>
-							{t('share.share')}
+				{type === 'checklist' ? (
+					<header className={styles.editorTopBar}>
+						<button type="button" className={styles.closeIconButton} onClick={props.onClose} aria-label={t('common.close')}>
+							✕
 						</button>
-						<button type="button" onClick={handleDelete} disabled={isDeleting}>
-							{isDeleting ? t('editors.deleting') : t('editors.delete')}
-						</button>
-						<button type="button" onClick={props.onClose} disabled={isDeleting}>
-							{t('common.close')}
-						</button>
-					</div>
-				</div>
-
-				{isShareOpen ? (
-					<div className={styles.shareOverlay} role="presentation" onClick={() => setIsShareOpen(false)}>
-						<section
-							className={styles.shareModal}
-							role="dialog"
-							aria-modal="true"
-							aria-label={t('share.title')}
-							onClick={(e) => e.stopPropagation()}
-						>
-							<header className={styles.shareHeader}>
-								<h3 className={styles.shareTitle}>{t('share.title')}</h3>
-								<button type="button" className={styles.shareClose} onClick={() => setIsShareOpen(false)} aria-label={t('common.close')}>
-									✕
-								</button>
-							</header>
-
-							{shareError ? <div className={styles.shareError}>{shareError}</div> : null}
-
-							<div className={styles.shareBody}>
-								{shareQrDataUrl ? (
-									<div className={styles.shareQrWrap}>
-										<img className={styles.shareQr} src={shareQrDataUrl} alt={t('share.qrAlt')} />
-									</div>
-								) : shareBusy ? (
-									<div>{t('common.loading')}</div>
-								) : null}
-							</div>
-						</section>
-					</div>
+					</header>
 				) : null}
 
-				<label className={styles.field}>
-					<span>{t('editors.title')}</span>
+				{type === 'checklist' ? (
 					<input
+						className={styles.editorTitleInput}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
-						placeholder={t('editors.untitled')}
+						placeholder={t('editors.titlePlaceholder')}
 					/>
-				</label>
+				) : (
+					<input
+						className={styles.editorTitleInput}
+						value={title}
+						onChange={(e) => setYTextValue(titleYText, e.target.value)}
+						placeholder={t('editors.titlePlaceholder')}
+					/>
+				)}
 
 				{type === 'text' && contentYText ? (
-					<label className={`${styles.field} ${styles.fullBodyFieldContainer}`}>
-						<span>{t('editors.content')}</span>
+					<>
+						<div className={styles.formatToolbar} role="toolbar" aria-label={t('editors.formatting')}>
+							<div className={styles.formatToolbarRow}>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.bold')} title={t('editors.bold')}>
+									<FontAwesomeIcon icon={faBold} />
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.italic')} title={t('editors.italic')}>
+									<FontAwesomeIcon icon={faItalic} />
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.underline')} title={t('editors.underline')}>
+									<FontAwesomeIcon icon={faUnderline} />
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.heading1')} title={t('editors.heading1')}>
+									H1
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.heading2')} title={t('editors.heading2')}>
+									H2
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.heading3')} title={t('editors.heading3')}>
+									H3
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')}>
+									<FontAwesomeIcon icon={faListUl} />
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.numberedList')} title={t('editors.numberedList')}>
+									<FontAwesomeIcon icon={faListOl} />
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')}>
+									<FontAwesomeIcon icon={faAlignLeft} />
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.alignCenter')} title={t('editors.alignCenter')}>
+									<FontAwesomeIcon icon={faAlignCenter} />
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.alignRight')} title={t('editors.alignRight')}>
+									<FontAwesomeIcon icon={faAlignRight} />
+								</button>
+								<button type="button" className={styles.formatButton} aria-label={t('editors.link')} title={t('editors.link')}>
+									<FontAwesomeIcon icon={faLink} />
+								</button>
+							</div>
+						</div>
 						<textarea
 							value={content}
 							onChange={(e) => setYTextValue(contentYText, e.target.value)}
@@ -754,16 +799,26 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							placeholder={t('editors.startTyping')}
 							className={styles.fullBodyField}
 						/>
-					</label>
+					</>
 				) : null}
 
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
-						<div className={styles.editorHeader}>
-							<span>{t('editors.checklist')}</span>
-							<button type="button" onClick={() => addChecklistItem()}>
-								{t('editors.add')}
-							</button>
+						<div className={`${styles.formatToolbar} ${styles.formatToolbarCompact}`} role="toolbar" aria-label={t('editors.formatting')}>
+							<div className={styles.formatToolbarRow}>
+								<button type="button" className={`${styles.formatButton} ${styles.formatButtonCompact}`} aria-label={t('editors.bold')} title={t('editors.bold')}>
+									<FontAwesomeIcon icon={faBold} />
+								</button>
+								<button type="button" className={`${styles.formatButton} ${styles.formatButtonCompact}`} aria-label={t('editors.italic')} title={t('editors.italic')}>
+									<FontAwesomeIcon icon={faItalic} />
+								</button>
+								<button type="button" className={`${styles.formatButton} ${styles.formatButtonCompact}`} aria-label={t('editors.underline')} title={t('editors.underline')}>
+									<FontAwesomeIcon icon={faUnderline} />
+								</button>
+								<button type="button" className={`${styles.formatButton} ${styles.formatButtonCompact}`} aria-label={t('editors.link')} title={t('editors.link')}>
+									<FontAwesomeIcon icon={faLink} />
+								</button>
+							</div>
 						</div>
 
 						<div className={styles.checklistScrollArea}>
@@ -896,7 +951,164 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						</div>
 					</section>
 				) : null}
+
+				<div className={styles.editorBottomArea}>
+					<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
+						<button
+							type="button"
+							className={styles.mediaDockHandle}
+							onClick={() => {
+								if (isMobileLandscapeRef.current) return;
+								setMediaDockOpen((prev) => !prev);
+							}}
+							onTouchStart={handleTouchStart}
+							onTouchMove={handleDockTouchMove}
+							onTouchEnd={handleHandleTouchEnd}
+							aria-label={t('editors.mediaDock')}
+						>
+							<span className={styles.mediaDockPill} aria-hidden="true" />
+							<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+						</button>
+					</section>
+
+					<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')}>
+						<div className={styles.bottomDockLeft}>
+							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+								<FontAwesomeIcon icon={faEllipsisVertical} />
+							</button>
+							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+								<FontAwesomeIcon icon={faPalette} />
+							</button>
+							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+								<FontAwesomeIcon icon={faBell} />
+							</button>
+							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+								<FontAwesomeIcon icon={faUserPlus} />
+							</button>
+							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+								<FontAwesomeIcon icon={faImage} />
+							</button>
+							<button
+								type="button"
+								className={styles.mediaDockText}
+								onClick={() => {
+									if (isMobileLandscapeRef.current) return;
+									setMediaDockOpen((prev) => !prev);
+								}}
+								aria-label={t('editors.mediaDock')}
+							>
+								{t('editors.mediaTabMedia')}
+							</button>
+						</div>
+						<button type="button" className={styles.bottomDockClose} onClick={props.onClose} aria-label={t('common.close')} title={t('common.close')}>
+							<FontAwesomeIcon icon={isModified ? byPrefixAndName.fas.check : byPrefixAndName.far.xmark} />
+						</button>
+					</nav>
+				</div>
+				<div className={styles.editorBlurLayer} aria-hidden="true" />
+				<div
+					className={styles.editorBlockLayer}
+					aria-hidden="true"
+					onPointerDown={handleInteractionGuardEvent}
+					onPointerUp={handleInteractionGuardEvent}
+					onMouseDown={handleInteractionGuardEvent}
+					onMouseUp={handleInteractionGuardEvent}
+					onTouchStart={handleInteractionGuardEvent}
+					onTouchEnd={handleInteractionGuardEvent}
+					onClick={handleInteractionGuardEvent}
+				/>
 			</section>
+
+			<section
+				className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}`}
+				aria-label={t('editors.mediaDock')}
+				onClick={(e) => e.stopPropagation()}
+			>
+				<button
+					type="button"
+					className={styles.mediaSheetHandle}
+					onClick={() => {
+						if (isMobileLandscapeRef.current) return;
+						setMediaDockOpen((prev) => !prev);
+					}}
+					onTouchStart={handleTouchStart}
+					onTouchMove={handleDockTouchMove}
+					onTouchEnd={handleHandleTouchEnd}
+					aria-label={t('editors.mediaDock')}
+				>
+					<span className={styles.mediaDockPill} aria-hidden="true" />
+					<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+				</button>
+
+				<header className={styles.mediaSheetHeader}>
+					<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleTouchStart} onTouchEnd={handleDockSwipeEnd}>
+						<button
+							type="button"
+							role="tab"
+							aria-selected={mediaDockTab === 0}
+							className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+							onClick={() => setMediaDockTab(0)}
+						>
+							{t('editors.mediaTabMedia')}
+						</button>
+						<button
+							type="button"
+							role="tab"
+							aria-selected={mediaDockTab === 1}
+							className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+							onClick={() => setMediaDockTab(1)}
+						>
+							{t('editors.mediaTabLinks')}
+						</button>
+					</div>
+					<button type="button" className={styles.mediaSheetClose} onClick={() => setMediaDockOpen(false)} aria-label={t('common.close')}>
+						✕
+					</button>
+				</header>
+
+				<div className={styles.mediaSheetBody}>
+					<div className={styles.mediaPanel} role="tabpanel">
+						<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
+					</div>
+				</div>
+			</section>
+
+			<aside
+				className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
+				onClick={(e) => e.stopPropagation()}
+				aria-hidden={!mediaDockOpen}
+			>
+					<header className={styles.mediaFlyoutHeader}>
+						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')}>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 0}
+								className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(0)}
+							>
+								{t('editors.mediaTabMedia')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 1}
+								className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(1)}
+							>
+								{t('editors.mediaTabLinks')}
+							</button>
+						</div>
+						<button type="button" className={styles.mediaFlyoutClose} onClick={() => setMediaDockOpen(false)} aria-label={t('common.close')}>
+							✕
+						</button>
+					</header>
+					<div className={styles.mediaFlyoutBody}>
+						<div className={styles.mediaPanel} role="tabpanel">
+							<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
+						</div>
+					</div>
+			</aside>
 		</div>
 	);
 }

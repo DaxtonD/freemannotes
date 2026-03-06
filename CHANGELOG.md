@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.63 - 2026-03-05
+
+### Fixed
+- Mobile editor open-flow hardening: prevented touch/click compatibility event
+  pass-through when opening note editors (especially checklist rows on Android
+  Firefox/Chrome) by combining pointer capture, post-open interaction guards,
+  and early focus suppression during the guard window.
+- Mobile landscape behavior: editor media dock interactions now stay locked
+  closed in landscape, and app header morph transitions are disabled while
+  landscape is active.
+- Vite dev websocket reliability/noise: development mode now embeds the Yjs
+  websocket handler by default, preventing `/yjs` proxy socket errors such as
+  `ECONNABORTED` / `ECONNREFUSED` spam during iterative dev runs.
+
+### Changed
+- Editor title styling (all text/checklist editors, mobile + desktop):
+  removed shaded title background and increased title emphasis (larger + bold).
+- Editor dock and formatting labels were aligned across locale dictionaries and
+  i18n fallback messages to keep UI strings consistent in all language/loading
+  branches.
+- Added detailed implementation comments across modified code paths to document
+  branch-specific behavior and interaction guards for future maintenance.
+
 ## 1.0.62 - 2026-03-05
 
 ### Fixed

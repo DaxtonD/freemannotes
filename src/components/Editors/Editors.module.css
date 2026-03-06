@@ -132,7 +132,12 @@
 	overflow: hidden;
 }
 
-@media (max-width: 900px) {
+/*
+	Use input capability (touch vs mouse/trackpad) instead of viewport width.
+	This keeps desktop layouts even in narrow windows, while mobile/touch devices
+	still get the bottom-sheet and compact dock.
+*/
+@media (pointer: coarse) {
 	.fullscreenOverlay {
 		/* Mobile: editors must cover everything (header/search/sidebar). */
 		/* iOS notch / safe area */
@@ -151,7 +156,7 @@
 	}
 }
 
-@media (min-width: 901px) {
+@media (pointer: fine) {
 	.fullscreenOverlay {
 		/*
 			Desktop: keep the app header and creation buttons visible.
@@ -189,53 +194,20 @@
 	gap: 10px;
 }
 
-.fullscreenTitle {
-	margin: 0;
-	font-size: 24px;
-}
-
-.fullscreenActions {
+.editorTopBar {
 	display: flex;
-	gap: var(--space-2);
-}
-
-.shareOverlay {
-	position: fixed;
-	inset: 0;
-	/* Must sit above the fullscreen editor overlay. */
-	z-index: 240;
-	background: color-mix(in srgb, var(--color-overlay) 80%, transparent);
-	display: flex;
+	justify-content: flex-end;
 	align-items: center;
-	justify-content: center;
-	padding: 20px;
 }
 
-.shareModal {
-	width: min(720px, 100%);
-	background: linear-gradient(180deg, var(--color-surface), var(--color-surface-2));
-	border: 1px solid var(--color-border);
-	border-radius: 14px;
-	box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
-	padding: 16px;
-	display: flex;
-	flex-direction: column;
-	gap: 12px;
+@media (pointer: coarse) {
+	/* Mobile checklist editor: reclaim space by removing the top-right close X. */
+	.editorTopBar {
+		display: none;
+	}
 }
 
-.shareHeader {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 12px;
-}
-
-.shareTitle {
-	margin: 0;
-	font-size: 18px;
-}
-
-.shareClose {
+.closeIconButton {
 	border: 0;
 	font-size: 22px;
 	line-height: 1;
@@ -248,48 +220,629 @@
 	color: var(--color-text);
 }
 
-.shareError {
-	border: 1px solid color-mix(in srgb, var(--color-danger) 55%, var(--color-border));
-	background: color-mix(in srgb, var(--color-danger) 12%, transparent);
-	border-radius: 10px;
-	padding: 10px 12px;
+.closeIconButton:hover,
+.closeIconButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.fullscreenTitle {
+	margin: 0;
+	font-size: 24px;
+}
+
+.fullscreenActions {
+	display: flex;
+	gap: var(--space-2);
+}
+
+.editorTitleInput {
+	background: transparent;
+	border: 0;
+	border-radius: 0;
+	padding: 4px 0;
+	font-size: calc(var(--font-size-md) + 2px);
+	font-weight: 700;
 	color: var(--color-text);
 }
 
-.shareBody {
+.editorTitleInput:focus-visible {
+	outline: none;
+}
+
+.formatToolbar {
 	display: flex;
 	flex-direction: column;
-	gap: 12px;
+	gap: 6px;
+	padding: 8px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: color-mix(in srgb, var(--color-surface-2) 60%, transparent);
 }
 
-.shareUrlRow {
+.formatToolbarCompact {
+	padding: 6px;
+	gap: 4px;
+}
+
+.formatToolbarRow {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
+.formatButton {
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	cursor: pointer;
+	height: 30px;
+	min-width: 30px;
+	padding: 0 8px;
+	border-radius: var(--radius-sm);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: var(--font-size-sm);
+	font-weight: 600;
+}
+
+.formatButtonCompact {
+	height: 26px;
+	min-width: 26px;
+	padding: 0 6px;
+	font-size: var(--font-size-xs);
+}
+
+.formatButton:hover,
+.formatButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.formatDivider {
+	width: 1px;
+	height: 18px;
+	background: var(--color-border);
+	margin: 0 2px;
+	flex: 0 0 auto;
+}
+
+.editorBottomArea {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	position: relative;
+	z-index: 2;
+}
+
+.mediaDock {
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	background: var(--color-surface);
+	overflow: hidden;
+}
+
+.mediaDockHandle {
+	width: 100%;
+	border: 0;
+	background: transparent;
+	padding: 8px;
+	cursor: pointer;
+	color: inherit;
+	/* Prevent native scrolling when swiping the handle. */
+	touch-action: none;
+}
+
+.mediaDockLabel {
+	display: block;
+	margin-top: 6px;
+	text-align: center;
+	font-size: var(--font-size-sm);
+	color: var(--color-text);
+}
+
+.mediaDockPill {
+	display: block;
+	width: 40px;
+	height: 4px;
+	border-radius: 999px;
+	margin: 0 auto;
+	background: color-mix(in srgb, var(--color-text-muted) 55%, transparent);
+}
+
+.mediaDockInner {
+	max-height: 0;
+	overflow: hidden;
+	opacity: 0;
+	transform: translateY(12px);
+	will-change: max-height, transform, opacity;
+	transition: max-height 240ms ease, transform 240ms ease, opacity 240ms ease;
+}
+
+.mediaDockOpen .mediaDockInner {
+	max-height: 260px;
+	opacity: 1;
+	transform: translateY(0);
+}
+
+.editorBlurred {
+	transition: filter 220ms ease;
+	position: relative;
+}
+
+.mediaOpen {
+}
+
+.editorBlurLayer {
+	display: none;
+}
+
+.editorBlockLayer {
+	display: block;
+	position: absolute;
+	inset: 0;
+	z-index: 1;
+	pointer-events: none;
+	opacity: 0;
+	background: transparent;
+}
+
+.editorInteractionGuardActive .editorBlockLayer {
+	/* Guard-active branch: transparent blocker absorbs the first post-open events. */
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.editorInteractionGuardActive {
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
+}
+
+.editorInteractionGuardActive input,
+.editorInteractionGuardActive textarea,
+.editorInteractionGuardActive button,
+.editorInteractionGuardActive [contenteditable='true'] {
+	/* Guard-active branch: controls are temporarily inert to prevent accidental
+	   focus/selection from delayed compatibility events on mobile browsers. */
+	pointer-events: none;
+}
+
+.mediaSheet {
+	display: none;
+}
+
+.mediaSheetHandle {
+	width: 100%;
+	border: 0;
+	background: transparent;
+	padding: 10px 12px 6px;
+	cursor: pointer;
+	color: inherit;
+	touch-action: none;
+}
+
+.mediaSheetHeader {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 6px 10px 0;
+	/* Header gestures (tabs/close) should never scroll the page behind. */
+	touch-action: none;
+}
+
+.mediaSheetClose {
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	width: 36px;
+	height: 36px;
+	border-radius: var(--radius-md);
+	cursor: pointer;
+	font-size: 22px;
+	line-height: 1;
+}
+
+.mediaSheetClose:hover,
+.mediaSheetClose:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.mediaSheetBody {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	-webkit-overflow-scrolling: touch;
+	overscroll-behavior: contain;
+}
+
+.mediaTabs {
 	display: flex;
 	gap: 8px;
-	align-items: center;
+	padding: 8px;
+	border-top: 1px solid var(--color-border);
 }
 
-.shareUrlInput {
+.mediaTab {
 	flex: 1;
-	min-width: 0;
-	height: 36px;
-	border: 1px solid var(--color-border);
-	border-radius: 10px;
-	background: var(--color-surface);
-	color: var(--color-input-text);
-	padding: 0 10px;
+	border: 0;
+	background: transparent;
+	color: var(--color-text-muted);
+	border-radius: var(--radius-md);
+	height: 34px;
+	cursor: pointer;
 }
 
-.shareQrWrap {
+.mediaTab:hover,
+.mediaTab:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.mediaTabActive {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+	color: var(--color-text);
+}
+
+.mediaPanel {
+	padding: 10px;
+}
+
+.mediaPanelPlaceholder {
+	height: 170px;
+	border-radius: var(--radius-md);
+	border: 1px dashed var(--color-border);
+	background: color-mix(in srgb, var(--color-surface-2) 45%, transparent);
+}
+
+.bottomDock {
 	display: flex;
-	justify-content: center;
+	align-items: center;
+	justify-content: space-between;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-lg);
+	padding: 6px;
+	background: color-mix(in srgb, var(--color-surface-2) 60%, transparent);
 }
 
-.shareQr {
-	width: 240px;
-	height: 240px;
-	border-radius: 12px;
+.bottomDockLeft {
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 14px;
+	min-width: 0;
+}
+
+.mediaDockText {
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	padding: 6px 8px;
+	border-radius: var(--radius-md);
+	cursor: pointer;
+	font-weight: 600;
+}
+
+.mediaDockText:hover,
+.mediaDockText:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.bottomDockClose {
+	border: 0;
+	border-radius: var(--radius-md);
+	background: color-mix(in srgb, var(--color-surface-2) 70%, transparent);
+	color: var(--color-text);
+	padding: 10px 14px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	line-height: 1;
+	font-size: 18px;
+	cursor: pointer;
+}
+
+.bottomDockRightActions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 10px;
+}
+
+.bottomDockClose:hover,
+.bottomDockClose:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.bottomDockClose:active {
+	transform: translateY(1px);
+}
+
+.bottomDockCompact {
+	padding: 4px;
+}
+
+.bottomDockButton {
+	border: 0;
+	background: transparent;
+	width: 44px;
+	height: 44px;
+	border-radius: var(--radius-md);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--color-text);
+	font-size: 16px;
+}
+
+.bottomDockButtonCompact {
+	width: 36px;
+	height: 36px;
+	border-radius: var(--radius-sm);
+	font-size: 14px;
+}
+
+.bottomDockButton:disabled {
+	opacity: 0.75;
+}
+
+.bottomDockIconPlaceholder {
+	width: 22px;
+	height: 22px;
+	border-radius: var(--radius-sm);
 	border: 1px solid var(--color-border);
-	background: white;
+	background: color-mix(in srgb, var(--color-surface-2) 70%, transparent);
+}
+
+.mediaFlyout {
+	display: none;
+}
+
+@media (pointer: fine) {
+	.formatToolbarRow {
+		flex-wrap: nowrap;
+		overflow-x: auto;
+		overflow-y: hidden;
+		-webkit-overflow-scrolling: touch;
+		scrollbar-width: none;
+	}
+
+	.formatToolbarRow::-webkit-scrollbar {
+		width: 0;
+		height: 0;
+	}
+
+	/* Desktop: blur editor content without blurring the bottom dock. */
+	.editorBlurLayer {
+		display: block;
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		pointer-events: none;
+		opacity: 0;
+		transition: opacity 220ms ease;
+		/* Tiny alpha so backdrop-filter reliably applies. */
+		background: rgba(0, 0, 0, 0.01);
+		backdrop-filter: blur(2px);
+		-webkit-backdrop-filter: blur(2px);
+	}
+
+	/* Desktop: block all pointer interaction with the editor when media flyout is open. */
+	.editorBlockLayer {
+		transition: opacity 220ms ease;
+	}
+
+	.editorBlurred.mediaOpen .editorBlurLayer {
+		opacity: 1;
+	}
+
+	.editorBlurred.mediaOpen .editorBlockLayer {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.editorBlurred.mediaOpen .bottomDockClose {
+		pointer-events: none;
+		opacity: 0.6;
+	}
+
+	/* Desktop: media opens via right-side flyout, so no drag-handle bar. */
+	.mediaDock {
+		display: none;
+	}
+
+	.bottomDockButton,
+	.bottomDockButtonCompact {
+		width: 46px;
+		height: 46px;
+		font-size: 18px;
+		transition: transform 120ms ease, background 160ms ease;
+	}
+
+	.bottomDockClose {
+		font-size: 20px;
+	}
+
+	.bottomDockButton:hover,
+	.bottomDockButton:focus-visible,
+	.bottomDockButtonCompact:hover,
+	.bottomDockButtonCompact:focus-visible {
+		transform: scale(1.06);
+		background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+	}
+
+	.mediaDockText {
+		font-size: 18px;
+	}
+
+	/* Desktop uses a right-side flyout instead of expanding the dock inline. */
+	.mediaDockInner {
+		display: none;
+	}
+
+	.mediaFlyout {
+		display: flex;
+		position: fixed;
+		right: 0;
+		top: var(--app-header-offset, 0px);
+		bottom: 0;
+		width: min(420px, 46vw);
+		background: var(--color-surface);
+		border-left: 1px solid var(--color-border);
+		z-index: 235;
+		flex-direction: column;
+		transform: translateX(100%);
+		opacity: 0;
+		visibility: hidden;
+		pointer-events: none;
+		will-change: transform, opacity;
+		transition: transform 240ms ease, opacity 200ms ease, visibility 0s linear 240ms;
+	}
+
+	.mediaFlyoutOpen {
+		transform: translateX(0);
+		opacity: 1;
+		visibility: visible;
+		pointer-events: auto;
+		transition: transform 240ms ease, opacity 200ms ease;
+	}
+
+	.mediaFlyoutHeader {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+		padding: 8px;
+		border-bottom: 1px solid var(--color-border);
+	}
+
+	.mediaFlyoutClose {
+		border: 0;
+		font-size: 22px;
+		line-height: 1;
+		padding: 0;
+		width: 32px;
+		height: 32px;
+		border-radius: 50%;
+		cursor: pointer;
+		background: transparent;
+		color: var(--color-text);
+	}
+
+	.mediaFlyoutClose:hover,
+	.mediaFlyoutClose:focus-visible {
+		background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+	}
+
+	.mediaFlyoutBody {
+		flex: 1;
+		min-height: 0;
+		overflow: auto;
+	}
+}
+
+@media (pointer: coarse) {
+	.editorBottomArea {
+		gap: 6px;
+		padding-bottom: env(safe-area-inset-bottom, 0px);
+	}
+
+	/* Match mobile dock screenshot: no visible divider lines. */
+	.mediaDock {
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+	}
+
+	/* Mobile: media opens as an overlay sheet, not inline. */
+	.mediaDockInner {
+		display: none;
+	}
+
+	.editorBlurred.mediaOpen {
+		filter: blur(2px);
+	}
+
+	.mediaSheet {
+		display: flex;
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		height: min(72dvh, 620px);
+		background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+		border-top-left-radius: 18px;
+		border-top-right-radius: 18px;
+		transform: translateY(100%);
+		opacity: 0;
+		pointer-events: none;
+		will-change: transform, opacity;
+		transition: transform 260ms ease, opacity 260ms ease;
+		z-index: 225;
+		flex-direction: column;
+		box-shadow: 0 -16px 40px -22px rgba(0, 0, 0, 0.6);
+		backdrop-filter: blur(8px);
+		-webkit-backdrop-filter: blur(8px);
+	}
+
+	.mediaSheetOpen {
+		transform: translateY(0);
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.mediaTabs {
+		border-top: 0;
+	}
+
+	.bottomDock {
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		padding: 8px 8px;
+		justify-content: space-between;
+		gap: 12px;
+	}
+
+	.bottomDockLeft {
+		flex: 1 1 auto;
+		min-width: 0;
+		gap: 10px;
+		padding-right: 6px;
+	}
+
+	.bottomDockRightActions {
+		flex: 0 0 auto;
+		margin-left: 6px;
+		white-space: nowrap;
+	}
+
+	.bottomDockButton,
+	.bottomDockButtonCompact {
+		width: 38px;
+		height: 38px;
+	}
+
+	.bottomDockButton,
+	.bottomDockButtonCompact {
+		background: transparent;
+	}
+
+	.mediaDockPill {
+		width: 140px;
+		height: 5px;
+		background: color-mix(in srgb, var(--color-text) 78%, transparent);
+	}
+
+	.mediaPanelPlaceholder {
+		border: 0;
+		background: transparent;
+	}
+
+	/* Mobile: media opens via handle, not a dock text button. */
+	.mediaDockText {
+		display: none;
+	}
 }
 
 .fullBodyField {
@@ -438,6 +991,7 @@ Drag handle:
 
 .rowTextArea {
 	flex: 1;
+	box-sizing: border-box;
 	/*
 	Allow wrapping inside a flex row:
 	`min-width: 0` is required so long text can wrap instead of forcing the row
@@ -459,8 +1013,18 @@ Drag handle:
 	white-space: pre-wrap;
 }
 
+.rowTextArea:focus,
+.rowTextArea:focus-visible {
+	outline: none;
+	box-shadow: none;
+	border-color: transparent;
+	-webkit-appearance: none;
+	appearance: none;
+}
+
 .dragPreviewText {
 	flex: 1;
+	box-sizing: border-box;
 	min-height: 26px;
 	padding: 4px 6px;
 	line-height: 1.35;
@@ -468,6 +1032,62 @@ Drag handle:
 	overflow-wrap: anywhere;
 	display: flex;
 	align-items: center;
+}
+
+@media (pointer: coarse) {
+	/* Mobile: keep checklist rows visually compact and vertically centered. */
+	.checklistList,
+	.checklistComposer {
+		gap: 1px;
+	}
+
+	.checklistItem,
+	.checklistComposerRow {
+		align-items: center;
+		padding: 3px 6px;
+	}
+
+	.rowTextArea {
+		min-height: 22px;
+		padding: 2px 6px;
+		line-height: 1.28;
+	}
+
+	.dragPreviewText {
+		min-height: 22px;
+		padding: 2px 6px;
+		line-height: 1.28;
+		align-items: center;
+	}
+
+	.dragHandle {
+		height: 32px;
+		min-width: 32px;
+		width: 32px;
+		align-items: center;
+		align-self: center;
+		padding-top: 0;
+		line-height: 1;
+		transform: translateY(4px);
+	}
+
+	.checklistCheckbox {
+		margin-top: 0;
+		align-self: center;
+		transform: translateY(2px);
+	}
+
+	.rowTextArea {
+		transform: translateY(2px);
+	}
+
+	.dragPreviewText {
+		transform: translateY(2px);
+	}
+
+	.rowRemoveButton {
+		align-self: center;
+	}
 }
 
 .rowDragging {
@@ -540,5 +1160,23 @@ Drag ghost:
 
 	.fullscreenTitle {
 		font-size: 20px;
+	}
+
+	/* Mobile: keep editor chrome small to maximize content area. */
+	.formatToolbar {
+		padding: 6px;
+		gap: 4px;
+	}
+	.formatButton {
+		height: 28px;
+		min-width: 28px;
+		padding: 0 6px;
+	}
+	.bottomDock {
+		padding: 4px;
+	}
+	.bottomDockButton {
+		width: 36px;
+		height: 36px;
 	}
 }
