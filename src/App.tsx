@@ -34,8 +34,53 @@ import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId } from './core/noteMo
 import { applyTheme, getStoredThemeId, isLightTheme, persistThemeId, THEMES, type ThemeId } from './core/theme';
 import { useConnectionStatus } from './core/useConnectionStatus';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
+import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 
 type EditorMode = 'none' | 'text' | 'checklist';
+
+type OverlaySnapshot = {
+	editorMode: EditorMode;
+	selectedNoteId: string | null;
+	isPreferencesOpen: boolean;
+	isUserManagementOpen: boolean;
+	isSendInviteOpen: boolean;
+	isWorkspaceSwitcherOpen: boolean;
+	isMobileSidebarOpen: boolean;
+	isFabOpen: boolean;
+};
+
+const OVERLAY_HISTORY_KEY = 'freemannotes.overlay.history.v1' as const;
+
+type OverlayHistoryState = {
+	[OVERLAY_HISTORY_KEY]: true;
+	snapshot: OverlaySnapshot;
+	kind?: 'overlay' | 'root';
+};
+
+const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
+	editorMode: 'none',
+	selectedNoteId: null,
+	isPreferencesOpen: false,
+	isUserManagementOpen: false,
+	isSendInviteOpen: false,
+	isWorkspaceSwitcherOpen: false,
+	isMobileSidebarOpen: false,
+	isFabOpen: false,
+};
+
+function isOverlayHistoryState(value: unknown): value is OverlayHistoryState {
+	if (!value || typeof value !== 'object') return false;
+	return (value as Partial<OverlayHistoryState>)[OVERLAY_HISTORY_KEY] === true;
+}
+
+function detectStandaloneDisplayMode(): boolean {
+	if (typeof window === 'undefined') return false;
+	return (
+		window.matchMedia?.('(display-mode: standalone)')?.matches ||
+		// iOS Safari
+		Boolean((window.navigator as unknown as { standalone?: boolean }).standalone)
+	);
+}
 
 type AuthCacheV1 = {
 	v: 1;
@@ -144,7 +189,7 @@ export function App(): React.JSX.Element {
 	const [isMobileHeaderCollapsed, setIsMobileHeaderCollapsed] = React.useState(false);
 	const [isMobileViewport, setIsMobileViewport] = React.useState(() => {
 		if (typeof window === 'undefined') return false;
-		return window.matchMedia('(max-width: 900px)').matches;
+		return window.matchMedia('(pointer: coarse)').matches;
 	});
 	const headerRef = React.useRef<HTMLElement | null>(null);
 	const topActionsRef = React.useRef<HTMLDivElement | null>(null);
@@ -172,7 +217,209 @@ export function App(): React.JSX.Element {
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
+	const isMobileLandscape = useIsMobileLandscape();
 	const maxCardHeightPx = isCoarsePointer ? 450 : 615;
+	const exitBackPressRef = React.useRef({ count: 0, lastAt: 0 });
+
+	const getOverlaySnapshot = React.useCallback((): OverlaySnapshot => {
+		return {
+			editorMode,
+			selectedNoteId,
+			isPreferencesOpen,
+			isUserManagementOpen,
+			isSendInviteOpen,
+			isWorkspaceSwitcherOpen,
+			isMobileSidebarOpen,
+			isFabOpen,
+		};
+	}, [
+		editorMode,
+		selectedNoteId,
+		isPreferencesOpen,
+		isUserManagementOpen,
+		isSendInviteOpen,
+		isWorkspaceSwitcherOpen,
+		isMobileSidebarOpen,
+		isFabOpen,
+	]);
+
+	const applyOverlaySnapshot = React.useCallback((snapshot: OverlaySnapshot) => {
+		setEditorMode(snapshot.editorMode);
+		setSelectedNoteId(snapshot.selectedNoteId);
+		setIsPreferencesOpen(snapshot.isPreferencesOpen);
+		setIsUserManagementOpen(snapshot.isUserManagementOpen);
+		setIsSendInviteOpen(snapshot.isSendInviteOpen);
+		setIsWorkspaceSwitcherOpen(snapshot.isWorkspaceSwitcherOpen);
+		setIsMobileSidebarOpen(snapshot.isMobileSidebarOpen);
+		setIsFabOpen(snapshot.isFabOpen);
+	}, []);
+
+	const commitOverlaySnapshot = React.useCallback(
+		(snapshot: OverlaySnapshot, mode: 'push' | 'replace') => {
+			applyOverlaySnapshot(snapshot);
+			if (!isMobileViewport || typeof window === 'undefined') return;
+			try {
+				const nextState: OverlayHistoryState = {
+					[OVERLAY_HISTORY_KEY]: true,
+					snapshot,
+					kind: 'overlay',
+				};
+				if (mode === 'replace' && isOverlayHistoryState(window.history.state)) {
+					window.history.replaceState(nextState, '');
+					return;
+				}
+				window.history.pushState(nextState, '');
+			} catch {
+				// ignore
+			}
+		},
+		[applyOverlaySnapshot, isMobileViewport]
+	);
+
+	const goBackIfOverlayHistory = React.useCallback((): boolean => {
+		if (!isMobileViewport || typeof window === 'undefined') return false;
+		if (!isOverlayHistoryState(window.history.state)) return false;
+		window.history.back();
+		return true;
+	}, [isMobileViewport]);
+
+	const openPreferences = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				isPreferencesOpen: true,
+				isUserManagementOpen: false,
+				isSendInviteOpen: false,
+				isWorkspaceSwitcherOpen: false,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const openUserManagementFromPreferences = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				isPreferencesOpen: false,
+				isUserManagementOpen: true,
+				isSendInviteOpen: false,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const openSendInviteFromPreferences = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				isPreferencesOpen: false,
+				isUserManagementOpen: false,
+				isSendInviteOpen: true,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const openWorkspaceSwitcher = React.useCallback(
+		(opts?: { replaceTop?: boolean }) => {
+			const current = getOverlaySnapshot();
+			commitOverlaySnapshot(
+				{
+					...current,
+					isWorkspaceSwitcherOpen: true,
+					isPreferencesOpen: false,
+					isUserManagementOpen: false,
+					isSendInviteOpen: false,
+					isMobileSidebarOpen: false,
+					isFabOpen: false,
+				},
+				opts?.replaceTop ? 'replace' : 'push'
+			);
+		},
+		[commitOverlaySnapshot, getOverlaySnapshot]
+	);
+
+	const openMobileSidebar = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				isMobileSidebarOpen: true,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const closeMobileSidebar = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setIsMobileSidebarOpen(false);
+	}, [goBackIfOverlayHistory]);
+
+	const openCreateEditor = React.useCallback(
+		(nextMode: Exclude<EditorMode, 'none'>, opts?: { replaceTop?: boolean }) => {
+			const current = getOverlaySnapshot();
+			commitOverlaySnapshot(
+				{
+					...current,
+					editorMode: nextMode,
+					selectedNoteId: null,
+					isMobileSidebarOpen: false,
+					isFabOpen: false,
+					isPreferencesOpen: false,
+					isUserManagementOpen: false,
+					isSendInviteOpen: false,
+					isWorkspaceSwitcherOpen: false,
+				},
+				opts?.replaceTop ? 'replace' : 'push'
+			);
+		},
+		[commitOverlaySnapshot, getOverlaySnapshot]
+	);
+
+	const closeCreateEditor = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setEditorMode('none');
+	}, [goBackIfOverlayHistory]);
+
+	type NoteEditorOpenOptions = { replaceTop?: boolean };
+	const openNoteEditor = React.useCallback(
+		(noteId: string, opts?: NoteEditorOpenOptions) => {
+			const current = getOverlaySnapshot();
+			commitOverlaySnapshot(
+				{
+					...current,
+					editorMode: 'none',
+					selectedNoteId: noteId,
+					isMobileSidebarOpen: false,
+					isFabOpen: false,
+				},
+				opts?.replaceTop ? 'replace' : 'push'
+			);
+		},
+		[commitOverlaySnapshot, getOverlaySnapshot]
+	);
+
+	const closeNoteEditor = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setSelectedNoteId(null);
+	}, [goBackIfOverlayHistory]);
+
+	const toggleFab = React.useCallback(() => {
+		if (isFabOpen) {
+			if (goBackIfOverlayHistory()) return;
+			setIsFabOpen(false);
+			return;
+		}
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot({ ...current, isFabOpen: true }, 'push');
+	}, [commitOverlaySnapshot, getOverlaySnapshot, goBackIfOverlayHistory, isFabOpen]);
 
 	React.useEffect(() => {
 		applyTheme(themeId);
@@ -633,7 +880,7 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
-		const mql = window.matchMedia('(max-width: 900px)');
+		const mql = window.matchMedia('(pointer: coarse)');
 		const onChange = () => setIsMobileViewport(mql.matches);
 		onChange();
 		// Safari < 14 uses addListener/removeListener
@@ -768,7 +1015,7 @@ export function App(): React.JSX.Element {
 			const dy = touch.clientY - startY;
 			if (Math.abs(dy) > MAX_DY) return;
 			if (dx > TRIGGER_DX) {
-				setIsMobileSidebarOpen(true);
+				openMobileSidebar();
 				tracking = false;
 				if (event.cancelable) event.preventDefault();
 			}
@@ -788,7 +1035,7 @@ export function App(): React.JSX.Element {
 			zone.removeEventListener('touchend', onTouchEnd);
 			zone.removeEventListener('touchcancel', onTouchEnd);
 		};
-	}, [isMobileViewport, isMobileSidebarOpen]);
+	}, [isMobileViewport, isMobileSidebarOpen, openMobileSidebar]);
 
 	React.useEffect(() => {
 		// Mobile header morph (MOBILE ONLY):
@@ -807,7 +1054,7 @@ export function App(): React.JSX.Element {
 		//   can change scrollTop mid-frame). To avoid this:
 		//   1) we base toggling on scroll direction + accumulated delta, not a single threshold
 		//   2) we apply a short "lock" after toggling so bounce/elastic scroll doesn't flip it back
-		if (!isMobileViewport || typeof window === 'undefined') return;
+		if (!isMobileViewport || isMobileLandscape || typeof window === 'undefined') return;
 		let raf = 0;
 		let lastScrollTop = window.scrollY || document.documentElement.scrollTop || 0;
 		let accumDown = 0;
@@ -878,38 +1125,73 @@ export function App(): React.JSX.Element {
 			cancelAnimationFrame(raf);
 			window.removeEventListener('scroll', onScroll);
 		};
-	}, [isMobileViewport]);
+	}, [isMobileLandscape, isMobileViewport]);
 
 	React.useEffect(() => {
-		// Chrome/PWA swipe-back can close the app. In standalone mode only,
-		// map a back gesture to toggling the sidebar instead of exiting.
+		// Mobile back button / swipe-back behavior:
+		// - If we are on a state that was pushed by the overlay system, apply it.
+		// - Otherwise, collapse to the base UI state.
+		// - In standalone mode, require a second back press to exit (confirm dialog).
 		if (!isMobileViewport || typeof window === 'undefined') return;
-		const isStandalone =
-			window.matchMedia?.('(display-mode: standalone)')?.matches ||
-			// iOS Safari
-			Boolean((window.navigator as unknown as { standalone?: boolean }).standalone);
-		if (!isStandalone) return;
+		const isStandalone = detectStandaloneDisplayMode();
 
-		let armed = false;
-		const pushGuardState = () => {
+		const ensureRootGuard = () => {
+			if (!isStandalone) return;
 			try {
-				window.history.pushState({ sidebarGuard: true }, '');
-				armed = true;
+				const guardState: OverlayHistoryState = {
+					[OVERLAY_HISTORY_KEY]: true,
+					snapshot: EMPTY_OVERLAY_SNAPSHOT,
+					kind: 'root',
+				};
+				window.history.pushState(guardState, '');
 			} catch {
 				// ignore
 			}
 		};
 
-		if (!armed) pushGuardState();
-		const onPopState = () => {
-			setIsMobileSidebarOpen((prev) => !prev);
-			pushGuardState();
+		// Arm a root guard so the first back press stays inside the app.
+		ensureRootGuard();
+
+		const onPopState = (event: PopStateEvent) => {
+			const state = event.state as unknown;
+			if (isOverlayHistoryState(state)) {
+				applyOverlaySnapshot(state.snapshot);
+				return;
+			}
+
+			// If we popped to a non-overlay history entry, collapse to base.
+			applyOverlaySnapshot(EMPTY_OVERLAY_SNAPSHOT);
+			if (!isStandalone) return;
+
+			const now = Date.now();
+			const thresholdMs = 1500;
+			const ref = exitBackPressRef.current;
+			if (now - ref.lastAt > thresholdMs) ref.count = 0;
+			ref.lastAt = now;
+			ref.count += 1;
+
+			if (ref.count === 1) {
+				window.alert('Press back again to exit');
+				ensureRootGuard();
+				return;
+			}
+
+			if (ref.count >= 2) {
+				ref.count = 0;
+				const ok = window.confirm('Exit the app?');
+				if (ok) {
+					window.history.back();
+					return;
+				}
+			}
+
+			ensureRootGuard();
 		};
 		window.addEventListener('popstate', onPopState);
 		return () => {
 			window.removeEventListener('popstate', onPopState);
 		};
-	}, [isMobileViewport]);
+	}, [applyOverlaySnapshot, isMobileViewport]);
 
 	React.useEffect(() => {
 		// Keep card max-height token in sync with responsive desktop/mobile defaults.
@@ -945,11 +1227,10 @@ export function App(): React.JSX.Element {
 			const doc = await manager.getDocWithSync(id);
 			initTextNoteDoc(doc, args.title, args.body);
 			await manager.createNote(id, args.title);
-			setEditorMode('none');
 			// Branch: auto-open newly created note.
-			setSelectedNoteId(id);
+			openNoteEditor(id, { replaceTop: true });
 		},
-		[manager]
+		[manager, openNoteEditor]
 	);
 
 	const onSaveChecklist = React.useCallback(
@@ -959,11 +1240,10 @@ export function App(): React.JSX.Element {
 			const doc = await manager.getDocWithSync(id);
 			initChecklistNoteDoc(doc, args.title, args.items);
 			await manager.createNote(id, args.title);
-			setEditorMode('none');
 			// Branch: auto-open newly created note.
-			setSelectedNoteId(id);
+			openNoteEditor(id, { replaceTop: true });
 		},
-		[manager]
+		[manager, openNoteEditor]
 	);
 
 	const onDeleteSelectedNote = React.useCallback(
@@ -1014,28 +1294,37 @@ export function App(): React.JSX.Element {
 	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
 	const toggleSidebar = () => {
 		if (isMobileViewport) {
-			setIsMobileSidebarOpen((prev) => !prev);
+			if (isMobileSidebarOpen) {
+				closeMobileSidebar();
+				return;
+			}
+			openMobileSidebar();
 			return;
 		}
 		setIsSidebarCollapsed((prev) => !prev);
 	};
 
-	const closeMobileSidebar = () => {
-		setIsMobileSidebarOpen(false);
-	};
-
 	return (
 		<div
-			className={`test-harness-root${isFabOpen ? ' fab-open' : ''}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${
-				isMobileSidebarOpen ? ' mobile-sidebar-open' : ''
-			}${isMobileHeaderCollapsed ? ' mobile-header-collapsed' : ''}`}
+			className={`test-harness-root${themeId.startsWith('catppuccin-') ? ' theme-catppuccin' : ''}${
+				isFabOpen ? ' fab-open' : ''
+			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${
+				// Landscape branch: expose a root class so CSS can hard-disable the
+				// portrait header morph transitions during rotation.
+				isMobileLandscape ? ' mobile-landscape' : ''
+				// Collapse branch:
+				// - normal mobile uses scroll-driven `isMobileHeaderCollapsed`
+				// - landscape forcibly stays collapsed to maximize editor space and
+				//   avoid transition jitter while rotating.
+			}${isMobileHeaderCollapsed || isMobileLandscape ? ' mobile-header-collapsed' : ''
+			}`}
 		>
 			{isMobileViewport && !isMobileSidebarOpen ? <div ref={mobileSwipeZoneRef} className="mobile-swipe-zone" aria-hidden="true" /> : null}
 			{isFabOpen ? (
 				<button
 					type="button"
 					className="mobile-fab-backdrop"
-					onClick={() => setIsFabOpen(false)}
+					onClick={toggleFab}
 					aria-label={t('app.closeQuickCreate')}
 				/>
 			) : null}
@@ -1064,7 +1353,7 @@ export function App(): React.JSX.Element {
 							<button
 								type="button"
 								className="avatar-trigger mobile-avatar-btn"
-								onClick={() => setIsPreferencesOpen(true)}
+								onClick={openPreferences}
 								aria-label={t('prefs.title')}
 								title={t('prefs.title')}
 							>
@@ -1118,7 +1407,7 @@ export function App(): React.JSX.Element {
 							<button
 								type="button"
 								className="avatar-trigger"
-								onClick={() => setIsPreferencesOpen(true)}
+								onClick={openPreferences}
 								aria-label={t('prefs.title')}
 								title={t('prefs.title')}
 							>
@@ -1155,8 +1444,7 @@ export function App(): React.JSX.Element {
 									className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}`}
 									onClick={() => {
 										if (entry.id === 'workspaces') {
-											setIsWorkspaceSwitcherOpen(true);
-											if (isMobileViewport) closeMobileSidebar();
+											openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
 											return;
 										}
 										if (isGroup) {
@@ -1187,21 +1475,19 @@ export function App(): React.JSX.Element {
 				<main className="app-main">
 
 					<div ref={topActionsRef} className="top-actions">
-						<button type="button" className="top-action-card" onClick={() => setEditorMode('text')}>
+						<button type="button" className="top-action-card" onClick={() => openCreateEditor('text')}>
 							{t('app.createNewNote')}
 						</button>
-						<button type="button" className="top-action-card" onClick={() => setEditorMode('checklist')}>
+						<button type="button" className="top-action-card" onClick={() => openCreateEditor('checklist')}>
 							{t('app.createNewChecklist')}
 						</button>
 					</div>
 
 					<section className="editor-panel">
 						{/* Branch: text editor open. */}
-						{editorMode === 'text' ? <TextEditor onSave={onSaveText} onCancel={() => setEditorMode('none')} /> : null}
+						{editorMode === 'text' ? <TextEditor onSave={onSaveText} onCancel={closeCreateEditor} /> : null}
 						{/* Branch: checklist editor open. */}
-						{editorMode === 'checklist' ? (
-							<ChecklistEditor onSave={onSaveChecklist} onCancel={() => setEditorMode('none')} />
-						) : null}
+						{editorMode === 'checklist' ? <ChecklistEditor onSave={onSaveChecklist} onCancel={closeCreateEditor} /> : null}
 					</section>
 
 					<NoteGrid
@@ -1211,8 +1497,7 @@ export function App(): React.JSX.Element {
 						maxCardHeightPx={maxCardHeightPx}
 						onSelectNote={(id) => {
 							// Branch: selecting a note should close the create editor.
-							setEditorMode('none');
-							setSelectedNoteId(id);
+							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
 						}}
 					/>
 				</main>
@@ -1223,8 +1508,7 @@ export function App(): React.JSX.Element {
 					type="button"
 					className="mobile-fab-action"
 					onClick={() => {
-						setEditorMode('text');
-						setIsFabOpen(false);
+						openCreateEditor('text', { replaceTop: true });
 					}}
 				>
 					{t('app.createNote')}
@@ -1233,8 +1517,7 @@ export function App(): React.JSX.Element {
 					type="button"
 					className="mobile-fab-action"
 					onClick={() => {
-						setEditorMode('checklist');
-						setIsFabOpen(false);
+						openCreateEditor('checklist', { replaceTop: true });
 					}}
 				>
 					{t('app.createChecklist')}
@@ -1244,11 +1527,18 @@ export function App(): React.JSX.Element {
 			<button
 				type="button"
 				className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
-				onClick={() => setIsFabOpen((prev) => !prev)}
+				onClick={toggleFab}
 				aria-label={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
 				title={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
 			>
-				<img src={fabIconSrc} alt="" aria-hidden="true" className="mobile-fab-icon" />
+				<span
+					aria-hidden="true"
+					className="mobile-fab-icon"
+					style={{
+						WebkitMaskImage: `url(${fabIconSrc})`,
+						maskImage: `url(${fabIconSrc})`,
+					}}
+				/>
 			</button>
 
 			{/* Branch: selection exists but doc not yet loaded. */}
@@ -1258,14 +1548,17 @@ export function App(): React.JSX.Element {
 				<NoteEditor
 					noteId={selectedNoteId}
 					doc={openDoc}
-					onClose={() => setSelectedNoteId(null)}
+					onClose={closeNoteEditor}
 					onDelete={onDeleteSelectedNote}
 				/>
 			) : null}
 
 			<PreferencesModal
 				isOpen={isPreferencesOpen}
-				onClose={() => setIsPreferencesOpen(false)}
+				onClose={() => {
+					if (goBackIfOverlayHistory()) return;
+					setIsPreferencesOpen(false);
+				}}
 				t={t}
 				themeId={themeId}
 				onThemeChange={setThemeId}
@@ -1273,27 +1566,27 @@ export function App(): React.JSX.Element {
 				onLanguageChange={(next) => setLocale(next as LocaleCode)}
 				themeOptions={themeOptions}
 				languageOptions={languageOptions}
-				onUserManagement={() => {
-					setIsPreferencesOpen(false);
-					setIsUserManagementOpen(true);
-				}}
-				onSendInvite={() => {
-					setIsPreferencesOpen(false);
-					setIsSendInviteOpen(true);
-				}}
+				onUserManagement={openUserManagementFromPreferences}
+				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}
 			/>
 
 			<SendInviteModal
 				isOpen={isSendInviteOpen}
-				onClose={() => setIsSendInviteOpen(false)}
+				onClose={() => {
+					if (goBackIfOverlayHistory()) return;
+					setIsSendInviteOpen(false);
+				}}
 				t={t}
 				workspaceId={authWorkspaceId}
 			/>
 
 			<WorkspaceSwitcherModal
 				isOpen={isWorkspaceSwitcherOpen}
-				onClose={() => setIsWorkspaceSwitcherOpen(false)}
+				onClose={() => {
+					if (goBackIfOverlayHistory()) return;
+					setIsWorkspaceSwitcherOpen(false);
+				}}
 				t={t}
 				onWorkspaceActivated={handleWorkspaceActivated}
 				onActiveWorkspaceRenamed={() => void refreshActiveWorkspace()}
@@ -1301,7 +1594,10 @@ export function App(): React.JSX.Element {
 
 			<UserManagementModal
 				isOpen={isUserManagementOpen}
-				onClose={() => setIsUserManagementOpen(false)}
+				onClose={() => {
+					if (goBackIfOverlayHistory()) return;
+					setIsUserManagementOpen(false);
+				}}
 				currentUserId={authUserId}
 			/>
 		</div>

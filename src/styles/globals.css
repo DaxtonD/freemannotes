@@ -10,6 +10,26 @@ body,
 	width: 100%;
 }
 
+html,
+body {
+	overflow-x: hidden;
+}
+
+@media (pointer: coarse) {
+	html,
+	body {
+		/* Hide scrollbar UI on mobile while keeping scroll enabled. */
+		scrollbar-width: none;
+		-ms-overflow-style: none;
+	}
+
+	html::-webkit-scrollbar,
+	body::-webkit-scrollbar {
+		width: 0;
+		height: 0;
+	}
+}
+
 body {
 	font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
 	font-size: var(--font-size-sm);

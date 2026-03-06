@@ -73,6 +73,9 @@ const FALLBACK_MESSAGES: Dictionary = {
 		language: 'Language',
 	},
 	editors: {
+		// Fallback branch for newly introduced editor dock/formatting labels.
+		// These keys ensure old or failed locale payloads still render readable UI
+		// instead of showing raw i18n keys during startup or offline conditions.
 		newText: 'New Text Note',
 		newChecklist: 'New Checklist Note',
 		titlePlaceholder: 'Title',
@@ -93,6 +96,25 @@ const FALLBACK_MESSAGES: Dictionary = {
 		dragHandle: 'Drag row',
 		checklistHint: 'Press Enter to add a row. Press Backspace on an empty row to remove it.',
 		completedItems: 'completed items',
+		formatting: 'Formatting',
+		bold: 'Bold',
+		italic: 'Italic',
+		underline: 'Underline',
+		link: 'Link',
+		heading1: 'Heading 1',
+		heading2: 'Heading 2',
+		heading3: 'Heading 3',
+		bulletedList: 'Bulleted list',
+		numberedList: 'Numbered list',
+		alignLeft: 'Align left',
+		alignCenter: 'Align center',
+		alignRight: 'Align right',
+		mediaDock: 'Media dock',
+		mediaDockTabs: 'Media dock tabs',
+		mediaTabMedia: 'Media',
+		mediaTabLinks: 'Links',
+		bottomDock: 'Bottom dock',
+		dockAction: 'Dock action',
 	},
 	note: {
 		untitled: '(untitled)',

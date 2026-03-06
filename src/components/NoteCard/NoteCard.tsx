@@ -25,6 +25,37 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
 	return Boolean(target.closest('input, button, textarea, select, a, [role="textbox"]'));
 }
 
+function isCoarsePointerDevice(): boolean {
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+	return window.matchMedia('(pointer: coarse)').matches;
+}
+
+function suppressNextDocumentCompatibilityMouseEvents(): void {
+	// Mobile browsers often dispatch compatibility mouse events after touch:
+	// `mousedown` -> `mouseup` -> `click`.
+	// If we open the editor overlay on pointer-up, those can land on the newly
+	// mounted editor ("click-through"), selecting text/focusing controls.
+	//
+	// Suppress these events briefly, in capture phase.
+	if (typeof window === 'undefined') return;
+	let timeoutId = 0;
+	const handler = (event: MouseEvent): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+	};
+	const cleanup = (): void => {
+		window.removeEventListener('mousedown', handler, true);
+		window.removeEventListener('mouseup', handler, true);
+		window.removeEventListener('click', handler, true);
+		if (timeoutId) window.clearTimeout(timeoutId);
+	};
+	window.addEventListener('mousedown', handler, true);
+	window.addEventListener('mouseup', handler, true);
+	window.addEventListener('click', handler, true);
+	// Cleanup shortly after the synthetic sequence would fire.
+	timeoutId = window.setTimeout(() => cleanup(), 500);
+}
+
 // Subscribe to an optional Y.Text and always return a string snapshot.
 function useOptionalYTextValue(getYText: () => Y.Text | null): string {
 	return React.useSyncExternalStore(
@@ -184,6 +215,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				// Track initial point; open action is decided on pointer up if movement stayed small.
 				if (!props.onOpen) return;
 				if (isInteractiveTarget(e.target)) return;
+				// Touch/coarse branch: capture the pointer so this interaction stays
+				// bound to the card element even if the editor overlay mounts before
+				// compatibility events are delivered.
+				if ((e.pointerType === 'touch' || isCoarsePointerDevice()) && e.currentTarget.hasPointerCapture && e.currentTarget.setPointerCapture) {
+					try {
+						e.currentTarget.setPointerCapture(e.pointerId);
+					} catch {
+						// Ignore browsers/devices that reject capture for this pointer.
+					}
+				}
 				pointerDownRef.current = {
 					x: e.clientX,
 					y: e.clientY,
@@ -204,15 +245,39 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			}}
 			onPointerUp={(e) => {
 				// Treat as click/tap only if the pointer did not move significantly.
+				if (e.currentTarget.hasPointerCapture && e.currentTarget.releasePointerCapture) {
+					try {
+						e.currentTarget.releasePointerCapture(e.pointerId);
+					} catch {
+						// Ignore if the pointer wasn't captured.
+					}
+				}
 				const state = pointerDownRef.current;
 				pointerDownRef.current = null;
 				if (!state) return;
 				if (state.pointerId !== e.pointerId) return;
 				if (state.moved) return;
 				if (isInteractiveTarget(e.target)) return;
+				// Touch/coarse branch: the same physical tap can generate delayed
+				// compatibility mouse events. We suppress them before opening so they
+				// cannot retarget into the newly mounted editor controls.
+				if (e.pointerType === 'touch' || isCoarsePointerDevice()) {
+					if (e.cancelable) e.preventDefault();
+					e.stopPropagation();
+					suppressNextDocumentCompatibilityMouseEvents();
+				}
 				tryOpen();
 			}}
-			onPointerCancel={() => {
+			onPointerCancel={(e) => {
+				// Cancellation branch: always release any capture to avoid pointer
+				// lifecycle leaks that can affect subsequent gestures.
+				if (e.currentTarget.hasPointerCapture && e.currentTarget.releasePointerCapture) {
+					try {
+						e.currentTarget.releasePointerCapture(e.pointerId);
+					} catch {
+						// Ignore if the pointer wasn't captured.
+					}
+				}
 				pointerDownRef.current = null;
 			}}
 			onKeyDown={(e) => {

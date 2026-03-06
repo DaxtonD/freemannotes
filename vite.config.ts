@@ -66,7 +66,14 @@ export default defineConfig(({ mode }) => {
 	const env = loadEnv(mode, envDir, 'VITE_');
 	const devPort = Number(env.VITE_DEV_PORT || 5173);
 	const apiProxyTarget = String(env.VITE_API_PROXY_TARGET || 'http://localhost:27015').trim();
-	const embedYjs = String(env.VITE_YJS_EMBED || '').trim() === '1';
+	const yjsEmbedEnv = String(env.VITE_YJS_EMBED || '').trim();
+	const yjsProxyEnv = String(env.VITE_YJS_PROXY || '').trim();
+	// Branch policy for Yjs transport in Vite:
+	// - Development branch: always embed Yjs websocket in Vite to eliminate noisy
+	//   /yjs ws proxy disconnect logs during iterative mobile testing.
+	// - Non-development branch: respect explicit env toggles for proxy/embed.
+	const useYjsProxy = mode === 'development' ? false : yjsProxyEnv === '1';
+	const embedYjs = mode === 'development' ? true : yjsEmbedEnv === '1';
 
 	return {
 		envDir,
@@ -89,8 +96,11 @@ export default defineConfig(({ mode }) => {
 					xfwd: true,
 				},
 				// Proxy Yjs websocket rooms to the Node server so dev can see persisted notes.
-				// If you *intentionally* want an in-memory Yjs backend inside Vite (rare), set VITE_YJS_EMBED=1.
-				...(embedYjs
+				// Branch notes:
+				// - When `embedYjs` is true, Vite itself handles /yjs upgrades via plugin.
+				// - Only when `embedYjs` is false *and* `useYjsProxy` is true do we
+				//   register the ws proxy entry.
+				...((embedYjs || !useYjsProxy)
 					? {}
 					: {
 						'/yjs': {

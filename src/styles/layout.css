@@ -2,6 +2,8 @@
 	--app-header-height: 56px;
 	--app-safe-top: env(safe-area-inset-top, 0px);
 	--app-header-total-height: calc(var(--app-header-height) + var(--app-safe-top));
+	/* Fallback: mobile header + in-header search row reserved height. */
+	--app-header-mobile-offset-fallback: calc(var(--app-header-total-height) + var(--space-2) + 49px);
 	display: flex;
 	flex-direction: column;
 	min-height: 100dvh;
@@ -470,7 +472,9 @@
 	border-radius: 50%;
 	padding: 0;
 	background: var(--color-surface-2);
-	box-shadow: 0 10px 20px -10px color-mix(in srgb, var(--color-text) 60%, transparent);
+	-webkit-tap-highlight-color: transparent;
+	-webkit-appearance: none;
+	appearance: none;
 	transform: rotate(0deg);
 	transition: transform 220ms ease;
 	z-index: 82;
@@ -483,12 +487,23 @@
 .mobile-fab-icon {
 	width: 30px;
 	height: 30px;
-	object-fit: contain;
+	display: block;
+	background: var(--color-text);
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	-webkit-mask-size: contain;
+	mask-repeat: no-repeat;
+	mask-position: center;
+	mask-size: contain;
 	pointer-events: none;
 	transform: rotate(180deg);
 }
 
-@media (max-width: 900px) {
+.test-harness-root.theme-catppuccin .mobile-fab-icon {
+	background: var(--color-accent);
+}
+
+@media (pointer: coarse) {
 	/*
 		Mobile header/search morph implementation notes
 		-----------------------------------------------
@@ -519,10 +534,19 @@
 		padding-left: var(--space-2);
 		padding-right: var(--space-2);
 		gap: 0;
-		position: sticky;
+		/* Sticky can be unreliable with complex mobile layouts; fixed is more robust. */
+		position: fixed;
+		top: 0;
+		left: 0;
+		right: 0;
 		/* Reserve space for the below-header search row (which is absolutely positioned). */
-		padding-bottom: calc(var(--space-2) + 45px);
+		padding-bottom: calc(var(--space-2) + 49px);
 		transition: padding-bottom 240ms ease;
+	}
+
+	.app-shell {
+		/* Ensure content starts below the fixed header + search row. */
+		padding-top: var(--app-header-offset, var(--app-header-mobile-offset-fallback));
 	}
 
 	.app-header-search-input {
@@ -583,6 +607,20 @@
 		will-change: top, left, right;
 	}
 
+	/*
+		Mobile landscape: keep the header collapsed with NO morph animations.
+		We still rely on the `mobile-header-collapsed` class for positioning,
+		but we disable transitions so rotation/scroll never animates the header.
+	*/
+	.test-harness-root.mobile-landscape .app-header,
+	.test-harness-root.mobile-landscape .app-header-toprow,
+	.test-harness-root.mobile-landscape .app-header-searchrow.mobile-searchrow,
+	.test-harness-root.mobile-landscape .mobile-app-icon,
+	.test-harness-root.mobile-landscape .mobile-appgrid-btn,
+	.test-harness-root.mobile-landscape .mobile-avatar-btn {
+		transition: none !important;
+	}
+
 	.test-harness-root.mobile-header-collapsed .app-header {
 		/* In collapsed mode, search lives in the top row, so we don't need the full reserved space. */
 		padding-bottom: 8px;
@@ -637,7 +675,7 @@
 	}
 
 	.app-main {
-		padding: var(--space-3);
+		padding: var(--space-2);
 	}
 
 	.top-actions {
@@ -645,7 +683,7 @@
 	}
 }
 
-@media (min-width: 901px) {
+@media (pointer: fine) {
 	.app-header {
 		height: var(--app-header-total-height);
 		padding-bottom: 0;

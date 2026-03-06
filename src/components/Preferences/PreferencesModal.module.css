@@ -6,7 +6,8 @@
 	align-items: center;
 	justify-content: center;
 	padding: 20px;
-	z-index: 110;
+	/* Must sit above sticky/fixed app header (z-index ~120). */
+	z-index: 240;
 }
 
 .modal {
@@ -104,7 +105,8 @@
 	align-items: center;
 	justify-content: center;
 	padding: 20px;
-	z-index: 120;
+	/* Above main modal overlay. */
+	z-index: 250;
 }
 
 .subModal {
@@ -143,6 +145,26 @@
 }
 
 @media (max-width: 720px) {
+	.overlay,
+	.subOverlay {
+		/* Use safe-area aware insets so the modal never tucks under the header/notch. */
+		align-items: flex-start;
+		justify-content: center;
+		padding-top: calc(env(safe-area-inset-top, 0px) + 12px);
+		padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+		padding-left: 12px;
+		padding-right: 12px;
+	}
+
+	.modal,
+	.subModal {
+		width: 100%;
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
+		overflow: auto;
+		padding: 14px;
+		gap: 12px;
+	}
+
 	.title {
 		font-size: 28px;
 	}
