@@ -1034,6 +1034,10 @@ Drag handle:
 	align-items: center;
 }
 
+.rowMultiline {
+	align-items: flex-start;
+}
+
 @media (pointer: coarse) {
 	/* Mobile: keep checklist rows visually compact and vertically centered. */
 	.checklistList,
@@ -1087,6 +1091,39 @@ Drag handle:
 
 	.rowRemoveButton {
 		align-self: center;
+	}
+
+	/*
+		Multiline branch:
+		- keep single-line offsets untouched (for existing perfect centering)
+		- override only rows that wrap so first text line aligns with
+		  drag handle + checkbox.
+	*/
+	.rowMultiline {
+		align-items: flex-start;
+	}
+
+	.rowMultiline .dragHandle {
+		align-self: flex-start;
+		transform: none;
+		padding-top: 4px;
+	}
+
+	.rowMultiline .checklistCheckbox {
+		align-self: flex-start;
+		transform: none;
+		margin-top: 5px;
+	}
+
+	.rowMultiline .rowTextArea,
+	.rowMultiline .dragPreviewText {
+		transform: none;
+		align-items: flex-start;
+	}
+
+	.rowMultiline .rowRemoveButton {
+		align-self: flex-start;
+		margin-top: 2px;
 	}
 }
 
