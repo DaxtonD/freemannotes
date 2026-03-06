@@ -181,12 +181,40 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const checklistItems = useChecklistItems(checklistArray);
 	const normalizedItems = React.useMemo(() => normalizeChecklistHierarchy(checklistItems), [checklistItems]);
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => completedExpandedByNoteId.get(props.noteId) ?? false);
+	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
+	const cardRef = React.useRef<HTMLElement | null>(null);
 
 	React.useEffect(() => {
 		setShowCompleted(completedExpandedByNoteId.get(props.noteId) ?? false);
 	}, [props.noteId]);
 	const activeChecklistItems = React.useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedChecklistItems = React.useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
+
+	React.useLayoutEffect(() => {
+		if (type !== 'checklist') return;
+		const card = cardRef.current;
+		if (!card) return;
+		const next: Record<string, boolean> = {};
+		const textNodes = card.querySelectorAll<HTMLElement>('[data-checklist-text-id]');
+		for (const node of textNodes) {
+			const id = String(node.dataset.checklistTextId ?? '').trim();
+			if (!id) continue;
+			const style = window.getComputedStyle(node);
+			const fontSize = Number.parseFloat(style.fontSize || '0') || 14;
+			const parsedLineHeight = Number.parseFloat(style.lineHeight || '0') || 0;
+			const lineHeight = parsedLineHeight > 0 ? parsedLineHeight : fontSize * 1.35;
+			const expectedSingleLine = Math.ceil(lineHeight + 2);
+			next[id] = node.scrollHeight > expectedSingleLine + 4;
+		}
+		setMultilineById((prev) => {
+			const prevKeys = Object.keys(prev);
+			const nextKeys = Object.keys(next);
+			if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === next[key])) {
+				return prev;
+			}
+			return next;
+		});
+	}, [normalizedItems, showCompleted, type]);
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);
 
@@ -206,6 +234,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 	return (
 		<article
+			ref={cardRef}
 			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}`}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
@@ -315,7 +344,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					<div className={styles.body}>
 						<ul className={styles.checklist}>
 							{activeChecklistItems.map((item) => (
-								<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childItem}` : ''}`}>
+								<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
 									<input
 										type="checkbox"
 										className={styles.checklistCheckbox}
@@ -325,7 +354,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 										onClick={(e) => e.stopPropagation()}
 										onChange={(e) => updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked })}
 									/>
-									<span className={styles.checklistText}>{item.text}</span>
+									<span className={styles.checklistText} data-checklist-text-id={item.id}>{item.text}</span>
 								</li>
 							))}
 						</ul>
@@ -347,7 +376,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							{showCompleted ? (
 								<ul className={styles.checklist}>
 									{completedChecklistItems.map((item) => (
-										<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childItem}` : ''}`}>
+										<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
 											<input
 												type="checkbox"
 												className={styles.checklistCheckbox}
@@ -357,7 +386,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 												onClick={(e) => e.stopPropagation()}
 											onChange={(e) => updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked })}
 											/>
-											<span className={styles.checklistTextCompleted}>{item.text}</span>
+											<span className={styles.checklistTextCompleted} data-checklist-text-id={item.id}>{item.text}</span>
 										</li>
 									))}
 								</ul>
