@@ -102,6 +102,18 @@ function autoResizeTextarea(textarea: HTMLTextAreaElement | null): void {
 	if (!textarea) return;
 	textarea.style.height = '0px';
 	textarea.style.height = `${Math.max(26, textarea.scrollHeight)}px`;
+	const style = window.getComputedStyle(textarea);
+	const fontSize = Number.parseFloat(style.fontSize || '0') || 16;
+	const parsedLineHeight = Number.parseFloat(style.lineHeight || '0') || 0;
+	const lineHeight = parsedLineHeight > 0 ? parsedLineHeight : fontSize * 1.35;
+	const paddingTop = Number.parseFloat(style.paddingTop || '0') || 0;
+	const paddingBottom = Number.parseFloat(style.paddingBottom || '0') || 0;
+	const expectedSingleLine = Math.ceil(lineHeight + paddingTop + paddingBottom + 2);
+	const isMultiline = textarea.scrollHeight > expectedSingleLine + 6;
+	const row = textarea.closest(`.${styles.checklistItem}, .${styles.checklistComposerRow}`);
+	if (row instanceof HTMLElement) {
+		row.classList.toggle(styles.rowMultiline, isMultiline);
+	}
 }
 
 // Write helper for Y.Text that applies a minimal diff and falls back to full replace if needed.
@@ -693,12 +705,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		): React.JSX.Element => {
 			const dragged = activeItems.find((item) => item.id === rubric.draggableId) ?? null;
 			const { rowWidth, textHeight, textWidth } = dragGhostMetricsRef.current;
+			const isMultilineClone = (textHeight ?? 0) > 30;
 
 			return (
 				<li
 					ref={dragProvided.innerRef}
 					{...dragProvided.draggableProps}
-					className={`${styles.checklistItem} ${styles.rowDragging} ${styles.dragGhost}`}
+					className={`${styles.checklistItem}${isMultilineClone ? ` ${styles.rowMultiline}` : ''} ${styles.rowDragging} ${styles.dragGhost}`}
 					style={{ ...(dragProvided.draggableProps.style ?? {}), width: rowWidth ?? undefined, boxSizing: 'border-box' }}
 				>
 					<button type="button" className={styles.dragHandle} aria-label={t('editors.dragHandle')} {...dragProvided.dragHandleProps}>
