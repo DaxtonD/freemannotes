@@ -118,7 +118,9 @@ function getGridLayoutForViewport(
 	let mobileSectionBleedPx = 0;
 	if (isMobile) {
 		if (isPortrait) {
-			mobileGapPx = 8;
+			// Portrait mobile branch: tighter gap increases visible note density and
+			// aligns with edge-to-edge card presentation used in current editor UX.
+			mobileGapPx = 4;
 			const desiredEdgeMargin = 4;
 			mobileSectionBleedPx = Math.max(0, Math.round(appSidePadding - desiredEdgeMargin));
 		}

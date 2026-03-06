@@ -1,6 +1,6 @@
 {
   "name": "freemannotes",
-  "version": "1.0.62",
+  "version": "1.0.63",
   "main": "index.js",
   "scripts": {
     "dev": "node server/dbInitCli.js && vite --host",
@@ -32,6 +32,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
     "@fortawesome/fontawesome-svg-core": "^7.2.0",
+    "@fortawesome/free-regular-svg-icons": "^7.2.0",
     "@fortawesome/free-solid-svg-icons": "^7.2.0",
     "@fortawesome/react-fontawesome": "^3.2.0",
     "@hello-pangea/dnd": "^18.0.1",
