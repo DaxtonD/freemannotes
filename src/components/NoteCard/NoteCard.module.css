@@ -84,6 +84,10 @@
 	align-items: flex-start;
 }
 
+.checklistItemMultiline {
+	align-items: flex-start;
+}
+
 .childItem {
 	padding-inline-start: 22px;
 }
@@ -128,4 +132,26 @@
 	padding: 0;
 	font-size: var(--font-size-xs);
 	color: var(--color-text-muted);
+}
+
+@media (pointer: coarse) {
+	/* Mobile note-card checklist rows: center checkbox and first text line. */
+	.checklistItem {
+		align-items: center;
+	}
+
+	.checklistCheckbox {
+		margin-top: 0;
+		align-self: center;
+	}
+
+	/* Wrapped rows: align against first line (same intent as editors). */
+	.checklistItemMultiline {
+		align-items: flex-start;
+	}
+
+	.checklistItemMultiline .checklistCheckbox {
+		align-self: flex-start;
+		margin-top: 5px;
+	}
 }

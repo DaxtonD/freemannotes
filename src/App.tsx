@@ -1227,10 +1227,11 @@ export function App(): React.JSX.Element {
 			const doc = await manager.getDocWithSync(id);
 			initTextNoteDoc(doc, args.title, args.body);
 			await manager.createNote(id, args.title);
-			// Branch: auto-open newly created note.
-			openNoteEditor(id, { replaceTop: true });
+			// Branch: after create/save, close the new-note editor and return to grid.
+			// We intentionally do NOT auto-open the saved note editor here.
+			closeCreateEditor();
 		},
-		[manager, openNoteEditor]
+		[closeCreateEditor, manager]
 	);
 
 	const onSaveChecklist = React.useCallback(
@@ -1240,10 +1241,11 @@ export function App(): React.JSX.Element {
 			const doc = await manager.getDocWithSync(id);
 			initChecklistNoteDoc(doc, args.title, args.items);
 			await manager.createNote(id, args.title);
-			// Branch: auto-open newly created note.
-			openNoteEditor(id, { replaceTop: true });
+			// Branch: after create/save, close the new-checklist editor and return to grid.
+			// We intentionally do NOT auto-open the saved note editor here.
+			closeCreateEditor();
 		},
-		[manager, openNoteEditor]
+		[closeCreateEditor, manager]
 	);
 
 	const onDeleteSelectedNote = React.useCallback(
