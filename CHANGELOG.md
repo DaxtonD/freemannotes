@@ -2,6 +2,50 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.64 - 2026-03-06
+
+### Changed
+- **Notes grid drag-and-drop: complete rewrite from swap-based to insertion-based
+  model.**  Cards now slide apart to show where the dragged card will land (via
+  framer-motion `layout` animations) instead of swapping positions on hover.
+  - Replaced the swap-based drag model with an insertion + placeholder approach:
+    the dragged card's grid slot stays as an invisible placeholder to hold space,
+    while a ghost overlay follows the pointer.  Neighboring cards animate into
+    their new positions before the drop.
+  - Switched from custom FLIP animation code to framer-motion's `layout` prop
+    and `LayoutGroup` for automatic layout-change animations with spring physics.
+  - Added `framer-motion` as a dependency.
+- **Drag hit detection: nearest-edge vertical detection.**  The ghost card's top
+  edge is used when dragging up, and its bottom edge when dragging down, to
+  determine insertion position.  This solves the problem where dragging a tall
+  card above a short card required moving impossibly far off-screen.  A 16 px
+  dead zone around each card's midpoint prevents oscillation.
+- **Post-insertion cooldown (150 ms).**  After each insertion-point change, rect
+  recalculation is paused briefly so framer-motion's spring animation settles and
+  intermediate `getBoundingClientRect()` values don't cause oscillation.
+- **Post-drop column preservation (sticky columns).**  After a drop, the column
+  layout is preserved across re-renders instead of being re-packed by height.
+  Only cards causing egregious height imbalance (>2x tallest-to-shortest ratio)
+  are moved—from the bottom of the tallest column to the shortest—rather than
+  shuffling all columns.
+- **Cross-device layout sync.**  Column slot lengths (the number of cards per
+  column) are now stored in a Yjs `noteLayout` map alongside the flat note order.
+  Other devices reconstruct the same column grouping via slot-based splitting
+  instead of height-based greedy packing, which diverged because card heights
+  differ across viewports.  The flat order is now column-major so slot-boundary
+  slicing reproduces the original grouping.
+- **Scrollbar stability.**  Added `scrollbar-gutter: stable` on `<html>` and
+  `overflow-x: clip` on `<html>`/`<body>` to prevent layout shift during
+  drag-induced column repacks.
+
+### Technical Details
+- New files: `layout.ts` (column utilities, insertion-point detection),
+  `useNoteGridDragManager.ts` (drag manager hook), `flip.ts` (height
+  measurement), `autoScroll.ts` (legacy, unused).
+- Modified: `NoteGrid.tsx` (framer-motion grid, sticky columns, Yjs layout map),
+  `NoteGrid.module.css` (placeholder + ghost styles), `DocumentManager.ts`
+  (`getNoteLayout()` for Yjs layout map), `globals.css` (scrollbar stability).
+
 ## 1.0.63 - 2026-03-05
 
 ### Fixed

@@ -293,6 +293,18 @@ export class DocumentManager {
 		return doc.getArray<string>(NOTE_ORDER_KEY);
 	}
 
+	/**
+	 * Return the Yjs layout map from the notes-registry doc.
+	 * Currently stores 'columnSlots' (number[]) — the number of cards per
+	 * column at the last drag-and-drop commit.  Other devices read this to
+	 * reconstruct the same column grouping via splitIntoColumnsBySlotLengths,
+	 * avoiding height-based packing divergence across viewports.
+	 */
+	public async getNoteLayout(): Promise<Y.Map<unknown>> {
+		const doc = await this.getNotesRegistryDoc();
+		return doc.getMap('noteLayout');
+	}
+
 	public async setNoteOrder(noteIds: readonly string[]): Promise<void> {
 		const noteOrder = await this.getNoteOrder();
 		const next = Array.from(new Set(noteIds.map((id) => this.normalizeNoteId(id))));

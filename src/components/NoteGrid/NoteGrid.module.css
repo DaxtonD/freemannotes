@@ -3,6 +3,8 @@
 	max-width: 100%;
 	min-width: 0;
 	overflow-x: hidden;
+	overflow-x: clip;
+	overflow-anchor: none;
 	touch-action: pan-y;
 }
 
@@ -27,7 +29,15 @@
 	min-width: var(--note-card-width);
 	max-width: var(--note-card-width);
 	position: relative;
-	will-change: transform;
+}
+
+/* ── Placeholder: the card stays in the grid to hold its space but is invisible.
+ * During a drag, the dragged card's grid slot keeps this class so neighboring
+ * cards don't collapse into the gap.  The actual visual card follows the pointer
+ * as a .dragPreview overlay. */
+.itemPlaceholder {
+	visibility: hidden;
+	pointer-events: none;
 }
 
 @media (pointer: coarse) {
@@ -50,6 +60,22 @@
 .itemSelected {
 	outline: 2px solid var(--color-outline);
 	outline-offset: -2px;
+	border-radius: var(--radius-sm);
+}
+
+/* ── Drag ghost overlay: a fixed-position clone of the dragged card that
+ * follows the pointer.  Rendered outside the grid flow so it can move freely.
+ * Slight opacity reduction + elevated shadow gives a "lifted" appearance.
+ * The drag manager positions this via inline left/top/width/height styles. */
+.dragPreview {
+	position: fixed;
+	z-index: 30;
+	left: 0;
+	top: 0;
+	pointer-events: none;
+	will-change: transform;
+	opacity: 0.92;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 	border-radius: var(--radius-sm);
 }
 

@@ -13,6 +13,16 @@ body,
 html,
 body {
 	overflow-x: hidden;
+	/* clip is preferred over hidden: it prevents horizontal scrolling without
+	   creating a new scroll container, avoiding interference with the masonry
+	   grid's framer-motion layout animations during drag-and-drop. */
+	overflow-x: clip;
+}
+
+html {
+	/* Prevent layout shift when the vertical scrollbar appears/disappears
+	   during drag-and-drop column repacks that change total grid height. */
+	scrollbar-gutter: stable;
 }
 
 @media (pointer: coarse) {
