@@ -688,8 +688,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		(event: React.KeyboardEvent<HTMLTextAreaElement>, rowId: string): void => {
 			if (event.key === 'Enter' && !event.shiftKey) {
 				event.preventDefault();
-				const currentIndex = activeItems.findIndex((row) => row.id === rowId);
-				addChecklistItem(currentIndex);
+				// Insert relative to the underlying stored array order. Using the active-only
+				// index here breaks when completed items exist because the insert index no
+				// longer matches the actual position of `rowId` in the Yjs array.
+				const currentIndex = items.findIndex((row) => row.id === rowId);
+				addChecklistItem(currentIndex === -1 ? undefined : currentIndex);
 				return;
 			}
 
@@ -700,7 +703,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				removeChecklistItem(rowId);
 			}
 		},
-		[activeItems, addChecklistItem, removeChecklistItem]
+		[activeItems, addChecklistItem, items, removeChecklistItem]
 	);
 
 	const renderChecklistClone = React.useCallback(
