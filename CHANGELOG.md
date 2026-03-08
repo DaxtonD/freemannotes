@@ -2,6 +2,36 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.65 - 2026-03-08
+
+### Added
+- **Desktop more-menu as a real context menu (fine pointers).** Note/editor 3-dot
+  menus now open a compact anchored popover on desktop instead of a full-screen
+  sheet. Mobile/coarse pointers keep the bottom-sheet presentation.
+- **Checklist empty-state “Add item”.** When all active checklist rows are
+  completed (active list becomes empty), an “Add item” row appears and inserts a
+  new checklist row. This works both when creating a new checklist and when
+  editing an existing checklist note.
+- **In-app splash overlay + layout animation gating.** After a refresh, the app
+  keeps an overlay up until `NoteGrid` reports its initial data/layout pass is
+  ready, preventing a “paint then immediately animate” flash.
+- **Dev boot ordering helper.** Added a small `/healthz` polling helper so Vite
+  doesn’t start proxying before the backend is ready.
+
+### Changed
+- **Notes grid canonical ordering: reading order (row-major).** The Yjs-stored
+  order now represents left-to-right, top-to-bottom reading order. Each device
+  reconstructs its local columns via round-robin dealing so different column
+  counts still preserve the same visual sequence.
+- **Drag insertion-point stability.** Column detection uses the raw pointer X
+  (more responsive for cross-column moves) and row detection uses the ghost card
+  edges (matches visible overlap). The post-insertion cooldown was increased to
+  better avoid oscillation during spring animation.
+
+### Fixed
+- **Translation freshness after deploy.** Service worker now bypasses caching for
+  `/locales/` JSON so updated translations take effect immediately.
+
 ## 1.0.64 - 2026-03-06
 
 ### Changed

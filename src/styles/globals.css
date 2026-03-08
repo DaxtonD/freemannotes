@@ -20,8 +20,9 @@ body {
 }
 
 html {
-	/* Prevent layout shift when the vertical scrollbar appears/disappears
-	   during drag-and-drop column repacks that change total grid height. */
+	/* Reserve scrollbar-gutter space so the vertical scrollbar appearing /
+	   disappearing during drag-and-drop doesn't shift the grid layout and
+	   trigger ResizeObserver-based column recalculation. */
 	scrollbar-gutter: stable;
 }
 

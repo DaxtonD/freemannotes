@@ -22,7 +22,7 @@ type DragManagerArgs = {
 	visibleIds: string[];
 	canStartDrag: () => boolean;
 	isTouchDragCandidate: () => boolean;
-	onCommitOrder: (nextVisibleOrder: string[], finalColumns: string[][]) => void;
+	onCommitOrder: (nextVisibleOrder: string[], finalColumns: string[][], draggedId: string) => void;
 };
 
 type PragmaticDragData = {
@@ -135,16 +135,12 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		(pointer: PointerInput): void => {
 			const activeId = activeDragIdRef.current;
 			if (!activeId) return;
-			// After an insertion change, skip recalculation for a 150 ms cooldown
-			// so framer-motion's spring animation settles and intermediate
-			// getBoundingClientRect() values don't cause oscillation.
+			// After an insertion change, skip recalculation so framer-motion's
+			// spring animation settles before rect reads are trusted again.
 			if (Date.now() < insertionCooldownRef.current) return;
-			// Horizontal: use ghost center for column detection (works well)
-			// Vertical: pass both ghost top and bottom edges. findInsertionPoint
-			// compares each card's midpoint against the nearest ghost edge so that
-			// dragging UP triggers at the top edge and dragging DOWN triggers at
-			// the bottom edge.
-			const ghostCenterX = pointer.clientX - pointerOffsetRef.current.x + previewSizeRef.current.width / 2;
+			// Use the raw pointer position for column detection — this is more
+			// responsive than the ghost center, especially for cross-column moves
+			// where the ghost's center lags behind the user's actual intent.
 			const ghostTopY = pointer.clientY - pointerOffsetRef.current.y;
 			const ghostBottomY = ghostTopY + previewSizeRef.current.height;
 			const ip = findInsertionPoint(
@@ -152,7 +148,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				activeId,
 				ghostTopY,
 				ghostBottomY,
-				ghostCenterX,
+				pointer.clientX,
 				getRectForId,
 				getColumnRect
 			);
@@ -160,12 +156,11 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			const prev = insertionPointRef.current;
 			if (prev && prev.column === ip.column && prev.index === ip.index) return;
 			insertionPointRef.current = ip;
-			// After a successful insertion-point change, impose a 150 ms cooldown
-			// before the next recalculation.  This gives framer-motion time to
-			// animate cards to their new positions so subsequent rect reads are
-			// stable, preventing the back-and-forth oscillation that occurs when
-			// an animation's intermediate rects immediately reverse the insertion.
-			insertionCooldownRef.current = Date.now() + 150;
+			// 280 ms cooldown — long enough for the spring (stiffness 700,
+			// damping 50, mass 0.8) to settle past the overshoot phase so
+			// intermediate getBoundingClientRect() values don't flip the
+			// insertion point back, causing visible oscillation.
+			insertionCooldownRef.current = Date.now() + 280;
 			setInsertionPoint({ column: ip.column, index: ip.index });
 		},
 		[getRectForId, getColumnRect]
@@ -293,14 +288,21 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				if (!activeId || !ip) return;
 
 				// Build the final column layout with the dragged card spliced into
-				// the insertion point.  flattenColumns produces a column-major flat
-				// order that, combined with columnSlotLengths, allows other devices
-				// to reconstruct the identical column grouping.
+				// the insertion point.  Compare column layouts — not the flat
+				// reading order — to decide whether the drop is a no-op.  With
+				// height-based masonry packing, a cross-column move can produce
+				// the same row-major flat order (e.g. moving a tall card from
+				// col 0 to col 1 leaves the interleaved reading order unchanged)
+				// even though the visual layout clearly changed.
 				const finalColumns = insertIntoColumns(columnsRef.current, activeId, ip.column, ip.index);
-				const nextVisibleOrder = flattenColumns(finalColumns);
+				const originalColumns = columnsRef.current;
+				const columnsChanged =
+					finalColumns.length !== originalColumns.length ||
+					finalColumns.some((col, i) => !arraysEqual(col, originalColumns[i]));
+				if (!columnsChanged) return;
 
-				if (arraysEqual(currentVisibleOrder, nextVisibleOrder)) return;
-				onCommitOrderRef.current(nextVisibleOrder, finalColumns);
+				const nextVisibleOrder = flattenColumns(finalColumns);
+				onCommitOrderRef.current(nextVisibleOrder, finalColumns, activeId);
 			},
 		});
 		return () => {

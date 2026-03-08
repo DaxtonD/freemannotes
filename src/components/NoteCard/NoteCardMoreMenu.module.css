@@ -1,0 +1,165 @@
+.overlay {
+	position: fixed;
+	inset: 0;
+	z-index: 9000;
+	background: var(--color-overlay);
+	display: flex;
+	align-items: flex-end;
+	justify-content: center;
+	touch-action: none;
+	overscroll-behavior: none;
+}
+
+/* Desktop: transparent overlay just catches clicks to close */
+.overlayDesktop {
+	position: fixed;
+	inset: 0;
+	z-index: 9000;
+	background: transparent;
+}
+
+.sheet {
+	width: 100%;
+	max-width: 420px;
+	background: var(--color-surface);
+	border-radius: var(--radius-md) var(--radius-md) 0 0;
+	padding: var(--space-3) 0 calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
+	box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.18);
+	animation: slideUp 180ms ease-out;
+}
+
+/* Desktop popover: compact dropdown anchored near the card */
+.popover {
+	position: fixed;
+	z-index: 9001;
+	width: 220px;
+	background: var(--color-surface);
+	border-radius: var(--radius-sm);
+	padding: var(--space-1) 0;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.22), 0 1px 4px rgba(0, 0, 0, 0.12);
+	border: 1px solid var(--color-border);
+	animation: fadeIn 120ms ease-out;
+}
+
+@keyframes fadeIn {
+	from {
+		opacity: 0;
+		transform: scale(0.96);
+	}
+	to {
+		opacity: 1;
+		transform: scale(1);
+	}
+}
+
+@keyframes slideUp {
+	from {
+		transform: translateY(100%);
+	}
+	to {
+		transform: translateY(0);
+	}
+}
+
+.handle {
+	width: 36px;
+	height: 4px;
+	border-radius: 2px;
+	background: var(--color-border);
+	margin: 0 auto var(--space-3);
+}
+
+.menuList {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+}
+
+.menuItem {
+	display: flex;
+	align-items: center;
+	gap: var(--space-3);
+	width: 100%;
+	border: 0;
+	background: transparent;
+	padding: var(--space-3) var(--space-4);
+	font-size: var(--font-size-md);
+	color: var(--color-text);
+	cursor: pointer;
+	text-align: left;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.menuItem:active {
+	background: var(--color-surface-2);
+}
+
+.menuItem:hover {
+	background: var(--color-surface-2);
+}
+
+/* Compact sizing inside desktop popover */
+.popover .menuItem {
+	padding: var(--space-2) var(--space-3);
+	font-size: var(--font-size-sm);
+	gap: var(--space-2);
+}
+
+.popover .menuItemIcon {
+	width: 16px;
+}
+
+.menuItemIcon {
+	width: 20px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.menuItemDanger {
+	color: var(--color-danger);
+}
+
+.divider {
+	height: 1px;
+	background: var(--color-border);
+	margin: var(--space-2) 0;
+}
+
+.widthOptions {
+	display: flex;
+	gap: var(--space-2);
+	padding: var(--space-2) var(--space-4);
+}
+
+.widthOption {
+	flex: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--space-1);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	padding: var(--space-2);
+	background: transparent;
+	color: var(--color-text);
+	font-size: var(--font-size-xs);
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.widthOption:active {
+	background: var(--color-surface-2);
+}
+
+.widthOptionActive {
+	border-color: var(--color-accent);
+	color: var(--color-accent);
+}
+
+.widthBar {
+	height: 4px;
+	border-radius: 2px;
+	background: currentColor;
+}

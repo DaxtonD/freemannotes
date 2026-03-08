@@ -30,6 +30,7 @@ import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
+import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import styles from './Editors.module.css';
 
 export type ChecklistEditorProps = {
@@ -76,6 +77,12 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const [showCompleted, setShowCompleted] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
+	// More-menu state (editor 3-dot button):
+	// - Mobile (pointer: coarse): NoteCardMoreMenu renders as a bottom sheet.
+	// - Desktop (pointer: fine): it renders as a popover positioned relative to
+	//   the trigger button's DOMRect (captured on click).
+	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
+	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
@@ -494,6 +501,25 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 									ref={dropProvided.innerRef}
 									{...dropProvided.droppableProps}
 								>
+									{activeItems.length === 0 ? (
+									// Empty-state affordance:
+									// If every checklist item has been marked completed, the "active" list
+									// becomes empty and there is otherwise no way to create a new row.
+									// This provides a lightweight in-place action that inserts a fresh row
+									// into the underlying items array and focuses it.
+										<li className={styles.checklistComposerRow}>
+											<div className={styles.dragHandle} aria-hidden="true" />
+											<input type="checkbox" className={styles.checklistCheckbox} checked={false} readOnly tabIndex={-1} aria-hidden="true" />
+											<button
+												type="button"
+												className={styles.checklistAddItemButton}
+												onClick={() => addItem()}
+												aria-label={t('editors.addItem')}
+											>
+												{t('editors.addItem')}
+											</button>
+										</li>
+									) : null}
 									{activeItems.map((item, index) => (
 										<Draggable key={item.id} draggableId={item.id} index={index} disableInteractiveElementBlocking>
 											{(dragProvided, snapshot) => (
@@ -632,7 +658,17 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 
 					<nav className={`${styles.bottomDock} ${styles.bottomDockCompact}`} aria-label={t('editors.bottomDock')}>
 						<div className={styles.bottomDockLeft}>
-							<button type="button" className={`${styles.bottomDockButton} ${styles.bottomDockButtonCompact}`} aria-label={t('editors.dockAction')} disabled>
+							<button
+								type="button"
+								className={`${styles.bottomDockButton} ${styles.bottomDockButtonCompact}`}
+								aria-label={t('editors.dockAction')}
+								onClick={(e) => {
+									// Capture the trigger button's rect for desktop popover placement.
+									// (On mobile this rect is ignored because the menu is a bottom sheet.)
+									setMoreMenuAnchorRect(e.currentTarget.getBoundingClientRect().toJSON());
+									setIsMoreMenuOpen(true);
+								}}
+							>
 								<FontAwesomeIcon icon={faEllipsisVertical} />
 							</button>
 							<button type="button" className={`${styles.bottomDockButton} ${styles.bottomDockButtonCompact}`} aria-label={t('editors.dockAction')} disabled>
@@ -794,6 +830,17 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					</div>
 				</div>
 			</section>
+			{/* Branch: only mount the menu while open so it can lock scroll / manage history on mobile. */}
+			{isMoreMenuOpen ? (
+			<NoteCardMoreMenu
+				noteType="checklist"
+				anchorRect={moreMenuAnchorRect}
+					onClose={() => {
+						setIsMoreMenuOpen(false);
+						setMoreMenuAnchorRect(null);
+					}}
+			/>
+		) : null}
 		</div>
 	);
 }
