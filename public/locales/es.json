@@ -209,5 +209,20 @@
     "catppuccinMochaSapphire": "Catppuccin Mocha Zafiro",
     "catppuccinMochaBlue": "Catppuccin Mocha Azul",
     "catppuccinMochaLavender": "Catppuccin Mocha Lavanda"
+  },
+  "noteMenu": {
+    "pinNote": "Fijar nota",
+    "addCollaborator": "Añadir colaborador",
+    "addImage": "Añadir imagen",
+    "addReminder": "Añadir recordatorio",
+    "moveToTrash": "Mover a la papelera",
+    "addToCollection": "Añadir a colección",
+    "addLabel": "Añadir etiqueta",
+    "cardWidth": "Ancho de tarjeta",
+    "uncheckAll": "Desmarcar todo",
+    "checkAll": "Marcar todo",
+    "narrow": "Estrecho",
+    "default": "Normal",
+    "wide": "Ancho"
   }
 }

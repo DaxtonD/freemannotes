@@ -2,6 +2,7 @@ import React from 'react';
 import type * as Y from 'yjs';
 import { motion, LayoutGroup } from 'framer-motion';
 import { NoteCard } from '../NoteCard/NoteCard';
+import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
@@ -10,14 +11,12 @@ import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { measureDocumentRects } from './flip';
 import {
 	arraysEqual,
-	columnSlotLengths,
 	flattenColumns,
 	getGridLayoutForViewport,
 	mergeVisibleIdsIntoLayoutOrder,
 	mergeVisibleOrderIntoFullOrder,
 	readCssPxVariable,
 	splitIntoColumnsByHeight,
-	splitIntoColumnsBySlotLengths,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
 import styles from './NoteGrid.module.css';
@@ -28,6 +27,10 @@ export type NoteGridProps = {
 	selectedNoteId: string | null;
 	onSelectNote: (noteId: string) => void;
 	maxCardHeightPx: number;
+	showTrashed?: boolean;
+	onReady?: () => void;
+	/** Enable framer-motion layout animations. Keep false during splash reveal. */
+	enableLayoutAnimations?: boolean;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -72,8 +75,10 @@ type GridNoteCardProps = {
 	hasPendingSync: boolean;
 	selected: boolean;
 	onOpen: () => void;
+	onMoreMenu: () => void;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
+	layoutReady: boolean;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 };
@@ -96,9 +101,14 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 	return (
 		<motion.div
 			ref={handleItemRef}
-			layout
+			layout="position"
 			layoutId={props.note.id}
-			transition={{ type: 'spring', stiffness: 700, damping: 50, mass: 0.8 }}
+			initial={false}
+			transition={
+				props.layoutReady
+					? { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 }
+					: { layout: { duration: 0 } }
+			}
 			className={[
 				styles.item,
 				props.isPlaceholder ? styles.itemPlaceholder : '',
@@ -121,6 +131,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					hasPendingSync={props.hasPendingSync}
 					maxCardHeightPx={props.maxCardHeightPx}
 					onOpen={props.onOpen}
+					onMoreMenu={props.onMoreMenu}
 					dragHandleRef={handleDragHandleRef}
 				/>
 			</div>
@@ -132,17 +143,37 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
+
+	// Suppress framer-motion layout animations until the parent explicitly
+	// enables them (after the splash overlay is fully dismissed). A 2-frame
+	// defer after the prop flips ensures cards paint at their final positions
+	// before animations can fire.
+	const [layoutReady, setLayoutReady] = React.useState(false);
+	React.useEffect(() => {
+		if (!props.enableLayoutAnimations) return;
+		if (layoutReady) return;
+		// Two rAFs:
+		// - rAF #1: wait for React commit + first paint
+		// - rAF #2: wait one more frame so layout is stable, then enable springs
+		let raf2 = 0;
+		const raf1 = requestAnimationFrame(() => {
+			raf2 = requestAnimationFrame(() => setLayoutReady(true));
+		});
+		return () => {
+			cancelAnimationFrame(raf1);
+			if (raf2) cancelAnimationFrame(raf2);
+		};
+	}, [props.enableLayoutAnimations, layoutReady]);
+
 	const pendingSyncNoteIds = React.useMemo(() => new Set(connection.pendingSyncNoteIds), [connection.pendingSyncNoteIds]);
 
 	const [notesList, setNotesList] = React.useState<Y.Array<Y.Map<unknown>> | null>(null);
 	const [noteOrder, setNoteOrder] = React.useState<Y.Array<string> | null>(null);
-	// ── Yjs-backed layout map ─────────────────────────────────────────────
-	// A Y.Map stored in the notes-registry Yjs doc alongside noteOrder.
-	// Currently holds one key: 'columnSlots' (number[]) — the number of cards
-	// in each column at the time of the last drag-and-drop commit.  Other
-	// devices read this to reconstruct the same column grouping via
-	// splitIntoColumnsBySlotLengths, avoiding height-based packing divergence.
-	const [noteLayout, setNoteLayout] = React.useState<Y.Map<unknown> | null>(null);
+
+	// Signal to the parent that the grid's initial data is loaded.
+	const readyFiredRef = React.useRef(false);
+
+	// ── Yjs-backed note data ─────────────────────────────────────────────
 	const [docsById, setDocsById] = React.useState<Record<string, Y.Doc>>({});
 	const docsByIdRef = React.useRef<Record<string, Y.Doc>>({});
 	const pendingDocLoadsRef = React.useRef<Set<string>>(new Set());
@@ -170,6 +201,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const pendingTouchIntentRef = React.useRef(false);
 	const touchScrollDetectedRef = React.useRef(false);
 	const suppressTouchDragUntilRef = React.useRef(0);
+	// ── More-menu state ──────────────────────────────────────────────────
+	// Tracks which note's long-press more-menu is currently open (null = closed).
+	const [moreMenuNoteId, setMoreMenuNoteId] = React.useState<string | null>(null);
+	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 
 	React.useEffect(() => {
 		docsByIdRef.current = docsById;
@@ -207,7 +242,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			touchScrollDetectedRef.current = true;
 			pendingTouchIntentRef.current = false;
 			touchStartPointRef.current = null;
-			suppressTouchDragUntilRef.current = Date.now() + 400;
+			suppressTouchDragUntilRef.current = Date.now() + 200;
 		};
 		window.addEventListener('scroll', onScroll, { passive: true, capture: true });
 		return () => {
@@ -215,25 +250,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, []);
 
-	// ── Load Yjs data: notesList, noteOrder, AND noteLayout ──────────────
-	// All three are Y types from the shared notes-registry doc.  noteLayout
-	// is a Y.Map that stores column slot lengths for cross-device sync.
+	// ── Load Yjs data: notesList + noteOrder ─────────────────────────────
 	React.useEffect(() => {
 		let cancelled = false;
 		(async () => {
-			const [list, order, layout] = await Promise.all([manager.getNotesList(), manager.getNoteOrder(), manager.getNoteLayout()]);
+			const [list, order] = await Promise.all([manager.getNotesList(), manager.getNoteOrder()]);
 			if (cancelled) return;
 			setNotesList(list as unknown as Y.Array<Y.Map<unknown>>);
 			setNoteOrder(order);
-			setNoteLayout(layout);
 		})();
 		return () => { cancelled = true; };
 	}, [manager]);
 
-	// ── Subscribe to Yjs changes: notesList + noteOrder + noteLayout ──────
-	// All three are observed so React re-renders when any of them change.
-	// noteLayout changes arrive when another device commits a drag result,
-	// which triggers packedColumns to re-derive columns from the new slot lengths.
+	// ── Subscribe to Yjs changes: notesList + noteOrder ──────────────────
 	const subscribe = React.useCallback(
 		(onStoreChange: () => void) => {
 			if (!notesList || !noteOrder) return () => {};
@@ -243,16 +272,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			};
 			notesList.observeDeep(onChange);
 			noteOrder.observe(onChange);
-			// Also observe the layout map so cross-device slot-length updates
-			// trigger a re-render and column reconstruction.
-			noteLayout?.observe(onChange);
 			return () => {
 				notesList.unobserveDeep(onChange);
 				noteOrder.unobserve(onChange);
-				noteLayout?.unobserve(onChange);
 			};
 		},
-		[notesList, noteOrder, noteLayout]
+		[notesList, noteOrder]
 	);
 
 	const getSnapshot = React.useCallback(() => versionRef.current, []);
@@ -281,92 +306,89 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const visibleIds = React.useMemo<string[]>(() => {
 		return orderedIds.filter((id) => {
 			const doc = docsById[id];
-			if (!doc) return true;
-			return !readTrashState(doc).trashed;
+			if (!doc) return !props.showTrashed;
+			const trashed = readTrashState(doc).trashed;
+			return props.showTrashed ? trashed : !trashed;
 		});
-	}, [orderedIds, docsById, metadataVersion]);
+	}, [orderedIds, docsById, metadataVersion, props.showTrashed]);
 
 	// ── Commit drag result to Yjs ─────────────────────────────────────────
 	// Called by the drag manager's onDrop handler with the raw column layout
-	// from the insertion point.  Before writing to Yjs, this function:
+	// from the insertion point.  Before writing to Yjs this function:
 	//
-	// 1. REBALANCES columns locally: if the tallest column is >2x the shortest
-	//    (measured by summing card heights), moves bottom cards from the tallest
-	//    to the shortest until the ratio drops to ≤1.5x.  Only the minimum
-	//    number of cards move — the rest of the layout is preserved.  This
-	//    rebalancing happens HERE (before commit) rather than in a read-only
-	//    memo, so that the BALANCED layout is what gets written to Yjs and
-	//    synced to other devices.
+	// 1. REBALANCES columns: if the tallest column is >2× the shortest
+	//    (by summed card height), iteratively moves the bottom card from
+	//    the tallest to the shortest until the ratio drops to ≤1.5×.
 	//
-	// 2. Saves the balanced columns as stickyColumns (local state) so the grid
-	//    doesn't repack on the next render.
-	//
-	// 3. Writes TWO things to Yjs in a single transaction:
-	//    a) The flat note order (column-major via flattenColumns)
-	//    b) The column slot lengths in the noteLayout Y.Map
-	//    Other devices read both to reconstruct the identical column grouping
-	//    via splitIntoColumnsBySlotLengths, regardless of card-height differences.
+	// 2. Flattens the balanced result into reading order (row-major) and
+	//    writes it to Yjs.  Every device then reconstructs columns locally
+	//    with splitIntoColumnsByHeight using its own measured card heights.
+	//    stickyColumns preserves the balanced drag result on the local
+	//    device so there's no visual jump.
 	const commitVisibleOrder = React.useCallback(
-		(nextVisibleOrder: string[], finalColumns: string[][]) => {
+		(nextVisibleOrder: string[], finalColumns: string[][], draggedId: string) => {
 			if (!noteOrder) return;
 
-			// Rebalance columns before committing so other devices receive the
-			// balanced layout, not the raw drop result.
+			// ── Rebalance: move bottom cards from tallest to shortest ─────
+			// Protect the just-dropped card so rebalancing never undoes the
+			// user's drag intention.
 			const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 			const fallbackH = Math.min(props.maxCardHeightPx, 220);
 			const heightOf = (id: string) => noteHeightByIdRef.current.get(id) ?? fallbackH;
 			const computeColHeights = (cols: string[][]) =>
 				cols.map((col) => col.reduce((sum, id, i) => sum + heightOf(id) + (i > 0 ? gapPx : 0), 0));
 
-			let balancedColumns = finalColumns.map((col) => col.slice());
-			let colHeights = computeColHeights(balancedColumns);
+			const balanced = finalColumns.map((col) => col.slice());
+			let colHeights = computeColHeights(balanced);
 			let maxH = Math.max(...colHeights);
 			let minH = Math.min(...colHeights);
 
-			// ── Rebalance: move cards from the tallest column to shorter ones ──
-			// If the tallest column is >2x the shortest (by summed card height),
-			// iteratively pop the bottom card from the tallest and append it to
-			// the shortest until the ratio drops to ≤1.5x.  This avoids a full
-			// greedy repack (which would shuffle every column) and instead only
-			// moves the minimum cards causing the imbalance.
 			if (minH > 0 && maxH / minH > 2) {
-				for (let moves = 0; moves < balancedColumns.flat().length; moves++) {
+				for (let moves = 0; moves < balanced.flat().length; moves++) {
 					maxH = Math.max(...colHeights);
 					minH = Math.min(...colHeights);
 					if (minH <= 0 || maxH / minH <= 1.5) break;
 
 					const tallestIdx = colHeights.indexOf(maxH);
 					const shortestIdx = colHeights.indexOf(minH);
-					if (tallestIdx === shortestIdx || balancedColumns[tallestIdx].length <= 1) break;
+					if (tallestIdx === shortestIdx || balanced[tallestIdx].length <= 1) break;
 
-					const movedId = balancedColumns[tallestIdx].pop()!;
-					balancedColumns[shortestIdx].push(movedId);
-					colHeights = computeColHeights(balancedColumns);
+					// Never move the card the user just dropped — that would
+					// undo the drag.  Skip upward from the bottom until we find
+					// a movable card, or give up on this column.
+					let candidateIdx = balanced[tallestIdx].length - 1;
+					while (candidateIdx >= 0 && balanced[tallestIdx][candidateIdx] === draggedId) {
+						candidateIdx--;
+					}
+					if (candidateIdx < 0) break;
+
+					const [movedId] = balanced[tallestIdx].splice(candidateIdx, 1);
+					balanced[shortestIdx].push(movedId);
+					colHeights = computeColHeights(balanced);
 				}
 			}
 
-			const balancedOrder = flattenColumns(balancedColumns);
-			pendingCommittedVisibleOrderRef.current = balancedOrder.slice();
-			setLayoutOrderIds((previous) => (arraysEqual(previous, balancedOrder) ? previous : balancedOrder));
-			setStickyColumns(balancedColumns);
+			// Row-major flatten of balanced columns → canonical order for Yjs.
+			const readingOrder = flattenColumns(balanced);
+			pendingCommittedVisibleOrderRef.current = readingOrder.slice();
+			setLayoutOrderIds((previous) => (arraysEqual(previous, readingOrder) ? previous : readingOrder));
+			// Preserve the balanced drag result as stickyColumns so the local
+			// device sees the exact column layout from the drag.  Other
+			// devices re-pack from the Yjs canonical order with their own
+			// card heights.  When a remote update arrives, the flat-order
+			// comparison in baseColumns invalidates stale stickyColumns.
+			setStickyColumns(balanced);
 
-			// ── Persist to Yjs in a single transaction ──────────────────────
-			// Write the balanced flat order AND column slot lengths atomically.
-			// The flat order is column-major (flattenColumns) so the receiving
-			// device can split it at slot boundaries to get the same columns.
 			const current = readOrderIds(noteOrder);
-			const next = mergeVisibleOrderIntoFullOrder(current, visibleIds, balancedOrder);
+			const next = mergeVisibleOrderIntoFullOrder(current, visibleIds, readingOrder);
 			if (arraysEqual(current, next)) return;
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
 			ydoc.transact(() => {
 				noteOrder.delete(0, noteOrder.length);
 				noteOrder.insert(0, next);
-				if (noteLayout) {
-					noteLayout.set('columnSlots', columnSlotLengths(balancedColumns));
-				}
 			});
 		},
-		[noteOrder, noteLayout, visibleIds, mobileGridGapPx, props.maxCardHeightPx]
+		[noteOrder, visibleIds, mobileGridGapPx, props.maxCardHeightPx]
 	);
 
 	React.useEffect(() => {
@@ -450,6 +472,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		}
 	}, [manager, noteOrder, orderedIds]);
 
+	// ── Fire onReady once initial docs are loaded ──────────────────────────
+	// Wait for every ordered note to have a loaded Y.Doc (or for 0 notes).
+	// This tells the parent "data is ready" so the splash can begin fading.
+	// Layout animations are NOT enabled here — that's controlled by the
+	// enableLayoutAnimations prop (set after splash is fully dismissed).
+	React.useEffect(() => {
+		if (readyFiredRef.current) return;
+		if (!noteOrder) return;
+		if (orderedIds.length > 0 && orderedIds.some((id) => !docsById[id])) return;
+		readyFiredRef.current = true;
+		props.onReady?.();
+	}, [noteOrder, orderedIds, docsById, props.onReady]);
+
 	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
 	const noteById = React.useMemo(() => {
 		const map = new Map<string, Note>();
@@ -458,69 +493,36 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [renderedIds]);
 
 	// ── Column computation: packedColumns ─────────────────────────────────
-	// This is the "cold start" column layout, used when there are no
-	// stickyColumns from a recent drag.  Two strategies, in priority order:
-	//
-	// 1. Slot-based (cross-device sync): if the Yjs noteLayout map has stored
-	//    columnSlots from another device's drag, AND those slots match the
-	//    local column count and total card count, reconstruct columns by
-	//    slicing the flat order at slot boundaries.  This guarantees the same
-	//    column grouping regardless of card-height differences.
-	//
-	// 2. Height-based (greedy packing): fall back to assigning each card to
-	//    the shortest column.  Used on first load, when column count differs
-	//    from stored slots, or when cards have been added/removed.
+	// Greedy shortest-column masonry: each card from the canonical order is
+	// placed into whichever column currently has the least accumulated
+	// height.  This produces visually balanced columns at every column
+	// count.  Different devices may compute different column assignments
+	// (because card heights vary across viewports), but the canonical order
+	// in Yjs is deterministic — each device simply packs from it locally.
+	// After a drag, the balanced result is preserved as stickyColumns so
+	// the dragging device sees an instant result; other devices re-pack
+	// from the updated Yjs order using their own heights.
 	const packedColumns = React.useMemo(() => {
-		// If the Yjs layout map has stored column slot lengths from the last drag,
-		// and they match the local column count + total card count, use them to
-		// reconstruct the exact column grouping. This ensures cross-device consistency
-		// even when card heights differ between devices.
-		if (noteLayout) {
-			const stored = noteLayout.get('columnSlots');
-			if (Array.isArray(stored) && stored.length === columnCount) {
-				const totalSlots = stored.reduce((sum: number, n: number) => sum + n, 0);
-				if (totalSlots === renderedIds.length && stored.every((n: unknown) => typeof n === 'number' && n >= 0)) {
-					return splitIntoColumnsBySlotLengths(renderedIds, stored as number[]);
-				}
-			}
-		}
+		void noteHeightsVersion;
 		const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
-		const fallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
-		return splitIntoColumnsByHeight(renderedIds, columnCount, noteHeightByIdRef.current, gapPx, fallbackHeightPx);
-	}, [renderedIds, columnCount, noteHeightsVersion, mobileGridGapPx, props.maxCardHeightPx, noteLayout, storeVersion]);
+		const fallbackH = Math.min(props.maxCardHeightPx, 220);
+		return splitIntoColumnsByHeight(renderedIds, columnCount, noteHeightByIdRef.current, gapPx, fallbackH);
+	}, [renderedIds, columnCount, noteHeightsVersion, mobileGridGapPx, props.maxCardHeightPx]);
 
-	// Reconcile stickyColumns with current renderedIds: keep sticky layout if still valid,
-	// clear it if column count changed or IDs changed.
 	// ── Reconcile stickyColumns with current card IDs ─────────────────────
 	// stickyColumns preserves the column layout from the last drag so cards
-	// don't shuffle on re-render.  But they can become stale if:
-	//   - Column count changed (viewport resize) → fall back to packedColumns
-	//   - Cards were added or removed → patch stickyColumns by removing stale
-	//     IDs and inserting new ones into the shortest column
-	// If stickyColumns are valid and up-to-date, use them as-is.
+	// don't shuffle on re-render.  Cleared when column count changes, IDs
+	// change, or ORDER changes (remote Yjs update), falling back to
+	// packedColumns (round-robin).
 	const baseColumns = React.useMemo(() => {
 		if (!stickyColumns || stickyColumns.length !== columnCount) return packedColumns;
 
-		// Check that all renderedIds are still present in stickyColumns
-		const stickyFlat = new Set(stickyColumns.flat());
-		const renderedSet = new Set(renderedIds);
-		const allPresent = renderedIds.every((id) => stickyFlat.has(id));
-		const noExtras = stickyFlat.size === renderedSet.size;
-
-		if (!allPresent || !noExtras) {
-			// IDs changed (card added/removed) — merge additions into sticky, remove stale
-			const reconciled = stickyColumns.map((col) => col.filter((id) => renderedSet.has(id)));
-			const seen = new Set(reconciled.flat());
-			const missing = renderedIds.filter((id) => !seen.has(id));
-			// Add missing cards to the shortest column
-			for (const id of missing) {
-				let shortest = 0;
-				for (let i = 1; i < reconciled.length; i++) {
-					if (reconciled[i].length < reconciled[shortest].length) shortest = i;
-				}
-				reconciled[shortest].push(id);
-			}
-			return reconciled;
+		// Verify stickyColumns still match current renderedIds AND order.
+		// flattenColumns is the inverse of dealIntoColumns, so if a remote
+		// update changed the order, the flat forms will diverge.
+		const stickyFlat = flattenColumns(stickyColumns);
+		if (!arraysEqual(stickyFlat, renderedIds)) {
+			return packedColumns;
 		}
 
 		return stickyColumns;
@@ -648,7 +650,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					touchScrollDetectedRef.current = true;
 					pendingTouchIntentRef.current = false;
 					touchStartPointRef.current = null;
-					suppressTouchDragUntilRef.current = Date.now() + 400;
+					suppressTouchDragUntilRef.current = Date.now() + 200;
 				}
 			}}
 			onTouchEndCapture={() => {
@@ -695,8 +697,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										hasPendingSync={pendingSyncNoteIds.has(note.id)}
 										selected={props.selectedNoteId === note.id}
 										onOpen={() => props.onSelectNote(note.id)}
+										onMoreMenu={() => {
+
+									const cardEl = gridRef.current?.querySelector(`[data-note-id="${note.id}"]`);
+									setMoreMenuAnchorRect(cardEl ? cardEl.getBoundingClientRect().toJSON() : null);
+									setMoreMenuNoteId(note.id);
+								}}
 										maxCardHeightPx={props.maxCardHeightPx}
 										isPlaceholder={isPlaceholder}
+										layoutReady={layoutReady}
 										setItemElement={dragManager.setItemElement}
 										setHandleElement={dragManager.setHandleElement}
 									/>
@@ -725,6 +734,23 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						maxCardHeightPx={props.maxCardHeightPx}
 					/>
 				</div>
+			) : null}
+			{moreMenuNoteId && docsById[moreMenuNoteId] ? (
+				<NoteCardMoreMenu
+					noteType={
+						String(docsById[moreMenuNoteId].getMap('metadata').get('type') ?? '') === 'checklist'
+							? 'checklist'
+							: 'text'
+					}
+					anchorRect={moreMenuAnchorRect}
+					onClose={() => { setMoreMenuNoteId(null); setMoreMenuAnchorRect(null); }}
+					onTrash={() => {
+						const noteId = moreMenuNoteId;
+						setMoreMenuNoteId(null);
+						setMoreMenuAnchorRect(null);
+						void manager.trashNote(noteId);
+					}}
+				/>
 			) : null}
 		</section>
 	);

@@ -179,6 +179,23 @@ export function App(): React.JSX.Element {
 	const [authUserId, setAuthUserId] = React.useState<string | null>(null);
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(null);
 	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(null);
+	// Splash overlay:
+	// - During auth "loading": show a full-page splash immediately.
+	// - After auth "authed": keep an overlay until NoteGrid signals its initial
+	//   data is loaded. This prevents a refresh flash where cards paint, then
+	//   immediately spring-animate from an incorrect initial layout.
+	const [splashFading, setSplashFading] = React.useState(false);
+	const [splashDismissed, setSplashDismissed] = React.useState(false);
+	const handleGridReady = React.useCallback(() => {
+		setSplashFading(true);
+		setTimeout(() => setSplashDismissed(true), 400);
+	}, []);
+	// Stable workspace key for NoteGrid:
+	// Retains the last non-null workspace ID so transient auth churn (e.g. network
+	// handoffs) doesn't unmount/remount the grid and lose in-memory measurement
+	// caches, scroll position, and any in-progress drag state.
+	const stableWorkspaceKeyRef = React.useRef<string>('no-workspace');
+	if (authWorkspaceId) stableWorkspaceKeyRef.current = authWorkspaceId;
 	const [authOfflineMode, setAuthOfflineMode] = React.useState(false);
 	const [registerAvatarUrl, setRegisterAvatarUrl] = React.useState<string | null>(null);
 	const [registerAvatarCrop, setRegisterAvatarCrop] = React.useState({ x: 0, y: 0 });
@@ -200,6 +217,8 @@ export function App(): React.JSX.Element {
 		sorting: false,
 		collections: false,
 	});
+	// Which sidebar view is active: regular notes or the trash bin.
+	const [sidebarView, setSidebarView] = React.useState<'notes' | 'trash'>('notes');
 	// UI mode for the "new note" panel.
 	const [editorMode, setEditorMode] = React.useState<EditorMode>('none');
 	// Phase 10 preferences shell entry point opened from top-right avatar.
@@ -1289,8 +1308,23 @@ export function App(): React.JSX.Element {
 		};
 	}, [manager, selectedNoteId]);
 
-	if (authStatus !== 'authed') {
-		return authGateView;
+	// ── Auth gate / splash overlay ────────────────────────────────────────
+	// 'unauth'  → show login form (early return)
+	// 'loading' → show full-page splash (early return – no workspace data yet)
+	// 'authed'  → render main app; keep splash overlay until NoteGrid signals ready
+	if (authStatus === 'unauth') return authGateView;
+
+	if (authStatus === 'loading') {
+		const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
+		return (
+			<div className="splash-shell">
+				<div className="splash-content">
+					<img src={splashIcon} alt="" className="splash-icon" />
+					<div className="splash-title">FreemanNotes</div>
+					<div className="splash-spinner" />
+				</div>
+			</div>
+		);
 	}
 
 	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
@@ -1306,7 +1340,25 @@ export function App(): React.JSX.Element {
 		setIsSidebarCollapsed((prev) => !prev);
 	};
 
+	const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
+
 	return (
+		<>
+			{/*
+				In-app splash overlay:
+				Even after auth is "authed", we keep a full-screen overlay until NoteGrid
+				signals it has loaded initial data and layout measurements. This prevents a
+				reload flash where cards briefly paint in a default layout and then spring.
+			*/}
+			{!splashDismissed && (
+			<div className={`splash-shell splash-overlay${splashFading ? ' splash-fade-out' : ''}`}>
+				<div className="splash-content">
+					<img src={splashIcon} alt="" className="splash-icon" />
+					<div className="splash-title">FreemanNotes</div>
+					<div className="splash-spinner" />
+				</div>
+			</div>
+			)}
 		<div
 			className={`test-harness-root${themeId.startsWith('catppuccin-') ? ' theme-catppuccin' : ''}${
 				isFabOpen ? ' fab-open' : ''
@@ -1443,10 +1495,20 @@ export function App(): React.JSX.Element {
 								<button
 									key={entry.id}
 									type="button"
-									className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}`}
+									className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${entry.id === 'trash' && sidebarView === 'trash' ? ' is-active' : ''}${entry.id === 'notes' && sidebarView === 'notes' ? ' is-active' : ''}`}
 									onClick={() => {
 										if (entry.id === 'workspaces') {
 											openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
+											return;
+										}
+										if (entry.id === 'trash') {
+											setSidebarView('trash');
+											if (isMobileViewport) closeMobileSidebar();
+											return;
+										}
+										if (entry.id === 'notes') {
+											setSidebarView('notes');
+											if (isMobileViewport) closeMobileSidebar();
 											return;
 										}
 										if (isGroup) {
@@ -1476,14 +1538,17 @@ export function App(): React.JSX.Element {
 
 				<main className="app-main">
 
-					<div ref={topActionsRef} className="top-actions">
-						<button type="button" className="top-action-card" onClick={() => openCreateEditor('text')}>
-							{t('app.createNewNote')}
-						</button>
-						<button type="button" className="top-action-card" onClick={() => openCreateEditor('checklist')}>
-							{t('app.createNewChecklist')}
-						</button>
-					</div>
+					{/* In trash view we hide the "create new note" affordances. */}
+					{sidebarView !== 'trash' ? (
+						<div ref={topActionsRef} className="top-actions">
+							<button type="button" className="top-action-card" onClick={() => openCreateEditor('text')}>
+								{t('app.createNewNote')}
+							</button>
+							<button type="button" className="top-action-card" onClick={() => openCreateEditor('checklist')}>
+								{t('app.createNewChecklist')}
+							</button>
+						</div>
+					) : null}
 
 					<section className="editor-panel">
 						{/* Branch: text editor open. */}
@@ -1493,14 +1558,21 @@ export function App(): React.JSX.Element {
 					</section>
 
 					<NoteGrid
-						key={authWorkspaceId || 'no-workspace'}
+						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
 						selectedNoteId={selectedNoteId}
 						maxCardHeightPx={maxCardHeightPx}
+						// When the trash view is active, NoteGrid switches to rendering trashed notes.
+						showTrashed={sidebarView === 'trash'}
 						onSelectNote={(id) => {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
 						}}
+						// NoteGrid calls onReady once it has loaded initial note metadata and performed its
+						// first layout pass (including DOM measurement needed for masonry packing).
+						onReady={handleGridReady}
+						// Layout animations are suppressed until after the splash overlay has faded out.
+						enableLayoutAnimations={splashDismissed}
 					/>
 				</main>
 			</div>
@@ -1603,5 +1675,6 @@ export function App(): React.JSX.Element {
 				currentUserId={authUserId}
 			/>
 		</div>
+		</>
 	);
 }
