@@ -103,8 +103,43 @@ model User {
 
   memberships WorkspaceMember[]
   preferences UserPreference?
+  devicePreferences UserDevicePreference[]
 
   @@map("user")
+}
+
+model UserDevicePreference {
+  /// Primary key — auto-generated UUID.
+  id String @id @default(uuid()) @db.Uuid
+
+  /// Authenticated user identifier.
+  userId String @map("user_id") @db.Uuid
+
+  /// Client-generated stable device identifier (stored in localStorage).
+  deviceId String @map("device_id")
+
+  /// Per-device appearance preferences.
+  theme    String?
+  language String?
+
+  /// Per-device workspace selection.
+  activeWorkspaceId String? @map("active_workspace_id") @db.Uuid
+
+  /// Per-device UI state: completed items expanded/collapsed in checklist editors.
+  checklistShowCompleted Boolean @default(false) @map("checklist_show_completed")
+
+  /// Per-device UI state: completed items expanded/collapsed per note card.
+  /// Shape: { [noteId: string]: boolean }
+  noteCardCompletedExpandedByNoteId Json @default("{}") @map("note_card_completed_expanded_by_note_id") @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([userId])
+  @@map("user_device_preference")
 }
 
 model WorkspaceMember {

@@ -45,6 +45,8 @@ const MAX_DELETE_AFTER_DAYS = 365;
 function createPreferencesRouter({ prisma, timezone = null }) {
 	const fmt = createTimestampFormatter(timezone);
 
+	const LEGACY_DEVICE_ID = 'legacy';
+
 	/**
 	 * Sends a JSON response with the given status code and body.
 	 *
@@ -103,6 +105,23 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 		};
 	}
 
+	function normalizeDeviceId(raw) {
+		if (typeof raw !== 'string') return LEGACY_DEVICE_ID;
+		const id = raw.trim();
+		if (!id) return LEGACY_DEVICE_ID;
+		// Keep reasonably bounded so it can't be abused as an unbounded key.
+		if (id.length > 120) return LEGACY_DEVICE_ID;
+		return id;
+	}
+
+	function normalizeNoteId(raw) {
+		if (typeof raw !== 'string') return '';
+		const id = raw.trim();
+		if (!id) return '';
+		if (id.length > 120) return '';
+		return id;
+	}
+
 	/**
 	 * Returns authenticated userId (UUID) or null.
 	 * @param {import('http').IncomingMessage} req
@@ -137,10 +156,10 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						return;
 					}
 
-					// Upsert: create with defaults if missing, return existing if present.
-					// This ensures the first GET always returns a valid preference object
-					// without requiring a separate "initialize" step.
-					const pref = await prisma.userPreference.upsert({
+					const deviceId = normalizeDeviceId(url.searchParams.get('deviceId'));
+
+					// Upsert the user-scoped preferences (deleteAfterDays).
+					const userPref = await prisma.userPreference.upsert({
 						where: { userId },
 						update: {},
 						create: {
@@ -148,7 +167,32 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 							deleteAfterDays: DEFAULT_DELETE_AFTER_DAYS,
 						},
 					});
-					jsonResponse(res, 200, formatPreference(pref));
+
+					// Upsert the device-scoped preferences.
+					const devicePref = await prisma.userDevicePreference.upsert({
+						where: { userId_deviceId: { userId, deviceId } },
+						update: {},
+						create: {
+							userId,
+							deviceId,
+							checklistShowCompleted: false,
+							noteCardCompletedExpandedByNoteId: {},
+						},
+					});
+
+					jsonResponse(res, 200, {
+						userId: userPref.userId,
+						deviceId: devicePref.deviceId,
+						deleteAfterDays: userPref.deleteAfterDays,
+						theme: devicePref.theme ?? null,
+						language: devicePref.language ?? null,
+						activeWorkspaceId: devicePref.activeWorkspaceId ?? null,
+						checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
+						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
+						createdAt: fmt(devicePref.createdAt),
+						updatedAt: fmt(devicePref.updatedAt),
+						timezone: timezone || 'UTC',
+					});
 				} catch (err) {
 					console.error('[api] GET /api/user/preferences error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
@@ -171,14 +215,17 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						return;
 					}
 
+					const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+					const deviceId = normalizeDeviceId(url.searchParams.get('deviceId'));
+
 					const body = await readJsonBody(req);
 					if (!body || typeof body !== 'object') {
 						jsonResponse(res, 400, { error: 'Request body must be a JSON object' });
 						return;
 					}
 
-					// ── Validate deleteAfterDays ─────────────────────────────
-					const updateData = {};
+					// ── Validate deleteAfterDays (user-scoped) ─────────────────
+					const userUpdateData = {};
 					if ('deleteAfterDays' in body) {
 						const days = Number(body.deleteAfterDays);
 						if (
@@ -192,35 +239,58 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 							});
 							return;
 						}
-						updateData.deleteAfterDays = days;
+						userUpdateData.deleteAfterDays = days;
 					}
 
-					// ── Persist theme/language (optional) ─────────────────────
+					// ── Device-scoped updates ─────────────────────────────────
+					const deviceUpdateData = {};
 					if ('theme' in body) {
 						if (body.theme == null || body.theme === '') {
-							updateData.theme = null;
+							deviceUpdateData.theme = null;
 						} else if (typeof body.theme !== 'string' || body.theme.length > 80) {
 							jsonResponse(res, 400, { error: 'theme must be a string up to 80 chars' });
 							return;
 						} else {
-							updateData.theme = body.theme;
+							deviceUpdateData.theme = body.theme;
 						}
 					}
 
 					if ('language' in body) {
 						if (body.language == null || body.language === '') {
-							updateData.language = null;
+							deviceUpdateData.language = null;
 						} else if (typeof body.language !== 'string' || body.language.length > 20) {
 							jsonResponse(res, 400, { error: 'language must be a string up to 20 chars' });
 							return;
 						} else {
-							updateData.language = body.language;
+							deviceUpdateData.language = body.language;
 						}
 					}
 
-					// If no recognized fields were provided, return the current state.
-					if (Object.keys(updateData).length === 0) {
-						const current = await prisma.userPreference.upsert({
+					if ('checklistShowCompleted' in body) {
+						deviceUpdateData.checklistShowCompleted = Boolean(body.checklistShowCompleted);
+					}
+
+					if ('noteCardCompletedExpandedPatch' in body) {
+						const patch = body.noteCardCompletedExpandedPatch;
+						if (!patch || typeof patch !== 'object') {
+							jsonResponse(res, 400, { error: 'noteCardCompletedExpandedPatch must be an object' });
+							return;
+						}
+						const noteId = normalizeNoteId(patch.noteId);
+						if (!noteId) {
+							jsonResponse(res, 400, { error: 'noteCardCompletedExpandedPatch.noteId is required' });
+							return;
+						}
+						const expanded = Boolean(patch.expanded);
+						// We'll merge this patch after reading current state (below).
+						deviceUpdateData.__noteCardPatch = { noteId, expanded };
+					}
+
+					const hasUserUpdates = Object.keys(userUpdateData).length > 0;
+					const hasDeviceUpdates = Object.keys(deviceUpdateData).length > 0;
+					if (!hasUserUpdates && !hasDeviceUpdates) {
+						// Return current state.
+						const userPref = await prisma.userPreference.upsert({
 							where: { userId },
 							update: {},
 							create: {
@@ -228,27 +298,116 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 								deleteAfterDays: DEFAULT_DELETE_AFTER_DAYS,
 							},
 						});
-						jsonResponse(res, 200, formatPreference(current));
+						const devicePref = await prisma.userDevicePreference.upsert({
+							where: { userId_deviceId: { userId, deviceId } },
+							update: {},
+							create: {
+								userId,
+								deviceId,
+								checklistShowCompleted: false,
+								noteCardCompletedExpandedByNoteId: {},
+							},
+						});
+						jsonResponse(res, 200, {
+							userId: userPref.userId,
+							deviceId: devicePref.deviceId,
+							deleteAfterDays: userPref.deleteAfterDays,
+							theme: devicePref.theme ?? null,
+							language: devicePref.language ?? null,
+							activeWorkspaceId: devicePref.activeWorkspaceId ?? null,
+							checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
+							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
+							createdAt: fmt(devicePref.createdAt),
+							updatedAt: fmt(devicePref.updatedAt),
+							timezone: timezone || 'UTC',
+						});
 						return;
 					}
 
-					// Upsert: create with provided values if missing, update if present.
-					const pref = await prisma.userPreference.upsert({
-						where: { userId },
-						update: updateData,
-						create: {
-							userId,
-							deleteAfterDays: updateData.deleteAfterDays ?? DEFAULT_DELETE_AFTER_DAYS,
-							theme: updateData.theme ?? null,
-							language: updateData.language ?? null,
-						},
+					const pref = await prisma.$transaction(async (tx) => {
+						const userPref = hasUserUpdates
+							? await tx.userPreference.upsert({
+								where: { userId },
+								update: userUpdateData,
+								create: {
+									userId,
+									deleteAfterDays: userUpdateData.deleteAfterDays ?? DEFAULT_DELETE_AFTER_DAYS,
+								},
+							})
+							: await tx.userPreference.upsert({
+								where: { userId },
+								update: {},
+								create: {
+									userId,
+									deleteAfterDays: DEFAULT_DELETE_AFTER_DAYS,
+								},
+							});
+
+						let deviceData = { ...deviceUpdateData };
+						const noteCardPatch = deviceData.__noteCardPatch;
+						delete deviceData.__noteCardPatch;
+						if (noteCardPatch) {
+							const current = await tx.userDevicePreference.findUnique({
+								where: { userId_deviceId: { userId, deviceId } },
+								select: { noteCardCompletedExpandedByNoteId: true },
+							});
+							const existing = current?.noteCardCompletedExpandedByNoteId;
+							const base = existing && typeof existing === 'object' ? existing : {};
+							deviceData.noteCardCompletedExpandedByNoteId = {
+								...base,
+								[noteCardPatch.noteId]: noteCardPatch.expanded,
+							};
+						}
+
+						const devicePref = hasDeviceUpdates
+							? await tx.userDevicePreference.upsert({
+								where: { userId_deviceId: { userId, deviceId } },
+								update: deviceData,
+								create: {
+									userId,
+									deviceId,
+									theme: deviceData.theme ?? null,
+									language: deviceData.language ?? null,
+									activeWorkspaceId: null,
+									checklistShowCompleted:
+										typeof deviceData.checklistShowCompleted === 'boolean'
+											? deviceData.checklistShowCompleted
+											: false,
+									noteCardCompletedExpandedByNoteId:
+										deviceData.noteCardCompletedExpandedByNoteId ?? {},
+								},
+							})
+							: await tx.userDevicePreference.upsert({
+								where: { userId_deviceId: { userId, deviceId } },
+								update: {},
+								create: {
+									userId,
+									deviceId,
+									checklistShowCompleted: false,
+									noteCardCompletedExpandedByNoteId: {},
+								},
+							});
+
+						return { userPref, devicePref };
 					});
 
 					console.info(
 						`[api] POST /api/user/preferences updated:`,
-						JSON.stringify(updateData)
+						JSON.stringify({ userUpdateData, deviceUpdateData })
 					);
-					jsonResponse(res, 200, formatPreference(pref));
+					jsonResponse(res, 200, {
+						userId: pref.userPref.userId,
+						deviceId: pref.devicePref.deviceId,
+						deleteAfterDays: pref.userPref.deleteAfterDays,
+						theme: pref.devicePref.theme ?? null,
+						language: pref.devicePref.language ?? null,
+						activeWorkspaceId: pref.devicePref.activeWorkspaceId ?? null,
+						checklistShowCompleted: Boolean(pref.devicePref.checklistShowCompleted),
+						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
+						createdAt: fmt(pref.devicePref.createdAt),
+						updatedAt: fmt(pref.devicePref.updatedAt),
+						timezone: timezone || 'UTC',
+					});
 				} catch (err) {
 					console.error('[api] POST /api/user/preferences error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });

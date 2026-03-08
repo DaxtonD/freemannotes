@@ -89,6 +89,10 @@
 	text-overflow: ellipsis;
 }
 
+.activeName {
+	color: var(--color-accent);
+}
+
 .sub {
 	font-size: var(--font-size-xs);
 	opacity: 0.8;

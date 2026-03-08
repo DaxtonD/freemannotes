@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.66 - 2026-03-08
+
+### Added
+- **Device-scoped preferences persistence (Phase 12).** Theme, language, active workspace, and editor/card expansion state now persist via the `user_device_preference` table.
+- **Workspace sidebar dropdown list.** The sidebar workspace section expands into a scrollable list (suitable for many workspaces) with a “Manage workspaces…” entry.
+- **Workspace modal active-row emphasis.** Active workspace is pinned to the top, has an accent-highlighted name, and no longer shows an Activate button.
+- **Share note action in the more-menu.** Creates a share link (`POST /api/docs/:docId/share`) and uses native share where available, otherwise falls back to clipboard or opening a new tab.
+
+### Changed
+- **Sidebar disclosure icon.** Sidebar expand/collapse arrows now use `/public/icons/Arrow.png` with theme-aware coloring.
+- **Dev startup resilience on Windows.** `prisma generate` is best-effort so DLL locks don’t prevent `npm run dev`.
+
 ## 1.0.65 - 2026-03-08
 
 ### Added

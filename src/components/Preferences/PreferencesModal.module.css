@@ -51,6 +51,23 @@
 	color: var(--color-text);
 }
 
+.iconButtonLeft {
+	position: absolute;
+	left: 0;
+	right: auto;
+	top: 0;
+	border: 0;
+	font-size: 26px;
+	line-height: 1;
+	padding: 0;
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	cursor: pointer;
+	background: transparent;
+	color: var(--color-text);
+}
+
 .sections {
 	display: flex;
 	flex-direction: column;
@@ -124,8 +141,8 @@
 .subHeader {
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	gap: 10px;
+	justify-content: center;
+	position: relative;
 }
 
 .subTitle {
@@ -137,6 +154,78 @@
 	display: flex;
 	flex-direction: column;
 	gap: 10px;
+}
+
+.appearanceLayout {
+	display: flex;
+	gap: 12px;
+	min-height: 340px;
+}
+
+.appearanceNav {
+	width: 180px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	flex: 0 0 auto;
+}
+
+.appearanceNavItem {
+	text-align: left;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	padding: 12px;
+	font-size: 15px;
+	font-weight: 700;
+	cursor: pointer;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+}
+
+.appearanceNavItemActive {
+	border-color: var(--color-accent);
+	outline: 2px solid var(--color-accent);
+	outline-offset: -2px;
+}
+
+.appearanceContent {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.themeList {
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	background: var(--color-surface-2);
+	padding: 6px;
+	flex: 1 1 auto;
+	min-height: 180px;
+	max-height: 360px;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.themeListItem {
+	text-align: left;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	padding: 12px;
+	font-size: 15px;
+	font-weight: 600;
+	cursor: pointer;
+	background: var(--color-surface);
+	color: var(--color-text);
+}
+
+.themeListItemActive {
+	border-color: var(--color-accent);
+	outline: 2px solid var(--color-accent);
+	outline-offset: -2px;
 }
 
 .subPlaceholder {
@@ -176,5 +265,21 @@
 
 	.footer {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
+	.appearanceLayout {
+		flex-direction: column;
+		min-height: 0;
+	}
+
+	.appearanceNav {
+		width: 100%;
+		flex-direction: row;
+		gap: 8px;
+	}
+
+	.appearanceNavItem {
+		flex: 1 1 0;
+		text-align: center;
 	}
 }
