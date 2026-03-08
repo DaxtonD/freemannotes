@@ -204,28 +204,22 @@ export function swapIds(ids: readonly string[], activeId: string, overId: string
  * Resolve the ghost card's position to a (column, index) insertion point.
  *
  * Column detection (horizontal):
- *   Uses the ghost's horizontal center (`pointerX`) and picks the column whose
- *   own center is closest.  Center-based detection works well horizontally
- *   because columns are roughly the same width.
+ *   Uses the raw pointer X (`pointerX`) to pick the column whose center is
+ *   closest.  Using the pointer directly (instead of ghost center) is more
+ *   responsive for cross-column moves because the pointer leads the ghost.
  *
  * Row detection (vertical):
- *   Receives BOTH the ghost's top edge (`ghostTopY`) and bottom edge
- *   (`ghostBottomY`).  For each card in the target column, the function picks
- *   whichever ghost edge is closer to the card's midpoint:
- *     • Dragging UP  → the ghost's top edge is closer, so the shift triggers
- *       when the top edge crosses the card's midpoint.
- *     • Dragging DOWN → the ghost's bottom edge is closer, so the shift
- *       triggers when the bottom edge crosses the card's midpoint.
- *   This "nearest edge" approach solves the tall-card-over-short-card problem:
- *   using only the ghost center would require dragging impossibly far for tall
- *   cards to clear a short card's midpoint.
- *
- * Dead zone (BUFFER_PX = 16):
- *   After a layout shift, framer-motion animates cards to their new positions.
- *   During the animation, getBoundingClientRect() returns intermediate values
- *   that can immediately flip the insertion point back, causing oscillation.
- *   The 16 px buffer ensures the ghost edge must clearly cross a card's midpoint
- *   before re-triggering, giving the spring animation time to settle.
+ *   Uses the ghost card's edges to find the insertion slot.  For each card in
+ *   the target column (excluding the dragged card), we compare the ghost's
+ *   nearest edge against the card's vertical midpoint:
+ *     • Ghost center above card → bottom edge (leading edge when dragging down).
+ *       If ghostBottom > cardMidY the ghost has "passed" the card.
+ *     • Ghost center below card → top edge (leading edge when dragging up).
+ *       If ghostTop < cardMidY the ghost has risen past the card.
+ *   This matches the physical overlap the user sees and provides stable,
+ *   predictable same-column and cross-column shifts.  The 280 ms cooldown in
+ *   the drag manager prevents oscillation from spring-animation intermediate
+ *   rects.
  *
  * @returns { column, index } where `index` is the slot BEFORE which the card
  *          should be inserted in that column, or null if columns are empty.
@@ -241,7 +235,9 @@ export function findInsertionPoint(
 ): { column: number; index: number } | null {
 	if (columns.length === 0) return null;
 
-	// Find which column the pointer is over
+	// ── Column detection ────────────────────────────────────────────────
+	// Use the raw pointer X (not ghost center) — this is more responsive
+	// for cross-column moves because the pointer leads the ghost.
 	let bestColumn = 0;
 	let bestDist = Infinity;
 	for (let c = 0; c < columns.length; c++) {
@@ -255,24 +251,30 @@ export function findInsertionPoint(
 		}
 	}
 
-	// Find insertion index within that column.
-	// For each card, compare its center against whichever ghost edge is
-	// closer. This means dragging UP triggers when the ghost's top edge
-	// crosses the card's midpoint, and dragging DOWN triggers when the
-	// ghost's bottom edge crosses the card's midpoint.
-	// A buffer/dead-zone is applied around each midpoint so the ghost edge
-	// must cross by BUFFER_PX to trigger. This prevents oscillation where
-	// card layout shifts cause the insertion point to immediately flip back.
-	const BUFFER_PX = 16;
+	// ── Row detection ───────────────────────────────────────────────────
+	// Use the ghost card's edges (not the raw pointer) to determine the
+	// insertion slot.  This matches the physical overlap the user sees:
+	//
+	//   • Dragging DOWN: the ghost's bottom edge crossing below a card's
+	//     midpoint means the ghost has "passed" that card.
+	//   • Dragging UP: the ghost's top edge crossing above a card's
+	//     midpoint means the ghost has risen past that card.
+	//
+	// To decide which edge to compare for each card, we look at whether
+	// the ghost center is above or below the card's midpoint:
+	//   ghost center above card → use bottom edge (leading when moving down)
+	//   ghost center below card → use top edge   (leading when moving up)
 	const col = columns[bestColumn].filter((id) => id !== activeId);
 	if (col.length === 0) return { column: bestColumn, index: 0 };
 
+	const ghostCenterY = (ghostTopY + ghostBottomY) / 2;
 	for (let i = 0; i < col.length; i++) {
 		const rect = getRectForId(col[i]);
 		if (!rect) continue;
 		const midY = rect.top + rect.height / 2;
-		const edgeY = Math.abs(ghostTopY - midY) <= Math.abs(ghostBottomY - midY) ? ghostTopY : ghostBottomY;
-		if (edgeY < midY - BUFFER_PX) {
+		// Pick the ghost edge that faces this card
+		const ghostEdge = ghostCenterY < midY ? ghostBottomY : ghostTopY;
+		if (ghostEdge < midY) {
 			return { column: bestColumn, index: i };
 		}
 	}
@@ -301,27 +303,41 @@ export function insertIntoColumns(
 }
 
 /**
- * Flatten columns to a column-major linear order (all of col-0, then col-1, etc.).
+ * Flatten columns to reading order (row-major).
  *
- * Column-major (not row-interleaved) is critical for cross-device sync:
- * the receiving device reads the flat order and splits it back into columns
- * using `splitIntoColumnsBySlotLengths`.  Column-major order means a simple
- * sequential slice at the stored slot boundaries reproduces the original
- * column grouping, regardless of how many cards each column has.
+ * Interleaves columns row-by-row so the flat list reads left-to-right,
+ * top-to-bottom — the natural "reading order".  This is the canonical
+ * order stored in Yjs so that every device, regardless of its local
+ * column count, can reconstruct the correct visual sequence by dealing
+ * the flat list with `dealIntoColumns`.
+ *
+ * Example: col0=[A,C,E] col1=[B,D,F] → [A,B,C,D,E,F]
  */
 export function flattenColumns(columns: readonly string[][]): string[] {
+	const maxLen = Math.max(0, ...columns.map((col) => col.length));
 	const result: string[] = [];
-	for (const col of columns) {
-		for (const id of col) result.push(id);
+	for (let row = 0; row < maxLen; row++) {
+		for (const col of columns) {
+			if (row < col.length) result.push(col[row]);
+		}
 	}
 	return result;
 }
 
 /**
- * Extract the number of items in each column (the "slot lengths").
- * Stored in Yjs alongside the flat note order so other devices can reconstruct
- * the same column groupings via `splitIntoColumnsBySlotLengths`.
+ * Deal a flat reading-order list into columns using round-robin assignment.
+ *
+ * Card 0 → col 0, card 1 → col 1, …, card N → col 0, card N+1 → col 1, …
+ * This preserves reading order (left-to-right, top-to-bottom) regardless of
+ * how many columns the device has.  It is the inverse of `flattenColumns`.
+ *
+ * Example: [A,B,C,D,E,F] with 3 cols → col0=[A,D] col1=[B,E] col2=[C,F]
  */
-export function columnSlotLengths(columns: readonly string[][]): number[] {
-	return columns.map((col) => col.length);
+export function dealIntoColumns(ids: readonly string[], columnCount: number): string[][] {
+	const cols = Math.max(1, columnCount);
+	const columns: string[][] = Array.from({ length: cols }, () => []);
+	for (let i = 0; i < ids.length; i++) {
+		columns[i % cols].push(ids[i]);
+	}
+	return columns;
 }

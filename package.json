@@ -1,13 +1,13 @@
 {
   "name": "freemannotes",
-  "version": "1.0.64",
+  "version": "1.0.65",
   "main": "index.js",
   "scripts": {
-    "dev": "node server/dbInitCli.js && vite --host",
-    "dev:full": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",
-    "dev:web": "vite --host",
+    "dev": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:web": "node server/waitForServer.js && vite --host",
     "dev:server": "node server/dbInitCli.js && node server.js",
-    "start": "node server.js",
+    "start": "npm run build && node server.js",
+    "start:server": "node server.js",
     "db:init": "node server/dbInitCli.js",
     "preview": "vite preview --host",
     "ws": "node ws-server.js",

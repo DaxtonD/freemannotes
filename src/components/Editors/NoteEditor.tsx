@@ -36,6 +36,7 @@ import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
+import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
@@ -249,6 +250,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [isModified, setIsModified] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
+	// More-menu state (editor 3-dot button):
+	// - Desktop: anchored popover positioned relative to the trigger button rect.
+	// - Mobile: bottom sheet menu (anchor rect is ignored).
+	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
+	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
@@ -852,6 +858,24 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<Droppable droppableId={`note-editor-active-${props.noteId}`} renderClone={renderChecklistClone}>
 									{(dropProvided) => (
 										<ul className={`${styles.checklistList}${isChecklistDragging ? ` ${styles.listDragging}` : ''}`} ref={dropProvided.innerRef} {...dropProvided.droppableProps}>
+												{activeItems.length === 0 ? (
+													// Empty-state affordance:
+													// If all checklist items have been checked, the active (unchecked)
+													// list becomes empty. This ensures the editor still exposes a way to
+													// add a new row without forcing the user to uncheck an item first.
+													<li className={styles.checklistComposerRow}>
+														<div className={styles.dragHandle} aria-hidden="true" />
+														<input type="checkbox" className={styles.checklistCheckbox} checked={false} readOnly tabIndex={-1} aria-hidden="true" />
+														<button
+															type="button"
+															className={styles.checklistAddItemButton}
+															onClick={() => addChecklistItem()}
+															aria-label={t('editors.addItem')}
+														>
+															{t('editors.addItem')}
+														</button>
+													</li>
+												) : null}
 											{activeItems.map((item, index) => (
 												<Draggable key={item.id} draggableId={item.id} index={index} disableInteractiveElementBlocking>
 													{(dragProvided, snapshot) => (
@@ -986,7 +1010,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 					<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')}>
 						<div className={styles.bottomDockLeft}>
-							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+							<button
+								type="button"
+								className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`}
+								aria-label={t('editors.dockAction')}
+								onClick={(e) => {
+									// Capture the trigger button's rect so the desktop popover can anchor
+									// to it. (On mobile this is ignored since the menu is a sheet.)
+									setMoreMenuAnchorRect(e.currentTarget.getBoundingClientRect().toJSON());
+									setIsMoreMenuOpen(true);
+								}}
+							>
 								<FontAwesomeIcon icon={faEllipsisVertical} />
 							</button>
 							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
@@ -1122,6 +1156,24 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						</div>
 					</div>
 			</aside>
+		{/* Only mount the menu while open so its side-effects are scoped:
+		    - mobile history/back-button handling
+		    - mobile scroll locking + initial-touch suppression */}
+		{isMoreMenuOpen ? (
+			<NoteCardMoreMenu
+				noteType={type}
+				anchorRect={moreMenuAnchorRect}
+				onClose={() => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+				}}
+				onTrash={() => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					void props.onDelete(props.noteId);
+				}}
+			/>
+		) : null}
 		</div>
 	);
 }

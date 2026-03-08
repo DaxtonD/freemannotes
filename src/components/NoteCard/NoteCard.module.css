@@ -8,6 +8,18 @@
 	position: relative;
 }
 
+@media (pointer: coarse) {
+	/* Mobile long-press UX:
+	   When a long-press is used to open the card's more-menu, we don't want the
+	   browser to also start selecting text / showing the touch callout.
+	*/
+	.card {
+		-webkit-user-select: none;
+		user-select: none;
+		-webkit-touch-callout: none;
+	}
+}
+
 .checklistCard {
 	display: flex;
 	flex-direction: column;

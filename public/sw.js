@@ -1,4 +1,4 @@
-const CACHE_NAME = 'freemannotes-shell-v4';
+const CACHE_NAME = 'freemannotes-shell-v5';
 // Cache the canonical app shell entry only.
 // Caching '/' can get sticky across proxy setups and makes upgrades harder.
 const CORE_ASSETS = ['/index.html'];
@@ -67,6 +67,12 @@ self.addEventListener('fetch', (event) => {
 
 	// Never cache API responses or uploads. They change frequently and must stay fresh.
 	if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/uploads/')) {
+		return;
+	}
+
+	// Locale JSON files must always be fetched fresh so translation updates
+	// take effect immediately after a deploy.
+	if (url.pathname.startsWith('/locales/')) {
 		return;
 	}
 

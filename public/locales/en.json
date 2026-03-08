@@ -50,7 +50,7 @@
     "titlePlaceholder": "Title",
     "bodyPlaceholder": "Body",
     "checklistItemPlaceholder": "Checklist item",
-    "addItem": "Add Item",
+    "addItem": "Add item",
     "remove": "Remove",
     "saving": "Saving…",
     "editing": "Editing",
@@ -209,5 +209,20 @@
     "catppuccinMochaSapphire": "Catppuccin Mocha Sapphire",
     "catppuccinMochaBlue": "Catppuccin Mocha Blue",
     "catppuccinMochaLavender": "Catppuccin Mocha Lavender"
+  },
+  "noteMenu": {
+    "pinNote": "Pin note",
+    "addCollaborator": "Add collaborator",
+    "addImage": "Add image",
+    "addReminder": "Add reminder",
+    "moveToTrash": "Move to trash",
+    "addToCollection": "Add to collection",
+    "addLabel": "Add label",
+    "cardWidth": "Card width",
+    "uncheckAll": "Uncheck all",
+    "checkAll": "Check all",
+    "narrow": "Narrow",
+    "default": "Default",
+    "wide": "Wide"
   }
 }

@@ -20,6 +20,7 @@ import { byPrefixAndName } from '../../core/byPrefixAndName';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
+import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import styles from './Editors.module.css';
 
 export type TextEditorProps = {
@@ -35,6 +36,11 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const [saving, setSaving] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
+	// More-menu state (editor 3-dot button):
+	// - Desktop: anchored popover positioned using the trigger button rect.
+	// - Mobile: bottom-sheet menu (anchor rect is ignored).
+	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
+	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
@@ -204,7 +210,17 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 
 					<nav className={styles.bottomDock} aria-label={t('editors.bottomDock')}>
 						<div className={styles.bottomDockLeft}>
-							<button type="button" className={styles.bottomDockButton} aria-label={t('editors.dockAction')} disabled>
+							<button
+								type="button"
+								className={styles.bottomDockButton}
+								aria-label={t('editors.dockAction')}
+								onClick={(e) => {
+									// Capture the button's rect before opening so the desktop
+									// popover can be placed relative to this element.
+									setMoreMenuAnchorRect(e.currentTarget.getBoundingClientRect().toJSON());
+									setIsMoreMenuOpen(true);
+								}}
+							>
 								<FontAwesomeIcon icon={faEllipsisVertical} />
 							</button>
 							<button type="button" className={styles.bottomDockButton} aria-label={t('editors.dockAction')} disabled>
@@ -366,6 +382,19 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						</div>
 					</div>
 			</aside>
+		{/* Only mount the menu while open so its side-effects are scoped:
+		    - mobile history/back-button handling
+		    - mobile scroll locking + initial-touch suppression */}
+		{isMoreMenuOpen ? (
+			<NoteCardMoreMenu
+				noteType="text"
+				anchorRect={moreMenuAnchorRect}
+				onClose={() => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+				}}
+			/>
+		) : null}
 		</div>
 	);
 }
