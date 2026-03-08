@@ -365,8 +365,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		(event: React.KeyboardEvent<HTMLTextAreaElement>, rowId: string): void => {
 			if (event.key === 'Enter' && !event.shiftKey) {
 				event.preventDefault();
-				const currentIndex = normalizedItems.findIndex((row) => row.id === rowId);
-				addItem(currentIndex);
+				// Insert relative to the underlying stored order (not the filtered/derived
+				// active list) so that, when completed rows exist, pressing Enter does not
+				// accidentally insert "above" the current row and make it appear to shift.
+				const currentIndex = items.findIndex((row) => row.id === rowId);
+				addItem(currentIndex === -1 ? undefined : currentIndex);
 				return;
 			}
 
@@ -385,7 +388,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 				setFocusRowId(previousId ?? nextId);
 			}
 		},
-		[activeItems, addItem, normalizedItems, removeItem]
+		[activeItems, addItem, items, removeItem]
 	);
 
 	const onSubmit = async (event: React.FormEvent): Promise<void> => {
