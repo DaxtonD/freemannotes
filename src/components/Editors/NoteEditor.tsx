@@ -36,6 +36,7 @@ import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
+import { shareDocById } from '../../core/shareNote';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import styles from './Editors.module.css';
 
@@ -44,6 +45,8 @@ export type NoteEditorProps = {
 	doc: Y.Doc;
 	onClose: () => void;
 	onDelete: (noteId: string) => Promise<void>;
+	initialShowCompleted?: boolean;
+	onShowCompletedChange?: (next: boolean) => void;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -326,7 +329,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		},
 		[]
 	);
-	const [showCompleted, setShowCompleted] = React.useState(false);
+	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
+	React.useEffect(() => {
+		setShowCompleted(Boolean(props.initialShowCompleted));
+	}, [props.initialShowCompleted]);
 	const checklistArray = useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 	const rowInputsRef = React.useRef<Map<string, HTMLTextAreaElement | null>>(new Map());
 	const rowContainersRef = React.useRef<Map<string, HTMLLIElement | null>>(new Map());
@@ -995,7 +1001,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<button
 									type="button"
 									className={styles.completedToggle}
-									onClick={() => setShowCompleted((prev) => !prev)}
+									onClick={() =>
+										setShowCompleted((prev) => {
+											const next = !prev;
+											props.onShowCompletedChange?.(next);
+											return next;
+										})
+								}
 								>
 									{showCompleted ? '▾' : '▸'} {completedItems.length} {t('editors.completedItems')}
 								</button>
@@ -1218,6 +1230,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				onClose={() => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
+				}}
+				onShare={() => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					const title = String(props.doc.getText('title')?.toString() ?? '');
+					void shareDocById(props.noteId, { title });
 				}}
 				onTrash={() => {
 					setIsMoreMenuOpen(false);

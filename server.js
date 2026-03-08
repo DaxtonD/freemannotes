@@ -172,6 +172,14 @@ if (DATABASE_URL.length > 0) {
 
 	// ── Persistence adapter + API router (only with valid Prisma) ────────
 	if (prisma) {
+		// Guard: if Prisma Client is stale (schema changed but `prisma generate` wasn't run),
+		// model delegates will be missing and device-scoped preference persistence will fail.
+		if (!prisma.userDevicePreference) {
+			console.error('[server] Prisma Client is missing model delegate: userDevicePreference');
+			console.error('[server] This usually means the schema changed but Prisma Client was not regenerated.');
+			console.error('[server] Fix: stop the dev server, run `npm run db:generate`, then restart.');
+			throw new Error('Stale Prisma Client: missing userDevicePreference delegate');
+		}
 		// Persistence adapter is optional; auth/workspaces should still work even
 		// if persistence fails to initialize.
 		try {
