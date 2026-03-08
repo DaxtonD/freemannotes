@@ -7,7 +7,6 @@ import {
 	faBars,
 	faBell,
 	faBoxArchive,
-	faChevronRight,
 	faFileLines,
 	faFolder,
 	faGrip,
@@ -23,15 +22,19 @@ import { ChecklistEditor } from './components/Editors/ChecklistEditor';
 import { NoteEditor } from './components/Editors/NoteEditor';
 import { UserManagementModal } from './components/Admin/UserManagementModal';
 import { PreferencesModal } from './components/Preferences/PreferencesModal';
+import { AppearanceModal } from './components/Preferences/AppearanceModal';
 import { SendInviteModal } from './components/Invites/SendInviteModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid } from './components/NoteGrid/NoteGrid';
 import { type ChecklistItem } from './core/bindings';
+import { getDeviceId } from './core/deviceId';
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
 import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId } from './core/noteModel';
+import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, isLightTheme, persistThemeId, THEMES, type ThemeId } from './core/theme';
+import { fetchUserPreferences, updateUserPreferences } from './core/userDevicePreferencesApi';
 import { useConnectionStatus } from './core/useConnectionStatus';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 import { useIsMobileLandscape } from './core/useIsMobileLandscape';
@@ -42,6 +45,7 @@ type OverlaySnapshot = {
 	editorMode: EditorMode;
 	selectedNoteId: string | null;
 	isPreferencesOpen: boolean;
+	isAppearanceOpen: boolean;
 	isUserManagementOpen: boolean;
 	isSendInviteOpen: boolean;
 	isWorkspaceSwitcherOpen: boolean;
@@ -61,6 +65,7 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	editorMode: 'none',
 	selectedNoteId: null,
 	isPreferencesOpen: false,
+	isAppearanceOpen: false,
 	isUserManagementOpen: false,
 	isSendInviteOpen: false,
 	isWorkspaceSwitcherOpen: false,
@@ -235,6 +240,7 @@ export function App(): React.JSX.Element {
 	const topActionsRef = React.useRef<HTMLDivElement | null>(null);
 	const mobileSwipeZoneRef = React.useRef<HTMLDivElement | null>(null);
 	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>({
+		workspaces: false,
 		reminders: false,
 		labels: false,
 		sorting: false,
@@ -246,6 +252,7 @@ export function App(): React.JSX.Element {
 	const [editorMode, setEditorMode] = React.useState<EditorMode>('none');
 	// Phase 10 preferences shell entry point opened from top-right avatar.
 	const [isPreferencesOpen, setIsPreferencesOpen] = React.useState(false);
+	const [isAppearanceOpen, setIsAppearanceOpen] = React.useState(false);
 	const [isUserManagementOpen, setIsUserManagementOpen] = React.useState(false);
 	const [isSendInviteOpen, setIsSendInviteOpen] = React.useState(false);
 	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(false);
@@ -256,6 +263,9 @@ export function App(): React.JSX.Element {
 	const [openDoc, setOpenDoc] = React.useState<Y.Doc | null>(null);
 	const [openDocId, setOpenDocId] = React.useState<string | null>(null);
 	const [themeId, setThemeId] = React.useState<ThemeId>(() => getStoredThemeId());
+	const deviceId = React.useMemo(() => getDeviceId(), []);
+	const [checklistShowCompletedPref, setChecklistShowCompletedPref] = React.useState(false);
+	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
@@ -268,6 +278,7 @@ export function App(): React.JSX.Element {
 			editorMode,
 			selectedNoteId,
 			isPreferencesOpen,
+			isAppearanceOpen,
 			isUserManagementOpen,
 			isSendInviteOpen,
 			isWorkspaceSwitcherOpen,
@@ -278,6 +289,7 @@ export function App(): React.JSX.Element {
 		editorMode,
 		selectedNoteId,
 		isPreferencesOpen,
+		isAppearanceOpen,
 		isUserManagementOpen,
 		isSendInviteOpen,
 		isWorkspaceSwitcherOpen,
@@ -289,6 +301,7 @@ export function App(): React.JSX.Element {
 		setEditorMode(snapshot.editorMode);
 		setSelectedNoteId(snapshot.selectedNoteId);
 		setIsPreferencesOpen(snapshot.isPreferencesOpen);
+		setIsAppearanceOpen(snapshot.isAppearanceOpen);
 		setIsUserManagementOpen(snapshot.isUserManagementOpen);
 		setIsSendInviteOpen(snapshot.isSendInviteOpen);
 		setIsWorkspaceSwitcherOpen(snapshot.isWorkspaceSwitcherOpen);
@@ -331,6 +344,7 @@ export function App(): React.JSX.Element {
 			{
 				...current,
 				isPreferencesOpen: true,
+				isAppearanceOpen: false,
 				isUserManagementOpen: false,
 				isSendInviteOpen: false,
 				isWorkspaceSwitcherOpen: false,
@@ -339,6 +353,28 @@ export function App(): React.JSX.Element {
 			'push'
 		);
 	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const openAppearanceFromPreferences = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				isPreferencesOpen: false,
+				isAppearanceOpen: true,
+				isUserManagementOpen: false,
+				isSendInviteOpen: false,
+				isWorkspaceSwitcherOpen: false,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const backToPreferencesFromAppearance = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setIsAppearanceOpen(false);
+		setIsPreferencesOpen(true);
+	}, [goBackIfOverlayHistory]);
 
 	const openUserManagementFromPreferences = React.useCallback(() => {
 		const current = getOverlaySnapshot();
@@ -466,7 +502,18 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		applyTheme(themeId);
 		persistThemeId(themeId);
-	}, [themeId]);
+		if (authStatus !== 'authed') return;
+		if (!prefsHydrationAttempted) return;
+		if (authOfflineMode) return;
+		void updateUserPreferences(deviceId, { theme: themeId });
+	}, [authStatus, authOfflineMode, deviceId, prefsHydrationAttempted, themeId]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed') return;
+		if (!prefsHydrationAttempted) return;
+		if (authOfflineMode) return;
+		void updateUserPreferences(deviceId, { language: locale });
+	}, [authStatus, authOfflineMode, deviceId, locale, prefsHydrationAttempted]);
 
 	const refreshActiveWorkspace = React.useCallback(async () => {
 		if (!authWorkspaceId) {
@@ -501,7 +548,9 @@ export function App(): React.JSX.Element {
 			//   user can access their offline IndexedDB notes.
 			const allowOfflineRestore = opts?.allowOfflineRestore ?? true;
 			try {
-				const res = await fetch('/api/auth/me', { credentials: 'include' });
+				const res = await fetch(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
+					credentials: 'include',
+				});
 				const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 				if (!res.ok || !contentType.includes('application/json')) {
 					setAuthStatus('unauth');
@@ -565,7 +614,7 @@ export function App(): React.JSX.Element {
 				manager.setWebsocketEnabled(false);
 			}
 		},
-		[manager]
+		[deviceId, manager]
 	);
 
 	React.useEffect(() => {
@@ -578,6 +627,28 @@ export function App(): React.JSX.Element {
 			cancelled = true;
 		};
 	}, [probeSession]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed') {
+			setPrefsHydrationAttempted(false);
+			return;
+		}
+		let cancelled = false;
+		(async () => {
+			const pref = await fetchUserPreferences(deviceId);
+			if (cancelled) return;
+			if (pref) {
+				if (pref.theme) setThemeId(pref.theme as ThemeId);
+				if (pref.language) setLocale(pref.language as LocaleCode);
+				setChecklistShowCompletedPref(Boolean(pref.checklistShowCompleted));
+				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
+			}
+			setPrefsHydrationAttempted(true);
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [authStatus, deviceId, setLocale]);
 
 	React.useEffect(() => {
 		// If we booted offline (restored from cache), re-probe once connectivity returns.
@@ -609,6 +680,7 @@ export function App(): React.JSX.Element {
 		manager.setWebsocketEnabled(false);
 		setIsUserManagementOpen(false);
 		setIsPreferencesOpen(false);
+		setIsAppearanceOpen(false);
 		setIsSendInviteOpen(false);
 		setIsWorkspaceSwitcherOpen(false);
 	}, [manager]);
@@ -624,6 +696,80 @@ export function App(): React.JSX.Element {
 			void refreshActiveWorkspace();
 		},
 		[manager, refreshActiveWorkspace]
+	);
+
+	type SidebarWorkspaceListItem = {
+		id: string;
+		name: string;
+	};
+	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>([]);
+	const [sidebarWorkspacesBusy, setSidebarWorkspacesBusy] = React.useState(false);
+	const [sidebarWorkspacesError, setSidebarWorkspacesError] = React.useState<string | null>(null);
+
+	const loadSidebarWorkspaces = React.useCallback(async (): Promise<void> => {
+		if (sidebarWorkspacesBusy) return;
+		if (authStatus !== 'authed') return;
+		if (authOfflineMode) return;
+		setSidebarWorkspacesBusy(true);
+		setSidebarWorkspacesError(null);
+		try {
+			const res = await fetch(`/api/workspaces?deviceId=${encodeURIComponent(deviceId)}`,
+				{ credentials: 'include' }
+			);
+			const body = await res.json().catch(() => null);
+			if (!res.ok) {
+				const msg = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
+				throw new Error(msg);
+			}
+			const next = body && Array.isArray(body.workspaces) ? body.workspaces : [];
+			setSidebarWorkspaces(
+				next
+					.map((ws: any) => ({
+						id: typeof ws.id === 'string' ? ws.id : '',
+						name: typeof ws.name === 'string' ? ws.name : '',
+					}))
+					.filter((ws: SidebarWorkspaceListItem) => Boolean(ws.id))
+			);
+		} catch (err) {
+			setSidebarWorkspacesError(err instanceof Error ? err.message : t('workspace.loadFailed'));
+		} finally {
+			setSidebarWorkspacesBusy(false);
+		}
+	}, [authOfflineMode, authStatus, deviceId, sidebarWorkspacesBusy, t]);
+
+	const sidebarWorkspacesSorted = React.useMemo(() => {
+		if (!authWorkspaceId) return sidebarWorkspaces;
+		const active = sidebarWorkspaces.find((ws) => ws.id === authWorkspaceId);
+		if (!active) return sidebarWorkspaces;
+		const rest = sidebarWorkspaces.filter((ws) => ws.id !== authWorkspaceId);
+		return [active, ...rest];
+	}, [authWorkspaceId, sidebarWorkspaces]);
+
+	const activateWorkspaceFromSidebar = React.useCallback(
+		async (workspaceId: string): Promise<void> => {
+			if (authStatus !== 'authed') return;
+			if (authOfflineMode) return;
+			if (workspaceId === authWorkspaceId) return;
+			try {
+				const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`, {
+					method: 'POST',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ deviceId }),
+				});
+				const body = await res.json().catch(() => null);
+				if (!res.ok) {
+					const msg = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
+					throw new Error(msg);
+				}
+				handleWorkspaceActivated(workspaceId);
+				setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+				if (isMobileViewport) closeMobileSidebar();
+			} catch {
+				// Keep errors out of the sidebar nav — Workspace modal provides richer error UX.
+			}
+		},
+		[authOfflineMode, authStatus, authWorkspaceId, closeMobileSidebar, deviceId, handleWorkspaceActivated, isMobileViewport]
 	);
 
 	React.useEffect(() => {
@@ -706,7 +852,9 @@ export function App(): React.JSX.Element {
 			// Re-fetch /me so we always sync to the server's truth. This keeps behavior
 			// consistent if server-side bootstrap logic updates role/workspace.
 			try {
-				const meRes = await fetch('/api/auth/me', { credentials: 'include' });
+				const meRes = await fetch(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
+					credentials: 'include',
+				});
 				const contentType = String(meRes.headers.get('content-type') || '').toLowerCase();
 				if (meRes.ok && contentType.includes('application/json')) {
 					const meBody = await meRes.json().catch(() => null);
@@ -907,7 +1055,7 @@ export function App(): React.JSX.Element {
 
 	const sidebarEntries: SidebarEntry[] = React.useMemo(
 		() => [
-			{ id: 'workspaces', label: t('workspace.title'), icon: faGrip, kind: 'link' },
+			{ id: 'workspaces', label: t('workspace.sidebarTitle'), icon: faGrip, kind: 'group' },
 			{ id: 'notes', label: t('app.sidebarNotes'), icon: faFileLines, kind: 'link' },
 			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
 			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
@@ -1536,50 +1684,95 @@ export function App(): React.JSX.Element {
 						{sidebarEntries.map((entry) => {
 							const isGroup = entry.kind === 'group';
 							const isOpen = Boolean(sidebarGroupsOpen[entry.id]);
-							const label =
-								entry.id === 'workspaces'
-									? `${t('workspace.title')}: ${activeWorkspaceName || t('workspace.unnamed')}`
-									: entry.label;
+							const label = entry.id === 'workspaces'
+								? `${t('workspace.sidebarTitle')}: ${activeWorkspaceName || t('workspace.unnamed')}`
+								: entry.label;
 							return (
-								<button
-									key={entry.id}
-									type="button"
-									className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${entry.id === 'trash' && sidebarView === 'trash' ? ' is-active' : ''}${entry.id === 'notes' && sidebarView === 'notes' ? ' is-active' : ''}`}
-									onClick={() => {
-										if (entry.id === 'workspaces') {
-											openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
-											return;
-										}
-										if (entry.id === 'trash') {
-											setSidebarView('trash');
+								<div key={entry.id}>
+									<button
+										type="button"
+										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${entry.id === 'trash' && sidebarView === 'trash' ? ' is-active' : ''}${entry.id === 'notes' && sidebarView === 'notes' ? ' is-active' : ''}`}
+										onClick={() => {
+											if (entry.id === 'workspaces') {
+												if (sidebarIsCollapsed) {
+													openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
+													return;
+												}
+												setSidebarGroupsOpen((prev) => {
+													const nextOpen = !Boolean(prev.workspaces);
+													if (nextOpen && sidebarWorkspaces.length === 0) {
+														void loadSidebarWorkspaces();
+													}
+													return { ...prev, workspaces: nextOpen };
+												});
+												return;
+											}
+											if (entry.id === 'trash') {
+												setSidebarView('trash');
+												if (isMobileViewport) closeMobileSidebar();
+												return;
+											}
+											if (entry.id === 'notes') {
+												setSidebarView('notes');
+												if (isMobileViewport) closeMobileSidebar();
+												return;
+											}
+											if (isGroup) {
+												setSidebarGroupsOpen((prev) => ({ ...prev, [entry.id]: !Boolean(prev[entry.id]) }));
+											}
 											if (isMobileViewport) closeMobileSidebar();
-											return;
-										}
-										if (entry.id === 'notes') {
-											setSidebarView('notes');
-											if (isMobileViewport) closeMobileSidebar();
-											return;
-										}
-										if (isGroup) {
-											setSidebarGroupsOpen((prev) => ({ ...prev, [entry.id]: !Boolean(prev[entry.id]) }));
-										}
-										if (isMobileViewport) closeMobileSidebar();
-									}}
-									title={sidebarIsCollapsed ? label : undefined}
-									aria-label={label}
-								>
-									<span className="sidebar-disclosure" aria-hidden="true">
-										{isGroup ? (
-											<span className={`sidebar-disclosure-icon${isOpen ? ' is-open' : ''}`}>
-												<FontAwesomeIcon icon={faChevronRight} />
-											</span>
-										) : null}
-									</span>
-									<span className="sidebar-icon" aria-hidden="true">
-										<FontAwesomeIcon icon={entry.icon as never} />
-									</span>
-									<span className="sidebar-label">{label}</span>
-								</button>
+										}}
+										title={sidebarIsCollapsed ? label : undefined}
+										aria-label={label}
+										aria-expanded={isGroup ? isOpen : undefined}
+									>
+										<span className="sidebar-disclosure" aria-hidden="true">
+											{isGroup ? <span className={`sidebar-disclosure-icon${isOpen ? ' is-open' : ''}`} /> : null}
+										</span>
+										<span className="sidebar-icon" aria-hidden="true">
+											<FontAwesomeIcon icon={entry.icon as never} />
+										</span>
+										<span className="sidebar-label">{label}</span>
+									</button>
+
+									{entry.id === 'workspaces' && isOpen && !sidebarIsCollapsed ? (
+										<div className="sidebar-workspace-menu" aria-label={t('workspace.listAria')}>
+											{sidebarWorkspacesBusy ? (
+												<div className="sidebar-workspace-muted">{t('common.loading')}</div>
+											) : null}
+											{sidebarWorkspacesError ? (
+												<div className="sidebar-workspace-muted">{sidebarWorkspacesError}</div>
+											) : null}
+											{sidebarWorkspacesSorted.length === 0 && !sidebarWorkspacesBusy ? (
+												<div className="sidebar-workspace-muted">{t('workspace.none')}</div>
+											) : null}
+											{sidebarWorkspacesSorted.map((ws) => {
+												const isActive = Boolean(authWorkspaceId && ws.id === authWorkspaceId);
+												return (
+													<button
+														key={ws.id}
+														type="button"
+														className={`sidebar-workspace-item${isActive ? ' is-active' : ''}`}
+														onClick={() => void activateWorkspaceFromSidebar(ws.id)}
+														title={ws.name || t('workspace.unnamed')}
+													>
+														{ws.name || t('workspace.unnamed')}
+													</button>
+												);
+											})}
+											<button
+												type="button"
+												className="sidebar-workspace-manage"
+												onClick={() => {
+													setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+													openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
+												}}
+											>
+												{t('workspace.manage')}
+											</button>
+										</div>
+									) : null}
+								</div>
 							);
 						})}
 					</nav>
@@ -1603,7 +1796,19 @@ export function App(): React.JSX.Element {
 						{/* Branch: text editor open. */}
 						{editorMode === 'text' ? <TextEditor onSave={onSaveText} onCancel={closeCreateEditor} /> : null}
 						{/* Branch: checklist editor open. */}
-						{editorMode === 'checklist' ? <ChecklistEditor onSave={onSaveChecklist} onCancel={closeCreateEditor} /> : null}
+						{editorMode === 'checklist' ? (
+							<ChecklistEditor
+								onSave={onSaveChecklist}
+								onCancel={closeCreateEditor}
+								initialShowCompleted={checklistShowCompletedPref}
+								onShowCompletedChange={(next) => {
+									setChecklistShowCompletedPref(next);
+									if (authStatus !== 'authed') return;
+									if (authOfflineMode) return;
+									void updateUserPreferences(deviceId, { checklistShowCompleted: next });
+								}}
+							/>
+						) : null}
 					</section>
 
 					<NoteGrid
@@ -1678,6 +1883,13 @@ export function App(): React.JSX.Element {
 					doc={openDoc}
 					onClose={closeNoteEditor}
 					onDelete={onDeleteSelectedNote}
+					initialShowCompleted={checklistShowCompletedPref}
+					onShowCompletedChange={(next) => {
+						setChecklistShowCompletedPref(next);
+						if (authStatus !== 'authed') return;
+						if (authOfflineMode) return;
+						void updateUserPreferences(deviceId, { checklistShowCompleted: next });
+					}}
 				/>
 			) : null}
 
@@ -1688,15 +1900,26 @@ export function App(): React.JSX.Element {
 					setIsPreferencesOpen(false);
 				}}
 				t={t}
-				themeId={themeId}
-				onThemeChange={setThemeId}
-				language={locale}
-				onLanguageChange={(next) => setLocale(next as LocaleCode)}
-				themeOptions={themeOptions}
-				languageOptions={languageOptions}
+				onOpenAppearance={openAppearanceFromPreferences}
 				onUserManagement={openUserManagementFromPreferences}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}
+			/>
+
+			<AppearanceModal
+				isOpen={isAppearanceOpen}
+				onClose={() => {
+					if (goBackIfOverlayHistory()) return;
+					setIsAppearanceOpen(false);
+				}}
+				onBack={backToPreferencesFromAppearance}
+				t={t}
+				themeId={themeId}
+				onThemeChange={setThemeId}
+				themeOptions={themeOptions}
+				language={locale}
+				onLanguageChange={(next) => setLocale(next as LocaleCode)}
+				languageOptions={languageOptions}
 			/>
 
 			<SendInviteModal

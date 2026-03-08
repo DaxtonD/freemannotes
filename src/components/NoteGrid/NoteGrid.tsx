@@ -8,6 +8,7 @@ import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
 import { readTrashState } from '../../core/noteModel';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
+import { shareDocById } from '../../core/shareNote';
 import { measureDocumentRects } from './flip';
 import {
 	arraysEqual,
@@ -143,6 +144,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
+
+	const shareNoteById = React.useCallback(async (noteId: string): Promise<void> => {
+		const normalizedId = normalizeId(noteId);
+		if (!normalizedId) return;
+		const doc = docsByIdRef.current[normalizedId];
+		const title = doc ? String(doc.getText('title').toString() || '') : '';
+		await shareDocById(normalizedId, { title });
+	}, []);
 
 	// Suppress framer-motion layout animations until the parent explicitly
 	// enables them (after the splash overlay is fully dismissed). A 2-frame
@@ -744,6 +753,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					}
 					anchorRect={moreMenuAnchorRect}
 					onClose={() => { setMoreMenuNoteId(null); setMoreMenuAnchorRect(null); }}
+					onShare={() => {
+						const noteId = moreMenuNoteId;
+						setMoreMenuNoteId(null);
+						setMoreMenuAnchorRect(null);
+						void shareNoteById(noteId);
+					}}
 					onTrash={() => {
 						const noteId = moreMenuNoteId;
 						setMoreMenuNoteId(null);

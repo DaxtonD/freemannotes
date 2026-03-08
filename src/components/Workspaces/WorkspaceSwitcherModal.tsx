@@ -1,4 +1,5 @@
 import React from 'react';
+import { getDeviceId } from '../../core/deviceId';
 import styles from './WorkspaceSwitcherModal.module.css';
 
 export type WorkspaceListItem = {
@@ -33,6 +34,7 @@ async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): P
 }
 
 export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
+	const deviceId = React.useMemo(() => getDeviceId(), []);
 	const [busy, setBusy] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	const [activeWorkspaceId, setActiveWorkspaceId] = React.useState<string | null>(null);
@@ -45,7 +47,9 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 		setBusy(true);
 		setError(null);
 		try {
-			const data = await fetchJson<ListResponse>('/api/workspaces');
+			const data = await fetchJson<ListResponse>(
+				`/api/workspaces?deviceId=${encodeURIComponent(deviceId)}`
+			);
 			setActiveWorkspaceId(typeof data.activeWorkspaceId === 'string' ? data.activeWorkspaceId : null);
 			setWorkspaces(Array.isArray(data.workspaces) ? data.workspaces : []);
 		} catch (err) {
@@ -53,7 +57,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 		} finally {
 			setBusy(false);
 		}
-	}, [props]);
+	}, [deviceId, props]);
 
 	React.useEffect(() => {
 		if (!props.isOpen) return;
@@ -74,9 +78,14 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 			setBusy(true);
 			setError(null);
 			try {
-				await fetchJson<{ activeWorkspaceId: string }>(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`, {
-					method: 'POST',
-				});
+				await fetchJson<{ activeWorkspaceId: string }>(
+					`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`,
+					{
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ deviceId }),
+					}
+				);
 				props.onWorkspaceActivated(workspaceId);
 				props.onClose();
 			} catch (err) {
@@ -85,7 +94,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 				setBusy(false);
 			}
 		},
-		[busy, props]
+		[busy, deviceId, props]
 	);
 
 	const createWorkspace = React.useCallback(async () => {
@@ -141,6 +150,14 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 		[activeWorkspaceId, busy, load, props, renameValue]
 	);
 
+	const sortedWorkspaces = React.useMemo(() => {
+		if (!activeWorkspaceId) return workspaces;
+		const active = workspaces.find((ws) => ws.id === activeWorkspaceId);
+		if (!active) return workspaces;
+		const rest = workspaces.filter((ws) => ws.id !== activeWorkspaceId);
+		return [active, ...rest];
+	}, [activeWorkspaceId, workspaces]);
+
 	if (!props.isOpen) return null;
 
 	return (
@@ -163,16 +180,15 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 							</div>
 						</div>
 					) : (
-						workspaces.map((ws) => {
+						sortedWorkspaces.map((ws) => {
 							const isActive = Boolean(activeWorkspaceId && ws.id === activeWorkspaceId);
 							const canRename = ws.role === 'OWNER' || ws.role === 'ADMIN';
 							const isRenaming = renameId === ws.id;
 							return (
 								<div key={ws.id} className={styles.row}>
 									<div className={styles.meta}>
-										<div className={styles.name} title={ws.name}>
+										<div className={`${styles.name}${isActive ? ` ${styles.activeName}` : ''}`} title={ws.name}>
 											{ws.name}
-											{isActive ? ` (${props.t('workspace.active')})` : ''}
 										</div>
 										<div className={styles.sub}>
 											{props.t('workspace.role')}: {ws.role}
@@ -205,9 +221,11 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 											</>
 										) : (
 											<>
-												<button type="button" disabled={busy || isActive} onClick={() => void activateWorkspace(ws.id)}>
-													{props.t('workspace.activate')}
-												</button>
+												{!isActive ? (
+													<button type="button" disabled={busy} onClick={() => void activateWorkspace(ws.id)}>
+														{props.t('workspace.activate')}
+													</button>
+												) : null}
 												{canRename ? (
 													<button
 														type="button"

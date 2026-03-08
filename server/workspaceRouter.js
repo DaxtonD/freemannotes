@@ -60,6 +60,16 @@ function readJsonBody(req) {
 }
 
 function createWorkspaceRouter({ prisma }) {
+	const LEGACY_DEVICE_ID = 'legacy';
+
+	function normalizeDeviceId(raw) {
+		if (typeof raw !== 'string') return LEGACY_DEVICE_ID;
+		const id = raw.trim();
+		if (!id) return LEGACY_DEVICE_ID;
+		if (id.length > 120) return LEGACY_DEVICE_ID;
+		return id;
+	}
+
 	function requireAuth(req, res) {
 		if (!req.auth || !req.auth.userId) {
 			jsonResponse(res, 401, { error: 'Not authenticated' });
@@ -82,6 +92,20 @@ function createWorkspaceRouter({ prisma }) {
 					const session = requireAuth(req, res);
 					if (!session) return;
 
+					const deviceId = normalizeDeviceId(url.searchParams.get('deviceId'));
+					let activeWorkspaceId = session.workspaceId || null;
+					try {
+						const pref = await prisma.userDevicePreference.findUnique({
+							where: { userId_deviceId: { userId: session.userId, deviceId } },
+							select: { activeWorkspaceId: true },
+						});
+						if (pref && pref.activeWorkspaceId) {
+							activeWorkspaceId = String(pref.activeWorkspaceId);
+						}
+					} catch {
+						// Ignore preference lookup failure; fallback to session cookie.
+					}
+
 					const memberships = await prisma.workspaceMember.findMany({
 						where: { userId: session.userId },
 						select: { role: true, workspace: { select: { id: true, name: true, createdAt: true } } },
@@ -89,7 +113,7 @@ function createWorkspaceRouter({ prisma }) {
 					});
 
 					jsonResponse(res, 200, {
-						activeWorkspaceId: session.workspaceId || null,
+						activeWorkspaceId,
 						workspaces: memberships.map((m) => ({
 							id: m.workspace.id,
 							name: m.workspace.name,
@@ -209,6 +233,24 @@ function createWorkspaceRouter({ prisma }) {
 					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
+					}
+
+					const body = await readJsonBody(req);
+					const deviceId = normalizeDeviceId(body && typeof body === 'object' ? body.deviceId : null);
+					try {
+						await prisma.userDevicePreference.upsert({
+							where: { userId_deviceId: { userId: session.userId, deviceId } },
+							update: { activeWorkspaceId: workspaceId },
+							create: {
+								userId: session.userId,
+								deviceId,
+								activeWorkspaceId: workspaceId,
+								checklistShowCompleted: false,
+								noteCardCompletedExpandedByNoteId: {},
+							},
+						});
+					} catch (err) {
+						console.warn('[workspace] activate: could not persist device pref:', err.message);
 					}
 
 					const secure = isSecureRequest(req);

@@ -36,6 +36,8 @@ import styles from './Editors.module.css';
 export type ChecklistEditorProps = {
 	onSave: (args: { title: string; items: ChecklistItem[] }) => void | Promise<void>;
 	onCancel: () => void;
+	initialShowCompleted?: boolean;
+	onShowCompletedChange?: (next: boolean) => void;
 };
 
 type DraftChecklistItem = ChecklistItem;
@@ -74,7 +76,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		{ id: makeId(), text: '', completed: false, parentId: null },
 	]);
 	const [saving, setSaving] = React.useState(false);
-	const [showCompleted, setShowCompleted] = React.useState(false);
+	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
 	// More-menu state (editor 3-dot button):
@@ -87,6 +89,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
 	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
+	React.useEffect(() => {
+		setShowCompleted(Boolean(props.initialShowCompleted));
+	}, [props.initialShowCompleted]);
 	React.useEffect(() => {
 		isMobileLandscapeRef.current = isMobileLandscape;
 		// Landscape branch: keep media dock closed and prevent opening gestures.
@@ -592,7 +597,13 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						<button
 							type="button"
 							className={styles.completedToggle}
-							onClick={() => setShowCompleted((prev) => !prev)}
+							onClick={() =>
+								setShowCompleted((prev) => {
+									const next = !prev;
+									props.onShowCompletedChange?.(next);
+									return next;
+								})
+							}
 						>
 							{showCompleted ? '▾' : '▸'} {completedItems.length} {t('editors.completedItems')}
 						</button>

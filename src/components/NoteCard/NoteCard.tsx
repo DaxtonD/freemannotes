@@ -2,10 +2,14 @@ import React from 'react';
 import * as Y from 'yjs';
 import type { ChecklistItem } from '../../core/bindings';
 import { normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
+import { getDeviceId } from '../../core/deviceId';
 import { useI18n } from '../../core/i18n';
+import {
+	getNoteCardCompletedExpanded,
+	setNoteCardCompletedExpanded,
+} from '../../core/noteCardCompletedExpansion';
+import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import styles from './NoteCard.module.css';
-
-const completedExpandedByNoteId = new Map<string, boolean>();
 
 export type NoteCardProps = {
 	noteId: string;
@@ -181,12 +185,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 	const checklistItems = useChecklistItems(checklistArray);
 	const normalizedItems = React.useMemo(() => normalizeChecklistHierarchy(checklistItems), [checklistItems]);
-	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => completedExpandedByNoteId.get(props.noteId) ?? false);
+	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const cardRef = React.useRef<HTMLElement | null>(null);
 
 	React.useEffect(() => {
-		setShowCompleted(completedExpandedByNoteId.get(props.noteId) ?? false);
+		setShowCompleted(getNoteCardCompletedExpanded(props.noteId));
 	}, [props.noteId]);
 	const activeChecklistItems = React.useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedChecklistItems = React.useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
@@ -238,7 +242,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const toggleCompletedSection = React.useCallback((): void => {
 		setShowCompleted((prev) => {
 			const next = !prev;
-			completedExpandedByNoteId.set(props.noteId, next);
+			setNoteCardCompletedExpanded(props.noteId, next);
+			void updateUserPreferences(getDeviceId(), {
+				noteCardCompletedExpandedPatch: { noteId: props.noteId, expanded: next },
+			});
 			return next;
 		});
 	}, [props.noteId]);

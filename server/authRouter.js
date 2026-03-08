@@ -90,6 +90,14 @@ function isValidEmail(email) {
 }
 
 function createApiAuthRouter({ prisma }) {
+	const LEGACY_DEVICE_ID = 'legacy';
+	function normalizeDeviceId(raw) {
+		if (typeof raw !== 'string') return LEGACY_DEVICE_ID;
+		const id = raw.trim();
+		if (!id) return LEGACY_DEVICE_ID;
+		if (id.length > 120) return LEGACY_DEVICE_ID;
+		return id;
+	}
 	/**
 	 * @param {import('http').IncomingMessage} req
 	 * @param {import('http').ServerResponse} res
@@ -321,6 +329,9 @@ function createApiAuthRouter({ prisma }) {
 						return;
 					}
 
+					const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+					const deviceId = normalizeDeviceId(url.searchParams.get('deviceId'));
+
 					let user = await prisma.user.findUnique({
 						where: { id: session.userId },
 						select: { id: true, email: true, name: true, role: true, disabled: true, profileImage: true, lastLogin: true, createdAt: true },
@@ -344,12 +355,49 @@ function createApiAuthRouter({ prisma }) {
 
 					// If the DB role differs from the role in the session cookie, refresh the cookie.
 					// This keeps long-lived sessions consistent after admin promotion/demotion.
-					if (String(session.role || '').toUpperCase() !== String(user.role || '').toUpperCase()) {
+					let effectiveWorkspaceId = session.workspaceId || null;
+					if (deviceId) {
+						// Ensure a device preference row exists; if missing, seed it with current session workspace.
+						try {
+							await prisma.userDevicePreference.upsert({
+								where: { userId_deviceId: { userId: user.id, deviceId } },
+								update: {},
+								create: {
+									userId: user.id,
+									deviceId,
+									activeWorkspaceId: effectiveWorkspaceId,
+									checklistShowCompleted: false,
+									noteCardCompletedExpandedByNoteId: {},
+								},
+							});
+							const pref = await prisma.userDevicePreference.findUnique({
+								where: { userId_deviceId: { userId: user.id, deviceId } },
+								select: { activeWorkspaceId: true },
+							});
+							if (pref && pref.activeWorkspaceId) {
+								// Validate membership before trusting the preference.
+								const member = await prisma.workspaceMember.findUnique({
+									where: { userId_workspaceId: { userId: user.id, workspaceId: pref.activeWorkspaceId } },
+									select: { id: true },
+								});
+								if (member) {
+									effectiveWorkspaceId = String(pref.activeWorkspaceId);
+								}
+							}
+						} catch (err) {
+							console.warn('[auth] me: device preference lookup failed:', err.message);
+						}
+					}
+
+					const roleChanged =
+						String(session.role || '').toUpperCase() !== String(user.role || '').toUpperCase();
+					const workspaceChanged = String(session.workspaceId || '') !== String(effectiveWorkspaceId || '');
+					if (roleChanged || workspaceChanged) {
 						const secure = isSecureRequest(req);
 						const sessionJwt = signSession({
 							userId: user.id,
 							role: user.role,
-							workspaceId: session.workspaceId,
+							workspaceId: effectiveWorkspaceId || undefined,
 						});
 						appendSetCookie(res, makeSessionCookie(sessionJwt, { secure }));
 					}
@@ -364,7 +412,7 @@ function createApiAuthRouter({ prisma }) {
 							lastLogin: user.lastLogin ? user.lastLogin.toISOString() : null,
 							createdAt: user.createdAt.toISOString(),
 						},
-						workspaceId: session.workspaceId || null,
+						workspaceId: effectiveWorkspaceId || null,
 					});
 				} catch (err) {
 					console.error('[auth] me error:', err);
