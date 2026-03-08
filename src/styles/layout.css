@@ -161,6 +161,24 @@
 
 /* ── Auth gate ───────────────────────────────────────────────────────── */
 
+/* ── Brief dialog (transient notice) ─────────────────────────────────── */
+
+.brief-dialog {
+	position: fixed;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	z-index: 10000;
+	padding: 10px 14px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-surface);
+	color: var(--color-text);
+	font-size: var(--font-size-sm);
+	max-width: min(560px, calc(100vw - 2 * var(--space-4)));
+	text-align: center;
+}
+
 .auth-shell {
 	min-height: 100dvh;
 	display: flex;

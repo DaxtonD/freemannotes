@@ -706,6 +706,55 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		[activeItems, addChecklistItem, items, removeChecklistItem]
 	);
 
+	const pruneEmptyChecklistRows = React.useCallback((): void => {
+		if (type !== 'checklist') return;
+		if (!checklistArray) return;
+
+		// Remove any rows whose text is blank/whitespace.
+		// This runs on close so partially-created rows (e.g. user pressed Enter and
+		// never typed into the new row) don't get persisted as empty items.
+		const arr = checklistArray.toArray();
+		const removedIds = new Set<string>();
+		for (const m of arr) {
+			const id = String(m.get('id') ?? '').trim();
+			if (!id) continue;
+			const text = String(m.get('text') ?? '');
+			if (text.trim().length === 0) removedIds.add(id);
+		}
+		if (removedIds.size === 0) return;
+
+		const doc = (checklistArray as any).doc as Y.Doc | null | undefined;
+		const apply = (): void => {
+			// Delete from end to start so indices remain stable.
+			for (let i = checklistArray.length - 1; i >= 0; i--) {
+				const m = checklistArray.get(i);
+				if (!m) continue;
+				const id = String(m.get('id') ?? '').trim();
+				if (id && removedIds.has(id)) {
+					checklistArray.delete(i, 1);
+				}
+			}
+
+			// If any remaining row referenced a deleted parent, clear parentId so the
+			// hierarchy stays valid when re-opened.
+			for (let i = 0; i < checklistArray.length; i++) {
+				const m = checklistArray.get(i);
+				if (!m) continue;
+				const parentId = typeof m.get('parentId') === 'string' ? String(m.get('parentId')).trim() : '';
+				if (parentId && removedIds.has(parentId)) {
+					m.set('parentId', null);
+				}
+			}
+		};
+		if (doc) doc.transact(apply);
+		else apply();
+	}, [checklistArray, type]);
+
+	const handleClose = React.useCallback((): void => {
+		pruneEmptyChecklistRows();
+		props.onClose();
+	}, [pruneEmptyChecklistRows, props]);
+
 	const renderChecklistClone = React.useCallback(
 		(
 			dragProvided: import('@hello-pangea/dnd').DraggableProvided,
@@ -742,7 +791,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 
 	return (
-		<div className={styles.fullscreenOverlay} role="presentation" onClick={mediaDockOpen ? undefined : props.onClose}>
+		<div className={styles.fullscreenOverlay} role="presentation" onClick={mediaDockOpen ? undefined : handleClose}>
 			<section
 				aria-label={`Editor ${props.noteId}`}
 				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}`}
@@ -750,7 +799,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			>
 				{type === 'checklist' ? (
 					<header className={styles.editorTopBar}>
-						<button type="button" className={styles.closeIconButton} onClick={props.onClose} aria-label={t('common.close')}>
+						<button type="button" className={styles.closeIconButton} onClick={handleClose} aria-label={t('common.close')}>
 							✕
 						</button>
 					</header>
@@ -1050,7 +1099,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								{t('editors.mediaTabMedia')}
 							</button>
 						</div>
-						<button type="button" className={styles.bottomDockClose} onClick={props.onClose} aria-label={t('common.close')} title={t('common.close')}>
+						<button type="button" className={styles.bottomDockClose} onClick={handleClose} aria-label={t('common.close')} title={t('common.close')}>
 							<FontAwesomeIcon icon={isModified ? byPrefixAndName.fas.check : byPrefixAndName.far.xmark} />
 						</button>
 					</nav>
