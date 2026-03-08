@@ -179,6 +179,29 @@ export function App(): React.JSX.Element {
 	const [authUserId, setAuthUserId] = React.useState<string | null>(null);
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(null);
 	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(null);
+	// Brief dialog messages are used for small "discard" notices (e.g. preventing
+	// empty notes from being saved). We avoid a blocking `alert()` and instead show
+	// a transient on-screen message.
+	const [briefDialogMessage, setBriefDialogMessage] = React.useState<string | null>(null);
+	const briefDialogTimeoutRef = React.useRef<number | null>(null);
+	const showBriefDialog = React.useCallback((message: string): void => {
+		setBriefDialogMessage(message);
+		if (briefDialogTimeoutRef.current !== null) {
+			window.clearTimeout(briefDialogTimeoutRef.current);
+		}
+		briefDialogTimeoutRef.current = window.setTimeout(() => {
+			briefDialogTimeoutRef.current = null;
+			setBriefDialogMessage(null);
+		}, 1500);
+	}, []);
+	React.useEffect(() => {
+		return () => {
+			if (briefDialogTimeoutRef.current !== null) {
+				window.clearTimeout(briefDialogTimeoutRef.current);
+				briefDialogTimeoutRef.current = null;
+			}
+		};
+	}, []);
 	// Splash overlay:
 	// - During auth "loading": show a full-page splash immediately.
 	// - After auth "authed": keep an overlay until NoteGrid signals its initial
@@ -1241,6 +1264,18 @@ export function App(): React.JSX.Element {
 
 	const onSaveText = React.useCallback(
 		async (args: { title: string; body: string }) => {
+			// Empty note guard:
+			// It's possible to create a new note and hit save without typing anything.
+			// In that case we do NOT create a note ID, do NOT create a Yjs doc, and do
+			// NOT add anything to the registry — the note is discarded entirely.
+			const titleTrimmed = args.title.trim();
+			const bodyTrimmed = args.body.trim();
+			if (titleTrimmed.length === 0 && bodyTrimmed.length === 0) {
+				showBriefDialog('empty note discarded');
+				closeCreateEditor();
+				return;
+			}
+
 			// All note creation goes through the canonical noteModel factory functions.
 			const id = makeNoteId('text-note');
 			const doc = await manager.getDocWithSync(id);
@@ -1250,21 +1285,35 @@ export function App(): React.JSX.Element {
 			// We intentionally do NOT auto-open the saved note editor here.
 			closeCreateEditor();
 		},
-		[closeCreateEditor, manager]
+		[closeCreateEditor, manager, showBriefDialog]
 	);
 
 	const onSaveChecklist = React.useCallback(
 		async (args: { title: string; items: ChecklistItem[] }) => {
+			// Checklist save cleanup:
+			// - Remove blank rows before persisting (both active + completed).
+			// - If the checklist is truly empty (no title AND no row text), discard it
+			//   without creating a Yjs doc or registry entry.
+			const cleanedItems = args.items
+				.map((item) => ({ ...item, text: String(item.text ?? '') }))
+				.filter((item) => item.text.trim().length > 0);
+			const titleTrimmed = args.title.trim();
+			if (titleTrimmed.length === 0 && cleanedItems.length === 0) {
+				showBriefDialog('empty checklist discarded');
+				closeCreateEditor();
+				return;
+			}
+
 			// All note creation goes through the canonical noteModel factory functions.
 			const id = makeNoteId('checklist-note');
 			const doc = await manager.getDocWithSync(id);
-			initChecklistNoteDoc(doc, args.title, args.items);
+			initChecklistNoteDoc(doc, args.title, cleanedItems);
 			await manager.createNote(id, args.title);
 			// Branch: after create/save, close the new-checklist editor and return to grid.
 			// We intentionally do NOT auto-open the saved note editor here.
 			closeCreateEditor();
 		},
-		[closeCreateEditor, manager]
+		[closeCreateEditor, manager, showBriefDialog]
 	);
 
 	const onDeleteSelectedNote = React.useCallback(
@@ -1576,6 +1625,11 @@ export function App(): React.JSX.Element {
 					/>
 				</main>
 			</div>
+			{briefDialogMessage ? (
+				<div className="brief-dialog" role="status" aria-live="polite">
+					{briefDialogMessage}
+				</div>
+			) : null}
 
 			<div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
 				<button
