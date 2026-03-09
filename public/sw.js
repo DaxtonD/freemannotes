@@ -43,7 +43,12 @@ self.addEventListener('install', (event) => {
 			if (buildAssets.length > 0) {
 				await cache.addAll(buildAssets);
 			}
-			await self.skipWaiting();
+			// NOTE: We intentionally do NOT call self.skipWaiting() here.
+			// Immediate activation causes clients.claim() to fire which
+			// triggers a navigation reload on mobile browsers — exactly the
+			// "random splash screen" scenario we want to avoid.
+			// Instead, the new SW activates naturally when all tabs are closed
+			// and re-opened, or the app can prompt users to refresh.
 		})()
 	);
 });
@@ -53,7 +58,15 @@ self.addEventListener('activate', (event) => {
 		(async () => {
 			const names = await caches.keys();
 			await Promise.all(names.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name)));
-			await self.clients.claim();
+			// Only claim clients that don't already have a controller.
+			// This makes first-visit offline work immediately without
+			// forcing a reload on existing tabs during an SW update.
+			if (!self.clients) return;
+			const allClients = await self.clients.matchAll({ type: 'window' });
+			const hasUncontrolled = allClients.some((c) => !c.url);
+			if (allClients.length === 0 || hasUncontrolled) {
+				await self.clients.claim();
+			}
 		})()
 	);
 });

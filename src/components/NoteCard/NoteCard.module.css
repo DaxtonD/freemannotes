@@ -8,6 +8,10 @@
 	position: relative;
 }
 
+.moreMenuOpen {
+	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border) 70%);
+}
+
 @media (pointer: coarse) {
 	/* Mobile long-press UX:
 	   When a long-press is used to open the card's more-menu, we don't want the
@@ -38,6 +42,15 @@
 	border-radius: var(--radius-sm) var(--radius-sm) 0 0;
 	background: color-mix(in srgb, var(--color-surface-2) 78%, var(--color-text) 22%);
 	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, var(--color-text) 30%);
+}
+
+@media (pointer: coarse) {
+	/* On touch devices the header is a drag handle, not a scroll surface.
+	   touch-action:none lets the touch-drag polyfill (Firefox Android) receive
+	   the full touch stream without the browser claiming it for scroll/pan. */
+	.header {
+		touch-action: none;
+	}
 }
 
 .header:active {
@@ -144,6 +157,98 @@
 	padding: 0;
 	font-size: var(--font-size-xs);
 	color: var(--color-text-muted);
+}
+
+.cardFooter {
+	display: none;
+}
+
+@media (pointer: fine) {
+	.moreMenuOpen {
+		box-shadow:
+			0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent),
+			0 0 0 2px color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
+
+	.card {
+		padding-bottom: 50px;
+	}
+
+	.cardFooter {
+		display: block;
+		position: absolute;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		height: 50px;
+		z-index: 1;
+	}
+
+	.cardDock {
+		height: 100%;
+		display: flex;
+		align-items: center;
+		justify-content: flex-start;
+		border-top: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+		border-radius: 0;
+		padding: 2px 10px 0;
+		background: color-mix(in srgb, var(--color-surface-2) 90%, var(--color-surface) 10%);
+		opacity: 0;
+		transform: translateY(18px);
+		pointer-events: none;
+		transition:
+			opacity 220ms ease,
+			transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+	}
+
+	.cardFooter:hover .cardDock,
+	.cardFooter:focus-within .cardDock {
+		opacity: 1;
+		transform: translateY(0);
+		pointer-events: auto;
+	}
+
+	.cardDockLeft {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+	}
+
+	.cardDockButton {
+		border: 0;
+		background: transparent;
+		width: 36px;
+		height: 36px;
+		border-radius: var(--radius-sm);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--color-text);
+		font-size: 14px;
+		cursor: pointer;
+		transform: scale(1);
+		transition:
+			transform 180ms ease,
+			background-color 160ms ease;
+	}
+
+	.cardDockButton:hover,
+	.cardDockButton:focus-visible {
+		background: color-mix(in srgb, var(--color-surface) 35%, transparent);
+		transform: scale(1.14);
+	}
+
+	.cardDockButton:active {
+		transform: scale(0.97);
+	}
+
+	.checklistCard .body {
+		padding-bottom: 6px;
+	}
+
+	.checklistCard .completedSection {
+		padding-bottom: 6px;
+	}
 }
 
 @media (pointer: coarse) {
