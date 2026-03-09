@@ -75,8 +75,9 @@ type GridNoteCardProps = {
 	doc: Y.Doc;
 	hasPendingSync: boolean;
 	selected: boolean;
+	isMoreMenuOpen: boolean;
 	onOpen: () => void;
-	onMoreMenu: () => void;
+	onMoreMenu: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
 	layoutReady: boolean;
@@ -130,6 +131,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					noteId={props.note.id}
 					doc={props.doc}
 					hasPendingSync={props.hasPendingSync}
+					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
 					onOpen={props.onOpen}
 					onMoreMenu={props.onMoreMenu}
@@ -705,11 +707,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										doc={doc}
 										hasPendingSync={pendingSyncNoteIds.has(note.id)}
 										selected={props.selectedNoteId === note.id}
+										isMoreMenuOpen={moreMenuNoteId === note.id}
 										onOpen={() => props.onSelectNote(note.id)}
-										onMoreMenu={() => {
-
+										onMoreMenu={(anchorRect) => {
+											// Footer 3-dot triggers provide a custom anchor so desktop
+											// popovers align to the card edge instead of the trigger.
 									const cardEl = gridRef.current?.querySelector(`[data-note-id="${note.id}"]`);
-									setMoreMenuAnchorRect(cardEl ? cardEl.getBoundingClientRect().toJSON() : null);
+											setMoreMenuAnchorRect(anchorRect ?? (cardEl ? cardEl.getBoundingClientRect().toJSON() : null));
 									setMoreMenuNoteId(note.id);
 								}}
 										maxCardHeightPx={props.maxCardHeightPx}

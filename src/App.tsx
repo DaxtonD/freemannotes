@@ -73,6 +73,16 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	isFabOpen: false,
 };
 
+const CLOSED_SIDEBAR_GROUPS: Record<string, boolean> = {
+	workspaces: false,
+	reminders: false,
+	labels: false,
+	sorting: false,
+	sortingFilters: false,
+	sortingGrouping: false,
+	collections: false,
+};
+
 function isOverlayHistoryState(value: unknown): value is OverlayHistoryState {
 	if (!value || typeof value !== 'object') return false;
 	return (value as Partial<OverlayHistoryState>)[OVERLAY_HISTORY_KEY] === true;
@@ -121,6 +131,28 @@ function writeAuthCache(next: AuthCacheV1): void {
 		// ignore
 	}
 }
+
+/**
+ * Detect whether this page load is a within-session reload (F5 / pull-to-refresh)
+ * vs a fresh session (close-and-reopen, tab eviction, new tab).
+ *
+ * sessionStorage survives reloads but is cleared when the browser/tab closes,
+ * so we use it as a sentinel. Combined with navigationType === 'reload' this
+ * reliably identifies an intentional manual refresh.
+ */
+const _isWithinSessionReload: boolean = (() => {
+	try {
+		const SESSION_KEY = 'freemannotes.session.active';
+		const wasActive = sessionStorage.getItem(SESSION_KEY) === 'true';
+		sessionStorage.setItem(SESSION_KEY, 'true');
+		if (!wasActive) return false;
+		const nav = performance?.getEntriesByType?.('navigation')?.[0] as
+			PerformanceNavigationTiming | undefined;
+		return nav?.type === 'reload';
+	} catch {
+		return false;
+	}
+})();
 
 function clearAuthCache(): void {
 	if (typeof window === 'undefined') return;
@@ -174,16 +206,26 @@ export function App(): React.JSX.Element {
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
 	const { t, locale, locales, setLocale } = useI18n();
-	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>('loading');
+	// ── Optimistic auth restoration ──────────────────────────────────────
+	// If a valid auth cache exists in localStorage we optimistically treat
+	// the user as authenticated on the very first render. This lets the
+	// NoteGrid begin loading data from IndexedDB immediately, avoiding the
+	// splash screen while the background `/api/auth/me` probe completes.
+	// If the probe later fails, authStatus is reverted to 'unauth'.
+	const authCacheRef = React.useRef(readAuthCache());
+	const cachedAuth = authCacheRef.current;
+	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
+		cachedAuth ? 'authed' : 'loading'
+	);
 	const [authMode, setAuthMode] = React.useState<'login' | 'register'>('login');
 	const [authEmail, setAuthEmail] = React.useState('');
 	const [authName, setAuthName] = React.useState('');
 	const [authPassword, setAuthPassword] = React.useState('');
 	const [authError, setAuthError] = React.useState<string | null>(null);
 	const [authBusy, setAuthBusy] = React.useState(false);
-	const [authUserId, setAuthUserId] = React.useState<string | null>(null);
-	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(null);
-	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(null);
+	const [authUserId, setAuthUserId] = React.useState<string | null>(() => cachedAuth?.userId ?? null);
+	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(() => cachedAuth?.profileImage ?? null);
+	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(() => cachedAuth?.workspaceId ?? null);
 	// Brief dialog messages are used for small "discard" notices (e.g. preventing
 	// empty notes from being saved). We avoid a blocking `alert()` and instead show
 	// a transient on-screen message.
@@ -213,7 +255,10 @@ export function App(): React.JSX.Element {
 	//   data is loaded. This prevents a refresh flash where cards paint, then
 	//   immediately spring-animate from an incorrect initial layout.
 	const [splashFading, setSplashFading] = React.useState(false);
-	const [splashDismissed, setSplashDismissed] = React.useState(false);
+	// Only show the splash overlay when this is a within-session reload (F5 /
+	// pull-to-refresh). On a fresh session (close-and-reopen, tab eviction)
+	// skip the splash entirely — there is no previous layout to flash.
+	const [splashDismissed, setSplashDismissed] = React.useState(!_isWithinSessionReload);
 	const handleGridReady = React.useCallback(() => {
 		setSplashFading(true);
 		setTimeout(() => setSplashDismissed(true), 400);
@@ -239,13 +284,8 @@ export function App(): React.JSX.Element {
 	const headerRef = React.useRef<HTMLElement | null>(null);
 	const topActionsRef = React.useRef<HTMLDivElement | null>(null);
 	const mobileSwipeZoneRef = React.useRef<HTMLDivElement | null>(null);
-	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>({
-		workspaces: false,
-		reminders: false,
-		labels: false,
-		sorting: false,
-		collections: false,
-	});
+	const mobileSidebarRef = React.useRef<HTMLElement | null>(null);
+	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>(CLOSED_SIDEBAR_GROUPS);
 	// Which sidebar view is active: regular notes or the trash bin.
 	const [sidebarView, setSidebarView] = React.useState<'notes' | 'trash'>('notes');
 	// UI mode for the "new note" panel.
@@ -617,6 +657,11 @@ export function App(): React.JSX.Element {
 		[deviceId, manager]
 	);
 
+	// The workspace is now pre-seeded at DocumentManager construction time
+	// (via initialWorkspaceId in main.tsx). This avoids the race where child
+	// effects (NoteGrid) start awaiting registry data before this parent
+	// effect can call setActiveWorkspaceId. No eager effect needed here.
+
 	React.useEffect(() => {
 		let cancelled = false;
 		(async () => {
@@ -687,6 +732,11 @@ export function App(): React.JSX.Element {
 
 	const handleWorkspaceActivated = React.useCallback(
 		(workspaceId: string) => {
+			// Re-show the splash overlay while the new workspace's notes load.
+			// NoteGrid remounts (key changes) and fires onReady once loaded,
+			// which triggers handleGridReady → fade-out → dismiss.
+			setSplashFading(false);
+			setSplashDismissed(false);
 			setAuthWorkspaceId(workspaceId);
 			manager.setActiveWorkspaceId(workspaceId);
 			setSelectedNoteId(null);
@@ -1053,20 +1103,115 @@ export function App(): React.JSX.Element {
 		kind: 'link' | 'group';
 	};
 
+	type SidebarSubmenuNode = {
+		id: string;
+		label: string;
+		kind: 'item' | 'heading' | 'muted' | 'action';
+	};
+
+	type SidebarSubmenuToggle = {
+		id: string;
+		label: string;
+		items: SidebarSubmenuNode[];
+	};
+
+	// Sidebar structure is intentionally data-driven so desktop + mobile share
+	// the same ordering, labels, and nested disclosure behavior.
+
 	const sidebarEntries: SidebarEntry[] = React.useMemo(
 		() => [
-			{ id: 'workspaces', label: t('workspace.sidebarTitle'), icon: faGrip, kind: 'group' },
 			{ id: 'notes', label: t('app.sidebarNotes'), icon: faFileLines, kind: 'link' },
-			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
-			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
+			{ id: 'workspaces', label: t('workspace.sidebarTitle'), icon: faGrip, kind: 'group' },
+			{ id: 'collections', label: t('app.sidebarCollections'), icon: faFolder, kind: 'group' },
 			{ id: 'labels', label: t('app.sidebarLabels'), icon: faTag, kind: 'group' },
 			{ id: 'sorting', label: t('app.sidebarSorting'), icon: faArrowDownWideShort, kind: 'group' },
-			{ id: 'collections', label: t('app.sidebarCollections'), icon: faFolder, kind: 'group' },
+			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
+			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
 			{ id: 'archive', label: t('app.sidebarArchive'), icon: faBoxArchive, kind: 'link' },
 			{ id: 'trash', label: t('app.sidebarTrash'), icon: faTrash, kind: 'link' },
 		],
 		[t]
 	);
+
+	const sidebarGroupContent = React.useMemo<Record<string, SidebarSubmenuNode[]>>(
+		() => ({
+			reminders: [
+				{ id: 'all', label: t('app.sidebarAll'), kind: 'item' },
+				{ id: 'today', label: t('app.sidebarToday'), kind: 'item' },
+				{ id: 'this-week', label: t('app.sidebarThisWeek'), kind: 'item' },
+				{ id: 'next-week', label: t('app.sidebarNextWeek'), kind: 'item' },
+				{ id: 'next-month', label: t('app.sidebarNextMonth'), kind: 'item' },
+			],
+			labels: [
+				{ id: 'no-labels', label: t('app.sidebarNoLabels'), kind: 'muted' },
+			],
+			collections: [
+				{ id: 'manage-collections', label: t('app.sidebarManageCollections'), kind: 'action' },
+			],
+		}),
+		[t]
+	);
+
+	const sortingPrimaryItems = React.useMemo<SidebarSubmenuNode[]>(
+		() => [
+			{ id: 'date-created', label: t('app.sidebarDateCreated'), kind: 'item' },
+			{ id: 'date-updated', label: t('app.sidebarDateUpdated'), kind: 'item' },
+			{ id: 'alphabetical', label: t('app.sidebarAlphabetical'), kind: 'item' },
+		],
+		[t]
+	);
+
+	const sortingNestedGroups = React.useMemo<SidebarSubmenuToggle[]>(
+		() => [
+			{
+				id: 'sortingFilters',
+				label: t('app.sidebarFilters'),
+				items: [
+					{ id: 'due-soon', label: t('app.sidebarDueSoon'), kind: 'item' },
+					{ id: 'least-accessed', label: t('app.sidebarLeastAccessed'), kind: 'item' },
+					{ id: 'most-edited', label: t('app.sidebarMostEdited'), kind: 'item' },
+					{ id: 'clear', label: t('app.sidebarClear'), kind: 'action' },
+				],
+			},
+			{
+				id: 'sortingGrouping',
+				label: t('app.sidebarGrouping'),
+				items: [
+					{ id: 'by-week', label: t('app.sidebarByWeek'), kind: 'item' },
+					{ id: 'by-month', label: t('app.sidebarByMonth'), kind: 'item' },
+				],
+			},
+		],
+		[t]
+	);
+
+	React.useEffect(() => {
+		// Lock the page behind the mobile drawer so background content cannot
+		// scroll or rubber-band while the sidebar is open.
+		if (!isMobileViewport || !isMobileSidebarOpen || typeof window === 'undefined' || typeof document === 'undefined') return;
+		const body = document.body;
+		const scrollY = window.scrollY;
+		const previous = {
+			overflow: body.style.overflow,
+			position: body.style.position,
+			top: body.style.top,
+			width: body.style.width,
+			overscrollBehavior: (body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior ?? '',
+		};
+		body.style.overflow = 'hidden';
+		body.style.position = 'fixed';
+		body.style.top = `-${scrollY}px`;
+		body.style.width = '100%';
+		(body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = 'none';
+		return () => {
+			body.style.overflow = previous.overflow;
+			body.style.position = previous.position;
+			body.style.top = previous.top;
+			body.style.width = previous.width;
+			(body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = previous.overscrollBehavior;
+			window.scrollTo(0, scrollY);
+		};
+	}, [isMobileSidebarOpen, isMobileViewport]);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -1226,6 +1371,57 @@ export function App(): React.JSX.Element {
 			zone.removeEventListener('touchcancel', onTouchEnd);
 		};
 	}, [isMobileViewport, isMobileSidebarOpen, openMobileSidebar]);
+
+	React.useEffect(() => {
+		if (!isMobileViewport || !isMobileSidebarOpen || typeof window === 'undefined') return;
+		const drawer = mobileSidebarRef.current;
+		if (!drawer) return;
+
+		let tracking = false;
+		let startX = 0;
+		let startY = 0;
+		const TRIGGER_DX = 54;
+		const MAX_DY = 28;
+
+		const onTouchStart = (event: TouchEvent) => {
+			if (event.touches.length !== 1) return;
+			const touch = event.touches[0];
+			startX = touch.clientX;
+			startY = touch.clientY;
+			tracking = true;
+		};
+
+		const onTouchMove = (event: TouchEvent) => {
+			if (!tracking || event.touches.length !== 1) return;
+			const touch = event.touches[0];
+			const dx = touch.clientX - startX;
+			const dy = touch.clientY - startY;
+			if (Math.abs(dy) > MAX_DY) {
+				tracking = false;
+				return;
+			}
+			if (dx < -TRIGGER_DX) {
+				tracking = false;
+				if (event.cancelable) event.preventDefault();
+				closeMobileSidebar();
+			}
+		};
+
+		const onTouchEnd = () => {
+			tracking = false;
+		};
+
+		drawer.addEventListener('touchstart', onTouchStart, { passive: true });
+		drawer.addEventListener('touchmove', onTouchMove, { passive: false });
+		drawer.addEventListener('touchend', onTouchEnd, { passive: true });
+		drawer.addEventListener('touchcancel', onTouchEnd, { passive: true });
+		return () => {
+			drawer.removeEventListener('touchstart', onTouchStart);
+			drawer.removeEventListener('touchmove', onTouchMove);
+			drawer.removeEventListener('touchend', onTouchEnd);
+			drawer.removeEventListener('touchcancel', onTouchEnd);
+		};
+	}, [closeMobileSidebar, isMobileSidebarOpen, isMobileViewport]);
 
 	React.useEffect(() => {
 		// Mobile header morph (MOBILE ONLY):
@@ -1525,6 +1721,20 @@ export function App(): React.JSX.Element {
 	}
 
 	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
+	const collapseAllSidebarGroups = React.useCallback(() => {
+		setSidebarGroupsOpen(CLOSED_SIDEBAR_GROUPS);
+	}, []);
+
+	const expandDesktopSidebarForEntry = React.useCallback((entryId: string, isGroup: boolean) => {
+		// Collapsed desktop clicks should first reveal the full sidebar so users
+		// can orient themselves before actions or nested lists appear.
+		setIsSidebarCollapsed(false);
+		setSidebarGroupsOpen({
+			...CLOSED_SIDEBAR_GROUPS,
+			...(isGroup ? { [entryId]: true } : {}),
+		});
+	}, []);
+
 	const toggleSidebar = () => {
 		if (isMobileViewport) {
 			if (isMobileSidebarOpen) {
@@ -1534,7 +1744,11 @@ export function App(): React.JSX.Element {
 			openMobileSidebar();
 			return;
 		}
-		setIsSidebarCollapsed((prev) => !prev);
+		setIsSidebarCollapsed((prev) => {
+			const next = !prev;
+			if (next) collapseAllSidebarGroups();
+			return next;
+		});
 	};
 
 	const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
@@ -1679,25 +1893,33 @@ export function App(): React.JSX.Element {
 			) : null}
 
 			<div className={`app-shell${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}`}>
-				<aside className={`app-sidebar${sidebarIsCollapsed ? ' is-collapsed' : ''}${isMobileSidebarOpen ? ' is-mobile-open' : ''}`}>
+				<aside
+					ref={mobileSidebarRef}
+					className={`app-sidebar${sidebarIsCollapsed ? ' is-collapsed' : ''}${isMobileSidebarOpen ? ' is-mobile-open' : ''}`}
+				>
 					<nav className="app-sidebar-nav" aria-label={t('grid.notes')}>
 						{sidebarEntries.map((entry) => {
 							const isGroup = entry.kind === 'group';
 							const isOpen = Boolean(sidebarGroupsOpen[entry.id]);
-							const label = entry.id === 'workspaces'
+							const groupContent = sidebarGroupContent[entry.id] ?? [];
+							const ariaLabel = entry.id === 'workspaces'
 								? `${t('workspace.sidebarTitle')}: ${activeWorkspaceName || t('workspace.unnamed')}`
 								: entry.label;
+							const label = entry.label;
 							return (
 								<div key={entry.id}>
 									<button
 										type="button"
 										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${entry.id === 'trash' && sidebarView === 'trash' ? ' is-active' : ''}${entry.id === 'notes' && sidebarView === 'notes' ? ' is-active' : ''}`}
 										onClick={() => {
-											if (entry.id === 'workspaces') {
-												if (sidebarIsCollapsed) {
-													openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
-													return;
+											if (!isMobileViewport && sidebarIsCollapsed) {
+												if (entry.id === 'workspaces' && sidebarWorkspaces.length === 0) {
+													void loadSidebarWorkspaces();
 												}
+												expandDesktopSidebarForEntry(entry.id, isGroup);
+												return;
+											}
+											if (entry.id === 'workspaces') {
 												setSidebarGroupsOpen((prev) => {
 													const nextOpen = !Boolean(prev.workspaces);
 													if (nextOpen && sidebarWorkspaces.length === 0) {
@@ -1719,11 +1941,12 @@ export function App(): React.JSX.Element {
 											}
 											if (isGroup) {
 												setSidebarGroupsOpen((prev) => ({ ...prev, [entry.id]: !Boolean(prev[entry.id]) }));
+												return;
 											}
 											if (isMobileViewport) closeMobileSidebar();
 										}}
-										title={sidebarIsCollapsed ? label : undefined}
-										aria-label={label}
+										title={sidebarIsCollapsed ? ariaLabel : undefined}
+										aria-label={ariaLabel}
 										aria-expanded={isGroup ? isOpen : undefined}
 									>
 										<span className="sidebar-disclosure" aria-hidden="true">
@@ -1735,16 +1958,17 @@ export function App(): React.JSX.Element {
 										<span className="sidebar-label">{label}</span>
 									</button>
 
-									{entry.id === 'workspaces' && isOpen && !sidebarIsCollapsed ? (
-										<div className="sidebar-workspace-menu" aria-label={t('workspace.listAria')}>
+									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
+										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
+											<div className="sidebar-submenu sidebar-workspace-menu" aria-label={t('workspace.listAria')} aria-hidden={!isOpen}>
 											{sidebarWorkspacesBusy ? (
-												<div className="sidebar-workspace-muted">{t('common.loading')}</div>
+													<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 0 }}>{t('common.loading')}</div>
 											) : null}
 											{sidebarWorkspacesError ? (
-												<div className="sidebar-workspace-muted">{sidebarWorkspacesError}</div>
+													<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 1 }}>{sidebarWorkspacesError}</div>
 											) : null}
 											{sidebarWorkspacesSorted.length === 0 && !sidebarWorkspacesBusy ? (
-												<div className="sidebar-workspace-muted">{t('workspace.none')}</div>
+													<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 2 }}>{t('workspace.none')}</div>
 											) : null}
 											{sidebarWorkspacesSorted.map((ws) => {
 												const isActive = Boolean(authWorkspaceId && ws.id === authWorkspaceId);
@@ -1752,9 +1976,10 @@ export function App(): React.JSX.Element {
 													<button
 														key={ws.id}
 														type="button"
-														className={`sidebar-workspace-item${isActive ? ' is-active' : ''}`}
+															className={`sidebar-workspace-item sidebar-submenu-item${isActive ? ' is-active' : ''}`}
 														onClick={() => void activateWorkspaceFromSidebar(ws.id)}
 														title={ws.name || t('workspace.unnamed')}
+															style={{ ['--sidebar-item-index' as const]: sidebarWorkspacesBusy || sidebarWorkspacesError ? 3 : 0 }}
 													>
 														{ws.name || t('workspace.unnamed')}
 													</button>
@@ -1762,14 +1987,87 @@ export function App(): React.JSX.Element {
 											})}
 											<button
 												type="button"
-												className="sidebar-workspace-manage"
+													className="sidebar-workspace-manage sidebar-submenu-action"
 												onClick={() => {
 													setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
 													openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
 												}}
+													style={{ ['--sidebar-item-index' as const]: Math.max(3, sidebarWorkspacesSorted.length + 1) }}
 											>
 												{t('workspace.manage')}
 											</button>
+											</div>
+										</div>
+									) : null}
+
+									{entry.id !== 'workspaces' && isGroup && groupContent.length > 0 && !sidebarIsCollapsed ? (
+										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
+											<div className="sidebar-submenu" aria-hidden={!isOpen}>
+												{groupContent.map((item, index) => {
+													if (item.kind === 'heading') {
+														return (
+															<div key={item.id} className="sidebar-submenu-heading" style={{ ['--sidebar-item-index' as const]: index }}>
+																{item.label}
+															</div>
+														);
+													}
+													if (item.kind === 'muted') {
+														return (
+															<div key={item.id} className="sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: index }}>
+																{item.label}
+															</div>
+														);
+													}
+													const className = item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item';
+													return (
+														<button key={item.id} type="button" className={className} style={{ ['--sidebar-item-index' as const]: index }}>
+															{item.label}
+														</button>
+													);
+												})}
+											</div>
+										</div>
+									) : null}
+
+									{entry.id === 'sorting' && !sidebarIsCollapsed ? (
+										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
+											<div className="sidebar-submenu" aria-hidden={!isOpen}>
+												{sortingPrimaryItems.map((item, index) => (
+													<button key={item.id} type="button" className="sidebar-submenu-item" style={{ ['--sidebar-item-index' as const]: index }}>
+														{item.label}
+													</button>
+												))}
+												{sortingNestedGroups.map((group, groupIndex) => {
+													const nestedOpen = Boolean(sidebarGroupsOpen[group.id]);
+													const baseIndex = sortingPrimaryItems.length + groupIndex;
+													return (
+														<div key={group.id} className="sidebar-nested-group">
+															<button
+																type="button"
+																className={`sidebar-submenu-toggle${nestedOpen ? ' is-open' : ''}`}
+																onClick={() => setSidebarGroupsOpen((prev) => ({ ...prev, [group.id]: !Boolean(prev[group.id]) }))}
+																aria-expanded={nestedOpen}
+																style={{ ['--sidebar-item-index' as const]: baseIndex }}
+															>
+																<span className="sidebar-submenu-toggle-icon" aria-hidden="true" />
+																<span className="sidebar-submenu-toggle-label">{group.label}</span>
+															</button>
+															<div className={`sidebar-nested-submenu-shell${nestedOpen ? ' is-open' : ''}`}>
+																<div className="sidebar-nested-submenu" aria-hidden={!nestedOpen}>
+																	{group.items.map((item, itemIndex) => {
+																		const className = item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item';
+																		return (
+																			<button key={item.id} type="button" className={className} style={{ ['--sidebar-item-index' as const]: itemIndex }}>
+																				{item.label}
+																			</button>
+																		);
+																	})}
+																</div>
+															</div>
+														</div>
+													);
+												})}
+											</div>
 										</div>
 									) : null}
 								</div>

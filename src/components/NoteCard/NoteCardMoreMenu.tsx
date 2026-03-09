@@ -184,13 +184,15 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 		const vw = window.innerWidth;
 		const vh = window.innerHeight;
 		const pad = 8;
+		const upwardLift = 12;
 
 		// Prefer left-aligned with the anchor's left edge
 		let left = anchor.left;
 		// Prefer above the anchor (opens upward from the button)
-		let top = anchor.top - menuRect.height - 4;
+		let top = anchor.top - menuRect.height - (anchor.height > 0 ? 4 : 0) - upwardLift;
 
-		// If it overflows top, show below instead
+		// If it overflows top, show below instead. Footer-triggered anchors carry
+		// footer height so the downward fallback clears the dock band cleanly.
 		if (top < pad) {
 			top = anchor.top + anchor.height + 4;
 		}
