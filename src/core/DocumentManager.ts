@@ -70,6 +70,9 @@ export class DocumentManager {
 	private readonly readyPromises = new Map<string, Promise<void>>();
 	private readonly websocketReadyPromises = new Map<string, Promise<void>>();
 	private readonly websocketUrl: string;
+	// Opt-in verbose websocket lifecycle logging. Keep disabled by default so
+	// normal editing/drag interactions don't flood the console or add overhead.
+	private readonly wsDebug = ((import.meta as any).env?.VITE_DEBUG_YJS_WS === '1');
 	private websocketEnabled: boolean;
 	// Active workspace ID used to namespace Yjs room names.
 	//
@@ -101,7 +104,7 @@ export class DocumentManager {
 		pendingSyncNoteIds: [],
 		registryReady: false,
 	};
-	// Cleanup function for the global visibility/focus lifecycle listeners that
+	// Cleanup function for the global visibility lifecycle listeners that
 	// trigger reconnect-on-foreground behavior. Stored so the manager can be
 	// torn down cleanly in tests or hot-module-replacement scenarios.
 	private readonly lifecycleCleanup: (() => void) | null = null;
@@ -136,13 +139,13 @@ export class DocumentManager {
 			window.addEventListener('online', onOnline);
 			window.addEventListener('offline', onOffline);
 
-			// ── Visibility / focus lifecycle ─────────────────────────────
+			// ── Visibility lifecycle ─────────────────────────────────────
 			// Mobile browsers (iOS Safari, Android Chrome) aggressively suspend
 			// background tabs, silently closing WebSocket connections without
 			// firing `close` events. When the user returns to the tab, the Yjs
 			// provider thinks it is still connected but the underlying socket
 			// is dead. We detect the tab returning to the foreground via the
-			// Page Visibility API and `focus` event, then force-disconnect and
+			// Page Visibility API, then force-disconnect and
 			// reconnect every WebSocket provider so that:
 			//   1. The provider re-establishes a fresh TCP/TLS connection.
 			//   2. The Yjs sync protocol re-runs Step 1 (full state vector
@@ -160,21 +163,14 @@ export class DocumentManager {
 					this.reconnectAllProviders('visibilitychange');
 				}
 			};
-			const onFocus = (): void => {
-				// Redundant with visibilitychange on most browsers, but some
-				// mobile WebViews only fire `focus` (not visibility events).
-				this.reconnectAllProviders('focus');
-			};
 
 			if (typeof document !== 'undefined') {
 				document.addEventListener('visibilitychange', onVisibilityChange);
 			}
-			window.addEventListener('focus', onFocus);
 
 			this.lifecycleCleanup = () => {
 				window.removeEventListener('online', onOnline);
 				window.removeEventListener('offline', onOffline);
-				window.removeEventListener('focus', onFocus);
 				if (typeof document !== 'undefined') {
 					document.removeEventListener('visibilitychange', onVisibilityChange);
 				}
@@ -596,12 +592,16 @@ export class DocumentManager {
 		});
 
 		const onStatus = (event: { status: string }): void => {
-			console.info(`[yjs-ws] room=${roomName} status=${event.status} url=${this.websocketUrl}`);
+			if (this.wsDebug) {
+				console.info(`[yjs-ws] room=${roomName} status=${event.status} url=${this.websocketUrl}`);
+			}
 			this.updateConnectionState();
 			this.emitConnectionStatus();
 		};
 		const onConnectionClose = (): void => {
-			console.info(`[yjs-ws] room=${roomName} connection-close url=${this.websocketUrl}`);
+			if (this.wsDebug) {
+				console.info(`[yjs-ws] room=${roomName} connection-close url=${this.websocketUrl}`);
+			}
 			this.updateConnectionState();
 			this.emitConnectionStatus();
 		};
@@ -676,29 +676,29 @@ export class DocumentManager {
 	 *   4. Run Yjs Sync Step 1 on the new connection, which brings the
 	 *      entire Y.Doc up to date in a single round-trip.
 	 *
-	 * The method uses a short 150 ms debounce so that rapid successive
-	 * events (e.g. both `visibilitychange` and `focus` firing at the same
-	 * instant) only trigger a single reconnect cycle.
+	 * The method uses a short timestamp throttle so rapid successive foreground
+	 * events only trigger one reconnect cycle.
 	 *
 	 * @param reason — Human-readable tag for log output (e.g. "visibilitychange").
 	 */
-	private reconnectDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private lastReconnectAt = 0;
 
 	private reconnectAllProviders(reason: string): void {
 		if (!this.websocketEnabled) return;
 
-		// Debounce: collapse rapid-fire events into a single reconnect pass.
-		if (this.reconnectDebounceTimer !== null) return;
-		this.reconnectDebounceTimer = setTimeout(() => {
-			this.reconnectDebounceTimer = null;
-		}, 150);
+		// Throttle: collapse rapid-fire events into a single reconnect pass.
+		const now = Date.now();
+		if (now - this.lastReconnectAt < 250) return;
+		this.lastReconnectAt = now;
 
 		const providers = Array.from(this.websocketProviders.values());
 		if (providers.length === 0) return;
 
-		console.info(
-			`[yjs-ws] reconnectAllProviders reason=${reason} providers=${providers.length}`
-		);
+		if (this.wsDebug) {
+			console.info(
+				`[yjs-ws] reconnectAllProviders reason=${reason} providers=${providers.length}`
+			);
+		}
 
 		for (const provider of providers) {
 			try {

@@ -233,6 +233,49 @@
 	color: var(--color-text-muted);
 }
 
+/* ── Editor section ──────────────────────────────────────────────────── */
+
+.editorSection {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.toggleRow {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	cursor: pointer;
+	padding: 8px 0;
+}
+
+.toggleLabel {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.toggleTitle {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--color-text);
+}
+
+.toggleDescription {
+	font-size: 12px;
+	color: var(--color-text-muted);
+}
+
+.toggleCheckbox {
+	width: 18px;
+	height: 18px;
+	flex: 0 0 auto;
+	accent-color: var(--color-accent);
+	cursor: pointer;
+}
+
 @media (max-width: 720px) {
 	.overlay,
 	.subOverlay {

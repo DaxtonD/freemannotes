@@ -1,30 +1,24 @@
 import React from 'react';
+import type { JSONContent } from '@tiptap/core';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-	faAlignCenter,
-	faAlignLeft,
-	faAlignRight,
 	faBell,
-	faBold,
 	faEllipsisVertical,
 	faImage,
-	faItalic,
-	faListOl,
-	faListUl,
-	faLink,
 	faPalette,
-	faUnderline,
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
+import { createRichTextDocFromPlainText } from '../../core/richText';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
+import { RichTextEditor } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type TextEditorProps = {
-	onSave: (args: { title: string; body: string }) => void | Promise<void>;
+	onSave: (args: { title: string; body: string; richContent: JSONContent }) => void | Promise<void>;
 	onCancel: () => void;
 };
 
@@ -33,6 +27,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	// Local draft state until onSave persists to Yjs in App.
 	const [title, setTitle] = React.useState('');
 	const [body, setBody] = React.useState('');
+	const [bodyRichContent, setBodyRichContent] = React.useState<JSONContent>(() => createRichTextDocFromPlainText(''));
 	const [saving, setSaving] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
@@ -125,7 +120,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		if (saving) return;
 		setSaving(true);
 		try {
-			await props.onSave({ title, body });
+			await props.onSave({ title, body, richContent: bodyRichContent });
 		} finally {
 			setSaving(false);
 		}
@@ -142,52 +137,19 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					placeholder={t('editors.titlePlaceholder')}
 				/>
 
-				<div className={styles.formatToolbar} role="toolbar" aria-label={t('editors.formatting')}>
-					<div className={styles.formatToolbarRow}>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.bold')} title={t('editors.bold')}>
-							<FontAwesomeIcon icon={faBold} />
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.italic')} title={t('editors.italic')}>
-							<FontAwesomeIcon icon={faItalic} />
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.underline')} title={t('editors.underline')}>
-							<FontAwesomeIcon icon={faUnderline} />
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.heading1')} title={t('editors.heading1')}>
-							H1
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.heading2')} title={t('editors.heading2')}>
-							H2
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.heading3')} title={t('editors.heading3')}>
-							H3
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')}>
-							<FontAwesomeIcon icon={faListUl} />
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.numberedList')} title={t('editors.numberedList')}>
-							<FontAwesomeIcon icon={faListOl} />
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')}>
-							<FontAwesomeIcon icon={faAlignLeft} />
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.alignCenter')} title={t('editors.alignCenter')}>
-							<FontAwesomeIcon icon={faAlignCenter} />
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.alignRight')} title={t('editors.alignRight')}>
-							<FontAwesomeIcon icon={faAlignRight} />
-						</button>
-						<button type="button" className={styles.formatButton} aria-label={t('editors.link')} title={t('editors.link')}>
-							<FontAwesomeIcon icon={faLink} />
-						</button>
-					</div>
+				<div className={styles.fullBodyFieldContainer}>
+					<RichTextEditor
+						variant="full"
+						placeholder={t('editors.bodyPlaceholder')}
+						content={bodyRichContent}
+						autoFocus
+						contentClassName={styles.fullBodyFieldRich}
+						onChange={({ json, text }) => {
+							setBodyRichContent(json);
+							setBody(text);
+						}}
+					/>
 				</div>
-				<textarea
-					value={body}
-					onChange={(e) => setBody(e.target.value)}
-					placeholder={t('editors.bodyPlaceholder')}
-					className={styles.fullBodyField}
-				/>
 
 				<div className={styles.editorBottomArea}>
 					<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>

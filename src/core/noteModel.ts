@@ -16,6 +16,16 @@
  */
 
 import * as Y from 'yjs';
+import type { JSONContent } from '@tiptap/core';
+import {
+	createRichTextDocFromPlainText,
+	ensureChecklistItemRichContent,
+	ensureTextNoteRichContent,
+	getPlainTextFromRichFragment,
+	replaceRichFragmentFromJson,
+	syncChecklistItemPlainText,
+	syncTextNotePlainText,
+} from './richText';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -116,7 +126,7 @@ export function makeNoteId(prefix: string): string {
  * @param title - Initial title string.
  * @param body  - Initial text content.
  */
-export function initTextNoteDoc(doc: Y.Doc, title: string, body: string): void {
+export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richContent?: JSONContent | null): void {
 	const now = Date.now();
 	doc.transact(() => {
 		/* Title – replace any pre-existing text with the supplied value. */
@@ -128,6 +138,11 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string): void {
 		const yContent = doc.getText('content');
 		yContent.delete(0, yContent.length);
 		yContent.insert(0, body);
+		replaceRichFragmentFromJson(
+			doc.getXmlFragment('contentRich'),
+			richContent ?? createRichTextDocFromPlainText(body),
+			'full'
+		);
 
 		/* Metadata map – type discriminator + creation/update timestamps + trash state. */
 		const metadata = doc.getMap<any>('metadata');
@@ -158,7 +173,7 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string): void {
 export function initChecklistNoteDoc(
 	doc: Y.Doc,
 	title: string,
-	items: readonly ChecklistItemData[]
+	items: ReadonlyArray<ChecklistItemData & { richContent?: JSONContent | null }>
 ): void {
 	const now = Date.now();
 	const yChecklist = doc.getArray<Y.Map<any>>('checklist');
@@ -189,6 +204,12 @@ export function initChecklistNoteDoc(
 			m.set('text', item.text);
 			m.set('completed', item.completed);
 			m.set('parentId', typeof item.parentId === 'string' && item.parentId.trim().length > 0 ? item.parentId : null);
+			replaceRichFragmentFromJson(
+				ensureChecklistItemRichContent(m),
+				item.richContent ?? createRichTextDocFromPlainText(item.text),
+				'minimal'
+			);
+			syncChecklistItemPlainText(m, ensureChecklistItemRichContent(m));
 			yChecklist.push([m]);
 		}
 	});
@@ -226,14 +247,18 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	const base: Note = { id, type, title, createdAt, updatedAt, trashed, trashedAt };
 
 	if (type === 'text') {
-		base.content = doc.getText('content').toString();
+		const content = doc.getText('content').toString();
+		base.content = content.length > 0 ? content : getPlainTextFromRichFragment(ensureTextNoteRichContent(doc), 'full');
 	} else {
 		const yChecklist = doc.getArray<Y.Map<any>>('checklist');
 		base.items = yChecklist
 			.toArray()
 			.map((m) => ({
 				id: String(m.get('id') ?? ''),
-				text: String(m.get('text') ?? ''),
+				text: (() => {
+					const plainText = String(m.get('text') ?? '');
+					return plainText.length > 0 ? plainText : getPlainTextFromRichFragment(ensureChecklistItemRichContent(m), 'minimal');
+				})(),
 				completed: Boolean(m.get('completed')),
 				parentId:
 					typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
@@ -241,6 +266,10 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 						: null,
 			}))
 			.filter((item) => item.id.length > 0);
+	}
+
+	if (type === 'text') {
+		syncTextNotePlainText(doc, ensureTextNoteRichContent(doc));
 	}
 
 	return base;

@@ -325,7 +325,7 @@ function createApiAuthRouter({ prisma }) {
 				try {
 					const session = req.auth || getSessionFromRequest(req);
 					if (!session) {
-						jsonResponse(res, 401, { error: 'Not authenticated' });
+						jsonResponse(res, 200, { authenticated: false, user: null, workspaceId: null });
 						return;
 					}
 
@@ -337,7 +337,7 @@ function createApiAuthRouter({ prisma }) {
 						select: { id: true, email: true, name: true, role: true, disabled: true, profileImage: true, lastLogin: true, createdAt: true },
 					});
 					if (!user || user.disabled) {
-						jsonResponse(res, 401, { error: 'Not authenticated' });
+						jsonResponse(res, 200, { authenticated: false, user: null, workspaceId: null });
 						return;
 					}
 
@@ -403,6 +403,7 @@ function createApiAuthRouter({ prisma }) {
 					}
 
 					jsonResponse(res, 200, {
+						authenticated: true,
 						user: {
 							id: user.id,
 							email: user.email,

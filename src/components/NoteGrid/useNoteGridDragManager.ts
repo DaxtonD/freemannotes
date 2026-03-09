@@ -48,6 +48,12 @@ function isPragmaticDragData(value: unknown): value is PragmaticDragData {
 	return candidate.type === DRAG_TYPE && typeof candidate.noteId === 'string';
 }
 
+function isScrollableElement(element: HTMLElement): boolean {
+	const style = window.getComputedStyle(element);
+	const overflowY = style.overflowY;
+	return /(auto|scroll|overlay)/.test(overflowY) && element.scrollHeight > element.clientHeight + 1;
+}
+
 export type DragManagerResult = {
 	activeDragId: string | null;
 	isTouchDragging: boolean;
@@ -197,18 +203,27 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	React.useEffect(() => {
 		const section = args.sectionRef.current;
 		if (!section) return;
-		return combine(
+		const cleanupParts = [
 			dropTargetForElements({
 				element: section,
 				canDrop: ({ source }) => isPragmaticDragData(source.data),
 			}),
-			autoScrollForElements({
-				element: section,
-				canScroll: ({ source }) => isPragmaticDragData(source.data) && !isTouchDragPolyfillActive(),
-			}),
 			autoScrollWindowForElements({
 				canScroll: ({ source }) => isPragmaticDragData(source.data) && !isTouchDragPolyfillActive(),
-			})
+			}),
+		];
+
+		if (isScrollableElement(section)) {
+			cleanupParts.push(
+				autoScrollForElements({
+					element: section,
+					canScroll: ({ source }) => isPragmaticDragData(source.data) && !isTouchDragPolyfillActive(),
+				})
+			);
+		}
+
+		return combine(
+			...cleanupParts
 		);
 	}, [args.sectionRef, registrationVersion]);
 

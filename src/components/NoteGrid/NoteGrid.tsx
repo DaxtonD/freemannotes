@@ -460,8 +460,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (!notesList || !noteOrder) return;
-		runNoteGuards(readRegistryIds(notesList), readOrderIds(noteOrder), docsById);
-	}, [notesList, noteOrder, storeVersion, docsById]);
+		runNoteGuards(
+			readRegistryIds(notesList),
+			readOrderIds(noteOrder),
+			docsById,
+			props.showTrashed ? [] : visibleIds,
+		);
+	}, [notesList, noteOrder, storeVersion, docsById, props.showTrashed, visibleIds]);
 
 	React.useEffect(() => {
 		if (!noteOrder) return;

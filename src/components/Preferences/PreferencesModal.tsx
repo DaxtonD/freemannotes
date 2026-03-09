@@ -1,10 +1,12 @@
 import React from 'react';
+import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import styles from './PreferencesModal.module.css';
 
 type PreferencesSection =
 	| 'install'
 	| 'about'
 	| 'appearance'
+	| 'editor'
 	| 'notifications'
 	| 'note-management'
 	| 'drag-animation'
@@ -19,6 +21,7 @@ const sections: readonly SectionConfig[] = [
 	{ id: 'install', labelKey: 'prefs.installApp' },
 	{ id: 'about', labelKey: 'prefs.about' },
 	{ id: 'appearance', labelKey: 'prefs.appearance' },
+	{ id: 'editor', labelKey: 'prefs.editor' },
 	{ id: 'notifications', labelKey: 'prefs.notifications' },
 	{ id: 'note-management', labelKey: 'prefs.noteManagement' },
 	{ id: 'drag-animation', labelKey: 'prefs.dragAnimation' },
@@ -44,6 +47,26 @@ type SectionModalProps = {
 	t: (key: string) => string;
 };
 
+function EditorSectionContent(props: { t: (key: string) => string }): React.JSX.Element {
+	const bubbleEnabled = useBubbleMenuEnabled();
+	return (
+		<div className={styles.editorSection}>
+			<label className={styles.toggleRow}>
+				<span className={styles.toggleLabel}>
+					<span className={styles.toggleTitle}>{props.t('prefs.bubbleMenu')}</span>
+					<span className={styles.toggleDescription}>{props.t('prefs.bubbleMenuDescription')}</span>
+				</span>
+				<input
+					type="checkbox"
+					checked={bubbleEnabled}
+					onChange={(e) => setBubbleMenuEnabled(e.target.checked)}
+					className={styles.toggleCheckbox}
+				/>
+			</label>
+		</div>
+	);
+}
+
 function SectionModal(props: SectionModalProps): React.JSX.Element {
 	const sectionConfig = sections.find((item) => item.id === props.section);
 	const sectionTitle = sectionConfig ? props.t(sectionConfig.labelKey) : props.t('prefs.title');
@@ -61,7 +84,11 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 					</button>
 				</header>
 
-				<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
+				{props.section === 'editor' ? (
+					<EditorSectionContent t={props.t} />
+				) : (
+					<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
+				)}
 			</section>
 		</div>
 	);
