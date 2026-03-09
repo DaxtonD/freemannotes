@@ -43,6 +43,17 @@ export type DocumentManagerOptions = {
 	 *   - Existing providers are disconnected and reconnect logic is suppressed.
 	 */
 	enableWebsocketSync?: boolean;
+	/**
+	 * Pre-seed the active workspace ID at construction time.
+	 *
+	 * When the app uses optimistic auth (reading a cached session from
+	 * localStorage), the workspace ID is known before React renders. Passing
+	 * it here ensures the notes registry is hydrated under the correct
+	 * workspace-prefixed room name from the very first tick, avoiding a race
+	 * where child component effects start awaiting a non-prefixed room that
+	 * gets torn down when setActiveWorkspaceId runs in a parent effect.
+	 */
+	initialWorkspaceId?: string | null;
 };
 
 export class DocumentManager {
@@ -99,6 +110,12 @@ export class DocumentManager {
 		// Normalize trailing slashes to avoid duplicate room URLs.
 		this.websocketUrl = String(websocketUrl || 'ws://localhost:1234').replace(/\/+$/, '');
 		this.websocketEnabled = options?.enableWebsocketSync ?? true;
+
+		// Pre-seed workspace so room names use the correct prefix from the start.
+		const initialWs = typeof options?.initialWorkspaceId === 'string' ? options.initialWorkspaceId.trim() : '';
+		if (initialWs.length > 0) {
+			this.activeWorkspaceId = initialWs;
+		}
 
 		if (typeof window !== 'undefined') {
 			const onOnline = (): void => {
@@ -170,7 +187,12 @@ export class DocumentManager {
 		// Eagerly kick off registry hydration so noteOrder is available as early
 		// as possible. This runs in the background; subsequent calls to
 		// getNotesRegistryDoc() reuse the same cached doc and providers.
-		this.initializeRegistry();
+		// Skip when no workspace is set and sync is disabled (auth-gated flow):
+		// the room would use an un-prefixed name that gets torn down as soon as
+		// setActiveWorkspaceId is called, potentially orphaning in-flight Promises.
+		if (this.activeWorkspaceId || this.websocketEnabled) {
+			this.initializeRegistry();
+		}
 	}
 
 	public setActiveWorkspaceId(workspaceId: string | null): void {
@@ -186,7 +208,11 @@ export class DocumentManager {
 		this.registryHydrated = false;
 		this.updateConnectionState();
 		this.emitConnectionStatus();
-		this.initializeRegistry();
+		// Null workspace means logout / auth loss. Skip registry re-init so we
+		// don't reconnect the unscoped `__notes_registry__` room and spam WS retries.
+		if (next) {
+			this.initializeRegistry();
+		}
 	}
 
 	public setWebsocketEnabled(enabled: boolean): void {

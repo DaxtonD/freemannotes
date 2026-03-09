@@ -3,6 +3,7 @@ import { combine } from '@atlaskit/pragmatic-drag-and-drop/combine';
 import { draggable, dropTargetForElements, monitorForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import { disableNativeDragPreview } from '@atlaskit/pragmatic-drag-and-drop/element/disable-native-drag-preview';
 import { autoScrollForElements, autoScrollWindowForElements } from '@atlaskit/pragmatic-drag-and-drop-auto-scroll/element';
+import { isTouchDragPolyfillActive } from '../../core/touchDragPolyfill';
 import { arraysEqual, findInsertionPoint, flattenColumns, insertIntoColumns } from './layout';
 
 type DragOverlayState = {
@@ -203,10 +204,10 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			}),
 			autoScrollForElements({
 				element: section,
-				canScroll: ({ source }) => isPragmaticDragData(source.data),
+				canScroll: ({ source }) => isPragmaticDragData(source.data) && !isTouchDragPolyfillActive(),
 			}),
 			autoScrollWindowForElements({
-				canScroll: ({ source }) => isPragmaticDragData(source.data),
+				canScroll: ({ source }) => isPragmaticDragData(source.data) && !isTouchDragPolyfillActive(),
 			})
 		);
 	}, [args.sectionRef, registrationVersion]);

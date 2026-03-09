@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
+import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
 import './styles/variables.css';
 import './styles/globals.css';
@@ -26,15 +27,41 @@ function getDefaultWsUrl(): string {
 
 const wsUrl = (import.meta as any).env?.VITE_WS_URL || getDefaultWsUrl();
 
+// Read cached workspace ID so the DocumentManager initializes the notes
+// registry under the correct workspace-prefixed IndexedDB room name from
+// the very first tick. Without this, child component effects that await
+// registry data can race against the parent effect that sets the workspace,
+// causing the IndexedDB ready Promise to hang forever (provider destroyed
+// mid-await). See DocumentManagerOptions.initialWorkspaceId.
+function readCachedWorkspaceId(): string | null {
+	try {
+		const raw = localStorage.getItem('freemannotes.auth.cache.v1');
+		if (!raw) return null;
+		const parsed = JSON.parse(raw);
+		if (parsed?.v !== 1 || typeof parsed.workspaceId !== 'string' || !parsed.workspaceId) return null;
+		return parsed.workspaceId;
+	} catch {
+		return null;
+	}
+}
+
 // Singleton manager owns Yjs docs + persistence providers for the entire app session.
 // Websocket sync starts disabled because the App now gates sync behind auth.
 // Once authenticated, App calls `manager.setWebsocketEnabled(true)`.
-const manager = new DocumentManager(wsUrl, { enableWebsocketSync: false });
+const manager = new DocumentManager(wsUrl, {
+	enableWebsocketSync: false,
+	initialWorkspaceId: readCachedWorkspaceId(),
+});
 
 const rootEl = document.getElementById('root');
 if (!rootEl) {
 	throw new Error('Missing #root element');
 }
+
+// Firefox Android does not synthesize dragstart from touch long-press.
+// Install a polyfill that bridges touch events → DragEvents so
+// @atlaskit/pragmatic-drag-and-drop works on Firefox Android.
+installTouchDragPolyfill();
 
 createRoot(rootEl).render(
 	<React.StrictMode>
@@ -45,6 +72,42 @@ createRoot(rootEl).render(
 		</I18nProvider>
 	</React.StrictMode>
 );
+
+// ── Mobile lifecycle diagnostic logger ─────────────────────────────────
+// Logs page lifecycle events, SW controller changes, and navigation type
+// to help diagnose unexpected splash/reload events on mobile devices.
+// Safe to leave in production (console.info only).
+if (typeof window !== 'undefined') {
+	const logLife = (event: string, detail?: unknown): void =>
+		console.info(`[lifecycle] ${new Date().toISOString()} ${event}`, detail ?? '');
+
+	document.addEventListener('visibilitychange', () =>
+		logLife('visibilitychange', document.visibilityState));
+	window.addEventListener('pageshow', (e: PageTransitionEvent) =>
+		logLife('pageshow', { persisted: e.persisted }));
+	window.addEventListener('pagehide', (e: PageTransitionEvent) =>
+		logLife('pagehide', { persisted: e.persisted }));
+	window.addEventListener('focus', () => logLife('focus'));
+	window.addEventListener('blur', () => logLife('blur'));
+	// Chrome 68+ Page Lifecycle API
+	(window as any).addEventListener?.('freeze', () => logLife('freeze'));
+	(window as any).addEventListener?.('resume', () => logLife('resume'));
+
+	if ('serviceWorker' in navigator) {
+		navigator.serviceWorker.addEventListener('controllerchange', () =>
+			logLife('sw:controllerchange — NEW SERVICE WORKER TOOK CONTROL'));
+	}
+
+	// Log once on boot: navigation type + tab discard flag
+	try {
+		const navEntry = performance?.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined;
+		logLife('boot', {
+			navigationType: navEntry?.type,
+			wasDiscarded: (document as any).wasDiscarded,
+			standalone: window.matchMedia?.('(display-mode: standalone)')?.matches,
+		});
+	} catch { /* ignore */ }
+}
 
 // Service worker registration + dev cleanup strategy.
 if ('serviceWorker' in navigator) {

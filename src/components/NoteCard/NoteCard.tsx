@@ -1,5 +1,13 @@
 import React from 'react';
 import * as Y from 'yjs';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import {
+	faBell,
+	faEllipsisVertical,
+	faImage,
+	faPalette,
+	faUserPlus,
+} from '@fortawesome/free-solid-svg-icons';
 import type { ChecklistItem } from '../../core/bindings';
 import { normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
 import { getDeviceId } from '../../core/deviceId';
@@ -15,8 +23,9 @@ export type NoteCardProps = {
 	noteId: string;
 	doc: Y.Doc;
 	hasPendingSync?: boolean;
+	isMoreMenuOpen?: boolean;
 	onOpen?: () => void;
-	onMoreMenu?: () => void;
+	onMoreMenu?: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
 	shouldSuppressOpen?: () => boolean;
 	dragHandleRef?: (node: HTMLDivElement | null) => void;
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
@@ -188,6 +197,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const cardRef = React.useRef<HTMLElement | null>(null);
+	const footerRef = React.useRef<HTMLDivElement | null>(null);
 
 	React.useEffect(() => {
 		setShowCompleted(getNoteCardCompletedExpanded(props.noteId));
@@ -250,10 +260,35 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		});
 	}, [props.noteId]);
 
+	const handleDockAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
+		// Placeholder buttons should feel inert for now but must not bubble and
+		// accidentally open the note card underneath.
+		event.stopPropagation();
+	}, []);
+
+	const handleMoreMenuAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
+		event.stopPropagation();
+		const cardRect = cardRef.current?.getBoundingClientRect();
+		const footerRect = footerRef.current?.getBoundingClientRect();
+		// Footer-triggered menus anchor to the card's left edge and the dock band
+		// so the desktop popover lines up with the card rather than the button.
+		props.onMoreMenu?.(
+			cardRect
+				? {
+					top: footerRect?.top ?? cardRect.bottom,
+					left: cardRect.left,
+					width: cardRect.width,
+					height: footerRect?.height ?? 0,
+				}
+				: null
+		);
+		event.currentTarget.blur();
+	}, [props]);
+
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}`}
+			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}`}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
 			role={props.onOpen ? 'button' : undefined}
@@ -443,6 +478,60 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					) : null}
 				</>
 			)}
+
+			<div ref={footerRef} className={styles.cardFooter}>
+				{/* Desktop-only footer dock mirrors the editor action strip so note
+				    cards and editors share the same action vocabulary. */}
+				<nav className={styles.cardDock} aria-label={t('editors.bottomDock')}>
+					<div className={styles.cardDockLeft}>
+						<button
+							type="button"
+							className={styles.cardDockButton}
+							onPointerDown={(e) => e.stopPropagation()}
+							onClick={handleMoreMenuAction}
+							aria-label={t('editors.dockAction')}
+						>
+							<FontAwesomeIcon icon={faEllipsisVertical} />
+						</button>
+						<button
+							type="button"
+							className={styles.cardDockButton}
+							onPointerDown={(e) => e.stopPropagation()}
+							onClick={handleDockAction}
+							aria-label={t('editors.dockAction')}
+						>
+							<FontAwesomeIcon icon={faPalette} />
+						</button>
+						<button
+							type="button"
+							className={styles.cardDockButton}
+							onPointerDown={(e) => e.stopPropagation()}
+							onClick={handleDockAction}
+							aria-label={t('editors.dockAction')}
+						>
+							<FontAwesomeIcon icon={faBell} />
+						</button>
+						<button
+							type="button"
+							className={styles.cardDockButton}
+							onPointerDown={(e) => e.stopPropagation()}
+							onClick={handleDockAction}
+							aria-label={t('editors.dockAction')}
+						>
+							<FontAwesomeIcon icon={faUserPlus} />
+						</button>
+						<button
+							type="button"
+							className={styles.cardDockButton}
+							onPointerDown={(e) => e.stopPropagation()}
+							onClick={handleDockAction}
+							aria-label={t('editors.dockAction')}
+						>
+							<FontAwesomeIcon icon={faImage} />
+						</button>
+					</div>
+				</nav>
+			</div>
 		</article>
 	);
 }

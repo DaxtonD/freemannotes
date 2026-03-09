@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.67 - 2026-03-08
+
+### Added
+- **Firefox Android touch-drag polyfill for note cards.** Long-press drag now works on Firefox Android, including a bounded edge-scroll path and protection against pragmatic-drag-and-drop's broken-drag detection.
+- **Expanded sidebar navigation model.** Added nested Reminders, Labels, Sorting, and Collections sections with animated disclosure transitions, desktop collapsed-sidebar auto-expand behavior, and improved mobile drawer interactions.
+- **Desktop note-card footer dock.** Note cards now expose an editor-style bottom action dock on desktop hover, with anchored more-menu placement and active-card accent highlighting while the menu is open.
+
+### Changed
+- **Mobile sidebar polish.** Removed the collapsed shadow artifact, locked background interaction while the drawer is open, added swipe-to-close, increased item/icon sizing, and refined ordering/spacing.
+- **Desktop sidebar readability.** Increased desktop sidebar type and disclosure icon sizing slightly and aligned nested disclosure arrows with the primary sidebar pattern.
+
+### Fixed
+- **Workspace logout WS spam.** Clearing the active workspace no longer reconnects the unscoped registry room and spam-retries websocket connections.
+- **PWA auth/load startup robustness.** Registry initialization now respects the cached initial workspace ID earlier in boot, reducing reload-time races and splash failures.
+
 ## 1.0.66 - 2026-03-08
 
 ### Added
