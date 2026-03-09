@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.70 - 2026-03-09
+
+### Added
+- **Rich-text editor foundation for notes and checklist rows.** Added TipTap/Yjs-backed rich-text helpers, shared editor components, and supporting toolbar/viewport preference hooks.
+- **Mobile keyboard viewport helpers.** Added dedicated visual viewport hooks so editors can clamp to the visible viewport and keep floating controls aligned above the software keyboard.
+- **Theme-aware app icon assets.** Added `darkicon1.png` and `lighticon1.png` for updated splash/icon usage.
+
+### Changed
+- **Text note creation flow.** New text notes now persist both plain text and structured rich-text content so draft and saved editors stay aligned.
+- **Checklist editing UX on mobile.** Checklist rows now use richer inline editing, improved drag ghost rendering, faster drop settling, and keyboard-aware bottom chrome behavior.
+- **Editor overlay navigation.** Mobile overlay history now guards against repeated back taps, and create/edit overlays are rendered mutually exclusively so they cannot stack.
+- **Preferences and translations.** Updated preference UI styling/behavior and refreshed localized strings for the new editor capabilities.
+
+### Fixed
+- **Note editor render-time update warning.** Opening a text note no longer mutates Yjs content during render, removing the `Cannot update a component (NoteGrid) while rendering a different component (NoteEditor)` warning.
+- **Mobile drag/close reliability.** Removed passive touch-path focus suppression that caused `preventDefault` warnings and hardened repeated editor open/close behavior.
+- **Keyboard occlusion and scroll stability.** Mobile editors now better cover the keyboard transition area and avoid post-drag scroll-jump regressions.
+
 ## 1.0.67 - 2026-03-08
 
 ### Added

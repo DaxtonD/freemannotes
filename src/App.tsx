@@ -312,6 +312,9 @@ export function App(): React.JSX.Element {
 	const isMobileLandscape = useIsMobileLandscape();
 	const maxCardHeightPx = isCoarsePointer ? 450 : 615;
 	const exitBackPressRef = React.useRef({ count: 0, lastAt: 0 });
+	// Guard: prevent queuing multiple history.back() calls from rapid taps.
+	// Reset in the popstate handler once the navigation actually completes.
+	const isNavigatingBackRef = React.useRef(false);
 
 	const getOverlaySnapshot = React.useCallback((): OverlaySnapshot => {
 		return {
@@ -374,6 +377,10 @@ export function App(): React.JSX.Element {
 	const goBackIfOverlayHistory = React.useCallback((): boolean => {
 		if (!isMobileViewport || typeof window === 'undefined') return false;
 		if (!isOverlayHistoryState(window.history.state)) return false;
+		// Prevent queuing multiple history.back() from rapid taps; the guard
+		// is cleared in the popstate handler once navigation completes.
+		if (isNavigatingBackRef.current) return true;
+		isNavigatingBackRef.current = true;
 		window.history.back();
 		return true;
 	}, [isMobileViewport]);
@@ -504,6 +511,7 @@ export function App(): React.JSX.Element {
 	const closeCreateEditor = React.useCallback(() => {
 		if (goBackIfOverlayHistory()) return;
 		setEditorMode('none');
+		setSelectedNoteId(null);
 	}, [goBackIfOverlayHistory]);
 
 	type NoteEditorOpenOptions = { replaceTop?: boolean };
@@ -527,6 +535,7 @@ export function App(): React.JSX.Element {
 	const closeNoteEditor = React.useCallback(() => {
 		if (goBackIfOverlayHistory()) return;
 		setSelectedNoteId(null);
+		setEditorMode('none');
 	}, [goBackIfOverlayHistory]);
 
 	const toggleFab = React.useCallback(() => {
@@ -1539,6 +1548,8 @@ export function App(): React.JSX.Element {
 		ensureRootGuard();
 
 		const onPopState = (event: PopStateEvent) => {
+			// Clear the rapid-tap guard so the next close gesture can navigate.
+			isNavigatingBackRef.current = false;
 			const state = event.state as unknown;
 			if (isOverlayHistoryState(state)) {
 				applyOverlaySnapshot(state.snapshot);
@@ -1607,7 +1618,7 @@ export function App(): React.JSX.Element {
 	}, [editorMode, selectedNoteId]);
 
 	const onSaveText = React.useCallback(
-		async (args: { title: string; body: string }) => {
+		async (args: { title: string; body: string; richContent: import('@tiptap/core').JSONContent }) => {
 			// Empty note guard:
 			// It's possible to create a new note and hit save without typing anything.
 			// In that case we do NOT create a note ID, do NOT create a Yjs doc, and do
@@ -1623,7 +1634,7 @@ export function App(): React.JSX.Element {
 			// All note creation goes through the canonical noteModel factory functions.
 			const id = makeNoteId('text-note');
 			const doc = await manager.getDocWithSync(id);
-			initTextNoteDoc(doc, args.title, args.body);
+			initTextNoteDoc(doc, args.title, args.body, args.richContent);
 			await manager.createNote(id, args.title);
 			// Branch: after create/save, close the new-note editor and return to grid.
 			// We intentionally do NOT auto-open the saved note editor here.
@@ -1633,7 +1644,7 @@ export function App(): React.JSX.Element {
 	);
 
 	const onSaveChecklist = React.useCallback(
-		async (args: { title: string; items: ChecklistItem[] }) => {
+		async (args: { title: string; items: Array<ChecklistItem & { richContent: import('@tiptap/core').JSONContent }> }) => {
 			// Checklist save cleanup:
 			// - Remove blank rows before persisting (both active + completed).
 			// - If the checklist is truly empty (no title AND no row text), discard it
@@ -1701,25 +1712,6 @@ export function App(): React.JSX.Element {
 		};
 	}, [manager, selectedNoteId]);
 
-	// ── Auth gate / splash overlay ────────────────────────────────────────
-	// 'unauth'  → show login form (early return)
-	// 'loading' → show full-page splash (early return – no workspace data yet)
-	// 'authed'  → render main app; keep splash overlay until NoteGrid signals ready
-	if (authStatus === 'unauth') return authGateView;
-
-	if (authStatus === 'loading') {
-		const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
-		return (
-			<div className="splash-shell">
-				<div className="splash-content">
-					<img src={splashIcon} alt="" className="splash-icon" />
-					<div className="splash-title">FreemanNotes</div>
-					<div className="splash-spinner" />
-				</div>
-			</div>
-		);
-	}
-
 	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
 	const collapseAllSidebarGroups = React.useCallback(() => {
 		setSidebarGroupsOpen(CLOSED_SIDEBAR_GROUPS);
@@ -1750,6 +1742,25 @@ export function App(): React.JSX.Element {
 			return next;
 		});
 	};
+
+	// ── Auth gate / splash overlay ────────────────────────────────────────
+	// 'unauth'  → show login form (early return)
+	// 'loading' → show full-page splash (early return – no workspace data yet)
+	// 'authed'  → render main app; keep splash overlay until NoteGrid signals ready
+	if (authStatus === 'unauth') return authGateView;
+
+	if (authStatus === 'loading') {
+		const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
+		return (
+			<div className="splash-shell">
+				<div className="splash-content">
+					<img src={splashIcon} alt="" className="splash-icon" />
+					<div className="splash-title">FreemanNotes</div>
+					<div className="splash-spinner" />
+				</div>
+			</div>
+		);
+	}
 
 	const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
 
@@ -2172,10 +2183,13 @@ export function App(): React.JSX.Element {
 				/>
 			</button>
 
-			{/* Branch: selection exists but doc not yet loaded. */}
-			{selectedNoteId && (!openDoc || openDocId !== selectedNoteId) ? <div>{t('app.loadingEditor')}</div> : null}
-			{/* Branch: single active editor for the selected note. */}
-			{selectedNoteId && openDoc && openDocId === selectedNoteId ? (
+			{/* Branch: selection exists but doc not yet loaded.
+			   Mutual exclusion: suppress when a create editor is active to prevent
+			   stacked overlays (both at z-index 220). */}
+			{editorMode === 'none' && selectedNoteId && (!openDoc || openDocId !== selectedNoteId) ? <div>{t('app.loadingEditor')}</div> : null}
+			{/* Branch: single active editor for the selected note.
+			   Same mutual exclusion guard as above. */}
+			{editorMode === 'none' && selectedNoteId && openDoc && openDocId === selectedNoteId ? (
 				<NoteEditor
 					noteId={selectedNoteId}
 					doc={openDoc}

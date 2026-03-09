@@ -62,7 +62,7 @@
 	display: flex;
 	gap: var(--space-2);
 	align-items: flex-start;
-	padding: 6px;
+	padding: 1px;
 	width: 100%;
 	box-sizing: border-box;
 	border-radius: var(--radius-md);
@@ -72,9 +72,25 @@
 	transition: background-color var(--transition-fast);
 }
 
-.checklistItem:hover,
-.checklistItem:focus-within {
-	background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+/*
+	Checklist row highlighting:
+	- Desktop (pointer: fine): highlight on hover/focus-within.
+	- Mobile (pointer: coarse): highlight ONLY the "active" row via an explicit
+	  class. This avoids iOS/Android quirks where :hover can stick after taps and
+	  where focus transitions during add/drag can temporarily leave multiple rows
+	  highlighted.
+*/
+@media (pointer: coarse) {
+	.checklistItemActive {
+		background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+	}
+}
+
+@media (pointer: fine) {
+	.checklistItem:hover,
+	.checklistItem:focus-within {
+		background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+	}
 }
 
 .grow {
@@ -94,9 +110,6 @@
 	*/
 	z-index: 220;
 	background: var(--color-overlay);
-	/* Subtle background blur so the app behind reads as inactive. */
-	backdrop-filter: blur(6px);
-	-webkit-backdrop-filter: blur(6px);
 	/*
 		Use CSS grid instead of flex so desktop can reserve a fixed top offset row
 		(header + create buttons), and the editor occupies the remaining viewport.
@@ -257,6 +270,10 @@
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-md);
 	background: color-mix(in srgb, var(--color-surface-2) 60%, transparent);
+	/* Gesture containment:
+	   If a toolbar interaction tries to overscroll, keep that energy local to the
+	   toolbar instead of letting it chain upward into the editor viewport/page. */
+	overscroll-behavior: contain;
 }
 
 .formatToolbarCompact {
@@ -264,11 +281,32 @@
 	gap: 4px;
 }
 
+.formatToolbarDisabled {
+	opacity: 0.45;
+	pointer-events: none;
+}
+
 .formatToolbarRow {
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	flex-wrap: wrap;
+	flex-wrap: nowrap;
+	overflow-x: auto;
+	overflow-y: hidden;
+	overscroll-behavior-x: contain;
+	overscroll-behavior-y: contain;
+	-webkit-overflow-scrolling: touch;
+	scrollbar-width: none;
+	/* Horizontal-scroll branch:
+	   The row is allowed to pan horizontally because the full editor toolbar can be
+	   wider than the viewport on mobile. Vertical pan is intentionally excluded here;
+	   the React touch handler above decides when a gesture has become vertical and
+	   cancels it before the browser can scroll the viewport. */
+	touch-action: pan-x;
+}
+
+.formatToolbarRow::-webkit-scrollbar {
+	display: none;
 }
 
 .formatButton {
@@ -276,6 +314,7 @@
 	background: transparent;
 	color: var(--color-text);
 	cursor: pointer;
+	flex: 0 0 auto;
 	height: 30px;
 	min-width: 30px;
 	padding: 0 8px;
@@ -294,9 +333,24 @@
 	font-size: var(--font-size-xs);
 }
 
+.checklistToolbarSlot {
+	flex: 0 0 auto;
+	min-height: 40px;
+}
+
 .formatButton:hover,
 .formatButton:focus-visible {
 	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.formatButtonActive {
+	background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-2));
+	color: var(--color-accent);
+}
+
+.formatButton:disabled {
+	opacity: 0.45;
+	cursor: default;
 }
 
 .formatDivider {
@@ -366,15 +420,7 @@
 }
 
 .editorBlurred {
-	transition: filter 220ms ease;
 	position: relative;
-}
-
-.mediaOpen {
-}
-
-.editorBlurLayer {
-	display: none;
 }
 
 .editorBlockLayer {
@@ -612,28 +658,9 @@
 		height: 0;
 	}
 
-	/* Desktop: blur editor content without blurring the bottom dock. */
-	.editorBlurLayer {
-		display: block;
-		position: absolute;
-		inset: 0;
-		z-index: 1;
-		pointer-events: none;
-		opacity: 0;
-		transition: opacity 220ms ease;
-		/* Tiny alpha so backdrop-filter reliably applies. */
-		background: rgba(0, 0, 0, 0.01);
-		backdrop-filter: blur(2px);
-		-webkit-backdrop-filter: blur(2px);
-	}
-
 	/* Desktop: block all pointer interaction with the editor when media flyout is open. */
 	.editorBlockLayer {
 		transition: opacity 220ms ease;
-	}
-
-	.editorBlurred.mediaOpen .editorBlurLayer {
-		opacity: 1;
 	}
 
 	.editorBlurred.mediaOpen .editorBlockLayer {
@@ -759,10 +786,6 @@
 		display: none;
 	}
 
-	.editorBlurred.mediaOpen {
-		filter: blur(2px);
-	}
-
 	.mediaSheet {
 		display: flex;
 		position: absolute;
@@ -781,8 +804,6 @@
 		z-index: 225;
 		flex-direction: column;
 		box-shadow: 0 -16px 40px -22px rgba(0, 0, 0, 0.6);
-		backdrop-filter: blur(8px);
-		-webkit-backdrop-filter: blur(8px);
 	}
 
 	.mediaSheetOpen {
@@ -849,6 +870,149 @@
 	flex: 1;
 	min-height: 0;
 	resize: none;
+}
+
+.fullBodyFieldRich {
+	min-height: 100%;
+	padding: 8px 2px 24px;
+}
+
+.richEditorStack {
+	display: flex;
+	flex: 1;
+	min-height: 0;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.richEditorViewport {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+}
+
+.editorViewportKeyboardOpen {
+	/* Keyboard-open branch:
+	   Match the floating toolbar footprint so the last editable lines/rows can scroll
+	   fully above the toolbar without reintroducing the hidden footer into layout. */
+	padding-bottom: 56px;
+	overscroll-behavior-y: contain;
+}
+
+.richEditorContent {
+	min-height: 0;
+	outline: none;
+	color: var(--color-text);
+	font: inherit;
+	line-height: 1.55;
+	white-space: normal;
+	word-break: break-word;
+}
+
+.richEditorContent :global(.ProseMirror) {
+	min-height: 100%;
+	outline: none;
+}
+
+.richEditorContent :global(.ProseMirror p.is-editor-empty:first-child::before) {
+	content: attr(data-placeholder);
+	float: left;
+	height: 0;
+	pointer-events: none;
+	color: var(--color-text-muted);
+	opacity: 0.82;
+}
+
+.richEditorContent :global(.ProseMirror p),
+.richEditorContent :global(.ProseMirror ul),
+.richEditorContent :global(.ProseMirror ol),
+.richEditorContent :global(.ProseMirror h1),
+.richEditorContent :global(.ProseMirror h2),
+.richEditorContent :global(.ProseMirror h3) {
+	margin: 0 0 0.6em;
+}
+
+.richEditorContent :global(.ProseMirror h1) {
+	font-size: clamp(1.45rem, 2vw, 2rem);
+	line-height: 1.12;
+}
+
+.richEditorContent :global(.ProseMirror h2) {
+	font-size: clamp(1.2rem, 1.7vw, 1.55rem);
+	line-height: 1.18;
+}
+
+.richEditorContent :global(.ProseMirror h3) {
+	font-size: clamp(1.05rem, 1.4vw, 1.2rem);
+	line-height: 1.22;
+}
+
+.richEditorContent :global(.ProseMirror a) {
+	color: var(--color-accent);
+	text-decoration: underline;
+	text-decoration-thickness: 1.5px;
+	text-underline-offset: 2px;
+}
+
+.checklistRowRichShell {
+	flex: 1;
+	min-width: 0;
+	min-height: 22px;
+	padding: 1px 6px;
+	border-radius: var(--radius-sm);
+	background: transparent;
+	cursor: text;
+	display: flex;
+	align-items: center;
+}
+
+.checklistRowRichStack {
+	flex: 0 0 auto;
+	width: 100%;
+	min-height: auto;
+	gap: 0;
+}
+
+.checklistRowRichViewport {
+	flex: 0 0 auto;
+	width: 100%;
+	min-height: 0;
+	background: transparent;
+	overflow: visible;
+}
+
+.checklistRowRichShell:focus-within {
+	background: transparent;
+}
+
+.checklistRowRichEditor {
+	min-height: 16px;
+	padding: 0;
+	background: transparent;
+	line-height: 1.3;
+}
+
+.checklistRowRichEditor:global(.ProseMirror) {
+	min-height: 16px;
+	background: transparent;
+	white-space: pre-wrap;
+	line-height: 1.3;
+}
+
+.checklistRowRichEditor :global(p) {
+	margin: 0;
+}
+
+.checklistRowPreview {
+	flex: 1;
+	min-width: 0;
+	min-height: 22px;
+	padding: 2px 6px;
+	line-height: 1.3;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: inherit;
 }
 .fullBodyFieldContainer {
 	flex: 1;
@@ -921,9 +1085,9 @@ Drag handle:
 - `padding-top` is tuned so the grip icon aligns with the first text line.
 */
 .dragHandle {
-	width: 36px;
-	height: 36px;
-	min-width: 36px;
+	width: 30px;
+	height: 30px;
+	min-width: 30px;
 	display: inline-flex;
 	align-items: flex-start;
 	justify-content: center;
@@ -938,7 +1102,7 @@ Drag handle:
 	-webkit-touch-callout: none;
 	-webkit-tap-highlight-color: transparent;
 	user-select: none;
-	margin-top: 0;
+	transform: translateY(1px);
 }
 
 .dragHandle svg {
@@ -961,9 +1125,19 @@ Drag handle:
 	margin-top: 3px;
 	accent-color: var(--color-accent);
 	cursor: pointer;
+	transform: translateY(2px);
+}
+
+.checklistRowRichShell,
+.checklistRowPreview,
+.rowTextArea,
+.checklistAddItemButton,
+.dragPreviewText {
+	transform: translateY(3px);
 }
 
 .rowRemoveButton {
+	margin-top: 2px;
 	opacity: 0;
 	pointer-events: none;
 	border: 0;
@@ -975,12 +1149,27 @@ Drag handle:
 	border-radius: var(--radius-sm);
 }
 
-.checklistComposerRow:hover .rowRemoveButton,
-.checklistComposerRow:focus-within .rowRemoveButton,
-.checklistItem:hover .rowRemoveButton,
-.checklistItem:focus-within .rowRemoveButton {
-	opacity: 1;
-	pointer-events: auto;
+/*
+	Row delete button visibility:
+	- Desktop: reveal on hover/focus-within.
+	- Mobile: reveal ONLY on the active row (prevents sticky :hover keeping
+	  delete buttons visible on inactive rows after taps/scroll).
+*/
+@media (pointer: fine) {
+	.checklistComposerRow:hover .rowRemoveButton,
+	.checklistComposerRow:focus-within .rowRemoveButton,
+	.checklistItem:hover .rowRemoveButton,
+	.checklistItem:focus-within .rowRemoveButton {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+@media (pointer: coarse) {
+	.checklistItemActive .rowRemoveButton {
+		opacity: 1;
+		pointer-events: auto;
+	}
 }
 
 .rowRemoveButton:hover,
@@ -998,9 +1187,9 @@ Drag handle:
 	to overflow, and so the drag clone width calculations remain stable.
 	*/
 	min-width: 0;
-	min-height: 26px;
-	padding: 4px 6px;
-	line-height: 1.35;
+	min-height: 22px;
+	padding: 2px 6px;
+	line-height: 1.3;
 	color: inherit;
 	background: transparent;
 	border: 0;
@@ -1025,14 +1214,14 @@ Drag handle:
 .checklistAddItemButton {
 	flex: 1;
 	min-width: 0;
-	min-height: 26px;
-	padding: 4px 6px;
+	min-height: 22px;
+	padding: 2px 6px;
 	border: 0;
 	background: transparent;
 	color: var(--color-text-muted);
 	text-align: left;
 	font: inherit;
-	line-height: 1.35;
+	line-height: 1.3;
 	cursor: pointer;
 }
 
@@ -1046,16 +1235,12 @@ Drag handle:
 .dragPreviewText {
 	flex: 1;
 	box-sizing: border-box;
-	min-height: 26px;
-	padding: 4px 6px;
-	line-height: 1.35;
+	min-height: 22px;
+	padding: 2px 6px;
+	line-height: 1.3;
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 	display: flex;
-	align-items: center;
-}
-
-.rowMultiline {
 	align-items: flex-start;
 }
 
@@ -1068,7 +1253,7 @@ Drag handle:
 
 	.checklistItem,
 	.checklistComposerRow {
-		align-items: center;
+		align-items: flex-start;
 		padding: 3px 6px;
 	}
 
@@ -1082,68 +1267,36 @@ Drag handle:
 		min-height: 22px;
 		padding: 2px 6px;
 		line-height: 1.28;
-		align-items: center;
+		align-items: flex-start;
 	}
 
 	.dragHandle {
 		height: 32px;
 		min-width: 32px;
 		width: 32px;
-		align-items: center;
-		align-self: center;
-		padding-top: 0;
+		align-items: flex-start;
+		padding-top: 7px;
 		line-height: 1;
-		transform: translateY(4px);
 	}
 
 	.checklistCheckbox {
-		margin-top: 0;
-		align-self: center;
-		transform: translateY(2px);
+		margin-top: 4px;
+	}
+
+	.checklistRowRichShell,
+	.checklistRowPreview {
+		transform: translateY(4px);
 	}
 
 	.rowTextArea {
-		transform: translateY(2px);
+		transform: translateY(4px);
 	}
 
 	.dragPreviewText {
-		transform: translateY(2px);
+		transform: translateY(4px);
 	}
 
 	.rowRemoveButton {
-		align-self: center;
-	}
-
-	/*
-		Multiline branch:
-		- keep single-line offsets untouched (for existing perfect centering)
-		- override only rows that wrap so first text line aligns with
-		  drag handle + checkbox.
-	*/
-	.rowMultiline {
-		align-items: flex-start;
-	}
-
-	.rowMultiline .dragHandle {
-		align-self: flex-start;
-		transform: none;
-		padding-top: 4px;
-	}
-
-	.rowMultiline .checklistCheckbox {
-		align-self: flex-start;
-		transform: none;
-		margin-top: 5px;
-	}
-
-	.rowMultiline .rowTextArea,
-	.rowMultiline .dragPreviewText {
-		transform: none;
-		align-items: flex-start;
-	}
-
-	.rowMultiline .rowRemoveButton {
-		align-self: flex-start;
 		margin-top: 2px;
 	}
 }
@@ -1162,6 +1315,11 @@ Drag ghost:
 	opacity: 1;
 	background: var(--color-surface-2);
 	box-shadow: 0 12px 28px -10px rgba(0, 0, 0, 0.75);
+}
+
+.dragGhost .rowRemoveButton {
+	opacity: 1;
+	pointer-events: none;
 }
 
 .listDragging .checklistComposerRow:hover,
@@ -1209,6 +1367,91 @@ Drag ghost:
 .checklistHint {
 	font-size: var(--font-size-xs);
 	color: var(--color-text-muted);
+}
+
+/* ── Floating keyboard toolbar (mobile only) ─────────────────────────── */
+
+.keyboardOcclusion {
+	position: fixed;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	/* Sit just under the floating toolbar but above the editor/app content. */
+	z-index: 9998;
+	background: var(--color-surface);
+	pointer-events: none;
+	contain: layout;
+}
+
+.floatingToolbar {
+	position: fixed;
+	left: 0;
+	right: 0;
+	/* Must be above the fullscreenOverlay (z-index 220) and everything inside it. */
+	z-index: 9999;
+	padding: 4px 8px;
+	background: var(--color-surface);
+	border-top: 1px solid var(--color-border);
+	box-shadow: 0 -2px 10px -4px rgba(0, 0, 0, 0.35);
+	/* Prevent the toolbar from participating in scroll or causing bounce. */
+	touch-action: none;
+	/* Prevent any ancestor from creating a containing block for this element. */
+	contain: layout;
+}
+
+.floatingToolbar .formatToolbar {
+	border: 0;
+	padding: 4px 0;
+	background: transparent;
+}
+
+/* ── BubbleMenu (inline selection formatting) ────────────────────────── */
+
+.bubbleMenu {
+	display: flex;
+	gap: 2px;
+	padding: 4px;
+	border-radius: var(--radius-md);
+	background: var(--color-surface-2);
+	border: 1px solid var(--color-border);
+	box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.45);
+	/* Must sit above Android native cut/copy/paste bar. */
+	z-index: 99999;
+}
+
+.bubbleMenuButton {
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	cursor: pointer;
+	width: 30px;
+	height: 30px;
+	border-radius: var(--radius-sm);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: var(--font-size-sm);
+}
+
+.bubbleMenuButton:hover,
+.bubbleMenuButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.bubbleMenuButtonActive {
+	background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-2));
+	color: var(--color-accent);
+}
+
+/* On mobile, hide the in-editor toolbar when the floating toolbar is active. */
+@media (pointer: coarse) {
+	.mobileHideToolbar .checklistToolbarSlot {
+		display: none;
+	}
+
+	.mobileHideToolbar .formatToolbar {
+		display: none;
+	}
 }
 
 @media (max-width: 780px) {

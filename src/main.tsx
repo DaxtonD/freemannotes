@@ -73,42 +73,6 @@ createRoot(rootEl).render(
 	</React.StrictMode>
 );
 
-// ── Mobile lifecycle diagnostic logger ─────────────────────────────────
-// Logs page lifecycle events, SW controller changes, and navigation type
-// to help diagnose unexpected splash/reload events on mobile devices.
-// Safe to leave in production (console.info only).
-if (typeof window !== 'undefined') {
-	const logLife = (event: string, detail?: unknown): void =>
-		console.info(`[lifecycle] ${new Date().toISOString()} ${event}`, detail ?? '');
-
-	document.addEventListener('visibilitychange', () =>
-		logLife('visibilitychange', document.visibilityState));
-	window.addEventListener('pageshow', (e: PageTransitionEvent) =>
-		logLife('pageshow', { persisted: e.persisted }));
-	window.addEventListener('pagehide', (e: PageTransitionEvent) =>
-		logLife('pagehide', { persisted: e.persisted }));
-	window.addEventListener('focus', () => logLife('focus'));
-	window.addEventListener('blur', () => logLife('blur'));
-	// Chrome 68+ Page Lifecycle API
-	(window as any).addEventListener?.('freeze', () => logLife('freeze'));
-	(window as any).addEventListener?.('resume', () => logLife('resume'));
-
-	if ('serviceWorker' in navigator) {
-		navigator.serviceWorker.addEventListener('controllerchange', () =>
-			logLife('sw:controllerchange — NEW SERVICE WORKER TOOK CONTROL'));
-	}
-
-	// Log once on boot: navigation type + tab discard flag
-	try {
-		const navEntry = performance?.getEntriesByType?.('navigation')?.[0] as PerformanceNavigationTiming | undefined;
-		logLife('boot', {
-			navigationType: navEntry?.type,
-			wasDiscarded: (document as any).wasDiscarded,
-			standalone: window.matchMedia?.('(display-mode: standalone)')?.matches,
-		});
-	} catch { /* ignore */ }
-}
-
 // Service worker registration + dev cleanup strategy.
 if ('serviceWorker' in navigator) {
 	if (import.meta.env.DEV) {

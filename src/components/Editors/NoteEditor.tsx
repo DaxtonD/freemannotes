@@ -1,43 +1,49 @@
 import React, { useMemo, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
+import type { Editor } from '@tiptap/core';
 import {
 	DragDropContext,
 	Draggable,
 	Droppable,
 	type BeforeCapture,
 	type DragStart,
-	type DragUpdate,
 	type DropResult,
 } from '@hello-pangea/dnd';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-	faAlignCenter,
-	faAlignLeft,
-	faAlignRight,
 	faBell,
-	faBold,
 	faImage,
 	faEllipsisVertical,
 	faGripVertical,
-	faItalic,
-	faListOl,
-	faListUl,
-	faLink,
 	faPalette,
-	faUnderline,
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
-import { applyChecklistDragToItems, normalizeChecklistHierarchy, removeChecklistItemWithChildren } from '../../core/checklistHierarchy';
+import { applyChecklistDragToItems, normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
+import {
+	createRichTextDocFromPlainText,
+	ensureChecklistItemRichContent,
+	ensureTextNoteRichContent,
+	getChecklistItemRichPreviewJson,
+	replaceRichFragmentFromJson,
+	setYTextValue,
+	snapshotChecklistRichContent,
+	syncChecklistItemPlainText,
+	TEXT_NOTE_RICH_FIELD,
+	syncTextNotePlainText,
+} from '../../core/richText';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
+import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { shareDocById } from '../../core/shareNote';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
+import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
@@ -52,6 +58,37 @@ export type NoteEditorProps = {
 type NoteType = 'text' | 'checklist';
 
 const EMPTY_ITEMS: readonly ChecklistItem[] = [];
+
+/**
+ * Lightweight renderer for ProseMirror JSON content in non-active rows.
+ * Handles bold, italic, underline, and hard breaks — no TipTap instance needed.
+ */
+function renderRichPreview(json: import('@tiptap/core').JSONContent | null | undefined): React.ReactNode {
+	if (!json?.content) return null;
+	let hasContent = false;
+	const elements = json.content.map((block, bi) => {
+		if (block.type !== 'paragraph') return null;
+		if (!block.content || block.content.length === 0) return bi > 0 ? <br key={bi} /> : null;
+		hasContent = true;
+		return (
+			<React.Fragment key={bi}>
+				{bi > 0 ? <br /> : null}
+				{block.content.map((node, ni) => {
+					if (node.type === 'hardBreak') return <br key={ni} />;
+					if (node.type !== 'text' || !node.text) return null;
+					let el: React.ReactNode = node.text;
+					for (const mark of node.marks ?? []) {
+						if (mark.type === 'bold') el = <strong>{el}</strong>;
+						if (mark.type === 'italic') el = <em>{el}</em>;
+						if (mark.type === 'underline') el = <u>{el}</u>;
+					}
+					return <React.Fragment key={ni}>{el}</React.Fragment>;
+				})}
+			</React.Fragment>
+		);
+	});
+	return hasContent ? elements : null;
+}
 
 function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
 	return yarray
@@ -102,64 +139,11 @@ function updateChecklistItemById(
 }
 
 
-function autoResizeTextarea(textarea: HTMLTextAreaElement | null): void {
-	if (!textarea) return;
-	textarea.style.height = '0px';
-	textarea.style.height = `${Math.max(26, textarea.scrollHeight)}px`;
-	const style = window.getComputedStyle(textarea);
-	const fontSize = Number.parseFloat(style.fontSize || '0') || 16;
-	const parsedLineHeight = Number.parseFloat(style.lineHeight || '0') || 0;
-	const lineHeight = parsedLineHeight > 0 ? parsedLineHeight : fontSize * 1.35;
-	const paddingTop = Number.parseFloat(style.paddingTop || '0') || 0;
-	const paddingBottom = Number.parseFloat(style.paddingBottom || '0') || 0;
-	const expectedSingleLine = Math.ceil(lineHeight + paddingTop + paddingBottom + 2);
-	const isMultiline = textarea.scrollHeight > expectedSingleLine + 6;
-	const row = textarea.closest(`.${styles.checklistItem}, .${styles.checklistComposerRow}`);
-	if (row instanceof HTMLElement) {
-		row.classList.toggle(styles.rowMultiline, isMultiline);
+function findChecklistItemMapById(yarray: Y.Array<Y.Map<any>>, id: string): Y.Map<any> | null {
+	for (const item of yarray.toArray()) {
+		if (String(item.get('id') ?? '') === id) return item;
 	}
-}
-
-// Write helper for Y.Text that applies a minimal diff and falls back to full replace if needed.
-function setYTextValue(ytext: Y.Text, next: string): void {
-	const prev = ytext.toString();
-	if (prev === next) return;
-
-	let start = 0;
-	const prevLen = prev.length;
-	const nextLen = next.length;
-	const minLen = prevLen < nextLen ? prevLen : nextLen;
-	while (start < minLen && prev.charCodeAt(start) === next.charCodeAt(start)) {
-		start++;
-	}
-
-	let prevEnd = prevLen - 1;
-	let nextEnd = nextLen - 1;
-	while (prevEnd >= start && nextEnd >= start && prev.charCodeAt(prevEnd) === next.charCodeAt(nextEnd)) {
-		prevEnd--;
-		nextEnd--;
-	}
-
-	const deleteLen = prevEnd >= start ? prevEnd - start + 1 : 0;
-	const insertText = nextEnd >= start ? next.slice(start, nextEnd + 1) : '';
-
-	const doc = (ytext as any).doc as Y.Doc | null | undefined;
-	const apply = (): void => {
-		if (deleteLen > 0) ytext.delete(start, deleteLen);
-		if (insertText.length > 0) ytext.insert(start, insertText);
-	};
-
-	if (doc) doc.transact(apply);
-	else apply();
-
-	if (ytext.toString() !== next) {
-		const fallback = (): void => {
-			ytext.delete(0, ytext.length);
-			if (next.length > 0) ytext.insert(0, next);
-		};
-		if (doc) doc.transact(fallback);
-		else fallback();
-	}
+	return null;
 }
 
 function useYTextValue(ytext: Y.Text): string {
@@ -244,10 +228,166 @@ function useOptionalChecklistItems(yarray: Y.Array<Y.Map<any>> | null): readonly
 	);
 }
 
+type ChecklistRowContentProps = {
+	item: ChecklistItem;
+	itemMap: Y.Map<any> | null;
+	checklistArray: Y.Array<Y.Map<any>>;
+	contentRef: (node: HTMLDivElement | null) => void;
+	isActive: boolean;
+	autoFocus: boolean;
+	isProtectedFromEmptyBackspace: boolean;
+	placeholderText: string;
+	removeLabel: string;
+	activate: (id: string) => void;
+	toggleCompleted: (id: string, checked: boolean) => void;
+	remove: (id: string) => void;
+	insertAfter: (id: string) => void;
+	setActiveEditor: (editor: Editor | null) => void;
+};
+
+const ChecklistRowContent = React.memo(function ChecklistRowContent(props: ChecklistRowContentProps): React.JSX.Element {
+	const {
+		item,
+		itemMap,
+		checklistArray,
+		contentRef,
+		isActive,
+		autoFocus,
+		isProtectedFromEmptyBackspace,
+		placeholderText,
+		removeLabel,
+		activate,
+		toggleCompleted,
+		remove,
+		insertAfter,
+		setActiveEditor,
+	} = props;
+
+	const handleActivate = React.useCallback((): void => {
+		activate(item.id);
+	}, [activate, item.id]);
+
+	const handleToggleCompleted = React.useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
+		toggleCompleted(item.id, event.target.checked);
+	}, [item.id, toggleCompleted]);
+
+	const handleRemove = React.useCallback((): void => {
+		remove(item.id);
+	}, [item.id, remove]);
+
+	const handleInsertAfter = React.useCallback((): void => {
+		insertAfter(item.id);
+	}, [insertAfter, item.id]);
+
+	if (!isActive) {
+		const previewMap = itemMap ?? findChecklistItemMapById(checklistArray, item.id);
+		const richPreview = renderRichPreview(previewMap ? getChecklistItemRichPreviewJson(previewMap) : null);
+
+		return (
+			<>
+				<input
+					type="checkbox"
+					className={styles.checklistCheckbox}
+					checked={item.completed}
+					onChange={handleToggleCompleted}
+				/>
+				<div ref={contentRef} className={styles.checklistRowPreview} onClick={handleActivate}>
+					{richPreview || item.text || '\u00A0'}
+				</div>
+				<button
+					type="button"
+					className={styles.rowRemoveButton}
+					onClick={handleRemove}
+					aria-label={removeLabel}
+					title={removeLabel}
+				>
+					×
+				</button>
+			</>
+		);
+	}
+
+	const liveItemMap = itemMap ?? findChecklistItemMapById(checklistArray, item.id);
+	const fragment = liveItemMap ? ensureChecklistItemRichContent(liveItemMap) : null;
+
+	return (
+		<>
+			<input
+				type="checkbox"
+				className={styles.checklistCheckbox}
+				checked={item.completed}
+				onChange={handleToggleCompleted}
+			/>
+			{liveItemMap && fragment ? (
+				<div ref={contentRef} className={styles.checklistRowRichShell} onClick={handleActivate}>
+					<RichTextEditor
+						variant="minimal"
+						fragment={fragment}
+						// Mount-emission branch:
+						// This row editor mounts whenever active row focus changes. We skip the
+						// initial change event so row activation itself does not trigger an
+						// immediate parent update.
+						emitInitialChange={false}
+						// Serialization branch:
+						// For Yjs-backed checklist rows we do not need JSON/text payloads from
+						// TipTap on each keystroke. We can sync plain text from the shared
+						// fragment directly, so signal-only updates are cheaper.
+						serializeChangePayload={false}
+						placeholder={placeholderText}
+						hideToolbar
+						autoFocus={autoFocus}
+						containerClassName={styles.checklistRowRichStack}
+						viewportClassName={styles.checklistRowRichViewport}
+						contentClassName={styles.checklistRowRichEditor}
+						onEditorChange={setActiveEditor}
+						onChange={() => {
+							syncChecklistItemPlainText(liveItemMap, fragment);
+						}}
+						onEnter={handleInsertAfter}
+						onShiftEnter={() => undefined}
+						onBackspaceWhenEmpty={() => {
+							if (isProtectedFromEmptyBackspace) return;
+							remove(item.id);
+						}}
+					/>
+				</div>
+			) : (
+				<div ref={contentRef} className={styles.checklistRowPreview} onClick={handleActivate}>
+					{item.text || '\u00A0'}
+				</div>
+			)}
+			<button
+				type="button"
+				className={styles.rowRemoveButton}
+				onClick={handleRemove}
+				aria-label={removeLabel}
+				title={removeLabel}
+			>
+				×
+			</button>
+		</>
+	);
+}, (prev, next) => (
+	prev.item === next.item &&
+	prev.itemMap === next.itemMap &&
+	prev.checklistArray === next.checklistArray &&
+	// contentRef is a side-effect ref callback — skip comparison to avoid
+	// defeating memoization when the parent creates a new closure per render.
+	prev.isActive === next.isActive &&
+	prev.autoFocus === next.autoFocus &&
+	prev.isProtectedFromEmptyBackspace === next.isProtectedFromEmptyBackspace &&
+	prev.placeholderText === next.placeholderText &&
+	prev.removeLabel === next.removeLabel &&
+	prev.activate === next.activate &&
+	prev.toggleCompleted === next.toggleCompleted &&
+	prev.remove === next.remove &&
+	prev.insertAfter === next.insertAfter &&
+	prev.setActiveEditor === next.setActiveEditor
+));
+
 export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const getInitialInteractionGuardState = (): boolean => {
-		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
-		return window.matchMedia('(pointer: coarse)').matches;
+		return false;
 	};
 	const { t } = useI18n();
 	const [isModified, setIsModified] = React.useState(false);
@@ -260,6 +400,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
+	const keyboard = useKeyboardHeight();
+	// Mobile-only keyboard branch:
+	// - `useKeyboardHeight()` is driven by the Visual Viewport API, so `keyboard.isOpen`
+	//   reflects whether the on-screen keyboard has reduced the visible viewport.
+	// - We intentionally gate this branch by `isCoarsePointer` because desktop virtual
+	//   keyboards and narrow windows should keep the normal dock/media layout.
+	// - Downstream, this flag removes the mobile dock/media sheet from layout entirely
+	//   so the editor body ends at the keyboard instead of allowing hidden footer UI to
+	//   remain scrollable beneath the visible editing surface.
+	const mobileKeyboardOpen = isCoarsePointer && keyboard.isOpen;
 	const isMobileLandscape = useIsMobileLandscape();
 	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
 	React.useEffect(() => {
@@ -268,13 +418,38 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (isMobileLandscape) setMediaDockOpen(false);
 	}, [isMobileLandscape]);
 	React.useEffect(() => {
-		// Coarse-pointer branch: start with a longer guard window because this
-		// editor has dense interactive checklist controls near the tap origin.
-		if (!isCoarsePointer || typeof window === 'undefined') return;
-		setInteractionGuardActive(true);
-		const timeoutId = window.setTimeout(() => setInteractionGuardActive(false), 700);
-		return () => window.clearTimeout(timeoutId);
-	}, [isCoarsePointer]);
+		// Keyboard-open branch:
+		// The mobile dock should never coexist with the software keyboard. If the dock
+		// stayed open while the keyboard was visible, users could still scroll the hidden
+		// footer region into view, which is exactly the bug we are preventing here.
+		if (!mobileKeyboardOpen) return;
+		setMediaDockOpen(false);
+	}, [mobileKeyboardOpen]);
+	// ── Keyboard-drag focusout guard ─────────────────────────────────────────────
+	// Mounted once on component init.  Listens in the *capture* phase so it fires
+	// before any library/framework handlers can react to the blur.
+	//
+	// Why capture phase?  The DnD library's own listeners run in the bubble phase.
+	// If we also used bubble, the browser's keyboard-dismiss heuristic could act
+	// between the library's blur dispatch and our handler.  Capture guarantees we
+	// intervene first.
+	//
+	// The guard is only active while `isDraggingWithKeyboardRef` is true (set in
+	// `onChecklistBeforeCapture`, cleared in `onDragEnd`).  Outside of that window
+	// the handler is a fast no-op.
+	React.useEffect(() => {
+		const handleFocusOut = (e: FocusEvent): void => {
+			// Not in a keyboard-drag session — let the event propagate normally.
+			if (!isDraggingWithKeyboardRef.current) return;
+			// Focus is already moving *to* the proxy (e.g. we just called .focus()
+			// on it ourselves) — no re-assert needed, avoid infinite loop.
+			if (e.relatedTarget === focusProxyRef.current) return;
+			// Re-claim focus on the proxy so the keyboard stays up.
+			focusProxyRef.current?.focus();
+		};
+		document.addEventListener('focusout', handleFocusOut, true);
+		return () => document.removeEventListener('focusout', handleFocusOut, true);
+	}, []);
 	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
@@ -334,7 +509,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		setShowCompleted(Boolean(props.initialShowCompleted));
 	}, [props.initialShowCompleted]);
 	const checklistArray = useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
-	const rowInputsRef = React.useRef<Map<string, HTMLTextAreaElement | null>>(new Map());
+	const rowInputsRef = React.useRef<Map<string, HTMLDivElement | null>>(new Map());
 	const rowContainersRef = React.useRef<Map<string, HTMLLIElement | null>>(new Map());
 	const dragGhostMetricsRef = React.useRef<{ rowWidth: number | null; rowHeight: number | null; textHeight: number | null; textWidth: number | null }>({
 		rowWidth: null,
@@ -354,10 +529,37 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			props.doc.off('afterTransaction', onAfterTransaction);
 		};
 	}, [props.doc, props.noteId]);
+	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
-	const lastOverIndexRef = React.useRef<number | null>(null);
+	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
+	const [activeChecklistRowEditor, setActiveChecklistRowEditor] = React.useState<Editor | null>(null);
+	// ── Mobile keyboard focus proxy ──────────────────────────────────────────────
+	// Problem: when the DnD library starts a drag it clones the grabbed element
+	// into a portal, tears the original out of flow, and sometimes blurs the
+	// contenteditable altogether.  On mobile, any frame without a focused
+	// input-like element causes the browser to dismiss the virtual keyboard.
+	//
+	// Solution: keep a hidden <textarea> in the DOM (the "focus proxy").  Right
+	// before the drag begins we transfer focus to the proxy.  Because a real
+	// input element holds focus, the OS keeps the keyboard visible even while
+	// the original TipTap editor is momentarily detached / blurred.
+	//
+	// `focusProxyRef`              – ref to the hidden <textarea> rendered below.
+	// `isDraggingWithKeyboardRef`  – mutable flag that is `true` only while a
+	//                                drag is in flight *and* the keyboard was open
+	//                                when the drag started.  Guards the document-
+	//                                level focusout listener so it only intervenes
+	//                                during keyboard-sensitive drags.
+	const focusProxyRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const isDraggingWithKeyboardRef = React.useRef(false);
+	// Some mobile browsers briefly report `keyboard.isOpen=false` during focus
+	// handoffs between rows. Suppress keyboard-close de-selection for a short
+	// window after deliberate row activation so we don't blur/clear selection.
+	const ignoreKeyboardCloseUntilRef = React.useRef<number>(0);
+	// Tracks keyboard open->closed transitions for de-selection.
+	const lastMobileKeyboardOpenRef = React.useRef(mobileKeyboardOpen);
+	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
 	const [draggingParentId, setDraggingParentId] = React.useState<string | null>(null);
-	const [isChecklistDragging, setIsChecklistDragging] = React.useState(false);
 
 
 	// metadata.type controls which editor body is rendered.
@@ -365,14 +567,70 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
 
+	// Keyboard-close de-selection (checklist mode only):
+	// If the user explicitly dismisses the mobile keyboard, clear any active
+	// checklist row selection so dragging cannot bring the keyboard back.
+	//
+	// We scope this to:
+	// - `isCoarsePointer` (mobile/tablet), because desktop has no soft keyboard
+	// - `type === 'checklist'`, because text notes use a different editor surface
+	React.useEffect(() => {
+		const wasOpen = lastMobileKeyboardOpenRef.current;
+		lastMobileKeyboardOpenRef.current = mobileKeyboardOpen;
+		if (!isCoarsePointer) return;
+		if (type !== 'checklist') return;
+		if (!wasOpen || mobileKeyboardOpen) return;
+		if (Date.now() < ignoreKeyboardCloseUntilRef.current) return;
+		setActiveChecklistRowId(null);
+		setFocusRowId(null);
+		setActiveChecklistRowEditor(null);
+		// Remove any lingering :focus-within highlight by clearing DOM focus.
+		// This must not move focus to another input (which could re-open the keyboard).
+		if (document.activeElement instanceof HTMLElement) {
+			document.activeElement.blur();
+		}
+	}, [isCoarsePointer, mobileKeyboardOpen, type]);
+
 	const titleYText = useMemo(() => props.doc.getText('title'), [props.doc]);
 	const contentYText = useMemo(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type]);
+	const [richContentFragment, setRichContentFragment] = React.useState<Y.XmlFragment | null>(() => {
+		if (type !== 'text') return null;
+		const existing = props.doc.share.get(TEXT_NOTE_RICH_FIELD);
+		return existing instanceof Y.XmlFragment ? existing : null;
+	});
 	const title = useYTextValue(titleYText);
 	const content = useOptionalYTextValue(contentYText);
 	const items = useOptionalChecklistItems(type === 'checklist' ? checklistArray : null);
+
+	React.useEffect(() => {
+		if (type !== 'text') {
+			setRichContentFragment(null);
+			return;
+		}
+		const existing = props.doc.share.get(TEXT_NOTE_RICH_FIELD);
+		if (existing instanceof Y.XmlFragment) {
+			setRichContentFragment((current) => (current === existing ? current : existing));
+			return;
+		}
+		// Seed the rich fragment after mount instead of during render so Yjs writes
+		// cannot cascade into NoteGrid subscriptions mid-render.
+		const nextFragment = ensureTextNoteRichContent(props.doc);
+		setRichContentFragment(nextFragment);
+	}, [props.doc, type]);
+
+	const checklistMapsById = useMemo(() => {
+		const next = new Map<string, Y.Map<any>>();
+		for (const itemMap of checklistArray.toArray()) {
+			next.set(String(itemMap.get('id') ?? ''), itemMap);
+		}
+		return next;
+	}, [checklistArray, items]);
 	const normalizedItems = useMemo(() => normalizeChecklistHierarchy(items), [items]);
 	const activeItems = useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedItems = useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
+	const firstActiveItemId = activeItems[0]?.id ?? null;
+	const checklistItemPlaceholder = t('editors.checklistItemPlaceholder');
+	const checklistRemoveLabel = t('editors.remove');
 
 	// FLIP animation helper for checklist indent/un-indent (horizontal snap):
 	// When we indent/unindent we mutate the *flat* list (parentId changes + regrouping),
@@ -386,41 +644,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	captureFlipPositionsRef.current = captureFlipPositions;
 
 	React.useEffect(() => {
-		if (!focusRowId) return;
-		const target = rowInputsRef.current.get(focusRowId);
-		autoResizeTextarea(target);
-		target?.focus();
-		setFocusRowId(null);
-	}, [focusRowId, items]);
-
-	React.useLayoutEffect(() => {
-		for (const textarea of rowInputsRef.current.values()) {
-			autoResizeTextarea(textarea);
-		}
-	}, [items, showCompleted]);
-
-	// Re-measure textarea heights when the container width changes (window resize):
-	// Checklist rows use auto-growing textareas where height depends on text wrapping.
-	// Without a resize listener, shrinking/growing the editor can change wrapping but
-	// leave stale heights, causing clipped text until the user types.
-	//
-	// We rAF-debounce to avoid forced layout on every resize event.
-	React.useEffect(() => {
-		let rafId = 0;
-		const onResize = (): void => {
-			cancelAnimationFrame(rafId);
-			rafId = requestAnimationFrame(() => {
-				for (const textarea of rowInputsRef.current.values()) {
-					autoResizeTextarea(textarea);
-				}
-			});
-		};
-		window.addEventListener('resize', onResize);
-		return () => {
-			window.removeEventListener('resize', onResize);
-			cancelAnimationFrame(rafId);
-		};
-	}, []);
+		if (type !== 'checklist') return;
+		// Mobile keyboard-hidden branch:
+		// When the keyboard is closed, allow "no active row" as a stable state.
+		// (See the keyboard-close de-selection effect above.)
+		if (isCoarsePointer && !mobileKeyboardOpen) return;
+		if (activeChecklistRowId && normalizedItems.some((item) => item.id === activeChecklistRowId)) return;
+		setActiveChecklistRowId(normalizedItems[0]?.id ?? null);
+	}, [activeChecklistRowId, isCoarsePointer, mobileKeyboardOpen, normalizedItems, type]);
 
 	// Horizontal snap handler — bypass the drag library entirely for indent/unindent:
 	// We detect a deliberate horizontal gesture (see `dndSensors.ts`) and then perform
@@ -453,46 +684,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		});
 	}, [type]);
 
-	React.useEffect(() => {
-		const clearInitialFocus = (): void => {
-			const active = document.activeElement;
-			if (active instanceof HTMLElement) {
-				active.blur();
-			}
-			window.getSelection?.()?.removeAllRanges();
-		};
-
-		// Focus suppression branch:
-		// - coarse pointer: use longer suppression to outlast delayed compat events
-		// - fine pointer: keep tight to avoid interfering with normal desktop focus
-		const suppressUntil = performance.now() + (isCoarsePointer ? 700 : 220);
-		const onFocusIn = (event: FocusEvent): void => {
-			if (performance.now() > suppressUntil) return;
-			const target = event.target;
-			if (target instanceof HTMLElement) {
-				target.blur();
-			}
-			window.getSelection?.()?.removeAllRanges();
-		};
-
-		clearInitialFocus();
-		const rafIdA = window.requestAnimationFrame(clearInitialFocus);
-		const rafIdB = window.requestAnimationFrame(() => {
-			clearInitialFocus();
-		});
-		document.addEventListener('focusin', onFocusIn, true);
-		const timeoutId = window.setTimeout(() => {
-			document.removeEventListener('focusin', onFocusIn, true);
-		}, isCoarsePointer ? 700 : 220);
-
-		return () => {
-			window.cancelAnimationFrame(rafIdA);
-			window.cancelAnimationFrame(rafIdB);
-			window.clearTimeout(timeoutId);
-			document.removeEventListener('focusin', onFocusIn, true);
-		};
-	}, [isCoarsePointer, props.noteId]);
-
 	const addChecklistItem = React.useCallback(
 		(index?: number): void => {
 			if (type !== 'checklist') return;
@@ -514,6 +705,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 			if (doc) doc.transact(apply);
 			else apply();
+			setActiveChecklistRowId(nextId);
 			setFocusRowId(nextId);
 		},
 		[checklistArray, items.length, type]
@@ -523,6 +715,52 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		(nextItems: readonly ChecklistItem[]): void => {
 			const doc = (checklistArray as any).doc as Y.Doc | null | undefined;
 			const apply = (): void => {
+				const currentMaps = checklistArray.toArray();
+				const richSnapshots = snapshotChecklistRichContent(checklistArray);
+
+				// Reorder in place by rewriting the existing slot maps instead of deleting and
+				// recreating the full Y.Array. That keeps each slot attached to the document,
+				// avoids detached-fragment warnings from y-prosemirror, and prevents the full
+				// TipTap remount storm that was making checklist drag feel sluggish.
+				if (currentMaps.length === nextItems.length) {
+					for (let index = 0; index < nextItems.length; index += 1) {
+						const entry = nextItems[index];
+						const map = currentMaps[index];
+						const nextParentId = typeof entry.parentId === 'string' && entry.parentId.trim().length > 0
+							? entry.parentId.trim()
+							: null;
+						const currentParentId = typeof map.get('parentId') === 'string' && String(map.get('parentId')).trim().length > 0
+							? String(map.get('parentId')).trim()
+							: null;
+						const currentId = String(map.get('id') ?? '');
+						const currentText = String(map.get('text') ?? '');
+						const currentCompleted = Boolean(map.get('completed'));
+
+						if (
+							currentId === entry.id &&
+							currentText === entry.text &&
+							currentCompleted === entry.completed &&
+							currentParentId === nextParentId
+						) {
+							continue;
+						}
+
+						map.set('id', entry.id);
+						map.set('text', entry.text);
+						map.set('completed', entry.completed);
+						map.set('parentId', nextParentId);
+
+						const fragment = ensureChecklistItemRichContent(map);
+						replaceRichFragmentFromJson(
+							fragment,
+							richSnapshots.get(entry.id) ?? createRichTextDocFromPlainText(entry.text),
+							'minimal'
+						);
+					}
+					return;
+				}
+
+				// Fallback for any future call sites that genuinely change list length.
 				checklistArray.delete(0, checklistArray.length);
 				const maps = nextItems.map((entry) => {
 					const map = new Y.Map<any>();
@@ -533,6 +771,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					return map;
 				});
 				checklistArray.insert(0, maps);
+				for (let index = 0; index < maps.length; index += 1) {
+					const entry = nextItems[index];
+					const fragment = ensureChecklistItemRichContent(maps[index]);
+					replaceRichFragmentFromJson(
+						fragment,
+						richSnapshots.get(entry.id) ?? createRichTextDocFromPlainText(entry.text),
+						'minimal'
+					);
+				}
 			};
 
 			if (doc) doc.transact(apply);
@@ -563,11 +810,33 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			const index = normalizedItems.findIndex((row) => row.id === id);
 			const previousId = index > 0 ? normalizedItems[index - 1]?.id ?? null : null;
 			const nextId = normalizedItems[index + 1]?.id ?? null;
-			const nextItems = removeChecklistItemWithChildren(normalizedItems, id);
-			replaceChecklistItems(nextItems);
+
+			// Surgical delete: remove only the target item and its children
+			// from the Y.Array, preserving all other items' Y.Map (and their
+			// rich-content Y.XmlFragment) in place.
+			const childIds = new Set(
+				normalizedItems.filter((item) => item.parentId === id).map((item) => item.id),
+			);
+			const idsToRemove = new Set([id, ...childIds]);
+			const doc = (checklistArray as any).doc as Y.Doc | null | undefined;
+			const apply = (): void => {
+				// Delete from end to start so indices remain stable.
+				for (let i = checklistArray.length - 1; i >= 0; i--) {
+					const m = checklistArray.get(i);
+					if (!m) continue;
+					const itemId = String(m.get('id') ?? '');
+					if (idsToRemove.has(itemId)) {
+						checklistArray.delete(i, 1);
+					}
+				}
+			};
+			if (doc) doc.transact(apply);
+			else apply();
+
+			setActiveChecklistRowId(previousId ?? nextId);
 			setFocusRowId(previousId ?? nextId);
 		},
-		[normalizedItems, replaceChecklistItems, type]
+		[checklistArray, normalizedItems, type]
 	);
 
 	const onChecklistDragEnd = React.useCallback(
@@ -612,27 +881,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		};
 	}, []);
 
-	const clearChecklistRowSelection = React.useCallback((): void => {
-		const active = document.activeElement;
-		if (active instanceof HTMLElement) {
-			active.blur();
-		}
-		window.getSelection?.()?.removeAllRanges();
-	}, []);
-
-	const measureChecklistRowIsMultiline = React.useCallback((id: string): boolean => {
-		const node = rowInputsRef.current.get(id);
-		if (!node) return false;
-		const style = window.getComputedStyle(node);
-		const fontSize = Number.parseFloat(style.fontSize || '0') || 16;
-		const parsedLineHeight = Number.parseFloat(style.lineHeight || '0') || 0;
-		const lineHeight = parsedLineHeight > 0 ? parsedLineHeight : fontSize * 1.35;
-		const paddingTop = Number.parseFloat(style.paddingTop || '0') || 0;
-		const paddingBottom = Number.parseFloat(style.paddingBottom || '0') || 0;
-		// Heuristic: treat the row as multi-line if its scrollHeight is meaningfully
-		// larger than the expected single-line height.
-		const expectedSingleLine = Math.ceil(lineHeight + paddingTop + paddingBottom + 2);
-		return node.scrollHeight > expectedSingleLine + 6;
+	// ── Drag-handle focus-steal prevention ────────────────────────────────────────
+	// Bound to onMouseDown / onPointerDown / onTouchStart on every drag-handle
+	// button.  `preventDefault()` on these events stops the browser's default
+	// "focus the element you just pressed" behaviour.  Without this, tapping the
+	// drag handle would blur the TipTap editor and dismiss the keyboard *before*
+	// the DnD gesture even begins — making the proxy guard irrelevant.
+	const preventHandleFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
+		event.preventDefault();
 	}, []);
 
 	const vibrateIfAvailable = React.useCallback((ms: number): void => {
@@ -642,75 +898,79 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	const onChecklistDragStart = React.useCallback(
 		(event: DragStart): void => {
-			setIsChecklistDragging(true);
-			clearChecklistRowSelection();
-			// Desktop ghost sizing notes:
-			// - @hello-pangea/dnd can apply inline styles at drag start that subtly
-			//   change the measured width/height of the dragged row (especially with
-			//   flex + textarea auto-sizing).
-			// - We capture measurements in `onBeforeCapture` while the DOM is still in
-			//   its stable, pre-drag state.
-			// - This `onDragStart` measurement is only a safety net (e.g. if refs were
-			//   not yet populated for a freshly-mounted row).
-			if (dragGhostMetricsRef.current.rowWidth === null || dragGhostMetricsRef.current.textHeight === null) {
-				captureDragGhostMetrics(event.draggableId);
-			}
+			// Keep drag-start lightweight: rely on metrics captured in onBeforeCapture.
 			resetChecklistDragAxis();
+
 			const dragged = activeItems.find((item) => item.id === event.draggableId) ?? null;
+			// Hierarchy branch:
+			// If the dragged row is a parent with visible children, we store its id so
+			// child rows can render with drag-aware styling and avoid visual ambiguity.
+			// Dragging a child row (or a parent without children) clears this state.
 			if (dragged && !dragged.parentId) {
 				const hasChildren = activeItems.some((item) => item.parentId === dragged.id);
 				setDraggingParentId(hasChildren ? dragged.id : null);
 			} else {
 				setDraggingParentId(null);
 			}
-			lastOverIndexRef.current = null;
-			vibrateIfAvailable(12);
 		},
-		[activeItems, captureDragGhostMetrics, clearChecklistRowSelection, vibrateIfAvailable]
+		[activeItems]
 	);
 
+	// ── onChecklistBeforeCapture — earliest hook in the drag lifecycle ────────────
+	// Called synchronously by @hello-pangea/dnd *before* any DOM mutations
+	// (cloning, portal injection, dimension locking) happen.  This is the only
+	// safe moment to move focus to the proxy because once cloning begins the
+	// browser may fire a blur on the contenteditable, which on mobile triggers
+	// the keyboard-dismiss heuristic within the same event-loop turn.
 	const onChecklistBeforeCapture = React.useCallback(
 		(before: BeforeCapture): void => {
-			// Capture the dragged row's dimensions *before* the drag begins so the
-			// clone/ghost can be sized to exactly match what the user picked up.
-			// This avoids narrow/overshooting ghosts caused by drag-time transforms.
+			// Ghost-sizing branch: measure the row so the drag clone is pixel-perfect.
 			captureDragGhostMetrics(before.draggableId);
-		},
-		[captureDragGhostMetrics]
-	);
 
-	const onChecklistDragUpdate = React.useCallback(
-		(event: DragUpdate): void => {
-			const nextIndex = event.destination?.index ?? null;
-			if (nextIndex === null) return;
-			if (lastOverIndexRef.current === nextIndex) return;
-			lastOverIndexRef.current = nextIndex;
-			vibrateIfAvailable(6);
-		},
-		[vibrateIfAvailable]
-	);
-
-	const onChecklistKeyDown = React.useCallback(
-		(event: React.KeyboardEvent<HTMLTextAreaElement>, rowId: string): void => {
-			if (event.key === 'Enter' && !event.shiftKey) {
-				event.preventDefault();
-				// Insert relative to the underlying stored array order. Using the active-only
-				// index here breaks when completed items exist because the insert index no
-				// longer matches the actual position of `rowId` in the Yjs array.
-				const currentIndex = items.findIndex((row) => row.id === rowId);
-				addChecklistItem(currentIndex === -1 ? undefined : currentIndex);
-				return;
-			}
-
-			if (event.key === 'Backspace') {
-				const current = activeItems.find((row) => row.id === rowId);
-				if (!current || current.text.length > 0) return;
-				event.preventDefault();
-				removeChecklistItem(rowId);
+			// Mobile keyboard preservation branch:
+			// • Arm the focusout guard so any subsequent blur during the drag is
+			//   immediately recovered.
+			// • Move focus to the proxy textarea.  Because the proxy is a real
+			//   input-like element, the OS considers the keyboard "still in use"
+			//   and keeps it visible.
+			// • We only do this when `mobileKeyboardOpen` is true to avoid
+			//   interfering with desktop drag interactions where there is no
+			//   virtual keyboard to preserve.
+			if (mobileKeyboardOpen) {
+				isDraggingWithKeyboardRef.current = true;
+				focusProxyRef.current?.focus();
 			}
 		},
-		[activeItems, addChecklistItem, items, removeChecklistItem]
+		[captureDragGhostMetrics, mobileKeyboardOpen]
 	);
+
+	const insertChecklistItemAfter = React.useCallback(
+		(rowId: string): void => {
+			const currentIndex = items.findIndex((row) => row.id === rowId);
+			addChecklistItem(currentIndex === -1 ? undefined : currentIndex);
+		},
+		[addChecklistItem, items]
+	);
+
+	const activateChecklistRow = React.useCallback(
+		(id: string): void => {
+			// Row-switch focus handoff (mobile):
+			// When moving between checklist rows while the keyboard is open, we
+			// focus the proxy textarea first so there is never a frame where no
+			// input-like element is focused (which would dismiss the keyboard).
+			if (isCoarsePointer && keyboard.isOpen) {
+				ignoreKeyboardCloseUntilRef.current = Date.now() + 450;
+				focusProxyRef.current?.focus();
+			}
+			setActiveChecklistRowId(id);
+			setFocusRowId(id);
+		},
+		[isCoarsePointer, keyboard.isOpen]
+	);
+
+	const setChecklistRowInputRef = React.useCallback((id: string, node: HTMLDivElement | null): void => {
+		rowInputsRef.current.set(id, node);
+	}, []);
 
 	const pruneEmptyChecklistRows = React.useCallback((): void => {
 		if (type !== 'checklist') return;
@@ -764,45 +1024,111 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const renderChecklistClone = React.useCallback(
 		(
 			dragProvided: import('@hello-pangea/dnd').DraggableProvided,
-			_snapshot: import('@hello-pangea/dnd').DraggableStateSnapshot,
+			snapshot: import('@hello-pangea/dnd').DraggableStateSnapshot,
 			rubric: import('@hello-pangea/dnd').DraggableRubric
 		): React.JSX.Element => {
 			const dragged = activeItems.find((item) => item.id === rubric.draggableId) ?? null;
-			const { rowWidth, textHeight, textWidth } = dragGhostMetricsRef.current;
-			const isMultilineClone = (textHeight ?? 0) > 30;
+			const { rowWidth, rowHeight, textHeight, textWidth } = dragGhostMetricsRef.current;
+			const draggedMap = dragged ? checklistMapsById.get(dragged.id) : undefined;
+			const draggedRichJson = draggedMap ? getChecklistItemRichPreviewJson(draggedMap) : null;
+			const richPreview = renderRichPreview(draggedRichJson);
+			const isActiveClone = dragged !== null && activeChecklistRowId === dragged.id;
+			const previewContent = richPreview || dragged?.text || '\u00A0';
+			const dragStyle = dragProvided.draggableProps.style ?? {};
 
 			return (
 				<li
 					ref={dragProvided.innerRef}
 					{...dragProvided.draggableProps}
-					className={`${styles.checklistItem}${isMultilineClone ? ` ${styles.rowMultiline}` : ''} ${styles.rowDragging} ${styles.dragGhost}`}
-					style={{ ...(dragProvided.draggableProps.style ?? {}), width: rowWidth ?? undefined, boxSizing: 'border-box' }}
+					className={`${styles.checklistItem} ${styles.rowDragging} ${styles.dragGhost}${isActiveClone ? ` ${styles.checklistItemActive}` : ''}${dragged?.parentId ? ` ${styles.childRow}` : ''}`}
+					style={{ ...dragStyle, ...(snapshot.isDropAnimating ? { transitionDuration: isCoarsePointer ? '1ms' : '60ms' } : null), width: rowWidth ?? undefined, minHeight: rowHeight ?? undefined, boxSizing: 'border-box' }}
 				>
 					<button type="button" className={styles.dragHandle} aria-label={t('editors.dragHandle')} {...dragProvided.dragHandleProps}>
 						<FontAwesomeIcon icon={faGripVertical} />
 					</button>
 					<input type="checkbox" className={styles.checklistCheckbox} checked={Boolean(dragged?.completed)} readOnly />
-					{/*
-						Clone sizing:
-						- Fixing width prevents re-wrapping relative to the original row.
-						- Fixing height prevents the clone from shrinking/expanding mid-drag.
-					*/}
-					<div className={styles.dragPreviewText} style={{ height: textHeight ?? undefined, width: textWidth ?? undefined, flex: '0 0 auto' }}>
-						{dragged?.text ?? ''}
-					</div>
+					{isActiveClone ? (
+						<div className={styles.checklistRowRichShell}>
+							<div className={styles.checklistRowRichStack} style={{ width: textWidth ?? undefined, flex: '0 0 auto' }}>
+								<div className={styles.checklistRowRichViewport}>
+									<div className={`${styles.checklistRowRichEditor} ${styles.dragPreviewText}`} style={{ height: textHeight ?? undefined }}>
+										{previewContent}
+									</div>
+								</div>
+							</div>
+						</div>
+					) : (
+						<div className={styles.checklistRowPreview} style={{ height: textHeight ?? undefined, width: textWidth ?? undefined, flex: '0 0 auto' }}>
+							{previewContent}
+						</div>
+					)}
+					<button type="button" className={styles.rowRemoveButton} aria-hidden="true" tabIndex={-1} disabled>
+						×
+					</button>
 				</li>
 			);
 		},
-		[activeItems, t]
+		[activeChecklistRowId, activeItems, checklistMapsById, isCoarsePointer, t]
 	);
 
 	return (
 		<div className={styles.fullscreenOverlay} role="presentation" onClick={mediaDockOpen ? undefined : handleClose}>
 			<section
 				aria-label={`Editor ${props.noteId}`}
-				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}`}
+				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}
+				// Keyboard-open branch:
+				// `keyboard.visibleBottom` is the bottom edge of the *visible* viewport from
+				// the Visual Viewport API. By clamping the editor to that exact height, the
+				// content area physically stops at the keyboard instead of continuing behind it.
+				style={mobileKeyboardOpen ? { height: `${keyboard.visibleBottom}px`, maxHeight: `${keyboard.visibleBottom}px` } : undefined}
 				onClick={(event) => event.stopPropagation()}
 			>
+				{/* ── Hidden focus proxy <textarea> ────────────────────────────────
+				    Purpose:
+				      Keeps the mobile virtual keyboard visible while the DnD library
+				      manipulates the DOM.  The proxy receives focus right before the
+				      drag begins (in `onChecklistBeforeCapture`) and holds it until
+				      the drag ends, at which point focus returns to the active TipTap
+				      editor.
+
+				    Why a <textarea> and not an <input>?
+				      Both work on Android/Chrome, but Safari on iOS aggressively
+				      collapses the keyboard for <input type="text"> when it detects
+				      that the element has no visible frame.  <textarea> does not
+				      trigger that heuristic.
+
+				    Style choices:
+				      • position:fixed / 1×1px / opacity:0 — invisible but focusable.
+				        `display:none` and `visibility:hidden` both make the element
+				        unfocusable, which would defeat the purpose.
+				      • fontSize:16px — prevents iOS "auto-zoom on focus" which fires
+				        when the focused input has a computed font-size < 16px.
+				      • pointerEvents:none — the proxy must never accidentally
+				        intercept taps or scroll gestures.
+				      • tabIndex={-1} — keeps the element out of the normal tab order
+				        so keyboard (hardware) navigation skips it.
+				      • aria-hidden — prevents screen readers from announcing it.
+				      • zIndex:-1 — pushes it behind all other content as a safety
+				        net in case opacity/pointer-events ever fail to hide it. */}
+				<textarea
+					ref={focusProxyRef}
+					aria-hidden="true"
+					tabIndex={-1}
+					style={{
+						position: 'fixed',
+						top: 0,
+						left: 0,
+						width: '1px',
+						height: '1px',
+						opacity: 0,
+						padding: 0,
+						border: 'none',
+						outline: 'none',
+						pointerEvents: 'none',
+						fontSize: '16px',
+						zIndex: -1,
+					}}
+				/>
 				{type === 'checklist' ? (
 					<header className={styles.editorTopBar}>
 						<button type="button" className={styles.closeIconButton} onClick={handleClose} aria-label={t('common.close')}>
@@ -827,95 +1153,78 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					/>
 				)}
 
-				{type === 'text' && contentYText ? (
-					<>
-						<div className={styles.formatToolbar} role="toolbar" aria-label={t('editors.formatting')}>
-							<div className={styles.formatToolbarRow}>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.bold')} title={t('editors.bold')}>
-									<FontAwesomeIcon icon={faBold} />
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.italic')} title={t('editors.italic')}>
-									<FontAwesomeIcon icon={faItalic} />
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.underline')} title={t('editors.underline')}>
-									<FontAwesomeIcon icon={faUnderline} />
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.heading1')} title={t('editors.heading1')}>
-									H1
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.heading2')} title={t('editors.heading2')}>
-									H2
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.heading3')} title={t('editors.heading3')}>
-									H3
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')}>
-									<FontAwesomeIcon icon={faListUl} />
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.numberedList')} title={t('editors.numberedList')}>
-									<FontAwesomeIcon icon={faListOl} />
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')}>
-									<FontAwesomeIcon icon={faAlignLeft} />
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.alignCenter')} title={t('editors.alignCenter')}>
-									<FontAwesomeIcon icon={faAlignCenter} />
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.alignRight')} title={t('editors.alignRight')}>
-									<FontAwesomeIcon icon={faAlignRight} />
-								</button>
-								<button type="button" className={styles.formatButton} aria-label={t('editors.link')} title={t('editors.link')}>
-									<FontAwesomeIcon icon={faLink} />
-								</button>
-							</div>
-						</div>
-						<textarea
-							value={content}
-							onChange={(e) => setYTextValue(contentYText, e.target.value)}
-							rows={10}
+				{type === 'text' && richContentFragment ? (
+						<div className={styles.fullBodyFieldContainer}>
+						<RichTextEditor
+							variant="full"
+							fragment={richContentFragment}
 							placeholder={t('editors.startTyping')}
-							className={styles.fullBodyField}
+							hideToolbar={isCoarsePointer}
+							// Keyboard-open branch:
+							// Reserve just enough space at the bottom of the scrolling viewport for the
+							// floating formatting toolbar. This keeps the last editable lines reachable
+							// without reintroducing the footer/dock into the scrollable area.
+							viewportClassName={mobileKeyboardOpen ? styles.editorViewportKeyboardOpen : undefined}
+							contentClassName={styles.fullBodyFieldRich}
+							onEditorChange={setTextEditor}
+							onChange={() => {
+								syncTextNotePlainText(props.doc, richContentFragment);
+							}}
 						/>
-					</>
+					</div>
 				) : null}
 
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
-						<div className={`${styles.formatToolbar} ${styles.formatToolbarCompact}`} role="toolbar" aria-label={t('editors.formatting')}>
-							<div className={styles.formatToolbarRow}>
-								<button type="button" className={`${styles.formatButton} ${styles.formatButtonCompact}`} aria-label={t('editors.bold')} title={t('editors.bold')}>
-									<FontAwesomeIcon icon={faBold} />
-								</button>
-								<button type="button" className={`${styles.formatButton} ${styles.formatButtonCompact}`} aria-label={t('editors.italic')} title={t('editors.italic')}>
-									<FontAwesomeIcon icon={faItalic} />
-								</button>
-								<button type="button" className={`${styles.formatButton} ${styles.formatButtonCompact}`} aria-label={t('editors.underline')} title={t('editors.underline')}>
-									<FontAwesomeIcon icon={faUnderline} />
-								</button>
-								<button type="button" className={`${styles.formatButton} ${styles.formatButtonCompact}`} aria-label={t('editors.link')} title={t('editors.link')}>
-									<FontAwesomeIcon icon={faLink} />
-								</button>
-							</div>
+						<div className={styles.checklistToolbarSlot}>
+							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact />
 						</div>
-
-						<div className={styles.checklistScrollArea}>
+						{/* Keyboard-open branch:
+						    Checklist mode does not use the generic rich-text viewport above, so we add
+						    the same bottom reserve here manually. The value matches the floating toolbar
+						    footprint and keeps the final checklist rows scrollable above it. */}
+						<div ref={checklistScrollRef} className={styles.checklistScrollArea} style={mobileKeyboardOpen ? { paddingBottom: '56px' } : undefined}>
 							<DragDropContext
 								enableDefaultSensors={false}
 								sensors={immediateChecklistSensors}
 								onBeforeCapture={onChecklistBeforeCapture}
 								onDragStart={onChecklistDragStart}
-								onDragUpdate={onChecklistDragUpdate}
 								onDragEnd={(event) => {
-									lastOverIndexRef.current = null;
+									const scrollEl = checklistScrollRef.current;
+									const savedScroll = scrollEl ? scrollEl.scrollTop : null;
+									const scrollGuard = (): void => {
+										if (scrollEl && savedScroll !== null) scrollEl.scrollTop = savedScroll;
+									};
+									if (isCoarsePointer && scrollEl) {
+										scrollEl.addEventListener('scroll', scrollGuard);
+									}
 									onChecklistDragEnd(event);
-									setIsChecklistDragging(false);
 									setDraggingParentId(null);
 									resetChecklistDragAxis();
+									const removeGuard = (): void => {
+										if (!isCoarsePointer || !scrollEl) return;
+										setTimeout(() => {
+											scrollEl.removeEventListener('scroll', scrollGuard);
+										}, 300);
+									};
+									if (isDraggingWithKeyboardRef.current) {
+										requestAnimationFrame(() => {
+											isDraggingWithKeyboardRef.current = false;
+											if (isCoarsePointer && activeChecklistRowEditor?.view) {
+												activeChecklistRowEditor.view.dom.focus({ preventScroll: true });
+											} else {
+												activeChecklistRowEditor?.commands.focus();
+											}
+											removeGuard();
+										});
+									} else {
+										removeGuard();
+									}
 								}}
 							>
 								<Droppable droppableId={`note-editor-active-${props.noteId}`} renderClone={renderChecklistClone}>
 									{(dropProvided) => (
-										<ul className={`${styles.checklistList}${isChecklistDragging ? ` ${styles.listDragging}` : ''}`} ref={dropProvided.innerRef} {...dropProvided.droppableProps}>
+										<ul className={styles.checklistList} ref={dropProvided.innerRef} {...dropProvided.droppableProps}>
 												{activeItems.length === 0 ? (
 													// Empty-state affordance:
 													// If all checklist items have been checked, the active (unchecked)
@@ -936,17 +1245,20 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 												) : null}
 											{activeItems.map((item, index) => (
 												<Draggable key={item.id} draggableId={item.id} index={index} disableInteractiveElementBlocking>
-													{(dragProvided, snapshot) => (
+													{(dragProvided, snapshot) => {
+														const dragStyle = dragProvided.draggableProps.style ?? {};
+														return (
 														<li
 															ref={(node) => {
 																dragProvided.innerRef(node);
 																rowContainersRef.current.set(item.id, node);
 															}}
 															{...dragProvided.draggableProps}
-															className={`${styles.checklistItem}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
+														className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
 															aria-label={t('editors.dragHandle')}
 															style={{
-																...(dragProvided.draggableProps.style ?? {}),
+															...dragStyle,
+															...(snapshot.isDropAnimating ? { transitionDuration: isCoarsePointer ? '1ms' : '60ms' } : null),
 															}}
 														>
 															<button
@@ -955,38 +1267,30 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																aria-label={t('editors.dragHandle')}
 																title={t('editors.dragHandle')}
 																{...dragProvided.dragHandleProps}
+																onMouseDown={preventHandleFocusSteal}
+																onPointerDown={preventHandleFocusSteal}
 															>
 																<FontAwesomeIcon icon={faGripVertical} />
 															</button>
-															<input
-																type="checkbox"
-																className={styles.checklistCheckbox}
-																checked={item.completed}
-																onChange={(event) => toggleChecklistCompleted(item.id, event.target.checked)}
+															<ChecklistRowContent
+																item={item}
+																itemMap={checklistMapsById.get(item.id) ?? null}
+																checklistArray={checklistArray}
+																contentRef={(node) => setChecklistRowInputRef(item.id, node)}
+																isActive={activeChecklistRowId === item.id}
+																autoFocus={focusRowId === item.id}
+																isProtectedFromEmptyBackspace={firstActiveItemId === item.id}
+																placeholderText={checklistItemPlaceholder}
+																removeLabel={checklistRemoveLabel}
+																activate={activateChecklistRow}
+																toggleCompleted={toggleChecklistCompleted}
+																remove={removeChecklistItem}
+																insertAfter={insertChecklistItemAfter}
+																setActiveEditor={setActiveChecklistRowEditor}
 															/>
-															<textarea
-																ref={(node) => rowInputsRef.current.set(item.id, node)}
-																value={item.text}
-																onChange={(event) => {
-																	updateChecklistItemById(checklistArray, item.id, { text: event.target.value });
-																	autoResizeTextarea(event.currentTarget);
-																}}
-																onInput={(event) => autoResizeTextarea(event.currentTarget)}
-																onKeyDown={(event) => onChecklistKeyDown(event, item.id)}
-																className={styles.rowTextArea}
-																rows={1}
-															/>
-															<button
-																type="button"
-																className={styles.rowRemoveButton}
-																onClick={() => removeChecklistItem(item.id)}
-																aria-label={t('editors.remove')}
-																title={t('editors.remove')}
-															>
-																×
-															</button>
 														</li>
-													)}
+															);
+														}}
 												</Draggable>
 											))}
 											{dropProvided.placeholder}
@@ -1012,37 +1316,28 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									{showCompleted ? '▾' : '▸'} {completedItems.length} {t('editors.completedItems')}
 								</button>
 								{showCompleted ? (
-									<ul className={`${styles.checklistList}${isChecklistDragging ? ` ${styles.listDragging}` : ''}`}>
+									<ul className={styles.checklistList}>
 										{completedItems.map((item) => (
-											<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+											<li key={item.id} className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
 												<div className={styles.dragHandle} aria-hidden="true">
 															<FontAwesomeIcon icon={faGripVertical} />
 												</div>
-												<input
-													type="checkbox"
-													className={styles.checklistCheckbox}
-													checked={item.completed}
-														onChange={(event) => toggleChecklistCompleted(item.id, event.target.checked)}
-												/>
-												<textarea
-													value={item.text}
-													onChange={(event) => {
-															updateChecklistItemById(checklistArray, item.id, { text: event.target.value });
-														autoResizeTextarea(event.currentTarget);
-													}}
-													onInput={(event) => autoResizeTextarea(event.currentTarget)}
-													className={styles.rowTextArea}
-													rows={1}
-												/>
-												<button
-													type="button"
-													className={styles.rowRemoveButton}
-													onClick={() => removeChecklistItem(item.id)}
-													aria-label={t('editors.remove')}
-													title={t('editors.remove')}
-												>
-													×
-												</button>
+										<ChecklistRowContent
+											item={item}
+											itemMap={checklistMapsById.get(item.id) ?? null}
+											checklistArray={checklistArray}
+											contentRef={(node) => setChecklistRowInputRef(item.id, node)}
+											isActive={activeChecklistRowId === item.id}
+											autoFocus={focusRowId === item.id}
+											isProtectedFromEmptyBackspace={false}
+											placeholderText={checklistItemPlaceholder}
+											removeLabel={checklistRemoveLabel}
+											activate={activateChecklistRow}
+											toggleCompleted={toggleChecklistCompleted}
+											remove={removeChecklistItem}
+											insertAfter={insertChecklistItemAfter}
+											setActiveEditor={setActiveChecklistRowEditor}
+										/>
 											</li>
 										))}
 									</ul>
@@ -1053,7 +1348,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</section>
 				) : null}
 
-				<div className={styles.editorBottomArea}>
+				{/* Keyboard-open branch:
+				    When the keyboard is visible, the bottom dock/media handle must not exist in
+				    layout at all. Rendering `null` here removes the footer from the document flow,
+				    which prevents it from being scrolled into view behind the keyboard. */}
+				{mobileKeyboardOpen ? null : <div className={styles.editorBottomArea}>
 					<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
 						<button
 							type="button"
@@ -1115,8 +1414,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							<FontAwesomeIcon icon={isModified ? byPrefixAndName.fas.check : byPrefixAndName.far.xmark} />
 						</button>
 					</nav>
-				</div>
-				<div className={styles.editorBlurLayer} aria-hidden="true" />
+				</div>}
 				<div
 					className={styles.editorBlockLayer}
 					aria-hidden="true"
@@ -1130,7 +1428,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				/>
 			</section>
 
-			<section
+			{/* Keyboard-open branch:
+			    The mobile media sheet is also removed while typing. Even if it is visually off
+			    screen, keeping it mounted would preserve extra mobile footer affordances that can
+			    interfere with the simplified keyboard-open editing layout. */}
+			{mobileKeyboardOpen ? null : <section
 				className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}`}
 				aria-label={t('editors.mediaDock')}
 				onClick={(e) => e.stopPropagation()}
@@ -1182,7 +1484,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
 					</div>
 				</div>
-			</section>
+			</section>}
 
 			<aside
 				className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
@@ -1243,6 +1545,27 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					void props.onDelete(props.noteId);
 				}}
 			/>
+		) : null}
+
+		{/* Floating keyboard toolbar + occlusion backdrop:
+		    The editor shell stops at `keyboard.visibleBottom`, so the remaining layout
+		    viewport below that edge must be explicitly covered while the mobile keyboard
+		    animates in. Otherwise the underlying notes grid can flash through. */}
+		{isCoarsePointer && keyboard.isOpen ? createPortal(
+			<>
+				<div className={styles.keyboardOcclusion} style={{ top: `${keyboard.visibleBottom}px` }} />
+				<div
+					className={styles.floatingToolbar}
+					style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
+				>
+					<RichTextToolbar
+						editor={type === 'text' ? textEditor : activeChecklistRowEditor}
+						variant={type === 'text' ? 'full' : 'minimal'}
+						compact
+					/>
+				</div>
+			</>,
+			document.body
 		) : null}
 		</div>
 	);
