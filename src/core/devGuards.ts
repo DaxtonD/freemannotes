@@ -34,7 +34,8 @@ import type * as Y from 'yjs';
 export function runNoteGuards(
 	registryIds: readonly string[],
 	orderIds: readonly string[],
-	docsById: Readonly<Record<string, Y.Doc>>
+	docsById: Readonly<Record<string, Y.Doc>>,
+	visibleIds: readonly string[] = []
 ): void {
 	/* Gate: only run in development builds. Vite replaces this expression
 	   with `false` in production, allowing the bundler to dead-code-eliminate
@@ -49,6 +50,7 @@ export function runNoteGuards(
 	// Each note should appear exactly once in the registry. Duplicates indicate
 	// a bug in createNote or a CRDT merge anomaly.
 	const registrySet = new Set<string>();
+	const visibleSet = new Set<string>(visibleIds);
 	for (const id of registryIds) {
 		if (registrySet.has(id)) {
 			console.warn(`[dev-guard] Duplicate note ID in notesList: "${id}"`);
@@ -107,17 +109,18 @@ export function runNoteGuards(
 		}
 	}
 
-	// ── 6. Trashed notes still visible in the main grid ──────────────────
-	// If a note's metadata has trashed === true but it's still showing in
-	// the main grid (i.e. in registryIds/orderIds), that indicates the UI
-	// is not properly filtering trashed notes.
+	// ── 6. Trashed notes still visible in the current grid view ───────────
+	// Trashed notes are allowed to remain in the registry and noteOrder so the
+	// trash view can render them and restores keep their relative order. The
+	// real bug is a trashed note leaking into the currently visible grid while
+	// the main notes view is active.
 	for (const [noteId, doc] of Object.entries(docsById)) {
 		const metadata = doc.getMap<any>('metadata');
 		const trashed = Boolean(metadata.get('trashed'));
-		if (trashed && (registrySet.has(noteId) || orderSet.has(noteId))) {
+		if (trashed && visibleSet.has(noteId)) {
 			console.warn(
 				`[dev-guard] Note "${noteId}" is trashed but still present in the ` +
-				`note registry/order. The UI should filter trashed notes from the main grid.`
+				`currently visible note grid. The UI should filter trashed notes from the main grid.`
 			);
 		}
 	}
