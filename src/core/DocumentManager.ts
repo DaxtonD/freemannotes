@@ -61,6 +61,7 @@ export class DocumentManager {
 	private readonly docs = new Map<string, Y.Doc>();
 	private readonly providers = new Map<string, IndexeddbPersistence>();
 	private readonly websocketProviders = new Map<string, WebsocketProvider>();
+	private readonly externalRoomAliases = new Map<string, string>();
 	private readonly connectionSubscribers = new Set<() => void>();
 	// Internal room-level pending tracker. This includes all rooms, then emitConnectionStatus
 	// filters out non-user rooms (such as the notes registry) before exposing snapshot data.
@@ -238,6 +239,30 @@ export class DocumentManager {
 		}
 
 		this.updateConnectionState();
+		this.emitConnectionStatus();
+	}
+
+	public setExternalRoomAliases(aliases: Readonly<Record<string, string>>): void {
+		const nextAliases = new Map<string, string>();
+		for (const [aliasId, roomName] of Object.entries(aliases || {})) {
+			const normalizedAliasId = typeof aliasId === 'string' ? aliasId.trim() : '';
+			const normalizedRoomName = typeof roomName === 'string' ? roomName.trim() : '';
+			if (!normalizedAliasId || !normalizedRoomName) continue;
+			nextAliases.set(normalizedAliasId, normalizedRoomName);
+		}
+
+		const previousRoomNames = new Set(this.externalRoomAliases.values());
+		const nextRoomNames = new Set(nextAliases.values());
+		for (const roomName of previousRoomNames) {
+			if (nextRoomNames.has(roomName)) continue;
+			this.pendingSyncRooms.delete(roomName);
+		}
+
+		this.externalRoomAliases.clear();
+		for (const [aliasId, roomName] of nextAliases.entries()) {
+			this.externalRoomAliases.set(aliasId, roomName);
+		}
+
 		this.emitConnectionStatus();
 	}
 
@@ -853,6 +878,8 @@ export class DocumentManager {
 	}
 
 	private roomNameFor(rawNoteId: string): string {
+		const externalRoomName = this.externalRoomAliases.get(rawNoteId);
+		if (externalRoomName) return externalRoomName;
 		// Room names are globally unique across workspaces.
 		// If no active workspace is set yet (auth gate), fall back to raw IDs.
 		if (!this.activeWorkspaceId) return rawNoteId;
@@ -860,6 +887,9 @@ export class DocumentManager {
 	}
 
 	private rawNoteIdFromRoomName(roomName: string): string {
+		for (const [aliasId, aliasedRoomName] of this.externalRoomAliases.entries()) {
+			if (aliasedRoomName === roomName) return aliasId;
+		}
 		if (!this.activeWorkspaceId) {
 			// Best-effort: if the room looks namespaced, strip the first segment.
 			const idx = roomName.indexOf(':');

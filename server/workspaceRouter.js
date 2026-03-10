@@ -140,7 +140,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 
 					const memberships = await prisma.workspaceMember.findMany({
 						where: { userId: session.userId, workspace: { is: { deletedAt: null } } },
-						select: { role: true, workspace: { select: { id: true, name: true, ownerUserId: true, createdAt: true, updatedAt: true } } },
+						select: { role: true, workspace: { select: { id: true, name: true, ownerUserId: true, systemKind: true, createdAt: true, updatedAt: true } } },
 						orderBy: { workspaceId: 'asc' },
 					});
 
@@ -151,6 +151,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							name: m.workspace.name,
 							role: m.role,
 							ownerUserId: m.workspace.ownerUserId,
+							systemKind: m.workspace.systemKind,
 							createdAt: m.workspace.createdAt.toISOString(),
 							updatedAt: m.workspace.updatedAt.toISOString(),
 						})),
@@ -188,7 +189,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						if (requestedId) {
 							const existing = await tx.workspace.findUnique({
 								where: { id: requestedId },
-								select: { id: true, name: true, ownerUserId: true, createdAt: true, updatedAt: true, deletedAt: true },
+								select: { id: true, name: true, ownerUserId: true, systemKind: true, createdAt: true, updatedAt: true, deletedAt: true },
 							});
 							if (existing && !existing.deletedAt && existing.ownerUserId === session.userId) {
 								await tx.workspaceMember.upsert({
@@ -202,7 +203,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 
 						const workspace = await tx.workspace.create({
 							data: { id: requestedId || undefined, name: wsName, ownerUserId: session.userId },
-							select: { id: true, name: true, ownerUserId: true, createdAt: true, updatedAt: true },
+							select: { id: true, name: true, ownerUserId: true, systemKind: true, createdAt: true, updatedAt: true },
 						});
 						await tx.workspaceMember.create({
 							data: { userId: session.userId, workspaceId: workspace.id, role: 'OWNER' },
@@ -256,6 +257,15 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						return;
 					}
 
+					const workspace = await prisma.workspace.findUnique({
+						where: { id: workspaceId },
+						select: { systemKind: true },
+					});
+					if (workspace && workspace.systemKind) {
+						jsonResponse(res, 400, { error: 'System workspaces cannot be renamed' });
+						return;
+					}
+
 					const body = await readJsonBody(req);
 					if (!body || typeof body !== 'object') {
 						jsonResponse(res, 400, { error: 'Request body must be a JSON object' });
@@ -270,7 +280,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const updated = await prisma.workspace.update({
 						where: { id: workspaceId },
 						data: { name },
-						select: { id: true, name: true, ownerUserId: true, createdAt: true, updatedAt: true },
+						select: { id: true, name: true, ownerUserId: true, systemKind: true, createdAt: true, updatedAt: true },
 					});
 
 					jsonResponse(res, 200, {
@@ -310,6 +320,15 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						return;
 					}
 
+					const workspace = await prisma.workspace.findUnique({
+						where: { id: workspaceId },
+						select: { systemKind: true },
+					});
+					if (workspace && workspace.systemKind) {
+						jsonResponse(res, 400, { error: 'System workspaces cannot be deleted' });
+						return;
+					}
+
 					// Workspace deletion transaction:
 					// 1. Tombstone the workspace so it disappears from "live" lookups.
 					// 2. Clear any device preferences still pointing at it.
@@ -319,10 +338,13 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const result = await prisma.$transaction(async (tx) => {
 						const workspace = await tx.workspace.findFirst({
 							where: { id: workspaceId, deletedAt: null },
-							select: { id: true, ownerUserId: true },
+							select: { id: true, ownerUserId: true, systemKind: true },
 						});
 						if (!workspace) {
 							return { missing: true, forbidden: false };
+						}
+						if (workspace.systemKind) {
+							return { missing: false, forbidden: false, systemWorkspace: true };
 						}
 						if (workspace.ownerUserId !== session.userId) {
 							return { missing: false, forbidden: true };
@@ -380,6 +402,10 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					}
 					if (result.forbidden) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+					if (result.systemWorkspace) {
+						jsonResponse(res, 400, { error: 'System workspaces cannot be deleted' });
 						return;
 					}
 

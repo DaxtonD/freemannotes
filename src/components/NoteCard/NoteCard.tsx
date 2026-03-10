@@ -26,6 +26,7 @@ export type NoteCardProps = {
 	isMoreMenuOpen?: boolean;
 	onOpen?: () => void;
 	onMoreMenu?: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
+	onAddCollaborator?: () => void;
 	shouldSuppressOpen?: () => boolean;
 	dragHandleRef?: (node: HTMLDivElement | null) => void;
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
@@ -265,6 +266,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		// accidentally open the note card underneath.
 		event.stopPropagation();
 	}, []);
+
+	const handleAddCollaborator = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
+		event.stopPropagation();
+		props.onAddCollaborator?.();
+	}, [props]);
 
 	const handleMoreMenuAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
@@ -515,8 +521,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							type="button"
 							className={styles.cardDockButton}
 							onPointerDown={(e) => e.stopPropagation()}
-							onClick={handleDockAction}
+							onClick={handleAddCollaborator}
 							aria-label={t('editors.dockAction')}
+							disabled={!props.onAddCollaborator}
 						>
 							<FontAwesomeIcon icon={faUserPlus} />
 						</button>

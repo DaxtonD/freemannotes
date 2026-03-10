@@ -5,8 +5,8 @@
 //
 // Endpoints:
 //   - POST /api/workspaces/:id/invites
-//       Creates an invite token for a specific email address and sends the
-//       invite link via SMTP.
+//       Creates an invite token for a specific email address and returns the
+//       invite link. The caller can also request SMTP delivery.
 //   - POST /api/invites/accept
 //       Marks an invite token as used and upserts a workspace membership for
 //       the authenticated user.
@@ -118,6 +118,10 @@ function createInviteRouter({ prisma }) {
 
 					const email = normalizeEmail(body.email);
 					const role = String(body.role || 'MEMBER').toUpperCase();
+					// Backward-compatible default: older callers still create and send invite
+					// emails, while newer modals can request a link-only response by passing
+					// sendEmail=false and handling copy/QR/open client-side.
+					const sendEmail = body.sendEmail !== false;
 					if (!email || !isValidEmail(email)) {
 						jsonResponse(res, 400, { error: 'Invalid email' });
 						return;
@@ -143,9 +147,23 @@ function createInviteRouter({ prisma }) {
 					const base = String(process.env.APP_URL || '').trim() || appBaseUrlFromRequest(req);
 					const inviteUrl = `${base.replace(/\/$/, '')}/invite/${token}`;
 
-					await sendInviteEmail({ to: email, workspaceName: workspace.name, inviteUrl });
+					// The server now supports two delivery modes from the same endpoint:
+					// 1. sendEmail=true  -> create token and dispatch SMTP
+					// 2. sendEmail=false -> create token and just return the invite URL payload
+					if (sendEmail) {
+						await sendInviteEmail({ to: email, workspaceName: workspace.name, inviteUrl });
+					}
 
-					jsonResponse(res, 201, { ok: true });
+					// The response includes the full invite metadata so the client can cache,
+					// display, and QR-encode the exact same link regardless of delivery mode.
+					jsonResponse(res, 201, {
+						ok: true,
+						inviteUrl,
+						expiresAt: expiresAt.toISOString(),
+						email,
+						role,
+						sentEmail: sendEmail,
+					});
 				} catch (err) {
 					console.error('[invite] create error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });

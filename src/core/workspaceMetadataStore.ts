@@ -12,6 +12,7 @@ type WorkspaceRow = {
 	id: string;
 	name: string;
 	ownerUserId: string | null;
+	systemKind: string | null;
 	createdAt: string;
 	updatedAt: string;
 };
@@ -49,6 +50,7 @@ export type CachedWorkspaceListItem = {
 	name: string;
 	role: WorkspaceRole;
 	ownerUserId: string | null;
+	systemKind?: string | null;
 	createdAt: string;
 	updatedAt: string;
 	pendingSync?: boolean;
@@ -190,6 +192,7 @@ function applyWorkspaceMutations(snapshot: CachedWorkspaceSnapshot, rows: readon
 				name: row.workspaceName || '',
 				role: asWorkspaceRole(row.role),
 				ownerUserId: row.ownerUserId ?? null,
+				systemKind: null,
 				createdAt: asIsoString(row.createdAt),
 				updatedAt: asIsoString(row.updatedAt, asIsoString(row.createdAt)),
 				pendingSync: true,
@@ -283,6 +286,7 @@ export async function readCachedWorkspaceSnapshot(userId: string, deviceId: stri
 						name: workspace.name,
 						role: asWorkspaceRole(member.role),
 						ownerUserId: workspace.ownerUserId ?? null,
+						systemKind: workspace.systemKind ?? null,
 						createdAt: asIsoString(workspace.createdAt),
 						updatedAt: asIsoString(workspace.updatedAt, asIsoString(workspace.createdAt)),
 						pendingSync: false,
@@ -325,6 +329,7 @@ export async function cacheWorkspaceSnapshot(args: {
 				id: workspace.id,
 				name: workspace.name,
 				ownerUserId: workspace.ownerUserId ?? null,
+				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind : null,
 				createdAt: asIsoString(workspace.createdAt, now),
 				updatedAt: asIsoString(workspace.updatedAt, asIsoString(workspace.createdAt, now)),
 			};
@@ -357,6 +362,7 @@ export async function cacheWorkspaceDetails(args: {
 		id: string;
 		name: string;
 		ownerUserId?: string | null;
+		systemKind?: string | null;
 		createdAt?: string | null;
 		updatedAt?: string | null;
 	};
@@ -377,6 +383,7 @@ export async function cacheWorkspaceDetails(args: {
 			id: args.workspace.id,
 			name: args.workspace.name,
 			ownerUserId: args.workspace.ownerUserId ?? existingWorkspace?.ownerUserId ?? null,
+			systemKind: args.workspace.systemKind ?? existingWorkspace?.systemKind ?? null,
 			createdAt: asIsoString(args.workspace.createdAt ?? existingWorkspace?.createdAt ?? now, now),
 			updatedAt: asIsoString(args.workspace.updatedAt ?? existingWorkspace?.updatedAt ?? now, now),
 		};

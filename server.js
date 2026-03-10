@@ -71,6 +71,7 @@ const {
 	subscribeToWorkspaceMetadataEvents,
 } = require('./server/workspaceMetadataEvents');
 const { findLiveWorkspaceMembership } = require('./server/workspaceAccess');
+const { splitDocRoomId } = require('./server/noteShareRouter');
 
 // ── Phase 11 auth helpers (JWT cookie sessions) ───────────────────────
 const { getSessionFromRequest } = require('./server/auth');
@@ -110,6 +111,9 @@ let inviteRouter = null;
 
 /** @type {ReturnType<import('./server/shareRouter').createShareRouter> | null} */
 let shareRouter = null;
+
+/** @type {ReturnType<import('./server/noteShareRouter').createNoteShareRouter> | null} */
+let noteShareRouter = null;
 
 /** @type {ReturnType<import('./server/profileRouter').createProfileRouter> | null} */
 let profileRouter = null;
@@ -278,6 +282,29 @@ if (DATABASE_URL.length > 0) {
 		}
 
 		try {
+			const { createNoteShareRouter } = require('./server/noteShareRouter');
+			noteShareRouter = createNoteShareRouter({
+				prisma,
+				onWorkspaceMetadataChanged: async (event) => {
+					const normalized = normalizeWorkspaceMetadataEvent({
+						...event,
+						type: 'workspace-metadata-changed',
+						origin: SERVER_INSTANCE_ID,
+					});
+					if (!normalized) return;
+					broadcastWorkspaceMetadataChanged(normalized);
+					if (redis) {
+						await publishWorkspaceMetadataEvent(redis, normalized);
+					}
+				},
+			});
+			console.info('[server] Note share API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Note share API router:', err.message);
+			noteShareRouter = null;
+		}
+
+		try {
 			const { createProfileRouter } = require('./server/profileRouter');
 			profileRouter = createProfileRouter({ prisma, uploadDir: UPLOAD_DIR });
 			console.info('[server] Profile API router initialized');
@@ -412,6 +439,11 @@ const server = http.createServer((req, res) => {
 
 		// ── Share API router ────────────────────────────────────────────
 		if (shareRouter && shareRouter(req, res)) {
+			return;
+		}
+
+		// ── Note-share collaboration router ─────────────────────────────
+		if (noteShareRouter && noteShareRouter(req, res)) {
 			return;
 		}
 
@@ -792,21 +824,35 @@ wss.on('connection', (conn, req) => {
 			const hasNamespace = raw.includes(':');
 			if (hasNamespace) {
 				if (!raw.startsWith(expectedPrefix)) {
-					console.warn(
-						'[ws] close forbidden namespace',
-						JSON.stringify({
-							userId: session.userId,
-							workspaceId: session.workspaceId,
-							rawRoom: raw,
+					const foreignRoom = splitDocRoomId(raw);
+					const foreignCollaborator = foreignRoom
+						? await prisma.noteCollaborator.findFirst({
+							where: {
+								docId: raw,
+								userId: session.userId,
+								revokedAt: null,
+							},
+							select: { id: true },
 						})
-					);
-					conn.close(1008, 'forbidden');
-					return;
+						: null;
+					if (!foreignCollaborator) {
+						console.warn(
+							'[ws] close forbidden namespace',
+							JSON.stringify({
+								userId: session.userId,
+								workspaceId: session.workspaceId,
+								rawRoom: raw,
+							})
+						);
+						conn.close(1008, 'forbidden');
+						return;
+					}
 				}
 			} else {
 				docName = `${session.workspaceId}:${raw}`;
 			}
-			persistAdapter?.registerDocWorkspace(docName, session.workspaceId);
+			const room = splitDocRoomId(docName);
+			persistAdapter?.registerDocWorkspace(docName, room ? room.sourceWorkspaceId : session.workspaceId);
 
 			// y-websocket expects req.url === '/<room>'
 			req.url = `/${docName}`;

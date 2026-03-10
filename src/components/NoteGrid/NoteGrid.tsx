@@ -6,9 +6,9 @@ import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
+import type { SharedNotePlacement } from '../../core/noteShareApi';
 import { readTrashState } from '../../core/noteModel';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
-import { shareDocById } from '../../core/shareNote';
 import { measureDocumentRects } from './flip';
 import {
 	arraysEqual,
@@ -22,13 +22,18 @@ import {
 import { useNoteGridDragManager } from './useNoteGridDragManager';
 import styles from './NoteGrid.module.css';
 
-type Note = { id: string };
+type Note = {
+	id: string;
+	isShared: boolean;
+};
 
 export type NoteGridProps = {
 	selectedNoteId: string | null;
 	onSelectNote: (noteId: string) => void;
+	onAddCollaborator?: (noteId: string) => void;
 	maxCardHeightPx: number;
 	showTrashed?: boolean;
+	sharedNotes?: readonly SharedNotePlacement[];
 	onReady?: () => void;
 	/** Enable framer-motion layout animations. Keep false during splash reveal. */
 	enableLayoutAnimations?: boolean;
@@ -77,6 +82,7 @@ type GridNoteCardProps = {
 	selected: boolean;
 	isMoreMenuOpen: boolean;
 	onOpen: () => void;
+	onAddCollaborator?: () => void;
 	onMoreMenu: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
@@ -134,6 +140,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
 					onOpen={props.onOpen}
+					onAddCollaborator={props.onAddCollaborator}
 					onMoreMenu={props.onMoreMenu}
 					dragHandleRef={handleDragHandleRef}
 				/>
@@ -146,14 +153,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
-
-	const shareNoteById = React.useCallback(async (noteId: string): Promise<void> => {
-		const normalizedId = normalizeId(noteId);
-		if (!normalizedId) return;
-		const doc = docsByIdRef.current[normalizedId];
-		const title = doc ? String(doc.getText('title').toString() || '') : '';
-		await shareDocById(normalizedId, { title });
-	}, []);
+	// Shared notes are mounted into the grid by alias ID so the receiver can open
+	// them like local notes while the DocumentManager still resolves them back to
+	// the source room via the alias map maintained by App.
+	const sharedNoteIds = React.useMemo(() => (props.sharedNotes ?? []).map((note) => note.aliasId), [props.sharedNotes]);
+	const sharedNoteIdSet = React.useMemo(() => new Set(sharedNoteIds), [sharedNoteIds]);
 
 	// Suppress framer-motion layout animations until the parent explicitly
 	// enables them (after the splash overlay is fully dismissed). A 2-frame
@@ -311,8 +315,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	const orderedIds = React.useMemo<string[]>(() => {
 		if (!noteOrder) return [];
-		return readOrderIds(noteOrder);
-	}, [noteOrder, storeVersion]);
+		// Local workspace order still comes from Yjs. Shared aliases are appended so
+		// they render in the grid without mutating the source workspace's note order.
+		return uniqueIds([...readOrderIds(noteOrder), ...sharedNoteIds]);
+	}, [noteOrder, sharedNoteIds, storeVersion]);
 
 	const visibleIds = React.useMemo<string[]>(() => {
 		return orderedIds.filter((id) => {
@@ -456,7 +462,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				}
 			});
 		}
-	}, [notesList, noteOrder, storeVersion]);
+	}, [notesList, noteOrder, sharedNoteIds, storeVersion]);
 
 	React.useEffect(() => {
 		if (!notesList || !noteOrder) return;
@@ -504,9 +510,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
 	const noteById = React.useMemo(() => {
 		const map = new Map<string, Note>();
-		for (const id of renderedIds) map.set(id, { id });
+		// Persist whether a card is a shared alias so downstream menu and drag logic
+		// can disable local-only actions like trashing or reordering that shared notes
+		// should not perform inside the receiver workspace.
+		for (const id of renderedIds) map.set(id, { id, isShared: sharedNoteIdSet.has(id) });
 		return map;
-	}, [renderedIds]);
+	}, [renderedIds, sharedNoteIdSet]);
 
 	// ── Column computation: packedColumns ─────────────────────────────────
 	// Greedy shortest-column masonry: each card from the canonical order is
@@ -714,6 +723,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										selected={props.selectedNoteId === note.id}
 										isMoreMenuOpen={moreMenuNoteId === note.id}
 										onOpen={() => props.onSelectNote(note.id)}
+										onAddCollaborator={props.onAddCollaborator ? () => props.onAddCollaborator?.(note.id) : undefined}
 										onMoreMenu={(anchorRect) => {
 											// Footer 3-dot triggers provide a custom anchor so desktop
 											// popovers align to the card edge instead of the trigger.
@@ -725,7 +735,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										isPlaceholder={isPlaceholder}
 										layoutReady={layoutReady}
 										setItemElement={dragManager.setItemElement}
-										setHandleElement={dragManager.setHandleElement}
+										setHandleElement={note.isShared ? () => {} : dragManager.setHandleElement}
 									/>
 								);
 							})}
@@ -762,13 +772,17 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					}
 					anchorRect={moreMenuAnchorRect}
 					onClose={() => { setMoreMenuNoteId(null); setMoreMenuAnchorRect(null); }}
-					onShare={() => {
+					onAddCollaborator={props.onAddCollaborator ? () => {
+						// The more-menu now routes share/collaboration actions through the
+						// dedicated collaborator modal instead of creating ad-hoc share links.
 						const noteId = moreMenuNoteId;
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
-						void shareNoteById(noteId);
-					}}
-					onTrash={() => {
+						props.onAddCollaborator?.(noteId);
+					} : undefined}
+					onTrash={sharedNoteIdSet.has(moreMenuNoteId) ? undefined : () => {
+						// Shared aliases are projections of another workspace's document, so the
+						// receiver can remove access but cannot locally trash the source note.
 						const noteId = moreMenuNoteId;
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);

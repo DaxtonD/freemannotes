@@ -2,7 +2,6 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
 	faThumbtack,
-	faShareNodes,
 	faUserPlus,
 	faImage,
 	faBell,
@@ -22,7 +21,7 @@ export type NoteCardMoreMenuProps = {
 	noteType: NoteType;
 	onClose: () => void;
 	onTrash?: (() => void) | undefined;
-	onShare?: (() => void) | undefined;
+	onAddCollaborator?: (() => void) | undefined;
 	/** Bounding rect of the anchor element (e.g. note card). On desktop the
 	 *  menu renders as a popover positioned relative to this rect. */
 	anchorRect?: { top: number; left: number; width: number; height: number } | null;
@@ -142,18 +141,17 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 
 	const items: MenuItem[] = [
 		{ key: 'pin', labelKey: 'noteMenu.pinNote', icon: faThumbtack, action: noop },
-		...(props.onShare
+		...(props.onAddCollaborator
 			? [{
-				key: 'share',
-				labelKey: 'share.share',
-				icon: faShareNodes,
+				key: 'collaborator',
+				labelKey: 'noteMenu.addCollaborator',
+				icon: faUserPlus,
 				action: () => {
 					props.onClose();
-					props.onShare?.();
+					props.onAddCollaborator?.();
 				},
 			}]
 			: []),
-		{ key: 'collaborator', labelKey: 'noteMenu.addCollaborator', icon: faUserPlus, action: noop },
 		{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, action: noop },
 		{ key: 'reminder', labelKey: 'noteMenu.addReminder', icon: faBell, action: noop },
 		...(props.onTrash
