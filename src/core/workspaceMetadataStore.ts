@@ -27,6 +27,7 @@ type UserDevicePreferenceRow = {
 	userId: string;
 	deviceId: string;
 	activeWorkspaceId: string | null;
+	activeSharedFolder: string | null;
 	createdAt: string;
 	updatedAt: string;
 };
@@ -59,6 +60,7 @@ export type CachedWorkspaceListItem = {
 
 export type CachedWorkspaceSnapshot = {
 	activeWorkspaceId: string | null;
+	activeSharedFolder: string | null;
 	preferenceUpdatedAt: string | null;
 	workspaces: CachedWorkspaceListItem[];
 };
@@ -209,6 +211,7 @@ function applyWorkspaceMutations(snapshot: CachedWorkspaceSnapshot, rows: readon
 
 	return {
 		activeWorkspaceId,
+		activeSharedFolder: snapshot.activeSharedFolder,
 		preferenceUpdatedAt: snapshot.preferenceUpdatedAt,
 		workspaces: Array.from(workspacesById.values()).sort((left, right) => left.id.localeCompare(right.id)),
 	};
@@ -253,7 +256,7 @@ export async function readPendingWorkspaceMutations(userId: string, deviceId: st
 
 export async function readCachedWorkspaceSnapshot(userId: string, deviceId: string): Promise<CachedWorkspaceSnapshot> {
 	if (!userId || !deviceId) {
-		return { activeWorkspaceId: null, preferenceUpdatedAt: null, workspaces: [] };
+		return { activeWorkspaceId: null, activeSharedFolder: null, preferenceUpdatedAt: null, workspaces: [] };
 	}
 	try {
 		// Read the normalized snapshot in one readonly transaction, then fold queued
@@ -276,6 +279,7 @@ export async function readCachedWorkspaceSnapshot(userId: string, deviceId: stri
 
 		const baseSnapshot: CachedWorkspaceSnapshot = {
 			activeWorkspaceId: pref?.activeWorkspaceId ?? null,
+			activeSharedFolder: pref?.activeSharedFolder ?? null,
 			preferenceUpdatedAt: pref?.updatedAt ?? null,
 			workspaces: members
 				.map((member, index) => {
@@ -300,7 +304,7 @@ export async function readCachedWorkspaceSnapshot(userId: string, deviceId: stri
 		const mutationRows = await safeReadWorkspaceMutationRows(userId, deviceId);
 		return applyWorkspaceMutations(baseSnapshot, mutationRows);
 	} catch {
-		return { activeWorkspaceId: null, preferenceUpdatedAt: null, workspaces: [] };
+		return { activeWorkspaceId: null, activeSharedFolder: null, preferenceUpdatedAt: null, workspaces: [] };
 	}
 }
 
@@ -308,6 +312,7 @@ export async function cacheWorkspaceSnapshot(args: {
 	userId: string;
 	deviceId: string;
 	activeWorkspaceId: string | null;
+	activeSharedFolder?: string | null;
 	workspaces: readonly CachedWorkspaceListItem[];
 }): Promise<void> {
 	if (!args.userId || !args.deviceId) return;
@@ -347,6 +352,10 @@ export async function cacheWorkspaceSnapshot(args: {
 			userId: args.userId,
 			deviceId: args.deviceId,
 			activeWorkspaceId: args.activeWorkspaceId,
+			activeSharedFolder:
+				typeof args.activeSharedFolder === 'undefined'
+					? existingPref?.activeSharedFolder ?? null
+					: args.activeSharedFolder ?? null,
 			createdAt: existingPref?.createdAt ? asIsoString(existingPref.createdAt, now) : now,
 			updatedAt: now,
 		};
@@ -407,6 +416,7 @@ export async function cacheActiveWorkspaceSelection(args: {
 	userId: string;
 	deviceId: string;
 	activeWorkspaceId: string | null;
+	activeSharedFolder?: string | null;
 	createdAt?: string | null;
 	updatedAt?: string | null;
 }): Promise<void> {
@@ -421,6 +431,10 @@ export async function cacheActiveWorkspaceSelection(args: {
 			userId: args.userId,
 			deviceId: args.deviceId,
 			activeWorkspaceId: args.activeWorkspaceId,
+			activeSharedFolder:
+				typeof args.activeSharedFolder === 'undefined'
+					? existingPref?.activeSharedFolder ?? null
+					: args.activeSharedFolder ?? null,
 			createdAt: asIsoString(args.createdAt ?? existingPref?.createdAt ?? now, now),
 			updatedAt: asIsoString(args.updatedAt ?? now, now),
 		};
