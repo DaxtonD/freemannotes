@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.80 - 2026-03-09
+
+### Added
+- **Note collaboration and recipient placement flows.** Added collaborator management, share notifications, Shared With Me placement handling, and accepted-shared-note alias mounting so users can receive notes into Shared With Me or Personal views.
+- **Workspace and note share link tooling.** Added link-generation, copy/open, QR rendering, and client-side caching for workspace invites and public note share links, including public share route rendering.
+- **Shared With Me system workspace support.** Added server helpers and note-share APIs to provision the system workspace, persist accepted placements, and expose collaborator/invitation state to the client.
+
+### Changed
+- **Workspace sidebar behavior.** Shared With Me now uses normalized display labels, nested folder disclosure, and root-vs-subfolder filtering so shared notes surface in the correct workspace branch.
+- **Invitation and share UX.** Workspace invites can now be generated without SMTP delivery, collaboration modals follow the active theme, and share notifications present richer note/inviter context with explicit placement choices.
+- **Release documentation.** Added branch-level and inline implementation comments across the new sharing, routing, caching, and collaboration flows introduced in this release.
+
+### Fixed
+- **Collaboration permissions.** Recipients now see self-removal instead of owner-style revoke controls, and self-removal no longer throws a forbidden error while still removing access successfully.
+- **Live collaboration refresh.** Open collaborator and notification views now refresh when remote users accept, decline, revoke, or relocate shared notes.
+- **Shared With Me placement correctness.** Shared With Me root no longer duplicates subfolder contents, and switching workspaces on desktop no longer collapses the Shared With Me disclosure list.
+
 ## 1.0.71 - 2026-03-09
 
 ### Added

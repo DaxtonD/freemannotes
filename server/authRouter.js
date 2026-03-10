@@ -44,6 +44,7 @@ const {
 	findFirstLiveWorkspaceMembership,
 	resolveLiveWorkspaceId,
 } = require('./workspaceAccess');
+const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
 
 const BCRYPT_ROUNDS = Number(process.env.AUTH_BCRYPT_ROUNDS || 12);
 const ALLOW_REGISTER = String(process.env.AUTH_ALLOW_REGISTER || 'true').trim().toLowerCase() !== 'false';
@@ -180,6 +181,8 @@ function createApiAuthRouter({ prisma }) {
 							data: { userId: user.id, workspaceId: workspace.id, role: 'OWNER' },
 						});
 
+						await ensureSharedWithMeWorkspace(tx, user.id);
+
 						await tx.userPreference.create({
 							data: { userId: user.id, deleteAfterDays: 30 },
 						});
@@ -278,6 +281,8 @@ function createApiAuthRouter({ prisma }) {
 						}
 					}
 
+					await ensureSharedWithMeWorkspace(prisma, user.id);
+
 					const membership = await findFirstLiveWorkspaceMembership(prisma, user.id, { workspaceId: true });
 
 					if (!membership) {
@@ -352,6 +357,8 @@ function createApiAuthRouter({ prisma }) {
 							});
 						}
 					}
+
+					await ensureSharedWithMeWorkspace(prisma, user.id);
 
 					// If the DB role differs from the role in the session cookie, refresh the cookie.
 					// This keeps long-lived sessions consistent after admin promotion/demotion.

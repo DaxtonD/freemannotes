@@ -41,7 +41,6 @@ import {
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
-import { shareDocById } from '../../core/shareNote';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
 import styles from './Editors.module.css';
@@ -51,6 +50,7 @@ export type NoteEditorProps = {
 	doc: Y.Doc;
 	onClose: () => void;
 	onDelete: (noteId: string) => Promise<void>;
+	onAddCollaborator?: () => void;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
 	allowQuickDelete?: boolean;
@@ -1433,7 +1433,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
 								<FontAwesomeIcon icon={faBell} />
 							</button>
-							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('noteMenu.addCollaborator')} onClick={() => props.onAddCollaborator?.()} disabled={!props.onAddCollaborator}>
 								<FontAwesomeIcon icon={faUserPlus} />
 							</button>
 							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
@@ -1574,12 +1574,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
 				}}
-				onShare={() => {
+				onAddCollaborator={props.onAddCollaborator ? () => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
-					const title = String(props.doc.getText('title')?.toString() ?? '');
-					void shareDocById(props.noteId, { title });
-				}}
+					props.onAddCollaborator?.();
+				} : undefined}
 				onTrash={() => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
