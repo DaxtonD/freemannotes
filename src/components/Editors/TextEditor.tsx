@@ -1,5 +1,6 @@
 import React from 'react';
-import type { JSONContent } from '@tiptap/core';
+import { createPortal } from 'react-dom';
+import type { Editor, JSONContent } from '@tiptap/core';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
 	faBell,
@@ -13,8 +14,9 @@ import { createRichTextDocFromPlainText } from '../../core/richText';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
+import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
-import { RichTextEditor } from './RichTextEditor';
+import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type TextEditorProps = {
@@ -24,10 +26,13 @@ export type TextEditorProps = {
 
 export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const { t } = useI18n();
+	// Reserve enough room for the floating formatting toolbar plus a little breathing
+	// room so auto-scroll keeps the caret above the keyboard chrome.
+	const keyboardVisibilityPaddingPx = 88;
 	// Local draft state until onSave persists to Yjs in App.
 	const [title, setTitle] = React.useState('');
 	const [body, setBody] = React.useState('');
-	const [bodyRichContent, setBodyRichContent] = React.useState<JSONContent>(() => createRichTextDocFromPlainText(''));
+	const [bodyRichContent, setBodyRichContent] = React.useState<JSONContent>(() => createRichTextDocFromPlainText('', 'full'));
 	const [saving, setSaving] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
@@ -38,13 +43,22 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
+	const keyboard = useKeyboardHeight();
+	// Coarse-pointer branch: treat the software keyboard as part of layout and swap to
+	// the floating toolbar presentation while it is open.
+	const mobileKeyboardOpen = isCoarsePointer && keyboard.isOpen;
 	const isMobileLandscape = useIsMobileLandscape();
 	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
+	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
 	React.useEffect(() => {
 		isMobileLandscapeRef.current = isMobileLandscape;
 		// Landscape branch: media sheet/flyout must remain closed and inert.
 		if (isMobileLandscape) setMediaDockOpen(false);
 	}, [isMobileLandscape]);
+	React.useEffect(() => {
+		if (!mobileKeyboardOpen) return;
+		setMediaDockOpen(false);
+	}, [mobileKeyboardOpen]);
 	React.useEffect(() => {
 		// Coarse-pointer branch: briefly enable an interaction shield after mount
 		// so residual open-tap events cannot focus/select editor controls.
@@ -128,7 +142,12 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 
 	return (
 		<div className={styles.fullscreenOverlay} role="presentation" onClick={mediaDockOpen ? undefined : props.onCancel}>
-			<form onSubmit={onSubmit} className={`${styles.fullscreenEditor} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}`} onClick={(event) => event.stopPropagation()}>
+			<form
+				onSubmit={onSubmit}
+				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}
+				style={mobileKeyboardOpen ? { height: `${keyboard.visibleBottom}px`, maxHeight: `${keyboard.visibleBottom}px` } : undefined}
+				onClick={(event) => event.stopPropagation()}
+			>
 				<input
 					className={styles.editorTitleInput}
 					ref={titleInputRef}
@@ -143,7 +162,13 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						placeholder={t('editors.bodyPlaceholder')}
 						content={bodyRichContent}
 						autoFocus
+						// Hide the inline toolbar on coarse pointers because it is re-mounted as a
+						// portal above the keyboard while the keyboard is open.
+						hideToolbar={isCoarsePointer}
+						caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
+						viewportClassName={mobileKeyboardOpen ? styles.editorViewportKeyboardOpen : undefined}
 						contentClassName={styles.fullBodyFieldRich}
+						onEditorChange={setTextEditor}
 						onChange={({ json, text }) => {
 							setBodyRichContent(json);
 							setBody(text);
@@ -151,7 +176,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					/>
 				</div>
 
-				<div className={styles.editorBottomArea}>
+				{mobileKeyboardOpen ? null : <div className={styles.editorBottomArea}>
 					<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
 						<button
 							type="button"
@@ -231,7 +256,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 							</button>
 						</div>
 					</nav>
-				</div>
+				</div>}
 				<div className={styles.editorBlurLayer} aria-hidden="true" />
 				<div
 					className={styles.editorBlockLayer}
@@ -246,7 +271,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 				/>
 			</form>
 
-			<section
+			{mobileKeyboardOpen ? null : <section
 				className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}`}
 				aria-label={t('editors.mediaDock')}
 				onClick={(e) => e.stopPropagation()}
@@ -306,7 +331,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
 					</div>
 				</div>
-			</section>
+			</section>}
 
 			<aside
 				className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
@@ -357,6 +382,20 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 				}}
 			/>
 		) : null}
+			{isCoarsePointer && keyboard.isOpen ? createPortal(
+				<>
+					{/* Portal branch: render outside the editor overlay so the toolbar stays pinned
+					    to the visual viewport instead of being clipped by the scrolling editor body. */}
+					<div className={styles.keyboardOcclusion} style={{ top: `${keyboard.visibleBottom}px` }} />
+					<div
+						className={styles.floatingToolbar}
+						style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
+					>
+						<RichTextToolbar editor={textEditor} variant="full" compact />
+					</div>
+				</>,
+				document.body
+			) : null}
 		</div>
 	);
 }

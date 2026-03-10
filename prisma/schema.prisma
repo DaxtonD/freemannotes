@@ -53,6 +53,7 @@ model Workspace {
   /// Timestamps for auditing.
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
 
   /// One workspace owns many documents.
   documents Document[]
@@ -127,6 +128,9 @@ model UserDevicePreference {
 
   /// Per-device UI state: completed items expanded/collapsed in checklist editors.
   checklistShowCompleted Boolean @default(false) @map("checklist_show_completed")
+
+  /// Per-device mobile editor preference: show checklist row delete affordances at all times.
+  quickDeleteChecklist Boolean @default(false) @map("quick_delete_checklist")
 
   /// Per-device UI state: completed items expanded/collapsed per note card.
   /// Shape: { [noteId: string]: boolean }

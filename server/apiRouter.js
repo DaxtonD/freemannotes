@@ -28,6 +28,7 @@
 
 const Y = require('yjs');
 const { createTimestampFormatter } = require('./timezone');
+const { findLiveWorkspace, findLiveWorkspaceMembership } = require('./workspaceAccess');
 
 /**
  * Creates an API router function that handles REST endpoints.
@@ -150,18 +151,13 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 					const workspaceId = requireAuthWorkspace();
 					if (!workspaceId) return;
 
-					const member = await prisma.workspaceMember.findUnique({
-						where: { userId_workspaceId: { userId: req.auth.userId, workspaceId } },
-						select: { role: true },
-					});
+					const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { role: true });
 					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
 
-					const workspace = await prisma.workspace.findUnique({
-						where: { id: workspaceId },
-					});
+					const workspace = await findLiveWorkspace(prisma, workspaceId);
 					if (!workspace) {
 						jsonResponse(res, 404, { error: 'Workspace not found' });
 						return;
@@ -191,10 +187,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 					const workspaceId = requireAuthWorkspace();
 					if (!workspaceId) return;
 
-					const member = await prisma.workspaceMember.findUnique({
-						where: { userId_workspaceId: { userId: req.auth.userId, workspaceId } },
-						select: { id: true },
-					});
+					const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { id: true });
 					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
@@ -257,10 +250,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 					const workspaceId = requireAuthWorkspace();
 					if (!workspaceId) return;
 
-					const member = await prisma.workspaceMember.findUnique({
-						where: { userId_workspaceId: { userId: req.auth.userId, workspaceId } },
-						select: { id: true },
-					});
+					const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { id: true });
 					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
