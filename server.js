@@ -65,6 +65,12 @@ if (YPERSISTENCE.length > 0) {
 // ── WebSocket + y-websocket ──────────────────────────────────────────────
 const WebSocket = require('ws');
 const { setupWSConnection } = require('y-websocket/bin/utils');
+const {
+	normalizeWorkspaceMetadataEvent,
+	publishWorkspaceMetadataEvent,
+	subscribeToWorkspaceMetadataEvents,
+} = require('./server/workspaceMetadataEvents');
+const { findLiveWorkspaceMembership } = require('./server/workspaceAccess');
 
 // ── Phase 11 auth helpers (JWT cookie sessions) ───────────────────────
 const { getSessionFromRequest } = require('./server/auth');
@@ -79,6 +85,13 @@ let prisma = null;
 
 /** @type {import('ioredis').Redis | null} */
 let redis = null;
+
+/** @type {import('ioredis').Redis | null} */
+let redisSubscriber = null;
+
+let unsubscribeWorkspaceMetadataEvents = async () => {};
+
+const SERVER_INSTANCE_ID = `${process.pid}:${Math.random().toString(36).slice(2, 10)}`;
 
 /** @type {import('./server/YjsPersistenceAdapter').YjsPersistenceAdapter | null} */
 let persistAdapter = null;
@@ -162,6 +175,12 @@ if (DATABASE_URL.length > 0) {
 			redis.on('close', () => console.warn('[server] Redis connection closed'));
 			redis.on('reconnecting', (ms) => console.info(`[server] Redis reconnecting in ${ms}ms`));
 			redis.on('error', (err) => console.warn('[server] Redis error:', err.message));
+			redisSubscriber = redis.duplicate();
+			redisSubscriber.on('connect', () => console.info('[server] Redis subscriber connected'));
+			redisSubscriber.on('ready', () => console.info('[server] Redis subscriber ready'));
+			redisSubscriber.on('close', () => console.warn('[server] Redis subscriber connection closed'));
+			redisSubscriber.on('reconnecting', (ms) => console.info(`[server] Redis subscriber reconnecting in ${ms}ms`));
+			redisSubscriber.on('error', (err) => console.warn('[server] Redis subscriber error:', err.message));
 			console.info('[server] Redis client initialized (REDIS_URL is set)');
 		} catch (err) {
 			console.error('[server] Failed to initialize Redis client:', err.message);
@@ -219,7 +238,21 @@ if (DATABASE_URL.length > 0) {
 
 		try {
 			const { createWorkspaceRouter } = require('./server/workspaceRouter');
-			workspaceRouter = createWorkspaceRouter({ prisma });
+			workspaceRouter = createWorkspaceRouter({
+				prisma,
+				onWorkspaceMetadataChanged: async (event) => {
+					const normalized = normalizeWorkspaceMetadataEvent({
+						...event,
+						type: 'workspace-metadata-changed',
+						origin: SERVER_INSTANCE_ID,
+					});
+					if (!normalized) return;
+					broadcastWorkspaceMetadataChanged(normalized);
+					if (redis) {
+						await publishWorkspaceMetadataEvent(redis, normalized);
+					}
+				},
+			});
 			console.info('[server] Workspace API router initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize Workspace API router:', err.message);
@@ -555,25 +588,56 @@ const WS_PING_INTERVAL_MS = 30_000;
 const WS_PONG_TIMEOUT_MS = 10_000;
 
 const wss = new WebSocket.Server({ noServer: true });
+const metadataWss = new WebSocket.Server({ noServer: true });
+
+const metadataClientSessionMap = new WeakMap();
 
 // ── Server-side ping/pong keep-alive ─────────────────────────────────────
 // Track liveness per connection so we can terminate unresponsive clients.
 const wsAliveMap = new WeakMap();
 
-const wsPingInterval = setInterval(() => {
-	for (const ws of wss.clients) {
-		if (wsAliveMap.get(ws) === false) {
-			// No pong received since last ping — connection is dead.
-			ws.terminate();
-			continue;
+function broadcastWorkspaceMetadataChanged(rawEvent) {
+	const event = normalizeWorkspaceMetadataEvent(rawEvent);
+	if (!event) return;
+	const allowedUserIds = event.userIds.length > 0 ? new Set(event.userIds) : null;
+	const payload = JSON.stringify({
+		type: 'workspace-metadata-changed',
+		reason: event.reason,
+		workspaceId: event.workspaceId,
+		occurredAt: event.occurredAt,
+	});
+	for (const ws of metadataWss.clients) {
+		if (ws.readyState !== WebSocket.OPEN) continue;
+		const session = metadataClientSessionMap.get(ws);
+		if (allowedUserIds && (!session || !allowedUserIds.has(session.userId))) continue;
+		try {
+			ws.send(payload);
+		} catch {
+			// Ignore per-socket send failures; liveness tracking will clean them up.
 		}
-		wsAliveMap.set(ws, false);
-		ws.ping();
+	}
+}
+
+const wsPingInterval = setInterval(() => {
+	for (const serverInstance of [wss, metadataWss]) {
+		for (const ws of serverInstance.clients) {
+			if (wsAliveMap.get(ws) === false) {
+				// No pong received since last ping — connection is dead.
+				ws.terminate();
+				continue;
+			}
+			wsAliveMap.set(ws, false);
+			ws.ping();
+		}
 	}
 }, WS_PING_INTERVAL_MS);
 
 // Clean up the interval when the WebSocket server closes.
 wss.on('close', () => {
+	clearInterval(wsPingInterval);
+});
+
+metadataWss.on('close', () => {
 	clearInterval(wsPingInterval);
 });
 
@@ -583,6 +647,20 @@ server.on('upgrade', (req, socket, head) => {
 	});
 
 	const url = req.url || '/';
+	if (url.startsWith('/ws/metadata')) {
+		try {
+			metadataWss.handleUpgrade(req, socket, head, (conn) => {
+				metadataWss.emit('connection', conn, req);
+			});
+		} catch {
+			try {
+				socket.destroy();
+			} catch {
+				// ignore
+			}
+		}
+		return;
+	}
 	if (!url.startsWith('/yjs')) return;
 
 	try {
@@ -595,6 +673,35 @@ server.on('upgrade', (req, socket, head) => {
 		} catch {
 			// ignore
 		}
+	}
+});
+
+metadataWss.on('connection', (conn, req) => {
+	wsAliveMap.set(conn, true);
+	conn.on('pong', () => {
+		wsAliveMap.set(conn, true);
+	});
+
+	const session = getSessionFromRequest(req);
+	if (!session || !session.userId) {
+		conn.close(1008, 'unauthorized');
+		return;
+	}
+
+	metadataClientSessionMap.set(conn, { userId: session.userId });
+
+	conn.on('close', () => {
+		metadataClientSessionMap.delete(conn);
+	});
+
+	conn.on('error', (err) => {
+		console.warn('[ws-metadata] socket error:', err.message);
+	});
+
+	try {
+		conn.send(JSON.stringify({ type: 'workspace-metadata-ready' }));
+	} catch {
+		// Ignore eager send failures.
 	}
 });
 
@@ -659,13 +766,9 @@ wss.on('connection', (conn, req) => {
 				return;
 			}
 
-			// Verify workspace membership.
-			const member = await prisma.workspaceMember.findUnique({
-				where: {
-					userId_workspaceId: { userId: session.userId, workspaceId: session.workspaceId },
-				},
-				select: { role: true },
-			});
+			// Verify workspace membership against a non-deleted workspace so stale
+			// offline/session state cannot reattach to tombstoned workspaces.
+			const member = await findLiveWorkspaceMembership(prisma, session.userId, session.workspaceId, { role: true });
 			if (!member) {
 				console.warn(
 					'[ws] close forbidden',
@@ -761,9 +864,25 @@ async function gracefulShutdown(signal) {
 		}
 	}
 
+	try {
+		await unsubscribeWorkspaceMetadataEvents();
+	} catch (err) {
+		console.error('[server] Error unsubscribing workspace metadata events:', err.message);
+	}
+
+	if (redisSubscriber) {
+		try {
+			redisSubscriber.disconnect();
+			console.info('[server] Redis subscriber disconnected');
+		} catch (err) {
+			console.error('[server] Error disconnecting Redis subscriber:', err.message);
+		}
+	}
+
 	// 4. Close the HTTP + WebSocket server.
 	try {
 		wss.close();
+		metadataWss.close();
 		server.close(() => {
 			console.info('[server] HTTP server closed');
 			process.exit(0);
@@ -868,6 +987,18 @@ process.on('unhandledRejection', (reason) => {
 			console.info('[server] Trash cleanup scheduler initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize trash cleanup:', err.message);
+		}
+	}
+
+	if (redisSubscriber) {
+		try {
+			unsubscribeWorkspaceMetadataEvents = await subscribeToWorkspaceMetadataEvents(redisSubscriber, (event) => {
+				if (event.origin && event.origin === SERVER_INSTANCE_ID) return;
+				broadcastWorkspaceMetadataChanged(event);
+			});
+			console.info('[server] Workspace metadata Redis subscription initialized');
+		} catch (err) {
+			console.error('[server] Failed to subscribe to workspace metadata events:', err.message);
 		}
 	}
 

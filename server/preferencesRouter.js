@@ -1,6 +1,8 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
+
+const { resolveLiveWorkspaceId } = require('./workspaceAccess');
 // User Preferences REST API router for FreemanNotes.
 //
 // Provides endpoints for reading and updating per-user preference values.
@@ -169,16 +171,28 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 					});
 
 					// Upsert the device-scoped preferences.
-					const devicePref = await prisma.userDevicePreference.upsert({
+					let devicePref = await prisma.userDevicePreference.upsert({
 						where: { userId_deviceId: { userId, deviceId } },
 						update: {},
 						create: {
 							userId,
 							deviceId,
 							checklistShowCompleted: false,
+							quickDeleteChecklist: false,
 							noteCardCompletedExpandedByNoteId: {},
 						},
 					});
+					const normalizedActiveWorkspaceId = await resolveLiveWorkspaceId(
+						prisma,
+						userId,
+						devicePref.activeWorkspaceId ? String(devicePref.activeWorkspaceId) : null,
+					);
+					if ((devicePref.activeWorkspaceId ?? null) !== normalizedActiveWorkspaceId) {
+						devicePref = await prisma.userDevicePreference.update({
+							where: { userId_deviceId: { userId, deviceId } },
+							data: { activeWorkspaceId: normalizedActiveWorkspaceId },
+						});
+					}
 
 					jsonResponse(res, 200, {
 						userId: userPref.userId,
@@ -186,8 +200,9 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						deleteAfterDays: userPref.deleteAfterDays,
 						theme: devicePref.theme ?? null,
 						language: devicePref.language ?? null,
-						activeWorkspaceId: devicePref.activeWorkspaceId ?? null,
+						activeWorkspaceId: normalizedActiveWorkspaceId,
 						checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
+						quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
 						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 						createdAt: fmt(devicePref.createdAt),
 						updatedAt: fmt(devicePref.updatedAt),
@@ -270,6 +285,10 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						deviceUpdateData.checklistShowCompleted = Boolean(body.checklistShowCompleted);
 					}
 
+					if ('quickDeleteChecklist' in body) {
+						deviceUpdateData.quickDeleteChecklist = Boolean(body.quickDeleteChecklist);
+					}
+
 					if ('noteCardCompletedExpandedPatch' in body) {
 						const patch = body.noteCardCompletedExpandedPatch;
 						if (!patch || typeof patch !== 'object') {
@@ -298,24 +317,37 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 								deleteAfterDays: DEFAULT_DELETE_AFTER_DAYS,
 							},
 						});
-						const devicePref = await prisma.userDevicePreference.upsert({
+						let devicePref = await prisma.userDevicePreference.upsert({
 							where: { userId_deviceId: { userId, deviceId } },
 							update: {},
 							create: {
 								userId,
 								deviceId,
 								checklistShowCompleted: false,
+								quickDeleteChecklist: false,
 								noteCardCompletedExpandedByNoteId: {},
 							},
 						});
+						const normalizedActiveWorkspaceId = await resolveLiveWorkspaceId(
+							prisma,
+							userId,
+							devicePref.activeWorkspaceId ? String(devicePref.activeWorkspaceId) : null,
+						);
+						if ((devicePref.activeWorkspaceId ?? null) !== normalizedActiveWorkspaceId) {
+							devicePref = await prisma.userDevicePreference.update({
+								where: { userId_deviceId: { userId, deviceId } },
+								data: { activeWorkspaceId: normalizedActiveWorkspaceId },
+							});
+						}
 						jsonResponse(res, 200, {
 							userId: userPref.userId,
 							deviceId: devicePref.deviceId,
 							deleteAfterDays: userPref.deleteAfterDays,
 							theme: devicePref.theme ?? null,
 							language: devicePref.language ?? null,
-							activeWorkspaceId: devicePref.activeWorkspaceId ?? null,
+							activeWorkspaceId: normalizedActiveWorkspaceId,
 							checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
+							quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
 							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 							createdAt: fmt(devicePref.createdAt),
 							updatedAt: fmt(devicePref.updatedAt),
@@ -324,7 +356,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						return;
 					}
 
-					const pref = await prisma.$transaction(async (tx) => {
+					let pref = await prisma.$transaction(async (tx) => {
 						const userPref = hasUserUpdates
 							? await tx.userPreference.upsert({
 								where: { userId },
@@ -373,6 +405,10 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 										typeof deviceData.checklistShowCompleted === 'boolean'
 											? deviceData.checklistShowCompleted
 											: false,
+									quickDeleteChecklist:
+										typeof deviceData.quickDeleteChecklist === 'boolean'
+											? deviceData.quickDeleteChecklist
+											: false,
 									noteCardCompletedExpandedByNoteId:
 										deviceData.noteCardCompletedExpandedByNoteId ?? {},
 								},
@@ -384,12 +420,27 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 									userId,
 									deviceId,
 									checklistShowCompleted: false,
+									quickDeleteChecklist: false,
 									noteCardCompletedExpandedByNoteId: {},
 								},
 							});
 
 						return { userPref, devicePref };
 					});
+					const normalizedActiveWorkspaceId = await resolveLiveWorkspaceId(
+						prisma,
+						userId,
+						pref.devicePref.activeWorkspaceId ? String(pref.devicePref.activeWorkspaceId) : null,
+					);
+					if ((pref.devicePref.activeWorkspaceId ?? null) !== normalizedActiveWorkspaceId) {
+						pref = {
+							...pref,
+							devicePref: await prisma.userDevicePreference.update({
+								where: { userId_deviceId: { userId, deviceId } },
+								data: { activeWorkspaceId: normalizedActiveWorkspaceId },
+							}),
+						};
+					}
 
 					console.info(
 						`[api] POST /api/user/preferences updated:`,
@@ -401,8 +452,9 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						deleteAfterDays: pref.userPref.deleteAfterDays,
 						theme: pref.devicePref.theme ?? null,
 						language: pref.devicePref.language ?? null,
-						activeWorkspaceId: pref.devicePref.activeWorkspaceId ?? null,
+						activeWorkspaceId: normalizedActiveWorkspaceId,
 						checklistShowCompleted: Boolean(pref.devicePref.checklistShowCompleted),
+						quickDeleteChecklist: Boolean(pref.devicePref.quickDeleteChecklist),
 						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
 						createdAt: fmt(pref.devicePref.createdAt),
 						updatedAt: fmt(pref.devicePref.updatedAt),

@@ -45,11 +45,12 @@
 }
 
 @media (pointer: coarse) {
-	/* On touch devices the header is a drag handle, not a scroll surface.
-	   touch-action:none lets the touch-drag polyfill (Firefox Android) receive
-	   the full touch stream without the browser claiming it for scroll/pan. */
+	/* On touch devices the header is still the drag handle, but it must remain a
+	   valid vertical scroll surface. `pan-y` keeps normal screen scrolling
+	   responsive while still allowing long-press drag to claim the gesture once
+	   the user commits to dragging. */
 	.header {
-		touch-action: none;
+		touch-action: pan-y;
 	}
 }
 

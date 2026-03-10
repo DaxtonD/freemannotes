@@ -28,6 +28,7 @@ const crypto = require('crypto');
 const { sendInviteEmail } = require('./mailer');
 const { enforceSameOrigin } = require('./auth');
 const { createRateLimiter, getClientIp } = require('./rateLimit');
+const { findLiveWorkspace, findLiveWorkspaceMembership } = require('./workspaceAccess');
 
 const inviteLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 50 });
 const acceptLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 40 });
@@ -103,10 +104,7 @@ function createInviteRouter({ prisma }) {
 					const session = requireAuth(req, res);
 					if (!session) return;
 
-					const member = await prisma.workspaceMember.findUnique({
-						where: { userId_workspaceId: { userId: session.userId, workspaceId } },
-						select: { role: true },
-					});
+					const member = await findLiveWorkspaceMembership(prisma, session.userId, workspaceId, { role: true });
 					if (!member || (member.role !== 'OWNER' && member.role !== 'ADMIN')) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
@@ -129,10 +127,7 @@ function createInviteRouter({ prisma }) {
 						return;
 					}
 
-					const workspace = await prisma.workspace.findUnique({
-						where: { id: workspaceId },
-						select: { id: true, name: true },
-					});
+					const workspace = await findLiveWorkspace(prisma, workspaceId, { id: true, name: true });
 					if (!workspace) {
 						jsonResponse(res, 404, { error: 'Workspace not found' });
 						return;
@@ -190,6 +185,11 @@ function createInviteRouter({ prisma }) {
 						jsonResponse(res, 410, { error: 'Invite expired' });
 						return;
 					}
+					const workspace = await findLiveWorkspace(prisma, invite.workspaceId, { id: true, name: true });
+					if (!workspace) {
+						jsonResponse(res, 410, { error: 'Workspace no longer exists' });
+						return;
+					}
 
 					const user = await prisma.user.findUnique({
 						where: { id: session.userId },
@@ -213,7 +213,7 @@ function createInviteRouter({ prisma }) {
 						await tx.inviteToken.update({ where: { id: invite.id }, data: { used: true } });
 					});
 
-					jsonResponse(res, 200, { ok: true, workspaceId: invite.workspaceId, workspaceName: invite.workspace.name, role: invite.role });
+					jsonResponse(res, 200, { ok: true, workspaceId: invite.workspaceId, workspaceName: workspace.name, role: invite.role });
 				} catch (err) {
 					console.error('[invite] accept error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });

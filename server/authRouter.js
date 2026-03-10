@@ -40,6 +40,10 @@ const {
 	isSecureRequest,
 	enforceSameOrigin,
 } = require('./auth');
+const {
+	findFirstLiveWorkspaceMembership,
+	resolveLiveWorkspaceId,
+} = require('./workspaceAccess');
 
 const BCRYPT_ROUNDS = Number(process.env.AUTH_BCRYPT_ROUNDS || 12);
 const ALLOW_REGISTER = String(process.env.AUTH_ALLOW_REGISTER || 'true').trim().toLowerCase() !== 'false';
@@ -274,11 +278,7 @@ function createApiAuthRouter({ prisma }) {
 						}
 					}
 
-					const membership = await prisma.workspaceMember.findFirst({
-						where: { userId: user.id },
-						orderBy: { workspaceId: 'asc' },
-						select: { workspaceId: true },
-					});
+					const membership = await findFirstLiveWorkspaceMembership(prisma, user.id, { workspaceId: true });
 
 					if (!membership) {
 						jsonResponse(res, 403, { error: 'User has no workspace' });
@@ -355,7 +355,7 @@ function createApiAuthRouter({ prisma }) {
 
 					// If the DB role differs from the role in the session cookie, refresh the cookie.
 					// This keeps long-lived sessions consistent after admin promotion/demotion.
-					let effectiveWorkspaceId = session.workspaceId || null;
+					let preferredWorkspaceId = session.workspaceId || null;
 					if (deviceId) {
 						// Ensure a device preference row exists; if missing, seed it with current session workspace.
 						try {
@@ -365,8 +365,9 @@ function createApiAuthRouter({ prisma }) {
 								create: {
 									userId: user.id,
 									deviceId,
-									activeWorkspaceId: effectiveWorkspaceId,
+									activeWorkspaceId: preferredWorkspaceId,
 									checklistShowCompleted: false,
+									quickDeleteChecklist: false,
 									noteCardCompletedExpandedByNoteId: {},
 								},
 							});
@@ -375,17 +376,30 @@ function createApiAuthRouter({ prisma }) {
 								select: { activeWorkspaceId: true },
 							});
 							if (pref && pref.activeWorkspaceId) {
-								// Validate membership before trusting the preference.
-								const member = await prisma.workspaceMember.findUnique({
-									where: { userId_workspaceId: { userId: user.id, workspaceId: pref.activeWorkspaceId } },
-									select: { id: true },
-								});
-								if (member) {
-									effectiveWorkspaceId = String(pref.activeWorkspaceId);
-								}
+								preferredWorkspaceId = String(pref.activeWorkspaceId);
 							}
 						} catch (err) {
 							console.warn('[auth] me: device preference lookup failed:', err.message);
+						}
+					}
+
+					const effectiveWorkspaceId = await resolveLiveWorkspaceId(prisma, user.id, preferredWorkspaceId);
+					if (deviceId) {
+						try {
+							await prisma.userDevicePreference.upsert({
+								where: { userId_deviceId: { userId: user.id, deviceId } },
+								update: { activeWorkspaceId: effectiveWorkspaceId },
+								create: {
+									userId: user.id,
+									deviceId,
+									activeWorkspaceId: effectiveWorkspaceId,
+									checklistShowCompleted: false,
+									quickDeleteChecklist: false,
+									noteCardCompletedExpandedByNoteId: {},
+								},
+							});
+						} catch (err) {
+							console.warn('[auth] me: device preference repair failed:', err.message);
 						}
 					}
 

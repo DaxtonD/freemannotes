@@ -102,6 +102,15 @@
 	display: flex;
 	gap: 8px;
 	align-items: center;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+}
+
+.dangerButton {
+	/* Destructive action affordance for workspace deletion. */
+	border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border));
+	background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface));
+	color: var(--color-text);
 }
 
 .renameInput {
@@ -136,4 +145,38 @@
 	display: flex;
 	justify-content: flex-end;
 	gap: 10px;
+}
+
+@media (max-width: 640px) {
+	.modal {
+		padding: 14px;
+		gap: 12px;
+	}
+
+	.row {
+		align-items: flex-start;
+		flex-direction: column;
+	}
+
+	.actions {
+		width: 100%;
+	}
+
+	.actions :global(button) {
+		font-size: 13px;
+		padding-inline: 10px;
+	}
+
+	.renameInput {
+		width: 100%;
+		min-width: 0;
+	}
+
+	.form {
+		flex-wrap: wrap;
+	}
+
+	.form :global(button) {
+		width: 100%;
+	}
 }

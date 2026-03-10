@@ -1,13 +1,15 @@
 {
   "name": "freemannotes",
-  "version": "1.0.70",
+  "version": "1.0.71",
   "main": "index.js",
   "scripts": {
     "dev": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",
     "dev:web": "node server/waitForServer.js && vite --host",
     "predev:server": "npm run db:generate || echo prisma generate failed",
     "dev:server": "node server/dbInitCli.js && node server.js",
+    "prestart": "npm run db:generate || echo prisma generate failed",
     "start": "npm run build && node server.js",
+    "prestart:server": "npm run db:generate || echo prisma generate failed",
     "start:server": "node server.js",
     "db:init": "node server/dbInitCli.js",
     "preview": "vite preview --host",

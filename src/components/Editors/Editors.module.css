@@ -896,7 +896,10 @@
 	/* Keyboard-open branch:
 	   Match the floating toolbar footprint so the last editable lines/rows can scroll
 	   fully above the toolbar without reintroducing the hidden footer into layout. */
-	padding-bottom: 56px;
+	padding-bottom: 88px;
+	/* `scroll-padding-bottom` mirrors the visual padding so browser/programmatic scroll
+	   targets stop above the floating toolbar instead of under it. */
+	scroll-padding-bottom: 88px;
 	overscroll-behavior-y: contain;
 }
 
@@ -910,12 +913,14 @@
 	word-break: break-word;
 }
 
-.richEditorContent :global(.ProseMirror) {
+.richEditorContent:global(.ProseMirror) {
+	/* The CSS module class is applied directly on the ProseMirror root, so these selectors
+	   must target `.richEditorContent:global(.ProseMirror)` rather than assuming a child node. */
 	min-height: 100%;
 	outline: none;
 }
 
-.richEditorContent :global(.ProseMirror p.is-editor-empty:first-child::before) {
+.richEditorContent:global(.ProseMirror) p.is-editor-empty:first-child::before {
 	content: attr(data-placeholder);
 	float: left;
 	height: 0;
@@ -924,31 +929,44 @@
 	opacity: 0.82;
 }
 
-.richEditorContent :global(.ProseMirror p),
-.richEditorContent :global(.ProseMirror ul),
-.richEditorContent :global(.ProseMirror ol),
-.richEditorContent :global(.ProseMirror h1),
-.richEditorContent :global(.ProseMirror h2),
-.richEditorContent :global(.ProseMirror h3) {
+.richEditorContent:global(.ProseMirror) p {
+	margin: 0;
+}
+
+.richEditorContent:global(.ProseMirror) li,
+.richEditorContent:global(.ProseMirror) li p {
+	margin: 0;
+}
+
+.richEditorContent:global(.ProseMirror) ul,
+.richEditorContent:global(.ProseMirror) ol,
+.richEditorContent:global(.ProseMirror) h1,
+.richEditorContent:global(.ProseMirror) h2,
+.richEditorContent:global(.ProseMirror) h3 {
 	margin: 0 0 0.6em;
 }
 
-.richEditorContent :global(.ProseMirror h1) {
+.richEditorContent:global(.ProseMirror) ul,
+.richEditorContent:global(.ProseMirror) ol {
+	padding-inline-start: 1.5em;
+}
+
+.richEditorContent:global(.ProseMirror) h1 {
 	font-size: clamp(1.45rem, 2vw, 2rem);
 	line-height: 1.12;
 }
 
-.richEditorContent :global(.ProseMirror h2) {
+.richEditorContent:global(.ProseMirror) h2 {
 	font-size: clamp(1.2rem, 1.7vw, 1.55rem);
 	line-height: 1.18;
 }
 
-.richEditorContent :global(.ProseMirror h3) {
+.richEditorContent:global(.ProseMirror) h3 {
 	font-size: clamp(1.05rem, 1.4vw, 1.2rem);
 	line-height: 1.22;
 }
 
-.richEditorContent :global(.ProseMirror a) {
+.richEditorContent:global(.ProseMirror) a {
 	color: var(--color-accent);
 	text-decoration: underline;
 	text-decoration-thickness: 1.5px;
@@ -1036,6 +1054,8 @@
 	overflow-x: hidden;
 	overscroll-behavior-y: contain;
 	padding-bottom: 6px;
+	/* Keep scrollIntoView/caret scrolling above the floating keyboard toolbar in checklist mode too. */
+	scroll-padding-bottom: 88px;
 }
 
 .checklistComposer {
@@ -1167,6 +1187,11 @@ Drag handle:
 
 @media (pointer: coarse) {
 	.checklistItemActive .rowRemoveButton {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.checklistItemQuickDelete .rowRemoveButton {
 		opacity: 1;
 		pointer-events: auto;
 	}

@@ -10,6 +10,43 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { setupWSConnection } from 'y-websocket/bin/utils';
 import type { Plugin } from 'vite';
 
+function attachProxyErrorHandlers(proxy: any, label: string): void {
+	const swallowSocketError = (socket: any): void => {
+		if (!socket || typeof socket.on !== 'function') return;
+		socket.on('error', () => {
+			// Ignore raw socket resets so Vite stays alive while the backend restarts.
+			// HTTP callers still get a 502 via the `error` handler below when applicable.
+		});
+	};
+
+	proxy.on('error', (err: Error, _req: unknown, resOrSocket: any) => {
+		const message = err instanceof Error ? err.message : String(err);
+		console.warn(`[vite-proxy:${label}] ${message}`);
+
+		if (!resOrSocket) return;
+		if (typeof resOrSocket.writeHead === 'function' && !resOrSocket.headersSent) {
+			resOrSocket.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+			resOrSocket.end('Proxy target unavailable');
+			return;
+		}
+		if (typeof resOrSocket.end === 'function') {
+			try {
+				resOrSocket.end();
+			} catch {
+				// ignore
+			}
+		}
+	});
+
+	proxy.on('proxyReqWs', (_proxyReq: unknown, _req: unknown, socket: any) => {
+		swallowSocketError(socket);
+	});
+
+	proxy.on('open', (proxySocket: any) => {
+		swallowSocketError(proxySocket);
+	});
+}
+
 function yjsWebsocketPlugin(): Plugin {
 	return {
 		name: 'freemannotes:yjs-websocket',
@@ -89,11 +126,26 @@ export default defineConfig(({ mode }) => {
 					target: apiProxyTarget,
 					changeOrigin: true,
 					xfwd: true,
+					configure(proxy) {
+						attachProxyErrorHandlers(proxy, 'api');
+					},
 				},
 				'/uploads': {
 					target: apiProxyTarget,
 					changeOrigin: true,
 					xfwd: true,
+					configure(proxy) {
+						attachProxyErrorHandlers(proxy, 'uploads');
+					},
+				},
+				'/ws': {
+					target: apiProxyTarget,
+					ws: true,
+					changeOrigin: true,
+					xfwd: true,
+					configure(proxy) {
+						attachProxyErrorHandlers(proxy, 'ws');
+					},
 				},
 				// Proxy Yjs websocket rooms to the Node server so dev can see persisted notes.
 				// Branch notes:
@@ -108,6 +160,9 @@ export default defineConfig(({ mode }) => {
 							ws: true,
 							changeOrigin: true,
 							xfwd: true,
+							configure(proxy) {
+								attachProxyErrorHandlers(proxy, 'yjs');
+							},
 						},
 					}),
 			},

@@ -125,10 +125,13 @@ export class DocumentManager {
 				this.browserOnline = true;
 				this.updateConnectionState();
 				this.emitConnectionStatus();
-				// Mobile networks often silently kill WebSocket connections during
-				// offline→online transitions (cell tower handoff, tunnel exit, etc).
-				// Force-reconnect all providers so pending Yjs updates sync immediately.
-				this.reconnectAllProviders('online-event');
+				// Defer reconnect to the next macrotask so the app layer can process
+				// workspace mutation replay first and, if needed, temporarily disable
+				// websocket sync or switch to a different active workspace.
+				window.setTimeout(() => {
+					if (!this.browserOnline || !this.websocketEnabled) return;
+					this.reconnectAllProviders('online-event');
+				}, 0);
 			};
 			const onOffline = (): void => {
 				this.browserOnline = false;

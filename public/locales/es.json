@@ -58,6 +58,8 @@
     "editor": "Editor",
     "bubbleMenu": "Menú de formato flotante",
     "bubbleMenuDescription": "Mostrar botones de negrita, cursiva y subrayado al seleccionar texto",
+    "quickDeleteChecklist": "Eliminación rápida de checklist",
+    "quickDeleteChecklistDescription": "Mostrar siempre el botón de eliminar en las filas del checklist en dispositivos táctiles",
     "userManagement": "Gestión de usuario",
     "sendInvite": "Enviar invitación",
     "signOut": "Cerrar sesión",
@@ -146,7 +148,17 @@
     "create": "Crear",
     "loadFailed": "No se pudieron cargar los espacios de trabajo",
     "activateFailed": "No se pudo activar el espacio de trabajo",
-    "createFailed": "No se pudo crear el espacio de trabajo"
+    "createFailed": "No se pudo crear el espacio de trabajo",
+    "createOfflineUnavailable": "No se pueden crear espacios de trabajo sin conexión",
+    "delete": "Eliminar",
+    "deleteConfirm": "¿Eliminar este espacio de trabajo de forma permanente?",
+    "deleteFailed": "No se pudo eliminar el espacio de trabajo",
+    "deleteOfflineUnavailable": "No se pueden eliminar espacios de trabajo sin conexión",
+    "pendingSync": "Pendiente de sincronización",
+    "deletedTitle": "Espacio de trabajo eliminado",
+    "deletedMessage": "Este espacio de trabajo fue eliminado. Elige otro espacio de trabajo.",
+    "deletedMessageNoFallback": "Este espacio de trabajo fue eliminado. No hay otro espacio de trabajo disponible en este momento.",
+    "chooseAnother": "Elegir espacio de trabajo"
   },
   "invite": {
     "title": "Enviar invitación",

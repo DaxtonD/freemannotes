@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const Y = require('yjs');
 const { createTimestampFormatter } = require('./timezone');
 const { enforceSameOrigin } = require('./auth');
+const { findLiveWorkspaceMembership } = require('./workspaceAccess');
 
 function jsonResponse(res, status, body) {
 	const json = JSON.stringify(body);
@@ -79,11 +80,8 @@ function createShareRouter({ prisma, timezone = null }) {
 					const session = requireAuthWorkspace(req, res);
 					if (!session) return;
 
-					const member = await prisma.workspaceMember.findUnique({
-						where: { userId_workspaceId: { userId: session.userId, workspaceId: session.workspaceId } },
-						select: { role: true },
-					});
-					if (!member) {
+					const membership = await findLiveWorkspaceMembership(prisma, session.userId, session.workspaceId, { workspaceId: true });
+					if (!membership) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}

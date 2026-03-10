@@ -179,6 +179,48 @@
 	text-align: center;
 }
 
+.workspace-deleted-dialog-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 10001;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--space-4);
+	background: var(--color-overlay);
+}
+
+.workspace-deleted-dialog {
+	width: min(420px, 100%);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-surface);
+	padding: var(--space-4);
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+	box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
+}
+
+.workspace-deleted-dialog-title {
+	margin: 0;
+	font-size: var(--font-size-md);
+	font-weight: 700;
+}
+
+.workspace-deleted-dialog-body {
+	margin: 0;
+	color: var(--color-text-muted);
+	font-size: var(--font-size-sm);
+}
+
+.workspace-deleted-dialog-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--space-2);
+	flex-wrap: wrap;
+}
+
 .auth-shell {
 	min-height: 100dvh;
 	display: flex;

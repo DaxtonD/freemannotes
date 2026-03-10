@@ -34,10 +34,20 @@ import { type LocaleCode, useI18n } from './core/i18n';
 import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId } from './core/noteModel';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, isLightTheme, persistThemeId, THEMES, type ThemeId } from './core/theme';
-import { fetchUserPreferences, updateUserPreferences } from './core/userDevicePreferencesApi';
+import { activateWorkspace, fetchUserPreferences, updateUserPreferences } from './core/userDevicePreferencesApi';
 import { useConnectionStatus } from './core/useConnectionStatus';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 import { useIsMobileLandscape } from './core/useIsMobileLandscape';
+import {
+	cacheActiveWorkspaceSelection,
+	cacheWorkspaceDetails,
+	cacheWorkspaceSnapshot,
+	type CachedWorkspaceListItem,
+	readPendingWorkspaceMutations,
+	removePendingWorkspaceMutation,
+	removeCachedWorkspace,
+	readCachedWorkspaceSnapshot,
+} from './core/workspaceMetadataStore';
 
 type EditorMode = 'none' | 'text' | 'checklist';
 
@@ -52,6 +62,36 @@ type OverlaySnapshot = {
 	isMobileSidebarOpen: boolean;
 	isFabOpen: boolean;
 };
+
+type SidebarWorkspaceListItem = CachedWorkspaceListItem;
+
+function mapWorkspaceList(value: unknown): SidebarWorkspaceListItem[] {
+	if (!Array.isArray(value)) return [];
+	return value
+		.map((entry) => {
+			if (!entry || typeof entry !== 'object') return null;
+			const workspace = entry as Record<string, unknown>;
+			const id = typeof workspace.id === 'string' ? workspace.id : '';
+			if (!id) return null;
+			return {
+				id,
+				name: typeof workspace.name === 'string' ? workspace.name : '',
+				role: workspace.role === 'OWNER' || workspace.role === 'ADMIN' || workspace.role === 'MEMBER' ? workspace.role : 'MEMBER',
+				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
+				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
+				updatedAt: typeof workspace.updatedAt === 'string' ? workspace.updatedAt : typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
+			};
+		})
+		.filter((workspace): workspace is SidebarWorkspaceListItem => Boolean(workspace));
+}
+
+function isLocalWorkspaceSelectionNewer(localUpdatedAt: string | null, remoteUpdatedAt: string | null): boolean {
+	const localMs = localUpdatedAt ? Date.parse(localUpdatedAt) : Number.NaN;
+	const remoteMs = remoteUpdatedAt ? Date.parse(remoteUpdatedAt) : Number.NaN;
+	if (!Number.isFinite(localMs)) return false;
+	if (!Number.isFinite(remoteMs)) return true;
+	return localMs > remoteMs;
+}
 
 const OVERLAY_HISTORY_KEY = 'freemannotes.overlay.history.v1' as const;
 
@@ -100,7 +140,7 @@ function detectStandaloneDisplayMode(): boolean {
 type AuthCacheV1 = {
 	v: 1;
 	userId: string;
-	workspaceId: string;
+	workspaceId: string | null;
 	profileImage: string | null;
 };
 
@@ -114,9 +154,9 @@ function readAuthCache(): AuthCacheV1 | null {
 		const parsed = JSON.parse(raw) as Partial<AuthCacheV1>;
 		if (parsed?.v !== 1) return null;
 		const userId = typeof parsed.userId === 'string' ? parsed.userId : '';
-		const workspaceId = typeof parsed.workspaceId === 'string' ? parsed.workspaceId : '';
+		const workspaceId = typeof parsed.workspaceId === 'string' ? parsed.workspaceId : null;
 		const profileImage = typeof parsed.profileImage === 'string' ? parsed.profileImage : null;
-		if (!userId || !workspaceId) return null;
+		if (!userId) return null;
 		return { v: 1, userId, workspaceId, profileImage };
 	} catch {
 		return null;
@@ -226,6 +266,7 @@ export function App(): React.JSX.Element {
 	const [authUserId, setAuthUserId] = React.useState<string | null>(() => cachedAuth?.userId ?? null);
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(() => cachedAuth?.profileImage ?? null);
 	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(() => cachedAuth?.workspaceId ?? null);
+	const [workspaceDeletedNotice, setWorkspaceDeletedNotice] = React.useState<{ hasOtherWorkspaces: boolean } | null>(null);
 	// Brief dialog messages are used for small "discard" notices (e.g. preventing
 	// empty notes from being saved). We avoid a blocking `alert()` and instead show
 	// a transient on-screen message.
@@ -305,6 +346,7 @@ export function App(): React.JSX.Element {
 	const [themeId, setThemeId] = React.useState<ThemeId>(() => getStoredThemeId());
 	const deviceId = React.useMemo(() => getDeviceId(), []);
 	const [checklistShowCompletedPref, setChecklistShowCompletedPref] = React.useState(false);
+	const [quickDeleteChecklistPref, setQuickDeleteChecklistPref] = React.useState(false);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
@@ -564,30 +606,73 @@ export function App(): React.JSX.Element {
 		void updateUserPreferences(deviceId, { language: locale });
 	}, [authStatus, authOfflineMode, deviceId, locale, prefsHydrationAttempted]);
 
+	const sidebarWorkspacesRef = React.useRef<readonly SidebarWorkspaceListItem[]>([]);
+	const handleWorkspaceActivatedRef = React.useRef<(workspaceId: string) => void>(() => undefined);
+
 	const refreshActiveWorkspace = React.useCallback(async () => {
 		if (!authWorkspaceId) {
 			setActiveWorkspaceName(null);
+			return;
+		}
+		const localWorkspace = sidebarWorkspacesRef.current.find((workspace) => workspace.id === authWorkspaceId);
+		if (localWorkspace) {
+			setActiveWorkspaceName(localWorkspace.name || null);
+		}
+		if (authStatus !== 'authed' || authOfflineMode) {
 			return;
 		}
 		try {
 			const res = await fetch('/api/workspace', { credentials: 'include' });
 			const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 			if (!res.ok || !contentType.includes('application/json')) {
-				setActiveWorkspaceName(null);
 				return;
 			}
 			const body = await res.json().catch(() => null);
+			if (authUserId && body?.id) {
+				await cacheWorkspaceDetails({
+					workspace: {
+						id: String(body.id),
+						name: typeof body.name === 'string' ? body.name : '',
+						ownerUserId: typeof body.ownerUserId === 'string' ? body.ownerUserId : null,
+						createdAt: typeof body.createdAt === 'string' ? body.createdAt : null,
+						updatedAt: typeof body.updatedAt === 'string' ? body.updatedAt : null,
+					},
+					userId: authUserId,
+					role: body?.role === 'OWNER' || body?.role === 'ADMIN' || body?.role === 'MEMBER' ? body.role : null,
+				});
+			}
 			const name = body?.name ? String(body.name) : null;
 			setActiveWorkspaceName(name);
 		} catch {
-			setActiveWorkspaceName(null);
+			// Keep the locally cached name on screen when the server is unavailable.
 		}
-	}, [authWorkspaceId]);
+	}, [authOfflineMode, authStatus, authUserId, authWorkspaceId]);
+
+	const refreshActiveWorkspaceRef = React.useRef(refreshActiveWorkspace);
+
+	React.useEffect(() => {
+		refreshActiveWorkspaceRef.current = refreshActiveWorkspace;
+	}, [refreshActiveWorkspace]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed') return;
 		void refreshActiveWorkspace();
 	}, [authStatus, authWorkspaceId, refreshActiveWorkspace]);
+
+	const restoreCachedAuthSession = React.useCallback((): boolean => {
+		// Offline-auth branch: reuse the last authenticated user/workspace so IndexedDB
+		// notes and cached workspace metadata stay available while the backend is unreachable.
+		const cached = readAuthCache();
+		if (!cached) return false;
+		setAuthStatus('authed');
+		setAuthUserId(cached.userId);
+		setAuthProfileImage(cached.profileImage);
+		setAuthWorkspaceId(cached.workspaceId);
+		setAuthOfflineMode(true);
+		manager.setActiveWorkspaceId(cached.workspaceId);
+		manager.setWebsocketEnabled(false);
+		return true;
+	}, [manager]);
 
 	const probeSession = React.useCallback(
 		async (opts?: { allowOfflineRestore?: boolean }) => {
@@ -602,6 +687,10 @@ export function App(): React.JSX.Element {
 				});
 				const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 				if (!res.ok || !contentType.includes('application/json')) {
+					const isExplicitUnauth = res.status === 401 || res.status === 403;
+					if (!isExplicitUnauth && allowOfflineRestore && restoreCachedAuthSession()) {
+						return;
+					}
 					setAuthStatus('unauth');
 					setAuthUserId(null);
 					setAuthProfileImage(null);
@@ -615,8 +704,8 @@ export function App(): React.JSX.Element {
 				const body = await res.json().catch(() => null);
 				const userId = body?.user?.id ? String(body.user.id) : '';
 				const profileImage = body?.user?.profileImage ? String(body.user.profileImage) : null;
-				const workspaceId = body?.workspaceId ? String(body.workspaceId) : '';
-				if (!userId || !workspaceId) {
+				const workspaceId = body?.workspaceId ? String(body.workspaceId) : null;
+				if (!userId) {
 					setAuthStatus('unauth');
 					setAuthUserId(null);
 					setAuthProfileImage(null);
@@ -633,25 +722,13 @@ export function App(): React.JSX.Element {
 				setAuthWorkspaceId(workspaceId);
 				setAuthOfflineMode(false);
 				manager.setActiveWorkspaceId(workspaceId);
-				manager.setWebsocketEnabled(true);
+				manager.setWebsocketEnabled(Boolean(workspaceId));
 				writeAuthCache({ v: 1, userId, workspaceId, profileImage });
 			} catch {
-				// Network failure (offline, captive portal, DNS, etc). Only restore cached
-				// auth when the browser is offline (or when explicitly allowed).
-				const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
-				if (allowOfflineRestore && isOffline) {
-					const cached = readAuthCache();
-					if (cached) {
-						setAuthStatus('authed');
-						setAuthUserId(cached.userId);
-						setAuthProfileImage(cached.profileImage);
-						setAuthWorkspaceId(cached.workspaceId);
-						setAuthOfflineMode(true);
-						manager.setActiveWorkspaceId(cached.workspaceId);
-						// Stay offline: IndexedDB works, websocket waits until we re-probe online.
-						manager.setWebsocketEnabled(false);
-						return;
-					}
+				// Treat transport failures and unreachable backends like offline mode when
+				// we have a cached session, even if the browser still reports "online".
+				if (allowOfflineRestore && restoreCachedAuthSession()) {
+					return;
 				}
 
 				setAuthStatus('unauth');
@@ -663,7 +740,7 @@ export function App(): React.JSX.Element {
 				manager.setWebsocketEnabled(false);
 			}
 		},
-		[deviceId, manager]
+		[deviceId, manager, restoreCachedAuthSession]
 	);
 
 	// The workspace is now pre-seeded at DocumentManager construction time
@@ -689,12 +766,34 @@ export function App(): React.JSX.Element {
 		}
 		let cancelled = false;
 		(async () => {
+			const localSnapshot = authUserId ? await readCachedWorkspaceSnapshot(authUserId, deviceId) : null;
 			const pref = await fetchUserPreferences(deviceId);
 			if (cancelled) return;
 			if (pref) {
+				let syncedWorkspaceId = pref.activeWorkspaceId;
+				if (
+					localSnapshot &&
+					localSnapshot.activeWorkspaceId &&
+					localSnapshot.activeWorkspaceId !== pref.activeWorkspaceId &&
+					isLocalWorkspaceSelectionNewer(localSnapshot.preferenceUpdatedAt, pref.updatedAt)
+				) {
+					const activatedWorkspaceId = await activateWorkspace(deviceId, localSnapshot.activeWorkspaceId);
+					if (!cancelled && activatedWorkspaceId) {
+						syncedWorkspaceId = activatedWorkspaceId;
+						handleWorkspaceActivatedRef.current(activatedWorkspaceId);
+					}
+				}
+				await cacheActiveWorkspaceSelection({
+					userId: pref.userId,
+					deviceId: pref.deviceId,
+					activeWorkspaceId: syncedWorkspaceId,
+					createdAt: pref.createdAt,
+					updatedAt: syncedWorkspaceId === pref.activeWorkspaceId ? pref.updatedAt : new Date().toISOString(),
+				});
 				if (pref.theme) setThemeId(pref.theme as ThemeId);
 				if (pref.language) setLocale(pref.language as LocaleCode);
 				setChecklistShowCompletedPref(Boolean(pref.checklistShowCompleted));
+				setQuickDeleteChecklistPref(Boolean(pref.quickDeleteChecklist));
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
 			}
 			setPrefsHydrationAttempted(true);
@@ -702,19 +801,66 @@ export function App(): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [authStatus, deviceId, setLocale]);
+	}, [authStatus, authUserId, deviceId, setLocale]);
 
 	React.useEffect(() => {
-		// If we booted offline (restored from cache), re-probe once connectivity returns.
-		if (!authOfflineMode || typeof window === 'undefined') return;
+		if (authStatus !== 'authed' || !authUserId) return;
+		let cancelled = false;
+		(async () => {
+			const snapshot = await readCachedWorkspaceSnapshot(authUserId, deviceId);
+			if (cancelled) return;
+			if (snapshot.workspaces.length > 0) {
+				setSidebarWorkspaces(snapshot.workspaces);
+				setSidebarWorkspacesError(null);
+			}
+			if ((authOfflineMode || !authWorkspaceId) && snapshot.activeWorkspaceId) {
+				setAuthWorkspaceId(snapshot.activeWorkspaceId);
+				manager.setActiveWorkspaceId(snapshot.activeWorkspaceId);
+				manager.setWebsocketEnabled(!authOfflineMode);
+				writeAuthCache({
+					v: 1,
+					userId: authUserId,
+					workspaceId: snapshot.activeWorkspaceId,
+					profileImage: authProfileImage,
+				});
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [authOfflineMode, authProfileImage, authStatus, authUserId, authWorkspaceId, deviceId, manager]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId || typeof window === 'undefined') return;
+		let running = false;
 		const onOnline = () => {
-			void probeSession({ allowOfflineRestore: false });
+			if (running) return;
+			running = true;
+			manager.setWebsocketEnabled(false);
+			void (async () => {
+				try {
+					await syncPendingWorkspaceMutationsRef.current();
+					await loadSidebarWorkspacesRef.current();
+					await refreshActiveWorkspaceRef.current();
+					if (authOfflineMode) {
+						await probeSession({ allowOfflineRestore: false });
+					} else {
+						const snapshot = await readCachedWorkspaceSnapshot(authUserId, deviceId);
+						manager.setWebsocketEnabled(Boolean(snapshot.activeWorkspaceId));
+					}
+				} finally {
+					running = false;
+				}
+			})();
 		};
 		window.addEventListener('online', onOnline);
+		if (navigator.onLine) {
+			onOnline();
+		}
 		return () => {
 			window.removeEventListener('online', onOnline);
 		};
-	}, [authOfflineMode, probeSession]);
+	}, [authOfflineMode, authStatus, authUserId, deviceId, manager, probeSession]);
 
 	const signOut = React.useCallback(async () => {
 		// Logout is best-effort: even if the request fails (offline), we clear local
@@ -737,7 +883,37 @@ export function App(): React.JSX.Element {
 		setIsAppearanceOpen(false);
 		setIsSendInviteOpen(false);
 		setIsWorkspaceSwitcherOpen(false);
+		setActiveWorkspaceName(null);
+		setSidebarWorkspaces([]);
+		setSidebarWorkspacesError(null);
 	}, [manager]);
+
+	const clearActiveWorkspaceState = React.useCallback(
+		(opts?: { preserveAuthCache?: boolean }) => {
+			// Centralized workspace-loss reset used by local deletes, remote deletes, and
+			// auth/session drift. Clearing these pieces together prevents stale editors,
+			// note selections, and websocket rooms from surviving after workspace removal.
+			setAuthWorkspaceId(null);
+			manager.setActiveWorkspaceId(null);
+			manager.setWebsocketEnabled(false);
+			setSelectedNoteId(null);
+			setOpenDoc(null);
+			setOpenDocId(null);
+			setEditorMode('none');
+			setActiveWorkspaceName(null);
+			if (authUserId) {
+				void cacheActiveWorkspaceSelection({
+					userId: authUserId,
+					deviceId,
+					activeWorkspaceId: null,
+				});
+				if (opts?.preserveAuthCache) {
+					writeAuthCache({ v: 1, userId: authUserId, workspaceId: null, profileImage: authProfileImage });
+				}
+			}
+		},
+		[authProfileImage, authUserId, deviceId, manager]
+	);
 
 	const handleWorkspaceActivated = React.useCallback(
 		(workspaceId: string) => {
@@ -752,25 +928,190 @@ export function App(): React.JSX.Element {
 			setOpenDoc(null);
 			setOpenDocId(null);
 			setEditorMode('none');
+			if (authUserId) {
+				void cacheActiveWorkspaceSelection({
+					userId: authUserId,
+					deviceId,
+					activeWorkspaceId: workspaceId,
+				});
+				writeAuthCache({ v: 1, userId: authUserId, workspaceId, profileImage: authProfileImage });
+			}
 			void refreshActiveWorkspace();
 		},
-		[manager, refreshActiveWorkspace]
+		[authProfileImage, authUserId, deviceId, manager, refreshActiveWorkspace]
 	);
 
-	type SidebarWorkspaceListItem = {
-		id: string;
-		name: string;
-	};
+	const handleWorkspaceDeleted = React.useCallback(
+		async (deletedWorkspaceId: string, nextActiveWorkspaceId: string | null) => {
+			// Local delete flow: remove cached metadata for the deleted workspace, then either
+			// activate the server-selected fallback workspace or clear workspace state entirely.
+			if (authUserId) {
+				await removeCachedWorkspace({ workspaceId: deletedWorkspaceId, userId: authUserId, deviceId });
+			}
+			setSidebarWorkspaces((prev) => prev.filter((workspace) => workspace.id !== deletedWorkspaceId));
+			if (nextActiveWorkspaceId) {
+				if (nextActiveWorkspaceId !== authWorkspaceId) {
+					handleWorkspaceActivated(nextActiveWorkspaceId);
+				}
+				return;
+			}
+			clearActiveWorkspaceState({ preserveAuthCache: true });
+		},
+		[authUserId, authWorkspaceId, clearActiveWorkspaceState, deviceId, handleWorkspaceActivated]
+	);
+
+	const handleRemoteWorkspaceRemoval = React.useCallback(
+		(args: { nextActiveWorkspaceId: string | null; hasOtherWorkspaces: boolean }) => {
+			if (args.nextActiveWorkspaceId) {
+				if (args.nextActiveWorkspaceId !== authWorkspaceId) {
+					handleWorkspaceActivatedRef.current(args.nextActiveWorkspaceId);
+				}
+			} else {
+				clearActiveWorkspaceState({ preserveAuthCache: true });
+			}
+			setWorkspaceDeletedNotice({ hasOtherWorkspaces: args.hasOtherWorkspaces });
+		},
+		[authWorkspaceId, clearActiveWorkspaceState]
+	);
+
+	const handleRemoteWorkspaceDeletedEvent = React.useCallback(
+		(deletedWorkspaceId: string) => {
+			// Remote delete flow: another tab/device/user action removed the workspace we are
+			// currently in. Clear the active workspace immediately and show the recovery notice.
+			if (!authWorkspaceId || deletedWorkspaceId !== authWorkspaceId) return;
+			const hasOtherWorkspaces = sidebarWorkspacesRef.current.some((workspace) => workspace.id !== deletedWorkspaceId);
+			setSidebarWorkspaces((prev) => prev.filter((workspace) => workspace.id !== deletedWorkspaceId));
+			clearActiveWorkspaceState({ preserveAuthCache: true });
+			setWorkspaceDeletedNotice({ hasOtherWorkspaces });
+		},
+		[authWorkspaceId, clearActiveWorkspaceState]
+	);
+
+	const syncPendingWorkspaceMutations = React.useCallback(async (): Promise<void> => {
+		if (authStatus !== 'authed' || !authUserId) return;
+		// Mutation replay is online-only. While offline we keep the queue intact and let the
+		// optimistic IndexedDB view continue to drive the workspace picker/sidebar.
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+		const pending = await readPendingWorkspaceMutations(authUserId, deviceId);
+		if (pending.length === 0) return;
+
+		for (const mutation of pending) {
+			try {
+				if (mutation.kind === 'create') {
+					const res = await fetch('/api/workspaces', {
+						method: 'POST',
+						credentials: 'include',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ id: mutation.workspaceId, name: mutation.workspaceName || '' }),
+					});
+					const body = await res.json().catch(() => null);
+					if (!res.ok) {
+						const message = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
+						throw new Error(message);
+					}
+					if (body?.workspace) {
+						await cacheWorkspaceDetails({
+							workspace: {
+								id: String(body.workspace.id),
+								name: typeof body.workspace.name === 'string' ? body.workspace.name : mutation.workspaceName || '',
+								ownerUserId: typeof body.workspace.ownerUserId === 'string' ? body.workspace.ownerUserId : authUserId,
+								createdAt: typeof body.workspace.createdAt === 'string' ? body.workspace.createdAt : mutation.createdAt,
+								updatedAt: typeof body.workspace.updatedAt === 'string' ? body.workspace.updatedAt : mutation.updatedAt,
+							},
+							userId: authUserId,
+							role: 'OWNER',
+						});
+					}
+					await removePendingWorkspaceMutation({
+						userId: authUserId,
+						deviceId,
+						workspaceId: mutation.workspaceId,
+						kind: 'create',
+					});
+					continue;
+				}
+
+				const res = await fetch(`/api/workspaces/${encodeURIComponent(mutation.workspaceId)}`, {
+					method: 'DELETE',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ deviceId }),
+				});
+				const body = await res.json().catch(() => null);
+				if (!res.ok && res.status !== 404 && res.status !== 403) {
+					const message = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
+					throw new Error(message);
+				}
+				await removePendingWorkspaceMutation({
+					userId: authUserId,
+					deviceId,
+					workspaceId: mutation.workspaceId,
+					kind: 'delete',
+				});
+				await removeCachedWorkspace({ workspaceId: mutation.workspaceId, userId: authUserId, deviceId });
+			} catch {
+				// Stop on the first failed mutation so later queue entries do not replay against
+				// a server state that is already diverging from the local mutation order.
+				break;
+			}
+		}
+
+		// Re-read the merged snapshot after replay so active workspace resolution uses the
+		// final local cache state, including any queued mutations still left behind.
+		const mergedSnapshot = await readCachedWorkspaceSnapshot(authUserId, deviceId);
+		if (mergedSnapshot.activeWorkspaceId) {
+			const activatedWorkspaceId = await activateWorkspace(deviceId, mergedSnapshot.activeWorkspaceId);
+			if (activatedWorkspaceId && activatedWorkspaceId !== authWorkspaceId) {
+				handleWorkspaceActivated(activatedWorkspaceId);
+			}
+		} else if (authWorkspaceId && !mergedSnapshot.workspaces.some((workspace) => workspace.id === authWorkspaceId)) {
+			clearActiveWorkspaceState({ preserveAuthCache: true });
+		}
+	}, [authStatus, authUserId, deviceId, authWorkspaceId, handleWorkspaceActivated, clearActiveWorkspaceState]);
+
+	const syncPendingWorkspaceMutationsRef = React.useRef(syncPendingWorkspaceMutations);
+
+	React.useEffect(() => {
+		syncPendingWorkspaceMutationsRef.current = syncPendingWorkspaceMutations;
+	}, [syncPendingWorkspaceMutations]);
+
+	React.useEffect(() => {
+		handleWorkspaceActivatedRef.current = handleWorkspaceActivated;
+	}, [handleWorkspaceActivated]);
 	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>([]);
 	const [sidebarWorkspacesBusy, setSidebarWorkspacesBusy] = React.useState(false);
 	const [sidebarWorkspacesError, setSidebarWorkspacesError] = React.useState<string | null>(null);
 
+	React.useEffect(() => {
+		sidebarWorkspacesRef.current = sidebarWorkspaces;
+		if (!authWorkspaceId) {
+			setActiveWorkspaceName(null);
+			return;
+		}
+		const match = sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId);
+		if (match) {
+			setActiveWorkspaceName(match.name || null);
+		}
+	}, [authWorkspaceId, sidebarWorkspaces]);
+
 	const loadSidebarWorkspaces = React.useCallback(async (): Promise<void> => {
 		if (sidebarWorkspacesBusy) return;
 		if (authStatus !== 'authed') return;
-		if (authOfflineMode) return;
 		setSidebarWorkspacesBusy(true);
 		setSidebarWorkspacesError(null);
+		let hasCachedWorkspaces = false;
+		if (authUserId) {
+			const cached = await readCachedWorkspaceSnapshot(authUserId, deviceId);
+			if (cached.workspaces.length > 0) {
+				hasCachedWorkspaces = true;
+				setSidebarWorkspaces(cached.workspaces);
+			}
+			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+				setSidebarWorkspacesBusy(false);
+				return;
+			}
+		}
 		try {
 			const res = await fetch(`/api/workspaces?deviceId=${encodeURIComponent(deviceId)}`,
 				{ credentials: 'include' }
@@ -780,21 +1121,170 @@ export function App(): React.JSX.Element {
 				const msg = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
 				throw new Error(msg);
 			}
-			const next = body && Array.isArray(body.workspaces) ? body.workspaces : [];
-			setSidebarWorkspaces(
-				next
-					.map((ws: any) => ({
-						id: typeof ws.id === 'string' ? ws.id : '',
-						name: typeof ws.name === 'string' ? ws.name : '',
-					}))
-					.filter((ws: SidebarWorkspaceListItem) => Boolean(ws.id))
+			const next = mapWorkspaceList(body && Array.isArray(body.workspaces) ? body.workspaces : []);
+			const nextActiveWorkspaceId = body && typeof body.activeWorkspaceId === 'string' ? String(body.activeWorkspaceId) : null;
+			let resolvedWorkspaces = next;
+			let resolvedActiveWorkspaceId = nextActiveWorkspaceId;
+			if (authUserId) {
+				await cacheWorkspaceSnapshot({
+					userId: authUserId,
+					deviceId,
+					activeWorkspaceId: nextActiveWorkspaceId,
+					workspaces: next,
+				});
+				const merged = await readCachedWorkspaceSnapshot(authUserId, deviceId);
+				resolvedWorkspaces = merged.workspaces;
+				resolvedActiveWorkspaceId = merged.activeWorkspaceId;
+				setSidebarWorkspaces(merged.workspaces);
+			} else {
+				setSidebarWorkspaces(next);
+			}
+			const activeWorkspaceMissing = Boolean(
+				authWorkspaceId && !resolvedWorkspaces.some((workspace) => workspace.id === authWorkspaceId)
 			);
+			if (activeWorkspaceMissing) {
+				handleRemoteWorkspaceRemoval({
+					nextActiveWorkspaceId: resolvedActiveWorkspaceId,
+					hasOtherWorkspaces: resolvedWorkspaces.length > 0,
+				});
+			} else if (resolvedActiveWorkspaceId && resolvedActiveWorkspaceId !== authWorkspaceId) {
+				handleWorkspaceActivatedRef.current(resolvedActiveWorkspaceId);
+			}
 		} catch (err) {
-			setSidebarWorkspacesError(err instanceof Error ? err.message : t('workspace.loadFailed'));
+			if (!hasCachedWorkspaces) {
+				setSidebarWorkspacesError(err instanceof Error ? err.message : t('workspace.loadFailed'));
+			}
 		} finally {
 			setSidebarWorkspacesBusy(false);
 		}
-	}, [authOfflineMode, authStatus, deviceId, sidebarWorkspacesBusy, t]);
+	}, [authStatus, authUserId, authWorkspaceId, deviceId, handleRemoteWorkspaceRemoval, sidebarWorkspacesBusy, t]);
+
+	const loadSidebarWorkspacesRef = React.useRef(loadSidebarWorkspaces);
+
+	React.useEffect(() => {
+		loadSidebarWorkspacesRef.current = loadSidebarWorkspaces;
+	}, [loadSidebarWorkspaces]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || authOfflineMode || !authUserId) {
+			return;
+		}
+		if (typeof window === 'undefined') {
+			return;
+		}
+
+		let disposed = false;
+		let socket: WebSocket | null = null;
+		let reconnectTimer: number | null = null;
+
+		const clearReconnectTimer = () => {
+			if (reconnectTimer !== null) {
+				window.clearTimeout(reconnectTimer);
+				reconnectTimer = null;
+			}
+		};
+
+		const refreshWorkspaceMetadata = () => {
+			// Fan-out refresh for sidebar + active workspace label after websocket nudges.
+			void loadSidebarWorkspacesRef.current();
+			void refreshActiveWorkspaceRef.current();
+		};
+
+		const scheduleReconnect = () => {
+			if (disposed || reconnectTimer !== null) return;
+			if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+			reconnectTimer = window.setTimeout(() => {
+				reconnectTimer = null;
+				connect();
+			}, 2000);
+		};
+
+		const connect = () => {
+			if (disposed || socket) return;
+			if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+			// Dedicated metadata websocket: lightweight event channel that tells the app when
+			// workspace lists/active workspace state may have changed on another tab/device.
+			const url = new URL('/ws/metadata', window.location.href);
+			url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+			const nextSocket = new WebSocket(url.toString());
+			socket = nextSocket;
+
+			nextSocket.addEventListener('open', () => {
+				clearReconnectTimer();
+				refreshWorkspaceMetadata();
+			});
+
+			nextSocket.addEventListener('message', (event) => {
+				try {
+					const payload = JSON.parse(String(event.data || '')) as {
+						type?: string;
+						reason?: string;
+						workspaceId?: string | null;
+					};
+					if (
+						payload.type === 'workspace-metadata-changed' &&
+						payload.reason === 'workspace-deleted' &&
+						typeof payload.workspaceId === 'string'
+					) {
+						handleRemoteWorkspaceDeletedEvent(payload.workspaceId);
+					}
+					if (
+						payload.type === 'workspace-metadata-ready' ||
+						payload.type === 'workspace-metadata-changed'
+					) {
+						refreshWorkspaceMetadata();
+					}
+				} catch {
+					// Ignore malformed websocket payloads.
+				}
+			});
+
+			nextSocket.addEventListener('close', () => {
+				if (socket === nextSocket) {
+					socket = null;
+				}
+				scheduleReconnect();
+			});
+
+			nextSocket.addEventListener('error', () => {
+				// Browsers will emit a follow-up close event for failed websocket handshakes.
+				// Avoid calling close() while the socket is still CONNECTING because that
+				// produces a noisy "closed before the connection is established" console warning.
+				if (nextSocket.readyState !== WebSocket.OPEN) {
+					return;
+				}
+				try {
+					nextSocket.close();
+				} catch {
+					// Ignore close failures on errored socket.
+				}
+			});
+		};
+
+		const handleOnline = () => {
+			if (socket) return;
+			clearReconnectTimer();
+			connect();
+		};
+
+		connect();
+		window.addEventListener('online', handleOnline);
+
+		return () => {
+			disposed = true;
+			window.removeEventListener('online', handleOnline);
+			clearReconnectTimer();
+			const activeSocket = socket;
+			socket = null;
+			if (activeSocket) {
+				try {
+					activeSocket.close();
+				} catch {
+					// Ignore close failures during cleanup.
+				}
+			}
+		};
+	}, [authOfflineMode, authStatus, authUserId, handleRemoteWorkspaceDeletedEvent]);
 
 	const sidebarWorkspacesSorted = React.useMemo(() => {
 		if (!authWorkspaceId) return sidebarWorkspaces;
@@ -807,8 +1297,18 @@ export function App(): React.JSX.Element {
 	const activateWorkspaceFromSidebar = React.useCallback(
 		async (workspaceId: string): Promise<void> => {
 			if (authStatus !== 'authed') return;
-			if (authOfflineMode) return;
 			if (workspaceId === authWorkspaceId) return;
+			if (authUserId && (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false))) {
+				await cacheActiveWorkspaceSelection({
+					userId: authUserId,
+					deviceId,
+					activeWorkspaceId: workspaceId,
+				});
+				handleWorkspaceActivated(workspaceId);
+				setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+				if (isMobileViewport) closeMobileSidebar();
+				return;
+			}
 			try {
 				const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`, {
 					method: 'POST',
@@ -825,10 +1325,24 @@ export function App(): React.JSX.Element {
 				setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
 				if (isMobileViewport) closeMobileSidebar();
 			} catch {
+				if (authUserId) {
+					const cached = await readCachedWorkspaceSnapshot(authUserId, deviceId);
+					if (cached.workspaces.some((workspace) => workspace.id === workspaceId)) {
+						await cacheActiveWorkspaceSelection({
+							userId: authUserId,
+							deviceId,
+							activeWorkspaceId: workspaceId,
+						});
+						handleWorkspaceActivated(workspaceId);
+						setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+						if (isMobileViewport) closeMobileSidebar();
+						return;
+					}
+				}
 				// Keep errors out of the sidebar nav — Workspace modal provides richer error UX.
 			}
 		},
-		[authOfflineMode, authStatus, authWorkspaceId, closeMobileSidebar, deviceId, handleWorkspaceActivated, isMobileViewport]
+		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, deviceId, handleWorkspaceActivated, isMobileViewport]
 	);
 
 	React.useEffect(() => {
@@ -858,6 +1372,7 @@ export function App(): React.JSX.Element {
 		setAuthError(null);
 		try {
 			const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
+			let resolvedWorkspaceId: string | null = null;
 			const payload: any = {
 				email: authEmail,
 				password: authPassword,
@@ -920,14 +1435,14 @@ export function App(): React.JSX.Element {
 					const userId = meBody?.user?.id ? String(meBody.user.id) : null;
 					const profileImage = meBody?.user?.profileImage ? String(meBody.user.profileImage) : null;
 					const workspaceId = meBody?.workspaceId ? String(meBody.workspaceId) : null;
+					resolvedWorkspaceId = workspaceId;
 					setAuthUserId(userId);
 					setAuthProfileImage(profileImage);
-					if (workspaceId) {
-						setAuthWorkspaceId(workspaceId);
-						manager.setActiveWorkspaceId(workspaceId);
-					}
+					setAuthWorkspaceId(workspaceId);
+					manager.setActiveWorkspaceId(workspaceId);
+					manager.setWebsocketEnabled(Boolean(workspaceId));
 					setAuthOfflineMode(false);
-					if (userId && workspaceId) {
+					if (userId) {
 						writeAuthCache({ v: 1, userId, workspaceId, profileImage });
 					}
 				}
@@ -937,7 +1452,7 @@ export function App(): React.JSX.Element {
 
 			setAuthStatus('authed');
 			setAuthOfflineMode(false);
-			manager.setWebsocketEnabled(true);
+			manager.setWebsocketEnabled(Boolean(resolvedWorkspaceId));
 		} catch {
 			setAuthError('Authentication failed');
 			setAuthStatus('unauth');
@@ -2090,7 +2605,7 @@ export function App(): React.JSX.Element {
 				<main className="app-main">
 
 					{/* In trash view we hide the "create new note" affordances. */}
-					{sidebarView !== 'trash' ? (
+					{sidebarView !== 'trash' && authWorkspaceId ? (
 						<div ref={topActionsRef} className="top-actions">
 							<button type="button" className="top-action-card" onClick={() => openCreateEditor('text')}>
 								{t('app.createNewNote')}
@@ -2110,6 +2625,7 @@ export function App(): React.JSX.Element {
 								onSave={onSaveChecklist}
 								onCancel={closeCreateEditor}
 								initialShowCompleted={checklistShowCompletedPref}
+								allowQuickDelete={quickDeleteChecklistPref}
 								onShowCompletedChange={(next) => {
 									setChecklistShowCompletedPref(next);
 									if (authStatus !== 'authed') return;
@@ -2145,7 +2661,37 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
-			<div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
+			{workspaceDeletedNotice ? (
+				<div className="workspace-deleted-dialog-backdrop" role="presentation">
+					<section className="workspace-deleted-dialog" role="dialog" aria-modal="true" aria-label={t('workspace.deletedTitle')}>
+						<h2 className="workspace-deleted-dialog-title">{t('workspace.deletedTitle')}</h2>
+						<p className="workspace-deleted-dialog-body">
+							{workspaceDeletedNotice.hasOtherWorkspaces ? t('workspace.deletedMessage') : t('workspace.deletedMessageNoFallback')}
+						</p>
+						<div className="workspace-deleted-dialog-actions">
+							{workspaceDeletedNotice.hasOtherWorkspaces ? (
+								<button
+									type="button"
+									onClick={() => {
+										setWorkspaceDeletedNotice(null);
+										openWorkspaceSwitcher();
+									}}
+								>
+									{t('workspace.chooseAnother')}
+								</button>
+							) : null}
+							<button
+								type="button"
+								onClick={() => setWorkspaceDeletedNotice(null)}
+							>
+								{t('common.close')}
+							</button>
+						</div>
+					</section>
+				</div>
+			) : null}
+
+			{authWorkspaceId ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
 				<button
 					type="button"
 					className="mobile-fab-action"
@@ -2164,24 +2710,26 @@ export function App(): React.JSX.Element {
 				>
 					{t('app.createChecklist')}
 				</button>
-			</div>
+			</div> : null}
 
-			<button
-				type="button"
-				className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
-				onClick={toggleFab}
-				aria-label={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
-				title={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
-			>
-				<span
-					aria-hidden="true"
-					className="mobile-fab-icon"
-					style={{
-						WebkitMaskImage: `url(${fabIconSrc})`,
-						maskImage: `url(${fabIconSrc})`,
-					}}
-				/>
-			</button>
+			{authWorkspaceId ? (
+				<button
+					type="button"
+					className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
+					onClick={toggleFab}
+					aria-label={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
+					title={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
+				>
+					<span
+						aria-hidden="true"
+						className="mobile-fab-icon"
+						style={{
+							WebkitMaskImage: `url(${fabIconSrc})`,
+							maskImage: `url(${fabIconSrc})`,
+						}}
+					/>
+				</button>
+			) : null}
 
 			{/* Branch: selection exists but doc not yet loaded.
 			   Mutual exclusion: suppress when a create editor is active to prevent
@@ -2196,6 +2744,7 @@ export function App(): React.JSX.Element {
 					onClose={closeNoteEditor}
 					onDelete={onDeleteSelectedNote}
 					initialShowCompleted={checklistShowCompletedPref}
+					allowQuickDelete={quickDeleteChecklistPref}
 					onShowCompletedChange={(next) => {
 						setChecklistShowCompletedPref(next);
 						if (authStatus !== 'authed') return;
@@ -2212,6 +2761,13 @@ export function App(): React.JSX.Element {
 					setIsPreferencesOpen(false);
 				}}
 				t={t}
+				quickDeleteChecklist={quickDeleteChecklistPref}
+				onQuickDeleteChecklistChange={(next) => {
+					setQuickDeleteChecklistPref(next);
+					if (authStatus !== 'authed') return;
+					if (authOfflineMode) return;
+					void updateUserPreferences(deviceId, { quickDeleteChecklist: next });
+				}}
 				onOpenAppearance={openAppearanceFromPreferences}
 				onUserManagement={openUserManagementFromPreferences}
 				onSendInvite={openSendInviteFromPreferences}
@@ -2251,7 +2807,9 @@ export function App(): React.JSX.Element {
 					setIsWorkspaceSwitcherOpen(false);
 				}}
 				t={t}
+				authUserId={authUserId}
 				onWorkspaceActivated={handleWorkspaceActivated}
+				onWorkspaceDeleted={(deletedWorkspaceId, nextActiveWorkspaceId) => void handleWorkspaceDeleted(deletedWorkspaceId, nextActiveWorkspaceId)}
 				onActiveWorkspaceRenamed={() => void refreshActiveWorkspace()}
 			/>
 

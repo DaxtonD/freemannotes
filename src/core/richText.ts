@@ -95,9 +95,9 @@ function makeParagraphNode(text: string): JSONContent {
 	return { type: 'paragraph', content: content.length > 0 ? content : undefined };
 }
 
-export function createRichTextDocFromPlainText(text: string): JSONContent {
+export function createRichTextDocFromPlainText(text: string, variant: RichTextVariant = 'minimal'): JSONContent {
 	const normalized = String(text ?? '').replace(/\r\n?/g, '\n');
-	const paragraphs = normalized.split('\n\n');
+	const paragraphs = variant === 'full' ? normalized.split('\n') : normalized.split('\n\n');
 	return {
 		type: 'doc',
 		content: paragraphs.map((paragraph) => makeParagraphNode(paragraph)),
@@ -135,7 +135,7 @@ export function setYTextValue(ytext: Y.Text, next: string): void {
 }
 
 export function getPlainTextFromRichJson(json: JSONContent, variant: RichTextVariant): string {
-	return generateText(json, createRichTextExtensions({ variant }), { blockSeparator: '\n\n' }).trimEnd();
+	return generateText(json, createRichTextExtensions({ variant }), { blockSeparator: variant === 'full' ? '\n' : '\n\n' }).trimEnd();
 }
 
 export function getPlainTextFromRichFragment(fragment: Y.XmlFragment, variant: RichTextVariant): string {
@@ -153,7 +153,7 @@ export function replaceRichFragmentFromJson(fragment: Y.XmlFragment, json: JSONC
 export function ensureTextNoteRichContent(doc: Y.Doc): Y.XmlFragment {
 	const fragment = doc.getXmlFragment(TEXT_NOTE_RICH_FIELD);
 	if (fragment.length === 0) {
-		replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(doc.getText('content').toString()), 'full');
+		replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(doc.getText('content').toString(), 'full'), 'full');
 	}
 	return fragment;
 }

@@ -32,6 +32,7 @@ type RichTextEditorProps = {
 	autoFocus?: boolean;
 	compactToolbar?: boolean;
 	hideToolbar?: boolean;
+	caretVisibilityBottomInset?: number;
 	containerClassName?: string;
 	viewportClassName?: string;
 	contentClassName?: string;
@@ -47,6 +48,53 @@ type RichTextToolbarProps = {
 	variant: RichTextVariant;
 	compact?: boolean;
 };
+
+function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
+	let current = node?.parentElement ?? null;
+	while (current) {
+		const style = window.getComputedStyle(current);
+		const overflowY = style.overflowY;
+		// `overflow:auto` alone is not enough: only treat the element as a scroll parent
+		// when content actually exceeds the container, otherwise selection scrolling would
+		// target non-scrolling wrappers and appear to do nothing.
+		const isScrollable = (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') && current.scrollHeight > current.clientHeight;
+		if (isScrollable) return current;
+		current = current.parentElement;
+	}
+	return null;
+}
+
+function ensureEditorSelectionVisible(editor: Editor | null, bottomInset: number): void {
+	if (!editor || typeof window === 'undefined') return;
+	const root = editor.view.dom as HTMLElement | null;
+	if (!root || !root.isConnected) return;
+	const scrollContainer = getScrollContainer(root);
+	if (!scrollContainer) return;
+	const { from, to } = editor.state.selection;
+	let startRect: { top: number; bottom: number };
+	let endRect: { top: number; bottom: number };
+	try {
+		startRect = editor.view.coordsAtPos(from);
+		endRect = editor.view.coordsAtPos(to);
+	} catch {
+		return;
+	}
+	const containerRect = scrollContainer.getBoundingClientRect();
+	const topBuffer = 12;
+	const bottomBuffer = Math.max(12, bottomInset);
+	const visibleTop = containerRect.top + topBuffer;
+	const visibleBottom = containerRect.bottom - bottomBuffer;
+	const selectionTop = Math.min(startRect.top, endRect.top);
+	const selectionBottom = Math.max(startRect.bottom, endRect.bottom);
+
+	if (selectionBottom > visibleBottom) {
+		scrollContainer.scrollTop += selectionBottom - visibleBottom;
+		return;
+	}
+	if (selectionTop < visibleTop) {
+		scrollContainer.scrollTop -= visibleTop - selectionTop;
+	}
+}
 
 function canRunUndo(editor: Editor | null | undefined): boolean {
 	if (!editor) return false;
@@ -90,6 +138,35 @@ function runRedo(editor: Editor | null | undefined): void {
 	} catch {
 		// Editor was destroyed or the command is unavailable.
 	}
+}
+
+function shouldExitEmptyListItem(editor: Editor | null | undefined): boolean {
+	if (!editor) return false;
+	const { selection } = editor.state;
+	if (!selection.empty) return false;
+	if (!editor.isActive('bulletList') && !editor.isActive('orderedList')) return false;
+	// Empty-list-item branch: a second Enter on a blank bullet/numbered row should
+	// exit the list instead of creating infinite empty items.
+	const parentText = selection.$from.parent.textContent;
+	if (parentText.trim().length > 0) return false;
+	for (let depth = selection.$from.depth; depth > 0; depth -= 1) {
+		if (selection.$from.node(depth).type.name === 'listItem') return true;
+	}
+	return false;
+}
+
+function exitEmptyListItem(editor: Editor | null | undefined): boolean {
+	if (!editor) return false;
+	try {
+		// Lift the current listItem back out to paragraph level, matching standard editor UX.
+		const chain = editor.chain().focus() as { liftListItem?: (typeOrName: string) => { run: () => boolean } };
+		if (typeof chain.liftListItem === 'function') {
+			return Boolean(chain.liftListItem('listItem').run());
+		}
+	} catch {
+		// Editor was destroyed or the command is unavailable.
+	}
+	return false;
 }
 
 export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element {
@@ -256,6 +333,8 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	const emitInitialChange = props.emitInitialChange ?? true;
 	const serializeChangePayload = props.serializeChangePayload ?? true;
 	const bubbleMenuEnabled = useBubbleMenuEnabled();
+	const caretVisibilityBottomInsetRef = React.useRef(props.caretVisibilityBottomInset ?? 0);
+	caretVisibilityBottomInsetRef.current = props.caretVisibilityBottomInset ?? 0;
 	const latestHandlersRef = React.useRef({
 		onChange: props.onChange,
 		onEnter: props.onEnter,
@@ -269,6 +348,13 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		onBackspaceWhenEmpty: props.onBackspaceWhenEmpty,
 	};
 	const editorRef = React.useRef<Editor | null>(null);
+	const ensureSelectionVisible = React.useCallback((): void => {
+		const bottomInset = caretVisibilityBottomInsetRef.current;
+		if (bottomInset <= 0) return;
+		window.requestAnimationFrame(() => {
+			ensureEditorSelectionVisible(editorRef.current, bottomInset);
+		});
+	}, []);
 	const editor = useEditor(
 		{
 			immediatelyRender: false,
@@ -285,6 +371,11 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 					class: `${styles.richEditorContent}${props.contentClassName ? ` ${props.contentClassName}` : ''}`,
 				},
 				handleKeyDown: (_view, event) => {
+					const ed = editorRef.current;
+					if (event.key === 'Enter' && !event.shiftKey && shouldExitEmptyListItem(ed)) {
+						event.preventDefault();
+						return exitEmptyListItem(ed);
+					}
 					if (event.key === 'Enter' && !event.shiftKey && latestHandlersRef.current.onEnter) {
 						event.preventDefault();
 						latestHandlersRef.current.onEnter();
@@ -303,7 +394,6 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 					// Ctrl/Cmd+B/I/U at end of text with collapsed selection → select all then toggle
 					const mod = event.metaKey || event.ctrlKey;
 					if (mod && !event.shiftKey && !event.altKey && ['b', 'i', 'u'].includes(event.key.toLowerCase())) {
-						const ed = editorRef.current;
 						if (ed) {
 							const { from, to, empty } = ed.state.selection;
 							const docEnd = ed.state.doc.content.size - 1;
@@ -319,6 +409,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				},
 			},
 			onCreate: ({ editor: currentEditor }) => {
+				ensureSelectionVisible();
 				// Mount-time emission branch:
 				// For checklist row activation we intentionally mount minimal editors very often.
 				// Emitting here can cause immediate JSON/text serialization and parent updates
@@ -337,6 +428,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				latestHandlersRef.current.onChange?.();
 			},
 			onUpdate: ({ editor: currentEditor }) => {
+				ensureSelectionVisible();
 				// Update-time branch mirrors onCreate:
 				// - `true`: caller wants structured payload for non-collab/draft editors.
 				// - `false`: caller wants a cheap signal-only callback to reduce CPU cost.
@@ -359,12 +451,26 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	}, [editor, props.onEditorChange]);
 
 	React.useEffect(() => {
+		if (!editor) return;
+		const handleSelectionChange = (): void => {
+			ensureSelectionVisible();
+		};
+		editor.on('selectionUpdate', handleSelectionChange);
+		editor.on('focus', handleSelectionChange);
+		return () => {
+			editor.off('selectionUpdate', handleSelectionChange);
+			editor.off('focus', handleSelectionChange);
+		};
+	}, [editor, ensureSelectionVisible]);
+
+	React.useEffect(() => {
 		if (!editor || !props.autoFocus) return;
 		const rafId = window.requestAnimationFrame(() => {
 			editor.commands.focus('end');
+			ensureSelectionVisible();
 		});
 		return () => window.cancelAnimationFrame(rafId);
-	}, [editor, props.autoFocus]);
+	}, [editor, ensureSelectionVisible, props.autoFocus]);
 
 	return (
 		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`}>
