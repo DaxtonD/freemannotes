@@ -20,6 +20,36 @@ type Props = {
 
 type PlacementChoice = 'personal' | 'shared-root' | 'shared-folder';
 
+const HIDDEN_NOTIFICATIONS_KEY_PREFIX = 'freemannotes.shareNotifications.hidden.v1:';
+
+function hiddenNotificationsKey(userId: string): string {
+	return `${HIDDEN_NOTIFICATIONS_KEY_PREFIX}${userId}`;
+}
+
+function readHiddenNotificationIds(userId: string | null): Set<string> {
+	// Keep dismissed non-pending notifications out of the list locally without
+	// mutating invitation history on the server.
+	if (!userId || typeof window === 'undefined') return new Set();
+	try {
+		const raw = window.localStorage.getItem(hiddenNotificationsKey(userId));
+		if (!raw) return new Set();
+		const parsed = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return new Set();
+		return new Set(parsed.filter((value): value is string => typeof value === 'string' && value.length > 0));
+	} catch {
+		return new Set();
+	}
+}
+
+function writeHiddenNotificationIds(userId: string | null, ids: ReadonlySet<string>): void {
+	if (!userId || typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(hiddenNotificationsKey(userId), JSON.stringify(Array.from(ids)));
+	} catch {
+		// Ignore persistence failures; clear-history is best effort.
+	}
+}
+
 function normalizeInvitation(invitation: NoteShareInvitation): NoteShareInvitation {
 	// Older cached payloads may be missing newer optional fields like noteTitle or
 	// inviter.profileImage, so the modal normalizes them before rendering cards.
@@ -49,6 +79,11 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const [acceptingId, setAcceptingId] = React.useState<string | null>(null);
 	const [placementChoiceByInvitationId, setPlacementChoiceByInvitationId] = React.useState<Record<string, PlacementChoice>>({});
 	const [folderByInvitationId, setFolderByInvitationId] = React.useState<Record<string, string>>({});
+	const [hiddenInvitationIds, setHiddenInvitationIds] = React.useState<Set<string>>(() => readHiddenNotificationIds(props.authUserId));
+
+	React.useEffect(() => {
+		setHiddenInvitationIds(readHiddenNotificationIds(props.authUserId));
+	}, [props.authUserId]);
 
 	const load = React.useCallback(async () => {
 		setError(null);
@@ -80,6 +115,26 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const updateInvitation = React.useCallback((invitationId: string, updater: (invitation: NoteShareInvitation) => NoteShareInvitation): void => {
 		setInvitations((current) => current.map((invitation) => invitation.id === invitationId ? normalizeInvitation(updater(invitation)) : invitation));
 	}, []);
+
+	const visibleInvitations = React.useMemo(() => {
+		return invitations.filter((invitation) => invitation.status === 'PENDING' || !hiddenInvitationIds.has(invitation.id));
+	}, [hiddenInvitationIds, invitations]);
+
+	const clearableInvitationIds = React.useMemo(() => {
+		return visibleInvitations.filter((invitation) => invitation.status !== 'PENDING').map((invitation) => invitation.id);
+	}, [visibleInvitations]);
+
+	const handleClearNotifications = React.useCallback(() => {
+		if (!props.authUserId || clearableInvitationIds.length === 0) return;
+		setHiddenInvitationIds((current) => {
+			const next = new Set(current);
+			for (const id of clearableInvitationIds) {
+				next.add(id);
+			}
+			writeHiddenNotificationIds(props.authUserId, next);
+			return next;
+		});
+	}, [clearableInvitationIds, props.authUserId]);
 
 	const queueAction = React.useCallback((action: PendingNoteShareAction) => {
 		// Offline accept/decline keeps the card state moving immediately and leaves the
@@ -175,46 +230,47 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	return (
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
 			<section className={styles.modal} role="dialog" aria-modal="true" aria-label={t('share.notifications')} onClick={(event) => event.stopPropagation()}>
+				<button type="button" className={styles.cornerCloseButton} onClick={props.onClose} aria-label={t('common.close')}>
+					✕
+				</button>
 				<header className={styles.header}>
 					<div>
 						<h2 className={styles.title}>{t('share.notifications')}</h2>
 						<p className={styles.subtitle}>{t('share.notificationsSubtitle')}</p>
 					</div>
-					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label={t('common.close')}>
-						✕
-					</button>
 				</header>
 
-				{error ? <div className={styles.error}>{error}</div> : null}
-				{invitations.length === 0 ? <div className={styles.empty}>{t('share.noNotifications')}</div> : null}
+				<div className={styles.modalBody}>
+					{error ? <div className={styles.error}>{error}</div> : null}
+					{visibleInvitations.length === 0 ? <div className={styles.empty}>{t('share.noNotifications')}</div> : null}
 
-				<div className={styles.section}>
-					{invitations.map((invitation) => {
+					<div className={`${styles.section} ${styles.notificationList}`}>
+					{visibleInvitations.map((invitation) => {
 						const isPending = invitation.status === 'PENDING';
 						const placementChoice = placementChoiceByInvitationId[invitation.id] || 'personal';
 						const isAccepting = acceptingId === invitation.id;
 						const inviterName = invitation.inviter?.name || invitation.inviter?.email || t('share.unknownInviter');
 						const noteTitle = String(invitation.noteTitle || '').trim() || t('note.untitled');
 						return (
-							<div key={invitation.id} className={styles.notificationCard}>
+							<div key={invitation.id} className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
 								<div className={styles.notificationHeader}>
 									{invitation.inviter?.profileImage ? (
-										<img className={styles.notificationAvatar} src={invitation.inviter.profileImage} alt="" />
+										<img className={`${styles.notificationAvatar} ${styles.notificationAvatarCompact}`} src={invitation.inviter.profileImage} alt="" />
 									) : (
-										<div className={styles.notificationAvatarFallback} aria-hidden="true">
+										<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
 											{inviterName.slice(0, 1).toUpperCase()}
 										</div>
 									)}
 									<div className={styles.notificationCopy}>
-										<div className={styles.rowTitle}>{inviterName}</div>
-										<div className={styles.rowMessage}>
+										<div className={styles.notificationSummaryRow}>
+											<div className={`${styles.rowTitle} ${styles.notificationTitleCompact}`}>{inviterName}</div>
+											<span className={styles.badge}>{statusLabels[invitation.status]}</span>
+										</div>
+										<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
 											{inviterName} {t('share.wantsToShare')} <strong>{noteTitle}</strong> {t('share.withYou')}
 										</div>
-										<div className={styles.rowMeta}>{invitation.role === 'VIEWER' ? t('share.roleViewer') : t('share.roleEditor')}</div>
+										<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>{invitation.role === 'VIEWER' ? t('share.roleViewer') : t('share.roleEditor')}</div>
 									</div>
-								</div>
-								<div className={styles.statusRow}>
-									<span className={styles.badge}>{statusLabels[invitation.status]}</span>
 								</div>
 								{isPending ? (
 									<>
@@ -264,6 +320,13 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 							</div>
 						);
 					})}
+					</div>
+				</div>
+
+				<div className={styles.modalFooter}>
+					<button type="button" className={styles.secondaryButton} onClick={handleClearNotifications} disabled={clearableInvitationIds.length === 0}>
+						{t('share.clearNotifications')}
+					</button>
 				</div>
 			</section>
 		</div>

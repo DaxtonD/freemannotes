@@ -152,6 +152,7 @@ model UserDevicePreference {
 
   /// Per-device workspace selection.
   activeWorkspaceId String? @map("active_workspace_id") @db.Uuid
+  activeSharedFolder String? @map("active_shared_folder")
 
   /// Per-device UI state: completed items expanded/collapsed in checklist editors.
   checklistShowCompleted Boolean @default(false) @map("checklist_show_completed")
