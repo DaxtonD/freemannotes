@@ -58,6 +58,8 @@
     "editor": "Editor",
     "bubbleMenu": "Bubble formatting menu",
     "bubbleMenuDescription": "Show bold, italic, and underline buttons when you select text",
+    "quickDeleteChecklist": "Quick delete checklist",
+    "quickDeleteChecklistDescription": "Always show the delete button for checklist rows on touch devices",
     "userManagement": "User management",
     "sendInvite": "Send Invite",
     "signOut": "Sign out",
@@ -146,7 +148,17 @@
     "create": "Create",
     "loadFailed": "Failed to load workspaces",
     "activateFailed": "Failed to activate workspace",
-    "createFailed": "Failed to create workspace"
+    "createFailed": "Failed to create workspace",
+    "createOfflineUnavailable": "Workspaces cannot be created while offline",
+    "delete": "Delete",
+    "deleteConfirm": "Delete this workspace permanently?",
+    "deleteFailed": "Failed to delete workspace",
+    "deleteOfflineUnavailable": "Workspaces cannot be deleted while offline",
+    "pendingSync": "Pending sync",
+    "deletedTitle": "Workspace deleted",
+    "deletedMessage": "This workspace was deleted. Please choose another workspace.",
+    "deletedMessageNoFallback": "This workspace was deleted. There is no other workspace available right now.",
+    "chooseAnother": "Choose workspace"
   },
   "invite": {
     "title": "Send Invite",

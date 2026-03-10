@@ -140,7 +140,7 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 		yContent.insert(0, body);
 		replaceRichFragmentFromJson(
 			doc.getXmlFragment('contentRich'),
-			richContent ?? createRichTextDocFromPlainText(body),
+			richContent ?? createRichTextDocFromPlainText(body, 'full'),
 			'full'
 		);
 

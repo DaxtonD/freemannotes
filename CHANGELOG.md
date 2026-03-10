@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.71 - 2026-03-09
+
+### Added
+- **Workspace deletion recovery plumbing.** Added live-workspace server helpers, cross-instance workspace metadata event handling, and client IndexedDB queue/snapshot support so deleted workspaces immediately roll users onto a valid fallback workspace.
+- **Per-device quick-delete preference for checklist rows.** Added device-scoped persistence and preferences UI for always-visible checklist delete affordances on touch devices.
+
+### Changed
+- **Workspace switching offline model.** Workspace creation/deletion now uses a cache-first modal/sidebar flow with queued offline mutations that replay when connectivity returns.
+- **Mobile editor keyboard handling.** Text and checklist editors now keep the software keyboard stable across row activation, drag handoff, quick-delete, and floating-toolbar presentation changes.
+- **Rich-text behavior and spacing.** Full note editors now use tighter single-line Enter behavior, empty list items exit their list on a second Enter, and ProseMirror spacing selectors target the correct root node.
+- **Release documentation.** Added branch-level and line-level implementation comments across the modified workspace, offline-sync, editor, and Vite proxy paths to document the new behavior.
+
+### Fixed
+- **Deleted workspace session repair.** Local and remote workspace deletions now clear stale active workspace state, refresh cookies/device preferences, and show a recovery notice instead of leaving the app pointed at a tombstoned workspace.
+- **Mobile note editing regressions.** Fixed header scroll gesture loss, keyboard flicker during caret placement, and caret visibility near the keyboard for text notes and checklist rows.
+- **Dev proxy resilience.** Vite proxy and embedded Yjs websocket handling now better tolerate backend restarts and socket resets without crashing the dev server.
+
 ## 1.0.70 - 2026-03-09
 
 ### Added

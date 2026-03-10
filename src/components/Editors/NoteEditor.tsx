@@ -53,6 +53,7 @@ export type NoteEditorProps = {
 	onDelete: (noteId: string) => Promise<void>;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
+	allowQuickDelete?: boolean;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -238,9 +239,10 @@ type ChecklistRowContentProps = {
 	isProtectedFromEmptyBackspace: boolean;
 	placeholderText: string;
 	removeLabel: string;
+	caretVisibilityBottomInset?: number;
 	activate: (id: string) => void;
 	toggleCompleted: (id: string, checked: boolean) => void;
-	remove: (id: string) => void;
+	remove: (id: string, options?: { clearSelection?: boolean }) => void;
 	insertAfter: (id: string) => void;
 	setActiveEditor: (editor: Editor | null) => void;
 };
@@ -256,6 +258,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 		isProtectedFromEmptyBackspace,
 		placeholderText,
 		removeLabel,
+		caretVisibilityBottomInset,
 		activate,
 		toggleCompleted,
 		remove,
@@ -272,7 +275,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	}, [item.id, toggleCompleted]);
 
 	const handleRemove = React.useCallback((): void => {
-		remove(item.id);
+		remove(item.id, { clearSelection: true });
 	}, [item.id, remove]);
 
 	const handleInsertAfter = React.useCallback((): void => {
@@ -336,6 +339,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 						placeholder={placeholderText}
 						hideToolbar
 						autoFocus={autoFocus}
+						caretVisibilityBottomInset={caretVisibilityBottomInset}
 						containerClassName={styles.checklistRowRichStack}
 						viewportClassName={styles.checklistRowRichViewport}
 						contentClassName={styles.checklistRowRichEditor}
@@ -390,6 +394,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		return false;
 	};
 	const { t } = useI18n();
+	const keyboardVisibilityPaddingPx = 88;
 	const [isModified, setIsModified] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
@@ -400,6 +405,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
+	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
 	const keyboard = useKeyboardHeight();
 	// Mobile-only keyboard branch:
 	// - `useKeyboardHeight()` is driven by the Visual Viewport API, so `keyboard.isOpen`
@@ -552,10 +558,30 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	//                                during keyboard-sensitive drags.
 	const focusProxyRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const isDraggingWithKeyboardRef = React.useRef(false);
+	// Quick-delete mode clears checklist-row focus entirely, so skip the normal
+	// "auto-activate the first remaining row" behavior on the next render.
+	const suppressAutoActivateAfterDeleteRef = React.useRef(false);
 	// Some mobile browsers briefly report `keyboard.isOpen=false` during focus
 	// handoffs between rows. Suppress keyboard-close de-selection for a short
 	// window after deliberate row activation so we don't blur/clear selection.
 	const ignoreKeyboardCloseUntilRef = React.useRef<number>(0);
+	const prepareChecklistRowFocusHandoff = React.useCallback((): void => {
+		// Focus the proxy textarea before a row editor unmounts so the mobile keyboard
+		// survives row activation/deletion without a visible close/reopen flicker.
+		if (!isCoarsePointer || !keyboard.isOpen) return;
+		ignoreKeyboardCloseUntilRef.current = Date.now() + 450;
+		focusProxyRef.current?.focus();
+	}, [isCoarsePointer, keyboard.isOpen]);
+	const clearChecklistSelection = React.useCallback((): void => {
+		// Quick delete wants a true blur state, not a refocus onto the next surviving row.
+		suppressAutoActivateAfterDeleteRef.current = true;
+		setActiveChecklistRowId(null);
+		setFocusRowId(null);
+		setActiveChecklistRowEditor(null);
+		if (document.activeElement instanceof HTMLElement) {
+			document.activeElement.blur();
+		}
+	}, []);
 	// Tracks keyboard open->closed transitions for de-selection.
 	const lastMobileKeyboardOpenRef = React.useRef(mobileKeyboardOpen);
 	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
@@ -650,6 +676,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		// (See the keyboard-close de-selection effect above.)
 		if (isCoarsePointer && !mobileKeyboardOpen) return;
 		if (activeChecklistRowId && normalizedItems.some((item) => item.id === activeChecklistRowId)) return;
+		if (suppressAutoActivateAfterDeleteRef.current) return;
 		setActiveChecklistRowId(normalizedItems[0]?.id ?? null);
 	}, [activeChecklistRowId, isCoarsePointer, mobileKeyboardOpen, normalizedItems, type]);
 
@@ -687,6 +714,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const addChecklistItem = React.useCallback(
 		(index?: number): void => {
 			if (type !== 'checklist') return;
+			suppressAutoActivateAfterDeleteRef.current = false;
+			prepareChecklistRowFocusHandoff();
 			const nextId =
 				typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
 					? crypto.randomUUID()
@@ -708,7 +737,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			setActiveChecklistRowId(nextId);
 			setFocusRowId(nextId);
 		},
-		[checklistArray, items.length, type]
+		[checklistArray, items.length, prepareChecklistRowFocusHandoff, type]
 	);
 
 	const replaceChecklistItems = React.useCallback(
@@ -805,11 +834,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 
 	const removeChecklistItem = React.useCallback(
-		(id: string): void => {
+		(id: string, options?: { clearSelection?: boolean }): void => {
 			if (type !== 'checklist') return;
 			const index = normalizedItems.findIndex((row) => row.id === id);
 			const previousId = index > 0 ? normalizedItems[index - 1]?.id ?? null : null;
 			const nextId = normalizedItems[index + 1]?.id ?? null;
+			// `clearSelection=true` is used by quick delete to close editing entirely.
+			// Normal delete keeps the keyboard alive and hands focus to a neighbor.
+			if (options?.clearSelection !== true) {
+				prepareChecklistRowFocusHandoff();
+			}
 
 			// Surgical delete: remove only the target item and its children
 			// from the Y.Array, preserving all other items' Y.Map (and their
@@ -833,10 +867,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			if (doc) doc.transact(apply);
 			else apply();
 
+			if (options?.clearSelection === true && quickDeleteVisible) {
+				clearChecklistSelection();
+				return;
+			}
+
+			suppressAutoActivateAfterDeleteRef.current = false;
 			setActiveChecklistRowId(previousId ?? nextId);
 			setFocusRowId(previousId ?? nextId);
 		},
-		[checklistArray, normalizedItems, type]
+		[checklistArray, clearChecklistSelection, normalizedItems, prepareChecklistRowFocusHandoff, quickDeleteVisible, type]
 	);
 
 	const onChecklistDragEnd = React.useCallback(
@@ -954,18 +994,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	const activateChecklistRow = React.useCallback(
 		(id: string): void => {
+			suppressAutoActivateAfterDeleteRef.current = false;
 			// Row-switch focus handoff (mobile):
 			// When moving between checklist rows while the keyboard is open, we
 			// focus the proxy textarea first so there is never a frame where no
 			// input-like element is focused (which would dismiss the keyboard).
-			if (isCoarsePointer && keyboard.isOpen) {
-				ignoreKeyboardCloseUntilRef.current = Date.now() + 450;
-				focusProxyRef.current?.focus();
-			}
+			prepareChecklistRowFocusHandoff();
 			setActiveChecklistRowId(id);
 			setFocusRowId(id);
 		},
-		[isCoarsePointer, keyboard.isOpen]
+		[prepareChecklistRowFocusHandoff]
 	);
 
 	const setChecklistRowInputRef = React.useCallback((id: string, node: HTMLDivElement | null): void => {
@@ -1160,6 +1198,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							fragment={richContentFragment}
 							placeholder={t('editors.startTyping')}
 							hideToolbar={isCoarsePointer}
+							caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 							// Keyboard-open branch:
 							// Reserve just enough space at the bottom of the scrolling viewport for the
 							// floating formatting toolbar. This keeps the last editable lines reachable
@@ -1183,7 +1222,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						    Checklist mode does not use the generic rich-text viewport above, so we add
 						    the same bottom reserve here manually. The value matches the floating toolbar
 						    footprint and keeps the final checklist rows scrollable above it. */}
-						<div ref={checklistScrollRef} className={styles.checklistScrollArea} style={mobileKeyboardOpen ? { paddingBottom: '56px' } : undefined}>
+						<div ref={checklistScrollRef} className={styles.checklistScrollArea} style={mobileKeyboardOpen ? { paddingBottom: `${keyboardVisibilityPaddingPx}px` } : undefined}>
 							<DragDropContext
 								enableDefaultSensors={false}
 								sensors={immediateChecklistSensors}
@@ -1254,7 +1293,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																rowContainersRef.current.set(item.id, node);
 															}}
 															{...dragProvided.draggableProps}
-														className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
+														className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
 															aria-label={t('editors.dragHandle')}
 															style={{
 															...dragStyle,
@@ -1282,6 +1321,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																isProtectedFromEmptyBackspace={firstActiveItemId === item.id}
 																placeholderText={checklistItemPlaceholder}
 																removeLabel={checklistRemoveLabel}
+																caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 																activate={activateChecklistRow}
 																toggleCompleted={toggleChecklistCompleted}
 																remove={removeChecklistItem}
@@ -1318,7 +1358,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								{showCompleted ? (
 									<ul className={styles.checklistList}>
 										{completedItems.map((item) => (
-											<li key={item.id} className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+											<li key={item.id} className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
 												<div className={styles.dragHandle} aria-hidden="true">
 															<FontAwesomeIcon icon={faGripVertical} />
 												</div>
@@ -1332,6 +1372,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 											isProtectedFromEmptyBackspace={false}
 											placeholderText={checklistItemPlaceholder}
 											removeLabel={checklistRemoveLabel}
+											caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 											activate={activateChecklistRow}
 											toggleCompleted={toggleChecklistCompleted}
 											remove={removeChecklistItem}

@@ -8,7 +8,10 @@ export type UserDevicePreferences = {
 	language: string | null;
 	activeWorkspaceId: string | null;
 	checklistShowCompleted: boolean;
+	quickDeleteChecklist: boolean;
 	noteCardCompletedExpandedByNoteId: Record<string, boolean>;
+	createdAt: string | null;
+	updatedAt: string | null;
 };
 
 function safeJson(value: any): Record<string, boolean> {
@@ -37,7 +40,10 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			language: (body as any).language ? String((body as any).language) : null,
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
+			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
+			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
+			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};
 	} catch {
 		return null;
@@ -50,6 +56,7 @@ export async function updateUserPreferences(
 		theme?: string | null;
 		language?: LocaleCode | null;
 		checklistShowCompleted?: boolean;
+		quickDeleteChecklist?: boolean;
 		noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
 	}
 ): Promise<UserDevicePreferences | null> {
@@ -73,7 +80,10 @@ export async function updateUserPreferences(
 			language: (body as any).language ? String((body as any).language) : null,
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
+			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
+			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
+			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};
 	} catch {
 		return null;

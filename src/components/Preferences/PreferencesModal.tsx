@@ -1,5 +1,6 @@
 import React from 'react';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
+import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import styles from './PreferencesModal.module.css';
 
 type PreferencesSection =
@@ -32,6 +33,8 @@ export type PreferencesModalProps = {
 	isOpen: boolean;
 	onClose: () => void;
 	t: (key: string) => string;
+	quickDeleteChecklist: boolean;
+	onQuickDeleteChecklistChange: (next: boolean) => void;
 	onOpenAppearance?: () => void;
 	// Optional admin/session actions.
 	// These are injected by the App so Preferences can stay a mostly-presentational
@@ -45,10 +48,17 @@ type SectionModalProps = {
 	section: PreferencesSection;
 	onClose: () => void;
 	t: (key: string) => string;
+	quickDeleteChecklist: boolean;
+	onQuickDeleteChecklistChange: (next: boolean) => void;
 };
 
-function EditorSectionContent(props: { t: (key: string) => string }): React.JSX.Element {
+function EditorSectionContent(props: {
+	t: (key: string) => string;
+	quickDeleteChecklist: boolean;
+	onQuickDeleteChecklistChange: (next: boolean) => void;
+}): React.JSX.Element {
 	const bubbleEnabled = useBubbleMenuEnabled();
+	const isCoarsePointer = useIsCoarsePointer();
 	return (
 		<div className={styles.editorSection}>
 			<label className={styles.toggleRow}>
@@ -60,6 +70,19 @@ function EditorSectionContent(props: { t: (key: string) => string }): React.JSX.
 					type="checkbox"
 					checked={bubbleEnabled}
 					onChange={(e) => setBubbleMenuEnabled(e.target.checked)}
+					className={styles.toggleCheckbox}
+				/>
+			</label>
+			<label className={`${styles.toggleRow}${!isCoarsePointer ? ` ${styles.toggleRowDisabled}` : ''}`}>
+				<span className={styles.toggleLabel}>
+					<span className={styles.toggleTitle}>{props.t('prefs.quickDeleteChecklist')}</span>
+					<span className={styles.toggleDescription}>{props.t('prefs.quickDeleteChecklistDescription')}</span>
+				</span>
+				<input
+					type="checkbox"
+					checked={props.quickDeleteChecklist}
+					onChange={(e) => props.onQuickDeleteChecklistChange(e.target.checked)}
+					disabled={!isCoarsePointer}
 					className={styles.toggleCheckbox}
 				/>
 			</label>
@@ -85,7 +108,11 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 				</header>
 
 				{props.section === 'editor' ? (
-					<EditorSectionContent t={props.t} />
+					<EditorSectionContent
+						t={props.t}
+						quickDeleteChecklist={props.quickDeleteChecklist}
+						onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+					/>
 				) : (
 					<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
 				)}
@@ -165,6 +192,8 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					section={activeSection}
 					onClose={() => setActiveSection(null)}
 					t={props.t}
+					quickDeleteChecklist={props.quickDeleteChecklist}
+					onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
 				/>
 			) : null}
 		</div>
