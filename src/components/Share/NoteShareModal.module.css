@@ -11,6 +11,8 @@
 
 .modal {
 	width: min(560px, 100%);
+	max-height: calc(100vh - 40px);
+	overflow: auto;
 	background: linear-gradient(180deg, var(--color-surface), var(--color-surface-2));
 	border: 1px solid var(--color-border);
 	border-radius: 14px;
@@ -19,7 +21,6 @@
 	flex-direction: column;
 	gap: 14px;
 	box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
-	max-height: calc(100vh - 40px);
 }
 
 .header {
@@ -61,44 +62,40 @@
 	color: var(--color-text);
 }
 
-.error {
-	border: 1px solid color-mix(in srgb, var(--color-danger) 55%, var(--color-border));
-	background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+.banner,
+.error,
+.success {
 	border-radius: 10px;
 	padding: 10px 12px;
 	color: var(--color-text);
+}
+
+.banner {
+	border: 1px solid var(--color-border);
+	background: var(--color-surface);
+	font-size: 13px;
+	color: var(--color-text-muted);
+}
+
+.error {
+	border: 1px solid color-mix(in srgb, var(--color-danger) 55%, var(--color-border));
+	background: color-mix(in srgb, var(--color-danger) 12%, transparent);
 }
 
 .success {
 	border: 1px solid color-mix(in srgb, var(--color-success) 55%, var(--color-border));
 	background: color-mix(in srgb, var(--color-success) 12%, transparent);
-	border-radius: 10px;
-	padding: 10px 12px;
-	color: var(--color-text);
 }
 
-.info {
-	border: 1px solid var(--color-border);
-	background: var(--color-surface);
-	border-radius: 10px;
-	padding: 10px 12px;
-	color: var(--color-text-muted);
-	font-size: 13px;
-}
-
-.field {
+.linkField {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: 8px;
 }
 
-.input {
-	height: 36px;
-	border: 1px solid var(--color-border);
-	border-radius: 10px;
-	background: var(--color-surface);
-	color: var(--color-input-text);
-	padding: 0 10px;
+.linkLabel {
+	font-size: 13px;
+	color: var(--color-text-muted);
 }
 
 .linkValue {
@@ -141,7 +138,19 @@
 	flex-wrap: wrap;
 }
 
+.actionButton {
+	min-width: 92px;
+}
+
 @media (max-width: 640px) {
+	.modal {
+		padding: 16px;
+	}
+
+	.footer {
+		justify-content: stretch;
+	}
+
 	.footer > button {
 		flex: 1 1 140px;
 	}

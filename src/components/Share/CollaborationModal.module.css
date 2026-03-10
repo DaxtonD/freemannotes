@@ -1,0 +1,244 @@
+.overlay {
+	position: fixed;
+	inset: 0;
+	background: color-mix(in srgb, var(--color-app-bg) 38%, rgba(15, 23, 42, 0.62));
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 1rem;
+	z-index: 260;
+}
+
+.modal {
+	width: min(40rem, 100%);
+	max-height: min(48rem, calc(100vh - 2rem));
+	overflow: auto;
+	border-radius: 1.25rem;
+	border: 1px solid var(--color-border);
+	background: var(--color-surface);
+	color: var(--color-text);
+	box-shadow: 0 24px 60px color-mix(in srgb, var(--color-app-bg) 30%, rgba(15, 23, 42, 0.4));
+	padding: 1.25rem;
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
+}
+
+.header {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 1rem;
+}
+
+.title {
+	margin: 0;
+	font-size: 1.25rem;
+}
+
+.subtitle {
+	margin: 0.3rem 0 0;
+	color: var(--color-text-muted);
+	font-size: 0.92rem;
+}
+
+.closeButton {
+	border: 1px solid var(--color-border);
+	background: var(--color-surface-2);
+	border-radius: 0.7rem;
+	width: 2.25rem;
+	height: 2.25rem;
+	font-size: 1.1rem;
+	cursor: pointer;
+	color: inherit;
+}
+
+.error {
+	border-radius: 0.9rem;
+	padding: 0.8rem 0.95rem;
+	border: 1px solid color-mix(in srgb, var(--color-danger) 30%, var(--color-border));
+	background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface));
+	color: var(--color-danger);
+}
+
+.info {
+	border-radius: 0.9rem;
+	padding: 0.8rem 0.95rem;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+	color: var(--color-text);
+}
+
+.inviteBox,
+.acceptBox {
+	display: grid;
+	gap: 0.75rem;
+	padding: 0.95rem;
+	border: 1px solid var(--color-border);
+	border-radius: 1rem;
+	background: color-mix(in srgb, var(--color-surface-2) 78%, var(--color-surface));
+}
+
+.input,
+.select {
+	width: 100%;
+	border: 1px solid var(--color-border);
+	border-radius: 0.8rem;
+	padding: 0.78rem 0.9rem;
+	background: var(--color-surface);
+	color: inherit;
+	font: inherit;
+}
+
+.primaryButton,
+.secondaryButton {
+	border-radius: 0.8rem;
+	padding: 0.75rem 0.95rem;
+	font: inherit;
+	cursor: pointer;
+}
+
+.primaryButton {
+	border: none;
+	background: var(--color-accent);
+	color: #fff;
+}
+
+.secondaryButton {
+	border: 1px solid var(--color-border);
+	background: var(--color-surface);
+	color: inherit;
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled,
+.closeButton:disabled,
+.input:disabled,
+.select:disabled {
+	opacity: 0.6;
+	cursor: not-allowed;
+}
+
+.section {
+	display: grid;
+	gap: 0.75rem;
+}
+
+.sectionTitle {
+	margin: 0;
+	font-size: 0.95rem;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--color-text-muted);
+}
+
+.empty {
+	padding: 0.8rem 0;
+	color: var(--color-text-muted);
+}
+
+.row,
+.notificationCard {
+	display: grid;
+	gap: 0.35rem;
+	padding: 0.95rem;
+	border-radius: 1rem;
+	background: color-mix(in srgb, var(--color-surface-2) 76%, var(--color-surface));
+	border: 1px solid var(--color-border);
+}
+
+.row {
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 0.85rem;
+}
+
+.rowTitle {
+	font-weight: 600;
+}
+
+.notificationHeader {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.85rem;
+}
+
+.notificationAvatar,
+.notificationAvatarFallback {
+	width: 2.5rem;
+	height: 2.5rem;
+	border-radius: 999px;
+	flex: 0 0 auto;
+}
+
+.notificationAvatar {
+	object-fit: cover;
+	border: 1px solid var(--color-border);
+	background: var(--color-surface);
+}
+
+.notificationAvatarFallback {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface));
+	color: var(--color-accent);
+	font-weight: 700;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+}
+
+.notificationCopy {
+	min-width: 0;
+	display: grid;
+	gap: 0.2rem;
+}
+
+.rowMessage {
+	color: var(--color-text);
+	line-height: 1.45;
+	word-break: break-word;
+}
+
+.rowMeta {
+	color: var(--color-text-muted);
+	font-size: 0.9rem;
+}
+
+.badge {
+	border-radius: 999px;
+	padding: 0.38rem 0.65rem;
+	background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+	color: var(--color-accent);
+	font-size: 0.82rem;
+	font-weight: 600;
+}
+
+.statusRow,
+.actionRow {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.6rem;
+	align-items: center;
+}
+
+.radioLabel {
+	display: flex;
+	align-items: center;
+	gap: 0.55rem;
+	font-size: 0.94rem;
+}
+
+@media (max-width: 640px) {
+	.modal {
+		padding: 1rem;
+		border-radius: 1rem;
+	}
+
+	.row {
+		grid-template-columns: 1fr;
+	}
+
+	.notificationHeader {
+		gap: 0.7rem;
+	}
+}

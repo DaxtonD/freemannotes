@@ -1,5 +1,7 @@
 'use strict';
 
+const { findPreferredWorkspaceMembership } = require('./systemWorkspaces');
+
 // "Live workspace" helpers centralize the rule that deleted/tombstoned workspaces
 // must disappear from every auth/workspace-resolution path. Callers use these
 // instead of raw Prisma lookups so reconnect flows never reactivate a workspace
@@ -28,14 +30,7 @@ async function findLiveWorkspaceMembership(prisma, userId, workspaceId, select =
  */
 async function findFirstLiveWorkspaceMembership(prisma, userId, select = { workspaceId: true }) {
 	if (!prisma || !userId) return null;
-	return prisma.workspaceMember.findFirst({
-		where: {
-			userId,
-			workspace: { is: { deletedAt: null } },
-		},
-		orderBy: { workspaceId: 'asc' },
-		select,
-	});
+	return findPreferredWorkspaceMembership(prisma, userId, select);
 }
 
 /**

@@ -9,6 +9,7 @@ import {
 	removeCachedWorkspace,
 	readCachedWorkspaceSnapshot,
 } from '../../core/workspaceMetadataStore';
+import { getWorkspaceDisplayName } from '../../core/workspaceDisplay';
 import styles from './WorkspaceSwitcherModal.module.css';
 
 export type WorkspaceListItem = {
@@ -16,6 +17,7 @@ export type WorkspaceListItem = {
 	name: string;
 	role: 'OWNER' | 'ADMIN' | 'MEMBER';
 	ownerUserId?: string | null;
+	systemKind?: string | null;
 	createdAt: string;
 	updatedAt?: string;
 	pendingSync?: boolean;
@@ -40,7 +42,7 @@ type Props = {
 function mapWorkspaces(value: unknown): WorkspaceListItem[] {
 	if (!Array.isArray(value)) return [];
 	return value
-		.map((entry) => {
+		.map<WorkspaceListItem | null>((entry) => {
 			if (!entry || typeof entry !== 'object') return null;
 			const workspace = entry as Record<string, unknown>;
 			const id = typeof workspace.id === 'string' ? workspace.id : '';
@@ -50,6 +52,7 @@ function mapWorkspaces(value: unknown): WorkspaceListItem[] {
 				name: typeof workspace.name === 'string' ? workspace.name : '',
 				role: workspace.role === 'OWNER' || workspace.role === 'ADMIN' || workspace.role === 'MEMBER' ? workspace.role : 'MEMBER',
 				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
+				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind : null,
 				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
 				updatedAt: typeof workspace.updatedAt === 'string' ? workspace.updatedAt : typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
 			};
@@ -130,6 +133,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 						name: workspace.name,
 						role: workspace.role,
 						ownerUserId: workspace.ownerUserId ?? null,
+						systemKind: workspace.systemKind ?? null,
 						createdAt: workspace.createdAt,
 						updatedAt: workspace.updatedAt ?? workspace.createdAt,
 					})),
@@ -327,7 +331,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 			}
 			const confirmed = typeof window === 'undefined'
 				? true
-				: window.confirm(`${props.t('workspace.deleteConfirm')} "${workspace.name}"?`);
+				: window.confirm(`${props.t('workspace.deleteConfirm')} "${getWorkspaceDisplayName(workspace, props.t)}"?`);
 			if (!confirmed) return;
 
 			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -438,8 +442,8 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 							return (
 								<div key={ws.id} className={styles.row}>
 									<div className={styles.meta}>
-										<div className={`${styles.name}${isActive ? ` ${styles.activeName}` : ''}`} title={ws.name}>
-											{ws.name}
+										<div className={`${styles.name}${isActive ? ` ${styles.activeName}` : ''}`} title={getWorkspaceDisplayName(ws, props.t)}>
+											{getWorkspaceDisplayName(ws, props.t)}
 										</div>
 										<div className={styles.sub}>
 											{props.t('workspace.role')}: {ws.role}{ws.pendingSync ? ` • ${props.t('workspace.pendingSync')}` : ''}
@@ -483,7 +487,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 														disabled={busy}
 														onClick={() => {
 														setRenameId(ws.id);
-														setRenameValue(ws.name);
+														setRenameValue(getWorkspaceDisplayName(ws, props.t));
 													}}
 													>
 														{props.t('workspace.rename')}
