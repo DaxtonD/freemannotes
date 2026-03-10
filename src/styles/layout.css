@@ -2,6 +2,7 @@
 	--app-header-height: 56px;
 	--app-safe-top: env(safe-area-inset-top, 0px);
 	--app-header-total-height: calc(var(--app-header-height) + var(--app-safe-top));
+	--app-sticky-top-offset: var(--app-header-offset, var(--app-header-total-height));
 	/* Fallback: mobile header + in-header search row reserved height. */
 	--app-header-mobile-offset-fallback: calc(var(--app-header-total-height) + var(--space-2) + 49px);
 	display: flex;
@@ -430,13 +431,38 @@
 
 .sidebar-workspace-menu {
 	margin-left: 14px;
-	padding-left: 8px;
+	padding-left: 14px;
 	border-left: 1px solid var(--color-border);
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
 	padding-top: 6px;
 	padding-bottom: 6px;
+	max-height: min(40vh, 320px);
+	overflow-y: auto;
+	overflow-x: hidden;
+	scrollbar-gutter: stable;
+	overscroll-behavior: contain;
+}
+
+.sidebar-workspace-current {
+	min-height: 20px;
+	margin: 2px 0 4px;
+	padding: 0 12px 0 36px;
+	display: flex;
+	align-items: center;
+}
+
+.sidebar-workspace-current-text {
+	display: block;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	color: var(--color-accent);
 }
 
 .sidebar-submenu-shell {
@@ -671,34 +697,49 @@
 }
 
 .sidebar-workspace-row {
+	position: relative;
 	display: flex;
 	align-items: center;
 	gap: 6px;
+	padding-left: 2px;
+}
+
+.sidebar-workspace-row::before {
+	content: '';
+	position: absolute;
+	left: -14px;
+	top: 50%;
+	width: 10px;
+	height: 1px;
+	background: color-mix(in srgb, var(--color-border) 82%, transparent);
+	transform: translateY(-50%);
 }
 
 .sidebar-workspace-disclosure-toggle {
 	border: 0;
 	background: transparent;
-	color: var(--color-text-muted);
-	width: 18px;
-	height: 18px;
+	color: var(--color-text);
+	width: 14px;
+	height: 14px;
 	padding: 0;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	cursor: pointer;
 	flex: 0 0 auto;
+	opacity: 0.8;
 }
 
 .sidebar-workspace-disclosure-placeholder {
-	width: 18px;
-	height: 18px;
+	width: 14px;
+	height: 14px;
 	flex: 0 0 auto;
 }
 
 .sidebar-workspace-disclosure-toggle:hover,
 .sidebar-workspace-disclosure-toggle:focus-visible {
 	color: var(--color-accent);
+	opacity: 1;
 	outline: none;
 }
 
@@ -711,14 +752,15 @@
 .sidebar-workspace-row .sidebar-workspace-item {
 	flex: 1 1 auto;
 	min-width: 0;
+	padding-right: 6px;
 }
 
 .sidebar-workspace-share {
 	border: 0;
 	background: transparent;
 	color: var(--color-text-muted);
-	width: 18px;
-	height: 18px;
+	width: 14px;
+	height: 14px;
 	padding: 0;
 	display: inline-flex;
 	align-items: center;
@@ -735,14 +777,14 @@
 }
 
 .sidebar-workspace-share-placeholder {
-	width: 18px;
-	height: 18px;
+	width: 14px;
+	height: 14px;
 	flex: 0 0 auto;
 }
 
 .sidebar-workspace-share svg {
-	width: 18px;
-	height: 18px;
+	width: 12px;
+	height: 12px;
 }
 
 .sidebar-submenu-shell.is-open .sidebar-workspace-share {
@@ -757,7 +799,25 @@
 }
 
 .sidebar-workspace-folders {
-	margin-left: 24px;
+	margin-left: 14px;
+	padding-left: 14px;
+	gap: 2px;
+}
+
+.sidebar-workspace-folders .sidebar-workspace-folder {
+	position: relative;
+}
+
+.sidebar-workspace-folders .sidebar-workspace-folder::before,
+.sidebar-workspace-folders .sidebar-workspace-folder-muted::before {
+	content: '';
+	position: absolute;
+	left: -14px;
+	top: 50%;
+	width: 10px;
+	height: 1px;
+	background: color-mix(in srgb, var(--color-border) 82%, transparent);
+	transform: translateY(-50%);
 }
 
 .sidebar-workspace-folder {
@@ -765,6 +825,7 @@
 }
 
 .sidebar-workspace-folder-muted {
+	position: relative;
 	padding-left: 10px;
 }
 
@@ -792,8 +853,8 @@
 }
 
 .app-sidebar.is-collapsed .sidebar-workspace-share {
-	width: 18px;
-	height: 18px;
+	width: 14px;
+	height: 14px;
 }
 
 .app-sidebar.is-collapsed .sidebar-label,
@@ -818,9 +879,54 @@
 	overscroll-behavior-x: contain;
 }
 
+.app-main-sticky {
+	position: sticky;
+	top: var(--app-sticky-top-offset);
+	z-index: 60;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding-top: 2px;
+	padding-bottom: 8px;
+	background: var(--color-app-bg);
+}
+
 .top-actions {
 	display: flex;
 	gap: var(--space-3);
+}
+
+.note-grid-scope {
+	min-height: 42px;
+	margin: 0;
+	padding: 6px 0;
+	display: flex;
+	align-items: center;
+	width: 100%;
+	box-sizing: border-box;
+}
+
+.note-grid-scope-chip {
+	max-width: 100%;
+	min-height: 30px;
+	padding: 0 12px;
+	display: inline-flex;
+	align-items: center;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+}
+
+.note-grid-scope-label {
+	display: inline-block;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	color: var(--color-accent);
 }
 
 .top-action-card {
@@ -901,7 +1007,7 @@
 .mobile-swipe-zone {
 	position: fixed;
 	left: 0;
-	top: var(--app-header-offset, var(--app-header-total-height));
+	top: var(--app-mobile-header-offset, var(--app-header-total-height));
 	bottom: 0;
 	width: 18px;
 	z-index: 100;
@@ -1016,49 +1122,23 @@
 }
 
 @media (pointer: coarse) {
-	/*
-		Mobile header/search morph implementation notes
-		-----------------------------------------------
-		Goal: animate the *same* search input from the row below the header into the
-		top header row when the user scrolls.
-
-		Key design choices (browser stability):
-		- We absolutely position the mobile search row inside the header so moving it
-		  does NOT reflow the document content.
-		- Collapsed mode reduces header padding-bottom (because the search lives in
-		  the top row). This does change layout height, which can be a source of scroll
-		  jitter in Chrome; the JS uses a scroll-delta model + a short lock to prevent
-		  oscillation.
-
-		Where to tune per-browser:
-		- Search insets in collapsed mode: left/right values in
-		  `.mobile-header-collapsed .app-header-searchrow.mobile-searchrow`
-		- Optical vertical centering: `--mobile-header-vshift`
-		- Transition speeds: the `transition:` rules on the mobile elements
-	*/
-
-	:root {
-		/* Optical centering tweak for mobile header controls. */
-		--mobile-header-vshift: 7px;
+	.test-harness-root {
+		--app-mobile-header-offset: calc(var(--app-header-total-height) + var(--space-2));
 	}
 
 	.app-header {
 		padding-left: var(--space-2);
 		padding-right: var(--space-2);
 		gap: 0;
-		/* Sticky can be unreliable with complex mobile layouts; fixed is more robust. */
 		position: fixed;
 		top: 0;
 		left: 0;
 		right: 0;
-		/* Reserve space for the below-header search row (which is absolutely positioned). */
-		padding-bottom: calc(var(--space-2) + 49px);
-		transition: padding-bottom 240ms ease;
+		padding-bottom: var(--space-2);
 	}
 
 	.app-shell {
-		/* Ensure content starts below the fixed header + search row. */
-		padding-top: var(--app-header-offset, var(--app-header-mobile-offset-fallback));
+		padding-top: var(--app-mobile-header-offset);
 	}
 
 	.app-header-search-input {
@@ -1066,102 +1146,61 @@
 	}
 
 	.app-header-toprow.mobile-toprow {
-		position: relative;
 		height: var(--app-header-height);
-		display: block;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
 	}
 
-	.mobile-sidebar-btn {
-		position: absolute;
-		left: 0;
-		top: calc(50% + var(--mobile-header-vshift));
-		transform: translateY(-50%);
+	.mobile-sidebar-btn,
+	.mobile-search-btn,
+	.mobile-notification-btn,
+	.mobile-appgrid-btn,
+	.mobile-avatar-btn {
+		flex: 0 0 auto;
 	}
 
 	.mobile-app-icon {
-		position: absolute;
-		left: calc(40px + var(--space-2));
-		top: calc(50% + var(--mobile-header-vshift));
-		transform: translateY(-50%);
-		transition: opacity 220ms ease, transform 220ms ease;
-		transform-origin: left center;
+		margin-right: auto;
 	}
 
-	.mobile-appgrid-btn {
-		position: absolute;
-		right: calc(40px + var(--space-2));
-		top: calc(50% + var(--mobile-header-vshift));
-		transform: translateY(-50%) translateX(0);
-		transition: transform 240ms ease;
-	}
-
-	.mobile-avatar-btn {
-		position: absolute;
-		right: 0;
-		top: calc(50% + var(--mobile-header-vshift));
-		transform: translateY(-50%) translateX(0);
-		transition: opacity 220ms ease, transform 220ms ease;
+	.mobile-search-btn.is-active {
+		background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-2));
+		color: var(--color-accent);
 	}
 
 	.app-header-searchrow.mobile-searchrow {
-		/*
-			Important for Chrome/Safari stability:
-			- The search row is positioned within the header so it can animate without
-			  pushing/pulling page content (minimizes scroll jitter).
-			- We move it by animating `top/left/right` which is deterministic and aligns
-			  with the other absolutely positioned header controls.
-		*/
 		position: absolute;
-		left: 0;
-		right: 0;
-		top: calc(var(--app-header-height) + var(--space-2));
-		transition: top 240ms ease, left 240ms ease, right 240ms ease;
-		will-change: top, left, right;
-	}
-
-	/*
-		Mobile landscape: keep the header collapsed with NO morph animations.
-		We still rely on the `mobile-header-collapsed` class for positioning,
-		but we disable transitions so rotation/scroll never animates the header.
-	*/
-	.test-harness-root.mobile-landscape .app-header,
-	.test-harness-root.mobile-landscape .app-header-toprow,
-	.test-harness-root.mobile-landscape .app-header-searchrow.mobile-searchrow,
-	.test-harness-root.mobile-landscape .mobile-app-icon,
-	.test-harness-root.mobile-landscape .mobile-appgrid-btn,
-	.test-harness-root.mobile-landscape .mobile-avatar-btn {
-		transition: none !important;
-	}
-
-	.test-harness-root.mobile-header-collapsed .app-header {
-		/* In collapsed mode, search lives in the top row, so we don't need the full reserved space. */
-		padding-bottom: 8px;
-	}
-
-	.test-harness-root.mobile-header-collapsed .mobile-app-icon {
+		left: var(--space-2);
+		right: var(--space-2);
+		top: var(--app-safe-top);
+		height: var(--app-header-height);
+		display: flex;
+		align-items: center;
 		opacity: 0;
-		transform: translateY(-50%) translateX(-6px) scale(0.96);
 		pointer-events: none;
+		transform: translateY(-4px);
+		transition: opacity 180ms ease, transform 180ms ease;
+		z-index: 1;
 	}
 
-	.test-harness-root.mobile-header-collapsed .mobile-avatar-btn {
-		opacity: 0;
-		transform: translateY(-50%) translateX(12px);
-		pointer-events: none;
+	.app-header-searchrow.mobile-searchrow.is-open {
+		opacity: 1;
+		pointer-events: auto;
+		transform: translateY(0);
 	}
 
-	/* Slide app-grid into the avatar's slot as avatar disappears. */
-	.test-harness-root.mobile-header-collapsed .mobile-appgrid-btn {
-		transform: translateY(-50%) translateX(calc(40px + var(--space-2)));
+	.mobile-search-overlay {
+		width: 100%;
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		padding: 0;
+		background: var(--color-app-bg);
 	}
 
-	/* Morph the search bar into the header between sidebar and app-grid. */
-	.test-harness-root.mobile-header-collapsed .app-header-searchrow.mobile-searchrow {
-		/* Center vertically within the header with a touch more breathing room. */
-		top: calc((var(--app-header-height) - 40px) / 2 + var(--mobile-header-vshift));
-		/* Extra inset so the search isn't tight to the edges. */
-		left: calc(40px + var(--space-3));
-		right: calc(40px + var(--space-3));
+	.mobile-search-close {
+		flex: 0 0 auto;
 	}
 
 	.app-shell {
@@ -1174,6 +1213,11 @@
 		left: 0;
 		bottom: 0;
 		width: min(86vw, 320px);
+		max-height: 100dvh;
+		overflow-y: auto;
+		overflow-x: hidden;
+		overscroll-behavior: contain;
+		touch-action: pan-y;
 		transform: translateX(-105%);
 		transition: transform 220ms ease;
 		z-index: 130;
@@ -1200,6 +1244,7 @@
 	.sidebar-submenu,
 	.sidebar-workspace-menu {
 		margin-left: 16px;
+		max-height: min(46vh, 360px);
 		padding-left: 10px;
 		padding-top: 4px;
 		padding-bottom: 4px;
@@ -1228,12 +1273,51 @@
 		transform: translateX(0);
 	}
 
+	.test-harness-root.mobile-sidebar-open .app-main {
+		pointer-events: none;
+	}
+
+	.test-harness-root.mobile-sidebar-open .app-sidebar,
+	.test-harness-root.mobile-sidebar-open .mobile-sidebar-backdrop {
+		pointer-events: auto;
+	}
+
 	.app-main {
 		padding: var(--space-2);
 	}
 
+	.app-main-sticky {
+		position: sticky;
+		top: var(--app-mobile-header-offset);
+		z-index: 90;
+		gap: 4px;
+		padding-top: 0;
+		padding-bottom: 6px;
+		width: 100vw;
+		margin-left: calc(50% - 50vw);
+		margin-right: calc(50% - 50vw);
+		padding-left: 0;
+		padding-right: 0;
+		background: var(--color-app-bg);
+	}
+
 	.top-actions {
 		display: none;
+	}
+
+	.note-grid-scope {
+		position: static;
+		z-index: auto;
+		background: transparent;
+		margin: 0;
+		padding: 8px 0;
+		width: 100%;
+	}
+
+	.note-grid-scope-chip {
+		min-height: 32px;
+		padding: 0 12px;
+		margin-left: var(--space-2);
 	}
 }
 
@@ -1268,5 +1352,16 @@
 	.mobile-fab-stack,
 	.mobile-fab-backdrop {
 		display: none;
+	}
+
+	.app-sidebar {
+		position: sticky;
+		top: var(--app-sticky-top-offset);
+		align-self: start;
+		max-height: calc(100dvh - var(--app-sticky-top-offset));
+		overflow-y: auto;
+		overflow-x: hidden;
+		overscroll-behavior: contain;
+		scrollbar-gutter: stable;
 	}
 }

@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.9 - 2026-03-10
+
+### Added
+- **Shared With Me selection persistence.** Added per-device storage for the active Shared With Me folder so shared subtree selection survives reloads, restores, and workspace re-activation.
+- **Earth & Neutral theme family.** Added a new curated theme category with sixteen earthy and neutral palettes, plus localized picker labels in English and Spanish.
+- **Offline collaborator queue cache.** Added IndexedDB-backed collaborator snapshot and action-queue storage so collaborator changes can be staged offline and replayed once connectivity returns.
+
+### Changed
+- **Workspace and mobile shell UX.** Simplified the mobile header into a fixed single-row layout with a search overlay, made the workspace tree scrollable, surfaced the active workspace path in the sidebar, and added a sticky scope chip above the notes grid.
+- **Share notification and collaborator flows.** Shared placement lookups now target the Shared With Me workspace explicitly, notification history can be cleared locally, collaborator rows show richer identity data, and collaborator role edits now sync through the same offline-safe pipeline.
+- **Release documentation.** Added targeted functional comments across the new offline collaborator cache/replay and notification dismissal paths.
+
+### Fixed
+- **Dev authentication under Vite.** Login now waits for `/api/auth/me` to confirm a real session before entering the authenticated state, and local dev cookies no longer get marked `Secure` on plain HTTP.
+- **Shared With Me disclosure correctness.** Shared folders stay visible even when Personal is active, and accepted placements restore the intended shared folder instead of collapsing back to the workspace root.
+- **Mobile sidebar stability.** Opening the mobile drawer no longer shifts the notes grid mid-scroll because the page lock now uses overflow suppression instead of `position: fixed`.
+
 ## 1.0.80 - 2026-03-09
 
 ### Added

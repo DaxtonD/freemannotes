@@ -252,9 +252,36 @@ function mapCollaborator(collaborator) {
 				id: collaborator.user.id,
 				name: collaborator.user.name,
 				email: collaborator.user.email,
+				profileImage: collaborator.user.profileImage || null,
 			}
 			: null,
 	};
+}
+
+function dedupeInvitationList(invitations) {
+	const deduped = new Map();
+	for (const invitation of invitations || []) {
+		if (!invitation || invitation.revokedAt) continue;
+		const key = `${invitation.docId}::${normalizeEmail(invitation.inviteeEmail)}::${invitation.status}`;
+		const existing = deduped.get(key);
+		if (!existing) {
+			deduped.set(key, invitation);
+			continue;
+		}
+		const existingUpdated = Date.parse(existing.updatedAt || existing.createdAt || '') || 0;
+		const nextUpdated = Date.parse(invitation.updatedAt || invitation.createdAt || '') || 0;
+		if (nextUpdated >= existingUpdated) {
+			deduped.set(key, invitation);
+		}
+	}
+	return Array.from(deduped.values()).sort((left, right) => {
+		const leftPending = left.status === 'PENDING' ? 0 : 1;
+		const rightPending = right.status === 'PENDING' ? 0 : 1;
+		if (leftPending !== rightPending) return leftPending - rightPending;
+		const leftCreated = Date.parse(left.createdAt || '') || 0;
+		const rightCreated = Date.parse(right.createdAt || '') || 0;
+		return rightCreated - leftCreated;
+	});
 }
 
 function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
@@ -308,10 +335,12 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						orderBy: [{ status: 'asc' }, { createdAt: 'desc' }],
 						take: 50,
 					});
+					const normalizedInvitations = invitations.map(mapInvitation);
+					const dedupedInvitations = dedupeInvitationList(normalizedInvitations);
 
 					jsonResponse(res, 200, {
-						invitations: invitations.map(mapInvitation),
-						pendingCount: invitations.filter((item) => item.status === 'PENDING').length,
+						invitations: dedupedInvitations,
+						pendingCount: dedupedInvitations.filter((item) => item.status === 'PENDING').length,
 					});
 				} catch (err) {
 					console.error('[note-share] list invitations error:', err.message);
@@ -326,12 +355,16 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 				try {
 					const session = requireAuth(req, res);
 					if (!session) return;
-					if (!session.workspaceId) {
+					const requestedWorkspaceId = typeof url.searchParams.get('workspaceId') === 'string'
+						? String(url.searchParams.get('workspaceId')).trim()
+						: '';
+					const targetWorkspaceId = requestedWorkspaceId || session.workspaceId || null;
+					if (!targetWorkspaceId) {
 						jsonResponse(res, 400, { error: 'No active workspace' });
 						return;
 					}
 
-					const member = await findLiveWorkspaceMembership(prisma, session.userId, session.workspaceId, { role: true });
+					const member = await findLiveWorkspaceMembership(prisma, session.userId, targetWorkspaceId, { role: true });
 					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
@@ -340,7 +373,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const placements = await prisma.noteSharePlacement.findMany({
 						where: {
 							userId: session.userId,
-							targetWorkspaceId: session.workspaceId,
+							targetWorkspaceId,
 							deletedAt: null,
 							collaborator: { revokedAt: null },
 						},
@@ -486,6 +519,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							await onWorkspaceMetadataChanged({
 								reason: 'note-share-invited',
 								workspaceId: access.sourceWorkspaceId,
+								docId: access.docId,
 								userIds: invitee.user ? [invitee.user.id, actor.id] : [actor.id],
 							});
 						} catch (publishErr) {
@@ -515,7 +549,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const [collaborators, pendingInvites, selfCollaborator] = await Promise.all([
 						prisma.noteCollaborator.findMany({
 							where: { docId: access.docId, revokedAt: null },
-							include: { user: { select: { id: true, name: true, email: true } } },
+							include: { user: { select: { id: true, name: true, email: true, profileImage: true } } },
 							orderBy: { createdAt: 'asc' },
 						}),
 						prisma.noteShareInvitation.findMany({
@@ -622,6 +656,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								await onWorkspaceMetadataChanged({
 									reason: 'note-share-declined',
 									workspaceId: invitation.sourceWorkspaceId,
+									docId: invitation.docId,
 									userIds: [user.id, invitation.inviterUserId],
 								});
 							} catch (publishErr) {
@@ -711,6 +746,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							await onWorkspaceMetadataChanged({
 								reason: 'note-share-accepted',
 								workspaceId: invitation.sourceWorkspaceId,
+								docId: invitation.docId,
 								userIds: [user.id, invitation.inviterUserId],
 							});
 						} catch (publishErr) {
@@ -725,9 +761,72 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 			return true;
 		}
 
-		const revokeMatch = pathname.match(/^\/api\/note-shares\/collaborators\/([^/]+)$/);
-		if (revokeMatch && method === 'DELETE') {
-			const collaboratorId = decodeURIComponent(revokeMatch[1]);
+		const collaboratorMatch = pathname.match(/^\/api\/note-shares\/collaborators\/([^/]+)$/);
+		if (collaboratorMatch && method === 'PUT') {
+			const collaboratorId = decodeURIComponent(collaboratorMatch[1]);
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const body = await readJsonBody(req);
+					const collaborator = await prisma.noteCollaborator.findUnique({
+						where: { id: collaboratorId },
+						include: {
+							user: { select: { id: true, name: true, email: true, profileImage: true } },
+							invitation: true,
+						},
+					});
+					if (!collaborator || collaborator.revokedAt) {
+						jsonResponse(res, 404, { error: 'Collaborator not found' });
+						return;
+					}
+
+					const sourceMembership = await findLiveWorkspaceMembership(prisma, session.userId, collaborator.sourceWorkspaceId, { role: true });
+					if (!sourceMembership) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					const role = normalizeRole(body && typeof body === 'object' ? body.role : null);
+					const updated = await prisma.$transaction(async (tx) => {
+						const nextCollaborator = await tx.noteCollaborator.update({
+							where: { id: collaborator.id },
+							data: { role },
+							include: { user: { select: { id: true, name: true, email: true, profileImage: true } } },
+						});
+						if (collaborator.invitationId) {
+							await tx.noteShareInvitation.update({
+								where: { id: collaborator.invitationId },
+								data: { role },
+							});
+						}
+						return nextCollaborator;
+					});
+
+					jsonResponse(res, 200, { collaborator: mapCollaborator(updated) });
+
+					if (typeof onWorkspaceMetadataChanged === 'function') {
+						try {
+							await onWorkspaceMetadataChanged({
+								reason: 'note-share-role-updated',
+								workspaceId: collaborator.sourceWorkspaceId,
+								docId: collaborator.docId,
+								userIds: [collaborator.userId, session.userId],
+							});
+						} catch (publishErr) {
+							console.warn('[note-share] role publish failed:', publishErr.message);
+						}
+					}
+				} catch (err) {
+					console.error('[note-share] update collaborator role error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		if (collaboratorMatch && method === 'DELETE') {
+			const collaboratorId = decodeURIComponent(collaboratorMatch[1]);
 			(async () => {
 				try {
 					const session = requireAuth(req, res);
@@ -778,6 +877,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							await onWorkspaceMetadataChanged({
 								reason: 'note-share-revoked',
 								workspaceId: collaborator.sourceWorkspaceId,
+								docId: collaborator.docId,
 								userIds: [collaborator.userId, session.userId],
 							});
 						} catch (publishErr) {

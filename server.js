@@ -636,6 +636,7 @@ function broadcastWorkspaceMetadataChanged(rawEvent) {
 		type: 'workspace-metadata-changed',
 		reason: event.reason,
 		workspaceId: event.workspaceId,
+		docId: event.docId,
 		occurredAt: event.occurredAt,
 	});
 	for (const ws of metadataWss.clients) {

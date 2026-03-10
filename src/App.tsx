@@ -11,9 +11,11 @@ import {
 	faFolder,
 	faGrip,
 	faImage,
+	faMagnifyingGlass,
 	faShareNodes,
 	faTag,
 	faTrash,
+	faXmark,
 } from '@fortawesome/free-solid-svg-icons';
 import fabIconDark from '../version.png';
 import fabIconLight from '../version-light.png';
@@ -43,9 +45,11 @@ import { useConnectionStatus } from './core/useConnectionStatus';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import {
+	flushPendingCollaboratorActions,
 	flushPendingNoteShareActions,
 	listNoteShareInvitations,
 	listSharedNotePlacements,
+	syncNoteShareCollaborators,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
 import {
@@ -368,13 +372,13 @@ export function App(): React.JSX.Element {
 	const [registerAvatarAreaPixels, setRegisterAvatarAreaPixels] = React.useState<CropAreaPixels | null>(null);
 	const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
 	const [isMobileSidebarOpen, setIsMobileSidebarOpen] = React.useState(false);
-	const [isMobileHeaderCollapsed, setIsMobileHeaderCollapsed] = React.useState(false);
 	const [isMobileViewport, setIsMobileViewport] = React.useState(() => {
 		if (typeof window === 'undefined') return false;
 		return window.matchMedia('(pointer: coarse)').matches;
 	});
 	const headerRef = React.useRef<HTMLElement | null>(null);
-	const topActionsRef = React.useRef<HTMLDivElement | null>(null);
+	const mobileSearchInputRef = React.useRef<HTMLInputElement | null>(null);
+	const topControlsRef = React.useRef<HTMLDivElement | null>(null);
 	const mobileSwipeZoneRef = React.useRef<HTMLDivElement | null>(null);
 	const mobileSidebarRef = React.useRef<HTMLElement | null>(null);
 	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>(CLOSED_SIDEBAR_GROUPS);
@@ -394,6 +398,7 @@ export function App(): React.JSX.Element {
 	const [activeWorkspaceSystemKind, setActiveWorkspaceSystemKind] = React.useState<string | null>(null);
 	const [sharedPlacements, setSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
+	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
@@ -409,6 +414,7 @@ export function App(): React.JSX.Element {
 	const [quickDeleteChecklistPref, setQuickDeleteChecklistPref] = React.useState(false);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
 	const [searchQuery, setSearchQuery] = React.useState('');
+	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(false);
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
@@ -891,11 +897,15 @@ export function App(): React.JSX.Element {
 			if (cancelled) return;
 			if (pref) {
 				let syncedWorkspaceId = pref.activeWorkspaceId;
+				let syncedActiveSharedFolder = pref.activeSharedFolder;
+				const localSelectionNewer = Boolean(
+					localSnapshot && isLocalWorkspaceSelectionNewer(localSnapshot.preferenceUpdatedAt, pref.updatedAt)
+				);
 				if (
 					localSnapshot &&
 					localSnapshot.activeWorkspaceId &&
 					localSnapshot.activeWorkspaceId !== pref.activeWorkspaceId &&
-					isLocalWorkspaceSelectionNewer(localSnapshot.preferenceUpdatedAt, pref.updatedAt)
+					localSelectionNewer
 				) {
 					const activatedWorkspaceId = await activateWorkspace(deviceId, localSnapshot.activeWorkspaceId);
 					if (!cancelled && activatedWorkspaceId) {
@@ -903,13 +913,27 @@ export function App(): React.JSX.Element {
 						handleWorkspaceActivatedRef.current(activatedWorkspaceId);
 					}
 				}
+				if (
+					localSnapshot &&
+					localSelectionNewer &&
+					(localSnapshot.activeSharedFolder ?? null) !== (pref.activeSharedFolder ?? null)
+				) {
+					const updatedPref = await updateUserPreferences(deviceId, {
+						activeSharedFolder: localSnapshot.activeSharedFolder ?? null,
+					});
+					if (!cancelled) {
+						syncedActiveSharedFolder = updatedPref?.activeSharedFolder ?? (localSnapshot.activeSharedFolder ?? null);
+					}
+				}
 				await cacheActiveWorkspaceSelection({
 					userId: pref.userId,
 					deviceId: pref.deviceId,
 					activeWorkspaceId: syncedWorkspaceId,
+					activeSharedFolder: syncedActiveSharedFolder,
 					createdAt: pref.createdAt,
 					updatedAt: syncedWorkspaceId === pref.activeWorkspaceId ? pref.updatedAt : new Date().toISOString(),
 				});
+				setPendingRestoredSharedFolder(syncedActiveSharedFolder ?? null);
 				if (pref.theme) setThemeId(pref.theme as ThemeId);
 				if (pref.language) setLocale(pref.language as LocaleCode);
 				setChecklistShowCompletedPref(Boolean(pref.checklistShowCompleted));
@@ -937,6 +961,7 @@ export function App(): React.JSX.Element {
 				setAuthWorkspaceId(snapshot.activeWorkspaceId);
 				manager.setActiveWorkspaceId(snapshot.activeWorkspaceId);
 				manager.setWebsocketEnabled(!authOfflineMode);
+				setPendingRestoredSharedFolder(snapshot.activeSharedFolder ?? null);
 				writeAuthCache({
 					v: 1,
 					userId: authUserId,
@@ -963,7 +988,10 @@ export function App(): React.JSX.Element {
 					await loadSidebarWorkspacesRef.current();
 					await refreshActiveWorkspaceRef.current();
 					if (authOfflineMode) {
-						await probeSession({ allowOfflineRestore: false });
+						// Browser "online" only means a network is available; it does not
+						// guarantee the app server is reachable. Keep offline-auth active
+						// until the probe gets a definitive authenticated or explicit unauth response.
+						await probeSession({ allowOfflineRestore: true });
 					} else {
 						const snapshot = await readCachedWorkspaceSnapshot(authUserId, deviceId);
 						manager.setWebsocketEnabled(Boolean(snapshot.activeWorkspaceId));
@@ -1009,6 +1037,9 @@ export function App(): React.JSX.Element {
 		setSidebarWorkspaces([]);
 		setSidebarWorkspacesError(null);
 		setSharedPlacements([]);
+		setActiveSharedFolder(null);
+		setPendingRestoredSharedFolder(false);
+		setPendingSharedFolderReveal(null);
 		setPendingShareNotificationCount(0);
 		setCollaboratorModalState(null);
 	}, [manager]);
@@ -1028,12 +1059,16 @@ export function App(): React.JSX.Element {
 			setActiveWorkspaceName(null);
 			setActiveWorkspaceSystemKind(null);
 			setSharedPlacements([]);
+			setActiveSharedFolder(null);
+			setPendingRestoredSharedFolder(false);
+			setPendingSharedFolderReveal(null);
 			setCollaboratorModalState(null);
 			if (authUserId) {
 				void cacheActiveWorkspaceSelection({
 					userId: authUserId,
 					deviceId,
 					activeWorkspaceId: null,
+					activeSharedFolder: null,
 				});
 				if (opts?.preserveAuthCache) {
 					writeAuthCache({ v: 1, userId: authUserId, workspaceId: null, profileImage: authProfileImage });
@@ -1056,17 +1091,38 @@ export function App(): React.JSX.Element {
 			setOpenDoc(null);
 			setOpenDocId(null);
 			setEditorMode('none');
+			setActiveSharedFolder(null);
 			if (authUserId) {
 				void cacheActiveWorkspaceSelection({
 					userId: authUserId,
 					deviceId,
 					activeWorkspaceId: workspaceId,
+					activeSharedFolder: null,
 				});
 				writeAuthCache({ v: 1, userId: authUserId, workspaceId, profileImage: authProfileImage });
 			}
 			void refreshActiveWorkspace();
 		},
 		[authProfileImage, authUserId, deviceId, manager, refreshActiveWorkspace]
+	);
+
+	const persistSharedWorkspaceSelection = React.useCallback(
+		async (workspaceId: string, folderName: string | null): Promise<void> => {
+			const normalizedFolder = typeof folderName === 'string' && folderName.trim() ? folderName.trim() : null;
+			if (authUserId) {
+				await cacheActiveWorkspaceSelection({
+					userId: authUserId,
+					deviceId,
+					activeWorkspaceId: workspaceId,
+					activeSharedFolder: normalizedFolder,
+				});
+			}
+			if (authStatus !== 'authed' || authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+				return;
+			}
+			await updateUserPreferences(deviceId, { activeSharedFolder: normalizedFolder });
+		},
+		[authOfflineMode, authStatus, authUserId, deviceId]
 	);
 
 	React.useEffect(() => {
@@ -1308,6 +1364,23 @@ export function App(): React.JSX.Element {
 		return sharedPlacements.filter((placement) => String(placement.folderName || '').trim() === activeSharedFolder);
 	}, [activeSharedFolder, activeWorkspaceSystemKind, sharedPlacements]);
 
+	const activeWorkspaceSidebarPath = React.useMemo(() => {
+		const workspaceLabel = activeWorkspaceName || t('workspace.unnamed');
+		if (activeWorkspaceSystemKind === 'SHARED_WITH_ME' && activeSharedFolder) {
+			return `${workspaceLabel} / ${activeSharedFolder}`;
+		}
+		return workspaceLabel;
+	}, [activeSharedFolder, activeWorkspaceName, activeWorkspaceSystemKind, t]);
+
+	const noteGridScopeLabel = React.useMemo(() => {
+		return `All notes / ${activeWorkspaceSidebarPath}`;
+	}, [activeWorkspaceSidebarPath]);
+
+	const sharedWithMeWorkspaceId = React.useMemo(() => {
+		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
+		return sharedWorkspace?.id ?? null;
+	}, [sidebarWorkspaces]);
+
 	const loadSidebarWorkspaces = React.useCallback(async (): Promise<void> => {
 		if (sidebarWorkspacesBusy) return;
 		if (authStatus !== 'authed') return;
@@ -1391,6 +1464,11 @@ export function App(): React.JSX.Element {
 		const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
 		if (!offline) {
 			try {
+				await flushPendingCollaboratorActions(authUserId);
+			} catch {
+				// Keep collaborator queue failures isolated from the rest of the share refresh.
+			}
+			try {
 				await flushPendingNoteShareActions(authUserId);
 			} catch {
 				// Keep the queue intact if a replay request fails.
@@ -1399,7 +1477,7 @@ export function App(): React.JSX.Element {
 		try {
 			const [invitationData, placementData] = await Promise.all([
 				listNoteShareInvitations(),
-				authWorkspaceId ? listSharedNotePlacements() : Promise.resolve({ placements: [] }),
+				sharedWithMeWorkspaceId ? listSharedNotePlacements(sharedWithMeWorkspaceId) : Promise.resolve({ placements: [] }),
 			]);
 			setPendingShareNotificationCount(invitationData.pendingCount);
 			setSharedPlacements(placementData.placements);
@@ -1409,7 +1487,7 @@ export function App(): React.JSX.Element {
 				setPendingShareNotificationCount(0);
 			}
 		}
-	}, [authStatus, authUserId, authWorkspaceId]);
+	}, [authStatus, authUserId, sharedWithMeWorkspaceId]);
 
 	const refreshNoteShareStateRef = React.useRef(refreshNoteShareState);
 	const bumpCollaborationRefreshToken = React.useCallback(() => {
@@ -1490,6 +1568,7 @@ export function App(): React.JSX.Element {
 						type?: string;
 						reason?: string;
 						workspaceId?: string | null;
+							docId?: string | null;
 					};
 					if (
 						payload.type === 'workspace-metadata-changed' &&
@@ -1502,6 +1581,9 @@ export function App(): React.JSX.Element {
 						payload.type === 'workspace-metadata-ready' ||
 						payload.type === 'workspace-metadata-changed'
 					) {
+							if (payload.type === 'workspace-metadata-changed' && typeof payload.docId === 'string' && authUserId) {
+								void syncNoteShareCollaborators(authUserId, payload.docId, { suppressError: true });
+							}
 						refreshWorkspaceMetadata();
 					}
 				} catch {
@@ -1565,14 +1647,16 @@ export function App(): React.JSX.Element {
 	}, [authWorkspaceId, sidebarWorkspaces]);
 
 	const activateWorkspaceFromSidebar = React.useCallback(
-		async (workspaceId: string): Promise<void> => {
+		async (workspaceId: string, options?: { activeSharedFolder?: string | null }): Promise<void> => {
 			if (authStatus !== 'authed') return;
 			if (workspaceId === authWorkspaceId) return;
+			const nextSharedFolder = options?.activeSharedFolder ?? null;
 			if (authUserId && (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false))) {
 				await cacheActiveWorkspaceSelection({
 					userId: authUserId,
 					deviceId,
 					activeWorkspaceId: workspaceId,
+					activeSharedFolder: nextSharedFolder,
 				});
 				handleWorkspaceActivated(workspaceId);
 				if (isMobileViewport) {
@@ -1594,6 +1678,7 @@ export function App(): React.JSX.Element {
 					throw new Error(msg);
 				}
 				handleWorkspaceActivated(workspaceId);
+				void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
 				if (isMobileViewport) {
 					setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
 				}
@@ -1606,6 +1691,7 @@ export function App(): React.JSX.Element {
 							userId: authUserId,
 							deviceId,
 							activeWorkspaceId: workspaceId,
+							activeSharedFolder: nextSharedFolder,
 						});
 						handleWorkspaceActivated(workspaceId);
 						if (isMobileViewport) {
@@ -1618,7 +1704,7 @@ export function App(): React.JSX.Element {
 				// Keep errors out of the sidebar nav — Workspace modal provides richer error UX.
 			}
 		},
-		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, deviceId, handleWorkspaceActivated, isMobileViewport]
+		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, deviceId, handleWorkspaceActivated, isMobileViewport, persistSharedWorkspaceSelection]
 	);
 
 	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
@@ -1632,9 +1718,30 @@ export function App(): React.JSX.Element {
 			folderName: args.folderName,
 		});
 		if (args.targetWorkspaceId !== authWorkspaceId) {
-			await activateWorkspaceFromSidebar(args.targetWorkspaceId);
+			await activateWorkspaceFromSidebar(args.targetWorkspaceId, { activeSharedFolder: args.folderName });
 		}
 	}, [activateWorkspaceFromSidebar, authWorkspaceId]);
+
+	React.useEffect(() => {
+		if (pendingRestoredSharedFolder === false) return;
+		if (!authWorkspaceId) {
+			setPendingRestoredSharedFolder(false);
+			return;
+		}
+		const activeWorkspace = sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId);
+		if (!activeWorkspace) return;
+		if (activeWorkspace.systemKind !== 'SHARED_WITH_ME') {
+			setPendingRestoredSharedFolder(false);
+			return;
+		}
+		const nextFolder = String(pendingRestoredSharedFolder || '').trim();
+		if (nextFolder) {
+			setPendingSharedFolderReveal({ workspaceId: authWorkspaceId, folderName: nextFolder });
+		} else {
+			setActiveSharedFolder(null);
+		}
+		setPendingRestoredSharedFolder(false);
+	}, [authWorkspaceId, pendingRestoredSharedFolder, sidebarWorkspaces]);
 
 	React.useEffect(() => {
 		// Switching away from registration should clear any staged avatar/crop state
@@ -1664,6 +1771,9 @@ export function App(): React.JSX.Element {
 		try {
 			const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
 			let resolvedWorkspaceId: string | null = null;
+			let resolvedUserId: string | null = null;
+			let resolvedProfileImage: string | null = null;
+			let sessionEstablished = false;
 			const payload: any = {
 				email: authEmail,
 				password: authPassword,
@@ -1691,6 +1801,18 @@ export function App(): React.JSX.Element {
 				return;
 			}
 
+			const authBody = await res.json().catch(() => null);
+			const authUserId = authBody?.user?.id ? String(authBody.user.id) : null;
+			const authWorkspaceId = authBody?.workspaceId
+				? String(authBody.workspaceId)
+				: authBody?.workspace?.id
+					? String(authBody.workspace.id)
+					: null;
+			const authProfileImageFromResponse = authBody?.user?.profileImage ? String(authBody.user.profileImage) : null;
+			resolvedUserId = authUserId;
+			resolvedWorkspaceId = authWorkspaceId;
+			resolvedProfileImage = authProfileImageFromResponse;
+
 			// Optional post-register avatar upload.
 			// This is separate from the register endpoint so registration remains a
 			// small JSON API and uploads are handled via multipart.
@@ -1708,7 +1830,9 @@ export function App(): React.JSX.Element {
 					if (!uploadRes.ok) throw new Error('Upload failed');
 					const uploadBody = await uploadRes.json().catch(() => null);
 					const profileImage = uploadBody?.profileImage ? String(uploadBody.profileImage) : null;
-					if (profileImage) setAuthProfileImage(profileImage);
+					if (profileImage) {
+						resolvedProfileImage = profileImage;
+					}
 				} catch {
 					setAuthError('Account created, but profile photo upload failed');
 				}
@@ -1726,23 +1850,36 @@ export function App(): React.JSX.Element {
 					const userId = meBody?.user?.id ? String(meBody.user.id) : null;
 					const profileImage = meBody?.user?.profileImage ? String(meBody.user.profileImage) : null;
 					const workspaceId = meBody?.workspaceId ? String(meBody.workspaceId) : null;
-					resolvedWorkspaceId = workspaceId;
-					setAuthUserId(userId);
-					setAuthProfileImage(profileImage);
-					setAuthWorkspaceId(workspaceId);
-					manager.setActiveWorkspaceId(workspaceId);
-					manager.setWebsocketEnabled(Boolean(workspaceId));
-					setAuthOfflineMode(false);
 					if (userId) {
-						writeAuthCache({ v: 1, userId, workspaceId, profileImage });
+						resolvedUserId = userId;
+						resolvedWorkspaceId = workspaceId;
+						resolvedProfileImage = profileImage;
+						sessionEstablished = true;
 					}
 				}
 			} catch {
 				// ignore
 			}
 
+			if (!sessionEstablished || !resolvedUserId) {
+				setAuthUserId(null);
+				setAuthProfileImage(null);
+				setAuthWorkspaceId(null);
+				setAuthOfflineMode(false);
+				setAuthStatus('unauth');
+				manager.setActiveWorkspaceId(null);
+				manager.setWebsocketEnabled(false);
+				setAuthError('Login succeeded, but the session was not established. Check the dev server session cookie/proxy setup and try again.');
+				return;
+			}
+
+			setAuthUserId(resolvedUserId);
+			setAuthProfileImage(resolvedProfileImage);
+			setAuthWorkspaceId(resolvedWorkspaceId);
 			setAuthStatus('authed');
 			setAuthOfflineMode(false);
+			manager.setActiveWorkspaceId(resolvedWorkspaceId);
+			writeAuthCache({ v: 1, userId: resolvedUserId, workspaceId: resolvedWorkspaceId, profileImage: resolvedProfileImage });
 			manager.setWebsocketEnabled(Boolean(resolvedWorkspaceId));
 		} catch {
 			setAuthError('Authentication failed');
@@ -2036,28 +2173,36 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		// Lock the page behind the mobile drawer so background content cannot
 		// scroll or rubber-band while the sidebar is open.
+		//
+		// Important: avoid `body { position: fixed }` here. That pattern can cause
+		// visible mid-scroll jumps when the drawer opens/closes because the entire
+		// document is re-positioned relative to the viewport. An overflow-only lock
+		// keeps the current scroll position stable while the backdrop/sidebar absorb
+		// interaction above the page content.
 		if (!isMobileViewport || !isMobileSidebarOpen || typeof window === 'undefined' || typeof document === 'undefined') return;
 		const body = document.body;
-		const scrollY = window.scrollY;
+		const root = document.documentElement;
 		const previous = {
+			rootOverflow: root.style.overflow,
+			rootOverscrollBehavior: (root.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior ?? '',
+			rootTouchAction: root.style.touchAction,
 			overflow: body.style.overflow,
-			position: body.style.position,
-			top: body.style.top,
-			width: body.style.width,
+			bodyTouchAction: body.style.touchAction,
 			overscrollBehavior: (body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior ?? '',
 		};
+		root.style.overflow = 'hidden';
+		(root.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = 'none';
+		root.style.touchAction = 'none';
 		body.style.overflow = 'hidden';
-		body.style.position = 'fixed';
-		body.style.top = `-${scrollY}px`;
-		body.style.width = '100%';
+		body.style.touchAction = 'none';
 		(body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = 'none';
 		return () => {
+			root.style.overflow = previous.rootOverflow;
+			(root.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = previous.rootOverscrollBehavior;
+			root.style.touchAction = previous.rootTouchAction;
 			body.style.overflow = previous.overflow;
-			body.style.position = previous.position;
-			body.style.top = previous.top;
-			body.style.width = previous.width;
+			body.style.touchAction = previous.bodyTouchAction;
 			(body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = previous.overscrollBehavior;
-			window.scrollTo(0, scrollY);
 		};
 	}, [isMobileSidebarOpen, isMobileViewport]);
 
@@ -2076,12 +2221,28 @@ export function App(): React.JSX.Element {
 	}, []);
 
 	React.useEffect(() => {
-		// Keep mobile drawer state consistent when resizing.
+		// Keep mobile-only overlays consistent when resizing back to desktop.
 		if (!isMobileViewport) {
 			setIsMobileSidebarOpen(false);
-			setIsMobileHeaderCollapsed(false);
+			setIsMobileSearchOpen(false);
 		}
 	}, [isMobileViewport]);
+
+	React.useEffect(() => {
+		if (!isMobileViewport) return;
+		if (!isMobileSearchOpen) return;
+		if (isMobileSidebarOpen) {
+			setIsMobileSearchOpen(false);
+			return;
+		}
+		if (typeof window === 'undefined') return;
+		let raf = 0;
+		raf = requestAnimationFrame(() => {
+			mobileSearchInputRef.current?.focus();
+			mobileSearchInputRef.current?.select();
+		});
+		return () => cancelAnimationFrame(raf);
+	}, [isMobileSearchOpen, isMobileSidebarOpen, isMobileViewport]);
 
 	React.useEffect(() => {
 		// Desktop editor overlay offset:
@@ -2091,7 +2252,7 @@ export function App(): React.JSX.Element {
 		// so editor overlays should start below those controls.
 		//
 		// We compute an absolute pixel offset from the viewport top by measuring the
-		// bottom edge of the `.top-actions` row. This is written to a CSS variable and
+		// bottom edge of the sticky top-controls stack. This is written to a CSS variable and
 		// consumed by the editor overlay styles.
 		if (typeof window === 'undefined') return;
 		if (isMobileViewport) return;
@@ -2106,7 +2267,7 @@ export function App(): React.JSX.Element {
 		const compute = () => {
 			cancelAnimationFrame(raf);
 			raf = requestAnimationFrame(() => {
-				const actions = topActionsRef.current;
+				const actions = topControlsRef.current;
 				const header = headerRef.current;
 				const headerBottom = header ? Math.round(header.getBoundingClientRect().bottom) : 0;
 				let offset = headerBottom;
@@ -2165,7 +2326,7 @@ export function App(): React.JSX.Element {
 			window.removeEventListener('resize', setVar);
 			document.documentElement.style.removeProperty('--app-header-offset');
 		};
-	}, [isMobileViewport]);
+	}, [isMobileLandscape, isMobileViewport]);
 
 	React.useEffect(() => {
 		// Best-effort edge-swipe gesture:
@@ -2270,96 +2431,6 @@ export function App(): React.JSX.Element {
 			drawer.removeEventListener('touchcancel', onTouchEnd);
 		};
 	}, [closeMobileSidebar, isMobileSidebarOpen, isMobileViewport]);
-
-	React.useEffect(() => {
-		// Mobile header morph (MOBILE ONLY):
-		//
-		// UX spec:
-		// - Normal: top header row shows sidebar button + app icon + app-grid + avatar;
-		//   a search input sits *below* that header row.
-		// - On scroll (content moves up): app icon fades out, avatar slides right + fades,
-		//   app-grid slides into the avatar slot, and the search input morphs into the
-		//   top row (between sidebar button and app-grid).
-		// - On reverse scroll: everything returns.
-		//
-		// Browser notes:
-		// - Chrome can oscillate rapidly if the collapse/expand state is driven purely
-		//   by scrollTop thresholds while the header height is animating (layout shifts
-		//   can change scrollTop mid-frame). To avoid this:
-		//   1) we base toggling on scroll direction + accumulated delta, not a single threshold
-		//   2) we apply a short "lock" after toggling so bounce/elastic scroll doesn't flip it back
-		if (!isMobileViewport || isMobileLandscape || typeof window === 'undefined') return;
-		let raf = 0;
-		let lastScrollTop = window.scrollY || document.documentElement.scrollTop || 0;
-		let accumDown = 0;
-		let accumUp = 0;
-		// Tuning knobs:
-		// - COLLAPSE_DELTA_PX: how far you must scroll "down" before collapsing.
-		// - EXPAND_DELTA_PX: how far you must scroll "up" before expanding.
-		// - MIN_SCROLL_TO_COLLAPSE_PX: prevents collapsing from tiny jitters near scrollTop=0.
-		//
-		// If a specific browser feels too eager/too sluggish, these are the values to adjust.
-		const COLLAPSE_DELTA_PX = 18;
-		const EXPAND_DELTA_PX = 10;
-		const MIN_SCROLL_TO_COLLAPSE_PX = 12;
-		let lockUntil = 0;
-
-		const setCollapsedWithLock = (nextCollapsed: boolean) => {
-			setIsMobileHeaderCollapsed((prev) => {
-				if (prev === nextCollapsed) return prev;
-				// Chrome-specific stability guard:
-				// After toggling, give the layout/scroll position time to settle. Without this,
-				// Chrome can bounce scrollTop by a few pixels during the header transition,
-				// which would otherwise immediately re-trigger the opposite state.
-				lockUntil = performance.now() + 260;
-				return nextCollapsed;
-			});
-		};
-		const onScroll = () => {
-			cancelAnimationFrame(raf);
-			raf = requestAnimationFrame(() => {
-				const now = performance.now();
-				if (now < lockUntil) {
-					lastScrollTop = window.scrollY || document.documentElement.scrollTop || 0;
-					return;
-				}
-				const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
-				const delta = scrollTop - lastScrollTop;
-				lastScrollTop = scrollTop;
-
-				// Always expand at the very top.
-				if (scrollTop <= 0) {
-					accumDown = 0;
-					accumUp = 0;
-					setCollapsedWithLock(false);
-					return;
-				}
-
-				if (delta > 0) {
-					accumDown += delta;
-					accumUp = 0;
-					if (scrollTop > MIN_SCROLL_TO_COLLAPSE_PX && accumDown >= COLLAPSE_DELTA_PX) {
-						accumDown = 0;
-						setCollapsedWithLock(true);
-					}
-				} else if (delta < 0) {
-					accumUp += -delta;
-					accumDown = 0;
-					// Expand as soon as the user scrolls back (downward gesture).
-					if (accumUp >= EXPAND_DELTA_PX) {
-						accumUp = 0;
-						setCollapsedWithLock(false);
-					}
-				}
-			});
-		};
-		onScroll();
-		window.addEventListener('scroll', onScroll, { passive: true });
-		return () => {
-			cancelAnimationFrame(raf);
-			window.removeEventListener('scroll', onScroll);
-		};
-	}, [isMobileLandscape, isMobileViewport]);
 
 	React.useEffect(() => {
 		// Mobile back button / swipe-back behavior:
@@ -2666,11 +2737,6 @@ export function App(): React.JSX.Element {
 				// Landscape branch: expose a root class so CSS can hard-disable the
 				// portrait header morph transitions during rotation.
 				isMobileLandscape ? ' mobile-landscape' : ''
-				// Collapse branch:
-				// - normal mobile uses scroll-driven `isMobileHeaderCollapsed`
-				// - landscape forcibly stays collapsed to maximize editor space and
-				//   avoid transition jitter while rotating.
-			}${isMobileHeaderCollapsed || isMobileLandscape ? ' mobile-header-collapsed' : ''
 			}`}
 		>
 			{isMobileViewport && !isMobileSidebarOpen ? <div ref={mobileSwipeZoneRef} className="mobile-swipe-zone" aria-hidden="true" /> : null}
@@ -2698,15 +2764,17 @@ export function App(): React.JSX.Element {
 							<img className="app-header-logo mobile-app-icon" src={headerIconSrc} alt="" aria-hidden="true" />
 							<button
 								type="button"
-								className="app-icon-button mobile-appgrid-btn"
+								className={`app-icon-button mobile-search-btn${isMobileSearchOpen ? ' is-active' : ''}`}
+								onClick={() => setIsMobileSearchOpen((prev) => !prev)}
 								aria-label={t('app.globalSearchPlaceholder')}
+								aria-pressed={isMobileSearchOpen}
 								title={t('app.globalSearchPlaceholder')}
 							>
-								<FontAwesomeIcon icon={faGrip} />
+								<FontAwesomeIcon icon={faMagnifyingGlass} />
 							</button>
 							<button
 								type="button"
-								className="app-icon-button app-notification-button"
+								className="app-icon-button app-notification-button mobile-notification-btn"
 								onClick={openShareNotifications}
 								aria-label={t('share.notifications')}
 								title={t('share.notifications')}
@@ -2720,6 +2788,14 @@ export function App(): React.JSX.Element {
 							</button>
 							<button
 								type="button"
+								className="app-icon-button mobile-appgrid-btn"
+								aria-label={t('app.globalSearchPlaceholder')}
+								title={t('app.globalSearchPlaceholder')}
+							>
+								<FontAwesomeIcon icon={faGrip} />
+							</button>
+							<button
+								type="button"
 								className="avatar-trigger mobile-avatar-btn"
 								onClick={openPreferences}
 								aria-label={t('prefs.title')}
@@ -2728,15 +2804,30 @@ export function App(): React.JSX.Element {
 								{authProfileImage ? <img className="avatar-img" src={authProfileImage} alt="" /> : <span aria-hidden="true">👤</span>}
 							</button>
 						</div>
-						<div className="app-header-searchrow mobile-searchrow">
-							<input
-								type="search"
-								className="app-header-search-input"
-								value={searchQuery}
-								onChange={(event) => setSearchQuery(event.target.value)}
-								placeholder={t('app.globalSearchPlaceholder')}
-								aria-label={t('app.globalSearchPlaceholder')}
-							/>
+						<div className={`app-header-searchrow mobile-searchrow${isMobileSearchOpen ? ' is-open' : ''}`}>
+							<div className="mobile-search-overlay">
+								<input
+									ref={mobileSearchInputRef}
+									type="search"
+									className="app-header-search-input"
+									value={searchQuery}
+									onChange={(event) => setSearchQuery(event.target.value)}
+									onKeyDown={(event) => {
+										if (event.key === 'Escape') setIsMobileSearchOpen(false);
+									}}
+									placeholder={t('app.globalSearchPlaceholder')}
+									aria-label={t('app.globalSearchPlaceholder')}
+								/>
+								<button
+									type="button"
+									className="app-icon-button mobile-search-close"
+									onClick={() => setIsMobileSearchOpen(false)}
+									aria-label={t('common.close')}
+									title={t('common.close')}
+								>
+									<FontAwesomeIcon icon={faXmark} />
+								</button>
+							</div>
 						</div>
 					</>
 				) : (
@@ -2877,6 +2968,12 @@ export function App(): React.JSX.Element {
 										<span className="sidebar-label">{label}</span>
 									</button>
 
+										{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
+											<div className="sidebar-workspace-current" aria-live="polite">
+												<span className="sidebar-workspace-current-text">{activeWorkspaceSidebarPath}</span>
+											</div>
+										) : null}
+
 									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
 											<div className="sidebar-submenu sidebar-workspace-menu" aria-label={t('workspace.listAria')} aria-hidden={!isOpen}>
@@ -2899,23 +2996,6 @@ export function App(): React.JSX.Element {
 												return (
 													<div key={ws.id} className="sidebar-workspace-group">
 														<div className="sidebar-workspace-row">
-															{canShareWorkspace ? (
-																<button
-																	type="button"
-																	className="sidebar-workspace-share"
-																	onClick={(event) => {
-																		event.stopPropagation();
-																		openSendInviteForWorkspace(ws);
-																	}}
-																	aria-label={t('invite.sidebarShareAria')}
-																	title={t('invite.sidebarShareAria')}
-																	style={{ ['--sidebar-item-index' as const]: itemIndex }}
-																>
-																	<FontAwesomeIcon icon={faShareNodes} aria-hidden="true" />
-																</button>
-															) : (
-																<span className="sidebar-workspace-share-placeholder" aria-hidden="true" />
-															)}
 															{hasSharedFolders ? (
 																<button
 																	type="button"
@@ -2947,7 +3027,9 @@ export function App(): React.JSX.Element {
 																		setSidebarGroupsOpen((prev) => ({ ...prev, [sharedFolderGroupId]: true }));
 																	}
 																	if (ws.id !== authWorkspaceId) {
-																		void activateWorkspaceFromSidebar(ws.id);
+																		void activateWorkspaceFromSidebar(ws.id, { activeSharedFolder: null });
+																	} else if (ws.systemKind === 'SHARED_WITH_ME') {
+																		void persistSharedWorkspaceSelection(ws.id, null);
 																	} else if (isMobileViewport) {
 																		closeMobileSidebar();
 																	}
@@ -2957,6 +3039,23 @@ export function App(): React.JSX.Element {
 															>
 																{getWorkspaceDisplayName(ws, t)}
 															</button>
+																	{canShareWorkspace ? (
+																		<button
+																			type="button"
+																			className="sidebar-workspace-share"
+																			onClick={(event) => {
+																				event.stopPropagation();
+																				openSendInviteForWorkspace(ws);
+																			}}
+																			aria-label={t('invite.sidebarShareAria')}
+																			title={t('invite.sidebarShareAria')}
+																			style={{ ['--sidebar-item-index' as const]: itemIndex }}
+																		>
+																			<FontAwesomeIcon icon={faShareNodes} aria-hidden="true" />
+																		</button>
+																	) : (
+																		<span className="sidebar-workspace-share-placeholder" aria-hidden="true" />
+																	)}
 														</div>
 														{showSharedFolders ? (
 															<div className="sidebar-nested-submenu-shell is-open">
@@ -2969,8 +3068,14 @@ export function App(): React.JSX.Element {
 																			type="button"
 																			className={`sidebar-submenu-item sidebar-workspace-folder${activeSharedFolder === folderName ? ' is-active' : ''}`}
 																			onClick={() => {
-																				setActiveSharedFolder(folderName);
 																				setSidebarView('notes');
+																				if (ws.id !== authWorkspaceId) {
+																					setPendingSharedFolderReveal({ workspaceId: ws.id, folderName });
+																					void activateWorkspaceFromSidebar(ws.id, { activeSharedFolder: folderName });
+																				} else {
+																					setActiveSharedFolder(folderName);
+																					void persistSharedWorkspaceSelection(ws.id, folderName);
+																				}
 																				if (isMobileViewport) closeMobileSidebar();
 																			}}
 																			style={{ ['--sidebar-item-index' as const]: folderIndex }}
@@ -3090,14 +3195,24 @@ export function App(): React.JSX.Element {
 				<main className="app-main">
 
 					{/* In trash view we hide the "create new note" affordances. */}
-					{sidebarView !== 'trash' && canCreateNotesInActiveWorkspace ? (
-						<div ref={topActionsRef} className="top-actions">
-							<button type="button" className="top-action-card" onClick={() => openCreateEditor('text')}>
-								{t('app.createNewNote')}
-							</button>
-							<button type="button" className="top-action-card" onClick={() => openCreateEditor('checklist')}>
-								{t('app.createNewChecklist')}
-							</button>
+					{sidebarView !== 'trash' ? (
+						<div ref={topControlsRef} className="app-main-sticky">
+							{canCreateNotesInActiveWorkspace ? (
+								<div className="top-actions">
+									<button type="button" className="top-action-card" onClick={() => openCreateEditor('text')}>
+										{t('app.createNewNote')}
+									</button>
+									<button type="button" className="top-action-card" onClick={() => openCreateEditor('checklist')}>
+										{t('app.createNewChecklist')}
+									</button>
+								</div>
+							) : null}
+
+							<div className="note-grid-scope" aria-live="polite">
+								<div className="note-grid-scope-chip">
+									<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
+								</div>
+							</div>
 						</div>
 					) : null}
 
@@ -3304,7 +3419,9 @@ export function App(): React.JSX.Element {
 			<CollaboratorModal
 				isOpen={Boolean(collaboratorModalState)}
 				onClose={() => setCollaboratorModalState(null)}
+				authUserId={authUserId}
 				docId={collaboratorModalState?.docId ?? null}
+				offlineCanManageHint={Boolean(collaboratorModalState && !sharedPlacements.some((item) => item.aliasId === collaboratorModalState.noteId))}
 				noteTitle={collaboratorModalState?.title ?? ''}
 				refreshToken={collaborationRefreshToken}
 				onChanged={() => {

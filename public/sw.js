@@ -58,15 +58,12 @@ self.addEventListener('activate', (event) => {
 		(async () => {
 			const names = await caches.keys();
 			await Promise.all(names.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name)));
-			// Only claim clients that don't already have a controller.
-			// This makes first-visit offline work immediately without
-			// forcing a reload on existing tabs during an SW update.
+			// Claim the current page on first install so the cached app shell can
+			// serve subsequent navigations even when the origin is unreachable.
+			// We intentionally still avoid skipWaiting(), so updates only activate
+			// after older tabs close; claiming here is therefore safe.
 			if (!self.clients) return;
-			const allClients = await self.clients.matchAll({ type: 'window' });
-			const hasUncontrolled = allClients.some((c) => !c.url);
-			if (allClients.length === 0 || hasUncontrolled) {
-				await self.clients.claim();
-			}
+			await self.clients.claim();
 		})()
 	);
 });

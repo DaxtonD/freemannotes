@@ -3,7 +3,7 @@ import type { LocaleCode } from '../../core/i18n';
 import type { ThemeId } from '../../core/theme';
 import styles from './PreferencesModal.module.css';
 
-type ThemeCategory = 'built-in' | 'nord' | 'catppuccin' | 'gruvbox' | 'everforest' | 'rose-pine' | 'tokyo-night';
+type ThemeCategory = 'built-in' | 'earth' | 'nord' | 'catppuccin' | 'gruvbox' | 'everforest' | 'rose-pine' | 'tokyo-night';
 type AppearancePane = 'theme' | 'language';
 
 type ThemeOption = { id: ThemeId; label: string };
@@ -11,6 +11,7 @@ type ThemeOption = { id: ThemeId; label: string };
 type LanguageOption = { code: LocaleCode; label: string };
 
 function getThemeCategory(themeId: ThemeId): ThemeCategory {
+	if (themeId.startsWith('earth-')) return 'earth';
 	if (themeId.startsWith('nord')) return 'nord';
 	if (themeId.startsWith('catppuccin-')) return 'catppuccin';
 	if (themeId.startsWith('gruvbox-')) return 'gruvbox';
@@ -22,6 +23,10 @@ function getThemeCategory(themeId: ThemeId): ThemeCategory {
 
 function stripThemePrefixForDisplay(theme: ThemeOption): string {
 	const label = theme.label;
+	if (theme.id.startsWith('earth-')) {
+		const stripped = label.replace(/^Earth\s*/i, '').trim();
+		return stripped || label;
+	}
 	if (theme.id.startsWith('nord')) {
 		const stripped = label.replace(/^Nord\s*/i, '').trim();
 		return stripped || label;
@@ -125,6 +130,7 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 										<span>{props.t('prefs.theme')}</span>
 										<select value={category} onChange={(e) => setCategory(e.target.value as ThemeCategory)}>
 											<option value="built-in">{props.t('prefs.themeCategoryBuiltIn')}</option>
+											<option value="earth">{props.t('prefs.themeCategoryEarth')}</option>
 											<option value="nord">{props.t('prefs.themeCategoryNord')}</option>
 											<option value="catppuccin">{props.t('prefs.themeCategoryCatppuccin')}</option>
 											<option value="gruvbox">{props.t('prefs.themeCategoryGruvbox')}</option>

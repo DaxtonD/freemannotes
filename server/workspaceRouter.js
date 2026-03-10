@@ -464,11 +464,12 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					try {
 						await prisma.userDevicePreference.upsert({
 							where: { userId_deviceId: { userId: session.userId, deviceId } },
-							update: { activeWorkspaceId: workspaceId },
+							update: { activeWorkspaceId: workspaceId, activeSharedFolder: null },
 							create: {
 								userId: session.userId,
 								deviceId,
 								activeWorkspaceId: workspaceId,
+								activeSharedFolder: null,
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
 								noteCardCompletedExpandedByNoteId: {},

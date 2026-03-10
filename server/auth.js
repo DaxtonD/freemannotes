@@ -15,7 +15,8 @@
 //   - `enforceSameOrigin` is intentionally simple: it blocks cross-site POST/PUT/
 //     PATCH/DELETE requests unless the host matches the request host.
 //   - Production should run over HTTPS. `isSecureRequest()` decides whether to
-//     mark cookies as `Secure` based on x-forwarded-proto and NODE_ENV.
+//     mark cookies as `Secure` based on actual request transport or an explicit
+//     AUTH_COOKIE_SECURE override.
 //
 // IMPORTANT:
 //   - AUTH_JWT_SECRET must be set in the environment.
@@ -42,11 +43,19 @@ function baseUrlFromRequest(req) {
 }
 
 function isSecureRequest(req) {
+	// Explicit override wins when operators need to force a specific behavior.
+	const override = String(process.env.AUTH_COOKIE_SECURE || '').trim().toLowerCase();
+	if (override === 'true' || override === '1') return true;
+	if (override === 'false' || override === '0') return false;
+
 	// When running behind a proxy, x-forwarded-proto is the best signal.
-	// Fallback: treat production as secure.
 	const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
 	if (proto === 'https') return true;
-	return String(process.env.NODE_ENV || '').toLowerCase() === 'production';
+
+	// Direct TLS termination without proxy headers.
+	if (req.socket && req.socket.encrypted) return true;
+
+	return false;
 }
 
 /**

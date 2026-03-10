@@ -7,6 +7,7 @@ export type UserDevicePreferences = {
 	theme: string | null;
 	language: string | null;
 	activeWorkspaceId: string | null;
+	activeSharedFolder: string | null;
 	checklistShowCompleted: boolean;
 	quickDeleteChecklist: boolean;
 	noteCardCompletedExpandedByNoteId: Record<string, boolean>;
@@ -39,6 +40,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			theme: (body as any).theme ? String((body as any).theme) : null,
 			language: (body as any).language ? String((body as any).language) : null,
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
+			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
@@ -55,6 +57,7 @@ export async function updateUserPreferences(
 	patch: {
 		theme?: string | null;
 		language?: LocaleCode | null;
+		activeSharedFolder?: string | null;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
 		noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
@@ -79,6 +82,7 @@ export async function updateUserPreferences(
 			theme: (body as any).theme ? String((body as any).theme) : null,
 			language: (body as any).language ? String((body as any).language) : null,
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
+			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),

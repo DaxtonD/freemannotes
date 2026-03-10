@@ -124,6 +124,14 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 		return id;
 	}
 
+	function normalizeActiveSharedFolder(raw) {
+		if (raw == null || raw === '') return null;
+		if (typeof raw !== 'string') return null;
+		const folderName = raw.trim();
+		if (!folderName) return null;
+		return folderName;
+	}
+
 	/**
 	 * Returns authenticated userId (UUID) or null.
 	 * @param {import('http').IncomingMessage} req
@@ -201,6 +209,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						theme: devicePref.theme ?? null,
 						language: devicePref.language ?? null,
 						activeWorkspaceId: normalizedActiveWorkspaceId,
+						activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
 						quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
 						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
@@ -281,6 +290,17 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						}
 					}
 
+					if ('activeSharedFolder' in body) {
+						if (body.activeSharedFolder == null || body.activeSharedFolder === '') {
+							deviceUpdateData.activeSharedFolder = null;
+						} else if (typeof body.activeSharedFolder !== 'string' || body.activeSharedFolder.length > 200) {
+							jsonResponse(res, 400, { error: 'activeSharedFolder must be a string up to 200 chars' });
+							return;
+						} else {
+							deviceUpdateData.activeSharedFolder = normalizeActiveSharedFolder(body.activeSharedFolder);
+						}
+					}
+
 					if ('checklistShowCompleted' in body) {
 						deviceUpdateData.checklistShowCompleted = Boolean(body.checklistShowCompleted);
 					}
@@ -346,6 +366,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 							theme: devicePref.theme ?? null,
 							language: devicePref.language ?? null,
 							activeWorkspaceId: normalizedActiveWorkspaceId,
+							activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 							checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
 							quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
 							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
@@ -401,6 +422,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 									theme: deviceData.theme ?? null,
 									language: deviceData.language ?? null,
 									activeWorkspaceId: null,
+									activeSharedFolder: deviceData.activeSharedFolder ?? null,
 									checklistShowCompleted:
 										typeof deviceData.checklistShowCompleted === 'boolean'
 											? deviceData.checklistShowCompleted
@@ -453,6 +475,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						theme: pref.devicePref.theme ?? null,
 						language: pref.devicePref.language ?? null,
 						activeWorkspaceId: normalizedActiveWorkspaceId,
+						activeSharedFolder: normalizeActiveSharedFolder(pref.devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(pref.devicePref.checklistShowCompleted),
 						quickDeleteChecklist: Boolean(pref.devicePref.quickDeleteChecklist),
 						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
