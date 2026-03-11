@@ -164,6 +164,16 @@ export function syncTextNotePlainText(doc: Y.Doc, fragment: Y.XmlFragment): stri
 	return next;
 }
 
+export function getTextNoteRichPreviewJson(doc: Y.Doc): JSONContent | null {
+	const fragment = doc.share.get(TEXT_NOTE_RICH_FIELD);
+	if (!(fragment instanceof Y.XmlFragment) || fragment.length === 0) return null;
+	try {
+		return yXmlFragmentToProsemirrorJSON(fragment) as JSONContent;
+	} catch {
+		return null;
+	}
+}
+
 export function ensureChecklistItemRichContent(itemMap: Y.Map<any>): Y.XmlFragment {
 	let fragment = itemMap.get(CHECKLIST_ITEM_RICH_FIELD) as Y.XmlFragment | undefined;
 	if (!(fragment instanceof Y.XmlFragment)) {
@@ -180,6 +190,11 @@ export function syncChecklistItemPlainText(itemMap: Y.Map<any>, fragment: Y.XmlF
 	const next = getPlainTextFromRichFragment(fragment, 'minimal');
 	itemMap.set('text', next);
 	return next;
+}
+
+export function getChecklistItemPlainText(itemMap: Y.Map<any>): string {
+	const plainText = String(itemMap.get('text') ?? '');
+	return plainText.length > 0 ? plainText : getPlainTextFromRichFragment(ensureChecklistItemRichContent(itemMap), 'minimal');
 }
 
 /**

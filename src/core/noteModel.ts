@@ -21,6 +21,7 @@ import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
 	ensureTextNoteRichContent,
+	getPlainTextFromRichJson,
 	getPlainTextFromRichFragment,
 	replaceRichFragmentFromJson,
 	syncChecklistItemPlainText,
@@ -200,17 +201,25 @@ export function initChecklistNoteDoc(
 		/* Insert each item as a fully-constructed Y.Map within the same transaction. */
 		for (const item of items) {
 			const m = new Y.Map<any>();
+			const itemRichContent = item.richContent ?? createRichTextDocFromPlainText(item.text);
+			const plainText = String(item.text ?? '').length > 0
+				? String(item.text)
+				: getPlainTextFromRichJson(itemRichContent, 'minimal');
 			m.set('id', item.id);
-			m.set('text', item.text);
+			m.set('text', plainText);
 			m.set('completed', item.completed);
 			m.set('parentId', typeof item.parentId === 'string' && item.parentId.trim().length > 0 ? item.parentId : null);
+			yChecklist.push([m]);
+
+			// Populate nested rich content only after the map is attached to the checklist
+			// array. Detached nested Yjs types can lose state during note creation, which
+			// shows up as checklist rows with a checkbox but no visible label.
 			replaceRichFragmentFromJson(
 				ensureChecklistItemRichContent(m),
-				item.richContent ?? createRichTextDocFromPlainText(item.text),
+				itemRichContent,
 				'minimal'
 			);
 			syncChecklistItemPlainText(m, ensureChecklistItemRichContent(m));
-			yChecklist.push([m]);
 		}
 	});
 }

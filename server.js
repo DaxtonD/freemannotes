@@ -64,7 +64,12 @@ if (YPERSISTENCE.length > 0) {
 
 // ── WebSocket + y-websocket ──────────────────────────────────────────────
 const WebSocket = require('ws');
-const { setupWSConnection } = require('y-websocket/bin/utils');
+const Y = require('yjs');
+const syncProtocol = require('y-protocols/sync');
+const awarenessProtocol = require('y-protocols/awareness');
+const encoding = require('lib0/encoding');
+const decoding = require('lib0/decoding');
+const { getYDoc, docs, getPersistence } = require('y-websocket/bin/utils');
 const {
 	normalizeWorkspaceMetadataEvent,
 	publishWorkspaceMetadataEvent,
@@ -72,9 +77,125 @@ const {
 } = require('./server/workspaceMetadataEvents');
 const { findLiveWorkspaceMembership } = require('./server/workspaceAccess');
 const { splitDocRoomId } = require('./server/noteShareRouter');
+const { canEditWorkspaceContent, normalizeWorkspaceRole } = require('./server/workspaceRoles');
 
 // ── Phase 11 auth helpers (JWT cookie sessions) ───────────────────────
 const { getSessionFromRequest } = require('./server/auth');
+
+const MESSAGE_SYNC = 0;
+const MESSAGE_AWARENESS = 1;
+const WS_READY_STATE_CONNECTING = 0;
+const WS_READY_STATE_OPEN = 1;
+const PING_TIMEOUT_MS = 30_000;
+
+function closeRoleAwareConn(doc, conn) {
+	if (doc.conns.has(conn)) {
+		const controlledIds = doc.conns.get(conn);
+		doc.conns.delete(conn);
+		awarenessProtocol.removeAwarenessStates(doc.awareness, Array.from(controlledIds || []), null);
+		const persistence = getPersistence();
+		if (doc.conns.size === 0 && persistence !== null) {
+			persistence.writeState(doc.name, doc).then(() => {
+				doc.destroy();
+			});
+			docs.delete(doc.name);
+		}
+	}
+	conn.close();
+}
+
+function sendRoleAware(doc, conn, message) {
+	if (conn.readyState !== WS_READY_STATE_CONNECTING && conn.readyState !== WS_READY_STATE_OPEN) {
+		closeRoleAwareConn(doc, conn);
+		return;
+	}
+	try {
+		conn.send(message, {}, (err) => {
+			if (err != null) closeRoleAwareConn(doc, conn);
+		});
+	} catch {
+		closeRoleAwareConn(doc, conn);
+	}
+}
+
+function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice(1).split('?')[0], gc = true, readOnly = false } = {}) {
+	conn.binaryType = 'arraybuffer';
+	const doc = getYDoc(docName, gc);
+	doc.conns.set(conn, new Set());
+
+	conn.on('message', (message) => {
+		try {
+			const encoder = encoding.createEncoder();
+			const decoder = decoding.createDecoder(new Uint8Array(message));
+			const messageType = decoding.readVarUint(decoder);
+			switch (messageType) {
+				case MESSAGE_SYNC: {
+					const syncMessageType = decoding.readVarUint(decoder);
+					if (readOnly && (syncMessageType === syncProtocol.messageYjsSyncStep2 || syncMessageType === syncProtocol.messageYjsUpdate)) {
+						conn.close(1008, 'read-only');
+						return;
+					}
+					encoding.writeVarUint(encoder, MESSAGE_SYNC);
+					if (syncMessageType === syncProtocol.messageYjsSyncStep1) {
+						syncProtocol.readSyncStep1(decoder, encoder, doc);
+					} else if (syncMessageType === syncProtocol.messageYjsSyncStep2) {
+						syncProtocol.readSyncStep2(decoder, doc, conn);
+					} else if (syncMessageType === syncProtocol.messageYjsUpdate) {
+						syncProtocol.readUpdate(decoder, doc, conn);
+					}
+					if (encoding.length(encoder) > 1) {
+						sendRoleAware(doc, conn, encoding.toUint8Array(encoder));
+					}
+					break;
+				}
+				case MESSAGE_AWARENESS:
+					awarenessProtocol.applyAwarenessUpdate(doc.awareness, decoding.readVarUint8Array(decoder), conn);
+					break;
+			}
+		} catch (err) {
+			console.error(err);
+			doc.emit('error', [err]);
+		}
+	});
+
+	let pongReceived = true;
+	const pingInterval = setInterval(() => {
+		if (!pongReceived) {
+			if (doc.conns.has(conn)) {
+				closeRoleAwareConn(doc, conn);
+			}
+			clearInterval(pingInterval);
+		} else if (doc.conns.has(conn)) {
+			pongReceived = false;
+			try {
+				conn.ping();
+			} catch {
+				closeRoleAwareConn(doc, conn);
+				clearInterval(pingInterval);
+			}
+		}
+	}, PING_TIMEOUT_MS);
+
+	conn.on('close', () => {
+		closeRoleAwareConn(doc, conn);
+		clearInterval(pingInterval);
+	});
+	conn.on('pong', () => {
+		pongReceived = true;
+	});
+
+	const syncEncoder = encoding.createEncoder();
+	encoding.writeVarUint(syncEncoder, MESSAGE_SYNC);
+	syncProtocol.writeSyncStep1(syncEncoder, doc);
+	sendRoleAware(doc, conn, encoding.toUint8Array(syncEncoder));
+	const awarenessStates = doc.awareness.getStates();
+	if (awarenessStates.size > 0) {
+		const awarenessEncoder = encoding.createEncoder();
+		encoding.writeVarUint(awarenessEncoder, MESSAGE_AWARENESS);
+		encoding.writeVarUint8Array(awarenessEncoder, awarenessProtocol.encodeAwarenessUpdate(doc.awareness, Array.from(awarenessStates.keys())));
+		sendRoleAware(doc, conn, encoding.toUint8Array(awarenessEncoder));
+	}
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Prisma + Redis initialization (conditional — only when DATABASE_URL is set).
@@ -265,7 +386,21 @@ if (DATABASE_URL.length > 0) {
 
 		try {
 			const { createInviteRouter } = require('./server/inviteRouter');
-			inviteRouter = createInviteRouter({ prisma });
+			inviteRouter = createInviteRouter({
+				prisma,
+				onWorkspaceMetadataChanged: async (event) => {
+					const normalized = normalizeWorkspaceMetadataEvent({
+						...event,
+						type: 'workspace-metadata-changed',
+						origin: SERVER_INSTANCE_ID,
+					});
+					if (!normalized) return;
+					broadcastWorkspaceMetadataChanged(normalized);
+					if (redis) {
+						await publishWorkspaceMetadataEvent(redis, normalized);
+					}
+				},
+			});
 			console.info('[server] Invite API router initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize Invite API router:', err.message);
@@ -814,6 +949,7 @@ wss.on('connection', (conn, req) => {
 				conn.close(1008, 'forbidden');
 				return;
 			}
+			let readOnly = !canEditWorkspaceContent(normalizeWorkspaceRole(member.role, 'VIEWER'));
 
 			// Namespace the room so shared IDs like "__notes_registry__" don't collide
 			// across workspaces.
@@ -833,7 +969,7 @@ wss.on('connection', (conn, req) => {
 								userId: session.userId,
 								revokedAt: null,
 							},
-							select: { id: true },
+							select: { id: true, role: true },
 						})
 						: null;
 					if (!foreignCollaborator) {
@@ -848,6 +984,7 @@ wss.on('connection', (conn, req) => {
 						conn.close(1008, 'forbidden');
 						return;
 					}
+					readOnly = foreignCollaborator.role === 'VIEWER';
 				}
 			} else {
 				docName = `${session.workspaceId}:${raw}`;
@@ -857,7 +994,7 @@ wss.on('connection', (conn, req) => {
 
 			// y-websocket expects req.url === '/<room>'
 			req.url = `/${docName}`;
-			setupWSConnection(conn, req, { gc: true });
+			setupRoleAwareWSConnection(conn, req, { gc: true, readOnly });
 		} catch (err) {
 			console.error('[ws] connection setup error:', err.message);
 			try {

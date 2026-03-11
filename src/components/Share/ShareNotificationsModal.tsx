@@ -7,7 +7,14 @@ import {
 	type NoteShareInvitation,
 	type PendingNoteShareAction,
 } from '../../core/noteShareApi';
+import {
+	acceptWorkspacePendingInvite,
+	declineWorkspacePendingInvite,
+	listWorkspacePendingInvites,
+	type WorkspacePendingInvite,
+} from '../../core/workspaceInviteApi';
 import { useI18n } from '../../core/i18n';
+import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import styles from './CollaborationModal.module.css';
 
 type Props = {
@@ -16,6 +23,7 @@ type Props = {
 	authUserId: string | null;
 	onChanged?: () => void;
 	onAcceptedPlacement?: (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => void;
+	onAcceptedWorkspaceInvite?: (workspaceId: string) => void;
 };
 
 type PlacementChoice = 'personal' | 'shared-root' | 'shared-folder';
@@ -27,8 +35,6 @@ function hiddenNotificationsKey(userId: string): string {
 }
 
 function readHiddenNotificationIds(userId: string | null): Set<string> {
-	// Keep dismissed non-pending notifications out of the list locally without
-	// mutating invitation history on the server.
 	if (!userId || typeof window === 'undefined') return new Set();
 	try {
 		const raw = window.localStorage.getItem(hiddenNotificationsKey(userId));
@@ -46,13 +52,11 @@ function writeHiddenNotificationIds(userId: string | null, ids: ReadonlySet<stri
 	try {
 		window.localStorage.setItem(hiddenNotificationsKey(userId), JSON.stringify(Array.from(ids)));
 	} catch {
-		// Ignore persistence failures; clear-history is best effort.
+		// Best effort only.
 	}
 }
 
 function normalizeInvitation(invitation: NoteShareInvitation): NoteShareInvitation {
-	// Older cached payloads may be missing newer optional fields like noteTitle or
-	// inviter.profileImage, so the modal normalizes them before rendering cards.
 	return {
 		...invitation,
 		noteTitle: typeof invitation.noteTitle === 'string' ? invitation.noteTitle : '',
@@ -67,15 +71,23 @@ function normalizeInvitation(invitation: NoteShareInvitation): NoteShareInvitati
 
 export function ShareNotificationsModal(props: Props): React.JSX.Element | null {
 	const { t } = useI18n();
+	useBodyScrollLock(props.isOpen);
 	const statusLabels: Record<NoteShareInvitation['status'], string> = {
 		PENDING: t('share.statusPending'),
 		ACCEPTED: t('share.statusAccepted'),
 		DECLINED: t('share.statusDeclined'),
 		REVOKED: t('share.statusRevoked'),
 	};
+	const statusClassNames: Record<NoteShareInvitation['status'], string> = {
+		PENDING: styles.badgePending,
+		ACCEPTED: styles.badgeAccepted,
+		DECLINED: styles.badgeDeclined,
+		REVOKED: styles.badgeDeclined,
+	};
 	const [busyId, setBusyId] = React.useState<string | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
 	const [invitations, setInvitations] = React.useState<NoteShareInvitation[]>([]);
+	const [workspaceInvites, setWorkspaceInvites] = React.useState<WorkspacePendingInvite[]>([]);
 	const [acceptingId, setAcceptingId] = React.useState<string | null>(null);
 	const [placementChoiceByInvitationId, setPlacementChoiceByInvitationId] = React.useState<Record<string, PlacementChoice>>({});
 	const [folderByInvitationId, setFolderByInvitationId] = React.useState<Record<string, string>>({});
@@ -88,14 +100,16 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const load = React.useCallback(async () => {
 		setError(null);
 		try {
-			// Revoked invites are filtered defensively here even though the backend also
-			// excludes them. That keeps stale cached payloads from resurfacing revoked rows.
-			const data = await listNoteShareInvitations();
+			const [noteData, workspaceData] = await Promise.all([
+				listNoteShareInvitations(),
+				listWorkspacePendingInvites(),
+			]);
 			setInvitations(
-				data.invitations
+				noteData.invitations
 					.filter((invitation) => invitation.status !== 'REVOKED' && !invitation.revokedAt)
 					.map(normalizeInvitation)
 			);
+			setWorkspaceInvites(workspaceData.invites);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t('share.loadFailed'));
 		}
@@ -119,26 +133,35 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const visibleInvitations = React.useMemo(() => {
 		return invitations.filter((invitation) => invitation.status === 'PENDING' || !hiddenInvitationIds.has(invitation.id));
 	}, [hiddenInvitationIds, invitations]);
+	const hasWorkspaceInvites = workspaceInvites.length > 0;
+	const hasNoteInvites = visibleInvitations.length > 0;
+	const modalTitle = hasWorkspaceInvites ? t('invite.notifications') : t('share.notifications');
+	const modalSubtitle = hasWorkspaceInvites
+		? (hasNoteInvites ? t('invite.notificationsSubtitleMixed') : t('invite.notificationsSubtitle'))
+		: t('share.notificationsSubtitle');
+	const emptyStateLabel = hasWorkspaceInvites ? t('invite.noNotifications') : t('share.noNotifications');
 
 	const clearableInvitationIds = React.useMemo(() => {
 		return visibleInvitations.filter((invitation) => invitation.status !== 'PENDING').map((invitation) => invitation.id);
 	}, [visibleInvitations]);
 
+	const getWorkspaceRoleLabel = React.useCallback((role: WorkspacePendingInvite['role']): string => {
+		if (role === 'ADMIN') return t('invite.roleAdmin');
+		if (role === 'EDITOR') return t('invite.roleEditor');
+		return t('invite.roleViewer');
+	}, [t]);
+
 	const handleClearNotifications = React.useCallback(() => {
 		if (!props.authUserId || clearableInvitationIds.length === 0) return;
 		setHiddenInvitationIds((current) => {
 			const next = new Set(current);
-			for (const id of clearableInvitationIds) {
-				next.add(id);
-			}
+			for (const id of clearableInvitationIds) next.add(id);
 			writeHiddenNotificationIds(props.authUserId, next);
 			return next;
 		});
 	}, [clearableInvitationIds, props.authUserId]);
 
 	const queueAction = React.useCallback((action: PendingNoteShareAction) => {
-		// Offline accept/decline keeps the card state moving immediately and leaves the
-		// actual API replay to App's connectivity reconciliation pass.
 		enqueuePendingNoteShareAction(action);
 		updateInvitation(action.invitationId, (invitation) => ({
 			...invitation,
@@ -188,9 +211,6 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 		if (!props.authUserId) return;
 		setBusyId(invitation.id);
 		setError(null);
-		// Placement choice is intentionally split into three UI options while still
-		// mapping onto the server's two target kinds: personal, shared root, and shared
-		// subfolder (the latter is shared + folderName).
 		const placementChoice = placementChoiceByInvitationId[invitation.id] || 'personal';
 		const target = placementChoice === 'personal' ? 'personal' : 'shared';
 		const folderName = placementChoice === 'shared-folder' ? (folderByInvitationId[invitation.id] || '').trim() : '';
@@ -225,101 +245,150 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 		}
 	}, [folderByInvitationId, placementChoiceByInvitationId, props, queueAction, t, updateInvitation]);
 
+	const handleAcceptWorkspaceInvite = React.useCallback(async (invite: WorkspacePendingInvite) => {
+		setBusyId(`workspace:${invite.id}`);
+		setError(null);
+		try {
+			const result = await acceptWorkspacePendingInvite(invite.id);
+			setWorkspaceInvites((current) => current.filter((item) => item.id !== invite.id));
+			props.onAcceptedWorkspaceInvite?.(result.workspaceId);
+			props.onChanged?.();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : t('invite.acceptFailed'));
+		} finally {
+			setBusyId(null);
+		}
+	}, [props, t]);
+
+	const handleDeclineWorkspaceInvite = React.useCallback(async (invite: WorkspacePendingInvite) => {
+		setBusyId(`workspace:${invite.id}`);
+		setError(null);
+		try {
+			await declineWorkspacePendingInvite(invite.id);
+			setWorkspaceInvites((current) => current.filter((item) => item.id !== invite.id));
+			props.onChanged?.();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : t('invite.acceptFailed'));
+		} finally {
+			setBusyId(null);
+		}
+	}, [props, t]);
+
 	if (!props.isOpen) return null;
 
 	return (
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
-			<section className={styles.modal} role="dialog" aria-modal="true" aria-label={t('share.notifications')} onClick={(event) => event.stopPropagation()}>
+			<section className={styles.modal} role="dialog" aria-modal="true" aria-label={modalTitle} onClick={(event) => event.stopPropagation()}>
 				<button type="button" className={styles.cornerCloseButton} onClick={props.onClose} aria-label={t('common.close')}>
 					✕
 				</button>
 				<header className={styles.header}>
 					<div>
-						<h2 className={styles.title}>{t('share.notifications')}</h2>
-						<p className={styles.subtitle}>{t('share.notificationsSubtitle')}</p>
+						<h2 className={styles.title}>{modalTitle}</h2>
+						<p className={styles.subtitle}>{modalSubtitle}</p>
 					</div>
 				</header>
 
 				<div className={styles.modalBody}>
 					{error ? <div className={styles.error}>{error}</div> : null}
-					{visibleInvitations.length === 0 ? <div className={styles.empty}>{t('share.noNotifications')}</div> : null}
+					{visibleInvitations.length === 0 && workspaceInvites.length === 0 ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
 
 					<div className={`${styles.section} ${styles.notificationList}`}>
-					{visibleInvitations.map((invitation) => {
-						const isPending = invitation.status === 'PENDING';
-						const placementChoice = placementChoiceByInvitationId[invitation.id] || 'personal';
-						const isAccepting = acceptingId === invitation.id;
-						const inviterName = invitation.inviter?.name || invitation.inviter?.email || t('share.unknownInviter');
-						const noteTitle = String(invitation.noteTitle || '').trim() || t('note.untitled');
-						return (
-							<div key={invitation.id} className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
-								<div className={styles.notificationHeader}>
-									{invitation.inviter?.profileImage ? (
-										<img className={`${styles.notificationAvatar} ${styles.notificationAvatarCompact}`} src={invitation.inviter.profileImage} alt="" />
-									) : (
+						{workspaceInvites.map((invite) => {
+							const inviterName = invite.inviter?.name || invite.inviter?.email || t('share.unknownInviter');
+							return (
+								<div key={invite.id} className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
+									<div className={styles.notificationHeader}>
 										<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
 											{inviterName.slice(0, 1).toUpperCase()}
 										</div>
-									)}
-									<div className={styles.notificationCopy}>
-										<div className={styles.notificationSummaryRow}>
-											<div className={`${styles.rowTitle} ${styles.notificationTitleCompact}`}>{inviterName}</div>
-											<span className={styles.badge}>{statusLabels[invitation.status]}</span>
+										<div className={styles.notificationCopy}>
+											<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
+												<strong className={styles.notificationSender}>{inviterName}</strong> {t('invite.invitedYouToJoin')} <strong>{invite.workspaceName}</strong>.
+											</div>
+											<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
+												{getWorkspaceRoleLabel(invite.role)}
+											</div>
 										</div>
-										<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
-											{inviterName} {t('share.wantsToShare')} <strong>{noteTitle}</strong> {t('share.withYou')}
+										<div className={styles.notificationStatusWrap}>
+											<span className={`${styles.badge} ${styles.badgePending}`}>{t('invite.statePending')}</span>
 										</div>
-										<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>{invitation.role === 'VIEWER' ? t('share.roleViewer') : t('share.roleEditor')}</div>
+									</div>
+									<div className={styles.rowMeta}>{t('invite.expiresAt')}: {new Date(invite.expiresAt).toLocaleString()}</div>
+									<div className={styles.actionRow}>
+										<button type="button" className={styles.primaryButton} onClick={() => void handleAcceptWorkspaceInvite(invite)} disabled={busyId === `workspace:${invite.id}`}>
+											{t('share.accept')}
+										</button>
+										<button type="button" className={styles.secondaryButton} onClick={() => void handleDeclineWorkspaceInvite(invite)} disabled={busyId === `workspace:${invite.id}`}>
+											{t('share.decline')}
+										</button>
 									</div>
 								</div>
-								{isPending ? (
-									<>
-										{isAccepting ? (
-											<div className={styles.acceptBox}>
-												<label className={styles.radioLabel}>
-													<input type="radio" checked={placementChoice === 'shared-root'} onChange={() => setPlacementChoiceByInvitationId((current) => ({ ...current, [invitation.id]: 'shared-root' }))} />
-													{t('share.placeInSharedWithMeRoot')}
-												</label>
-												<label className={styles.radioLabel}>
-													<input type="radio" checked={placementChoice === 'shared-folder'} onChange={() => setPlacementChoiceByInvitationId((current) => ({ ...current, [invitation.id]: 'shared-folder' }))} />
-													{t('share.placeInSharedWithMeFolder')}
-												</label>
-												{placementChoice === 'shared-folder' ? (
-													<input
-														className={styles.input}
-														value={folderByInvitationId[invitation.id] || ''}
-														onChange={(event) => setFolderByInvitationId((current) => ({ ...current, [invitation.id]: event.target.value }))}
-														placeholder={t('share.folderPlaceholder')}
-													/>
-												) : null}
-												<label className={styles.radioLabel}>
-													<input type="radio" checked={placementChoice === 'personal'} onChange={() => setPlacementChoiceByInvitationId((current) => ({ ...current, [invitation.id]: 'personal' }))} />
-													{t('share.placeInPersonal')}
-												</label>
-												<div className={styles.actionRow}>
-													<button type="button" className={styles.primaryButton} onClick={() => void handleAccept(invitation)} disabled={busyId === invitation.id}>
-														{t('share.accept')}
-													</button>
-													<button type="button" className={styles.secondaryButton} onClick={() => setAcceptingId(null)} disabled={busyId === invitation.id}>
-														{t('common.cancel')}
-													</button>
-												</div>
-											</div>
+							);
+						})}
+
+						{visibleInvitations.map((invitation) => {
+							const isPending = invitation.status === 'PENDING';
+							const placementChoice = placementChoiceByInvitationId[invitation.id] || 'personal';
+							const isAccepting = acceptingId === invitation.id;
+							const inviterName = invitation.inviter?.name || invitation.inviter?.email || t('share.unknownInviter');
+							const noteTitle = String(invitation.noteTitle || '').trim() || t('note.untitled');
+							const roleLabel = invitation.role === 'VIEWER' ? t('share.roleViewer') : t('share.roleEditor');
+							return (
+								<div key={invitation.id} className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
+									<div className={styles.notificationHeader}>
+										{invitation.inviter?.profileImage ? (
+											<img className={`${styles.notificationAvatar} ${styles.notificationAvatarCompact}`} src={invitation.inviter.profileImage} alt="" />
 										) : (
-											<div className={styles.actionRow}>
-												<button type="button" className={styles.primaryButton} onClick={() => setAcceptingId(invitation.id)} disabled={busyId === invitation.id}>
-													{t('share.accept')}
-												</button>
-												<button type="button" className={styles.secondaryButton} onClick={() => void handleDecline(invitation)} disabled={busyId === invitation.id}>
-													{t('share.decline')}
-												</button>
+											<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
+												{inviterName.slice(0, 1).toUpperCase()}
 											</div>
 										)}
-									</>
-								) : null}
-							</div>
-						);
-					})}
+										<div className={styles.notificationCopy}>
+											<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
+												<strong className={styles.notificationSender}>{inviterName}</strong> {t('share.wantsToShare')} <strong>{noteTitle}</strong> {t('share.withYou')}
+											</div>
+											<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>{roleLabel}</div>
+										</div>
+										<div className={styles.notificationStatusWrap}>
+											<span className={`${styles.badge} ${statusClassNames[invitation.status]}`}>{statusLabels[invitation.status]}</span>
+										</div>
+									</div>
+									{isPending ? (
+										<>
+											{isAccepting ? (
+												<div className={styles.acceptBox}>
+													<label className={styles.radioLabel}>
+														<input type="radio" checked={placementChoice === 'shared-root'} onChange={() => setPlacementChoiceByInvitationId((current) => ({ ...current, [invitation.id]: 'shared-root' }))} />
+														{t('share.placeInSharedWithMeRoot')}
+													</label>
+													<label className={styles.radioLabel}>
+														<input type="radio" checked={placementChoice === 'shared-folder'} onChange={() => setPlacementChoiceByInvitationId((current) => ({ ...current, [invitation.id]: 'shared-folder' }))} />
+														{t('share.placeInSharedWithMeFolder')}
+													</label>
+													{placementChoice === 'shared-folder' ? (
+														<input className={styles.input} value={folderByInvitationId[invitation.id] || ''} onChange={(event) => setFolderByInvitationId((current) => ({ ...current, [invitation.id]: event.target.value }))} placeholder={t('share.folderPlaceholder')} />
+													) : null}
+													<label className={styles.radioLabel}>
+														<input type="radio" checked={placementChoice === 'personal'} onChange={() => setPlacementChoiceByInvitationId((current) => ({ ...current, [invitation.id]: 'personal' }))} />
+														{t('share.placeInPersonal')}
+													</label>
+													<div className={styles.actionRow}>
+														<button type="button" className={styles.primaryButton} onClick={() => void handleAccept(invitation)} disabled={busyId === invitation.id}>{t('share.accept')}</button>
+														<button type="button" className={styles.secondaryButton} onClick={() => setAcceptingId(null)} disabled={busyId === invitation.id}>{t('common.cancel')}</button>
+													</div>
+												</div>
+											) : (
+												<div className={styles.actionRow}>
+													<button type="button" className={styles.primaryButton} onClick={() => setAcceptingId(invitation.id)} disabled={busyId === invitation.id}>{t('share.accept')}</button>
+													<button type="button" className={styles.secondaryButton} onClick={() => void handleDecline(invitation)} disabled={busyId === invitation.id}>{t('share.decline')}</button>
+												</div>
+											)}
+										</>
+									) : null}
+								</div>
+							);
+						})}
 					</div>
 				</div>
 

@@ -30,7 +30,9 @@ type Note = {
 export type NoteGridProps = {
 	selectedNoteId: string | null;
 	onSelectNote: (noteId: string) => void;
-	onAddCollaborator?: (noteId: string) => void;
+	onAddCollaborator?: (noteId: string, title?: string) => void;
+	canEditWorkspaceContent?: boolean;
+	canReorder?: boolean;
 	maxCardHeightPx: number;
 	showTrashed?: boolean;
 	sharedNotes?: readonly SharedNotePlacement[];
@@ -84,6 +86,7 @@ type GridNoteCardProps = {
 	onOpen: () => void;
 	onAddCollaborator?: () => void;
 	onMoreMenu: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
+	canEdit: boolean;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
 	layoutReady: boolean;
@@ -136,6 +139,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 				<NoteCard
 					noteId={props.note.id}
 					doc={props.doc}
+					canEdit={props.canEdit}
 					hasPendingSync={props.hasPendingSync}
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
@@ -158,6 +162,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// the source room via the alias map maintained by App.
 	const sharedNoteIds = React.useMemo(() => (props.sharedNotes ?? []).map((note) => note.aliasId), [props.sharedNotes]);
 	const sharedNoteIdSet = React.useMemo(() => new Set(sharedNoteIds), [sharedNoteIds]);
+	const sharedAliasSignature = React.useMemo(
+		() => (props.sharedNotes ?? []).map((note) => `${note.aliasId}:${note.roomId}:${note.role}`).sort().join('|'),
+		[props.sharedNotes]
+	);
 
 	// Suppress framer-motion layout animations until the parent explicitly
 	// enables them (after the splash overlay is fully dismissed). A 2-frame
@@ -477,13 +485,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useEffect(() => {
 		if (!noteOrder) return;
 		for (const id of orderedIds) {
-			if (docsByIdRef.current[id]) continue;
+			const currentDoc = docsByIdRef.current[id] ?? null;
+			const canonicalDoc = manager.peekDoc(id);
+			if (currentDoc && canonicalDoc === currentDoc) continue;
 			if (pendingDocLoadsRef.current.has(id)) continue;
 			pendingDocLoadsRef.current.add(id);
 			void manager
 				.getDocWithSync(id)
 				.then((doc) => {
-					setDocsById((previous) => (previous[id] ? previous : { ...previous, [id]: doc }));
+					setDocsById((previous) => (previous[id] === doc ? previous : { ...previous, [id]: doc }));
 				})
 				.catch((error) => {
 					console.error('[CRDT] Failed to load note doc:', id, error);
@@ -492,7 +502,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					pendingDocLoadsRef.current.delete(id);
 				});
 		}
-	}, [manager, noteOrder, orderedIds]);
+	}, [manager, noteOrder, orderedIds, sharedAliasSignature]);
 
 	// ── Fire onReady once initial docs are loaded ──────────────────────────
 	// Wait for every ordered note to have a loaded Y.Doc (or for 0 notes).
@@ -569,7 +579,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		gridRef,
 		columns: baseColumns,
 		visibleIds,
-		canStartDrag: () => !touchScrollDetectedRef.current && Date.now() >= suppressTouchDragUntilRef.current,
+		canStartDrag: () => props.canReorder !== false && !touchScrollDetectedRef.current && Date.now() >= suppressTouchDragUntilRef.current,
 		isTouchDragCandidate: () => pendingTouchIntentRef.current,
 		onCommitOrder: commitVisibleOrder,
 	});
@@ -715,15 +725,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								}
 								const isPlaceholder = dragManager.activeDragId === note.id;
 								return (
-									<GridNoteCard
+										< GridNoteCard
 										key={note.id}
 										note={note}
 										doc={doc}
+										canEdit={note.isShared
+											? (props.sharedNotes ?? []).find((placement) => placement.aliasId === note.id)?.role === 'EDITOR'
+											: props.canEditWorkspaceContent !== false}
 										hasPendingSync={pendingSyncNoteIds.has(note.id)}
 										selected={props.selectedNoteId === note.id}
 										isMoreMenuOpen={moreMenuNoteId === note.id}
 										onOpen={() => props.onSelectNote(note.id)}
-										onAddCollaborator={props.onAddCollaborator ? () => props.onAddCollaborator?.(note.id) : undefined}
+											onAddCollaborator={props.onAddCollaborator ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
 										onMoreMenu={(anchorRect) => {
 											// Footer 3-dot triggers provide a custom anchor so desktop
 											// popovers align to the card edge instead of the trigger.
@@ -758,6 +771,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					<NoteCard
 						noteId={activeNote.id}
 						doc={activeDoc}
+						canEdit={activeNote.isShared
+							? (props.sharedNotes ?? []).find((placement) => placement.aliasId === activeNote.id)?.role === 'EDITOR'
+							: props.canEditWorkspaceContent !== false}
 						hasPendingSync={activeHasPendingSync}
 						maxCardHeightPx={props.maxCardHeightPx}
 					/>

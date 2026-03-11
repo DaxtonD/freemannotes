@@ -69,6 +69,7 @@ export class DocumentManager {
 	private readonly wsCleanup = new Map<string, () => void>();
 	private readonly docCleanup = new Map<string, () => void>();
 	private readonly readyPromises = new Map<string, Promise<void>>();
+	private readonly readyPromiseResolvers = new Map<string, () => void>();
 	private readonly websocketReadyPromises = new Map<string, Promise<void>>();
 	private readonly websocketUrl: string;
 	// Opt-in verbose websocket lifecycle logging. Keep disabled by default so
@@ -109,6 +110,7 @@ export class DocumentManager {
 	// trigger reconnect-on-foreground behavior. Stored so the manager can be
 	// torn down cleanly in tests or hot-module-replacement scenarios.
 	private readonly lifecycleCleanup: (() => void) | null = null;
+	private onlineReconnectTimer: number | null = null;
 
 	public constructor(websocketUrl = 'ws://localhost:1234', options?: DocumentManagerOptions) {
 		// Normalize trailing slashes to avoid duplicate room URLs.
@@ -122,19 +124,30 @@ export class DocumentManager {
 		}
 
 		if (typeof window !== 'undefined') {
+			const clearOnlineReconnectTimer = (): void => {
+				if (this.onlineReconnectTimer !== null) {
+					window.clearTimeout(this.onlineReconnectTimer);
+					this.onlineReconnectTimer = null;
+				}
+			};
 			const onOnline = (): void => {
 				this.browserOnline = true;
 				this.updateConnectionState();
 				this.emitConnectionStatus();
-				// Defer reconnect to the next macrotask so the app layer can process
-				// workspace mutation replay first and, if needed, temporarily disable
-				// websocket sync or switch to a different active workspace.
-				window.setTimeout(() => {
+				// Delay reconnect long enough for App's online handler to replay queued
+				// workspace mutations first. Offline-created workspaces are not yet
+				// authorized on the server at the instant connectivity returns, so
+				// reconnecting their Yjs rooms immediately can trigger forbidden closes
+				// and exponential backoff before the workspace replay completes.
+				clearOnlineReconnectTimer();
+				this.onlineReconnectTimer = window.setTimeout(() => {
+					this.onlineReconnectTimer = null;
 					if (!this.browserOnline || !this.websocketEnabled) return;
 					this.reconnectAllProviders('online-event');
-				}, 0);
+				}, 1500);
 			};
 			const onOffline = (): void => {
+				clearOnlineReconnectTimer();
 				this.browserOnline = false;
 				this.updateConnectionState();
 				this.emitConnectionStatus();
@@ -173,6 +186,7 @@ export class DocumentManager {
 			}
 
 			this.lifecycleCleanup = () => {
+				clearOnlineReconnectTimer();
 				window.removeEventListener('online', onOnline);
 				window.removeEventListener('offline', onOffline);
 				if (typeof document !== 'undefined') {
@@ -221,6 +235,10 @@ export class DocumentManager {
 		const next = enabled === true;
 		if (this.websocketEnabled === next) return;
 		this.websocketEnabled = next;
+		if (!next && typeof window !== 'undefined' && this.onlineReconnectTimer !== null) {
+			window.clearTimeout(this.onlineReconnectTimer);
+			this.onlineReconnectTimer = null;
+		}
 
 		for (const provider of this.websocketProviders.values()) {
 			try {
@@ -256,6 +274,18 @@ export class DocumentManager {
 		for (const roomName of previousRoomNames) {
 			if (nextRoomNames.has(roomName)) continue;
 			this.pendingSyncRooms.delete(roomName);
+			if (this.docs.has(roomName)) {
+				this.destroyRoom(roomName);
+			}
+		}
+
+		for (const [aliasId, roomName] of nextAliases.entries()) {
+			const rawAliasRoomName = this.activeWorkspaceId ? `${this.activeWorkspaceId}:${aliasId}` : aliasId;
+			if (rawAliasRoomName === roomName) continue;
+			this.pendingSyncRooms.delete(rawAliasRoomName);
+			if (this.docs.has(rawAliasRoomName)) {
+				this.destroyRoom(rawAliasRoomName);
+			}
 		}
 
 		this.externalRoomAliases.clear();
@@ -271,6 +301,11 @@ export class DocumentManager {
 		return this.docs.has(this.roomNameFor(raw));
 	}
 
+	public peekDoc(noteId: string): Y.Doc | null {
+		const raw = this.normalizeNoteId(noteId);
+		return this.docs.get(this.roomNameFor(raw)) ?? null;
+	}
+
 	public subscribeConnectionStatus(listener: () => void): () => void {
 		this.connectionSubscribers.add(listener);
 		return () => {
@@ -284,13 +319,17 @@ export class DocumentManager {
 
 	public getDoc(noteId: string): Y.Doc {
 		const raw = this.normalizeNoteId(noteId);
-		const key = this.roomNameFor(raw);
+		return this.getOrCreateDocEntry(raw).doc;
+	}
+
+	private getOrCreateDocEntry(rawNoteId: string): { key: string; doc: Y.Doc } {
+		const key = this.roomNameFor(rawNoteId);
 
 		const existing = this.docs.get(key);
 		if (existing) {
 			this.ensureStructure(existing);
 			this.ensureProvider(key, existing);
-			return existing;
+			return { key, doc: existing };
 		}
 
 		// Create once, register immediately to prevent accidental duplicate creation
@@ -301,20 +340,24 @@ export class DocumentManager {
 		this.ensureStructure(doc);
 		this.ensureProvider(key, doc);
 		this.ensureUpdatedAtTracking(key, doc);
-		return doc;
+		return { key, doc };
 	}
 
 	public async getDocReady(noteId: string): Promise<Y.Doc> {
 		const raw = this.normalizeNoteId(noteId);
-		const doc = this.getDoc(raw);
-		const key = this.roomNameFor(raw);
-		const ready = this.readyPromises.get(key);
-		if (!ready) {
-			// getDoc() should always install a provider + ready promise.
-			throw new Error(`Document provider was not initialized for noteId: ${key}`);
+		for (let attempt = 0; attempt < 4; attempt++) {
+			const { key, doc } = this.getOrCreateDocEntry(raw);
+			const ready = this.readyPromises.get(key);
+			if (!ready) {
+				// getDoc() should always install a provider + ready promise.
+				throw new Error(`Document provider was not initialized for noteId: ${key}`);
+			}
+			await ready;
+			if (this.docs.get(key) === doc) {
+				return doc;
+			}
 		}
-		await ready;
-		return doc;
+		throw new Error(`Document room kept changing before sync completed: ${this.roomNameFor(raw)}`);
 	}
 
 	public async getDocWithSync(noteId: string): Promise<Y.Doc> {
@@ -513,6 +556,8 @@ export class DocumentManager {
 		this.docs.delete(roomName);
 		this.providers.delete(roomName);
 		this.websocketProviders.delete(roomName);
+		this.readyPromiseResolvers.get(roomName)?.();
+		this.readyPromiseResolvers.delete(roomName);
 		this.readyPromises.delete(roomName);
 		this.websocketReadyPromises.delete(roomName);
 		this.pendingSyncRooms.delete(roomName);
@@ -580,7 +625,7 @@ export class DocumentManager {
 		this.providers.set(roomName, provider);
 
 		if (!this.readyPromises.has(roomName)) {
-			this.readyPromises.set(roomName, this.waitForSynced(provider));
+			this.readyPromises.set(roomName, this.waitForSynced(roomName, provider));
 		}
 	}
 
@@ -832,13 +877,18 @@ export class DocumentManager {
 		});
 	}
 
-	private waitForSynced(provider: IndexeddbPersistence): Promise<void> {
+	private waitForSynced(roomName: string, provider: IndexeddbPersistence): Promise<void> {
 		const alreadySynced = (provider as any).synced === true;
 		if (alreadySynced) {
 			return Promise.resolve();
 		}
 
 		return new Promise<void>((resolve, reject) => {
+			this.readyPromiseResolvers.set(roomName, () => {
+				cleanup();
+				resolve();
+			});
+
 			const onSynced = (): void => {
 				cleanup();
 				resolve();
@@ -850,6 +900,7 @@ export class DocumentManager {
 			};
 
 			const cleanup = (): void => {
+				this.readyPromiseResolvers.delete(roomName);
 				(provider as any).off?.('synced', onSynced);
 				(provider as any).off?.('error', onError);
 			};

@@ -29,6 +29,7 @@
 const Y = require('yjs');
 const { createTimestampFormatter } = require('./timezone');
 const { findLiveWorkspace, findLiveWorkspaceMembership } = require('./workspaceAccess');
+const { normalizeWorkspaceRole } = require('./workspaceRoles');
 
 /**
  * Creates an API router function that handles REST endpoints.
@@ -166,7 +167,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 						id: workspace.id,
 						name: workspace.name,
 						ownerUserId: workspace.ownerUserId,
-						role: member.role,
+						role: normalizeWorkspaceRole(member.role, 'VIEWER'),
 						createdAt: fmt(workspace.createdAt),
 						updatedAt: fmt(workspace.updatedAt),
 						timezone: timezone || 'UTC',
@@ -187,7 +188,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 					const workspaceId = requireAuthWorkspace();
 					if (!workspaceId) return;
 
-					const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { id: true });
+					const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { role: true });
 					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
@@ -250,7 +251,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 					const workspaceId = requireAuthWorkspace();
 					if (!workspaceId) return;
 
-					const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { id: true });
+					const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { role: true });
 					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;

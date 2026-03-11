@@ -1,5 +1,6 @@
 import React from 'react';
 import { getDeviceId } from '../../core/deviceId';
+import { canManageWorkspace, getWorkspaceRoleLabelKey, normalizeWorkspaceRole, type WorkspaceRole } from '../../core/workspaceRoles';
 import {
 	cacheActiveWorkspaceSelection,
 	cacheWorkspaceDetails,
@@ -15,7 +16,7 @@ import styles from './WorkspaceSwitcherModal.module.css';
 export type WorkspaceListItem = {
 	id: string;
 	name: string;
-	role: 'OWNER' | 'ADMIN' | 'MEMBER';
+	role: WorkspaceRole;
 	ownerUserId?: string | null;
 	systemKind?: string | null;
 	createdAt: string;
@@ -50,7 +51,7 @@ function mapWorkspaces(value: unknown): WorkspaceListItem[] {
 			return {
 				id,
 				name: typeof workspace.name === 'string' ? workspace.name : '',
-				role: workspace.role === 'OWNER' || workspace.role === 'ADMIN' || workspace.role === 'MEMBER' ? workspace.role : 'MEMBER',
+				role: normalizeWorkspaceRole(workspace.role),
 				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
 				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind : null,
 				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
@@ -60,9 +61,18 @@ function mapWorkspaces(value: unknown): WorkspaceListItem[] {
 		.filter((workspace): workspace is WorkspaceListItem => Boolean(workspace));
 }
 
-function getWorkspaceRole(workspaces: readonly WorkspaceListItem[], workspaceId: string): 'OWNER' | 'ADMIN' | 'MEMBER' | null {
+function getWorkspaceRole(workspaces: readonly WorkspaceListItem[], workspaceId: string): WorkspaceRole | null {
 	const match = workspaces.find((workspace) => workspace.id === workspaceId);
 	return match ? match.role : null;
+}
+
+function getWorkspaceRoleLabel(role: WorkspaceListItem['role'], t: Props['t']): string {
+	return t(getWorkspaceRoleLabelKey(role));
+}
+
+function isProtectedWorkspace(workspace: WorkspaceListItem, t: Props['t']): boolean {
+	if (workspace.systemKind === 'SHARED_WITH_ME') return true;
+	return getWorkspaceDisplayName(workspace, t) === t('workspace.personal');
 }
 
 function createWorkspaceId(): string {
@@ -323,6 +333,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 	const deleteWorkspace = React.useCallback(
 		async (workspace: WorkspaceListItem) => {
 			if (busy) return;
+			if (isProtectedWorkspace(workspace, props.t)) return;
 			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
 				if (!props.authUserId) {
 					setError(props.t('workspace.deleteFailed'));
@@ -436,8 +447,8 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 					) : (
 						sortedWorkspaces.map((ws) => {
 							const isActive = Boolean(activeWorkspaceId && ws.id === activeWorkspaceId);
-							const canRename = ws.role === 'OWNER' || ws.role === 'ADMIN';
-							const canDelete = ws.role === 'OWNER';
+							const canRename = canManageWorkspace(ws.role);
+							const canDelete = ws.role === 'OWNER' && !isProtectedWorkspace(ws, props.t);
 							const isRenaming = renameId === ws.id;
 							return (
 								<div key={ws.id} className={styles.row}>
@@ -446,7 +457,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 											{getWorkspaceDisplayName(ws, props.t)}
 										</div>
 										<div className={styles.sub}>
-											{props.t('workspace.role')}: {ws.role}{ws.pendingSync ? ` • ${props.t('workspace.pendingSync')}` : ''}
+											{props.t('workspace.role')}: {getWorkspaceRoleLabel(ws.role, props.t)}{ws.pendingSync ? ` • ${props.t('workspace.pendingSync')}` : ''}
 										</div>
 									</div>
 									<div className={styles.actions}>

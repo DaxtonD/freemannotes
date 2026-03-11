@@ -37,6 +37,7 @@ const {
 	findLiveWorkspaceMembership,
 	resolveLiveWorkspaceId,
 } = require('./workspaceAccess');
+const { normalizeWorkspaceRole, canManageWorkspace } = require('./workspaceRoles');
 
 function jsonResponse(res, status, body) {
 	const json = JSON.stringify(body);
@@ -149,7 +150,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						workspaces: memberships.map((m) => ({
 							id: m.workspace.id,
 							name: m.workspace.name,
-							role: m.role,
+							role: normalizeWorkspaceRole(m.role, 'VIEWER'),
 							ownerUserId: m.workspace.ownerUserId,
 							systemKind: m.workspace.systemKind,
 							createdAt: m.workspace.createdAt.toISOString(),
@@ -252,7 +253,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					if (!session) return;
 
 					const member = await findLiveWorkspaceMembership(prisma, session.userId, workspaceId, { role: true });
-					if (!member || (member.role !== 'OWNER' && member.role !== 'ADMIN')) {
+					if (!member || !canManageWorkspace(member.role)) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
@@ -282,6 +283,10 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						data: { name },
 						select: { id: true, name: true, ownerUserId: true, systemKind: true, createdAt: true, updatedAt: true },
 					});
+					const memberRows = await prisma.workspaceMember.findMany({
+						where: { workspaceId },
+						select: { userId: true },
+					});
 
 					jsonResponse(res, 200, {
 						workspace: {
@@ -290,6 +295,18 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							updatedAt: updated.updatedAt.toISOString(),
 						},
 					});
+
+					if (typeof onWorkspaceMetadataChanged === 'function') {
+						try {
+							await onWorkspaceMetadataChanged({
+								reason: 'workspace-renamed',
+								workspaceId,
+								userIds: [...new Set(memberRows.map((row) => String(row.userId || '')).filter(Boolean))],
+							});
+						} catch (publishErr) {
+							console.warn('[workspace] rename: metadata event publish failed:', publishErr.message);
+						}
+					}
 				} catch (err) {
 					if (String(err.code || '') === 'P2002') {
 						jsonResponse(res, 409, { error: 'Workspace name already exists' });

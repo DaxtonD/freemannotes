@@ -4,6 +4,7 @@ const Y = require('yjs');
 const { enforceSameOrigin } = require('./auth');
 const { findLiveWorkspaceMembership, resolveLiveWorkspaceId } = require('./workspaceAccess');
 const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
+const { normalizeWorkspaceRole, canEditWorkspaceContent, canManageWorkspace } = require('./workspaceRoles');
 
 function jsonResponse(res, status, body) {
 	const json = JSON.stringify(body);
@@ -172,12 +173,13 @@ async function resolveDocAccess(prisma, session, rawDocId) {
 	// having EDITOR access to the shared content itself.
 	const membership = await findLiveWorkspaceMembership(prisma, session.userId, room.sourceWorkspaceId, { role: true });
 	if (membership) {
+		const normalizedRole = normalizeWorkspaceRole(membership.role, 'VIEWER');
 		return {
 			docId: room.docId,
 			sourceWorkspaceId: room.sourceWorkspaceId,
 			sourceNoteId: room.sourceNoteId,
-			accessRole: membership.role === 'MEMBER' ? 'EDITOR' : 'EDITOR',
-			canManage: true,
+			accessRole: canEditWorkspaceContent(normalizedRole) ? 'EDITOR' : 'VIEWER',
+			canManage: canManageWorkspace(normalizedRole),
 			via: 'workspace-member',
 		};
 	}
@@ -811,7 +813,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								reason: 'note-share-role-updated',
 								workspaceId: collaborator.sourceWorkspaceId,
 								docId: collaborator.docId,
-								userIds: [collaborator.userId, session.userId],
+								userIds: [collaborator.userId],
 							});
 						} catch (publishErr) {
 							console.warn('[note-share] role publish failed:', publishErr.message);
@@ -878,7 +880,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								reason: 'note-share-revoked',
 								workspaceId: collaborator.sourceWorkspaceId,
 								docId: collaborator.docId,
-								userIds: [collaborator.userId, session.userId],
+								userIds: [collaborator.userId],
 							});
 						} catch (publishErr) {
 							console.warn('[note-share] revoke publish failed:', publishErr.message);

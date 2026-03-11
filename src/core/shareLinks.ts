@@ -1,22 +1,76 @@
-type WorkspaceInviteRole = 'MEMBER' | 'ADMIN';
+import { normalizeWorkspaceRole, type WorkspaceRole } from './workspaceRoles';
+
+export type WorkspaceInviteRole = Exclude<WorkspaceRole, 'OWNER'>;
+export type NoteShareRole = 'VIEWER' | 'EDITOR';
+export type WorkspaceShareRole = Exclude<WorkspaceRole, 'OWNER'>;
+export type ShareExpiryDays = 1 | 7 | 30;
+export type ShareEntityType = 'note' | 'workspace';
 
 export type NoteShareLink = {
-	shareUrl: string;
-	expiresAt: string;
+	entityType: 'note';
+	permission: NoteShareRole;
+	shareUrl: string | null;
+	expiresAt: string | null;
+	label?: string;
+	pending?: boolean;
+};
+
+export type WorkspaceShareLink = {
+	entityType: 'workspace';
+	permission: WorkspaceShareRole;
+	shareUrl: string | null;
+	expiresAt: string | null;
+	label?: string;
+	pending?: boolean;
 };
 
 export type WorkspaceInviteLink = {
+	inviteId?: string;
 	inviteUrl: string;
 	expiresAt: string;
 	email: string;
 	role: WorkspaceInviteRole;
 	sentEmail: boolean;
+	deliveredInApp?: boolean;
 };
 
-const NOTE_SHARE_CACHE_KEY = 'freemannotes.share.note-links.v1';
-const WORKSPACE_INVITE_CACHE_KEY = 'freemannotes.share.workspace-links.v1';
-// Treat links that are within one minute of expiry as stale so the UI does not
-// present a QR code or copied URL that will die immediately after the user opens it.
+export type ShareTokenMetadata = {
+	entityType: ShareEntityType;
+	permission: string;
+	expiresAt: string;
+	label: string;
+	creator: { id: string; name: string; email: string } | null;
+};
+
+export type ShareAcceptResult = {
+	ok: true;
+	status: 'accepted' | 'already-has-access';
+	entityType: ShareEntityType;
+	permission: string;
+	workspaceId?: string;
+	workspaceName?: string;
+	targetWorkspaceId?: string;
+	placementAliasId?: string | null;
+	sourceNoteId?: string;
+	title?: string;
+	docId?: string;
+};
+
+type PendingShareLinkRequest = {
+	id: string;
+	userId: string;
+	entityType: ShareEntityType;
+	entityId: string;
+	permission: string;
+	expiresInDays: ShareExpiryDays;
+	createdAt: string;
+};
+
+const NOTE_SHARE_CACHE_KEY = 'freemannotes.share.note-links.v2';
+const WORKSPACE_SHARE_CACHE_KEY = 'freemannotes.share.workspace-links.v1';
+const WORKSPACE_INVITE_CACHE_KEY = 'freemannotes.share.workspace-invites.v2';
+const PENDING_SHARE_QUEUE_KEY = 'freemannotes.share.pending-links.v1';
+const SHARE_LINK_EVENT = 'freemannotes:share-link-ready';
 const EXPIRY_SKEW_MS = 60_000;
 
 function normalizeId(value: unknown): string {
@@ -27,9 +81,23 @@ function normalizeEmail(value: unknown): string {
 	return String(value ?? '').trim().toLowerCase();
 }
 
+function normalizeExpiryDays(value: unknown): ShareExpiryDays {
+	return value === 1 || value === 30 ? value : 7;
+}
+
+export function normalizeWorkspaceInviteRole(value: unknown): WorkspaceInviteRole {
+	const normalized = normalizeWorkspaceRole(value);
+	if (normalized === 'ADMIN') return 'ADMIN';
+	return normalized === 'EDITOR' ? 'EDITOR' : 'VIEWER';
+}
+
+export function normalizeWorkspaceShareRole(value: unknown): WorkspaceShareRole {
+	const normalized = normalizeWorkspaceRole(value);
+	if (normalized === 'ADMIN') return 'ADMIN';
+	return normalized === 'EDITOR' ? 'EDITOR' : 'VIEWER';
+}
+
 function readCacheMap<T>(storageKey: string): Record<string, T> {
-	// Share/invite links are cached client-side so the UI can still show the last
-	// known valid URL while offline instead of forcing the user through a dead end.
 	if (typeof window === 'undefined') return {};
 	try {
 		const raw = window.localStorage.getItem(storageKey);
@@ -46,8 +114,38 @@ function writeCacheMap<T>(storageKey: string, next: Record<string, T>): void {
 	try {
 		window.localStorage.setItem(storageKey, JSON.stringify(next));
 	} catch {
-		// Ignore storage quota failures and keep the live request result.
+		// Ignore storage failures.
 	}
+}
+
+function readPendingQueue(): PendingShareLinkRequest[] {
+	if (typeof window === 'undefined') return [];
+	try {
+		const raw = window.localStorage.getItem(PENDING_SHARE_QUEUE_KEY);
+		if (!raw) return [];
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed.filter((item) => item && typeof item === 'object') as PendingShareLinkRequest[] : [];
+	} catch {
+		return [];
+	}
+}
+
+function writePendingQueue(next: PendingShareLinkRequest[]): void {
+	if (typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(PENDING_SHARE_QUEUE_KEY, JSON.stringify(next));
+	} catch {
+		// Ignore storage failures.
+	}
+}
+
+function emitShareLinkReady(args: { entityType: ShareEntityType; entityId: string; permission: string; expiresInDays: ShareExpiryDays }): void {
+	if (typeof window === 'undefined') return;
+	window.dispatchEvent(new CustomEvent(SHARE_LINK_EVENT, { detail: args }));
+}
+
+export function getShareLinkReadyEventName(): string {
+	return SHARE_LINK_EVENT;
 }
 
 function isUsableExpiry(expiresAt: string | null | undefined): boolean {
@@ -65,60 +163,202 @@ async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): P
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
 	if (!res.ok) {
-		const message = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
-		throw new Error(message);
+		const error = new Error(body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`) as Error & { status?: number };
+		error.status = res.status;
+		throw error;
 	}
 	return body as T;
 }
 
-export function readCachedNoteShareLink(docId: string): NoteShareLink | null {
-	const normalizedId = normalizeId(docId);
-	if (!normalizedId) return null;
-	const map = readCacheMap<NoteShareLink>(NOTE_SHARE_CACHE_KEY);
-	const cached = map[normalizedId];
-	if (!cached || !cached.shareUrl || !cached.expiresAt) return null;
-	return cached;
+function buildShareCacheKey(entityId: string, permission: string, expiresInDays: ShareExpiryDays): string {
+	return `${entityId}::${permission}::${expiresInDays}`;
 }
 
-function writeCachedNoteShareLink(docId: string, link: NoteShareLink): void {
-	const normalizedId = normalizeId(docId);
-	if (!normalizedId) return;
-	const map = readCacheMap<NoteShareLink>(NOTE_SHARE_CACHE_KEY);
-	map[normalizedId] = link;
-	writeCacheMap(NOTE_SHARE_CACHE_KEY, map);
+function readCachedSecureLink<T>(storageKey: string, entityId: string, permission: string, expiresInDays: ShareExpiryDays): T | null {
+	const id = normalizeId(entityId);
+	if (!id) return null;
+	const map = readCacheMap<T>(storageKey);
+	return map[buildShareCacheKey(id, permission, expiresInDays)] || null;
 }
 
-export async function ensureDocShareLink(docId: string, opts?: { forceRefresh?: boolean }): Promise<NoteShareLink> {
-	const normalizedId = normalizeId(docId);
-	if (!normalizedId) throw new Error('Missing docId');
-	const cached = readCachedNoteShareLink(normalizedId);
-	// Normal path: reuse the cached link until it is near expiry. The modal only
-	// hits the server when the caller explicitly refreshes or when the cached URL
-	// is no longer trustworthy.
-	if (!opts?.forceRefresh && cached && isUsableExpiry(cached.expiresAt)) {
-		return cached;
-	}
-	// Offline fallback: if we have any cached link at all, return it so the user
-	// can still copy/open the last known URL. If there is no cache we fail loudly.
-	if (isOffline()) {
-		if (cached) return cached;
-		throw new Error('Share link unavailable while offline');
-	}
-	const body = await fetchJson<{ shareUrl?: string; expiresAt?: string }>(`/api/docs/${encodeURIComponent(normalizedId)}/share`, {
+function writeCachedSecureLink<T>(storageKey: string, entityId: string, permission: string, expiresInDays: ShareExpiryDays, link: T): void {
+	const id = normalizeId(entityId);
+	if (!id) return;
+	const map = readCacheMap<T>(storageKey);
+	map[buildShareCacheKey(id, permission, expiresInDays)] = link;
+	writeCacheMap(storageKey, map);
+}
+
+async function requestSecureShareLink<T extends NoteShareLink | WorkspaceShareLink>(args: {
+	entityType: ShareEntityType;
+	entityId: string;
+	permission: string;
+	expiresInDays: ShareExpiryDays;
+}): Promise<T> {
+	const body = await fetchJson<{ entityType?: ShareEntityType; permission?: string; shareUrl?: string; expiresAt?: string; label?: string }>('/api/share-links', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({
+			entityType: args.entityType.toUpperCase(),
+			entityId: args.entityId,
+			permission: args.permission,
+			expiresInDays: args.expiresInDays,
+		}),
 	});
-	const shareUrl = typeof body?.shareUrl === 'string' ? body.shareUrl : '';
-	const expiresAt = typeof body?.expiresAt === 'string' ? body.expiresAt : '';
-	if (!shareUrl || !expiresAt) throw new Error('Missing share link');
-	const next = { shareUrl, expiresAt };
-	writeCachedNoteShareLink(normalizedId, next);
+	return {
+		entityType: args.entityType,
+		permission: args.permission,
+		shareUrl: typeof body.shareUrl === 'string' ? body.shareUrl : null,
+		expiresAt: typeof body.expiresAt === 'string' ? body.expiresAt : null,
+		label: typeof body.label === 'string' ? body.label : undefined,
+	} as T;
+}
+
+function enqueuePendingShareLinkRequest(request: PendingShareLinkRequest): void {
+	const current = readPendingQueue();
+	const deduped = current.filter((item) => !(
+		item.userId === request.userId &&
+		item.entityType === request.entityType &&
+		item.entityId === request.entityId &&
+		item.permission === request.permission &&
+		item.expiresInDays === request.expiresInDays
+	));
+	deduped.push(request);
+	writePendingQueue(deduped);
+}
+
+function removePendingShareLinkRequest(requestId: string): void {
+	writePendingQueue(readPendingQueue().filter((item) => item.id !== requestId));
+}
+
+export async function flushPendingShareLinkRequests(userId: string): Promise<void> {
+	if (!userId || isOffline()) return;
+	const queued = readPendingQueue().filter((item) => item.userId === userId);
+	for (const request of queued) {
+		try {
+			// Replay queued link generation one item at a time so a transient failure does
+			// not discard the rest of the offline request queue.
+			if (request.entityType === 'note') {
+				const link = await requestSecureShareLink<NoteShareLink>({
+					entityType: 'note',
+					entityId: request.entityId,
+					permission: request.permission,
+					expiresInDays: request.expiresInDays,
+				});
+				writeCachedSecureLink(NOTE_SHARE_CACHE_KEY, request.entityId, request.permission, request.expiresInDays, link);
+			} else {
+				const link = await requestSecureShareLink<WorkspaceShareLink>({
+					entityType: 'workspace',
+					entityId: request.entityId,
+					permission: request.permission,
+					expiresInDays: request.expiresInDays,
+				});
+				writeCachedSecureLink(WORKSPACE_SHARE_CACHE_KEY, request.entityId, request.permission, request.expiresInDays, link);
+			}
+			removePendingShareLinkRequest(request.id);
+			emitShareLinkReady({
+				entityType: request.entityType,
+				entityId: request.entityId,
+				permission: request.permission,
+				expiresInDays: request.expiresInDays,
+			});
+		} catch {
+			break;
+		}
+	}
+}
+
+export async function ensureNoteShareLink(args: {
+	userId: string | null;
+	docId: string;
+	permission: NoteShareRole;
+	expiresInDays: ShareExpiryDays;
+	forceRefresh?: boolean;
+}): Promise<NoteShareLink> {
+	const docId = normalizeId(args.docId);
+	const expiresInDays = normalizeExpiryDays(args.expiresInDays);
+	const cached = readCachedSecureLink<NoteShareLink>(NOTE_SHARE_CACHE_KEY, docId, args.permission, expiresInDays);
+	if (!args.forceRefresh && cached && isUsableExpiry(cached.expiresAt)) {
+		return cached;
+	}
+	if (isOffline()) {
+		if (args.userId) {
+			enqueuePendingShareLinkRequest({
+				id: `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+				userId: args.userId,
+				entityType: 'note',
+				entityId: docId,
+				permission: args.permission,
+				expiresInDays,
+				createdAt: new Date().toISOString(),
+			});
+		}
+		return {
+			entityType: 'note',
+			permission: args.permission,
+			shareUrl: cached?.shareUrl ?? null,
+			expiresAt: cached?.expiresAt ?? null,
+			label: cached?.label,
+			pending: true,
+		};
+	}
+	const next = await requestSecureShareLink<NoteShareLink>({ entityType: 'note', entityId: docId, permission: args.permission, expiresInDays });
+	writeCachedSecureLink(NOTE_SHARE_CACHE_KEY, docId, args.permission, expiresInDays, next);
 	return next;
 }
 
+export async function ensureWorkspaceShareLink(args: {
+	userId: string | null;
+	workspaceId: string;
+	permission: WorkspaceShareRole;
+	expiresInDays: ShareExpiryDays;
+	forceRefresh?: boolean;
+}): Promise<WorkspaceShareLink> {
+	const workspaceId = normalizeId(args.workspaceId);
+	const expiresInDays = normalizeExpiryDays(args.expiresInDays);
+	const cached = readCachedSecureLink<WorkspaceShareLink>(WORKSPACE_SHARE_CACHE_KEY, workspaceId, args.permission, expiresInDays);
+	if (!args.forceRefresh && cached && isUsableExpiry(cached.expiresAt)) {
+		return cached;
+	}
+	if (isOffline()) {
+		if (args.userId) {
+			enqueuePendingShareLinkRequest({
+				id: `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+				userId: args.userId,
+				entityType: 'workspace',
+				entityId: workspaceId,
+				permission: args.permission,
+				expiresInDays,
+				createdAt: new Date().toISOString(),
+			});
+		}
+		return {
+			entityType: 'workspace',
+			permission: args.permission,
+			shareUrl: cached?.shareUrl ?? null,
+			expiresAt: cached?.expiresAt ?? null,
+			label: cached?.label,
+			pending: true,
+		};
+	}
+	const next = await requestSecureShareLink<WorkspaceShareLink>({ entityType: 'workspace', entityId: workspaceId, permission: args.permission, expiresInDays });
+	writeCachedSecureLink(WORKSPACE_SHARE_CACHE_KEY, workspaceId, args.permission, expiresInDays, next);
+	return next;
+}
+
+export function readCachedNoteShareLink(args: { docId: string; permission: NoteShareRole; expiresInDays: ShareExpiryDays }): NoteShareLink | null {
+	return readCachedSecureLink<NoteShareLink>(NOTE_SHARE_CACHE_KEY, args.docId, args.permission, normalizeExpiryDays(args.expiresInDays));
+}
+
+export function readCachedWorkspaceShareLink(args: { workspaceId: string; permission: WorkspaceShareRole; expiresInDays: ShareExpiryDays }): WorkspaceShareLink | null {
+	return readCachedSecureLink<WorkspaceShareLink>(WORKSPACE_SHARE_CACHE_KEY, args.workspaceId, args.permission, normalizeExpiryDays(args.expiresInDays));
+}
+
+export async function ensureDocShareLink(docId: string, opts?: { forceRefresh?: boolean }): Promise<NoteShareLink> {
+	return ensureNoteShareLink({ userId: null, docId, permission: 'VIEWER', expiresInDays: 7, forceRefresh: opts?.forceRefresh });
+}
+
 function buildWorkspaceInviteCacheKey(workspaceId: string, email: string, role: WorkspaceInviteRole): string {
-	// Workspace invites are scoped by workspace + recipient email + role so the
-	// modal can cache separate links for different recipients or permission levels.
 	return `${workspaceId}::${normalizeEmail(email)}::${role}`;
 }
 
@@ -126,20 +366,16 @@ export function readCachedWorkspaceInviteLink(args: { workspaceId: string; email
 	const workspaceId = normalizeId(args.workspaceId);
 	const email = normalizeEmail(args.email);
 	if (!workspaceId || !email) return null;
-	const key = buildWorkspaceInviteCacheKey(workspaceId, email, args.role);
 	const map = readCacheMap<WorkspaceInviteLink>(WORKSPACE_INVITE_CACHE_KEY);
-	const cached = map[key];
-	if (!cached || !cached.inviteUrl || !cached.expiresAt) return null;
-	return cached;
+	return map[buildWorkspaceInviteCacheKey(workspaceId, email, args.role)] || null;
 }
 
 function writeCachedWorkspaceInviteLink(args: { workspaceId: string; email: string; role: WorkspaceInviteRole }, link: WorkspaceInviteLink): void {
 	const workspaceId = normalizeId(args.workspaceId);
 	const email = normalizeEmail(args.email);
 	if (!workspaceId || !email) return;
-	const key = buildWorkspaceInviteCacheKey(workspaceId, email, args.role);
 	const map = readCacheMap<WorkspaceInviteLink>(WORKSPACE_INVITE_CACHE_KEY);
-	map[key] = link;
+	map[buildWorkspaceInviteCacheKey(workspaceId, email, args.role)] = link;
 	writeCacheMap(WORKSPACE_INVITE_CACHE_KEY, map);
 }
 
@@ -158,33 +394,31 @@ async function requestWorkspaceInviteLink(args: {
 		if (cached) return cached;
 		throw new Error('Invite link unavailable while offline');
 	}
-	// Both "generate link" and "send email" run through the same endpoint. The
-	// sendEmail flag decides whether the server should only mint/return the link or
-	// also dispatch SMTP delivery for that recipient.
 	const body = await fetchJson<{
+		inviteId?: string;
 		inviteUrl?: string;
 		expiresAt?: string;
 		email?: string;
 		role?: WorkspaceInviteRole;
 		sentEmail?: boolean;
+		deliveredInApp?: boolean;
 	}>(`/api/workspaces/${encodeURIComponent(workspaceId)}/invites`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ email, role: args.role, sendEmail: args.sendEmail }),
 	});
-	const inviteUrl = typeof body?.inviteUrl === 'string' ? body.inviteUrl : '';
-	const expiresAt = typeof body?.expiresAt === 'string' ? body.expiresAt : '';
-	const role = body?.role === 'ADMIN' ? 'ADMIN' : 'MEMBER';
-	const responseEmail = normalizeEmail(body?.email || email);
-	if (!inviteUrl || !expiresAt || !responseEmail) throw new Error('Missing invite link');
+	const role = normalizeWorkspaceInviteRole(body.role || args.role);
 	const next: WorkspaceInviteLink = {
-		inviteUrl,
-		expiresAt,
-		email: responseEmail,
+		inviteId: typeof body.inviteId === 'string' ? body.inviteId : undefined,
+		inviteUrl: typeof body.inviteUrl === 'string' ? body.inviteUrl : '',
+		expiresAt: typeof body.expiresAt === 'string' ? body.expiresAt : '',
+		email: normalizeEmail(body.email || email),
 		role,
-		sentEmail: Boolean(body?.sentEmail),
+		sentEmail: Boolean(body.sentEmail),
+		deliveredInApp: Boolean(body.deliveredInApp),
 	};
-	writeCachedWorkspaceInviteLink({ workspaceId, email: responseEmail, role }, next);
+	if (!next.inviteUrl || !next.expiresAt) throw new Error('Missing invite link');
+	writeCachedWorkspaceInviteLink({ workspaceId, email: next.email, role }, next);
 	return next;
 }
 
@@ -200,8 +434,6 @@ export async function ensureWorkspaceInviteLink(args: {
 	if (!args.forceRefresh && cached && isUsableExpiry(cached.expiresAt)) {
 		return cached;
 	}
-	// Generate-link mode intentionally suppresses email delivery so admins can
-	// preview/copy/QR-share the invite before deciding whether to send mail.
 	return requestWorkspaceInviteLink({ workspaceId, email, role: args.role, sendEmail: false });
 }
 
@@ -210,13 +442,18 @@ export async function sendWorkspaceInviteEmail(args: {
 	email: string;
 	role: WorkspaceInviteRole;
 }): Promise<WorkspaceInviteLink> {
-	// Email-send mode still returns the link payload so the modal can update its
-	// copy/open/QR affordances without making a second request.
-	return requestWorkspaceInviteLink({
-		workspaceId: args.workspaceId,
-		email: args.email,
-		role: args.role,
-		sendEmail: true,
+	return requestWorkspaceInviteLink({ workspaceId: args.workspaceId, email: args.email, role: args.role, sendEmail: true });
+}
+
+export async function getShareTokenMetadata(token: string): Promise<ShareTokenMetadata> {
+	return fetchJson<ShareTokenMetadata>(`/api/share/${encodeURIComponent(token)}`);
+}
+
+export async function acceptShareToken(token: string): Promise<ShareAcceptResult> {
+	return fetchJson<ShareAcceptResult>('/api/share/accept', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ token }),
 	});
 }
 
