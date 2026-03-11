@@ -41,6 +41,7 @@ type RichTextEditorProps = {
 	onEnter?: () => void;
 	onShiftEnter?: () => void;
 	onBackspaceWhenEmpty?: () => void;
+	editable?: boolean;
 };
 
 type RichTextToolbarProps = {
@@ -364,7 +365,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				includeCollaboration: Boolean(props.fragment),
 				fragment: props.fragment ?? null,
 			}),
-			editable: true,
+			editable: props.editable !== false,
 			content: props.fragment ? undefined : props.content ?? undefined,
 			editorProps: {
 				attributes: {
@@ -439,7 +440,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				latestHandlersRef.current.onChange?.();
 			},
 		},
-		[emitInitialChange, props.fragment, props.placeholder, serializeChangePayload, variant]
+		[emitInitialChange, props.editable, props.fragment, props.placeholder, serializeChangePayload, variant]
 	);
 
 	React.useEffect(() => {

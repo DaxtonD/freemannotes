@@ -140,8 +140,27 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		}
 	};
 
+	const backdropPressStartedRef = React.useRef(false);
+	const handleOverlayBackdropPressStart = React.useCallback((event: React.PointerEvent | React.MouseEvent): void => {
+		// Only close on clicks that both start and end on the backdrop. That prevents
+		// text-selection drags from dismissing the editor when the mouse-up lands outside.
+		backdropPressStartedRef.current = event.target === event.currentTarget;
+	}, []);
+	const handleOverlayBackdropClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>): void => {
+		if (mediaDockOpen) return;
+		const shouldClose = backdropPressStartedRef.current && event.target === event.currentTarget;
+		backdropPressStartedRef.current = false;
+		if (shouldClose) props.onCancel();
+	}, [mediaDockOpen, props]);
+
 	return (
-		<div className={styles.fullscreenOverlay} role="presentation" onClick={mediaDockOpen ? undefined : props.onCancel}>
+		<div
+			className={styles.fullscreenOverlay}
+			role="presentation"
+			onPointerDownCapture={handleOverlayBackdropPressStart}
+			onMouseDownCapture={handleOverlayBackdropPressStart}
+			onClick={handleOverlayBackdropClick}
+		>
 			<form
 				onSubmit={onSubmit}
 				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}

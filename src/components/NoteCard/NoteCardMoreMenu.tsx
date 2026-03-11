@@ -41,6 +41,10 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	const menuRef = React.useRef<HTMLDivElement>(null);
 	const onCloseRef = React.useRef(props.onClose);
 	onCloseRef.current = props.onClose;
+	const isMoreMenuHistoryEntry = React.useCallback((value: unknown): boolean => {
+		if (!value || typeof value !== 'object') return false;
+		return (value as { __moreMenu?: boolean }).__moreMenu === true;
+	}, []);
 
 	// Device-mode detection:
 	// We treat "pointer: fine" as desktop-like interaction (mouse/trackpad), and
@@ -103,13 +107,13 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 		return () => {
 			window.clearTimeout(pushTimer);
 			window.removeEventListener('popstate', onPopState);
-			if (active && didPush) {
+			if (active && didPush && isMoreMenuHistoryEntry(window.history.state)) {
 				active = false;
 				window.history.back();
 			}
 			active = false;
 		};
-	}, []);
+	}, [isMoreMenuHistoryEntry]);
 
 	// Prevent body/html scroll while menu is open (including iOS rubber-banding)
 	React.useEffect(() => {

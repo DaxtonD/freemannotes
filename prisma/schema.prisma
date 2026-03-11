@@ -64,6 +64,7 @@ model Workspace {
 
   /// Phase 11: invite tokens for onboarding.
   invites InviteToken[]
+  shareAccessTokens ShareAccessToken[]
 
   /// Accepted shared-note placements that should appear inside this workspace.
   incomingSharedPlacements NoteSharePlacement[]
@@ -95,7 +96,8 @@ enum GlobalRole {
 enum WorkspaceRole {
   OWNER
   ADMIN
-  MEMBER
+  EDITOR
+  VIEWER
 }
 
 enum WorkspaceSystemKind {
@@ -112,6 +114,17 @@ enum NoteShareStatus {
   ACCEPTED
   DECLINED
   REVOKED
+}
+
+enum ShareAccessEntityType {
+  NOTE
+  WORKSPACE
+}
+
+enum ShareAccessPermission {
+  VIEWER
+  ADMIN
+  EDITOR
 }
 
 model User {
@@ -132,6 +145,8 @@ model User {
   receivedNoteShareInvitations NoteShareInvitation[] @relation("ReceivedNoteShareInvitations")
   noteCollaborations NoteCollaborator[]
   noteSharePlacements NoteSharePlacement[]
+  createdShareAccessTokens ShareAccessToken[] @relation("CreatedShareAccessTokens")
+  createdWorkspaceInvites InviteToken[] @relation("CreatedWorkspaceInvites")
 
   @@map("user")
 }
@@ -178,7 +193,7 @@ model WorkspaceMember {
   id          String        @id @default(uuid()) @db.Uuid
   userId      String        @map("user_id") @db.Uuid
   workspaceId String        @map("workspace_id") @db.Uuid
-  role        WorkspaceRole @default(MEMBER)
+  role        WorkspaceRole @default(VIEWER)
 
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -192,12 +207,15 @@ model InviteToken {
   id          String        @id @default(uuid()) @db.Uuid
   email       String
   workspaceId String        @map("workspace_id") @db.Uuid
+  createdByUserId String?   @map("created_by_user_id") @db.Uuid
   role        WorkspaceRole
   token       String        @unique
   expiresAt   DateTime      @map("expires_at")
   used        Boolean       @default(false)
+  createdAt   DateTime      @default(now()) @map("created_at")
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  creator   User?     @relation("CreatedWorkspaceInvites", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId])
   @@index([email])
@@ -216,6 +234,28 @@ model ShareToken {
 
   @@index([docId])
   @@map("share_token")
+}
+
+model ShareAccessToken {
+  id                String                @id @default(uuid()) @db.Uuid
+  token             String                @unique
+  entityType        ShareAccessEntityType @map("entity_type")
+  entityId          String                @map("entity_id")
+  sourceWorkspaceId String?               @map("source_workspace_id") @db.Uuid
+  createdByUserId   String                @map("created_by_user_id") @db.Uuid
+  permission        ShareAccessPermission
+  expiresAt         DateTime              @map("expires_at")
+  revokedAt         DateTime?             @map("revoked_at")
+  createdAt         DateTime              @default(now()) @map("created_at")
+  updatedAt         DateTime              @updatedAt @map("updated_at")
+
+  creator         User       @relation("CreatedShareAccessTokens", fields: [createdByUserId], references: [id], onDelete: Cascade)
+  sourceWorkspace Workspace? @relation(fields: [sourceWorkspaceId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId])
+  @@index([sourceWorkspaceId])
+  @@index([createdByUserId])
+  @@map("share_access_token")
 }
 
 model NoteShareInvitation {

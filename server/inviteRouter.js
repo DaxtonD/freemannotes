@@ -1,34 +1,11 @@
 'use strict';
 
-// ─────────────────────────────────────────────────────────────────────────────
-// inviteRouter.js — Workspace email invitations.
-//
-// Endpoints:
-//   - POST /api/workspaces/:id/invites
-//       Creates an invite token for a specific email address and returns the
-//       invite link. The caller can also request SMTP delivery.
-//   - POST /api/invites/accept
-//       Marks an invite token as used and upserts a workspace membership for
-//       the authenticated user.
-//
-// Security model:
-//   - Both endpoints require authentication (cookie session).
-//   - Mutations are protected by `enforceSameOrigin` to reduce CSRF risk.
-//   - Invite creation additionally checks the caller is OWNER/ADMIN in the
-//     target workspace.
-//   - Invite acceptance checks that the authenticated user's email matches the
-//     invite email (prevents using someone else's token).
-//
-// Operational notes:
-//   - SMTP must be configured for sending emails (see server/mailer.js).
-//   - Rate limiting is in-process (per Node instance).
-// ─────────────────────────────────────────────────────────────────────────────
-
 const crypto = require('crypto');
 const { sendInviteEmail } = require('./mailer');
 const { enforceSameOrigin } = require('./auth');
 const { createRateLimiter, getClientIp } = require('./rateLimit');
 const { findLiveWorkspace, findLiveWorkspaceMembership } = require('./workspaceAccess');
+const { normalizeWorkspaceRole: normalizeStoredWorkspaceRole, canManageWorkspace } = require('./workspaceRoles');
 
 const inviteLimiter = createRateLimiter({ windowMs: 60 * 60 * 1000, max: 50 });
 const acceptLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 40 });
@@ -74,7 +51,86 @@ function appBaseUrlFromRequest(req) {
 	return `${proto}://${host}`;
 }
 
-function createInviteRouter({ prisma }) {
+function normalizeWorkspaceRole(input) {
+	const normalized = normalizeStoredWorkspaceRole(input);
+	if (normalized === 'OWNER') return 'OWNER';
+	if (normalized === 'ADMIN') return 'ADMIN';
+	if (normalized === 'EDITOR') return 'EDITOR';
+	return 'VIEWER';
+}
+
+function normalizeAssignableWorkspaceRole(input) {
+	const normalized = normalizeStoredWorkspaceRole(input);
+	if (normalized === 'ADMIN') return 'ADMIN';
+	if (normalized === 'EDITOR') return 'EDITOR';
+	return 'VIEWER';
+}
+
+async function requireWorkspaceAdmin(prisma, userId, workspaceId) {
+	const member = await findLiveWorkspaceMembership(prisma, userId, workspaceId, { role: true });
+	if (!member) return null;
+	return canManageWorkspace(member.role) ? { ...member, role: normalizeWorkspaceRole(member.role) } : null;
+}
+
+async function listWorkspaceInviteState(prisma, workspaceId, baseUrl) {
+	const [members, invites] = await Promise.all([
+		prisma.workspaceMember.findMany({
+			where: { workspaceId, workspace: { is: { deletedAt: null } } },
+			include: {
+				user: { select: { id: true, email: true, name: true, profileImage: true } },
+			},
+			orderBy: [{ role: 'asc' }, { userId: 'asc' }],
+		}),
+		prisma.inviteToken.findMany({
+			where: {
+				workspaceId,
+				used: false,
+				expiresAt: { gt: new Date() },
+			},
+			include: {
+				creator: { select: { id: true, name: true, email: true } },
+			},
+			orderBy: [{ expiresAt: 'asc' }, { email: 'asc' }],
+		}),
+	]);
+
+	return {
+		members: members.map((member) => ({
+			id: member.user ? member.user.id : `${workspaceId}:${member.userId}`,
+			userId: member.user ? member.user.id : null,
+			email: normalizeEmail(member.user ? member.user.email : ''),
+			name: member.user ? member.user.name : null,
+			profileImage: member.user ? member.user.profileImage || null : null,
+			role: normalizeWorkspaceRole(member.role),
+		})),
+		invites: invites.map((invite) => ({
+			id: invite.id,
+			email: normalizeEmail(invite.email),
+			role: normalizeWorkspaceRole(invite.role),
+			expiresAt: invite.expiresAt.toISOString(),
+			inviteUrl: `${baseUrl.replace(/\/$/, '')}/invite/${invite.token}`,
+			name: null,
+			creator: invite.creator
+				? {
+					id: invite.creator.id,
+					name: invite.creator.name,
+					email: invite.creator.email,
+				}
+				: null,
+		})),
+	};
+}
+
+async function publishWorkspaceInviteMetadataChange(onWorkspaceMetadataChanged, event, errorLabel) {
+	if (typeof onWorkspaceMetadataChanged !== 'function') return;
+	try {
+		await onWorkspaceMetadataChanged(event);
+	} catch (publishErr) {
+		console.warn(`[invite] ${errorLabel} publish failed:`, publishErr.message);
+	}
+}
+
+function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 	function requireAuth(req, res) {
 		if (!req.auth || !req.auth.userId) {
 			jsonResponse(res, 401, { error: 'Not authenticated' });
@@ -83,15 +139,66 @@ function createInviteRouter({ prisma }) {
 		return req.auth;
 	}
 
-	function handleRequest(req, res) {
+	async function resolveInviteForAcceptance(body) {
+		const token = body && typeof body === 'object' ? String(body.token || '').trim() : '';
+		const inviteId = body && typeof body === 'object' ? String(body.inviteId || '').trim() : '';
+		if (token) {
+			return prisma.inviteToken.findUnique({
+				where: { token },
+				include: {
+					workspace: { select: { id: true, name: true } },
+					creator: { select: { id: true, name: true, email: true } },
+				},
+			});
+		}
+		if (inviteId) {
+			return prisma.inviteToken.findUnique({
+				where: { id: inviteId },
+				include: {
+					workspace: { select: { id: true, name: true } },
+					creator: { select: { id: true, name: true, email: true } },
+				},
+			});
+		}
+		return null;
+	}
+
+	return function handleRequest(req, res) {
 		const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 		const pathname = url.pathname;
 		const method = req.method || 'GET';
 
 		if (!enforceSameOrigin(req, res)) return true;
 
-		// POST /api/workspaces/:id/invites
 		const inviteMatch = pathname.match(/^\/api\/workspaces\/([^/]+)\/invites$/);
+		if (inviteMatch && method === 'GET') {
+			const workspaceId = decodeURIComponent(inviteMatch[1]);
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+
+					const member = await requireWorkspaceAdmin(prisma, session.userId, workspaceId);
+					if (!member) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					const workspace = await findLiveWorkspace(prisma, workspaceId, { id: true });
+					if (!workspace) {
+						jsonResponse(res, 404, { error: 'Workspace not found' });
+						return;
+					}
+
+					jsonResponse(res, 200, await listWorkspaceInviteState(prisma, workspaceId, appBaseUrlFromRequest(req)));
+				} catch (err) {
+					console.error('[invite] list error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		if (inviteMatch && method === 'POST') {
 			const workspaceId = decodeURIComponent(inviteMatch[1]);
 			const ip = getClientIp(req);
@@ -104,8 +211,8 @@ function createInviteRouter({ prisma }) {
 					const session = requireAuth(req, res);
 					if (!session) return;
 
-					const member = await findLiveWorkspaceMembership(prisma, session.userId, workspaceId, { role: true });
-					if (!member || (member.role !== 'OWNER' && member.role !== 'ADMIN')) {
+					const member = await requireWorkspaceAdmin(prisma, session.userId, workspaceId);
+					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
@@ -117,17 +224,14 @@ function createInviteRouter({ prisma }) {
 					}
 
 					const email = normalizeEmail(body.email);
-					const role = String(body.role || 'MEMBER').toUpperCase();
-					// Backward-compatible default: older callers still create and send invite
-					// emails, while newer modals can request a link-only response by passing
-					// sendEmail=false and handling copy/QR/open client-side.
+					const role = normalizeAssignableWorkspaceRole(body.role);
 					const sendEmail = body.sendEmail !== false;
 					if (!email || !isValidEmail(email)) {
 						jsonResponse(res, 400, { error: 'Invalid email' });
 						return;
 					}
-					if (!['MEMBER', 'ADMIN'].includes(role)) {
-						jsonResponse(res, 400, { error: 'role must be MEMBER or ADMIN' });
+					if (!['VIEWER', 'EDITOR', 'ADMIN'].includes(role)) {
+						jsonResponse(res, 400, { error: 'role must be VIEWER, EDITOR, or ADMIN' });
 						return;
 					}
 
@@ -137,33 +241,81 @@ function createInviteRouter({ prisma }) {
 						return;
 					}
 
+					const [existingMember, existingInvite, existingUser] = await Promise.all([
+						prisma.workspaceMember.findFirst({
+							where: {
+								workspaceId,
+								workspace: { is: { deletedAt: null } },
+								user: { is: { email: { equals: email, mode: 'insensitive' } } },
+							},
+							select: { id: true },
+						}),
+						prisma.inviteToken.findFirst({
+							where: {
+								workspaceId,
+								email,
+								used: false,
+								expiresAt: { gt: new Date() },
+							},
+							select: { id: true },
+						}),
+						prisma.user.findFirst({
+							where: {
+								email: { equals: email, mode: 'insensitive' },
+							},
+							select: { id: true },
+						}),
+					]);
+					if (existingMember) {
+						jsonResponse(res, 409, { error: 'This email already belongs to a workspace member' });
+						return;
+					}
+					if (existingInvite) {
+						jsonResponse(res, 409, { error: 'This email already has a pending invite' });
+						return;
+					}
+
 					const token = crypto.randomBytes(24).toString('hex');
 					const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-
-					await prisma.inviteToken.create({
-						data: { email, workspaceId, role, token, expiresAt },
+					const invite = await prisma.inviteToken.create({
+						data: {
+							email,
+							workspaceId,
+							createdByUserId: session.userId,
+							role,
+							token,
+							expiresAt,
+						},
+						select: { id: true },
 					});
 
 					const base = String(process.env.APP_URL || '').trim() || appBaseUrlFromRequest(req);
 					const inviteUrl = `${base.replace(/\/$/, '')}/invite/${token}`;
-
-					// The server now supports two delivery modes from the same endpoint:
-					// 1. sendEmail=true  -> create token and dispatch SMTP
-					// 2. sendEmail=false -> create token and just return the invite URL payload
-					if (sendEmail) {
+					const sentEmail = sendEmail && !existingUser;
+					if (sentEmail) {
 						await sendInviteEmail({ to: email, workspaceName: workspace.name, inviteUrl });
 					}
 
-					// The response includes the full invite metadata so the client can cache,
-					// display, and QR-encode the exact same link regardless of delivery mode.
 					jsonResponse(res, 201, {
 						ok: true,
+						inviteId: invite.id,
 						inviteUrl,
 						expiresAt: expiresAt.toISOString(),
 						email,
 						role,
-						sentEmail: sendEmail,
+						sentEmail,
+						deliveredInApp: Boolean(existingUser),
 					});
+
+					await publishWorkspaceInviteMetadataChange(
+						onWorkspaceMetadataChanged,
+						{
+							reason: 'workspace-invite-created',
+							workspaceId,
+							userIds: existingUser ? [existingUser.id, session.userId] : [session.userId],
+						},
+						'create invite'
+					);
 				} catch (err) {
 					console.error('[invite] create error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
@@ -172,7 +324,203 @@ function createInviteRouter({ prisma }) {
 			return true;
 		}
 
-		// POST /api/invites/accept
+		const memberMatch = pathname.match(/^\/api\/workspaces\/([^/]+)\/members\/([^/]+)$/);
+		if (memberMatch && (method === 'PATCH' || method === 'DELETE')) {
+			const workspaceId = decodeURIComponent(memberMatch[1]);
+			const targetUserId = decodeURIComponent(memberMatch[2]);
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+
+					const actor = await requireWorkspaceAdmin(prisma, session.userId, workspaceId);
+					if (!actor) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					const target = await prisma.workspaceMember.findUnique({
+						where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
+						select: { userId: true, role: true },
+					});
+					if (!target) {
+						jsonResponse(res, 404, { error: 'Workspace member not found' });
+						return;
+					}
+					if (target.role === 'OWNER') {
+						jsonResponse(res, 403, { error: 'Workspace owner cannot be changed here' });
+						return;
+					}
+
+					if (method === 'DELETE') {
+						const body = await readJsonBody(req);
+						const expectedRole = body && typeof body === 'object' ? normalizeWorkspaceRole(body.expectedRole) : '';
+						const currentRole = normalizeWorkspaceRole(target.role);
+						if (expectedRole && expectedRole !== currentRole) {
+							jsonResponse(res, 409, { error: 'Workspace member changed before this action could sync', code: 'STALE_MEMBER_ROLE', currentRole });
+							return;
+						}
+						await prisma.workspaceMember.delete({ where: { userId_workspaceId: { userId: targetUserId, workspaceId } } });
+						jsonResponse(res, 200, { ok: true, userId: targetUserId });
+						await publishWorkspaceInviteMetadataChange(
+							onWorkspaceMetadataChanged,
+							{
+								reason: 'workspace-member-removed',
+								workspaceId,
+								userIds: [targetUserId, session.userId],
+							},
+							'remove member'
+						);
+						return;
+					}
+
+					const body = await readJsonBody(req);
+					if (!body || typeof body !== 'object') {
+						jsonResponse(res, 400, { error: 'Request body must be a JSON object' });
+						return;
+					}
+					const role = normalizeAssignableWorkspaceRole(body.role);
+					const expectedRole = body.expectedRole ? normalizeWorkspaceRole(body.expectedRole) : '';
+					const currentRole = normalizeWorkspaceRole(target.role);
+					if (expectedRole && expectedRole !== currentRole) {
+						jsonResponse(res, 409, { error: 'Workspace member changed before this action could sync', code: 'STALE_MEMBER_ROLE', currentRole });
+						return;
+					}
+					if (!['VIEWER', 'EDITOR', 'ADMIN'].includes(role)) {
+						jsonResponse(res, 400, { error: 'role must be VIEWER, EDITOR, or ADMIN' });
+						return;
+					}
+					await prisma.workspaceMember.update({
+						where: { userId_workspaceId: { userId: targetUserId, workspaceId } },
+						data: { role },
+					});
+					jsonResponse(res, 200, { ok: true, userId: targetUserId, role });
+					await publishWorkspaceInviteMetadataChange(
+						onWorkspaceMetadataChanged,
+						{
+							reason: 'workspace-member-role-updated',
+							workspaceId,
+							userIds: [targetUserId, session.userId],
+						},
+						'update member'
+					);
+				} catch (err) {
+					console.error('[invite] member mutation error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		const cancelInviteMatch = pathname.match(/^\/api\/workspaces\/([^/]+)\/invites\/([^/]+)\/cancel$/);
+		if (cancelInviteMatch && method === 'POST') {
+			const workspaceId = decodeURIComponent(cancelInviteMatch[1]);
+			const inviteId = decodeURIComponent(cancelInviteMatch[2]);
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+
+					const actor = await requireWorkspaceAdmin(prisma, session.userId, workspaceId);
+					if (!actor) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					const invite = await prisma.inviteToken.findUnique({
+						where: { id: inviteId },
+						select: { id: true, workspaceId: true, used: true, role: true, email: true },
+					});
+					if (!invite || invite.workspaceId !== workspaceId || invite.used) {
+						jsonResponse(res, 409, { error: 'Invite changed before this action could sync', code: 'STALE_INVITE' });
+						return;
+					}
+					const body = await readJsonBody(req);
+					const expectedRole = body && typeof body === 'object' ? normalizeWorkspaceRole(body.expectedRole) : '';
+					const currentRole = normalizeWorkspaceRole(invite.role);
+					if (expectedRole && expectedRole !== currentRole) {
+						jsonResponse(res, 409, { error: 'Invite changed before this action could sync', code: 'STALE_INVITE_ROLE', currentRole });
+						return;
+					}
+
+					await prisma.inviteToken.update({ where: { id: inviteId }, data: { used: true } });
+					jsonResponse(res, 200, { ok: true, inviteId });
+
+					const invitee = await prisma.user.findFirst({
+						where: { email: { equals: invite.email, mode: 'insensitive' } },
+						select: { id: true },
+					});
+					await publishWorkspaceInviteMetadataChange(
+						onWorkspaceMetadataChanged,
+						{
+							reason: 'workspace-invite-cancelled',
+							workspaceId,
+							userIds: invitee ? [invitee.id, session.userId] : [session.userId],
+						},
+						'cancel invite'
+					);
+				} catch (err) {
+					console.error('[invite] cancel error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		if (pathname === '/api/invites' && method === 'GET') {
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const user = await prisma.user.findUnique({
+						where: { id: session.userId },
+						select: { email: true },
+					});
+					if (!user || !user.email) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					const invites = await prisma.inviteToken.findMany({
+						where: {
+							email: normalizeEmail(user.email),
+							used: false,
+							expiresAt: { gt: new Date() },
+							workspace: { is: { deletedAt: null } },
+						},
+						include: {
+							workspace: { select: { id: true, name: true } },
+							creator: { select: { id: true, name: true, email: true } },
+						},
+						orderBy: [{ createdAt: 'desc' }],
+					});
+
+					jsonResponse(res, 200, {
+						invites: invites.map((invite) => ({
+							id: invite.id,
+							workspaceId: invite.workspaceId,
+							workspaceName: invite.workspace ? invite.workspace.name : '',
+							role: normalizeWorkspaceRole(invite.role),
+							email: normalizeEmail(invite.email),
+							createdAt: invite.createdAt.toISOString(),
+							expiresAt: invite.expiresAt.toISOString(),
+							inviter: invite.creator
+								? {
+									id: invite.creator.id,
+									name: invite.creator.name,
+									email: invite.creator.email,
+								}
+								: null,
+						})),
+					});
+				} catch (err) {
+					console.error('[invite] notifications error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		if (pathname === '/api/invites/accept' && method === 'POST') {
 			const ip = getClientIp(req);
 			if (!acceptLimiter.allow(`${ip}:invite-accept`)) {
@@ -183,18 +531,8 @@ function createInviteRouter({ prisma }) {
 				try {
 					const session = requireAuth(req, res);
 					if (!session) return;
-
 					const body = await readJsonBody(req);
-					const token = body && typeof body === 'object' ? String(body.token || '').trim() : '';
-					if (!token) {
-						jsonResponse(res, 400, { error: 'Missing token' });
-						return;
-					}
-
-					const invite = await prisma.inviteToken.findUnique({
-						where: { token },
-						select: { id: true, email: true, workspaceId: true, role: true, expiresAt: true, used: true, workspace: { select: { name: true } } },
-					});
+					const invite = await resolveInviteForAcceptance(body);
 					if (!invite || invite.used) {
 						jsonResponse(res, 404, { error: 'Invite not found' });
 						return;
@@ -203,6 +541,7 @@ function createInviteRouter({ prisma }) {
 						jsonResponse(res, 410, { error: 'Invite expired' });
 						return;
 					}
+
 					const workspace = await findLiveWorkspace(prisma, invite.workspaceId, { id: true, name: true });
 					if (!workspace) {
 						jsonResponse(res, 410, { error: 'Workspace no longer exists' });
@@ -225,13 +564,22 @@ function createInviteRouter({ prisma }) {
 					await prisma.$transaction(async (tx) => {
 						await tx.workspaceMember.upsert({
 							where: { userId_workspaceId: { userId: session.userId, workspaceId: invite.workspaceId } },
-							update: { role: invite.role },
-							create: { userId: session.userId, workspaceId: invite.workspaceId, role: invite.role },
+							update: { role: normalizeWorkspaceRole(invite.role) },
+							create: { userId: session.userId, workspaceId: invite.workspaceId, role: normalizeWorkspaceRole(invite.role) },
 						});
 						await tx.inviteToken.update({ where: { id: invite.id }, data: { used: true } });
 					});
 
-					jsonResponse(res, 200, { ok: true, workspaceId: invite.workspaceId, workspaceName: workspace.name, role: invite.role });
+					jsonResponse(res, 200, { ok: true, workspaceId: invite.workspaceId, workspaceName: workspace.name, role: normalizeWorkspaceRole(invite.role) });
+					await publishWorkspaceInviteMetadataChange(
+						onWorkspaceMetadataChanged,
+						{
+							reason: 'workspace-invite-accepted',
+							workspaceId: invite.workspaceId,
+							userIds: invite.creator ? [session.userId, invite.creator.id] : [session.userId],
+						},
+						'accept invite'
+					);
 				} catch (err) {
 					console.error('[invite] accept error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
@@ -240,10 +588,50 @@ function createInviteRouter({ prisma }) {
 			return true;
 		}
 
-		return false;
-	}
+		const declineMatch = pathname.match(/^\/api\/invites\/([^/]+)\/decline$/);
+		if (declineMatch && method === 'POST') {
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const inviteId = decodeURIComponent(declineMatch[1]);
+					const invite = await prisma.inviteToken.findUnique({
+						where: { id: inviteId },
+						include: { workspace: { select: { id: true, name: true } } },
+					});
+					if (!invite || invite.used) {
+						jsonResponse(res, 404, { error: 'Invite not found' });
+						return;
+					}
+					const user = await prisma.user.findUnique({
+						where: { id: session.userId },
+						select: { email: true },
+					});
+					if (!user || normalizeEmail(user.email) !== normalizeEmail(invite.email)) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+					await prisma.inviteToken.update({ where: { id: invite.id }, data: { used: true } });
+					jsonResponse(res, 200, { ok: true, inviteId: invite.id });
+					await publishWorkspaceInviteMetadataChange(
+						onWorkspaceMetadataChanged,
+						{
+							reason: 'workspace-invite-declined',
+							workspaceId: invite.workspaceId,
+							userIds: invite.createdByUserId ? [session.userId, invite.createdByUserId] : [session.userId],
+						},
+						'decline invite'
+					);
+				} catch (err) {
+					console.error('[invite] decline error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
 
-	return handleRequest;
+		return false;
+	};
 }
 
 module.exports = { createInviteRouter };

@@ -251,6 +251,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeRowId, setActiveRowId] = React.useState<string | null>(null);
 	const [activeRowEditor, setActiveRowEditor] = React.useState<Editor | null>(null);
+	const latestItemsRef = React.useRef<DraftChecklistItem[]>(items);
+	const latestRowPayloadRef = React.useRef<{ id: string; text: string; richContent: JSONContent } | null>(null);
 	// ── Mobile keyboard focus proxy ──────────────────────────────────────────────
 	// Problem: when the DnD library starts a drag it clones the grabbed element
 	// into a portal, tears the original out of flow, and sometimes blurs the
@@ -349,6 +351,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const normalizedItems = React.useMemo(() => reconcileDraftItems(normalizeChecklistHierarchy(items), items), [items]);
 	const activeItems = React.useMemo(() => normalizedItems.filter((row) => !row.completed), [normalizedItems]);
 	const completedItems = React.useMemo(() => normalizedItems.filter((row) => row.completed), [normalizedItems]);
+
+	React.useEffect(() => {
+		latestItemsRef.current = items;
+	}, [items]);
 
 	React.useEffect(() => {
 		// Mobile keyboard-hidden branch:
@@ -585,12 +591,38 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		if (saving) return;
 		setSaving(true);
 		try {
-			const prunedItems = items.filter((item) => item.text.trim().length > 0);
+			let itemsForSave = latestItemsRef.current;
+			// Save-time flush:
+			// The focused TipTap row can be ahead of React state if the user types and taps
+			// Save immediately. Snapshot the active editor directly so offline-created
+			// checklist rows never persist as "checkbox with blank text".
+			const latestRowPayload = latestRowPayloadRef.current;
+			if (latestRowPayload && itemsForSave.some((item) => item.id === latestRowPayload.id)) {
+				itemsForSave = itemsForSave.map((item) => item.id === latestRowPayload.id
+					? { ...item, text: latestRowPayload.text, richContent: latestRowPayload.richContent }
+					: item);
+			}
+			if (activeRowId && activeRowEditor) {
+				try {
+					const activeText = activeRowEditor.getText();
+					const activeJson = activeRowEditor.getJSON();
+					itemsForSave = itemsForSave.map((item) => item.id === activeRowId
+						? { ...item, text: activeText, richContent: activeJson }
+						: item);
+				} catch {
+					// If the editor is tearing down mid-submit, fall back to the latest React state.
+				}
+			}
+			const prunedItems = itemsForSave.filter((item) => item.text.trim().length > 0);
 			await props.onSave({ title, items: prunedItems });
 		} finally {
 			setSaving(false);
 		}
 	};
+
+	const preventSaveFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
+		event.preventDefault();
+	}, []);
 
 	const removeItemAndFocus = React.useCallback(
 		(id: string): void => {
@@ -673,8 +705,27 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		[activeItems, activeRowId, isCoarsePointer, t]
 	);
 
+	const backdropPressStartedRef = React.useRef(false);
+	const handleOverlayBackdropPressStart = React.useCallback((event: React.PointerEvent | React.MouseEvent): void => {
+		// Only close on clicks that both start and end on the backdrop. That prevents
+		// text-selection drags from dismissing the editor when the mouse-up lands outside.
+		backdropPressStartedRef.current = event.target === event.currentTarget;
+	}, []);
+	const handleOverlayBackdropClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>): void => {
+		if (mediaDockOpen) return;
+		const shouldClose = backdropPressStartedRef.current && event.target === event.currentTarget;
+		backdropPressStartedRef.current = false;
+		if (shouldClose) props.onCancel();
+	}, [mediaDockOpen, props]);
+
 	return (
-		<div className={styles.fullscreenOverlay} role="presentation" onClick={mediaDockOpen ? undefined : props.onCancel}>
+		<div
+			className={styles.fullscreenOverlay}
+			role="presentation"
+			onPointerDownCapture={handleOverlayBackdropPressStart}
+			onMouseDownCapture={handleOverlayBackdropPressStart}
+			onClick={handleOverlayBackdropClick}
+		>
 			<form
 				onSubmit={onSubmit}
 				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}
@@ -872,6 +923,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	// `RichTextEditor` can emit undefined payloads in lightweight mode.
 																	// This draft editor still requests full payloads, so guard defensively.
 																	if (!payload) return;
+																	latestRowPayloadRef.current = { id: item.id, text: payload.text, richContent: payload.json };
 																	updateItem(item.id, { text: payload.text, richContent: payload.json });
 																}}
 																onEnter={() => insertItemAfter(item.id)}
@@ -960,6 +1012,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																onChange={(payload) => {
 																	// Same guard in completed-items branch for symmetry and safety.
 																	if (!payload) return;
+																	latestRowPayloadRef.current = { id: item.id, text: payload.text, richContent: payload.json };
 																	updateItem(item.id, { text: payload.text, richContent: payload.json });
 																}}
 																onEnter={() => insertItemAfter(item.id)}
@@ -1070,6 +1123,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 								type="submit"
 								className={styles.bottomDockClose}
 								disabled={saving}
+								onMouseDown={preventSaveFocusSteal}
+								onPointerDown={preventSaveFocusSteal}
 								aria-label={saving ? t('editors.saving') : t('common.save')}
 								title={saving ? t('editors.saving') : t('common.save')}
 							>

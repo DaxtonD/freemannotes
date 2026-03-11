@@ -1,4 +1,4 @@
-type WorkspaceRole = 'OWNER' | 'ADMIN' | 'MEMBER';
+import { normalizeWorkspaceRole, type WorkspaceRole } from './workspaceRoles';
 type WorkspaceMutationKind = 'create' | 'delete';
 
 // Offline workspace metadata cache:
@@ -100,7 +100,7 @@ function asIsoString(value: unknown, fallback = getNowIso()): string {
 }
 
 function asWorkspaceRole(value: unknown): WorkspaceRole {
-	return value === 'OWNER' || value === 'ADMIN' || value === 'MEMBER' ? value : 'MEMBER';
+	return normalizeWorkspaceRole(value);
 }
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
