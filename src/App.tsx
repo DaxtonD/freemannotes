@@ -28,7 +28,6 @@ import { PreferencesModal } from './components/Preferences/PreferencesModal';
 import { AppearanceModal } from './components/Preferences/AppearanceModal';
 import { SendInviteModal } from './components/Invites/SendInviteModal';
 import { CollaboratorModal } from './components/Share/CollaboratorModal';
-import { PublicSharePage } from './components/Share/PublicSharePage';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
@@ -52,6 +51,10 @@ import {
 	syncNoteShareCollaborators,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
+import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
+import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
+import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
+import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
 import {
 	cacheActiveWorkspaceSelection,
 	cacheWorkspaceDetails,
@@ -66,6 +69,12 @@ import { getWorkspaceDisplayName } from './core/workspaceDisplay';
 
 type EditorMode = 'none' | 'text' | 'checklist';
 
+type CollaboratorModalState = {
+	noteId: string;
+	docId: string;
+	title: string;
+};
+
 type OverlaySnapshot = {
 	editorMode: EditorMode;
 	selectedNoteId: string | null;
@@ -74,6 +83,7 @@ type OverlaySnapshot = {
 	isUserManagementOpen: boolean;
 	isSendInviteOpen: boolean;
 	isWorkspaceSwitcherOpen: boolean;
+	collaboratorModalState: CollaboratorModalState | null;
 	isMobileSidebarOpen: boolean;
 	isFabOpen: boolean;
 };
@@ -91,7 +101,7 @@ function mapWorkspaceList(value: unknown): SidebarWorkspaceListItem[] {
 			return {
 				id,
 				name: typeof workspace.name === 'string' ? workspace.name : '',
-				role: workspace.role === 'OWNER' || workspace.role === 'ADMIN' || workspace.role === 'MEMBER' ? workspace.role : 'MEMBER',
+				role: normalizeWorkspaceRole(workspace.role),
 				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
 				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind : null,
 				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
@@ -125,6 +135,7 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	isUserManagementOpen: false,
 	isSendInviteOpen: false,
 	isWorkspaceSwitcherOpen: false,
+	collaboratorModalState: null,
 	isMobileSidebarOpen: false,
 	isFabOpen: false,
 };
@@ -147,6 +158,11 @@ type ExternalRoute = {
 function isOverlayHistoryState(value: unknown): value is OverlayHistoryState {
 	if (!value || typeof value !== 'object') return false;
 	return (value as Partial<OverlayHistoryState>)[OVERLAY_HISTORY_KEY] === true;
+}
+
+function isMoreMenuHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return (value as { __moreMenu?: boolean }).__moreMenu === true;
 }
 
 function readExternalRoute(): ExternalRoute | null {
@@ -300,6 +316,22 @@ export function App(): React.JSX.Element {
 		status: 'idle',
 		message: null,
 	});
+	const [shareRouteState, setShareRouteState] = React.useState<{
+		status: 'idle' | 'loading' | 'ready' | 'error';
+		message: string | null;
+		label: string | null;
+		entityType: 'note' | 'workspace' | null;
+		openWorkspaceId: string | null;
+		openNoteId: string | null;
+	}>({
+		status: 'idle',
+		message: null,
+		label: null,
+		entityType: null,
+		openWorkspaceId: null,
+		openNoteId: null,
+	});
+	const [shareAttemptKey, setShareAttemptKey] = React.useState(0);
 	const [inviteAttemptKey, setInviteAttemptKey] = React.useState(0);
 	// ── Optimistic auth restoration ──────────────────────────────────────
 	// If a valid auth cache exists in localStorage we optimistically treat
@@ -377,10 +409,13 @@ export function App(): React.JSX.Element {
 		return window.matchMedia('(pointer: coarse)').matches;
 	});
 	const headerRef = React.useRef<HTMLElement | null>(null);
+	const sidebarToggleButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const mobileSearchInputRef = React.useRef<HTMLInputElement | null>(null);
 	const topControlsRef = React.useRef<HTMLDivElement | null>(null);
 	const mobileSwipeZoneRef = React.useRef<HTMLDivElement | null>(null);
 	const mobileSidebarRef = React.useRef<HTMLElement | null>(null);
+	const workspaceMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const sidebarEntryButtonRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>(CLOSED_SIDEBAR_GROUPS);
 	// Which sidebar view is active: regular notes or the trash bin.
 	const [sidebarView, setSidebarView] = React.useState<'notes' | 'trash'>('notes');
@@ -396,13 +431,16 @@ export function App(): React.JSX.Element {
 	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(false);
 	const [activeWorkspaceName, setActiveWorkspaceName] = React.useState<string | null>(null);
 	const [activeWorkspaceSystemKind, setActiveWorkspaceSystemKind] = React.useState<string | null>(null);
+	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>([]);
+	const [sidebarWorkspacesBusy, setSidebarWorkspacesBusy] = React.useState(false);
+	const [sidebarWorkspacesError, setSidebarWorkspacesError] = React.useState<string | null>(null);
 	const [sharedPlacements, setSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
-	const [collaboratorModalState, setCollaboratorModalState] = React.useState<{ noteId: string; docId: string; title: string } | null>(null);
+	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(null);
 	// The currently selected note in the grid/editor area.
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(null);
 	// Loaded Y.Doc for the selected note.
@@ -419,6 +457,13 @@ export function App(): React.JSX.Element {
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
 	const maxCardHeightPx = isCoarsePointer ? 450 : 615;
+	const activeWorkspaceRole = React.useMemo<WorkspaceRole | null>(() => {
+		if (!authWorkspaceId) return null;
+		const match = sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId);
+		return match ? normalizeWorkspaceRole(match.role) : null;
+	}, [authWorkspaceId, sidebarWorkspaces]);
+	const canManageActiveWorkspace = canManageWorkspace(activeWorkspaceRole);
+	const canEditActiveWorkspace = canEditWorkspaceContent(activeWorkspaceRole);
 	const exitBackPressRef = React.useRef({ count: 0, lastAt: 0 });
 	// Guard: prevent queuing multiple history.back() calls from rapid taps.
 	// Reset in the popstate handler once the navigation actually completes.
@@ -433,6 +478,7 @@ export function App(): React.JSX.Element {
 			isUserManagementOpen,
 			isSendInviteOpen,
 			isWorkspaceSwitcherOpen,
+			collaboratorModalState,
 			isMobileSidebarOpen,
 			isFabOpen,
 		};
@@ -444,6 +490,7 @@ export function App(): React.JSX.Element {
 		isUserManagementOpen,
 		isSendInviteOpen,
 		isWorkspaceSwitcherOpen,
+		collaboratorModalState,
 		isMobileSidebarOpen,
 		isFabOpen,
 	]);
@@ -456,6 +503,7 @@ export function App(): React.JSX.Element {
 		setIsUserManagementOpen(snapshot.isUserManagementOpen);
 		setIsSendInviteOpen(snapshot.isSendInviteOpen);
 		setIsWorkspaceSwitcherOpen(snapshot.isWorkspaceSwitcherOpen);
+		setCollaboratorModalState(snapshot.collaboratorModalState);
 		setIsMobileSidebarOpen(snapshot.isMobileSidebarOpen);
 		setIsFabOpen(snapshot.isFabOpen);
 	}, []);
@@ -497,6 +545,14 @@ export function App(): React.JSX.Element {
 		clearExternalRoute();
 		setExternalRoute(null);
 		setInviteRouteState({ status: 'idle', message: null });
+		setShareRouteState({
+			status: 'idle',
+			message: null,
+			label: null,
+			entityType: null,
+			openWorkspaceId: null,
+			openNoteId: null,
+		});
 	}, []);
 
 	const openPreferences = React.useCallback(() => {
@@ -552,7 +608,7 @@ export function App(): React.JSX.Element {
 	}, [commitOverlaySnapshot, getOverlaySnapshot]);
 
 	const openSendInviteFromPreferences = React.useCallback(() => {
-		if (activeWorkspaceSystemKind === 'SHARED_WITH_ME') return;
+		if (activeWorkspaceSystemKind === 'SHARED_WITH_ME' || !canManageActiveWorkspace) return;
 		setInviteWorkspaceTarget(authWorkspaceId ? { id: authWorkspaceId, name: activeWorkspaceName } : null);
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot(
@@ -565,7 +621,7 @@ export function App(): React.JSX.Element {
 			},
 			'push'
 		);
-	}, [activeWorkspaceName, authWorkspaceId, commitOverlaySnapshot, getOverlaySnapshot]);
+	}, [activeWorkspaceName, activeWorkspaceSystemKind, authWorkspaceId, canManageActiveWorkspace, commitOverlaySnapshot, getOverlaySnapshot]);
 
 	const openSendInviteForWorkspace = React.useCallback(
 		(workspace: SidebarWorkspaceListItem) => {
@@ -611,14 +667,31 @@ export function App(): React.JSX.Element {
 
 	const openCollaboratorModalForNote = React.useCallback((noteId: string, title?: string) => {
 		const placement = sharedPlacements.find((item) => item.aliasId === noteId);
+		if (placement && placement.role === 'VIEWER') return;
+		if (!placement && !canEditActiveWorkspace) return;
 		const docId = placement ? placement.roomId : authWorkspaceId ? `${authWorkspaceId}:${noteId}` : null;
 		if (!docId) return;
-		setCollaboratorModalState({
+		const nextState: CollaboratorModalState = {
 			noteId,
 			docId,
 			title: title || '',
-		});
-	}, [authWorkspaceId, sharedPlacements]);
+		};
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				collaboratorModalState: nextState,
+				isMobileSidebarOpen: false,
+				isFabOpen: false,
+			},
+			isMobileViewport && isMoreMenuHistoryState(typeof window !== 'undefined' ? window.history.state : null) ? 'replace' : 'push'
+		);
+	}, [authWorkspaceId, canEditActiveWorkspace, commitOverlaySnapshot, getOverlaySnapshot, isMobileViewport, sharedPlacements]);
+
+	const closeCollaboratorModal = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setCollaboratorModalState(null);
+	}, [goBackIfOverlayHistory]);
 
 	const openMobileSidebar = React.useCallback(() => {
 		const current = getOverlaySnapshot();
@@ -645,10 +718,32 @@ export function App(): React.JSX.Element {
 		setInviteWorkspaceTarget(null);
 	}, [isSendInviteOpen]);
 
+	const restoreFocusFromHiddenRegion = React.useCallback((container: HTMLElement | null, fallbackTarget: HTMLElement | null) => {
+		// Move focus out before a region becomes aria-hidden so browsers do not leave
+		// the active element stranded inside hidden sidebar content.
+		if (typeof document === 'undefined' || !container) return;
+		const activeElement = document.activeElement;
+		if (!(activeElement instanceof HTMLElement) || !container.contains(activeElement)) return;
+		if (fallbackTarget && !fallbackTarget.hasAttribute('disabled')) {
+			fallbackTarget.focus();
+			return;
+		}
+		activeElement.blur();
+	}, []);
+
 	const closeMobileSidebar = React.useCallback(() => {
 		if (goBackIfOverlayHistory()) return;
+		restoreFocusFromHiddenRegion(mobileSidebarRef.current, sidebarToggleButtonRef.current);
 		setIsMobileSidebarOpen(false);
-	}, [goBackIfOverlayHistory]);
+	}, [goBackIfOverlayHistory, restoreFocusFromHiddenRegion]);
+
+	const closeWorkspaceSidebarGroup = React.useCallback(() => {
+		// Closing the workspace flyout can hide the focused workspace button, so restore
+		// focus to the group trigger (desktop) or sidebar toggle (mobile) first.
+		const fallbackTarget = isMobileViewport ? sidebarToggleButtonRef.current : sidebarEntryButtonRefs.current.workspaces;
+		restoreFocusFromHiddenRegion(workspaceMenuRef.current, fallbackTarget);
+		setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+	}, [isMobileViewport, restoreFocusFromHiddenRegion]);
 
 	const openCreateEditor = React.useCallback(
 		(nextMode: Exclude<EditorMode, 'none'>, opts?: { replaceTop?: boolean }) => {
@@ -761,7 +856,7 @@ export function App(): React.JSX.Element {
 						updatedAt: typeof body.updatedAt === 'string' ? body.updatedAt : null,
 					},
 					userId: authUserId,
-					role: body?.role === 'OWNER' || body?.role === 'ADMIN' || body?.role === 'MEMBER' ? body.role : null,
+					role: body?.role ? normalizeWorkspaceRole(body.role) : null,
 				});
 			}
 			setActiveWorkspaceName(getWorkspaceDisplayName({
@@ -985,6 +1080,7 @@ export function App(): React.JSX.Element {
 			void (async () => {
 				try {
 					await syncPendingWorkspaceMutationsRef.current();
+					await flushPendingShareLinkRequests(authUserId);
 					await loadSidebarWorkspacesRef.current();
 					await refreshActiveWorkspaceRef.current();
 					if (authOfflineMode) {
@@ -1010,6 +1106,33 @@ export function App(): React.JSX.Element {
 		};
 	}, [authOfflineMode, authStatus, authUserId, deviceId, manager, probeSession]);
 
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId || authOfflineMode) {
+			cancelSyncOutboxWorker(authUserId);
+			return;
+		}
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+		void flushSyncOutbox(authUserId);
+		void scheduleSyncOutboxFlush(authUserId);
+		void flushPendingShareLinkRequests(authUserId);
+		return () => {
+			cancelSyncOutboxWorker(authUserId);
+		};
+	}, [authOfflineMode, authStatus, authUserId]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const eventName = getWorkspaceInviteConflictEventName();
+		const onConflict = (event: Event): void => {
+			const detail = (event as CustomEvent<{ message?: string }>).detail;
+			showBriefDialog(detail?.message || 'An offline workspace access change was rejected because the server state changed.');
+		};
+		window.addEventListener(eventName, onConflict as EventListener);
+		return () => {
+			window.removeEventListener(eventName, onConflict as EventListener);
+		};
+	}, [showBriefDialog]);
+
 	const signOut = React.useCallback(async () => {
 		// Logout is best-effort: even if the request fails (offline), we clear local
 		// auth state and disable websocket sync.
@@ -1026,6 +1149,7 @@ export function App(): React.JSX.Element {
 		clearAuthCache();
 		manager.setActiveWorkspaceId(null);
 		manager.setWebsocketEnabled(false);
+		cancelSyncOutboxWorker(authUserId);
 		setIsUserManagementOpen(false);
 		setIsPreferencesOpen(false);
 		setIsAppearanceOpen(false);
@@ -1042,7 +1166,7 @@ export function App(): React.JSX.Element {
 		setPendingSharedFolderReveal(null);
 		setPendingShareNotificationCount(0);
 		setCollaboratorModalState(null);
-	}, [manager]);
+	}, [authUserId, manager]);
 
 	const clearActiveWorkspaceState = React.useCallback(
 		(opts?: { preserveAuthCache?: boolean }) => {
@@ -1312,10 +1436,6 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		handleWorkspaceActivatedRef.current = handleWorkspaceActivated;
 	}, [handleWorkspaceActivated]);
-	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>([]);
-	const [sidebarWorkspacesBusy, setSidebarWorkspacesBusy] = React.useState(false);
-	const [sidebarWorkspacesError, setSidebarWorkspacesError] = React.useState<string | null>(null);
-
 	React.useEffect(() => {
 		sidebarWorkspacesRef.current = sidebarWorkspaces;
 		if (!authWorkspaceId) {
@@ -1433,7 +1553,7 @@ export function App(): React.JSX.Element {
 					nextActiveWorkspaceId: resolvedActiveWorkspaceId,
 					hasOtherWorkspaces: resolvedWorkspaces.length > 0,
 				});
-			} else if (resolvedActiveWorkspaceId && resolvedActiveWorkspaceId !== authWorkspaceId) {
+			} else if (!authWorkspaceId && resolvedActiveWorkspaceId) {
 				handleWorkspaceActivatedRef.current(resolvedActiveWorkspaceId);
 			}
 		} catch (err) {
@@ -1475,11 +1595,12 @@ export function App(): React.JSX.Element {
 			}
 		}
 		try {
-			const [invitationData, placementData] = await Promise.all([
+			const [invitationData, placementData, workspaceInviteData] = await Promise.all([
 				listNoteShareInvitations(),
 				sharedWithMeWorkspaceId ? listSharedNotePlacements(sharedWithMeWorkspaceId) : Promise.resolve({ placements: [] }),
+				listWorkspacePendingInvites(),
 			]);
-			setPendingShareNotificationCount(invitationData.pendingCount);
+			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length);
 			setSharedPlacements(placementData.placements);
 		} catch {
 			if (!offline) {
@@ -1488,6 +1609,81 @@ export function App(): React.JSX.Element {
 			}
 		}
 	}, [authStatus, authUserId, sharedWithMeWorkspaceId]);
+
+	React.useEffect(() => {
+		if (externalRoute?.kind !== 'share') {
+			setShareRouteState({
+				status: 'idle',
+				message: null,
+				label: null,
+				entityType: null,
+				openWorkspaceId: null,
+				openNoteId: null,
+			});
+			return;
+		}
+		if (authStatus !== 'authed') return;
+		if (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+			setShareRouteState({
+				status: 'error',
+				message: 'Share links must be opened while online.',
+				label: null,
+				entityType: null,
+				openWorkspaceId: null,
+				openNoteId: null,
+			});
+			return;
+		}
+
+		let cancelled = false;
+		setShareRouteState({
+			status: 'loading',
+			message: null,
+			label: null,
+			entityType: null,
+			openWorkspaceId: null,
+			openNoteId: null,
+		});
+
+		void (async () => {
+			try {
+				const [metadata, accepted] = await Promise.all([
+					getShareTokenMetadata(externalRoute.token),
+					acceptShareToken(externalRoute.token),
+				]);
+				if (cancelled) return;
+				const entityType = accepted.entityType;
+				const label = metadata.label || accepted.title || accepted.workspaceName || (entityType === 'workspace' ? 'Workspace' : 'Note');
+				setShareRouteState({
+					status: 'ready',
+					message: accepted.status === 'already-has-access'
+						? `You already have access to ${label}.`
+						: `${entityType === 'workspace' ? 'Workspace' : 'Note'} access granted for ${label}.`,
+					label,
+					entityType,
+					openWorkspaceId: entityType === 'workspace' ? accepted.workspaceId ?? null : accepted.targetWorkspaceId ?? null,
+					openNoteId: entityType === 'note' ? accepted.placementAliasId || accepted.sourceNoteId || null : null,
+				});
+				void loadSidebarWorkspacesRef.current();
+				void refreshNoteShareStateRef.current();
+				setCollaborationRefreshToken((value) => value + 1);
+			} catch (err) {
+				if (cancelled) return;
+				setShareRouteState({
+					status: 'error',
+					message: err instanceof Error ? err.message : 'Unable to open share link.',
+					label: null,
+					entityType: null,
+					openWorkspaceId: null,
+					openNoteId: null,
+				});
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [authOfflineMode, authStatus, externalRoute, shareAttemptKey]);
 
 	const refreshNoteShareStateRef = React.useRef(refreshNoteShareState);
 	const bumpCollaborationRefreshToken = React.useCallback(() => {
@@ -1570,6 +1766,9 @@ export function App(): React.JSX.Element {
 						workspaceId?: string | null;
 							docId?: string | null;
 					};
+					const isNoteShareMetadataEvent = payload.type === 'workspace-metadata-changed'
+						&& typeof payload.reason === 'string'
+						&& payload.reason.startsWith('note-share-');
 					if (
 						payload.type === 'workspace-metadata-changed' &&
 						payload.reason === 'workspace-deleted' &&
@@ -1581,9 +1780,25 @@ export function App(): React.JSX.Element {
 						payload.type === 'workspace-metadata-ready' ||
 						payload.type === 'workspace-metadata-changed'
 					) {
-							if (payload.type === 'workspace-metadata-changed' && typeof payload.docId === 'string' && authUserId) {
-								void syncNoteShareCollaborators(authUserId, payload.docId, { suppressError: true });
-							}
+						if (
+							payload.type === 'workspace-metadata-changed' &&
+							typeof payload.workspaceId === 'string' &&
+							typeof window.dispatchEvent === 'function'
+						) {
+							window.dispatchEvent(
+								new CustomEvent(getWorkspaceInviteStateEventName(), {
+									detail: { workspaceId: payload.workspaceId },
+								})
+							);
+						}
+						if (payload.type === 'workspace-metadata-changed' && typeof payload.docId === 'string' && authUserId) {
+							void syncNoteShareCollaborators(authUserId, payload.docId, { suppressError: true });
+						}
+						if (isNoteShareMetadataEvent) {
+							void refreshNoteShareStateRef.current();
+							bumpCollaborationRefreshToken();
+							return;
+						}
 						refreshWorkspaceMetadata();
 					}
 				} catch {
@@ -1660,7 +1875,7 @@ export function App(): React.JSX.Element {
 				});
 				handleWorkspaceActivated(workspaceId);
 				if (isMobileViewport) {
-					setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+					closeWorkspaceSidebarGroup();
 				}
 				if (isMobileViewport) closeMobileSidebar();
 				return;
@@ -1680,7 +1895,7 @@ export function App(): React.JSX.Element {
 				handleWorkspaceActivated(workspaceId);
 				void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
 				if (isMobileViewport) {
-					setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+					closeWorkspaceSidebarGroup();
 				}
 				if (isMobileViewport) closeMobileSidebar();
 			} catch {
@@ -1695,7 +1910,7 @@ export function App(): React.JSX.Element {
 						});
 						handleWorkspaceActivated(workspaceId);
 						if (isMobileViewport) {
-							setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+							closeWorkspaceSidebarGroup();
 						}
 						if (isMobileViewport) closeMobileSidebar();
 						return;
@@ -1704,7 +1919,7 @@ export function App(): React.JSX.Element {
 				// Keep errors out of the sidebar nav — Workspace modal provides richer error UX.
 			}
 		},
-		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, deviceId, handleWorkspaceActivated, isMobileViewport, persistSharedWorkspaceSelection]
+		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, closeWorkspaceSidebarGroup, deviceId, handleWorkspaceActivated, isMobileViewport, persistSharedWorkspaceSelection]
 	);
 
 	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
@@ -1897,11 +2112,14 @@ export function App(): React.JSX.Element {
 				<div className="auth-subtitle">
 					{externalRoute?.kind === 'invite'
 						? t('invite.authPrompt')
+						: externalRoute?.kind === 'share'
+							? 'Sign in to open this shared item.'
 						: authStatus === 'loading'
 							? 'Checking session…'
 							: 'Sign in to enable sync'}
 				</div>
 				{externalRoute?.kind === 'invite' ? <div className="auth-hint">{t('invite.emailMatchNotice')}</div> : null}
+				{externalRoute?.kind === 'share' ? <div className="auth-hint">Share links require an authenticated account before access is applied.</div> : null}
 				<div className="auth-mode-row">
 					<button
 						type="button"
@@ -2055,6 +2273,70 @@ export function App(): React.JSX.Element {
 							}}
 						>
 							{t('share.refresh')}
+						</button>
+					) : null}
+					<button type="button" onClick={handleExitExternalRoute}>
+						{t('share.backToApp')}
+					</button>
+				</div>
+			</div>
+		</div>
+	);
+
+	const handleOpenSharedEntity = React.useCallback(async () => {
+		const targetWorkspaceId = shareRouteState.openWorkspaceId;
+		const targetNoteId = shareRouteState.openNoteId;
+		if (targetWorkspaceId) {
+			if (targetWorkspaceId !== authWorkspaceId) {
+				await activateWorkspaceFromSidebar(targetWorkspaceId, { activeSharedFolder: null });
+			} else if (activeWorkspaceSystemKind === 'SHARED_WITH_ME') {
+				setActiveSharedFolder(null);
+				void persistSharedWorkspaceSelection(targetWorkspaceId, null);
+			}
+		}
+		if (targetNoteId) {
+			await refreshNoteShareStateRef.current();
+			setSidebarView('notes');
+			setEditorMode('none');
+			setSelectedNoteId(targetNoteId);
+		}
+		handleExitExternalRoute();
+	}, [activateWorkspaceFromSidebar, activeWorkspaceSystemKind, authWorkspaceId, handleExitExternalRoute, persistSharedWorkspaceSelection, shareRouteState.openNoteId, shareRouteState.openWorkspaceId]);
+
+	const shareRouteView = (
+		<div className="auth-shell">
+			<div className="auth-card">
+				<div className="auth-title">{shareRouteState.label || 'Shared item'}</div>
+				<div className="auth-subtitle">
+					{shareRouteState.status === 'loading'
+						? 'Verifying share link…'
+						: shareRouteState.entityType === 'workspace'
+							? 'Workspace sharing'
+							: 'Note sharing'}
+				</div>
+				{shareRouteState.message ? <div className={shareRouteState.status === 'error' ? 'auth-error' : 'auth-hint'}>{shareRouteState.message}</div> : null}
+				<div className="auth-mode-row">
+					{shareRouteState.status === 'error' ? (
+						<button
+							type="button"
+							onClick={() => {
+								setShareRouteState({
+									status: 'idle',
+									message: null,
+									label: null,
+									entityType: null,
+									openWorkspaceId: null,
+									openNoteId: null,
+								});
+								setShareAttemptKey((value) => value + 1);
+							}}
+						>
+							{t('share.refresh')}
+						</button>
+					) : null}
+					{shareRouteState.status === 'ready' ? (
+						<button type="button" onClick={() => void handleOpenSharedEntity()}>
+							Open {shareRouteState.entityType === 'workspace' ? 'workspace' : 'note'}
 						</button>
 					) : null}
 					<button type="button" onClick={handleExitExternalRoute}>
@@ -2529,6 +2811,11 @@ export function App(): React.JSX.Element {
 
 	const onSaveText = React.useCallback(
 		async (args: { title: string; body: string; richContent: import('@tiptap/core').JSONContent }) => {
+			if (!canEditActiveWorkspace) {
+				showBriefDialog(t('share.roleViewer'));
+				closeCreateEditor();
+				return;
+			}
 			// Empty note guard:
 			// It's possible to create a new note and hit save without typing anything.
 			// In that case we do NOT create a note ID, do NOT create a Yjs doc, and do
@@ -2550,11 +2837,16 @@ export function App(): React.JSX.Element {
 			// We intentionally do NOT auto-open the saved note editor here.
 			closeCreateEditor();
 		},
-		[closeCreateEditor, manager, showBriefDialog]
+		[canEditActiveWorkspace, closeCreateEditor, manager, showBriefDialog, t]
 	);
 
 	const onSaveChecklist = React.useCallback(
 		async (args: { title: string; items: Array<ChecklistItem & { richContent: import('@tiptap/core').JSONContent }> }) => {
+			if (!canEditActiveWorkspace) {
+				showBriefDialog(t('share.roleViewer'));
+				closeCreateEditor();
+				return;
+			}
 			// Checklist save cleanup:
 			// - Remove blank rows before persisting (both active + completed).
 			// - If the checklist is truly empty (no title AND no row text), discard it
@@ -2578,11 +2870,16 @@ export function App(): React.JSX.Element {
 			// We intentionally do NOT auto-open the saved note editor here.
 			closeCreateEditor();
 		},
-		[closeCreateEditor, manager, showBriefDialog]
+		[canEditActiveWorkspace, closeCreateEditor, manager, showBriefDialog, t]
 	);
 
 	const onDeleteSelectedNote = React.useCallback(
 		async (noteId: string) => {
+			const placement = sharedPlacements.find((item) => item.aliasId === noteId);
+			if ((placement && placement.role === 'VIEWER') || (!placement && !canEditActiveWorkspace)) {
+				showBriefDialog(t('share.roleViewer'));
+				return;
+			}
 			// Soft-delete: mark as trashed in the Yjs metadata. The note stays
 			// in the registry and order arrays but is hidden from the main grid.
 			// Server-side cleanup permanently removes it after deleteAfterDays.
@@ -2594,7 +2891,7 @@ export function App(): React.JSX.Element {
 				return null;
 			});
 		},
-		[manager]
+		[canEditActiveWorkspace, manager, sharedPlacements, showBriefDialog, t]
 	);
 
 	React.useEffect(() => {
@@ -2624,8 +2921,9 @@ export function App(): React.JSX.Element {
 
 	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
 	const collapseAllSidebarGroups = React.useCallback(() => {
+		restoreFocusFromHiddenRegion(workspaceMenuRef.current, sidebarEntryButtonRefs.current.workspaces);
 		setSidebarGroupsOpen(CLOSED_SIDEBAR_GROUPS);
-	}, []);
+	}, [restoreFocusFromHiddenRegion]);
 
 	const expandDesktopSidebarForEntry = React.useCallback((entryId: string, isGroup: boolean) => {
 		// Collapsed desktop clicks should first reveal the full sidebar so users
@@ -2689,10 +2987,6 @@ export function App(): React.JSX.Element {
 	// 'unauth'  → show login form (early return)
 	// 'loading' → show full-page splash (early return – no workspace data yet)
 	// 'authed'  → render main app; keep splash overlay until NoteGrid signals ready
-	if (externalRoute?.kind === 'share') {
-		return <PublicSharePage t={t} token={externalRoute.token} onExit={handleExitExternalRoute} />;
-	}
-
 	if (authStatus === 'unauth') return authGateView;
 
 	if (authStatus === 'loading') {
@@ -2708,10 +3002,15 @@ export function App(): React.JSX.Element {
 		);
 	}
 
+	if (externalRoute?.kind === 'share') return shareRouteView;
+
 	if (externalRoute?.kind === 'invite') return inviteRouteView;
 
 	const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
-	const canCreateNotesInActiveWorkspace = Boolean(authWorkspaceId && activeWorkspaceSystemKind !== 'SHARED_WITH_ME');
+	const canCreateNotesInActiveWorkspace = Boolean(authWorkspaceId && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' && canEditActiveWorkspace);
+	const selectedSharedPlacement = selectedNoteId ? sharedPlacements.find((placement) => placement.aliasId === selectedNoteId) ?? null : null;
+	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
+	const canManageSelectedNoteCollaborators = selectedSharedPlacement ? selectedSharedPlacement.role === 'EDITOR' : canEditActiveWorkspace;
 
 	return (
 		<>
@@ -2753,6 +3052,7 @@ export function App(): React.JSX.Element {
 					<>
 						<div className="app-header-toprow mobile-toprow">
 							<button
+								ref={sidebarToggleButtonRef}
 								type="button"
 								className="app-icon-button mobile-sidebar-btn"
 								onClick={toggleSidebar}
@@ -2834,6 +3134,7 @@ export function App(): React.JSX.Element {
 					<>
 						<div className="app-header-left">
 							<button
+								ref={sidebarToggleButtonRef}
 								type="button"
 								className="app-icon-button"
 								onClick={toggleSidebar}
@@ -2917,6 +3218,9 @@ export function App(): React.JSX.Element {
 							return (
 								<div key={entry.id}>
 									<button
+										ref={(node) => {
+											sidebarEntryButtonRefs.current[entry.id] = node;
+										}}
 										type="button"
 										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${entry.id === 'trash' && sidebarView === 'trash' ? ' is-active' : ''}${entry.id === 'notes' && sidebarView === 'notes' ? ' is-active' : ''}`}
 										onClick={() => {
@@ -2928,13 +3232,14 @@ export function App(): React.JSX.Element {
 												return;
 											}
 											if (entry.id === 'workspaces') {
-												setSidebarGroupsOpen((prev) => {
-													const nextOpen = !Boolean(prev.workspaces);
-													if (nextOpen && sidebarWorkspaces.length === 0) {
-														void loadSidebarWorkspaces();
-													}
-													return { ...prev, workspaces: nextOpen };
-												});
+												if (isOpen) {
+													closeWorkspaceSidebarGroup();
+													return;
+												}
+												if (sidebarWorkspaces.length === 0) {
+													void loadSidebarWorkspaces();
+												}
+												setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: true }));
 												return;
 											}
 											if (entry.id === 'trash') {
@@ -2976,7 +3281,7 @@ export function App(): React.JSX.Element {
 
 									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
-											<div className="sidebar-submenu sidebar-workspace-menu" aria-label={t('workspace.listAria')} aria-hidden={!isOpen}>
+											<div ref={workspaceMenuRef} className="sidebar-submenu sidebar-workspace-menu" aria-label={t('workspace.listAria')} aria-hidden={!isOpen}>
 											{sidebarWorkspacesBusy ? (
 													<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 0 }}>{t('common.loading')}</div>
 											) : null}
@@ -2988,14 +3293,14 @@ export function App(): React.JSX.Element {
 											) : null}
 											{sidebarWorkspacesSorted.map((ws, index) => {
 												const isActive = Boolean(authWorkspaceId && ws.id === authWorkspaceId);
-												const canShareWorkspace = (ws.role === 'OWNER' || ws.role === 'ADMIN') && ws.systemKind !== 'SHARED_WITH_ME';
+												const canShareWorkspace = canManageWorkspace(ws.role) && ws.systemKind !== 'SHARED_WITH_ME';
 												const sharedFolderGroupId = `workspace-folders:${ws.id}`;
 												const hasSharedFolders = ws.systemKind === 'SHARED_WITH_ME' && sharedFolderNames.length > 0;
 												const showSharedFolders = hasSharedFolders && Boolean(sidebarGroupsOpen[sharedFolderGroupId]);
 												const itemIndex = (sidebarWorkspacesBusy || sidebarWorkspacesError ? 3 : 0) + index;
 												return (
 													<div key={ws.id} className="sidebar-workspace-group">
-														<div className="sidebar-workspace-row">
+														<div className={`sidebar-workspace-row${canShareWorkspace ? ' has-share-action' : ''}`}>
 															{hasSharedFolders ? (
 																<button
 																	type="button"
@@ -3053,9 +3358,7 @@ export function App(): React.JSX.Element {
 																		>
 																			<FontAwesomeIcon icon={faShareNodes} aria-hidden="true" />
 																		</button>
-																	) : (
-																		<span className="sidebar-workspace-share-placeholder" aria-hidden="true" />
-																	)}
+																	) : null}
 														</div>
 														{showSharedFolders ? (
 															<div className="sidebar-nested-submenu-shell is-open">
@@ -3093,7 +3396,7 @@ export function App(): React.JSX.Element {
 												type="button"
 													className="sidebar-workspace-manage sidebar-submenu-action"
 												onClick={() => {
-													setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: false }));
+													closeWorkspaceSidebarGroup();
 													openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
 												}}
 													style={{ ['--sidebar-item-index' as const]: Math.max(3, sidebarWorkspacesSorted.length + 1) }}
@@ -3240,11 +3543,13 @@ export function App(): React.JSX.Element {
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
 						selectedNoteId={selectedNoteId}
+						canEditWorkspaceContent={canEditActiveWorkspace}
 						sharedNotes={sidebarView === 'trash' ? [] : visibleSharedPlacements}
 						maxCardHeightPx={maxCardHeightPx}
 						// When the trash view is active, NoteGrid switches to rendering trashed notes.
 						showTrashed={sidebarView === 'trash'}
-						onAddCollaborator={openCollaboratorModalForNote}
+						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
+						canReorder={canEditActiveWorkspace}
 						onSelectNote={(id) => {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
@@ -3345,7 +3650,8 @@ export function App(): React.JSX.Element {
 					doc={openDoc}
 					onClose={closeNoteEditor}
 					onDelete={onDeleteSelectedNote}
-					onAddCollaborator={() => openCollaboratorModalForNote(selectedNoteId)}
+					onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
+					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}
 					onShowCompletedChange={(next) => {
@@ -3401,6 +3707,8 @@ export function App(): React.JSX.Element {
 					setInviteWorkspaceTarget(null);
 				}}
 				t={t}
+				authUserId={authUserId}
+				authProfileImage={authProfileImage}
 				workspaceId={inviteWorkspaceTarget?.id ?? authWorkspaceId}
 				workspaceName={inviteWorkspaceTarget?.name ?? activeWorkspaceName}
 			/>
@@ -3410,6 +3718,10 @@ export function App(): React.JSX.Element {
 				onClose={() => setIsShareNotificationsOpen(false)}
 				authUserId={authUserId}
 				onAcceptedPlacement={(args) => void handleAcceptedSharedPlacement(args)}
+				onAcceptedWorkspaceInvite={(workspaceId) => {
+					setIsShareNotificationsOpen(false);
+					void activateWorkspaceFromSidebar(workspaceId, { activeSharedFolder: null });
+				}}
 				onChanged={() => {
 					bumpCollaborationRefreshToken();
 					void refreshNoteShareState();
@@ -3418,7 +3730,7 @@ export function App(): React.JSX.Element {
 
 			<CollaboratorModal
 				isOpen={Boolean(collaboratorModalState)}
-				onClose={() => setCollaboratorModalState(null)}
+				onClose={closeCollaboratorModal}
 				authUserId={authUserId}
 				docId={collaboratorModalState?.docId ?? null}
 				offlineCanManageHint={Boolean(collaboratorModalState && !sharedPlacements.some((item) => item.aliasId === collaboratorModalState.noteId))}

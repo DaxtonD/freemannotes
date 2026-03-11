@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.91 - 2026-03-11
+
+### Added
+- **Workspace sharing and invite management.** Added secure workspace share links, richer invite delivery paths, invitation notifications, workspace member management, and offline-safe invite replay plumbing.
+- **Role-aware workspace access controls.** Added shared workspace role helpers across the client and server so `OWNER`/`ADMIN`/`EDITOR`/`VIEWER` behavior stays consistent for navigation, editing, sharing, and websocket sync.
+- **Release documentation for new interaction paths.** Added targeted comments across the newest sidebar focus handling, rich note-card preview rendering, and editor backdrop guards.
+
+### Changed
+- **Sidebar and modal polish.** The workspace submenu now restores focus safely when hidden, the desktop sidebar flyout is wider, dropdown text sizing is aligned, and workspace share affordances now sit inside the workspace row on desktop and mobile.
+- **Sharing UX.** Workspace and note sharing now support QR/link flows, in-app invite delivery, collaborator/mobile history integration, pending invitation review, and protected handling for system workspaces.
+- **Note preview fidelity.** Note cards now render rich text formatting, list markers, links, and alignment from stored TipTap/Yjs content while flattening headings for compact previews.
+
+### Fixed
+- **Collaborator and invite mobile regressions.** Fixed oversized mobile dropdowns, mobile back-button behavior for collaborator flows, and the more-menu history conflict that could hide the collaborator modal.
+- **Rendering and selection stability.** Fixed the React snapshot loop behind error 185, prevented accidental editor close when text selection ends outside the overlay, and kept note-card checklist text in sync with rich content.
+- **Workspace safety and access correctness.** Prevented deletion of protected Personal and Shared With Me workspaces and enforced read-only behavior for viewer access in editors, cards, and websocket sync.
+
 ## 1.0.9 - 2026-03-10
 
 ### Added

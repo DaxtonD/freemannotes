@@ -41,8 +41,36 @@ const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
 
+const KNOWN_BROKEN_MIGRATION = '20260311000100_owner_editor_viewer_roles';
+const KNOWN_BROKEN_MIGRATION_HINT = 'relation "share_access_token" does not exist';
+
 function getRepoRoot() {
 	return path.resolve(__dirname, '..');
+}
+
+function runPrismaCommand(command, databaseUrl) {
+	return execSync(command, {
+		cwd: getRepoRoot(),
+		stdio: 'pipe',
+		timeout: 300000,
+		env: {
+			...process.env,
+			DATABASE_URL: databaseUrl,
+		},
+	});
+}
+
+function shouldRecoverKnownBrokenMigration(message) {
+	const text = String(message || '');
+	return text.includes('P3018')
+		&& text.includes(`Migration name: ${KNOWN_BROKEN_MIGRATION}`)
+		&& text.includes(KNOWN_BROKEN_MIGRATION_HINT);
+	}
+
+function recoverKnownBrokenMigration(databaseUrl) {
+	console.warn(`[dbInit] Attempting automatic recovery for failed migration ${KNOWN_BROKEN_MIGRATION}`);
+	runPrismaCommand(`npx prisma migrate resolve --rolled-back ${KNOWN_BROKEN_MIGRATION}`, databaseUrl);
+	console.warn(`[dbInit] Marked ${KNOWN_BROKEN_MIGRATION} as rolled back; retrying migrate deploy`);
 }
 
 function hasCommittedMigrations() {
@@ -173,18 +201,7 @@ function syncSchema(databaseUrl) {
 	console.info(`[dbInit] Syncing schema with database (${label})...`);
 
 	try {
-		// ── Execute the chosen Prisma command as a child process ─────────
-		// We pass DATABASE_URL explicitly in the environment to ensure Prisma
-		// reads the correct connection string regardless of .env file state.
-		const output = execSync(command, {
-			cwd: getRepoRoot(),
-			stdio: 'pipe',
-			timeout: 300000, // 5-minute timeout for slow first-run migrations.
-			env: {
-				...process.env,
-				DATABASE_URL: databaseUrl,
-			},
-		});
+		const output = runPrismaCommand(command, databaseUrl);
 
 		// ── Parse and log the output ─────────────────────────────────────
 		const text = output.toString().trim();
@@ -207,6 +224,25 @@ function syncSchema(databaseUrl) {
 		console.warn('[dbInit] ' + message);
 
 		if (isDeploy) {
+			if (shouldRecoverKnownBrokenMigration(message)) {
+				try {
+					recoverKnownBrokenMigration(databaseUrl);
+					const retryOutput = runPrismaCommand(command, databaseUrl);
+					const retryText = retryOutput.toString().trim();
+					if (retryText.includes('already in sync') || retryText.includes('No pending migrations')) {
+						console.info('[dbInit] Schema is already in sync — no changes applied');
+					} else {
+						console.info('[dbInit] Schema changes applied successfully after migration recovery');
+						if (retryText) {
+							console.info('[dbInit] Prisma output:\n' + retryText);
+						}
+					}
+					return;
+				} catch (recoveryErr) {
+					const recoveryMessage = recoveryErr.stderr ? recoveryErr.stderr.toString().trim() : recoveryErr.message;
+					console.warn('[dbInit] Automatic migration recovery failed: ' + recoveryMessage);
+				}
+			}
 			console.warn('[dbInit] This run was using `prisma migrate deploy`.');
 			console.warn('[dbInit] Ensure migration files exist in prisma/migrations/.');
 			console.warn('[dbInit] To create a migration: npx prisma migrate dev --name <label>');

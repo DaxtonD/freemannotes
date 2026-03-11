@@ -1,4 +1,5 @@
 import React from 'react';
+import type { JSONContent } from '@tiptap/core';
 import * as Y from 'yjs';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
@@ -13,6 +14,12 @@ import { normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
 import { getDeviceId } from '../../core/deviceId';
 import { useI18n } from '../../core/i18n';
 import {
+	createRichTextDocFromPlainText,
+	getChecklistItemPlainText,
+	getChecklistItemRichPreviewJson,
+	getTextNoteRichPreviewJson,
+} from '../../core/richText';
+import {
 	getNoteCardCompletedExpanded,
 	setNoteCardCompletedExpanded,
 } from '../../core/noteCardCompletedExpansion';
@@ -22,6 +29,7 @@ import styles from './NoteCard.module.css';
 export type NoteCardProps = {
 	noteId: string;
 	doc: Y.Doc;
+	canEdit?: boolean;
 	hasPendingSync?: boolean;
 	isMoreMenuOpen?: boolean;
 	onOpen?: () => void;
@@ -34,6 +42,8 @@ export type NoteCardProps = {
 };
 
 type NoteType = 'text' | 'checklist';
+
+type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null };
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
 	if (!target || !(target instanceof HTMLElement)) return false;
@@ -100,12 +110,13 @@ function useMetadataString(metadata: Y.Map<any>, key: string): string {
 }
 
 // Subscribe to checklist binding updates from Y.Array.
-function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
+function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardChecklistItem[] {
 	return yarray
 		.toArray()
 		.map((m) => ({
 			id: String(m.get('id') ?? ''),
-			text: String(m.get('text') ?? ''),
+			text: getChecklistItemPlainText(m),
+			richContent: getChecklistItemRichPreviewJson(m),
 			completed: Boolean(m.get('completed')),
 			parentId:
 				typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
@@ -113,6 +124,117 @@ function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly Checkl
 					: null,
 		}))
 		.filter((item) => item.id.length > 0);
+}
+
+function useTextNoteRichPreview(doc: Y.Doc, plainText: string): JSONContent {
+	const cacheRef = React.useRef<{
+		signature: string;
+		value: JSONContent;
+	} | null>(null);
+
+	return React.useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			doc.on('afterTransaction', observer);
+			return () => doc.off('afterTransaction', observer);
+		},
+		() => {
+			const nextValue = getTextNoteRichPreviewJson(doc) ?? createRichTextDocFromPlainText(plainText, 'full');
+			const signature = JSON.stringify(nextValue);
+			// useSyncExternalStore must return the same snapshot object when content has
+			// not changed, otherwise React treats every render as a fresh update cycle.
+			if (cacheRef.current && cacheRef.current.signature === signature) {
+				return cacheRef.current.value;
+			}
+			cacheRef.current = { signature, value: nextValue };
+			return nextValue;
+		},
+		() => {
+			const nextValue = getTextNoteRichPreviewJson(doc) ?? createRichTextDocFromPlainText(plainText, 'full');
+			const signature = JSON.stringify(nextValue);
+			if (cacheRef.current && cacheRef.current.signature === signature) {
+				return cacheRef.current.value;
+			}
+			cacheRef.current = { signature, value: nextValue };
+			return nextValue;
+		}
+	);
+}
+
+function getSafeHref(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	const href = value.trim();
+	if (!href || /^javascript:/i.test(href)) return undefined;
+	return href;
+}
+
+function applyMarks(node: JSONContent, content: React.ReactNode, key: string): React.ReactNode {
+	let result = content;
+	for (const [index, mark] of (node.marks ?? []).entries()) {
+		if (mark.type === 'bold') result = <strong key={`${key}:bold:${index}`}>{result}</strong>;
+		if (mark.type === 'italic') result = <em key={`${key}:italic:${index}`}>{result}</em>;
+		if (mark.type === 'underline') result = <u key={`${key}:underline:${index}`}>{result}</u>;
+		if (mark.type === 'link') {
+			const href = getSafeHref((mark.attrs as { href?: unknown } | undefined)?.href);
+			result = href ? (
+				<a key={`${key}:link:${index}`} className={styles.richLink} href={href} target="_blank" rel="noreferrer noopener">
+					{result}
+				</a>
+			) : result;
+		}
+	}
+	return result;
+}
+
+function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string): React.ReactNode[] {
+	return nodes.flatMap((node, index) => {
+		const key = `${keyPrefix}:${index}`;
+		if (node.type === 'hardBreak') return [<br key={key} />];
+		if (node.type !== 'text' || !node.text) return [];
+		return [<React.Fragment key={key}>{applyMarks(node, node.text, key)}</React.Fragment>];
+	});
+}
+
+function renderBlockNode(block: JSONContent, key: string, inListItem = false): React.ReactNode {
+	const textAlign = typeof (block.attrs as { textAlign?: unknown } | undefined)?.textAlign === 'string'
+		? String((block.attrs as { textAlign?: string }).textAlign)
+		: undefined;
+	const style = textAlign ? { textAlign } : undefined;
+
+	if (block.type === 'paragraph' || block.type === 'heading') {
+		// Headings are intentionally flattened to paragraph-sized blocks so note-card
+		// previews keep editor formatting without blowing out the compact layout.
+		const children = renderInlineNodes(block.content ?? [], key);
+		if (children.length === 0) return <div key={key} className={inListItem ? styles.richListParagraph : styles.richBlock} style={style}><br /></div>;
+		return <div key={key} className={inListItem ? styles.richListParagraph : styles.richBlock} style={style}>{children}</div>;
+	}
+
+	if (block.type === 'bulletList' || block.type === 'orderedList') {
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`)).filter(Boolean);
+		if (items.length === 0) return null;
+		const ListTag = block.type === 'orderedList' ? 'ol' : 'ul';
+		return <ListTag key={key} className={block.type === 'orderedList' ? styles.richOrderedList : styles.richList}>{items}</ListTag>;
+	}
+
+	if (block.type === 'listItem') {
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true)).filter(Boolean);
+		if (children.length === 0) return null;
+		return <li key={key} className={styles.richListItem}>{children}</li>;
+	}
+
+	if (Array.isArray(block.content) && block.content.length > 0) {
+		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, inListItem)).filter(Boolean);
+		if (children.length === 0) return null;
+		return <React.Fragment key={key}>{children}</React.Fragment>;
+	}
+
+	return null;
+}
+
+function renderRichPreview(json: JSONContent | null | undefined): React.ReactNode {
+	if (!json?.content) return null;
+	const blocks = json.content.map((block, index) => renderBlockNode(block, `block:${index}`)).filter(Boolean);
+	return blocks.length > 0 ? blocks : null;
 }
 
 function updateChecklistItemById(
@@ -148,7 +270,7 @@ function updateChecklistItemById(
 	else apply();
 }
 
-function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
+function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardChecklistItem[] {
 	const cacheRef = React.useRef<{
 		yarray: Y.Array<Y.Map<any>>;
 		items: readonly ChecklistItem[];
@@ -183,6 +305,7 @@ function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[
 
 export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const { t } = useI18n();
+	const canEdit = props.canEdit !== false;
 	// metadata.type controls note rendering mode.
 	const metadata = React.useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const typeValue = useMetadataString(metadata, 'type');
@@ -192,6 +315,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const content = useOptionalYTextValue(
 		React.useCallback(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type])
 	);
+	const richContent = useTextNoteRichPreview(props.doc, content);
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 	const checklistItems = useChecklistItems(checklistArray);
 	const normalizedItems = React.useMemo(() => normalizeChecklistHierarchy(checklistItems), [checklistItems]);
@@ -426,7 +550,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 			{type === 'text' ? (
 				<div className={styles.body}>
-					<div className={styles.contentPreview}>{content}</div>
+					<div className={styles.contentPreview}>{renderRichPreview(richContent) ?? content}</div>
 				</div>
 			) : (
 				<>
@@ -438,12 +562,18 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 										type="checkbox"
 										className={styles.checklistCheckbox}
 										checked={item.completed}
+										disabled={!canEdit}
 										onPointerDown={(e) => e.stopPropagation()}
 										onPointerUp={(e) => e.stopPropagation()}
 										onClick={(e) => e.stopPropagation()}
-										onChange={(e) => updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked })}
+										onChange={(e) => {
+											if (!canEdit) return;
+											updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
+										}}
 									/>
-									<span className={styles.checklistText} data-checklist-text-id={item.id}>{item.text}</span>
+									<div className={styles.checklistText} data-checklist-text-id={item.id}>
+										{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text)) ?? item.text}
+									</div>
 								</li>
 							))}
 						</ul>
@@ -470,12 +600,18 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 												type="checkbox"
 												className={styles.checklistCheckbox}
 												checked={item.completed}
+												disabled={!canEdit}
 												onPointerDown={(e) => e.stopPropagation()}
 												onPointerUp={(e) => e.stopPropagation()}
 												onClick={(e) => e.stopPropagation()}
-											onChange={(e) => updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked })}
+												onChange={(e) => {
+													if (!canEdit) return;
+													updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
+												}}
 											/>
-											<span className={styles.checklistTextCompleted} data-checklist-text-id={item.id}>{item.text}</span>
+											<div className={styles.checklistTextCompleted} data-checklist-text-id={item.id}>
+												{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text)) ?? item.text}
+											</div>
 										</li>
 									))}
 								</ul>

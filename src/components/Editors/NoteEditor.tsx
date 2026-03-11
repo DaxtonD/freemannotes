@@ -30,6 +30,7 @@ import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
 	ensureTextNoteRichContent,
+	getChecklistItemPlainText,
 	getChecklistItemRichPreviewJson,
 	replaceRichFragmentFromJson,
 	setYTextValue,
@@ -51,6 +52,7 @@ export type NoteEditorProps = {
 	onClose: () => void;
 	onDelete: (noteId: string) => Promise<void>;
 	onAddCollaborator?: () => void;
+	readOnly?: boolean;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
 	allowQuickDelete?: boolean;
@@ -96,7 +98,7 @@ function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly Checkl
 		.toArray()
 		.map((m) => ({
 			id: String(m.get('id') ?? ''),
-			text: String(m.get('text') ?? ''),
+			text: getChecklistItemPlainText(m),
 			completed: Boolean(m.get('completed')),
 			parentId:
 				typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
@@ -394,6 +396,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		return false;
 	};
 	const { t } = useI18n();
+	const readOnly = props.readOnly === true;
 	const keyboardVisibilityPaddingPx = 88;
 	const [isModified, setIsModified] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
@@ -1022,7 +1025,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		for (const m of arr) {
 			const id = String(m.get('id') ?? '').trim();
 			if (!id) continue;
-			const text = String(m.get('text') ?? '');
+			const text = getChecklistItemPlainText(m);
 			if (text.trim().length === 0) removedIds.add(id);
 		}
 		if (removedIds.size === 0) return;
@@ -1058,6 +1061,19 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		pruneEmptyChecklistRows();
 		props.onClose();
 	}, [pruneEmptyChecklistRows, props]);
+
+	const backdropPressStartedRef = React.useRef(false);
+	const handleOverlayBackdropPressStart = React.useCallback((event: React.PointerEvent | React.MouseEvent): void => {
+		// Only close on clicks that both start and end on the backdrop. That prevents
+		// text-selection drags from dismissing the editor when the mouse-up lands outside.
+		backdropPressStartedRef.current = event.target === event.currentTarget;
+	}, []);
+	const handleOverlayBackdropClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>, close: () => void): void => {
+		if (mediaDockOpen) return;
+		const shouldClose = backdropPressStartedRef.current && event.target === event.currentTarget;
+		backdropPressStartedRef.current = false;
+		if (shouldClose) close();
+	}, [mediaDockOpen]);
 
 	const renderChecklistClone = React.useCallback(
 		(
@@ -1109,8 +1125,90 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		[activeChecklistRowId, activeItems, checklistMapsById, isCoarsePointer, t]
 	);
 
+	if (readOnly) {
+		return (
+			<div
+				className={styles.fullscreenOverlay}
+				role="presentation"
+				onPointerDownCapture={handleOverlayBackdropPressStart}
+				onMouseDownCapture={handleOverlayBackdropPressStart}
+				onClick={(event) => handleOverlayBackdropClick(event, props.onClose)}
+			>
+				<section
+					aria-label={`Editor ${props.noteId}`}
+					className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}
+					onClick={(event) => event.stopPropagation()}
+				>
+					<header className={styles.editorTopBar}>
+						<button type="button" className={styles.closeIconButton} onClick={props.onClose} aria-label={t('common.close')}>
+							✕
+						</button>
+					</header>
+					<input
+						className={styles.editorTitleInput}
+						value={title}
+						placeholder={t('editors.titlePlaceholder')}
+						readOnly
+					/>
+					{type === 'text' && richContentFragment ? (
+						<div className={styles.fullBodyFieldContainer}>
+							<RichTextEditor
+								variant="full"
+								fragment={richContentFragment}
+								placeholder={t('editors.startTyping')}
+								hideToolbar
+								editable={false}
+								viewportClassName={mobileKeyboardOpen ? styles.editorViewportKeyboardOpen : undefined}
+								contentClassName={styles.fullBodyFieldRich}
+							/>
+						</div>
+					) : null}
+					{type === 'checklist' ? (
+						<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
+							<div ref={checklistScrollRef} className={styles.checklistScrollArea}>
+								<ul className={styles.checklistList}>
+									{activeItems.map((item) => (
+										<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+											<div className={styles.dragHandle} aria-hidden="true">
+												<FontAwesomeIcon icon={faGripVertical} />
+											</div>
+											<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly />
+											<div className={styles.checklistRowPreview}>{item.text || '\u00A0'}</div>
+										</li>
+									))}
+								</ul>
+								{completedItems.length > 0 ? (
+									<section className={styles.completedSection}>
+										<div className={styles.completedToggle}>{completedItems.length} {t('editors.completedItems')}</div>
+										<ul className={styles.checklistList}>
+											{completedItems.map((item) => (
+												<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+													<div className={styles.dragHandle} aria-hidden="true">
+														<FontAwesomeIcon icon={faGripVertical} />
+													</div>
+													<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly />
+													<div className={styles.checklistRowPreview}>{item.text || '\u00A0'}</div>
+												</li>
+											))}
+										</ul>
+									</section>
+								) : null}
+							</div>
+						</section>
+					) : null}
+				</section>
+			</div>
+		);
+	}
+
 	return (
-		<div className={styles.fullscreenOverlay} role="presentation" onClick={mediaDockOpen ? undefined : handleClose}>
+		<div
+			className={styles.fullscreenOverlay}
+			role="presentation"
+			onPointerDownCapture={handleOverlayBackdropPressStart}
+			onMouseDownCapture={handleOverlayBackdropPressStart}
+			onClick={(event) => handleOverlayBackdropClick(event, handleClose)}
+		>
 			<section
 				aria-label={`Editor ${props.noteId}`}
 				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}

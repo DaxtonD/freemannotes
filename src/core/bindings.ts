@@ -1,4 +1,5 @@
 import * as Y from 'yjs';
+import { getChecklistItemPlainText } from './richText';
 
 export type TextChangeSource = 'editor' | 'yjs';
 
@@ -182,7 +183,7 @@ export class ChecklistModel {
 			.toArray()
 			.map((m) => ({
 				id: String(m.get('id') ?? ''),
-				text: String(m.get('text') ?? ''),
+				text: getChecklistItemPlainText(m),
 				completed: Boolean(m.get('completed')),
 				parentId:
 					typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
