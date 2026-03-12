@@ -11,6 +11,7 @@ type CachedCollaborator = {
 	id: string;
 	userId: string;
 	role: CollaboratorRole;
+	accessSource?: 'direct' | 'workspace';
 	revokedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
@@ -87,6 +88,7 @@ type CollaboratorRow = {
 	collaboratorId: string;
 	collaboratorUserId: string;
 	role: CollaboratorRole;
+	accessSource?: 'direct' | 'workspace';
 	revokedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
@@ -346,6 +348,7 @@ export async function cacheCollaboratorSnapshot(args: { userId: string; docId: s
 				collaboratorId: collaborator.id,
 				collaboratorUserId: collaborator.userId,
 				role: asRole(collaborator.role),
+				accessSource: collaborator.accessSource === 'workspace' ? 'workspace' : 'direct',
 				revokedAt: collaborator.revokedAt ? asIsoString(collaborator.revokedAt) : null,
 				createdAt: asIsoString(collaborator.createdAt),
 				updatedAt: asIsoString(collaborator.updatedAt, asIsoString(collaborator.createdAt)),
@@ -462,6 +465,7 @@ export async function readCachedCollaboratorSnapshot(userId: string, docId: stri
 					id: row.collaboratorId,
 					userId: row.collaboratorUserId,
 					role: asRole(row.role),
+					accessSource: row.accessSource === 'workspace' ? 'workspace' : 'direct',
 					revokedAt: row.revokedAt ? asIsoString(row.revokedAt) : null,
 					createdAt: asIsoString(row.createdAt),
 					updatedAt: asIsoString(row.updatedAt, asIsoString(row.createdAt)),

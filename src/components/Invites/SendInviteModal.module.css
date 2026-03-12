@@ -602,7 +602,7 @@
 
 	.sectionCard .field {
 		display: grid;
-		grid-template-columns: 64px minmax(0, 1fr);
+		grid-template-columns: 128px minmax(0, 1fr);
 		align-items: center;
 		gap: 8px;
 	}

@@ -76,6 +76,10 @@ function renderNoteRole(role: NoteShareRole, t: (key: string) => string): string
 	return role === 'VIEWER' ? t('share.roleViewer') : t('share.roleEditor');
 }
 
+function isWorkspaceInheritedCollaborator(collaborator: NoteShareCollaboratorSnapshot['collaborators'][number]): boolean {
+	return collaborator.accessSource === 'workspace';
+}
+
 export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const { t } = useI18n();
 	const [busy, setBusy] = React.useState(false);
@@ -551,19 +555,20 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 													<div className={styles.rowCopy}>
 														<div className={styles.rowPrimary}>{collaborator.user?.name || collaborator.user?.email || collaborator.userId}</div>
 														<div className={styles.rowSecondary}>{collaborator.user?.email || renderNoteRole(collaborator.role, t)}</div>
+														{isWorkspaceInheritedCollaborator(collaborator) ? <div className={styles.rowTertiary}>{t('share.inheritedWorkspaceAccess')}</div> : null}
 													</div>
 												</div>
-												{snapshot.canManage ? (
+												{snapshot.canManage && !isWorkspaceInheritedCollaborator(collaborator) ? (
 													<select className={`${styles.compactSelect} ${styles.memberRoleSelect}`} value={collaborator.role} onChange={(event) => void handleRoleChange(collaborator.id, collaborator.userId, event.target.value === 'VIEWER' ? 'VIEWER' : 'EDITOR')} disabled={busy || loading}>
 														<option value="EDITOR">{t('share.roleEditor')}</option>
 														<option value="VIEWER">{t('share.roleViewer')}</option>
 													</select>
-												) : collaborator.userId === snapshot.currentUserId ? (
+												) : collaborator.userId === snapshot.currentUserId && !isWorkspaceInheritedCollaborator(collaborator) ? (
 													<button type="button" className={`${styles.secondaryButton} ${styles.memberActionButton}`} onClick={() => void handleRemove()} disabled={busy || !snapshot.selfCollaboratorId}>
 														{t('editors.remove')}
 													</button>
 												) : null}
-												{snapshot.canManage ? (
+												{snapshot.canManage && !isWorkspaceInheritedCollaborator(collaborator) ? (
 													<button type="button" className={`${styles.secondaryButton} ${styles.memberRemoveButton}`} onClick={() => void handleRevoke(collaborator.id)} disabled={busy || loading}>
 														{t('share.revoke')}
 													</button>

@@ -1,4 +1,5 @@
 import React from 'react';
+import { getPasswordStrengthLabel, getPasswordStrengthScore } from '../../core/passwordStrength';
 import styles from './UserManagementModal.module.css';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,6 +97,11 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 	const [createName, setCreateName] = React.useState('');
 	const [createPassword, setCreatePassword] = React.useState('');
 	const [createRole, setCreateRole] = React.useState<'USER' | 'ADMIN'>('USER');
+	const [resetPasswordTarget, setResetPasswordTarget] = React.useState<{ userId: string; email: string } | null>(null);
+	const [resetPasswordValue, setResetPasswordValue] = React.useState('');
+	const [resetPasswordConfirm, setResetPasswordConfirm] = React.useState('');
+	const resetPasswordStrengthScore = React.useMemo(() => getPasswordStrengthScore(resetPasswordValue), [resetPasswordValue]);
+	const resetPasswordStrengthLabel = React.useMemo(() => getPasswordStrengthLabel(resetPasswordValue), [resetPasswordValue]);
 
 	const loadUsers = React.useCallback(async () => {
 		// Loads the full user list from the server.
@@ -161,19 +167,44 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 		}
 	}, [loadUsers, serverAdminUserId]);
 
-	const resetPassword = React.useCallback(async (userId: string) => {
-		// Password reset returns a temporary password that the admin must
-		// communicate to the user out-of-band.
+	const openResetPasswordModal = React.useCallback((userId: string, email: string) => {
+		// Reset each draft when the nested modal opens so one admin action cannot
+		// leak a stale password into the next user.
+		setError(null);
+		setResetPasswordTarget({ userId, email });
+		setResetPasswordValue('');
+		setResetPasswordConfirm('');
+	}, []);
+
+	const submitResetPassword = React.useCallback(async () => {
+		if (!resetPasswordTarget) return;
+		// Mirror the shared server policy client-side so mismatched or weak values
+		// are rejected before the reset request is sent.
+		if (resetPasswordValue !== resetPasswordConfirm) {
+			setError('Passwords do not match');
+			return;
+		}
+		if (resetPasswordStrengthScore < 2) {
+			setError('Password is too weak');
+			return;
+		}
+		setBusy(true);
 		setError(null);
 		try {
-			const data = await fetchJson<{ tempPassword: string }>(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
+			await fetchJson(`/api/admin/users/${encodeURIComponent(resetPasswordTarget.userId)}/reset-password`, {
 				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ password: resetPasswordValue }),
 			});
-			window.alert(`Temporary password: ${data.tempPassword}`);
+			setResetPasswordTarget(null);
+			setResetPasswordValue('');
+			setResetPasswordConfirm('');
 		} catch (err) {
 			setError(err instanceof Error ? err.message : 'Failed to reset password');
+		} finally {
+			setBusy(false);
 		}
-	}, []);
+	}, [resetPasswordConfirm, resetPasswordStrengthScore, resetPasswordTarget, resetPasswordValue]);
 
 	const deleteUser = React.useCallback(async (userId: string, email: string) => {
 		// Destructive action: confirm first.
@@ -300,7 +331,7 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 								</div>
 
 								<div className={styles.actions}>
-									<button type="button" className={styles.actionButton} onClick={() => void resetPassword(u.id)} disabled={busy}>
+									<button type="button" className={styles.actionButton} onClick={() => openResetPasswordModal(u.id, u.email)} disabled={busy}>
 										Reset password
 									</button>
 									<button
@@ -360,6 +391,45 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 					</button>
 				</footer>
 			</section>
+			{resetPasswordTarget ? (
+				<div className={styles.resetPasswordOverlay} role="presentation" onClick={(event) => {
+					event.stopPropagation();
+					setResetPasswordTarget(null);
+				}}>
+					<section className={styles.resetPasswordModal} role="dialog" aria-modal="true" aria-label="Reset password" onClick={(e) => e.stopPropagation()}>
+						<header className={styles.header}>
+							<div>
+								<h3 className={styles.sectionTitle}>Reset password</h3>
+								<div className={styles.name}>{resetPasswordTarget.email}</div>
+							</div>
+							<button type="button" className={styles.iconButton} onClick={() => setResetPasswordTarget(null)} aria-label="Close">
+								✕
+							</button>
+						</header>
+						<div className={styles.resetPasswordBody}>
+							<label className={styles.fieldLabel}>
+								<span>New password</span>
+								<input className={styles.input} type="password" value={resetPasswordValue} onChange={(e) => setResetPasswordValue(e.target.value)} disabled={busy} />
+							</label>
+							<div className={styles.passwordStrength} aria-live="polite">
+								<div className={styles.passwordStrengthBar} aria-hidden="true">
+									<span className={`${styles.passwordStrengthFill} ${styles[`passwordStrength${resetPasswordStrengthLabel}`]}`} style={{ width: `${Math.max(8, resetPasswordStrengthScore * 25)}%` }} />
+								</div>
+								<div className={styles.passwordStrengthCopy}>Password strength: {resetPasswordStrengthLabel}</div>
+							</div>
+							<label className={styles.fieldLabel}>
+								<span>Confirm password</span>
+								<input className={styles.input} type="password" value={resetPasswordConfirm} onChange={(e) => setResetPasswordConfirm(e.target.value)} disabled={busy} />
+							</label>
+							{resetPasswordConfirm && resetPasswordValue !== resetPasswordConfirm ? <div className={styles.error}>Passwords do not match</div> : null}
+						</div>
+						<footer className={styles.footer}>
+							<button type="button" className={styles.closeButton} onClick={() => setResetPasswordTarget(null)} disabled={busy}>Cancel</button>
+							<button type="button" className={styles.refreshButton} onClick={() => void submitResetPassword()} disabled={busy}>Save password</button>
+						</footer>
+					</section>
+				</div>
+			) : null}
 		</div>
 	);
 }

@@ -28,6 +28,7 @@ export type WorkspaceInviteLink = {
 	inviteId?: string;
 	inviteUrl: string;
 	expiresAt: string;
+	identifier?: string;
 	email: string;
 	role: WorkspaceInviteRole;
 	sentEmail: boolean;
@@ -68,6 +69,8 @@ type PendingShareLinkRequest = {
 
 const NOTE_SHARE_CACHE_KEY = 'freemannotes.share.note-links.v2';
 const WORKSPACE_SHARE_CACHE_KEY = 'freemannotes.share.workspace-links.v1';
+// Workspace invite cache keys moved to v2 when invite lookup expanded from
+// email-only input to raw identifiers (username or email).
 const WORKSPACE_INVITE_CACHE_KEY = 'freemannotes.share.workspace-invites.v2';
 const PENDING_SHARE_QUEUE_KEY = 'freemannotes.share.pending-links.v1';
 const SHARE_LINK_EVENT = 'freemannotes:share-link-ready';
@@ -79,6 +82,10 @@ function normalizeId(value: unknown): string {
 
 function normalizeEmail(value: unknown): string {
 	return String(value ?? '').trim().toLowerCase();
+}
+
+function normalizeIdentifier(value: unknown): string {
+	return String(value ?? '').trim();
 }
 
 function normalizeExpiryDays(value: unknown): ShareExpiryDays {
@@ -358,39 +365,39 @@ export async function ensureDocShareLink(docId: string, opts?: { forceRefresh?: 
 	return ensureNoteShareLink({ userId: null, docId, permission: 'VIEWER', expiresInDays: 7, forceRefresh: opts?.forceRefresh });
 }
 
-function buildWorkspaceInviteCacheKey(workspaceId: string, email: string, role: WorkspaceInviteRole): string {
-	return `${workspaceId}::${normalizeEmail(email)}::${role}`;
+function buildWorkspaceInviteCacheKey(workspaceId: string, identifier: string, role: WorkspaceInviteRole): string {
+	return `${workspaceId}::${normalizeIdentifier(identifier).toLowerCase()}::${role}`;
 }
 
-export function readCachedWorkspaceInviteLink(args: { workspaceId: string; email: string; role: WorkspaceInviteRole }): WorkspaceInviteLink | null {
+export function readCachedWorkspaceInviteLink(args: { workspaceId: string; identifier: string; role: WorkspaceInviteRole }): WorkspaceInviteLink | null {
 	const workspaceId = normalizeId(args.workspaceId);
-	const email = normalizeEmail(args.email);
-	if (!workspaceId || !email) return null;
+	const identifier = normalizeIdentifier(args.identifier);
+	if (!workspaceId || !identifier) return null;
 	const map = readCacheMap<WorkspaceInviteLink>(WORKSPACE_INVITE_CACHE_KEY);
-	return map[buildWorkspaceInviteCacheKey(workspaceId, email, args.role)] || null;
+	return map[buildWorkspaceInviteCacheKey(workspaceId, identifier, args.role)] || null;
 }
 
-function writeCachedWorkspaceInviteLink(args: { workspaceId: string; email: string; role: WorkspaceInviteRole }, link: WorkspaceInviteLink): void {
+function writeCachedWorkspaceInviteLink(args: { workspaceId: string; identifier: string; role: WorkspaceInviteRole }, link: WorkspaceInviteLink): void {
 	const workspaceId = normalizeId(args.workspaceId);
-	const email = normalizeEmail(args.email);
-	if (!workspaceId || !email) return;
+	const identifier = normalizeIdentifier(args.identifier);
+	if (!workspaceId || !identifier) return;
 	const map = readCacheMap<WorkspaceInviteLink>(WORKSPACE_INVITE_CACHE_KEY);
-	map[buildWorkspaceInviteCacheKey(workspaceId, email, args.role)] = link;
+	map[buildWorkspaceInviteCacheKey(workspaceId, identifier, args.role)] = link;
 	writeCacheMap(WORKSPACE_INVITE_CACHE_KEY, map);
 }
 
 async function requestWorkspaceInviteLink(args: {
 	workspaceId: string;
-	email: string;
+	identifier: string;
 	role: WorkspaceInviteRole;
 	sendEmail: boolean;
 }): Promise<WorkspaceInviteLink> {
 	const workspaceId = normalizeId(args.workspaceId);
-	const email = normalizeEmail(args.email);
+	const identifier = normalizeIdentifier(args.identifier);
 	if (!workspaceId) throw new Error('Missing workspaceId');
-	if (!email) throw new Error('Missing email');
+	if (!identifier) throw new Error('Missing identifier');
 	if (isOffline()) {
-		const cached = readCachedWorkspaceInviteLink({ workspaceId, email, role: args.role });
+		const cached = readCachedWorkspaceInviteLink({ workspaceId, identifier, role: args.role });
 		if (cached) return cached;
 		throw new Error('Invite link unavailable while offline');
 	}
@@ -399,50 +406,52 @@ async function requestWorkspaceInviteLink(args: {
 		inviteUrl?: string;
 		expiresAt?: string;
 		email?: string;
+		identifier?: string;
 		role?: WorkspaceInviteRole;
 		sentEmail?: boolean;
 		deliveredInApp?: boolean;
 	}>(`/api/workspaces/${encodeURIComponent(workspaceId)}/invites`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ email, role: args.role, sendEmail: args.sendEmail }),
+		body: JSON.stringify({ identifier, role: args.role, sendEmail: args.sendEmail }),
 	});
 	const role = normalizeWorkspaceInviteRole(body.role || args.role);
 	const next: WorkspaceInviteLink = {
 		inviteId: typeof body.inviteId === 'string' ? body.inviteId : undefined,
 		inviteUrl: typeof body.inviteUrl === 'string' ? body.inviteUrl : '',
 		expiresAt: typeof body.expiresAt === 'string' ? body.expiresAt : '',
-		email: normalizeEmail(body.email || email),
+		identifier,
+		email: normalizeEmail(body.email || identifier),
 		role,
 		sentEmail: Boolean(body.sentEmail),
 		deliveredInApp: Boolean(body.deliveredInApp),
 	};
 	if (!next.inviteUrl || !next.expiresAt) throw new Error('Missing invite link');
-	writeCachedWorkspaceInviteLink({ workspaceId, email: next.email, role }, next);
+	writeCachedWorkspaceInviteLink({ workspaceId, identifier, role }, next);
 	return next;
 }
 
 export async function ensureWorkspaceInviteLink(args: {
 	workspaceId: string;
-	email: string;
+	identifier: string;
 	role: WorkspaceInviteRole;
 	forceRefresh?: boolean;
 }): Promise<WorkspaceInviteLink> {
 	const workspaceId = normalizeId(args.workspaceId);
-	const email = normalizeEmail(args.email);
-	const cached = readCachedWorkspaceInviteLink({ workspaceId, email, role: args.role });
+	const identifier = normalizeIdentifier(args.identifier);
+	const cached = readCachedWorkspaceInviteLink({ workspaceId, identifier, role: args.role });
 	if (!args.forceRefresh && cached && isUsableExpiry(cached.expiresAt)) {
 		return cached;
 	}
-	return requestWorkspaceInviteLink({ workspaceId, email, role: args.role, sendEmail: false });
+	return requestWorkspaceInviteLink({ workspaceId, identifier, role: args.role, sendEmail: false });
 }
 
 export async function sendWorkspaceInviteEmail(args: {
 	workspaceId: string;
-	email: string;
+	identifier: string;
 	role: WorkspaceInviteRole;
 }): Promise<WorkspaceInviteLink> {
-	return requestWorkspaceInviteLink({ workspaceId: args.workspaceId, email: args.email, role: args.role, sendEmail: true });
+	return requestWorkspaceInviteLink({ workspaceId: args.workspaceId, identifier: args.identifier, role: args.role, sendEmail: true });
 }
 
 export async function getShareTokenMetadata(token: string): Promise<ShareTokenMetadata> {

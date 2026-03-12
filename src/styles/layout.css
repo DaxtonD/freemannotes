@@ -345,6 +345,50 @@
 	background: color-mix(in srgb, var(--color-surface-2) 65%, transparent);
 }
 
+.auth-password-strength {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	font-size: var(--font-size-xs);
+	color: var(--color-text-muted);
+}
+
+.auth-password-strength-bar {
+	width: 100%;
+	height: 8px;
+	border-radius: 999px;
+	background: var(--color-surface-2);
+	overflow: hidden;
+	border: 1px solid var(--color-border);
+}
+
+.auth-password-strength-fill {
+	display: block;
+	height: 100%;
+	border-radius: inherit;
+	transition: width 140ms ease, background-color 140ms ease;
+}
+
+.auth-password-strength-weak {
+	background: #cc5a4b;
+}
+
+.auth-password-strength-fair {
+	background: #d28b2d;
+}
+
+.auth-password-strength-good {
+	background: #6b9d3d;
+}
+
+.auth-password-strength-strong {
+	background: #2e9f6b;
+}
+
+.auth-password-strength-copy {
+	line-height: 1.3;
+}
+
 .auth-hint {
 	font-size: var(--font-size-xs);
 	color: var(--color-text-muted);
