@@ -4,39 +4,43 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: freemannotes:beta
     container_name: freemannotes
+    init: true
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+    volumes:
+      - freemannotes-uploads:/app/uploads
     environment:
-      NODE_ENV: production
-      HOST: 0.0.0.0
-      PORT: 27015
-      # Set this to your public URL for clearer startup logs only.
-      # APP_URL: https://dev.freeman.daxtond.com
-
-      # ── PostgreSQL persistence (required) ────────────────────────────────
-      # The connection string points to the companion postgres service below.
-      DATABASE_URL: postgresql://freemannotes:freemannotes@postgres:5432/freemannotes?schema=public
-
-      # ── Redis caching (optional) ──────────────────────────────────────
-      # Uncomment to enable Redis doc-state caching and multi-instance pub/sub.
-      # REDIS_URL: redis://redis:6379
-
-      # ── PostgreSQL Timezone ────────────────────────────────────────────
-      # IANA timezone for timestamp display in API responses.
-      # Internal storage remains UTC; only affects presentation.
-      # PGTIMEZONE: America/Regina
-
-      # ── Legacy LevelDB persistence (now superseded by PostgreSQL) ──────
-      # Keep empty when using PostgreSQL. Can still be used as a fallback
-      # if DATABASE_URL is unset.
-      # YPERSISTENCE: /data/yjs
+      NODE_ENV: ${NODE_ENV:-production}
+      HOST: ${HOST:-0.0.0.0}
+      PORT: ${PORT:-27015}
+      APP_URL: ${APP_URL:-}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://freemannotes:freemannotes@postgres:5432/freemannotes?schema=public}
+      DB_SCHEMA_SYNC: ${DB_SCHEMA_SYNC:-deploy}
+      REDIS_URL: ${REDIS_URL:-}
+      PGTIMEZONE: ${PGTIMEZONE:-}
+      YPERSISTENCE: ${YPERSISTENCE:-}
+      UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+      AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-change-me-before-beta}
+      AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-freemannotes_session}
+      AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-}
+      AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-14}
+      AUTH_BCRYPT_ROUNDS: ${AUTH_BCRYPT_ROUNDS:-12}
+      AUTH_ALLOW_REGISTER: ${AUTH_ALLOW_REGISTER:-true}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM: ${SMTP_FROM:-FreemanNotes <no-reply@example.com>}
+      TRASH_CLEANUP_INTERVAL_MS: ${TRASH_CLEANUP_INTERVAL_MS:-3600000}
     ports:
-      - "27015:27015"
+      - "${APP_PORT:-27015}:${PORT:-27015}"
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:27015/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:' + (process.env.PORT || '27015') + '/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -48,17 +52,13 @@ services:
     container_name: freemannotes-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: freemannotes
-      POSTGRES_PASSWORD: freemannotes
-      POSTGRES_DB: freemannotes
+      POSTGRES_USER: ${POSTGRES_USER:-freemannotes}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-freemannotes}
+      POSTGRES_DB: ${POSTGRES_DB:-freemannotes}
     volumes:
       - freemannotes-pgdata:/var/lib/postgresql/data
-    ports:
-      # Expose for local development / administration only.
-      # In production behind a firewall, you can remove this.
-      - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U freemannotes -d freemannotes"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-freemannotes} -d ${POSTGRES_DB:-freemannotes}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -81,4 +81,5 @@ services:
 
 volumes:
   freemannotes-pgdata:
+  freemannotes-uploads:
   # freemannotes-redis:
