@@ -1,86 +1,96 @@
 # Docker Deployment
 
-This app is designed to run as a single container that serves both:
-- App UI over HTTP
-- Yjs WebSocket sync on `/yjs`
-- REST API at `/api/*` (when PostgreSQL is configured)
+FreemanNotes ships as a single Node container that serves the SPA, REST API, uploaded assets, and the Yjs WebSocket endpoint on the same port.
 
-No custom websocket URL config is required in normal deployments.
+The repository now includes a Docker-ready stack for beta deployment:
+- `Dockerfile` for the app image
+- `docker-entrypoint.sh` for startup preparation and runtime warnings
+- `docker-compose.yml` for app + PostgreSQL
+- `.env.docker.example` as the deployment env template
+- named volumes for PostgreSQL data and uploaded profile images
 
-## Quick Start (with PostgreSQL)
+No manual Prisma step is required during normal startup. The server boot process creates the database if needed and runs the configured schema sync automatically.
 
-1. Build and start (includes PostgreSQL):
+## Quick Start
+
+1. Copy the deployment env template:
    ```bash
-   docker compose up -d --build
+   cp .env.docker.example .env.docker
    ```
-2. Run database migrations on first boot:
+2. Edit `.env.docker` and set at least:
+   - `AUTH_JWT_SECRET`
+   - `APP_URL` for your beta URL or host
+   - `POSTGRES_PASSWORD`
+   - `SMTP_*` values if invite email should work
+3. Start the stack:
    ```bash
-   docker compose exec freemannotes npx prisma migrate deploy
-   # or for quick schema push (no migration history):
-   docker compose exec freemannotes npx prisma db push
+   docker compose --env-file .env.docker up -d --build
    ```
-3. Open: `http://<server-ip>:27015`
-4. Check health: `http://<server-ip>:27015/healthz`
-5. Check readiness: `http://<server-ip>:27015/readyz`
-
-## Quick Start (Relay-Only, No Database)
-
-If you don't want PostgreSQL persistence, omit `DATABASE_URL`:
-
-1. Build and start:
-   ```bash
-   docker compose up -d --build freemannotes
+4. Open the app:
+   ```text
+   http://<server-ip-or-domain>:27015
    ```
-2. Open: `http://<server-ip>:27015`
+5. Verify runtime health:
+   ```text
+   http://<server-ip-or-domain>:27015/healthz
+   http://<server-ip-or-domain>:27015/readyz
+   ```
 
-In relay-only mode, documents only exist in browser IndexedDB and in-memory on the server while clients are connected.
+## What Persists
+
+- PostgreSQL data in the `freemannotes-pgdata` volume
+- uploaded profile images in the `freemannotes-uploads` volume
+
+That means beta testers can restart or update the container without losing the database or uploaded avatars.
 
 ## Environment Variables
 
+The recommended deployment path is to keep all runtime settings in `.env.docker` and pass it with `docker compose --env-file .env.docker ...`.
+
+Important variables:
+
 | Variable | Default | Description |
 |---|---|---|
-| `HOST` | `0.0.0.0` | Bind address |
-| `PORT` | `27015` | HTTP + WebSocket port |
-| `DATABASE_URL` | *(unset)* | PostgreSQL connection string. When set, enables server-side Yjs doc persistence via Prisma. Format: `postgresql://USER:PASS@HOST:PORT/DB?schema=public` |
-| `REDIS_URL` | *(unset)* | Optional Redis URL for doc-state caching. Format: `redis://HOST:PORT` |
-| `YPERSISTENCE` | *(unset)* | Legacy LevelDB persistence path (superseded by `DATABASE_URL`) |
-| `APP_URL` | *(unset)* | Public base URL, used for startup logging only |
+| `APP_PORT` | `27015` | Host port exposed by Docker |
+| `HOST` | `0.0.0.0` | Bind address inside the container |
+| `PORT` | `27015` | Internal app port |
+| `APP_URL` | *(unset)* | Public base URL used for invite links and startup logs |
+| `DATABASE_URL` | `postgresql://...@postgres:5432/...` | Prisma connection string for the bundled PostgreSQL service or an external PostgreSQL instance |
+| `DB_SCHEMA_SYNC` | `deploy` | Startup schema mode: `deploy`, `push`, or `none` |
+| `AUTH_JWT_SECRET` | `change-me-before-beta` | JWT signing secret. Set a long random value before shipping |
+| `AUTH_ALLOW_REGISTER` | `true` | Allows open user registration |
+| `UPLOAD_DIR` | `/app/uploads` | Upload storage path inside the container |
+| `PGTIMEZONE` | *(unset)* | Optional PostgreSQL display timezone |
+| `REDIS_URL` | *(unset)* | Optional Redis cache URL |
+| `SMTP_HOST` | *(unset)* | SMTP host for invite mail |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_SECURE` | `false` | SMTP TLS mode |
+| `SMTP_USER` | *(unset)* | SMTP username |
+| `SMTP_PASS` | *(unset)* | SMTP password |
+| `SMTP_FROM` | `FreemanNotes <no-reply@example.com>` | Sender address for invites |
 
-### Persistence Modes
+## External PostgreSQL
 
-1. **PostgreSQL** (`DATABASE_URL` set) — Recommended. Yjs documents are durably persisted to PostgreSQL via Prisma. Survives server restarts. Optional Redis cache layer for faster loads.
-2. **LevelDB** (`YPERSISTENCE=/data/yjs`) — Legacy. Uses y-websocket's built-in LevelDB. Useful for simple single-node deployments.
-3. **Relay-only** (neither set) — No server-side persistence. Documents live only in browser IndexedDB.
+If you already have PostgreSQL elsewhere, point `DATABASE_URL` at it and start only the app service:
 
-## REST API Endpoints
-
-Available when `DATABASE_URL` is set:
-
-| Endpoint | Method | Description |
-|---|---|---|
-| `/healthz` | GET | Health check (always available) |
-| `/readyz` | GET | Readiness check (DB + workspace initialized) |
-| `/api/workspace` | GET | Active workspace metadata |
-| `/api/docs` | GET | List all persisted documents with sizes |
-| `/api/docs/:docId` | GET | Decoded snapshot of a single document |
-
-## Reverse Proxy (if used)
-
-If you put this behind Nginx/OpenResty/Caddy, proxy both:
-- `/` -> app container
-- `/yjs` -> same app container with websocket upgrade support
-
-If `/yjs` is not proxied with upgrade headers, UI may load but status will stay `Connection: Reconnecting...`.
-
-## Redis (Optional)
-
-To enable Redis caching, uncomment the `redis` service in `docker-compose.yml` and set `REDIS_URL`:
-
-```yaml
-environment:
-  REDIS_URL: redis://redis:6379
+```bash
+docker compose --env-file .env.docker up -d --build freemannotes
 ```
 
-Redis provides:
-- Faster doc-state loads (cached binary snapshots with 24h TTL)
-- Foundation for multi-instance pub/sub coordination (future)
+In that mode, the bundled `postgres` service is not required.
+
+## Reverse Proxy
+
+If you deploy behind Nginx, Caddy, Traefik, OpenResty, or another reverse proxy, proxy both paths to the same app container:
+
+- `/`
+- `/yjs`
+
+`/yjs` must allow WebSocket upgrades. If it does not, the UI will load but collaboration will stay stuck reconnecting.
+
+## Operational Notes
+
+- The bundled PostgreSQL service is not exposed on a host port by default.
+- `AUTH_JWT_SECRET` should be changed before any public beta.
+- For invite emails, configure `APP_URL` and the `SMTP_*` variables together.
+- For relay-only testing, you can unset `DATABASE_URL`, but that is not recommended for beta because server-side persistence is disabled.

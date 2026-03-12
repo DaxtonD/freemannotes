@@ -47,6 +47,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		closeQuickCreate: 'Close quick create',
 		createNote: 'Create note',
 		createChecklist: 'Create checklist',
+		withFilterPrefix: 'With',
 		sidebarNotes: 'Notes',
 		sidebarAll: 'All',
 		sidebarToday: 'Today',

@@ -19,6 +19,7 @@
     "closeQuickCreate": "Close quick create",
     "createNote": "Create note",
     "createChecklist": "Create checklist",
+    "withFilterPrefix": "With",
     "sidebarNotes": "All Notes",
     "sidebarAll": "All",
     "sidebarToday": "Today",

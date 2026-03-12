@@ -75,6 +75,30 @@
 	color: var(--color-text-muted);
 }
 
+.metaChipRow {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 10px 10px 0;
+	position: relative;
+	z-index: 2;
+}
+
+@media (pointer: coarse) {
+	/* Mobile chips need to size from the card width itself so four future chip
+	   slots can fit consistently regardless of the responsive card width. */
+	.metaChipRow {
+		display: grid;
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+		gap: 6px;
+		padding: 8px 8px 8px;
+	}
+
+	.metaChipRow > * {
+		min-width: 0;
+	}
+}
+
 .body {
 	user-select: none;
 	padding: var(--space-2);
