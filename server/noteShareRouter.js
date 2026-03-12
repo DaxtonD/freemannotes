@@ -4,7 +4,7 @@ const Y = require('yjs');
 const { enforceSameOrigin } = require('./auth');
 const { findLiveWorkspaceMembership, resolveLiveWorkspaceId } = require('./workspaceAccess');
 const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
-const { normalizeWorkspaceRole, canEditWorkspaceContent, canManageWorkspace } = require('./workspaceRoles');
+const { normalizeWorkspaceRole, canEditWorkspaceContent, canManageWorkspace, canViewWorkspace } = require('./workspaceRoles');
 
 function jsonResponse(res, status, body) {
 	const json = JSON.stringify(body);
@@ -246,6 +246,7 @@ function mapCollaborator(collaborator) {
 		id: collaborator.id,
 		userId: collaborator.userId,
 		role: collaborator.role,
+		accessSource: 'direct',
 		revokedAt: collaborator.revokedAt ? collaborator.revokedAt.toISOString() : null,
 		createdAt: collaborator.createdAt.toISOString(),
 		updatedAt: collaborator.updatedAt.toISOString(),
@@ -258,6 +259,52 @@ function mapCollaborator(collaborator) {
 			}
 			: null,
 	};
+}
+
+function mapInheritedWorkspaceCollaborator(member) {
+	const normalizedRole = normalizeWorkspaceRole(member.role, 'VIEWER');
+	return {
+		id: `workspace-member:${member.userId}`,
+		userId: member.userId,
+		role: canEditWorkspaceContent(normalizedRole) ? 'EDITOR' : 'VIEWER',
+		accessSource: 'workspace',
+		revokedAt: null,
+		// Workspace memberships do not carry per-row timestamps in Prisma, so use a
+		// stable sentinel value and sort the final list by identity instead.
+		createdAt: new Date(0).toISOString(),
+		updatedAt: new Date(0).toISOString(),
+		user: member.user
+			? {
+				id: member.user.id,
+				name: member.user.name,
+				email: member.user.email,
+				profileImage: member.user.profileImage || null,
+			}
+			: null,
+	};
+}
+
+function mergeVisibleCollaborators(directCollaborators, workspaceMembers, currentUserId) {
+	const merged = new Map();
+
+	for (const collaborator of directCollaborators) {
+		if (!collaborator || collaborator.userId === currentUserId) continue;
+		merged.set(collaborator.userId, mapCollaborator(collaborator));
+	}
+
+	for (const member of workspaceMembers) {
+		if (!member || member.userId === currentUserId || !canViewWorkspace(member.role)) continue;
+		// Workspace-derived access should appear in the collaborator list, but it must
+		// override any direct note-share row so the UI does not offer revoke/remove
+		// actions that would leave workspace access intact.
+		merged.set(member.userId, mapInheritedWorkspaceCollaborator(member));
+	}
+
+	return Array.from(merged.values()).sort((left, right) => {
+		const leftLabel = left.user ? `${left.user.name || ''}${left.user.email || ''}` : left.userId;
+		const rightLabel = right.user ? `${right.user.name || ''}${right.user.email || ''}` : right.userId;
+		return String(leftLabel || '').localeCompare(String(rightLabel || ''));
+	});
 }
 
 function dedupeInvitationList(invitations) {
@@ -548,7 +595,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						return;
 					}
 
-					const [collaborators, pendingInvites, selfCollaborator] = await Promise.all([
+					const [collaborators, pendingInvites, selfCollaborator, workspaceMembers] = await Promise.all([
 						prisma.noteCollaborator.findMany({
 							where: { docId: access.docId, revokedAt: null },
 							include: { user: { select: { id: true, name: true, email: true, profileImage: true } } },
@@ -571,11 +618,23 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								},
 							})
 							: Promise.resolve(null),
+						prisma.workspaceMember.findMany({
+							where: {
+								workspaceId: access.sourceWorkspaceId,
+								workspace: { is: { deletedAt: null } },
+							},
+							include: {
+								user: { select: { id: true, name: true, email: true, profileImage: true, disabled: true } },
+							},
+							orderBy: { userId: 'asc' },
+						}),
 					]);
 
-					const visibleCollaborators = access.via === 'collaborator' && access.collaboratorId
+					const directCollaborators = access.via === 'collaborator' && access.collaboratorId
 						? collaborators.filter((collaborator) => collaborator.id !== access.collaboratorId)
 						: collaborators;
+					const visibleWorkspaceMembers = workspaceMembers.filter((member) => member.user && member.user.disabled !== true);
+					const visibleCollaborators = mergeVisibleCollaborators(directCollaborators, visibleWorkspaceMembers, session.userId);
 
 					jsonResponse(res, 200, {
 						roomId: access.docId,
@@ -593,7 +652,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								profileImage: selfCollaborator.invitation.inviter.profileImage || null,
 							}
 							: null,
-						collaborators: visibleCollaborators.map(mapCollaborator),
+						collaborators: visibleCollaborators,
 						pendingInvitations: access.canManage ? pendingInvites.map(mapInvitation) : [],
 					});
 				} catch (err) {

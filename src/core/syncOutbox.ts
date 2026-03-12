@@ -6,6 +6,7 @@ export type SyncStatus = 'pending' | 'syncing' | 'failed' | 'completed';
 
 type SyncOutboxPayload = {
 	workspaceId?: string;
+	identifier?: string;
 	email?: string;
 	role?: WorkspaceInviteRole;
 	localInviteId?: string;
@@ -128,6 +129,10 @@ function normalizeWorkspaceId(value: unknown): string {
 
 function normalizeEmail(value: unknown): string {
 	return String(value ?? '').trim().toLowerCase();
+}
+
+function normalizeIdentifier(value: unknown): string {
+	return String(value ?? '').trim();
 }
 
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
@@ -473,14 +478,16 @@ export async function cancelWorkspaceInviteItem(args: { workspaceId: string; inv
 			const payload = row.payload || {};
 			return row.entityType === 'workspace_invite'
 				&& normalizeWorkspaceId(payload.workspaceId || row.entityId) === workspaceId
-				&& normalizeEmail(payload.email) === email;
+				&& normalizeIdentifier(payload.identifier || payload.email) === normalizeIdentifier(email);
 		});
 		return;
 	}
 	const send = async (): Promise<void> => {
 		await fetchJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/invites/${encodeURIComponent(inviteId)}/cancel`, {
 			method: 'POST',
-			body: JSON.stringify({ expectedRole: args.expectedRole }),
+			// Stale-role checks are for queued offline replay. Live UI actions should act
+			// on the latest server state instead of failing on cached role metadata.
+			body: JSON.stringify({}),
 		});
 		const remote = await loadRemoteWorkspaceInviteState(workspaceId);
 		await replaceServerWorkspaceInviteSnapshot(workspaceId, remote);
@@ -504,7 +511,7 @@ export async function cancelWorkspaceInviteItem(args: { workspaceId: string; inv
 		operationType: 'delete',
 		entityType: 'workspace_invite',
 		entityId: inviteId,
-		payload: { workspaceId, inviteId, email, expectedRole: args.expectedRole },
+		payload: { workspaceId, inviteId, identifier: email, email, expectedRole: args.expectedRole },
 		createdAt: getNowIso(),
 		updatedAt: getNowIso(),
 		retryCount: 0,
@@ -521,7 +528,9 @@ export async function updateWorkspaceMemberAccess(args: { workspaceId: string; u
 	const send = async (): Promise<void> => {
 		await fetchJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`, {
 			method: 'PATCH',
-			body: JSON.stringify({ role: args.role, expectedRole: args.expectedRole }),
+			// Stale-role checks are preserved for offline replay. Online edits should use
+			// the current server row even if the local modal cached an older role.
+			body: JSON.stringify({ role: args.role }),
 		});
 		const remote = await loadRemoteWorkspaceInviteState(workspaceId);
 		await replaceServerWorkspaceInviteSnapshot(workspaceId, remote);
@@ -562,7 +571,9 @@ export async function removeWorkspaceMemberAccess(args: { workspaceId: string; u
 	const send = async (): Promise<void> => {
 		await fetchJson(`/api/workspaces/${encodeURIComponent(workspaceId)}/members/${encodeURIComponent(userId)}`, {
 			method: 'DELETE',
-			body: JSON.stringify({ expectedRole: args.expectedRole }),
+			// Stale-role checks are preserved for offline replay. Online removals should
+			// delete the current membership row instead of rejecting due to cached role drift.
+			body: JSON.stringify({}),
 		});
 		const remote = await loadRemoteWorkspaceInviteState(workspaceId);
 		await replaceServerWorkspaceInviteSnapshot(workspaceId, remote);
@@ -617,43 +628,48 @@ export async function readCachedWorkspaceInviteState(workspaceId: string): Promi
 	return listWorkspaceInviteState(workspaceId, { preferCache: true });
 }
 
-export async function hasWorkspaceInviteDuplicate(workspaceId: string, email: string): Promise<'member' | 'invite' | null> {
-	const normalizedEmail = normalizeEmail(email);
-	if (!normalizedEmail) return null;
+export async function hasWorkspaceInviteDuplicate(workspaceId: string, identifier: string): Promise<'member' | 'invite' | null> {
+	const normalizedIdentifier = normalizeIdentifier(identifier);
+	const normalizedEmail = normalizeEmail(identifier);
+	if (!normalizedIdentifier) return null;
 	const state = await listWorkspaceInviteState(workspaceId, { preferCache: isOffline() });
-	if (state.members.some((member) => member.email === normalizedEmail)) return 'member';
-	if (state.invites.some((invite) => invite.email === normalizedEmail)) return 'invite';
+	// Identifier-based invites must dedupe against both the resolved email and the
+	// visible username so offline behavior matches the server-side lookup.
+	if (state.members.some((member) => member.email === normalizedEmail || String(member.name || '').trim().toLowerCase() === normalizedIdentifier.toLowerCase())) return 'member';
+	if (state.invites.some((invite) => invite.email === normalizedEmail || String(invite.name || '').trim().toLowerCase() === normalizedIdentifier.toLowerCase())) return 'invite';
 	return null;
 }
 
 export async function queueWorkspaceInviteEmail(args: {
 	userId: string;
 	workspaceId: string;
-	email: string;
+	identifier: string;
 	role: WorkspaceInviteRole;
 }): Promise<{ inviteId: string; inviteLink: WorkspaceInviteLink | null }> {
 	const workspaceId = normalizeWorkspaceId(args.workspaceId);
-	const email = normalizeEmail(args.email);
-	if (!args.userId || !workspaceId || !email) {
+	const identifier = normalizeIdentifier(args.identifier);
+	if (!args.userId || !workspaceId || !identifier) {
 		throw new Error('Missing invite data');
 	}
-	const duplicate = await hasWorkspaceInviteDuplicate(workspaceId, email);
+	const duplicate = await hasWorkspaceInviteDuplicate(workspaceId, identifier);
 	if (duplicate === 'member') {
-		throw new Error('This email already belongs to a workspace member');
+		throw new Error('This user is already a workspace member');
 	}
 	if (duplicate === 'invite') {
-		throw new Error('This email already has a pending invite');
+		throw new Error('This user already has a pending invite');
 	}
 	const localInviteId = createId('workspace-invite');
 	const now = getNowIso();
-	const cachedLink = readCachedWorkspaceInviteLink({ workspaceId, email, role: args.role });
+	const cachedLink = readCachedWorkspaceInviteLink({ workspaceId, identifier, role: args.role });
+	// Preserve the user-entered identifier locally so queued offline invites remain
+	// recognizable before the server resolves the canonical email address.
 	await upsertLocalWorkspaceInvite({
-		id: toInviteCacheId(workspaceId, email),
+		id: toInviteCacheId(workspaceId, identifier.toLowerCase()),
 		workspaceId,
 		source: 'local',
 		kind: 'invite',
-		email,
-		name: null,
+		email: normalizeEmail(identifier),
+		name: identifier,
 		role: args.role,
 		userId: null,
 		inviteId: localInviteId,
@@ -672,7 +688,7 @@ export async function queueWorkspaceInviteEmail(args: {
 		entityId: workspaceId,
 		payload: {
 			workspaceId,
-			email,
+			identifier,
 			role: args.role,
 			localInviteId,
 		},
@@ -688,6 +704,7 @@ export async function queueWorkspaceInviteEmail(args: {
 
 export async function recordWorkspaceInviteSuccess(args: {
 	workspaceId: string;
+	identifier?: string;
 	email: string;
 	role: WorkspaceInviteRole;
 	inviteId: string;
@@ -696,15 +713,18 @@ export async function recordWorkspaceInviteSuccess(args: {
 }): Promise<void> {
 	const workspaceId = normalizeWorkspaceId(args.workspaceId);
 	const email = normalizeEmail(args.email);
+	const identifier = normalizeIdentifier(args.identifier || args.email);
 	if (!workspaceId || !email || !args.inviteId) return;
-	await deleteWorkspaceInviteCacheRow(toInviteCacheId(workspaceId, email), workspaceId);
+	// Swap the optimistic identifier-keyed placeholder with the authoritative
+	// server invite row once the create call succeeds.
+	await deleteWorkspaceInviteCacheRow(toInviteCacheId(workspaceId, identifier.toLowerCase()), workspaceId);
 	await upsertLocalWorkspaceInvite({
 		id: args.inviteId,
 		workspaceId,
 		source: 'server',
 		kind: 'invite',
 		email,
-		name: null,
+		name: identifier && normalizeEmail(identifier) !== email ? identifier : null,
 		role: args.role,
 		userId: null,
 		inviteId: args.inviteId,
@@ -864,22 +884,24 @@ export async function flushSyncOutbox(userId: string): Promise<void> {
 			}));
 			const payload = row.payload || {};
 			const workspaceId = normalizeWorkspaceId(payload.workspaceId || row.entityId);
+			const identifier = normalizeIdentifier(payload.identifier || payload.email);
 			const email = normalizeEmail(payload.email);
 			const role = normalizeWorkspaceInviteRole(payload.role);
 			const targetUserId = String(payload.userId || row.entityId || '').trim();
 			const inviteId = String(payload.inviteId || row.entityId || '').trim();
 			try {
-				if (row.operationType === 'invite' && row.entityType === 'workspace_invite' && workspaceId && email) {
+				if (row.operationType === 'invite' && row.entityType === 'workspace_invite' && workspaceId && identifier) {
 					await markWorkspaceInviteLocalState({
 						workspaceId,
-						email,
+						email: normalizeEmail(identifier),
 						syncStatus: 'syncing',
 						error: null,
 					});
-					const link = await sendWorkspaceInviteEmail({ workspaceId, email, role });
+					const link = await sendWorkspaceInviteEmail({ workspaceId, identifier, role });
 					await recordWorkspaceInviteSuccess({
 						workspaceId,
-						email,
+						identifier,
+						email: link.email,
 						role,
 						inviteId: link.inviteId || row.payload.localInviteId || createId('workspace-invite-server'),
 						inviteUrl: link.inviteUrl,

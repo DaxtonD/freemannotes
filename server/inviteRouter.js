@@ -39,8 +39,49 @@ function normalizeEmail(input) {
 	return String(input || '').trim().toLowerCase();
 }
 
+function normalizeIdentifier(input) {
+	return String(input || '').trim();
+}
+
 function isValidEmail(email) {
 	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+async function resolveInvitee(prisma, identifier) {
+	const normalized = normalizeIdentifier(identifier);
+	if (!normalized) return null;
+	// Workspace invites accept either an email address or an in-app username.
+	// Existing accounts are resolved up front so the invite can target the
+	// canonical account email and optionally skip SMTP delivery.
+	const email = normalizeEmail(normalized);
+	if (isValidEmail(email)) {
+		const user = await prisma.user.findFirst({
+			where: { email: { equals: email, mode: 'insensitive' } },
+			select: { id: true, email: true, name: true, disabled: true },
+		});
+		return {
+			identifier: normalized,
+			email,
+			user: user && !user.disabled ? user : null,
+		};
+	}
+
+	const user = await prisma.user.findFirst({
+		where: {
+			name: {
+				equals: normalized,
+				mode: 'insensitive',
+			},
+			disabled: false,
+		},
+		select: { id: true, email: true, name: true, disabled: true },
+	});
+	if (!user || !user.email) return null;
+	return {
+		identifier: normalized,
+		email: normalizeEmail(user.email),
+		user,
+	};
 }
 
 function appBaseUrlFromRequest(req) {
@@ -223,11 +264,11 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						return;
 					}
 
-					const email = normalizeEmail(body.email);
+					const identifier = normalizeIdentifier(body.identifier || body.email);
 					const role = normalizeAssignableWorkspaceRole(body.role);
 					const sendEmail = body.sendEmail !== false;
-					if (!email || !isValidEmail(email)) {
-						jsonResponse(res, 400, { error: 'Invalid email' });
+					if (!identifier) {
+						jsonResponse(res, 400, { error: 'Username or email is required' });
 						return;
 					}
 					if (!['VIEWER', 'EDITOR', 'ADMIN'].includes(role)) {
@@ -241,7 +282,14 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						return;
 					}
 
-					const [existingMember, existingInvite, existingUser] = await Promise.all([
+					const resolvedInvitee = await resolveInvitee(prisma, identifier);
+					if (!resolvedInvitee) {
+						jsonResponse(res, 404, { error: 'No matching user or email address found' });
+						return;
+					}
+					const email = resolvedInvitee.email;
+					const existingUser = resolvedInvitee.user;
+					const [existingMember, existingInvite] = await Promise.all([
 						prisma.workspaceMember.findFirst({
 							where: {
 								workspaceId,
@@ -259,19 +307,13 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 							},
 							select: { id: true },
 						}),
-						prisma.user.findFirst({
-							where: {
-								email: { equals: email, mode: 'insensitive' },
-							},
-							select: { id: true },
-						}),
 					]);
 					if (existingMember) {
-						jsonResponse(res, 409, { error: 'This email already belongs to a workspace member' });
+						jsonResponse(res, 409, { error: 'This user already belongs to the workspace' });
 						return;
 					}
 					if (existingInvite) {
-						jsonResponse(res, 409, { error: 'This email already has a pending invite' });
+						jsonResponse(res, 409, { error: 'This user already has a pending invite' });
 						return;
 					}
 
@@ -292,6 +334,8 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 					const base = String(process.env.APP_URL || '').trim() || appBaseUrlFromRequest(req);
 					const inviteUrl = `${base.replace(/\/$/, '')}/invite/${token}`;
 					const sentEmail = sendEmail && !existingUser;
+					// Existing users receive the invite in-app, so email is only sent when the
+					// identifier did not resolve to a local account.
 					if (sentEmail) {
 						await sendInviteEmail({ to: email, workspaceName: workspace.name, inviteUrl });
 					}
@@ -354,7 +398,9 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 
 					if (method === 'DELETE') {
 						const body = await readJsonBody(req);
-						const expectedRole = body && typeof body === 'object' ? normalizeWorkspaceRole(body.expectedRole) : '';
+						const expectedRole = body && typeof body === 'object' && typeof body.expectedRole === 'string'
+							? normalizeWorkspaceRole(body.expectedRole)
+							: '';
 						const currentRole = normalizeWorkspaceRole(target.role);
 						if (expectedRole && expectedRole !== currentRole) {
 							jsonResponse(res, 409, { error: 'Workspace member changed before this action could sync', code: 'STALE_MEMBER_ROLE', currentRole });
@@ -380,7 +426,7 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						return;
 					}
 					const role = normalizeAssignableWorkspaceRole(body.role);
-					const expectedRole = body.expectedRole ? normalizeWorkspaceRole(body.expectedRole) : '';
+					const expectedRole = typeof body.expectedRole === 'string' ? normalizeWorkspaceRole(body.expectedRole) : '';
 					const currentRole = normalizeWorkspaceRole(target.role);
 					if (expectedRole && expectedRole !== currentRole) {
 						jsonResponse(res, 409, { error: 'Workspace member changed before this action could sync', code: 'STALE_MEMBER_ROLE', currentRole });
@@ -436,7 +482,9 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						return;
 					}
 					const body = await readJsonBody(req);
-					const expectedRole = body && typeof body === 'object' ? normalizeWorkspaceRole(body.expectedRole) : '';
+					const expectedRole = body && typeof body === 'object' && typeof body.expectedRole === 'string'
+						? normalizeWorkspaceRole(body.expectedRole)
+						: '';
 					const currentRole = normalizeWorkspaceRole(invite.role);
 					if (expectedRole && expectedRole !== currentRole) {
 						jsonResponse(res, 409, { error: 'Invite changed before this action could sync', code: 'STALE_INVITE_ROLE', currentRole });
