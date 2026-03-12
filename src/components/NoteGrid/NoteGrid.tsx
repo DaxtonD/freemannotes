@@ -1,12 +1,20 @@
 import React from 'react';
 import type * as Y from 'yjs';
-import { motion, LayoutGroup } from 'framer-motion';
+import { createPortal } from 'react-dom';
+import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faUsers } from '@fortawesome/free-solid-svg-icons';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
-import type { SharedNotePlacement } from '../../core/noteShareApi';
+import {
+	readCachedNoteShareCollaborators,
+	syncNoteShareCollaborators,
+	type NoteShareCollaboratorSnapshot,
+	type SharedNotePlacement,
+} from '../../core/noteShareApi';
 import { readTrashState } from '../../core/noteModel';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { measureDocumentRects } from './flip';
@@ -28,9 +36,14 @@ type Note = {
 };
 
 export type NoteGridProps = {
+	authUserId?: string | null;
+	activeWorkspaceId?: string | null;
 	selectedNoteId: string | null;
 	onSelectNote: (noteId: string) => void;
 	onAddCollaborator?: (noteId: string, title?: string) => void;
+	onSelectCollaboratorFilter?: (filter: NoteGridCollaboratorFilter) => void;
+	activeCollaboratorFilter?: NoteGridCollaboratorFilter | null;
+	refreshCollaboratorsToken?: number;
 	canEditWorkspaceContent?: boolean;
 	canReorder?: boolean;
 	maxCardHeightPx: number;
@@ -42,6 +55,29 @@ export type NoteGridProps = {
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
+
+type NoteCardCollaborator = {
+	key: string;
+	userId: string | null;
+	name: string;
+	email: string;
+	avatar: string | null;
+	accessSource: 'direct' | 'workspace';
+};
+
+type NoteCardCollaboratorSummary = {
+	docId: string;
+	collaborators: readonly NoteCardCollaborator[];
+	count: number;
+};
+
+export type NoteGridCollaboratorFilter = {
+	key: string;
+	userId: string | null;
+	label: string;
+	email: string;
+	avatar: string | null;
+};
 
 function normalizeId(value: unknown): string {
 	return typeof value === 'string' ? value.trim() : String(value ?? '').trim();
@@ -80,6 +116,7 @@ function ensureOrderContainsAllRegistryIds(noteOrder: Y.Array<string>, registryI
 type GridNoteCardProps = {
 	note: Note;
 	doc: Y.Doc;
+	metaChips?: React.ReactNode;
 	hasPendingSync: boolean;
 	selected: boolean;
 	isMoreMenuOpen: boolean;
@@ -139,6 +176,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 				<NoteCard
 					noteId={props.note.id}
 					doc={props.doc}
+					metaChips={props.metaChips}
 					canEdit={props.canEdit}
 					hasPendingSync={props.hasPendingSync}
 					isMoreMenuOpen={props.isMoreMenuOpen}
@@ -152,6 +190,51 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 		</motion.div>
 	);
 });
+
+function normalizeEmail(value: unknown): string {
+	return String(value ?? '').trim().toLowerCase();
+}
+
+function collaboratorFilterKey(collaborator: { userId?: string | null; email?: string | null }): string {
+	const userId = typeof collaborator.userId === 'string' ? collaborator.userId.trim() : '';
+	if (userId) return `user:${userId}`;
+	return `email:${normalizeEmail(collaborator.email)}`;
+}
+
+function snapshotToCollaboratorSummary(docId: string, snapshot: NoteShareCollaboratorSnapshot | null): NoteCardCollaboratorSummary | null {
+	if (!snapshot || !Array.isArray(snapshot.collaborators) || snapshot.collaborators.length === 0) {
+		return null;
+	}
+	const collaborators = snapshot.collaborators
+		.map((collaborator): NoteCardCollaborator | null => {
+			const label = String(collaborator.user?.name || collaborator.user?.email || collaborator.userId || '').trim();
+			const email = String(collaborator.user?.email || '').trim();
+			if (!label && !email) return null;
+			return {
+				key: collaboratorFilterKey({ userId: collaborator.userId, email }),
+				userId: collaborator.userId || null,
+				name: label || email,
+				email,
+				avatar: collaborator.user?.profileImage ?? null,
+				accessSource: collaborator.accessSource === 'workspace' ? 'workspace' : 'direct',
+			};
+		})
+		.filter((collaborator): collaborator is NoteCardCollaborator => Boolean(collaborator))
+		.sort((left, right) => left.name.localeCompare(right.name));
+	if (collaborators.length === 0) return null;
+	return { docId, collaborators, count: collaborators.length };
+}
+
+function collaboratorMatchesFilter(summary: NoteCardCollaboratorSummary | null | undefined, filter: NoteGridCollaboratorFilter | null | undefined): boolean {
+	if (!summary || !filter) return false;
+	return summary.collaborators.some((collaborator) => collaborator.key === filter.key);
+}
+
+function collaboratorAvatarFallback(name: string): string {
+	const value = String(name || '').trim();
+	if (!value) return '?';
+	return value.slice(0, 1).toUpperCase();
+}
 
 export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
@@ -189,6 +272,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [props.enableLayoutAnimations, layoutReady]);
 
 	const pendingSyncNoteIds = React.useMemo(() => new Set(connection.pendingSyncNoteIds), [connection.pendingSyncNoteIds]);
+	const [collaboratorSummariesByNoteId, setCollaboratorSummariesByNoteId] = React.useState<Record<string, NoteCardCollaboratorSummary>>({});
+	const [openCollaboratorChip, setOpenCollaboratorChip] = React.useState<{
+		noteId: string;
+		anchorRect: { top: number; left: number; width: number; height: number };
+	} | null>(null);
 
 	const [notesList, setNotesList] = React.useState<Y.Array<Y.Map<unknown>> | null>(null);
 	const [noteOrder, setNoteOrder] = React.useState<Y.Array<string> | null>(null);
@@ -328,7 +416,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return uniqueIds([...readOrderIds(noteOrder), ...sharedNoteIds]);
 	}, [noteOrder, sharedNoteIds, storeVersion]);
 
-	const visibleIds = React.useMemo<string[]>(() => {
+	const baseVisibleIds = React.useMemo<string[]>(() => {
 		return orderedIds.filter((id) => {
 			const doc = docsById[id];
 			if (!doc) return !props.showTrashed;
@@ -336,6 +424,77 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			return props.showTrashed ? trashed : !trashed;
 		});
 	}, [orderedIds, docsById, metadataVersion, props.showTrashed]);
+
+	const visibleNoteEntries = React.useMemo(() => {
+		const sharedPlacementByAlias = new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement]));
+		return baseVisibleIds
+			.map((noteId) => {
+				const placement = sharedPlacementByAlias.get(noteId) ?? null;
+				const docId = placement?.roomId || (props.activeWorkspaceId ? `${props.activeWorkspaceId}:${noteId}` : '');
+				return docId ? { noteId, docId } : null;
+			})
+			.filter((entry): entry is { noteId: string; docId: string } => Boolean(entry));
+	}, [baseVisibleIds, props.activeWorkspaceId, props.sharedNotes]);
+
+	React.useEffect(() => {
+		if (!props.authUserId) {
+			setCollaboratorSummariesByNoteId({});
+			return;
+		}
+		if (visibleNoteEntries.length === 0) {
+			setCollaboratorSummariesByNoteId({});
+			return;
+		}
+		let cancelled = false;
+
+		const applySummaries = (rows: readonly { noteId: string; summary: NoteCardCollaboratorSummary | null }[]) => {
+			if (cancelled) return;
+			setCollaboratorSummariesByNoteId(() => {
+				const next: Record<string, NoteCardCollaboratorSummary> = {};
+				for (const row of rows) {
+					if (row.summary) next[row.noteId] = row.summary;
+				}
+				return next;
+			});
+		};
+
+		void (async () => {
+			const cached = await Promise.all(
+				visibleNoteEntries.map(async (entry) => ({
+					noteId: entry.noteId,
+					summary: snapshotToCollaboratorSummary(entry.docId, await readCachedNoteShareCollaborators(props.authUserId || '', entry.docId)),
+				}))
+			);
+			applySummaries(cached);
+
+			if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+			// Refresh visible notes in small batches so collaborator chips converge to
+			// server state without stalling the rest of the grid on large workspaces.
+			const refreshed: Array<{ noteId: string; summary: NoteCardCollaboratorSummary | null }> = [];
+			for (let start = 0; start < visibleNoteEntries.length; start += 6) {
+				const batch = visibleNoteEntries.slice(start, start + 6);
+				const batchRows = await Promise.all(
+					batch.map(async (entry) => ({
+						noteId: entry.noteId,
+						summary: snapshotToCollaboratorSummary(entry.docId, await syncNoteShareCollaborators(props.authUserId || '', entry.docId, { suppressError: true })),
+					}))
+				);
+				if (cancelled) return;
+				refreshed.push(...batchRows);
+			}
+			applySummaries(refreshed);
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [props.authUserId, props.refreshCollaboratorsToken, visibleNoteEntries]);
+
+	const visibleIds = React.useMemo<string[]>(() => {
+		if (!props.activeCollaboratorFilter) return baseVisibleIds;
+		return baseVisibleIds.filter((noteId) => collaboratorMatchesFilter(collaboratorSummariesByNoteId[noteId], props.activeCollaboratorFilter));
+	}, [baseVisibleIds, collaboratorSummariesByNoteId, props.activeCollaboratorFilter]);
 
 	// ── Commit drag result to Yjs ─────────────────────────────────────────
 	// Called by the drag manager's onDrop handler with the raw column layout
@@ -653,6 +812,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const activeDoc = dragManager.activeDragId ? docsById[dragManager.activeDragId] : undefined;
 	const activeNote = dragManager.activeDragId ? noteById.get(dragManager.activeDragId) : undefined;
 	const activeHasPendingSync = activeNote ? pendingSyncNoteIds.has(activeNote.id) : false;
+	const collaboratorOverlaySummary = openCollaboratorChip ? collaboratorSummariesByNoteId[openCollaboratorChip.noteId] ?? null : null;
+	const collaboratorOverlayPosition = React.useMemo(() => {
+		if (!openCollaboratorChip || typeof window === 'undefined') return null;
+		const overlayWidth = Math.min(320, Math.max(240, Math.round(openCollaboratorChip.anchorRect.width + 84)));
+		const viewportWidth = window.innerWidth;
+		const viewportHeight = window.innerHeight;
+		const left = Math.min(Math.max(12, openCollaboratorChip.anchorRect.left), Math.max(12, viewportWidth - overlayWidth - 12));
+		const estimatedHeight = Math.min(240, Math.max(84, (collaboratorOverlaySummary?.count ?? 1) * 44 + 16));
+		const preferredTop = openCollaboratorChip.anchorRect.top + openCollaboratorChip.anchorRect.height + 10;
+		const top = preferredTop + estimatedHeight <= viewportHeight - 12
+			? preferredTop
+			: Math.max(12, openCollaboratorChip.anchorRect.top - estimatedHeight - 10);
+		return { top, left, width: overlayWidth };
+	}, [collaboratorOverlaySummary?.count, openCollaboratorChip]);
 
 	return (
 		<section
@@ -724,11 +897,34 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									);
 								}
 								const isPlaceholder = dragManager.activeDragId === note.id;
+								const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
 								return (
 										< GridNoteCard
 										key={note.id}
 										note={note}
 										doc={doc}
+										metaChips={collaboratorSummary && collaboratorSummary.count > 0 ? (
+											<button
+												type="button"
+												className={styles.noteChipButton}
+												onPointerDown={(event) => event.stopPropagation()}
+												onClick={(event) => {
+													event.stopPropagation();
+													const rect = event.currentTarget.getBoundingClientRect();
+													setOpenCollaboratorChip((current) => current?.noteId === note.id
+														? null
+														: {
+															noteId: note.id,
+															anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+														}
+													);
+												}}
+												aria-label={`${t('share.activeCollaborators')}: ${collaboratorSummary.count}`}
+											>
+												<FontAwesomeIcon icon={faUsers} />
+												<span>{collaboratorSummary.count}</span>
+											</button>
+										) : undefined}
 										canEdit={note.isShared
 											? (props.sharedNotes ?? []).find((placement) => placement.aliasId === note.id)?.role === 'EDITOR'
 											: props.canEditWorkspaceContent !== false}
@@ -771,6 +967,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					<NoteCard
 						noteId={activeNote.id}
 						doc={activeDoc}
+						metaChips={undefined}
 						canEdit={activeNote.isShared
 							? (props.sharedNotes ?? []).find((placement) => placement.aliasId === activeNote.id)?.role === 'EDITOR'
 							: props.canEditWorkspaceContent !== false}
@@ -779,6 +976,93 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					/>
 				</div>
 			) : null}
+			{typeof document !== 'undefined'
+				? createPortal(
+					<AnimatePresence>
+						{openCollaboratorChip && collaboratorOverlaySummary && collaboratorOverlayPosition ? (
+							(() => {
+								const shouldCapCollaboratorList = collaboratorOverlaySummary.collaborators.length > 10;
+								return (
+							<div className={styles.collaboratorOverlayRoot} onPointerDown={() => setOpenCollaboratorChip(null)}>
+								<motion.div
+									className={styles.collaboratorOverlayPanel}
+									style={collaboratorOverlayPosition}
+									onPointerDown={(event) => event.stopPropagation()}
+									initial={{ opacity: 0, y: -8, scale: 0.985 }}
+									animate={{ opacity: 1, y: 0, scale: 1 }}
+									exit={{ opacity: 0, y: -8, scale: 0.98 }}
+									transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+								>
+									<div
+										className={`${styles.collaboratorOverlayList}${shouldCapCollaboratorList ? ` ${styles.collaboratorOverlayListScrollable}` : ''}`}
+									>
+										{collaboratorOverlaySummary.collaborators.map((collaborator, index) => {
+											const isActive = props.activeCollaboratorFilter?.key === collaborator.key;
+											// Each row grows the panel first, then drops in from above the settled rows.
+											const shellDelay = 0.01 + index * 0.035;
+											const contentDelay = shellDelay + 0.0125;
+											// Later rows start higher so they visibly hop over the earlier collaborators.
+											const entryOffset = 18 + index * 32;
+											return (
+												<motion.div
+													key={collaborator.key}
+													className={styles.collaboratorOverlayItemShell}
+													initial={{ height: 0, marginTop: 0 }}
+													animate={{ height: 'auto', marginTop: index === 0 ? 0 : 4 }}
+													exit={{ height: 0, marginTop: 0 }}
+													transition={{
+														height: { duration: 0.06, ease: [0.22, 1, 0.36, 1], delay: shellDelay },
+														marginTop: { duration: 0.04, ease: 'easeOut', delay: shellDelay },
+													}}
+												>
+													<motion.button
+														type="button"
+														className={`${styles.collaboratorOverlayItem}${isActive ? ` ${styles.collaboratorOverlayItemActive}` : ''}`}
+														// Keep the newest row above earlier ones while it flies through the stack.
+														style={{ zIndex: index + 1 }}
+														initial={{ y: -entryOffset, scale: 0.97 }}
+														animate={{ y: 0, scale: 1 }}
+														exit={{ y: -12, scale: 0.98 }}
+														transition={{
+															type: 'spring',
+															stiffness: 620,
+															damping: 30,
+															mass: 0.6,
+															delay: contentDelay,
+														}}
+														onClick={() => {
+															props.onSelectCollaboratorFilter?.({
+																key: collaborator.key,
+																userId: collaborator.userId,
+																label: collaborator.name,
+																email: collaborator.email,
+																avatar: collaborator.avatar,
+															});
+															setOpenCollaboratorChip(null);
+														}}
+													>
+														{collaborator.avatar ? (
+															<img className={styles.collaboratorOverlayAvatar} src={collaborator.avatar} alt="" />
+														) : (
+															<span className={styles.collaboratorOverlayAvatarFallback} aria-hidden="true">
+																{collaboratorAvatarFallback(collaborator.name)}
+															</span>
+														)}
+														<span className={styles.collaboratorOverlayName}>{collaborator.name}</span>
+													</motion.button>
+												</motion.div>
+											);
+										})}
+									</div>
+								</motion.div>
+							</div>
+								);
+							})()
+						) : null}
+					</AnimatePresence>,
+					document.body
+				)
+				: null}
 			{moreMenuNoteId && docsById[moreMenuNoteId] ? (
 				<NoteCardMoreMenu
 					noteType={

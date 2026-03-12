@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.93 - 2026-03-11
+
+### Added
+- **Collaborator note chips and filter flow.** Note cards now surface collaborator count chips, open a collaborator picker overlay with avatar rows, and let users filter the notes grid by collaborator directly from the card.
+- **Docker beta deployment assets.** Added a container entrypoint, deployment env template, persistent upload volume wiring, and hardened Docker packaging for beta self-hosting.
+- **GHCR publish workflow.** Added a GitHub Actions workflow that builds the root Dockerfile and publishes `ghcr.io/daxtond/freemannotes:latest` on every push to `main`.
+
+### Changed
+- **Collaborator overlay UX.** The collaborator picker now uses a compact staged hopscotch animation, caps growth after ten collaborators, and hides native scrollbars while preserving touch and wheel scrolling.
+- **Deployment documentation.** Docker and beta-hosting docs now reflect the automatic database bootstrap path, required runtime secrets, and the new GHCR image publishing flow.
+
+### Fixed
+- **Mobile note chip spacing and density.** Note-card chip rails now fit tighter mobile layouts, preserve finger-friendly spacing above note content, and keep overlay rows aligned to the panel width.
+- **Docker runtime defaults.** The shipped container now prepares its upload directory at startup and keeps runtime configuration out of the image via deployment env files.
+
 ## 1.0.92 - 2026-03-11
 
 ### Added

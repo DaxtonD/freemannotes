@@ -29,6 +29,7 @@ import styles from './NoteCard.module.css';
 export type NoteCardProps = {
 	noteId: string;
 	doc: Y.Doc;
+	metaChips?: React.ReactNode;
 	canEdit?: boolean;
 	hasPendingSync?: boolean;
 	isMoreMenuOpen?: boolean;
@@ -547,6 +548,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					</span>
 				) : null}
 			</div>
+
+			{props.metaChips ? (
+				// Keep a dedicated chip rail on the card so collaborator chips ship now
+				// and future label/image/collection chips can reuse the same slot.
+				<div className={styles.metaChipRow}>{props.metaChips}</div>
+			) : null}
 
 			{type === 'text' ? (
 				<div className={styles.body}>

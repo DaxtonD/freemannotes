@@ -972,6 +972,7 @@
 	padding: 0 12px;
 	display: inline-flex;
 	align-items: center;
+	gap: 8px;
 	border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
 	border-radius: 999px;
 	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
@@ -987,6 +988,24 @@
 	font-weight: 700;
 	letter-spacing: 0.01em;
 	color: var(--color-accent);
+}
+
+.note-grid-scope-clear {
+	width: 24px;
+	height: 24px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+	color: var(--color-accent);
+	flex-shrink: 0;
+}
+
+.note-grid-scope-clear:hover,
+.note-grid-scope-clear:focus-visible {
+	background: color-mix(in srgb, var(--color-accent) 20%, transparent);
 }
 
 .top-action-card {

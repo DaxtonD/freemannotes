@@ -31,7 +31,7 @@ import { CollaboratorModal } from './components/Share/CollaboratorModal';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
-import { NoteGrid } from './components/NoteGrid/NoteGrid';
+import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid/NoteGrid';
 import { type ChecklistItem } from './core/bindings';
 import { getDeviceId } from './core/deviceId';
 import { useDocumentManager } from './core/DocumentManagerContext';
@@ -456,6 +456,7 @@ export function App(): React.JSX.Element {
 	const [quickDeleteChecklistPref, setQuickDeleteChecklistPref] = React.useState(false);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
 	const [searchQuery, setSearchQuery] = React.useState('');
+	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
 	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(false);
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
@@ -1194,6 +1195,7 @@ export function App(): React.JSX.Element {
 		setPendingSharedFolderReveal(null);
 		setPendingShareNotificationCount(0);
 		setCollaboratorModalState(null);
+		setNoteGridCollaboratorFilter(null);
 	}, [authUserId, manager]);
 
 	const clearActiveWorkspaceState = React.useCallback(
@@ -1534,9 +1536,16 @@ export function App(): React.JSX.Element {
 		return workspaceLabel;
 	}, [activeSharedFolder, activeWorkspaceName, activeWorkspaceSystemKind, t]);
 
+	React.useEffect(() => {
+		setNoteGridCollaboratorFilter(null);
+	}, [activeSharedFolder, authWorkspaceId, sidebarView]);
+
 	const noteGridScopeLabel = React.useMemo(() => {
+		if (noteGridCollaboratorFilter) {
+			return `${t('app.withFilterPrefix')}: ${noteGridCollaboratorFilter.label}`;
+		}
 		return `All notes / ${activeWorkspaceSidebarPath}`;
-	}, [activeWorkspaceSidebarPath]);
+	}, [activeWorkspaceSidebarPath, noteGridCollaboratorFilter, t]);
 
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
@@ -3599,6 +3608,16 @@ export function App(): React.JSX.Element {
 							<div className="note-grid-scope" aria-live="polite">
 								<div className="note-grid-scope-chip">
 									<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
+									{noteGridCollaboratorFilter ? (
+										<button
+											type="button"
+											className="note-grid-scope-clear"
+											onClick={() => setNoteGridCollaboratorFilter(null)}
+											aria-label={t('common.close')}
+										>
+											<FontAwesomeIcon icon={faXmark} />
+										</button>
+									) : null}
 								</div>
 							</div>
 						</div>
@@ -3627,14 +3646,19 @@ export function App(): React.JSX.Element {
 					<NoteGrid
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
+						authUserId={authUserId}
+						activeWorkspaceId={authWorkspaceId}
 						selectedNoteId={selectedNoteId}
 						canEditWorkspaceContent={canEditActiveWorkspace}
 						sharedNotes={sidebarView === 'trash' ? [] : visibleSharedPlacements}
+						activeCollaboratorFilter={noteGridCollaboratorFilter}
+						refreshCollaboratorsToken={collaborationRefreshToken}
 						maxCardHeightPx={maxCardHeightPx}
 						// When the trash view is active, NoteGrid switches to rendering trashed notes.
 						showTrashed={sidebarView === 'trash'}
 						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
-						canReorder={canEditActiveWorkspace}
+						onSelectCollaboratorFilter={setNoteGridCollaboratorFilter}
+						canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter}
 						onSelectNote={(id) => {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });

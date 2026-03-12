@@ -19,12 +19,19 @@ ENV NODE_ENV=production
 ENV PORT=27015
 ENV HOST=0.0.0.0
 
-COPY --from=build /app/package*.json ./
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
-COPY --from=build /app/server.js ./server.js
-COPY --from=build /app/server ./server
-COPY --from=build /app/prisma ./prisma
+RUN mkdir -p /app/uploads && chown -R node:node /app
+
+COPY --from=build --chown=node:node /app/package*.json ./
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/server.js ./server.js
+COPY --from=build --chown=node:node /app/server ./server
+COPY --from=build --chown=node:node /app/prisma ./prisma
+COPY --chown=node:node docker-entrypoint.sh ./docker-entrypoint.sh
+
+RUN chmod +x /app/docker-entrypoint.sh
+
+USER node
 
 EXPOSE 27015
 
@@ -32,4 +39,5 @@ EXPOSE 27015
 #   1. Creates the database if it does not exist.
 #   2. Runs `prisma migrate deploy` (production) to apply committed migrations.
 # No separate migration step is required — just start the server.
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["node", "server.js"]

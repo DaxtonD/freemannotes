@@ -51,13 +51,18 @@ The easiest way to run FreemanNotes with a fully managed database:
 git clone https://github.com/DaxtonD/freemannotes.git
 cd freemannotes
 
+# Create deployment env
+cp .env.docker.example .env.docker
+# Edit AUTH_JWT_SECRET, POSTGRES_PASSWORD, APP_URL, and SMTP_* as needed
+
 # Start everything (app + Postgres)
-docker compose up -d
+docker compose --env-file .env.docker up -d --build
 ```
 
 This starts:
 - **FreemanNotes** on `http://localhost:27015`
 - **PostgreSQL 16** with persistent storage (volume: `freemannotes-pgdata`)
+- **Uploaded avatars** with persistent storage (volume: `freemannotes-uploads`)
 
 The app automatically creates the database, runs migrations, and seeds the default workspace on first boot. No manual setup required.
 
@@ -89,7 +94,9 @@ If you already have a PostgreSQL instance (e.g. on Unraid, a NAS, or a managed c
    docker run -d \
      --name freemannotes \
      -p 27015:27015 \
+       -v freemannotes-uploads:/app/uploads \
      -e NODE_ENV=production \
+       -e AUTH_JWT_SECRET="replace-me" \
      -e DATABASE_URL="postgresql://user:password@your-postgres-host:5432/freemannotes?schema=public" \
      ghcr.io/daxtond/freemannotes:latest
    ```
