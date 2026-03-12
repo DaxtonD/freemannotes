@@ -47,6 +47,7 @@ export type NoteShareCollaborator = {
 	id: string;
 	userId: string;
 	role: NoteShareRole;
+	accessSource?: 'direct' | 'workspace';
 	revokedAt: string | null;
 	createdAt: string;
 	updatedAt: string;
@@ -177,6 +178,7 @@ function toCachedCollaboratorSnapshot(snapshot: NoteShareCollaboratorSnapshot): 
 		collaborators: snapshot.collaborators.map((collaborator) => ({
 			...collaborator,
 			role: normalizeRole(collaborator.role),
+			accessSource: collaborator.accessSource === 'workspace' ? 'workspace' : 'direct',
 			user: collaborator.user
 				? {
 					...collaborator.user,

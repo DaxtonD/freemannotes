@@ -43,6 +43,7 @@ import { activateWorkspace, fetchUserPreferences, updateUserPreferences } from '
 import { useConnectionStatus } from './core/useConnectionStatus';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 import { useIsMobileLandscape } from './core/useIsMobileLandscape';
+import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
 import {
 	flushPendingCollaboratorActions,
 	flushPendingNoteShareActions,
@@ -348,6 +349,7 @@ export function App(): React.JSX.Element {
 	const [authEmail, setAuthEmail] = React.useState('');
 	const [authName, setAuthName] = React.useState('');
 	const [authPassword, setAuthPassword] = React.useState('');
+	const [authPasswordConfirm, setAuthPasswordConfirm] = React.useState('');
 	const [authError, setAuthError] = React.useState<string | null>(null);
 	const [authBusy, setAuthBusy] = React.useState(false);
 	const [authUserId, setAuthUserId] = React.useState<string | null>(() => cachedAuth?.userId ?? null);
@@ -402,6 +404,8 @@ export function App(): React.JSX.Element {
 	const [registerAvatarCrop, setRegisterAvatarCrop] = React.useState({ x: 0, y: 0 });
 	const [registerAvatarZoom, setRegisterAvatarZoom] = React.useState(1);
 	const [registerAvatarAreaPixels, setRegisterAvatarAreaPixels] = React.useState<CropAreaPixels | null>(null);
+	const authPasswordStrengthScore = React.useMemo(() => getPasswordStrengthScore(authPassword), [authPassword]);
+	const authPasswordStrengthLabel = React.useMemo(() => getPasswordStrengthLabel(authPassword), [authPassword]);
 	const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
 	const [isMobileSidebarOpen, setIsMobileSidebarOpen] = React.useState(false);
 	const [isMobileViewport, setIsMobileViewport] = React.useState(() => {
@@ -875,6 +879,30 @@ export function App(): React.JSX.Element {
 		refreshActiveWorkspaceRef.current = refreshActiveWorkspace;
 	}, [refreshActiveWorkspace]);
 
+	const confirmActivatedWorkspaceSession = React.useCallback(async (workspaceId: string): Promise<void> => {
+		// Workspace activation flips the server-side session before the client should
+		// reconnect Yjs rooms against the new workspace namespace.
+		for (let attempt = 0; attempt < 3; attempt++) {
+			try {
+				const res = await fetch('/api/workspace', { credentials: 'include' });
+				const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+				if (res.ok && contentType.includes('application/json')) {
+					const body = await res.json().catch(() => null);
+					if (body?.id && String(body.id) === workspaceId) {
+						return;
+					}
+				}
+			} catch {
+				// Best effort only. The activation request already succeeded.
+			}
+			if (attempt < 2) {
+				await new Promise<void>((resolve) => {
+					window.setTimeout(resolve, 120);
+				});
+			}
+		}
+	}, []);
+
 	React.useEffect(() => {
 		if (authStatus !== 'authed') return;
 		void refreshActiveWorkspace();
@@ -1279,8 +1307,22 @@ export function App(): React.JSX.Element {
 				}
 				const workspaceId = body?.workspaceId ? String(body.workspaceId) : '';
 				if (workspaceId) {
-					const activatedWorkspaceId = await activateWorkspace(deviceId, workspaceId);
-					handleWorkspaceActivated(activatedWorkspaceId || workspaceId);
+					// Pause reconnects for the old workspace while the server session flips to the
+					// accepted workspace. Otherwise the stale room providers hammer the server with
+					// now-forbidden old workspace namespaces until the UI activation catches up.
+					manager.setWebsocketEnabled(false);
+					try {
+						const activatedWorkspaceId = await activateWorkspace(deviceId, workspaceId);
+						const resolvedWorkspaceId = activatedWorkspaceId || workspaceId;
+						// Confirm the server session has switched workspaces before the grid mounts
+						// the new Yjs rooms. Without this follow-up, freshly accepted workspaces can
+						// render an empty grid until a full refresh refreshes the auth cookie state.
+						await confirmActivatedWorkspaceSession(resolvedWorkspaceId);
+						await loadSidebarWorkspacesRef.current();
+						handleWorkspaceActivated(resolvedWorkspaceId);
+					} finally {
+						manager.setWebsocketEnabled(true);
+					}
 				}
 				if (cancelled) return;
 				showBriefDialog(t('invite.accepted'));
@@ -1296,7 +1338,7 @@ export function App(): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [authOfflineMode, authStatus, deviceId, externalRoute, handleExitExternalRoute, handleWorkspaceActivated, inviteAttemptKey, showBriefDialog, t]);
+	}, [authOfflineMode, authStatus, confirmActivatedWorkspaceSession, deviceId, externalRoute, handleExitExternalRoute, handleWorkspaceActivated, inviteAttemptKey, manager, showBriefDialog, t]);
 
 	const handleWorkspaceDeleted = React.useCallback(
 		async (deletedWorkspaceId: string, nextActiveWorkspaceId: string | null) => {
@@ -1881,18 +1923,25 @@ export function App(): React.JSX.Element {
 				return;
 			}
 			try {
-				const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`, {
-					method: 'POST',
-					credentials: 'include',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({ deviceId }),
-				});
-				const body = await res.json().catch(() => null);
-				if (!res.ok) {
-					const msg = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
-					throw new Error(msg);
+				manager.setWebsocketEnabled(false);
+				try {
+					const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`, {
+						method: 'POST',
+						credentials: 'include',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ deviceId }),
+					});
+					const body = await res.json().catch(() => null);
+					if (!res.ok) {
+						const msg = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
+						throw new Error(msg);
+					}
+					await confirmActivatedWorkspaceSession(workspaceId);
+					await loadSidebarWorkspacesRef.current();
+					handleWorkspaceActivated(workspaceId);
+				} finally {
+					manager.setWebsocketEnabled(true);
 				}
-				handleWorkspaceActivated(workspaceId);
 				void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
 				if (isMobileViewport) {
 					closeWorkspaceSidebarGroup();
@@ -1919,7 +1968,7 @@ export function App(): React.JSX.Element {
 				// Keep errors out of the sidebar nav — Workspace modal provides richer error UX.
 			}
 		},
-		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, closeWorkspaceSidebarGroup, deviceId, handleWorkspaceActivated, isMobileViewport, persistSharedWorkspaceSelection]
+		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, closeWorkspaceSidebarGroup, confirmActivatedWorkspaceSession, deviceId, handleWorkspaceActivated, isMobileViewport, manager, persistSharedWorkspaceSelection]
 	);
 
 	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
@@ -1981,6 +2030,18 @@ export function App(): React.JSX.Element {
 		// follow-up step. We then call /api/auth/me to populate the canonical user
 		// fields (including profileImage) and ensure the UI updates immediately.
 		if (authBusy) return;
+		if (authMode === 'register') {
+			// Keep the pre-submit checks aligned with the shared password policy so the
+			// user gets immediate feedback before the registration request round-trip.
+			if (authPassword !== authPasswordConfirm) {
+				setAuthError('Passwords do not match');
+				return;
+			}
+			if (authPasswordStrengthScore < 2) {
+				setAuthError('Password is too weak');
+				return;
+			}
+		}
 		setAuthBusy(true);
 		setAuthError(null);
 		try {
@@ -2103,7 +2164,7 @@ export function App(): React.JSX.Element {
 		} finally {
 			setAuthBusy(false);
 		}
-	}, [authBusy, authEmail, authMode, authName, authPassword, manager, registerAvatarAreaPixels, registerAvatarUrl]);
+	}, [authBusy, authEmail, authMode, authName, authPassword, authPasswordConfirm, authPasswordStrengthScore, manager, registerAvatarAreaPixels, registerAvatarUrl]);
 
 	const authGateView = (
 		<div className="auth-shell">
@@ -2126,6 +2187,7 @@ export function App(): React.JSX.Element {
 						className={authMode === 'login' ? 'auth-mode is-active' : 'auth-mode'}
 						onClick={() => {
 							setAuthMode('login');
+								setAuthPasswordConfirm('');
 							setAuthError(null);
 						}}
 						disabled={authBusy || authStatus === 'loading'}
@@ -2137,6 +2199,7 @@ export function App(): React.JSX.Element {
 						className={authMode === 'register' ? 'auth-mode is-active' : 'auth-mode'}
 						onClick={() => {
 							setAuthMode('register');
+								setAuthPasswordConfirm('');
 							setAuthError(null);
 						}}
 						disabled={authBusy || authStatus === 'loading'}
@@ -2245,6 +2308,28 @@ export function App(): React.JSX.Element {
 							required
 						/>
 					</label>
+					{authMode === 'register' ? (
+						<>
+							<div className="auth-password-strength" aria-live="polite">
+								<div className="auth-password-strength-bar" aria-hidden="true">
+									<span className={`auth-password-strength-fill auth-password-strength-${authPasswordStrengthLabel.toLowerCase()}`} style={{ width: `${Math.max(8, authPasswordStrengthScore * 25)}%` }} />
+								</div>
+								<div className="auth-password-strength-copy">Password strength: {authPasswordStrengthLabel}</div>
+							</div>
+							<label className="auth-label">
+								Confirm password
+								<input
+									type="password"
+									autoComplete="new-password"
+									value={authPasswordConfirm}
+									onChange={(e) => setAuthPasswordConfirm(e.target.value)}
+									disabled={authBusy || authStatus === 'loading'}
+									required
+								/>
+							</label>
+							{authPasswordConfirm && authPassword !== authPasswordConfirm ? <div className="auth-error">Passwords do not match</div> : null}
+						</>
+					) : null}
 					{authError ? <div className="auth-error">{authError}</div> : null}
 					<button type="submit" disabled={authBusy || authStatus === 'loading'}>
 						{authBusy ? 'Please wait…' : authMode === 'register' ? 'Create account' : 'Sign in'}

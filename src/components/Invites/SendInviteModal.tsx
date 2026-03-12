@@ -64,7 +64,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 	const [shareQrModalOpen, setShareQrModalOpen] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	const [success, setSuccess] = React.useState<string | null>(null);
-	const [email, setEmail] = React.useState('');
+	const [identifier, setIdentifier] = React.useState('');
 	const [inviteRole, setInviteRole] = React.useState<WorkspaceInviteRole>('VIEWER');
 	const [linkRole, setLinkRole] = React.useState<WorkspaceShareRole | ''>('');
 	const [expiryDays, setExpiryDays] = React.useState<ShareExpiryDays>(7);
@@ -84,7 +84,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		setShareQrModalOpen(false);
 		setError(null);
 		setSuccess(null);
-		setEmail('');
+		setIdentifier('');
 		setInviteRole('VIEWER');
 		setLinkRole('');
 		setExpiryDays(7);
@@ -183,7 +183,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		};
 	}, [loadInviteState, props.isOpen, props.workspaceId]);
 
-	const canSendInvite = Boolean(props.workspaceId) && email.trim().length > 0;
+	const canSendInvite = Boolean(props.workspaceId) && identifier.trim().length > 0;
 	const canGenerateShareLink = Boolean(props.workspaceId && linkRole);
 
 	const generateInviteLink = React.useCallback(async (forceRefresh: boolean) => {
@@ -196,9 +196,9 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		setError(null);
 		setSuccess(null);
 		try {
-			const next = await ensureWorkspaceInviteLink({ workspaceId: props.workspaceId, email, role: inviteRole, forceRefresh });
+			const next = await ensureWorkspaceInviteLink({ workspaceId: props.workspaceId, identifier, role: inviteRole, forceRefresh });
 			setInviteLink(next);
-			const cached = readCachedWorkspaceInviteLink({ workspaceId: props.workspaceId, email, role: inviteRole });
+			const cached = readCachedWorkspaceInviteLink({ workspaceId: props.workspaceId, identifier, role: inviteRole });
 			if (!forceRefresh && cached && cached.inviteUrl === next.inviteUrl && typeof navigator !== 'undefined' && navigator.onLine === false) {
 				setSuccess(props.t('invite.offlineCached'));
 			} else {
@@ -209,7 +209,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		} finally {
 			setBusy(false);
 		}
-	}, [busy, email, inviteRole, props]);
+	}, [busy, identifier, inviteRole, props]);
 
 	const generateWorkspaceShare = React.useCallback(async (forceRefresh: boolean) => {
 		if (busy) return;
@@ -252,23 +252,26 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		setError(null);
 		setSuccess(null);
 		try {
-			const duplicate = await hasWorkspaceInviteDuplicate(props.workspaceId, email);
+			const duplicate = await hasWorkspaceInviteDuplicate(props.workspaceId, identifier);
 			if (duplicate === 'member') throw new Error(props.t('invite.duplicateMember'));
 			if (duplicate === 'invite') throw new Error(props.t('invite.duplicateInvite'));
 			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+				// Offline sends queue the typed identifier so the pending invite appears
+				// immediately and can replay once the connection returns.
 				if (!props.authUserId) throw new Error(props.t('invite.sendFailed'));
-				const queued = await queueWorkspaceInviteEmail({ userId: props.authUserId, workspaceId: props.workspaceId, email, role: inviteRole });
+				const queued = await queueWorkspaceInviteEmail({ userId: props.authUserId, workspaceId: props.workspaceId, identifier, role: inviteRole });
 				setInviteLink(queued.inviteLink);
 				setSuccess(props.t('invite.pendingQueued'));
 				await loadInviteState(true);
 				return;
 			}
-			const next = await sendWorkspaceInviteEmail({ workspaceId: props.workspaceId, email, role: inviteRole });
+			const next = await sendWorkspaceInviteEmail({ workspaceId: props.workspaceId, identifier, role: inviteRole });
 			setInviteLink(next);
 			if (next.inviteId) {
 				await recordWorkspaceInviteSuccess({
 					workspaceId: props.workspaceId,
-					email,
+					identifier,
+					email: next.email,
 					role: inviteRole,
 					inviteId: next.inviteId,
 					inviteUrl: next.inviteUrl,
@@ -280,7 +283,9 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		} catch (err) {
 			if (props.authUserId && props.workspaceId && isTransportLikeError(err)) {
 				try {
-					const queued = await queueWorkspaceInviteEmail({ userId: props.authUserId, workspaceId: props.workspaceId, email, role: inviteRole });
+					// Treat transport failures after the duplicate check like offline mode so
+					// the admin keeps the action instead of re-entering the invite later.
+					const queued = await queueWorkspaceInviteEmail({ userId: props.authUserId, workspaceId: props.workspaceId, identifier, role: inviteRole });
 					setInviteLink(queued.inviteLink);
 					setSuccess(props.t('invite.pendingQueued'));
 					setError(null);
@@ -295,7 +300,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		} finally {
 			setBusy(false);
 		}
-	}, [busy, email, inviteRole, loadInviteState, props]);
+	}, [busy, identifier, inviteRole, loadInviteState, props]);
 
 	const copyLink = React.useCallback(async (value: string | null, successKey: string, failureKey: string) => {
 		if (!value) return;
@@ -392,7 +397,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 					</button>
 				</header>
 
-				<div className={styles.info}>{props.t('invite.emailMatchNotice')}</div>
+				<div className={styles.info}>{props.t('invite.identifierNotice')}</div>
 				{error ? <div className={styles.error}>{error}</div> : null}
 				{success ? <div className={styles.success}>{success}</div> : null}
 
@@ -411,8 +416,8 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 							<div className={styles.sectionPanelInner}>
 								<div className={`${styles.sectionCard} ${styles.inviteSectionCard}`}>
 									<label className={styles.field}>
-										<span>{props.t('invite.email')}</span>
-										<input className={styles.input} type="email" value={email} onChange={(e) => setEmail(e.target.value)} disabled={busy || Boolean(actionBusyKey)} />
+										<span>{props.t('invite.identifier')}</span>
+										<input className={styles.input} type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder={props.t('share.identifierPlaceholder')} disabled={busy || Boolean(actionBusyKey)} />
 									</label>
 									<label className={styles.field}>
 										<span>{props.t('invite.role')}</span>

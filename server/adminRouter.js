@@ -23,8 +23,7 @@
 // Security notes:
 //   - Cookie-based auth + `enforceSameOrigin` CSRF mitigation for mutations.
 //   - User IDs are validated as UUIDs.
-//   - Password resets generate a strong temporary password and return it in the
-//     response so the admin can communicate it out-of-band.
+//   - Password changes are validated server-side before the bcrypt hash is updated.
 //
 // Usage accounting:
 //   - Workspace usage is computed from stored Yjs document rows.
@@ -32,8 +31,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const { enforceSameOrigin } = require('./auth');
+const { validatePassword } = require('./passwordPolicy');
 
 const BCRYPT_ROUNDS = Number(process.env.AUTH_BCRYPT_ROUNDS || 12);
 
@@ -295,15 +294,21 @@ function createAdminRouter({ prisma }) {
 						return;
 					}
 
-					const tempPassword = crypto.randomBytes(9).toString('base64url');
-					const passwordHash = await bcrypt.hash(tempPassword, Number.isFinite(BCRYPT_ROUNDS) ? BCRYPT_ROUNDS : 12);
+					const body = await readJsonBody(req);
+					const password = body && typeof body === 'object' ? String(body.password || '') : '';
+					const passwordError = validatePassword(password);
+					if (passwordError) {
+						jsonResponse(res, 400, { error: passwordError });
+						return;
+					}
+					const passwordHash = await bcrypt.hash(password, Number.isFinite(BCRYPT_ROUNDS) ? BCRYPT_ROUNDS : 12);
 
 					await prisma.user.update({
 						where: { id: userId },
 						data: { passwordHash },
 					});
 
-					jsonResponse(res, 200, { tempPassword });
+					jsonResponse(res, 200, { ok: true });
 				} catch (err) {
 					console.error('[admin] reset password error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
@@ -382,8 +387,9 @@ function createAdminRouter({ prisma }) {
 						jsonResponse(res, 400, { error: 'Name is too long' });
 						return;
 					}
-					if (password.length < 8) {
-						jsonResponse(res, 400, { error: 'Password must be at least 8 characters' });
+					const passwordError = validatePassword(password);
+					if (passwordError) {
+						jsonResponse(res, 400, { error: passwordError });
 						return;
 					}
 

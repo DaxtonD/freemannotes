@@ -45,6 +45,7 @@ const {
 	resolveLiveWorkspaceId,
 } = require('./workspaceAccess');
 const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
+const { validatePassword } = require('./passwordPolicy');
 
 const BCRYPT_ROUNDS = Number(process.env.AUTH_BCRYPT_ROUNDS || 12);
 const ALLOW_REGISTER = String(process.env.AUTH_ALLOW_REGISTER || 'true').trim().toLowerCase() !== 'false';
@@ -148,8 +149,9 @@ function createApiAuthRouter({ prisma }) {
 						jsonResponse(res, 400, { error: 'Invalid name' });
 						return;
 					}
-					if (!password || password.length < 8) {
-						jsonResponse(res, 400, { error: 'Password must be at least 8 characters' });
+					const passwordError = validatePassword(password);
+					if (passwordError) {
+						jsonResponse(res, 400, { error: passwordError });
 						return;
 					}
 

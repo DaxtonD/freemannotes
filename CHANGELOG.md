@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.92 - 2026-03-11
+
+### Added
+- **Identifier-based workspace invites.** Workspace sharing now accepts either a username or an email address, resolves existing accounts for in-app delivery, and keeps the offline invite queue aligned with the same identifier-based flow.
+- **Password confirmation and strength guidance.** Registration and admin password reset now include confirm-password entry plus a shared password-strength indicator backed by the same client/server policy.
+
+### Changed
+- **Admin password reset workflow.** User management now opens a dedicated reset modal that sets the new password directly instead of generating a temporary password.
+- **Release documentation.** Added targeted implementation comments across the new workspace-invite, activation, and password-policy paths introduced in this patch release.
+
+### Fixed
+- **Workspace activation hydration.** Accepting or activating a workspace now confirms the server session before reconnecting realtime state so notes appear immediately without a manual refresh.
+- **Collaboration and invite polish.** Note collaborator lists now surface workspace-inherited access correctly, stale online member mutations no longer fail on cached roles, and the share-workspace label layout no longer overlaps the identifier input.
+
 ## 1.0.91 - 2026-03-11
 
 ### Added
