@@ -41,9 +41,11 @@ const EMPTY_SNAPSHOT: NoteShareCollaboratorSnapshot = {
 	roomId: '',
 	sourceWorkspaceId: '',
 	sourceNoteId: '',
+	noteTitle: '',
 	accessRole: 'EDITOR',
 	canManage: false,
 	currentUserId: null,
+	currentUser: null,
 	selfCollaboratorId: null,
 	sharedBy: null,
 	collaborators: [],
@@ -55,9 +57,11 @@ function buildOfflineManagerSnapshot(authUserId: string, docId: string, base?: N
 		roomId: base?.roomId || docId,
 		sourceWorkspaceId: base?.sourceWorkspaceId || docId.split(':', 1)[0] || '',
 		sourceNoteId: base?.sourceNoteId || (docId.includes(':') ? docId.slice(docId.indexOf(':') + 1) : docId),
+		noteTitle: base?.noteTitle || '',
 		accessRole: base?.accessRole || 'EDITOR',
 		canManage: true,
 		currentUserId: base?.currentUserId ?? authUserId,
+		currentUser: base?.currentUser ?? null,
 		selfCollaboratorId: base?.selfCollaboratorId ?? null,
 		sharedBy: base?.sharedBy ?? null,
 		collaborators: base?.collaborators ?? [],
@@ -78,6 +82,11 @@ function renderNoteRole(role: NoteShareRole, t: (key: string) => string): string
 
 function isWorkspaceInheritedCollaborator(collaborator: NoteShareCollaboratorSnapshot['collaborators'][number]): boolean {
 	return collaborator.accessSource === 'workspace';
+}
+
+function getDisplayLabel(user: { name?: string | null; email?: string | null; id?: string | null } | null | undefined): string {
+	if (!user) return '';
+	return user.name || user.email || user.id || '';
 }
 
 export function CollaboratorModal(props: Props): React.JSX.Element | null {
@@ -365,7 +374,9 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		}
 	}, [load, loadCachedState, props, t]);
 
+	const currentUserCollaborator = snapshot.currentUser && (snapshot.selfCollaboratorId || snapshot.sharedBy) ? snapshot.currentUser : null;
 	const visibleCollaboratorCount = snapshot.collaborators.length + (snapshot.sharedBy ? 1 : 0);
+	const resolvedNoteTitle = (props.noteTitle || snapshot.noteTitle || '').trim() || t('note.untitled');
 
 	if (!props.isOpen) return null;
 
@@ -376,7 +387,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 					<header className={styles.collabHeader}>
 						<div className={styles.titleBlock}>
 							<h2 className={styles.title}>{t('share.collaborators')}</h2>
-							<p className={styles.subtitle}>{props.noteTitle || t('note.untitled')}</p>
+							<p className={styles.subtitle}>{resolvedNoteTitle}</p>
 						</div>
 						<button type="button" className={styles.iconButton} onClick={props.onClose} aria-label={t('common.close')}>
 							✕
@@ -514,6 +525,34 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 								<div className={styles.sectionPanelInner}>
 									<div className={styles.listSection}>
 										{visibleCollaboratorCount === 0 ? <div className={styles.emptyState}>{t('share.noneCollaborators')}</div> : null}
+										{currentUserCollaborator ? (
+											<div className={`${styles.listRow} ${styles.memberRow}`}>
+												<div className={styles.memberIdentity}>
+													<div className={styles.memberAvatarStack}>
+														{currentUserCollaborator.profileImage ? (
+															<img className={styles.memberAvatar} src={currentUserCollaborator.profileImage} alt="" />
+														) : (
+															<div className={styles.memberAvatarFallback} aria-hidden="true">
+																{getDisplayLabel(currentUserCollaborator).slice(0, 1).toUpperCase()}
+															</div>
+														)}
+														<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('share.statusAccepted')}</span>
+													</div>
+													<div className={styles.rowCopy}>
+														<div className={styles.rowPrimary}>{getDisplayLabel(currentUserCollaborator)}</div>
+														<div className={styles.rowSecondary}>{currentUserCollaborator.email}</div>
+														<div className={styles.rowTertiary}>{renderNoteRole(snapshot.accessRole, t)}</div>
+													</div>
+												</div>
+												{snapshot.selfCollaboratorId ? (
+													<div className={styles.memberActions}>
+														<button type="button" className={`${styles.secondaryButton} ${styles.memberActionButton}`} onClick={() => void handleRemove()} disabled={busy || !snapshot.selfCollaboratorId}>
+															{t('editors.remove')}
+														</button>
+													</div>
+												) : null}
+											</div>
+										) : null}
 										{snapshot.sharedBy ? (
 											<div className={styles.listRow}>
 												<div className={styles.memberIdentity}>
@@ -522,21 +561,16 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 															<img className={styles.memberAvatar} src={snapshot.sharedBy.profileImage} alt="" />
 														) : (
 															<div className={styles.memberAvatarFallback} aria-hidden="true">
-																{(snapshot.sharedBy.name || snapshot.sharedBy.email || snapshot.sharedBy.id).slice(0, 1).toUpperCase()}
+																{getDisplayLabel(snapshot.sharedBy).slice(0, 1).toUpperCase()}
 															</div>
 														)}
-														<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('share.statusAccepted')}</span>
+														<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('invite.roleOwner')}</span>
 													</div>
 													<div className={styles.rowCopy}>
-														<div className={styles.rowPrimary}>{snapshot.sharedBy.name || snapshot.sharedBy.email || snapshot.sharedBy.id}</div>
+														<div className={styles.rowPrimary}>{getDisplayLabel(snapshot.sharedBy)}</div>
 														<div className={styles.rowSecondary}>{snapshot.sharedBy.email}</div>
 													</div>
 												</div>
-												{snapshot.selfCollaboratorId ? (
-													<button type="button" className={`${styles.secondaryButton} ${styles.memberActionButton}`} onClick={() => void handleRemove()} disabled={busy}>
-														{t('editors.remove')}
-													</button>
-												) : null}
 											</div>
 										) : null}
 										{snapshot.collaborators.map((collaborator) => (
@@ -547,31 +581,27 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 															<img className={styles.memberAvatar} src={collaborator.user.profileImage} alt="" />
 														) : (
 															<div className={styles.memberAvatarFallback} aria-hidden="true">
-																{(collaborator.user?.name || collaborator.user?.email || collaborator.userId).slice(0, 1).toUpperCase()}
+																{getDisplayLabel(collaborator.user || { id: collaborator.userId }).slice(0, 1).toUpperCase()}
 															</div>
 														)}
 														<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('share.statusAccepted')}</span>
 													</div>
 													<div className={styles.rowCopy}>
-														<div className={styles.rowPrimary}>{collaborator.user?.name || collaborator.user?.email || collaborator.userId}</div>
+														<div className={styles.rowPrimary}>{getDisplayLabel(collaborator.user || { id: collaborator.userId })}</div>
 														<div className={styles.rowSecondary}>{collaborator.user?.email || renderNoteRole(collaborator.role, t)}</div>
 														{isWorkspaceInheritedCollaborator(collaborator) ? <div className={styles.rowTertiary}>{t('share.inheritedWorkspaceAccess')}</div> : null}
 													</div>
 												</div>
 												{snapshot.canManage && !isWorkspaceInheritedCollaborator(collaborator) ? (
-													<select className={`${styles.compactSelect} ${styles.memberRoleSelect}`} value={collaborator.role} onChange={(event) => void handleRoleChange(collaborator.id, collaborator.userId, event.target.value === 'VIEWER' ? 'VIEWER' : 'EDITOR')} disabled={busy || loading}>
-														<option value="EDITOR">{t('share.roleEditor')}</option>
-														<option value="VIEWER">{t('share.roleViewer')}</option>
-													</select>
-												) : collaborator.userId === snapshot.currentUserId && !isWorkspaceInheritedCollaborator(collaborator) ? (
-													<button type="button" className={`${styles.secondaryButton} ${styles.memberActionButton}`} onClick={() => void handleRemove()} disabled={busy || !snapshot.selfCollaboratorId}>
-														{t('editors.remove')}
-													</button>
-												) : null}
-												{snapshot.canManage && !isWorkspaceInheritedCollaborator(collaborator) ? (
-													<button type="button" className={`${styles.secondaryButton} ${styles.memberRemoveButton}`} onClick={() => void handleRevoke(collaborator.id)} disabled={busy || loading}>
-														{t('share.revoke')}
-													</button>
+													<div className={styles.memberActions}>
+														<select className={`${styles.compactSelect} ${styles.memberRoleSelect}`} value={collaborator.role} onChange={(event) => void handleRoleChange(collaborator.id, collaborator.userId, event.target.value === 'VIEWER' ? 'VIEWER' : 'EDITOR')} disabled={busy || loading}>
+															<option value="EDITOR">{t('share.roleEditor')}</option>
+															<option value="VIEWER">{t('share.roleViewer')}</option>
+														</select>
+														<button type="button" className={`${styles.secondaryButton} ${styles.memberRemoveButton}`} onClick={() => void handleRevoke(collaborator.id)} disabled={busy || loading}>
+															{t('share.revoke')}
+														</button>
+													</div>
 												) : null}
 											</div>
 										))}
@@ -588,7 +618,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 						<header className={styles.qrModalHeader}>
 							<div className={styles.titleBlock}>
 								<h3 className={styles.title}>{t('share.linkSectionTitle')}</h3>
-								<p className={styles.subtitle}>{props.noteTitle || t('note.untitled')}</p>
+								<p className={styles.subtitle}>{resolvedNoteTitle}</p>
 							</div>
 							<button type="button" className={styles.iconButton} onClick={() => setShareQrModalOpen(false)} aria-label={t('common.close')}>
 								✕

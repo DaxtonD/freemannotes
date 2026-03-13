@@ -62,7 +62,9 @@ docker compose --env-file .env.docker up -d --build
 This starts:
 - **FreemanNotes** on `http://localhost:27015`
 - **PostgreSQL 16** with persistent storage (volume: `freemannotes-pgdata`)
-- **Uploaded avatars** with persistent storage (volume: `freemannotes-uploads`)
+- **Uploaded media** with persistent storage (volume: `freemannotes-uploads`)
+
+The runtime image now installs PaddleOCR in the main app container so uploaded note images can be OCR-processed for global search.
 
 The app automatically creates the database, runs migrations, and seeds the default workspace on first boot. No manual setup required.
 

@@ -42,16 +42,20 @@ import {
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
+import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
 	noteId: string;
+	docId: string;
+	authUserId?: string | null;
 	doc: Y.Doc;
 	onClose: () => void;
 	onDelete: (noteId: string) => Promise<void>;
 	onAddCollaborator?: () => void;
+	onAddImage?: () => void;
 	readOnly?: boolean;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
@@ -61,6 +65,11 @@ export type NoteEditorProps = {
 type NoteType = 'text' | 'checklist';
 
 const EMPTY_ITEMS: readonly ChecklistItem[] = [];
+
+function isMediaDockHistoryEntry(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return typeof (value as { __noteEditorMediaDock?: unknown }).__noteEditorMediaDock === 'string';
+}
 
 /**
  * Lightweight renderer for ProseMirror JSON content in non-active rows.
@@ -460,6 +469,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		return () => document.removeEventListener('focusout', handleFocusOut, true);
 	}, []);
 	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const mediaDockHistoryTokenRef = React.useRef(`note-editor-media-dock:${Math.random().toString(36).slice(2, 10)}`);
+	const pendingMediaDockCleanupRef = React.useRef<number | null>(null);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
 		event.preventDefault();
@@ -474,7 +486,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const handleDockTouchMove = React.useCallback((event: React.TouchEvent): void => {
 		if (!dockTouchStartRef.current) return;
 		event.stopPropagation();
-		if (event.cancelable) event.preventDefault();
 	}, []);
 	const handleHandleTouchEnd = React.useCallback(
 		(event: React.TouchEvent): void => {
@@ -484,7 +495,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			const t0 = event.changedTouches[0];
 			if (!start || !t0) return;
 			event.stopPropagation();
-			if (event.cancelable) event.preventDefault();
 			dockTouchStartRef.current = null;
 			const dx = t0.clientX - start.x;
 			const dy = t0.clientY - start.y;
@@ -513,6 +523,74 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		},
 		[]
 	);
+	React.useEffect(() => {
+		if (!isCoarsePointer || !mediaDockOpen) return;
+		if (pendingMediaDockCleanupRef.current != null) {
+			window.clearTimeout(pendingMediaDockCleanupRef.current);
+			pendingMediaDockCleanupRef.current = null;
+		}
+		let active = true;
+		let didPush = false;
+		const token = mediaDockHistoryTokenRef.current;
+		const onPopState = (event: PopStateEvent): void => {
+			if (!active) return;
+			if (isMediaDockHistoryEntry(event.state)) return;
+			setMediaDockOpen(false);
+		};
+		window.addEventListener('popstate', onPopState);
+		const currentState = window.history.state as { __noteEditorMediaDock?: string } | null;
+		// The media sheet gets its own history entry so mobile Back dismisses the
+		// sheet first and leaves the surrounding editor mounted in place.
+		if (currentState?.__noteEditorMediaDock !== token) {
+			window.history.pushState({ __noteEditorMediaDock: token }, '');
+			didPush = true;
+		}
+		return () => {
+			active = false;
+			window.removeEventListener('popstate', onPopState);
+			if (!didPush) return;
+			pendingMediaDockCleanupRef.current = window.setTimeout(() => {
+				pendingMediaDockCleanupRef.current = null;
+				const state = window.history.state as { __noteEditorMediaDock?: string } | null;
+				if (state?.__noteEditorMediaDock === token) {
+					window.history.back();
+				}
+			}, 0);
+		};
+	}, [isCoarsePointer, mediaDockOpen]);
+	React.useEffect(() => () => {
+		if (typeof window === 'undefined') return;
+		if (pendingMediaDockCleanupRef.current != null) {
+			window.clearTimeout(pendingMediaDockCleanupRef.current);
+			pendingMediaDockCleanupRef.current = null;
+		}
+	}, []);
+	const closeMediaDock = React.useCallback((): void => {
+		if (isCoarsePointer && typeof window !== 'undefined' && isMediaDockHistoryEntry(window.history.state)) {
+			window.history.back();
+			return;
+		}
+		setMediaDockOpen(false);
+	}, [isCoarsePointer]);
+	const handleMediaSheetTouchStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		const touch = event.touches[0];
+		if (!touch) return;
+		mediaSheetSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+	}, []);
+	const handleMediaSheetTouchEnd = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		const start = mediaSheetSwipeStartRef.current;
+		const touch = event.changedTouches[0];
+		mediaSheetSwipeStartRef.current = null;
+		if (!start || !touch) return;
+		const dx = touch.clientX - start.x;
+		const dy = touch.clientY - start.y;
+		const currentTarget = event.currentTarget;
+		const scrolledToTop = currentTarget.scrollTop <= 0;
+		if (!scrolledToTop) return;
+		if (dy > 72 && Math.abs(dy) > Math.abs(dx) * 1.25) {
+			closeMediaDock();
+		}
+	}, [closeMediaDock]);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	React.useEffect(() => {
 		setShowCompleted(Boolean(props.initialShowCompleted));
@@ -1534,7 +1612,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('noteMenu.addCollaborator')} onClick={() => props.onAddCollaborator?.()} disabled={!props.onAddCollaborator}>
 								<FontAwesomeIcon icon={faUserPlus} />
 							</button>
-							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('noteMenu.addImage')} onClick={() => props.onAddImage?.()} disabled={!props.onAddImage}>
 								<FontAwesomeIcon icon={faImage} />
 							</button>
 							<button
@@ -1571,7 +1649,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			    The mobile media sheet is also removed while typing. Even if it is visually off
 			    screen, keeping it mounted would preserve extra mobile footer affordances that can
 			    interfere with the simplified keyboard-open editing layout. */}
-			{mobileKeyboardOpen ? null : <section
+			{isCoarsePointer && !mobileKeyboardOpen ? <section
 				className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}`}
 				aria-label={t('editors.mediaDock')}
 				onClick={(e) => e.stopPropagation()}
@@ -1613,19 +1691,26 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							{t('editors.mediaTabLinks')}
 						</button>
 					</div>
-					<button type="button" className={styles.mediaSheetClose} onClick={() => setMediaDockOpen(false)} aria-label={t('common.close')}>
+					<button type="button" className={styles.mediaSheetClose} onClick={closeMediaDock} aria-label={t('common.close')}>
 						✕
 					</button>
 				</header>
 
-				<div className={styles.mediaSheetBody}>
+				<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
 					<div className={styles.mediaPanel} role="tabpanel">
-						<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
+						{mediaDockTab === 0 ? (
+							<NoteMediaPanel
+								docId={props.docId}
+								authUserId={props.authUserId}
+								canEdit={!readOnly}
+								onAddImage={props.onAddImage}
+							/>
+						) : <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />}
 					</div>
 				</div>
-			</section>}
+			</section> : null}
 
-			<aside
+			{!isCoarsePointer ? <aside
 				className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
 				onClick={(e) => e.stopPropagation()}
 				aria-hidden={!mediaDockOpen}
@@ -1651,16 +1736,23 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								{t('editors.mediaTabLinks')}
 							</button>
 						</div>
-						<button type="button" className={styles.mediaFlyoutClose} onClick={() => setMediaDockOpen(false)} aria-label={t('common.close')}>
+						<button type="button" className={styles.mediaFlyoutClose} onClick={closeMediaDock} aria-label={t('common.close')}>
 							✕
 						</button>
 					</header>
 					<div className={styles.mediaFlyoutBody}>
 						<div className={styles.mediaPanel} role="tabpanel">
-							<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
+							{mediaDockTab === 0 ? (
+								<NoteMediaPanel
+									docId={props.docId}
+									authUserId={props.authUserId}
+									canEdit={!readOnly}
+									onAddImage={props.onAddImage}
+								/>
+							) : <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />}
 						</div>
 					</div>
-			</aside>
+			</aside> : null}
 		{/* Only mount the menu while open so its side-effects are scoped:
 		    - mobile history/back-button handling
 		    - mobile scroll locking + initial-touch suppression */}
@@ -1676,6 +1768,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
 					props.onAddCollaborator?.();
+				} : undefined}
+				onAddImage={props.onAddImage ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					props.onAddImage?.();
 				} : undefined}
 				onTrash={() => {
 					setIsMoreMenuOpen(false);

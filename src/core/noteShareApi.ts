@@ -71,9 +71,11 @@ export type NoteShareCollaboratorSnapshot = {
 	roomId: string;
 	sourceWorkspaceId: string;
 	sourceNoteId: string;
+	noteTitle?: string;
 	accessRole: NoteShareRole;
 	canManage: boolean;
 	currentUserId: string | null;
+	currentUser?: NoteShareInviter | null;
 	selfCollaboratorId: string | null;
 	sharedBy: NoteShareInviter | null;
 	collaborators: NoteShareCollaborator[];
@@ -165,9 +167,16 @@ function toCachedCollaboratorSnapshot(snapshot: NoteShareCollaboratorSnapshot): 
 		roomId: snapshot.roomId,
 		sourceWorkspaceId: snapshot.sourceWorkspaceId,
 		sourceNoteId: snapshot.sourceNoteId,
+		noteTitle: typeof snapshot.noteTitle === 'string' ? snapshot.noteTitle : '',
 		accessRole: normalizeRole(snapshot.accessRole),
 		canManage: Boolean(snapshot.canManage),
 		currentUserId: snapshot.currentUserId ?? null,
+		currentUser: snapshot.currentUser
+			? {
+				...snapshot.currentUser,
+				profileImage: snapshot.currentUser.profileImage ?? null,
+			}
+			: null,
 		selfCollaboratorId: snapshot.selfCollaboratorId ?? null,
 		sharedBy: snapshot.sharedBy
 			? {
