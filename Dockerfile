@@ -18,10 +18,14 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=27015
 ENV HOST=0.0.0.0
+ENV OCR_PYTHON_BIN=/opt/ocr-venv/bin/python
+ENV PATH=/opt/ocr-venv/bin:${PATH}
 
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends python3 python3-pip libglib2.0-0 libgl1 libgomp1 \
-	&& python3 -m pip install --no-cache-dir paddleocr paddlepaddle \
+	&& apt-get install -y --no-install-recommends python3 python3-pip python3-venv libglib2.0-0 libgl1 libgomp1 \
+	&& python3 -m venv /opt/ocr-venv \
+	&& /opt/ocr-venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
+	&& /opt/ocr-venv/bin/pip install --no-cache-dir paddleocr paddlepaddle \
 	&& rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /app/uploads && chown -R node:node /app
