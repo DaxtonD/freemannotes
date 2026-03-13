@@ -39,7 +39,7 @@ services:
       TRASH_CLEANUP_INTERVAL_MS: ${TRASH_CLEANUP_INTERVAL_MS:-3600000}
       # Override these when OCR lives in a separate Python environment or when
       # production nodes should skip OCR entirely.
-      OCR_PYTHON_BIN: ${OCR_PYTHON_BIN:-python3}
+      OCR_PYTHON_BIN: ${OCR_PYTHON_BIN:-/opt/ocr-venv/bin/python}
       OCR_DISABLED: ${OCR_DISABLED:-0}
     ports:
       - "${APP_PORT:-27015}:${PORT:-27015}"
