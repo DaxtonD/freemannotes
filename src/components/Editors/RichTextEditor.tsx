@@ -473,6 +473,10 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		return () => window.cancelAnimationFrame(rafId);
 	}, [editor, ensureSelectionVisible, props.autoFocus]);
 
+	const stopToolbarPropagation = React.useCallback((event: React.SyntheticEvent): void => {
+		event.stopPropagation();
+	}, []);
+
 	return (
 		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`}>
 			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} />}

@@ -74,6 +74,10 @@ export interface Note {
 	 * permanently removes it after `deleteAfterDays` have elapsed.
 	 */
 	trashed: boolean;
+	/** Archived notes stay out of the main grid but remain searchable. */
+	archived: boolean;
+	/** ISO-8601 timestamp recording when the note was archived, if any. */
+	archivedAt: string | null;
 	/**
 	 * ISO-8601 timestamp recording when the note was moved to trash.
 	 * null when the note is not trashed (trashed === false).
@@ -152,6 +156,8 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 		metadata.set('updatedAt', now);
 		metadata.set('trashed', false);
 		metadata.set('trashedAt', null);
+		metadata.set('archived', false);
+		metadata.set('archivedAt', null);
 	});
 }
 
@@ -192,6 +198,8 @@ export function initChecklistNoteDoc(
 		metadata.set('updatedAt', now);
 		metadata.set('trashed', false);
 		metadata.set('trashedAt', null);
+		metadata.set('archived', false);
+		metadata.set('archivedAt', null);
 
 		/* Clear any pre-existing checklist data (safety net for re-initialization). */
 		if (yChecklist.length > 0) {
@@ -252,8 +260,11 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	const trashed = Boolean(metadata.get('trashed'));
 	const rawTrashedAt = metadata.get('trashedAt');
 	const trashedAt = typeof rawTrashedAt === 'string' ? rawTrashedAt : null;
+	const archived = Boolean(metadata.get('archived'));
+	const rawArchivedAt = metadata.get('archivedAt');
+	const archivedAt = typeof rawArchivedAt === 'string' ? rawArchivedAt : null;
 
-	const base: Note = { id, type, title, createdAt, updatedAt, trashed, trashedAt };
+	const base: Note = { id, type, title, createdAt, updatedAt, trashed, archived, archivedAt, trashedAt };
 
 	if (type === 'text') {
 		const content = doc.getText('content').toString();
@@ -333,6 +344,10 @@ export function setNoteTrashed(doc: Y.Doc, trashed = true, origin?: symbol): voi
 	const run = (): void => {
 		metadata.set('trashed', trashed);
 		metadata.set('trashedAt', trashed ? new Date().toISOString() : null);
+		if (trashed) {
+			metadata.set('archived', false);
+			metadata.set('archivedAt', null);
+		}
 		/* Also bump updatedAt so the change is visible in timestamps. */
 		metadata.set('updatedAt', Date.now());
 	};
@@ -357,4 +372,30 @@ export function readTrashState(doc: Y.Doc): { trashed: boolean; trashedAt: strin
 	const rawTrashedAt = metadata.get('trashedAt');
 	const trashedAt = typeof rawTrashedAt === 'string' ? rawTrashedAt : null;
 	return { trashed, trashedAt };
+}
+
+export function setNoteArchived(doc: Y.Doc, archived = true, origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const run = (): void => {
+		metadata.set('archived', archived);
+		metadata.set('archivedAt', archived ? new Date().toISOString() : null);
+		if (archived) {
+			metadata.set('trashed', false);
+			metadata.set('trashedAt', null);
+		}
+		metadata.set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
+}
+
+export function readArchiveState(doc: Y.Doc): { archived: boolean; archivedAt: string | null } {
+	const metadata = doc.getMap<any>('metadata');
+	const archived = Boolean(metadata.get('archived'));
+	const rawArchivedAt = metadata.get('archivedAt');
+	const archivedAt = typeof rawArchivedAt === 'string' ? rawArchivedAt : null;
+	return { archived, archivedAt };
 }

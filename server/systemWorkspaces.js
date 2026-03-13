@@ -67,9 +67,11 @@ async function findPreferredWorkspaceMembership(prisma, userId, select = { works
 	const personal = await prisma.workspaceMember.findFirst({
 		where: {
 			userId,
+			role: 'OWNER',
 			workspace: {
 				is: {
 					deletedAt: null,
+					ownerUserId: userId,
 					systemKind: null,
 				},
 			},

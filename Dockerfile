@@ -1,4 +1,4 @@
-FROM node:20-alpine AS build
+FROM node:20-bookworm-slim AS build
 WORKDIR /app
 
 COPY package*.json ./
@@ -12,12 +12,17 @@ RUN npm run build && npm prune --omit=dev
 # Re-generate Prisma client after prune (prune may remove it).
 RUN npx prisma generate
 
-FROM node:20-alpine AS runtime
+FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=27015
 ENV HOST=0.0.0.0
+
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends python3 python3-pip libglib2.0-0 libgl1 libgomp1 \
+	&& python3 -m pip install --no-cache-dir paddleocr paddlepaddle \
+	&& rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /app/uploads && chown -R node:node /app
 

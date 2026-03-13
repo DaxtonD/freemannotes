@@ -1,0 +1,82 @@
+.backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 9500;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	background: rgba(12, 18, 24, 0.56);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+}
+
+.dialog {
+	width: min(880px, 100%);
+	max-height: min(88vh, 920px);
+	display: flex;
+	flex-direction: column;
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: 24px;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.24);
+	overflow: hidden;
+}
+
+.header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 16px;
+	padding: 20px 20px 12px;
+	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+}
+
+.headerCopy {
+	min-width: 0;
+}
+
+.title {
+	margin: 0;
+	font-size: 1.05rem;
+	font-weight: 700;
+}
+
+.subtitle {
+	margin: 6px 0 0;
+	font-size: 0.92rem;
+	color: var(--color-text-muted);
+}
+
+.closeButton {
+	width: 40px;
+	height: 40px;
+	border: 1px solid var(--color-border);
+	border-radius: 12px;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	cursor: pointer;
+}
+
+.body {
+	min-height: 0;
+	overflow: auto;
+	padding: 18px 20px 20px;
+}
+
+@media (pointer: coarse) {
+	.backdrop {
+		align-items: flex-end;
+		padding: 0;
+	}
+
+	.dialog {
+		width: 100%;
+		max-height: min(92vh, 100%);
+		border-radius: 24px 24px 0 0;
+	}
+
+	.body {
+		padding-bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+	}
+}

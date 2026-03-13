@@ -45,9 +45,11 @@ export type CachedCollaboratorSnapshot = {
 	roomId: string;
 	sourceWorkspaceId: string;
 	sourceNoteId: string;
+	noteTitle?: string;
 	accessRole: CollaboratorRole;
 	canManage: boolean;
 	currentUserId: string | null;
+	currentUser?: CachedUser | null;
 	selfCollaboratorId: string | null;
 	sharedBy: CachedUser | null;
 	collaborators: CachedCollaborator[];
@@ -73,9 +75,11 @@ type SnapshotRow = {
 	roomId: string;
 	sourceWorkspaceId: string;
 	sourceNoteId: string;
+	noteTitle: string;
 	accessRole: CollaboratorRole;
 	canManage: boolean;
 	currentUserId: string | null;
+	currentUser: CachedUser | null;
 	selfCollaboratorId: string | null;
 	sharedBy: CachedUser | null;
 	updatedAt: string;
@@ -220,9 +224,11 @@ function createEmptySnapshot(userId: string, docId: string): CachedCollaboratorS
 		roomId: docId,
 		sourceWorkspaceId: '',
 		sourceNoteId: '',
+		noteTitle: '',
 		accessRole: 'EDITOR',
 		canManage: false,
 		currentUserId: userId,
+		currentUser: null,
 		selfCollaboratorId: null,
 		sharedBy: null,
 		collaborators: [],
@@ -324,9 +330,18 @@ export async function cacheCollaboratorSnapshot(args: { userId: string; docId: s
 			roomId: args.snapshot.roomId || args.docId,
 			sourceWorkspaceId: args.snapshot.sourceWorkspaceId || '',
 			sourceNoteId: args.snapshot.sourceNoteId || '',
+			noteTitle: typeof args.snapshot.noteTitle === 'string' ? args.snapshot.noteTitle : '',
 			accessRole: asRole(args.snapshot.accessRole),
 			canManage: Boolean(args.snapshot.canManage),
 			currentUserId: args.snapshot.currentUserId ?? null,
+			currentUser: args.snapshot.currentUser
+				? {
+					id: args.snapshot.currentUser.id,
+					name: args.snapshot.currentUser.name,
+					email: args.snapshot.currentUser.email,
+					profileImage: args.snapshot.currentUser.profileImage ?? null,
+				}
+				: null,
 			selfCollaboratorId: args.snapshot.selfCollaboratorId ?? null,
 			sharedBy: args.snapshot.sharedBy
 				? {
@@ -456,9 +471,11 @@ export async function readCachedCollaboratorSnapshot(userId: string, docId: stri
 				roomId: snapshotRow.roomId,
 				sourceWorkspaceId: snapshotRow.sourceWorkspaceId,
 				sourceNoteId: snapshotRow.sourceNoteId,
+				noteTitle: snapshotRow.noteTitle,
 				accessRole: asRole(snapshotRow.accessRole),
 				canManage: Boolean(snapshotRow.canManage),
 				currentUserId: snapshotRow.currentUserId ?? null,
+				currentUser: snapshotRow.currentUser ? { ...snapshotRow.currentUser } : null,
 				selfCollaboratorId: snapshotRow.selfCollaboratorId ?? null,
 				sharedBy: snapshotRow.sharedBy ? { ...snapshotRow.sharedBy } : null,
 				collaborators: collaboratorRows.map((row) => ({

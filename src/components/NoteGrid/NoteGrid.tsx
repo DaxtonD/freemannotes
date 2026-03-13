@@ -5,6 +5,7 @@ import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faUsers } from '@fortawesome/free-solid-svg-icons';
 import { NoteCard } from '../NoteCard/NoteCard';
+import { NoteImageCountChip } from '../NoteMedia/NoteImageCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
@@ -15,7 +16,7 @@ import {
 	type NoteShareCollaboratorSnapshot,
 	type SharedNotePlacement,
 } from '../../core/noteShareApi';
-import { readTrashState } from '../../core/noteModel';
+import { readArchiveState, readTrashState } from '../../core/noteModel';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { measureDocumentRects } from './flip';
 import {
@@ -41,6 +42,8 @@ export type NoteGridProps = {
 	selectedNoteId: string | null;
 	onSelectNote: (noteId: string) => void;
 	onAddCollaborator?: (noteId: string, title?: string) => void;
+	onAddImage?: (noteId: string, docId: string, title?: string) => void;
+	onOpenMediaBrowser?: (noteId: string, docId: string, title: string | undefined, canEdit: boolean) => void;
 	onSelectCollaboratorFilter?: (filter: NoteGridCollaboratorFilter) => void;
 	activeCollaboratorFilter?: NoteGridCollaboratorFilter | null;
 	refreshCollaboratorsToken?: number;
@@ -48,6 +51,7 @@ export type NoteGridProps = {
 	canReorder?: boolean;
 	maxCardHeightPx: number;
 	showTrashed?: boolean;
+	showArchived?: boolean;
 	sharedNotes?: readonly SharedNotePlacement[];
 	onReady?: () => void;
 	/** Enable framer-motion layout animations. Keep false during splash reveal. */
@@ -122,6 +126,7 @@ type GridNoteCardProps = {
 	isMoreMenuOpen: boolean;
 	onOpen: () => void;
 	onAddCollaborator?: () => void;
+	onAddImage?: () => void;
 	onMoreMenu: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
 	canEdit: boolean;
 	maxCardHeightPx: number;
@@ -183,6 +188,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					maxCardHeightPx={props.maxCardHeightPx}
 					onOpen={props.onOpen}
 					onAddCollaborator={props.onAddCollaborator}
+					onAddImage={props.onAddImage}
 					onMoreMenu={props.onMoreMenu}
 					dragHandleRef={handleDragHandleRef}
 				/>
@@ -202,25 +208,42 @@ function collaboratorFilterKey(collaborator: { userId?: string | null; email?: s
 }
 
 function snapshotToCollaboratorSummary(docId: string, snapshot: NoteShareCollaboratorSnapshot | null): NoteCardCollaboratorSummary | null {
-	if (!snapshot || !Array.isArray(snapshot.collaborators) || snapshot.collaborators.length === 0) {
+	if (!snapshot) {
 		return null;
 	}
-	const collaborators = snapshot.collaborators
-		.map((collaborator): NoteCardCollaborator | null => {
-			const label = String(collaborator.user?.name || collaborator.user?.email || collaborator.userId || '').trim();
-			const email = String(collaborator.user?.email || '').trim();
-			if (!label && !email) return null;
-			return {
-				key: collaboratorFilterKey({ userId: collaborator.userId, email }),
-				userId: collaborator.userId || null,
-				name: label || email,
-				email,
-				avatar: collaborator.user?.profileImage ?? null,
-				accessSource: collaborator.accessSource === 'workspace' ? 'workspace' : 'direct',
-			};
-		})
-		.filter((collaborator): collaborator is NoteCardCollaborator => Boolean(collaborator))
-		.sort((left, right) => left.name.localeCompare(right.name));
+	const collaboratorsByKey = new Map<string, NoteCardCollaborator>();
+	const upsertCollaborator = (candidate: NoteCardCollaborator | null): void => {
+		if (!candidate) return;
+		collaboratorsByKey.set(candidate.key, candidate);
+	};
+	const mapUserLike = (
+		user: { id?: string | null; name?: string | null; email?: string | null; profileImage?: string | null } | null | undefined,
+		accessSource: 'direct' | 'workspace'
+	): NoteCardCollaborator | null => {
+		const label = String(user?.name || user?.email || user?.id || '').trim();
+		const email = String(user?.email || '').trim();
+		const userId = typeof user?.id === 'string' ? user.id : null;
+		if (!label && !email) return null;
+		return {
+			key: collaboratorFilterKey({ userId, email }),
+			userId,
+			name: label || email,
+			email,
+			avatar: user?.profileImage ?? null,
+			accessSource,
+		};
+	};
+
+	upsertCollaborator(mapUserLike(snapshot.sharedBy, 'direct'));
+	for (const collaborator of snapshot.collaborators ?? []) {
+		upsertCollaborator(mapUserLike({
+			id: collaborator.userId,
+			name: collaborator.user?.name,
+			email: collaborator.user?.email,
+			profileImage: collaborator.user?.profileImage,
+		}, collaborator.accessSource === 'workspace' ? 'workspace' : 'direct'));
+	}
+	const collaborators = Array.from(collaboratorsByKey.values()).sort((left, right) => left.name.localeCompare(right.name));
 	if (collaborators.length === 0) return null;
 	return { docId, collaborators, count: collaborators.length };
 }
@@ -419,11 +442,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const baseVisibleIds = React.useMemo<string[]>(() => {
 		return orderedIds.filter((id) => {
 			const doc = docsById[id];
-			if (!doc) return !props.showTrashed;
+			if (!doc) return !props.showTrashed && !props.showArchived;
 			const trashed = readTrashState(doc).trashed;
-			return props.showTrashed ? trashed : !trashed;
+			const archived = readArchiveState(doc).archived;
+			if (props.showTrashed) return trashed;
+			if (props.showArchived) return !trashed && archived;
+			return !trashed && !archived;
 		});
-	}, [orderedIds, docsById, metadataVersion, props.showTrashed]);
+	}, [orderedIds, docsById, metadataVersion, props.showArchived, props.showTrashed]);
 
 	const visibleNoteEntries = React.useMemo(() => {
 		const sharedPlacementByAlias = new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement]));
@@ -898,41 +924,51 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								}
 								const isPlaceholder = dragManager.activeDragId === note.id;
 								const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
+								const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
+								const docId = placement?.roomId || (props.activeWorkspaceId ? `${props.activeWorkspaceId}:${note.id}` : '');
+								const canEditNote = note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false;
 								return (
 										< GridNoteCard
 										key={note.id}
 										note={note}
 										doc={doc}
-										metaChips={collaboratorSummary && collaboratorSummary.count > 0 ? (
-											<button
-												type="button"
-												className={styles.noteChipButton}
-												onPointerDown={(event) => event.stopPropagation()}
-												onClick={(event) => {
-													event.stopPropagation();
-													const rect = event.currentTarget.getBoundingClientRect();
-													setOpenCollaboratorChip((current) => current?.noteId === note.id
-														? null
-														: {
-															noteId: note.id,
-															anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
-														}
-													);
-												}}
-												aria-label={`${t('share.activeCollaborators')}: ${collaboratorSummary.count}`}
-											>
-												<FontAwesomeIcon icon={faUsers} />
-												<span>{collaboratorSummary.count}</span>
-											</button>
+										metaChips={collaboratorSummary && collaboratorSummary.count > 0 || docId ? (
+											<>
+												{collaboratorSummary && collaboratorSummary.count > 0 ? (
+													<button
+														type="button"
+														className={styles.noteChipButton}
+														onPointerDown={(event) => event.stopPropagation()}
+														onClick={(event) => {
+															event.stopPropagation();
+															const rect = event.currentTarget.getBoundingClientRect();
+															setOpenCollaboratorChip((current) => current?.noteId === note.id
+																? null
+																: {
+																	noteId: note.id,
+																	anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+																}
+															);
+														}}
+														aria-label={`${t('share.activeCollaborators')}: ${collaboratorSummary.count}`}
+													>
+														<FontAwesomeIcon icon={faUsers} />
+														<span>{collaboratorSummary.count}</span>
+													</button>
+												) : null}
+												{docId ? <NoteImageCountChip docId={docId} authUserId={props.authUserId} className={styles.noteChipButton} onClick={() => props.onOpenMediaBrowser?.(note.id, docId, doc.getText('title').toString(), canEditNote)} /> : null}
+											</>
 										) : undefined}
-										canEdit={note.isShared
-											? (props.sharedNotes ?? []).find((placement) => placement.aliasId === note.id)?.role === 'EDITOR'
-											: props.canEditWorkspaceContent !== false}
+										canEdit={canEditNote}
 										hasPendingSync={pendingSyncNoteIds.has(note.id)}
 										selected={props.selectedNoteId === note.id}
 										isMoreMenuOpen={moreMenuNoteId === note.id}
 										onOpen={() => props.onSelectNote(note.id)}
 											onAddCollaborator={props.onAddCollaborator ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
+											onAddImage={props.onAddImage && canEditNote ? () => {
+												if (!docId) return;
+												props.onAddImage?.(note.id, docId, doc.getText('title').toString());
+											} : undefined}
 										onMoreMenu={(anchorRect) => {
 											// Footer 3-dot triggers provide a custom anchor so desktop
 											// popovers align to the card edge instead of the trigger.
@@ -1079,6 +1115,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
 						props.onAddCollaborator?.(noteId);
+					} : undefined}
+					onAddImage={props.onAddImage ? () => {
+						const noteId = moreMenuNoteId;
+						const doc = docsById[noteId];
+						const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === noteId);
+						const docId = placement?.roomId || (props.activeWorkspaceId ? `${props.activeWorkspaceId}:${noteId}` : '');
+						setMoreMenuNoteId(null);
+						setMoreMenuAnchorRect(null);
+						if (!docId || !doc) return;
+						props.onAddImage?.(noteId, docId, doc.getText('title').toString());
 					} : undefined}
 					onTrash={sharedNoteIdSet.has(moreMenuNoteId) ? undefined : () => {
 						// Shared aliases are projections of another workspace's document, so the

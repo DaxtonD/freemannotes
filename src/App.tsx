@@ -29,6 +29,8 @@ import { AppearanceModal } from './components/Preferences/AppearanceModal';
 import { SendInviteModal } from './components/Invites/SendInviteModal';
 import { CollaboratorModal } from './components/Share/CollaboratorModal';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
+import { NoteMediaPanel } from './components/NoteMedia/NoteMediaPanel';
+import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid/NoteGrid';
@@ -53,6 +55,8 @@ import {
 	type SharedNotePlacement,
 } from './core/noteShareApi';
 import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
+import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
+import { scheduleQueuedNoteImageFlush } from './core/noteMediaStore';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -76,6 +80,19 @@ type CollaboratorModalState = {
 	title: string;
 };
 
+type NoteImageModalState = {
+	noteId: string;
+	docId: string;
+	title: string;
+};
+
+type NoteMediaBrowserState = {
+	noteId: string;
+	docId: string;
+	title: string;
+	canEdit: boolean;
+};
+
 type OverlaySnapshot = {
 	editorMode: EditorMode;
 	selectedNoteId: string | null;
@@ -85,6 +102,7 @@ type OverlaySnapshot = {
 	isSendInviteOpen: boolean;
 	isWorkspaceSwitcherOpen: boolean;
 	collaboratorModalState: CollaboratorModalState | null;
+	noteMediaBrowserState: NoteMediaBrowserState | null;
 	isMobileSidebarOpen: boolean;
 	isFabOpen: boolean;
 };
@@ -137,6 +155,7 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	isSendInviteOpen: false,
 	isWorkspaceSwitcherOpen: false,
 	collaboratorModalState: null,
+	noteMediaBrowserState: null,
 	isMobileSidebarOpen: false,
 	isFabOpen: false,
 };
@@ -164,6 +183,16 @@ function isOverlayHistoryState(value: unknown): value is OverlayHistoryState {
 function isMoreMenuHistoryState(value: unknown): boolean {
 	if (!value || typeof value !== 'object') return false;
 	return (value as { __moreMenu?: boolean }).__moreMenu === true;
+}
+
+function isNoteImageViewerHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return typeof (value as { __noteImageViewer?: unknown }).__noteImageViewer === 'string';
+}
+
+function isNoteEditorMediaDockHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return typeof (value as { __noteEditorMediaDock?: unknown }).__noteEditorMediaDock === 'string';
 }
 
 function readExternalRoute(): ExternalRoute | null {
@@ -421,8 +450,8 @@ export function App(): React.JSX.Element {
 	const workspaceMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const sidebarEntryButtonRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>(CLOSED_SIDEBAR_GROUPS);
-	// Which sidebar view is active: regular notes or the trash bin.
-	const [sidebarView, setSidebarView] = React.useState<'notes' | 'trash'>('notes');
+	// Which sidebar view is active: regular notes, archive, or the trash bin.
+	const [sidebarView, setSidebarView] = React.useState<'notes' | 'archive' | 'trash'>('notes');
 	// UI mode for the "new note" panel.
 	const [editorMode, setEditorMode] = React.useState<EditorMode>('none');
 	// Phase 10 preferences shell entry point opened from top-right avatar.
@@ -445,6 +474,8 @@ export function App(): React.JSX.Element {
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(null);
+	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(null);
+	const [noteMediaBrowserState, setNoteMediaBrowserState] = React.useState<NoteMediaBrowserState | null>(null);
 	// The currently selected note in the grid/editor area.
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(null);
 	// Loaded Y.Doc for the selected note.
@@ -456,6 +487,10 @@ export function App(): React.JSX.Element {
 	const [quickDeleteChecklistPref, setQuickDeleteChecklistPref] = React.useState(false);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
 	const [searchQuery, setSearchQuery] = React.useState('');
+	const deferredSearchQuery = React.useDeferredValue(searchQuery.trim());
+	const [searchResults, setSearchResults] = React.useState<readonly NoteSearchResult[]>([]);
+	const [searchResultsBusy, setSearchResultsBusy] = React.useState(false);
+	const [searchResultsError, setSearchResultsError] = React.useState<string | null>(null);
 	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
 	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(false);
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
@@ -484,6 +519,7 @@ export function App(): React.JSX.Element {
 			isSendInviteOpen,
 			isWorkspaceSwitcherOpen,
 			collaboratorModalState,
+			noteMediaBrowserState,
 			isMobileSidebarOpen,
 			isFabOpen,
 		};
@@ -496,6 +532,7 @@ export function App(): React.JSX.Element {
 		isSendInviteOpen,
 		isWorkspaceSwitcherOpen,
 		collaboratorModalState,
+		noteMediaBrowserState,
 		isMobileSidebarOpen,
 		isFabOpen,
 	]);
@@ -509,6 +546,7 @@ export function App(): React.JSX.Element {
 		setIsSendInviteOpen(snapshot.isSendInviteOpen);
 		setIsWorkspaceSwitcherOpen(snapshot.isWorkspaceSwitcherOpen);
 		setCollaboratorModalState(snapshot.collaboratorModalState);
+		setNoteMediaBrowserState(snapshot.noteMediaBrowserState);
 		setIsMobileSidebarOpen(snapshot.isMobileSidebarOpen);
 		setIsFabOpen(snapshot.isFabOpen);
 	}, []);
@@ -698,6 +736,35 @@ export function App(): React.JSX.Element {
 		setCollaboratorModalState(null);
 	}, [goBackIfOverlayHistory]);
 
+	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string) => {
+		setNoteImageModalState({ noteId, docId, title: title || '' });
+	}, []);
+
+	const closeNoteImageModal = React.useCallback(() => {
+		setNoteImageModalState(null);
+	}, []);
+
+	const openNoteMediaBrowser = React.useCallback((noteId: string, docId: string, title: string | undefined, canEdit: boolean) => {
+		// The note-card media browser participates in the same overlay history stack
+		// as editors and sidebars so mobile Back always peels off the top-most layer
+		// before closing the underlying note or workspace UI.
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				noteMediaBrowserState: { noteId, docId, title: title || '', canEdit },
+				isMobileSidebarOpen: false,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const closeNoteMediaBrowser = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setNoteMediaBrowserState(null);
+	}, [goBackIfOverlayHistory]);
+
 	const openMobileSidebar = React.useCallback(() => {
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot(
@@ -781,6 +848,13 @@ export function App(): React.JSX.Element {
 	const openNoteEditor = React.useCallback(
 		(noteId: string, opts?: NoteEditorOpenOptions) => {
 			const current = getOverlaySnapshot();
+			const historyState = typeof window !== 'undefined' ? window.history.state : null;
+			// When the editor is reopened from a nested media layer, replace that top
+			// history entry instead of stacking another editor snapshot on top of it.
+			const shouldReplaceTop =
+				opts?.replaceTop ||
+				isNoteImageViewerHistoryState(historyState) ||
+				isNoteEditorMediaDockHistoryState(historyState);
 			commitOverlaySnapshot(
 				{
 					...current,
@@ -789,7 +863,7 @@ export function App(): React.JSX.Element {
 					isMobileSidebarOpen: false,
 					isFabOpen: false,
 				},
-				opts?.replaceTop ? 'replace' : 'push'
+				shouldReplaceTop ? 'replace' : 'push'
 			);
 		},
 		[commitOverlaySnapshot, getOverlaySnapshot]
@@ -1521,7 +1595,7 @@ export function App(): React.JSX.Element {
 		// Shared With Me root and Shared With Me subfolders are distinct views.
 		// Root shows only placements with no folder assignment; selecting a folder
 		// narrows the grid to placements assigned to that specific folder name.
-		if (activeWorkspaceSystemKind !== 'SHARED_WITH_ME') return [];
+		if (activeWorkspaceSystemKind !== 'SHARED_WITH_ME') return sharedPlacements;
 		if (!activeSharedFolder) {
 			return sharedPlacements.filter((placement) => !String(placement.folderName || '').trim());
 		}
@@ -1544,8 +1618,14 @@ export function App(): React.JSX.Element {
 		if (noteGridCollaboratorFilter) {
 			return `${t('app.withFilterPrefix')}: ${noteGridCollaboratorFilter.label}`;
 		}
+		if (sidebarView === 'archive') {
+			return `${t('app.sidebarArchive')} / ${activeWorkspaceSidebarPath}`;
+		}
+		if (sidebarView === 'trash') {
+			return `${t('app.sidebarTrash')} / ${activeWorkspaceSidebarPath}`;
+		}
 		return `All notes / ${activeWorkspaceSidebarPath}`;
-	}, [activeWorkspaceSidebarPath, noteGridCollaboratorFilter, t]);
+	}, [activeWorkspaceSidebarPath, noteGridCollaboratorFilter, sidebarView, t]);
 
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
@@ -1648,7 +1728,7 @@ export function App(): React.JSX.Element {
 		try {
 			const [invitationData, placementData, workspaceInviteData] = await Promise.all([
 				listNoteShareInvitations(),
-				sharedWithMeWorkspaceId ? listSharedNotePlacements(sharedWithMeWorkspaceId) : Promise.resolve({ placements: [] }),
+				authWorkspaceId ? listSharedNotePlacements(authWorkspaceId) : Promise.resolve({ placements: [] }),
 				listWorkspacePendingInvites(),
 			]);
 			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length);
@@ -1659,7 +1739,7 @@ export function App(): React.JSX.Element {
 				setPendingShareNotificationCount(0);
 			}
 		}
-	}, [authStatus, authUserId, sharedWithMeWorkspaceId]);
+	}, [authStatus, authUserId, authWorkspaceId]);
 
 	React.useEffect(() => {
 		if (externalRoute?.kind !== 'share') {
@@ -1984,8 +2064,8 @@ export function App(): React.JSX.Element {
 		// Accepting into Shared With Me can require a workspace switch plus a sidebar
 		// reveal. We stage the reveal first, then let the activation path complete and
 		// the follow-up effect expands the correct folder once placements are loaded.
-		if (args.target !== 'shared' || !args.targetWorkspaceId) return;
 		setIsShareNotificationsOpen(false);
+		if (args.target !== 'shared' || !args.targetWorkspaceId) return;
 		setPendingSharedFolderReveal({
 			workspaceId: args.targetWorkspaceId,
 			folderName: args.folderName,
@@ -2841,6 +2921,9 @@ export function App(): React.JSX.Element {
 				applyOverlaySnapshot(state.snapshot);
 				return;
 			}
+			if (isNoteImageViewerHistoryState(state) || isNoteEditorMediaDockHistoryState(state)) {
+				return;
+			}
 
 			// If we popped to a non-overlay history entry, collapse to base.
 			applyOverlaySnapshot(EMPTY_OVERLAY_SNAPSHOT);
@@ -3061,6 +3144,65 @@ export function App(): React.JSX.Element {
 		sidebarIsCollapsed,
 	]);
 
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId) return;
+		void scheduleQueuedNoteImageFlush(authUserId);
+		const onOnline = (): void => {
+			void scheduleQueuedNoteImageFlush(authUserId);
+		};
+		window.addEventListener('online', onOnline);
+		return () => window.removeEventListener('online', onOnline);
+	}, [authStatus, authUserId]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed') return;
+		if (!deferredSearchQuery) {
+			setSearchResults([]);
+			setSearchResultsBusy(false);
+			setSearchResultsError(null);
+			return;
+		}
+		if (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+			setSearchResults([]);
+			setSearchResultsBusy(false);
+			setSearchResultsError(t('search.offlineUnavailable'));
+			return;
+		}
+
+		let cancelled = false;
+		const timer = window.setTimeout(() => {
+			setSearchResultsBusy(true);
+			setSearchResultsError(null);
+			void searchNotes(deferredSearchQuery)
+				.then((response) => {
+					if (cancelled) return;
+					setSearchResults(response.results);
+				})
+				.catch((error) => {
+					if (cancelled) return;
+					setSearchResults([]);
+					setSearchResultsError(error instanceof Error ? error.message : t('search.failed'));
+				})
+				.finally(() => {
+					if (cancelled) return;
+					setSearchResultsBusy(false);
+				});
+		}, 180);
+
+		return () => {
+			cancelled = true;
+			window.clearTimeout(timer);
+		};
+	}, [authOfflineMode, authStatus, deferredSearchQuery, t]);
+
+	const clearSearchAndClose = React.useCallback(() => {
+		setSearchQuery('');
+		setSearchResults([]);
+		setSearchResultsError(null);
+		setSearchResultsBusy(false);
+		setIsMobileSearchOpen(false);
+	}, []);
+
 	const toggleSidebar = () => {
 		if (isMobileViewport) {
 			if (isMobileSidebarOpen) {
@@ -3103,8 +3245,49 @@ export function App(): React.JSX.Element {
 	const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
 	const canCreateNotesInActiveWorkspace = Boolean(authWorkspaceId && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' && canEditActiveWorkspace);
 	const selectedSharedPlacement = selectedNoteId ? sharedPlacements.find((placement) => placement.aliasId === selectedNoteId) ?? null : null;
+	const selectedNoteDocId = selectedNoteId ? selectedSharedPlacement?.roomId || (authWorkspaceId ? `${authWorkspaceId}:${selectedNoteId}` : '') : '';
 	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
 	const canManageSelectedNoteCollaborators = selectedSharedPlacement ? selectedSharedPlacement.role === 'EDITOR' : canEditActiveWorkspace;
+	const groupedSearchResults = React.useMemo(() => {
+		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
+		for (const result of searchResults) {
+			const key = `${result.group.kind}:${result.group.label}`;
+			const existing = groups.get(key);
+			if (existing) {
+				existing.items.push(result);
+				continue;
+			}
+			groups.set(key, { label: result.group.label, items: [result] });
+		}
+		return Array.from(groups.values());
+	}, [searchResults]);
+	const formatSearchGroupLabel = React.useCallback((group: NoteSearchResult['group']): string => {
+		if (group.kind === 'shared') return `${t('search.sharedPrefix')} ${group.label}`;
+		return `${t('search.workspacePrefix')} ${group.label}`;
+	}, [t]);
+	const formatSearchMatchLabel = React.useCallback((kind: NoteSearchMatchKind): string => {
+		if (kind === 'ocr') return t('search.matchOcr');
+		if (kind === 'collaborator') return t('search.matchCollaborator');
+		return t('search.matchNote');
+	}, [t]);
+	const handleSearchResultSelect = React.useCallback(async (result: NoteSearchResult) => {
+		setSearchQuery('');
+		setSearchResults([]);
+		setSearchResultsError(null);
+		setIsMobileSearchOpen(false);
+		setNoteGridCollaboratorFilter(null);
+		if (result.openWorkspaceId && result.openWorkspaceId !== authWorkspaceId) {
+			await activateWorkspaceFromSidebar(result.openWorkspaceId, {
+				activeSharedFolder: result.group.kind === 'shared' ? result.folderName ?? null : null,
+			});
+		} else if (result.group.kind === 'shared') {
+			setActiveSharedFolder(result.folderName ?? null);
+		}
+		setSidebarView(result.archived ? 'archive' : 'notes');
+		if (result.openNoteId) {
+			openNoteEditor(result.openNoteId, { replaceTop: true });
+		}
+	}, [activateWorkspaceFromSidebar, authWorkspaceId, openNoteEditor]);
 
 	return (
 		<>
@@ -3215,7 +3398,7 @@ export function App(): React.JSX.Element {
 								<button
 									type="button"
 									className="app-icon-button mobile-search-close"
-									onClick={() => setIsMobileSearchOpen(false)}
+									onClick={clearSearchAndClose}
 									aria-label={t('common.close')}
 									title={t('common.close')}
 								>
@@ -3316,7 +3499,7 @@ export function App(): React.JSX.Element {
 											sidebarEntryButtonRefs.current[entry.id] = node;
 										}}
 										type="button"
-										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${entry.id === 'trash' && sidebarView === 'trash' ? ' is-active' : ''}${entry.id === 'notes' && sidebarView === 'notes' ? ' is-active' : ''}`}
+										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${entry.id === 'trash' && sidebarView === 'trash' ? ' is-active' : ''}${entry.id === 'archive' && sidebarView === 'archive' ? ' is-active' : ''}${entry.id === 'notes' && sidebarView === 'notes' ? ' is-active' : ''}`}
 										onClick={() => {
 											if (!isMobileViewport && sidebarIsCollapsed) {
 												if (entry.id === 'workspaces' && sidebarWorkspaces.length === 0) {
@@ -3339,6 +3522,12 @@ export function App(): React.JSX.Element {
 											if (entry.id === 'trash') {
 												setActiveSharedFolder(null);
 												setSidebarView('trash');
+												if (isMobileViewport) closeMobileSidebar();
+												return;
+											}
+											if (entry.id === 'archive') {
+												setActiveSharedFolder(null);
+												setSidebarView('archive');
 												if (isMobileViewport) closeMobileSidebar();
 												return;
 											}
@@ -3590,9 +3779,65 @@ export function App(): React.JSX.Element {
 				</aside>
 
 				<main className="app-main">
+					{deferredSearchQuery ? (
+						<section className="global-search-results" aria-live="polite">
+							<div className="global-search-results-header">
+								<div>
+									<p className="global-search-results-eyebrow">{t('search.title')}</p>
+									<h2 className="global-search-results-title">{deferredSearchQuery}</h2>
+								</div>
+								<div className="global-search-results-meta">
+									{searchResultsBusy ? t('common.loading') : `${searchResults.length} ${searchResults.length === 1 ? t('search.resultSingular') : t('search.resultPlural')}`}
+								</div>
+							</div>
+							{searchResultsError ? <p className="global-search-results-error">{searchResultsError}</p> : null}
+							{!searchResultsBusy && !searchResultsError && groupedSearchResults.length === 0 ? (
+								<p className="global-search-results-empty">{t('search.noResults')}</p>
+							) : null}
+							<div className="global-search-results-groups">
+								{groupedSearchResults.map((group) => (
+									<section key={group.label} className="global-search-results-group">
+										<header className="global-search-results-group-header">{formatSearchGroupLabel(group.items[0].group)}</header>
+										<div className="global-search-results-list">
+											{group.items.map((result) => (
+												<button
+													key={`${result.docId}:${result.openNoteId || result.noteId}`}
+													type="button"
+													className="global-search-result-card"
+													onClick={() => void handleSearchResultSelect(result)}
+												>
+													{result.thumbnailUrl ? <img className="global-search-result-thumb" src={result.thumbnailUrl} alt="" /> : (
+														<div className="global-search-result-thumb global-search-result-thumb-placeholder" aria-hidden="true">
+															<span className="global-search-result-thumb-title">{result.title}</span>
+															<span className="global-search-result-thumb-snippet">{result.snippet || t('note.untitled')}</span>
+															<span className="global-search-result-thumb-line global-search-result-thumb-line-short" />
+														</div>
+													)}
+													<div className="global-search-result-copy">
+														<div className="global-search-result-topline">
+															<span className="global-search-result-title">{result.title}</span>
+															{result.matchKinds.map((kind) => <span key={`${result.docId}:${kind}`} className="global-search-result-badge">{formatSearchMatchLabel(kind)}</span>)}
+															{result.archived ? <span className="global-search-result-badge">{t('search.archivedBadge')}</span> : null}
+														</div>
+														<p className="global-search-result-snippet">{result.snippet}</p>
+														{result.collaboratorMatches.length > 0 ? (
+															<div className="global-search-result-contexts">
+																{result.collaboratorMatches.map((label) => <span key={`${result.docId}:${label}`} className="global-search-result-context">{t('search.collaboratorPrefix')} {label}</span>)}
+															</div>
+														) : null}
+														<div className="global-search-result-meta">{result.imageCount > 0 ? `${result.imageCount} ${result.imageCount === 1 ? t('media.imageSingular') : t('media.imagePlural')} · ` : ''}{new Date(result.updatedAt).toLocaleString(locale)}</div>
+													</div>
+												</button>
+											))}
+										</div>
+									</section>
+								))}
+							</div>
+						</section>
+					) : null}
 
-					{/* In trash view we hide the "create new note" affordances. */}
-					{sidebarView !== 'trash' ? (
+					{/* Archive/trash views are read-focused, so hide quick-create affordances. */}
+					{sidebarView === 'notes' ? (
 						<div ref={topControlsRef} className="app-main-sticky">
 							{canCreateNotesInActiveWorkspace ? (
 								<div className="top-actions">
@@ -3656,7 +3901,10 @@ export function App(): React.JSX.Element {
 						maxCardHeightPx={maxCardHeightPx}
 						// When the trash view is active, NoteGrid switches to rendering trashed notes.
 						showTrashed={sidebarView === 'trash'}
+						showArchived={sidebarView === 'archive'}
 						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
+						onAddImage={openNoteImageModal}
+						onOpenMediaBrowser={openNoteMediaBrowser}
 						onSelectCollaboratorFilter={setNoteGridCollaboratorFilter}
 						canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter}
 						onSelectNote={(id) => {
@@ -3671,6 +3919,41 @@ export function App(): React.JSX.Element {
 					/>
 				</main>
 			</div>
+			{noteMediaBrowserState ? (
+				<div className="note-media-browser-backdrop" role="presentation" onClick={closeNoteMediaBrowser}>
+					<section className="note-media-browser-dialog" role="dialog" aria-modal="true" aria-label={noteMediaBrowserState.title || t('app.sidebarImages')} onClick={(event) => event.stopPropagation()}>
+						<header className="note-media-browser-header">
+							<div className="note-media-browser-header-copy">
+								<h2 className="note-media-browser-title">{noteMediaBrowserState.title || t('note.untitled')}</h2>
+								<p className="note-media-browser-subtitle">{t('app.sidebarImages')}</p>
+							</div>
+							<button type="button" className="note-media-browser-close" onClick={closeNoteMediaBrowser} aria-label={t('common.close')}>
+								<FontAwesomeIcon icon={faXmark} />
+							</button>
+						</header>
+						<div className="note-media-browser-body">
+							<NoteMediaPanel
+								docId={noteMediaBrowserState.docId}
+								authUserId={authUserId}
+								canEdit={noteMediaBrowserState.canEdit}
+								onAddImage={() => {
+									closeNoteMediaBrowser();
+									openNoteImageModal(noteMediaBrowserState.noteId, noteMediaBrowserState.docId, noteMediaBrowserState.title);
+								}}
+							/>
+						</div>
+					</section>
+				</div>
+			) : null}
+			<NoteImageUploadModal
+				isOpen={Boolean(noteImageModalState)}
+				docId={noteImageModalState?.docId ?? null}
+				authUserId={authUserId}
+				offlineMode={authOfflineMode}
+				noteTitle={noteImageModalState?.title ?? null}
+				onClose={closeNoteImageModal}
+				onUploaded={(result) => showBriefDialog(result.queued ? `${result.count} ${result.count === 1 ? t('media.queuedUploadToastSingular') : t('media.queuedUploadToastPlural')}` : t('media.queuedForOcrToast'))}
+			/>
 			{briefDialogMessage ? (
 				<div className="brief-dialog" role="status" aria-live="polite">
 					{briefDialogMessage}
@@ -3707,7 +3990,7 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
-			{canCreateNotesInActiveWorkspace ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
+			{canCreateNotesInActiveWorkspace && sidebarView === 'notes' ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
 				<button
 					type="button"
 					className="mobile-fab-action"
@@ -3728,7 +4011,7 @@ export function App(): React.JSX.Element {
 				</button>
 			</div> : null}
 
-			{canCreateNotesInActiveWorkspace ? (
+			{canCreateNotesInActiveWorkspace && sidebarView === 'notes' ? (
 				<button
 					type="button"
 					className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
@@ -3756,10 +4039,16 @@ export function App(): React.JSX.Element {
 			{editorMode === 'none' && selectedNoteId && openDoc && openDocId === selectedNoteId ? (
 				<NoteEditor
 					noteId={selectedNoteId}
+					docId={selectedNoteDocId}
+					authUserId={authUserId}
 					doc={openDoc}
 					onClose={closeNoteEditor}
 					onDelete={onDeleteSelectedNote}
 					onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
+					onAddImage={selectedNoteReadOnly ? undefined : () => {
+						if (!selectedNoteDocId) return;
+						openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
+					}}
 					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}

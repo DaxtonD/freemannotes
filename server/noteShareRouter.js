@@ -100,6 +100,7 @@ async function resolveTargetWorkspaceId(prisma, userId, targetKind) {
 			workspace: {
 				is: {
 					deletedAt: null,
+					ownerUserId: userId,
 					systemKind: null,
 				},
 			},
@@ -595,7 +596,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						return;
 					}
 
-					const [collaborators, pendingInvites, selfCollaborator, workspaceMembers] = await Promise.all([
+					const [collaborators, pendingInvites, selfCollaborator, workspaceMembers, currentUser, document] = await Promise.all([
 						prisma.noteCollaborator.findMany({
 							where: { docId: access.docId, revokedAt: null },
 							include: { user: { select: { id: true, name: true, email: true, profileImage: true } } },
@@ -628,21 +629,40 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							},
 							orderBy: { userId: 'asc' },
 						}),
+						prisma.user.findUnique({
+							where: { id: session.userId },
+							select: { id: true, name: true, email: true, profileImage: true },
+						}),
+						prisma.document.findUnique({
+							where: { docId: access.docId },
+							select: { state: true },
+						}),
 					]);
 
 					const directCollaborators = access.via === 'collaborator' && access.collaboratorId
 						? collaborators.filter((collaborator) => collaborator.id !== access.collaboratorId)
 						: collaborators;
-					const visibleWorkspaceMembers = workspaceMembers.filter((member) => member.user && member.user.disabled !== true);
+					const visibleWorkspaceMembers = access.via === 'workspace-member'
+						? workspaceMembers.filter((member) => member.user && member.user.disabled !== true)
+						: [];
 					const visibleCollaborators = mergeVisibleCollaborators(directCollaborators, visibleWorkspaceMembers, session.userId);
 
 					jsonResponse(res, 200, {
 						roomId: access.docId,
 						sourceWorkspaceId: access.sourceWorkspaceId,
 						sourceNoteId: access.sourceNoteId,
+						noteTitle: readDocumentTitle(document && document.state ? document.state : null),
 						accessRole: access.accessRole,
 						canManage: access.canManage,
 						currentUserId: session.userId,
+						currentUser: currentUser
+							? {
+								id: currentUser.id,
+								name: currentUser.name,
+								email: currentUser.email,
+								profileImage: currentUser.profileImage || null,
+							}
+							: null,
 						selfCollaboratorId: access.via === 'collaborator' ? access.collaboratorId || null : null,
 						sharedBy: selfCollaborator && selfCollaborator.invitation && selfCollaborator.invitation.inviter
 							? {
@@ -959,6 +979,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 
 module.exports = {
 	createNoteShareRouter,
+	resolveDocAccess,
 	resolveDocRoomId,
 	splitDocRoomId,
 };
