@@ -239,6 +239,9 @@ let noteShareRouter = null;
 /** @type {ReturnType<import('./server/profileRouter').createProfileRouter> | null} */
 let profileRouter = null;
 
+/** @type {ReturnType<import('./server/noteMediaRouter').createNoteMediaRouter> | null} */
+let noteMediaRouter = null;
+
 /** @type {ReturnType<import('./server/adminRouter').createAdminRouter> | null} */
 let adminRouter = null;
 
@@ -449,6 +452,15 @@ if (DATABASE_URL.length > 0) {
 		}
 
 		try {
+			const { createNoteMediaRouter } = require('./server/noteMediaRouter');
+			noteMediaRouter = createNoteMediaRouter({ prisma, uploadDir: UPLOAD_DIR });
+			console.info('[server] Note media API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Note media API router:', err.message);
+			noteMediaRouter = null;
+		}
+
+		try {
 			const { createAdminRouter } = require('./server/adminRouter');
 			adminRouter = createAdminRouter({ prisma });
 			console.info('[server] Admin API router initialized');
@@ -584,6 +596,10 @@ const server = http.createServer((req, res) => {
 
 		// ── Profile API router ──────────────────────────────────────────
 		if (profileRouter && profileRouter(req, res)) {
+			return;
+		}
+
+		if (noteMediaRouter && noteMediaRouter(req, res)) {
 			return;
 		}
 

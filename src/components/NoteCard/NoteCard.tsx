@@ -36,6 +36,7 @@ export type NoteCardProps = {
 	onOpen?: () => void;
 	onMoreMenu?: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
 	onAddCollaborator?: () => void;
+	onAddImage?: () => void;
 	shouldSuppressOpen?: () => boolean;
 	dragHandleRef?: (node: HTMLDivElement | null) => void;
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
@@ -397,6 +398,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		props.onAddCollaborator?.();
 	}, [props]);
 
+	const handleAddImage = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
+		event.stopPropagation();
+		props.onAddImage?.();
+	}, [props]);
+
 	const handleMoreMenuAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
 		const cardRect = cardRef.current?.getBoundingClientRect();
@@ -674,8 +680,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							type="button"
 							className={styles.cardDockButton}
 							onPointerDown={(e) => e.stopPropagation()}
-							onClick={handleDockAction}
+							onClick={props.onAddImage ? handleAddImage : handleDockAction}
 							aria-label={t('editors.dockAction')}
+							disabled={!props.onAddImage}
 						>
 							<FontAwesomeIcon icon={faImage} />
 						</button>

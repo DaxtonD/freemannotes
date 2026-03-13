@@ -22,6 +22,7 @@ export type NoteCardMoreMenuProps = {
 	onClose: () => void;
 	onTrash?: (() => void) | undefined;
 	onAddCollaborator?: (() => void) | undefined;
+	onAddImage?: (() => void) | undefined;
 	/** Bounding rect of the anchor element (e.g. note card). On desktop the
 	 *  menu renders as a popover positioned relative to this rect. */
 	anchorRect?: { top: number; left: number; width: number; height: number } | null;
@@ -156,7 +157,17 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				},
 			}]
 			: []),
-		{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, action: noop },
+		...(props.onAddImage
+			? [{
+				key: 'image',
+				labelKey: 'noteMenu.addImage',
+				icon: faImage,
+				action: () => {
+					props.onClose();
+					props.onAddImage?.();
+				},
+			}]
+			: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, action: noop }]),
 		{ key: 'reminder', labelKey: 'noteMenu.addReminder', icon: faBell, action: noop },
 		...(props.onTrash
 			? [{ key: 'trash', labelKey: 'noteMenu.moveToTrash', icon: faTrash, danger: true, action: props.onTrash }]

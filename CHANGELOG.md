@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.94 - 2026-03-12
+
+### Added
+- **Image uploads, galleries, and OCR search.** Notes now support file and URL image imports, thumbnail galleries, fullscreen viewing, server-side OCR extraction, and global search matches that include extracted image text.
+- **Offline-safe media staging.** Added IndexedDB-backed upload and delete queues so note media changes appear immediately offline and replay once connectivity returns.
+- **Archive-aware media/search plumbing.** Note metadata, search grouping, and image result routing now include archive state alongside Personal, shared, and workspace note locations.
+
+### Changed
+- **Mobile media navigation.** Image viewers and note media sheets now use layered history tokens, swipe navigation, and explicit close routing so Back closes the top-most media surface before unwinding the editor.
+- **Search result context.** Workspace labels, collaborator matches, and image-result placeholders now render clearer prefixes, hide raw UUIDs, and open directly into the relevant note or media browser.
+- **Container OCR runtime.** Docker packaging and compose defaults now ship the Python/PaddleOCR runtime and OCR environment wiring required for note-image processing in production.
+
+### Fixed
+- **Shared-note placement visibility.** Notes accepted into Personal or other workspaces now render in the active workspace view instead of only under Shared With Me.
+- **Collaborator chip and modal correctness.** Shared-note collaborator summaries now exclude self from note-card chips, preserve owner labeling, and avoid inherited-workspace mislabeling for recipients.
+- **Media viewer regressions.** Fixed mobile tap/click conflicts, fullscreen stacking, zoomed viewer gestures, and editor/media back-stack crashes introduced during the image browser rollout.
+
 ## 1.0.93 - 2026-03-11
 
 ### Added

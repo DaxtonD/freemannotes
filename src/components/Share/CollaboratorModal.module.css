@@ -290,7 +290,6 @@
 .memberRow {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) auto;
-	grid-template-rows: auto auto;
 	column-gap: 10px;
 	row-gap: 8px;
 	align-items: start;
@@ -307,8 +306,17 @@
 
 .memberRow .memberIdentity {
 	grid-column: 1;
-	grid-row: 1 / span 2;
+	grid-row: 1;
 	align-self: start;
+}
+
+.memberActions {
+	grid-column: 2;
+	grid-row: 1;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 8px;
 }
 
 .memberAvatarStack {
@@ -433,15 +441,11 @@
 }
 
 .memberRoleSelect {
-	grid-column: 2;
-	grid-row: 1;
 	justify-self: end;
 	align-self: start;
 }
 
 .memberRemoveButton {
-	grid-column: 2;
-	grid-row: 2;
 	justify-self: end;
 	align-self: start;
 }

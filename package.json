@@ -1,6 +1,6 @@
 {
   "name": "freemannotes",
-  "version": "1.0.93",
+  "version": "1.0.94",
   "main": "index.js",
   "scripts": {
     "dev": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",
@@ -53,7 +53,7 @@
     "bcryptjs": "^3.0.3",
     "busboy": "^1.6.0",
     "dotenv": "^16.6.1",
-    "framer-motion": "^12.35.0",
+    "framer-motion": "^12.35.2",
     "ioredis": "^5.10.0",
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^8.0.1",
