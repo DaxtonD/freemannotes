@@ -20,14 +20,28 @@ export type QueuedNoteImageRow = {
 };
 
 const DB_NAME = 'freemannotes.note-media.v1';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const NOTE_MEDIA_QUEUE_STORE = 'note_media_queue';
+const NOTE_MEDIA_PREVIEW_STORE = 'note_media_preview';
 const NOTE_MEDIA_CHANGED_EVENT = 'freemannotes:note-media-changed';
+
+export type StoredNoteImagePreviewRecord = {
+	id: string;
+	kind: 'remote' | 'queued';
+	docId: string;
+	remoteImageId: string | null;
+	image: NoteImageRecord | null;
+	thumbnailBlob: Blob | null;
+	createdAt: string;
+	updatedAt: string;
+};
 
 let dbPromise: Promise<IDBDatabase> | null = null;
 const pendingFlushes = new Map<string, Promise<void>>();
 const flushTimers = new Map<string, number>();
 const remoteCache = new Map<string, readonly NoteImageRecord[]>();
+const pendingRemoteRefreshes = new Map<string, Promise<readonly NoteImageRecord[]>>();
+const remoteRefreshTimestamps = new Map<string, number>();
 
 function isOffline(): boolean {
 	return typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -77,6 +91,23 @@ async function openDb(): Promise<IDBDatabase> {
 						store.createIndex('userId_docId_operationType', ['userId', 'docId', 'operationType'], { unique: false });
 					}
 				}
+				if (!db.objectStoreNames.contains(NOTE_MEDIA_PREVIEW_STORE)) {
+					const previewStore = db.createObjectStore(NOTE_MEDIA_PREVIEW_STORE, { keyPath: 'id' });
+					previewStore.createIndex('docId', 'docId', { unique: false });
+					previewStore.createIndex('docId_kind', ['docId', 'kind'], { unique: false });
+					previewStore.createIndex('remoteImageId', 'remoteImageId', { unique: false });
+				} else {
+					const previewStore = request.transaction?.objectStore(NOTE_MEDIA_PREVIEW_STORE);
+					if (previewStore && !previewStore.indexNames.contains('docId')) {
+						previewStore.createIndex('docId', 'docId', { unique: false });
+					}
+					if (previewStore && !previewStore.indexNames.contains('docId_kind')) {
+						previewStore.createIndex('docId_kind', ['docId', 'kind'], { unique: false });
+					}
+					if (previewStore && !previewStore.indexNames.contains('remoteImageId')) {
+						previewStore.createIndex('remoteImageId', 'remoteImageId', { unique: false });
+					}
+				}
 			};
 			request.onsuccess = () => resolve(request.result);
 			request.onerror = () => reject(request.error || new Error('IndexedDB open failed'));
@@ -103,6 +134,187 @@ async function upsertQueuedRows(rows: readonly QueuedNoteImageRow[]): Promise<vo
 		store.put(row);
 	}
 	await transactionToPromise(tx);
+}
+
+async function upsertPreviewRows(rows: readonly StoredNoteImagePreviewRecord[]): Promise<void> {
+	if (rows.length === 0) return;
+	const db = await openDb();
+	const tx = db.transaction([NOTE_MEDIA_PREVIEW_STORE], 'readwrite');
+	const store = tx.objectStore(NOTE_MEDIA_PREVIEW_STORE);
+	for (const row of rows) {
+		store.put(row);
+	}
+	await transactionToPromise(tx);
+}
+
+async function deletePreviewRows(ids: readonly string[]): Promise<void> {
+	if (ids.length === 0) return;
+	const db = await openDb();
+	const tx = db.transaction([NOTE_MEDIA_PREVIEW_STORE], 'readwrite');
+	const store = tx.objectStore(NOTE_MEDIA_PREVIEW_STORE);
+	for (const id of ids) {
+		store.delete(id);
+	}
+	await transactionToPromise(tx);
+}
+
+async function readPreviewRowsByDoc(docId: string): Promise<StoredNoteImagePreviewRecord[]> {
+	if (!docId) return [];
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_MEDIA_PREVIEW_STORE], 'readonly');
+		const rows = (await requestToPromise(
+			tx.objectStore(NOTE_MEDIA_PREVIEW_STORE).index('docId').getAll(docId)
+		)) as StoredNoteImagePreviewRecord[];
+		await transactionToPromise(tx);
+		return Array.isArray(rows) ? rows : [];
+	} catch {
+		return [];
+	}
+}
+
+async function loadImageElementFromBlob(blob: Blob): Promise<HTMLImageElement> {
+	const objectUrl = URL.createObjectURL(blob);
+	try {
+		return await new Promise((resolve, reject) => {
+			const image = new Image();
+			image.decoding = 'async';
+			image.onload = () => resolve(image);
+			image.onerror = () => reject(new Error('Image decode failed'));
+			image.src = objectUrl;
+		});
+	} finally {
+		URL.revokeObjectURL(objectUrl);
+	}
+}
+
+export async function createProgressiveNoteImageThumbnail(blob: Blob): Promise<Blob | null> {
+	if (typeof document === 'undefined' || !(blob instanceof Blob) || blob.size === 0) return null;
+	try {
+		const image = await loadImageElementFromBlob(blob);
+		const maxDimension = 200;
+		const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+		const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
+		const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
+		const canvas = document.createElement('canvas');
+		canvas.width = width;
+		canvas.height = height;
+		const context = canvas.getContext('2d');
+		if (!context) return null;
+		context.drawImage(image, 0, 0, width, height);
+
+		const qualities = [0.55, 0.48, 0.4];
+		let fallbackBlob: Blob | null = null;
+		for (const quality of qualities) {
+			const nextBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
+			if (!nextBlob) continue;
+			fallbackBlob = nextBlob;
+			if (nextBlob.size <= 20 * 1024) return nextBlob;
+		}
+		return fallbackBlob;
+	} catch {
+		return null;
+	}
+}
+
+async function fetchBlob(url: string): Promise<Blob | null> {
+	if (!url || isOffline()) return null;
+	try {
+		const response = await fetch(url, { credentials: 'include' });
+		if (!response.ok) return null;
+		return await response.blob();
+	} catch {
+		return null;
+	}
+}
+
+async function syncRemotePreviewRows(docId: string, images: readonly NoteImageRecord[]): Promise<void> {
+	if (!docId) return;
+	const existingRows = (await readPreviewRowsByDoc(docId)).filter((row) => row.kind === 'remote');
+	const existingById = new Map(existingRows.map((row) => [row.id, row]));
+	const nextIds = new Set(images.map((image) => image.id));
+	const staleIds = existingRows.filter((row) => !nextIds.has(row.id)).map((row) => row.id);
+	if (staleIds.length > 0) {
+		await deletePreviewRows(staleIds);
+	}
+
+	const baseRows = images.map((image) => {
+		const existing = existingById.get(image.id);
+		return {
+			id: image.id,
+			kind: 'remote' as const,
+			docId,
+			remoteImageId: image.id,
+			image,
+			thumbnailBlob: existing?.thumbnailBlob || null,
+			createdAt: existing?.createdAt || image.createdAt,
+			updatedAt: image.updatedAt,
+		};
+	});
+	await upsertPreviewRows(baseRows);
+
+	const pendingThumbnailImages = images.filter((image) => {
+		const existing = existingById.get(image.id);
+		if (!existing?.thumbnailBlob) return true;
+		const existingThumbUrl = existing.image?.thumbnailUrl || '';
+		return existingThumbUrl !== image.thumbnailUrl;
+	});
+	if (pendingThumbnailImages.length === 0) return;
+
+	let storedThumbnail = false;
+	const resolvedRows: StoredNoteImagePreviewRecord[] = [];
+	for (const image of pendingThumbnailImages) {
+		const sourceBlob = await fetchBlob(image.thumbnailUrl);
+		if (!sourceBlob) continue;
+		const thumbnailBlob = await createProgressiveNoteImageThumbnail(sourceBlob);
+		if (!thumbnailBlob) continue;
+		const existing = existingById.get(image.id);
+		resolvedRows.push({
+			id: image.id,
+			kind: 'remote',
+			docId,
+			remoteImageId: image.id,
+			image,
+			thumbnailBlob,
+			createdAt: existing?.createdAt || image.createdAt,
+			updatedAt: image.updatedAt,
+		});
+		storedThumbnail = true;
+	}
+	if (resolvedRows.length > 0) {
+		await upsertPreviewRows(resolvedRows);
+	}
+	if (storedThumbnail) {
+		emitNoteMediaChanged(docId);
+	}
+}
+
+async function storeQueuedPreviewRow(docId: string, rowId: string, blob: Blob, createdAt: string): Promise<void> {
+	const thumbnailBlob = await createProgressiveNoteImageThumbnail(blob);
+	await upsertPreviewRows([
+		{
+			id: rowId,
+			kind: 'queued',
+			docId,
+			remoteImageId: null,
+			image: null,
+			thumbnailBlob,
+			createdAt,
+			updatedAt: createdAt,
+		},
+	]);
+}
+
+export async function readStoredNoteImagePreviewRows(docId: string): Promise<StoredNoteImagePreviewRecord[]> {
+	return readPreviewRowsByDoc(docId);
+}
+
+export async function readStoredRemoteNoteImages(docId: string): Promise<NoteImageRecord[]> {
+	const rows = await readPreviewRowsByDoc(docId);
+	return rows
+		.filter((row) => row.kind === 'remote' && row.image)
+		.map((row) => row.image as NoteImageRecord)
+		.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
 }
 
 function isUploadRow(row: QueuedNoteImageRow): boolean {
@@ -138,6 +350,7 @@ export async function queueNoteImagesForUpload(args: {
 		lastError: null,
 	}));
 	await upsertQueuedRows(rows);
+	await Promise.all(rows.map((row, index) => storeQueuedPreviewRow(docId, row.id, args.files[index], createdAt).catch(() => undefined)));
 	emitNoteMediaChanged(docId);
 	await scheduleQueuedNoteImageFlush(userId);
 	return rows;
@@ -174,6 +387,7 @@ export async function queueRemoteNoteImageDeletion(args: {
 	};
 	await upsertQueuedRows([row]);
 	removeRemoteImageFromCache(docId, imageId);
+	await deletePreviewRows([imageId]).catch(() => undefined);
 	emitNoteMediaChanged(docId);
 	await scheduleQueuedNoteImageFlush(userId);
 	return row;
@@ -252,6 +466,7 @@ export async function deleteQueuedNoteImage(id: string): Promise<void> {
 			docId = current.docId;
 			return null;
 		});
+		await deletePreviewRows([id]).catch(() => undefined);
 		if (docId) emitNoteMediaChanged(docId);
 	} catch {
 		// ignore
@@ -271,14 +486,45 @@ export function filterRemoteNoteImagesByPendingDeletes(images: readonly NoteImag
 	return images.filter((image) => !hiddenIds.has(image.id));
 }
 
-export async function refreshRemoteNoteImages(docId: string): Promise<readonly NoteImageRecord[]> {
+export async function refreshRemoteNoteImages(
+	docId: string,
+	options: { force?: boolean; minIntervalMs?: number } = {}
+): Promise<readonly NoteImageRecord[]> {
 	if (!docId || isOffline()) {
+		const stored = await readStoredRemoteNoteImages(docId);
+		if (stored.length > 0) {
+			remoteCache.set(docId, stored);
+			return stored;
+		}
 		return remoteCache.get(docId) || [];
 	}
-	const response = await listNoteImages(docId);
-	remoteCache.set(docId, response.images);
-	emitNoteMediaChanged(docId);
-	return response.images;
+	const minIntervalMs = Math.max(0, Number(options.minIntervalMs || 0) || 0);
+	const cached = remoteCache.get(docId);
+	if (!options.force && cached && minIntervalMs > 0) {
+		const lastRefreshedAt = remoteRefreshTimestamps.get(docId) || 0;
+		if (Date.now() - lastRefreshedAt < minIntervalMs) {
+			return cached;
+		}
+	}
+	const pending = pendingRemoteRefreshes.get(docId);
+	if (pending) {
+		// Coalesce concurrent chip/panel/viewer refreshes so one burst of note-media
+		// events results in a single `/api/note-media` round-trip per note.
+		return pending;
+	}
+	const work = (async () => {
+		const response = await listNoteImages(docId);
+		remoteCache.set(docId, response.images);
+		remoteRefreshTimestamps.set(docId, Date.now());
+		void syncRemotePreviewRows(docId, response.images);
+		return response.images;
+	})();
+	pendingRemoteRefreshes.set(docId, work);
+	try {
+		return await work;
+	} finally {
+		pendingRemoteRefreshes.delete(docId);
+	}
 }
 
 export function getCachedRemoteNoteImages(docId: string): readonly NoteImageRecord[] {
@@ -320,6 +566,7 @@ export async function flushQueuedNoteImages(userId: string): Promise<void> {
 					if (row.remoteImageId) {
 						await deleteNoteImage(row.remoteImageId);
 						removeRemoteImageFromCache(row.docId, row.remoteImageId);
+						await deletePreviewRows([row.remoteImageId]).catch(() => undefined);
 					}
 				} else {
 					if (!row.blob) throw new Error('Upload payload is missing');
@@ -327,6 +574,7 @@ export async function flushQueuedNoteImages(userId: string): Promise<void> {
 						type: row.mimeType || row.blob.type || 'application/octet-stream',
 					});
 					await uploadNoteImages(row.docId, [file]);
+					await deletePreviewRows([row.id]).catch(() => undefined);
 				}
 				await updateQueuedRow(row.id, () => null);
 				await refreshRemoteNoteImages(row.docId).catch(() => undefined);

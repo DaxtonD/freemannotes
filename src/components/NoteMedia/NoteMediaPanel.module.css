@@ -112,6 +112,16 @@
 	display: block;
 }
 
+.thumbPlaceholder {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background:
+		linear-gradient(180deg, color-mix(in srgb, var(--color-surface-2) 82%, transparent), color-mix(in srgb, var(--color-surface) 92%, transparent));
+	color: var(--color-text-muted);
+	font-size: 20px;
+}
+
 .meta {
 	padding: 10px 8px 4px;
 	display: flex;
@@ -156,6 +166,10 @@
 	padding: 5px 8px;
 	color: var(--color-text);
 	background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+}
+
+.offlineBadge {
+	background: color-mix(in srgb, #0f766e 18%, var(--color-surface));
 }
 
 .deleteButton {
