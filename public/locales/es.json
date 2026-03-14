@@ -166,6 +166,9 @@
     "queuedUploadToastSingular": "imagen en cola para subir",
     "queuedUploadToastPlural": "imágenes en cola para subir",
     "queuedForOcrToast": "imagen en cola para OCR",
+    "offlinePreviewBadge": "Vista previa sin conexión",
+    "offlinePreviewHint": "Vista previa sin conexión",
+    "imageUnavailableOffline": "Imagen no disponible sin conexión",
     "zoomOut": "Alejar",
     "zoomIn": "Acercar",
     "resetZoom": "Restablecer zoom"

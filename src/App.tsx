@@ -56,7 +56,7 @@ import {
 } from './core/noteShareApi';
 import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
 import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
-import { scheduleQueuedNoteImageFlush } from './core/noteMediaStore';
+import { emitNoteMediaChanged, scheduleQueuedNoteImageFlush } from './core/noteMediaStore';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -1179,7 +1179,6 @@ export function App(): React.JSX.Element {
 		const onOnline = () => {
 			if (running) return;
 			running = true;
-			manager.setWebsocketEnabled(false);
 			void (async () => {
 				try {
 					await syncPendingWorkspaceMutationsRef.current();
@@ -1191,9 +1190,6 @@ export function App(): React.JSX.Element {
 						// guarantee the app server is reachable. Keep offline-auth active
 						// until the probe gets a definitive authenticated or explicit unauth response.
 						await probeSession({ allowOfflineRestore: true });
-					} else {
-						const snapshot = await readCachedWorkspaceSnapshot(authUserId, deviceId);
-						manager.setWebsocketEnabled(Boolean(snapshot.activeWorkspaceId));
 					}
 				} finally {
 					running = false;
@@ -1383,22 +1379,14 @@ export function App(): React.JSX.Element {
 				}
 				const workspaceId = body?.workspaceId ? String(body.workspaceId) : '';
 				if (workspaceId) {
-					// Pause reconnects for the old workspace while the server session flips to the
-					// accepted workspace. Otherwise the stale room providers hammer the server with
-					// now-forbidden old workspace namespaces until the UI activation catches up.
-					manager.setWebsocketEnabled(false);
-					try {
-						const activatedWorkspaceId = await activateWorkspace(deviceId, workspaceId);
-						const resolvedWorkspaceId = activatedWorkspaceId || workspaceId;
-						// Confirm the server session has switched workspaces before the grid mounts
-						// the new Yjs rooms. Without this follow-up, freshly accepted workspaces can
-						// render an empty grid until a full refresh refreshes the auth cookie state.
-						await confirmActivatedWorkspaceSession(resolvedWorkspaceId);
-						await loadSidebarWorkspacesRef.current();
-						handleWorkspaceActivated(resolvedWorkspaceId);
-					} finally {
-						manager.setWebsocketEnabled(true);
-					}
+					const activatedWorkspaceId = await activateWorkspace(deviceId, workspaceId);
+					const resolvedWorkspaceId = activatedWorkspaceId || workspaceId;
+					// Confirm the server session has switched workspaces before the grid mounts
+					// the new Yjs rooms. Without this follow-up, freshly accepted workspaces can
+					// render an empty grid until a full refresh refreshes the auth cookie state.
+					await confirmActivatedWorkspaceSession(resolvedWorkspaceId);
+					await loadSidebarWorkspacesRef.current();
+					handleWorkspaceActivated(resolvedWorkspaceId);
 				}
 				if (cancelled) return;
 				showBriefDialog(t('invite.accepted'));
@@ -1461,6 +1449,11 @@ export function App(): React.JSX.Element {
 		},
 		[authWorkspaceId, clearActiveWorkspaceState]
 	);
+	const handleRemoteWorkspaceDeletedEventRef = React.useRef(handleRemoteWorkspaceDeletedEvent);
+
+	React.useEffect(() => {
+		handleRemoteWorkspaceDeletedEventRef.current = handleRemoteWorkspaceDeletedEvent;
+	}, [handleRemoteWorkspaceDeletedEvent]);
 
 	const syncPendingWorkspaceMutations = React.useCallback(async (): Promise<void> => {
 		if (authStatus !== 'authed' || !authUserId) return;
@@ -1849,12 +1842,20 @@ export function App(): React.JSX.Element {
 		let disposed = false;
 		let socket: WebSocket | null = null;
 		let reconnectTimer: number | null = null;
+		const pendingNoteMediaTimers = new Map<string, number>();
 
 		const clearReconnectTimer = () => {
 			if (reconnectTimer !== null) {
 				window.clearTimeout(reconnectTimer);
 				reconnectTimer = null;
 			}
+		};
+
+		const clearPendingNoteMediaTimers = () => {
+			for (const timer of pendingNoteMediaTimers.values()) {
+				window.clearTimeout(timer);
+			}
+			pendingNoteMediaTimers.clear();
 		};
 
 		const refreshWorkspaceMetadata = () => {
@@ -1900,12 +1901,15 @@ export function App(): React.JSX.Element {
 					const isNoteShareMetadataEvent = payload.type === 'workspace-metadata-changed'
 						&& typeof payload.reason === 'string'
 						&& payload.reason.startsWith('note-share-');
+						const isNoteMediaMetadataEvent = payload.type === 'workspace-metadata-changed'
+							&& typeof payload.reason === 'string'
+							&& payload.reason.startsWith('note-media-');
 					if (
 						payload.type === 'workspace-metadata-changed' &&
 						payload.reason === 'workspace-deleted' &&
 						typeof payload.workspaceId === 'string'
 					) {
-						handleRemoteWorkspaceDeletedEvent(payload.workspaceId);
+						handleRemoteWorkspaceDeletedEventRef.current(payload.workspaceId);
 					}
 					if (
 						payload.type === 'workspace-metadata-ready' ||
@@ -1922,7 +1926,27 @@ export function App(): React.JSX.Element {
 								})
 							);
 						}
-						if (payload.type === 'workspace-metadata-changed' && typeof payload.docId === 'string' && authUserId) {
+						if (isNoteMediaMetadataEvent && typeof payload.docId === 'string') {
+							const existingTimer = pendingNoteMediaTimers.get(payload.docId);
+							if (existingTimer) {
+								window.clearTimeout(existingTimer);
+							}
+							// Offline replay can emit one websocket event per image. Batch them per
+							// note so other clients refresh the chip once instead of repainting the
+							// workspace UI repeatedly during large delete bursts.
+							const timer = window.setTimeout(() => {
+								pendingNoteMediaTimers.delete(payload.docId as string);
+								emitNoteMediaChanged(payload.docId as string);
+							}, 150);
+							pendingNoteMediaTimers.set(payload.docId, timer);
+							return;
+						}
+						if (
+							payload.type === 'workspace-metadata-changed' &&
+							typeof payload.docId === 'string' &&
+							authUserId &&
+							!isNoteMediaMetadataEvent
+						) {
 							void syncNoteShareCollaborators(authUserId, payload.docId, { suppressError: true });
 						}
 						if (isNoteShareMetadataEvent) {
@@ -1972,6 +1996,7 @@ export function App(): React.JSX.Element {
 			disposed = true;
 			window.removeEventListener('online', handleOnline);
 			clearReconnectTimer();
+			clearPendingNoteMediaTimers();
 			const activeSocket = socket;
 			socket = null;
 			if (activeSocket) {
@@ -1982,7 +2007,7 @@ export function App(): React.JSX.Element {
 				}
 			}
 		};
-	}, [authOfflineMode, authStatus, authUserId, handleRemoteWorkspaceDeletedEvent]);
+	}, [authOfflineMode, authStatus, authUserId]);
 
 	const sidebarWorkspacesSorted = React.useMemo(() => {
 		if (!authWorkspaceId) return sidebarWorkspaces;
@@ -2012,25 +2037,20 @@ export function App(): React.JSX.Element {
 				return;
 			}
 			try {
-				manager.setWebsocketEnabled(false);
-				try {
-					const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`, {
-						method: 'POST',
-						credentials: 'include',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ deviceId }),
-					});
-					const body = await res.json().catch(() => null);
-					if (!res.ok) {
-						const msg = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
-						throw new Error(msg);
-					}
-					await confirmActivatedWorkspaceSession(workspaceId);
-					await loadSidebarWorkspacesRef.current();
-					handleWorkspaceActivated(workspaceId);
-				} finally {
-					manager.setWebsocketEnabled(true);
+				const res = await fetch(`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`, {
+					method: 'POST',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ deviceId }),
+				});
+				const body = await res.json().catch(() => null);
+				if (!res.ok) {
+					const msg = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
+					throw new Error(msg);
 				}
+				await confirmActivatedWorkspaceSession(workspaceId);
+				await loadSidebarWorkspacesRef.current();
+				handleWorkspaceActivated(workspaceId);
 				void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
 				if (isMobileViewport) {
 					closeWorkspaceSidebarGroup();
@@ -3202,6 +3222,46 @@ export function App(): React.JSX.Element {
 		setSearchResultsBusy(false);
 		setIsMobileSearchOpen(false);
 	}, []);
+	const groupedSearchResults = React.useMemo(() => {
+		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
+		for (const result of searchResults) {
+			const key = `${result.group.kind}:${result.group.label}`;
+			const existing = groups.get(key);
+			if (existing) {
+				existing.items.push(result);
+				continue;
+			}
+			groups.set(key, { label: result.group.label, items: [result] });
+		}
+		return Array.from(groups.values());
+	}, [searchResults]);
+	const formatSearchGroupLabel = React.useCallback((group: NoteSearchResult['group']): string => {
+		if (group.kind === 'shared') return `${t('search.sharedPrefix')} ${group.label}`;
+		return `${t('search.workspacePrefix')} ${group.label}`;
+	}, [t]);
+	const formatSearchMatchLabel = React.useCallback((kind: NoteSearchMatchKind): string => {
+		if (kind === 'ocr') return t('search.matchOcr');
+		if (kind === 'collaborator') return t('search.matchCollaborator');
+		return t('search.matchNote');
+	}, [t]);
+	const handleSearchResultSelect = React.useCallback(async (result: NoteSearchResult) => {
+		setSearchQuery('');
+		setSearchResults([]);
+		setSearchResultsError(null);
+		setIsMobileSearchOpen(false);
+		setNoteGridCollaboratorFilter(null);
+		if (result.openWorkspaceId && result.openWorkspaceId !== authWorkspaceId) {
+			await activateWorkspaceFromSidebar(result.openWorkspaceId, {
+				activeSharedFolder: result.group.kind === 'shared' ? result.folderName ?? null : null,
+			});
+		} else if (result.group.kind === 'shared') {
+			setActiveSharedFolder(result.folderName ?? null);
+		}
+		setSidebarView(result.archived ? 'archive' : 'notes');
+		if (result.openNoteId) {
+			openNoteEditor(result.openNoteId, { replaceTop: true });
+		}
+	}, [activateWorkspaceFromSidebar, authWorkspaceId, openNoteEditor]);
 
 	const toggleSidebar = () => {
 		if (isMobileViewport) {
@@ -3248,46 +3308,6 @@ export function App(): React.JSX.Element {
 	const selectedNoteDocId = selectedNoteId ? selectedSharedPlacement?.roomId || (authWorkspaceId ? `${authWorkspaceId}:${selectedNoteId}` : '') : '';
 	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
 	const canManageSelectedNoteCollaborators = selectedSharedPlacement ? selectedSharedPlacement.role === 'EDITOR' : canEditActiveWorkspace;
-	const groupedSearchResults = React.useMemo(() => {
-		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
-		for (const result of searchResults) {
-			const key = `${result.group.kind}:${result.group.label}`;
-			const existing = groups.get(key);
-			if (existing) {
-				existing.items.push(result);
-				continue;
-			}
-			groups.set(key, { label: result.group.label, items: [result] });
-		}
-		return Array.from(groups.values());
-	}, [searchResults]);
-	const formatSearchGroupLabel = React.useCallback((group: NoteSearchResult['group']): string => {
-		if (group.kind === 'shared') return `${t('search.sharedPrefix')} ${group.label}`;
-		return `${t('search.workspacePrefix')} ${group.label}`;
-	}, [t]);
-	const formatSearchMatchLabel = React.useCallback((kind: NoteSearchMatchKind): string => {
-		if (kind === 'ocr') return t('search.matchOcr');
-		if (kind === 'collaborator') return t('search.matchCollaborator');
-		return t('search.matchNote');
-	}, [t]);
-	const handleSearchResultSelect = React.useCallback(async (result: NoteSearchResult) => {
-		setSearchQuery('');
-		setSearchResults([]);
-		setSearchResultsError(null);
-		setIsMobileSearchOpen(false);
-		setNoteGridCollaboratorFilter(null);
-		if (result.openWorkspaceId && result.openWorkspaceId !== authWorkspaceId) {
-			await activateWorkspaceFromSidebar(result.openWorkspaceId, {
-				activeSharedFolder: result.group.kind === 'shared' ? result.folderName ?? null : null,
-			});
-		} else if (result.group.kind === 'shared') {
-			setActiveSharedFolder(result.folderName ?? null);
-		}
-		setSidebarView(result.archived ? 'archive' : 'notes');
-		if (result.openNoteId) {
-			openNoteEditor(result.openNoteId, { replaceTop: true });
-		}
-	}, [activateWorkspaceFromSidebar, authWorkspaceId, openNoteEditor]);
 
 	return (
 		<>
