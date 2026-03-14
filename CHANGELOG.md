@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.95 - 2026-03-13
+
+### Added
+- **Durable offline image previews.** Viewed note images now fall back through service-worker cached full images, IndexedDB-backed preview blobs, and explicit placeholders so media stays understandable offline after reloads.
+
+### Changed
+- **Realtime media refresh routing.** Note-media websocket nudges now stay scoped to media state, coalesce burst deletes per note, and update note chips across devices without repainting the rest of the workspace UI.
+- **Mobile media viewer polish.** The fullscreen image viewer now relies on Back-only dismissal, keeps its header actions stable on coarse-pointer layouts, and surfaces offline-preview context inline.
+
+### Fixed
+- **Image and collaborator chip hydration.** Note cards now resolve shared aliases back to source room IDs, refresh image counts on first paint, and hydrate collaborator chips correctly on fresh devices and same-user multi-session setups.
+- **Offline media controls.** Remote thumbnail delete affordances remain enabled offline so queued image removals can be staged directly from the gallery.
+
 ## 1.0.94 - 2026-03-12
 
 ### Added

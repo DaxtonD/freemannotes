@@ -1,13 +1,15 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faChevronLeft, faChevronRight, faTrash, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faChevronLeft, faChevronRight, faImage, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
+import { useResolvedNoteImageSource } from './useResolvedNoteImageSource';
 import styles from './NoteImageViewer.module.css';
 
 type NoteImageViewerProps = {
 	src: string;
+	fallbackThumbnailBlob?: Blob | null;
 	title: string;
 	subtitle?: string | null;
 	onClose: () => void;
@@ -30,6 +32,11 @@ function distanceBetweenPoints(left: { x: number; y: number }, right: { x: numbe
 
 export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element {
 	const { t } = useI18n();
+	const resolvedImage = useResolvedNoteImageSource({
+		fullUrl: props.src,
+		offlineThumbnailBlob: props.fallbackThumbnailBlob || null,
+		mode: 'viewer',
+	});
 	const [scale, setScale] = React.useState(1);
 	const [offset, setOffset] = React.useState({ x: 0, y: 0 });
 	const [dragging, setDragging] = React.useState(false);
@@ -262,7 +269,7 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 						</button>
 						<div className={styles.titleWrap}>
 							<h2 className={styles.title}>{props.title}</h2>
-							{props.subtitle ? <p className={styles.subtitle}>{props.subtitle}</p> : null}
+							{props.subtitle || resolvedImage.isOfflinePreview ? <p className={styles.subtitle}>{[props.subtitle, resolvedImage.isOfflinePreview ? t('media.offlinePreviewHint') : ''].filter(Boolean).join(' · ')}</p> : null}
 						</div>
 					</div>
 					<div className={styles.toolbar}>
@@ -272,9 +279,6 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 								<span>{t('editors.delete')}</span>
 							</button>
 						) : null}
-						<button type="button" className={styles.button} onClick={requestClose} aria-label={t('common.close')}>
-							<FontAwesomeIcon icon={faXmark} />
-						</button>
 					</div>
 				</header>
 
@@ -291,15 +295,23 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 						className={`${styles.imageFrame}${transitionDirection === 'next' ? ` ${styles.imageFrameSwapNext}` : transitionDirection === 'previous' ? ` ${styles.imageFrameSwapPrevious}` : ''}`}
 						onAnimationEnd={() => setTransitionDirection(null)}
 					>
-						<img
-							src={props.src}
-							alt={props.title}
-							className={styles.image}
-							draggable={false}
-							style={{
-								transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
-							}}
-						/>
+						{resolvedImage.src ? (
+							<img
+								src={resolvedImage.src}
+								alt={props.title}
+								className={styles.image}
+								draggable={false}
+								onError={resolvedImage.fallbackToOfflinePreview}
+								style={{
+									transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,
+								}}
+							/>
+						) : (
+							<div className={styles.placeholder}>
+								<FontAwesomeIcon icon={faImage} />
+								<span>{t('media.imageUnavailableOffline')}</span>
+							</div>
+						)}
 					</div>
 					{props.hasPrevious ? (
 						<button type="button" className={`${styles.navButton} ${styles.navButtonPrev}`} onClick={handlePrevious} aria-label={t('common.previous')}>

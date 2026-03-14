@@ -166,6 +166,9 @@
     "queuedUploadToastSingular": "image queued for upload",
     "queuedUploadToastPlural": "images queued for upload",
     "queuedForOcrToast": "image queued for OCR",
+    "offlinePreviewBadge": "Offline preview",
+    "offlinePreviewHint": "Offline preview",
+    "imageUnavailableOffline": "Image unavailable offline",
     "zoomOut": "Zoom out",
     "zoomIn": "Zoom in",
     "resetZoom": "Reset zoom"

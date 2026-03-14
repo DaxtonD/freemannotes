@@ -2,7 +2,7 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faImage, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
-import { deleteNoteImage, listNoteImages, type NoteImageRecord } from '../../core/noteMediaApi';
+import { deleteNoteImage, type NoteImageRecord } from '../../core/noteMediaApi';
 import {
 	deleteQueuedNoteImage,
 	emitNoteMediaChanged,
@@ -10,11 +10,16 @@ import {
 	flushQueuedNoteImages,
 	getCachedRemoteNoteImages,
 	getNoteMediaChangedEventName,
+	readStoredNoteImagePreviewRows,
+	readStoredRemoteNoteImages,
 	readQueuedNoteImages,
 	readQueuedNoteImageDeletions,
+	refreshRemoteNoteImages,
 	queueRemoteNoteImageDeletion,
+	type StoredNoteImagePreviewRecord,
 	type QueuedNoteImageRow,
 } from '../../core/noteMediaStore';
+import { useResolvedNoteImageSource } from './useResolvedNoteImageSource';
 import { NoteImageViewer } from './NoteImageViewer';
 import styles from './NoteMediaPanel.module.css';
 
@@ -32,6 +37,8 @@ type LocalPreviewItem = QueuedNoteImageRow & {
 type ViewerState = {
 	items: Array<{
 		src: string;
+		fallbackThumbnailBlob?: Blob | null;
+		thumbnailUrl?: string | null;
 		title: string;
 		subtitle?: string | null;
 		onDelete?: (() => void) | undefined;
@@ -39,6 +46,38 @@ type ViewerState = {
 	}>;
 	index: number;
 };
+
+type RemoteImageThumbProps = {
+	image: NoteImageRecord;
+	preview: StoredNoteImagePreviewRecord | null;
+	alt: string;
+};
+
+function RemoteImageThumb(props: RemoteImageThumbProps): React.JSX.Element {
+	const { t } = useI18n();
+	const resolvedImage = useResolvedNoteImageSource({
+		fullUrl: props.image.originalUrl,
+		thumbnailUrl: props.image.thumbnailUrl,
+		offlineThumbnailBlob: props.preview?.thumbnailBlob || null,
+		mode: 'thumbnail',
+	});
+
+	if (resolvedImage.showPlaceholder || !resolvedImage.src) {
+		return (
+			<div className={`${styles.thumb} ${styles.thumbPlaceholder}`} aria-hidden="true">
+				<FontAwesomeIcon icon={faImage} />
+			</div>
+		);
+	}
+
+	return (
+		<>
+			{resolvedImage.isOfflinePreview ? <span className={`${styles.badge} ${styles.offlineBadge}`}>{t('media.offlinePreviewBadge')}</span> : null}
+			{!resolvedImage.isOfflinePreview && props.image.ocrStatus !== 'READY' ? <span className={styles.badge}>{t('media.ocrBadge')}</span> : null}
+			<img className={styles.thumb} src={resolvedImage.src} alt={props.alt} onError={resolvedImage.fallbackToOfflinePreview} />
+		</>
+	);
+}
 
 function isOffline(): boolean {
 	return typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -73,6 +112,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const [deletingId, setDeletingId] = React.useState<string | null>(null);
 	const [viewerState, setViewerState] = React.useState<ViewerState | null>(null);
 	const [localPreviewItems, setLocalPreviewItems] = React.useState<readonly LocalPreviewItem[]>([]);
+	const [storedPreviewRows, setStoredPreviewRows] = React.useState<readonly StoredNoteImagePreviewRecord[]>([]);
 	const tileTouchStartRef = React.useRef<{ index: number; x: number; y: number } | null>(null);
 	const lastTouchOpenRef = React.useRef<{ index: number; at: number } | null>(null);
 
@@ -80,19 +120,25 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		setLoading(true);
 		setError(null);
 		try {
-			const [remoteResponse, queuedResponse, queuedDeleteResponse] = await Promise.all([
-				isOffline() ? Promise.resolve({ images: getCachedRemoteNoteImages(props.docId) }) : listNoteImages(props.docId),
+			const [remoteImages, queuedResponse, queuedDeleteResponse, previewRows] = await Promise.all([
+				refreshRemoteNoteImages(props.docId).catch(async () => {
+					const stored = await readStoredRemoteNoteImages(props.docId);
+					return stored.length > 0 ? stored : getCachedRemoteNoteImages(props.docId);
+				}),
 				props.authUserId ? readQueuedNoteImages(props.authUserId, props.docId) : Promise.resolve([]),
 				props.authUserId ? readQueuedNoteImageDeletions(props.authUserId, props.docId) : Promise.resolve([]),
+				readStoredNoteImagePreviewRows(props.docId),
 			]);
-			setRemoteImages(remoteResponse.images);
+			setRemoteImages(remoteImages);
 			setQueuedImages(queuedResponse);
 			setQueuedDeletions(queuedDeleteResponse);
+			setStoredPreviewRows(previewRows);
 		} catch (nextError) {
 			setError(nextError instanceof Error ? nextError.message : 'Unable to load note media');
-			setRemoteImages(getCachedRemoteNoteImages(props.docId));
+			setRemoteImages(await readStoredRemoteNoteImages(props.docId));
 			setQueuedImages(props.authUserId ? await readQueuedNoteImages(props.authUserId, props.docId) : []);
 			setQueuedDeletions(props.authUserId ? await readQueuedNoteImageDeletions(props.authUserId, props.docId) : []);
+			setStoredPreviewRows(await readStoredNoteImagePreviewRows(props.docId));
 		} finally {
 			setLoading(false);
 		}
@@ -141,6 +187,12 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		() => filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletions),
 		[queuedDeletions, remoteImages]
 	);
+	const storedPreviewByRemoteId = React.useMemo(() => {
+		const entries = storedPreviewRows
+			.filter((row) => row.kind === 'remote' && row.remoteImageId)
+			.map((row) => [row.remoteImageId as string, row] as const);
+		return new Map(entries);
+	}, [storedPreviewRows]);
 	const queuedCount = localPreviewItems.length;
 	const queuedDeleteCount = queuedDeletions.length;
 	const totalCount = visibleRemoteImages.length + queuedCount;
@@ -227,18 +279,22 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const viewerItems = React.useMemo(() => ([
 		...localPreviewItems.map((item, index) => ({
 			src: item.previewUrl,
+			fallbackThumbnailBlob: null,
+			thumbnailUrl: null,
 			title: item.fileName || `${t('media.queuedImageLabel')} ${index + 1}`,
 			subtitle: item.lastError || `${t('media.queuedState')} ${formatRelativeDate(item.createdAt, locale)}`,
 			onDelete: props.canEdit ? () => void handleDeleteQueued(item) : undefined,
 		})),
 		...visibleRemoteImages.map((image, index) => ({
 			src: image.originalUrl,
+			fallbackThumbnailBlob: storedPreviewByRemoteId.get(image.id)?.thumbnailBlob || null,
+			thumbnailUrl: image.thumbnailUrl,
 			title: `${t('media.imageLabel')} ${index + 1}`,
 			subtitle: image.ocrStatus === 'READY' ? t('media.ocrReady') : `${image.width || '?'} × ${image.height || '?'}`,
 			onDelete: props.canEdit ? () => void handleDeleteRemote(image) : undefined,
 			deleteDisabled: deletingId === image.id,
 		})),
-	]), [deletingId, handleDeleteQueued, handleDeleteRemote, locale, localPreviewItems, props.canEdit, t, visibleRemoteImages]);
+	]), [deletingId, handleDeleteQueued, handleDeleteRemote, locale, localPreviewItems, props.canEdit, storedPreviewByRemoteId, t, visibleRemoteImages]);
 	React.useEffect(() => {
 		setViewerState((current) => {
 			if (!current) return null;
@@ -388,7 +444,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 											event.stopPropagation();
 											void handleDeleteRemote(image);
 										}}
-										disabled={deletingId === image.id || isOffline()}
+										disabled={deletingId === image.id}
 										aria-label={t('editors.delete')}
 									>
 										<FontAwesomeIcon icon={faTrash} />
@@ -402,8 +458,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 									onTouchEnd={(event) => handleTileTouchEnd(localPreviewItems.length + index, event)}
 								>
 									<div className={styles.thumbWrap}>
-										{image.ocrStatus !== 'READY' ? <span className={styles.badge}>{t('media.ocrBadge')}</span> : null}
-										<img className={styles.thumb} src={image.thumbnailUrl} alt={`${t('media.imageLabel')} ${index + 1}`} />
+										<RemoteImageThumb image={image} preview={storedPreviewByRemoteId.get(image.id) || null} alt={`${t('media.imageLabel')} ${index + 1}`} />
 									</div>
 									<div className={styles.meta}>
 										<span className={styles.title}>{t('media.imageLabel')} {index + 1}</span>
@@ -419,6 +474,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			{viewerState ? (
 				<NoteImageViewer
 					src={viewerState.items[viewerState.index]?.src || ''}
+					fallbackThumbnailBlob={viewerState.items[viewerState.index]?.fallbackThumbnailBlob}
 					title={viewerState.items[viewerState.index]?.title || ''}
 					subtitle={viewerState.items[viewerState.index]?.subtitle}
 					onClose={closeViewer}

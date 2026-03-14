@@ -306,6 +306,11 @@ export class DocumentManager {
 		return this.docs.get(this.roomNameFor(raw)) ?? null;
 	}
 
+	public resolveRoomName(noteId: string): string {
+		const raw = this.normalizeNoteId(noteId);
+		return this.roomNameFor(raw);
+	}
+
 	public subscribeConnectionStatus(listener: () => void): () => void {
 		this.connectionSubscribers.add(listener);
 		return () => {

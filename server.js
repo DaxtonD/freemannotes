@@ -453,7 +453,22 @@ if (DATABASE_URL.length > 0) {
 
 		try {
 			const { createNoteMediaRouter } = require('./server/noteMediaRouter');
-			noteMediaRouter = createNoteMediaRouter({ prisma, uploadDir: UPLOAD_DIR });
+			noteMediaRouter = createNoteMediaRouter({
+				prisma,
+				uploadDir: UPLOAD_DIR,
+				onWorkspaceMetadataChanged: async (event) => {
+					const normalized = normalizeWorkspaceMetadataEvent({
+						...event,
+						type: 'workspace-metadata-changed',
+						origin: SERVER_INSTANCE_ID,
+					});
+					if (!normalized) return;
+					broadcastWorkspaceMetadataChanged(normalized);
+					if (redis) {
+						await publishWorkspaceMetadataEvent(redis, normalized);
+					}
+				},
+			});
 			console.info('[server] Note media API router initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize Note media API router:', err.message);

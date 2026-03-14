@@ -263,6 +263,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
+	const resolveMediaDocId = React.useCallback((noteId: string): string => {
+		try {
+			// Shared aliases need to resolve back to their source room so media and
+			// collaborator lookups hit the real document namespace instead of the alias.
+			return manager.resolveRoomName(noteId);
+		} catch {
+			return props.activeWorkspaceId ? `${props.activeWorkspaceId}:${noteId}` : '';
+		}
+	}, [manager, props.activeWorkspaceId]);
 	// Shared notes are mounted into the grid by alias ID so the receiver can open
 	// them like local notes while the DocumentManager still resolves them back to
 	// the source room via the alias map maintained by App.
@@ -456,11 +465,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return baseVisibleIds
 			.map((noteId) => {
 				const placement = sharedPlacementByAlias.get(noteId) ?? null;
-				const docId = placement?.roomId || (props.activeWorkspaceId ? `${props.activeWorkspaceId}:${noteId}` : '');
-				return docId ? { noteId, docId } : null;
+				const docId = placement?.roomId || resolveMediaDocId(noteId);
+				return docId ? { noteId, docId, isSharedAlias: Boolean(placement) } : null;
 			})
-			.filter((entry): entry is { noteId: string; docId: string } => Boolean(entry));
-	}, [baseVisibleIds, props.activeWorkspaceId, props.sharedNotes]);
+			.filter((entry): entry is { noteId: string; docId: string; isSharedAlias: boolean } => Boolean(entry));
+	}, [baseVisibleIds, props.sharedNotes, resolveMediaDocId]);
 
 	React.useEffect(() => {
 		if (!props.authUserId) {
@@ -497,9 +506,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 			// Refresh visible notes in small batches so collaborator chips converge to
 			// server state without stalling the rest of the grid on large workspaces.
+			// Brand-new local notes can still be missing from the server document table,
+			// which produces 403s if we probe them immediately. Once a local note is
+			// synced, though, a fresh device still needs one server read to discover any
+			// collaborators because there is no local collaborator cache yet.
+			const cachedSummaryByNoteId = new Map(cached.map((row) => [row.noteId, row.summary] as const));
+			const entriesToRefresh = visibleNoteEntries.filter(
+				(entry) => entry.isSharedAlias || Boolean(cachedSummaryByNoteId.get(entry.noteId)) || !pendingSyncNoteIds.has(entry.noteId)
+			);
+			if (entriesToRefresh.length === 0) return;
 			const refreshed: Array<{ noteId: string; summary: NoteCardCollaboratorSummary | null }> = [];
-			for (let start = 0; start < visibleNoteEntries.length; start += 6) {
-				const batch = visibleNoteEntries.slice(start, start + 6);
+			for (let start = 0; start < entriesToRefresh.length; start += 6) {
+				const batch = entriesToRefresh.slice(start, start + 6);
 				const batchRows = await Promise.all(
 					batch.map(async (entry) => ({
 						noteId: entry.noteId,
@@ -515,7 +533,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [props.authUserId, props.refreshCollaboratorsToken, visibleNoteEntries]);
+	}, [pendingSyncNoteIds, props.authUserId, props.refreshCollaboratorsToken, visibleNoteEntries]);
 
 	const visibleIds = React.useMemo<string[]>(() => {
 		if (!props.activeCollaboratorFilter) return baseVisibleIds;
@@ -925,7 +943,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								const isPlaceholder = dragManager.activeDragId === note.id;
 								const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
 								const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
-								const docId = placement?.roomId || (props.activeWorkspaceId ? `${props.activeWorkspaceId}:${note.id}` : '');
+								const docId = placement?.roomId || resolveMediaDocId(note.id);
 								const canEditNote = note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false;
 								return (
 										< GridNoteCard
@@ -1120,7 +1138,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						const noteId = moreMenuNoteId;
 						const doc = docsById[noteId];
 						const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === noteId);
-						const docId = placement?.roomId || (props.activeWorkspaceId ? `${props.activeWorkspaceId}:${noteId}` : '');
+						const docId = placement?.roomId || resolveMediaDocId(noteId);
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
 						if (!docId || !doc) return;

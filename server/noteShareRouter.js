@@ -892,7 +892,9 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								reason: 'note-share-role-updated',
 								workspaceId: collaborator.sourceWorkspaceId,
 								docId: collaborator.docId,
-								userIds: [collaborator.userId],
+								// Include both sides so the changed collaborator and the actor's other
+								// open sessions all refresh their note chips immediately.
+								userIds: Array.from(new Set([collaborator.userId, session.userId].filter(Boolean))),
 							});
 						} catch (publishErr) {
 							console.warn('[note-share] role publish failed:', publishErr.message);
@@ -959,7 +961,9 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								reason: 'note-share-revoked',
 								workspaceId: collaborator.sourceWorkspaceId,
 								docId: collaborator.docId,
-								userIds: [collaborator.userId],
+								// Include both sides so the removed collaborator and the actor's other
+								// devices converge without waiting for a manual refresh.
+								userIds: Array.from(new Set([collaborator.userId, session.userId].filter(Boolean))),
 							});
 						} catch (publishErr) {
 							console.warn('[note-share] revoke publish failed:', publishErr.message);

@@ -1,7 +1,97 @@
 const CACHE_NAME = 'freemannotes-shell-v5';
+const IMAGE_CACHE_NAME = 'freemannotes-images-v1';
+const IMAGE_META_CACHE_NAME = 'freemannotes-images-meta-v1';
+const IMAGE_CACHE_LIMIT_BYTES = 300 * 1024 * 1024;
 // Cache the canonical app shell entry only.
 // Caching '/' can get sticky across proxy setups and makes upgrades harder.
 const CORE_ASSETS = ['/index.html'];
+
+async function readImageMeta(cache, url) {
+	const response = await cache.match(url);
+	if (!response) return null;
+	try {
+		return await response.json();
+	} catch {
+		return null;
+	}
+}
+
+async function writeImageMeta(cache, url, meta) {
+	await cache.put(url, new Response(JSON.stringify(meta), {
+		headers: { 'Content-Type': 'application/json; charset=utf-8' },
+	}));
+}
+
+async function touchImageMeta(url) {
+	const metaCache = await caches.open(IMAGE_META_CACHE_NAME);
+	const existing = await readImageMeta(metaCache, url);
+	if (!existing) return;
+	await writeImageMeta(metaCache, url, {
+		...existing,
+		lastAccessed: Date.now(),
+	});
+}
+
+async function enforceImageCacheLimit() {
+	const imageCache = await caches.open(IMAGE_CACHE_NAME);
+	const metaCache = await caches.open(IMAGE_META_CACHE_NAME);
+	const keys = await metaCache.keys();
+	const entries = [];
+	let totalSize = 0;
+	for (const request of keys) {
+		const meta = await readImageMeta(metaCache, request.url);
+		if (!meta) continue;
+		const size = Number(meta.size || 0);
+		totalSize += size;
+		entries.push({
+			url: request.url,
+			size,
+			lastAccessed: Number(meta.lastAccessed || 0),
+		});
+	}
+	entries.sort((left, right) => left.lastAccessed - right.lastAccessed);
+	while (totalSize > IMAGE_CACHE_LIMIT_BYTES && entries.length > 0) {
+		const oldest = entries.shift();
+		if (!oldest) break;
+		totalSize -= oldest.size;
+		await Promise.all([
+			imageCache.delete(oldest.url),
+			metaCache.delete(oldest.url),
+		]);
+	}
+}
+
+async function storeViewedImage(request, response) {
+	if (!response || !response.ok || response.type !== 'basic') return response;
+	const imageCache = await caches.open(IMAGE_CACHE_NAME);
+	const metaCache = await caches.open(IMAGE_META_CACHE_NAME);
+	const clone = response.clone();
+	const sizedClone = response.clone();
+	const blob = await sizedClone.blob().catch(() => null);
+	const size = blob ? blob.size : Number(response.headers.get('content-length') || '0') || 0;
+	await imageCache.put(request, clone);
+	await writeImageMeta(metaCache, request.url, {
+		size,
+		lastAccessed: Date.now(),
+	});
+	await enforceImageCacheLimit();
+	return response;
+}
+
+async function handleViewedImageRequest(request) {
+	try {
+		const response = await fetch(request);
+		return await storeViewedImage(request, response);
+	} catch {
+		const imageCache = await caches.open(IMAGE_CACHE_NAME);
+		const cached = await imageCache.match(request);
+		if (cached) {
+			await touchImageMeta(request.url);
+			return cached;
+		}
+		return Response.error();
+	}
+}
 
 async function getBuildAssetsFromIndexHtml() {
 	// For production builds, index.html references hashed assets under /assets/.
@@ -57,7 +147,7 @@ self.addEventListener('activate', (event) => {
 	event.waitUntil(
 		(async () => {
 			const names = await caches.keys();
-			await Promise.all(names.filter((name) => name !== CACHE_NAME).map((name) => caches.delete(name)));
+			await Promise.all(names.filter((name) => ![CACHE_NAME, IMAGE_CACHE_NAME, IMAGE_META_CACHE_NAME].includes(name)).map((name) => caches.delete(name)));
 			// Claim the current page on first install so the cached app shell can
 			// serve subsequent navigations even when the origin is unreachable.
 			// We intentionally still avoid skipWaiting(), so updates only activate
@@ -75,8 +165,15 @@ self.addEventListener('fetch', (event) => {
 	const url = new URL(request.url);
 	if (url.origin !== self.location.origin) return;
 
+	if (url.pathname.startsWith('/uploads/')) {
+		// Attachment assets stay out of IndexedDB. We only cache the responses that
+		// users actually view, and we bound that cache with LRU eviction.
+		event.respondWith(handleViewedImageRequest(request));
+		return;
+	}
+
 	// Never cache API responses or uploads. They change frequently and must stay fresh.
-	if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/uploads/')) {
+	if (url.pathname.startsWith('/api/')) {
 		return;
 	}
 

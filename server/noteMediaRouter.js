@@ -80,6 +80,21 @@ async function ensureMediaAccess(prisma, session, rawDocId, { requireEdit = fals
 	return { error: null, access };
 }
 
+async function publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, access, reason) {
+	if (typeof onWorkspaceMetadataChanged !== 'function' || !access) return;
+	try {
+		// Media mutations do not change the Yjs document body, so we publish a small
+		// metadata event to nudge other sessions to refresh note-media state directly.
+		await onWorkspaceMetadataChanged({
+			reason,
+			workspaceId: access.sourceWorkspaceId,
+			docId: access.docId,
+		});
+	} catch (error) {
+		console.warn('[note-media] metadata event publish failed:', error && error.message ? error.message : String(error));
+	}
+}
+
 async function compressImage(buffer) {
 	const resizeTargets = [2560, 2200, 1920, 1600];
 	const qualities = [82, 76, 68, 60, 52];
@@ -263,7 +278,7 @@ async function buildAccessibleDocContext(prisma, userId) {
 	return { docContext, workspaceIds, sharedDocIds: placements.map((placement) => placement.collaborator.docId) };
 }
 
-function createNoteMediaRouter({ prisma, uploadDir }) {
+function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged = null }) {
 	if (!uploadDir) throw new Error('uploadDir is required');
 
 	return function handleRequest(req, res) {
@@ -330,6 +345,7 @@ function createNoteMediaRouter({ prisma, uploadDir }) {
 						mimeType: imported.mimeType,
 						sourceUrl: imageUrl,
 					});
+					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-media-created');
 					jsonResponse(res, 201, { image: mapNoteImage(image) });
 				} catch (err) {
 					console.error('[note-media] import-url error:', err.message);
@@ -413,6 +429,7 @@ function createNoteMediaRouter({ prisma, uploadDir }) {
 						});
 						images.push(mapNoteImage(image));
 					}
+					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-media-created');
 					jsonResponse(res, 201, { images, count: images.length });
 				} catch (err) {
 					console.error('[note-media] upload error:', err.message);
@@ -452,6 +469,7 @@ function createNoteMediaRouter({ prisma, uploadDir }) {
 						fs.promises.rm(path.join(uploadDir, image.originalPath), { force: true }),
 						fs.promises.rm(path.join(uploadDir, image.thumbnailPath), { force: true }),
 					]);
+					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-media-deleted');
 					jsonResponse(res, 200, { ok: true, imageId: image.id });
 				} catch (err) {
 					console.error('[note-media] delete error:', err.message);
