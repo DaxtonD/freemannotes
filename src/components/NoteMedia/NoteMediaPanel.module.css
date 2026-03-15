@@ -44,6 +44,10 @@
 	cursor: pointer;
 	color: var(--color-text);
 	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface-2));
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	text-decoration: none;
 }
 
 .retryButton {
@@ -75,15 +79,17 @@
 
 .grid {
 	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
-	gap: 10px;
+	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+	gap: 12px;
 }
 
 .tile {
 	position: relative;
 	border-radius: 18px;
-	overflow: visible;
+	overflow: hidden;
 	min-width: 0;
+	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+	background: color-mix(in srgb, var(--color-surface-2) 34%, transparent);
 }
 
 .tileActivator {
@@ -94,15 +100,18 @@
 	text-align: left;
 	cursor: pointer;
 	color: inherit;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
 }
 
 .thumbWrap {
 	position: relative;
-	aspect-ratio: 1 / 1;
-	border-radius: 18px;
+	aspect-ratio: 4 / 3;
+	border-radius: 0;
 	overflow: hidden;
-	background: color-mix(in srgb, var(--color-surface-2) 72%, transparent);
-	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	background: var(--color-surface-2);
+	border: 0;
 }
 
 .thumb {
@@ -123,49 +132,48 @@
 }
 
 .meta {
-	padding: 10px 8px 4px;
+	padding: 12px;
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
+	gap: 6px;
 	min-width: 0;
 }
 
 .title {
 	font-size: 12px;
 	font-weight: 700;
-	line-height: 1.25;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
+	line-height: 1.35;
+	word-break: break-word;
 }
 
 .caption {
-	font-size: 11px;
-	line-height: 1.25;
+	font-size: 12px;
+	line-height: 1.35;
 	color: var(--color-text-muted);
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
 	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 
 .badge,
 .deleteButton {
 	position: absolute;
 	z-index: 1;
-	top: 8px;
+	top: 10px;
 	border: 0;
 	border-radius: 999px;
-	font-size: 10px;
+	font-size: 11px;
 	font-weight: 700;
 	backdrop-filter: blur(10px);
 	-webkit-backdrop-filter: blur(10px);
 }
 
 .badge {
-	left: 8px;
-	padding: 5px 8px;
-	color: var(--color-text);
-	background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+	left: 10px;
+	padding: 4px 8px;
+	color: var(--color-text-muted);
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
 }
 
 .offlineBadge {
@@ -173,9 +181,9 @@
 }
 
 .deleteButton {
-	right: 8px;
-	width: 28px;
-	height: 28px;
+	right: 10px;
+	width: 30px;
+	height: 30px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;

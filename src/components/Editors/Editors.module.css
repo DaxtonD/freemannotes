@@ -281,6 +281,13 @@
 	gap: 4px;
 }
 
+.formatToolbarScroller {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+}
+
 .formatToolbarDisabled {
 	opacity: 0.45;
 	pointer-events: none;
@@ -290,6 +297,8 @@
 	display: flex;
 	align-items: center;
 	gap: 6px;
+	flex: 1 1 auto;
+	min-width: 0;
 	flex-wrap: nowrap;
 	overflow-x: auto;
 	overflow-y: hidden;
@@ -305,8 +314,60 @@
 	touch-action: pan-x;
 }
 
+@media (pointer: fine) {
+	.formatToolbarRow {
+		scrollbar-width: thin;
+		scrollbar-color: color-mix(in srgb, var(--color-text) 24%, transparent) transparent;
+	}
+
+	.formatToolbarRow::-webkit-scrollbar {
+		display: block;
+		height: 8px;
+	}
+
+	.formatToolbarRow::-webkit-scrollbar-thumb {
+		background: color-mix(in srgb, var(--color-text) 24%, transparent);
+		border-radius: 999px;
+	}
+
+	.formatToolbarRow::-webkit-scrollbar-track {
+		background: transparent;
+	}
+}
+
 .formatToolbarRow::-webkit-scrollbar {
 	display: none;
+}
+
+.formatToolbarScrollButton {
+	border: 0;
+	background: color-mix(in srgb, var(--color-surface-2) 84%, transparent);
+	color: var(--color-text);
+	width: 28px;
+	height: 28px;
+	border-radius: 999px;
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	transition: opacity var(--transition-fast), background-color var(--transition-fast);
+}
+
+.formatToolbarScrollButton:hover,
+.formatToolbarScrollButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 96%, transparent);
+}
+
+.formatToolbarScrollButtonHidden {
+	opacity: 0;
+	pointer-events: none;
+}
+
+@media (pointer: coarse) {
+	.formatToolbarScrollButton {
+		display: none;
+	}
 }
 
 .formatButton {
@@ -351,6 +412,72 @@
 .formatButton:disabled {
 	opacity: 0.45;
 	cursor: default;
+}
+
+.formatMenuAnchor {
+	position: relative;
+	flex: 0 0 auto;
+}
+
+.formatMenu {
+	position: absolute;
+	top: calc(100% + 8px);
+	right: 0;
+	min-width: 180px;
+	padding: 6px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-surface);
+	box-shadow: 0 14px 28px -18px rgba(0, 0, 0, 0.55);
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	z-index: 10000;
+}
+
+.formatMenuButton {
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	text-align: left;
+	padding: 8px 10px;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	font: inherit;
+}
+
+.formatMenuButton:hover,
+.formatMenuButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+.formatMenuButton:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.formatButtonImageIcon,
+.formatButtonMaskIcon {
+	display: block;
+	width: 16px;
+	height: 16px;
+	pointer-events: none;
+}
+
+.formatButtonImageIcon {
+	object-fit: contain;
+}
+
+.formatButtonMaskIcon {
+	background-color: currentColor;
+	-webkit-mask-image: url('/icons/URL-Preview.png');
+	mask-image: url('/icons/URL-Preview.png');
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	mask-position: center;
+	-webkit-mask-size: contain;
+	mask-size: contain;
 }
 
 .formatDivider {
@@ -539,6 +666,35 @@
 	border-radius: var(--radius-md);
 	border: 1px dashed var(--color-border);
 	background: color-mix(in srgb, var(--color-surface-2) 45%, transparent);
+}
+
+.mediaPanelPlaceholderCard {
+	min-height: 170px;
+	border-radius: var(--radius-md);
+	border: 1px dashed var(--color-border);
+	background: color-mix(in srgb, var(--color-surface-2) 45%, transparent);
+	padding: 18px;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 6px;
+}
+
+.mediaPanelPlaceholderTitle,
+.mediaPanelPlaceholderBody {
+	margin: 0;
+}
+
+.mediaPanelPlaceholderTitle {
+	font-size: var(--font-size-md);
+	font-weight: 600;
+	color: var(--color-text);
+}
+
+.mediaPanelPlaceholderBody {
+	font-size: var(--font-size-sm);
+	line-height: 1.4;
+	color: var(--color-text-muted);
 }
 
 .bottomDock {
@@ -942,7 +1098,14 @@
 .richEditorContent:global(.ProseMirror) ol,
 .richEditorContent:global(.ProseMirror) h1,
 .richEditorContent:global(.ProseMirror) h2,
-.richEditorContent:global(.ProseMirror) h3 {
+.richEditorContent:global(.ProseMirror) h3,
+.richEditorContent:global(.ProseMirror) h4,
+.richEditorContent:global(.ProseMirror) h5,
+.richEditorContent:global(.ProseMirror) h6,
+.richEditorContent:global(.ProseMirror) blockquote,
+.richEditorContent:global(.ProseMirror) pre,
+.richEditorContent:global(.ProseMirror) table,
+.richEditorContent:global(.ProseMirror) hr {
 	margin: 0 0 0.6em;
 }
 
@@ -964,6 +1127,116 @@
 .richEditorContent:global(.ProseMirror) h3 {
 	font-size: clamp(1.05rem, 1.4vw, 1.2rem);
 	line-height: 1.22;
+}
+
+.richEditorContent:global(.ProseMirror) h4 {
+	font-size: clamp(0.98rem, 1.25vw, 1.08rem);
+	line-height: 1.28;
+	font-weight: 700;
+}
+
+.richEditorContent:global(.ProseMirror) h5 {
+	font-size: clamp(0.92rem, 1.15vw, 1rem);
+	line-height: 1.3;
+	font-weight: 700;
+}
+
+.richEditorContent:global(.ProseMirror) h6 {
+	font-size: clamp(0.84rem, 1vw, 0.92rem);
+	line-height: 1.34;
+	font-weight: 700;
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+	color: var(--color-text-muted);
+}
+
+.richEditorContent:global(.ProseMirror) blockquote {
+	border-inline-start: 3px solid color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+	padding: 0.15em 0 0.15em 0.9em;
+	color: color-mix(in srgb, var(--color-text) 82%, var(--color-text-muted));
+	font-style: italic;
+}
+
+.richEditorContent:global(.ProseMirror) code {
+	font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+	font-size: 0.92em;
+	background: color-mix(in srgb, var(--color-surface-2) 88%, transparent);
+	border-radius: var(--radius-sm);
+	padding: 0.1em 0.3em;
+}
+
+.richEditorContent:global(.ProseMirror) pre {
+	overflow-x: auto;
+	padding: 0.85em 1em;
+	border-radius: var(--radius-md);
+	border: 1px solid var(--color-border);
+	background: color-mix(in srgb, var(--color-surface-2) 92%, transparent);
+	-webkit-overflow-scrolling: touch;
+}
+
+.richEditorContent:global(.ProseMirror) pre code {
+	background: transparent;
+	padding: 0;
+	border-radius: 0;
+	font-size: 0.95em;
+}
+
+.richEditorContent:global(.ProseMirror) hr {
+	border: 0;
+	border-top: 1px solid var(--color-border);
+	margin-block: 1em;
+}
+
+.richEditorContent:global(.ProseMirror) table {
+	width: 100%;
+	border-collapse: collapse;
+	table-layout: fixed;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	overflow: hidden;
+	background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-2));
+}
+
+.richEditorContent:global(.ProseMirror) th,
+.richEditorContent:global(.ProseMirror) td {
+	border: 1px solid var(--color-border);
+	padding: 0.55em 0.7em;
+	text-align: left;
+	vertical-align: top;
+	overflow-wrap: anywhere;
+}
+
+.richEditorContent:global(.ProseMirror) th {
+	font-weight: 700;
+	background: color-mix(in srgb, var(--color-surface-2) 72%, transparent);
+}
+
+.richEditorContent:global(.ProseMirror) ul[data-type='taskList'] {
+	list-style: none;
+	padding-inline-start: 0;
+}
+
+.richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li {
+	display: flex;
+	align-items: flex-start;
+	gap: 0.65em;
+	margin: 0 0 0.45em;
+}
+
+.richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > label {
+	flex: 0 0 auto;
+	margin-top: 0.1em;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > div {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > div > p {
+	margin: 0;
 }
 
 .richEditorContent:global(.ProseMirror) a {
@@ -1056,6 +1329,20 @@
 	padding-bottom: 6px;
 	/* Keep scrollIntoView/caret scrolling above the floating keyboard toolbar in checklist mode too. */
 	scroll-padding-bottom: 88px;
+}
+
+@media (pointer: fine) {
+	.richEditorViewport,
+	.checklistScrollArea {
+		scrollbar-width: none;
+		-ms-overflow-style: none;
+	}
+
+	.richEditorViewport::-webkit-scrollbar,
+	.checklistScrollArea::-webkit-scrollbar {
+		width: 0;
+		height: 0;
+	}
 }
 
 .checklistComposer {

@@ -1,0 +1,417 @@
+.panel {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	min-height: 0;
+}
+
+.header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+}
+
+.eyebrow {
+	margin: 0;
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--color-text-muted);
+}
+
+.summary,
+.meta,
+.status,
+.placeholderBody,
+.emptyBody,
+.viewerMeta,
+.viewerEmptyBody {
+	margin: 0;
+	font-size: 12px;
+	color: var(--color-text-muted);
+}
+
+.toolbar,
+.viewerActions {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.addButton,
+.retryButton,
+.viewerLinkButton,
+.viewerCloseButton {
+	border: 0;
+	border-radius: 999px;
+	padding: 9px 14px;
+	font-size: 12px;
+	font-weight: 700;
+	cursor: pointer;
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface-2));
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	text-decoration: none;
+}
+
+.viewerCloseButton {
+	width: 38px;
+	height: 38px;
+	justify-content: center;
+	padding: 0;
+	background: var(--color-surface-2);
+}
+
+.addButton:hover,
+.addButton:focus-visible,
+.retryButton:hover,
+.retryButton:focus-visible,
+.viewerLinkButton:hover,
+.viewerLinkButton:focus-visible,
+.viewerCloseButton:hover,
+.viewerCloseButton:focus-visible,
+.cardButton:hover,
+.cardButton:focus-visible {
+	background: color-mix(in srgb, var(--color-accent) 20%, var(--color-surface-2));
+}
+
+.error {
+	margin: 0;
+	color: #b91c1c;
+	font-size: 12px;
+}
+
+.empty,
+.placeholderCard,
+.viewerEmpty {
+	padding: 18px;
+	border-radius: 18px;
+	border: 1px dashed var(--color-border);
+	background: color-mix(in srgb, var(--color-surface-2) 45%, transparent);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	align-items: flex-start;
+}
+
+.placeholderTitle,
+.emptyTitle,
+.viewerEmptyTitle,
+.viewerTitle {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 700;
+}
+
+.list {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+	gap: 12px;
+}
+
+.card {
+	position: relative;
+	border-radius: 18px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+	background: color-mix(in srgb, var(--color-surface-2) 34%, transparent);
+	overflow: hidden;
+}
+
+.cardButton {
+	width: 100%;
+	border: 0;
+	background: transparent;
+	padding: 0;
+	text-align: left;
+	color: inherit;
+	cursor: pointer;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+
+.thumbnail {
+	width: 100%;
+	aspect-ratio: 4 / 3;
+	object-fit: cover;
+	display: block;
+	background: var(--color-surface-2);
+}
+
+.copy {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 12px;
+	min-width: 0;
+}
+
+.title,
+.description {
+	margin: 0;
+	font-size: 12px;
+	line-height: 1.35;
+}
+
+.badge {
+	align-self: flex-start;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 999px;
+	padding: 4px 8px;
+	font-size: 11px;
+	font-weight: 700;
+	color: var(--color-text-muted);
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
+}
+
+.title {
+	font-weight: 700;
+	word-break: break-word;
+}
+
+.description {
+	color: var(--color-text-muted);
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.deleteButton {
+	position: absolute;
+	top: 10px;
+	right: 10px;
+	width: 30px;
+	height: 30px;
+	border: 0;
+	border-radius: 999px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	color: #fff;
+	background: color-mix(in srgb, #991b1b 78%, transparent);
+	cursor: pointer;
+	z-index: 1;
+}
+
+.deleteButton:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.viewerBackdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 10030;
+	display: flex;
+	align-items: stretch;
+	justify-content: stretch;
+	padding: 0;
+	background: rgba(12, 18, 24, 0.54);
+	backdrop-filter: blur(8px);
+}
+
+.viewerDialog {
+	width: 100vw;
+	height: 100vh;
+	max-width: none;
+	max-height: none;
+	background: var(--color-surface);
+	border: 0;
+	border-radius: 0;
+	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.24);
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+}
+
+.viewerHeader {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 16px;
+	padding: 20px;
+	border-bottom: 1px solid var(--color-border);
+	flex: 0 0 auto;
+}
+
+.viewerToolbar {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 12px;
+	padding: 14px 20px;
+	border-bottom: 1px solid var(--color-border);
+	background: color-mix(in srgb, var(--color-surface-2) 45%, transparent);
+	flex: 0 0 auto;
+}
+
+.viewerModeTabs {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.viewerModeButton {
+	border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+	border-radius: 999px;
+	padding: 8px 12px;
+	font: inherit;
+	font-size: 12px;
+	font-weight: 700;
+	color: var(--color-text-muted);
+	background: var(--color-surface);
+	cursor: pointer;
+}
+
+.viewerModeButton:disabled {
+	opacity: 0.55;
+	cursor: default;
+}
+
+.viewerModeButtonActive {
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+	border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
+}
+
+.viewerModeHint,
+.viewerMetaRow {
+	margin: 0;
+	font-size: 12px;
+	color: var(--color-text-muted);
+}
+
+.viewerBody {
+	display: grid;
+	grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
+	gap: 0;
+	min-height: 0;
+	flex: 1;
+	height: 100%;
+}
+
+.viewerBodyFullBleed {
+	grid-template-columns: minmax(0, 1fr);
+}
+
+.viewerPreviewColumn {
+	padding: 20px;
+	background: color-mix(in srgb, var(--color-surface-2) 40%, transparent);
+	border-right: 1px solid var(--color-border);
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	justify-content: flex-start;
+	gap: 12px;
+	overflow: auto;
+}
+
+.viewerPreviewImage {
+	width: 100%;
+	max-width: 280px;
+	border-radius: 18px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	box-shadow: 0 16px 32px rgba(15, 23, 42, 0.1);
+	background: var(--color-surface);
+}
+
+.viewerPreviewMeta {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.viewerContentColumn {
+	min-height: 0;
+	overflow: auto;
+	display: flex;
+	flex-direction: column;
+}
+
+.viewerContentColumnFullBleed {
+	height: 100%;
+	overflow: hidden;
+}
+
+.viewerFrame,
+.viewerText,
+.viewerDocumentPreview {
+	border: 0;
+	width: 100%;
+	flex: 1;
+	min-height: 0;
+	background: transparent;
+}
+
+.viewerFrame {
+	display: block;
+	overflow: hidden;
+}
+
+.viewerDocumentPreview {
+	display: flex;
+	align-items: flex-start;
+	justify-content: center;
+	padding: 24px;
+	overflow: auto;
+	box-sizing: border-box;
+}
+
+.viewerDocumentPreviewImage {
+	width: min(100%, 720px);
+	border-radius: 20px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	box-shadow: 0 16px 32px rgba(15, 23, 42, 0.08);
+	background: var(--color-surface);
+}
+
+.viewerText {
+	padding: 20px;
+	white-space: pre-wrap;
+	font: inherit;
+	line-height: 1.5;
+	color: var(--color-text);
+	overflow: auto;
+	box-sizing: border-box;
+}
+
+@media (max-width: 860px), (pointer: coarse) {
+	.viewerBackdrop {
+		padding: 0;
+		align-items: stretch;
+	}
+
+	.viewerDialog {
+		width: 100%;
+		height: 100%;
+		max-height: none;
+		border-radius: 0;
+	}
+
+	.viewerBody {
+		grid-template-columns: 1fr;
+	}
+
+	.viewerToolbar {
+		align-items: flex-start;
+		flex-direction: column;
+	}
+
+	.viewerPreviewColumn {
+		border-right: 0;
+		border-bottom: 1px solid var(--color-border);
+	}
+
+	.list {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}

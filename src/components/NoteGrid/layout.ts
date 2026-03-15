@@ -112,8 +112,9 @@ export function splitIntoColumnsByHeight(
 /**
  * Reconstruct columns from a flat ID list using predefined slot lengths.
  * This is the cross-device sync path: when device A performs a drag and commits
- * the result to Yjs, it stores both the flat column-major order AND the number
- * of cards per column (the "slot lengths", e.g. [3, 2] for 3-in-col-0 / 2-in-col-1).
+ * the result to Yjs, it stores the flat reading-order list produced by
+ * `flattenColumns` plus the number of cards per column (the "slot lengths",
+ * e.g. [3, 2] for 3-in-col-0 / 2-in-col-1).
  * Device B reads the same flat order and slot lengths and uses this function to
  * reproduce the exact same column grouping — bypassing height-based packing which
  * would diverge because card heights differ across viewports.
@@ -123,13 +124,18 @@ export function splitIntoColumnsByHeight(
  */
 export function splitIntoColumnsBySlotLengths(ids: readonly string[], slotLengths: readonly number[]): string[][] {
 	if (slotLengths.length === 0) return [ids.slice()];
-	const columns: string[][] = [];
+	const normalizedSlots = slotLengths.map((rawLength) => Math.max(0, rawLength));
+	const columns: string[][] = normalizedSlots.map(() => []);
 	let cursor = 0;
-	for (const rawLength of slotLengths) {
-		const length = Math.max(0, rawLength);
-		columns.push(ids.slice(cursor, cursor + length));
-		cursor += length;
+	const maxRows = Math.max(0, ...normalizedSlots);
+
+	for (let row = 0; row < maxRows && cursor < ids.length; row++) {
+		for (let columnIndex = 0; columnIndex < normalizedSlots.length && cursor < ids.length; columnIndex++) {
+			if (row >= normalizedSlots[columnIndex]) continue;
+			columns[columnIndex].push(ids[cursor++]);
+		}
 	}
+
 	if (cursor < ids.length) {
 		columns.push(ids.slice(cursor));
 	}
@@ -204,9 +210,10 @@ export function swapIds(ids: readonly string[], activeId: string, overId: string
  * Resolve the ghost card's position to a (column, index) insertion point.
  *
  * Column detection (horizontal):
- *   Uses the raw pointer X (`pointerX`) to pick the column whose center is
- *   closest.  Using the pointer directly (instead of ghost center) is more
- *   responsive for cross-column moves because the pointer leads the ghost.
+	*   Uses the ghost card's center X (`ghostCenterX`) to pick the column whose
+	*   center is closest. This makes horizontal movement follow the same visual
+	*   rule as vertical movement: the dragged card itself must cross into the new
+	*   column before neighbors shift.
  *
  * Row detection (vertical):
  *   Uses the ghost card's edges to find the insertion slot.  For each card in
@@ -229,22 +236,23 @@ export function findInsertionPoint(
 	activeId: string,
 	ghostTopY: number,
 	ghostBottomY: number,
-	pointerX: number,
+	ghostCenterX: number,
 	getRectForId: (id: string) => DOMRect | null,
 	getColumnRect: (columnIndex: number) => DOMRect | null
 ): { column: number; index: number } | null {
 	if (columns.length === 0) return null;
 
 	// ── Column detection ────────────────────────────────────────────────
-	// Use the raw pointer X (not ghost center) — this is more responsive
-	// for cross-column moves because the pointer leads the ghost.
+	// Use the ghost center so horizontal swaps trigger when the card itself
+	// crosses into a neighboring column, not when the user's original grab
+	// point happens to reach it first.
 	let bestColumn = 0;
 	let bestDist = Infinity;
 	for (let c = 0; c < columns.length; c++) {
 		const colRect = getColumnRect(c);
 		if (!colRect) continue;
 		const colCenterX = colRect.left + colRect.width / 2;
-		const dist = Math.abs(pointerX - colCenterX);
+		const dist = Math.abs(ghostCenterX - colCenterX);
 		if (dist < bestDist) {
 			bestDist = dist;
 			bestColumn = c;

@@ -26,6 +26,18 @@ html {
 	scrollbar-gutter: stable;
 }
 
+html.body-scroll-locked,
+body.body-scroll-locked {
+	overflow: hidden;
+	overscroll-behavior: none;
+}
+
+html.body-scroll-locked,
+body.body-scroll-locked,
+html.body-scroll-locked #root {
+	height: 100%;
+}
+
 @media (pointer: coarse) {
 	html,
 	body {
@@ -38,6 +50,19 @@ html {
 	body::-webkit-scrollbar {
 		width: 0;
 		height: 0;
+	}
+
+	html.body-scroll-locked,
+	body.body-scroll-locked {
+		touch-action: none;
+	}
+
+	html.body-scroll-locked .test-harness-root,
+	html.body-scroll-locked .app-shell,
+	html.body-scroll-locked .app-main,
+	html.body-scroll-locked .app-sidebar {
+		overflow: hidden !important;
+		overscroll-behavior: none;
 	}
 }
 

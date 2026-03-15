@@ -2,6 +2,24 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.97 - 2026-03-14
+
+### Added
+- **Document attachments with in-app browsing.** Notes can now carry PDFs and office-style documents with upload queues, OCR-backed text extraction, generated previews, and dedicated image/link/document attachment browsers.
+- **Link preview infrastructure.** Notes now persist URL preview metadata, resolve richer site cards server-side, surface failed preview notifications, and expose link management in cards, editors, and note menus.
+- **Attachment-aware note chips.** Note cards now use a single attachment chip that expands into images, links, and documents instead of competing for limited chip space.
+
+### Changed
+- **Rich-text editing breadth.** Editors now support broader Markdown paste conversion, task lists, tables, blockquotes, code blocks, horizontal rules, extra heading levels, and URL-preview insertion directly from the toolbar.
+- **Note-card preview fidelity.** Cards now render richer text structures, compact table summaries, tighter link rails, and consistent attachment/browser styling across desktop and mobile.
+- **Grid ordering durability.** Drag-and-drop now preserves intended column placement more reliably across devices by syncing column slots alongside reading order.
+- **Release documentation.** Updated code comments across the new attachment, document, link-preview, and modal plumbing, plus refreshed top-level project docs for self-hosted deployment.
+
+### Fixed
+- **Drag-and-drop stability regressions.** Fixed post-drop reshuffling, tall-card placement drift, and horizontal swaps that triggered before the dragged card visually crossed columns.
+- **Editor and modal scroll behavior.** Hidden editor scrollbars now stay scrollable, the background grid stops scrolling while editors are open, and mobile attachment/document modals properly lock background scroll.
+- **Preview hydration and collaboration polish.** Fixed rich preview materialization after reload, collaborator modal access-state timing, viewer-role media visibility, and several mobile editor/caret interaction edge cases.
+
 ## 1.0.95 - 2026-03-13
 
 ### Added

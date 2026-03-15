@@ -5,8 +5,9 @@ import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faUsers } from '@fortawesome/free-solid-svg-icons';
 import { NoteCard } from '../NoteCard/NoteCard';
-import { NoteImageCountChip } from '../NoteMedia/NoteImageCountChip';
+import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
+import { addNotePreviewLinkToDoc } from '../../core/noteLinks';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
@@ -26,6 +27,7 @@ import {
 	mergeVisibleIdsIntoLayoutOrder,
 	mergeVisibleOrderIntoFullOrder,
 	readCssPxVariable,
+	splitIntoColumnsBySlotLengths,
 	splitIntoColumnsByHeight,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
@@ -43,7 +45,14 @@ export type NoteGridProps = {
 	onSelectNote: (noteId: string) => void;
 	onAddCollaborator?: (noteId: string, title?: string) => void;
 	onAddImage?: (noteId: string, docId: string, title?: string) => void;
-	onOpenMediaBrowser?: (noteId: string, docId: string, title: string | undefined, canEdit: boolean) => void;
+	onAddDocument?: (noteId: string, docId: string, title?: string) => void;
+	onOpenAttachmentBrowser?: (
+		kind: NoteAttachmentBrowserKind,
+		noteId: string,
+		docId: string,
+		title: string | undefined,
+		canEdit: boolean
+	) => void;
 	onSelectCollaboratorFilter?: (filter: NoteGridCollaboratorFilter) => void;
 	activeCollaboratorFilter?: NoteGridCollaboratorFilter | null;
 	refreshCollaboratorsToken?: number;
@@ -74,6 +83,116 @@ type NoteCardCollaboratorSummary = {
 	collaborators: readonly NoteCardCollaborator[];
 	count: number;
 };
+
+function computeColumnHeights(
+	columns: readonly string[][],
+	heightOf: (id: string) => number,
+	gapPx: number
+): number[] {
+	return columns.map((col) => col.reduce((sum, id, index) => sum + heightOf(id) + (index > 0 ? gapPx : 0), 0));
+}
+
+function getHeightSpread(heights: readonly number[]): number {
+	if (heights.length === 0) return 0;
+	return Math.max(...heights) - Math.min(...heights);
+}
+
+function arraysEqualNumbers(a: readonly number[], b: readonly number[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let index = 0; index < a.length; index++) {
+		if (a[index] !== b[index]) return false;
+	}
+	return true;
+}
+
+function readColumnSlots(layoutMap: Y.Map<unknown> | null, columnCount: number, itemCount: number): number[] | null {
+	if (!layoutMap) return null;
+	// Slot lengths only matter when they fully describe the visible layout; partial
+	// or mismatched slot data is ignored so stale sync metadata never corrupts packing.
+	const raw = layoutMap.get('columnSlots');
+	if (!Array.isArray(raw)) return null;
+	const slots = raw
+		.map((value) => Number(value))
+		.filter((value) => Number.isFinite(value))
+		.map((value) => Math.max(0, Math.floor(value)));
+	if (slots.length !== columnCount) return null;
+	if (slots.reduce((sum, value) => sum + value, 0) !== itemCount) return null;
+	return slots;
+}
+
+function rebalanceColumnsConstrained(args: {
+	columns: readonly string[][];
+	draggedId: string;
+	heightOf: (id: string) => number;
+	gapPx: number;
+	fallbackHeightPx: number;
+	maxMoves?: number;
+}): string[][] {
+	const maxMoves = Math.max(0, args.maxMoves ?? 2);
+	const minSpreadPx = Math.max(48, Math.round(args.fallbackHeightPx * 0.45));
+	let current = args.columns.map((col) => col.slice());
+
+	for (let moveCount = 0; moveCount < maxMoves; moveCount++) {
+		// Only consider adjacent-column moves. That trims obvious whitespace gaps after
+		// a drop without reintroducing the broad reshuffles the user wanted removed.
+		const currentHeights = computeColumnHeights(current, args.heightOf, args.gapPx);
+		const currentSpread = getHeightSpread(currentHeights);
+		if (currentSpread <= minSpreadPx) break;
+
+		let bestCandidate: {
+			columns: string[][];
+			spread: number;
+			pairImprovement: number;
+		} | null = null;
+
+		for (let columnIndex = 0; columnIndex < current.length - 1; columnIndex++) {
+			const leftHeight = currentHeights[columnIndex] ?? 0;
+			const rightHeight = currentHeights[columnIndex + 1] ?? 0;
+			const pairGap = Math.abs(leftHeight - rightHeight);
+			if (pairGap <= minSpreadPx) continue;
+
+			const fromIndex = leftHeight > rightHeight ? columnIndex : columnIndex + 1;
+			const toIndex = fromIndex === columnIndex ? columnIndex + 1 : columnIndex;
+			const sourceColumn = current[fromIndex] ?? [];
+			if (sourceColumn.length <= 1) continue;
+
+			let moveIndex = sourceColumn.length - 1;
+			while (moveIndex >= 0 && sourceColumn[moveIndex] === args.draggedId) {
+				moveIndex--;
+			}
+			if (moveIndex < 0) continue;
+
+			const nextColumns = current.map((col) => col.slice());
+			const [movedId] = nextColumns[fromIndex].splice(moveIndex, 1);
+			nextColumns[toIndex].push(movedId);
+
+			const nextHeights = computeColumnHeights(nextColumns, args.heightOf, args.gapPx);
+			const nextSpread = getHeightSpread(nextHeights);
+			const nextPairGap = Math.abs((nextHeights[columnIndex] ?? 0) - (nextHeights[columnIndex + 1] ?? 0));
+			const pairImprovement = pairGap - nextPairGap;
+
+			if (pairImprovement <= 0) continue;
+			if (nextSpread >= currentSpread) continue;
+
+			if (
+				!bestCandidate ||
+				nextSpread < bestCandidate.spread ||
+				(nextSpread === bestCandidate.spread && pairImprovement > bestCandidate.pairImprovement)
+			) {
+				bestCandidate = {
+					columns: nextColumns,
+					spread: nextSpread,
+					pairImprovement,
+				};
+			}
+		}
+
+		if (!bestCandidate) break;
+		current = bestCandidate.columns;
+	}
+
+	return current;
+}
 
 export type NoteGridCollaboratorFilter = {
 	key: string;
@@ -119,6 +238,8 @@ function ensureOrderContainsAllRegistryIds(noteOrder: Y.Array<string>, registryI
 
 type GridNoteCardProps = {
 	note: Note;
+	docId: string | null;
+	authUserId?: string | null;
 	doc: Y.Doc;
 	metaChips?: React.ReactNode;
 	hasPendingSync: boolean;
@@ -135,6 +256,64 @@ type GridNoteCardProps = {
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 };
+
+function renderNoteMetaChips(args: {
+	noteId: string;
+	docId: string | null;
+	doc: Y.Doc;
+	authUserId?: string | null;
+	canEditNote: boolean;
+	collaboratorSummary?: NoteCardCollaboratorSummary | null;
+	onOpenAttachmentBrowser?: (
+		kind: NoteAttachmentBrowserKind,
+		noteId: string,
+		docId: string,
+		title: string | undefined,
+		canEdit: boolean
+	) => void;
+	onToggleCollaboratorChip?: (noteId: string, anchorRect: { top: number; left: number; width: number; height: number }) => void;
+	t: (key: string) => string;
+	title?: string;
+}): React.ReactNode | undefined {
+	if ((!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && !args.docId) {
+		return undefined;
+	}
+
+	return (
+		<>
+			{args.collaboratorSummary && args.collaboratorSummary.count > 0 ? (
+				<button
+					type="button"
+					className={styles.noteChipButton}
+					onPointerDown={(event) => event.stopPropagation()}
+					onClick={(event) => {
+						event.stopPropagation();
+						const rect = event.currentTarget.getBoundingClientRect();
+						args.onToggleCollaboratorChip?.(args.noteId, {
+							top: rect.top,
+							left: rect.left,
+							width: rect.width,
+							height: rect.height,
+						});
+					}}
+					aria-label={`${args.t('share.activeCollaborators')}: ${args.collaboratorSummary.count}`}
+				>
+					<FontAwesomeIcon icon={faUsers} />
+					<span>{args.collaboratorSummary.count}</span>
+				</button>
+			) : null}
+			{args.docId ? (
+				<NoteAttachmentCountChip
+					docId={args.docId}
+					doc={args.doc}
+					authUserId={args.authUserId}
+					className={styles.noteChipButton}
+					onOpenBrowser={(kind) => args.onOpenAttachmentBrowser?.(kind, args.noteId, args.docId || '', args.title, args.canEditNote)}
+				/>
+			) : null}
+		</>
+	);
+}
 
 const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps): React.JSX.Element {
 	const handleItemRef = React.useCallback(
@@ -180,6 +359,8 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 			>
 				<NoteCard
 					noteId={props.note.id}
+					docId={props.docId || undefined}
+					authUserId={props.authUserId}
 					doc={props.doc}
 					metaChips={props.metaChips}
 					canEdit={props.canEdit}
@@ -312,6 +493,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	const [notesList, setNotesList] = React.useState<Y.Array<Y.Map<unknown>> | null>(null);
 	const [noteOrder, setNoteOrder] = React.useState<Y.Array<string> | null>(null);
+	const [noteLayout, setNoteLayout] = React.useState<Y.Map<unknown> | null>(null);
 
 	// Signal to the parent that the grid's initial data is loaded.
 	const readyFiredRef = React.useRef(false);
@@ -397,10 +579,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useEffect(() => {
 		let cancelled = false;
 		(async () => {
-			const [list, order] = await Promise.all([manager.getNotesList(), manager.getNoteOrder()]);
+			const [list, order, layout] = await Promise.all([manager.getNotesList(), manager.getNoteOrder(), manager.getNoteLayout()]);
 			if (cancelled) return;
 			setNotesList(list as unknown as Y.Array<Y.Map<unknown>>);
 			setNoteOrder(order);
+			setNoteLayout(layout);
 		})();
 		return () => { cancelled = true; };
 	}, [manager]);
@@ -408,19 +591,21 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// ── Subscribe to Yjs changes: notesList + noteOrder ──────────────────
 	const subscribe = React.useCallback(
 		(onStoreChange: () => void) => {
-			if (!notesList || !noteOrder) return () => {};
+			if (!notesList || !noteOrder || !noteLayout) return () => {};
 			const onChange = (): void => {
 				versionRef.current += 1;
 				onStoreChange();
 			};
 			notesList.observeDeep(onChange);
 			noteOrder.observe(onChange);
+			noteLayout.observe(onChange);
 			return () => {
 				notesList.unobserveDeep(onChange);
 				noteOrder.unobserve(onChange);
+				noteLayout.unobserve(onChange);
 			};
 		},
-		[notesList, noteOrder]
+		[notesList, noteOrder, noteLayout]
 	);
 
 	const getSnapshot = React.useCallback(() => versionRef.current, []);
@@ -542,70 +727,51 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	// ── Commit drag result to Yjs ─────────────────────────────────────────
 	// Called by the drag manager's onDrop handler with the raw column layout
-	// from the insertion point.  Before writing to Yjs this function:
-	//
-	// 1. REBALANCES columns: if the tallest column is >2× the shortest
-	//    (by summed card height), iteratively moves the bottom card from
-	//    the tallest to the shortest until the ratio drops to ≤1.5×.
-	//
-	// 2. Flattens the balanced result into reading order (row-major) and
-	//    writes it to Yjs.  Every device then reconstructs columns locally
-	//    with splitIntoColumnsByHeight using its own measured card heights.
-	//    stickyColumns preserves the balanced drag result on the local
-	//    device so there's no visual jump.
+	// from the insertion point. Start from the exact preview layout, then allow
+	// a tiny amount of constrained adjacent-column balancing so tall whitespace
+	// gaps can tighten without triggering broad post-drop reshuffles.
 	const commitVisibleOrder = React.useCallback(
-		(nextVisibleOrder: string[], finalColumns: string[][], draggedId: string) => {
+		(finalColumns: string[][], draggedId: string, draggedHeight: number) => {
 			if (!noteOrder) return;
 
-			// ── Rebalance: move bottom cards from tallest to shortest ─────
-			// Protect the just-dropped card so rebalancing never undoes the
-			// user's drag intention.
 			const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 			const fallbackH = Math.min(props.maxCardHeightPx, 220);
-			const heightOf = (id: string) => noteHeightByIdRef.current.get(id) ?? fallbackH;
-			const computeColHeights = (cols: string[][]) =>
-				cols.map((col) => col.reduce((sum, id, i) => sum + heightOf(id) + (i > 0 ? gapPx : 0), 0));
+			const heightOf = (id: string) => {
+				if (id === draggedId && draggedHeight > 0) return draggedHeight;
+				return noteHeightByIdRef.current.get(id) ?? fallbackH;
+			};
 
-			const balanced = finalColumns.map((col) => col.slice());
-			let colHeights = computeColHeights(balanced);
-			let maxH = Math.max(...colHeights);
-			let minH = Math.min(...colHeights);
-
-			if (minH > 0 && maxH / minH > 2) {
-				for (let moves = 0; moves < balanced.flat().length; moves++) {
-					maxH = Math.max(...colHeights);
-					minH = Math.min(...colHeights);
-					if (minH <= 0 || maxH / minH <= 1.5) break;
-
-					const tallestIdx = colHeights.indexOf(maxH);
-					const shortestIdx = colHeights.indexOf(minH);
-					if (tallestIdx === shortestIdx || balanced[tallestIdx].length <= 1) break;
-
-					// Never move the card the user just dropped — that would
-					// undo the drag.  Skip upward from the bottom until we find
-					// a movable card, or give up on this column.
-					let candidateIdx = balanced[tallestIdx].length - 1;
-					while (candidateIdx >= 0 && balanced[tallestIdx][candidateIdx] === draggedId) {
-						candidateIdx--;
-					}
-					if (candidateIdx < 0) break;
-
-					const [movedId] = balanced[tallestIdx].splice(candidateIdx, 1);
-					balanced[shortestIdx].push(movedId);
-					colHeights = computeColHeights(balanced);
-				}
-			}
-
-			// Row-major flatten of balanced columns → canonical order for Yjs.
-			const readingOrder = flattenColumns(balanced);
+			// Row-major flatten of the constrained post-drop columns → canonical order for Yjs.
+			const committedColumns = rebalanceColumnsConstrained({
+				columns: finalColumns,
+				draggedId,
+				heightOf,
+				gapPx,
+				fallbackHeightPx: fallbackH,
+				maxMoves: 2,
+			});
+			const columnSlots = committedColumns.map((column) => column.length);
+			const readingOrder = flattenColumns(committedColumns);
 			pendingCommittedVisibleOrderRef.current = readingOrder.slice();
 			setLayoutOrderIds((previous) => (arraysEqual(previous, readingOrder) ? previous : readingOrder));
-			// Preserve the balanced drag result as stickyColumns so the local
+			// Preserve the committed drag result as stickyColumns so the local
 			// device sees the exact column layout from the drag.  Other
 			// devices re-pack from the Yjs canonical order with their own
 			// card heights.  When a remote update arrives, the flat-order
 			// comparison in baseColumns invalidates stale stickyColumns.
-			setStickyColumns(balanced);
+			setStickyColumns(committedColumns);
+
+			if (noteLayout) {
+				const currentSlots = readColumnSlots(noteLayout, columnSlots.length, readingOrder.length) ?? [];
+				if (!arraysEqualNumbers(currentSlots, columnSlots)) {
+					const layoutDoc = (noteLayout as Y.Map<unknown> & { doc?: Y.Doc | null }).doc ?? null;
+					const applyLayout = (): void => {
+						noteLayout.set('columnSlots', columnSlots.slice());
+					};
+					if (layoutDoc) layoutDoc.transact(applyLayout);
+					else applyLayout();
+				}
+			}
 
 			const current = readOrderIds(noteOrder);
 			const next = mergeVisibleOrderIntoFullOrder(current, visibleIds, readingOrder);
@@ -616,7 +782,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				noteOrder.insert(0, next);
 			});
 		},
-		[noteOrder, visibleIds, mobileGridGapPx, props.maxCardHeightPx]
+		[noteLayout, noteOrder, visibleIds, mobileGridGapPx, props.maxCardHeightPx]
 	);
 
 	React.useEffect(() => {
@@ -721,6 +887,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [noteOrder, orderedIds, docsById, props.onReady]);
 
 	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
+	const persistedColumnSlots = React.useMemo(
+		() => readColumnSlots(noteLayout, columnCount, renderedIds.length),
+		[noteLayout, columnCount, renderedIds.length, storeVersion]
+	);
 	const noteById = React.useMemo(() => {
 		const map = new Map<string, Note>();
 		// Persist whether a card is a shared alias so downstream menu and drag logic
@@ -746,12 +916,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const fallbackH = Math.min(props.maxCardHeightPx, 220);
 		return splitIntoColumnsByHeight(renderedIds, columnCount, noteHeightByIdRef.current, gapPx, fallbackH);
 	}, [renderedIds, columnCount, noteHeightsVersion, mobileGridGapPx, props.maxCardHeightPx]);
+	const slottedColumns = React.useMemo(() => {
+		if (!persistedColumnSlots) return null;
+		return splitIntoColumnsBySlotLengths(renderedIds, persistedColumnSlots);
+	}, [persistedColumnSlots, renderedIds]);
 
 	// ── Reconcile stickyColumns with current card IDs ─────────────────────
 	// stickyColumns preserves the column layout from the last drag so cards
 	// don't shuffle on re-render.  Cleared when column count changes, IDs
 	// change, or ORDER changes (remote Yjs update), falling back to
-	// packedColumns (round-robin).
+	// height-based packing unless persisted slot lengths are available.
 	const baseColumns = React.useMemo(() => {
 		if (!stickyColumns || stickyColumns.length !== columnCount) return packedColumns;
 
@@ -765,6 +939,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 		return stickyColumns;
 	}, [stickyColumns, packedColumns, renderedIds, columnCount]);
+	const resolvedBaseColumns = React.useMemo(() => {
+		if (stickyColumns && baseColumns === stickyColumns) return baseColumns;
+		if (slottedColumns && slottedColumns.length === columnCount) return slottedColumns;
+		return baseColumns;
+	}, [stickyColumns, baseColumns, slottedColumns, columnCount]);
 
 	// Clear stickyColumns when a full repack wins (e.g. height imbalance or column count change)
 	React.useEffect(() => {
@@ -780,7 +959,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const dragManager = useNoteGridDragManager({
 		sectionRef,
 		gridRef,
-		columns: baseColumns,
+		columns: resolvedBaseColumns,
 		visibleIds,
 		canStartDrag: () => props.canReorder !== false && !touchScrollDetectedRef.current && Date.now() >= suppressTouchDragUntilRef.current,
 		isTouchDragCandidate: () => pendingTouchIntentRef.current,
@@ -792,7 +971,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// and the placeholder holding the original space); otherwise use the
 	// stable baseColumns.  framer-motion's `layout` prop on each card
 	// automatically animates position changes when columns swap.
-	const columns = dragManager.previewColumns ?? baseColumns;
+	const columns = dragManager.previewColumns ?? resolvedBaseColumns;
 
 	// Freeze touch actions during touch drag to prevent browser scroll interference
 	React.useEffect(() => {
@@ -856,6 +1035,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const activeDoc = dragManager.activeDragId ? docsById[dragManager.activeDragId] : undefined;
 	const activeNote = dragManager.activeDragId ? noteById.get(dragManager.activeDragId) : undefined;
 	const activeHasPendingSync = activeNote ? pendingSyncNoteIds.has(activeNote.id) : false;
+	const activePlacement = activeNote ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === activeNote.id) : undefined;
+	const activeDocId = activeNote ? activePlacement?.roomId || resolveMediaDocId(activeNote.id) : undefined;
+	const activeCanEdit = Boolean(
+		activeNote && (activeNote.isShared ? activePlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
+	);
+	const activeCollaboratorSummary = activeNote ? collaboratorSummariesByNoteId[activeNote.id] ?? null : null;
+	const moreMenuDoc = moreMenuNoteId ? docsById[moreMenuNoteId] : undefined;
+	const moreMenuPlacement = moreMenuNoteId ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === moreMenuNoteId) : undefined;
+	const moreMenuDocId = moreMenuNoteId ? moreMenuPlacement?.roomId || resolveMediaDocId(moreMenuNoteId) : undefined;
+	const moreMenuCanEdit = Boolean(
+		moreMenuNoteId && (sharedNoteIdSet.has(moreMenuNoteId) ? moreMenuPlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
+	);
 	const collaboratorOverlaySummary = openCollaboratorChip ? collaboratorSummariesByNoteId[openCollaboratorChip.noteId] ?? null : null;
 	const collaboratorOverlayPosition = React.useMemo(() => {
 		if (!openCollaboratorChip || typeof window === 'undefined') return null;
@@ -945,38 +1136,28 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
 								const docId = placement?.roomId || resolveMediaDocId(note.id);
 								const canEditNote = note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false;
+								const title = doc.getText('title').toString();
 								return (
-										< GridNoteCard
+									<GridNoteCard
 										key={note.id}
 										note={note}
+										docId={docId}
+										authUserId={props.authUserId}
 										doc={doc}
-										metaChips={collaboratorSummary && collaboratorSummary.count > 0 || docId ? (
-											<>
-												{collaboratorSummary && collaboratorSummary.count > 0 ? (
-													<button
-														type="button"
-														className={styles.noteChipButton}
-														onPointerDown={(event) => event.stopPropagation()}
-														onClick={(event) => {
-															event.stopPropagation();
-															const rect = event.currentTarget.getBoundingClientRect();
-															setOpenCollaboratorChip((current) => current?.noteId === note.id
-																? null
-																: {
-																	noteId: note.id,
-																	anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
-																}
-															);
-														}}
-														aria-label={`${t('share.activeCollaborators')}: ${collaboratorSummary.count}`}
-													>
-														<FontAwesomeIcon icon={faUsers} />
-														<span>{collaboratorSummary.count}</span>
-													</button>
-												) : null}
-												{docId ? <NoteImageCountChip docId={docId} authUserId={props.authUserId} className={styles.noteChipButton} onClick={() => props.onOpenMediaBrowser?.(note.id, docId, doc.getText('title').toString(), canEditNote)} /> : null}
-											</>
-										) : undefined}
+										metaChips={renderNoteMetaChips({
+											noteId: note.id,
+											docId,
+											doc,
+											authUserId: props.authUserId,
+											canEditNote,
+											collaboratorSummary,
+											onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
+											onToggleCollaboratorChip: (chipNoteId, anchorRect) => {
+												setOpenCollaboratorChip((current) => current?.noteId === chipNoteId ? null : { noteId: chipNoteId, anchorRect });
+											},
+											t,
+											title,
+										})}
 										canEdit={canEditNote}
 										hasPendingSync={pendingSyncNoteIds.has(note.id)}
 										selected={props.selectedNoteId === note.id}
@@ -1020,11 +1201,21 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				>
 					<NoteCard
 						noteId={activeNote.id}
+						docId={activeDocId || undefined}
+						authUserId={props.authUserId}
 						doc={activeDoc}
-						metaChips={undefined}
-						canEdit={activeNote.isShared
-							? (props.sharedNotes ?? []).find((placement) => placement.aliasId === activeNote.id)?.role === 'EDITOR'
-							: props.canEditWorkspaceContent !== false}
+						metaChips={renderNoteMetaChips({
+							noteId: activeNote.id,
+							docId: activeDocId ?? null,
+							doc: activeDoc,
+							authUserId: props.authUserId,
+							canEditNote: activeCanEdit,
+							collaboratorSummary: activeCollaboratorSummary,
+							onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
+							t,
+							title: activeDoc.getText('title').toString(),
+						})}
+						canEdit={activeCanEdit}
 						hasPendingSync={activeHasPendingSync}
 						maxCardHeightPx={props.maxCardHeightPx}
 					/>
@@ -1117,16 +1308,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					document.body
 				)
 				: null}
-			{moreMenuNoteId && docsById[moreMenuNoteId] ? (
+			{moreMenuNoteId && moreMenuDoc ? (
 				<NoteCardMoreMenu
 					noteType={
-						String(docsById[moreMenuNoteId].getMap('metadata').get('type') ?? '') === 'checklist'
+						String(moreMenuDoc.getMap('metadata').get('type') ?? '') === 'checklist'
 							? 'checklist'
 							: 'text'
 					}
 					anchorRect={moreMenuAnchorRect}
 					onClose={() => { setMoreMenuNoteId(null); setMoreMenuAnchorRect(null); }}
-					onAddCollaborator={props.onAddCollaborator ? () => {
+					onAddCollaborator={props.onAddCollaborator && moreMenuCanEdit ? () => {
 						// The more-menu now routes share/collaboration actions through the
 						// dedicated collaborator modal instead of creating ad-hoc share links.
 						const noteId = moreMenuNoteId;
@@ -1134,15 +1325,27 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						setMoreMenuAnchorRect(null);
 						props.onAddCollaborator?.(noteId);
 					} : undefined}
-					onAddImage={props.onAddImage ? () => {
+					onAddImage={props.onAddImage && moreMenuCanEdit ? () => {
 						const noteId = moreMenuNoteId;
-						const doc = docsById[noteId];
-						const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === noteId);
-						const docId = placement?.roomId || resolveMediaDocId(noteId);
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
-						if (!docId || !doc) return;
-						props.onAddImage?.(noteId, docId, doc.getText('title').toString());
+						if (!moreMenuDocId || !moreMenuDoc) return;
+						props.onAddImage?.(noteId, moreMenuDocId, moreMenuDoc.getText('title').toString());
+					} : undefined}
+					onAddDocument={props.onAddDocument && moreMenuCanEdit ? () => {
+						const noteId = moreMenuNoteId;
+						setMoreMenuNoteId(null);
+						setMoreMenuAnchorRect(null);
+						if (!moreMenuDocId || !moreMenuDoc) return;
+						props.onAddDocument?.(noteId, moreMenuDocId, moreMenuDoc.getText('title').toString());
+					} : undefined}
+					onAddUrlPreview={moreMenuCanEdit ? () => {
+						setMoreMenuNoteId(null);
+						setMoreMenuAnchorRect(null);
+						if (!moreMenuDoc) return;
+						const next = window.prompt(t('links.prompt'), 'https://');
+						if (!next) return;
+						addNotePreviewLinkToDoc(moreMenuDoc, next);
 					} : undefined}
 					onTrash={sharedNoteIdSet.has(moreMenuNoteId) ? undefined : () => {
 						// Shared aliases are projections of another workspace's document, so the

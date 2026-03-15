@@ -131,6 +131,40 @@
 	color: inherit;
 }
 
+.richHeading {
+	margin: 0;
+	color: inherit;
+	line-height: 1.2;
+	overflow-wrap: anywhere;
+}
+
+.richHeading3 {
+	font-size: 1rem;
+	font-weight: 700;
+	letter-spacing: -0.01em;
+}
+
+.richHeading4 {
+	font-size: 0.95rem;
+	font-weight: 700;
+}
+
+.richHeading5 {
+	font-size: 0.88rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--color-text-muted);
+}
+
+.richHeading6 {
+	font-size: 0.8rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--color-text-muted);
+}
+
 .richList,
 .richOrderedList {
 	margin: 0;
@@ -155,6 +189,154 @@
 	text-decoration: underline;
 	text-decoration-thickness: 1px;
 	text-underline-offset: 2px;
+}
+
+.richInlineCode {
+	font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+	font-size: 0.92em;
+	padding: 0.08rem 0.3rem;
+	border-radius: 0.35rem;
+	background: color-mix(in srgb, var(--color-surface-2) 86%, var(--color-text) 14%);
+	border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.richBlockquote {
+	margin: 0;
+	padding: 0.35rem 0.7rem;
+	border-inline-start: 3px solid color-mix(in srgb, var(--color-accent) 52%, var(--color-border));
+	background: color-mix(in srgb, var(--color-surface-2) 84%, var(--color-surface) 16%);
+	border-radius: 0 0.6rem 0.6rem 0;
+	color: var(--color-text-muted);
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+}
+
+.richCodeBlock {
+	margin: 0;
+	padding: 0.6rem 0.75rem;
+	border-radius: 0.7rem;
+	background: color-mix(in srgb, var(--color-surface-2) 78%, black 22%);
+	color: color-mix(in srgb, white 88%, var(--color-surface) 12%);
+	overflow-x: auto;
+	font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+	font-size: 0.78rem;
+	line-height: 1.45;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+
+.richRule {
+	width: 100%;
+	height: 1px;
+	margin: 0.2rem 0;
+	border: 0;
+	background: color-mix(in srgb, var(--color-border) 78%, transparent);
+}
+
+.richTaskList {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.35rem;
+}
+
+.richTaskItem {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	align-items: start;
+	gap: 0.5rem;
+	margin: 0;
+	padding: 0;
+}
+
+.richTaskCheckbox {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding-top: 0.12rem;
+}
+
+.richTaskCheckbox input {
+	margin: 0;
+	width: 0.95rem;
+	height: 0.95rem;
+	accent-color: var(--color-accent);
+	pointer-events: none;
+}
+
+.richTaskContent {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.2rem;
+}
+
+.richTablePreview {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.richTableCard {
+	display: flex;
+	flex-direction: column;
+	gap: 0.45rem;
+	padding: 0.65rem 0.7rem;
+	border-radius: 0.9rem;
+	background:
+		linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 88%, white 12%), color-mix(in srgb, var(--color-surface-2) 90%, var(--color-surface) 10%));
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	box-shadow: inset 0 1px 0 color-mix(in srgb, white 35%, transparent);
+}
+
+.richTableField {
+	display: flex;
+	flex-direction: column;
+	gap: 0.18rem;
+	min-width: 0;
+}
+
+.richTableField + .richTableField {
+	padding-top: 0.45rem;
+	border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.richTableLabel {
+	font-size: 0.66rem;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--color-text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.richTableValue {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+}
+
+.richTableValueRow {
+	min-width: 0;
+	padding: 0.35rem 0.45rem;
+	border-radius: 0.65rem;
+	background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-2) 8%);
+	border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+}
+
+.richTableValueRow + .richTableValueRow {
+	margin-top: 0.1rem;
+}
+
+.richTableEmpty {
+	display: block;
+	min-height: 0.9rem;
 }
 
 .checklist {
@@ -226,6 +408,13 @@
 	padding: 0;
 	font-size: var(--font-size-xs);
 	color: var(--color-text-muted);
+}
+
+.linkPreviewRail {
+	padding: 0 0 var(--space-2);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
 }
 
 .cardFooter {
