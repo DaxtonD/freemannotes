@@ -21,6 +21,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
+import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { createRichTextDocFromPlainText } from '../../core/richText';
 import { applyChecklistDragToItems, normalizeChecklistHierarchy, removeChecklistItemWithChildren } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
@@ -31,11 +32,12 @@ import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
+import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type ChecklistEditorProps = {
-	onSave: (args: { title: string; items: Array<ChecklistItem & { richContent: JSONContent }> }) => void | Promise<void>;
+	onSave: (args: { title: string; items: Array<ChecklistItem & { richContent: JSONContent }>; previewLinks: string[] }) => void | Promise<void>;
 	onCancel: () => void;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
@@ -116,10 +118,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const [items, setItems] = React.useState<DraftChecklistItem[]>(() => [
 		{ id: makeId(), text: '', completed: false, parentId: null, richContent: createRichTextDocFromPlainText('') },
 	]);
+	const [previewLinks, setPreviewLinks] = React.useState<string[]>([]);
 	const [saving, setSaving] = React.useState(false);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
-	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
+	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(0);
 	// More-menu state (editor 3-dot button):
 	// - Mobile (pointer: coarse): NoteCardMoreMenu renders as a bottom sheet.
 	// - Desktop (pointer: fine): it renders as a popover positioned relative to
@@ -185,6 +188,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		setInteractionGuardActive(false);
 	}, [isCoarsePointer]);
 	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
 		event.preventDefault();
@@ -228,19 +232,32 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		const dy = t0.clientY - start.y;
 		if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
 		setMediaDockTab((prev) => {
-			if (dx < 0) return (prev === 0 ? 1 : prev);
-			return (prev === 1 ? 0 : prev);
+			if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
+			return Math.max(prev - 1, 0) as 0 | 1 | 2;
+		});
+	}, []);
+	const handleMediaSheetTouchStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		const touch = event.touches[0];
+		if (!touch) return;
+		mediaSheetSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+	}, []);
+	const handleMediaSheetTouchEnd = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		const start = mediaSheetSwipeStartRef.current;
+		const touch = event.changedTouches[0];
+		mediaSheetSwipeStartRef.current = null;
+		if (!start || !touch) return;
+		const dx = touch.clientX - start.x;
+		const dy = touch.clientY - start.y;
+		if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
+		setMediaDockTab((prev) => {
+			if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
+			return Math.max(prev - 1, 0) as 0 | 1 | 2;
 		});
 	}, []);
 	const titleInputRef = React.useRef<HTMLInputElement | null>(null);
 	const rowInputsRef = React.useRef<Map<string, HTMLDivElement | null>>(new Map());
 	const rowContainersRef = React.useRef<Map<string, HTMLLIElement | null>>(new Map());
 	// Drag “ghost” sizing:
-	// - We capture metrics from the real row *before* the drag starts.
-	// - Height alone is not enough for multiline items: if the clone’s text area
-	//   ends up with even a slightly different width, the text re-wraps, which
-	//   looks like the ghost “changes” and can pull words from neighbouring lines.
-	// - Capturing the text area's exact width lets the clone reflow identically.
 	const dragGhostMetricsRef = React.useRef<{ rowWidth: number | null; rowHeight: number | null; textHeight: number | null; textWidth: number | null }>({
 		rowWidth: null,
 		rowHeight: null,
@@ -306,12 +323,13 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	// to dismiss the keyboard and then immediately re-open it.
 	const activateRow = React.useCallback(
 		(id: string): void => {
+			if (activeRowId === id) return;
 			suppressAutoActivateAfterDeleteRef.current = false;
 			prepareRowFocusHandoff();
 			setActiveRowId(id);
 			setFocusRowId(id);
 		},
-		[prepareRowFocusHandoff]
+		[activeRowId, prepareRowFocusHandoff]
 	);
 	// Keyboard-close de-selection:
 	// If the user dismisses the software keyboard, we intentionally de-select
@@ -372,6 +390,16 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		});
 		return () => window.cancelAnimationFrame(rafId);
 	}, []);
+
+	const handleCreateUrlPreview = React.useCallback((): void => {
+		const next = window.prompt(t('links.prompt'), 'https://');
+		if (!next) return;
+		setPreviewLinks((current) => mergeNotePreviewLinkInputs(current, next));
+	}, [t]);
+	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
+		if (mediaDockTab === 2) return <DocumentsPanel />;
+		return <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />;
+	}, [mediaDockTab]);
 
 	// Horizontal snap handler — bypass the drag library entirely for indent/unindent.
 	// Important: we capture FLIP positions *before* the setItems() call so the
@@ -614,7 +642,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 				}
 			}
 			const prunedItems = itemsForSave.filter((item) => item.text.trim().length > 0);
-			await props.onSave({ title, items: prunedItems });
+			await props.onSave({ title, items: prunedItems, previewLinks });
 		} finally {
 			setSaving(false);
 		}
@@ -790,7 +818,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 
 				<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 					<div className={styles.checklistToolbarSlot}>
-						<RichTextToolbar editor={activeRowEditor} variant="minimal" compact />
+						<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} />
 					</div>
 					{/* Keyboard-open branch:
 					    Reserve space for the floating toolbar only. This preserves comfortable text
@@ -904,7 +932,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 														onChange={(event) => toggleCompleted(item.id, event.target.checked)}
 													/>
 													{activeRowId === item.id ? (
-														<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowRichShell} onClick={() => activateRow(item.id)}>
+														<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowRichShell}>
 															<RichTextEditor
 																key={item.id}
 																variant="minimal"
@@ -995,7 +1023,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 											onChange={(event) => toggleCompleted(item.id, event.target.checked)}
 										/>
 											{activeRowId === item.id ? (
-																	<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowRichShell} onClick={() => activateRow(item.id)}>
+																	<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowRichShell}>
 															<RichTextEditor
 																key={item.id}
 																variant="minimal"
@@ -1171,6 +1199,15 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 							>
 								{t('editors.mediaTabLinks')}
 							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 2}
+								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(2)}
+							>
+								{t('editors.mediaTabDocuments')}
+							</button>
 						</div>
 						<button type="button" className={styles.mediaFlyoutClose} onClick={() => setMediaDockOpen(false)} aria-label={t('common.close')}>
 							✕
@@ -1178,7 +1215,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					</header>
 					<div className={styles.mediaFlyoutBody}>
 						<div className={styles.mediaPanel} role="tabpanel">
-							<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
+							{renderMediaDockPanel()}
 						</div>
 					</div>
 			</aside>
@@ -1228,6 +1265,15 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						>
 							{t('editors.mediaTabLinks')}
 						</button>
+						<button
+							type="button"
+							role="tab"
+							aria-selected={mediaDockTab === 2}
+							className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+							onClick={() => setMediaDockTab(2)}
+						>
+							{t('editors.mediaTabDocuments')}
+						</button>
 					</div>
 					<button
 						type="button"
@@ -1242,9 +1288,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					</button>
 				</header>
 
-				<div className={styles.mediaSheetBody}>
+				<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
 					<div className={styles.mediaPanel} role="tabpanel">
-						<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
+						{renderMediaDockPanel()}
 					</div>
 				</div>
 			</section>}
@@ -1256,6 +1302,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					onClose={() => {
 						setIsMoreMenuOpen(false);
 						setMoreMenuAnchorRect(null);
+					}}
+					onAddUrlPreview={() => {
+						setIsMoreMenuOpen(false);
+						setMoreMenuAnchorRect(null);
+						handleCreateUrlPreview();
 					}}
 			/>
 		) : null}
@@ -1272,7 +1323,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					className={styles.floatingToolbar}
 					style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 				>
-					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact />
+					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} />
 				</div>
 			</>,
 			document.body

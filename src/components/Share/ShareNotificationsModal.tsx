@@ -13,6 +13,7 @@ import {
 	listWorkspacePendingInvites,
 	type WorkspacePendingInvite,
 } from '../../core/workspaceInviteApi';
+import type { FailedNoteLinkRecord } from '../../core/noteLinkApi';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import styles from './CollaborationModal.module.css';
@@ -21,9 +22,11 @@ type Props = {
 	isOpen: boolean;
 	onClose: () => void;
 	authUserId: string | null;
+	failedLinkNotifications?: FailedNoteLinkRecord[];
 	onChanged?: () => void;
 	onAcceptedPlacement?: (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => void;
 	onAcceptedWorkspaceInvite?: (workspaceId: string) => void;
+	onOpenFailedLink?: (failure: FailedNoteLinkRecord) => void;
 };
 
 type PlacementChoice = 'personal' | 'shared-root' | 'shared-folder';
@@ -92,6 +95,7 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const [placementChoiceByInvitationId, setPlacementChoiceByInvitationId] = React.useState<Record<string, PlacementChoice>>({});
 	const [folderByInvitationId, setFolderByInvitationId] = React.useState<Record<string, string>>({});
 	const [hiddenInvitationIds, setHiddenInvitationIds] = React.useState<Set<string>>(() => readHiddenNotificationIds(props.authUserId));
+	const failedLinkNotifications = React.useMemo(() => Array.isArray(props.failedLinkNotifications) ? props.failedLinkNotifications : [], [props.failedLinkNotifications]);
 
 	React.useEffect(() => {
 		setHiddenInvitationIds(readHiddenNotificationIds(props.authUserId));
@@ -135,10 +139,11 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	}, [hiddenInvitationIds, invitations]);
 	const hasWorkspaceInvites = workspaceInvites.length > 0;
 	const hasNoteInvites = visibleInvitations.length > 0;
+	const hasFailedLinks = failedLinkNotifications.length > 0;
 	const modalTitle = hasWorkspaceInvites ? t('invite.notifications') : t('share.notifications');
 	const modalSubtitle = hasWorkspaceInvites
 		? (hasNoteInvites ? t('invite.notificationsSubtitleMixed') : t('invite.notificationsSubtitle'))
-		: t('share.notificationsSubtitle');
+		: (hasFailedLinks ? t('links.notificationsSubtitle') : t('share.notificationsSubtitle'));
 	const emptyStateLabel = hasWorkspaceInvites ? t('invite.noNotifications') : t('share.noNotifications');
 
 	const clearableInvitationIds = React.useMemo(() => {
@@ -291,7 +296,34 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 
 				<div className={styles.modalBody}>
 					{error ? <div className={styles.error}>{error}</div> : null}
-					{visibleInvitations.length === 0 && workspaceInvites.length === 0 ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
+					{visibleInvitations.length === 0 && workspaceInvites.length === 0 && failedLinkNotifications.length === 0 ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
+
+					{failedLinkNotifications.length > 0 ? (
+						<div className={`${styles.section} ${styles.notificationList}`}>
+							{failedLinkNotifications.map((failure) => (
+								<div key={failure.id} className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
+									<div className={styles.notificationHeader}>
+										<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
+											!
+										</div>
+										<div className={styles.notificationCopy}>
+											<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
+												<strong>{failure.noteTitle}</strong> {t('links.notificationMessage')}
+											</div>
+											<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
+												{failure.rootDomain} · {failure.errorMessage}
+											</div>
+										</div>
+									</div>
+									<div className={styles.actionRow}>
+										<button type="button" className={styles.primaryButton} onClick={() => props.onOpenFailedLink?.(failure)}>
+											{t('links.openNote')}
+										</button>
+									</div>
+								</div>
+							))}
+						</div>
+					) : null}
 
 					<div className={`${styles.section} ${styles.notificationList}`}>
 						{workspaceInvites.map((invite) => {

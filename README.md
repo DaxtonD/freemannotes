@@ -1,188 +1,208 @@
-# FreemanNotes 📝
+# FreemanNotes
 
-**Your notes, your rules — the Keep experience, supercharged like a HEV suit.**
+FreemanNotes is my "Google Keep, but let me actually do the stuff I keep wishing it could do" project.
 
-FreemanNotes isn’t just another note app. It’s a self-hosted, CRDT-powered, offline-first note and checklist platform that does things Google Keep can’t: advanced media, flexible organization, rich collaboration, and smart offline-first editing — all under your control. Think of it as the lab notebook Gordon Freeman would actually use in Black Mesa: everything tracked, everything structured, nothing lost.
+I love Google Keep. I use it a lot. But I kept running into the same wall: I wanted workspaces, collections, real self-hosting, better media support, markdown-friendly writing, document attachments, richer collaboration, and a note app that does not panic the second the network gets weird. So I built the note app my inner tinkering goblin wanted.
 
----
+The "Freeman" part is the other half of my brain. I also love Half-Life 2, and Gordon Freeman has the exact kind of silent "fine, I'll solve it myself" energy that feels correct for a self-hosted notes app. So this became FreemanNotes: part Keep-inspired scratchpad, part Black Mesa lab notebook.
 
-## Why FreemanNotes is Better
+## What It Is
 
-- **Canonical Note Model** — Every note has a stable identity, timestamps, metadata, and content. Cross-device edits converge automatically; no more lost changes or conflicts.  
-- **Offline-First & Crash-Proof** — Edit notes in your bunker, offline lab, or Lambda Complex. Everything persists locally, syncs when the network returns, and survives browser crashes.  
-- **Checklist CRDT Safety** — Add, remove, or update checklist items safely in real-time. Merge conflicts? Not on Freeman’s watch.  
-- **Drag-and-Drop Grid** — dnd-kit-powered masonry works seamlessly on desktop, tablet, and touch devices. Portrait, landscape, or multi-column layouts adapt automatically.  
-- **Collections & Smart Sorting** — Organize by folders, collections, due dates, tags, or collaborator. No more chaotic stacks of notes like a misfired resonance cascade.  
-- **Media & URL Handling** — Notes aren’t just text: images, PDFs, videos, and links live inside cards with instant previews.  
-- **Connection-Aware Collaboration** — Know if you’re connected, reconnecting, or offline. Local edits never block your workflow.  
-- **Developer-Friendly** — Dev-only guards and logging help prevent orphan notes, duplicate IDs, or messy merges.
+FreemanNotes is a self-hosted, offline-first notes app built with React, TypeScript, Yjs, PostgreSQL, Prisma, and a small amount of stubbornness.
 
----
+It is designed to feel quick like a sticky-note app, but without being boxed into sticky-note limitations.
 
-## Core Features at a Glance
+## Current Features
 
-- **Notes & Checklists** — text, checkable items, and media  
-- **Offline-first + auto-sync** — CRDT-safe, merges across devices seamlessly  
-- **Advanced media & galleries** — preview images, PDFs, videos, URLs  
-- **Collections & folders** — nested organization without chaos  
-- **Smart filtering & sorting** — by tags, collaborators, due date, collection  
-- **Drag & drop masonry** — works across desktop, PWA, and mobile  
-- **Connection status awareness** — see if you’re synced or offline  
-- **Extensible** — future Markdown & rich-text, custom themes, font size preferences  
+- Text notes and checklist notes.
+- Rich-text editing with headings, lists, task lists, blockquotes, code blocks, tables, alignment, links, and markdown-friendly paste handling.
+- Offline-first editing with IndexedDB-backed local persistence and replay queues.
+- Realtime sync powered by Yjs.
+- Self-hosted deployment with Docker, Docker Compose, and Unraid-friendly container settings.
+- Multiple workspaces, including sharing flows and a Shared With Me workspace model.
+- Collections and nested workspace organization.
+- Drag-and-drop masonry note grid with improved cross-device ordering persistence.
+- Note collaboration with roles for owners, admins, editors, and viewers.
+- Workspace invites, note collaboration flows, and in-app notifications.
+- Rich note-card previews that understand formatted content instead of flattening everything into sad plain text.
+- Image uploads, galleries, fullscreen viewers, and OCR-backed search support for note images.
+- Document attachments with in-app browsing, generated previews, extracted text, and PDF viewing.
+- URL previews with stored metadata, preview cards, and failure notifications when a site refuses to cooperate.
+- Aggregate attachment chips on note cards for images, links, and documents.
+- Search across notes, OCR text, collaborators, links, and documents.
+- Theme and language preferences, plus per-device UI preferences.
+- Mobile-aware editor and modal behavior, including better scroll locking and overlay handling.
 
----
+## Why I Built It
+
+The short version is: I wanted Google Keep with more gears exposed.
+
+I wanted:
+
+- Workspaces instead of one flat pile of thoughts.
+- Collections and better structure.
+- Images and documents as real first-class note content.
+- Markdown-friendly writing instead of fighting a text box.
+- Self-hosting because sometimes I want my notes to live on my machine, not somebody else's product roadmap.
+- Collaboration without giving up offline-first behavior.
+- A note app that feels like a tool, not a trap.
 
 ## Tech Stack
 
-- **Frontend:** React + TypeScript + dnd-kit  
-- **CRDT Engine:** Yjs + y-websocket  
-- **Offline Persistence:** IndexedDB (client-side cache)  
-- **Backend:** Node.js + PostgreSQL (Prisma ORM) + optional Redis  
-- **Deployment:** Docker / Docker Compose / Unraid  
+- Frontend: React, TypeScript, Vite.
+- Collaboration and offline merge model: Yjs.
+- Backend: Node.js, Prisma, PostgreSQL.
+- Optional cache/pub-sub: Redis.
+- OCR and document/image processing: Python runtime inside the container.
+- Deployment: Docker, Docker Compose, Unraid.
 
----
+## Install With Docker Compose
 
-## Quick Start (Docker Compose)
-
-The easiest way to run FreemanNotes with a fully managed database:
+This is the easiest full setup because it includes PostgreSQL in the stack.
 
 ```bash
-# Clone the repo
 git clone https://github.com/DaxtonD/freemannotes.git
 cd freemannotes
-
-# Create deployment env
 cp .env.docker.example .env.docker
-# Edit AUTH_JWT_SECRET, POSTGRES_PASSWORD, APP_URL, and SMTP_* as needed
+```
 
-# Start everything (app + Postgres)
+Edit `.env.docker` and set at least these values:
+
+- `AUTH_JWT_SECRET`
+- `POSTGRES_PASSWORD`
+- `APP_URL`
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` if you want invite emails
+
+Then start the stack:
+
+```bash
 docker compose --env-file .env.docker up -d --build
 ```
 
-This starts:
-- **FreemanNotes** on `http://localhost:27015`
-- **PostgreSQL 16** with persistent storage (volume: `freemannotes-pgdata`)
-- **Uploaded media** with persistent storage (volume: `freemannotes-uploads`)
+What this gives you:
 
-The runtime image now installs PaddleOCR in the main app container so uploaded note images can be OCR-processed for global search.
+- The app on `http://localhost:27015`
+- PostgreSQL 16 with a persistent named volume
+- A persistent uploads volume for images and documents
+- Automatic Prisma migration deploy on startup
+- OCR runtime in the main app container for image/document processing
 
-The app automatically creates the database, runs migrations, and seeds the default workspace on first boot. No manual setup required.
+Useful checks:
 
-### Optional: Enable Redis caching
-
-Uncomment the `redis` service in `docker-compose.yml` and add:
-```yaml
-REDIS_URL: redis://redis:6379
+```text
+http://localhost:27015/healthz
+http://localhost:27015/readyz
 ```
 
----
+Optional Redis:
 
-## Unraid / External Database Setup
+- Uncomment the `redis` service in `docker-compose.yml`
+- Set `REDIS_URL=redis://redis:6379`
 
-If you already have a PostgreSQL instance (e.g. on Unraid, a NAS, or a managed cloud DB):
+## Install With Docker
 
-1. **Create the database** (or let the app auto-create it):
-   ```sql
-   CREATE DATABASE freemannotes;
-   ```
+If you already have PostgreSQL somewhere else, run the app container directly.
 
-2. **Set `DATABASE_URL`** in your container environment:
-   ```
-   DATABASE_URL=postgresql://user:password@your-postgres-host:5432/freemannotes?schema=public
-   ```
+Example:
 
-3. **Run the container:**
-   ```bash
-   docker run -d \
-     --name freemannotes \
-     -p 27015:27015 \
-       -v freemannotes-uploads:/app/uploads \
-     -e NODE_ENV=production \
-       -e AUTH_JWT_SECRET="replace-me" \
-     -e DATABASE_URL="postgresql://user:password@your-postgres-host:5432/freemannotes?schema=public" \
-     ghcr.io/daxtond/freemannotes:latest
-   ```
+```bash
+docker run -d \
+  --name freemannotes \
+  -p 27015:27015 \
+  -v freemannotes-uploads:/app/uploads \
+  -e NODE_ENV=production \
+  -e HOST=0.0.0.0 \
+  -e PORT=27015 \
+  -e APP_URL=http://your-server:27015 \
+  -e AUTH_JWT_SECRET=replace-this-with-a-real-secret \
+  -e DATABASE_URL=postgresql://user:password@your-postgres-host:5432/freemannotes?schema=public \
+  ghcr.io/daxtond/freemannotes:latest
+```
 
-The server automatically:
-- Creates the database if it doesn't exist (requires admin privileges on the PG instance)
-- Runs `prisma migrate deploy` (production) to apply pending migrations
-- Seeds the default workspace on first boot
+Optional environment variables you may want:
 
-### Unraid Community Apps
+- `REDIS_URL`
+- `PGTIMEZONE`
+- `SMTP_HOST`
+- `SMTP_PORT`
+- `SMTP_SECURE`
+- `SMTP_USER`
+- `SMTP_PASS`
+- `SMTP_FROM`
+- `OCR_DISABLED=1` if you intentionally want to disable OCR
 
-For Unraid users, add as a Docker container with these key fields:
+Startup behavior:
+
+- The container creates the database if permissions allow it.
+- `prisma migrate deploy` runs automatically in production mode.
+- The app serves the frontend, API, uploads, and Yjs websocket endpoint on the same port.
+
+## Install On Unraid
+
+If you use Unraid, FreemanNotes works fine as a normal custom container.
+
+Suggested setup:
+
+1. Use repository `ghcr.io/daxtond/freemannotes:latest`.
+2. Map port `27015` on the host to container port `27015`.
+3. Map a persistent path or volume to `/app/uploads`.
+4. Point `DATABASE_URL` at your PostgreSQL instance.
+5. Set `AUTH_JWT_SECRET` to something long and random.
+6. Set `APP_URL` to your public or LAN URL.
+
+Recommended Unraid fields:
+
 | Field | Value |
-|-------|-------|
+|---|---|
 | Repository | `ghcr.io/daxtond/freemannotes:latest` |
 | WebUI | `http://[IP]:[PORT:27015]` |
-| Port | `27015` → `27015` |
-| `DATABASE_URL` | `postgresql://user:pass@your-pg-ip:5432/freemannotes?schema=public` |
+| Port | `27015` -> `27015` |
+| AppData mapping | `/app/uploads` |
 | `NODE_ENV` | `production` |
-| `REDIS_URL` *(optional)* | `redis://your-redis-ip:6379` |
-| `PGTIMEZONE` *(optional)* | `America/Regina` (or your IANA timezone) |
+| `DATABASE_URL` | `postgresql://user:pass@your-postgres-host:5432/freemannotes?schema=public` |
+| `AUTH_JWT_SECRET` | your generated secret |
+| `APP_URL` | `http://your-unraid-ip:27015` or your domain |
+| `REDIS_URL` | optional |
+| `PGTIMEZONE` | optional |
 
----
+Reverse proxy note:
+
+- If you proxy FreemanNotes through Nginx, Traefik, Caddy, or similar, make sure `/yjs` supports websocket upgrades.
 
 ## Local Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Start Postgres (via Docker Compose or your own instance)
 docker compose up postgres -d
-
-# Copy and edit environment
 cp .env.example .env
-# Edit DATABASE_URL if needed
-
-# Terminal A: start the backend API server
-# (cookie auth + /api/* endpoints)
-npm start
-
-# Terminal B: start Vite (frontend) on http://localhost:5173
-# Vite proxies /api/* and /uploads/* to the backend so auth stays same-origin.
 npm run dev
 ```
 
-### Dev notes (auth + proxy)
+Helpful scripts:
 
-- The frontend uses same-origin `fetch('/api/...')`. In dev, Vite proxies `/api`, `/uploads`, and `/yjs` (WebSocket) to the Node server.
-- Optional: run both servers together with `npm run dev:full`.
-- If your backend is not on `http://localhost:27015`, set `VITE_API_PROXY_TARGET` in `env.vite/.env.development`.
-- If you *intentionally* want an in-memory Yjs backend inside Vite (no persistence), set `VITE_YJS_EMBED=1`.
+- `npm run dev`
+- `npm run build`
+- `npm run test`
+- `npm run db:generate`
+- `npm run db:migrate`
+- `npm run db:migrate:deploy`
+- `npm run db:migrate:status`
+- `npm run db:push`
+- `npm run db:init`
 
-### Database Commands
+## Planned Features
 
-| Command | Purpose |
-|---------|---------|
-| `npm run db:migrate` | Create a new migration (dev) |
-| `npm run db:migrate:deploy` | Apply pending migrations (production) |
-| `npm run db:migrate:status` | Check migration status |
-| `npm run db:push` | Push schema without migrations (dev shortcut) |
-| `npm run db:generate` | Regenerate Prisma client |
-| `npm run db:init` | Create DB + sync schema (called automatically on `npm run dev`) |
+- Collaborative drawings.
+- Image labels and better image organization.
+- More document workflows and richer previews.
+- More search and filtering depth.
+- More collaboration polish.
+- More customization without turning the settings menu into a cockpit.
 
-### Migration Workflow
+## Closing Pitch
 
-```bash
-# 1. Edit prisma/schema.prisma
-# 2. Create a migration:
-npm run db:migrate -- --name add_new_field
-# 3. Commit the generated migration files
-# 4. In production, migrations are applied automatically on server boot
-```
+If Google Keep and a Half-Life 2 obsession had a self-hosted side project child, this would be it.
 
----
+FreemanNotes is for people who want quick notes, but also want folders, workspaces, images, documents, collaboration, markdown-friendly writing, offline resilience, and control over where the whole thing runs.
 
-## Roadmap
-
-- Markdown & rich-text editor (think lab logs with formatted formulas)  
-- User-customizable themes, font sizes, and checkbox styles  
-- Mobile masonry layouts optimized for portrait and landscape  
-- Advanced collaboration: sharing, permissions, real-time edits by multiple users  
-- Postgres-powered persistent note order & cross-device consistency  
-
----
-
-FreemanNotes is **not just “like Keep”** — it’s your own Half-Life 2 inspired lab notebook: smarter, safer, more powerful, and fully under your control.
+Basically: the sticky note, but with a crowbar and admin access.

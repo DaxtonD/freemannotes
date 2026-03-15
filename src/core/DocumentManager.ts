@@ -608,6 +608,7 @@ export class DocumentManager {
 		doc.transact(() => {
 			doc.getText('title');
 			doc.getText('content');
+			doc.getXmlFragment('contentRich');
 			doc.getArray<Y.Map<any>>('checklist');
 			doc.getMap<any>('metadata');
 		}, this.internalOrigin);

@@ -1,0 +1,44 @@
+.viewer {
+	position: relative;
+	display: block;
+	min-height: 520px;
+	height: 100%;
+	background: color-mix(in srgb, var(--color-surface-2) 24%, transparent);
+	overflow: hidden;
+}
+
+.canvas {
+	min-height: 520px;
+	height: 100%;
+	background: #d9e2ec;
+}
+.loading,
+.loadError {
+	margin: 0;
+	font-size: 12px;
+	line-height: 1.4;
+}
+.loading {
+	color: var(--color-text-muted);
+}
+.loadState {
+	padding: 20px 14px;
+	background: color-mix(in srgb, var(--color-surface) 80%, transparent);
+}
+
+.loadError {
+	color: #b91c1c;
+}
+
+.viewer :global(.textLayer) {
+	mix-blend-mode: normal;
+	opacity: 1;
+}
+
+
+.viewer :global(.textLayer span),
+.viewer :global(.textLayer br) {
+	color: transparent !important;
+	-webkit-text-fill-color: transparent !important;
+	mix-blend-mode: normal !important;
+}

@@ -34,7 +34,6 @@ type Props = {
 	offlineCanManageHint?: boolean;
 	noteTitle: string;
 	onChanged?: () => void;
-	refreshToken?: number;
 };
 
 const EMPTY_SNAPSHOT: NoteShareCollaboratorSnapshot = {
@@ -94,6 +93,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const [busy, setBusy] = React.useState(false);
 	const [loading, setLoading] = React.useState(false);
 	const [syncing, setSyncing] = React.useState(false);
+	const [accessResolved, setAccessResolved] = React.useState(false);
 	const [openPanel, setOpenPanel] = React.useState<'invite' | 'link' | 'pending' | 'collaborators'>('invite');
 	const [shareQrModalOpen, setShareQrModalOpen] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
@@ -107,6 +107,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const [pendingActionCount, setPendingActionCount] = React.useState(0);
 	const [isOffline, setIsOffline] = React.useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
 	const [snapshot, setSnapshot] = React.useState<NoteShareCollaboratorSnapshot>(EMPTY_SNAPSHOT);
+	const loadRequestIdRef = React.useRef(0);
 
 	useBodyScrollLock(props.isOpen);
 
@@ -160,10 +161,15 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 
 	const load = React.useCallback(async () => {
 		if (!props.docId || !props.authUserId) return;
+		const requestId = loadRequestIdRef.current + 1;
+		loadRequestIdRef.current = requestId;
+		setAccessResolved(false);
 		setLoading(true);
 		setError(null);
 		const hadCache = await loadCachedState();
+		if (loadRequestIdRef.current !== requestId) return;
 		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			setAccessResolved(true);
 			setLoading(false);
 			return;
 		}
@@ -171,23 +177,34 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		try {
 			await flushPendingCollaboratorActions(props.authUserId);
 			const fresh = await syncNoteShareCollaborators(props.authUserId, props.docId, { suppressError: true });
+			if (loadRequestIdRef.current !== requestId) return;
 			if (fresh) setSnapshot(fresh);
 			const pendingActions = await readPendingCollaboratorActions(props.authUserId, props.docId);
+			if (loadRequestIdRef.current !== requestId) return;
 			setPendingActionCount(pendingActions.length);
 		} catch {
+			if (loadRequestIdRef.current !== requestId) return;
 			if (!hadCache) {
 				setSnapshot(props.offlineCanManageHint && props.authUserId ? buildOfflineManagerSnapshot(props.authUserId, props.docId, null) : EMPTY_SNAPSHOT);
 			}
 		} finally {
+			if (loadRequestIdRef.current !== requestId) return;
+			setAccessResolved(true);
 			setSyncing(false);
 			setLoading(false);
 		}
 	}, [loadCachedState, props.authUserId, props.docId, props.offlineCanManageHint]);
 
+	const loadRef = React.useRef(load);
+
 	React.useEffect(() => {
-		if (!props.isOpen || !props.docId) return;
-		void load();
-	}, [load, props.docId, props.isOpen, props.refreshToken]);
+		loadRef.current = load;
+	}, [load]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || !props.docId || !props.authUserId) return;
+		void loadRef.current();
+	}, [props.authUserId, props.docId, props.isOpen]);
 
 	React.useEffect(() => {
 		if (!props.isOpen) return;
@@ -210,6 +227,8 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 
 	React.useEffect(() => {
 		if (props.isOpen) return;
+		loadRequestIdRef.current += 1;
+		setAccessResolved(false);
 		setIdentifier('');
 		setRole('EDITOR');
 		setShareRole('');
@@ -226,10 +245,10 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 
 	React.useEffect(() => {
 		if (!props.isOpen) return;
-		if (!snapshot.canManage && openPanel !== 'collaborators') {
+		if (accessResolved && !snapshot.canManage && openPanel !== 'collaborators') {
 			setOpenPanel('collaborators');
 		}
-	}, [openPanel, props.isOpen, snapshot.canManage]);
+	}, [accessResolved, openPanel, props.isOpen, snapshot.canManage]);
 
 	const handleInvite = React.useCallback(async () => {
 		if (!props.docId || !props.authUserId || !identifier.trim()) return;
@@ -397,7 +416,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 					{error ? <div className={styles.error}>{error}</div> : null}
 					{success ? <div className={styles.success}>{success}</div> : null}
 					{!isOffline && (syncing || pendingActionCount > 0) ? <div className={styles.info}>{t('share.collaboratorSyncPending')}</div> : null}
-					{!snapshot.canManage ? <div className={styles.info}>{t('share.viewOnlyAccess')}</div> : null}
+					{accessResolved && !snapshot.canManage ? <div className={styles.info}>{t('share.viewOnlyAccess')}</div> : null}
 
 					<div className={styles.collabModalBody}>
 						{snapshot.canManage ? (
@@ -412,7 +431,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 											<div className={`${styles.sectionCard} ${styles.inviteSectionCard}`}>
 												<label className={styles.field}>
 													<span>{t('share.identifierPlaceholder')}</span>
-													<input className={styles.input} value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder={t('share.identifierPlaceholder')} disabled={busy} />
+													<input id="collaborator-identifier" name="collaborator-identifier" type="text" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} data-bwignore="true" className={styles.input} value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder={t('share.identifierPlaceholder')} disabled={busy} />
 												</label>
 												<label className={styles.field}>
 													<span>{t('share.requiredRole')}</span>

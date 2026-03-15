@@ -29,11 +29,15 @@ import { AppearanceModal } from './components/Preferences/AppearanceModal';
 import { SendInviteModal } from './components/Invites/SendInviteModal';
 import { CollaboratorModal } from './components/Share/CollaboratorModal';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
-import { NoteMediaPanel } from './components/NoteMedia/NoteMediaPanel';
+import { NoteDocumentBrowserModal } from './components/NoteAttachments/NoteDocumentBrowserModal';
+import { NoteLinkBrowserModal } from './components/NoteAttachments/NoteLinkBrowserModal';
 import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModal';
+import { NoteMediaBrowserModal } from './components/NoteMedia/NoteMediaBrowserModal';
+import { NoteDocumentUploadModal } from './components/NoteDocuments/NoteDocumentUploadModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid/NoteGrid';
+import type { NoteAttachmentBrowserKind } from './components/NoteAttachments/NoteAttachmentCountChip';
 import { type ChecklistItem } from './core/bindings';
 import { getDeviceId } from './core/deviceId';
 import { useDocumentManager } from './core/DocumentManagerContext';
@@ -54,9 +58,13 @@ import {
 	syncNoteShareCollaborators,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
+import { addNotePreviewLinkToDoc, removeNotePreviewLinkFromDoc } from './core/noteLinks';
 import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
+import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkApi';
 import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
 import { emitNoteMediaChanged, scheduleQueuedNoteImageFlush } from './core/noteMediaStore';
+import { flushQueuedNoteLinkSync } from './core/noteLinkStore';
+import { scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -86,7 +94,14 @@ type NoteImageModalState = {
 	title: string;
 };
 
-type NoteMediaBrowserState = {
+type NoteDocumentModalState = {
+	noteId: string;
+	docId: string;
+	title: string;
+};
+
+type NoteAttachmentBrowserState = {
+	kind: NoteAttachmentBrowserKind;
 	noteId: string;
 	docId: string;
 	title: string;
@@ -102,7 +117,7 @@ type OverlaySnapshot = {
 	isSendInviteOpen: boolean;
 	isWorkspaceSwitcherOpen: boolean;
 	collaboratorModalState: CollaboratorModalState | null;
-	noteMediaBrowserState: NoteMediaBrowserState | null;
+	noteAttachmentBrowserState: NoteAttachmentBrowserState | null;
 	isMobileSidebarOpen: boolean;
 	isFabOpen: boolean;
 };
@@ -155,7 +170,7 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	isSendInviteOpen: false,
 	isWorkspaceSwitcherOpen: false,
 	collaboratorModalState: null,
-	noteMediaBrowserState: null,
+	noteAttachmentBrowserState: null,
 	isMobileSidebarOpen: false,
 	isFabOpen: false,
 };
@@ -363,16 +378,18 @@ export function App(): React.JSX.Element {
 	});
 	const [shareAttemptKey, setShareAttemptKey] = React.useState(0);
 	const [inviteAttemptKey, setInviteAttemptKey] = React.useState(0);
-	// ── Optimistic auth restoration ──────────────────────────────────────
-	// If a valid auth cache exists in localStorage we optimistically treat
-	// the user as authenticated on the very first render. This lets the
-	// NoteGrid begin loading data from IndexedDB immediately, avoiding the
-	// splash screen while the background `/api/auth/me` probe completes.
-	// If the probe later fails, authStatus is reverted to 'unauth'.
+	// ── Cached auth restoration ─────────────────────────────────────────
+	// Cached auth is trusted only for explicit offline startup. When the browser
+	// is online we wait for `/api/auth/me` before mounting the authenticated UI,
+	// which prevents stale local auth from triggering a burst of protected API
+	// requests against an expired or missing server session.
 	const authCacheRef = React.useRef(readAuthCache());
 	const cachedAuth = authCacheRef.current;
+	const canRestoreCachedAuthImmediately = Boolean(
+		cachedAuth && typeof navigator !== 'undefined' && navigator.onLine === false
+	);
 	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
-		cachedAuth ? 'authed' : 'loading'
+		canRestoreCachedAuthImmediately ? 'authed' : 'loading'
 	);
 	const [authMode, setAuthMode] = React.useState<'login' | 'register'>('login');
 	const [authEmail, setAuthEmail] = React.useState('');
@@ -472,10 +489,12 @@ export function App(): React.JSX.Element {
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
+	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(null);
 	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(null);
-	const [noteMediaBrowserState, setNoteMediaBrowserState] = React.useState<NoteMediaBrowserState | null>(null);
+	const [noteDocumentModalState, setNoteDocumentModalState] = React.useState<NoteDocumentModalState | null>(null);
+	const [noteAttachmentBrowserState, setNoteAttachmentBrowserState] = React.useState<NoteAttachmentBrowserState | null>(null);
 	// The currently selected note in the grid/editor area.
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(null);
 	// Loaded Y.Doc for the selected note.
@@ -496,7 +515,7 @@ export function App(): React.JSX.Element {
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
-	const maxCardHeightPx = isCoarsePointer ? 450 : 615;
+	const maxCardHeightPx = isCoarsePointer ? 720 : 920;
 	const activeWorkspaceRole = React.useMemo<WorkspaceRole | null>(() => {
 		if (!authWorkspaceId) return null;
 		const match = sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId);
@@ -519,7 +538,7 @@ export function App(): React.JSX.Element {
 			isSendInviteOpen,
 			isWorkspaceSwitcherOpen,
 			collaboratorModalState,
-			noteMediaBrowserState,
+			noteAttachmentBrowserState,
 			isMobileSidebarOpen,
 			isFabOpen,
 		};
@@ -532,7 +551,7 @@ export function App(): React.JSX.Element {
 		isSendInviteOpen,
 		isWorkspaceSwitcherOpen,
 		collaboratorModalState,
-		noteMediaBrowserState,
+		noteAttachmentBrowserState,
 		isMobileSidebarOpen,
 		isFabOpen,
 	]);
@@ -546,7 +565,7 @@ export function App(): React.JSX.Element {
 		setIsSendInviteOpen(snapshot.isSendInviteOpen);
 		setIsWorkspaceSwitcherOpen(snapshot.isWorkspaceSwitcherOpen);
 		setCollaboratorModalState(snapshot.collaboratorModalState);
-		setNoteMediaBrowserState(snapshot.noteMediaBrowserState);
+		setNoteAttachmentBrowserState(snapshot.noteAttachmentBrowserState);
 		setIsMobileSidebarOpen(snapshot.isMobileSidebarOpen);
 		setIsFabOpen(snapshot.isFabOpen);
 	}, []);
@@ -744,7 +763,15 @@ export function App(): React.JSX.Element {
 		setNoteImageModalState(null);
 	}, []);
 
-	const openNoteMediaBrowser = React.useCallback((noteId: string, docId: string, title: string | undefined, canEdit: boolean) => {
+	const openNoteDocumentModal = React.useCallback((noteId: string, docId: string, title?: string) => {
+		setNoteDocumentModalState({ noteId, docId, title: title || '' });
+	}, []);
+
+	const closeNoteDocumentModal = React.useCallback(() => {
+		setNoteDocumentModalState(null);
+	}, []);
+
+	const openNoteAttachmentBrowser = React.useCallback((kind: NoteAttachmentBrowserKind, noteId: string, docId: string, title: string | undefined, canEdit: boolean) => {
 		// The note-card media browser participates in the same overlay history stack
 		// as editors and sidebars so mobile Back always peels off the top-most layer
 		// before closing the underlying note or workspace UI.
@@ -752,7 +779,7 @@ export function App(): React.JSX.Element {
 		commitOverlaySnapshot(
 			{
 				...current,
-				noteMediaBrowserState: { noteId, docId, title: title || '', canEdit },
+				noteAttachmentBrowserState: { kind, noteId, docId, title: title || '', canEdit },
 				isMobileSidebarOpen: false,
 				isFabOpen: false,
 			},
@@ -760,9 +787,9 @@ export function App(): React.JSX.Element {
 		);
 	}, [commitOverlaySnapshot, getOverlaySnapshot]);
 
-	const closeNoteMediaBrowser = React.useCallback(() => {
+	const closeNoteAttachmentBrowser = React.useCallback(() => {
 		if (goBackIfOverlayHistory()) return;
-		setNoteMediaBrowserState(null);
+		setNoteAttachmentBrowserState(null);
 	}, [goBackIfOverlayHistory]);
 
 	const openMobileSidebar = React.useCallback(() => {
@@ -784,6 +811,24 @@ export function App(): React.JSX.Element {
 		window.addEventListener('popstate', onPopState);
 		return () => window.removeEventListener('popstate', onPopState);
 	}, []);
+
+	const activeAttachmentBrowserDoc = React.useMemo(() => {
+		if (!noteAttachmentBrowserState) return null;
+		return manager.getDoc(noteAttachmentBrowserState.noteId);
+	}, [manager, noteAttachmentBrowserState]);
+	const isEditorOverlayOpen = editorMode !== 'none' || Boolean(selectedNoteId);
+
+	const handleAddUrlPreviewFromBrowser = React.useCallback(() => {
+		if (!noteAttachmentBrowserState?.canEdit) return;
+		const next = window.prompt(t('links.prompt'), 'https://');
+		if (!next) return;
+		addNotePreviewLinkToDoc(manager.getDoc(noteAttachmentBrowserState.noteId), next);
+	}, [manager, noteAttachmentBrowserState, t]);
+
+	const handleDeleteUrlPreviewFromBrowser = React.useCallback((normalizedUrl: string) => {
+		if (!noteAttachmentBrowserState?.canEdit) return;
+		removeNotePreviewLinkFromDoc(manager.getDoc(noteAttachmentBrowserState.noteId), normalizedUrl);
+	}, [manager, noteAttachmentBrowserState]);
 
 	React.useEffect(() => {
 		if (isSendInviteOpen) return;
@@ -1088,6 +1133,10 @@ export function App(): React.JSX.Element {
 			setPrefsHydrationAttempted(false);
 			return;
 		}
+		if (authOfflineMode) {
+			setPrefsHydrationAttempted(true);
+			return;
+		}
 		let cancelled = false;
 		(async () => {
 			const localSnapshot = authUserId ? await readCachedWorkspaceSnapshot(authUserId, deviceId) : null;
@@ -1143,7 +1192,7 @@ export function App(): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [authStatus, authUserId, deviceId, setLocale]);
+	}, [authOfflineMode, authStatus, authUserId, deviceId, setLocale]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) return;
@@ -1702,6 +1751,7 @@ export function App(): React.JSX.Element {
 		// - refresh alias-mounted shared note placements for the grid/sidebar
 		if (authStatus !== 'authed' || !authUserId) {
 			setSharedPlacements([]);
+			setFailedLinkNotifications([]);
 			setPendingShareNotificationCount(0);
 			return;
 		}
@@ -1719,16 +1769,19 @@ export function App(): React.JSX.Element {
 			}
 		}
 		try {
-			const [invitationData, placementData, workspaceInviteData] = await Promise.all([
+			const [invitationData, placementData, workspaceInviteData, failedLinkData] = await Promise.all([
 				listNoteShareInvitations(),
 				authWorkspaceId ? listSharedNotePlacements(authWorkspaceId) : Promise.resolve({ placements: [] }),
 				listWorkspacePendingInvites(),
+				listFailedNoteLinks().catch(() => ({ failures: [], count: 0 })),
 			]);
-			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length);
+			setFailedLinkNotifications(failedLinkData.failures);
+			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length + failedLinkData.count);
 			setSharedPlacements(placementData.placements);
 		} catch {
 			if (!offline) {
 				setSharedPlacements([]);
+				setFailedLinkNotifications([]);
 				setPendingShareNotificationCount(0);
 			}
 		}
@@ -2254,7 +2307,7 @@ export function App(): React.JSX.Element {
 				setAuthStatus('unauth');
 				manager.setActiveWorkspaceId(null);
 				manager.setWebsocketEnabled(false);
-				setAuthError('Login succeeded, but the session was not established. Check the dev server session cookie/proxy setup and try again.');
+				setAuthError('Login succeeded, but the server session was not established. Check the production cookie and reverse-proxy setup, then try again.');
 				return;
 			}
 
@@ -3007,7 +3060,7 @@ export function App(): React.JSX.Element {
 	}, [editorMode, selectedNoteId]);
 
 	const onSaveText = React.useCallback(
-		async (args: { title: string; body: string; richContent: import('@tiptap/core').JSONContent }) => {
+		async (args: { title: string; body: string; richContent: import('@tiptap/core').JSONContent; previewLinks: string[] }) => {
 			if (!canEditActiveWorkspace) {
 				showBriefDialog(t('share.roleViewer'));
 				closeCreateEditor();
@@ -3028,7 +3081,7 @@ export function App(): React.JSX.Element {
 			// All note creation goes through the canonical noteModel factory functions.
 			const id = makeNoteId('text-note');
 			const doc = await manager.getDocWithSync(id);
-			initTextNoteDoc(doc, args.title, args.body, args.richContent);
+			initTextNoteDoc(doc, args.title, args.body, args.richContent, args.previewLinks);
 			await manager.createNote(id, args.title);
 			// Branch: after create/save, close the new-note editor and return to grid.
 			// We intentionally do NOT auto-open the saved note editor here.
@@ -3038,7 +3091,7 @@ export function App(): React.JSX.Element {
 	);
 
 	const onSaveChecklist = React.useCallback(
-		async (args: { title: string; items: Array<ChecklistItem & { richContent: import('@tiptap/core').JSONContent }> }) => {
+		async (args: { title: string; items: Array<ChecklistItem & { richContent: import('@tiptap/core').JSONContent }>; previewLinks: string[] }) => {
 			if (!canEditActiveWorkspace) {
 				showBriefDialog(t('share.roleViewer'));
 				closeCreateEditor();
@@ -3061,7 +3114,7 @@ export function App(): React.JSX.Element {
 			// All note creation goes through the canonical noteModel factory functions.
 			const id = makeNoteId('checklist-note');
 			const doc = await manager.getDocWithSync(id);
-			initChecklistNoteDoc(doc, args.title, cleanedItems);
+			initChecklistNoteDoc(doc, args.title, cleanedItems, args.previewLinks);
 			await manager.createNote(id, args.title);
 			// Branch: after create/save, close the new-checklist editor and return to grid.
 			// We intentionally do NOT auto-open the saved note editor here.
@@ -3167,12 +3220,18 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) return;
 		void scheduleQueuedNoteImageFlush(authUserId);
+		void scheduleQueuedNoteDocumentFlush(authUserId);
+		void flushQueuedNoteLinkSync(authUserId);
 		const onOnline = (): void => {
 			void scheduleQueuedNoteImageFlush(authUserId);
+			void scheduleQueuedNoteDocumentFlush(authUserId);
+			void flushQueuedNoteLinkSync(authUserId).finally(() => {
+				void refreshNoteShareState();
+			});
 		};
 		window.addEventListener('online', onOnline);
 		return () => window.removeEventListener('online', onOnline);
-	}, [authStatus, authUserId]);
+	}, [authStatus, authUserId, refreshNoteShareState]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed') return;
@@ -3242,6 +3301,8 @@ export function App(): React.JSX.Element {
 	const formatSearchMatchLabel = React.useCallback((kind: NoteSearchMatchKind): string => {
 		if (kind === 'ocr') return t('search.matchOcr');
 		if (kind === 'collaborator') return t('search.matchCollaborator');
+		if (kind === 'link') return t('search.matchLink');
+		if (kind === 'document') return t('search.matchDocument');
 		return t('search.matchNote');
 	}, [t]);
 	const handleSearchResultSelect = React.useCallback(async (result: NoteSearchResult) => {
@@ -3329,7 +3390,7 @@ export function App(): React.JSX.Element {
 		<div
 			className={`test-harness-root${themeId.startsWith('catppuccin-') ? ' theme-catppuccin' : ''}${
 				isFabOpen ? ' fab-open' : ''
-			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${
+			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${isEditorOverlayOpen ? ' editor-open' : ''}${
 				// Landscape branch: expose a root class so CSS can hard-disable the
 				// portrait header morph transitions during rotation.
 				isMobileLandscape ? ' mobile-landscape' : ''
@@ -3924,7 +3985,8 @@ export function App(): React.JSX.Element {
 						showArchived={sidebarView === 'archive'}
 						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
 						onAddImage={openNoteImageModal}
-						onOpenMediaBrowser={openNoteMediaBrowser}
+						onAddDocument={openNoteDocumentModal}
+						onOpenAttachmentBrowser={openNoteAttachmentBrowser}
 						onSelectCollaboratorFilter={setNoteGridCollaboratorFilter}
 						canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter}
 						onSelectNote={(id) => {
@@ -3939,32 +4001,41 @@ export function App(): React.JSX.Element {
 					/>
 				</main>
 			</div>
-			{noteMediaBrowserState ? (
-				<div className="note-media-browser-backdrop" role="presentation" onClick={closeNoteMediaBrowser}>
-					<section className="note-media-browser-dialog" role="dialog" aria-modal="true" aria-label={noteMediaBrowserState.title || t('app.sidebarImages')} onClick={(event) => event.stopPropagation()}>
-						<header className="note-media-browser-header">
-							<div className="note-media-browser-header-copy">
-								<h2 className="note-media-browser-title">{noteMediaBrowserState.title || t('note.untitled')}</h2>
-								<p className="note-media-browser-subtitle">{t('app.sidebarImages')}</p>
-							</div>
-							<button type="button" className="note-media-browser-close" onClick={closeNoteMediaBrowser} aria-label={t('common.close')}>
-								<FontAwesomeIcon icon={faXmark} />
-							</button>
-						</header>
-						<div className="note-media-browser-body">
-							<NoteMediaPanel
-								docId={noteMediaBrowserState.docId}
-								authUserId={authUserId}
-								canEdit={noteMediaBrowserState.canEdit}
-								onAddImage={() => {
-									closeNoteMediaBrowser();
-									openNoteImageModal(noteMediaBrowserState.noteId, noteMediaBrowserState.docId, noteMediaBrowserState.title);
-								}}
-							/>
-						</div>
-					</section>
-				</div>
-			) : null}
+			<NoteMediaBrowserModal
+				isOpen={noteAttachmentBrowserState?.kind === 'images'}
+				docId={noteAttachmentBrowserState?.kind === 'images' ? noteAttachmentBrowserState.docId : null}
+				authUserId={authUserId}
+				canEdit={noteAttachmentBrowserState?.kind === 'images' ? noteAttachmentBrowserState.canEdit : false}
+				noteTitle={noteAttachmentBrowserState?.kind === 'images' ? noteAttachmentBrowserState.title : null}
+				onClose={closeNoteAttachmentBrowser}
+				onAddImage={noteAttachmentBrowserState?.kind === 'images' && noteAttachmentBrowserState.canEdit ? () => {
+					closeNoteAttachmentBrowser();
+					openNoteImageModal(noteAttachmentBrowserState.noteId, noteAttachmentBrowserState.docId, noteAttachmentBrowserState.title);
+				} : undefined}
+			/>
+			<NoteLinkBrowserModal
+				isOpen={noteAttachmentBrowserState?.kind === 'links'}
+				docId={noteAttachmentBrowserState?.kind === 'links' ? noteAttachmentBrowserState.docId : null}
+				doc={noteAttachmentBrowserState?.kind === 'links' ? activeAttachmentBrowserDoc : null}
+				authUserId={authUserId}
+				canEdit={noteAttachmentBrowserState?.kind === 'links' ? noteAttachmentBrowserState.canEdit : false}
+				noteTitle={noteAttachmentBrowserState?.kind === 'links' ? noteAttachmentBrowserState.title : null}
+				onClose={closeNoteAttachmentBrowser}
+				onDeleteLink={noteAttachmentBrowserState?.kind === 'links' && noteAttachmentBrowserState.canEdit ? handleDeleteUrlPreviewFromBrowser : undefined}
+				onAddUrlPreview={noteAttachmentBrowserState?.kind === 'links' && noteAttachmentBrowserState.canEdit ? handleAddUrlPreviewFromBrowser : undefined}
+			/>
+			<NoteDocumentBrowserModal
+				isOpen={noteAttachmentBrowserState?.kind === 'documents'}
+				docId={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.docId : null}
+				authUserId={authUserId}
+				canEdit={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.canEdit : false}
+				noteTitle={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.title : null}
+				onClose={closeNoteAttachmentBrowser}
+				onAddDocument={noteAttachmentBrowserState?.kind === 'documents' && noteAttachmentBrowserState.canEdit ? () => {
+					closeNoteAttachmentBrowser();
+					openNoteDocumentModal(noteAttachmentBrowserState.noteId, noteAttachmentBrowserState.docId, noteAttachmentBrowserState.title);
+				} : undefined}
+			/>
 			<NoteImageUploadModal
 				isOpen={Boolean(noteImageModalState)}
 				docId={noteImageModalState?.docId ?? null}
@@ -3973,6 +4044,19 @@ export function App(): React.JSX.Element {
 				noteTitle={noteImageModalState?.title ?? null}
 				onClose={closeNoteImageModal}
 				onUploaded={(result) => showBriefDialog(result.queued ? `${result.count} ${result.count === 1 ? t('media.queuedUploadToastSingular') : t('media.queuedUploadToastPlural')}` : t('media.queuedForOcrToast'))}
+			/>
+			<NoteDocumentUploadModal
+				isOpen={Boolean(noteDocumentModalState)}
+				docId={noteDocumentModalState?.docId ?? null}
+				authUserId={authUserId}
+				offlineMode={authOfflineMode}
+				noteTitle={noteDocumentModalState?.title ?? null}
+				onClose={closeNoteDocumentModal}
+				onUploaded={(result) => showBriefDialog(
+					result.queued
+						? (result.count === 1 ? t('documents.queuedUploadToastSingular') : `${result.count} ${t('documents.queuedUploadToastPlural')}`)
+						: (result.count === 1 ? t('documents.uploadToastSingular') : `${result.count} ${t('documents.uploadToastPlural')}`)
+				)}
 			/>
 			{briefDialogMessage ? (
 				<div className="brief-dialog" role="status" aria-live="polite">
@@ -4069,6 +4153,10 @@ export function App(): React.JSX.Element {
 						if (!selectedNoteDocId) return;
 						openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
 					}}
+					onAddDocument={selectedNoteReadOnly ? undefined : () => {
+						if (!selectedNoteDocId) return;
+						openNoteDocumentModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
+					}}
 					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}
@@ -4135,10 +4223,26 @@ export function App(): React.JSX.Element {
 				isOpen={isShareNotificationsOpen}
 				onClose={() => setIsShareNotificationsOpen(false)}
 				authUserId={authUserId}
+				failedLinkNotifications={failedLinkNotifications}
 				onAcceptedPlacement={(args) => void handleAcceptedSharedPlacement(args)}
 				onAcceptedWorkspaceInvite={(workspaceId) => {
 					setIsShareNotificationsOpen(false);
 					void activateWorkspaceFromSidebar(workspaceId, { activeSharedFolder: null });
+				}}
+				onOpenFailedLink={(failure) => {
+					setIsShareNotificationsOpen(false);
+					void (async () => {
+						if (failure.openWorkspaceId && failure.openWorkspaceId !== authWorkspaceId) {
+							await activateWorkspaceFromSidebar(failure.openWorkspaceId, {
+								activeSharedFolder: failure.folderName ?? null,
+							});
+						} else if (failure.folderName) {
+							setActiveSharedFolder(failure.folderName);
+						}
+						if (failure.openNoteId) {
+							openNoteEditor(failure.openNoteId, { replaceTop: true });
+						}
+					})();
 				}}
 				onChanged={() => {
 					bumpCollaborationRefreshToken();
@@ -4153,7 +4257,6 @@ export function App(): React.JSX.Element {
 				docId={collaboratorModalState?.docId ?? null}
 				offlineCanManageHint={Boolean(collaboratorModalState && !sharedPlacements.some((item) => item.aliasId === collaboratorModalState.noteId))}
 				noteTitle={collaboratorModalState?.title ?? ''}
-				refreshToken={collaborationRefreshToken}
 				onChanged={() => {
 					bumpCollaborationRefreshToken();
 					void refreshNoteShareState();

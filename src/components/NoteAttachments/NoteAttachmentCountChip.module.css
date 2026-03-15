@@ -1,0 +1,107 @@
+.mainChip {
+	justify-content: center;
+	min-width: 0;
+	padding-inline: 8px;
+}
+
+.mainChipCount {
+	font-variant-numeric: tabular-nums;
+	line-height: 1;
+}
+
+.overlayRoot {
+	position: fixed;
+	inset: 0;
+	z-index: 240;
+	padding: 12px;
+	pointer-events: auto;
+}
+
+.overlayPanel {
+	position: fixed;
+	min-width: min(248px, calc(100vw - 24px));
+	max-width: calc(100vw - 24px);
+	padding: 7px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 70%, var(--color-text) 30%);
+	border-radius: 18px;
+	background: color-mix(in srgb, var(--color-surface) 96%, rgba(20, 20, 20, 0.2));
+	backdrop-filter: blur(16px);
+	-webkit-backdrop-filter: blur(16px);
+	box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+	pointer-events: auto;
+}
+
+.overlayList {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+
+.overlayItemShell {
+	width: 100%;
+	position: relative;
+	overflow: visible;
+}
+
+.overlayItem {
+	width: 100%;
+	min-height: 34px;
+	padding: 0 10px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-surface-2) 80%, var(--color-surface) 20%);
+	color: var(--color-text);
+	text-align: left;
+	font-size: 11px;
+	font-weight: 700;
+	transition:
+		transform 180ms ease,
+		border-color 180ms ease,
+		background-color 180ms ease;
+	overflow: visible;
+}
+
+.overlayItem:hover,
+.overlayItem:focus-visible {
+	transform: translateY(-1px);
+	border-color: color-mix(in srgb, var(--color-accent) 32%, var(--color-border));
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-2));
+}
+
+.overlayItemCopy {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.overlayItemLabel {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.overlayItemCount {
+	font-variant-numeric: tabular-nums;
+	line-height: 1;
+	flex-shrink: 0;
+}
+
+@media (pointer: coarse) {
+	.mainChip {
+		min-width: 0;
+	}
+
+	.overlayPanel {
+		width: min(320px, calc(100vw - 24px));
+		min-width: 0;
+	}
+}

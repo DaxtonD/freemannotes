@@ -5,6 +5,7 @@ import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
 import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
+import 'react-pdf-highlighter-plus/style/style.css';
 import './styles/variables.css';
 import './styles/globals.css';
 import './styles/layout.css';
