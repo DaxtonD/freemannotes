@@ -418,6 +418,14 @@
 	gap: 0;
 }
 
+.test-harness-root.editor-open,
+.test-harness-root.editor-open .app-shell,
+.test-harness-root.editor-open .app-main,
+.test-harness-root.editor-open .app-sidebar {
+	overflow: hidden;
+	overscroll-behavior: none;
+}
+
 .app-shell.sidebar-collapsed {
 	grid-template-columns: 72px minmax(0, 1fr);
 }

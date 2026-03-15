@@ -13,6 +13,7 @@ import type { ChecklistItem } from '../../core/bindings';
 import { normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
 import { getDeviceId } from '../../core/deviceId';
 import { useI18n } from '../../core/i18n';
+import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import {
 	createRichTextDocFromPlainText,
 	getChecklistItemPlainText,
@@ -24,10 +25,13 @@ import {
 	setNoteCardCompletedExpanded,
 } from '../../core/noteCardCompletedExpansion';
 import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
+import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import styles from './NoteCard.module.css';
 
 export type NoteCardProps = {
 	noteId: string;
+	docId?: string;
+	authUserId?: string | null;
 	doc: Y.Doc;
 	metaChips?: React.ReactNode;
 	canEdit?: boolean;
@@ -170,12 +174,49 @@ function getSafeHref(value: unknown): string | undefined {
 	return href;
 }
 
+function getTextAlignStyle(node: JSONContent): React.CSSProperties | undefined {
+	const textAlign = typeof (node.attrs as { textAlign?: unknown } | undefined)?.textAlign === 'string'
+		? String((node.attrs as { textAlign?: string }).textAlign)
+		: undefined;
+	return textAlign ? { textAlign } : undefined;
+}
+
+function getHeadingLevel(node: JSONContent): 3 | 4 | 5 | 6 {
+	const level = Number((node.attrs as { level?: unknown } | undefined)?.level ?? 3);
+	if (level <= 3) return 3;
+	if (level === 4) return 4;
+	if (level === 5) return 5;
+	return 6;
+}
+
+function getTaskItemChecked(node: JSONContent): boolean {
+	const attrs = (node.attrs as { checked?: unknown; ['data-checked']?: unknown } | undefined) ?? {};
+	if (typeof attrs.checked === 'boolean') return attrs.checked;
+	if (typeof attrs['data-checked'] === 'string') return attrs['data-checked'] === 'true';
+	return false;
+}
+
+function extractPlainTextFromNode(node: JSONContent | null | undefined): string {
+	if (!node) return '';
+	if (node.type === 'text') return node.text ?? '';
+	if (node.type === 'hardBreak') return '\n';
+	if (!Array.isArray(node.content) || node.content.length === 0) return '';
+	return node.content.map((child) => extractPlainTextFromNode(child)).join('');
+}
+
+function extractPlainTextFromNodes(nodes: readonly JSONContent[] | null | undefined): string {
+	if (!Array.isArray(nodes) || nodes.length === 0) return '';
+	return nodes.map((node) => extractPlainTextFromNode(node)).join('').replace(/\s+/g, ' ').trim();
+}
+
 function applyMarks(node: JSONContent, content: React.ReactNode, key: string): React.ReactNode {
 	let result = content;
 	for (const [index, mark] of (node.marks ?? []).entries()) {
 		if (mark.type === 'bold') result = <strong key={`${key}:bold:${index}`}>{result}</strong>;
 		if (mark.type === 'italic') result = <em key={`${key}:italic:${index}`}>{result}</em>;
 		if (mark.type === 'underline') result = <u key={`${key}:underline:${index}`}>{result}</u>;
+		if (mark.type === 'strike') result = <s key={`${key}:strike:${index}`}>{result}</s>;
+		if (mark.type === 'code') result = <code key={`${key}:code:${index}`} className={styles.richInlineCode}>{result}</code>;
 		if (mark.type === 'link') {
 			const href = getSafeHref((mark.attrs as { href?: unknown } | undefined)?.href);
 			result = href ? (
@@ -197,18 +238,87 @@ function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string): Re
 	});
 }
 
-function renderBlockNode(block: JSONContent, key: string, inListItem = false): React.ReactNode {
-	const textAlign = typeof (block.attrs as { textAlign?: unknown } | undefined)?.textAlign === 'string'
-		? String((block.attrs as { textAlign?: string }).textAlign)
-		: undefined;
-	const style = textAlign ? { textAlign } : undefined;
+function renderTableCellContent(nodes: readonly JSONContent[], keyPrefix: string): React.ReactNode {
+	const children = nodes
+		.map((child, index) => renderBlockNode(child, `${keyPrefix}:${index}`, false, true))
+		.filter(Boolean);
+	return children.length > 0 ? children : <span className={styles.richTableEmpty}>&nbsp;</span>;
+}
+
+function renderTableNode(block: JSONContent, key: string): React.ReactNode {
+	const rows = (block.content ?? [])
+		.filter((row): row is JSONContent => row?.type === 'tableRow')
+		.map((row) => ({
+			cells: (row.content ?? [])
+				.filter((cell): cell is JSONContent => cell?.type === 'tableCell' || cell?.type === 'tableHeader')
+				.map((cell) => ({
+					isHeader: cell.type === 'tableHeader',
+					content: cell.content ?? [],
+				})),
+		}))
+		.filter((row) => row.cells.length > 0);
+
+	if (rows.length === 0) return null;
+
+	const hasHeaderRow = rows[0]?.cells.every((cell) => cell.isHeader) ?? false;
+	const headerLabels = hasHeaderRow
+		? rows[0].cells.map((cell) => extractPlainTextFromNodes(cell.content))
+		: [];
+	const bodyRows = hasHeaderRow && rows.length > 1 ? rows.slice(1) : rows;
+	const displayRows = bodyRows.length > 0 ? bodyRows : rows;
+	const columnCount = Math.max(0, ...displayRows.map((row) => row.cells.length));
+	if (columnCount === 0) return null;
+
+	return (
+		<div key={key} className={styles.richTablePreview}>
+			<section className={styles.richTableCard}>
+				{Array.from({ length: columnCount }, (_, columnIndex) => {
+					const label = headerLabels[columnIndex] || `Column ${columnIndex + 1}`;
+					const values = displayRows
+						.map((row, rowIndex) => {
+							const cell = row.cells[columnIndex];
+							if (!cell) return null;
+							return (
+								<div key={`${key}:column:${columnIndex}:row:${rowIndex}`} className={styles.richTableValueRow}>
+									{renderTableCellContent(cell.content, `${key}:column:${columnIndex}:row:${rowIndex}`)}
+								</div>
+							);
+						})
+						.filter(Boolean);
+
+					return (
+						<div key={`${key}:column:${columnIndex}`} className={styles.richTableField}>
+							<div className={styles.richTableLabel}>{label}</div>
+							<div className={styles.richTableValue}>
+								{values.length > 0 ? values : <span className={styles.richTableEmpty}>&nbsp;</span>}
+							</div>
+						</div>
+					);
+				})}
+			</section>
+		</div>
+	);
+}
+
+function renderBlockNode(block: JSONContent, key: string, inListItem = false, inTableCell = false): React.ReactNode {
+	const style = getTextAlignStyle(block);
 
 	if (block.type === 'paragraph' || block.type === 'heading') {
-		// Headings are intentionally flattened to paragraph-sized blocks so note-card
-		// previews keep editor formatting without blowing out the compact layout.
 		const children = renderInlineNodes(block.content ?? [], key);
-		if (children.length === 0) return <div key={key} className={inListItem ? styles.richListParagraph : styles.richBlock} style={style}><br /></div>;
-		return <div key={key} className={inListItem ? styles.richListParagraph : styles.richBlock} style={style}>{children}</div>;
+		if (block.type === 'heading') {
+			const level = getHeadingLevel(block);
+			const headingClassName = [styles.richHeading, styles[`richHeading${level}` as keyof typeof styles]].filter(Boolean).join(' ');
+			return React.createElement(
+				`h${level}`,
+				{ key, className: headingClassName, style },
+				children.length > 0 ? children : <br />
+			);
+		}
+		return React.createElement(
+			inListItem || inTableCell ? 'div' : 'p',
+			{ key, className: inListItem ? styles.richListParagraph : styles.richBlock, style },
+			children.length > 0 ? children : <br />
+		);
 	}
 
 	if (block.type === 'bulletList' || block.type === 'orderedList') {
@@ -218,14 +328,57 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false): R
 		return <ListTag key={key} className={block.type === 'orderedList' ? styles.richOrderedList : styles.richList}>{items}</ListTag>;
 	}
 
+	if (block.type === 'taskList') {
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`)).filter(Boolean);
+		if (items.length === 0) return null;
+		return <ul key={key} className={styles.richTaskList}>{items}</ul>;
+	}
+
 	if (block.type === 'listItem') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell)).filter(Boolean);
 		if (children.length === 0) return null;
 		return <li key={key} className={styles.richListItem}>{children}</li>;
 	}
 
+	if (block.type === 'taskItem') {
+		const checked = getTaskItemChecked(block);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell)).filter(Boolean);
+		if (children.length === 0) return null;
+		return (
+			<li key={key} className={styles.richTaskItem} data-checked={checked ? 'true' : 'false'}>
+				<span className={styles.richTaskCheckbox} aria-hidden="true">
+					<input type="checkbox" checked={checked} readOnly tabIndex={-1} />
+				</span>
+				<div className={styles.richTaskContent}>{children}</div>
+			</li>
+		);
+	}
+
+	if (block.type === 'blockquote') {
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, false, inTableCell)).filter(Boolean);
+		if (children.length === 0) return null;
+		return <blockquote key={key} className={styles.richBlockquote}>{children}</blockquote>;
+	}
+
+	if (block.type === 'codeBlock') {
+		const codeText = extractPlainTextFromNodes(block.content ?? []);
+		return (
+			<pre key={key} className={styles.richCodeBlock}>
+				<code>{codeText}</code>
+			</pre>
+		);
+	}
+
+	if (block.type === 'horizontalRule') {
+		return <hr key={key} className={styles.richRule} />;
+	}
+
+	if (block.type === 'table') {
+		return renderTableNode(block, key);
+	}
+
 	if (Array.isArray(block.content) && block.content.length > 0) {
-		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, inListItem)).filter(Boolean);
+		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, inListItem, inTableCell)).filter(Boolean);
 		if (children.length === 0) return null;
 		return <React.Fragment key={key}>{children}</React.Fragment>;
 	}
@@ -321,6 +474,19 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 	const checklistItems = useChecklistItems(checklistArray);
 	const normalizedItems = React.useMemo(() => normalizeChecklistHierarchy(checklistItems), [checklistItems]);
+	const extractedLinks = React.useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			props.doc.on('afterTransaction', observer);
+			return () => props.doc.off('afterTransaction', observer);
+		},
+		() => extractNoteLinksFromDoc(props.doc),
+		() => extractNoteLinksFromDoc(props.doc)
+	);
+	const handleDeletePreview = React.useCallback((normalizedUrl: string): void => {
+		if (!canEdit) return;
+		removeNotePreviewLinkFromDoc(props.doc, normalizedUrl);
+	}, [canEdit, props.doc]);
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const cardRef = React.useRef<HTMLElement | null>(null);
@@ -633,6 +799,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					) : null}
 				</>
 			)}
+
+			{props.docId ? (
+				<div className={styles.linkPreviewRail}>
+					<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={3} />
+				</div>
+			) : null}
 
 			<div ref={footerRef} className={styles.cardFooter}>
 				{/* Desktop-only footer dock mirrors the editor action strip so note

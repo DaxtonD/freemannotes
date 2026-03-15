@@ -4,7 +4,7 @@ import { draggable, dropTargetForElements, monitorForElements } from '@atlaskit/
 import { disableNativeDragPreview } from '@atlaskit/pragmatic-drag-and-drop/element/disable-native-drag-preview';
 import { autoScrollForElements, autoScrollWindowForElements } from '@atlaskit/pragmatic-drag-and-drop-auto-scroll/element';
 import { isTouchDragPolyfillActive } from '../../core/touchDragPolyfill';
-import { arraysEqual, findInsertionPoint, flattenColumns, insertIntoColumns } from './layout';
+import { arraysEqual, findInsertionPoint, insertIntoColumns } from './layout';
 
 type DragOverlayState = {
 	id: string;
@@ -23,7 +23,7 @@ type DragManagerArgs = {
 	visibleIds: string[];
 	canStartDrag: () => boolean;
 	isTouchDragCandidate: () => boolean;
-	onCommitOrder: (nextVisibleOrder: string[], finalColumns: string[][], draggedId: string) => void;
+	onCommitOrder: (finalColumns: string[][], draggedId: string, draggedHeight: number) => void;
 };
 
 type PragmaticDragData = {
@@ -85,7 +85,7 @@ export type DragManagerResult = {
  *   bottom when dragging down) compared against each card's midpoint.  A 16 px
  *   buffer zone prevents oscillation from mid-animation intermediate rects.
  *
- * - Cooldown: after each insertion-point change, a 150 ms cooldown ignores
+ * - Cooldown: after each insertion-point change, a 280 ms cooldown ignores
  *   further recalculations, giving framer-motion's spring animation time to
  *   settle so getBoundingClientRect() returns stable values.
  *
@@ -145,17 +145,19 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			// After an insertion change, skip recalculation so framer-motion's
 			// spring animation settles before rect reads are trusted again.
 			if (Date.now() < insertionCooldownRef.current) return;
-			// Use the raw pointer position for column detection — this is more
-			// responsive than the ghost center, especially for cross-column moves
-			// where the ghost's center lags behind the user's actual intent.
+			// Use the ghost center for horizontal column detection so crossing
+			// columns follows the same visual rule as vertical insertion: the
+			// dragged card itself, not the original grab point, determines when
+			// neighboring cards shift.
 			const ghostTopY = pointer.clientY - pointerOffsetRef.current.y;
 			const ghostBottomY = ghostTopY + previewSizeRef.current.height;
+			const ghostCenterX = pointer.clientX - pointerOffsetRef.current.x + previewSizeRef.current.width / 2;
 			const ip = findInsertionPoint(
 				columnsRef.current,
 				activeId,
 				ghostTopY,
 				ghostBottomY,
-				pointer.clientX,
+				ghostCenterX,
 				getRectForId,
 				getColumnRect
 			);
@@ -294,12 +296,6 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			onDrop: () => {
 				const activeId = activeDragIdRef.current;
 				const ip = insertionPointRef.current;
-				const currentVisibleOrder = visibleIdsRef.current;
-
-				// Clear all drag state immediately so the UI snaps to the final
-				// layout.  The overlay disappears, the placeholder becomes visible,
-				// and framer-motion animates the card into its landing position.
-				clearDragState();
 
 				if (!activeId || !ip) return;
 
@@ -315,10 +311,21 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				const columnsChanged =
 					finalColumns.length !== originalColumns.length ||
 					finalColumns.some((col, i) => !arraysEqual(col, originalColumns[i]));
-				if (!columnsChanged) return;
+				if (!columnsChanged) {
+					clearDragState();
+					return;
+				}
 
-				const nextVisibleOrder = flattenColumns(finalColumns);
-				onCommitOrderRef.current(nextVisibleOrder, finalColumns, activeId);
+				const draggedElement = itemElementsRef.current.get(activeId);
+				const draggedHeight = Math.max(
+					0,
+					Math.round(draggedElement?.getBoundingClientRect().height ?? previewSizeRef.current.height)
+				);
+				onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
+				// Clear drag state after scheduling the committed layout so React can
+				// transition directly from the live preview into the final grid state
+				// instead of briefly re-rendering the pre-drop base columns.
+				clearDragState();
 			},
 		});
 		return () => {

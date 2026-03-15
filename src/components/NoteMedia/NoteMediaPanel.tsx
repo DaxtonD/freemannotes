@@ -381,18 +381,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 					{error ? <p className={styles.error}>{error}</p> : null}
 				</div>
 
-				{totalCount === 0 ? (
-					<div className={styles.empty}>
-						<p className={styles.emptyTitle}>{t('media.emptyTitle')}</p>
-						<p className={styles.emptyBody}>{t('media.emptyBody')}</p>
-						{props.canEdit && props.onAddImage ? (
-							<button type="button" className={styles.addButton} onClick={props.onAddImage}>
-								<FontAwesomeIcon icon={faImage} />
-								<span>{t('noteMenu.addImage')}</span>
-							</button>
-						) : null}
-					</div>
-				) : (
+				{totalCount === 0 ? null : (
 					<div className={styles.grid}>
 						{localPreviewItems.map((item, index) => (
 							<div

@@ -1,23 +1,31 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import type { Editor, JSONContent } from '@tiptap/core';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
 	faAlignCenter,
+	faChevronLeft,
+	faChevronRight,
 	faAlignLeft,
 	faAlignRight,
 	faBold,
+	faCode,
 	faItalic,
 	faLink,
+	faListCheck,
 	faListOl,
 	faListUl,
+	faMinus,
+	faQuoteLeft,
 	faRotateLeft,
 	faRotateRight,
+	faTable,
 	faUnderline,
 } from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
-import { createRichTextExtensions, type RichTextVariant } from '../../core/richText';
+import { createRichTextExtensions, getMarkdownPasteHtml, type RichTextVariant } from '../../core/richText';
 import { useI18n } from '../../core/i18n';
 import { useBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import styles from './Editors.module.css';
@@ -42,12 +50,14 @@ type RichTextEditorProps = {
 	onShiftEnter?: () => void;
 	onBackspaceWhenEmpty?: () => void;
 	editable?: boolean;
+	onCreateUrlPreview?: () => void;
 };
 
 type RichTextToolbarProps = {
 	editor: Editor | null;
 	variant: RichTextVariant;
 	compact?: boolean;
+	onCreateUrlPreview?: () => void;
 };
 
 function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
@@ -117,6 +127,19 @@ function canRunRedo(editor: Editor | null | undefined): boolean {
 	}
 }
 
+function canRunRichTextCommand(editor: Editor | null | undefined, commandName: string, ...args: unknown[]): boolean {
+	if (!editor) return false;
+	try {
+		// TipTap command availability varies by extension set, so this helper lets the
+		// toolbar ask about optional commands without hard-coding extension knowledge.
+		const canApi = editor.can() as unknown as Record<string, ((...callArgs: unknown[]) => boolean) | undefined>;
+		const command = canApi[commandName];
+		return typeof command === 'function' ? Boolean(command(...args)) : false;
+	} catch {
+		return false;
+	}
+}
+
 function runUndo(editor: Editor | null | undefined): void {
 	if (!editor) return;
 	try {
@@ -135,6 +158,21 @@ function runRedo(editor: Editor | null | undefined): void {
 		const chain = editor.chain().focus() as { redo?: () => { run: () => boolean } };
 		if (typeof chain.redo === 'function') {
 			chain.redo().run();
+		}
+	} catch {
+		// Editor was destroyed or the command is unavailable.
+	}
+}
+
+function runRichTextCommand(editor: Editor | null | undefined, commandName: string, ...args: unknown[]): void {
+	if (!editor) return;
+	try {
+		// Mirror the defensive can-run helper above: missing commands should quietly no-op
+		// rather than explode when the editor is mid-destroy or the extension is absent.
+		const chain = editor.chain().focus() as unknown as Record<string, ((...callArgs: unknown[]) => { run: () => boolean }) | undefined>;
+		const command = chain[commandName];
+		if (typeof command === 'function') {
+			command(...args).run();
 		}
 	} catch {
 		// Editor was destroyed or the command is unavailable.
@@ -184,6 +222,12 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		selector: ({ editor }) => ({
 			canUndo: canRunUndo(editor),
 			canRedo: canRunRedo(editor),
+			canInsertTable: canRunRichTextCommand(editor, 'insertTable', { rows: 3, cols: 3, withHeaderRow: true }),
+			canAddTableColumn: canRunRichTextCommand(editor, 'addColumnAfter'),
+			canDeleteTableColumn: canRunRichTextCommand(editor, 'deleteColumn'),
+			canAddTableRow: canRunRichTextCommand(editor, 'addRowAfter'),
+			canDeleteTableRow: canRunRichTextCommand(editor, 'deleteRow'),
+			canDeleteTable: canRunRichTextCommand(editor, 'deleteTable'),
 			isBold: Boolean(editor?.isActive('bold')),
 			isItalic: Boolean(editor?.isActive('italic')),
 			isUnderline: Boolean(editor?.isActive('underline')),
@@ -191,16 +235,69 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			isHeading1: Boolean(editor?.isActive('heading', { level: 1 })),
 			isHeading2: Boolean(editor?.isActive('heading', { level: 2 })),
 			isHeading3: Boolean(editor?.isActive('heading', { level: 3 })),
+				isHeading4: Boolean(editor?.isActive('heading', { level: 4 })),
+				isHeading5: Boolean(editor?.isActive('heading', { level: 5 })),
+				isHeading6: Boolean(editor?.isActive('heading', { level: 6 })),
 			isBulletList: Boolean(editor?.isActive('bulletList')),
 			isOrderedList: Boolean(editor?.isActive('orderedList')),
+			isTaskList: Boolean(editor?.isActive('taskList')),
+			isBlockquote: Boolean(editor?.isActive('blockquote')),
+			isCodeBlock: Boolean(editor?.isActive('codeBlock')),
+			isTable: Boolean(editor?.isActive('table')),
 			isAlignLeft: Boolean(editor?.isActive({ textAlign: 'left' })),
 			isAlignCenter: Boolean(editor?.isActive({ textAlign: 'center' })),
 			isAlignRight: Boolean(editor?.isActive({ textAlign: 'right' })),
 		}),
 	});
+	const resolvedToolbarState = toolbarState ?? {
+		canUndo: false,
+		canRedo: false,
+		canInsertTable: false,
+		canAddTableColumn: false,
+		canDeleteTableColumn: false,
+		canAddTableRow: false,
+		canDeleteTableRow: false,
+		canDeleteTable: false,
+		isBold: false,
+		isItalic: false,
+		isUnderline: false,
+		isLink: false,
+		isHeading1: false,
+		isHeading2: false,
+		isHeading3: false,
+		isHeading4: false,
+		isHeading5: false,
+		isHeading6: false,
+		isBulletList: false,
+		isOrderedList: false,
+		isTaskList: false,
+		isBlockquote: false,
+		isCodeBlock: false,
+		isTable: false,
+		isAlignLeft: false,
+		isAlignCenter: false,
+		isAlignRight: false,
+	};
 
 	const preventToolbarFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
 		event.preventDefault();
+	}, []);
+	const toolbarRowRef = React.useRef<HTMLDivElement | null>(null);
+	const tableMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
+	const tableMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const [tableMenuOpen, setTableMenuOpen] = React.useState(false);
+	const [tableMenuPosition, setTableMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
+	const [canScrollToolbarLeft, setCanScrollToolbarLeft] = React.useState(false);
+	const [canScrollToolbarRight, setCanScrollToolbarRight] = React.useState(false);
+	const updateToolbarScrollState = React.useCallback((): void => {
+		const node = toolbarRowRef.current;
+		if (!node) {
+			setCanScrollToolbarLeft(false);
+			setCanScrollToolbarRight(false);
+			return;
+		}
+		setCanScrollToolbarLeft(node.scrollLeft > 4);
+		setCanScrollToolbarRight(node.scrollLeft + node.clientWidth < node.scrollWidth - 4);
 	}, []);
 
 	const handleToolbarTouchStart = React.useCallback((event: React.TouchEvent): void => {
@@ -258,6 +355,96 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		if (!next) return;
 		props.editor.chain().focus().extendMarkRange('link').setLink({ href: next }).run();
 	}, [props.editor, t]);
+	const handleToolbarWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>): void => {
+		const node = toolbarRowRef.current;
+		if (!node) return;
+		if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+		if (node.scrollWidth <= node.clientWidth + 1) return;
+		event.preventDefault();
+		node.scrollLeft += event.deltaY;
+		updateToolbarScrollState();
+	}, [updateToolbarScrollState]);
+	const scrollToolbarBy = React.useCallback((delta: number): void => {
+		const node = toolbarRowRef.current;
+		if (!node) return;
+		node.scrollBy({ left: delta, behavior: 'smooth' });
+	}, []);
+	const updateTableMenuPosition = React.useCallback((): void => {
+		const button = tableMenuButtonRef.current;
+		if (!button || typeof window === 'undefined') {
+			setTableMenuPosition(null);
+			return;
+		}
+		// Anchor against the visual viewport so the floating table menu stays on-screen
+		// on mobile keyboards, zoomed layouts, and desktop scroll containers alike.
+		const visualViewport = window.visualViewport;
+		const viewportLeft = visualViewport ? Math.round(visualViewport.offsetLeft) : 0;
+		const viewportTop = visualViewport ? Math.round(visualViewport.offsetTop) : 0;
+		const viewportWidth = visualViewport ? Math.round(visualViewport.width) : window.innerWidth;
+		const viewportHeight = visualViewport ? Math.round(visualViewport.height) : window.innerHeight;
+		const viewportRight = viewportLeft + viewportWidth;
+		const viewportBottom = viewportTop + viewportHeight;
+		const rect = button.getBoundingClientRect();
+		const menuWidth = 180;
+		const menuHeight = 232;
+		const viewportPadding = 12;
+		const left = Math.min(
+			Math.max(viewportLeft + viewportPadding, rect.right - menuWidth),
+			viewportRight - menuWidth - viewportPadding,
+		);
+		const preferredTop = rect.bottom + 8;
+		const fitsBelow = preferredTop + menuHeight <= viewportBottom - viewportPadding;
+		const top = fitsBelow
+			? preferredTop
+			: Math.max(viewportTop + viewportPadding, rect.top - menuHeight - 8);
+		setTableMenuPosition({
+			top,
+			left,
+		});
+	}, []);
+	const runTableMenuCommand = React.useCallback((commandName: string, ...args: unknown[]): void => {
+		runRichTextCommand(props.editor, commandName, ...args);
+		setTableMenuOpen(false);
+	}, [props.editor]);
+	React.useEffect(() => {
+		updateToolbarScrollState();
+		const node = toolbarRowRef.current;
+		if (!node) return;
+		const handleScroll = (): void => updateToolbarScrollState();
+		node.addEventListener('scroll', handleScroll, { passive: true });
+		const resizeObserver = new ResizeObserver(() => updateToolbarScrollState());
+		resizeObserver.observe(node);
+		if (node.parentElement) resizeObserver.observe(node.parentElement);
+		return () => {
+			node.removeEventListener('scroll', handleScroll);
+			resizeObserver.disconnect();
+		};
+	}, [updateToolbarScrollState, props.variant, props.compact]);
+	React.useEffect(() => {
+		if (!tableMenuOpen) return;
+		updateTableMenuPosition();
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target as Node | null;
+			if (!target) return;
+			if (tableMenuRef.current?.contains(target)) return;
+			if (tableMenuButtonRef.current?.contains(target)) return;
+			setTableMenuOpen(false);
+		};
+		const handleKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === 'Escape') setTableMenuOpen(false);
+		};
+		const handleViewportChange = (): void => updateTableMenuPosition();
+		document.addEventListener('pointerdown', handlePointerDown);
+		document.addEventListener('keydown', handleKeyDown);
+		window.addEventListener('resize', handleViewportChange);
+		window.addEventListener('scroll', handleViewportChange, true);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown);
+			document.removeEventListener('keydown', handleKeyDown);
+			window.removeEventListener('resize', handleViewportChange);
+			window.removeEventListener('scroll', handleViewportChange, true);
+		};
+	}, [tableMenuOpen, updateTableMenuPosition]);
 
 	const noEditor = !props.editor;
 	const compactButtonClass = props.compact ? ` ${styles.formatButtonCompact}` : '';
@@ -275,56 +462,160 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			onTouchEndCapture={resetToolbarTouch}
 			onTouchCancelCapture={resetToolbarTouch}
 		>
-			<div className={styles.formatToolbarRow}>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.undo')} title={t('editors.undo')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runUndo(props.editor)} disabled={!toolbarState.canUndo}>
+			<div className={styles.formatToolbarScroller}>
+				<button
+					type="button"
+					className={`${styles.formatToolbarScrollButton}${canScrollToolbarLeft ? '' : ` ${styles.formatToolbarScrollButtonHidden}`}`}
+					aria-label={t('editors.scrollToolbarLeft')}
+					title={t('editors.scrollToolbarLeft')}
+					onMouseDown={preventToolbarFocusSteal}
+					onPointerDown={preventToolbarFocusSteal}
+					onClick={() => scrollToolbarBy(-220)}
+					disabled={!canScrollToolbarLeft}
+				>
+					<FontAwesomeIcon icon={faChevronLeft} />
+				</button>
+				<div ref={toolbarRowRef} className={styles.formatToolbarRow} onWheel={handleToolbarWheel}>
+				<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.undo')} title={t('editors.undo')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runUndo(props.editor)} disabled={!resolvedToolbarState.canUndo}>
 					<FontAwesomeIcon icon={faRotateLeft} />
 				</button>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.redo')} title={t('editors.redo')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRedo(props.editor)} disabled={!toolbarState.canRedo}>
+				<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.redo')} title={t('editors.redo')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRedo(props.editor)} disabled={!resolvedToolbarState.canRedo}>
 					<FontAwesomeIcon icon={faRotateRight} />
 				</button>
 				<div className={styles.formatDivider} aria-hidden="true" />
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBold().run()}>
+				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBold().run()}>
 					<FontAwesomeIcon icon={faBold} />
 				</button>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleItalic().run()}>
+				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleItalic().run()}>
 					<FontAwesomeIcon icon={faItalic} />
 				</button>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleUnderline().run()}>
+				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleUnderline().run()}>
 					<FontAwesomeIcon icon={faUnderline} />
 				</button>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={toolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={toolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
+				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
 					<FontAwesomeIcon icon={faLink} />
 				</button>
+				{props.onCreateUrlPreview ? (
+					<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
+						<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
+					</button>
+				) : null}
 				{props.variant === 'full' ? (
 					<>
 						<div className={styles.formatDivider} aria-hidden="true" />
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isHeading1 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 1 }).run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading1 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 1 }).run()}>
 							H1
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isHeading2 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 2 }).run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading2 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 2 }).run()}>
 							H2
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isHeading3 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 3 }).run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading3 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 3 }).run()}>
 							H3
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isBulletList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBulletList().run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading4 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 4 }).run()}>
+							H4
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading5 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 5 }).run()}>
+							H5
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading6 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 6 }).run()}>
+							H6
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBulletList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBulletList().run()}>
 							<FontAwesomeIcon icon={faListUl} />
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isOrderedList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.numberedList')} title={t('editors.numberedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleOrderedList().run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isOrderedList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.numberedList')} title={t('editors.numberedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleOrderedList().run()}>
 							<FontAwesomeIcon icon={faListOl} />
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isAlignLeft ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('left').run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isTaskList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.taskList')} title={t('editors.taskList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleTaskList')}>
+							<FontAwesomeIcon icon={faListCheck} />
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBlockquote ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.blockquote')} title={t('editors.blockquote')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleBlockquote')}>
+							<FontAwesomeIcon icon={faQuoteLeft} />
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isCodeBlock ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.codeBlock')} title={t('editors.codeBlock')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleCodeBlock')}>
+							<FontAwesomeIcon icon={faCode} />
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.horizontalRule')} title={t('editors.horizontalRule')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'setHorizontalRule')}>
+							<FontAwesomeIcon icon={faMinus} />
+						</button>
+						<div className={styles.formatMenuAnchor}>
+							<button
+								ref={tableMenuButtonRef}
+								type="button"
+								className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isTable || tableMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+								aria-label={t('editors.tableMenu')}
+								title={t('editors.tableMenu')}
+								aria-expanded={tableMenuOpen}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => {
+									updateTableMenuPosition();
+									setTableMenuOpen((open) => !open);
+								}}
+							>
+								<FontAwesomeIcon icon={faTable} />
+							</button>
+						</div>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignLeft ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('left').run()}>
 							<FontAwesomeIcon icon={faAlignLeft} />
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isAlignCenter ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignCenter')} title={t('editors.alignCenter')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('center').run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignCenter ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignCenter')} title={t('editors.alignCenter')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('center').run()}>
 							<FontAwesomeIcon icon={faAlignCenter} />
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${toolbarState.isAlignRight ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignRight')} title={t('editors.alignRight')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('right').run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignRight ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignRight')} title={t('editors.alignRight')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('right').run()}>
 							<FontAwesomeIcon icon={faAlignRight} />
 						</button>
 					</>
 				) : null}
+				</div>
+				<button
+					type="button"
+					className={`${styles.formatToolbarScrollButton}${canScrollToolbarRight ? '' : ` ${styles.formatToolbarScrollButtonHidden}`}`}
+					aria-label={t('editors.scrollToolbarRight')}
+					title={t('editors.scrollToolbarRight')}
+					onMouseDown={preventToolbarFocusSteal}
+					onPointerDown={preventToolbarFocusSteal}
+					onClick={() => scrollToolbarBy(220)}
+					disabled={!canScrollToolbarRight}
+				>
+					<FontAwesomeIcon icon={faChevronRight} />
+				</button>
 			</div>
+			{tableMenuOpen && tableMenuPosition && typeof document !== 'undefined'
+				? createPortal(
+					<div
+						ref={tableMenuRef}
+						className={styles.formatMenu}
+						role="menu"
+						aria-label={t('editors.tableMenu')}
+						style={{ position: 'fixed', top: `${tableMenuPosition.top}px`, left: `${tableMenuPosition.left}px` }}
+						onPointerDown={stopToolbarPropagation}
+						onMouseDown={stopToolbarPropagation}
+						onClick={stopToolbarPropagation}
+					>
+						<button type="button" className={styles.formatMenuButton} role="menuitem" onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runTableMenuCommand('insertTable', { rows: 3, cols: 3, withHeaderRow: true })} disabled={!resolvedToolbarState.canInsertTable}>
+							{t('editors.insertTable')}
+						</button>
+						<button type="button" className={styles.formatMenuButton} role="menuitem" onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runTableMenuCommand('addColumnAfter')} disabled={!resolvedToolbarState.canAddTableColumn}>
+							{t('editors.addTableColumn')}
+						</button>
+						<button type="button" className={styles.formatMenuButton} role="menuitem" onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runTableMenuCommand('deleteColumn')} disabled={!resolvedToolbarState.canDeleteTableColumn}>
+							{t('editors.deleteTableColumn')}
+						</button>
+						<button type="button" className={styles.formatMenuButton} role="menuitem" onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runTableMenuCommand('addRowAfter')} disabled={!resolvedToolbarState.canAddTableRow}>
+							{t('editors.addTableRow')}
+						</button>
+						<button type="button" className={styles.formatMenuButton} role="menuitem" onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runTableMenuCommand('deleteRow')} disabled={!resolvedToolbarState.canDeleteTableRow}>
+							{t('editors.deleteTableRow')}
+						</button>
+						<button type="button" className={styles.formatMenuButton} role="menuitem" onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runTableMenuCommand('deleteTable')} disabled={!resolvedToolbarState.canDeleteTable}>
+							{t('editors.deleteTable')}
+						</button>
+					</div>,
+					document.body,
+				)
+				: null}
 		</div>
 	);
 }
@@ -370,6 +661,24 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 			editorProps: {
 				attributes: {
 					class: `${styles.richEditorContent}${props.contentClassName ? ` ${props.contentClassName}` : ''}`,
+				},
+				handlePaste: (_view, event) => {
+					const ed = editorRef.current;
+					if (!ed || variant !== 'full') return false;
+					const clipboardData = event.clipboardData;
+					if (!clipboardData) return false;
+					const hasFiles = Array.from(clipboardData.items ?? []).some((item) => item.kind === 'file');
+					if (hasFiles) return false;
+					// Prefer markdown expansion only when the clipboard does not already contain
+					// meaningful rich HTML. That preserves rich copy/paste while upgrading plain markdown.
+					const markdownHtml = getMarkdownPasteHtml({
+						text: clipboardData.getData('text/plain'),
+						html: clipboardData.getData('text/html'),
+						variant,
+					});
+					if (!markdownHtml) return false;
+					event.preventDefault();
+					return ed.chain().focus().insertContent(markdownHtml).run();
 				},
 				handleKeyDown: (_view, event) => {
 					const ed = editorRef.current;
@@ -479,7 +788,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 
 	return (
 		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`}>
-			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} />}
+			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} onCreateUrlPreview={props.onCreateUrlPreview} />}
 			<EditorContent editor={editor} className={`${styles.richEditorViewport}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}`} />
 			{/*
 				Bubble menu branch:

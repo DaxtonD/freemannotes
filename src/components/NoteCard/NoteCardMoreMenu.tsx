@@ -4,6 +4,8 @@ import {
 	faThumbtack,
 	faUserPlus,
 	faImage,
+	faFileLines,
+	faLink,
 	faBell,
 	faTrash,
 	faFolderPlus,
@@ -23,6 +25,8 @@ export type NoteCardMoreMenuProps = {
 	onTrash?: (() => void) | undefined;
 	onAddCollaborator?: (() => void) | undefined;
 	onAddImage?: (() => void) | undefined;
+	onAddDocument?: (() => void) | undefined;
+	onAddUrlPreview?: (() => void) | undefined;
 	/** Bounding rect of the anchor element (e.g. note card). On desktop the
 	 *  menu renders as a popover positioned relative to this rect. */
 	anchorRect?: { top: number; left: number; width: number; height: number } | null;
@@ -168,6 +172,28 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				},
 			}]
 			: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, action: noop }]),
+		...(props.onAddDocument
+			? [{
+				key: 'document',
+				labelKey: 'noteMenu.addDocument',
+				icon: faFileLines,
+				action: () => {
+					props.onClose();
+					props.onAddDocument?.();
+				},
+			}]
+			: []),
+		...(props.onAddUrlPreview
+			? [{
+				key: 'url-preview',
+				labelKey: 'noteMenu.addUrlPreview',
+				icon: faLink,
+				action: () => {
+					props.onClose();
+					props.onAddUrlPreview?.();
+				},
+			}]
+			: []),
 		{ key: 'reminder', labelKey: 'noteMenu.addReminder', icon: faBell, action: noop },
 		...(props.onTrash
 			? [{ key: 'trash', labelKey: 'noteMenu.moveToTrash', icon: faTrash, danger: true, action: props.onTrash }]

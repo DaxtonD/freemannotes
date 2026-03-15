@@ -71,6 +71,8 @@ model Workspace {
   sentNoteShareInvitations NoteShareInvitation[]
   noteCollaborators NoteCollaborator[]
   noteImages NoteImage[]
+  noteLinks NoteLink[]
+  noteDocuments NoteDocument[]
 
   // Enforce unique workspace names to prevent accidental duplicates.
   @@unique([name])
@@ -128,6 +130,18 @@ enum NoteImageOcrStatus {
   FAILED
 }
 
+enum NoteLinkStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum NoteDocumentOcrStatus {
+  PENDING
+  COMPLETE
+  FAILED
+}
+
 enum ShareAccessEntityType {
   NOTE
   WORKSPACE
@@ -160,6 +174,9 @@ model User {
   createdShareAccessTokens ShareAccessToken[] @relation("CreatedShareAccessTokens")
   createdWorkspaceInvites InviteToken[] @relation("CreatedWorkspaceInvites")
   uploadedNoteImages NoteImage[]
+  noteLinks NoteLink[]
+  uploadedNoteDocuments NoteDocument[]
+  noteDocumentAnnotations NoteDocumentAnnotation[]
 
   @@map("user")
 }
@@ -398,6 +415,8 @@ model Document {
   noteShareInvitations NoteShareInvitation[]
   noteCollaborators NoteCollaborator[]
   noteImages NoteImage[]
+  noteLinks NoteLink[]
+  noteDocuments NoteDocument[]
 
   // Index for fast workspace-scoped queries (list all docs in a workspace).
   @@index([workspaceId])
@@ -440,6 +459,113 @@ model NoteImage {
   @@index([sourceWorkspaceId, sourceNoteId])
   @@index([uploadedByUserId])
   @@map("note_image")
+}
+
+model NoteLink {
+  id String @id @default(uuid()) @db.Uuid
+
+  docId String @map("doc_id")
+  sourceWorkspaceId String @map("source_workspace_id") @db.Uuid
+  sourceNoteId String @map("source_note_id")
+  createdByUserId String? @map("created_by_user_id") @db.Uuid
+
+  normalizedUrl String @map("normalized_url")
+  originalUrl String @map("original_url")
+  hostname String
+  rootDomain String @map("root_domain")
+  siteName String? @map("site_name")
+  title String?
+  description String?
+  mainContent String? @map("main_content")
+  imageUrl String? @map("image_url")
+  metadataJson Json? @map("metadata_json") @db.JsonB
+  imageUrls Json? @map("image_urls") @db.JsonB
+  sortOrder Int @default(0) @map("sort_order")
+  status NoteLinkStatus @default(PENDING)
+  errorMessage String? @map("error_message")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  document Document @relation(fields: [docId], references: [docId], onDelete: Cascade)
+  sourceWorkspace Workspace @relation(fields: [sourceWorkspaceId], references: [id], onDelete: Cascade)
+  creator User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([docId, normalizedUrl])
+  @@index([docId, deletedAt])
+  @@index([sourceWorkspaceId, sourceNoteId])
+  @@index([createdByUserId])
+  @@map("note_link")
+}
+
+model NoteDocument {
+  id String @id @default(uuid()) @db.Uuid
+
+  docId String @map("doc_id")
+  sourceWorkspaceId String @map("source_workspace_id") @db.Uuid
+  sourceNoteId String @map("source_note_id")
+  uploadedByUserId String @map("uploaded_by_user_id") @db.Uuid
+
+  storageKey String @map("storage_key")
+  originalPath String @map("original_path")
+  previewPath String @map("preview_path")
+  thumbnailPath String @map("thumbnail_path")
+  fileName String @map("file_name")
+  fileExtension String @map("file_extension")
+  mimeType String @map("mime_type")
+  byteSize Int @map("byte_size")
+  pageCount Int? @map("page_count")
+  previewWidth Int? @map("preview_width")
+  previewHeight Int? @map("preview_height")
+  thumbnailWidth Int? @map("thumbnail_width")
+  thumbnailHeight Int? @map("thumbnail_height")
+
+  ocrStatus NoteDocumentOcrStatus @default(PENDING) @map("ocr_status")
+  ocrText String? @map("ocr_text")
+  ocrError String? @map("ocr_error")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  document Document @relation(fields: [docId], references: [docId], onDelete: Cascade)
+  sourceWorkspace Workspace @relation(fields: [sourceWorkspaceId], references: [id], onDelete: Cascade)
+  uploader User @relation(fields: [uploadedByUserId], references: [id], onDelete: Cascade)
+  annotations NoteDocumentAnnotation[]
+
+  @@index([docId, deletedAt])
+  @@index([sourceWorkspaceId, sourceNoteId])
+  @@index([uploadedByUserId])
+  @@map("note_document")
+}
+
+model NoteDocumentAnnotation {
+  id String @id @default(uuid()) @db.Uuid
+
+  noteDocumentId String @map("note_document_id") @db.Uuid
+  createdByUserId String? @map("created_by_user_id") @db.Uuid
+  annotationType String @map("annotation_type")
+  quoteText String? @map("quote_text")
+  bodyText String? @map("body_text")
+  pageNumber Int? @map("page_number")
+  positionJson Json @map("position_json") @db.JsonB
+  color String?
+  highlightStyle String? @map("highlight_style")
+  backgroundColor String? @map("background_color")
+  fontFamily String? @map("font_family")
+  fontSize String? @map("font_size")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  noteDocument NoteDocument @relation(fields: [noteDocumentId], references: [id], onDelete: Cascade)
+  creator User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([noteDocumentId, deletedAt])
+  @@index([createdByUserId])
+  @@map("note_document_annotation")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

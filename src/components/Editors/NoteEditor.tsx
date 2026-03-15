@@ -26,6 +26,7 @@ import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizont
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
+import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
@@ -42,8 +43,11 @@ import {
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
+import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
+import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
+import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
 import styles from './Editors.module.css';
 
@@ -56,6 +60,7 @@ export type NoteEditorProps = {
 	onDelete: (noteId: string) => Promise<void>;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
+	onAddDocument?: () => void;
 	readOnly?: boolean;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
@@ -333,7 +338,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 				onChange={handleToggleCompleted}
 			/>
 			{liveItemMap && fragment ? (
-				<div ref={contentRef} className={styles.checklistRowRichShell} onClick={handleActivate}>
+				<div ref={contentRef} className={styles.checklistRowRichShell}>
 					<RichTextEditor
 						variant="minimal"
 						fragment={fragment}
@@ -409,7 +414,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const keyboardVisibilityPaddingPx = 88;
 	const [isModified, setIsModified] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
-	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
+	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(0);
 	// More-menu state (editor 3-dot button):
 	// - Desktop: anchored popover positioned relative to the trigger button rect.
 	// - Mobile: bottom sheet menu (anchor rect is ignored).
@@ -418,6 +423,48 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
+	// Keep the dock tabs driven by the live Yjs doc so link chips, link previews,
+	// and browser modals stay in sync without forcing the editor to own extra copy state.
+	const extractedLinks = useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			props.doc.on('afterTransaction', observer);
+			return () => props.doc.off('afterTransaction', observer);
+		},
+		() => extractNoteLinksFromDoc(props.doc),
+		() => extractNoteLinksFromDoc(props.doc)
+	);
+	const handleCreateUrlPreview = React.useCallback((): void => {
+		if (readOnly) return;
+		const next = window.prompt(t('links.prompt'), 'https://');
+		if (!next) return;
+		addNotePreviewLinkToDoc(props.doc, next);
+	}, [props.doc, readOnly, t]);
+	const handleDeleteUrlPreview = React.useCallback((normalizedUrl: string): void => {
+		if (readOnly) return;
+		removeNotePreviewLinkFromDoc(props.doc, normalizedUrl);
+	}, [props.doc, readOnly]);
+
+	React.useEffect(() => {
+		let timerId = 0;
+		// Debounce link sync so typing/editing does not spam the preview resolver.
+		const scheduleSync = (): void => {
+			if (timerId) window.clearTimeout(timerId);
+			timerId = window.setTimeout(() => {
+				void syncNoteLinksForDoc({
+					userId: props.authUserId,
+					docId: props.docId,
+					links: extractNoteLinksFromDoc(props.doc),
+				});
+			}, 320);
+		};
+		scheduleSync();
+		props.doc.on('afterTransaction', scheduleSync);
+		return () => {
+			props.doc.off('afterTransaction', scheduleSync);
+			if (timerId) window.clearTimeout(timerId);
+		};
+	}, [props.authUserId, props.doc, props.docId]);
 	const keyboard = useKeyboardHeight();
 	// Mobile-only keyboard branch:
 	// - `useKeyboardHeight()` is driven by the Visual Viewport API, so `keyboard.isOpen`
@@ -517,8 +564,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			const dy = t0.clientY - start.y;
 			if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
 			setMediaDockTab((prev) => {
-				if (dx < 0) return (prev === 0 ? 1 : prev);
-				return (prev === 1 ? 0 : prev);
+				if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
+				return Math.max(prev - 1, 0) as 0 | 1 | 2;
 			});
 		},
 		[]
@@ -587,10 +634,35 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		const currentTarget = event.currentTarget;
 		const scrolledToTop = currentTarget.scrollTop <= 0;
 		if (!scrolledToTop) return;
+		if (Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy)) {
+			setMediaDockTab((prev) => {
+				if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
+				return Math.max(prev - 1, 0) as 0 | 1 | 2;
+			});
+			return;
+		}
 		if (dy > 72 && Math.abs(dy) > Math.abs(dx) * 1.25) {
 			closeMediaDock();
 		}
 	}, [closeMediaDock]);
+	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
+		// All dock variants funnel through one renderer so mobile sheets and desktop
+		// flyouts cannot drift into subtly different attachment behavior.
+		if (mediaDockTab === 0) {
+			return (
+				<NoteMediaPanel
+					docId={props.docId}
+					authUserId={props.authUserId}
+					canEdit={!readOnly}
+					onAddImage={props.onAddImage}
+				/>
+			);
+		}
+		if (mediaDockTab === 1) {
+			return <NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={!readOnly} onDeleteLink={handleDeleteUrlPreview} onAddUrlPreview={handleCreateUrlPreview} />;
+		}
+		return <DocumentsPanel docId={props.docId} authUserId={props.authUserId} canEdit={!readOnly} onAddDocument={props.onAddDocument} />;
+	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, mediaDockTab, props.authUserId, props.docId, props.onAddDocument, props.onAddImage, readOnly]);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	React.useEffect(() => {
 		setShowCompleted(Boolean(props.initialShowCompleted));
@@ -1075,6 +1147,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	const activateChecklistRow = React.useCallback(
 		(id: string): void => {
+			if (activeChecklistRowId === id) return;
 			suppressAutoActivateAfterDeleteRef.current = false;
 			// Row-switch focus handoff (mobile):
 			// When moving between checklist rows while the keyboard is open, we
@@ -1084,7 +1157,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			setActiveChecklistRowId(id);
 			setFocusRowId(id);
 		},
-		[prepareChecklistRowFocusHandoff]
+		[activeChecklistRowId, prepareChecklistRowFocusHandoff]
 	);
 
 	const setChecklistRowInputRef = React.useCallback((id: string, node: HTMLDivElement | null): void => {
@@ -1214,7 +1287,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			>
 				<section
 					aria-label={`Editor ${props.noteId}`}
-					className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}
+					className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}
 					onClick={(event) => event.stopPropagation()}
 				>
 					<header className={styles.editorTopBar}>
@@ -1274,7 +1347,154 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							</div>
 						</section>
 					) : null}
+					{mobileKeyboardOpen ? null : <div className={styles.editorBottomArea}>
+						<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
+							<button
+								type="button"
+								className={styles.mediaDockHandle}
+								onClick={() => {
+									if (isMobileLandscapeRef.current) return;
+									setMediaDockOpen((prev) => !prev);
+								}}
+								onTouchStart={handleTouchStart}
+								onTouchMove={handleDockTouchMove}
+								onTouchEnd={handleHandleTouchEnd}
+								aria-label={t('editors.mediaDock')}
+							>
+								<span className={styles.mediaDockPill} aria-hidden="true" />
+								<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+							</button>
+						</section>
+
+						<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')}>
+							<div className={styles.bottomDockLeft}>
+								<button
+									type="button"
+									className={styles.mediaDockText}
+									onClick={() => {
+										if (isMobileLandscapeRef.current) return;
+										setMediaDockOpen((prev) => !prev);
+									}}
+									aria-label={t('editors.mediaDock')}
+								>
+									{t('editors.mediaTabMedia')}
+								</button>
+							</div>
+							<button type="button" className={styles.bottomDockClose} onClick={props.onClose} aria-label={t('common.close')} title={t('common.close')}>
+								<FontAwesomeIcon icon={byPrefixAndName.far.xmark} />
+							</button>
+						</nav>
+					</div>}
 				</section>
+
+				{isCoarsePointer && !mobileKeyboardOpen ? <section
+					className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}`}
+					aria-label={t('editors.mediaDock')}
+					onClick={(e) => e.stopPropagation()}
+				>
+					<button
+						type="button"
+						className={styles.mediaSheetHandle}
+						onClick={() => {
+							if (isMobileLandscapeRef.current) return;
+							setMediaDockOpen((prev) => !prev);
+						}}
+						onTouchStart={handleTouchStart}
+						onTouchMove={handleDockTouchMove}
+						onTouchEnd={handleHandleTouchEnd}
+						aria-label={t('editors.mediaDock')}
+					>
+						<span className={styles.mediaDockPill} aria-hidden="true" />
+						<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+					</button>
+
+					<header className={styles.mediaSheetHeader}>
+						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleTouchStart} onTouchEnd={handleDockSwipeEnd}>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 0}
+								className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(0)}
+							>
+								{t('editors.mediaTabMedia')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 1}
+								className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(1)}
+							>
+								{t('editors.mediaTabLinks')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 2}
+								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(2)}
+							>
+								{t('editors.mediaTabDocuments')}
+							</button>
+						</div>
+						<button type="button" className={styles.mediaSheetClose} onClick={closeMediaDock} aria-label={t('common.close')}>
+							✕
+						</button>
+					</header>
+
+					<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
+						<div className={styles.mediaPanel} role="tabpanel">
+							{renderMediaDockPanel()}
+						</div>
+					</div>
+				</section> : null}
+
+				{!isCoarsePointer ? <aside
+					className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
+					onClick={(e) => e.stopPropagation()}
+					aria-hidden={!mediaDockOpen}
+				>
+					<header className={styles.mediaFlyoutHeader}>
+						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')}>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 0}
+								className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(0)}
+							>
+								{t('editors.mediaTabMedia')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 1}
+								className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(1)}
+							>
+								{t('editors.mediaTabLinks')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 2}
+								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(2)}
+							>
+								{t('editors.mediaTabDocuments')}
+							</button>
+						</div>
+						<button type="button" className={styles.mediaFlyoutClose} onClick={closeMediaDock} aria-label={t('common.close')}>
+							✕
+						</button>
+					</header>
+					<div className={styles.mediaFlyoutBody}>
+						<div className={styles.mediaPanel} role="tabpanel">
+							{renderMediaDockPanel()}
+						</div>
+					</div>
+				</aside> : null}
 			</div>
 		);
 	}
@@ -1382,6 +1602,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							viewportClassName={mobileKeyboardOpen ? styles.editorViewportKeyboardOpen : undefined}
 							contentClassName={styles.fullBodyFieldRich}
 							onEditorChange={setTextEditor}
+							onCreateUrlPreview={handleCreateUrlPreview}
 							onChange={() => {
 								syncTextNotePlainText(props.doc, richContentFragment);
 							}}
@@ -1392,7 +1613,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 						<div className={styles.checklistToolbarSlot}>
-							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact />
+							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} />
 						</div>
 						{/* Keyboard-open branch:
 						    Checklist mode does not use the generic rich-text viewport above, so we add
@@ -1690,6 +1911,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						>
 							{t('editors.mediaTabLinks')}
 						</button>
+						<button
+							type="button"
+							role="tab"
+							aria-selected={mediaDockTab === 2}
+							className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+							onClick={() => setMediaDockTab(2)}
+						>
+							{t('editors.mediaTabDocuments')}
+						</button>
 					</div>
 					<button type="button" className={styles.mediaSheetClose} onClick={closeMediaDock} aria-label={t('common.close')}>
 						✕
@@ -1698,14 +1928,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 				<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
 					<div className={styles.mediaPanel} role="tabpanel">
-						{mediaDockTab === 0 ? (
-							<NoteMediaPanel
-								docId={props.docId}
-								authUserId={props.authUserId}
-								canEdit={!readOnly}
-								onAddImage={props.onAddImage}
-							/>
-						) : <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />}
+						{renderMediaDockPanel()}
 					</div>
 				</div>
 			</section> : null}
@@ -1735,6 +1958,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							>
 								{t('editors.mediaTabLinks')}
 							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 2}
+								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(2)}
+							>
+								{t('editors.mediaTabDocuments')}
+							</button>
 						</div>
 						<button type="button" className={styles.mediaFlyoutClose} onClick={closeMediaDock} aria-label={t('common.close')}>
 							✕
@@ -1742,14 +1974,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</header>
 					<div className={styles.mediaFlyoutBody}>
 						<div className={styles.mediaPanel} role="tabpanel">
-							{mediaDockTab === 0 ? (
-								<NoteMediaPanel
-									docId={props.docId}
-									authUserId={props.authUserId}
-									canEdit={!readOnly}
-									onAddImage={props.onAddImage}
-								/>
-							) : <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />}
+							{renderMediaDockPanel()}
 						</div>
 					</div>
 			</aside> : null}
@@ -1774,6 +1999,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setMoreMenuAnchorRect(null);
 					props.onAddImage?.();
 				} : undefined}
+				onAddDocument={props.onAddDocument ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					props.onAddDocument?.();
+				} : undefined}
+				onAddUrlPreview={!readOnly ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					handleCreateUrlPreview();
+				} : undefined}
 				onTrash={() => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
@@ -1797,6 +2032,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						editor={type === 'text' ? textEditor : activeChecklistRowEditor}
 						variant={type === 'text' ? 'full' : 'minimal'}
 						compact
+						onCreateUrlPreview={handleCreateUrlPreview}
 					/>
 				</div>
 			</>,

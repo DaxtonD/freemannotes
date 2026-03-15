@@ -563,6 +563,7 @@ function contentTypeFor(filePath) {
 	const ext = path.extname(filePath).toLowerCase();
 	if (ext === '.html') return 'text/html; charset=utf-8';
 	if (ext === '.js') return 'text/javascript; charset=utf-8';
+	if (ext === '.mjs') return 'text/javascript; charset=utf-8';
 	if (ext === '.css') return 'text/css; charset=utf-8';
 	if (ext === '.json') return 'application/json; charset=utf-8';
 	if (ext === '.svg') return 'image/svg+xml';

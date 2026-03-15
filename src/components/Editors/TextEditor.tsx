@@ -10,17 +10,19 @@ import {
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
+import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { createRichTextDocFromPlainText } from '../../core/richText';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
+import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type TextEditorProps = {
-	onSave: (args: { title: string; body: string; richContent: JSONContent }) => void | Promise<void>;
+	onSave: (args: { title: string; body: string; richContent: JSONContent; previewLinks: string[] }) => void | Promise<void>;
 	onCancel: () => void;
 };
 
@@ -33,9 +35,10 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const [title, setTitle] = React.useState('');
 	const [body, setBody] = React.useState('');
 	const [bodyRichContent, setBodyRichContent] = React.useState<JSONContent>(() => createRichTextDocFromPlainText('', 'full'));
+	const [previewLinks, setPreviewLinks] = React.useState<string[]>([]);
 	const [saving, setSaving] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
-	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1>(0);
+	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(0);
 	// More-menu state (editor 3-dot button):
 	// - Desktop: anchored popover positioned using the trigger button rect.
 	// - Mobile: bottom-sheet menu (anchor rect is ignored).
@@ -68,6 +71,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		return () => window.clearTimeout(timeoutId);
 	}, [isCoarsePointer]);
 	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const titleInputRef = React.useRef<HTMLInputElement | null>(null);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
@@ -116,8 +120,28 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		const dy = t0.clientY - start.y;
 		if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
 		setMediaDockTab((prev) => {
-			if (dx < 0) return prev === 0 ? 1 : prev;
-			return prev === 1 ? 0 : prev;
+			if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
+			return Math.max(prev - 1, 0) as 0 | 1 | 2;
+		});
+	}, []);
+
+	const handleMediaSheetTouchStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		const touch = event.touches[0];
+		if (!touch) return;
+		mediaSheetSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+	}, []);
+
+	const handleMediaSheetTouchEnd = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		const start = mediaSheetSwipeStartRef.current;
+		const touch = event.changedTouches[0];
+		mediaSheetSwipeStartRef.current = null;
+		if (!start || !touch) return;
+		const dx = touch.clientX - start.x;
+		const dy = touch.clientY - start.y;
+		if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
+		setMediaDockTab((prev) => {
+			if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
+			return Math.max(prev - 1, 0) as 0 | 1 | 2;
 		});
 	}, []);
 
@@ -134,11 +158,22 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		if (saving) return;
 		setSaving(true);
 		try {
-			await props.onSave({ title, body, richContent: bodyRichContent });
+			await props.onSave({ title, body, richContent: bodyRichContent, previewLinks });
 		} finally {
 			setSaving(false);
 		}
 	};
+
+	const handleCreateUrlPreview = React.useCallback((): void => {
+		const next = window.prompt(t('links.prompt'), 'https://');
+		if (!next) return;
+		setPreviewLinks((current) => mergeNotePreviewLinkInputs(current, next));
+	}, [t]);
+
+	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
+		if (mediaDockTab === 2) return <DocumentsPanel />;
+		return <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />;
+	}, [mediaDockTab]);
 
 	const backdropPressStartedRef = React.useRef(false);
 	const handleOverlayBackdropPressStart = React.useCallback((event: React.PointerEvent | React.MouseEvent): void => {
@@ -188,9 +223,11 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						viewportClassName={mobileKeyboardOpen ? styles.editorViewportKeyboardOpen : undefined}
 						contentClassName={styles.fullBodyFieldRich}
 						onEditorChange={setTextEditor}
-						onChange={({ json, text }) => {
-							setBodyRichContent(json);
-							setBody(text);
+						onCreateUrlPreview={handleCreateUrlPreview}
+						onChange={(payload) => {
+							if (!payload) return;
+							setBodyRichContent(payload.json);
+							setBody(payload.text);
 						}}
 					/>
 				</div>
@@ -331,6 +368,15 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						>
 							{t('editors.mediaTabLinks')}
 						</button>
+						<button
+							type="button"
+							role="tab"
+							aria-selected={mediaDockTab === 2}
+							className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+							onClick={() => setMediaDockTab(2)}
+						>
+							{t('editors.mediaTabDocuments')}
+						</button>
 					</div>
 					<button
 						type="button"
@@ -345,9 +391,9 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					</button>
 				</header>
 
-				<div className={styles.mediaSheetBody}>
+				<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
 					<div className={styles.mediaPanel} role="tabpanel">
-						<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
+						{renderMediaDockPanel()}
 					</div>
 				</div>
 			</section>}
@@ -377,6 +423,15 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 							>
 								{t('editors.mediaTabLinks')}
 							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 2}
+								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(2)}
+							>
+								{t('editors.mediaTabDocuments')}
+							</button>
 						</div>
 						<button type="button" className={styles.mediaFlyoutClose} onClick={() => setMediaDockOpen(false)} aria-label={t('common.close')}>
 							✕
@@ -384,7 +439,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					</header>
 					<div className={styles.mediaFlyoutBody}>
 						<div className={styles.mediaPanel} role="tabpanel">
-							<div className={styles.mediaPanelPlaceholder} aria-hidden="true" />
+							{renderMediaDockPanel()}
 						</div>
 					</div>
 			</aside>
@@ -399,6 +454,11 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
 				}}
+				onAddUrlPreview={() => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					handleCreateUrlPreview();
+				}}
 			/>
 		) : null}
 			{isCoarsePointer && keyboard.isOpen ? createPortal(
@@ -410,7 +470,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						className={styles.floatingToolbar}
 						style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 					>
-						<RichTextToolbar editor={textEditor} variant="full" compact />
+						<RichTextToolbar editor={textEditor} variant="full" compact onCreateUrlPreview={handleCreateUrlPreview} />
 					</div>
 				</>,
 				document.body

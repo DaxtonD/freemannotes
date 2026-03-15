@@ -2,9 +2,14 @@ import { generateText, getSchema, type Extensions, type JSONContent } from '@tip
 import Collaboration from '@tiptap/extension-collaboration';
 import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
+import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table';
+import TaskItem from '@tiptap/extension-task-item';
+import TaskList from '@tiptap/extension-task-list';
 import TextAlign from '@tiptap/extension-text-align';
 import Underline from '@tiptap/extension-underline';
 import StarterKit from '@tiptap/starter-kit';
+import MarkdownIt from 'markdown-it';
+import markdownItTaskLists from 'markdown-it-task-lists';
 import { prosemirrorJSONToYXmlFragment, yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import * as Y from 'yjs';
 
@@ -12,6 +17,20 @@ export const TEXT_NOTE_RICH_FIELD = 'contentRich';
 export const CHECKLIST_ITEM_RICH_FIELD = 'contentRich';
 
 export type RichTextVariant = 'full' | 'minimal';
+
+const markdownParser = new MarkdownIt({
+	html: false,
+	linkify: true,
+	typographer: false,
+}).use(markdownItTaskLists, {
+	enabled: true,
+	label: false,
+	labelAfter: false,
+});
+
+const MEANINGFUL_CLIPBOARD_HTML_PATTERN = /<(p|div|ul|ol|li|strong|b|em|i|a|h1|h2|h3|blockquote|pre|code|table|thead|tbody|tr|th|td|hr)\b/i;
+const MARKDOWN_BLOCK_PATTERN = /(^|\n)(#{1,6}\s|>\s|[-+*]\s|\d+\.\s|```|~~~|\|.+\||\s*[-+*]\s\[[ xX]\]\s)|(^|\n)\s*([-*_])(?:\s*\3){2,}\s*($|\n)/m;
+const MARKDOWN_INLINE_PATTERN = /(\*\*[^*\n][\s\S]*?\*\*|__[^_\n][\s\S]*?__|~~[^~\n][\s\S]*?~~|`[^`\n]+`|\[[^\]]+\]\([^\)]+\)|!\[[^\]]*\]\([^\)]+\))/;
 
 function buildStarterKit(variant: RichTextVariant) {
 	if (variant === 'minimal') {
@@ -53,7 +72,15 @@ export function createRichTextExtensions(args: {
 	];
 
 	if (args.variant === 'full') {
-		extensions.push(TextAlign.configure({ types: ['heading', 'paragraph'] }));
+		extensions.push(
+			TaskList,
+			TaskItem.configure({ nested: true }),
+			Table.configure({ resizable: false }),
+			TableRow,
+			TableHeader,
+			TableCell,
+			TextAlign.configure({ types: ['heading', 'paragraph'] })
+		);
 	}
 
 	if (args.placeholder) {
@@ -165,8 +192,13 @@ export function syncTextNotePlainText(doc: Y.Doc, fragment: Y.XmlFragment): stri
 }
 
 export function getTextNoteRichPreviewJson(doc: Y.Doc): JSONContent | null {
-	const fragment = doc.share.get(TEXT_NOTE_RICH_FIELD);
-	if (!(fragment instanceof Y.XmlFragment) || fragment.length === 0) return null;
+	// Materialize the named root fragment on read. On a cold load, relying on
+	// doc.share.get(...) can return undefined until some other code path first
+	// touches the root type, which makes note-card previews fall back to plain
+	// text until the editor opens. getXmlFragment() safely returns the existing
+	// fragment when present and instantiates the accessor when not yet realized.
+	const fragment = doc.getXmlFragment(TEXT_NOTE_RICH_FIELD);
+	if (fragment.length === 0) return null;
 	try {
 		return yXmlFragmentToProsemirrorJSON(fragment) as JSONContent;
 	} catch {
@@ -254,4 +286,78 @@ export function restoreChecklistItemRichContent(
 	const fragment = new Y.XmlFragment();
 	itemMap.set(CHECKLIST_ITEM_RICH_FIELD, fragment);
 	replaceRichFragmentFromJson(fragment, json, 'minimal');
+}
+
+function looksLikeMarkdown(text: string): boolean {
+	const normalized = String(text ?? '').replace(/\r\n?/g, '\n').trim();
+	if (normalized.length === 0) return false;
+	// Use a light heuristic instead of full parsing first so normal prose paste is cheap
+	// and only obviously-markdown text goes through the markdown-it conversion path.
+	return MARKDOWN_BLOCK_PATTERN.test(normalized) || MARKDOWN_INLINE_PATTERN.test(normalized);
+}
+
+function normalizeMarkdownTaskListHtml(html: string): string {
+	if (typeof DOMParser === 'undefined') return html;
+	// markdown-it-task-lists emits plain HTML checkboxes; reshape that markup into the
+	// data attributes TipTap expects so pasted task lists become real editable task nodes.
+	const doc = new DOMParser().parseFromString(html, 'text/html');
+	const taskLists = Array.from(doc.querySelectorAll('ul.contains-task-list'));
+	for (const list of taskLists) {
+		list.setAttribute('data-type', 'taskList');
+	}
+	const taskItems = Array.from(doc.querySelectorAll('li.task-list-item'));
+	for (const item of taskItems) {
+		const directCheckbox = Array.from(item.childNodes).find((node) => {
+			return node instanceof HTMLInputElement && node.type === 'checkbox';
+		}) as HTMLInputElement | undefined;
+		const fallbackCheckbox = directCheckbox ?? item.querySelector('input[type="checkbox"]') ?? undefined;
+		const checked = fallbackCheckbox?.checked === true;
+		item.setAttribute('data-type', 'taskItem');
+		item.setAttribute('data-checked', checked ? 'true' : 'false');
+		if (fallbackCheckbox) fallbackCheckbox.remove();
+
+		const label = doc.createElement('label');
+		label.contentEditable = 'false';
+		const input = doc.createElement('input');
+		input.type = 'checkbox';
+		if (checked) input.checked = true;
+		label.appendChild(input);
+
+		const contentWrapper = doc.createElement('div');
+		while (item.firstChild) {
+			contentWrapper.appendChild(item.firstChild);
+		}
+
+		item.append(label, contentWrapper);
+	}
+	return doc.body.innerHTML;
+}
+
+function getVisibleClipboardTextFromHtml(html: string): string {
+	if (typeof DOMParser === 'undefined') return '';
+	const doc = new DOMParser().parseFromString(html, 'text/html');
+	return (doc.body.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\r\n?/g, '\n').trim();
+}
+
+export function getMarkdownPasteHtml(args: {
+	text: string;
+	html?: string | null;
+	variant: RichTextVariant;
+}): string | null {
+	if (args.variant !== 'full') return null;
+	const text = String(args.text ?? '').replace(/\r\n?/g, '\n');
+	if (!looksLikeMarkdown(text)) return null;
+	const clipboardHtml = String(args.html ?? '').trim();
+	if (
+		// If the clipboard already contains richer HTML than the markdown source, keep it.
+		// This avoids downgrading content copied from websites or other editors.
+		clipboardHtml &&
+		MEANINGFUL_CLIPBOARD_HTML_PATTERN.test(clipboardHtml) &&
+		getVisibleClipboardTextFromHtml(clipboardHtml) !== text.trim()
+	) {
+		return null;
+	}
+	const rendered = markdownParser.render(text).trim();
+	if (rendered.length === 0) return null;
+	return normalizeMarkdownTaskListHtml(rendered);
 }

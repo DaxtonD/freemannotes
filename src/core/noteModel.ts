@@ -27,6 +27,7 @@ import {
 	syncChecklistItemPlainText,
 	syncTextNotePlainText,
 } from './richText';
+import { setNotePreviewLinksOnDoc } from './noteLinks';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -131,7 +132,7 @@ export function makeNoteId(prefix: string): string {
  * @param title - Initial title string.
  * @param body  - Initial text content.
  */
-export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richContent?: JSONContent | null): void {
+export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richContent?: JSONContent | null, previewLinks?: readonly string[]): void {
 	const now = Date.now();
 	doc.transact(() => {
 		/* Title – replace any pre-existing text with the supplied value. */
@@ -158,6 +159,7 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 		metadata.set('trashedAt', null);
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
+		setNotePreviewLinksOnDoc(doc, previewLinks || []);
 	});
 }
 
@@ -180,7 +182,8 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 export function initChecklistNoteDoc(
 	doc: Y.Doc,
 	title: string,
-	items: ReadonlyArray<ChecklistItemData & { richContent?: JSONContent | null }>
+	items: ReadonlyArray<ChecklistItemData & { richContent?: JSONContent | null }>,
+	previewLinks?: readonly string[]
 ): void {
 	const now = Date.now();
 	const yChecklist = doc.getArray<Y.Map<any>>('checklist');
@@ -200,6 +203,7 @@ export function initChecklistNoteDoc(
 		metadata.set('trashedAt', null);
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
+		setNotePreviewLinksOnDoc(doc, previewLinks || []);
 
 		/* Clear any pre-existing checklist data (safety net for re-initialization). */
 		if (yChecklist.length > 0) {
