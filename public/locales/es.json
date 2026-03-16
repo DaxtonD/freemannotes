@@ -6,7 +6,8 @@
     "close": "Cerrar",
     "save": "Guardar",
     "cancel": "Cancelar",
-    "loading": "Cargando…"
+    "loading": "Cargando…",
+    "refresh": "Actualizar"
   },
   "app": {
     "newTextNote": "Nueva nota de texto",
@@ -77,7 +78,16 @@
     "themeCategoryEverforest": "Everforest",
     "themeCategoryRosePine": "Rose Pine",
     "themeCategoryTokyoNight": "Tokyo Night",
-    "language": "Idioma"
+    "language": "Idioma",
+    "installNow": "Instalar app",
+    "installPromptBody": "FreemanNotes está lista para instalarse y abrir más rápido, funcionar sin conexión y ejecutarse como app independiente.",
+    "installIosBody": "FreemanNotes se puede instalar desde Safari en iPhone y iPad.",
+    "installIosStep1": "Toca el botón Compartir en Safari.",
+    "installIosStep2": "Elige Añadir a pantalla de inicio.",
+    "installAcceptedToast": "Se abrió el aviso de instalación",
+    "offlineReadyToast": "FreemanNotes está lista para usarse sin conexión",
+    "updateAvailable": "Hay una nueva versión de la app lista.",
+    "updateNow": "Actualizar ahora"
   },
   "editors": {
     "newText": "Nueva nota de texto",

@@ -1,7 +1,13 @@
 const { defineConfig, loadEnv } = require('vite');
 const react = require('@vitejs/plugin-react');
+const { VitePWA } = require('vite-plugin-pwa');
 const { WebSocketServer } = require('ws');
 const { setupWSConnection } = require('y-websocket/bin/utils');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const packageJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8'));
+const appVersion = String(packageJson.version || 'dev');
 
 function attachProxyErrorHandlers(proxy, label) {
 	const swallowSocketError = (socket) => {
@@ -94,7 +100,51 @@ module.exports = defineConfig(({ mode }) => {
 
 	return {
 		envDir,
-		plugins: [react(), ...(embedYjs ? [yjsWebsocketPlugin()] : [])],
+		plugins: [
+			react(),
+			VitePWA({
+				strategies: 'injectManifest',
+				srcDir: 'src',
+				filename: 'sw.js',
+				injectRegister: false,
+				registerType: 'autoUpdate',
+				includeAssets: [
+					'apple-touch-icon.png',
+					'pwa-192x192.png',
+					'pwa-512x512.png',
+					'pwa-maskable-192x192.png',
+					'pwa-maskable-512x512.png',
+				],
+				manifest: {
+					name: 'FreemanNotes',
+					short_name: 'Notes',
+					description: 'Offline-first collaborative note taking for personal and shared workspaces.',
+					start_url: '/',
+					scope: '/',
+					display: 'standalone',
+					orientation: 'portrait',
+					theme_color: '#2f5af4',
+					background_color: '#f5f7fb',
+					icons: [
+						{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+						{ src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+						{ src: 'pwa-maskable-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+						{ src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+					],
+				},
+				injectManifest: {
+					globPatterns: ['**/*.{js,css,html,ico,png,svg,json,woff2}'],
+					maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+				},
+				devOptions: {
+					enabled: false,
+				},
+			}),
+			...(embedYjs ? [yjsWebsocketPlugin()] : []),
+		],
+		define: {
+			__APP_VERSION__: JSON.stringify(appVersion),
+		},
 		server: {
 			host: true,
 			port: devPort,

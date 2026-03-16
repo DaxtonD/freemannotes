@@ -1,5 +1,6 @@
 import { listNoteLinks, syncNoteLinks, type NoteLinkRecord } from './noteLinkApi';
 import type { ExtractedNoteLink } from './noteLinks';
+import { requestPwaBackgroundSync } from './pwa';
 
 // Offline-aware link-preview store:
 // - remembers resolved previews per note
@@ -202,6 +203,7 @@ export async function queueNoteLinkSync(args: {
 		lastError: null,
 	});
 	await writeCachedLinks(docId, buildQueuedRecords(docId, args.links), { emit: true });
+	void requestPwaBackgroundSync();
 }
 
 export async function refreshRemoteNoteLinks(docId: string): Promise<readonly NoteLinkRecord[]> {
@@ -211,7 +213,9 @@ export async function refreshRemoteNoteLinks(docId: string): Promise<readonly No
 	const request = (async () => {
 		try {
 			const response = await listNoteLinks(docId);
-			await writeCachedLinks(docId, response.links);
+			// Emit here as well as during local queue writes so note-card rails on other
+			// clients react when fresh preview metadata arrives from the server.
+			await writeCachedLinks(docId, response.links, { emit: true });
 			return response.links;
 		} finally {
 			pendingRefreshes.delete(docId);
