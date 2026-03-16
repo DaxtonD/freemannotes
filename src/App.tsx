@@ -26,6 +26,8 @@ import { NoteEditor } from './components/Editors/NoteEditor';
 import { UserManagementModal } from './components/Admin/UserManagementModal';
 import { PreferencesModal } from './components/Preferences/PreferencesModal';
 import { AppearanceModal } from './components/Preferences/AppearanceModal';
+import { UserModal } from './components/Preferences/UserModal';
+import { type CropAreaPixels, getAvatarUploadBlob } from './core/avatarProfileImage';
 import { SendInviteModal } from './components/Invites/SendInviteModal';
 import { CollaboratorModal } from './components/Share/CollaboratorModal';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
@@ -117,6 +119,7 @@ type OverlaySnapshot = {
 	selectedNoteId: string | null;
 	isPreferencesOpen: boolean;
 	isAppearanceOpen: boolean;
+	isUserOpen: boolean;
 	isUserManagementOpen: boolean;
 	isSendInviteOpen: boolean;
 	isWorkspaceSwitcherOpen: boolean;
@@ -170,6 +173,7 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	selectedNoteId: null,
 	isPreferencesOpen: false,
 	isAppearanceOpen: false,
+	isUserOpen: false,
 	isUserManagementOpen: false,
 	isSendInviteOpen: false,
 	isWorkspaceSwitcherOpen: false,
@@ -293,45 +297,6 @@ function clearAuthCache(): void {
 	} catch {
 		// ignore
 	}
-}
-
-// Cropper callback provides pixel coordinates in the *source image*.
-// We store these so we can produce a deterministic 1:1 square avatar later.
-type CropAreaPixels = { width: number; height: number; x: number; y: number };
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-	return new Promise((resolve, reject) => {
-		const img = new Image();
-		img.addEventListener('load', () => resolve(img));
-		img.addEventListener('error', () => reject(new Error('Failed to load image')));
-		// Some browsers will taint the canvas if we draw cross-origin images
-		// without CORS. Registration uses a local object URL, but we keep this here
-		// because the helper is generic.
-		img.crossOrigin = 'anonymous';
-		img.src = src;
-	});
-}
-
-async function getCroppedSquareBlob(imageSrc: string, crop: CropAreaPixels, sizePx: number): Promise<Blob> {
-	// Converts a crop selection into a square PNG Blob.
-	//
-	// Why canvas:
-	// - `react-easy-crop` gives us crop coordinates; canvas is the simplest way
-	//   to apply those coordinates without additional dependencies.
-	// - We upload a normalized image (small, square) to keep server work bounded
-	//   and provide consistent avatar rendering.
-	const image = await loadImage(imageSrc);
-	const canvas = document.createElement('canvas');
-	canvas.width = sizePx;
-	canvas.height = sizePx;
-	const ctx = canvas.getContext('2d');
-	if (!ctx) throw new Error('Canvas not supported');
-
-	ctx.drawImage(image, crop.x, crop.y, crop.width, crop.height, 0, 0, sizePx, sizePx);
-
-	const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-	if (!blob) throw new Error('Failed to encode image');
-	return blob;
 }
 
 export function App(): React.JSX.Element {
@@ -468,7 +433,10 @@ export function App(): React.JSX.Element {
 	// Phase 10 preferences shell entry point opened from top-right avatar.
 	const [isPreferencesOpen, setIsPreferencesOpen] = React.useState(false);
 	const [isAppearanceOpen, setIsAppearanceOpen] = React.useState(false);
+	const [isUserOpen, setIsUserOpen] = React.useState(false);
 	const [isUserManagementOpen, setIsUserManagementOpen] = React.useState(false);
+	const [userModalBusy, setUserModalBusy] = React.useState(false);
+	const [userModalError, setUserModalError] = React.useState<string | null>(null);
 	const [isSendInviteOpen, setIsSendInviteOpen] = React.useState(false);
 	const [isShareNotificationsOpen, setIsShareNotificationsOpen] = React.useState(false);
 	const [inviteWorkspaceTarget, setInviteWorkspaceTarget] = React.useState<{ id: string; name: string | null } | null>(null);
@@ -528,6 +496,7 @@ export function App(): React.JSX.Element {
 			selectedNoteId,
 			isPreferencesOpen,
 			isAppearanceOpen,
+			isUserOpen,
 			isUserManagementOpen,
 			isSendInviteOpen,
 			isWorkspaceSwitcherOpen,
@@ -541,6 +510,7 @@ export function App(): React.JSX.Element {
 		selectedNoteId,
 		isPreferencesOpen,
 		isAppearanceOpen,
+		isUserOpen,
 		isUserManagementOpen,
 		isSendInviteOpen,
 		isWorkspaceSwitcherOpen,
@@ -555,6 +525,7 @@ export function App(): React.JSX.Element {
 		setSelectedNoteId(snapshot.selectedNoteId);
 		setIsPreferencesOpen(snapshot.isPreferencesOpen);
 		setIsAppearanceOpen(snapshot.isAppearanceOpen);
+		setIsUserOpen(snapshot.isUserOpen);
 		setIsUserManagementOpen(snapshot.isUserManagementOpen);
 		setIsSendInviteOpen(snapshot.isSendInviteOpen);
 		setIsWorkspaceSwitcherOpen(snapshot.isWorkspaceSwitcherOpen);
@@ -618,6 +589,7 @@ export function App(): React.JSX.Element {
 				...current,
 				isPreferencesOpen: true,
 				isAppearanceOpen: false,
+				isUserOpen: false,
 				isUserManagementOpen: false,
 				isSendInviteOpen: false,
 				isWorkspaceSwitcherOpen: false,
@@ -634,6 +606,25 @@ export function App(): React.JSX.Element {
 				...current,
 				isPreferencesOpen: false,
 				isAppearanceOpen: true,
+				isUserOpen: false,
+				isUserManagementOpen: false,
+				isSendInviteOpen: false,
+				isWorkspaceSwitcherOpen: false,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const openUserFromPreferences = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		setUserModalError(null);
+		commitOverlaySnapshot(
+			{
+				...current,
+				isPreferencesOpen: false,
+				isAppearanceOpen: false,
+				isUserOpen: true,
 				isUserManagementOpen: false,
 				isSendInviteOpen: false,
 				isWorkspaceSwitcherOpen: false,
@@ -647,6 +638,13 @@ export function App(): React.JSX.Element {
 		if (goBackIfOverlayHistory()) return;
 		setIsAppearanceOpen(false);
 		setIsPreferencesOpen(true);
+	}, [goBackIfOverlayHistory]);
+
+	const backToPreferencesFromUser = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setIsUserOpen(false);
+		setIsPreferencesOpen(true);
+		setUserModalError(null);
 	}, [goBackIfOverlayHistory]);
 
 	const openUserManagementFromPreferences = React.useCallback(() => {
@@ -1106,6 +1104,41 @@ export function App(): React.JSX.Element {
 		[deviceId, manager, restoreCachedAuthSession]
 	);
 
+	const refreshAuthenticatedProfile = React.useCallback(async (): Promise<string | null> => {
+		if (authStatus !== 'authed') return null;
+		try {
+			const res = await fetch(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
+				credentials: 'include',
+			});
+			const contentType = String(res.headers.get('content-type') || '').toLowerCase();
+			if (!res.ok || !contentType.includes('application/json')) return null;
+
+			const body = await res.json().catch(() => null);
+			const userId = body?.user?.id ? String(body.user.id) : null;
+			if (!userId) return null;
+			const profileImage = body?.user?.profileImage ? String(body.user.profileImage) : null;
+			const workspaceId = body?.workspaceId ? String(body.workspaceId) : null;
+
+			setAuthUserId(userId);
+			setAuthProfileImage(profileImage);
+			setAuthWorkspaceId(workspaceId);
+			setAuthStatus('authed');
+			setAuthOfflineMode(false);
+			manager.setActiveWorkspaceId(workspaceId);
+			manager.setWebsocketEnabled(Boolean(workspaceId));
+			writeAuthCache({ v: 1, userId, workspaceId, profileImage });
+			return profileImage;
+		} catch {
+			return null;
+		}
+	}, [authStatus, deviceId, manager]);
+
+	const refreshAuthenticatedProfileRef = React.useRef(refreshAuthenticatedProfile);
+
+	React.useEffect(() => {
+		refreshAuthenticatedProfileRef.current = refreshAuthenticatedProfile;
+	}, [refreshAuthenticatedProfile]);
+
 	// The workspace is now pre-seeded at DocumentManager construction time
 	// (via initialWorkspaceId in main.tsx). This avoids the race where child
 	// effects (NoteGrid) start awaiting registry data before this parent
@@ -1292,6 +1325,9 @@ export function App(): React.JSX.Element {
 		manager.setActiveWorkspaceId(null);
 		manager.setWebsocketEnabled(false);
 		cancelSyncOutboxWorker(authUserId);
+		setIsUserOpen(false);
+		setUserModalBusy(false);
+		setUserModalError(null);
 		setIsUserManagementOpen(false);
 		setIsPreferencesOpen(false);
 		setIsAppearanceOpen(false);
@@ -2000,6 +2036,8 @@ export function App(): React.JSX.Element {
 						const isNoteMediaMetadataEvent = payload.type === 'workspace-metadata-changed'
 							&& typeof payload.reason === 'string'
 							&& payload.reason.startsWith('note-media-');
+					const isUserProfileMetadataEvent = payload.type === 'workspace-metadata-changed'
+						&& payload.reason === 'user-profile-updated';
 					if (
 						payload.type === 'workspace-metadata-changed' &&
 						payload.reason === 'workspace-deleted' &&
@@ -2046,6 +2084,14 @@ export function App(): React.JSX.Element {
 							void syncNoteShareCollaborators(authUserId, payload.docId, { suppressError: true });
 						}
 						if (isNoteShareMetadataEvent) {
+							void refreshNoteShareStateRef.current();
+							bumpCollaborationRefreshToken();
+							return;
+						}
+						if (isUserProfileMetadataEvent) {
+							void refreshAuthenticatedProfileRef.current();
+							void loadSidebarWorkspacesRef.current();
+							void refreshActiveWorkspaceRef.current();
 							void refreshNoteShareStateRef.current();
 							bumpCollaborationRefreshToken();
 							return;
@@ -2332,9 +2378,9 @@ export function App(): React.JSX.Element {
 			// Optional post-register avatar upload.
 			// Delay this until after /api/auth/me succeeds so the fresh session cookie is
 			// definitely active before the multipart upload hits the authenticated route.
-			if (authMode === 'register' && registerAvatarUrl && registerAvatarAreaPixels) {
+			if (authMode === 'register' && registerAvatarUrl) {
 				try {
-					const blob = await getCroppedSquareBlob(registerAvatarUrl, registerAvatarAreaPixels, 256);
+					const blob = await getAvatarUploadBlob(registerAvatarUrl, registerAvatarAreaPixels, 256);
 					const form = new FormData();
 					form.append('file', blob, 'avatar.png');
 					const uploadRes = await fetch('/api/user/profile-image', {
@@ -2349,7 +2395,7 @@ export function App(): React.JSX.Element {
 						resolvedProfileImage = profileImage;
 					}
 				} catch {
-					showBriefDialog('Account created, but profile photo upload failed');
+					showBriefDialog(t('prefs.avatarUploadFailed'));
 				}
 			}
 
@@ -2368,7 +2414,67 @@ export function App(): React.JSX.Element {
 		} finally {
 			setAuthBusy(false);
 		}
-	}, [authBusy, authEmail, authMode, authName, authPassword, authPasswordConfirm, authPasswordStrengthScore, deviceId, manager, registerAvatarAreaPixels, registerAvatarUrl, showBriefDialog]);
+	}, [authBusy, authEmail, authMode, authName, authPassword, authPasswordConfirm, authPasswordStrengthScore, deviceId, manager, registerAvatarAreaPixels, registerAvatarUrl, showBriefDialog, t]);
+
+	const handleSaveUserAvatar = React.useCallback(
+		async ({ imageUrl, crop }: { imageUrl: string; crop: CropAreaPixels | null }) => {
+			if (userModalBusy) return;
+			if (authStatus !== 'authed' || !authUserId) {
+				setUserModalError(t('prefs.avatarUploadFailed'));
+				return;
+			}
+
+			setUserModalBusy(true);
+			setUserModalError(null);
+			try {
+				const blob = await getAvatarUploadBlob(imageUrl, crop, 256);
+				const form = new FormData();
+				form.append('file', blob, 'avatar.png');
+
+				const uploadRes = await fetch('/api/user/profile-image', {
+					method: 'POST',
+					credentials: 'include',
+					body: form,
+				});
+				const uploadBody = await uploadRes.json().catch(() => null);
+				if (!uploadRes.ok) {
+					throw new Error(
+						typeof uploadBody?.error === 'string' && uploadBody.error.trim()
+							? uploadBody.error
+							: t('prefs.avatarUploadFailed')
+					);
+				}
+
+				const uploadedProfileImage = uploadBody?.profileImage ? String(uploadBody.profileImage) : null;
+				if (uploadedProfileImage) {
+					setAuthProfileImage(uploadedProfileImage);
+					writeAuthCache({
+						v: 1,
+						userId: authUserId,
+						workspaceId: authWorkspaceId,
+						profileImage: uploadedProfileImage,
+					});
+				}
+
+				await Promise.allSettled([
+					refreshAuthenticatedProfileRef.current(),
+					loadSidebarWorkspacesRef.current(),
+					refreshActiveWorkspaceRef.current(),
+					refreshNoteShareStateRef.current(),
+				]);
+				bumpCollaborationRefreshToken();
+				setIsUserOpen(false);
+				setIsPreferencesOpen(true);
+				setUserModalError(null);
+				showBriefDialog(t('prefs.avatarUpdated'));
+			} catch (error) {
+				setUserModalError(error instanceof Error && error.message ? error.message : t('prefs.avatarUploadFailed'));
+			} finally {
+				setUserModalBusy(false);
+			}
+		},
+		[authStatus, authUserId, authWorkspaceId, bumpCollaborationRefreshToken, showBriefDialog, t, userModalBusy]
+	);
 
 	const authGateView = (
 		<div className="auth-shell">
@@ -4265,9 +4371,25 @@ export function App(): React.JSX.Element {
 					void updateUserPreferences(deviceId, { quickDeleteChecklist: next });
 				}}
 				onOpenAppearance={openAppearanceFromPreferences}
+				onOpenUser={openUserFromPreferences}
 				onUserManagement={openUserManagementFromPreferences}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}
+			/>
+
+			<UserModal
+				isOpen={isUserOpen}
+				onClose={() => {
+					if (goBackIfOverlayHistory()) return;
+					setIsUserOpen(false);
+					setUserModalError(null);
+				}}
+				onBack={backToPreferencesFromUser}
+				t={t}
+				currentProfileImage={authProfileImage}
+				busy={userModalBusy}
+				error={userModalError}
+				onSave={handleSaveUserAvatar}
 			/>
 
 			<AppearanceModal

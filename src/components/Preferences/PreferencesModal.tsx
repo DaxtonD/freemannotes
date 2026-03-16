@@ -6,11 +6,11 @@ import styles from './PreferencesModal.module.css';
 type PreferencesSection =
 	| 'install'
 	| 'about'
+	| 'user'
 	| 'appearance'
 	| 'editor'
 	| 'notifications'
 	| 'note-management'
-	| 'drag-animation'
 	| 'collaborators';
 
 type SectionConfig = {
@@ -21,11 +21,11 @@ type SectionConfig = {
 const sections: readonly SectionConfig[] = [
 	{ id: 'install', labelKey: 'prefs.installApp' },
 	{ id: 'about', labelKey: 'prefs.about' },
+	{ id: 'user', labelKey: 'prefs.user' },
 	{ id: 'appearance', labelKey: 'prefs.appearance' },
 	{ id: 'editor', labelKey: 'prefs.editor' },
 	{ id: 'notifications', labelKey: 'prefs.notifications' },
 	{ id: 'note-management', labelKey: 'prefs.noteManagement' },
-	{ id: 'drag-animation', labelKey: 'prefs.dragAnimation' },
 	{ id: 'collaborators', labelKey: 'prefs.collaborators' },
 ];
 
@@ -39,6 +39,7 @@ export type PreferencesModalProps = {
 	installMethod?: 'prompt' | 'ios' | null;
 	installBusy?: boolean;
 	onInstallApp?: () => void | Promise<void>;
+	onOpenUser?: () => void;
 	onOpenAppearance?: () => void;
 	// Optional admin/session actions.
 	// These are injected by the App so Preferences can stay a mostly-presentational
@@ -216,6 +217,10 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 								type="button"
 								className={styles.sectionButton}
 								onClick={() => {
+									if (section.id === 'user') {
+										props.onOpenUser?.();
+										return;
+									}
 									if (section.id === 'appearance') {
 										props.onOpenAppearance?.();
 										return;
