@@ -65,6 +65,7 @@ import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './
 import { emitNoteMediaChanged, scheduleQueuedNoteImageFlush } from './core/noteMediaStore';
 import { flushQueuedNoteLinkSync } from './core/noteLinkStore';
 import { scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
+import { searchOfflineNotes } from './core/offlineSearch';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -78,6 +79,8 @@ import {
 	removeCachedWorkspace,
 	readCachedWorkspaceSnapshot,
 } from './core/workspaceMetadataStore';
+
+const DOCUMENT_VIEWER_STATE_EVENT = 'freemannotes:document-viewer-state';
 import { getWorkspaceDisplayName } from './core/workspaceDisplay';
 
 type EditorMode = 'none' | 'text' | 'checklist';
@@ -282,28 +285,6 @@ function writeAuthCache(next: AuthCacheV1): void {
 	}
 }
 
-/**
- * Detect whether this page load is a within-session reload (F5 / pull-to-refresh)
- * vs a fresh session (close-and-reopen, tab eviction, new tab).
- *
- * sessionStorage survives reloads but is cleared when the browser/tab closes,
- * so we use it as a sentinel. Combined with navigationType === 'reload' this
- * reliably identifies an intentional manual refresh.
- */
-const _isWithinSessionReload: boolean = (() => {
-	try {
-		const SESSION_KEY = 'freemannotes.session.active';
-		const wasActive = sessionStorage.getItem(SESSION_KEY) === 'true';
-		sessionStorage.setItem(SESSION_KEY, 'true');
-		if (!wasActive) return false;
-		const nav = performance?.getEntriesByType?.('navigation')?.[0] as
-			PerformanceNavigationTiming | undefined;
-		return nav?.type === 'reload';
-	} catch {
-		return false;
-	}
-})();
-
 function clearAuthCache(): void {
 	if (typeof window === 'undefined') return;
 	try {
@@ -428,13 +409,11 @@ export function App(): React.JSX.Element {
 	// Splash overlay:
 	// - During auth "loading": show a full-page splash immediately.
 	// - After auth "authed": keep an overlay until NoteGrid signals its initial
-	//   data is loaded. This prevents a refresh flash where cards paint, then
-	//   immediately spring-animate from an incorrect initial layout.
+	//   data is loaded. This covers both reloads and fresh-device startup so the
+	//   grid never paints placeholder/empty cards before IndexedDB hydration
+	//   and initial note docs are ready.
 	const [splashFading, setSplashFading] = React.useState(false);
-	// Only show the splash overlay when this is a within-session reload (F5 /
-	// pull-to-refresh). On a fresh session (close-and-reopen, tab eviction)
-	// skip the splash entirely — there is no previous layout to flash.
-	const [splashDismissed, setSplashDismissed] = React.useState(!_isWithinSessionReload);
+	const [splashDismissed, setSplashDismissed] = React.useState(false);
 	const handleGridReady = React.useCallback(() => {
 		setSplashFading(true);
 		setTimeout(() => setSplashDismissed(true), 400);
@@ -1866,10 +1845,28 @@ export function App(): React.JSX.Element {
 	const bumpCollaborationRefreshToken = React.useCallback(() => {
 		setCollaborationRefreshToken((value) => value + 1);
 	}, []);
+	const documentViewerOpenRef = React.useRef(false);
+	const pendingViewerRefreshRef = React.useRef(false);
 
 	React.useEffect(() => {
 		refreshNoteShareStateRef.current = refreshNoteShareState;
 	}, [refreshNoteShareState]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const onViewerState = (event: Event): void => {
+			const open = Boolean((event as CustomEvent<{ open?: boolean }>).detail?.open);
+			documentViewerOpenRef.current = open;
+			if (open || !pendingViewerRefreshRef.current) return;
+			pendingViewerRefreshRef.current = false;
+			void loadSidebarWorkspacesRef.current();
+			void refreshActiveWorkspaceRef.current();
+			void refreshNoteShareStateRef.current();
+			bumpCollaborationRefreshToken();
+		};
+		window.addEventListener(DOCUMENT_VIEWER_STATE_EVENT, onViewerState as EventListener);
+		return () => window.removeEventListener(DOCUMENT_VIEWER_STATE_EVENT, onViewerState as EventListener);
+	}, [bumpCollaborationRefreshToken]);
 
 	React.useEffect(() => {
 		void refreshNoteShareState();
@@ -1912,6 +1909,10 @@ export function App(): React.JSX.Element {
 		};
 
 		const refreshWorkspaceMetadata = () => {
+			if (documentViewerOpenRef.current) {
+				pendingViewerRefreshRef.current = true;
+				return;
+			}
 			// Fan-out refresh for sidebar + active workspace label after websocket nudges.
 			void loadSidebarWorkspacesRef.current();
 			void refreshActiveWorkspaceRef.current();
@@ -3241,18 +3242,23 @@ export function App(): React.JSX.Element {
 			setSearchResultsError(null);
 			return;
 		}
-		if (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
-			setSearchResults([]);
-			setSearchResultsBusy(false);
-			setSearchResultsError(t('search.offlineUnavailable'));
-			return;
-		}
 
 		let cancelled = false;
 		const timer = window.setTimeout(() => {
 			setSearchResultsBusy(true);
 			setSearchResultsError(null);
-			void searchNotes(deferredSearchQuery)
+			const isOfflineSearch = authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false);
+			const request = isOfflineSearch
+				? searchOfflineNotes({
+					manager,
+					query: deferredSearchQuery,
+					authUserId,
+					activeWorkspaceId: authWorkspaceId,
+					activeWorkspaceName,
+					sharedPlacements,
+				}).then((results) => ({ results }))
+				: searchNotes(deferredSearchQuery);
+			void request
 				.then((response) => {
 					if (cancelled) return;
 					setSearchResults(response.results);
@@ -3272,7 +3278,7 @@ export function App(): React.JSX.Element {
 			cancelled = true;
 			window.clearTimeout(timer);
 		};
-	}, [authOfflineMode, authStatus, deferredSearchQuery, t]);
+	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, deferredSearchQuery, manager, sharedPlacements, t]);
 
 	const clearSearchAndClose = React.useCallback(() => {
 		setSearchQuery('');
@@ -3467,6 +3473,14 @@ export function App(): React.JSX.Element {
 								<input
 									ref={mobileSearchInputRef}
 									type="search"
+									name="global-search-mobile"
+									autoComplete="off"
+									autoCorrect="off"
+									autoCapitalize="none"
+									spellCheck={false}
+									data-bwignore="true"
+									data-lpignore="true"
+									data-1p-ignore="true"
 									className="app-header-search-input"
 									value={searchQuery}
 									onChange={(event) => setSearchQuery(event.target.value)}
@@ -3506,6 +3520,14 @@ export function App(): React.JSX.Element {
 						<div className="app-header-search">
 							<input
 								type="search"
+								name="global-search"
+								autoComplete="off"
+								autoCorrect="off"
+								autoCapitalize="none"
+								spellCheck={false}
+								data-bwignore="true"
+								data-lpignore="true"
+								data-1p-ignore="true"
 								className="app-header-search-input"
 								value={searchQuery}
 								onChange={(event) => setSearchQuery(event.target.value)}
@@ -3985,7 +4007,7 @@ export function App(): React.JSX.Element {
 						showArchived={sidebarView === 'archive'}
 						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
 						onAddImage={openNoteImageModal}
-						onAddDocument={openNoteDocumentModal}
+						onAddDocument={undefined}
 						onOpenAttachmentBrowser={openNoteAttachmentBrowser}
 						onSelectCollaboratorFilter={setNoteGridCollaboratorFilter}
 						canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter}
@@ -4031,10 +4053,7 @@ export function App(): React.JSX.Element {
 				canEdit={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.canEdit : false}
 				noteTitle={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.title : null}
 				onClose={closeNoteAttachmentBrowser}
-				onAddDocument={noteAttachmentBrowserState?.kind === 'documents' && noteAttachmentBrowserState.canEdit ? () => {
-					closeNoteAttachmentBrowser();
-					openNoteDocumentModal(noteAttachmentBrowserState.noteId, noteAttachmentBrowserState.docId, noteAttachmentBrowserState.title);
-				} : undefined}
+				onAddDocument={undefined}
 			/>
 			<NoteImageUploadModal
 				isOpen={Boolean(noteImageModalState)}
@@ -4153,10 +4172,7 @@ export function App(): React.JSX.Element {
 						if (!selectedNoteDocId) return;
 						openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
 					}}
-					onAddDocument={selectedNoteReadOnly ? undefined : () => {
-						if (!selectedNoteDocId) return;
-						openNoteDocumentModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
-					}}
+					onAddDocument={undefined}
 					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}

@@ -397,7 +397,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		setPreviewLinks((current) => mergeNotePreviewLinkInputs(current, next));
 	}, [t]);
 	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
-		if (mediaDockTab === 2) return <DocumentsPanel />;
+		if (mediaDockTab === 2) return <DocumentsPanel showComingSoonPlaceholder />;
 		return <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />;
 	}, [mediaDockTab]);
 
@@ -793,6 +793,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					ref={focusProxyRef}
 					aria-hidden="true"
 					tabIndex={-1}
+					autoComplete="off"
+					data-bwignore="true"
+					data-lpignore="true"
+					data-1p-ignore="true"
 					style={{
 						position: 'fixed',
 						top: 0,
@@ -809,6 +813,15 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					}}
 				/>
 				<input
+					type="text"
+					name="checklist-note-title"
+					autoComplete="off"
+					autoCorrect="off"
+					autoCapitalize="sentences"
+					spellCheck={false}
+					data-bwignore="true"
+					data-lpignore="true"
+					data-1p-ignore="true"
 					className={styles.editorTitleInput}
 					ref={titleInputRef}
 					value={title}

@@ -35,7 +35,6 @@ export type NoteDocumentRecord = {
 	originalUrl: string;
 	previewUrl: string;
 	thumbnailUrl: string;
-	viewerUrl: string;
 	isLocal?: boolean;
 	syncStatus?: 'synced' | 'queued' | 'failed';
 	lastSyncError?: string | null;

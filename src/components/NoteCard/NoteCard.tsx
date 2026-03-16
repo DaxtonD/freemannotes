@@ -802,7 +802,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 			{props.docId ? (
 				<div className={styles.linkPreviewRail}>
-					<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={3} />
+					<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={3} disableInitialRemoteRefresh />
 				</div>
 			) : null}
 
