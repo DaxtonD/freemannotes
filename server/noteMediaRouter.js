@@ -257,6 +257,58 @@ function mapNoteDocument(document) {
 	};
 }
 
+function noteLinkNeedsResolution(link) {
+	if (!link || typeof link !== 'object') return false;
+	return link.status !== 'READY'
+		|| (!link.title && !link.description && !link.mainContent)
+		|| !link.imageUrl
+		|| isLikelyBadPreviewImageUrl(link.imageUrl);
+}
+
+async function hydrateNoteLinkRows(prisma, rows) {
+	if (!Array.isArray(rows) || rows.length === 0) return [];
+	let mutated = false;
+	for (const row of rows) {
+		if (!noteLinkNeedsResolution(row)) continue;
+		mutated = true;
+		try {
+			const resolved = await resolveNoteLinkPreview(row.originalUrl || row.normalizedUrl);
+			await prisma.noteLink.update({
+				where: { id: row.id },
+				data: {
+					hostname: resolved.hostname,
+					rootDomain: resolved.rootDomain,
+					siteName: resolved.siteName,
+					title: resolved.title,
+					description: resolved.description,
+					mainContent: resolved.mainContent,
+					imageUrl: resolved.imageUrl,
+					metadataJson: resolved.metadataJson,
+					imageUrls: resolved.imageUrls,
+					status: 'READY',
+					errorMessage: null,
+				},
+			});
+		} catch (error) {
+			await prisma.noteLink.update({
+				where: { id: row.id },
+				data: {
+					status: 'FAILED',
+					errorMessage: error && error.message ? error.message : 'Link preview resolution failed',
+				},
+			});
+		}
+	}
+	if (!mutated) return rows;
+	return prisma.noteLink.findMany({
+		where: {
+			docId: rows[0].docId,
+			deletedAt: null,
+		},
+		orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+	});
+}
+
 async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourceBuffer, fileName, mimeType }) {
 	const fileExtension = getNormalizedDocumentExtension(fileName, mimeType);
 	if (!isSupportedNoteDocument(fileName, mimeType)) {
@@ -397,48 +449,7 @@ async function syncNoteLinks({ prisma, access, userId, links }) {
 		orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
 	});
 
-	for (const row of rows) {
-		const needsResolution = row.status !== 'READY'
-			|| (!row.title && !row.description && !row.mainContent)
-			|| !row.imageUrl
-			|| isLikelyBadPreviewImageUrl(row.imageUrl);
-		if (!needsResolution) continue;
-		try {
-			const resolved = await resolveNoteLinkPreview(row.originalUrl || row.normalizedUrl);
-			await prisma.noteLink.update({
-				where: { id: row.id },
-				data: {
-					hostname: resolved.hostname,
-					rootDomain: resolved.rootDomain,
-					siteName: resolved.siteName,
-					title: resolved.title,
-					description: resolved.description,
-					mainContent: resolved.mainContent,
-					imageUrl: resolved.imageUrl,
-					metadataJson: resolved.metadataJson,
-					imageUrls: resolved.imageUrls,
-					status: 'READY',
-					errorMessage: null,
-				},
-			});
-		} catch (error) {
-			await prisma.noteLink.update({
-				where: { id: row.id },
-				data: {
-					status: 'FAILED',
-					errorMessage: error && error.message ? error.message : 'Link preview resolution failed',
-				},
-			});
-		}
-	}
-
-	return prisma.noteLink.findMany({
-		where: {
-			docId: access.docId,
-			deletedAt: null,
-		},
-		orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
-	});
+	return hydrateNoteLinkRows(prisma, rows);
 }
 
 async function fetchImportUrlBuffer(imageUrl) {
@@ -577,7 +588,8 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						},
 						orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
 					});
-					jsonResponse(res, 200, { links: links.map(mapNoteLink), count: links.length });
+					const hydratedLinks = await hydrateNoteLinkRows(prisma, links);
+					jsonResponse(res, 200, { links: hydratedLinks.map(mapNoteLink), count: hydratedLinks.length });
 				} catch (err) {
 					console.error('[note-links] list error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
