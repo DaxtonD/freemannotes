@@ -123,6 +123,7 @@ Optional environment variables you may want:
 
 - `REDIS_URL`
 - `PGTIMEZONE`
+- `DB_BASELINE_ON_NON_EMPTY=true` for one startup if a previous failed install already created tables and Prisma now exits with `P3005`
 - `SMTP_HOST`
 - `SMTP_PORT`
 - `SMTP_SECURE`
