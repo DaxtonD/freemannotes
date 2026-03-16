@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.10 - 2026-03-16
+
+### Changed
+- **PWA install identity.** Android install metadata now uses `FreemanNotes` for both the app name and short name, and the web manifest advertises the standard 192px/512px icons instead of the maskable icon set.
+
+### Fixed
+- **Link-preview image hydration.** Note-card URL preview rails now background-refresh incomplete cached preview rows, and the server rehydrates stale link preview metadata on fetch so hero images appear without opening the editor first.
+- **Docker avatar upload reliability.** Post-registration avatar uploads now wait for the authenticated session to be confirmed before sending the multipart request, reducing missed writes in container deployments.
+- **Docker upload diagnostics.** Container startup now warns when the configured upload directory is not writable by the runtime user, making bind-mount permission problems visible immediately.
+
 ## 1.1.0 - 2026-03-16
 
 ### Added

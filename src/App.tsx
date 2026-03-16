@@ -2294,31 +2294,6 @@ export function App(): React.JSX.Element {
 			resolvedWorkspaceId = authWorkspaceId;
 			resolvedProfileImage = authProfileImageFromResponse;
 
-			// Optional post-register avatar upload.
-			// This is separate from the register endpoint so registration remains a
-			// small JSON API and uploads are handled via multipart.
-			if (authMode === 'register' && registerAvatarUrl && registerAvatarAreaPixels) {
-				try {
-					const blob = await getCroppedSquareBlob(registerAvatarUrl, registerAvatarAreaPixels, 256);
-					const form = new FormData();
-					form.append('file', blob, 'avatar.png');
-					const uploadRes = await fetch('/api/user/profile-image', {
-						method: 'POST',
-						credentials: 'include',
-						body: form,
-					});
-					// Fetch does not throw on non-2xx; enforce it explicitly.
-					if (!uploadRes.ok) throw new Error('Upload failed');
-					const uploadBody = await uploadRes.json().catch(() => null);
-					const profileImage = uploadBody?.profileImage ? String(uploadBody.profileImage) : null;
-					if (profileImage) {
-						resolvedProfileImage = profileImage;
-					}
-				} catch {
-					setAuthError('Account created, but profile photo upload failed');
-				}
-			}
-
 			// Re-fetch /me so we always sync to the server's truth. This keeps behavior
 			// consistent if server-side bootstrap logic updates role/workspace.
 			try {
@@ -2354,6 +2329,30 @@ export function App(): React.JSX.Element {
 				return;
 			}
 
+			// Optional post-register avatar upload.
+			// Delay this until after /api/auth/me succeeds so the fresh session cookie is
+			// definitely active before the multipart upload hits the authenticated route.
+			if (authMode === 'register' && registerAvatarUrl && registerAvatarAreaPixels) {
+				try {
+					const blob = await getCroppedSquareBlob(registerAvatarUrl, registerAvatarAreaPixels, 256);
+					const form = new FormData();
+					form.append('file', blob, 'avatar.png');
+					const uploadRes = await fetch('/api/user/profile-image', {
+						method: 'POST',
+						credentials: 'include',
+						body: form,
+					});
+					if (!uploadRes.ok) throw new Error('Upload failed');
+					const uploadBody = await uploadRes.json().catch(() => null);
+					const profileImage = uploadBody?.profileImage ? String(uploadBody.profileImage) : null;
+					if (profileImage) {
+						resolvedProfileImage = profileImage;
+					}
+				} catch {
+					showBriefDialog('Account created, but profile photo upload failed');
+				}
+			}
+
 			setAuthUserId(resolvedUserId);
 			setAuthProfileImage(resolvedProfileImage);
 			setAuthWorkspaceId(resolvedWorkspaceId);
@@ -2369,7 +2368,7 @@ export function App(): React.JSX.Element {
 		} finally {
 			setAuthBusy(false);
 		}
-	}, [authBusy, authEmail, authMode, authName, authPassword, authPasswordConfirm, authPasswordStrengthScore, manager, registerAvatarAreaPixels, registerAvatarUrl]);
+	}, [authBusy, authEmail, authMode, authName, authPassword, authPasswordConfirm, authPasswordStrengthScore, deviceId, manager, registerAvatarAreaPixels, registerAvatarUrl, showBriefDialog]);
 
 	const authGateView = (
 		<div className="auth-shell">
