@@ -75,6 +75,16 @@
 	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-2));
 }
 
+.overlayItem[data-disabled='true'],
+.overlayItem[data-disabled='true']:hover,
+.overlayItem[data-disabled='true']:focus-visible {
+	opacity: 0.5;
+	cursor: not-allowed;
+	transform: none;
+	border-color: color-mix(in srgb, var(--color-border) 72%, transparent);
+	background: color-mix(in srgb, var(--color-surface-2) 80%, var(--color-surface) 20%);
+}
+
 .overlayItemCopy {
 	display: inline-flex;
 	align-items: center;

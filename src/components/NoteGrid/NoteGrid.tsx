@@ -263,6 +263,8 @@ function renderNoteMetaChips(args: {
 	doc: Y.Doc;
 	authUserId?: string | null;
 	canEditNote: boolean;
+	suspendAttachmentRemoteRefresh?: boolean;
+	disableAttachmentInitialRemoteRefresh?: boolean;
 	collaboratorSummary?: NoteCardCollaboratorSummary | null;
 	onOpenAttachmentBrowser?: (
 		kind: NoteAttachmentBrowserKind,
@@ -308,6 +310,8 @@ function renderNoteMetaChips(args: {
 					doc={args.doc}
 					authUserId={args.authUserId}
 					className={styles.noteChipButton}
+					suspendRemoteRefresh={args.suspendAttachmentRemoteRefresh}
+					disableInitialRemoteRefresh={args.disableAttachmentInitialRemoteRefresh}
 					onOpenBrowser={(kind) => args.onOpenAttachmentBrowser?.(kind, args.noteId, args.docId || '', args.title, args.canEditNote)}
 				/>
 			) : null}
@@ -655,13 +659,21 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			})
 			.filter((entry): entry is { noteId: string; docId: string; isSharedAlias: boolean } => Boolean(entry));
 	}, [baseVisibleIds, props.sharedNotes, resolveMediaDocId]);
+	const visibleNoteEntriesForCollaboratorSync = React.useMemo(
+		() => [...visibleNoteEntries].sort((left, right) => left.noteId.localeCompare(right.noteId)),
+		[visibleNoteEntries]
+	);
+	const visibleNoteEntriesForCollaboratorSyncSignature = React.useMemo(
+		() => visibleNoteEntriesForCollaboratorSync.map((entry) => `${entry.noteId}:${entry.docId}:${entry.isSharedAlias ? 'shared' : 'local'}`).join('|'),
+		[visibleNoteEntriesForCollaboratorSync]
+	);
 
 	React.useEffect(() => {
 		if (!props.authUserId) {
 			setCollaboratorSummariesByNoteId({});
 			return;
 		}
-		if (visibleNoteEntries.length === 0) {
+		if (visibleNoteEntriesForCollaboratorSync.length === 0) {
 			setCollaboratorSummariesByNoteId({});
 			return;
 		}
@@ -680,7 +692,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 		void (async () => {
 			const cached = await Promise.all(
-				visibleNoteEntries.map(async (entry) => ({
+				visibleNoteEntriesForCollaboratorSync.map(async (entry) => ({
 					noteId: entry.noteId,
 					summary: snapshotToCollaboratorSummary(entry.docId, await readCachedNoteShareCollaborators(props.authUserId || '', entry.docId)),
 				}))
@@ -696,7 +708,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			// synced, though, a fresh device still needs one server read to discover any
 			// collaborators because there is no local collaborator cache yet.
 			const cachedSummaryByNoteId = new Map(cached.map((row) => [row.noteId, row.summary] as const));
-			const entriesToRefresh = visibleNoteEntries.filter(
+			const entriesToRefresh = visibleNoteEntriesForCollaboratorSync.filter(
 				(entry) => entry.isSharedAlias || Boolean(cachedSummaryByNoteId.get(entry.noteId)) || !pendingSyncNoteIds.has(entry.noteId)
 			);
 			if (entriesToRefresh.length === 0) return;
@@ -718,7 +730,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [pendingSyncNoteIds, props.authUserId, props.refreshCollaboratorsToken, visibleNoteEntries]);
+	}, [pendingSyncNoteIds, props.authUserId, props.refreshCollaboratorsToken, visibleNoteEntriesForCollaboratorSyncSignature]);
 
 	const visibleIds = React.useMemo<string[]>(() => {
 		if (!props.activeCollaboratorFilter) return baseVisibleIds;
@@ -1048,6 +1060,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		moreMenuNoteId && (sharedNoteIdSet.has(moreMenuNoteId) ? moreMenuPlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
 	);
 	const collaboratorOverlaySummary = openCollaboratorChip ? collaboratorSummariesByNoteId[openCollaboratorChip.noteId] ?? null : null;
+	const suspendAttachmentRemoteRefresh = Boolean(dragManager.activeDragId);
+	const disableAttachmentInitialRemoteRefresh = true;
 	const collaboratorOverlayPosition = React.useMemo(() => {
 		if (!openCollaboratorChip || typeof window === 'undefined') return null;
 		const overlayWidth = Math.min(320, Math.max(240, Math.round(openCollaboratorChip.anchorRect.width + 84)));
@@ -1150,6 +1164,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 											doc,
 											authUserId: props.authUserId,
 											canEditNote,
+											suspendAttachmentRemoteRefresh,
+											disableAttachmentInitialRemoteRefresh,
 											collaboratorSummary,
 											onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 											onToggleCollaboratorChip: (chipNoteId, anchorRect) => {
@@ -1210,6 +1226,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							doc: activeDoc,
 							authUserId: props.authUserId,
 							canEditNote: activeCanEdit,
+							suspendAttachmentRemoteRefresh,
+							disableAttachmentInitialRemoteRefresh,
 							collaboratorSummary: activeCollaboratorSummary,
 							onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 							t,

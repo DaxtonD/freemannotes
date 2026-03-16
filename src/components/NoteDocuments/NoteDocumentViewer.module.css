@@ -1,0 +1,143 @@
+.viewer {
+	height: 100%;
+	min-height: 0;
+	overflow: hidden;
+	background: color-mix(in srgb, var(--color-surface-2) 42%, var(--color-surface) 58%);
+}
+
+.docViewer {
+	height: 100%;
+	min-height: 0;
+}
+
+.viewer :global(.rdv-container) {
+	height: 100%;
+	border: 0;
+	border-radius: 0;
+	background: var(--color-surface);
+}
+
+.viewer :global(.rdv-header-bar) {
+	border-bottom: 1px solid var(--color-border);
+}
+
+/* Library DOM order inside .rdv-pdf-main-content (the scroll container):
+   1. .rdv-annotation-toolbar  (first child)
+   2. .rdv-pdf-controls        (second child)
+   3. PDF pages
+   Swap visual order so zoom/page controls appear first (conventional),
+   with the annotation toolbar below them. */
+.viewer :global(.rdv-pdf-controls) {
+	order: -1;
+}
+
+/* Annotation toolbar: sticky below pdf-controls so it stays visible on scroll.
+   pdf-controls height: 6px padding + 32px button + 6px padding + 1px border = 45px.
+   With order:-1, pdf-controls is visually first (Y=0) and annotation toolbar is
+   at Y=45 — its natural position matches the sticky offset, so no visual jump. */
+.viewer :global(.rdv-annotation-toolbar) {
+	position: sticky;
+	top: 45px;
+	z-index: 1;
+}
+
+.viewer :global(.rdv-pdf-page-wrapper) {
+	padding-bottom: 16px;
+}
+
+/* Scroll containment: prevents overscroll from triggering browser
+   back-navigation on mobile (iOS Safari, Chrome Android). */
+.viewer :global(.rdv-common-content-wrapper),
+.viewer :global(.rdv-pdf-main-content) {
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+}
+
+/* When the pen tool is active, the drawing canvas must capture all touch
+   events for freehand drawing. Without this, the ancestor's touch-action
+   (manipulation) would cause the browser to interpret drawing strokes as
+   pan gestures instead of passing them to the canvas. */
+.viewer :global(.rdv-annotation-drawing-canvas[data-pen-active]) {
+	touch-action: none;
+}
+
+.viewer :global(.rdv-thumbnail-sidebar) {
+	border-right: 1px solid var(--color-border);
+}
+
+.state {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	height: 100%;
+	padding: 24px;
+	background: color-mix(in srgb, var(--color-surface-2) 42%, var(--color-surface) 58%);
+}
+
+.message,
+.error {
+	margin: 0;
+	font-size: 12px;
+	line-height: 1.5;
+}
+
+.message {
+	color: var(--color-text-muted);
+}
+
+.error {
+	color: #b91c1c;
+}
+
+.fallbackCard {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	height: 100%;
+	padding: 40px 20px;
+	text-align: center;
+}
+
+.fallbackLabel {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 700;
+	word-break: break-word;
+}
+
+.fallbackHint {
+	margin: 0;
+	font-size: 12px;
+	color: var(--color-text-muted);
+}
+
+.fallbackDownload {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	border: 0;
+	border-radius: 999px;
+	padding: 10px 20px;
+	font-size: 13px;
+	font-weight: 700;
+	cursor: pointer;
+	color: #fff;
+	background: color-mix(in srgb, var(--color-accent) 88%, white 12%);
+	text-decoration: none;
+}
+
+/* Mobile: library shrinks toolbar at max-width:768px.
+   Smaller buttons: 4px padding + 28px button + 4px padding + 1px border = 37px. */
+@media (max-width: 768px) {
+	.viewer :global(.rdv-annotation-toolbar) {
+		top: 37px;
+	}
+}
+
+@media (max-width: 860px), (pointer: coarse) {
+	.viewer :global(.rdv-container) {
+		min-height: 100%;
+	}
+}

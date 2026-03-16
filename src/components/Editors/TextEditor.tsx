@@ -10,6 +10,7 @@ import {
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
+import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { createRichTextDocFromPlainText } from '../../core/richText';
 import { useI18n } from '../../core/i18n';
@@ -53,6 +54,10 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const isMobileLandscape = useIsMobileLandscape();
 	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
 	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
+	// Parent-owned copy state keeps the hidden inline editor toolbar and the visible
+	// floating mobile toolbar in sync.
+	const [copyMode, setCopyMode] = React.useState<ClipboardConversionTarget>('rich-text');
+	const [clipboardStatusMessage, setClipboardStatusMessage] = React.useState('');
 	React.useEffect(() => {
 		isMobileLandscapeRef.current = isMobileLandscape;
 		// Landscape branch: media sheet/flyout must remain closed and inert.
@@ -171,7 +176,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	}, [t]);
 
 	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
-		if (mediaDockTab === 2) return <DocumentsPanel />;
+		if (mediaDockTab === 2) return <DocumentsPanel showComingSoonPlaceholder />;
 		return <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />;
 	}, [mediaDockTab]);
 
@@ -203,6 +208,15 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 				onClick={(event) => event.stopPropagation()}
 			>
 				<input
+					type="text"
+					name="text-note-title"
+					autoComplete="off"
+					autoCorrect="off"
+					autoCapitalize="sentences"
+					spellCheck={false}
+					data-bwignore="true"
+					data-lpignore="true"
+					data-1p-ignore="true"
 					className={styles.editorTitleInput}
 					ref={titleInputRef}
 					value={title}
@@ -215,6 +229,9 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						variant="full"
 						placeholder={t('editors.bodyPlaceholder')}
 						content={bodyRichContent}
+						copyMode={copyMode}
+						onCopyModeChange={setCopyMode}
+						onClipboardStatusChange={setClipboardStatusMessage}
 						autoFocus
 						// Hide the inline toolbar on coarse pointers because it is re-mounted as a
 						// portal above the keyboard while the keyboard is open.
@@ -470,7 +487,8 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						className={styles.floatingToolbar}
 						style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 					>
-						<RichTextToolbar editor={textEditor} variant="full" compact onCreateUrlPreview={handleCreateUrlPreview} />
+						{clipboardStatusMessage ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
+						<RichTextToolbar editor={textEditor} variant="full" compact onCreateUrlPreview={handleCreateUrlPreview} copyMode={copyMode} onCopyModeChange={setCopyMode} />
 					</div>
 				</>,
 				document.body

@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.0.98 - 2026-03-16
+
+### Added
+- **Unified selected-text copy conversion.** Full text editors now support copying the active selection as either Markdown or Rich Text using shared conversion utilities that are also scaffolded for browser extension, Android, and iOS reuse.
+- **Offline note search coverage.** Search now falls back to local note, OCR, document, link-preview, and collaborator caches when the app is offline.
+- **Doc-viewer based document reader.** Document browsing now uses `@iamjariwala/react-doc-viewer` with cached blob resolution, built-in annotation persistence, and safer fallback download handling for unsupported formats.
+
+### Changed
+- **Text editor copy UX.** The previous selection bubble copy flow has been replaced with toolbar copy-mode toggles, desktop/mobile shared state, a heading dropdown, and copy-mode toasts that align with normal keyboard/browser copy behavior.
+- **Document availability controls.** Document-add entry points now show temporary Coming Soon states while existing document browsing remains available through the new viewer pipeline.
+- **Offline/media refresh behavior.** Note-card attachment and link-preview surfaces now avoid unnecessary remote refreshes during drag/reorder work while still allowing one-time hydration on fresh devices.
+
+### Fixed
+- **Mobile copy-mode parity.** Floating mobile toolbars now default to Rich Text, stay in sync with the underlying editor state, and render copy-mode status toasts above the visible toolbar.
+- **Clipboard fidelity.** Markdown and rich-text copy conversion now preserve block structure, line breaks, tables, and task-list markers more reliably across paste targets.
+- **Fresh-device and offline preview hydration.** Link preview art, cached document blobs, splash timing, and document-viewer refresh behavior now better tolerate cold starts, websocket nudges, and offline reopen flows.
+
 ## 1.0.97 - 2026-03-14
 
 ### Added

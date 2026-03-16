@@ -23,10 +23,29 @@ type QueuedNoteDocumentRow = {
 	lastError: string | null;
 };
 
+type StoredRemoteNoteDocumentAssetRow = {
+	id: string;
+	docId: string;
+	document: NoteDocumentRecord | null;
+	blob: Blob | null;
+	originalUrl: string;
+	createdAt: string;
+	updatedAt: string;
+};
+
+type StoredNoteDocumentAnnotationRow = {
+	id: string;
+	docId: string;
+	annotationsJson: unknown[];
+	updatedAt: string;
+};
+
 const DB_NAME = 'freemannotes.note-documents.v1';
-const DB_VERSION = 1;
+const DB_VERSION = 3;
 const NOTE_DOCUMENT_QUEUE_STORE = 'note_document_queue';
 const NOTE_DOCUMENT_CACHE_STORE = 'note_document_cache';
+const NOTE_DOCUMENT_REMOTE_ASSET_STORE = 'note_document_remote_asset';
+const NOTE_DOCUMENT_ANNOTATION_STORE = 'note_document_annotation';
 
 const remoteCache = new Map<string, readonly NoteDocumentRecord[]>();
 const queuedCache = new Map<string, readonly NoteDocumentRecord[]>();
@@ -84,6 +103,24 @@ async function openDb(): Promise<IDBDatabase> {
 				if (!db.objectStoreNames.contains(NOTE_DOCUMENT_CACHE_STORE)) {
 					const store = db.createObjectStore(NOTE_DOCUMENT_CACHE_STORE, { keyPath: 'docId' });
 					store.createIndex('docId', 'docId', { unique: true });
+				}
+				if (!db.objectStoreNames.contains(NOTE_DOCUMENT_REMOTE_ASSET_STORE)) {
+					const store = db.createObjectStore(NOTE_DOCUMENT_REMOTE_ASSET_STORE, { keyPath: 'id' });
+					store.createIndex('docId', 'docId', { unique: false });
+				} else {
+					const store = request.transaction?.objectStore(NOTE_DOCUMENT_REMOTE_ASSET_STORE);
+					if (store && !store.indexNames.contains('docId')) {
+						store.createIndex('docId', 'docId', { unique: false });
+					}
+				}
+				if (!db.objectStoreNames.contains(NOTE_DOCUMENT_ANNOTATION_STORE)) {
+					const store = db.createObjectStore(NOTE_DOCUMENT_ANNOTATION_STORE, { keyPath: 'id' });
+					store.createIndex('docId', 'docId', { unique: false });
+				} else {
+					const store = request.transaction?.objectStore(NOTE_DOCUMENT_ANNOTATION_STORE);
+					if (store && !store.indexNames.contains('docId')) {
+						store.createIndex('docId', 'docId', { unique: false });
+					}
 				}
 			};
 			request.onsuccess = () => resolve(request.result);
@@ -160,7 +197,6 @@ function toQueuedDocumentRecord(row: QueuedNoteDocumentRow): NoteDocumentRecord 
 		originalUrl,
 		previewUrl: row.previewDataUrl,
 		thumbnailUrl: row.thumbnailDataUrl,
-		viewerUrl: row.mimeType === 'application/pdf' ? originalUrl : '',
 		isLocal: true,
 		syncStatus: row.syncStatus === 'failed' ? 'failed' : 'queued',
 		lastSyncError: row.lastError,
@@ -173,7 +209,11 @@ function mergeDocuments(docId: string): readonly NoteDocumentRecord[] {
 	return [...queued, ...remote];
 }
 
-async function writeStoredRemoteDocuments(docId: string, documents: readonly NoteDocumentRecord[]): Promise<void> {
+async function writeStoredRemoteDocuments(
+	docId: string,
+	documents: readonly NoteDocumentRecord[],
+	options: { emitChange?: boolean } = {}
+): Promise<void> {
 	remoteCache.set(docId, documents.slice());
 	try {
 		const db = await openDb();
@@ -184,7 +224,159 @@ async function writeStoredRemoteDocuments(docId: string, documents: readonly Not
 		// Best effort cache only.
 	}
 	queuedCache.set(docId, queuedCache.get(docId) || []);
-	emitNoteDocumentsChanged(docId);
+	if (options.emitChange !== false) {
+		emitNoteDocumentsChanged(docId);
+	}
+}
+
+async function upsertRemoteAssetRows(rows: readonly StoredRemoteNoteDocumentAssetRow[]): Promise<void> {
+	if (rows.length === 0) return;
+	const db = await openDb();
+	const tx = db.transaction([NOTE_DOCUMENT_REMOTE_ASSET_STORE], 'readwrite');
+	const store = tx.objectStore(NOTE_DOCUMENT_REMOTE_ASSET_STORE);
+	for (const row of rows) {
+		store.put(row);
+	}
+	await transactionToPromise(tx);
+}
+
+async function deleteRemoteAssetRows(ids: readonly string[]): Promise<void> {
+	if (ids.length === 0) return;
+	const db = await openDb();
+	const tx = db.transaction([NOTE_DOCUMENT_REMOTE_ASSET_STORE], 'readwrite');
+	const store = tx.objectStore(NOTE_DOCUMENT_REMOTE_ASSET_STORE);
+	for (const id of ids) {
+		store.delete(id);
+	}
+	await transactionToPromise(tx);
+}
+
+async function readRemoteAssetRowsByDoc(docId: string): Promise<StoredRemoteNoteDocumentAssetRow[]> {
+	if (!docId) return [];
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_DOCUMENT_REMOTE_ASSET_STORE], 'readonly');
+		const rows = (await requestToPromise(
+			tx.objectStore(NOTE_DOCUMENT_REMOTE_ASSET_STORE).index('docId').getAll(docId)
+		)) as StoredRemoteNoteDocumentAssetRow[];
+		await transactionToPromise(tx);
+		return Array.isArray(rows) ? rows : [];
+	} catch {
+		return [];
+	}
+}
+
+async function readRemoteAssetRow(documentId: string): Promise<StoredRemoteNoteDocumentAssetRow | null> {
+	if (!documentId) return null;
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_DOCUMENT_REMOTE_ASSET_STORE], 'readonly');
+		const row = (await requestToPromise(tx.objectStore(NOTE_DOCUMENT_REMOTE_ASSET_STORE).get(documentId))) as StoredRemoteNoteDocumentAssetRow | undefined;
+		await transactionToPromise(tx);
+		return row || null;
+	} catch {
+		return null;
+	}
+}
+
+async function readAnnotationRow(documentId: string): Promise<StoredNoteDocumentAnnotationRow | null> {
+	if (!documentId) return null;
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_DOCUMENT_ANNOTATION_STORE], 'readonly');
+		const row = (await requestToPromise(tx.objectStore(NOTE_DOCUMENT_ANNOTATION_STORE).get(documentId))) as StoredNoteDocumentAnnotationRow | undefined;
+		await transactionToPromise(tx);
+		return row || null;
+	} catch {
+		return null;
+	}
+}
+
+async function writeAnnotationRow(row: StoredNoteDocumentAnnotationRow): Promise<void> {
+	const db = await openDb();
+	const tx = db.transaction([NOTE_DOCUMENT_ANNOTATION_STORE], 'readwrite');
+	tx.objectStore(NOTE_DOCUMENT_ANNOTATION_STORE).put(row);
+	await transactionToPromise(tx);
+}
+
+async function deleteAnnotationRow(documentId: string): Promise<void> {
+	if (!documentId) return;
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_DOCUMENT_ANNOTATION_STORE], 'readwrite');
+		tx.objectStore(NOTE_DOCUMENT_ANNOTATION_STORE).delete(documentId);
+		await transactionToPromise(tx);
+	} catch {
+		// ignore
+	}
+}
+
+async function fetchBlob(url: string): Promise<Blob | null> {
+	if (!url || isOffline()) return null;
+	try {
+		const response = await fetch(url, { credentials: 'include' });
+		if (!response.ok) return null;
+		return await response.blob();
+	} catch {
+		return null;
+	}
+}
+
+async function syncRemoteNoteDocumentAssetRows(
+	docId: string,
+	documents: readonly NoteDocumentRecord[],
+	options: { emitChange?: boolean } = {}
+): Promise<void> {
+	if (!docId) return;
+	const existingRows = await readRemoteAssetRowsByDoc(docId);
+	const existingById = new Map(existingRows.map((row) => [row.id, row]));
+	const nextIds = new Set(documents.map((document) => document.id));
+	const staleIds = existingRows.filter((row) => !nextIds.has(row.id)).map((row) => row.id);
+	if (staleIds.length > 0) {
+		await deleteRemoteAssetRows(staleIds);
+	}
+
+	const baseRows = documents.map((document) => {
+		const existing = existingById.get(document.id);
+		return {
+			id: document.id,
+			docId,
+			document,
+			blob: existing?.blob || null,
+			originalUrl: document.originalUrl,
+			createdAt: existing?.createdAt || document.createdAt,
+			updatedAt: document.updatedAt,
+		};
+	});
+	await upsertRemoteAssetRows(baseRows);
+	if (isOffline()) return;
+
+	let storedBlob = false;
+	const resolvedRows: StoredRemoteNoteDocumentAssetRow[] = [];
+	for (const document of documents) {
+		const existing = existingById.get(document.id);
+		if (existing?.blob && existing.originalUrl === document.originalUrl && existing.updatedAt === document.updatedAt) {
+			continue;
+		}
+		const blob = await fetchBlob(document.originalUrl);
+		if (!blob) continue;
+		resolvedRows.push({
+			id: document.id,
+			docId,
+			document,
+			blob,
+			originalUrl: document.originalUrl,
+			createdAt: existing?.createdAt || document.createdAt,
+			updatedAt: document.updatedAt,
+		});
+		storedBlob = true;
+	}
+	if (resolvedRows.length > 0) {
+		await upsertRemoteAssetRows(resolvedRows);
+	}
+	if (storedBlob && options.emitChange !== false) {
+		emitNoteDocumentsChanged(docId);
+	}
 }
 
 async function readAllQueuedRows(userId: string): Promise<QueuedNoteDocumentRow[]> {
@@ -235,6 +427,7 @@ export async function deleteQueuedNoteDocument(documentId: string): Promise<void
 			return null;
 		});
 		revokeObjectUrl(documentId);
+		await deleteAnnotationRow(documentId);
 		if (docId) {
 			const remaining = (queuedCache.get(docId) || []).filter((document) => document.id !== documentId);
 			queuedCache.set(docId, remaining);
@@ -294,6 +487,66 @@ export async function readQueuedNoteDocuments(userId: string, docId: string): Pr
 	}
 }
 
+export async function readQueuedNoteDocumentBlob(documentId: string): Promise<Blob | null> {
+	if (!documentId) return null;
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_DOCUMENT_QUEUE_STORE], 'readonly');
+		const row = (await requestToPromise(tx.objectStore(NOTE_DOCUMENT_QUEUE_STORE).get(documentId))) as QueuedNoteDocumentRow | undefined;
+		await transactionToPromise(tx);
+		return row?.blob || null;
+	} catch {
+		return null;
+	}
+}
+
+export async function readStoredRemoteNoteDocumentBlob(documentId: string): Promise<Blob | null> {
+	const row = await readRemoteAssetRow(documentId);
+	return row?.blob || null;
+}
+
+export async function resolveNoteDocumentBlob(document: NoteDocumentRecord): Promise<Blob | null> {
+	if (!document || !document.id) return null;
+	if (document.isLocal) return readQueuedNoteDocumentBlob(document.id);
+	const cached = await readStoredRemoteNoteDocumentBlob(document.id);
+	if (cached) return cached;
+	const blob = await fetchBlob(document.originalUrl);
+	if (!blob) return null;
+	await upsertRemoteAssetRows([
+		{
+			id: document.id,
+			docId: document.docId,
+			document,
+			blob,
+			originalUrl: document.originalUrl,
+			createdAt: document.createdAt,
+			updatedAt: document.updatedAt,
+		},
+	]);
+	return blob;
+}
+
+export async function readStoredNoteDocumentAnnotations(documentId: string): Promise<unknown[]> {
+	const row = await readAnnotationRow(documentId);
+	return Array.isArray(row?.annotationsJson) ? row.annotationsJson : [];
+}
+
+export async function writeStoredNoteDocumentAnnotations(args: {
+	documentId: string;
+	docId: string;
+	annotationsJson: unknown[];
+}): Promise<void> {
+	const documentId = String(args.documentId || '').trim();
+	const docId = String(args.docId || '').trim();
+	if (!documentId || !docId) return;
+	await writeAnnotationRow({
+		id: documentId,
+		docId,
+		annotationsJson: Array.isArray(args.annotationsJson) ? args.annotationsJson : [],
+		updatedAt: nowIso(),
+	});
+}
+
 export async function queueNoteDocumentsForUpload(args: {
 	userId: string;
 	docId: string;
@@ -351,7 +604,8 @@ export async function refreshRemoteNoteDocuments(
 	const request = (async () => {
 		try {
 			const response = await listNoteDocuments(docId);
-			await writeStoredRemoteDocuments(docId, response.documents);
+			await writeStoredRemoteDocuments(docId, response.documents, { emitChange: false });
+			void syncRemoteNoteDocumentAssetRows(docId, response.documents, { emitChange: false });
 			if (options.userId) {
 				await readQueuedNoteDocuments(String(options.userId || ''), docId);
 			}

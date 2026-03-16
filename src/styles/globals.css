@@ -52,8 +52,8 @@ html.body-scroll-locked #root {
 		height: 0;
 	}
 
-	html.body-scroll-locked,
-	body.body-scroll-locked {
+	html.body-scroll-locked:not(.body-scroll-lock-allow-touch),
+	body.body-scroll-locked:not(.body-scroll-lock-allow-touch) {
 		touch-action: none;
 	}
 

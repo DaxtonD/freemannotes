@@ -40,6 +40,7 @@ import {
 	TEXT_NOTE_RICH_FIELD,
 	syncTextNotePlainText,
 } from '../../core/richText';
+import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
@@ -661,7 +662,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (mediaDockTab === 1) {
 			return <NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={!readOnly} onDeleteLink={handleDeleteUrlPreview} onAddUrlPreview={handleCreateUrlPreview} />;
 		}
-		return <DocumentsPanel docId={props.docId} authUserId={props.authUserId} canEdit={!readOnly} onAddDocument={props.onAddDocument} />;
+		return <DocumentsPanel docId={props.docId} authUserId={props.authUserId} canEdit={!readOnly} onAddDocument={props.onAddDocument} showComingSoonPlaceholder />;
 	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, mediaDockTab, props.authUserId, props.docId, props.onAddDocument, props.onAddImage, readOnly]);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	React.useEffect(() => {
@@ -692,6 +693,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowEditor, setActiveChecklistRowEditor] = React.useState<Editor | null>(null);
+	// Text-note copy mode is lifted here so the coarse-pointer floating toolbar can
+	// reflect and update the same selection-copy mode as the inline desktop toolbar.
+	const [copyMode, setCopyMode] = React.useState<ClipboardConversionTarget>('rich-text');
+	const [clipboardStatusMessage, setClipboardStatusMessage] = React.useState('');
 	// ── Mobile keyboard focus proxy ──────────────────────────────────────────────
 	// Problem: when the DnD library starts a drag it clones the grabbed element
 	// into a portal, tears the original out of flow, and sometimes blurs the
@@ -1548,6 +1553,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					ref={focusProxyRef}
 					aria-hidden="true"
 					tabIndex={-1}
+					autoComplete="off"
+					data-bwignore="true"
+					data-lpignore="true"
+					data-1p-ignore="true"
 					style={{
 						position: 'fixed',
 						top: 0,
@@ -1573,6 +1582,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 				{type === 'checklist' ? (
 					<input
+						type="text"
+						name="note-title"
+						autoComplete="off"
+						autoCorrect="off"
+						autoCapitalize="sentences"
+						spellCheck={false}
+						data-bwignore="true"
+						data-lpignore="true"
+						data-1p-ignore="true"
 						className={styles.editorTitleInput}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
@@ -1580,6 +1598,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					/>
 				) : (
 					<input
+						type="text"
+						name="text-note-title"
+						autoComplete="off"
+						autoCorrect="off"
+						autoCapitalize="sentences"
+						spellCheck={false}
+						data-bwignore="true"
+						data-lpignore="true"
+						data-1p-ignore="true"
 						className={styles.editorTitleInput}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
@@ -1592,6 +1619,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						<RichTextEditor
 							variant="full"
 							fragment={richContentFragment}
+							copyMode={copyMode}
+							onCopyModeChange={setCopyMode}
+							onClipboardStatusChange={setClipboardStatusMessage}
 							placeholder={t('editors.startTyping')}
 							hideToolbar={isCoarsePointer}
 							caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
@@ -2028,11 +2058,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					className={styles.floatingToolbar}
 					style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 				>
+					{type === 'text' && clipboardStatusMessage ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
 					<RichTextToolbar
 						editor={type === 'text' ? textEditor : activeChecklistRowEditor}
 						variant={type === 'text' ? 'full' : 'minimal'}
 						compact
 						onCreateUrlPreview={handleCreateUrlPreview}
+						copyMode={type === 'text' ? copyMode : undefined}
+						onCopyModeChange={type === 'text' ? setCopyMode : undefined}
 					/>
 				</div>
 			</>,

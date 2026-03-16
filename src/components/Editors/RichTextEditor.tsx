@@ -1,6 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import type { Editor, JSONContent } from '@tiptap/core';
+import { DOMSerializer } from '@tiptap/pm/model';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -26,6 +27,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
 import { createRichTextExtensions, getMarkdownPasteHtml, type RichTextVariant } from '../../core/richText';
+import { prepareConvertedClipboardPayload, type ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { useI18n } from '../../core/i18n';
 import { useBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import styles from './Editors.module.css';
@@ -51,6 +53,9 @@ type RichTextEditorProps = {
 	onBackspaceWhenEmpty?: () => void;
 	editable?: boolean;
 	onCreateUrlPreview?: () => void;
+	copyMode?: ClipboardConversionTarget;
+	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
+	onClipboardStatusChange?: (message: string) => void;
 };
 
 type RichTextToolbarProps = {
@@ -58,6 +63,8 @@ type RichTextToolbarProps = {
 	variant: RichTextVariant;
 	compact?: boolean;
 	onCreateUrlPreview?: () => void;
+	copyMode?: ClipboardConversionTarget;
+	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
 };
 
 function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
@@ -208,8 +215,21 @@ function exitEmptyListItem(editor: Editor | null | undefined): boolean {
 	return false;
 }
 
+function getEditorSelectionClipboardInput(editor: Editor | null): { text: string; html: string } | null {
+	if (!editor) return null;
+	const { from, to, empty } = editor.state.selection;
+	if (empty || from === to) return null;
+	const slice = editor.state.selection.content();
+	const serializer = DOMSerializer.fromSchema(editor.schema);
+	const container = document.createElement('div');
+	container.appendChild(serializer.serializeFragment(slice.content));
+	const text = editor.state.doc.textBetween(from, to, '\n\n');
+	return { text, html: container.innerHTML };
+}
+
 export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element {
 	const { t } = useI18n();
+	const resolvedCopyMode = props.copyMode ?? 'rich-text';
 	// Toolbar touch tracking:
 	// We record the initial touch point so we can distinguish between two very different
 	// gestures that both begin on the toolbar on mobile:
@@ -283,8 +303,11 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		event.preventDefault();
 	}, []);
 	const toolbarRowRef = React.useRef<HTMLDivElement | null>(null);
+	const headingMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const headingMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const tableMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const tableMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const [headingMenuOpen, setHeadingMenuOpen] = React.useState(false);
 	const [tableMenuOpen, setTableMenuOpen] = React.useState(false);
 	const [tableMenuPosition, setTableMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
 	const [canScrollToolbarLeft, setCanScrollToolbarLeft] = React.useState(false);
@@ -406,6 +429,10 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		runRichTextCommand(props.editor, commandName, ...args);
 		setTableMenuOpen(false);
 	}, [props.editor]);
+	const runHeadingCommand = React.useCallback((level: number): void => {
+		props.editor?.chain().focus().toggleHeading({ level }).run();
+		setHeadingMenuOpen(false);
+	}, [props.editor]);
 	React.useEffect(() => {
 		updateToolbarScrollState();
 		const node = toolbarRowRef.current;
@@ -420,6 +447,25 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			resizeObserver.disconnect();
 		};
 	}, [updateToolbarScrollState, props.variant, props.compact]);
+	React.useEffect(() => {
+		if (!headingMenuOpen) return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target as Node | null;
+			if (!target) return;
+			if (headingMenuRef.current?.contains(target)) return;
+			if (headingMenuButtonRef.current?.contains(target)) return;
+			setHeadingMenuOpen(false);
+		};
+		const handleKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === 'Escape') setHeadingMenuOpen(false);
+		};
+		document.addEventListener('pointerdown', handlePointerDown);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [headingMenuOpen]);
 	React.useEffect(() => {
 		if (!tableMenuOpen) return;
 		updateTableMenuPosition();
@@ -448,21 +494,29 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 
 	const noEditor = !props.editor;
 	const compactButtonClass = props.compact ? ` ${styles.formatButtonCompact}` : '';
+	const activeHeadingLabel = resolvedToolbarState.isHeading1 ? 'H1'
+		: resolvedToolbarState.isHeading2 ? 'H2'
+		: resolvedToolbarState.isHeading3 ? 'H3'
+		: resolvedToolbarState.isHeading4 ? 'H4'
+		: resolvedToolbarState.isHeading5 ? 'H5'
+		: resolvedToolbarState.isHeading6 ? 'H6'
+		: t('editors.headingMenu');
 
 	return (
-		<div
-			className={`${styles.formatToolbar}${props.compact ? ` ${styles.formatToolbarCompact}` : ''}${noEditor ? ` ${styles.formatToolbarDisabled}` : ''}`}
-			role="toolbar"
-			aria-label={t('editors.formatting')}
-			onPointerDown={stopToolbarPropagation}
-			onMouseDown={stopToolbarPropagation}
-			onClick={stopToolbarPropagation}
-			onTouchStartCapture={handleToolbarTouchStart}
-			onTouchMoveCapture={handleToolbarTouchMove}
-			onTouchEndCapture={resetToolbarTouch}
-			onTouchCancelCapture={resetToolbarTouch}
-		>
-			<div className={styles.formatToolbarScroller}>
+		<div className={styles.formatToolbarStack}>
+			<div
+				className={`${styles.formatToolbar}${props.compact ? ` ${styles.formatToolbarCompact}` : ''}${noEditor ? ` ${styles.formatToolbarDisabled}` : ''}`}
+				role="toolbar"
+				aria-label={t('editors.formatting')}
+				onPointerDown={stopToolbarPropagation}
+				onMouseDown={stopToolbarPropagation}
+				onClick={stopToolbarPropagation}
+				onTouchStartCapture={handleToolbarTouchStart}
+				onTouchMoveCapture={handleToolbarTouchMove}
+				onTouchEndCapture={resetToolbarTouch}
+				onTouchCancelCapture={resetToolbarTouch}
+			>
+				<div className={styles.formatToolbarScroller}>
 				<button
 					type="button"
 					className={`${styles.formatToolbarScrollButton}${canScrollToolbarLeft ? '' : ` ${styles.formatToolbarScrollButtonHidden}`}`}
@@ -503,23 +557,18 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				{props.variant === 'full' ? (
 					<>
 						<div className={styles.formatDivider} aria-hidden="true" />
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading1 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 1 }).run()}>
-							H1
-						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading2 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 2 }).run()}>
-							H2
-						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading3 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 3 }).run()}>
-							H3
-						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading4 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 4 }).run()}>
-							H4
-						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading5 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 5 }).run()}>
-							H5
-						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHeading6 ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleHeading({ level: 6 }).run()}>
-							H6
+						<button
+							ref={headingMenuButtonRef}
+							type="button"
+							className={`${styles.formatButton}${compactButtonClass}${headingMenuOpen || resolvedToolbarState.isHeading1 || resolvedToolbarState.isHeading2 || resolvedToolbarState.isHeading3 || resolvedToolbarState.isHeading4 || resolvedToolbarState.isHeading5 || resolvedToolbarState.isHeading6 ? ` ${styles.formatButtonActive}` : ''}`}
+							aria-label={t('editors.headingMenu')}
+							title={t('editors.headingMenu')}
+							aria-expanded={headingMenuOpen}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => setHeadingMenuOpen((open) => !open)}
+						>
+							<span className={styles.headingMenuButtonLabel}>{activeHeadingLabel}</span>
 						</button>
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBulletList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBulletList().run()}>
 							<FontAwesomeIcon icon={faListUl} />
@@ -566,6 +615,33 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignRight ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignRight')} title={t('editors.alignRight')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('right').run()}>
 							<FontAwesomeIcon icon={faAlignRight} />
 						</button>
+						<div className={styles.formatDivider} aria-hidden="true" />
+						<div className={styles.copyModeToggleGroup} role="group" aria-label={t('editors.copyMode')}>
+							<button
+								type="button"
+								className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'markdown' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
+								aria-label={t('editors.copyModeMarkdownToast')}
+								aria-pressed={resolvedCopyMode === 'markdown'}
+								title={t('editors.copyModeMarkdownToast')}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => props.onCopyModeChange?.('markdown')}
+							>
+								{t('editors.copyMarkdown')}
+							</button>
+							<button
+								type="button"
+								className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'rich-text' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
+								aria-label={t('editors.copyModeRichTextToast')}
+								aria-pressed={resolvedCopyMode === 'rich-text'}
+								title={t('editors.copyModeRichTextToast')}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => props.onCopyModeChange?.('rich-text')}
+							>
+								{t('editors.copyRichText')}
+							</button>
+						</div>
 					</>
 				) : null}
 				</div>
@@ -582,6 +658,25 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					<FontAwesomeIcon icon={faChevronRight} />
 				</button>
 			</div>
+			</div>
+			{props.variant === 'full' && headingMenuOpen ? (
+				<div
+					ref={headingMenuRef}
+					className={`${styles.headingToolbar}${props.compact ? ` ${styles.headingToolbarCompact}` : ''}`}
+					role="toolbar"
+					aria-label={t('editors.headingMenu')}
+					onPointerDown={stopToolbarPropagation}
+					onMouseDown={stopToolbarPropagation}
+					onClick={stopToolbarPropagation}
+				>
+					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading1 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(1)}>H1</button>
+					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading2 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(2)}>H2</button>
+					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading3 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(3)}>H3</button>
+					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading4 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(4)}>H4</button>
+					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading5 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(5)}>H5</button>
+					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading6 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(6)}>H6</button>
+				</div>
+			) : null}
 			{tableMenuOpen && tableMenuPosition && typeof document !== 'undefined'
 				? createPortal(
 					<div
@@ -622,9 +717,11 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 
 export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	const { variant } = props;
+	const { t } = useI18n();
 	const emitInitialChange = props.emitInitialChange ?? true;
 	const serializeChangePayload = props.serializeChangePayload ?? true;
 	const bubbleMenuEnabled = useBubbleMenuEnabled();
+	const showFormattingBubbleActions = bubbleMenuEnabled && variant === 'full';
 	const caretVisibilityBottomInsetRef = React.useRef(props.caretVisibilityBottomInset ?? 0);
 	caretVisibilityBottomInsetRef.current = props.caretVisibilityBottomInset ?? 0;
 	const latestHandlersRef = React.useRef({
@@ -640,6 +737,31 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		onBackspaceWhenEmpty: props.onBackspaceWhenEmpty,
 	};
 	const editorRef = React.useRef<Editor | null>(null);
+	const [hasSelection, setHasSelection] = React.useState(false);
+	const [internalCopyMode, setInternalCopyMode] = React.useState<ClipboardConversionTarget>('rich-text');
+	const effectiveCopyMode = props.copyMode ?? internalCopyMode;
+	const copyModeRef = React.useRef<ClipboardConversionTarget>('rich-text');
+	const [clipboardStatusMessage, setClipboardStatusMessage] = React.useState('');
+	const clipboardMessageTimeoutRef = React.useRef<number | null>(null);
+	const showFormattingBubble = showFormattingBubbleActions && hasSelection;
+	const publishClipboardStatus = React.useCallback((message: string): void => {
+		setClipboardStatusMessage(message);
+		props.onClipboardStatusChange?.(message);
+		if (clipboardMessageTimeoutRef.current !== null) {
+			window.clearTimeout(clipboardMessageTimeoutRef.current);
+		}
+		clipboardMessageTimeoutRef.current = window.setTimeout(() => {
+			clipboardMessageTimeoutRef.current = null;
+			setClipboardStatusMessage('');
+			props.onClipboardStatusChange?.('');
+		}, 1800);
+	}, [props]);
+	const handleCopyModeChange = React.useCallback((target: ClipboardConversionTarget): void => {
+		copyModeRef.current = target;
+		if (props.onCopyModeChange) props.onCopyModeChange(target);
+		else setInternalCopyMode(target);
+		publishClipboardStatus(target === 'markdown' ? t('editors.copyModeMarkdownToast') : t('editors.copyModeRichTextToast'));
+	}, [props, publishClipboardStatus, t]);
 	const ensureSelectionVisible = React.useCallback((): void => {
 		const bottomInset = caretVisibilityBottomInsetRef.current;
 		if (bottomInset <= 0) return;
@@ -661,6 +783,33 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 			editorProps: {
 				attributes: {
 					class: `${styles.richEditorContent}${props.contentClassName ? ` ${props.contentClassName}` : ''}`,
+					'autocomplete': 'off',
+					'autoCorrect': 'off',
+					'autoCapitalize': 'off',
+					'data-bwignore': 'true',
+					'data-lpignore': 'true',
+					'data-1p-ignore': 'true',
+				},
+				handleDOMEvents: {
+					copy: (_view, event) => {
+						const ed = editorRef.current;
+						if (!ed || variant !== 'full') return false;
+						const input = getEditorSelectionClipboardInput(ed);
+						if (!input || !event.clipboardData) return false;
+						try {
+							// Intercept the native copy event so keyboard shortcuts and browser copy
+							// actions respect the selected Markdown vs rich-text export mode.
+							const payload = prepareConvertedClipboardPayload(input, copyModeRef.current);
+							event.preventDefault();
+							event.clipboardData.setData('text/plain', payload.text);
+							if (payload.html) {
+								event.clipboardData.setData('text/html', payload.html);
+							}
+							return true;
+						} catch {
+							return false;
+						}
+					},
 				},
 				handlePaste: (_view, event) => {
 					const ed = editorRef.current;
@@ -753,9 +902,17 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	);
 
 	React.useEffect(() => {
+		copyModeRef.current = effectiveCopyMode;
+	}, [effectiveCopyMode]);
+
+	React.useEffect(() => {
 		editorRef.current = editor;
 		props.onEditorChange?.(editor);
 		return () => {
+			if (clipboardMessageTimeoutRef.current !== null) {
+				window.clearTimeout(clipboardMessageTimeoutRef.current);
+				clipboardMessageTimeoutRef.current = null;
+			}
 			props.onEditorChange?.(null);
 		};
 	}, [editor, props.onEditorChange]);
@@ -764,9 +921,11 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		if (!editor) return;
 		const handleSelectionChange = (): void => {
 			ensureSelectionVisible();
+			setHasSelection(!editor.state.selection.empty);
 		};
 		editor.on('selectionUpdate', handleSelectionChange);
 		editor.on('focus', handleSelectionChange);
+		handleSelectionChange();
 		return () => {
 			editor.off('selectionUpdate', handleSelectionChange);
 			editor.off('focus', handleSelectionChange);
@@ -788,7 +947,8 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 
 	return (
 		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`}>
-			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} onCreateUrlPreview={props.onCreateUrlPreview} />}
+			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} onCreateUrlPreview={props.onCreateUrlPreview} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} />}
+			{clipboardStatusMessage && !(props.hideToolbar && props.onClipboardStatusChange) ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
 			<EditorContent editor={editor} className={`${styles.richEditorViewport}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}`} />
 			{/*
 				Bubble menu branch:
@@ -796,7 +956,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				switch focus. Restricting BubbleMenu to `full` editors avoids extra delayed
 				position/update timers in high-frequency checklist interactions.
 			*/}
-			{bubbleMenuEnabled && editor && variant === 'full' ? (
+			{editor && showFormattingBubble ? (
 				<BubbleMenu editor={editor} updateDelay={150} options={{ placement: 'top' }}>
 					<div
 						className={styles.bubbleMenu}
@@ -804,27 +964,31 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 						onMouseDown={stopToolbarPropagation}
 						onClick={stopToolbarPropagation}
 					>
-						<button
-							type="button"
-							className={`${styles.bubbleMenuButton}${editor.isActive('bold') ? ` ${styles.bubbleMenuButtonActive}` : ''}`}
-							onClick={() => editor.chain().focus().toggleBold().run()}
-						>
-							<FontAwesomeIcon icon={faBold} />
-						</button>
-						<button
-							type="button"
-							className={`${styles.bubbleMenuButton}${editor.isActive('italic') ? ` ${styles.bubbleMenuButtonActive}` : ''}`}
-							onClick={() => editor.chain().focus().toggleItalic().run()}
-						>
-							<FontAwesomeIcon icon={faItalic} />
-						</button>
-						<button
-							type="button"
-							className={`${styles.bubbleMenuButton}${editor.isActive('underline') ? ` ${styles.bubbleMenuButtonActive}` : ''}`}
-							onClick={() => editor.chain().focus().toggleUnderline().run()}
-						>
-							<FontAwesomeIcon icon={faUnderline} />
-						</button>
+						{showFormattingBubbleActions ? (
+							<>
+								<button
+									type="button"
+									className={`${styles.bubbleMenuButton}${editor.isActive('bold') ? ` ${styles.bubbleMenuButtonActive}` : ''}`}
+									onClick={() => editor.chain().focus().toggleBold().run()}
+								>
+									<FontAwesomeIcon icon={faBold} />
+								</button>
+								<button
+									type="button"
+									className={`${styles.bubbleMenuButton}${editor.isActive('italic') ? ` ${styles.bubbleMenuButtonActive}` : ''}`}
+									onClick={() => editor.chain().focus().toggleItalic().run()}
+								>
+									<FontAwesomeIcon icon={faItalic} />
+								</button>
+								<button
+									type="button"
+									className={`${styles.bubbleMenuButton}${editor.isActive('underline') ? ` ${styles.bubbleMenuButtonActive}` : ''}`}
+									onClick={() => editor.chain().focus().toggleUnderline().run()}
+								>
+									<FontAwesomeIcon icon={faUnderline} />
+								</button>
+							</>
+						) : null}
 					</div>
 				</BubbleMenu>
 			) : null}

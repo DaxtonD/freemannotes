@@ -37,6 +37,7 @@ type MenuItem = {
 	labelKey: string;
 	icon: IconDefinition;
 	danger?: boolean;
+	disabled?: boolean;
 	action: () => void;
 };
 
@@ -172,17 +173,13 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				},
 			}]
 			: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, action: noop }]),
-		...(props.onAddDocument
-			? [{
-				key: 'document',
-				labelKey: 'noteMenu.addDocument',
-				icon: faFileLines,
-				action: () => {
-					props.onClose();
-					props.onAddDocument?.();
-				},
-			}]
-			: []),
+		{
+			key: 'document',
+			labelKey: 'noteMenu.addDocument',
+			icon: faFileLines,
+			disabled: true,
+			action: noop,
+		},
 		...(props.onAddUrlPreview
 			? [{
 				key: 'url-preview',
@@ -260,9 +257,12 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 							<button
 								type="button"
 								role="menuitem"
-								className={`${styles.menuItem}${item.danger ? ` ${styles.menuItemDanger}` : ''}`}
+								className={`${styles.menuItem}${item.danger ? ` ${styles.menuItemDanger}` : ''}${item.disabled ? ` ${styles.menuItemDisabled}` : ''}`}
+								disabled={item.disabled}
+								aria-disabled={item.disabled ? 'true' : undefined}
 								onClick={(e) => {
 									e.stopPropagation();
+									if (item.disabled) return;
 									if (Date.now() < suppressUntilRef.current) return;
 									item.action();
 								}}

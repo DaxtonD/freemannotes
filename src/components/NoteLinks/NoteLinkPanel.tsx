@@ -22,6 +22,7 @@ type NoteLinkPanelProps = {
 	canEdit?: boolean;
 	onDeleteLink?: (normalizedUrl: string) => void;
 	onAddUrlPreview?: (() => void) | undefined;
+	disableInitialRemoteRefresh?: boolean;
 };
 
 function isOffline(): boolean {
@@ -122,8 +123,35 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 	}, [props.docId, t]);
 
 	React.useEffect(() => {
+		if (props.disableInitialRemoteRefresh) {
+			void readStoredNoteLinks(props.docId)
+				.then((next) => {
+					const cached = next.length > 0 ? next : getCachedRemoteNoteLinks(props.docId);
+					setLinks(cached);
+					// Fresh-device branch: the note card rail is cache-first to avoid reorder-time
+					// fetch churn, but a brand-new device has no local preview rows yet. If the
+					// Yjs doc says links exist (`fallbackLinks`) and the cache is empty, hydrate
+					// the stored preview records once from the server so card images can render
+					// without requiring the editor to be opened.
+					if (cached.length === 0 && (props.fallbackLinks?.length || 0) > 0 && !isOffline()) {
+						void refreshRemoteNoteLinks(props.docId)
+							.then((remote) => setLinks(remote))
+							.catch(() => undefined);
+					}
+				})
+				.catch(() => {
+					const cached = getCachedRemoteNoteLinks(props.docId);
+					setLinks(cached);
+					if (cached.length === 0 && (props.fallbackLinks?.length || 0) > 0 && !isOffline()) {
+						void refreshRemoteNoteLinks(props.docId)
+							.then((remote) => setLinks(remote))
+							.catch(() => undefined);
+					}
+				});
+			return;
+		}
 		void refresh();
-	}, [refresh]);
+	}, [props.disableInitialRemoteRefresh, props.docId, props.fallbackLinks, refresh]);
 
 	React.useEffect(() => {
 		const eventName = getNoteLinksChangedEventName();
