@@ -106,6 +106,10 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 	const [links, setLinks] = React.useState<readonly NoteLinkRecord[]>(() => getCachedRemoteNoteLinks(props.docId));
 	const [loading, setLoading] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
+	const fallbackSignature = React.useMemo(
+		() => (props.fallbackLinks || []).map((link) => `${link.normalizedUrl}:${link.sortOrder}`).join('|'),
+		[props.fallbackLinks]
+	);
 	const summaryLabel = links.length === 1 ? `1 ${t('links.linkSingular')}` : `${links.length} ${t('links.linkPlural')}`;
 
 	const refresh = React.useCallback(async () => {
@@ -152,6 +156,20 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 		}
 		void refresh();
 	}, [props.disableInitialRemoteRefresh, props.docId, props.fallbackLinks, refresh]);
+
+	React.useEffect(() => {
+		if (!props.disableInitialRemoteRefresh) return;
+		if ((props.fallbackLinks?.length || 0) === 0) return;
+		if (isOffline()) return;
+		// When collaborators add/remove preview links, the Yjs metadata updates land
+		// immediately on every client. Use that as a cue to re-hydrate the cached
+		// server previews so note-card rails update without a manual refresh.
+		// The signature guard keeps this tied to actual link-list changes instead of
+		// rerunning on every parent render while the rail stays mounted.
+		void refreshRemoteNoteLinks(props.docId)
+			.then((remote) => setLinks(remote))
+			.catch(() => undefined);
+	}, [fallbackSignature, props.disableInitialRemoteRefresh, props.docId, props.fallbackLinks]);
 
 	React.useEffect(() => {
 		const eventName = getNoteLinksChangedEventName();

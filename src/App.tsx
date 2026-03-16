@@ -66,6 +66,7 @@ import { emitNoteMediaChanged, scheduleQueuedNoteImageFlush } from './core/noteM
 import { flushQueuedNoteLinkSync } from './core/noteLinkStore';
 import { scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
 import { searchOfflineNotes } from './core/offlineSearch';
+import { applyPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, usePwaState } from './core/pwa';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -383,6 +384,9 @@ export function App(): React.JSX.Element {
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(() => cachedAuth?.profileImage ?? null);
 	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(() => cachedAuth?.workspaceId ?? null);
 	const [workspaceDeletedNotice, setWorkspaceDeletedNotice] = React.useState<{ hasOtherWorkspaces: boolean } | null>(null);
+	const pwaState = usePwaState();
+	const [pwaInstallBusy, setPwaInstallBusy] = React.useState(false);
+	const [pwaUpdateDismissed, setPwaUpdateDismissed] = React.useState(false);
 	// Brief dialog messages are used for small "discard" notices (e.g. preventing
 	// empty notes from being saved). We avoid a blocking `alert()` and instead show
 	// a transient on-screen message.
@@ -406,6 +410,17 @@ export function App(): React.JSX.Element {
 			}
 		};
 	}, []);
+	React.useEffect(() => {
+		if (!pwaState.updateAvailable) {
+			setPwaUpdateDismissed(false);
+		}
+	}, [pwaState.updateAvailable]);
+	const offlineReadyNoticeRef = React.useRef(false);
+	React.useEffect(() => {
+		if (!pwaState.offlineReady || offlineReadyNoticeRef.current) return;
+		offlineReadyNoticeRef.current = true;
+		showBriefDialog(t('prefs.offlineReadyToast'));
+	}, [pwaState.offlineReady, showBriefDialog, t]);
 	// Splash overlay:
 	// - During auth "loading": show a full-page splash immediately.
 	// - After auth "authed": keep an overlay until NoteGrid signals its initial
@@ -1765,6 +1780,33 @@ export function App(): React.JSX.Element {
 			}
 		}
 	}, [authStatus, authUserId, authWorkspaceId]);
+
+	const flushPwaOfflineQueues = React.useCallback(async (): Promise<void> => {
+		if (authStatus !== 'authed' || !authUserId || authOfflineMode) return;
+		await syncPendingWorkspaceMutationsRef.current().catch(() => undefined);
+		await flushSyncOutbox(authUserId).catch(() => undefined);
+		await scheduleSyncOutboxFlush(authUserId).catch(() => undefined);
+		await flushPendingShareLinkRequests(authUserId).catch(() => undefined);
+		await scheduleQueuedNoteImageFlush(authUserId).catch(() => undefined);
+		await scheduleQueuedNoteDocumentFlush(authUserId).catch(() => undefined);
+		await flushQueuedNoteLinkSync(authUserId).catch(() => undefined);
+		await flushPendingCollaboratorActions(authUserId).catch(() => undefined);
+		await flushPendingNoteShareActions(authUserId).catch(() => undefined);
+		await loadSidebarWorkspacesRef.current().catch(() => undefined);
+		await refreshActiveWorkspaceRef.current().catch(() => undefined);
+		await refreshNoteShareState().catch(() => undefined);
+	}, [authOfflineMode, authStatus, authUserId, refreshNoteShareState]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const onPwaSyncRequest = (): void => {
+			void flushPwaOfflineQueues();
+		};
+		window.addEventListener(PWA_SYNC_REQUEST_EVENT, onPwaSyncRequest as EventListener);
+		return () => {
+			window.removeEventListener(PWA_SYNC_REQUEST_EVENT, onPwaSyncRequest as EventListener);
+		};
+	}, [flushPwaOfflineQueues]);
 
 	React.useEffect(() => {
 		if (externalRoute?.kind !== 'share') {
@@ -4083,6 +4125,16 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
+			{pwaState.updateAvailable && !pwaUpdateDismissed ? (
+				<div className="pwa-update-banner" role="status" aria-live="polite">
+					<span>{t('prefs.updateAvailable')}</span>
+					<div className="pwa-update-banner-actions">
+						<button type="button" onClick={() => void applyPwaUpdate()}>{t('prefs.updateNow')}</button>
+						<button type="button" onClick={() => setPwaUpdateDismissed(true)}>{t('common.close')}</button>
+					</div>
+				</div>
+			) : null}
+
 			{workspaceDeletedNotice ? (
 				<div className="workspace-deleted-dialog-backdrop" role="presentation">
 					<section className="workspace-deleted-dialog" role="dialog" aria-modal="true" aria-label={t('workspace.deletedTitle')}>
@@ -4193,6 +4245,20 @@ export function App(): React.JSX.Element {
 				}}
 				t={t}
 				quickDeleteChecklist={quickDeleteChecklistPref}
+				installAvailable={pwaState.canInstall}
+				installMethod={pwaState.installMethod}
+				installBusy={pwaInstallBusy}
+				onInstallApp={async () => {
+					setPwaInstallBusy(true);
+					try {
+						const outcome = await promptInstallApp();
+						if (outcome === 'accepted') {
+							showBriefDialog(t('prefs.installAcceptedToast'));
+						}
+					} finally {
+						setPwaInstallBusy(false);
+					}
+				}}
 				onQuickDeleteChecklistChange={(next) => {
 					setQuickDeleteChecklistPref(next);
 					if (authStatus !== 'authed') return;

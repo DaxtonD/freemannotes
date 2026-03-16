@@ -1,4 +1,5 @@
 import { normalizeWorkspaceInviteRole, readCachedWorkspaceInviteLink, sendWorkspaceInviteEmail, type WorkspaceInviteLink, type WorkspaceInviteRole } from './shareLinks';
+import { requestPwaBackgroundSync } from './pwa';
 
 export type SyncOperationType = 'create' | 'update' | 'delete' | 'invite';
 export type SyncEntityType = 'workspace' | 'note' | 'collaborator' | 'workspace_invite';
@@ -774,10 +775,11 @@ async function enqueueSyncOutboxEntry(entry: SyncOutboxRow): Promise<void> {
 		const tx = db.transaction([SYNC_OUTBOX_STORE], 'readwrite');
 		tx.objectStore(SYNC_OUTBOX_STORE).put(entry);
 		await transactionToPromise(tx);
+		void requestPwaBackgroundSync();
 	} catch {
 		// Best-effort queue persistence only.
 	}
-	}
+}
 
 async function readSyncOutboxEntries(userId: string): Promise<SyncOutboxRow[]> {
 	if (!userId) return [];

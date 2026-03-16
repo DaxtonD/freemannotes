@@ -569,6 +569,7 @@ function contentTypeFor(filePath) {
 	if (ext === '.svg') return 'image/svg+xml';
 	if (ext === '.png') return 'image/png';
 	if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+	if (ext === '.webp') return 'image/webp';
 	if (ext === '.ico') return 'image/x-icon';
 	if (ext === '.txt') return 'text/plain; charset=utf-8';
 	return 'application/octet-stream';

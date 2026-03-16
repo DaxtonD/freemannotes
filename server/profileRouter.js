@@ -131,7 +131,7 @@ function createProfileRouter({ prisma, uploadDir }) {
 					const fullPath = path.join(uploadDir, filename);
 					await fs.promises.writeFile(fullPath, out);
 
-					const publicPath = `/uploads/${filename}`;
+					const publicPath = `/uploads/${filename}?v=${Date.now()}`;
 					await prisma.user.update({
 						where: { id: userId },
 						data: { profileImage: publicPath },

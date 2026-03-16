@@ -35,6 +35,10 @@ export type PreferencesModalProps = {
 	t: (key: string) => string;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	installAvailable?: boolean;
+	installMethod?: 'prompt' | 'ios' | null;
+	installBusy?: boolean;
+	onInstallApp?: () => void | Promise<void>;
 	onOpenAppearance?: () => void;
 	// Optional admin/session actions.
 	// These are injected by the App so Preferences can stay a mostly-presentational
@@ -50,7 +54,15 @@ type SectionModalProps = {
 	t: (key: string) => string;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	installAvailable?: boolean;
+	installMethod?: 'prompt' | 'ios' | null;
+	installBusy?: boolean;
+	onInstallApp?: () => void | Promise<void>;
 };
+
+function getVisibleSections(installAvailable: boolean): readonly SectionConfig[] {
+	return installAvailable ? sections : sections.filter((section) => section.id !== 'install');
+}
 
 function EditorSectionContent(props: {
 	t: (key: string) => string;
@@ -90,8 +102,41 @@ function EditorSectionContent(props: {
 	);
 }
 
+function InstallSectionContent(props: {
+	t: (key: string) => string;
+	installMethod: 'prompt' | 'ios' | null;
+	installBusy: boolean;
+	onInstallApp?: () => void | Promise<void>;
+}): React.JSX.Element {
+	if (props.installMethod === 'ios') {
+		return (
+			<div className={styles.installSection}>
+				<p className={styles.installDescription}>{props.t('prefs.installIosBody')}</p>
+				<ol className={styles.installSteps}>
+					<li>{props.t('prefs.installIosStep1')}</li>
+					<li>{props.t('prefs.installIosStep2')}</li>
+				</ol>
+			</div>
+		);
+	}
+
+	return (
+		<div className={styles.installSection}>
+			<p className={styles.installDescription}>{props.t('prefs.installPromptBody')}</p>
+			<button
+				type="button"
+				className={styles.installAction}
+				onClick={() => props.onInstallApp?.()}
+				disabled={props.installBusy}
+			>
+				{props.installBusy ? props.t('common.loading') : props.t('prefs.installNow')}
+			</button>
+		</div>
+	);
+}
+
 function SectionModal(props: SectionModalProps): React.JSX.Element {
-	const sectionConfig = sections.find((item) => item.id === props.section);
+	const sectionConfig = getVisibleSections(Boolean(props.installAvailable)).find((item) => item.id === props.section);
 	const sectionTitle = sectionConfig ? props.t(sectionConfig.labelKey) : props.t('prefs.title');
 
 	return (
@@ -107,7 +152,14 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 					</button>
 				</header>
 
-				{props.section === 'editor' ? (
+				{props.section === 'install' && props.installAvailable ? (
+					<InstallSectionContent
+						t={props.t}
+						installMethod={props.installMethod ?? null}
+						installBusy={Boolean(props.installBusy)}
+						onInstallApp={props.onInstallApp}
+					/>
+				) : props.section === 'editor' ? (
 					<EditorSectionContent
 						t={props.t}
 						quickDeleteChecklist={props.quickDeleteChecklist}
@@ -123,11 +175,17 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 
 export function PreferencesModal(props: PreferencesModalProps): React.JSX.Element | null {
 	const [activeSection, setActiveSection] = React.useState<PreferencesSection | null>(null);
+	const visibleSections = React.useMemo(() => getVisibleSections(Boolean(props.installAvailable)), [props.installAvailable]);
 
 	React.useEffect(() => {
 		if (props.isOpen) return;
 		setActiveSection(null);
 	}, [props.isOpen]);
+
+	React.useEffect(() => {
+		if (props.installAvailable || activeSection !== 'install') return;
+		setActiveSection(null);
+	}, [activeSection, props.installAvailable]);
 
 	if (!props.isOpen) return null;
 
@@ -151,7 +209,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 				</header>
 
 				<div className={styles.sections}>
-					{sections.map((section) => {
+					{visibleSections.map((section) => {
 						return (
 							<button
 								key={section.id}
@@ -194,6 +252,10 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					t={props.t}
 					quickDeleteChecklist={props.quickDeleteChecklist}
 					onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+					installAvailable={props.installAvailable}
+					installMethod={props.installMethod}
+					installBusy={props.installBusy}
+					onInstallApp={props.onInstallApp}
 				/>
 			) : null}
 		</div>

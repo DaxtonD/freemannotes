@@ -1,4 +1,5 @@
 import { listNoteDocuments, uploadNoteDocuments, type NoteDocumentRecord } from './noteDocumentApi';
+import { requestPwaBackgroundSync } from './pwa';
 
 // Offline-first document store:
 // - caches server documents per note
@@ -579,6 +580,7 @@ export async function queueNoteDocumentsForUpload(args: {
 	const queuedDocuments = rows.map(toQueuedDocumentRecord);
 	queuedCache.set(docId, [...queuedDocuments, ...(queuedCache.get(docId) || [])]);
 	emitNoteDocumentsChanged(docId);
+	void requestPwaBackgroundSync();
 	await scheduleQueuedNoteDocumentFlush(userId);
 	return queuedDocuments;
 }

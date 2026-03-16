@@ -1,5 +1,8 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import { VitePWA } from 'vite-plugin-pwa';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // Dev-only: host the Yjs websocket backend on the SAME port as Vite under /yjs/*.
 // This avoids the “desktop tabs sync locally but phone sees no notes” trap when
@@ -9,6 +12,9 @@ import react from '@vitejs/plugin-react';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { setupWSConnection } from 'y-websocket/bin/utils';
 import type { Plugin } from 'vite';
+
+const packageJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as { version?: string };
+const appVersion = String(packageJson.version || 'dev');
 
 function attachProxyErrorHandlers(proxy: any, label: string): void {
 	const swallowSocketError = (socket: any): void => {
@@ -114,7 +120,51 @@ export default defineConfig(({ mode }) => {
 
 	return {
 		envDir,
-		plugins: [react(), ...(embedYjs ? [yjsWebsocketPlugin()] : [])],
+		plugins: [
+			react(),
+			VitePWA({
+				strategies: 'injectManifest',
+				srcDir: 'src',
+				filename: 'sw.js',
+				injectRegister: false,
+				registerType: 'autoUpdate',
+				includeAssets: [
+					'apple-touch-icon.png',
+					'pwa-192x192.png',
+					'pwa-512x512.png',
+					'pwa-maskable-192x192.png',
+					'pwa-maskable-512x512.png',
+				],
+				manifest: {
+					name: 'FreemanNotes',
+					short_name: 'Notes',
+					description: 'Offline-first collaborative note taking for personal and shared workspaces.',
+					start_url: '/',
+					scope: '/',
+					display: 'standalone',
+					orientation: 'portrait',
+					theme_color: '#2f5af4',
+					background_color: '#f5f7fb',
+					icons: [
+						{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+						{ src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+						{ src: 'pwa-maskable-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+						{ src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+					],
+				},
+				injectManifest: {
+					globPatterns: ['**/*.{js,css,html,ico,png,svg,json,woff2}'],
+					maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+				},
+				devOptions: {
+					enabled: false,
+				},
+			}),
+			...(embedYjs ? [yjsWebsocketPlugin()] : []),
+		],
+		define: {
+			__APP_VERSION__: JSON.stringify(appVersion),
+		},
 		server: {
 			host: true,
 			port: devPort,

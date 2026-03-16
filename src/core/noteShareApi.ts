@@ -8,6 +8,7 @@ import {
 	type CachedCollaboratorSnapshot,
 	type PendingCollaboratorAction,
 } from './noteShareCollaboratorStore';
+import { requestPwaBackgroundSync } from './pwa';
 
 export type NoteShareRole = 'VIEWER' | 'EDITOR';
 export type NoteShareStatus = 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'REVOKED';
@@ -247,6 +248,7 @@ export function enqueuePendingNoteShareAction(action: PendingNoteShareAction): v
 	const existing = readQueue(action.userId).filter((item) => item.invitationId !== action.invitationId);
 	existing.push(action);
 	writeQueue(action.userId, existing);
+	void requestPwaBackgroundSync();
 }
 
 export function removePendingNoteShareAction(userId: string, invitationId: string): void {
