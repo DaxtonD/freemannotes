@@ -57,6 +57,7 @@ Important variables:
 | `APP_URL` | *(unset)* | Public base URL used for invite links and startup logs |
 | `DATABASE_URL` | `postgresql://...@postgres:5432/...` | Prisma connection string for the bundled PostgreSQL service or an external PostgreSQL instance |
 | `DB_SCHEMA_SYNC` | `deploy` | Startup schema mode: `deploy`, `push`, or `none` |
+| `DB_BASELINE_ON_NON_EMPTY` | *(unset)* | One-time recovery flag for `P3005` when a prior failed install already created FreemanNotes tables without Prisma migration history |
 | `AUTH_JWT_SECRET` | `change-me-before-beta` | JWT signing secret. Set a long random value before shipping |
 | `AUTH_ALLOW_REGISTER` | `true` | Allows open user registration |
 | `UPLOAD_DIR` | `/app/uploads` | Upload storage path inside the container |
@@ -94,3 +95,21 @@ If you deploy behind Nginx, Caddy, Traefik, OpenResty, or another reverse proxy,
 - `AUTH_JWT_SECRET` should be changed before any public beta.
 - For invite emails, configure `APP_URL` and the `SMTP_*` variables together.
 - For relay-only testing, you can unset `DATABASE_URL`, but that is not recommended for beta because server-side persistence is disabled.
+
+## Recovering From P3005 After A Failed First Install
+
+If a previous container run created FreemanNotes tables before migrations were fully baselined, later production starts may fail with `P3005` because `prisma migrate deploy` sees a non-empty database with no Prisma migration history.
+
+For a FreemanNotes database that you want to keep, set this once in `.env.docker`:
+
+```text
+DB_BASELINE_ON_NON_EMPTY=true
+```
+
+Then start the app once. The container will:
+
+- run `prisma db push --skip-generate`
+- mark the committed migrations as already applied
+- retry `prisma migrate deploy`
+
+After that startup succeeds, remove `DB_BASELINE_ON_NON_EMPTY` again. If the database contains no data you care about, deleting the database or volume and letting the app recreate it is simpler.

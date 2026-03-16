@@ -99,6 +99,47 @@ function resolveSchemaSyncMode() {
 	return process.env.NODE_ENV === 'production' ? 'deploy' : 'push';
 }
 
+function isTruthyEnv(value) {
+	const normalized = String(value || '').trim().toLowerCase();
+	return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function shouldBaselineOnNonEmptyDatabase() {
+	return isTruthyEnv(process.env.DB_BASELINE_ON_NON_EMPTY);
+}
+
+function isNonEmptySchemaError(message) {
+	const text = String(message || '');
+	return text.includes('P3005') && text.includes('The database schema is not empty');
+}
+
+function getCommittedMigrationNames() {
+	const migrationsDir = path.join(getRepoRoot(), 'prisma', 'migrations');
+	if (!fs.existsSync(migrationsDir)) return [];
+	return fs.readdirSync(migrationsDir, { withFileTypes: true })
+		.filter((entry) => entry.isDirectory())
+		.map((entry) => entry.name)
+		.sort();
+}
+
+function baselineExistingSchema(databaseUrl) {
+	const migrationNames = getCommittedMigrationNames();
+	if (migrationNames.length === 0) {
+		throw new Error('Cannot baseline a non-empty database because prisma/migrations is empty.');
+	}
+
+	console.warn('[dbInit] DB_BASELINE_ON_NON_EMPTY is enabled; attempting one-time baseline for the existing database schema');
+	console.warn('[dbInit] Step 1/2: syncing the current Prisma schema with `prisma db push --skip-generate`');
+	runPrismaCommand('npx prisma db push --skip-generate', databaseUrl);
+
+	console.warn('[dbInit] Step 2/2: marking committed migrations as already applied');
+	for (const migrationName of migrationNames) {
+		runPrismaCommand(`npx prisma migrate resolve --applied ${migrationName}`, databaseUrl);
+	}
+
+	console.warn('[dbInit] Baseline complete; retrying `prisma migrate deploy`');
+}
+
 /**
  * Parses a PostgreSQL connection URL and returns its component parts.
  *
@@ -242,6 +283,30 @@ function syncSchema(databaseUrl) {
 					const recoveryMessage = recoveryErr.stderr ? recoveryErr.stderr.toString().trim() : recoveryErr.message;
 					console.warn('[dbInit] Automatic migration recovery failed: ' + recoveryMessage);
 				}
+			}
+			if (isNonEmptySchemaError(message) && shouldBaselineOnNonEmptyDatabase()) {
+				try {
+					baselineExistingSchema(databaseUrl);
+					const retryOutput = runPrismaCommand(command, databaseUrl);
+					const retryText = retryOutput.toString().trim();
+					if (retryText.includes('already in sync') || retryText.includes('No pending migrations')) {
+						console.info('[dbInit] Schema is already in sync — no changes applied');
+					} else {
+						console.info('[dbInit] Schema changes applied successfully after baselining the existing database');
+						if (retryText) {
+							console.info('[dbInit] Prisma output:\n' + retryText);
+						}
+					}
+					return;
+				} catch (baselineErr) {
+					const baselineMessage = baselineErr.stderr ? baselineErr.stderr.toString().trim() : baselineErr.message;
+					console.warn('[dbInit] Automatic baseline failed: ' + baselineMessage);
+				}
+			}
+			if (isNonEmptySchemaError(message)) {
+				console.warn('[dbInit] The target database already has tables but Prisma has no migration history for it.');
+				console.warn('[dbInit] If this database came from a prior failed install or a pre-migration setup, either drop it and retry,');
+				console.warn('[dbInit] or set DB_BASELINE_ON_NON_EMPTY=true for one startup to baseline it automatically.');
 			}
 			console.warn('[dbInit] This run was using `prisma migrate deploy`.');
 			console.warn('[dbInit] Ensure migration files exist in prisma/migrations/.');
