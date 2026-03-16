@@ -1,4 +1,5 @@
 import { deleteNoteImage, listNoteImages, uploadNoteImages, type NoteImageRecord } from './noteMediaApi';
+import { requestPwaBackgroundSync } from './pwa';
 
 export type QueuedNoteImageStatus = 'pending' | 'failed';
 export type QueuedNoteImageOperation = 'upload' | 'delete';
@@ -352,6 +353,7 @@ export async function queueNoteImagesForUpload(args: {
 	await upsertQueuedRows(rows);
 	await Promise.all(rows.map((row, index) => storeQueuedPreviewRow(docId, row.id, args.files[index], createdAt).catch(() => undefined)));
 	emitNoteMediaChanged(docId);
+	void requestPwaBackgroundSync();
 	await scheduleQueuedNoteImageFlush(userId);
 	return rows;
 }
@@ -389,6 +391,7 @@ export async function queueRemoteNoteImageDeletion(args: {
 	removeRemoteImageFromCache(docId, imageId);
 	await deletePreviewRows([imageId]).catch(() => undefined);
 	emitNoteMediaChanged(docId);
+	void requestPwaBackgroundSync();
 	await scheduleQueuedNoteImageFlush(userId);
 	return row;
 }

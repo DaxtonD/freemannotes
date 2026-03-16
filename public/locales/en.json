@@ -6,7 +6,8 @@
     "close": "Close",
     "save": "Save",
     "cancel": "Cancel",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "refresh": "Refresh"
   },
   "app": {
     "newTextNote": "New Text Note",
@@ -77,7 +78,16 @@
     "themeCategoryEverforest": "Everforest",
     "themeCategoryRosePine": "Rose Pine",
     "themeCategoryTokyoNight": "Tokyo Night",
-    "language": "Language"
+    "language": "Language",
+    "installNow": "Install App",
+    "installPromptBody": "FreemanNotes is ready to install for faster launches, offline access, and a standalone window.",
+    "installIosBody": "FreemanNotes can be installed from Safari on iPhone and iPad.",
+    "installIosStep1": "Tap the Share button in Safari.",
+    "installIosStep2": "Choose Add to Home Screen.",
+    "installAcceptedToast": "Install prompt opened",
+    "offlineReadyToast": "FreemanNotes is ready for offline use",
+    "updateAvailable": "A new app version is ready.",
+    "updateNow": "Refresh to update"
   },
   "editors": {
     "newText": "New Text Note",

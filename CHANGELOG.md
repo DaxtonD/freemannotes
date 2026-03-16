@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.0 - 2026-03-16
+
+### Added
+- **Progressive Web App support.** Added `vite-plugin-pwa`, an installable web manifest, generated app icons, a custom service worker, offline-ready/update state, and install flows for both prompt-capable browsers and iOS Safari.
+- **Queue-aware offline sync bridge.** Existing note, link, document, media, and collaborator offline queues now request background sync through the shared PWA client/service-worker path instead of waiting only for foreground reconnects.
+
+### Changed
+- **Preferences install surface.** Preferences now only shows app-install actions when installation is actually available, with browser-specific instructions and mobile-safe modal overflow handling.
+- **Production avatar freshness.** Profile image uploads now return cache-busted URLs so a newly registered avatar appears immediately in Docker and other long-cache deployments.
+- **Collaborative preview hydration.** Note-card link rails now treat live Yjs link metadata changes as a signal to refresh cached remote previews, so collaborators see preview content update without a manual reload.
+
+### Fixed
+- **Offline navigation and caching behavior.** The service worker now preserves an app-shell fallback for navigations, keeps API/image caching scoped by intent, and avoids filling image cache storage with oversized local originals.
+- **Remote link-preview propagation.** Server-fetched link preview records now emit the same change event as local queue writes, keeping rails, panels, and fresh devices in sync after remote refreshes.
+- **WebP avatar delivery.** Production upload serving now advertises `image/webp` correctly for normalized profile photos.
+
 ## 1.0.98 - 2026-03-16
 
 ### Added

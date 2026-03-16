@@ -1,3 +1,5 @@
+import { requestPwaBackgroundSync } from './pwa';
+
 type CollaboratorRole = 'VIEWER' | 'EDITOR';
 
 type CachedUser = {
@@ -563,6 +565,7 @@ export async function enqueuePendingCollaboratorAction(action: PendingCollaborat
 			updatedAt: asIsoString(action.updatedAt, asIsoString(action.createdAt)),
 		});
 		await replaceDocActions(action.userId, action.docId, next);
+		void requestPwaBackgroundSync();
 	} catch {
 		// Queue failures should not crash the live UI.
 	}

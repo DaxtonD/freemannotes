@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
+import { initPwa } from './core/pwa';
 import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
 import './styles/variables.css';
@@ -73,27 +74,4 @@ createRoot(rootEl).render(
 	</React.StrictMode>
 );
 
-// Service worker registration + dev cleanup strategy.
-if ('serviceWorker' in navigator) {
-	if (import.meta.env.DEV) {
-		// Branch: clear any stale SW/caches from previous runs,
-		// then register a dev-safe SW (see public/sw.js for cache bypass rules).
-		navigator.serviceWorker
-			.getRegistrations()
-			.then((registrations) => Promise.all(registrations.map((r) => r.unregister())))
-			.then(() => caches.keys())
-			.then((names) => Promise.all(names.map((name) => caches.delete(name))))
-			.catch((error) => {
-				console.warn('[SW] dev cleanup failed:', error);
-			})
-			.finally(() => {
-				navigator.serviceWorker.register('/sw.js').catch((error) => {
-					console.error('[SW] registration failed:', error);
-				});
-			});
-	} else {
-		navigator.serviceWorker.register('/sw.js').catch((error) => {
-			console.error('[SW] registration failed:', error);
-		});
-	}
-}
+initPwa();
