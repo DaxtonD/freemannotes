@@ -52,6 +52,14 @@ function pickDisplayImageUrl(link: NoteLinkRecord): string | null {
 	return null;
 }
 
+function needsRemoteHydration(links: readonly NoteLinkRecord[]): boolean {
+	return links.some((link) => {
+		if (link.status !== 'READY') return true;
+		if (!link.title && !link.description && !link.mainContent) return true;
+		return !pickDisplayImageUrl(link);
+	});
+}
+
 function LinkPreviewImage(props: { link: NoteLinkRecord }): React.JSX.Element {
 	const [failed, setFailed] = React.useState(false);
 	const displayImageUrl = pickDisplayImageUrl(props.link);
@@ -132,12 +140,11 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 				.then((next) => {
 					const cached = next.length > 0 ? next : getCachedRemoteNoteLinks(props.docId);
 					setLinks(cached);
-					// Fresh-device branch: the note card rail is cache-first to avoid reorder-time
-					// fetch churn, but a brand-new device has no local preview rows yet. If the
-					// Yjs doc says links exist (`fallbackLinks`) and the cache is empty, hydrate
-					// the stored preview records once from the server so card images can render
-					// without requiring the editor to be opened.
-					if (cached.length === 0 && (props.fallbackLinks?.length || 0) > 0 && !isOffline()) {
+					// The note-card rail stays cache-first to avoid fetch churn while dragging,
+					// but still needs one background refresh when a device has no cached rows or
+					// the cached rows are incomplete (for example: titles exist but the hero
+					// image was never hydrated yet).
+					if ((props.fallbackLinks?.length || 0) > 0 && !isOffline() && (cached.length === 0 || needsRemoteHydration(cached))) {
 						void refreshRemoteNoteLinks(props.docId)
 							.then((remote) => setLinks(remote))
 							.catch(() => undefined);
@@ -146,7 +153,7 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 				.catch(() => {
 					const cached = getCachedRemoteNoteLinks(props.docId);
 					setLinks(cached);
-					if (cached.length === 0 && (props.fallbackLinks?.length || 0) > 0 && !isOffline()) {
+					if ((props.fallbackLinks?.length || 0) > 0 && !isOffline() && (cached.length === 0 || needsRemoteHydration(cached))) {
 						void refreshRemoteNoteLinks(props.docId)
 							.then((remote) => setLinks(remote))
 							.catch(() => undefined);
