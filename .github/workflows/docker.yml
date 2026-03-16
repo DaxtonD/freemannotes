@@ -34,5 +34,8 @@ jobs:
           file: ${{ github.workspace }}/Dockerfile
           push: true
           tags: ghcr.io/daxtond/freemannotes:latest
-          cache-from: type=registry,ref=ghcr.io/daxtond/freemannotes:latest
-          cache-to: type=registry,ref=ghcr.io/daxtond/freemannotes:latest,mode=max
+          # Keep the pullable runtime image and the BuildKit cache in separate refs.
+          # Reusing :latest for cache export can publish cache metadata that older
+          # runtimes reject with "unsupported media type application/vnd.buildkit.cacheconfig.v0".
+          cache-from: type=registry,ref=ghcr.io/daxtond/freemannotes:buildcache
+          cache-to: type=registry,ref=ghcr.io/daxtond/freemannotes:buildcache,mode=max
