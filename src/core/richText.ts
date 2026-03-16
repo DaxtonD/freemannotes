@@ -31,6 +31,8 @@ const markdownParser = new MarkdownIt({
 const MEANINGFUL_CLIPBOARD_HTML_PATTERN = /<(p|div|ul|ol|li|strong|b|em|i|a|h1|h2|h3|blockquote|pre|code|table|thead|tbody|tr|th|td|hr)\b/i;
 const MARKDOWN_BLOCK_PATTERN = /(^|\n)(#{1,6}\s|>\s|[-+*]\s|\d+\.\s|```|~~~|\|.+\||\s*[-+*]\s\[[ xX]\]\s)|(^|\n)\s*([-*_])(?:\s*\3){2,}\s*($|\n)/m;
 const MARKDOWN_INLINE_PATTERN = /(\*\*[^*\n][\s\S]*?\*\*|__[^_\n][\s\S]*?__|~~[^~\n][\s\S]*?~~|`[^`\n]+`|\[[^\]]+\]\([^\)]+\)|!\[[^\]]*\]\([^\)]+\))/;
+const CLIPBOARD_BLOCK_SELECTOR = 'p,div,section,article,header,footer,aside,blockquote,pre,ul,ol,li,table,thead,tbody,tfoot,tr,hr,h1,h2,h3,h4,h5,h6';
+const CLIPBOARD_CELL_SELECTOR = 'th,td';
 
 function buildStarterKit(variant: RichTextVariant) {
 	if (variant === 'minimal') {
@@ -288,7 +290,7 @@ export function restoreChecklistItemRichContent(
 	replaceRichFragmentFromJson(fragment, json, 'minimal');
 }
 
-function looksLikeMarkdown(text: string): boolean {
+export function looksLikeMarkdown(text: string): boolean {
 	const normalized = String(text ?? '').replace(/\r\n?/g, '\n').trim();
 	if (normalized.length === 0) return false;
 	// Use a light heuristic instead of full parsing first so normal prose paste is cheap
@@ -333,10 +335,59 @@ function normalizeMarkdownTaskListHtml(html: string): string {
 	return doc.body.innerHTML;
 }
 
-function getVisibleClipboardTextFromHtml(html: string): string {
+export function getVisibleClipboardTextFromHtml(html: string): string {
 	if (typeof DOMParser === 'undefined') return '';
 	const doc = new DOMParser().parseFromString(html, 'text/html');
-	return (doc.body.textContent ?? '').replace(/\u00a0/g, ' ').replace(/\r\n?/g, '\n').trim();
+	for (const br of Array.from(doc.querySelectorAll('br'))) {
+		br.replaceWith(doc.createTextNode('\n'));
+	}
+	for (const hr of Array.from(doc.querySelectorAll('hr'))) {
+		hr.replaceWith(doc.createTextNode('\n---\n'));
+	}
+	for (const cell of Array.from(doc.querySelectorAll(CLIPBOARD_CELL_SELECTOR))) {
+		if (!cell.textContent?.endsWith('\t')) {
+			cell.append(doc.createTextNode('\t'));
+		}
+	}
+	for (const item of Array.from(doc.querySelectorAll('li'))) {
+		const parentTag = item.parentElement?.tagName;
+		const prefix = parentTag === 'OL'
+			? `${Array.from(item.parentElement?.children ?? []).indexOf(item) + 1}. `
+			: ((item.getAttribute('data-type') === 'taskItem')
+				? `- [${item.getAttribute('data-checked') === 'true' ? 'x' : ' '}] `
+				: '- ');
+		item.prepend(doc.createTextNode(prefix));
+		item.append(doc.createTextNode('\n'));
+	}
+	for (const block of Array.from(doc.querySelectorAll(CLIPBOARD_BLOCK_SELECTOR))) {
+		if (!block.textContent?.endsWith('\n')) {
+			block.append(doc.createTextNode('\n'));
+		}
+	}
+	return (doc.body.textContent ?? '')
+		.replace(/\u00a0/g, ' ')
+		.replace(/\r\n?/g, '\n')
+		.replace(/\t\n/g, '\n')
+		.replace(/\n{3,}/g, '\n\n')
+		.trim();
+}
+
+export function isMeaningfulClipboardHtml(html: string | null | undefined): boolean {
+	return MEANINGFUL_CLIPBOARD_HTML_PATTERN.test(String(html ?? '').trim());
+}
+
+export function renderMarkdownToRichHtml(text: string): string | null {
+	const normalized = String(text ?? '').replace(/\r\n?/g, '\n').trim();
+	if (!looksLikeMarkdown(normalized)) return null;
+	const rendered = markdownParser.render(normalized).trim();
+	if (rendered.length === 0) return null;
+	return normalizeMarkdownTaskListHtml(rendered);
+}
+
+export function wrapClipboardHtmlDocument(html: string): string {
+	const fragment = String(html ?? '').trim();
+	if (!fragment) return '';
+	return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${fragment}</body></html>`;
 }
 
 export function getMarkdownPasteHtml(args: {
@@ -357,7 +408,5 @@ export function getMarkdownPasteHtml(args: {
 	) {
 		return null;
 	}
-	const rendered = markdownParser.render(text).trim();
-	if (rendered.length === 0) return null;
-	return normalizeMarkdownTaskListHtml(rendered);
+	return renderMarkdownToRichHtml(text);
 }

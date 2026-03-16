@@ -6,7 +6,6 @@ const Busboy = require('busboy');
 const sharp = require('sharp');
 const { enforceSameOrigin } = require('./auth');
 const {
-	buildDocumentViewerHtml,
 	createDocumentPreviewBuffers,
 	extractDocumentText,
 	getNormalizedDocumentExtension,
@@ -233,7 +232,6 @@ function mapNoteLink(link) {
 }
 
 function mapNoteDocument(document) {
-	const viewerRelativePath = getNoteDocumentViewerRelativePath(document);
 	return {
 		id: document.id,
 		docId: document.docId,
@@ -256,36 +254,7 @@ function mapNoteDocument(document) {
 		originalUrl: toPublicUploadPath(document.originalPath),
 		previewUrl: toPublicUploadPath(document.previewPath),
 		thumbnailUrl: toPublicUploadPath(document.thumbnailPath),
-		viewerUrl: toPublicUploadPath(viewerRelativePath),
 	};
-}
-
-function getNoteDocumentViewerRelativePath(document) {
-	return path.join(path.dirname(document.originalPath), 'viewer.html').replace(/\\/g, '/');
-}
-
-async function ensureNoteDocumentViewerFile({ uploadDir, document }) {
-	if (!document || !document.originalPath) return;
-	if (String(document.mimeType || '').toLowerCase() === 'application/pdf') return;
-	const viewerRelativePath = getNoteDocumentViewerRelativePath(document);
-	const absoluteViewerPath = path.join(uploadDir, viewerRelativePath);
-	try {
-		await fs.promises.access(absoluteViewerPath, fs.constants.F_OK);
-		return;
-	} catch {
-		// Missing viewer file; regenerate it from the stored original.
-	}
-
-	const absoluteOriginalPath = path.join(uploadDir, document.originalPath);
-	const sourceBuffer = await fs.promises.readFile(absoluteOriginalPath);
-	const viewerHtml = await buildDocumentViewerHtml({
-		buffer: sourceBuffer,
-		extension: document.fileExtension,
-		sourcePath: absoluteOriginalPath,
-		fileName: document.fileName,
-		extractedText: document.ocrText || '',
-	});
-	await fs.promises.writeFile(absoluteViewerPath, viewerHtml, 'utf8');
 }
 
 async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourceBuffer, fileName, mimeType }) {
@@ -318,7 +287,6 @@ async function persistDocumentRecord({ prisma, uploadDir, access, userId, source
 	const originalRelativePath = path.join(baseRelativeDir, `${fileBaseName || 'document'}.${fileExtension}`).replace(/\\/g, '/');
 	const previewRelativePath = path.join(baseRelativeDir, 'preview.webp').replace(/\\/g, '/');
 	const thumbnailRelativePath = path.join(baseRelativeDir, 'thumb.webp').replace(/\\/g, '/');
-	const viewerRelativePath = path.join(baseRelativeDir, 'viewer.html').replace(/\\/g, '/');
 	const absoluteOriginalPath = path.join(uploadDir, originalRelativePath);
 
 	await fs.promises.writeFile(absoluteOriginalPath, sourceBuffer);
@@ -333,18 +301,10 @@ async function persistDocumentRecord({ prisma, uploadDir, access, userId, source
 		extension: fileExtension,
 		extractedText: extracted.text,
 	});
-	const viewerHtml = await buildDocumentViewerHtml({
-		buffer: sourceBuffer,
-		extension: fileExtension,
-		sourcePath: absoluteOriginalPath,
-		fileName,
-		extractedText: extracted.text,
-	});
 
 	await Promise.all([
 		fs.promises.writeFile(path.join(uploadDir, previewRelativePath), preview.previewBuffer),
 		fs.promises.writeFile(path.join(uploadDir, thumbnailRelativePath), preview.thumbnailBuffer),
-		fs.promises.writeFile(path.join(uploadDir, viewerRelativePath), viewerHtml, 'utf8'),
 	]);
 
 	return prisma.noteDocument.update({
@@ -643,7 +603,6 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						},
 						orderBy: { createdAt: 'asc' },
 					});
-					await Promise.all(documents.map((document) => ensureNoteDocumentViewerFile({ uploadDir, document }).catch(() => undefined)));
 					jsonResponse(res, 200, { documents: documents.map(mapNoteDocument), count: documents.length });
 				} catch (err) {
 					console.error('[note-documents] list error:', err.message);
@@ -1022,7 +981,6 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						fs.promises.rm(path.join(uploadDir, noteDocument.originalPath), { force: true }),
 						fs.promises.rm(path.join(uploadDir, noteDocument.previewPath), { force: true }),
 						fs.promises.rm(path.join(uploadDir, noteDocument.thumbnailPath), { force: true }),
-						fs.promises.rm(path.join(uploadDir, path.join(path.dirname(noteDocument.originalPath), 'viewer.html')), { force: true }),
 					]);
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-deleted');
 					jsonResponse(res, 200, { ok: true, documentId: noteDocument.id });

@@ -1,6 +1,7 @@
 import React from 'react';
 
 const SCROLL_LOCK_CLASS = 'body-scroll-locked';
+const SCROLL_LOCK_ALLOW_TOUCH_CLASS = 'body-scroll-lock-allow-touch';
 
 let activeLockCount = 0;
 let previousBodyOverflow = '';
@@ -10,11 +11,12 @@ let previousHtmlOverflow = '';
 let previousHtmlOverscroll = '';
 let previousHtmlTouchAction = '';
 
-export function useBodyScrollLock(locked: boolean): void {
+export function useBodyScrollLock(locked: boolean, options?: { disableTouchAction?: boolean }): void {
 	React.useEffect(() => {
 		if (!locked || typeof document === 'undefined') return;
 		const html = document.documentElement;
 		const body = document.body;
+		const disableTouchAction = options?.disableTouchAction !== false;
 		if (activeLockCount === 0) {
 			// Capture and restore both html/body styles because this app uses nested scroll
 			// containers and mobile browsers happily keep scrolling whichever root still can.
@@ -27,12 +29,18 @@ export function useBodyScrollLock(locked: boolean): void {
 
 			html.classList.add(SCROLL_LOCK_CLASS);
 			body.classList.add(SCROLL_LOCK_CLASS);
+			if (!disableTouchAction) {
+				html.classList.add(SCROLL_LOCK_ALLOW_TOUCH_CLASS);
+				body.classList.add(SCROLL_LOCK_ALLOW_TOUCH_CLASS);
+			}
 			html.style.overflow = 'hidden';
 			body.style.overflow = 'hidden';
 			(html.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
 			(body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
-			html.style.touchAction = 'none';
-			body.style.touchAction = 'none';
+			if (disableTouchAction) {
+				html.style.touchAction = 'none';
+				body.style.touchAction = 'none';
+			}
 		}
 		activeLockCount += 1;
 		return () => {
@@ -40,6 +48,8 @@ export function useBodyScrollLock(locked: boolean): void {
 			if (activeLockCount > 0) return;
 			html.classList.remove(SCROLL_LOCK_CLASS);
 			body.classList.remove(SCROLL_LOCK_CLASS);
+			html.classList.remove(SCROLL_LOCK_ALLOW_TOUCH_CLASS);
+			body.classList.remove(SCROLL_LOCK_ALLOW_TOUCH_CLASS);
 			html.style.overflow = previousHtmlOverflow;
 			body.style.overflow = previousBodyOverflow;
 			(html.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = previousHtmlOverscroll;
@@ -47,5 +57,5 @@ export function useBodyScrollLock(locked: boolean): void {
 			html.style.touchAction = previousHtmlTouchAction;
 			body.style.touchAction = previousBodyTouchAction;
 		};
-	}, [locked]);
+	}, [locked, options?.disableTouchAction]);
 }

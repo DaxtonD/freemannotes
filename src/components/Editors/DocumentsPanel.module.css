@@ -88,6 +88,7 @@
 
 .empty,
 .placeholderCard,
+.comingSoonCard,
 .viewerEmpty {
 	padding: 18px;
 	border-radius: 18px;
@@ -97,6 +98,11 @@
 	flex-direction: column;
 	gap: 8px;
 	align-items: flex-start;
+}
+
+.comingSoonCard {
+	justify-content: center;
+	min-height: 140px;
 }
 
 .placeholderTitle,
@@ -226,120 +232,90 @@
 	background: var(--color-surface);
 	border: 0;
 	border-radius: 0;
-	box-shadow: 0 24px 60px rgba(0, 0, 0, 0.24);
+	box-shadow: none;
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
+	/* Allow pan + pinch-zoom. 'manipulation' = pan-x pan-y pinch-zoom.
+	   This lets users pan/scroll the document AND pinch-to-zoom on mobile
+	   while blocking double-tap-zoom (which would zoom the whole viewport). */
+	touch-action: manipulation;
+	/* Prevent horizontal/vertical overscroll from chaining to the browser
+	   and triggering swipe-back navigation (iOS Safari, Chrome Android). */
+	overscroll-behavior: contain;
 }
 
 .viewerHeader {
 	display: flex;
 	justify-content: space-between;
-	align-items: flex-start;
+	align-items: center;
 	gap: 16px;
-	padding: 20px;
+	padding: 14px 16px;
 	border-bottom: 1px solid var(--color-border);
+	background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-2) 8%);
 	flex: 0 0 auto;
 }
 
-.viewerToolbar {
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	gap: 12px;
-	padding: 14px 20px;
-	border-bottom: 1px solid var(--color-border);
-	background: color-mix(in srgb, var(--color-surface-2) 45%, transparent);
-	flex: 0 0 auto;
+.viewerHeaderCopy {
+	min-width: 0;
+	flex: 1 1 auto;
 }
 
-.viewerModeTabs {
-	display: inline-flex;
-	align-items: center;
-	gap: 8px;
-	flex-wrap: wrap;
-}
-
-.viewerModeButton {
-	border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
-	border-radius: 999px;
-	padding: 8px 12px;
-	font: inherit;
-	font-size: 12px;
-	font-weight: 700;
-	color: var(--color-text-muted);
-	background: var(--color-surface);
-	cursor: pointer;
-}
-
-.viewerModeButton:disabled {
-	opacity: 0.55;
-	cursor: default;
-}
-
-.viewerModeButtonActive {
-	color: var(--color-text);
-	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
-	border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border));
-}
-
-.viewerModeHint,
-.viewerMetaRow {
-	margin: 0;
-	font-size: 12px;
-	color: var(--color-text-muted);
+.viewerHeaderCopyCompact {
+	display: none;
 }
 
 .viewerBody {
-	display: grid;
-	grid-template-columns: minmax(240px, 320px) minmax(0, 1fr);
-	gap: 0;
+	display: flex;
 	min-height: 0;
 	flex: 1;
 	height: 100%;
 }
 
-.viewerBodyFullBleed {
-	grid-template-columns: minmax(0, 1fr);
-}
-
-.viewerPreviewColumn {
-	padding: 20px;
-	background: color-mix(in srgb, var(--color-surface-2) 40%, transparent);
-	border-right: 1px solid var(--color-border);
-	display: flex;
-	flex-direction: column;
-	align-items: flex-start;
-	justify-content: flex-start;
-	gap: 12px;
-	overflow: auto;
-}
-
-.viewerPreviewImage {
-	width: 100%;
-	max-width: 280px;
-	border-radius: 18px;
-	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
-	box-shadow: 0 16px 32px rgba(15, 23, 42, 0.1);
-	background: var(--color-surface);
-}
-
-.viewerPreviewMeta {
-	display: flex;
-	flex-direction: column;
-	gap: 6px;
-}
-
 .viewerContentColumn {
+	flex: 1;
 	min-height: 0;
-	overflow: auto;
+	overflow: hidden;
 	display: flex;
 	flex-direction: column;
 }
 
-.viewerContentColumnFullBleed {
-	height: 100%;
-	overflow: hidden;
+.viewerHeaderCompact {
+	gap: 8px;
+	padding: 8px 10px;
+	justify-content: flex-end;
+	border-bottom: 0;
+	background: transparent;
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 5;
+	pointer-events: none;
+}
+
+.viewerActionsCompact {
+	pointer-events: auto;
+	margin-left: auto;
+	gap: 8px;
+	flex-wrap: nowrap;
+	padding: 6px;
+	border-radius: 999px;
+	background: rgba(15, 23, 42, 0.18);
+	backdrop-filter: blur(10px);
+}
+
+.viewerLinkButtonCompact {
+	width: 38px;
+	height: 38px;
+	justify-content: center;
+	padding: 0;
+	background: rgba(255, 255, 255, 0.92);
+}
+
+.viewerPreviewStage {
+	display: flex;
+	align-items: stretch;
 }
 
 .viewerFrame,
@@ -355,20 +331,26 @@
 .viewerFrame {
 	display: block;
 	overflow: hidden;
+	background: var(--color-surface);
+	pointer-events: none;
 }
 
 .viewerDocumentPreview {
 	display: flex;
 	align-items: flex-start;
 	justify-content: center;
-	padding: 24px;
+	padding: 12px;
 	overflow: auto;
 	box-sizing: border-box;
+	background: color-mix(in srgb, var(--color-surface-2) 42%, var(--color-surface) 58%);
 }
 
 .viewerDocumentPreviewImage {
-	width: min(100%, 720px);
-	border-radius: 20px;
+	width: auto;
+	max-width: none;
+	min-width: min(100%, 720px);
+	min-height: 0;
+	border-radius: 16px;
 	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
 	box-shadow: 0 16px 32px rgba(15, 23, 42, 0.08);
 	background: var(--color-surface);
@@ -397,18 +379,36 @@
 		border-radius: 0;
 	}
 
-	.viewerBody {
-		grid-template-columns: 1fr;
+	.viewerHeader {
+		gap: 12px;
+		padding: 12px;
 	}
 
-	.viewerToolbar {
-		align-items: flex-start;
-		flex-direction: column;
+	.viewerActions {
+		gap: 6px;
+		flex-wrap: nowrap;
 	}
 
-	.viewerPreviewColumn {
-		border-right: 0;
-		border-bottom: 1px solid var(--color-border);
+	.viewerLinkButton {
+		padding: 8px 12px;
+	}
+
+	.viewerLinkButton span {
+		display: none;
+	}
+
+	.viewerFrame,
+	.viewerDocumentPreview,
+	.viewerText {
+		min-height: 100%;
+	}
+
+	.viewerCloseButton,
+	.viewerLinkButtonCompact {
+		width: 38px;
+		height: 38px;
+		padding: 0;
+		justify-content: center;
 	}
 
 	.list {

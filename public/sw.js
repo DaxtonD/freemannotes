@@ -1,6 +1,6 @@
 const CACHE_NAME = 'freemannotes-shell-v5';
-const IMAGE_CACHE_NAME = 'freemannotes-images-v1';
-const IMAGE_META_CACHE_NAME = 'freemannotes-images-meta-v1';
+const IMAGE_CACHE_NAME = 'freemannotes-images-v2';
+const IMAGE_META_CACHE_NAME = 'freemannotes-images-meta-v2';
 const IMAGE_CACHE_LIMIT_BYTES = 300 * 1024 * 1024;
 // Cache the canonical app shell entry only.
 // Caching '/' can get sticky across proxy setups and makes upgrades harder.
@@ -62,13 +62,18 @@ async function enforceImageCacheLimit() {
 }
 
 async function storeViewedImage(request, response) {
-	if (!response || !response.ok || response.type !== 'basic') return response;
+	if (!response) return response;
+	if (response.type !== 'opaque' && !response.ok) return response;
+	if (!['basic', 'cors', 'opaque'].includes(response.type)) return response;
 	const imageCache = await caches.open(IMAGE_CACHE_NAME);
 	const metaCache = await caches.open(IMAGE_META_CACHE_NAME);
 	const clone = response.clone();
-	const sizedClone = response.clone();
-	const blob = await sizedClone.blob().catch(() => null);
-	const size = blob ? blob.size : Number(response.headers.get('content-length') || '0') || 0;
+	let size = Number(response.headers.get('content-length') || '0') || 0;
+	if (response.type !== 'opaque') {
+		const sizedClone = response.clone();
+		const blob = await sizedClone.blob().catch(() => null);
+		size = blob ? blob.size : size;
+	}
 	await imageCache.put(request, clone);
 	await writeImageMeta(metaCache, request.url, {
 		size,
@@ -163,6 +168,12 @@ self.addEventListener('fetch', (event) => {
 	if (request.method !== 'GET') return;
 
 	const url = new URL(request.url);
+	if (request.destination === 'image' && url.origin !== self.location.origin) {
+		// Link preview cards often point at third-party images. Cache those responses
+		// as-viewed so offline cards can continue rendering the same preview art.
+		event.respondWith(handleViewedImageRequest(request));
+		return;
+	}
 	if (url.origin !== self.location.origin) return;
 
 	if (url.pathname.startsWith('/uploads/')) {

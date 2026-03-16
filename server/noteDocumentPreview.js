@@ -2,7 +2,6 @@
 
 // Server-side document helper pipeline:
 // - extracts text from supported uploads for search and previews
-// - builds HTML viewers for non-PDF documents
 // - generates preview/thumbnail art so note cards stay compact and fast
 
 const fs = require('fs');
@@ -35,15 +34,6 @@ const MIME_EXTENSION_MAP = {
 };
 
 const SUPPORTED_NOTE_DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'odt', 'ods', 'odp', 'rtf']);
-
-function escapeHtml(value) {
-	return String(value || '')
-		.replace(/&/g, '&amp;')
-		.replace(/</g, '&lt;')
-		.replace(/>/g, '&gt;')
-		.replace(/"/g, '&quot;')
-		.replace(/'/g, '&#39;');
-}
 
 function inferExtensionFromMimeType(mimeType) {
 	return MIME_EXTENSION_MAP[String(mimeType || '').toLowerCase()] || '';
@@ -231,191 +221,6 @@ async function runLibreOfficeConversion(sourcePath, args) {
 	}
 }
 
-function buildViewerDocument({ title, body, extension }) {
-	return `<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="utf-8" />
-	<meta name="viewport" content="width=device-width, initial-scale=1" />
-	<title>${escapeHtml(title)}</title>
-	<style>
-		:root {
-			color-scheme: light;
-			--surface: #f8fafc;
-			--surface-strong: #ffffff;
-			--border: #d9e2ec;
-			--text: #0f172a;
-			--muted: #64748b;
-			--accent: #2563eb;
-		}
-		* { box-sizing: border-box; }
-		body {
-			margin: 0;
-			font-family: Georgia, "Times New Roman", serif;
-			background: linear-gradient(180deg, #f8fafc 0%, #eef4f8 100%);
-			color: var(--text);
-			padding: 24px;
-		}
-		.page {
-			max-width: 980px;
-			margin: 0 auto;
-			background: var(--surface-strong);
-			border: 1px solid var(--border);
-			border-radius: 24px;
-			box-shadow: 0 24px 48px rgba(15, 23, 42, 0.08);
-			overflow: hidden;
-		}
-		.header {
-			padding: 24px 28px 20px;
-			border-bottom: 1px solid var(--border);
-			background: linear-gradient(135deg, rgba(37, 99, 235, 0.10), rgba(15, 23, 42, 0.02));
-		}
-		.eyebrow {
-			margin: 0 0 8px;
-			font: 700 11px/1.2 system-ui, sans-serif;
-			letter-spacing: 0.08em;
-			text-transform: uppercase;
-			color: var(--muted);
-		}
-		.title {
-			margin: 0;
-			font-size: 30px;
-			line-height: 1.2;
-			word-break: break-word;
-		}
-		.meta {
-			margin: 8px 0 0;
-			font: 500 13px/1.4 system-ui, sans-serif;
-			color: var(--muted);
-		}
-		.content {
-			padding: 28px;
-			font-size: 16px;
-			line-height: 1.7;
-		}
-		.content h1,
-		.content h2,
-		.content h3,
-		.content h4 {
-			font-family: Georgia, "Times New Roman", serif;
-			color: var(--text);
-		}
-		.content table {
-			width: 100%;
-			border-collapse: collapse;
-			margin: 16px 0 28px;
-			font: 500 14px/1.5 system-ui, sans-serif;
-		}
-		.content th,
-		.content td {
-			border: 1px solid var(--border);
-			padding: 8px 10px;
-			vertical-align: top;
-		}
-		.content th {
-			background: rgba(37, 99, 235, 0.08);
-			text-align: left;
-		}
-		.content pre {
-			white-space: pre-wrap;
-			word-break: break-word;
-			font: inherit;
-			margin: 0;
-		}
-		.sheet + .sheet,
-		.section + .section {
-			margin-top: 28px;
-			padding-top: 24px;
-			border-top: 1px solid var(--border);
-		}
-		.sheet-title,
-		.section-title {
-			margin: 0 0 12px;
-			font-size: 22px;
-			line-height: 1.25;
-		}
-	</style>
-</head>
-<body>
-	<main class="page">
-		<header class="header">
-			<p class="eyebrow">Freeman Notes read-only ${escapeHtml(extension ? extension.toUpperCase() : 'document')} viewer</p>
-			<h1 class="title">${escapeHtml(title)}</h1>
-			<p class="meta">This document is rendered read-only inside the app.</p>
-		</header>
-		<section class="content">
-			${body}
-		</section>
-	</main>
-</body>
-</html>`;
-}
-
-function buildTextHtmlBody(text) {
-	const normalized = normalizeExtractedText(text);
-	if (!normalized) {
-		return '<section class="section"><p>No extracted document text is available for this file.</p></section>';
-	}
-	const blocks = normalized.split(/\n\n+/).map((paragraph) => paragraph.trim()).filter(Boolean);
-	return blocks.map((paragraph) => `<section class="section"><pre>${escapeHtml(paragraph)}</pre></section>`).join('');
-}
-
-async function buildWorkbookHtml(buffer) {
-	const workbook = XLSX.read(buffer, { type: 'buffer', cellText: true, cellDates: true });
-	const sections = workbook.SheetNames.map((sheetName, index) => {
-		const sheet = workbook.Sheets[sheetName];
-		if (!sheet) return '';
-		const tableHtml = XLSX.utils.sheet_to_html(sheet, { id: `sheet-${index + 1}` });
-		return `<section class="sheet"><h2 class="sheet-title">${escapeHtml(sheetName)}</h2>${tableHtml}</section>`;
-	}).filter(Boolean);
-	return sections.join('');
-}
-
-async function buildDocumentViewerHtml(args) {
-	const extension = String(args.extension || '').toLowerCase();
-	const title = path.basename(String(args.fileName || 'Document'));
-	try {
-		// Prefer richer native conversions when possible; only fall back to text rendering
-		// when the source format or runtime environment cannot support a prettier preview.
-		if (extension === 'docx') {
-			const result = await mammoth.convertToHtml({ buffer: args.buffer });
-			const html = String(result?.value || '').trim();
-			if (html) {
-				return buildViewerDocument({ title, body: html, extension });
-			}
-		}
-		if (extension === 'xls' || extension === 'xlsx' || extension === 'ods') {
-			const workbookHtml = await buildWorkbookHtml(args.buffer);
-			if (workbookHtml) {
-				return buildViewerDocument({ title, body: workbookHtml, extension });
-			}
-		}
-	} catch {
-		// Fall back to extracted text or LibreOffice rendering below.
-	}
-
-	if (args.sourcePath && (extension === 'doc' || extension === 'odt' || extension === 'odp' || extension === 'rtf')) {
-		try {
-			const libreOfficeHtml = await runLibreOfficeConversion(args.sourcePath, {
-				format: 'html:XHTML Writer File:UTF8',
-				extension: 'html',
-				binaries: ['soffice', 'libreoffice'],
-			});
-			if (libreOfficeHtml.trim()) {
-				return libreOfficeHtml;
-			}
-		} catch {
-			// Fall through to text rendering.
-		}
-	}
-
-	return buildViewerDocument({
-		title,
-		body: buildTextHtmlBody(args.extractedText || ''),
-		extension,
-	});
-}
-
 async function extractDocumentText(args) {
 	const extension = String(args.extension || '').toLowerCase();
 	try {
@@ -485,7 +290,6 @@ async function createDocumentPreviewBuffers(args) {
 module.exports = {
 	SUPPORTED_NOTE_DOCUMENT_EXTENSIONS,
 	createDocumentPreviewBuffers,
-	buildDocumentViewerHtml,
 	extractDocumentText,
 	getNormalizedDocumentExtension,
 	isSupportedNoteDocument,

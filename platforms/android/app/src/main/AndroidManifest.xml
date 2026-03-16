@@ -1,0 +1,33 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.freemannotes.clipboard">
+
+    <application android:label="FreemanNotes Clipboard Converter">
+        <activity
+            android:name=".CopyMarkdownActivity"
+            android:exported="true"
+            android:label="Copy Markdown">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <meta-data
+                android:name="android.intent.extra.PROCESS_TEXT_READONLY"
+                android:value="true" />
+        </activity>
+
+        <activity
+            android:name=".CopyRichTextActivity"
+            android:exported="true"
+            android:label="Copy Rich Text">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <meta-data
+                android:name="android.intent.extra.PROCESS_TEXT_READONLY"
+                android:value="true" />
+        </activity>
+    </application>
+</manifest>

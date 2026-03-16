@@ -24,6 +24,8 @@ type NoteAttachmentCountChipProps = {
 	authUserId?: string | null;
 	className: string;
 	onOpenBrowser: (kind: NoteAttachmentBrowserKind) => void;
+	suspendRemoteRefresh?: boolean;
+	disableInitialRemoteRefresh?: boolean;
 };
 
 function readAnchorRect(element: HTMLElement | null): { top: number; left: number; width: number; height: number } | null {
@@ -87,8 +89,9 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	}, [props.authUserId, props.doc, props.docId]);
 
 	React.useEffect(() => {
-		void refresh({ syncRemote: true });
-	}, [refresh]);
+		if (props.suspendRemoteRefresh) return;
+		void refresh({ syncRemote: !props.disableInitialRemoteRefresh });
+	}, [props.disableInitialRemoteRefresh, props.suspendRemoteRefresh, refresh]);
 
 	React.useEffect(() => {
 		const onDocUpdate = (): void => {
@@ -101,6 +104,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	}, [props.doc]);
 
 	React.useEffect(() => {
+		if (props.suspendRemoteRefresh) return () => {};
 		const mediaEventName = getNoteMediaChangedEventName();
 		const documentEventName = getNoteDocumentsChangedEventName();
 		const onChanged = (event: Event): void => {
@@ -120,7 +124,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 			window.removeEventListener(documentEventName, onChanged as EventListener);
 			window.removeEventListener('online', onOnline);
 		};
-	}, [props.docId, refresh]);
+	}, [props.docId, props.suspendRemoteRefresh, refresh]);
 
 	React.useEffect(() => {
 		if (!isOpen) return;
@@ -158,6 +162,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	}, []);
 
 	const handleOpenBrowser = React.useCallback((kind: NoteAttachmentBrowserKind) => {
+		if (kind === 'documents') return;
 		setIsOpen(false);
 		props.onOpenBrowser(kind);
 	}, [props]);
@@ -224,6 +229,9 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 													<motion.button
 														type="button"
 														className={styles.overlayItem}
+														disabled={item.kind === 'documents'}
+														aria-disabled={item.kind === 'documents' ? 'true' : undefined}
+														data-disabled={item.kind === 'documents' ? 'true' : undefined}
 														style={{ zIndex: index + 1 }}
 														initial={{ y: -entryOffset, scale: 0.97 }}
 														animate={{ y: 0, scale: 1 }}

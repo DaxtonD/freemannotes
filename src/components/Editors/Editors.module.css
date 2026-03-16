@@ -414,6 +414,115 @@
 	cursor: default;
 }
 
+.formatToolbarStack {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.headingMenuButtonLabel {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 2ch;
+	white-space: nowrap;
+}
+
+.headingToolbar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-2));
+	box-shadow: 0 10px 24px -20px rgba(0, 0, 0, 0.4);
+	flex-wrap: wrap;
+}
+
+.headingToolbarCompact {
+	gap: 4px;
+	padding: 4px;
+}
+
+.headingToolbarButton {
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	cursor: pointer;
+	height: 30px;
+	min-width: 38px;
+	padding: 0 10px;
+	border-radius: var(--radius-sm);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	flex: 0 0 auto;
+}
+
+.headingToolbarButtonCompact {
+	height: 26px;
+	min-width: 34px;
+	padding: 0 8px;
+}
+
+.headingToolbarButton:hover,
+.headingToolbarButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 90%, transparent);
+}
+
+.headingToolbarButtonActive {
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface));
+	color: var(--color-accent);
+}
+
+.copyModeToggleGroup {
+	display: inline-flex;
+	align-items: center;
+	flex: 0 0 auto;
+	border: 1px solid var(--color-border);
+	border-radius: calc(var(--radius-sm) + 2px);
+	overflow: hidden;
+	background: color-mix(in srgb, var(--color-surface) 88%, var(--color-surface-2));
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.copyModeToggleButton {
+	border: 0;
+	background: transparent;
+	color: var(--color-text-muted);
+	cursor: pointer;
+	flex: 0 0 auto;
+	height: 30px;
+	padding: 0 10px;
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	white-space: nowrap;
+	transition: background-color 120ms ease, color 120ms ease;
+}
+
+.copyModeToggleButton + .copyModeToggleButton {
+	border-left: 1px solid var(--color-border);
+}
+
+.copyModeToggleButtonCompact {
+	height: 26px;
+	padding: 0 8px;
+}
+
+.copyModeToggleButton:hover,
+.copyModeToggleButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 90%, transparent);
+	color: var(--color-text);
+}
+
+.copyModeToggleButtonActive {
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface));
+	color: var(--color-accent);
+}
+
 .formatMenuAnchor {
 	position: relative;
 	flex: 0 0 auto;
@@ -1705,6 +1814,9 @@ Drag ghost:
 	background: var(--color-surface);
 	border-top: 1px solid var(--color-border);
 	box-shadow: 0 -2px 10px -4px rgba(0, 0, 0, 0.35);
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
 	/* Prevent the toolbar from participating in scroll or causing bounce. */
 	touch-action: none;
 	/* Prevent any ancestor from creating a containing block for this element. */
@@ -1715,6 +1827,14 @@ Drag ghost:
 	border: 0;
 	padding: 4px 0;
 	background: transparent;
+}
+
+.floatingToolbar .selectionCopyToast {
+	align-self: stretch;
+	max-width: none;
+	margin-top: 0;
+	margin-bottom: 2px;
+	border-radius: var(--radius-md);
 }
 
 /* ── BubbleMenu (inline selection formatting) ────────────────────────── */
@@ -1753,6 +1873,23 @@ Drag ghost:
 .bubbleMenuButtonActive {
 	background: color-mix(in srgb, var(--color-accent) 18%, var(--color-surface-2));
 	color: var(--color-accent);
+}
+
+.selectionCopyToast {
+	align-self: center;
+	max-width: min(420px, calc(100% - 24px));
+	padding: 10px 14px;
+	margin-top: 8px;
+	border-radius: var(--radius-pill, 999px);
+	background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-2));
+	border: 1px solid var(--color-border);
+	color: var(--color-text);
+	font-size: var(--font-size-xs);
+	font-weight: 600;
+	text-align: center;
+	box-shadow: 0 14px 34px -22px rgba(0, 0, 0, 0.6);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
 }
 
 /* On mobile, hide the in-editor toolbar when the floating toolbar is active. */
