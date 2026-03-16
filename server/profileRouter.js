@@ -44,7 +44,55 @@ function jsonResponse(res, status, body) {
 	res.end(json);
 }
 
-function createProfileRouter({ prisma, uploadDir }) {
+async function publishProfileImageChange(prisma, userId, onWorkspaceMetadataChanged) {
+	if (!prisma || !userId || typeof onWorkspaceMetadataChanged !== 'function') return;
+	try {
+		const memberships = await prisma.workspaceMember.findMany({
+			where: {
+				userId,
+				workspace: { is: { deletedAt: null } },
+			},
+			select: { workspaceId: true },
+		});
+		const workspaceIds = memberships.map((row) => row.workspaceId);
+		const [workspaceMembers, invitations] = await Promise.all([
+			workspaceIds.length > 0
+				? prisma.workspaceMember.findMany({
+					where: {
+						workspaceId: { in: workspaceIds },
+						workspace: { is: { deletedAt: null } },
+					},
+					select: { userId: true },
+				})
+				: [],
+			prisma.noteShareInvitation.findMany({
+				where: {
+					revokedAt: null,
+					OR: [{ inviterUserId: userId }, { inviteeUserId: userId }],
+				},
+				select: { inviterUserId: true, inviteeUserId: true },
+			}),
+		]);
+
+		const userIds = new Set([userId]);
+		for (const row of workspaceMembers) {
+			if (row && typeof row.userId === 'string') userIds.add(row.userId);
+		}
+		for (const row of invitations) {
+			if (row && typeof row.inviterUserId === 'string') userIds.add(row.inviterUserId);
+			if (row && typeof row.inviteeUserId === 'string') userIds.add(row.inviteeUserId);
+		}
+
+		await onWorkspaceMetadataChanged({
+			reason: 'user-profile-updated',
+			userIds: Array.from(userIds),
+		});
+	} catch (error) {
+		console.warn('[profile] metadata publish failed:', error && error.message ? error.message : String(error));
+	}
+}
+
+function createProfileRouter({ prisma, uploadDir, onWorkspaceMetadataChanged = null }) {
 	if (!uploadDir) throw new Error('uploadDir is required');
 
 	function requireAuth(req, res) {
@@ -136,6 +184,7 @@ function createProfileRouter({ prisma, uploadDir }) {
 						where: { id: userId },
 						data: { profileImage: publicPath },
 					});
+					await publishProfileImageChange(prisma, userId, onWorkspaceMetadataChanged);
 
 					jsonResponse(res, 200, { profileImage: publicPath });
 				} catch (err) {

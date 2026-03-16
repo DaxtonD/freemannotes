@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.11 - 2026-03-16
+
+### Added
+- **Dedicated User avatar settings.** Preferences now exposes a User section with a standalone avatar editor modal that reuses the registration crop flow for profile photo updates.
+
+### Changed
+- **Shared avatar crop plumbing.** Avatar image preparation now runs through a shared client helper so registration and in-app profile edits follow the same crop and export behavior.
+
+### Fixed
+- **Immediate avatar refresh after save.** Saving a profile photo from Preferences now updates the current session avatar immediately and keeps the cached authenticated profile in sync.
+- **Realtime collaborator avatar propagation.** Profile image uploads now publish targeted metadata events so connected collaborators refresh user avatars without opening another screen or reloading.
+
 ## 1.1.10 - 2026-03-16
 
 ### Changed

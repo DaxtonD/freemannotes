@@ -444,7 +444,22 @@ if (DATABASE_URL.length > 0) {
 
 		try {
 			const { createProfileRouter } = require('./server/profileRouter');
-			profileRouter = createProfileRouter({ prisma, uploadDir: UPLOAD_DIR });
+			profileRouter = createProfileRouter({
+				prisma,
+				uploadDir: UPLOAD_DIR,
+				onWorkspaceMetadataChanged: async (event) => {
+					const normalized = normalizeWorkspaceMetadataEvent({
+						...event,
+						type: 'workspace-metadata-changed',
+						origin: SERVER_INSTANCE_ID,
+					});
+					if (!normalized) return;
+					broadcastWorkspaceMetadataChanged(normalized);
+					if (redis) {
+						await publishWorkspaceMetadataEvent(redis, normalized);
+					}
+				},
+			});
 			console.info('[server] Profile API router initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize Profile API router:', err.message);
