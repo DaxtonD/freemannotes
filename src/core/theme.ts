@@ -1091,9 +1091,25 @@ export function applyTheme(themeId: ThemeId): void {
 	if (typeof document === 'undefined') return;
 	const root = document.documentElement;
 	const theme = getTheme(themeId);
+	const appBackground = theme.variables['--color-app-bg'] || '#f5f7fb';
+	const surfaceColor = theme.variables['--color-surface'] || appBackground;
+	const prefersLightChrome = isLightTheme(themeId);
 	root.setAttribute('data-theme', theme.id);
 	for (const [key, value] of Object.entries(theme.variables)) {
 		root.style.setProperty(key, value);
+	}
+	root.style.setProperty('color-scheme', prefersLightChrome ? 'light' : 'dark');
+	if (document.body) {
+		document.body.style.backgroundColor = appBackground;
+		document.body.style.colorScheme = prefersLightChrome ? 'light' : 'dark';
+	}
+	const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+	if (themeColorMeta) {
+		themeColorMeta.setAttribute('content', surfaceColor);
+	}
+	const appleStatusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
+	if (appleStatusBarMeta) {
+		appleStatusBarMeta.setAttribute('content', prefersLightChrome ? 'default' : 'black-translucent');
 	}
 }
 
