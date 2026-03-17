@@ -68,7 +68,7 @@ import { emitNoteMediaChanged, scheduleQueuedNoteImageFlush } from './core/noteM
 import { flushQueuedNoteLinkSync } from './core/noteLinkStore';
 import { scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
 import { searchOfflineNotes } from './core/offlineSearch';
-import { applyPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, usePwaState } from './core/pwa';
+import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -352,6 +352,8 @@ export function App(): React.JSX.Element {
 	const pwaState = usePwaState();
 	const [pwaInstallBusy, setPwaInstallBusy] = React.useState(false);
 	const [pwaUpdateDismissed, setPwaUpdateDismissed] = React.useState(false);
+	const hasAppUpdateNotification = pwaState.updateAvailable && !pwaUpdateDismissed;
+ 	const hasAppUpdatedNotification = pwaState.updateApplied;
 	// Brief dialog messages are used for small "discard" notices (e.g. preventing
 	// empty notes from being saved). We avoid a blocking `alert()` and instead show
 	// a transient on-screen message.
@@ -809,6 +811,28 @@ export function App(): React.JSX.Element {
 		return manager.getDoc(noteAttachmentBrowserState.noteId);
 	}, [manager, noteAttachmentBrowserState]);
 	const isEditorOverlayOpen = editorMode !== 'none' || Boolean(selectedNoteId);
+	const isPwaUpdateBlocked =
+		isEditorOverlayOpen ||
+		isPreferencesOpen ||
+		isAppearanceOpen ||
+		isUserOpen ||
+		isUserManagementOpen ||
+		isSendInviteOpen ||
+		isShareNotificationsOpen ||
+		isWorkspaceSwitcherOpen ||
+		Boolean(collaboratorModalState) ||
+		Boolean(noteImageModalState) ||
+		Boolean(noteDocumentModalState) ||
+		Boolean(noteAttachmentBrowserState) ||
+		userModalBusy;
+	const totalNotificationCount = pendingShareNotificationCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0);
+
+	React.useEffect(() => {
+		setPwaUpdateBlocked(isPwaUpdateBlocked);
+		return () => {
+			setPwaUpdateBlocked(false);
+		};
+	}, [isPwaUpdateBlocked]);
 
 	const handleAddUrlPreviewFromBrowser = React.useCallback(() => {
 		if (!noteAttachmentBrowserState?.canEdit) return;
@@ -3592,13 +3616,13 @@ export function App(): React.JSX.Element {
 								type="button"
 								className="app-icon-button app-notification-button mobile-notification-btn"
 								onClick={openShareNotifications}
-								aria-label={t('share.notifications')}
-								title={t('share.notifications')}
+								aria-label={t('prefs.notifications')}
+								title={t('prefs.notifications')}
 							>
 								<FontAwesomeIcon icon={faBell} />
-								{pendingShareNotificationCount > 0 ? (
+								{totalNotificationCount > 0 ? (
 									<span className="app-notification-badge" aria-hidden="true">
-										{pendingShareNotificationCount > 99 ? '99+' : pendingShareNotificationCount}
+										{totalNotificationCount > 99 ? '99+' : totalNotificationCount}
 									</span>
 								) : null}
 							</button>
@@ -3695,13 +3719,13 @@ export function App(): React.JSX.Element {
 								type="button"
 								className="app-icon-button app-notification-button"
 								onClick={openShareNotifications}
-								aria-label={t('share.notifications')}
-								title={t('share.notifications')}
+								aria-label={t('prefs.notifications')}
+								title={t('prefs.notifications')}
 							>
 								<FontAwesomeIcon icon={faBell} />
-								{pendingShareNotificationCount > 0 ? (
+								{totalNotificationCount > 0 ? (
 									<span className="app-notification-badge" aria-hidden="true">
-										{pendingShareNotificationCount > 99 ? '99+' : pendingShareNotificationCount}
+										{totalNotificationCount > 99 ? '99+' : totalNotificationCount}
 									</span>
 								) : null}
 							</button>
@@ -4238,16 +4262,6 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
-			{pwaState.updateAvailable && !pwaUpdateDismissed ? (
-				<div className="pwa-update-banner" role="status" aria-live="polite">
-					<span>{t('prefs.updateAvailable')}</span>
-					<div className="pwa-update-banner-actions">
-						<button type="button" onClick={() => void applyPwaUpdate()}>{t('prefs.updateNow')}</button>
-						<button type="button" onClick={() => setPwaUpdateDismissed(true)}>{t('common.close')}</button>
-					</div>
-				</div>
-			) : null}
-
 			{workspaceDeletedNotice ? (
 				<div className="workspace-deleted-dialog-backdrop" role="presentation">
 					<section className="workspace-deleted-dialog" role="dialog" aria-modal="true" aria-label={t('workspace.deletedTitle')}>
@@ -4435,6 +4449,14 @@ export function App(): React.JSX.Element {
 				onClose={() => setIsShareNotificationsOpen(false)}
 				authUserId={authUserId}
 				failedLinkNotifications={failedLinkNotifications}
+				hasAppUpdateNotification={hasAppUpdateNotification}
+				hasAppUpdatedNotification={hasAppUpdatedNotification}
+				onApplyAppUpdate={() => void applyPwaUpdate()}
+				onDismissAppUpdate={() => {
+					setPwaUpdateDismissed(true);
+					deferPwaUpdate();
+				}}
+				onDismissAppUpdated={() => acknowledgePwaUpdated()}
 				onAcceptedPlacement={(args) => void handleAcceptedSharedPlacement(args)}
 				onAcceptedWorkspaceInvite={(workspaceId) => {
 					setIsShareNotificationsOpen(false);
