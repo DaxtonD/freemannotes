@@ -69,6 +69,8 @@ Important variables:
 | `SMTP_USER` | *(unset)* | SMTP username |
 | `SMTP_PASS` | *(unset)* | SMTP password |
 | `SMTP_FROM` | `FreemanNotes <no-reply@example.com>` | Sender address for invites |
+| `OCR_DISABLED` | `0` | Set to `1` to disable OCR processing entirely |
+| `OCR_LOG_OUTPUT` | `0` | Set to `1` to stream OCR child-process output and progress messages into the container logs |
 
 ## External PostgreSQL
 

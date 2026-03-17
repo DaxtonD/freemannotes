@@ -41,6 +41,7 @@ services:
       # production nodes should skip OCR entirely.
       OCR_PYTHON_BIN: ${OCR_PYTHON_BIN:-/opt/ocr-venv/bin/python}
       OCR_DISABLED: ${OCR_DISABLED:-0}
+      OCR_LOG_OUTPUT: ${OCR_LOG_OUTPUT:-0}
     ports:
       - "${APP_PORT:-27015}:${PORT:-27015}"
     healthcheck:
