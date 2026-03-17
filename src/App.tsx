@@ -218,6 +218,21 @@ function isNoteEditorMediaDockHistoryState(value: unknown): boolean {
 	return typeof (value as { __noteEditorMediaDock?: unknown }).__noteEditorMediaDock === 'string';
 }
 
+function hasOverlaySnapshotContent(snapshot: OverlaySnapshot): boolean {
+	return snapshot.editorMode !== 'none'
+		|| snapshot.selectedNoteId !== null
+		|| snapshot.isPreferencesOpen
+		|| snapshot.isAppearanceOpen
+		|| snapshot.isUserOpen
+		|| snapshot.isUserManagementOpen
+		|| snapshot.isSendInviteOpen
+		|| snapshot.isWorkspaceSwitcherOpen
+		|| snapshot.collaboratorModalState !== null
+		|| snapshot.noteAttachmentBrowserState !== null
+		|| snapshot.isMobileSidebarOpen
+		|| snapshot.isFabOpen;
+}
+
 function readExternalRoute(): ExternalRoute | null {
 	// Public share pages and workspace invite acceptance reuse the main SPA shell.
 	// We parse those URLs up front so App can branch into the dedicated read-only
@@ -491,6 +506,7 @@ export function App(): React.JSX.Element {
 	// Guard: prevent queuing multiple history.back() calls from rapid taps.
 	// Reset in the popstate handler once the navigation actually completes.
 	const isNavigatingBackRef = React.useRef(false);
+	const currentOverlaySnapshotRef = React.useRef<OverlaySnapshot>(EMPTY_OVERLAY_SNAPSHOT);
 
 	const getOverlaySnapshot = React.useCallback((): OverlaySnapshot => {
 		return {
@@ -521,6 +537,10 @@ export function App(): React.JSX.Element {
 		isMobileSidebarOpen,
 		isFabOpen,
 	]);
+
+	React.useEffect(() => {
+		currentOverlaySnapshotRef.current = getOverlaySnapshot();
+	}, [getOverlaySnapshot]);
 
 	const applyOverlaySnapshot = React.useCallback((snapshot: OverlaySnapshot) => {
 		setEditorMode(snapshot.editorMode);
@@ -3164,6 +3184,7 @@ export function App(): React.JSX.Element {
 			// Clear the rapid-tap guard so the next close gesture can navigate.
 			isNavigatingBackRef.current = false;
 			const state = event.state as unknown;
+			const hadActiveOverlay = hasOverlaySnapshotContent(currentOverlaySnapshotRef.current);
 			if (isOverlayHistoryState(state)) {
 				applyOverlaySnapshot(state.snapshot);
 				return;
@@ -3174,6 +3195,10 @@ export function App(): React.JSX.Element {
 
 			// If we popped to a non-overlay history entry, collapse to base.
 			applyOverlaySnapshot(EMPTY_OVERLAY_SNAPSHOT);
+			if (hadActiveOverlay) {
+				exitBackPressRef.current.count = 0;
+				return;
+			}
 			if (!isStandalone) return;
 
 			const now = Date.now();

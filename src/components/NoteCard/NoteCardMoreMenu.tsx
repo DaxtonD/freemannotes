@@ -144,6 +144,17 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	// lifts over a menu item within the first 300ms, ignore that tap.
 	const suppressUntilRef = React.useRef(isDesktop ? 0 : Date.now() + 300);
 
+	const isInitialTouchGuardActive = React.useCallback((): boolean => {
+		return Date.now() < suppressUntilRef.current;
+	}, []);
+
+	const swallowSuppressedInteraction = React.useCallback((event: React.SyntheticEvent): void => {
+		if (!isInitialTouchGuardActive()) return;
+		event.preventDefault();
+		event.stopPropagation();
+		window.getSelection()?.removeAllRanges();
+	}, [isInitialTouchGuardActive]);
+
 	const noop = (): void => {
 		// Placeholder for unimplemented actions — close menu after tap
 		props.onClose();
@@ -248,6 +259,14 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 			role="dialog"
 			aria-modal="true"
 			onPointerDown={handleOverlayPointerDown}
+			onPointerUpCapture={swallowSuppressedInteraction}
+			onClickCapture={swallowSuppressedInteraction}
+			onTouchEndCapture={swallowSuppressedInteraction}
+			onSelect={(event) => {
+				if (!isInitialTouchGuardActive()) return;
+				event.preventDefault();
+				window.getSelection()?.removeAllRanges();
+			}}
 		>
 			<div ref={menuRef} className={anchor ? styles.popover : styles.sheet} style={anchor ? popoverStyle : undefined}>
 				{!anchor && <div className={styles.handle} />}
@@ -263,7 +282,10 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 								onClick={(e) => {
 									e.stopPropagation();
 									if (item.disabled) return;
-									if (Date.now() < suppressUntilRef.current) return;
+									if (isInitialTouchGuardActive()) {
+										e.preventDefault();
+										return;
+									}
 									item.action();
 								}}
 							>
@@ -286,7 +308,10 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 										className={styles.menuItem}
 										onClick={(e) => {
 											e.stopPropagation();
-											if (Date.now() < suppressUntilRef.current) return;
+											if (isInitialTouchGuardActive()) {
+												e.preventDefault();
+												return;
+											}
 											item.action();
 										}}
 									>
