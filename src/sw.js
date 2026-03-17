@@ -34,8 +34,11 @@ function isApiGetRequest(request, url) {
 	return request.method === 'GET' && url.origin === self.location.origin && url.pathname.startsWith('/api/');
 }
 
-function isImageRequest(request) {
-	return request.destination === 'image';
+function isImageRequest(request, url) {
+	if (request.destination === 'image') return true;
+	const acceptHeader = String(request.headers.get('accept') || '').toLowerCase();
+	if (acceptHeader.includes('image/')) return true;
+	return /\.(?:avif|gif|jpe?g|png|svg|webp)(?:$|[?#])/i.test(url.pathname);
 }
 
 function isLikelyThumbnail(url) {
@@ -210,7 +213,7 @@ self.addEventListener('fetch', (event) => {
 		return;
 	}
 
-	if (isImageRequest(request)) {
+	if (isImageRequest(request, url)) {
 		event.respondWith(cacheFirstImage(request));
 	}
 });
