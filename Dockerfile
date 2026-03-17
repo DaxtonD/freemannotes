@@ -18,6 +18,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=27015
 ENV HOST=0.0.0.0
+ENV HOME=/home/node
 ENV OCR_PYTHON_BIN=/opt/ocr-venv/bin/python
 ENV PADDLE_HOME=/app/.paddleocr
 ENV PADDLE_PDX_MODEL_SOURCE=BOS
@@ -31,7 +32,7 @@ RUN apt-get update \
 	&& /opt/ocr-venv/bin/pip install --no-cache-dir paddleocr==3.2.0 \
 	&& rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/uploads /app/.paddleocr && chown -R node:node /app
+RUN mkdir -p /app/uploads /app/.paddleocr /home/node/.paddlex && chown -R node:node /app /home/node
 
 COPY --from=build --chown=node:node /app/package*.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
@@ -44,6 +45,10 @@ COPY --chown=node:node docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x /app/docker-entrypoint.sh
 
 USER node
+
+# Preload the runtime OCR model cache during the image build so the first user
+# upload does not trigger large downloads in production.
+RUN "$OCR_PYTHON_BIN" /app/server/ocrRunner.py --self-check
 
 EXPOSE 27015
 
