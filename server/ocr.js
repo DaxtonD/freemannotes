@@ -9,6 +9,10 @@ const pendingImageIds = [];
 const queuedImageIds = new Set();
 let activeJobs = 0;
 
+function isOcrLoggingEnabled() {
+	return String(process.env.OCR_LOG_OUTPUT || '').trim() === '1';
+}
+
 function runPythonOcr(imagePath) {
 	const disabled = String(process.env.OCR_DISABLED || '').trim() === '1';
 	if (disabled) {
@@ -17,6 +21,7 @@ function runPythonOcr(imagePath) {
 
 	const pythonBin = String(process.env.OCR_PYTHON_BIN || 'python3').trim() || 'python3';
 	const scriptPath = path.join(__dirname, 'ocrRunner.py');
+	const logOutput = isOcrLoggingEnabled();
 
 	return new Promise((resolve) => {
 		const child = spawn(pythonBin, [scriptPath, imagePath], {
@@ -29,10 +34,22 @@ function runPythonOcr(imagePath) {
 		let stdout = '';
 		let stderr = '';
 		child.stdout.on('data', (chunk) => {
-			stdout += chunk.toString('utf-8');
+			const text = chunk.toString('utf-8');
+			stdout += text;
+			if (logOutput) {
+				for (const line of text.split(/\r?\n/).filter(Boolean)) {
+					console.info('[ocr][stdout]', line);
+				}
+			}
 		});
 		child.stderr.on('data', (chunk) => {
-			stderr += chunk.toString('utf-8');
+			const text = chunk.toString('utf-8');
+			stderr += text;
+			if (logOutput) {
+				for (const line of text.split(/\r?\n/).filter(Boolean)) {
+					console.info('[ocr][stderr]', line);
+				}
+			}
 		});
 		child.on('error', (err) => {
 			resolve({ ok: false, error: err.message || 'ocr-process-error' });
@@ -72,8 +89,14 @@ async function processNext(prisma) {
 		});
 		if (!image || image.deletedAt) return;
 		const imagePath = path.resolve(process.env.UPLOAD_DIR || path.join(__dirname, '..', 'uploads'), image.originalPath);
+		if (isOcrLoggingEnabled()) {
+			console.info('[ocr] starting image OCR:', imageId, imagePath);
+		}
 		const result = await runPythonOcr(imagePath);
 		if (result.ok) {
+			if (isOcrLoggingEnabled()) {
+				console.info('[ocr] image OCR complete:', imageId, `${(result.text || '').length} chars`);
+			}
 			await prisma.noteImage.update({
 				where: { id: imageId },
 				data: {

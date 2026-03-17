@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 
 
@@ -35,10 +36,21 @@ def normalize_text(value) -> list[str]:
 def create_ocr_instance():
     from paddleocr import PaddleOCR  # type: ignore
 
-    try:
-        return PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
-    except TypeError:
-        return PaddleOCR(lang="en", show_log=False)
+    show_log = str(os.getenv("OCR_LOG_OUTPUT", "")).strip() == "1"
+
+    attempts = [
+        {"use_angle_cls": True, "lang": "en", "show_log": show_log},
+        {"use_angle_cls": True, "lang": "en"},
+        {"lang": "en", "show_log": show_log},
+        {"lang": "en"},
+    ]
+    last_error: Exception | None = None
+    for kwargs in attempts:
+        try:
+            return PaddleOCR(**kwargs)
+        except Exception as exc:
+            last_error = exc
+    raise RuntimeError(f"paddleocr-constructor-failed: {last_error}")
 
 
 def run_ocr(ocr, image_path: str):
@@ -53,6 +65,7 @@ def self_check() -> int:
     try:
         import paddle  # type: ignore
         from paddleocr import PaddleOCR  # type: ignore
+        instance = create_ocr_instance()
 
         print(
             json.dumps(
@@ -61,6 +74,7 @@ def self_check() -> int:
                     "paddle": getattr(paddle, "__version__", "unknown"),
                     "paddleocr": getattr(sys.modules.get("paddleocr"), "__version__", "unknown"),
                     "class": getattr(PaddleOCR, "__name__", "PaddleOCR"),
+                    "runner": instance.__class__.__name__,
                 }
             )
         )

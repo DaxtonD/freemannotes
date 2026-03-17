@@ -131,6 +131,7 @@ Optional environment variables you may want:
 - `SMTP_PASS`
 - `SMTP_FROM`
 - `OCR_DISABLED=1` if you intentionally want to disable OCR
+- `OCR_LOG_OUTPUT=1` if you want OCR child-process output and progress logs in the server logs
 
 Startup behavior:
 
