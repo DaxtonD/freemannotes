@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
 const sharp = require('sharp');
+const heicConvert = require('heic-convert');
 const { enforceSameOrigin } = require('./auth');
 const {
 	createDocumentPreviewBuffers,
@@ -137,8 +138,28 @@ async function compressImage(buffer) {
 	throw new Error('Unable to compress image under 5 MB');
 }
 
-async function persistImageRecord({ prisma, uploadDir, access, userId, sourceBuffer, mimeType, sourceUrl = null }) {
-	const compressed = await compressImage(sourceBuffer);
+function isHeicLikeInput(mimeType, fileName = '') {
+	const normalizedMimeType = String(mimeType || '').toLowerCase();
+	if (normalizedMimeType === 'image/heic' || normalizedMimeType === 'image/heif') return true;
+	return /\.(heic|heif)$/i.test(String(fileName || '').trim());
+}
+
+async function normalizeSourceImageBuffer(sourceBuffer, mimeType, fileName = '') {
+	if (!isHeicLikeInput(mimeType, fileName)) return sourceBuffer;
+	try {
+		return Buffer.from(await heicConvert({
+			buffer: sourceBuffer,
+			format: 'JPEG',
+			quality: 0.92,
+		}));
+	} catch (error) {
+		throw new Error(`HEIC/HEIF conversion failed: ${error && error.message ? error.message : String(error)}`);
+	}
+}
+
+async function persistImageRecord({ prisma, uploadDir, access, userId, sourceBuffer, mimeType, fileName = '', sourceUrl = null }) {
+	const normalizedSourceBuffer = await normalizeSourceImageBuffer(sourceBuffer, mimeType, fileName);
+	const compressed = await compressImage(normalizedSourceBuffer);
 	const noteImage = await prisma.noteImage.create({
 		data: {
 			docId: access.docId,
@@ -743,6 +764,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						userId: session.userId,
 						sourceBuffer: imported.buffer,
 						mimeType: imported.mimeType,
+						fileName: imageUrl,
 						sourceUrl: imageUrl,
 					});
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-media-created');
@@ -788,6 +810,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					if (!fileError) {
 						files.push({
 							mimeType,
+							fileName: String(info.filename || ''),
 							buffer: Buffer.concat(chunks),
 						});
 					}
@@ -826,6 +849,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							userId: session.userId,
 							sourceBuffer: entry.buffer,
 							mimeType: entry.mimeType,
+							fileName: entry.fileName,
 						});
 						images.push(mapNoteImage(image));
 					}

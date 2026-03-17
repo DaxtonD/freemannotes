@@ -1,7 +1,10 @@
 'use strict';
 
+const fs = require('fs/promises');
+const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const sharp = require('sharp');
 
 const MAX_CONCURRENT_JOBS = 1;
 const OCR_TIMEOUT_MS = 120000;
@@ -13,7 +16,25 @@ function isOcrLoggingEnabled() {
 	return String(process.env.OCR_LOG_OUTPUT || '').trim() === '1';
 }
 
-function runPythonOcr(imagePath) {
+async function prepareOcrInputPath(imagePath) {
+	if (!String(imagePath || '').toLowerCase().endsWith('.webp')) {
+		return { imagePath, cleanup: async () => {} };
+	}
+
+	const tempPath = path.join(
+		os.tmpdir(),
+		`freemannotes-ocr-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.png`
+	);
+	await sharp(imagePath).png().toFile(tempPath);
+	return {
+		imagePath: tempPath,
+		cleanup: async () => {
+			await fs.unlink(tempPath).catch(() => {});
+		},
+	};
+}
+
+async function runPythonOcr(imagePath) {
 	const disabled = String(process.env.OCR_DISABLED || '').trim() === '1';
 	if (disabled) {
 		return Promise.resolve({ ok: true, text: '' });
@@ -22,9 +43,18 @@ function runPythonOcr(imagePath) {
 	const pythonBin = String(process.env.OCR_PYTHON_BIN || 'python3').trim() || 'python3';
 	const scriptPath = path.join(__dirname, 'ocrRunner.py');
 	const logOutput = isOcrLoggingEnabled();
+	let preparedInput;
+	try {
+		preparedInput = await prepareOcrInputPath(imagePath);
+	} catch (error) {
+		return {
+			ok: false,
+			error: error && error.message ? error.message : 'ocr-input-preparation-failed',
+		};
+	}
 
 	return new Promise((resolve) => {
-		const child = spawn(pythonBin, [scriptPath, imagePath], {
+		const child = spawn(pythonBin, [scriptPath, preparedInput.imagePath], {
 			cwd: path.dirname(scriptPath),
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
@@ -52,9 +82,12 @@ function runPythonOcr(imagePath) {
 			}
 		});
 		child.on('error', (err) => {
-			resolve({ ok: false, error: err.message || 'ocr-process-error' });
+			void preparedInput.cleanup().finally(() => {
+				resolve({ ok: false, error: err.message || 'ocr-process-error' });
+			});
 		});
 		child.on('close', () => {
+			void preparedInput.cleanup();
 			clearTimeout(timeout);
 			try {
 				const lastLine = String(stdout || '')
