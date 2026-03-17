@@ -8,6 +8,9 @@
 	justify-content: center;
 	touch-action: none;
 	overscroll-behavior: none;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
 }
 
 /* Desktop: transparent overlay just catches clicks to close */
@@ -26,6 +29,9 @@
 	padding: var(--space-3) 0 calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
 	box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.18);
 	animation: slideUp 180ms ease-out;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
 }
 
 /* Desktop popover: compact dropdown anchored near the card */
@@ -88,6 +94,9 @@
 	cursor: pointer;
 	text-align: left;
 	-webkit-tap-highlight-color: transparent;
+	user-select: none;
+	-webkit-user-select: none;
+	-webkit-touch-callout: none;
 }
 
 .menuItem:active {

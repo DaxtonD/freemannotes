@@ -237,11 +237,19 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		});
 	}, []);
 	const handleMediaSheetTouchStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageViewerOpen === 'true') {
+			mediaSheetSwipeStartRef.current = null;
+			return;
+		}
 		const touch = event.touches[0];
 		if (!touch) return;
 		mediaSheetSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
 	}, []);
 	const handleMediaSheetTouchEnd = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageViewerOpen === 'true') {
+			mediaSheetSwipeStartRef.current = null;
+			return;
+		}
 		const start = mediaSheetSwipeStartRef.current;
 		const touch = event.changedTouches[0];
 		mediaSheetSwipeStartRef.current = null;
