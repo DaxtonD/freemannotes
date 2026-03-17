@@ -25,9 +25,14 @@ type ServiceWorkerRegistrationWithSync = ServiceWorkerRegistration & {
 	sync?: { register: (tag: string) => Promise<void> };
 };
 
+const SW_UPDATE_POLL_MS = 60_000;
+
 let initialized = false;
 let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
 let updateServiceWorker: ((reloadPage?: boolean) => Promise<void>) | null = null;
+let swRegistration: ServiceWorkerRegistration | null = null;
+let swUpdateTimer: number | null = null;
+let swAutoApplying = false;
 
 let snapshot: PwaSnapshot = {
 	canInstall: false,
@@ -83,6 +88,32 @@ function recomputeInstallAvailability(): void {
 function dispatchSyncRequest(): void {
 	if (typeof window === 'undefined') return;
 	window.dispatchEvent(new CustomEvent(PWA_SYNC_REQUEST_EVENT));
+}
+
+function scheduleServiceWorkerUpdateChecks(): void {
+	if (typeof window === 'undefined' || typeof document === 'undefined') return;
+	const updateNow = () => {
+		void swRegistration?.update().catch(() => undefined);
+	};
+	if (swUpdateTimer !== null) {
+		window.clearInterval(swUpdateTimer);
+	}
+	swUpdateTimer = window.setInterval(updateNow, SW_UPDATE_POLL_MS);
+	window.addEventListener('focus', updateNow);
+	document.addEventListener('visibilitychange', () => {
+		if (document.visibilityState === 'visible') updateNow();
+	});
+}
+
+async function applyPwaUpdateImmediately(): Promise<void> {
+	if (!updateServiceWorker || swAutoApplying) return;
+	swAutoApplying = true;
+	setSnapshot({ updateAvailable: true });
+	try {
+		await updateServiceWorker(true);
+	} catch {
+		swAutoApplying = false;
+	}
 }
 
 async function scheduleBackgroundSyncInternal(): Promise<void> {
@@ -148,16 +179,23 @@ export function initPwa(): void {
 
 	if ('serviceWorker' in navigator) {
 		navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+		navigator.serviceWorker.addEventListener('controllerchange', () => {
+			if (typeof window !== 'undefined') {
+				window.location.reload();
+			}
+		});
 		updateServiceWorker = registerSW({
 			immediate: true,
 			onNeedRefresh() {
-				setSnapshot({ updateAvailable: true });
+				void applyPwaUpdateImmediately();
 			},
 			onOfflineReady() {
 				setSnapshot({ offlineReady: true });
 			},
 			onRegisteredSW(_swUrl, registration) {
+				swRegistration = registration || null;
 				registration?.update().catch(() => undefined);
+				scheduleServiceWorkerUpdateChecks();
 			},
 		});
 	}
@@ -191,6 +229,7 @@ export async function promptInstallApp(): Promise<'accepted' | 'dismissed' | 'un
 export async function applyPwaUpdate(): Promise<void> {
 	if (!updateServiceWorker) return;
 	await updateServiceWorker(true);
+	swAutoApplying = false;
 	setSnapshot({ updateAvailable: false });
 }
 
