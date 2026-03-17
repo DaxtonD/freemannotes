@@ -44,11 +44,95 @@
 	gap: var(--space-2);
 }
 
+.app-header-logo-stack {
+	display: inline-flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 3px;
+	flex: 0 0 auto;
+	min-width: 40px;
+}
+
 .app-header-logo {
 	width: 40px;
 	height: 40px;
 	object-fit: contain;
 	display: block;
+}
+
+.app-header-connection-line {
+	--connection-line-color: var(--color-accent);
+	position: relative;
+	display: block;
+	width: 28px;
+	height: 2px;
+	border-radius: 999px;
+	overflow: hidden;
+	opacity: 0;
+	background: transparent;
+	transition: opacity 180ms ease, background-color 180ms ease;
+}
+
+.app-header-connection-line::before,
+.app-header-connection-line::after {
+	content: '';
+	position: absolute;
+	top: 0;
+	bottom: 0;
+	border-radius: inherit;
+}
+
+.app-header-connection-line::before {
+	left: 0;
+	right: 0;
+	background: color-mix(in srgb, var(--connection-line-color) 78%, transparent);
+	opacity: 0.55;
+}
+
+.app-header-connection-line::after {
+	left: -42%;
+	width: 42%;
+	background: linear-gradient(
+		90deg,
+		transparent 0%,
+		color-mix(in srgb, white 64%, var(--connection-line-color)) 45%,
+		transparent 100%
+	);
+	box-shadow: 0 0 7px color-mix(in srgb, var(--connection-line-color) 44%, transparent);
+	animation: app-header-connection-scan 1.35s linear infinite;
+	opacity: 0;
+}
+
+.app-header-logo-stack.is-connecting .app-header-connection-line,
+.app-header-logo-stack.is-offline .app-header-connection-line {
+	opacity: 0.82;
+}
+
+.app-header-logo-stack.is-connecting .app-header-connection-line {
+	--connection-line-color: var(--color-accent);
+}
+
+.app-header-logo-stack.is-offline .app-header-connection-line {
+	--connection-line-color: var(--color-danger);
+}
+
+.app-header-logo-stack.is-connecting .app-header-connection-line::after,
+.app-header-logo-stack.is-offline .app-header-connection-line::after {
+	opacity: 0.95;
+}
+
+.app-header-logo-stack.is-connected .app-header-connection-line {
+	opacity: 0;
+}
+
+@keyframes app-header-connection-scan {
+	0% {
+		transform: translateX(0);
+	}
+	100% {
+		transform: translateX(240%);
+	}
 }
 
 

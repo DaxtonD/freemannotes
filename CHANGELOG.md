@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.12 - 2026-03-16
+
+### Changed
+- **Subtle header connectivity indicator.** The app icon now carries a thin status line that stays invisible while connected, uses the active theme accent while reconnecting, and switches to a soft animated red scan when the app is offline.
+
 ## 1.1.11 - 2026-03-16
 
 ### Added
