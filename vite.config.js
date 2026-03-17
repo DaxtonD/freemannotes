@@ -121,7 +121,7 @@ module.exports = defineConfig(({ mode }) => {
 					scope: '/',
 					display: 'standalone',
 					orientation: 'portrait',
-					theme_color: '#2f5af4',
+					theme_color: '#ffffff',
 					background_color: '#f5f7fb',
 					icons: [
 						{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
