@@ -39,8 +39,19 @@ def create_ocr_instance():
     show_log = str(os.getenv("OCR_LOG_OUTPUT", "")).strip() == "1"
 
     attempts = [
-        {"use_angle_cls": True, "lang": "en", "show_log": show_log},
-        {"use_angle_cls": True, "lang": "en"},
+        {
+            "lang": "en",
+            "show_log": show_log,
+            "use_doc_orientation_classify": False,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+        },
+        {
+            "lang": "en",
+            "use_doc_orientation_classify": False,
+            "use_doc_unwarping": False,
+            "use_textline_orientation": False,
+        },
         {"lang": "en", "show_log": show_log},
         {"lang": "en"},
     ]
