@@ -4,6 +4,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 
 const MAX_CONCURRENT_JOBS = 1;
+const OCR_TIMEOUT_MS = 120000;
 const pendingImageIds = [];
 const queuedImageIds = new Set();
 let activeJobs = 0;
@@ -22,6 +23,9 @@ function runPythonOcr(imagePath) {
 			cwd: path.dirname(scriptPath),
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
+		const timeout = setTimeout(() => {
+			child.kill('SIGKILL');
+		}, OCR_TIMEOUT_MS);
 		let stdout = '';
 		let stderr = '';
 		child.stdout.on('data', (chunk) => {
@@ -34,8 +38,14 @@ function runPythonOcr(imagePath) {
 			resolve({ ok: false, error: err.message || 'ocr-process-error' });
 		});
 		child.on('close', () => {
+			clearTimeout(timeout);
 			try {
-				const parsed = JSON.parse(stdout || '{}');
+				const lastLine = String(stdout || '')
+					.trim()
+					.split(/\r?\n/)
+					.filter(Boolean)
+					.pop() || '{}';
+				const parsed = JSON.parse(lastLine);
 				if (parsed && parsed.ok) {
 					resolve({ ok: true, text: typeof parsed.text === 'string' ? parsed.text : '' });
 					return;
@@ -73,6 +83,7 @@ async function processNext(prisma) {
 				},
 			});
 		} else {
+			console.warn('[ocr] image OCR failed:', imageId, result.error || 'ocr-failed');
 			await prisma.noteImage.update({
 				where: { id: imageId },
 				data: {

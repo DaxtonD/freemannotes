@@ -19,16 +19,19 @@ ENV NODE_ENV=production
 ENV PORT=27015
 ENV HOST=0.0.0.0
 ENV OCR_PYTHON_BIN=/opt/ocr-venv/bin/python
+ENV PADDLE_HOME=/app/.paddleocr
+ENV PADDLE_PDX_MODEL_SOURCE=BOS
 ENV PATH=/opt/ocr-venv/bin:${PATH}
 
 RUN apt-get update \
-	&& apt-get install -y --no-install-recommends python3 python3-pip python3-venv libglib2.0-0 libgl1 libgomp1 \
+	&& apt-get install -y --no-install-recommends python3 python3-pip python3-venv libglib2.0-0 libgl1 libgomp1 libsm6 libxext6 libxrender1 \
 	&& python3 -m venv /opt/ocr-venv \
 	&& /opt/ocr-venv/bin/pip install --no-cache-dir --upgrade pip setuptools wheel \
-	&& /opt/ocr-venv/bin/pip install --no-cache-dir paddleocr paddlepaddle \
+	&& /opt/ocr-venv/bin/pip install --no-cache-dir paddlepaddle==3.2.0 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/ \
+	&& /opt/ocr-venv/bin/pip install --no-cache-dir paddleocr==3.2.0 \
 	&& rm -rf /var/lib/apt/lists/*
 
-RUN mkdir -p /app/uploads && chown -R node:node /app
+RUN mkdir -p /app/uploads /app/.paddleocr && chown -R node:node /app
 
 COPY --from=build --chown=node:node /app/package*.json ./
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
