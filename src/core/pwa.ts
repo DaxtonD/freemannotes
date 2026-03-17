@@ -11,6 +11,7 @@ type PwaSnapshot = {
 	installMethod: InstallMethod;
 	isInstalled: boolean;
 	updateAvailable: boolean;
+	updateApplied: boolean;
 	offlineReady: boolean;
 	syncInProgress: boolean;
 };
@@ -26,6 +27,10 @@ type ServiceWorkerRegistrationWithSync = ServiceWorkerRegistration & {
 };
 
 const SW_UPDATE_POLL_MS = 60_000;
+const SW_UPDATE_IDLE_MS = 90_000;
+const PWA_VERSION_STORAGE_KEY = 'freemannotes.pwa.current-version.v1';
+const PWA_UPDATED_NOTICE_KEY = 'freemannotes.pwa.updated-notice.v1';
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 let initialized = false;
 let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
@@ -33,12 +38,16 @@ let updateServiceWorker: ((reloadPage?: boolean) => Promise<void>) | null = null
 let swRegistration: ServiceWorkerRegistration | null = null;
 let swUpdateTimer: number | null = null;
 let swAutoApplying = false;
+let swPendingApply = false;
+let pwaUpdateBlocked = false;
+let pwaLastInteractionAt = Date.now();
 
 let snapshot: PwaSnapshot = {
 	canInstall: false,
 	installMethod: null,
 	isInstalled: false,
 	updateAvailable: false,
+	updateApplied: false,
 	offlineReady: false,
 	syncInProgress: false,
 };
@@ -90,29 +99,101 @@ function dispatchSyncRequest(): void {
 	window.dispatchEvent(new CustomEvent(PWA_SYNC_REQUEST_EVENT));
 }
 
+function readStorageValue(key: string): string | null {
+	if (typeof window === 'undefined') return null;
+	try {
+		return window.localStorage.getItem(key);
+	} catch {
+		return null;
+	}
+}
+
+function writeStorageValue(key: string, value: string): void {
+	if (typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(key, value);
+	} catch {
+		// ignore
+	}
+}
+
+function removeStorageValue(key: string): void {
+	if (typeof window === 'undefined') return;
+	try {
+		window.localStorage.removeItem(key);
+	} catch {
+		// ignore
+	}
+}
+
+function reconcileVersionNotifications(): void {
+	const previousVersion = readStorageValue(PWA_VERSION_STORAGE_KEY);
+	if (previousVersion && previousVersion !== APP_VERSION) {
+		writeStorageValue(PWA_UPDATED_NOTICE_KEY, APP_VERSION);
+	}
+	writeStorageValue(PWA_VERSION_STORAGE_KEY, APP_VERSION);
+	setSnapshot({ updateApplied: readStorageValue(PWA_UPDATED_NOTICE_KEY) === APP_VERSION });
+	if (previousVersion === APP_VERSION) {
+		setSnapshot({ updateApplied: readStorageValue(PWA_UPDATED_NOTICE_KEY) === APP_VERSION });
+	}
+}
+
+function markPwaInteraction(): void {
+	pwaLastInteractionAt = Date.now();
+}
+
+function canSafelyApplyPwaUpdate(): boolean {
+	if (typeof document === 'undefined') return !pwaUpdateBlocked;
+	if (pwaUpdateBlocked) return false;
+	if (document.visibilityState === 'hidden') return true;
+	return Date.now() - pwaLastInteractionAt >= SW_UPDATE_IDLE_MS;
+}
+
+function scheduleDeferredPwaApplyCheck(): void {
+	if (!swPendingApply || !updateServiceWorker) return;
+	if (!canSafelyApplyPwaUpdate()) return;
+	void applyPwaUpdateImmediately();
+}
+
 function scheduleServiceWorkerUpdateChecks(): void {
 	if (typeof window === 'undefined' || typeof document === 'undefined') return;
 	const updateNow = () => {
 		void swRegistration?.update().catch(() => undefined);
+		scheduleDeferredPwaApplyCheck();
 	};
 	if (swUpdateTimer !== null) {
 		window.clearInterval(swUpdateTimer);
 	}
 	swUpdateTimer = window.setInterval(updateNow, SW_UPDATE_POLL_MS);
+	window.addEventListener('pointerdown', markPwaInteraction, { passive: true });
+	window.addEventListener('keydown', markPwaInteraction);
+	window.addEventListener('touchstart', markPwaInteraction, { passive: true });
 	window.addEventListener('focus', updateNow);
 	document.addEventListener('visibilitychange', () => {
-		if (document.visibilityState === 'visible') updateNow();
+		if (document.visibilityState === 'visible') {
+			markPwaInteraction();
+			updateNow();
+			return;
+		}
+		scheduleDeferredPwaApplyCheck();
 	});
 }
 
 async function applyPwaUpdateImmediately(): Promise<void> {
 	if (!updateServiceWorker || swAutoApplying) return;
+	if (!canSafelyApplyPwaUpdate()) {
+		swPendingApply = true;
+		setSnapshot({ updateAvailable: true });
+		return;
+	}
 	swAutoApplying = true;
+	swPendingApply = false;
 	setSnapshot({ updateAvailable: true });
 	try {
 		await updateServiceWorker(true);
 	} catch {
 		swAutoApplying = false;
+		swPendingApply = true;
 	}
 }
 
@@ -147,6 +228,7 @@ function handleServiceWorkerMessage(event: MessageEvent): void {
 export function initPwa(): void {
 	if (initialized || typeof window === 'undefined') return;
 	initialized = true;
+	reconcileVersionNotifications();
 
 	if (import.meta.env.DEV) {
 		// Dev should always reflect the latest code, not whatever an older worker or
@@ -180,6 +262,8 @@ export function initPwa(): void {
 	if ('serviceWorker' in navigator) {
 		navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
 		navigator.serviceWorker.addEventListener('controllerchange', () => {
+			swAutoApplying = false;
+			swPendingApply = false;
 			if (typeof window !== 'undefined') {
 				window.location.reload();
 			}
@@ -187,6 +271,7 @@ export function initPwa(): void {
 		updateServiceWorker = registerSW({
 			immediate: true,
 			onNeedRefresh() {
+				swPendingApply = true;
 				void applyPwaUpdateImmediately();
 			},
 			onOfflineReady() {
@@ -228,9 +313,27 @@ export async function promptInstallApp(): Promise<'accepted' | 'dismissed' | 'un
 
 export async function applyPwaUpdate(): Promise<void> {
 	if (!updateServiceWorker) return;
+	swPendingApply = false;
 	await updateServiceWorker(true);
 	swAutoApplying = false;
 	setSnapshot({ updateAvailable: false });
+}
+
+export function deferPwaUpdate(): void {
+	swPendingApply = true;
+	scheduleDeferredPwaApplyCheck();
+}
+
+export function acknowledgePwaUpdated(): void {
+	removeStorageValue(PWA_UPDATED_NOTICE_KEY);
+	setSnapshot({ updateApplied: false });
+}
+
+export function setPwaUpdateBlocked(next: boolean): void {
+	pwaUpdateBlocked = next;
+	if (!next) {
+		scheduleDeferredPwaApplyCheck();
+	}
 }
 
 export async function requestPwaBackgroundSync(): Promise<void> {
