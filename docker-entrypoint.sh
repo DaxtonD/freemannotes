@@ -19,10 +19,6 @@ fi
 if [ "${OCR_DISABLED:-0}" != "1" ]; then
 	if [ ! -x "${OCR_PYTHON_BIN:-}" ]; then
 		echo "[entrypoint] Warning: OCR_PYTHON_BIN is not executable: ${OCR_PYTHON_BIN:-<unset>}" >&2
-	elif ! "$OCR_PYTHON_BIN" /app/server/ocrRunner.py --self-check >/tmp/freemannotes-ocr-check.json 2>/tmp/freemannotes-ocr-check.err; then
-		echo "[entrypoint] Warning: OCR runtime self-check failed." >&2
-		cat /tmp/freemannotes-ocr-check.json >&2 || true
-		cat /tmp/freemannotes-ocr-check.err >&2 || true
 	fi
 	if [ -d "${PADDLE_HOME:-}" ] && [ ! -w "${PADDLE_HOME:-}" ]; then
 		echo "[entrypoint] Warning: PADDLE_HOME is not writable by uid $(id -u):gid $(id -g): ${PADDLE_HOME:-}" >&2
