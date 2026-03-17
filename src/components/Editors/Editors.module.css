@@ -1058,7 +1058,7 @@
 		right: 0;
 		bottom: 0;
 		height: min(72dvh, 620px);
-		background: color-mix(in srgb, var(--color-surface) 92%, transparent);
+		background: var(--color-surface);
 		border-top-left-radius: 18px;
 		border-top-right-radius: 18px;
 		transform: translateY(100%);
