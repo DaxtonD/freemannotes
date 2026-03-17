@@ -65,10 +65,10 @@ def create_ocr_instance():
 
 
 def run_ocr(ocr, image_path: str):
-    if hasattr(ocr, "ocr"):
-        return ocr.ocr(image_path, cls=True)
     if hasattr(ocr, "predict"):
         return ocr.predict(image_path)
+    if hasattr(ocr, "ocr"):
+        return ocr.ocr(image_path)
     raise RuntimeError("paddleocr-api-unsupported")
 
 
