@@ -23,6 +23,11 @@ type Props = {
 	onClose: () => void;
 	authUserId: string | null;
 	failedLinkNotifications?: FailedNoteLinkRecord[];
+	hasAppUpdateNotification?: boolean;
+	hasAppUpdatedNotification?: boolean;
+	onApplyAppUpdate?: () => void;
+	onDismissAppUpdate?: () => void;
+	onDismissAppUpdated?: () => void;
 	onChanged?: () => void;
 	onAcceptedPlacement?: (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => void;
 	onAcceptedWorkspaceInvite?: (workspaceId: string) => void;
@@ -96,6 +101,8 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const [folderByInvitationId, setFolderByInvitationId] = React.useState<Record<string, string>>({});
 	const [hiddenInvitationIds, setHiddenInvitationIds] = React.useState<Set<string>>(() => readHiddenNotificationIds(props.authUserId));
 	const failedLinkNotifications = React.useMemo(() => Array.isArray(props.failedLinkNotifications) ? props.failedLinkNotifications : [], [props.failedLinkNotifications]);
+	const hasAppUpdate = props.hasAppUpdateNotification === true;
+	const hasAppUpdated = props.hasAppUpdatedNotification === true;
 
 	React.useEffect(() => {
 		setHiddenInvitationIds(readHiddenNotificationIds(props.authUserId));
@@ -140,11 +147,15 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const hasWorkspaceInvites = workspaceInvites.length > 0;
 	const hasNoteInvites = visibleInvitations.length > 0;
 	const hasFailedLinks = failedLinkNotifications.length > 0;
-	const modalTitle = hasWorkspaceInvites ? t('invite.notifications') : t('share.notifications');
-	const modalSubtitle = hasWorkspaceInvites
+	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks;
+	const hasAppNotification = hasAppUpdate || hasAppUpdated;
+	const modalTitle = hasAppNotification ? t('prefs.notifications') : hasWorkspaceInvites ? t('invite.notifications') : t('share.notifications');
+	const modalSubtitle = hasAppNotification
+		? t('prefs.notificationsSubtitle')
+		: hasWorkspaceInvites
 		? (hasNoteInvites ? t('invite.notificationsSubtitleMixed') : t('invite.notificationsSubtitle'))
 		: (hasFailedLinks ? t('links.notificationsSubtitle') : t('share.notificationsSubtitle'));
-	const emptyStateLabel = hasWorkspaceInvites ? t('invite.noNotifications') : t('share.noNotifications');
+	const emptyStateLabel = hasAppNotification ? t('prefs.noNotifications') : hasWorkspaceInvites ? t('invite.noNotifications') : t('share.noNotifications');
 
 	const clearableInvitationIds = React.useMemo(() => {
 		return visibleInvitations.filter((invitation) => invitation.status !== 'PENDING').map((invitation) => invitation.id);
@@ -296,7 +307,66 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 
 				<div className={styles.modalBody}>
 					{error ? <div className={styles.error}>{error}</div> : null}
-					{visibleInvitations.length === 0 && workspaceInvites.length === 0 && failedLinkNotifications.length === 0 ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
+					{visibleInvitations.length === 0 && workspaceInvites.length === 0 && failedLinkNotifications.length === 0 && !hasAppNotification ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
+
+					{hasAppUpdate ? (
+						<div className={`${styles.section} ${styles.notificationList}`}>
+							<div className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
+								<div className={styles.notificationHeader}>
+									<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
+										↻
+									</div>
+									<div className={styles.notificationCopy}>
+										<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
+											<strong>{t('prefs.updateNotificationTitle')}</strong>
+										</div>
+										<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
+											{t('prefs.updateNotificationBody')}
+										</div>
+									</div>
+									<div className={styles.notificationStatusWrap}>
+										<span className={`${styles.badge} ${styles.badgePending}`}>{t('prefs.updateAvailableBadge')}</span>
+									</div>
+								</div>
+								<div className={styles.actionRow}>
+									<button type="button" className={styles.primaryButton} onClick={props.onApplyAppUpdate}>
+										{t('prefs.updateNow')}
+									</button>
+									<button type="button" className={styles.secondaryButton} onClick={props.onDismissAppUpdate}>
+										{t('common.close')}
+									</button>
+								</div>
+							</div>
+						</div>
+					) : null}
+
+					{hasAppUpdated ? (
+						<div className={`${styles.section} ${styles.notificationList}`}>
+							<div className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
+								<div className={styles.notificationHeader}>
+									<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
+										✓
+									</div>
+									<div className={styles.notificationCopy}>
+										<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
+											<strong>{t('prefs.updatedNotificationTitle')}</strong>
+										</div>
+										<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
+											{t('prefs.updatedNotificationBody')}
+										</div>
+									</div>
+									<div className={styles.notificationStatusWrap}>
+										<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('prefs.updatedBadge')}</span>
+									</div>
+								</div>
+								<div className={styles.actionRow}>
+									<button type="button" className={styles.primaryButton} onClick={props.onDismissAppUpdated}>
+										{t('common.close')}
+									</button>
+								</div>
+							</div>
+						</div>
+					) : null}
 
 					{failedLinkNotifications.length > 0 ? (
 						<div className={`${styles.section} ${styles.notificationList}`}>
@@ -424,11 +494,13 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 					</div>
 				</div>
 
-				<div className={styles.modalFooter}>
-					<button type="button" className={styles.secondaryButton} onClick={handleClearNotifications} disabled={clearableInvitationIds.length === 0}>
-						{t('share.clearNotifications')}
-					</button>
-				</div>
+				{hasAnyShareNotifications ? (
+					<div className={styles.modalFooter}>
+						<button type="button" className={styles.secondaryButton} onClick={handleClearNotifications} disabled={clearableInvitationIds.length === 0}>
+							{t('share.clearNotifications')}
+						</button>
+					</div>
+				) : null}
 			</section>
 		</div>
 	);

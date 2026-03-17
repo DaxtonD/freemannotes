@@ -53,6 +53,8 @@
   "prefs": {
     "title": "Preferencias",
     "installApp": "Instalar app",
+    "notificationsSubtitle": "Revisa actualizaciones de la app, invitaciones y problemas de enlaces en un solo lugar.",
+    "noNotifications": "No hay notificaciones en este momento.",
     "about": "Acerca de",
     "user": "Usuario",
     "appearance": "Apariencia",
@@ -93,7 +95,14 @@
     "installAcceptedToast": "Se abrió el aviso de instalación",
     "offlineReadyToast": "FreemanNotes está lista para usarse sin conexión",
     "updateAvailable": "Hay una nueva versión de la app lista.",
-    "updateNow": "Actualizar ahora"
+    "updateAvailableBadge": "Actualización",
+    "updateNotificationTitle": "Actualización de la app disponible",
+    "updateNotificationBody": "Se ha descargado una versión más reciente de FreemanNotes. Actualiza ahora, o cierra este aviso y se aplicará automáticamente cuando termines de trabajar.",
+    "updateNow": "Actualizar ahora",
+    "updateLater": "Más tarde",
+    "updatedBadge": "Actualizada",
+    "updatedNotificationTitle": "Aplicación actualizada",
+    "updatedNotificationBody": "FreemanNotes se ha actualizado correctamente y la versión más reciente ya está activa."
   },
   "editors": {
     "newText": "Nueva nota de texto",
