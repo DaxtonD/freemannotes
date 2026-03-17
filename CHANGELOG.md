@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.13 - 2026-03-16
+
+### Added
+- **Bell-based app update notifications.** Available app updates and post-update confirmations now appear in the main notifications modal so update status is visible alongside invites and link issues.
+
+### Changed
+- **Safer automatic PWA updates.** Service-worker refreshes now wait until the app is idle or no longer blocked by active editors and modals before applying automatically.
+- **Android launch icon metadata.** The web manifest now advertises the standard 192px and 512px app icons as both regular and maskable-capable launch assets so Android can use the current primary branding during install and startup.
+
 ## 1.1.12 - 2026-03-16
 
 ### Changed
