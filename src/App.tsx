@@ -2758,6 +2758,8 @@ export function App(): React.JSX.Element {
 		return isLightTheme(themeId) ? appIconLight : appIconDark;
 	}, [themeId]);
 
+	const headerConnectionState = connection.state;
+
 	type SidebarEntry = {
 		id: string;
 		label: string;
@@ -3572,7 +3574,10 @@ export function App(): React.JSX.Element {
 							>
 								<FontAwesomeIcon icon={faBars} />
 							</button>
-							<img className="app-header-logo mobile-app-icon" src={headerIconSrc} alt="" aria-hidden="true" />
+								<span className={`app-header-logo-stack mobile-app-icon is-${headerConnectionState}`} aria-hidden="true">
+									<img className="app-header-logo" src={headerIconSrc} alt="" />
+									<span className="app-header-connection-line" />
+								</span>
 							<button
 								type="button"
 								className={`app-icon-button mobile-search-btn${isMobileSearchOpen ? ' is-active' : ''}`}
@@ -3662,7 +3667,10 @@ export function App(): React.JSX.Element {
 							>
 								<FontAwesomeIcon icon={faBars} />
 							</button>
-							<img className="app-header-logo" src={headerIconSrc} alt="" aria-hidden="true" />
+								<span className={`app-header-logo-stack is-${headerConnectionState}`} aria-hidden="true">
+									<img className="app-header-logo" src={headerIconSrc} alt="" />
+									<span className="app-header-connection-line" />
+								</span>
 						</div>
 						<div className="app-header-search">
 							<input
