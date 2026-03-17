@@ -143,9 +143,16 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	// the menu.  The finger is still down when the sheet mounts; if it
 	// lifts over a menu item within the first 300ms, ignore that tap.
 	const suppressUntilRef = React.useRef(isDesktop ? 0 : Date.now() + 300);
+	const awaitingInitialTouchReleaseRef = React.useRef(!isDesktop);
 
 	const isInitialTouchGuardActive = React.useCallback((): boolean => {
-		return Date.now() < suppressUntilRef.current;
+		return awaitingInitialTouchReleaseRef.current || Date.now() < suppressUntilRef.current;
+	}, []);
+
+	const armPostReleaseGuard = React.useCallback((): void => {
+		awaitingInitialTouchReleaseRef.current = false;
+		suppressUntilRef.current = Date.now() + 400;
+		window.getSelection()?.removeAllRanges();
 	}, []);
 
 	const swallowSuppressedInteraction = React.useCallback((event: React.SyntheticEvent): void => {
@@ -153,6 +160,46 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 		event.preventDefault();
 		event.stopPropagation();
 		window.getSelection()?.removeAllRanges();
+	}, [isInitialTouchGuardActive]);
+
+	const handleTouchEndCapture = React.useCallback((event: React.TouchEvent<HTMLDivElement>): void => {
+		if (awaitingInitialTouchReleaseRef.current) {
+			swallowSuppressedInteraction(event);
+			armPostReleaseGuard();
+			return;
+		}
+		swallowSuppressedInteraction(event);
+	}, [armPostReleaseGuard, swallowSuppressedInteraction]);
+
+	const handlePointerUpCapture = React.useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
+		if (event.pointerType !== 'touch') {
+			swallowSuppressedInteraction(event);
+			return;
+		}
+		if (awaitingInitialTouchReleaseRef.current) {
+			swallowSuppressedInteraction(event);
+			armPostReleaseGuard();
+			return;
+		}
+		swallowSuppressedInteraction(event);
+	}, [armPostReleaseGuard, swallowSuppressedInteraction]);
+
+	React.useEffect(() => {
+		if (typeof document === 'undefined') return;
+		const clearSelection = (): void => {
+			if (!isInitialTouchGuardActive()) return;
+			window.getSelection()?.removeAllRanges();
+		};
+		const preventContextMenu = (event: Event): void => {
+			if (!isInitialTouchGuardActive()) return;
+			event.preventDefault();
+		};
+		document.addEventListener('selectionchange', clearSelection);
+		document.addEventListener('contextmenu', preventContextMenu, true);
+		return () => {
+			document.removeEventListener('selectionchange', clearSelection);
+			document.removeEventListener('contextmenu', preventContextMenu, true);
+		};
 	}, [isInitialTouchGuardActive]);
 
 	const noop = (): void => {
@@ -259,9 +306,13 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 			role="dialog"
 			aria-modal="true"
 			onPointerDown={handleOverlayPointerDown}
-			onPointerUpCapture={swallowSuppressedInteraction}
+			onPointerUpCapture={handlePointerUpCapture}
 			onClickCapture={swallowSuppressedInteraction}
-			onTouchEndCapture={swallowSuppressedInteraction}
+			onTouchEndCapture={handleTouchEndCapture}
+			onSelectStart={(event) => {
+				if (!isInitialTouchGuardActive()) return;
+				event.preventDefault();
+			}}
 			onSelect={(event) => {
 				if (!isInitialTouchGuardActive()) return;
 				event.preventDefault();

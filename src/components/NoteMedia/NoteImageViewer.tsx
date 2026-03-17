@@ -23,6 +23,7 @@ type NoteImageViewerProps = {
 
 const MIN_SCALE = 1;
 const MAX_SCALE = 4;
+const IMAGE_VIEWER_BODY_FLAG = 'freemannotesNoteImageViewerOpen';
 
 function distanceBetweenPoints(left: { x: number; y: number }, right: { x: number; y: number }): number {
 	const dx = right.x - left.x;
@@ -86,6 +87,14 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 		setScale(1);
 		setOffset({ x: 0, y: 0 });
 	}, [props.src]);
+
+	React.useEffect(() => {
+		if (typeof document === 'undefined') return;
+		document.body.dataset[IMAGE_VIEWER_BODY_FLAG] = 'true';
+		return () => {
+			delete document.body.dataset[IMAGE_VIEWER_BODY_FLAG];
+		};
+	}, []);
 
 	React.useEffect(() => {
 		if (!isCoarsePointer || typeof window === 'undefined') return;
