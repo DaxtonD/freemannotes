@@ -27,6 +27,16 @@ const remoteCache = new Map<string, readonly NoteLinkRecord[]>();
 const pendingRefreshes = new Map<string, Promise<readonly NoteLinkRecord[]>>();
 const pendingFlushes = new Map<string, Promise<void>>();
 
+export type NoteLinksChangedReason = 'cache' | 'remote';
+
+type RefreshRemoteNoteLinksOptions = {
+	force?: boolean;
+	/** When provided, any URL returned by the server that is absent from this
+	 *  set will be suppressed – it was locally deleted and the flush has not
+	 *  yet reached the server (e.g. network error on first attempt). */
+	intentUrls?: ReadonlySet<string> | null;
+};
+
 function isOffline(): boolean {
 	return typeof navigator !== 'undefined' && navigator.onLine === false;
 }
@@ -80,9 +90,9 @@ export function getNoteLinksChangedEventName(): string {
 	return NOTE_LINK_CHANGED_EVENT;
 }
 
-export function emitNoteLinksChanged(docId: string): void {
+export function emitNoteLinksChanged(docId: string, reason: NoteLinksChangedReason = 'cache'): void {
 	if (!docId || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
-	window.dispatchEvent(new CustomEvent(NOTE_LINK_CHANGED_EVENT, { detail: { docId } }));
+	window.dispatchEvent(new CustomEvent(NOTE_LINK_CHANGED_EVENT, { detail: { docId, reason } }));
 }
 
 async function writeQueuedSnapshot(row: QueuedNoteLinkSnapshot): Promise<void> {
@@ -112,6 +122,13 @@ async function readQueuedSnapshotsByUser(userId: string): Promise<QueuedNoteLink
 	}
 }
 
+export async function hasQueuedNoteLinkSync(userId: string): Promise<boolean> {
+	const normalizedUserId = String(userId || '').trim();
+	if (!normalizedUserId) return false;
+	const rows = await readQueuedSnapshotsByUser(normalizedUserId);
+	return rows.length > 0;
+}
+
 async function readQueuedSnapshot(userId: string, docId: string): Promise<QueuedNoteLinkSnapshot | null> {
 	if (!userId || !docId) return null;
 	try {
@@ -135,7 +152,7 @@ async function writeCachedLinks(docId: string, links: readonly NoteLinkRecord[],
 	} catch {
 		// Best effort cache only.
 	}
-	if (options.emit && typeof window !== 'undefined') emitNoteLinksChanged(docId);
+	if (options.emit && typeof window !== 'undefined') emitNoteLinksChanged(docId, 'cache');
 }
 
 export function getCachedRemoteNoteLinks(docId: string): readonly NoteLinkRecord[] {
@@ -183,6 +200,40 @@ function buildQueuedRecords(docId: string, links: readonly ExtractedNoteLink[]):
 	}));
 }
 
+export function isPlaceholderLink(link: NoteLinkRecord): boolean {
+	// Only genuinely unresolved (queued / in-flight) links are placeholders.
+	// FAILED means resolution was attempted and the URL could not be fetched
+	// (paywall, bot-block, network error) – treat it as terminal so the client
+	// stops retrying and displays the basic fallback card instead.
+	return link.status === 'PENDING';
+}
+
+function mergeFetchedLinksWithCachedPlaceholders(
+	fetched: readonly NoteLinkRecord[],
+	cached: readonly NoteLinkRecord[],
+	intentUrls: ReadonlySet<string> | null = null
+): readonly NoteLinkRecord[] {
+	if (cached.length === 0 && intentUrls === null) return fetched.slice();
+	const merged = new Map<string, NoteLinkRecord>();
+	for (const link of fetched) {
+		// If the caller supplied an intent set (queued snapshot that hasn't been
+		// flushed yet) and this URL is absent from it, the user deleted the link
+		// locally; skip the stale server entry so it doesn't reappear on reconnect.
+		if (intentUrls !== null && !intentUrls.has(link.normalizedUrl)) continue;
+		merged.set(link.normalizedUrl, link);
+	}
+	for (const link of cached) {
+		if (merged.has(link.normalizedUrl)) continue;
+		if (!isPlaceholderLink(link)) continue;
+		merged.set(link.normalizedUrl, link);
+	}
+	return Array.from(merged.values()).sort((left, right) => {
+		const sortDiff = Number(left.sortOrder || 0) - Number(right.sortOrder || 0);
+		if (sortDiff !== 0) return sortDiff;
+		return String(left.createdAt || '').localeCompare(String(right.createdAt || ''));
+	});
+}
+
 export async function queueNoteLinkSync(args: {
 	userId: string;
 	docId: string;
@@ -202,21 +253,44 @@ export async function queueNoteLinkSync(args: {
 		updatedAt,
 		lastError: null,
 	});
-	await writeCachedLinks(docId, buildQueuedRecords(docId, args.links), { emit: true });
+	// Merge queued placeholder records with existing cached records so that
+	// already-resolved previews (title, imageUrl) are preserved while offline
+	// instead of being overwritten with blank placeholders.
+	const existingLinks = await readStoredNoteLinks(docId);
+	const existingByUrl = new Map(existingLinks.map((l) => [l.normalizedUrl, l]));
+	const queued = buildQueuedRecords(docId, args.links);
+	const merged = queued.map((placeholder) => {
+		const existing = existingByUrl.get(placeholder.normalizedUrl);
+		// Preserve any definitive server-determined status (READY or FAILED).
+		// Only replace with a local placeholder if the URL is genuinely new or
+		// still PENDING (i.e. background hydration has not yet run).
+		if (existing && existing.status !== 'PENDING') return existing;
+		return placeholder;
+	});
+	await writeCachedLinks(docId, merged, { emit: true });
 	void requestPwaBackgroundSync();
 }
 
-export async function refreshRemoteNoteLinks(docId: string): Promise<readonly NoteLinkRecord[]> {
+export async function refreshRemoteNoteLinks(
+	docId: string,
+	options: RefreshRemoteNoteLinksOptions = {}
+): Promise<readonly NoteLinkRecord[]> {
 	if (!docId) return [];
-	const pending = pendingRefreshes.get(docId);
+	if (isOffline() && !options.force) {
+		const stored = await readStoredNoteLinks(docId);
+		return stored.length > 0 ? stored : [];
+	}
+	const pending = options.force ? null : pendingRefreshes.get(docId);
 	if (pending) return pending;
 	const request = (async () => {
 		try {
 			const response = await listNoteLinks(docId);
+			const cached = remoteCache.get(docId) || await readStoredNoteLinks(docId);
+			const merged = mergeFetchedLinksWithCachedPlaceholders(response.links, cached, options.intentUrls ?? null);
 			// Emit here as well as during local queue writes so note-card rails on other
 			// clients react when fresh preview metadata arrives from the server.
-			await writeCachedLinks(docId, response.links, { emit: true });
-			return response.links;
+			await writeCachedLinks(docId, merged, { emit: true });
+			return merged;
 		} finally {
 			pendingRefreshes.delete(docId);
 		}
@@ -232,12 +306,20 @@ export async function flushQueuedNoteLinkSync(userId: string): Promise<void> {
 	if (existing) return existing;
 	const work = (async () => {
 		try {
-			if (isOffline()) return;
 			const snapshots = await readQueuedSnapshotsByUser(normalizedUserId);
 			for (const snapshot of snapshots.sort((left, right) => left.updatedAt.localeCompare(right.updatedAt))) {
-				const response = await syncNoteLinks(snapshot.docId, snapshot.links);
-				await writeCachedLinks(snapshot.docId, response.links, { emit: true });
-				await deleteQueuedSnapshot(snapshot.id);
+				try {
+					const response = await syncNoteLinks(snapshot.docId, snapshot.links);
+					// Server sync returns hydrated rows. Use 'remote' reason so that
+					// NoteLinkPanel components trigger their hydration‐retry mechanism
+					// in case some rows are still PENDING after slow preview resolution.
+					await writeCachedLinks(snapshot.docId, response.links, { emit: false });
+					emitNoteLinksChanged(snapshot.docId, 'remote');
+					await deleteQueuedSnapshot(snapshot.id);
+				} catch {
+					// Per-snapshot failure: leave the snapshot in the queue for the
+					// next flush attempt instead of aborting the entire batch.
+				}
 			}
 		} finally {
 			pendingFlushes.delete(normalizedUserId);
@@ -266,5 +348,37 @@ export async function syncNoteLinksForDoc(args: {
 	const leftover = await readQueuedSnapshot(userId, docId);
 	if (!leftover) {
 		await refreshRemoteNoteLinks(docId).catch(() => undefined);
+	} else {
+		// Flush did not process this doc (either it failed silently or a concurrent
+		// flush already ran with a stale snapshot). Refresh but suppress any server
+		// URLs that contradict our local intent so deleted links don't reappear.
+		const intentUrls = new Set(leftover.links.map((l) => l.normalizedUrl));
+		await refreshRemoteNoteLinks(docId, { force: true, intentUrls }).catch(() => undefined);
 	}
+}
+
+/**
+ * Returns the set of normalizedUrls from the pending queued snapshot for
+ * (userId, docId), or null if no snapshot is queued.  Used by callers to
+ * suppress stale server URLs when the flush hasn't propagated yet.
+ */
+export async function getQueuedIntentUrls(userId: string, docId: string): Promise<ReadonlySet<string> | null> {
+	const snapshot = await readQueuedSnapshot(userId, docId);
+	if (!snapshot) return null;
+	return new Set(snapshot.links.map((l) => l.normalizedUrl));
+}
+
+/**
+ * Scan every docId currently in the in-memory remote cache and trigger a
+ * background refresh for any that still have placeholder (unresolved) links.
+ * Called on reconnect so that all open note panels eventually upgrade their
+ * placeholder chips to real preview metadata without requiring a page reload.
+ */
+export async function scanAllDocumentsForPlaceholders(): Promise<void> {
+	if (isOffline()) return;
+	for (const [docId, links] of remoteCache) {
+		const placeholders = links.filter(isPlaceholderLink);
+		if (placeholders.length === 0) continue;
+		void refreshRemoteNoteLinks(docId, { force: true }).catch(() => undefined);
 	}
+}

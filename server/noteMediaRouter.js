@@ -19,6 +19,10 @@ const { buildSearchSnippet, decodeDocumentState, normalizeText } = require('./no
 const { queueNoteImageOcr } = require('./ocr');
 
 const MAX_FILES_PER_UPLOAD = 12;
+// Tracks docIds currently undergoing background URL hydration.
+// Prevents concurrent hydrations for the same doc when multiple POST requests
+// arrive in rapid succession during reconnect (which would rate-limit the URLs).
+const activeHydrations = new Set();
 const MAX_SOURCE_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_DOCUMENT_FILE_BYTES = 40 * 1024 * 1024;
 const MAX_COMPRESSED_FILE_BYTES = 5 * 1024 * 1024;
@@ -280,6 +284,10 @@ function mapNoteDocument(document) {
 
 function noteLinkNeedsResolution(link) {
 	if (!link || typeof link !== 'object') return false;
+	// FAILED means the server already attempted resolution and the URL could not
+	// be fetched (paywall, bot-block, timeout). Treat it as terminal – do not
+	// re-attempt automatically to avoid hammering the same failing endpoint.
+	if (link.status === 'FAILED') return false;
 	return link.status !== 'READY'
 		|| (!link.title && !link.description && !link.mainContent)
 		|| !link.imageUrl
@@ -399,7 +407,7 @@ async function persistDocumentRecord({ prisma, uploadDir, access, userId, source
 	});
 }
 
-async function syncNoteLinks({ prisma, access, userId, links }) {
+async function syncNoteLinks({ prisma, access, userId, links, hydrate = true }) {
 	const seeds = [];
 	const seen = new Set();
 	for (const entry of Array.isArray(links) ? links : []) {
@@ -436,8 +444,11 @@ async function syncNoteLinks({ prisma, access, userId, links }) {
 				rootDomain: seed.rootDomain,
 				sortOrder: seed.sortOrder,
 				deletedAt: null,
-				status: current && current.status === 'READY' ? 'READY' : 'PENDING',
-				errorMessage: current && current.status === 'READY' ? current.errorMessage : null,
+				// Preserve READY and FAILED statuses - resolution was already attempted
+				// for both. Only reset to PENDING for truly new rows or rows that were
+				// previously soft-deleted (re-added after removal).
+				status: current && !current.deletedAt ? current.status : 'PENDING',
+				errorMessage: current && !current.deletedAt ? current.errorMessage : null,
 			},
 			create: {
 				docId: access.docId,
@@ -470,6 +481,7 @@ async function syncNoteLinks({ prisma, access, userId, links }) {
 		orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
 	});
 
+	if (!hydrate) return rows;
 	return hydrateNoteLinkRows(prisma, rows);
 }
 
@@ -609,8 +621,11 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						},
 						orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
 					});
-					const hydratedLinks = await hydrateNoteLinkRows(prisma, links);
-					jsonResponse(res, 200, { links: hydratedLinks.map(mapNoteLink), count: hydratedLinks.length });
+					// Return the current DB state directly — background hydration (triggered
+					// by the sync POST and deduped by activeHydrations) is the sole mechanism
+					// for URL resolution. Inline GET hydration was removed because running
+					// concurrent URL fetches from every client retry caused rate-limiting.
+					jsonResponse(res, 200, { links: links.map(mapNoteLink), count: links.length });
 				} catch (err) {
 					console.error('[note-links] list error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
@@ -720,14 +735,40 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						jsonResponse(res, accessResult.error.status, accessResult.error.body);
 						return;
 					}
-					const links = await syncNoteLinks({
+					// Upsert link rows immediately (fast – no URL fetching) and
+					// respond so the client can show the placeholder right away.
+					const pendingRows = await syncNoteLinks({
 						prisma,
 						access: accessResult.access,
 						userId: session.userId,
 						links: Array.isArray(body.links) ? body.links : [],
+						hydrate: false,
 					});
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-links-updated');
-					jsonResponse(res, 200, { links: links.map(mapNoteLink), count: links.length });
+					jsonResponse(res, 200, { links: pendingRows.map(mapNoteLink), count: pendingRows.length });
+					// Resolve URL metadata in the background. When hydration
+					// finishes, emit a second event so all clients refresh and
+					// replace placeholders with real preview data.
+					// activeHydrations prevents multiple concurrent URL fetches for the same
+					// doc when Yjs fires many afterTransaction events on reconnect.
+					const hydrationDocId = accessResult.access.docId;
+					if (pendingRows.some(noteLinkNeedsResolution) && !activeHydrations.has(hydrationDocId)) {
+						activeHydrations.add(hydrationDocId);
+						setImmediate(async () => {
+							try {
+								const hydratedRows = await hydrateNoteLinkRows(prisma, pendingRows);
+								// hydrateNoteLinkRows returns the original array reference when
+								// nothing changed; a new array means at least one row was mutated.
+								if (hydratedRows !== pendingRows) {
+									await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-links-updated');
+								}
+							} catch (err) {
+								console.error('[note-links] background hydration error:', err && err.message ? err.message : String(err));
+							} finally {
+								activeHydrations.delete(hydrationDocId);
+							}
+						});
+					}
 				} catch (err) {
 					console.error('[note-links] sync error:', err.message);
 					jsonResponse(res, 400, { error: err.message || 'Link sync failed' });

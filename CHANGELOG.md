@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.14 - 2026-03-26
+
+### Fixed
+- **Offline image uploads no longer appear stuck.** File uploads now queue immediately offline, close the modal without a hanging spinner, and replay reliably on reconnect.
+- **Theme preferences now apply while offline.** Local theme changes are applied and persisted instantly, then synced back to user preferences once connectivity returns.
+- **Offline image previews keep sharp framing.** Cached/queued media thumbnails now preserve aspect ratio and improved progressive quality so note image tiles stay clear and correctly cropped offline.
+- **Workspace renaming now works offline.** Renames are queued, applied to cached workspace snapshots immediately, and replayed to the server on reconnect.
+- **URL preview metadata now hydrates after offline reconnect.** Link sync now uses queue-aware reconnect retries, deduplicated background hydration, and placeholder-safe merge rules so metadata resolves without requiring a manual page refresh.
+
 ## 1.1.13 - 2026-03-16
 
 ### Added

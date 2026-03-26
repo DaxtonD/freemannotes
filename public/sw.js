@@ -188,9 +188,25 @@ self.addEventListener('fetch', (event) => {
 		return;
 	}
 
-	// Locale JSON files must always be fetched fresh so translation updates
-	// take effect immediately after a deploy.
+	// Locale JSON files use a stale-while-revalidate strategy: serve the cached
+	// version immediately (so offline language switching works), then fetch a fresh
+	// copy in the background so translation updates take effect on the next load.
 	if (url.pathname.startsWith('/locales/')) {
+		event.respondWith(
+			caches.open('freemannotes-locales-v1').then(function (cache) {
+				return cache.match(request).then(function (cached) {
+					var fetchPromise = fetch(request).then(function (response) {
+						if (response.ok) {
+							cache.put(request, response.clone());
+						}
+						return response;
+					}).catch(function () {
+						return cached;
+					});
+					return cached || fetchPromise;
+				});
+			})
+		);
 		return;
 	}
 

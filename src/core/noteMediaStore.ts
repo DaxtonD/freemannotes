@@ -25,6 +25,7 @@ const DB_VERSION = 3;
 const NOTE_MEDIA_QUEUE_STORE = 'note_media_queue';
 const NOTE_MEDIA_PREVIEW_STORE = 'note_media_preview';
 const NOTE_MEDIA_CHANGED_EVENT = 'freemannotes:note-media-changed';
+const NOTE_MEDIA_PREVIEW_VERSION = 2;
 
 export type StoredNoteImagePreviewRecord = {
 	id: string;
@@ -33,6 +34,7 @@ export type StoredNoteImagePreviewRecord = {
 	remoteImageId: string | null;
 	image: NoteImageRecord | null;
 	thumbnailBlob: Blob | null;
+	previewVersion?: number;
 	createdAt: string;
 	updatedAt: string;
 };
@@ -193,7 +195,9 @@ export async function createProgressiveNoteImageThumbnail(blob: Blob): Promise<B
 	if (typeof document === 'undefined' || !(blob instanceof Blob) || blob.size === 0) return null;
 	try {
 		const image = await loadImageElementFromBlob(blob);
-		const maxDimension = 200;
+		// Keep source proportions while downscaling so offline previews preserve
+		// the original composition instead of stretching/cropping unexpectedly.
+		const maxDimension = 400;
 		const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
 		const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
 		const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
@@ -204,13 +208,15 @@ export async function createProgressiveNoteImageThumbnail(blob: Blob): Promise<B
 		if (!context) return null;
 		context.drawImage(image, 0, 0, width, height);
 
+		// Progressive quality fallback keeps tiles sharp enough for note scanning
+		// while staying small enough for reliable offline cache + sync behavior.
 		const qualities = [0.55, 0.48, 0.4];
 		let fallbackBlob: Blob | null = null;
 		for (const quality of qualities) {
 			const nextBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
 			if (!nextBlob) continue;
 			fallbackBlob = nextBlob;
-			if (nextBlob.size <= 20 * 1024) return nextBlob;
+			if (nextBlob.size <= 50 * 1024) return nextBlob;
 		}
 		return fallbackBlob;
 	} catch {
@@ -248,6 +254,7 @@ async function syncRemotePreviewRows(docId: string, images: readonly NoteImageRe
 			remoteImageId: image.id,
 			image,
 			thumbnailBlob: existing?.thumbnailBlob || null,
+			previewVersion: existing?.previewVersion || NOTE_MEDIA_PREVIEW_VERSION,
 			createdAt: existing?.createdAt || image.createdAt,
 			updatedAt: image.updatedAt,
 		};
@@ -257,15 +264,17 @@ async function syncRemotePreviewRows(docId: string, images: readonly NoteImageRe
 	const pendingThumbnailImages = images.filter((image) => {
 		const existing = existingById.get(image.id);
 		if (!existing?.thumbnailBlob) return true;
+		if (existing.previewVersion !== NOTE_MEDIA_PREVIEW_VERSION) return true;
 		const existingThumbUrl = existing.image?.thumbnailUrl || '';
-		return existingThumbUrl !== image.thumbnailUrl;
+		const existingOriginalUrl = existing.image?.originalUrl || '';
+		return existingThumbUrl !== image.thumbnailUrl || existingOriginalUrl !== image.originalUrl;
 	});
 	if (pendingThumbnailImages.length === 0) return;
 
 	let storedThumbnail = false;
 	const resolvedRows: StoredNoteImagePreviewRecord[] = [];
 	for (const image of pendingThumbnailImages) {
-		const sourceBlob = await fetchBlob(image.thumbnailUrl);
+		const sourceBlob = (await fetchBlob(image.originalUrl)) || (await fetchBlob(image.thumbnailUrl));
 		if (!sourceBlob) continue;
 		const thumbnailBlob = await createProgressiveNoteImageThumbnail(sourceBlob);
 		if (!thumbnailBlob) continue;
@@ -277,6 +286,7 @@ async function syncRemotePreviewRows(docId: string, images: readonly NoteImageRe
 			remoteImageId: image.id,
 			image,
 			thumbnailBlob,
+			previewVersion: NOTE_MEDIA_PREVIEW_VERSION,
 			createdAt: existing?.createdAt || image.createdAt,
 			updatedAt: image.updatedAt,
 		});
@@ -300,6 +310,7 @@ async function storeQueuedPreviewRow(docId: string, rowId: string, blob: Blob, c
 			remoteImageId: null,
 			image: null,
 			thumbnailBlob,
+			previewVersion: NOTE_MEDIA_PREVIEW_VERSION,
 			createdAt,
 			updatedAt: createdAt,
 		},
