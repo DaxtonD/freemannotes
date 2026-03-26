@@ -113,6 +113,8 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const [viewerState, setViewerState] = React.useState<ViewerState | null>(null);
 	const [localPreviewItems, setLocalPreviewItems] = React.useState<readonly LocalPreviewItem[]>([]);
 	const [storedPreviewRows, setStoredPreviewRows] = React.useState<readonly StoredNoteImagePreviewRecord[]>([]);
+	const newestQueuedTileRef = React.useRef<HTMLDivElement | null>(null);
+	const previousQueuedCountRef = React.useRef(0);
 	const tileTouchStartRef = React.useRef<{ index: number; x: number; y: number } | null>(null);
 	const lastTouchOpenRef = React.useRef<{ index: number; at: number } | null>(null);
 
@@ -160,6 +162,13 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			}
 		};
 	}, [queuedImages]);
+
+	React.useEffect(() => {
+		if (localPreviewItems.length > previousQueuedCountRef.current) {
+			newestQueuedTileRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+		}
+		previousQueuedCountRef.current = localPreviewItems.length;
+	}, [localPreviewItems]);
 
 	React.useEffect(() => {
 		const eventName = getNoteMediaChangedEventName();
@@ -277,14 +286,6 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 				? `${queuedCount} ${queuedCount === 1 ? t('media.pendingUploadSingular') : t('media.pendingUploadPlural')}`
 				: t('media.synced');
 	const viewerItems = React.useMemo(() => ([
-		...localPreviewItems.map((item, index) => ({
-			src: item.previewUrl,
-			fallbackThumbnailBlob: null,
-			thumbnailUrl: null,
-			title: item.fileName || `${t('media.queuedImageLabel')} ${index + 1}`,
-			subtitle: item.lastError || `${t('media.queuedState')} ${formatRelativeDate(item.createdAt, locale)}`,
-			onDelete: props.canEdit ? () => void handleDeleteQueued(item) : undefined,
-		})),
 		...visibleRemoteImages.map((image, index) => ({
 			src: image.originalUrl,
 			fallbackThumbnailBlob: storedPreviewByRemoteId.get(image.id)?.thumbnailBlob || null,
@@ -293,6 +294,14 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			subtitle: image.ocrStatus === 'READY' ? t('media.ocrReady') : `${image.width || '?'} × ${image.height || '?'}`,
 			onDelete: props.canEdit ? () => void handleDeleteRemote(image) : undefined,
 			deleteDisabled: deletingId === image.id,
+		})),
+		...localPreviewItems.map((item, index) => ({
+			src: item.previewUrl,
+			fallbackThumbnailBlob: null,
+			thumbnailUrl: null,
+			title: item.fileName || `${t('media.queuedImageLabel')} ${index + 1}`,
+			subtitle: item.lastError || `${t('media.queuedState')} ${formatRelativeDate(item.createdAt, locale)}`,
+			onDelete: props.canEdit ? () => void handleDeleteQueued(item) : undefined,
 		})),
 	]), [deletingId, handleDeleteQueued, handleDeleteRemote, locale, localPreviewItems, props.canEdit, storedPreviewByRemoteId, t, visibleRemoteImages]);
 	React.useEffect(() => {
@@ -383,43 +392,6 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 
 				{totalCount === 0 ? null : (
 					<div className={styles.grid}>
-						{localPreviewItems.map((item, index) => (
-							<div
-								key={item.id}
-								className={styles.tile}
-							>
-								{props.canEdit ? (
-									<button
-										type="button"
-										className={styles.deleteButton}
-										onClick={(event) => {
-											event.stopPropagation();
-											void handleDeleteQueued(item);
-										}}
-										aria-label={t('editors.delete')}
-									>
-										<FontAwesomeIcon icon={faTrash} />
-									</button>
-								) : null}
-								<button
-									type="button"
-									className={styles.tileActivator}
-									onClick={(event) => handleTileClick(index, event)}
-									onTouchStart={(event) => handleTileTouchStart(index, event)}
-									onTouchEnd={(event) => handleTileTouchEnd(index, event)}
-								>
-									<div className={styles.thumbWrap}>
-										<span className={styles.badge}>{item.syncStatus === 'failed' ? t('media.failedBadge') : t('media.queuedBadge')}</span>
-										<img className={styles.thumb} src={item.previewUrl} alt={item.fileName} />
-									</div>
-									<div className={styles.meta}>
-										<span className={styles.title}>{item.fileName || `${t('media.queuedImageLabel')} ${index + 1}`}</span>
-										<span className={styles.caption}>{formatBytes(item.byteSize)}</span>
-									</div>
-								</button>
-							</div>
-						))}
-
 						{visibleRemoteImages.map((image, index) => (
 							<div
 								key={image.id}
@@ -442,9 +414,9 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 								<button
 									type="button"
 									className={styles.tileActivator}
-									onClick={(event) => handleTileClick(localPreviewItems.length + index, event)}
-									onTouchStart={(event) => handleTileTouchStart(localPreviewItems.length + index, event)}
-									onTouchEnd={(event) => handleTileTouchEnd(localPreviewItems.length + index, event)}
+									onClick={(event) => handleTileClick(index, event)}
+									onTouchStart={(event) => handleTileTouchStart(index, event)}
+									onTouchEnd={(event) => handleTileTouchEnd(index, event)}
 								>
 									<div className={styles.thumbWrap}>
 										<RemoteImageThumb image={image} preview={storedPreviewByRemoteId.get(image.id) || null} alt={`${t('media.imageLabel')} ${index + 1}`} />
@@ -452,6 +424,44 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 									<div className={styles.meta}>
 										<span className={styles.title}>{t('media.imageLabel')} {index + 1}</span>
 										<span className={styles.caption}>{formatRelativeDate(image.createdAt, locale)} · {image.width || '?'} × {image.height || '?'}</span>
+									</div>
+								</button>
+							</div>
+						))}
+
+						{localPreviewItems.map((item, index) => (
+							<div
+								key={item.id}
+								ref={index === localPreviewItems.length - 1 ? newestQueuedTileRef : null}
+								className={styles.tile}
+							>
+								{props.canEdit ? (
+									<button
+										type="button"
+										className={styles.deleteButton}
+										onClick={(event) => {
+											event.stopPropagation();
+											void handleDeleteQueued(item);
+										}}
+										aria-label={t('editors.delete')}
+									>
+										<FontAwesomeIcon icon={faTrash} />
+									</button>
+								) : null}
+								<button
+									type="button"
+									className={styles.tileActivator}
+									onClick={(event) => handleTileClick(visibleRemoteImages.length + index, event)}
+									onTouchStart={(event) => handleTileTouchStart(visibleRemoteImages.length + index, event)}
+									onTouchEnd={(event) => handleTileTouchEnd(visibleRemoteImages.length + index, event)}
+								>
+									<div className={styles.thumbWrap}>
+										<span className={styles.badge}>{item.syncStatus === 'failed' ? t('media.failedBadge') : t('media.queuedBadge')}</span>
+										<img className={styles.thumb} src={item.previewUrl} alt={item.fileName} />
+									</div>
+									<div className={styles.meta}>
+										<span className={styles.title}>{item.fileName || `${t('media.queuedImageLabel')} ${index + 1}`}</span>
+										<span className={styles.caption}>{formatBytes(item.byteSize)}</span>
 									</div>
 								</button>
 							</div>

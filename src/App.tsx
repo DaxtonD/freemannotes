@@ -60,12 +60,12 @@ import {
 	syncNoteShareCollaborators,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
-import { addNotePreviewLinkToDoc, removeNotePreviewLinkFromDoc } from './core/noteLinks';
+import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from './core/noteLinks';
 import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
 import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkApi';
 import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
 import { emitNoteMediaChanged, scheduleQueuedNoteImageFlush } from './core/noteMediaStore';
-import { flushQueuedNoteLinkSync } from './core/noteLinkStore';
+import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
 import { scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
 import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
@@ -77,6 +77,7 @@ import {
 	cacheWorkspaceDetails,
 	cacheWorkspaceSnapshot,
 	type CachedWorkspaceListItem,
+	getWorkspaceMetadataChangedEventName,
 	readPendingWorkspaceMutations,
 	removePendingWorkspaceMutation,
 	removeCachedWorkspace,
@@ -858,12 +859,25 @@ export function App(): React.JSX.Element {
 		if (!noteAttachmentBrowserState?.canEdit) return;
 		const next = window.prompt(t('links.prompt'), 'https://');
 		if (!next) return;
-		addNotePreviewLinkToDoc(manager.getDoc(noteAttachmentBrowserState.noteId), next);
-	}, [manager, noteAttachmentBrowserState, t]);
+		const doc = manager.getDoc(noteAttachmentBrowserState.noteId);
+		const added = addNotePreviewLinkToDoc(doc, next);
+		if (!added) return;
+		void syncNoteLinksForDoc({
+			userId: authUserId,
+			docId: noteAttachmentBrowserState.docId,
+			links: extractNoteLinksFromDoc(doc),
+		});
+	}, [authUserId, manager, noteAttachmentBrowserState, t]);
 
 	const handleDeleteUrlPreviewFromBrowser = React.useCallback((normalizedUrl: string) => {
 		if (!noteAttachmentBrowserState?.canEdit) return;
-		removeNotePreviewLinkFromDoc(manager.getDoc(noteAttachmentBrowserState.noteId), normalizedUrl);
+		const doc = manager.getDoc(noteAttachmentBrowserState.noteId);
+		removeNotePreviewLinkFromDoc(doc, normalizedUrl);
+		void syncNoteLinksForDoc({
+			userId: authUserId,
+			docId: noteAttachmentBrowserState.docId,
+			links: extractNoteLinksFromDoc(doc),
+		});
 	}, [manager, noteAttachmentBrowserState]);
 
 	React.useEffect(() => {
@@ -967,19 +981,53 @@ export function App(): React.JSX.Element {
 	}, [commitOverlaySnapshot, getOverlaySnapshot, goBackIfOverlayHistory, isFabOpen]);
 
 	React.useEffect(() => {
+		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+		const shouldDeferThemeSync = authOfflineMode || browserOffline;
 		applyTheme(themeId);
 		persistThemeId(themeId);
 		if (authStatus !== 'authed') return;
 		if (!prefsHydrationAttempted) return;
-		if (authOfflineMode) return;
-		void updateUserPreferences(deviceId, { theme: themeId });
+		if (shouldDeferThemeSync) {
+			// Mark theme as needing a sync push when we reconnect so the server
+			// preference hydration doesn't overwrite the local offline change.
+			try { window.localStorage.setItem('freemannotes.pendingThemeSync', themeId); } catch { /* best effort */ }
+			return;
+		}
+		void (async () => {
+			const updatedPref = await updateUserPreferences(deviceId, { theme: themeId });
+			if (!updatedPref) return;
+			try {
+				const pendingTheme = window.localStorage.getItem('freemannotes.pendingThemeSync');
+				if (!pendingTheme || pendingTheme === themeId) {
+					window.localStorage.removeItem('freemannotes.pendingThemeSync');
+				}
+			} catch {
+				// best effort
+			}
+		})();
 	}, [authStatus, authOfflineMode, deviceId, prefsHydrationAttempted, themeId]);
 
 	React.useEffect(() => {
+		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+		const shouldDeferLanguageSync = authOfflineMode || browserOffline;
 		if (authStatus !== 'authed') return;
 		if (!prefsHydrationAttempted) return;
-		if (authOfflineMode) return;
-		void updateUserPreferences(deviceId, { language: locale });
+		if (shouldDeferLanguageSync) {
+			try { window.localStorage.setItem('freemannotes.pendingLanguageSync', locale); } catch { /* best effort */ }
+			return;
+		}
+		void (async () => {
+			const updatedPref = await updateUserPreferences(deviceId, { language: locale });
+			if (!updatedPref) return;
+			try {
+				const pendingLanguage = window.localStorage.getItem('freemannotes.pendingLanguageSync');
+				if (!pendingLanguage || pendingLanguage === locale) {
+					window.localStorage.removeItem('freemannotes.pendingLanguageSync');
+				}
+			} catch {
+				// best effort
+			}
+		})();
 	}, [authStatus, authOfflineMode, deviceId, locale, prefsHydrationAttempted]);
 
 	const sidebarWorkspacesRef = React.useRef<readonly SidebarWorkspaceListItem[]>([]);
@@ -1252,8 +1300,43 @@ export function App(): React.JSX.Element {
 					updatedAt: syncedWorkspaceId === pref.activeWorkspaceId ? pref.updatedAt : new Date().toISOString(),
 				});
 				setPendingRestoredSharedFolder(syncedActiveSharedFolder ?? null);
-				if (pref.theme) setThemeId(pref.theme as ThemeId);
-				if (pref.language) setLocale(pref.language as LocaleCode);
+				// If the user changed theme/language while offline, push the local
+				// value to the server instead of overwriting it with the stale
+				// server preference.
+				const pendingTheme = (() => { try { return window.localStorage.getItem('freemannotes.pendingThemeSync'); } catch { return null; } })();
+				const pendingLanguage = (() => { try { return window.localStorage.getItem('freemannotes.pendingLanguageSync'); } catch { return null; } })();
+				if (pendingTheme) {
+					const pendingThemeId = pendingTheme as ThemeId;
+					setThemeId(pendingThemeId);
+					const updatedPref = await updateUserPreferences(deviceId, { theme: pendingThemeId });
+					if (updatedPref) {
+						try {
+							if (window.localStorage.getItem('freemannotes.pendingThemeSync') === pendingThemeId) {
+								window.localStorage.removeItem('freemannotes.pendingThemeSync');
+							}
+						} catch {
+							// best effort
+						}
+					}
+				} else if (pref.theme) {
+					setThemeId(pref.theme as ThemeId);
+				}
+				if (pendingLanguage) {
+					const pendingLocale = pendingLanguage as LocaleCode;
+					setLocale(pendingLocale);
+					const updatedPref = await updateUserPreferences(deviceId, { language: pendingLocale });
+					if (updatedPref) {
+						try {
+							if (window.localStorage.getItem('freemannotes.pendingLanguageSync') === pendingLocale) {
+								window.localStorage.removeItem('freemannotes.pendingLanguageSync');
+							}
+						} catch {
+							// best effort
+						}
+					}
+				} else if (pref.language) {
+					setLocale(pref.language as LocaleCode);
+				}
 				setChecklistShowCompletedPref(Boolean(pref.checklistShowCompleted));
 				setQuickDeleteChecklistPref(Boolean(pref.quickDeleteChecklist));
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
@@ -1623,6 +1706,38 @@ export function App(): React.JSX.Element {
 					continue;
 				}
 
+				if (mutation.kind === 'rename') {
+					const res = await fetch(`/api/workspaces/${encodeURIComponent(mutation.workspaceId)}`, {
+						method: 'PATCH',
+						credentials: 'include',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ name: mutation.workspaceName || '' }),
+					});
+					const body = await res.json().catch(() => null);
+					if (!res.ok && res.status !== 404 && res.status !== 403) {
+						const message = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
+						throw new Error(message);
+					}
+					if (body?.workspace) {
+						await cacheWorkspaceDetails({
+							workspace: {
+								id: String(body.workspace.id),
+								name: typeof body.workspace.name === 'string' ? body.workspace.name : mutation.workspaceName || '',
+								ownerUserId: typeof body.workspace.ownerUserId === 'string' ? body.workspace.ownerUserId : authUserId,
+							},
+							userId: authUserId,
+							role: mutation.role || 'OWNER',
+						});
+					}
+					await removePendingWorkspaceMutation({
+						userId: authUserId,
+						deviceId,
+						workspaceId: mutation.workspaceId,
+						kind: 'rename',
+					});
+					continue;
+				}
+
 				const res = await fetch(`/api/workspaces/${encodeURIComponent(mutation.workspaceId)}`, {
 					method: 'DELETE',
 					credentials: 'include',
@@ -1817,6 +1932,22 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		loadSidebarWorkspacesRef.current = loadSidebarWorkspaces;
 	}, [loadSidebarWorkspaces]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const eventName = getWorkspaceMetadataChangedEventName();
+		const onWorkspaceMetadataChanged = (): void => {
+			const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+			if (!authOfflineMode && !browserOffline) {
+				return;
+			}
+			void loadSidebarWorkspacesRef.current();
+		};
+		window.addEventListener(eventName, onWorkspaceMetadataChanged as EventListener);
+		return () => {
+			window.removeEventListener(eventName, onWorkspaceMetadataChanged as EventListener);
+		};
+	}, [authOfflineMode]);
 
 	const refreshNoteShareState = React.useCallback(async (): Promise<void> => {
 		// This is the single reconciliation point for collaboration UI state:
@@ -2015,6 +2146,7 @@ export function App(): React.JSX.Element {
 		let socket: WebSocket | null = null;
 		let reconnectTimer: number | null = null;
 		const pendingNoteMediaTimers = new Map<string, number>();
+		const pendingNoteLinkTimers = new Map<string, number>();
 
 		const clearReconnectTimer = () => {
 			if (reconnectTimer !== null) {
@@ -2028,6 +2160,12 @@ export function App(): React.JSX.Element {
 				window.clearTimeout(timer);
 			}
 			pendingNoteMediaTimers.clear();
+		};
+		const clearPendingNoteLinkTimers = () => {
+			for (const timer of pendingNoteLinkTimers.values()) {
+				window.clearTimeout(timer);
+			}
+			pendingNoteLinkTimers.clear();
 		};
 
 		const refreshWorkspaceMetadata = () => {
@@ -2077,9 +2215,12 @@ export function App(): React.JSX.Element {
 					const isNoteShareMetadataEvent = payload.type === 'workspace-metadata-changed'
 						&& typeof payload.reason === 'string'
 						&& payload.reason.startsWith('note-share-');
-						const isNoteMediaMetadataEvent = payload.type === 'workspace-metadata-changed'
-							&& typeof payload.reason === 'string'
-							&& payload.reason.startsWith('note-media-');
+					const isNoteMediaMetadataEvent = payload.type === 'workspace-metadata-changed'
+						&& typeof payload.reason === 'string'
+						&& payload.reason.startsWith('note-media-');
+					const isNoteLinksMetadataEvent = payload.type === 'workspace-metadata-changed'
+						&& typeof payload.reason === 'string'
+						&& payload.reason.startsWith('note-links-');
 					const isUserProfileMetadataEvent = payload.type === 'workspace-metadata-changed'
 						&& payload.reason === 'user-profile-updated';
 					if (
@@ -2119,11 +2260,24 @@ export function App(): React.JSX.Element {
 							pendingNoteMediaTimers.set(payload.docId, timer);
 							return;
 						}
+						if (isNoteLinksMetadataEvent && typeof payload.docId === 'string') {
+							const existingTimer = pendingNoteLinkTimers.get(payload.docId);
+							if (existingTimer) {
+								window.clearTimeout(existingTimer);
+							}
+							const timer = window.setTimeout(() => {
+								pendingNoteLinkTimers.delete(payload.docId as string);
+								emitNoteLinksChanged(payload.docId as string, 'remote');
+							}, 150);
+							pendingNoteLinkTimers.set(payload.docId, timer);
+							return;
+						}
 						if (
 							payload.type === 'workspace-metadata-changed' &&
 							typeof payload.docId === 'string' &&
 							authUserId &&
-							!isNoteMediaMetadataEvent
+							!isNoteMediaMetadataEvent &&
+							!isNoteLinksMetadataEvent
 						) {
 							void syncNoteShareCollaborators(authUserId, payload.docId, { suppressError: true });
 						}
@@ -2183,6 +2337,7 @@ export function App(): React.JSX.Element {
 			window.removeEventListener('online', handleOnline);
 			clearReconnectTimer();
 			clearPendingNoteMediaTimers();
+						clearPendingNoteLinkTimers();
 			const activeSocket = socket;
 			socket = null;
 			if (activeSocket) {
@@ -3421,15 +3576,36 @@ export function App(): React.JSX.Element {
 		void scheduleQueuedNoteImageFlush(authUserId);
 		void scheduleQueuedNoteDocumentFlush(authUserId);
 		void flushQueuedNoteLinkSync(authUserId);
+		let retryTimer: ReturnType<typeof setTimeout> | null = null;
+		const MAX_RECONNECT_FLUSH_ATTEMPTS = 8;
 		const onOnline = (): void => {
-			void scheduleQueuedNoteImageFlush(authUserId);
-			void scheduleQueuedNoteDocumentFlush(authUserId);
-			void flushQueuedNoteLinkSync(authUserId).finally(() => {
-				void refreshNoteShareState();
-			});
+			// Small delay to let the network connection stabilise after the
+			// browser fires the `online` event (DNS/TLS may still be settling).
+			if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
+			const attemptFlush = (attempt: number): void => {
+				void (async () => {
+					await new Promise((r) => setTimeout(r, attempt === 0 ? 600 : 2000));
+					void scheduleQueuedNoteImageFlush(authUserId);
+					void scheduleQueuedNoteDocumentFlush(authUserId);
+					await flushQueuedNoteLinkSync(authUserId);
+					void refreshNoteShareState();
+					// After each attempt, re-scan placeholders in cache so hydrated rows
+					// are picked up even if a websocket reconnect event is delayed.
+					void scanAllDocumentsForPlaceholders();
+
+					const stillQueued = await hasQueuedNoteLinkSync(authUserId);
+					if (stillQueued && attempt < MAX_RECONNECT_FLUSH_ATTEMPTS) {
+						retryTimer = setTimeout(() => { retryTimer = null; attemptFlush(attempt + 1); }, 3000);
+					}
+				})();
+			};
+			attemptFlush(0);
 		};
 		window.addEventListener('online', onOnline);
-		return () => window.removeEventListener('online', onOnline);
+		return () => {
+			window.removeEventListener('online', onOnline);
+			if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
+		};
 	}, [authStatus, authUserId, refreshNoteShareState]);
 
 	React.useEffect(() => {

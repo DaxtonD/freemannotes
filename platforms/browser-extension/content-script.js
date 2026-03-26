@@ -37,10 +37,17 @@ async function writeClipboard(payload) {
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 	if (message?.type === 'freemannotes:get-selection') {
 		sendResponse(getSelectionPayload());
-		return true;
+		return false;
 	}
 	if (message?.type === 'freemannotes:write-clipboard') {
-		void writeClipboard(message.payload).then(sendResponse);
+		void writeClipboard(message.payload)
+			.then((result) => sendResponse(result))
+			.catch((error) => {
+				sendResponse({
+					ok: false,
+					error: error && error.message ? error.message : String(error),
+				});
+			});
 		return true;
 	}
 	return false;

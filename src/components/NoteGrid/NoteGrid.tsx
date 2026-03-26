@@ -7,10 +7,11 @@ import { faUsers } from '@fortawesome/free-solid-svg-icons';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
-import { addNotePreviewLinkToDoc } from '../../core/noteLinks';
+import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc } from '../../core/noteLinks';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
+import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import {
 	readCachedNoteShareCollaborators,
 	syncNoteShareCollaborators,
@@ -1363,7 +1364,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						if (!moreMenuDoc) return;
 						const next = window.prompt(t('links.prompt'), 'https://');
 						if (!next) return;
-						addNotePreviewLinkToDoc(moreMenuDoc, next);
+						const added = addNotePreviewLinkToDoc(moreMenuDoc, next);
+						if (!added || !moreMenuDocId) return;
+						void syncNoteLinksForDoc({
+							userId: props.authUserId,
+							docId: moreMenuDocId,
+							links: extractNoteLinksFromDoc(moreMenuDoc),
+						});
 					} : undefined}
 					onTrash={sharedNoteIdSet.has(moreMenuNoteId) ? undefined : () => {
 						// Shared aliases are projections of another workspace's document, so the
