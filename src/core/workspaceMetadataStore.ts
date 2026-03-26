@@ -1,5 +1,7 @@
 import { normalizeWorkspaceRole, type WorkspaceRole } from './workspaceRoles';
-type WorkspaceMutationKind = 'create' | 'delete';
+type WorkspaceMutationKind = 'create' | 'delete' | 'rename';
+
+const WORKSPACE_METADATA_CHANGED_EVENT = 'freemannotes:workspace-metadata-local-changed';
 
 // Offline workspace metadata cache:
 // - Stores the last server snapshot for workspace rows, memberships, and the
@@ -88,6 +90,15 @@ const USER_DEVICE_PREFERENCE_STORE = 'user_device_preference';
 const WORKSPACE_MUTATION_STORE = 'workspace_mutation';
 
 let dbPromise: Promise<IDBDatabase> | null = null;
+
+export function getWorkspaceMetadataChangedEventName(): string {
+	return WORKSPACE_METADATA_CHANGED_EVENT;
+}
+
+function emitWorkspaceMetadataChanged(): void {
+	if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+	window.dispatchEvent(new CustomEvent(WORKSPACE_METADATA_CHANGED_EVENT));
+}
 
 function getNowIso(): string {
 	return new Date().toISOString();
@@ -200,6 +211,20 @@ function applyWorkspaceMutations(snapshot: CachedWorkspaceSnapshot, rows: readon
 				pendingSync: true,
 				pendingSyncKind: 'create',
 			});
+			continue;
+		}
+
+		if (row.kind === 'rename') {
+			const existing = workspacesById.get(row.workspaceId);
+			if (existing) {
+				workspacesById.set(row.workspaceId, {
+					...existing,
+					name: row.workspaceName || existing.name,
+					updatedAt: asIsoString(row.updatedAt, existing.updatedAt),
+					pendingSync: true,
+					pendingSyncKind: 'rename',
+				});
+			}
 			continue;
 		}
 
@@ -361,6 +386,7 @@ export async function cacheWorkspaceSnapshot(args: {
 		};
 		prefStore.put(prefRow, [args.userId, args.deviceId]);
 		await transactionToPromise(tx);
+		emitWorkspaceMetadataChanged();
 	} catch {
 		// Local metadata caching should not block app startup or workspace switching.
 	}
@@ -407,6 +433,7 @@ export async function cacheWorkspaceDetails(args: {
 			memberStore.put(memberRow, [args.userId, args.workspace.id]);
 		}
 		await transactionToPromise(tx);
+		emitWorkspaceMetadataChanged();
 	} catch {
 		// Ignore local cache failures and keep the live UI responsive.
 	}
@@ -440,6 +467,7 @@ export async function cacheActiveWorkspaceSelection(args: {
 		};
 		prefStore.put(prefRow, [args.userId, args.deviceId]);
 		await transactionToPromise(tx);
+		emitWorkspaceMetadataChanged();
 	} catch {
 		// Ignore local cache failures and let the server remain the fallback.
 	}
@@ -491,6 +519,52 @@ export async function queueOfflineWorkspaceCreate(args: {
 			deletedAt: null,
 		});
 		await transactionToPromise(tx);
+		emitWorkspaceMetadataChanged();
+	} catch {
+		// Ignore local queue failures and let the UI continue best-effort.
+	}
+}
+
+export async function queueOfflineWorkspaceRename(args: {
+	userId: string;
+	deviceId: string;
+	workspaceId: string;
+	nextName: string;
+	ownerUserId?: string | null;
+	role?: WorkspaceRole;
+}): Promise<void> {
+	if (!args.userId || !args.deviceId || !args.workspaceId || !args.nextName) return;
+	try {
+		await cacheWorkspaceDetails({
+			workspace: { id: args.workspaceId, name: args.nextName, ownerUserId: args.ownerUserId },
+			userId: args.userId,
+			role: args.role ?? 'OWNER',
+		});
+		const db = await openWorkspaceMetadataDb();
+		const tx = db.transaction([WORKSPACE_MUTATION_STORE], 'readwrite');
+		const store = tx.objectStore(WORKSPACE_MUTATION_STORE);
+		const now = getNowIso();
+		const existingRows = await requestToPromise(store.index('workspaceId').getAll(args.workspaceId)) as WorkspaceMutationRow[];
+		for (const row of existingRows) {
+			if (row.userId === args.userId && row.deviceId === args.deviceId && row.kind === 'rename') {
+				store.delete(row.id);
+			}
+		}
+		store.put({
+			id: `rename:${args.workspaceId}`,
+			userId: args.userId,
+			deviceId: args.deviceId,
+			workspaceId: args.workspaceId,
+			kind: 'rename',
+			workspaceName: args.nextName,
+			ownerUserId: args.ownerUserId ?? args.userId,
+			role: asWorkspaceRole(args.role ?? 'OWNER'),
+			createdAt: now,
+			updatedAt: now,
+			deletedAt: null,
+		});
+		await transactionToPromise(tx);
+		emitWorkspaceMetadataChanged();
 	} catch {
 		// Ignore local queue failures and let the UI continue best-effort.
 	}
@@ -532,6 +606,7 @@ export async function queueOfflineWorkspaceDelete(args: {
 			deletedAt: asIsoString(args.deletedAt ?? now, now),
 		});
 		await transactionToPromise(tx);
+		emitWorkspaceMetadataChanged();
 	} catch {
 		// Ignore local queue failures and let the UI continue best-effort.
 	}
@@ -555,6 +630,7 @@ export async function removePendingWorkspaceMutation(args: {
 			store.delete(row.id);
 		}
 		await transactionToPromise(tx);
+		emitWorkspaceMetadataChanged();
 	} catch {
 		// Ignore local queue cleanup failures.
 	}
@@ -592,6 +668,7 @@ export async function removeCachedWorkspace(args: {
 		}
 
 		await transactionToPromise(tx);
+		emitWorkspaceMetadataChanged();
 	} catch {
 		// Local metadata cleanup should never block UI updates.
 	}
