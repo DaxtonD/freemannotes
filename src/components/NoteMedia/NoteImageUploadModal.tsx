@@ -43,7 +43,10 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		try {
 			if (isOfflineRequest(props)) {
 				if (!props.authUserId) throw new Error(t('media.offlineRequiresAuth'));
-				await queueNoteImagesForUpload({ userId: props.authUserId, docId: props.docId, files });
+				// Fire-and-forget: close the modal immediately so the user doesn't
+				// see a stuck "Uploading…" spinner while IndexedDB thumbnail
+				// generation runs in the background.
+				void queueNoteImagesForUpload({ userId: props.authUserId, docId: props.docId!, files });
 				props.onUploaded?.({ queued: true, count: files.length });
 				props.onClose();
 				return;

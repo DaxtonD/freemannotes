@@ -7,6 +7,7 @@ import {
 	cacheWorkspaceSnapshot,
 	queueOfflineWorkspaceCreate,
 	queueOfflineWorkspaceDelete,
+	queueOfflineWorkspaceRename,
 	removeCachedWorkspace,
 	readCachedWorkspaceSnapshot,
 } from '../../core/workspaceMetadataStore';
@@ -162,7 +163,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 		} finally {
 			setBusy(false);
 		}
-	}, [deviceId, props]);
+	}, [deviceId, props.authUserId, props.t]);
 
 	React.useEffect(() => {
 		if (!props.isOpen) return;
@@ -295,6 +296,29 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 			const nextName = renameValue.trim();
 			if (!nextName) {
 				setError(props.t('workspace.renameInvalid'));
+				return;
+			}
+
+			const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+			if (isOffline) {
+				if (!props.authUserId) {
+					setError(props.t('workspace.renameFailed'));
+					return;
+				}
+				// Offline rename flow: queue the mutation and update cached workspace
+				// records now so the new name is visible immediately without waiting
+				// for the next successful server round-trip.
+				await queueOfflineWorkspaceRename({
+					userId: props.authUserId,
+					deviceId: getDeviceId(),
+					workspaceId,
+					nextName,
+					ownerUserId: props.authUserId,
+					role: getWorkspaceRole(workspaces, workspaceId),
+				});
+				setRenameId(null);
+				setRenameValue('');
+				await load();
 				return;
 			}
 
