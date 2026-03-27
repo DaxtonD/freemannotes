@@ -38,6 +38,7 @@ import {
 	snapshotChecklistRichContent,
 	syncChecklistItemPlainText,
 	TEXT_NOTE_RICH_FIELD,
+	RICHTEXT_INTERNAL_ORIGIN,
 	syncTextNotePlainText,
 } from '../../core/richText';
 import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
@@ -448,21 +449,27 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		let timerId = 0;
+		let lastSignature = (extractNoteLinksFromDoc(props.doc) || []).map((link) => `${link.normalizedUrl}:${link.sortOrder}`).join('|');
 		// Debounce link sync so typing/editing does not spam the preview resolver.
-		const scheduleSync = (): void => {
+		const scheduleSync = (tr?: Y.Transaction): void => {
+			if (tr?.origin === RICHTEXT_INTERNAL_ORIGIN) return;
+			const nextLinks = extractNoteLinksFromDoc(props.doc);
+			const nextSignature = nextLinks.map((link) => `${link.normalizedUrl}:${link.sortOrder}`).join('|');
+			if (nextSignature === lastSignature) return;
+			lastSignature = nextSignature;
 			if (timerId) window.clearTimeout(timerId);
 			timerId = window.setTimeout(() => {
 				void syncNoteLinksForDoc({
 					userId: props.authUserId,
 					docId: props.docId,
-					links: extractNoteLinksFromDoc(props.doc),
+					links: nextLinks,
 				});
 			}, 320);
 		};
 		scheduleSync();
-		props.doc.on('afterTransaction', scheduleSync);
+		props.doc.on('afterTransaction', scheduleSync as unknown as (tr: Y.Transaction) => void);
 		return () => {
-			props.doc.off('afterTransaction', scheduleSync);
+			props.doc.off('afterTransaction', scheduleSync as unknown as (tr: Y.Transaction) => void);
 			if (timerId) window.clearTimeout(timerId);
 		};
 	}, [props.authUserId, props.doc, props.docId]);
@@ -491,6 +498,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (!mobileKeyboardOpen) return;
 		setMediaDockOpen(false);
 	}, [mobileKeyboardOpen]);
+	React.useEffect(() => {
+		if (!mediaDockOpen || !isCoarsePointer || typeof document === 'undefined') return;
+		const active = document.activeElement;
+		if (active instanceof HTMLElement) {
+			// Hide the active caret immediately once the sheet overlays editor content.
+			active.blur();
+		}
+	}, [isCoarsePointer, mediaDockOpen]);
 	// ── Keyboard-drag focusout guard ─────────────────────────────────────────────
 	// Mounted once on component init.  Listens in the *capture* phase so it fires
 	// before any library/framework handlers can react to the blur.
@@ -648,12 +663,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
 				return Math.max(prev - 1, 0) as 0 | 1 | 2;
 			});
-			return;
 		}
-		if (dy > 72 && Math.abs(dy) > Math.abs(dx) * 1.25) {
-			closeMediaDock();
-		}
-	}, [closeMediaDock]);
+	}, []);
 	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
 		// All dock variants funnel through one renderer so mobile sheets and desktop
 		// flyouts cannot drift into subtly different attachment behavior.
@@ -690,6 +701,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		setIsModified(false);
 		const onAfterTransaction = (tr: Y.Transaction): void => {
 			if (!tr.local) return;
+			if (tr.origin === RICHTEXT_INTERNAL_ORIGIN) return;
 			setIsModified(true);
 		};
 		props.doc.on('afterTransaction', onAfterTransaction);
@@ -1273,8 +1285,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 										{previewContent}
 									</div>
 								</div>
+								</div>
 							</div>
-						</div>
 					) : (
 						<div className={styles.checklistRowPreview} style={{ height: textHeight ?? undefined, width: textWidth ?? undefined, flex: '0 0 auto' }}>
 							{previewContent}
@@ -1418,7 +1430,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						aria-label={t('editors.mediaDock')}
 					>
 						<span className={styles.mediaDockPill} aria-hidden="true" />
-						<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
 					</button>
 
 					<header className={styles.mediaSheetHeader}>
@@ -1457,7 +1468,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</header>
 
 					<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
-						<div className={styles.mediaPanel} role="tabpanel">
+						<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
 							{renderMediaDockPanel()}
 						</div>
 					</div>
@@ -1503,7 +1514,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						</button>
 					</header>
 					<div className={styles.mediaFlyoutBody}>
-						<div className={styles.mediaPanel} role="tabpanel">
+						<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
 							{renderMediaDockPanel()}
 						</div>
 					</div>
@@ -1926,7 +1937,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					aria-label={t('editors.mediaDock')}
 				>
 					<span className={styles.mediaDockPill} aria-hidden="true" />
-					<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
 				</button>
 
 				<header className={styles.mediaSheetHeader}>
@@ -1965,7 +1975,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				</header>
 
 				<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
-					<div className={styles.mediaPanel} role="tabpanel">
+					<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
 						{renderMediaDockPanel()}
 					</div>
 				</div>
@@ -2011,7 +2021,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						</button>
 					</header>
 					<div className={styles.mediaFlyoutBody}>
-						<div className={styles.mediaPanel} role="tabpanel">
+						<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
 							{renderMediaDockPanel()}
 						</div>
 					</div>

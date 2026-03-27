@@ -54,6 +54,28 @@ function isScrollableElement(element: HTMLElement): boolean {
 	return /(auto|scroll|overlay)/.test(overflowY) && element.scrollHeight > element.clientHeight + 1;
 }
 
+function getMinDragTop(sectionRef: React.RefObject<HTMLElement | null>): number {
+	if (typeof window === 'undefined') return 0;
+	const scope = document.querySelector<HTMLElement>('.note-grid-scope');
+	if (scope) {
+		const rect = scope.getBoundingClientRect();
+		// Keep the dragged card anchored below the scope row (All notes / workspace)
+		// so touch drags cannot carry cards into the header area.
+		return rect.top;
+	}
+	const section = sectionRef.current;
+	if (section) {
+		return section.getBoundingClientRect().top;
+	}
+	return 0;
+}
+
+function clamp(value: number, min: number, max: number): number {
+	if (value < min) return min;
+	if (value > max) return max;
+	return value;
+}
+
 export type DragManagerResult = {
 	activeDragId: string | null;
 	isTouchDragging: boolean;
@@ -175,6 +197,21 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		[getRectForId, getColumnRect]
 	);
 
+	const computeOverlayTop = React.useCallback((pointer: PointerInput): number => {
+		const rawTop = pointer.clientY - pointerOffsetRef.current.y;
+		const minTop = getMinDragTop(args.sectionRef);
+		return Math.max(rawTop, minTop);
+	}, [args.sectionRef]);
+
+	const computeOverlayLeft = React.useCallback((pointer: PointerInput): number => {
+		const rawLeft = pointer.clientX - pointerOffsetRef.current.x;
+		const section = args.sectionRef.current;
+		if (!section) return rawLeft;
+		const rect = section.getBoundingClientRect();
+		const maxLeft = Math.max(rect.left, rect.right - previewSizeRef.current.width);
+		return clamp(rawLeft, rect.left, maxLeft);
+	}, [args.sectionRef]);
+
 	const clearDragState = React.useCallback((): void => {
 		activeDragIdRef.current = null;
 		insertionPointRef.current = null;
@@ -271,10 +308,12 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				previewSizeRef.current = { width: rect.width, height: rect.height };
 				setActiveDragId(activeId);
 				setIsTouchDragging(isTouchDragCandidateRef.current());
+				const overlayLeft = computeOverlayLeft(input);
+				const overlayTop = computeOverlayTop(input);
 				setDragOverlay({
 					id: activeId,
-					left: input.clientX - pointerOffsetRef.current.x,
-					top: input.clientY - pointerOffsetRef.current.y,
+					left: overlayLeft,
+					top: overlayTop,
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
 				});
@@ -284,10 +323,12 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				const activeId = activeDragIdRef.current;
 				if (!activeId) return;
 				const pointer = event.location.current.input as PointerInput;
+				const overlayLeft = computeOverlayLeft(pointer);
+				const overlayTop = computeOverlayTop(pointer);
 				setDragOverlay({
 					id: activeId,
-					left: pointer.clientX - pointerOffsetRef.current.x,
-					top: pointer.clientY - pointerOffsetRef.current.y,
+					left: overlayLeft,
+					top: overlayTop,
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
 				});
@@ -332,7 +373,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			cleanup();
 			clearDragState();
 		};
-	}, [clearDragState, updateInsertionPoint]);
+	}, [clearDragState, computeOverlayLeft, computeOverlayTop, updateInsertionPoint]);
 
 	// Cancel drag if the active card disappears from the list
 	React.useEffect(() => {

@@ -5,8 +5,10 @@ import { AnimatePresence, motion } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faFileLines, faImage, faLink, faPaperclip } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
+import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { getCachedNoteDocuments, getNoteDocumentsChangedEventName, readQueuedNoteDocuments, readStoredRemoteNoteDocuments, refreshRemoteNoteDocuments } from '../../core/noteDocumentStore';
 import { extractNoteLinksFromDoc } from '../../core/noteLinks';
+import { getCachedRemoteNoteLinks, getNoteLinksChangedEventName, readStoredNoteLinks, refreshRemoteNoteLinks } from '../../core/noteLinkStore';
 import { filterRemoteNoteImagesByPendingDeletes, getCachedRemoteNoteImages, getNoteMediaChangedEventName, readQueuedNoteImageDeletions, readQueuedNoteImages, readStoredRemoteNoteImages, refreshRemoteNoteImages } from '../../core/noteMediaStore';
 import styles from './NoteAttachmentCountChip.module.css';
 
@@ -24,6 +26,7 @@ type NoteAttachmentCountChipProps = {
 	authUserId?: string | null;
 	className: string;
 	onOpenBrowser: (kind: NoteAttachmentBrowserKind) => void;
+	onOpenStateChange?: (isOpen: boolean) => void;
 	suspendRemoteRefresh?: boolean;
 	disableInitialRemoteRefresh?: boolean;
 };
@@ -34,55 +37,105 @@ function readAnchorRect(element: HTMLElement | null): { top: number; left: numbe
 	return { top: rect.top, left: rect.left, width: rect.width, height: rect.height };
 }
 
+function suppressNextDocumentCompatibilityMouseEvents(): void {
+	if (typeof window === 'undefined') return;
+	let timeoutId = 0;
+	const handler = (event: MouseEvent): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+	};
+	const cleanup = (): void => {
+		window.removeEventListener('mousedown', handler, true);
+		window.removeEventListener('mouseup', handler, true);
+		window.removeEventListener('click', handler, true);
+		if (timeoutId) window.clearTimeout(timeoutId);
+	};
+	window.addEventListener('mousedown', handler, true);
+	window.addEventListener('mouseup', handler, true);
+	window.addEventListener('click', handler, true);
+	timeoutId = window.setTimeout(() => cleanup(), 500);
+}
+
 export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): React.JSX.Element | null {
 	const { t } = useI18n();
+	const isCoarsePointer = useIsCoarsePointer();
 	const buttonRef = React.useRef<HTMLButtonElement | null>(null);
+	const overlayPanelRef = React.useRef<HTMLDivElement | null>(null);
+	const backStatePushedRef = React.useRef(false);
 	const [counts, setCounts] = React.useState<AttachmentCounts>(() => ({
 		images: getCachedRemoteNoteImages(props.docId).length,
-		links: extractNoteLinksFromDoc(props.doc).length,
+		links: Math.max(getCachedRemoteNoteLinks(props.docId).length, extractNoteLinksFromDoc(props.doc).length),
 		documents: getCachedNoteDocuments(props.docId).length,
 	}));
 	const [isOpen, setIsOpen] = React.useState(false);
 	const [anchorRect, setAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 
-	const refresh = React.useCallback(async (options?: { syncRemote?: boolean; forceRemote?: boolean }) => {
+	React.useEffect(() => {
+		props.onOpenStateChange?.(isOpen);
+	}, [isOpen, props.onOpenStateChange]);
+
+	const refresh = React.useCallback(async (options?: {
+		scope?: 'all' | 'media' | 'documents' | 'links';
+		syncRemote?: boolean;
+		forceRemote?: boolean;
+	}) => {
+		const scope = options?.scope ?? 'all';
+		const includeMedia = scope === 'all' || scope === 'media';
+		const includeDocuments = scope === 'all' || scope === 'documents';
+		const includeLinks = scope === 'all' || scope === 'links';
 		// Combine queued + cached + remote counts so the chip reflects the user's intent
 		// immediately, even while uploads/deletes are still in flight or offline.
-		const [queuedImages, queuedDeletes, storedRemoteImages, queuedDocuments, storedRemoteDocuments] = await Promise.all([
+		const [queuedImages, queuedDeletes, storedRemoteImages, queuedDocuments, storedRemoteDocuments, storedRemoteLinks] = await Promise.all([
 			props.authUserId ? readQueuedNoteImages(props.authUserId, props.docId) : Promise.resolve([]),
 			props.authUserId ? readQueuedNoteImageDeletions(props.authUserId, props.docId) : Promise.resolve([]),
-			readStoredRemoteNoteImages(props.docId),
+			includeMedia ? readStoredRemoteNoteImages(props.docId) : Promise.resolve([]),
 			props.authUserId ? readQueuedNoteDocuments(props.authUserId, props.docId) : Promise.resolve([]),
-			readStoredRemoteNoteDocuments(props.docId),
+			includeDocuments ? readStoredRemoteNoteDocuments(props.docId) : Promise.resolve([]),
+			includeLinks ? readStoredNoteLinks(props.docId) : Promise.resolve([]),
 		]);
-
-		setCounts({
-			images: filterRemoteNoteImagesByPendingDeletes(
-				storedRemoteImages.length > 0 ? storedRemoteImages : getCachedRemoteNoteImages(props.docId),
-				queuedDeletes
-			).length + queuedImages.length,
-			links: extractNoteLinksFromDoc(props.doc).length,
-			documents: Math.max(storedRemoteDocuments.length + queuedDocuments.length, getCachedNoteDocuments(props.docId).length),
-		});
+		const extractedLinkCount = extractNoteLinksFromDoc(props.doc).length;
+		setCounts((current) => ({
+			images: includeMedia
+				? filterRemoteNoteImagesByPendingDeletes(
+					storedRemoteImages.length > 0 ? storedRemoteImages : getCachedRemoteNoteImages(props.docId),
+					queuedDeletes
+				).length + queuedImages.length
+				: current.images,
+			links: includeLinks ? Math.max(storedRemoteLinks.length, extractedLinkCount) : current.links,
+			documents: includeDocuments
+				? Math.max(storedRemoteDocuments.length + queuedDocuments.length, getCachedNoteDocuments(props.docId).length)
+				: current.documents,
+		}));
 
 		if (!options?.syncRemote) return;
 
 		try {
-			const [remoteImages, mergedDocuments] = await Promise.all([
-				refreshRemoteNoteImages(props.docId, {
-					force: options.forceRemote,
-					minIntervalMs: options.forceRemote ? 0 : 15_000,
-				}),
-				refreshRemoteNoteDocuments(props.docId, {
-					userId: props.authUserId,
-					force: options.forceRemote,
-				}),
+			const [remoteImages, mergedDocuments, remoteLinks] = await Promise.all([
+				includeMedia
+					? refreshRemoteNoteImages(props.docId, {
+						force: options.forceRemote,
+						minIntervalMs: options.forceRemote ? 0 : 15_000,
+					})
+					: Promise.resolve<readonly ReturnType<typeof getCachedRemoteNoteImages>[number][]>([]),
+				includeDocuments
+					? refreshRemoteNoteDocuments(props.docId, {
+						userId: props.authUserId,
+						force: options.forceRemote,
+					})
+					: Promise.resolve<readonly ReturnType<typeof getCachedNoteDocuments>[number][]>([]),
+				includeLinks
+					? refreshRemoteNoteLinks(props.docId, {
+						force: options.forceRemote,
+					})
+					: Promise.resolve<readonly ReturnType<typeof getCachedRemoteNoteLinks>[number][]>([]),
 			]);
-			setCounts({
-				images: filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes).length + queuedImages.length,
-				links: extractNoteLinksFromDoc(props.doc).length,
-				documents: mergedDocuments.length,
-			});
+			setCounts((current) => ({
+				images: includeMedia
+					? filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes).length + queuedImages.length
+					: current.images,
+				links: includeLinks ? Math.max(remoteLinks.length, extractedLinkCount) : current.links,
+				documents: includeDocuments ? mergedDocuments.length : current.documents,
+			}));
 		} catch {
 			// Keep the best local counts when refreshes fail.
 		}
@@ -95,33 +148,56 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 
 	React.useEffect(() => {
 		const onDocUpdate = (): void => {
-			setCounts((current) => ({ ...current, links: extractNoteLinksFromDoc(props.doc).length }));
+			const extracted = extractNoteLinksFromDoc(props.doc).length;
+			const cachedRemote = getCachedRemoteNoteLinks(props.docId).length;
+			setCounts((current) => ({ ...current, links: Math.max(extracted, cachedRemote) }));
 		};
 		props.doc.on('update', onDocUpdate);
 		return () => {
 			props.doc.off('update', onDocUpdate);
 		};
-	}, [props.doc]);
+	}, [props.doc, props.docId]);
 
 	React.useEffect(() => {
 		if (props.suspendRemoteRefresh) return () => {};
 		const mediaEventName = getNoteMediaChangedEventName();
 		const documentEventName = getNoteDocumentsChangedEventName();
-		const onChanged = (event: Event): void => {
+		const linksEventName = getNoteLinksChangedEventName();
+		const onMediaChanged = (event: Event): void => {
 			const detail = (event as CustomEvent<{ docId?: string }>).detail;
 			if (!detail?.docId || detail.docId === props.docId) {
-				void refresh({ syncRemote: true, forceRemote: true });
+				void refresh({ scope: 'media', syncRemote: true, forceRemote: true });
+			}
+		};
+		const onDocumentChanged = (event: Event): void => {
+			const detail = (event as CustomEvent<{ docId?: string }>).detail;
+			if (!detail?.docId || detail.docId === props.docId) {
+				void refresh({ scope: 'documents', syncRemote: true, forceRemote: true });
+			}
+		};
+		const onLinksChanged = (event: Event): void => {
+			const detail = (event as CustomEvent<{ docId?: string; reason?: 'cache' | 'remote' }>).detail;
+			if (!detail?.docId || detail.docId === props.docId) {
+				if (detail?.reason === 'cache') {
+					const extracted = extractNoteLinksFromDoc(props.doc).length;
+					const cachedRemote = getCachedRemoteNoteLinks(props.docId).length;
+					setCounts((current) => ({ ...current, links: Math.max(extracted, cachedRemote) }));
+					return;
+				}
+				void refresh({ scope: 'links', syncRemote: true, forceRemote: true });
 			}
 		};
 		const onOnline = (): void => {
-			void refresh({ syncRemote: true, forceRemote: true });
+			void refresh({ scope: 'all', syncRemote: true, forceRemote: true });
 		};
-		window.addEventListener(mediaEventName, onChanged as EventListener);
-		window.addEventListener(documentEventName, onChanged as EventListener);
+		window.addEventListener(mediaEventName, onMediaChanged as EventListener);
+		window.addEventListener(documentEventName, onDocumentChanged as EventListener);
+		window.addEventListener(linksEventName, onLinksChanged as EventListener);
 		window.addEventListener('online', onOnline);
 		return () => {
-			window.removeEventListener(mediaEventName, onChanged as EventListener);
-			window.removeEventListener(documentEventName, onChanged as EventListener);
+			window.removeEventListener(mediaEventName, onMediaChanged as EventListener);
+			window.removeEventListener(documentEventName, onDocumentChanged as EventListener);
+			window.removeEventListener(linksEventName, onLinksChanged as EventListener);
 			window.removeEventListener('online', onOnline);
 		};
 	}, [props.docId, props.suspendRemoteRefresh, refresh]);
@@ -144,14 +220,68 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 
 		syncPosition();
 		window.addEventListener('resize', syncPosition);
-		window.addEventListener('scroll', syncPosition, true);
+		if (isCoarsePointer) {
+			window.addEventListener('scroll', syncPosition, true);
+		}
 		document.addEventListener('keydown', onKeyDown);
 		return () => {
 			window.removeEventListener('resize', syncPosition);
-			window.removeEventListener('scroll', syncPosition, true);
+			if (isCoarsePointer) {
+				window.removeEventListener('scroll', syncPosition, true);
+			}
 			document.removeEventListener('keydown', onKeyDown);
 		};
-	}, [isOpen]);
+	}, [isCoarsePointer, isOpen]);
+
+	React.useEffect(() => {
+		if (!isOpen || typeof window === 'undefined') return;
+		if (isCoarsePointer) return;
+		const closeOverlay = (): void => setIsOpen(false);
+		window.addEventListener('wheel', closeOverlay, { passive: true });
+		window.addEventListener('scroll', closeOverlay, true);
+		return () => {
+			window.removeEventListener('wheel', closeOverlay);
+			window.removeEventListener('scroll', closeOverlay, true);
+		};
+	}, [isCoarsePointer, isOpen]);
+
+	React.useEffect(() => {
+		if (!isOpen || !isCoarsePointer) return;
+		const panel = overlayPanelRef.current;
+		if (!panel) return;
+		const onTouchMove = (event: TouchEvent): void => {
+			if (event.cancelable) event.preventDefault();
+		};
+		panel.addEventListener('touchmove', onTouchMove, { passive: false });
+		return () => panel.removeEventListener('touchmove', onTouchMove);
+	}, [isCoarsePointer, isOpen]);
+
+	React.useEffect(() => {
+		if (!isOpen || !isCoarsePointer || typeof window === 'undefined') return;
+		try {
+			const currentState = window.history.state as Record<string, unknown> | null;
+			window.history.pushState({ ...(currentState ?? {}), __chipOverlay: 'attachments' }, '', window.location.href);
+			backStatePushedRef.current = true;
+		} catch {
+			backStatePushedRef.current = false;
+		}
+		const onPopState = (): void => setIsOpen(false);
+		window.addEventListener('popstate', onPopState);
+		return () => {
+			window.removeEventListener('popstate', onPopState);
+			if (backStatePushedRef.current) {
+				backStatePushedRef.current = false;
+				try {
+					const state = window.history.state as Record<string, unknown> | null;
+					if (state && state.__chipOverlay === 'attachments') {
+						window.history.back();
+					}
+				} catch {
+					// No-op if history APIs are unavailable.
+				}
+			}
+		};
+	}, [isCoarsePointer, isOpen]);
 
 	const totalCount = counts.images + counts.links + counts.documents;
 
@@ -189,13 +319,39 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 				? createPortal(
 					<AnimatePresence>
 						{isOpen && anchorRect ? (
-							<div className={styles.overlayRoot} role="presentation" onPointerDown={() => setIsOpen(false)}>
+							<>
 								<motion.div
+									className={styles.overlayBackdrop}
+									aria-hidden="true"
+									initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+									animate={{ opacity: 1, backdropFilter: 'blur(2px)' }}
+									exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+									transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+								/>
+								<div
+									className={styles.overlayRoot}
+									role="presentation"
+									onPointerDown={(event) => {
+										if (event.cancelable) event.preventDefault();
+										event.stopPropagation();
+										if (isCoarsePointer) {
+											suppressNextDocumentCompatibilityMouseEvents();
+										}
+										setIsOpen(false);
+									}}
+									onClick={(event) => {
+										event.preventDefault();
+										event.stopPropagation();
+									}}
+								>
+								<motion.div
+									ref={overlayPanelRef}
 									className={styles.overlayPanel}
 									role="dialog"
 									aria-modal="false"
 									aria-label={t('attachments.chipLabel')}
 									onPointerDown={(event) => event.stopPropagation()}
+									onClick={(event) => event.stopPropagation()}
 									style={{
 										top: Math.min(anchorRect.top + anchorRect.height + 10, window.innerHeight - 164),
 										left: Math.min(anchorRect.left, Math.max(12, window.innerWidth - 272)),
@@ -256,7 +412,8 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 										})}
 									</div>
 								</motion.div>
-							</div>
+								</div>
+							</>
 						) : null}
 					</AnimatePresence>,
 					document.body

@@ -68,6 +68,14 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		setMediaDockOpen(false);
 	}, [mobileKeyboardOpen]);
 	React.useEffect(() => {
+		if (!mediaDockOpen || !isCoarsePointer || typeof document === 'undefined') return;
+		const active = document.activeElement;
+		if (active instanceof HTMLElement) {
+			// Hide the active caret immediately once the sheet overlays editor content.
+			active.blur();
+		}
+	}, [isCoarsePointer, mediaDockOpen]);
+	React.useEffect(() => {
 		// Coarse-pointer branch: briefly enable an interaction shield after mount
 		// so residual open-tap events cannot focus/select editor controls.
 		if (!isCoarsePointer || typeof window === 'undefined') return;
@@ -264,7 +272,6 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 							aria-label={t('editors.mediaDock')}
 						>
 							<span className={styles.mediaDockPill} aria-hidden="true" />
-							<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
 						</button>
 					</section>
 
@@ -362,7 +369,6 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					aria-label={t('editors.mediaDock')}
 				>
 					<span className={styles.mediaDockPill} aria-hidden="true" />
-					<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
 				</button>
 
 				<header className={styles.mediaSheetHeader}>
@@ -409,7 +415,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 				</header>
 
 				<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
-					<div className={styles.mediaPanel} role="tabpanel">
+					<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
 						{renderMediaDockPanel()}
 					</div>
 				</div>
@@ -455,7 +461,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						</button>
 					</header>
 					<div className={styles.mediaFlyoutBody}>
-						<div className={styles.mediaPanel} role="tabpanel">
+						<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
 							{renderMediaDockPanel()}
 						</div>
 					</div>

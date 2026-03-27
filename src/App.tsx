@@ -66,7 +66,7 @@ import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkA
 import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
 import { emitNoteMediaChanged, scheduleQueuedNoteImageFlush } from './core/noteMediaStore';
 import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
-import { scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
+import { emitNoteDocumentsChanged, scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
 import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
@@ -2146,6 +2146,7 @@ export function App(): React.JSX.Element {
 		let socket: WebSocket | null = null;
 		let reconnectTimer: number | null = null;
 		const pendingNoteMediaTimers = new Map<string, number>();
+		const pendingNoteDocumentTimers = new Map<string, number>();
 		const pendingNoteLinkTimers = new Map<string, number>();
 
 		const clearReconnectTimer = () => {
@@ -2166,6 +2167,12 @@ export function App(): React.JSX.Element {
 				window.clearTimeout(timer);
 			}
 			pendingNoteLinkTimers.clear();
+		};
+		const clearPendingNoteDocumentTimers = () => {
+			for (const timer of pendingNoteDocumentTimers.values()) {
+				window.clearTimeout(timer);
+			}
+			pendingNoteDocumentTimers.clear();
 		};
 
 		const refreshWorkspaceMetadata = () => {
@@ -2218,6 +2225,9 @@ export function App(): React.JSX.Element {
 					const isNoteMediaMetadataEvent = payload.type === 'workspace-metadata-changed'
 						&& typeof payload.reason === 'string'
 						&& payload.reason.startsWith('note-media-');
+					const isNoteDocumentsMetadataEvent = payload.type === 'workspace-metadata-changed'
+						&& typeof payload.reason === 'string'
+						&& payload.reason.startsWith('note-documents-');
 					const isNoteLinksMetadataEvent = payload.type === 'workspace-metadata-changed'
 						&& typeof payload.reason === 'string'
 						&& payload.reason.startsWith('note-links-');
@@ -2260,6 +2270,18 @@ export function App(): React.JSX.Element {
 							pendingNoteMediaTimers.set(payload.docId, timer);
 							return;
 						}
+						if (isNoteDocumentsMetadataEvent && typeof payload.docId === 'string') {
+							const existingTimer = pendingNoteDocumentTimers.get(payload.docId);
+							if (existingTimer) {
+								window.clearTimeout(existingTimer);
+							}
+							const timer = window.setTimeout(() => {
+								pendingNoteDocumentTimers.delete(payload.docId as string);
+								emitNoteDocumentsChanged(payload.docId as string);
+							}, 150);
+							pendingNoteDocumentTimers.set(payload.docId, timer);
+							return;
+						}
 						if (isNoteLinksMetadataEvent && typeof payload.docId === 'string') {
 							const existingTimer = pendingNoteLinkTimers.get(payload.docId);
 							if (existingTimer) {
@@ -2277,6 +2299,7 @@ export function App(): React.JSX.Element {
 							typeof payload.docId === 'string' &&
 							authUserId &&
 							!isNoteMediaMetadataEvent &&
+							!isNoteDocumentsMetadataEvent &&
 							!isNoteLinksMetadataEvent
 						) {
 							void syncNoteShareCollaborators(authUserId, payload.docId, { suppressError: true });
@@ -2337,7 +2360,8 @@ export function App(): React.JSX.Element {
 			window.removeEventListener('online', handleOnline);
 			clearReconnectTimer();
 			clearPendingNoteMediaTimers();
-						clearPendingNoteLinkTimers();
+			clearPendingNoteDocumentTimers();
+			clearPendingNoteLinkTimers();
 			const activeSocket = socket;
 			socket = null;
 			if (activeSocket) {

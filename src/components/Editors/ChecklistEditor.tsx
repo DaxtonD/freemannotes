@@ -156,6 +156,14 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		if (!mobileKeyboardOpen) return;
 		setMediaDockOpen(false);
 	}, [mobileKeyboardOpen]);
+	React.useEffect(() => {
+		if (!mediaDockOpen || !isCoarsePointer || typeof document === 'undefined') return;
+		const active = document.activeElement;
+		if (active instanceof HTMLElement) {
+			// Hide the active caret immediately once the sheet overlays editor content.
+			active.blur();
+		}
+	}, [isCoarsePointer, mediaDockOpen]);
 	// ── Keyboard-drag focusout guard ─────────────────────────────────────────────
 	// Mounted once on component init.  Listens in the *capture* phase so it fires
 	// before any library/framework handlers can react to the blur.
@@ -187,47 +195,58 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		if (!isCoarsePointer) return;
 		setInteractionGuardActive(false);
 	}, [isCoarsePointer]);
-	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const dockHandleTouchStartRef = React.useRef<{ x: number; y: number; id: number } | null>(null);
+	const dockTabSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
 		event.preventDefault();
 		event.stopPropagation();
 	}, [interactionGuardActive]);
-	const handleTouchStart = React.useCallback((event: React.TouchEvent): void => {
+	const clearDockHandleGesture = React.useCallback((): void => {
+		dockHandleTouchStartRef.current = null;
+	}, []);
+	const handleDockHandleTouchStart = React.useCallback((event: React.TouchEvent): void => {
 		const t0 = event.touches[0];
 		if (!t0) return;
 		event.stopPropagation();
-		dockTouchStartRef.current = { x: t0.clientX, y: t0.clientY };
+		dockHandleTouchStartRef.current = { x: t0.clientX, y: t0.clientY, id: t0.identifier };
 	}, []);
 	const handleDockTouchMove = React.useCallback((event: React.TouchEvent): void => {
-		if (!dockTouchStartRef.current) return;
+		if (!dockHandleTouchStartRef.current) return;
 		event.stopPropagation();
 		if (event.cancelable) event.preventDefault();
 	}, []);
 	const handleHandleTouchEnd = React.useCallback((event: React.TouchEvent): void => {
 		// Landscape branch: dock open/close gestures are blocked.
 		if (isMobileLandscapeRef.current) return;
-		const start = dockTouchStartRef.current;
-		const t0 = event.changedTouches[0];
+		const start = dockHandleTouchStartRef.current;
+		const t0 = Array.from(event.changedTouches).find((touch) => touch.identifier === start?.id) || null;
 		if (!start || !t0) return;
 		event.stopPropagation();
 		if (event.cancelable) event.preventDefault();
-		dockTouchStartRef.current = null;
+		clearDockHandleGesture();
 		const dx = t0.clientX - start.x;
 		const dy = t0.clientY - start.y;
 		if (Math.abs(dy) < 28 || Math.abs(dy) < Math.abs(dx)) return;
 		if (dy < 0) setMediaDockOpen(true);
 		if (dy > 0) setMediaDockOpen(false);
-	}, []);
+	}, [clearDockHandleGesture]);
+	const handleDockTabSwipeStart = React.useCallback((event: React.TouchEvent): void => {
+		const t0 = event.touches[0];
+		if (!t0) return;
+		event.stopPropagation();
+		clearDockHandleGesture();
+		dockTabSwipeStartRef.current = { x: t0.clientX, y: t0.clientY };
+	}, [clearDockHandleGesture]);
 	const handleDockSwipeEnd = React.useCallback((event: React.TouchEvent): void => {
 		// Landscape branch: media tab swipe is blocked with dock locked closed.
 		if (isMobileLandscapeRef.current) return;
-		const start = dockTouchStartRef.current;
+		const start = dockTabSwipeStartRef.current;
 		const t0 = event.changedTouches[0];
 		if (!start || !t0) return;
 		event.stopPropagation();
-		dockTouchStartRef.current = null;
+		dockTabSwipeStartRef.current = null;
 		const dx = t0.clientX - start.x;
 		const dy = t0.clientY - start.y;
 		if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
@@ -241,10 +260,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			mediaSheetSwipeStartRef.current = null;
 			return;
 		}
+		clearDockHandleGesture();
 		const touch = event.touches[0];
 		if (!touch) return;
 		mediaSheetSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
-	}, []);
+	}, [clearDockHandleGesture]);
 	const handleMediaSheetTouchEnd = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
 		if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageViewerOpen === 'true') {
 			mediaSheetSwipeStartRef.current = null;
@@ -1108,9 +1128,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 								if (isMobileLandscapeRef.current) return;
 								setMediaDockOpen((prev) => !prev);
 							}}
-							onTouchStart={handleTouchStart}
+							onTouchStart={handleDockHandleTouchStart}
 							onTouchMove={handleDockTouchMove}
 							onTouchEnd={handleHandleTouchEnd}
+							onTouchCancel={clearDockHandleGesture}
 							aria-label={t('editors.mediaDock')}
 						>
 							<span className={styles.mediaDockPill} aria-hidden="true" />
@@ -1235,7 +1256,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						</button>
 					</header>
 					<div className={styles.mediaFlyoutBody}>
-						<div className={styles.mediaPanel} role="tabpanel">
+						<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
 							{renderMediaDockPanel()}
 						</div>
 					</div>
@@ -1257,17 +1278,17 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						if (isMobileLandscapeRef.current) return;
 						setMediaDockOpen((prev) => !prev);
 					}}
-					onTouchStart={handleTouchStart}
+					onTouchStart={handleDockHandleTouchStart}
 					onTouchMove={handleDockTouchMove}
 					onTouchEnd={handleHandleTouchEnd}
+					onTouchCancel={clearDockHandleGesture}
 					aria-label={t('editors.mediaDock')}
 				>
 					<span className={styles.mediaDockPill} aria-hidden="true" />
-					<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
 				</button>
 
 				<header className={styles.mediaSheetHeader}>
-					<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleTouchStart} onTouchEnd={handleDockSwipeEnd}>
+					<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabSwipeStart} onTouchEnd={handleDockSwipeEnd}>
 						<button
 							type="button"
 							role="tab"
@@ -1310,7 +1331,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 				</header>
 
 				<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
-					<div className={styles.mediaPanel} role="tabpanel">
+					<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
 						{renderMediaDockPanel()}
 					</div>
 				</div>

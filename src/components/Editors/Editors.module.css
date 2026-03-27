@@ -695,10 +695,12 @@
 }
 
 .mediaSheetHandle {
-	width: 100%;
+	width: auto;
+	min-width: 64px;
+	align-self: center;
 	border: 0;
 	background: transparent;
-	padding: 10px 12px 6px;
+	padding: 10px 14px 6px;
 	cursor: pointer;
 	color: inherit;
 	touch-action: none;
@@ -768,6 +770,33 @@
 
 .mediaPanel {
 	padding: 10px;
+}
+
+.mediaPanelAnimated {
+	animation: mediaPanelSlideIn 180ms ease;
+}
+
+@keyframes mediaPanelSlideIn {
+	0% {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	100% {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+.editorBlurred.mediaOpen [contenteditable='true'],
+.editorBlurred.mediaOpen textarea,
+.editorBlurred.mediaOpen input {
+	caret-color: transparent;
+}
+
+.editorBlurred.mediaOpen .richEditorContent:global(.ProseMirror),
+.editorBlurred.mediaOpen .richEditorContent:global(.ProseMirror.ProseMirror-focused) {
+	/* Keep insertion caret from bleeding through sheet/flyout overlays on mobile. */
+	caret-color: transparent !important;
 }
 
 .mediaPanelPlaceholder {
