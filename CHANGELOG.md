@@ -2,6 +2,29 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.16 - 2026-03-27
+
+### Added
+- **Background workspace preload for full offline coverage.** When the app comes online (or 5 seconds after login), a background loop iterates every workspace the user belongs to, activates each one server-side, and pulls its complete registry + all notes into IndexedDB via temporary Yjs providers. This ensures every workspace is available offline even if the user has never visited it on this device.
+- **Dedicated workspace-selection cache (`workspaceSelectionCache.ts`).** A new localStorage key (`freemannotes.workspace.selection.cache.v1`) tracks the user's last chosen workspace independently of the auth-session cache. It is written on every workspace switch (including offline switches) and is read at startup before the server session is restored, so the locally-selected workspace is never overwritten by a stale server response.
+
+### Fixed
+- **Offline edits from multiple workspaces now sync on reconnect.** Previously only the server's last active workspace was flushed on reconnect; offline edits made in any other workspace were silently lost until the user manually switched back. The reconnect path now calls `indexedDB.databases()` to discover every workspace with local data, activates each in sequence, and flushes pending Yjs updates before activating the final target workspace.
+- **WebSocket "forbidden namespace" storm eliminated.** WebSocket sync is now held disabled until the server session is successfully activated to the target workspace. Opening WS rooms before activation completed caused the server to reject every message with `1008 forbidden namespace`, triggering an unrecoverable reconnect loop.
+- **Workspace label no longer flips on reconnect.** `refreshActiveWorkspace` now skips updating the displayed workspace name if the server returns a different workspace ID than the locally-selected one, preventing a transient flash of the old workspace name during the activation handshake.
+- **Offline workspace switch no longer reverts on page refresh.** The service worker can serve a cached `/api/auth/me` response while the backend is unreachable; the app previously interpreted this as a successful online probe and reverted to the server's (stale) workspace. Network errors during workspace activation are now distinguished from server rejections — a network error triggers offline mode while preserving the locally-selected workspace.
+- **IndexedDB snapshot no longer overrides an already-determined workspace.** The `loadSidebarWorkspaces` hydration path now only falls back to the IndexedDB active-workspace snapshot when no workspace is set at all, preventing a race where a stale IDB timestamp caused an already-resolved offline switch to be reverted.
+- **`DocumentManager.discoverLocalWorkspaceIds()`.** New public method enumerates all `${workspaceId}:${docId}` IndexedDB databases and returns the unique workspace ID prefixes, with graceful fallback when `indexedDB.databases()` is unavailable.
+- **`DocumentManager.flushPreviousWorkspaceEdits()`.** Verifiably flushes offline Yjs edits for a no-longer-active workspace: opens isolated temporary IDB + WS providers, waits for the Yjs state-vector exchange, then tears them down — without interfering with the active workspace's providers.
+- **`DocumentManager.preloadWorkspaceFromServer()`.** New public method syncs a workspace's full dataset (registry then all notes) from the server into IndexedDB using temporary providers, enabling offline access to workspaces that have never been opened on the current device.
+
+### Changed
+- **Workspace switcher pinning order.** The workspace switcher now always shows Personal first, then Shared-With-Me, then user-created workspaces. The active workspace within the user-created group floats to the top.
+- **`systemKind` values normalized to uppercase.** `mapWorkspaceList` and `mapWorkspaces` now call `.toUpperCase()` on `systemKind` so PERSONAL / SHARED_WITH_ME comparisons are case-insensitive against any server casing.
+- **`onOnline` handler always probes session.** The `probeSession` call is no longer gated on `authOfflineMode`; any workspace switch made while online-but-later-going-offline also needs server re-activation on reconnect.
+- **Background preload is aborted on manual workspace switch.** `handleWorkspaceActivated` increments `backgroundPreloadAbortRef` so a user-initiated switch immediately cancels any in-progress preload cycle, preventing the restore activation from clobbering the new selection.
+- **Sidebar workspace name display styles.** Added `sidebar-workspace-inline-summary`, `sidebar-workspace-inline-label`, `sidebar-workspace-current-inline-text`, and `sidebar-workspace-manage` CSS classes to support the updated inline workspace name layout in the sidebar.
+
 ## 1.1.15 - 2026-03-26
 
 ### Fixed
