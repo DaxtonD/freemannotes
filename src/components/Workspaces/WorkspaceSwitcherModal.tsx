@@ -54,7 +54,7 @@ function mapWorkspaces(value: unknown): WorkspaceListItem[] {
 				name: typeof workspace.name === 'string' ? workspace.name : '',
 				role: normalizeWorkspaceRole(workspace.role),
 				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
-				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind : null,
+				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind.toUpperCase() : null,
 				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
 				updatedAt: typeof workspace.updatedAt === 'string' ? workspace.updatedAt : typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
 			};
@@ -439,12 +439,30 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 		[busy, deviceId, props]
 	);
 
+	// Sort order: Personal workspace first, then Shared-With-Me, then user-created
+	// workspaces (alphabetical). Within the user-created group, the currently active
+	// workspace is floated to the top so it's always visible without scrolling.
 	const sortedWorkspaces = React.useMemo(() => {
-		if (!activeWorkspaceId) return workspaces;
-		const active = workspaces.find((ws) => ws.id === activeWorkspaceId);
-		if (!active) return workspaces;
-		const rest = workspaces.filter((ws) => ws.id !== activeWorkspaceId);
-		return [active, ...rest];
+		const personalWorkspace = workspaces.find((workspace) => (workspace.systemKind || '').toUpperCase() === 'PERSONAL') || null;
+		const sharedWorkspace = workspaces.find((workspace) => (workspace.systemKind || '').toUpperCase() === 'SHARED_WITH_ME') || null;
+		const pinnedWorkspaceIds = new Set<string>();
+		if (personalWorkspace) pinnedWorkspaceIds.add(personalWorkspace.id);
+		if (sharedWorkspace) pinnedWorkspaceIds.add(sharedWorkspace.id);
+
+		const remaining = workspaces.filter((workspace) => !pinnedWorkspaceIds.has(workspace.id));
+		if (activeWorkspaceId) {
+			const activeRemainingIndex = remaining.findIndex((workspace) => workspace.id === activeWorkspaceId);
+			if (activeRemainingIndex > 0) {
+				const [activeRemainingWorkspace] = remaining.splice(activeRemainingIndex, 1);
+				remaining.unshift(activeRemainingWorkspace);
+			}
+		}
+
+		return [
+			...(personalWorkspace ? [personalWorkspace] : []),
+			...(sharedWorkspace ? [sharedWorkspace] : []),
+			...remaining,
+		];
 	}, [activeWorkspaceId, workspaces]);
 
 	if (!props.isOpen) return null;
