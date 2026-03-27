@@ -20,6 +20,7 @@ import {
 } from '../../core/noteShareApi';
 import { readArchiveState, readTrashState } from '../../core/noteModel';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
+import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { measureDocumentRects } from './flip';
 import {
 	arraysEqual,
@@ -84,6 +85,27 @@ type NoteCardCollaboratorSummary = {
 	collaborators: readonly NoteCardCollaborator[];
 	count: number;
 };
+
+const MAX_VISIBLE_COLLABORATORS = 6;
+
+function suppressNextDocumentCompatibilityMouseEvents(): void {
+	if (typeof window === 'undefined') return;
+	let timeoutId = 0;
+	const handler = (event: MouseEvent): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+	};
+	const cleanup = (): void => {
+		window.removeEventListener('mousedown', handler, true);
+		window.removeEventListener('mouseup', handler, true);
+		window.removeEventListener('click', handler, true);
+		if (timeoutId) window.clearTimeout(timeoutId);
+	};
+	window.addEventListener('mousedown', handler, true);
+	window.addEventListener('mouseup', handler, true);
+	window.addEventListener('click', handler, true);
+	timeoutId = window.setTimeout(() => cleanup(), 500);
+}
 
 function computeColumnHeights(
 	columns: readonly string[][],
@@ -253,6 +275,7 @@ type GridNoteCardProps = {
 	canEdit: boolean;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
+	isOverlayActiveCard?: boolean;
 	layoutReady: boolean;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
@@ -275,6 +298,7 @@ function renderNoteMetaChips(args: {
 		canEdit: boolean
 	) => void;
 	onToggleCollaboratorChip?: (noteId: string, anchorRect: { top: number; left: number; width: number; height: number }) => void;
+	onAttachmentChipOpenStateChange?: (noteId: string, isOpen: boolean) => void;
 	t: (key: string) => string;
 	title?: string;
 }): React.ReactNode | undefined {
@@ -313,6 +337,7 @@ function renderNoteMetaChips(args: {
 					className={styles.noteChipButton}
 					suspendRemoteRefresh={args.suspendAttachmentRemoteRefresh}
 					disableInitialRemoteRefresh={args.disableAttachmentInitialRemoteRefresh}
+					onOpenStateChange={(isOpen) => args.onAttachmentChipOpenStateChange?.(args.noteId, isOpen)}
 					onOpenBrowser={(kind) => args.onOpenAttachmentBrowser?.(kind, args.noteId, args.docId || '', args.title, args.canEditNote)}
 				/>
 			) : null}
@@ -348,6 +373,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 			}
 			className={[
 				styles.item,
+				props.isOverlayActiveCard ? styles.itemOverlayActive : '',
 				props.isPlaceholder ? styles.itemPlaceholder : '',
 			]
 				.filter(Boolean)
@@ -495,6 +521,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		noteId: string;
 		anchorRect: { top: number; left: number; width: number; height: number };
 	} | null>(null);
+	const [openAttachmentChipNoteId, setOpenAttachmentChipNoteId] = React.useState<string | null>(null);
+	const [latchedOverlayNoteId, setLatchedOverlayNoteId] = React.useState<string | null>(null);
+	const isCoarsePointer = useIsCoarsePointer();
+	const collaboratorOverlayPanelRef = React.useRef<HTMLDivElement | null>(null);
+	const collaboratorOverlayListRef = React.useRef<HTMLDivElement | null>(null);
+	const collaboratorTouchYRef = React.useRef<number | null>(null);
+	const collaboratorBackStatePushedRef = React.useRef(false);
+	const overlayReleaseTimerRef = React.useRef<number>(0);
 
 	const [notesList, setNotesList] = React.useState<Y.Array<Y.Map<unknown>> | null>(null);
 	const [noteOrder, setNoteOrder] = React.useState<Y.Array<string> | null>(null);
@@ -1061,21 +1095,126 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		moreMenuNoteId && (sharedNoteIdSet.has(moreMenuNoteId) ? moreMenuPlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
 	);
 	const collaboratorOverlaySummary = openCollaboratorChip ? collaboratorSummariesByNoteId[openCollaboratorChip.noteId] ?? null : null;
+	const openOverlayNoteId = openCollaboratorChip?.noteId ?? openAttachmentChipNoteId;
+	const overlayActiveNoteId = openOverlayNoteId ?? latchedOverlayNoteId;
+
+	React.useEffect(() => {
+		if (overlayReleaseTimerRef.current) {
+			window.clearTimeout(overlayReleaseTimerRef.current);
+			overlayReleaseTimerRef.current = 0;
+		}
+		if (openOverlayNoteId) {
+			setLatchedOverlayNoteId(openOverlayNoteId);
+			return;
+		}
+		if (!latchedOverlayNoteId) return;
+		// Keep the originating note visually "active" through dropdown exit motion
+		// so it doesn't momentarily drop back into the blurred background.
+		overlayReleaseTimerRef.current = window.setTimeout(() => {
+			overlayReleaseTimerRef.current = 0;
+			setLatchedOverlayNoteId(null);
+		}, 220);
+		return () => {
+			if (overlayReleaseTimerRef.current) {
+				window.clearTimeout(overlayReleaseTimerRef.current);
+				overlayReleaseTimerRef.current = 0;
+			}
+		};
+	}, [latchedOverlayNoteId, openOverlayNoteId]);
 	const suspendAttachmentRemoteRefresh = Boolean(dragManager.activeDragId);
 	const disableAttachmentInitialRemoteRefresh = true;
 	const collaboratorOverlayPosition = React.useMemo(() => {
 		if (!openCollaboratorChip || typeof window === 'undefined') return null;
-		const overlayWidth = Math.min(320, Math.max(240, Math.round(openCollaboratorChip.anchorRect.width + 84)));
+		const overlayWidth = Math.min(230, Math.max(170, Math.round(openCollaboratorChip.anchorRect.width + 34)));
 		const viewportWidth = window.innerWidth;
 		const viewportHeight = window.innerHeight;
 		const left = Math.min(Math.max(12, openCollaboratorChip.anchorRect.left), Math.max(12, viewportWidth - overlayWidth - 12));
-		const estimatedHeight = Math.min(240, Math.max(84, (collaboratorOverlaySummary?.count ?? 1) * 44 + 16));
+		const visibleRows = Math.min(MAX_VISIBLE_COLLABORATORS, collaboratorOverlaySummary?.count ?? 1);
+		const estimatedHeight = Math.min(240, Math.max(84, visibleRows * 44 + 16));
 		const preferredTop = openCollaboratorChip.anchorRect.top + openCollaboratorChip.anchorRect.height + 10;
 		const top = preferredTop + estimatedHeight <= viewportHeight - 12
 			? preferredTop
 			: Math.max(12, openCollaboratorChip.anchorRect.top - estimatedHeight - 10);
 		return { top, left, width: overlayWidth };
 	}, [collaboratorOverlaySummary?.count, openCollaboratorChip]);
+
+	React.useEffect(() => {
+		if (!openCollaboratorChip || typeof window === 'undefined') return;
+		if (isCoarsePointer) return;
+		const closeOverlay = (): void => setOpenCollaboratorChip(null);
+		window.addEventListener('wheel', closeOverlay, { passive: true });
+		window.addEventListener('scroll', closeOverlay, true);
+		return () => {
+			window.removeEventListener('wheel', closeOverlay);
+			window.removeEventListener('scroll', closeOverlay, true);
+		};
+	}, [isCoarsePointer, openCollaboratorChip]);
+
+	React.useEffect(() => {
+		if (!openCollaboratorChip || !isCoarsePointer) return;
+		const panel = collaboratorOverlayPanelRef.current;
+		if (!panel) return;
+
+		const onTouchMove = (event: TouchEvent): void => {
+			if (!event.cancelable) return;
+			const list = collaboratorOverlayListRef.current;
+			const touch = event.touches[0];
+			if (!list || !touch) {
+				event.preventDefault();
+				return;
+			}
+			const isScrollable = list.scrollHeight > list.clientHeight + 1;
+			if (!isScrollable) {
+				event.preventDefault();
+				return;
+			}
+			const previousY = collaboratorTouchYRef.current;
+			collaboratorTouchYRef.current = touch.clientY;
+			if (previousY === null) return;
+			const deltaY = touch.clientY - previousY;
+			const atTop = list.scrollTop <= 0;
+			const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 1;
+			if ((atTop && deltaY > 0) || (atBottom && deltaY < 0)) {
+				event.preventDefault();
+			}
+		};
+
+		panel.addEventListener('touchmove', onTouchMove, { passive: false });
+		return () => {
+			panel.removeEventListener('touchmove', onTouchMove);
+			collaboratorTouchYRef.current = null;
+		};
+	}, [isCoarsePointer, openCollaboratorChip]);
+
+	React.useEffect(() => {
+		if (!openCollaboratorChip || !isCoarsePointer || typeof window === 'undefined') return;
+		try {
+			const currentState = window.history.state as Record<string, unknown> | null;
+			window.history.pushState({ ...(currentState ?? {}), __chipOverlay: 'collaborator' }, '', window.location.href);
+			collaboratorBackStatePushedRef.current = true;
+		} catch {
+			collaboratorBackStatePushedRef.current = false;
+		}
+
+		const onPopState = (): void => {
+			setOpenCollaboratorChip(null);
+		};
+		window.addEventListener('popstate', onPopState);
+		return () => {
+			window.removeEventListener('popstate', onPopState);
+			if (collaboratorBackStatePushedRef.current) {
+				collaboratorBackStatePushedRef.current = false;
+				try {
+					const state = window.history.state as Record<string, unknown> | null;
+					if (state && state.__chipOverlay === 'collaborator') {
+						window.history.back();
+					}
+				} catch {
+					// No-op if history APIs are unavailable.
+				}
+			}
+		};
+	}, [isCoarsePointer, openCollaboratorChip]);
 
 	return (
 		<section
@@ -1172,6 +1311,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 											onToggleCollaboratorChip: (chipNoteId, anchorRect) => {
 												setOpenCollaboratorChip((current) => current?.noteId === chipNoteId ? null : { noteId: chipNoteId, anchorRect });
 											},
+											onAttachmentChipOpenStateChange: (chipNoteId, isOpen) => {
+												setOpenAttachmentChipNoteId((current) => {
+													if (isOpen) return chipNoteId;
+													return current === chipNoteId ? null : current;
+												});
+											},
 											t,
 											title,
 										})}
@@ -1194,6 +1339,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								}}
 										maxCardHeightPx={props.maxCardHeightPx}
 										isPlaceholder={isPlaceholder}
+										isOverlayActiveCard={overlayActiveNoteId === note.id}
 										layoutReady={layoutReady}
 										setItemElement={dragManager.setItemElement}
 										setHandleElement={note.isShared ? () => {} : dragManager.setHandleElement}
@@ -1231,6 +1377,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							disableAttachmentInitialRemoteRefresh,
 							collaboratorSummary: activeCollaboratorSummary,
 							onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
+								onAttachmentChipOpenStateChange: (chipNoteId, isOpen) => {
+									setOpenAttachmentChipNoteId((current) => {
+										if (isOpen) return chipNoteId;
+										return current === chipNoteId ? null : current;
+									});
+								},
 							t,
 							title: activeDoc.getText('title').toString(),
 						})}
@@ -1245,19 +1397,49 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					<AnimatePresence>
 						{openCollaboratorChip && collaboratorOverlaySummary && collaboratorOverlayPosition ? (
 							(() => {
-								const shouldCapCollaboratorList = collaboratorOverlaySummary.collaborators.length > 10;
+								const shouldCapCollaboratorList = collaboratorOverlaySummary.collaborators.length > MAX_VISIBLE_COLLABORATORS;
 								return (
-							<div className={styles.collaboratorOverlayRoot} onPointerDown={() => setOpenCollaboratorChip(null)}>
+									<>
+										<motion.div
+											className={styles.overlayBackdrop}
+											aria-hidden="true"
+											initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+											animate={{ opacity: 1, backdropFilter: 'blur(2px)' }}
+											exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
+											transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+										/>
+										<div
+											className={styles.collaboratorOverlayRoot}
+								onPointerDown={(event) => {
+									if (event.cancelable) event.preventDefault();
+									event.stopPropagation();
+									if (isCoarsePointer) {
+										suppressNextDocumentCompatibilityMouseEvents();
+									}
+									setOpenCollaboratorChip(null);
+								}}
+								onClick={(event) => {
+									event.preventDefault();
+									event.stopPropagation();
+								}}
+										>
 								<motion.div
+									ref={collaboratorOverlayPanelRef}
 									className={styles.collaboratorOverlayPanel}
 									style={collaboratorOverlayPosition}
 									onPointerDown={(event) => event.stopPropagation()}
+									onClick={(event) => event.stopPropagation()}
+									onTouchStartCapture={(event) => {
+										const touch = event.touches[0];
+										collaboratorTouchYRef.current = touch ? touch.clientY : null;
+									}}
 									initial={{ opacity: 0, y: -8, scale: 0.985 }}
 									animate={{ opacity: 1, y: 0, scale: 1 }}
 									exit={{ opacity: 0, y: -8, scale: 0.98 }}
 									transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
 								>
 									<div
+										ref={collaboratorOverlayListRef}
 										className={`${styles.collaboratorOverlayList}${shouldCapCollaboratorList ? ` ${styles.collaboratorOverlayListScrollable}` : ''}`}
 									>
 										{collaboratorOverlaySummary.collaborators.map((collaborator, index) => {
@@ -1319,7 +1501,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										})}
 									</div>
 								</motion.div>
-							</div>
+										</div>
+									</>
 								);
 							})()
 						) : null}

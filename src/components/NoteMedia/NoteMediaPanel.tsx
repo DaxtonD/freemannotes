@@ -73,7 +73,6 @@ function RemoteImageThumb(props: RemoteImageThumbProps): React.JSX.Element {
 	return (
 		<>
 			{resolvedImage.isOfflinePreview ? <span className={`${styles.badge} ${styles.offlineBadge}`}>{t('media.offlinePreviewBadge')}</span> : null}
-			{!resolvedImage.isOfflinePreview && props.image.ocrStatus !== 'READY' ? <span className={styles.badge}>{t('media.ocrBadge')}</span> : null}
 			<img className={styles.thumb} src={resolvedImage.src} alt={props.alt} onError={resolvedImage.fallbackToOfflinePreview} />
 		</>
 	);
@@ -284,7 +283,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			? `${queuedDeleteCount} ${queuedDeleteCount === 1 ? t('media.pendingDeletionSingular') : t('media.pendingDeletionPlural')}`
 			: queuedCount > 0
 				? `${queuedCount} ${queuedCount === 1 ? t('media.pendingUploadSingular') : t('media.pendingUploadPlural')}`
-				: t('media.synced');
+				: null;
 	const viewerItems = React.useMemo(() => ([
 		...visibleRemoteImages.map((image, index) => ({
 			src: image.originalUrl,
@@ -385,10 +384,12 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 					</div>
 				</div>
 
-				<div className={styles.statusRow}>
-					<span>{statusLabel}</span>
-					{error ? <p className={styles.error}>{error}</p> : null}
-				</div>
+				{statusLabel || error ? (
+					<div className={styles.statusRow}>
+						{statusLabel ? <span>{statusLabel}</span> : null}
+						{error ? <p className={styles.error}>{error}</p> : null}
+					</div>
+				) : null}
 
 				{totalCount === 0 ? null : (
 					<div className={styles.grid}>

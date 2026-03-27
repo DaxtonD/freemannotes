@@ -511,6 +511,10 @@
 
 @media (pointer: coarse) {
 	/* Mobile note-card checklist rows: center checkbox and first text line. */
+	.linkPreviewRail {
+		padding-bottom: 0;
+	}
+
 	.checklistItem {
 		align-items: center;
 	}

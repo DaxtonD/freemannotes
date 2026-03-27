@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.15 - 2026-03-26
+
+### Fixed
+- **Offline open/close no longer spams sync work.** Opening and closing notes while offline no longer triggers redundant sync churn, and reconnect refresh behavior is now scoped to the changed attachment domain.
+- **Attachment chips and overlays are stable on mobile.** Expanded chips now close safely via Android Back, avoid click-through to underlying notes, keep active cards above blur layers, and prevent off-screen dropdown placement.
+- **Collaborator/media panel scroll interactions.** Expanded chip and media panel interactions now isolate internal scrolling and stop accidental page/grid scroll or unintended dismisses.
+- **URL preview rail spacing on note cards.** Mobile note-card URL previews now sit flush to the card bottom with the gap removed.
+- **Drag freeze near top edge.** Drag bounds now clamp correctly against section/scope geometry so dragging to the top edge no longer stalls or locks.
+- **Realtime attachment update reliability.** Metadata fanout and attachment refresh pathways now propagate link/document/media count updates more reliably across clients.
+- **Image viewer swipe transition artifact.** Swiping to adjacent images in the viewer no longer flashes the previous frame before the next frame renders.
+- **Media panel visual noise reduced.** Removed the default `synced` status line and removed OCR thumbnail chips from image tiles.
+- **Media panel caret bleed-through.** Caret visibility is now suppressed while the media sheet/flyout is open.
+
+### Changed
+- **Media sheet tab transitions.** Added animated transitions for media tab changes across note, checklist, and text editors.
+- **Attachment browser modal shell.** Mobile attachment browser modal now uses safer backdrop press semantics and a dedicated handle affordance.
+- **Editor/mobile spacing and sheet polish.** Updated layout spacing and sheet styling to keep scope/header/card geometry consistent on small screens.
+- **Localization and rich-text support refinements.** Updated i18n and rich-text handling paths touched by the media/editor interaction fixes.
+
 ## 1.1.14 - 2026-03-26
 
 ### Fixed

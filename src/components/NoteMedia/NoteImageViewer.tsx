@@ -48,6 +48,10 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 	const pendingHistoryCleanupRef = React.useRef<number | null>(null);
 	const dragStartRef = React.useRef<{ x: number; y: number; originX: number; originY: number } | null>(null);
 	const swipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	// Delay transition-direction application until the image source actually changes
+	// so swipe navigation never briefly replays the previous image frame.
+	const pendingTransitionDirectionRef = React.useRef<'next' | 'previous' | null>(null);
+	const transitionResetTimerRef = React.useRef<number | null>(null);
 	const activePointersRef = React.useRef(new Map<number, { x: number; y: number }>());
 	const pinchStateRef = React.useRef<{ distance: number; scale: number } | null>(null);
 	const onCloseRef = React.useRef(props.onClose);
@@ -86,7 +90,31 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 	React.useEffect(() => {
 		setScale(1);
 		setOffset({ x: 0, y: 0 });
+		const nextDirection = pendingTransitionDirectionRef.current;
+		pendingTransitionDirectionRef.current = null;
+		if (transitionResetTimerRef.current !== null) {
+			window.clearTimeout(transitionResetTimerRef.current);
+			transitionResetTimerRef.current = null;
+		}
+		if (nextDirection) {
+			setTransitionDirection(nextDirection);
+			transitionResetTimerRef.current = window.setTimeout(() => {
+				transitionResetTimerRef.current = null;
+				setTransitionDirection(null);
+			}, 220);
+			return;
+		}
+		setTransitionDirection(null);
 	}, [props.src]);
+
+	React.useEffect(() => {
+		return () => {
+			if (transitionResetTimerRef.current !== null) {
+				window.clearTimeout(transitionResetTimerRef.current);
+				transitionResetTimerRef.current = null;
+			}
+		};
+	}, []);
 
 	React.useEffect(() => {
 		if (typeof document === 'undefined') return;
@@ -201,11 +229,11 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 	}, [scale, syncPinchState]);
 
 	const handlePrevious = React.useCallback(() => {
-		setTransitionDirection('previous');
+		pendingTransitionDirectionRef.current = 'previous';
 		onPreviousRef.current?.();
 	}, []);
 	const handleNext = React.useCallback(() => {
-		setTransitionDirection('next');
+		pendingTransitionDirectionRef.current = 'next';
 		onNextRef.current?.();
 	}, []);
 
@@ -300,9 +328,8 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 					onWheel={handleWheel}
 				>
 					<div
-						key={`${props.src}:${transitionDirection || 'idle'}`}
+						key={props.src}
 						className={`${styles.imageFrame}${transitionDirection === 'next' ? ` ${styles.imageFrameSwapNext}` : transitionDirection === 'previous' ? ` ${styles.imageFrameSwapPrevious}` : ''}`}
-						onAnimationEnd={() => setTransitionDirection(null)}
 					>
 						{resolvedImage.src ? (
 							<img

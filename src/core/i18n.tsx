@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type LocaleCode = 'en' | 'es';
+export type LocaleCode = string;
 
 type Dictionary = Record<string, unknown>;
 
@@ -20,10 +20,58 @@ type I18nContextValue = {
 const STORAGE_KEY = 'freemannotes.locale';
 const FALLBACK_LOCALE: LocaleCode = 'en';
 
-const SUPPORTED_LOCALES: readonly LocaleOption[] = [
-	{ code: 'en', label: 'English' },
-	{ code: 'es', label: 'Español' },
-];
+const LOCALE_LABELS: Record<string, string> = {
+	en: 'English',
+	es: 'Espanol',
+};
+
+// Bundle locale payloads at build-time so switching languages works fully
+// offline (no runtime network fetch required for shipped locale files).
+const LOCALE_MESSAGE_MODULES = import.meta.glob('../../public/locales/*.json', {
+	eager: true,
+	import: 'default',
+}) as Record<string, Dictionary>;
+
+function getLocaleCodeFromModulePath(path: string): string | null {
+	const normalized = String(path || '').replace(/\\/g, '/');
+	const match = normalized.match(/\/locales\/([A-Za-z0-9-]+)\.json$/);
+	return match ? match[1].toLowerCase() : null;
+}
+
+const BUNDLED_LOCALE_MESSAGES: Record<string, Dictionary> = Object.entries(LOCALE_MESSAGE_MODULES)
+	.reduce<Record<string, Dictionary>>((acc, [path, messages]) => {
+		const code = getLocaleCodeFromModulePath(path);
+		if (!code || !messages || typeof messages !== 'object') return acc;
+		acc[code] = messages;
+		return acc;
+	}, {});
+
+function getLocaleLabel(code: string): string {
+	const normalized = String(code || '').toLowerCase();
+	if (LOCALE_LABELS[normalized]) return LOCALE_LABELS[normalized];
+	const baseLanguage = normalized.split('-')[0] || normalized;
+	if (typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function') {
+		try {
+			const displayNames = new Intl.DisplayNames([FALLBACK_LOCALE], { type: 'language' });
+			const candidate = displayNames.of(baseLanguage);
+			if (candidate) return candidate;
+		} catch {
+			// Ignore Intl localization errors and fall back to the language code.
+		}
+	}
+	return normalized || FALLBACK_LOCALE;
+}
+
+const SUPPORTED_LOCALES: readonly LocaleOption[] = (() => {
+	const discovered = Array.from(new Set(Object.keys(BUNDLED_LOCALE_MESSAGES).map((code) => code.toLowerCase())));
+	if (!discovered.includes(FALLBACK_LOCALE)) discovered.unshift(FALLBACK_LOCALE);
+	discovered.sort((a, b) => {
+		if (a === FALLBACK_LOCALE) return -1;
+		if (b === FALLBACK_LOCALE) return 1;
+		return a.localeCompare(b);
+	});
+	return discovered.map((code) => ({ code, label: getLocaleLabel(code) }));
+})();
 
 // Fallback dictionary keeps app labels readable even if a locale file fails to load.
 const FALLBACK_MESSAGES: Dictionary = {
@@ -115,6 +163,14 @@ const FALLBACK_MESSAGES: Dictionary = {
 		appearanceTitle: 'Appearance Settings',
 		theme: 'Theme',
 		language: 'Language',
+		themeCategoryBuiltIn: 'Built-in',
+		themeCategoryEarth: 'Earth',
+		themeCategoryNord: 'Nord',
+		themeCategoryCatppuccin: 'Catppuccin',
+		themeCategoryGruvbox: 'Gruvbox',
+		themeCategoryEverforest: 'Everforest',
+		themeCategoryRosePine: 'Rose Pine',
+		themeCategoryTokyoNight: 'Tokyo Night',
 	},
 	editors: {
 		// Fallback branch for newly introduced editor dock/formatting labels.
@@ -523,7 +579,12 @@ function getNestedValue(dict: Dictionary, key: string): string | null {
 
 function normalizeLocale(raw: string | null): LocaleCode {
 	if (!raw) return FALLBACK_LOCALE;
-	return SUPPORTED_LOCALES.some((entry) => entry.code === raw) ? (raw as LocaleCode) : FALLBACK_LOCALE;
+	const normalized = String(raw || '').trim().toLowerCase().replace(/_/g, '-');
+	if (!normalized) return FALLBACK_LOCALE;
+	if (SUPPORTED_LOCALES.some((entry) => entry.code === normalized)) return normalized;
+	const base = normalized.split('-')[0] || normalized;
+	if (SUPPORTED_LOCALES.some((entry) => entry.code === base)) return base;
+	return FALLBACK_LOCALE;
 }
 
 function getInitialLocale(): LocaleCode {
@@ -531,14 +592,17 @@ function getInitialLocale(): LocaleCode {
 	const stored = normalizeLocale(window.localStorage.getItem(STORAGE_KEY));
 	if (stored !== FALLBACK_LOCALE) return stored;
 
-	const browser = normalizeLocale(window.navigator.language.toLowerCase().startsWith('es') ? 'es' : 'en');
+	const browser = normalizeLocale(window.navigator.language || FALLBACK_LOCALE);
 	return browser;
 }
 
 async function loadLocaleMessages(locale: LocaleCode): Promise<Dictionary> {
-	const response = await fetch(`/locales/${locale}.json`, { cache: 'no-store' });
+	const normalized = normalizeLocale(locale);
+	const bundled = BUNDLED_LOCALE_MESSAGES[normalized];
+	if (bundled && typeof bundled === 'object') return bundled;
+	const response = await fetch(`/locales/${normalized}.json`);
 	if (!response.ok) {
-		throw new Error(`Failed to load locale ${locale}`);
+		throw new Error(`Failed to load locale ${normalized}`);
 	}
 	return (await response.json()) as Dictionary;
 }
@@ -550,25 +614,35 @@ export function I18nProvider(props: { children: React.ReactNode }): React.JSX.El
 
 	React.useEffect(() => {
 		let cancelled = false;
-		setIsLoadingLocale(true);
-		loadLocaleMessages(locale)
-			.then((next) => {
-				if (cancelled) return;
-				setMessages(next);
-			})
-			.catch((error) => {
-				console.warn('[i18n] Falling back to embedded messages:', error);
-				if (!cancelled) setMessages(FALLBACK_MESSAGES);
-			})
-			.finally(() => {
-				if (!cancelled) setIsLoadingLocale(false);
-			});
+		const bundled = BUNDLED_LOCALE_MESSAGES[normalizeLocale(locale)];
+		if (bundled && typeof bundled === 'object') {
+			setMessages(bundled);
+			setIsLoadingLocale(false);
+		} else {
+			setIsLoadingLocale(true);
+			loadLocaleMessages(locale)
+				.then((next) => {
+					if (cancelled) return;
+					setMessages(next);
+				})
+				.catch((error) => {
+					console.warn('[i18n] Falling back to embedded messages:', error);
+					if (!cancelled) setMessages(FALLBACK_MESSAGES);
+				})
+				.finally(() => {
+					if (!cancelled) setIsLoadingLocale(false);
+				});
+		}
 
 		if (typeof document !== 'undefined') {
 			document.documentElement.lang = locale;
 		}
 		if (typeof window !== 'undefined') {
-			window.localStorage.setItem(STORAGE_KEY, locale);
+			try {
+				window.localStorage.setItem(STORAGE_KEY, locale);
+			} catch {
+				// Ignore storage write failures in restricted browser contexts.
+			}
 		}
 		return () => {
 			cancelled = true;

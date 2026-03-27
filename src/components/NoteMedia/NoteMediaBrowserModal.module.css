@@ -23,6 +23,25 @@
 	overflow: hidden;
 }
 
+.sheetHandle {
+	display: none;
+	border: 0;
+	background: transparent;
+	padding: 10px 12px 6px;
+	color: inherit;
+	cursor: default;
+	touch-action: none;
+}
+
+.sheetHandlePill {
+	display: block;
+	width: 44px;
+	height: 4px;
+	border-radius: 999px;
+	margin: 0 auto;
+	background: color-mix(in srgb, var(--color-text-muted) 56%, transparent);
+}
+
 .header {
 	display: flex;
 	align-items: flex-start;
@@ -74,6 +93,10 @@
 		width: 100%;
 		max-height: min(92vh, 100%);
 		border-radius: 24px 24px 0 0;
+	}
+
+	.sheetHandle {
+		display: block;
 	}
 
 	.body {
