@@ -119,6 +119,13 @@ class YjsPersistenceAdapter {
 		 * @type {Map<string, import('yjs').Doc>}
 		 */
 		this._activeDocs = new Map();
+
+		/**
+		 * Last persisted state vector per room. Used to skip no-op writes when
+		 * open/close lifecycle hooks fire without semantic document changes.
+		 * @type {Map<string, Buffer>}
+		 */
+		this._lastPersistedStateVector = new Map();
 	}
 
 	// ─── Public API (y-websocket persistence interface) ───────────────────────
@@ -165,7 +172,7 @@ class YjsPersistenceAdapter {
 				// Multi-tenant: always scope reads to the authenticated workspace.
 				let row = await this._prisma.document.findFirst({
 					where: { docId: docName, workspaceId },
-					select: { id: true, state: true, docId: true },
+					select: { id: true, state: true, stateVector: true, docId: true },
 				});
 
 				// Backward-compat: legacy installs stored un-namespaced docIds.
@@ -180,7 +187,7 @@ class YjsPersistenceAdapter {
 						const doubleDocId = `${workspaceId}:${docName}`;
 						const double = await this._prisma.document.findFirst({
 							where: { docId: doubleDocId, workspaceId },
-							select: { id: true, state: true },
+							select: { id: true, state: true, stateVector: true },
 						});
 						if (double && double.state && double.state.length > 0) {
 							try {
@@ -188,7 +195,7 @@ class YjsPersistenceAdapter {
 									where: { id: double.id },
 									data: { docId: docName },
 								});
-								row = { id: double.id, state: double.state, docId: docName };
+								row = { id: double.id, state: double.state, stateVector: double.stateVector, docId: docName };
 								console.info(`[persist] migrated double docId: ${doubleDocId} -> ${docName}`);
 							} catch {
 								// If it can't be migrated (unique constraint), ignore and fall through.
@@ -199,7 +206,7 @@ class YjsPersistenceAdapter {
 						if (legacyDocId) {
 							const legacy = await this._prisma.document.findFirst({
 								where: { docId: legacyDocId, workspaceId },
-								select: { id: true, state: true },
+								select: { id: true, state: true, stateVector: true },
 							});
 							if (legacy && legacy.state && legacy.state.length > 0) {
 								// Migrate by renaming docId to the namespaced value.
@@ -207,7 +214,7 @@ class YjsPersistenceAdapter {
 									where: { id: legacy.id },
 									data: { docId: docName },
 								});
-								row = { id: legacy.id, state: legacy.state, docId: docName };
+								row = { id: legacy.id, state: legacy.state, stateVector: legacy.stateVector, docId: docName };
 								console.info(`[persist] migrated legacy docId: ${legacyDocId} -> ${docName}`);
 							}
 						}
@@ -215,6 +222,9 @@ class YjsPersistenceAdapter {
 				}
 				if (row && row.state && row.state.length > 0) {
 					Y.applyUpdate(yDoc, new Uint8Array(row.state));
+					if (row.stateVector && row.stateVector.length > 0) {
+						this._lastPersistedStateVector.set(docName, Buffer.from(row.stateVector));
+					}
 					loaded = true;
 					console.info(`[persist] loaded from PostgreSQL: room=${docName} bytes=${row.state.length}`);
 
@@ -272,6 +282,7 @@ class YjsPersistenceAdapter {
 		// Remove from active tracking.
 		this._activeDocs.delete(docName);
 		this._docWorkspaceId.delete(docName);
+		this._lastPersistedStateVector.delete(docName);
 	}
 
 	/**
@@ -351,6 +362,10 @@ class YjsPersistenceAdapter {
 		// Encode the full document state as a single binary blob.
 		const state = Buffer.from(Y.encodeStateAsUpdate(yDoc));
 		const stateVector = Buffer.from(Y.encodeStateVector(yDoc));
+		const previousStateVector = this._lastPersistedStateVector.get(docName);
+		if (previousStateVector && previousStateVector.equals(stateVector)) {
+			return;
+		}
 
 		try {
 			const existing = await this._prisma.document.findUnique({
@@ -375,6 +390,7 @@ class YjsPersistenceAdapter {
 					data: { workspaceId, docId: docName, state, stateVector },
 				});
 			}
+			this._lastPersistedStateVector.set(docName, Buffer.from(stateVector));
 			console.info(`[persist] saved to PostgreSQL: room=${docName} bytes=${state.length}`);
 		} catch (err) {
 			console.error(`[persist] PostgreSQL write failed for room=${docName}:`, err.message);

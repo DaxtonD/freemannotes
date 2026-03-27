@@ -15,6 +15,7 @@ import * as Y from 'yjs';
 
 export const TEXT_NOTE_RICH_FIELD = 'contentRich';
 export const CHECKLIST_ITEM_RICH_FIELD = 'contentRich';
+export const RICHTEXT_INTERNAL_ORIGIN = 'freemannotes:richtext-internal';
 
 export type RichTextVariant = 'full' | 'minimal';
 
@@ -182,7 +183,10 @@ export function replaceRichFragmentFromJson(fragment: Y.XmlFragment, json: JSONC
 export function ensureTextNoteRichContent(doc: Y.Doc): Y.XmlFragment {
 	const fragment = doc.getXmlFragment(TEXT_NOTE_RICH_FIELD);
 	if (fragment.length === 0) {
-		replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(doc.getText('content').toString(), 'full'), 'full');
+		const seed = (): void => {
+			replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(doc.getText('content').toString(), 'full'), 'full');
+		};
+		doc.transact(seed, RICHTEXT_INTERNAL_ORIGIN);
 	}
 	return fragment;
 }
@@ -211,18 +215,32 @@ export function getTextNoteRichPreviewJson(doc: Y.Doc): JSONContent | null {
 export function ensureChecklistItemRichContent(itemMap: Y.Map<any>): Y.XmlFragment {
 	let fragment = itemMap.get(CHECKLIST_ITEM_RICH_FIELD) as Y.XmlFragment | undefined;
 	if (!(fragment instanceof Y.XmlFragment)) {
-		fragment = new Y.XmlFragment();
-		itemMap.set(CHECKLIST_ITEM_RICH_FIELD, fragment);
+		const doc = (itemMap as unknown as { doc?: Y.Doc | null }).doc ?? null;
+		const create = (): void => {
+			fragment = new Y.XmlFragment();
+			itemMap.set(CHECKLIST_ITEM_RICH_FIELD, fragment as Y.XmlFragment);
+		};
+		if (doc) doc.transact(create, RICHTEXT_INTERNAL_ORIGIN);
+		else create();
+		fragment = itemMap.get(CHECKLIST_ITEM_RICH_FIELD) as Y.XmlFragment | undefined;
 	}
-	if (fragment.length === 0) {
-		replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(String(itemMap.get('text') ?? '')), 'minimal');
+	if (fragment instanceof Y.XmlFragment && fragment.length === 0) {
+		const doc = (itemMap as unknown as { doc?: Y.Doc | null }).doc ?? null;
+		const seed = (): void => {
+			replaceRichFragmentFromJson(fragment as Y.XmlFragment, createRichTextDocFromPlainText(String(itemMap.get('text') ?? '')), 'minimal');
+		};
+		if (doc) doc.transact(seed, RICHTEXT_INTERNAL_ORIGIN);
+		else seed();
 	}
-	return fragment;
+	return fragment as Y.XmlFragment;
 }
 
 export function syncChecklistItemPlainText(itemMap: Y.Map<any>, fragment: Y.XmlFragment): string {
 	const next = getPlainTextFromRichFragment(fragment, 'minimal');
-	itemMap.set('text', next);
+	const current = String(itemMap.get('text') ?? '');
+	if (current !== next) {
+		itemMap.set('text', next);
+	}
 	return next;
 }
 

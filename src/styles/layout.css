@@ -1836,21 +1836,23 @@
 
 	.app-main {
 		padding: var(--space-2);
+		gap: var(--space-1);
 	}
 
 	.app-main-sticky {
 		position: sticky;
 		top: var(--app-mobile-header-offset);
 		z-index: 90;
-		gap: 4px;
+		gap: 2px;
 		padding-top: 0;
-		padding-bottom: 6px;
+		padding-bottom: 2px;
 		width: 100vw;
 		margin-left: calc(50% - 50vw);
 		margin-right: calc(50% - 50vw);
 		padding-left: 0;
 		padding-right: 0;
 		background: var(--color-app-bg);
+		contain: paint;
 	}
 
 	.top-actions {
@@ -1862,12 +1864,13 @@
 		z-index: auto;
 		background: transparent;
 		margin: 0;
-		padding: 8px 0;
+		min-height: 32px;
+		padding: 0;
 		width: 100%;
 	}
 
 	.note-grid-scope-chip {
-		min-height: 32px;
+		min-height: 30px;
 		padding: 0 12px;
 		margin-left: var(--space-2);
 	}
