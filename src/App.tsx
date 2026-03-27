@@ -86,6 +86,7 @@ import {
 
 const DOCUMENT_VIEWER_STATE_EVENT = 'freemannotes:document-viewer-state';
 import { getWorkspaceDisplayName } from './core/workspaceDisplay';
+import { clearWorkspaceSelectionCache, readWorkspaceSelectionCache, writeWorkspaceSelectionCache } from './core/workspaceSelectionCache';
 
 type EditorMode = 'none' | 'text' | 'checklist';
 
@@ -145,7 +146,7 @@ function mapWorkspaceList(value: unknown): SidebarWorkspaceListItem[] {
 				name: typeof workspace.name === 'string' ? workspace.name : '',
 				role: normalizeWorkspaceRole(workspace.role),
 				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
-				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind : null,
+				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind.toUpperCase() : null,
 				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
 				updatedAt: typeof workspace.updatedAt === 'string' ? workspace.updatedAt : typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
 			};
@@ -348,6 +349,11 @@ export function App(): React.JSX.Element {
 	// requests against an expired or missing server session.
 	const authCacheRef = React.useRef(readAuthCache());
 	const cachedAuth = authCacheRef.current;
+	// Workspace selection cache is the source of truth for which workspace was last
+	// selected on this device. It is written on every switch and is NOT overwritten by
+	// the server's session response, preventing offline switches from being reverted.
+	const cachedWorkspaceSelectionRef = React.useRef(readWorkspaceSelectionCache());
+	const cachedWorkspaceSelection = cachedWorkspaceSelectionRef.current;
 	const canRestoreCachedAuthImmediately = Boolean(
 		cachedAuth && typeof navigator !== 'undefined' && navigator.onLine === false
 	);
@@ -363,7 +369,12 @@ export function App(): React.JSX.Element {
 	const [authBusy, setAuthBusy] = React.useState(false);
 	const [authUserId, setAuthUserId] = React.useState<string | null>(() => cachedAuth?.userId ?? null);
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(() => cachedAuth?.profileImage ?? null);
-	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(() => cachedAuth?.workspaceId ?? null);
+	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(() => {
+		if (cachedAuth && cachedWorkspaceSelection?.userId === cachedAuth.userId) {
+			return cachedWorkspaceSelection.workspaceId;
+		}
+		return cachedAuth?.workspaceId ?? null;
+	});
 	const [workspaceDeletedNotice, setWorkspaceDeletedNotice] = React.useState<{ hasOtherWorkspaces: boolean } | null>(null);
 	const pwaState = usePwaState();
 	const [pwaInstallBusy, setPwaInstallBusy] = React.useState(false);
@@ -423,6 +434,10 @@ export function App(): React.JSX.Element {
 	const stableWorkspaceKeyRef = React.useRef<string>('no-workspace');
 	if (authWorkspaceId) stableWorkspaceKeyRef.current = authWorkspaceId;
 	const [authOfflineMode, setAuthOfflineMode] = React.useState(false);
+	// Ref mirror of authOfflineMode so async callbacks (e.g. backgroundPreloadAllWorkspaces)
+	// can read the latest value without capturing a stale closure.
+	const authOfflineModeRef = React.useRef(authOfflineMode);
+	authOfflineModeRef.current = authOfflineMode;
 	const [registerAvatarUrl, setRegisterAvatarUrl] = React.useState<string | null>(null);
 	const [registerAvatarCrop, setRegisterAvatarCrop] = React.useState({ x: 0, y: 0 });
 	const [registerAvatarZoom, setRegisterAvatarZoom] = React.useState(1);
@@ -1054,6 +1069,12 @@ export function App(): React.JSX.Element {
 				return;
 			}
 			const body = await res.json().catch(() => null);
+			// Guard: if the server returns a different workspace than the locally-selected one,
+			// the server session is stale (e.g. an offline workspace switch is still being
+			// activated). Skip updating the label to avoid a transient flip to the old name.
+			if (body?.id && String(body.id) !== authWorkspaceId) {
+				return;
+			}
 			if (authUserId && body?.id) {
 				await cacheWorkspaceDetails({
 					workspace: {
@@ -1116,13 +1137,17 @@ export function App(): React.JSX.Element {
 		// Offline-auth branch: reuse the last authenticated user/workspace so IndexedDB
 		// notes and cached workspace metadata stay available while the backend is unreachable.
 		const cached = readAuthCache();
+		const cachedWorkspaceSelection = readWorkspaceSelectionCache();
 		if (!cached) return false;
+		const restoredWorkspaceId = cachedWorkspaceSelection?.userId === cached.userId
+			? cachedWorkspaceSelection.workspaceId
+			: cached.workspaceId;
 		setAuthStatus('authed');
 		setAuthUserId(cached.userId);
 		setAuthProfileImage(cached.profileImage);
-		setAuthWorkspaceId(cached.workspaceId);
+		setAuthWorkspaceId(restoredWorkspaceId);
 		setAuthOfflineMode(true);
-		manager.setActiveWorkspaceId(cached.workspaceId);
+		manager.setActiveWorkspaceId(restoredWorkspaceId);
 		manager.setWebsocketEnabled(false);
 		return true;
 	}, [manager]);
@@ -1169,14 +1194,118 @@ export function App(): React.JSX.Element {
 					return;
 				}
 
+				// Preserve the locally selected workspace (e.g. an offline switch) rather than
+				// unconditionally reverting to the server's active workspace on reconnect.
+				const existingSelection = readWorkspaceSelectionCache();
+				const effectiveWorkspaceId =
+					existingSelection?.userId === userId && existingSelection?.workspaceId
+						? existingSelection.workspaceId
+						: workspaceId;
 				setAuthStatus('authed');
 				setAuthUserId(userId);
 				setAuthProfileImage(profileImage);
-				setAuthWorkspaceId(workspaceId);
+				setAuthWorkspaceId(effectiveWorkspaceId);
 				setAuthOfflineMode(false);
-				manager.setActiveWorkspaceId(workspaceId);
-				manager.setWebsocketEnabled(Boolean(workspaceId));
-				writeAuthCache({ v: 1, userId, workspaceId, profileImage });
+				manager.setActiveWorkspaceId(effectiveWorkspaceId);
+				writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage });
+				// If the local selection differs from the server's active workspace (e.g. an
+				// offline switch that has not been synced yet), we MUST activate workspace B on
+				// the server before enabling WebSocket sync. Enabling WS before activation
+				// completes causes the server to reject the workspace B room names with
+				// "forbidden namespace" errors, which triggers an infinite reconnect storm.
+				if (effectiveWorkspaceId && effectiveWorkspaceId !== workspaceId) {
+					// Keep WS disabled while we re-activate on the server. Only enabling WS
+					// AFTER activation completes prevents "forbidden namespace" loops where
+					// the client opens workspace-B rooms before the server session is updated.
+					manager.setWebsocketEnabled(false);
+
+					// Flush offline edits from EVERY workspace that has local IndexedDB data,
+					// not just the server's current one. While offline the user may have switched
+					// between many workspaces and edited notes in each. The WS auth is tied to the
+					// server session, so we must activate each workspace in turn, flush its edits,
+					// then move on — and finally activate the desired target workspace.
+					let localWorkspaceIds = await manager.discoverLocalWorkspaceIds();
+					if (localWorkspaceIds.length === 0) {
+						// Fallback: indexedDB.databases() not available — use the cached workspace list.
+						const snapshot = await readCachedWorkspaceSnapshot(userId, deviceId);
+						localWorkspaceIds = snapshot.workspaces.map((w) => w.id);
+					}
+					// Exclude the target workspace — it will sync normally once its session is active.
+					const idsToFlush = localWorkspaceIds.filter((id) => id !== effectiveWorkspaceId);
+
+					// Flush the server's currently-authorized workspace first (no activation needed).
+					if (workspaceId && idsToFlush.includes(workspaceId)) {
+						await manager.flushPreviousWorkspaceEdits(workspaceId, 5_000);
+					}
+
+					// For every other workspace with local data, activate on server then flush.
+					let flushNetworkFailed = false;
+					for (const wsId of idsToFlush.filter((id) => id !== workspaceId)) {
+						try {
+							const res = await fetch(
+								`/api/workspaces/${encodeURIComponent(wsId)}/activate`,
+								{
+									method: 'POST',
+									credentials: 'include',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ deviceId }),
+								}
+							);
+							if (!res.ok) continue; // Lost access to this workspace — skip it.
+						} catch {
+							flushNetworkFailed = true;
+							break; // Network dropped — stop flushing.
+						}
+						await manager.flushPreviousWorkspaceEdits(wsId, 5_000);
+					}
+
+					if (flushNetworkFailed) {
+						// Network went down mid-flush — treat as offline, preserve local selection.
+						setAuthOfflineMode(true);
+						manager.setWebsocketEnabled(false);
+					} else {
+						// All preceding workspaces flushed. Now activate the target workspace.
+						let activatedWorkspaceId: string | null = effectiveWorkspaceId;
+						let activationNetworkError = false;
+						try {
+							const activateRes = await fetch(
+								`/api/workspaces/${encodeURIComponent(effectiveWorkspaceId)}/activate`,
+								{
+									method: 'POST',
+									credentials: 'include',
+									headers: { 'Content-Type': 'application/json' },
+									body: JSON.stringify({ deviceId }),
+								}
+							);
+							if (!activateRes.ok) {
+								// Server explicitly rejected B (403/404/etc): revert to server's workspace.
+								activatedWorkspaceId = workspaceId;
+							}
+						} catch {
+							// Network error: the server is genuinely unreachable (the /api/auth/me
+							// response was likely served from the service-worker cache). Keep the
+							// locally-selected workspace and go into offline mode instead of reverting
+							// to the stale server workspace.
+							activationNetworkError = true;
+						}
+
+						if (activationNetworkError) {
+							// Treat as offline: preserve the locally-selected workspace and disable sync.
+							setAuthOfflineMode(true);
+							manager.setWebsocketEnabled(false);
+						} else if (activatedWorkspaceId !== effectiveWorkspaceId) {
+							// Server rejected target: revert so WS rooms align with existing session.
+							manager.setActiveWorkspaceId(activatedWorkspaceId);
+							setAuthWorkspaceId(activatedWorkspaceId);
+							writeAuthCache({ v: 1, userId, workspaceId: activatedWorkspaceId, profileImage });
+							manager.setWebsocketEnabled(Boolean(activatedWorkspaceId));
+						} else {
+							manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
+						}
+					}
+				} else {
+					manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
+				}
 			} catch {
 				// Treat transport failures and unreachable backends like offline mode when
 				// we have a cached session, even if the browser still reports "online".
@@ -1211,14 +1340,19 @@ export function App(): React.JSX.Element {
 			const profileImage = body?.user?.profileImage ? String(body.user.profileImage) : null;
 			const workspaceId = body?.workspaceId ? String(body.workspaceId) : null;
 
+			const existingSelection = readWorkspaceSelectionCache();
+			const effectiveWorkspaceId =
+				existingSelection?.userId === userId && existingSelection?.workspaceId
+					? existingSelection.workspaceId
+					: workspaceId;
 			setAuthUserId(userId);
 			setAuthProfileImage(profileImage);
-			setAuthWorkspaceId(workspaceId);
+			setAuthWorkspaceId(effectiveWorkspaceId);
 			setAuthStatus('authed');
 			setAuthOfflineMode(false);
-			manager.setActiveWorkspaceId(workspaceId);
-			manager.setWebsocketEnabled(Boolean(workspaceId));
-			writeAuthCache({ v: 1, userId, workspaceId, profileImage });
+			manager.setActiveWorkspaceId(effectiveWorkspaceId);
+			manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
+			writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage });
 			return profileImage;
 		} catch {
 			return null;
@@ -1358,7 +1492,14 @@ export function App(): React.JSX.Element {
 				setSidebarWorkspaces(snapshot.workspaces);
 				setSidebarWorkspacesError(null);
 			}
-			if ((authOfflineMode || !authWorkspaceId) && snapshot.activeWorkspaceId) {
+			// The workspace selection cache (localStorage) is written on every switch and is
+			// authoritative at startup. Only fall back to the IndexedDB snapshot if no
+			// workspace is set at all — never override an already-determined workspace,
+			// as the snapshot can lag behind the latest offline switch.
+			const shouldHydrateFromSnapshot = Boolean(
+				snapshot.activeWorkspaceId && !authWorkspaceId
+			);
+			if (shouldHydrateFromSnapshot && snapshot.activeWorkspaceId) {
 				setAuthWorkspaceId(snapshot.activeWorkspaceId);
 				manager.setActiveWorkspaceId(snapshot.activeWorkspaceId);
 				manager.setWebsocketEnabled(!authOfflineMode);
@@ -1368,6 +1509,11 @@ export function App(): React.JSX.Element {
 					userId: authUserId,
 					workspaceId: snapshot.activeWorkspaceId,
 					profileImage: authProfileImage,
+				});
+				writeWorkspaceSelectionCache({
+					userId: authUserId,
+					workspaceId: snapshot.activeWorkspaceId,
+					activeSharedFolder: snapshot.activeSharedFolder ?? null,
 				});
 			}
 		})();
@@ -1388,12 +1534,17 @@ export function App(): React.JSX.Element {
 					await flushPendingShareLinkRequests(authUserId);
 					await loadSidebarWorkspacesRef.current();
 					await refreshActiveWorkspaceRef.current();
-					if (authOfflineMode) {
-						// Browser "online" only means a network is available; it does not
-						// guarantee the app server is reachable. Keep offline-auth active
-						// until the probe gets a definitive authenticated or explicit unauth response.
-						await probeSession({ allowOfflineRestore: true });
-					}
+					// Always probe the session when going back online to ensure the server JWT
+					// is aligned with the locally-selected workspace. Workspace switches made
+					// while offline need server-side activation regardless of whether authOfflineMode
+					// is true (started offline) or false (was online, went offline, switched workspace).
+					// probeSession only enables WebSocket AFTER activation completes.
+					await probeSession({ allowOfflineRestore: true });
+					// After the session is fully established, kick off a background preload
+					// so any workspaces the user has not visited on this device are pulled
+					// into IndexedDB and available offline. Fire-and-forget — errors are
+					// swallowed inside the callback.
+					void backgroundPreloadAllWorkspacesRef.current();
 				} finally {
 					running = false;
 				}
@@ -1406,7 +1557,24 @@ export function App(): React.JSX.Element {
 		return () => {
 			window.removeEventListener('online', onOnline);
 		};
-	}, [authOfflineMode, authStatus, authUserId, deviceId, manager, probeSession]);
+	}, [authStatus, authUserId, deviceId, manager, probeSession]);
+
+	// Trigger an initial background preload when the user is online and authenticated
+	// with a workspace list. This covers the case where the user logs in while already
+	// online (the onOnline handler above fires immediately via navigator.onLine, but by
+	// the time loadSidebarWorkspaces completes the sidebarWorkspaces state update is
+	// async, so this effect is the reliable trigger once data lands). Uses a 5-second
+	// delay so the active workspace is fully connected before we start cycling sessions.
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || authOfflineMode || sidebarWorkspaces.length <= 1) return;
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+		const timer = window.setTimeout(() => {
+			void backgroundPreloadAllWorkspacesRef.current();
+		}, 5_000);
+		return () => window.clearTimeout(timer);
+	// Re-run only when workspace count changes or auth/offline state changes.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [authOfflineMode, authStatus, sidebarWorkspaces.length]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId || authOfflineMode) {
@@ -1500,9 +1668,12 @@ export function App(): React.JSX.Element {
 					activeWorkspaceId: null,
 					activeSharedFolder: null,
 				});
+				writeWorkspaceSelectionCache({ userId: authUserId, workspaceId: null, activeSharedFolder: null });
 				if (opts?.preserveAuthCache) {
 					writeAuthCache({ v: 1, userId: authUserId, workspaceId: null, profileImage: authProfileImage });
 				}
+			} else {
+				clearWorkspaceSelectionCache();
 			}
 		},
 		[authProfileImage, authUserId, deviceId, manager]
@@ -1522,6 +1693,17 @@ export function App(): React.JSX.Element {
 			setOpenDocId(null);
 			setEditorMode('none');
 			setActiveSharedFolder(null);
+			// Cancel any in-progress background preload so it cannot re-activate a
+			// previous workspace and clobber the user's intentional switch.
+			backgroundPreloadAbortRef.current++;
+			backgroundPreloadRunningRef.current = false;
+			const cachedAuth = readAuthCache();
+			const cacheUserId = authUserId || cachedAuth?.userId || null;
+			const cacheProfileImage = authProfileImage ?? cachedAuth?.profileImage ?? null;
+			if (cacheUserId) {
+				writeAuthCache({ v: 1, userId: cacheUserId, workspaceId, profileImage: cacheProfileImage });
+				writeWorkspaceSelectionCache({ userId: cacheUserId, workspaceId, activeSharedFolder: null });
+			}
 			if (authUserId) {
 				void cacheActiveWorkspaceSelection({
 					userId: authUserId,
@@ -1529,7 +1711,6 @@ export function App(): React.JSX.Element {
 					activeWorkspaceId: workspaceId,
 					activeSharedFolder: null,
 				});
-				writeAuthCache({ v: 1, userId: authUserId, workspaceId, profileImage: authProfileImage });
 			}
 			void refreshActiveWorkspace();
 		},
@@ -1546,6 +1727,7 @@ export function App(): React.JSX.Element {
 					activeWorkspaceId: workspaceId,
 					activeSharedFolder: normalizedFolder,
 				});
+				writeWorkspaceSelectionCache({ userId: authUserId, workspaceId, activeSharedFolder: normalizedFolder });
 			}
 			if (authStatus !== 'authed' || authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
 				return;
@@ -1785,6 +1967,108 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		handleWorkspaceActivatedRef.current = handleWorkspaceActivated;
 	}, [handleWorkspaceActivated]);
+
+	// ── Background preload ────────────────────────────────────────────────────
+	// When the user is online and authenticated, pre-populate IndexedDB for every
+	// workspace so data is available offline WITHOUT the user having to visit each
+	// workspace first. This runs as a fire-and-forget background task.
+	//
+	// The server enforces per-session workspace isolation for WS connections, so
+	// we must briefly activate each workspace on the server, sync its rooms, then
+	// restore the user's current session. Existing WS connections for the active
+	// workspace are NOT affected by the session switch (the server only checks auth
+	// at connection time, not per-message).
+	//
+	// An abort-ID mechanism cancels the loop if the user manually switches workspace
+	// during a preload cycle (to prevent the "restore" activation from clobbering
+	// the user's intentional switch).
+	const backgroundPreloadAbortRef = React.useRef(0);
+	const backgroundPreloadRunningRef = React.useRef(false);
+	const authWorkspaceIdRef = React.useRef(authWorkspaceId);
+	authWorkspaceIdRef.current = authWorkspaceId;
+
+	/**
+	 * Iterate every workspace the user belongs to (except the current one) and pull
+	 * its full dataset (registry + all notes) into IndexedDB via temporary Yjs
+	 * providers. This ensures every workspace is available offline even if the user
+	 * has never visited it on this device.
+	 *
+	 * Sequence per workspace:
+	 *   1. POST /activate to align the server session with this workspace.
+	 *   2. Call DocumentManager.preloadWorkspaceFromServer() — syncs registry + notes.
+	 *   3. Continue to next workspace.
+	 * Finally: restore the server session to the user's actual current workspace.
+	 *
+	 * The loop is aborted immediately if the user manually switches workspace
+	 * (backgroundPreloadAbortRef is incremented by handleWorkspaceActivated).
+	 */
+	const backgroundPreloadAllWorkspaces = React.useCallback(async (): Promise<void> => {
+		if (backgroundPreloadRunningRef.current) return;
+		if (authStatus !== 'authed' || !authUserId || authOfflineMode) return;
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+		const workspaces = sidebarWorkspacesRef.current;
+		const currentWorkspaceId = authWorkspaceIdRef.current;
+		if (!currentWorkspaceId || workspaces.length <= 1) return;
+
+		backgroundPreloadRunningRef.current = true;
+		const preloadId = ++backgroundPreloadAbortRef.current;
+		const aborted = (): boolean => backgroundPreloadAbortRef.current !== preloadId;
+
+		const otherWorkspaces = workspaces.filter((w) => w.id !== currentWorkspaceId);
+		let lastActivatedId = currentWorkspaceId;
+
+		try {
+			for (const workspace of otherWorkspaces) {
+				if (aborted()) break;
+				if (typeof navigator !== 'undefined' && navigator.onLine === false) break;
+				try {
+					const res = await fetch(
+						`/api/workspaces/${encodeURIComponent(workspace.id)}/activate`,
+						{
+							method: 'POST',
+							credentials: 'include',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ deviceId }),
+						}
+					);
+					if (!res.ok) continue; // lost access — skip without aborting
+					lastActivatedId = workspace.id;
+				} catch {
+					break; // network gone
+				}
+				if (aborted()) break;
+				await manager.preloadWorkspaceFromServer(workspace.id, 8_000);
+			}
+		} finally {
+			backgroundPreloadRunningRef.current = false;
+			// Restore the session to whatever workspace the user currently has active.
+			// Read from the ref so we use the up-to-date value even if the user
+			// switched workspaces during the preload loop.
+			const restoreId = authWorkspaceIdRef.current ?? currentWorkspaceId;
+			if (!aborted() && lastActivatedId !== restoreId && restoreId) {
+				try {
+					await fetch(
+						`/api/workspaces/${encodeURIComponent(restoreId)}/activate`,
+						{
+							method: 'POST',
+							credentials: 'include',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ deviceId }),
+						}
+					);
+				} catch {
+					// best effort
+				}
+			}
+		}
+	}, [authOfflineMode, authStatus, authUserId, deviceId, manager]);
+
+	const backgroundPreloadAllWorkspacesRef = React.useRef(backgroundPreloadAllWorkspaces);
+	React.useEffect(() => {
+		backgroundPreloadAllWorkspacesRef.current = backgroundPreloadAllWorkspaces;
+	}, [backgroundPreloadAllWorkspaces]);
+
 	React.useEffect(() => {
 		sidebarWorkspacesRef.current = sidebarWorkspaces;
 		if (!authWorkspaceId) {
@@ -1894,10 +2178,19 @@ export function App(): React.JSX.Element {
 			let resolvedWorkspaces = next;
 			let resolvedActiveWorkspaceId = nextActiveWorkspaceId;
 			if (authUserId) {
+				// Prefer the locally-selected workspace (authWorkspaceId) over the server's
+				// stale activeWorkspaceId when the server's list contains the local selection.
+				// Without this guard, loadSidebarWorkspaces overwrites IndexedDB with the
+				// server's old workspace A, causing the prefs-hydration effect to see a
+				// "newer" local selection of A and revert an offline switch to B.
+				const localActiveWorkspaceId =
+					authWorkspaceId && next.some((w) => w.id === authWorkspaceId)
+						? authWorkspaceId
+						: nextActiveWorkspaceId;
 				await cacheWorkspaceSnapshot({
 					userId: authUserId,
 					deviceId,
-					activeWorkspaceId: nextActiveWorkspaceId,
+					activeWorkspaceId: localActiveWorkspaceId,
 					workspaces: next,
 				});
 				const merged = await readCachedWorkspaceSnapshot(authUserId, deviceId);
@@ -2375,11 +2668,27 @@ export function App(): React.JSX.Element {
 	}, [authOfflineMode, authStatus, authUserId]);
 
 	const sidebarWorkspacesSorted = React.useMemo(() => {
-		if (!authWorkspaceId) return sidebarWorkspaces;
-		const active = sidebarWorkspaces.find((ws) => ws.id === authWorkspaceId);
-		if (!active) return sidebarWorkspaces;
-		const rest = sidebarWorkspaces.filter((ws) => ws.id !== authWorkspaceId);
-		return [active, ...rest];
+		// Keep system workspaces pinned before custom workspaces.
+		const personalWorkspace = sidebarWorkspaces.find((workspace) => (workspace.systemKind || '').toUpperCase() === 'PERSONAL') || null;
+		const sharedWorkspace = sidebarWorkspaces.find((workspace) => (workspace.systemKind || '').toUpperCase() === 'SHARED_WITH_ME') || null;
+		const pinnedWorkspaceIds = new Set<string>();
+		if (personalWorkspace) pinnedWorkspaceIds.add(personalWorkspace.id);
+		if (sharedWorkspace) pinnedWorkspaceIds.add(sharedWorkspace.id);
+
+		const remainingWorkspaces = sidebarWorkspaces.filter((workspace) => !pinnedWorkspaceIds.has(workspace.id));
+		if (authWorkspaceId) {
+			const activeRemainingIndex = remainingWorkspaces.findIndex((workspace) => workspace.id === authWorkspaceId);
+			if (activeRemainingIndex > 0) {
+				const [activeRemainingWorkspace] = remainingWorkspaces.splice(activeRemainingIndex, 1);
+				remainingWorkspaces.unshift(activeRemainingWorkspace);
+			}
+		}
+
+		return [
+			...(personalWorkspace ? [personalWorkspace] : []),
+			...(sharedWorkspace ? [sharedWorkspace] : []),
+			...remainingWorkspaces,
+		];
 	}, [authWorkspaceId, sidebarWorkspaces]);
 
 	const activateWorkspaceFromSidebar = React.useCallback(
@@ -2388,13 +2697,8 @@ export function App(): React.JSX.Element {
 			if (workspaceId === authWorkspaceId) return;
 			const nextSharedFolder = options?.activeSharedFolder ?? null;
 			if (authUserId && (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false))) {
-				await cacheActiveWorkspaceSelection({
-					userId: authUserId,
-					deviceId,
-					activeWorkspaceId: workspaceId,
-					activeSharedFolder: nextSharedFolder,
-				});
 				handleWorkspaceActivated(workspaceId);
+				void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
 				if (isMobileViewport) {
 					closeWorkspaceSidebarGroup();
 				}
@@ -2425,13 +2729,8 @@ export function App(): React.JSX.Element {
 				if (authUserId) {
 					const cached = await readCachedWorkspaceSnapshot(authUserId, deviceId);
 					if (cached.workspaces.some((workspace) => workspace.id === workspaceId)) {
-						await cacheActiveWorkspaceSelection({
-							userId: authUserId,
-							deviceId,
-							activeWorkspaceId: workspaceId,
-							activeSharedFolder: nextSharedFolder,
-						});
 						handleWorkspaceActivated(workspaceId);
+						void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
 						if (isMobileViewport) {
 							closeWorkspaceSidebarGroup();
 						}
@@ -2442,7 +2741,7 @@ export function App(): React.JSX.Element {
 				// Keep errors out of the sidebar nav — Workspace modal provides richer error UX.
 			}
 		},
-		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, closeWorkspaceSidebarGroup, confirmActivatedWorkspaceSession, deviceId, handleWorkspaceActivated, isMobileViewport, manager, persistSharedWorkspaceSelection]
+		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, closeWorkspaceSidebarGroup, confirmActivatedWorkspaceSession, deviceId, handleWorkspaceActivated, isMobileViewport, persistSharedWorkspaceSelection]
 	);
 
 	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
@@ -4060,14 +4359,17 @@ export function App(): React.JSX.Element {
 										<span className="sidebar-icon" aria-hidden="true">
 											<FontAwesomeIcon icon={entry.icon as never} />
 										</span>
-										<span className="sidebar-label">{label}</span>
-									</button>
-
 										{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
-											<div className="sidebar-workspace-current" aria-live="polite">
-												<span className="sidebar-workspace-current-text">{activeWorkspaceSidebarPath}</span>
-											</div>
-										) : null}
+											<span className="sidebar-workspace-inline-summary" aria-live="polite">
+												<span className="sidebar-label sidebar-workspace-inline-label">{label}</span>
+												<span className="sidebar-workspace-current-inline-text">
+													{`- ${activeWorkspaceName || t('workspace.unnamed')}`}
+												</span>
+											</span>
+										) : (
+											<span className="sidebar-label">{label}</span>
+										)}
+									</button>
 
 									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>

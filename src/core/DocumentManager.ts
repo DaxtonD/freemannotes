@@ -998,6 +998,249 @@ export class DocumentManager {
 	}
 
 	/**
+	 * Discover all workspace IDs that currently have IndexedDB data stored locally.
+	 *
+	 * Uses `indexedDB.databases()` to enumerate all room databases and extracts the
+	 * unique workspace-ID prefix from each `${workspaceId}:${docId}` database name.
+	 * Returns an empty array when the API is unavailable.
+	 */
+	public async discoverLocalWorkspaceIds(): Promise<string[]> {
+		if (typeof (globalThis as any).indexedDB === 'undefined') return [];
+		try {
+			if (typeof (indexedDB as any).databases !== 'function') return [];
+			const allDbs: { name?: string }[] = await (indexedDB as any).databases();
+			const workspaceIds = new Set<string>();
+			for (const db of allDbs) {
+				const name = db.name ?? '';
+				const colonIdx = name.indexOf(':');
+				if (colonIdx > 0) {
+					workspaceIds.add(name.slice(0, colonIdx));
+				}
+			}
+			return Array.from(workspaceIds);
+		} catch {
+			return [];
+		}
+	}
+
+	/**
+	 * Flush any pending offline Yjs edits for a workspace that is no longer active.
+	 *
+	 * Called in the online-reconnect path when the user switches workspace while offline.
+	 * For each workspace the user edited while offline we must:
+	 *   1. Ensure the server session has that workspace active (caller's responsibility).
+	 *   2. Open temporary IndexedDB + WS providers for all of that workspace's rooms.
+	 *   3. Wait for the Yjs state-vector exchange to upload any pending local edits.
+	 *   4. Destroy the temporary providers.
+	 *
+	 * The temporary providers are outside DocumentManager's managed maps so they cannot
+	 * interfere with the currently-active workspace and setWebsocketEnabled() does not
+	 * affect them.
+	 *
+	 * @param previousWorkspaceId — workspace whose offline edits need syncing.
+	 * @param timeoutMs           — max time to wait for sync before giving up (default 5 s).
+	 */
+	public async flushPreviousWorkspaceEdits(previousWorkspaceId: string, timeoutMs = 5_000): Promise<void> {
+		if (!previousWorkspaceId || !this.websocketUrl) return;
+		// Never flush the currently-active workspace — its rooms are managed by the
+		// normal WS providers and opening a second set of providers would cause conflicts.
+		if (previousWorkspaceId === this.activeWorkspaceId) return;
+
+		// Discover which y-indexeddb databases (= Yjs rooms) exist for the previous
+		// workspace by enumerating IndexedDB database names with the workspace prefix.
+		// indexedDB.databases() is available on Chrome 71+, Firefox 126+, Safari 15.4+.
+		const prefix = `${previousWorkspaceId}:`;
+		let roomNames: string[] = [];
+		try {
+			if (typeof (indexedDB as any).databases === 'function') {
+				const allDbs: { name?: string }[] = await (indexedDB as any).databases();
+				roomNames = allDbs.map((db) => db.name ?? '').filter((name) => name.startsWith(prefix));
+			} else {
+				// Fallback: at minimum sync the registry doc. Individual note docs will sync
+				// the next time the user opens workspace A.
+				roomNames = [`${previousWorkspaceId}:${NOTES_REGISTRY_ID}`];
+			}
+		} catch {
+			return; // Unable to enumerate – skip flush; edits will sync on next manual switch.
+		}
+
+		if (roomNames.length === 0) return;
+
+		const tempDocs: Y.Doc[] = [];
+		const tempIdbProviders: IndexeddbPersistence[] = [];
+		const tempWsProviders: WebsocketProvider[] = [];
+
+		const cleanup = (): void => {
+			for (const provider of tempWsProviders) {
+				try { provider.disconnect(); provider.destroy(); } catch { /* ignore */ }
+			}
+			for (const provider of tempIdbProviders) {
+				try { provider.destroy(); } catch { /* ignore */ }
+			}
+			for (const doc of tempDocs) {
+				try { doc.destroy(); } catch { /* ignore */ }
+			}
+		};
+
+		try {
+			// Step 1: Open IndexedDB providers for all rooms and wait for local hydration.
+			// WS providers must only open AFTER IndexedDB is hydrated so the state vector
+			// sent in Sync Step 1 reflects the full local state (including offline edits).
+			const idbReadyPromises: Promise<void>[] = [];
+			for (const roomName of roomNames) {
+				const doc = new Y.Doc();
+				tempDocs.push(doc);
+				const idb = new IndexeddbPersistence(roomName, doc);
+				tempIdbProviders.push(idb);
+				idbReadyPromises.push(
+					Promise.race([
+						new Promise<void>((resolve) => {
+							if ((idb as any).synced) { resolve(); return; }
+							idb.on('synced', () => resolve());
+						}),
+						new Promise<void>((resolve) => { window.setTimeout(resolve, 3_000); }),
+					])
+				);
+			}
+			await Promise.all(idbReadyPromises);
+
+			// Step 2: Open WS providers (server session still has previousWorkspaceId).
+			const wsReadyPromises: Promise<void>[] = [];
+			for (let i = 0; i < roomNames.length; i++) {
+				const wsProvider = new WebsocketProvider(this.websocketUrl, roomNames[i], tempDocs[i], {
+					connect: true,
+					resyncInterval: 0,
+					maxBackoffTime: 2_000,
+				});
+				tempWsProviders.push(wsProvider);
+				wsReadyPromises.push(
+					new Promise<void>((resolve) => {
+						if ((wsProvider as any).synced === true) { resolve(); return; }
+						const onSync = (isSynced: boolean): void => {
+							if (isSynced) {
+								(wsProvider as any).off?.('sync', onSync);
+								resolve();
+							}
+						};
+						(wsProvider as any).on?.('sync', onSync);
+					})
+				);
+			}
+
+			// Wait for all WS syncs to report back, or bail after timeoutMs.
+			await Promise.race([
+				Promise.all(wsReadyPromises),
+				new Promise<void>((resolve) => { window.setTimeout(resolve, timeoutMs); }),
+			]);
+		} finally {
+			cleanup();
+		}
+	}
+
+	/**
+	 * Pull a workspace's full dataset (registry + all notes) from the server into
+	 * IndexedDB so it is available offline, even if the user has never visited it.
+	 *
+	 * Unlike flushPreviousWorkspaceEdits (which only opens rooms that ALREADY exist
+	 * in IDB), this method always syncs the registry first to discover the full note
+	 * list, then opens every note room. This is the correct path for the initial
+	 * offline-preload use case where a workspace has never been loaded on this device.
+	 *
+	 * The server session MUST already be set to previousWorkspaceId before calling
+	 * (the caller is responsible for the POST /activate call).
+	 *
+	 * @param workspaceId — workspace to pull.
+	 * @param timeoutMs   — max time to wait per-sync phase before moving on (default 8 s).
+	 */
+	public async preloadWorkspaceFromServer(workspaceId: string, timeoutMs = 8_000): Promise<void> {
+		if (!workspaceId || !this.websocketUrl) return;
+		if (workspaceId === this.activeWorkspaceId) return;
+
+		const tempDocs: Y.Doc[] = [];
+		const tempIdbProviders: IndexeddbPersistence[] = [];
+		const tempWsProviders: WebsocketProvider[] = [];
+
+		const cleanup = (): void => {
+			for (const p of tempWsProviders) { try { p.disconnect(); p.destroy(); } catch { /* ignore */ } }
+			for (const p of tempIdbProviders) { try { p.destroy(); } catch { /* ignore */ } }
+			for (const d of tempDocs) { try { d.destroy(); } catch { /* ignore */ } }
+		};
+
+		const waitIdb = (idb: IndexeddbPersistence, ms: number): Promise<void> =>
+			Promise.race([
+				new Promise<void>((resolve) => {
+					if ((idb as any).synced) { resolve(); return; }
+					idb.on('synced', () => resolve());
+				}),
+				new Promise<void>((resolve) => { window.setTimeout(resolve, ms); }),
+			]);
+
+		const waitWs = (ws: WebsocketProvider, ms: number): Promise<void> =>
+			Promise.race([
+				new Promise<void>((resolve) => {
+					if ((ws as any).synced === true) { resolve(); return; }
+					const onSync = (ok: boolean): void => {
+						if (ok) { (ws as any).off?.('sync', onSync); resolve(); }
+					};
+					(ws as any).on?.('sync', onSync);
+				}),
+				new Promise<void>((resolve) => { window.setTimeout(resolve, ms); }),
+			]);
+
+		try {
+			// ── Phase 1: sync the registry to discover the workspace's note IDs ──────
+			const registryRoom = `${workspaceId}:${NOTES_REGISTRY_ID}`;
+			const registryDoc = new Y.Doc();
+			tempDocs.push(registryDoc);
+
+			const registryIdb = new IndexeddbPersistence(registryRoom, registryDoc);
+			tempIdbProviders.push(registryIdb);
+			await waitIdb(registryIdb, 3_000);
+
+			const registryWs = new WebsocketProvider(this.websocketUrl, registryRoom, registryDoc, {
+				connect: true, resyncInterval: 0, maxBackoffTime: 2_000,
+			});
+			tempWsProviders.push(registryWs);
+			await waitWs(registryWs, timeoutMs);
+
+			// Read note IDs from the synced registry (same structure as getOrCreateDocEntry).
+			const notesList = registryDoc.getArray<Y.Map<any>>(NOTES_LIST_KEY);
+			const noteIds = notesList.toArray()
+				.map((item) => String(item.get?.('id') ?? '').trim())
+				.filter(Boolean);
+
+			if (noteIds.length === 0) return;
+
+			// ── Phase 2: sync every note doc in parallel ──────────────────────────────
+			const noteWaitPromises: Promise<void>[] = [];
+			for (const noteId of noteIds) {
+				const noteRoom = `${workspaceId}:${noteId}`;
+				const noteDoc = new Y.Doc();
+				tempDocs.push(noteDoc);
+
+				const noteIdb = new IndexeddbPersistence(noteRoom, noteDoc);
+				tempIdbProviders.push(noteIdb);
+				// Wait for IDB hydration so the state vector reflects existing local data
+				// before the WS provider sends Sync Step 1.
+				await waitIdb(noteIdb, 2_000);
+
+				const noteWs = new WebsocketProvider(this.websocketUrl, noteRoom, noteDoc, {
+					connect: true, resyncInterval: 0, maxBackoffTime: 2_000,
+				});
+				tempWsProviders.push(noteWs);
+				noteWaitPromises.push(waitWs(noteWs, timeoutMs));
+			}
+
+			await Promise.race([
+				Promise.all(noteWaitPromises),
+				new Promise<void>((resolve) => { window.setTimeout(resolve, timeoutMs + 2_000); }),
+			]);
+		} finally {
+			cleanup();
+		}
+	}
+
+	/**
 	 * Eagerly initialize the notes registry doc (IndexedDB hydration + WS wiring).
 	 *
 	 * Called once from the constructor so downstream getNotesRegistryDoc() calls

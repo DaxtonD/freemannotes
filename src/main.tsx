@@ -6,6 +6,7 @@ import { DocumentManagerProvider } from './core/DocumentManagerContext';
 import { initPwa } from './core/pwa';
 import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
+import { readWorkspaceSelectionCache } from './core/workspaceSelectionCache';
 import './styles/variables.css';
 import './styles/globals.css';
 import './styles/layout.css';
@@ -36,6 +37,13 @@ const wsUrl = (import.meta as any).env?.VITE_WS_URL || getDefaultWsUrl();
 // mid-await). See DocumentManagerOptions.initialWorkspaceId.
 function readCachedWorkspaceId(): string | null {
 	try {
+		// Prefer the dedicated workspace-selection cache (updated on every switch,
+		// including offline switches) over the auth cache (which reflects the server
+		// session and may lag behind the latest local workspace change).
+		const cachedWorkspaceSelection = readWorkspaceSelectionCache();
+		if (cachedWorkspaceSelection?.workspaceId) {
+			return cachedWorkspaceSelection.workspaceId;
+		}
 		const raw = localStorage.getItem('freemannotes.auth.cache.v1');
 		if (!raw) return null;
 		const parsed = JSON.parse(raw);
