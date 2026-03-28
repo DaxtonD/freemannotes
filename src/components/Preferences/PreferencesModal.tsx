@@ -3,6 +3,8 @@ import { fetchAboutHudStats, type AboutHudStatsResponse } from '../../core/noteM
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import styles from './PreferencesModal.module.css';
+import aboutIconLightAsset from '../../../lighticon.png';
+import aboutIconDarkAsset from '../../../darkicon.png';
 
 type ConnectionState = 'connected' | 'connecting' | 'offline';
 
@@ -72,8 +74,8 @@ type SectionModalProps = {
 	connectionState: ConnectionState;
 };
 
-const ABOUT_ICON_LIGHT = '../../../lighticon.png';
-const ABOUT_ICON_DARK = '../../../darkicon.png';
+const ABOUT_ICON_LIGHT = aboutIconLightAsset;
+const ABOUT_ICON_DARK = aboutIconDarkAsset;
 const ABOUT_WORDMARK = '/icons/freemannotes.png';
 const ABOUT_FACE_IMAGE = '/icons/FreemanFace.png';
 const VERSION_ICON_LIGHT = '/icons/version-light.png';
