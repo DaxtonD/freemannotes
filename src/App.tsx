@@ -5299,6 +5299,7 @@ export function App(): React.JSX.Element {
 				}}
 				onOpenAppearance={openAppearanceFromPreferences}
 				onOpenUser={openUserFromPreferences}
+				connectionState={connection.state}
 				onUserManagement={openUserManagementFromPreferences}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}

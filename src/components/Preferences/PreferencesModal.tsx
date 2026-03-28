@@ -4,6 +4,8 @@ import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubble
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import styles from './PreferencesModal.module.css';
 
+type ConnectionState = 'connected' | 'connecting' | 'offline';
+
 type PreferencesSection =
 	| 'install'
 	| 'about'
@@ -45,6 +47,7 @@ export type PreferencesModalProps = {
 	onInstallApp?: () => void | Promise<void>;
 	onOpenUser?: () => void;
 	onOpenAppearance?: () => void;
+	connectionState?: ConnectionState;
 	// Optional admin/session actions.
 	// These are injected by the App so Preferences can stay a mostly-presentational
 	// component and not depend directly on auth/admin service logic.
@@ -66,11 +69,13 @@ type SectionModalProps = {
 	installMethod?: 'prompt' | 'ios' | null;
 	installBusy?: boolean;
 	onInstallApp?: () => void | Promise<void>;
+	connectionState: ConnectionState;
 };
 
 const ABOUT_ICON_LIGHT = '../../../lighticon.png';
 const ABOUT_ICON_DARK = '../../../darkicon.png';
 const ABOUT_WORDMARK = '/icons/freemannotes.png';
+const ABOUT_FACE_IMAGE = '/icons/FreemanFace.png';
 const VERSION_ICON_LIGHT = '/icons/version-light.png';
 const VERSION_ICON_DARK = '/icons/version.png';
 
@@ -110,69 +115,97 @@ function formatUptime(seconds: number): string {
 function AboutSectionContent(props: {
 	t: (key: string) => string;
 	isLightTheme: boolean;
+	connectionState: ConnectionState;
 }): React.JSX.Element {
 	const [hud, setHud] = React.useState<AboutHudStatsResponse | null>(null);
 	const [hudLoading, setHudLoading] = React.useState(true);
 	const [hudError, setHudError] = React.useState<string | null>(null);
+	const [iconLoadFailed, setIconLoadFailed] = React.useState(false);
+	const [iconRetryToken, setIconRetryToken] = React.useState(0);
 
-	React.useEffect(() => {
-		let cancelled = false;
+	const fetchHud = React.useCallback(async () => {
 		setHudLoading(true);
 		setHudError(null);
-		void fetchAboutHudStats()
-			.then((response) => {
-				if (cancelled) return;
-				setHud(response);
-				setHudLoading(false);
-			})
-			.catch(() => {
-				if (cancelled) return;
-				setHud(null);
-				setHudLoading(false);
-				setHudError('Telemetry unavailable');
-			});
-		return () => {
-			cancelled = true;
-		};
+		try {
+			const response = await fetchAboutHudStats();
+			setHud(response);
+			setHudLoading(false);
+		} catch {
+			setHudLoading(false);
+			setHudError('Telemetry unavailable');
+		}
 	}, []);
 
+	React.useEffect(() => {
+		if (props.connectionState === 'offline') {
+			setHudLoading(false);
+			setHudError('Telemetry unavailable');
+			return;
+		}
+
+		if (props.connectionState === 'connected') {
+			void fetchHud();
+		}
+	}, [fetchHud, props.connectionState]);
+
+	React.useEffect(() => {
+		if (props.connectionState !== 'connected') return;
+		const timer = window.setInterval(() => {
+			void fetchHud();
+		}, 30000);
+		return () => {
+			window.clearInterval(timer);
+		};
+	}, [fetchHud, props.connectionState]);
+
+	React.useEffect(() => {
+		if (props.connectionState !== 'connected') return;
+		setIconLoadFailed(false);
+		setIconRetryToken((value) => value + 1);
+	}, [props.connectionState, props.isLightTheme]);
+
 	const healthValue = React.useMemo(() => {
-		if (hudLoading) return 50;
+		if (props.connectionState === 'offline') return 25;
+		if (props.connectionState === 'connecting' || hudLoading) return 50;
 		if (hud?.status === 'ok') return 100;
-		if (hud) return 50;
-		return 25;
-	}, [hud, hudLoading]);
+		return 50;
+	}, [hud, hudLoading, props.connectionState]);
 
 	const hudItems = React.useMemo(() => {
 		if (!hud) {
 			return [
-				{ key: 'users', label: 'USERS', value: '--' },
 				{ key: 'db', label: 'DB', value: '--' },
 				{ key: 'uploads', label: 'UPLOADS', value: '--' },
 				{ key: 'rooms', label: 'ROOMS', value: '--' },
-				{ key: 'uptime', label: 'UPTIME', value: '--' },
-				{ key: 'memory', label: 'MEMORY', value: '--' },
+				{ key: 'images', label: 'IMAGES', value: '--' },
+				{ key: 'docs', label: 'DOCS', value: '--' },
+				{ key: 'workspaces', label: 'WORKSPACES', value: '--' },
 			];
 		}
 		return [
-			{ key: 'users', label: 'USERS', value: formatCompact(hud.totals.users) },
 			{ key: 'db', label: 'DB', value: formatBytes(hud.totals.dbStateBytes) },
 			{ key: 'uploads', label: 'UPLOADS', value: formatBytes(hud.totals.uploadBytes) },
 			{ key: 'rooms', label: 'ROOMS', value: formatCompact(hud.totals.documents) },
-			{ key: 'uptime', label: 'UPTIME', value: formatUptime(hud.uptimeSeconds) },
-			{ key: 'memory', label: 'MEMORY', value: formatBytes(hud.process.rssBytes) },
+			{ key: 'images', label: 'IMAGES', value: formatCompact(hud.totals.noteImagesCount) },
+			{ key: 'docs', label: 'DOCS', value: formatCompact(hud.totals.noteDocumentsCount) },
+			{ key: 'workspaces', label: 'WORKSPACES', value: formatCompact(hud.totals.workspaces) },
 		];
-	}, [hud, hudLoading]);
+	}, [hud]);
 
 	return (
 		<div className={styles.aboutSection}>
 			<h4 className={styles.aboutTitle}>{props.t('prefs.aboutTitle')}</h4>
 			<div className={styles.aboutHeroGroup}>
 				<div className={styles.aboutHero} aria-label={props.t('prefs.aboutBrandingAria')}>
+					<img src={ABOUT_FACE_IMAGE} alt="" role="presentation" className={styles.aboutHeroFace} />
 					<img
-						src={props.isLightTheme ? ABOUT_ICON_LIGHT : ABOUT_ICON_DARK}
+						key={`about-icon-${props.isLightTheme ? 'light' : 'dark'}-${iconRetryToken}`}
+						src={iconLoadFailed ? (props.isLightTheme ? ABOUT_ICON_DARK : ABOUT_ICON_LIGHT) : (props.isLightTheme ? ABOUT_ICON_LIGHT : ABOUT_ICON_DARK)}
 						alt={props.t('prefs.aboutIconAlt')}
 						className={styles.aboutHeroIcon}
+						onError={() => {
+							setIconLoadFailed(true);
+						}}
 					/>
 					<img
 						src={ABOUT_WORDMARK}
@@ -202,11 +235,6 @@ function AboutSectionContent(props: {
 						))}
 					</div>
 					{hudError ? <div className={styles.aboutHudMeta}>{hudError}</div> : null}
-					{hud && !hudError ? (
-						<div className={styles.aboutHudMeta}>
-							{`IMAGES ${formatCompact(hud.totals.noteImagesCount)}  DOCS ${formatCompact(hud.totals.noteDocumentsCount)}  WORKSPACES ${formatCompact(hud.totals.workspaces)}`}
-						</div>
-					) : null}
 				</div>
 			</div>
 			<div className={styles.aboutDescription}>
@@ -214,9 +242,27 @@ function AboutSectionContent(props: {
 				<p>{props.t('prefs.aboutBodyLine2')}</p>
 				<p>{props.t('prefs.aboutBodyLine3')}</p>
 			</div>
-			<div className={styles.aboutHealthCorner} aria-live="polite">
-				<span className={styles.aboutHealthLabel}>HEALTH</span>
-				<span className={styles.aboutHealthValue}>{healthValue}</span>
+			<div className={styles.aboutFooterStats} aria-live="polite">
+				<div className={styles.aboutFooterGroup}>
+					<div className={styles.aboutFooterCell}>
+						<span className={styles.aboutFooterLabel}>HEALTH</span>
+						<span className={styles.aboutFooterValue}>{healthValue}</span>
+					</div>
+					<div className={styles.aboutFooterCell}>
+						<span className={styles.aboutFooterLabel}>MEMORY</span>
+						<span className={styles.aboutFooterValue}>{hud ? formatBytes(hud.process.rssBytes) : '--'}</span>
+					</div>
+				</div>
+				<div className={`${styles.aboutFooterGroup} ${styles.aboutFooterGroupRight}`}>
+					<div className={styles.aboutFooterCell}>
+						<span className={styles.aboutFooterLabel}>UPTIME</span>
+						<span className={styles.aboutFooterValue}>{hud ? formatUptime(hud.uptimeSeconds) : '--'}</span>
+					</div>
+					<div className={styles.aboutFooterCell}>
+						<span className={styles.aboutFooterLabel}>USERS</span>
+						<span className={styles.aboutFooterValue}>{hud ? formatCompact(hud.totals.users) : '--'}</span>
+					</div>
+				</div>
 			</div>
 		</div>
 	);
@@ -370,6 +416,7 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 					<AboutSectionContent
 						t={props.t}
 						isLightTheme={props.isLightTheme}
+						connectionState={props.connectionState}
 					/>
 				) : (
 					<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
@@ -469,6 +516,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					installMethod={props.installMethod}
 					installBusy={props.installBusy}
 					onInstallApp={props.onInstallApp}
+					connectionState={props.connectionState ?? 'connecting'}
 				/>
 			) : null}
 		</div>
