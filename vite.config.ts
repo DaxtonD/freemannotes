@@ -131,10 +131,13 @@ export default defineConfig(({ mode }) => {
 				includeAssets: [
 					'pwa-192x192.png',
 					'pwa-512x512.png',
+					'pwa-192x192-maskable.png',
+					'pwa-512x512-maskable.png',
+					'apple-touch-icon.png',
 				],
 				manifest: {
-					name: 'FreemanNotes',
-					short_name: 'FreemanNotes',
+					name: 'Freeman Notes',
+					short_name: 'Freeman Notes',
 					description: 'Offline-first collaborative note taking for personal and shared workspaces.',
 					start_url: '/',
 					scope: '/',
@@ -143,8 +146,18 @@ export default defineConfig(({ mode }) => {
 					theme_color: '#ffffff',
 					background_color: '#0b0f16',
 					icons: [
-						{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-						{ src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+						// 'any' icons are displayed as-is (transparent background preserved).
+						// Used for browser tabs, notification trays, and launchers that
+						// render the icon without cropping or background-filling.
+						{ src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+						{ src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+						// 'maskable' icons have an opaque background (app dark theme colour)
+						// and the logo scaled to fit within the inner 80% safe zone.
+						// Android adaptive-icon launchers prefer these — without them the
+						// launcher fills the transparent area with its own colour (often
+						// white), making a light logo invisible.
+						{ src: 'pwa-192x192-maskable.png', sizes: '192x192', type: 'image/png', purpose: 'maskable' },
+						{ src: 'pwa-512x512-maskable.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
 					],
 				},
 				injectManifest: {
