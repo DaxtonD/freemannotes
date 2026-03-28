@@ -20,6 +20,7 @@ import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
+import { resizeAutoHeightTextarea } from './autoSizeTextarea';
 import styles from './Editors.module.css';
 
 export type TextEditorProps = {
@@ -85,7 +86,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	}, [isCoarsePointer]);
 	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
-	const titleInputRef = React.useRef<HTMLInputElement | null>(null);
+	const titleInputRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
 		event.preventDefault();
@@ -165,6 +166,10 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		return () => window.cancelAnimationFrame(rafId);
 	}, []);
 
+	React.useLayoutEffect(() => {
+		resizeAutoHeightTextarea(titleInputRef.current);
+	}, [title]);
+
 	const onSubmit = async (event: React.FormEvent): Promise<void> => {
 		// Standard async submit guard to prevent duplicate saves.
 		event.preventDefault();
@@ -215,9 +220,9 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 				style={mobileKeyboardOpen ? { height: `${keyboard.visibleBottom}px`, maxHeight: `${keyboard.visibleBottom}px` } : undefined}
 				onClick={(event) => event.stopPropagation()}
 			>
-				<input
-					type="text"
+				<textarea
 					name="text-note-title"
+					rows={1}
 					autoComplete="off"
 					autoCorrect="off"
 					autoCapitalize="sentences"
@@ -229,6 +234,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					ref={titleInputRef}
 					value={title}
 					onChange={(e) => setTitle(e.target.value)}
+					onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
 					placeholder={t('editors.titlePlaceholder')}
 				/>
 

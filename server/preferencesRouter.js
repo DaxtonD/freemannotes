@@ -34,6 +34,24 @@ const MIN_DELETE_AFTER_DAYS = 1;
 /** Maximum allowed value for deleteAfterDays (cap at 365 days / 1 year). */
 const MAX_DELETE_AFTER_DAYS = 365;
 
+/** Per-device display-size lower bound (75%). */
+const MIN_FONT_SCALE = 0.75;
+
+/** Per-device display-size upper bound (150%). */
+const MAX_FONT_SCALE = 1.5;
+
+/** Per-device note card height lower bound in px. */
+const MIN_NOTE_CARD_HEIGHT_PX = 320;
+
+/** Per-device note card height upper bound in px. */
+const MAX_NOTE_CARD_HEIGHT_PX = 1400;
+
+function normalizeFontScale(raw) {
+	const value = Number(raw);
+	if (!Number.isFinite(value)) return 1;
+	return Math.min(MAX_FONT_SCALE, Math.max(MIN_FONT_SCALE, value));
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -185,6 +203,8 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						create: {
 							userId,
 							deviceId,
+							noteCardFontScale: 1,
+							noteEditorFontScale: 1,
 							checklistShowCompleted: false,
 							quickDeleteChecklist: false,
 							noteCardCompletedExpandedByNoteId: {},
@@ -208,6 +228,11 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						deleteAfterDays: userPref.deleteAfterDays,
 						theme: devicePref.theme ?? null,
 						language: devicePref.language ?? null,
+						noteCardFontScale: normalizeFontScale(devicePref.noteCardFontScale),
+						noteEditorFontScale: normalizeFontScale(devicePref.noteEditorFontScale),
+						noteCardMaxHeightPx: Number.isFinite(Number(devicePref.noteCardMaxHeightPx))
+							? Number(devicePref.noteCardMaxHeightPx)
+							: null,
 						activeWorkspaceId: normalizedActiveWorkspaceId,
 						activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
@@ -290,6 +315,43 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						}
 					}
 
+					if ('noteCardFontScale' in body) {
+						const scale = Number(body.noteCardFontScale);
+						if (!Number.isFinite(scale) || scale < MIN_FONT_SCALE || scale > MAX_FONT_SCALE) {
+							jsonResponse(res, 400, {
+								error: `noteCardFontScale must be a number between ${MIN_FONT_SCALE} and ${MAX_FONT_SCALE}`,
+							});
+							return;
+						}
+						deviceUpdateData.noteCardFontScale = scale;
+					}
+
+					if ('noteEditorFontScale' in body) {
+						const scale = Number(body.noteEditorFontScale);
+						if (!Number.isFinite(scale) || scale < MIN_FONT_SCALE || scale > MAX_FONT_SCALE) {
+							jsonResponse(res, 400, {
+								error: `noteEditorFontScale must be a number between ${MIN_FONT_SCALE} and ${MAX_FONT_SCALE}`,
+							});
+							return;
+						}
+						deviceUpdateData.noteEditorFontScale = scale;
+					}
+
+					if ('noteCardMaxHeightPx' in body) {
+						if (body.noteCardMaxHeightPx == null || body.noteCardMaxHeightPx === '') {
+							deviceUpdateData.noteCardMaxHeightPx = null;
+						} else {
+							const height = Number(body.noteCardMaxHeightPx);
+							if (!Number.isFinite(height) || !Number.isInteger(height) || height < MIN_NOTE_CARD_HEIGHT_PX || height > MAX_NOTE_CARD_HEIGHT_PX) {
+								jsonResponse(res, 400, {
+									error: `noteCardMaxHeightPx must be an integer between ${MIN_NOTE_CARD_HEIGHT_PX} and ${MAX_NOTE_CARD_HEIGHT_PX}`,
+								});
+								return;
+							}
+							deviceUpdateData.noteCardMaxHeightPx = height;
+						}
+					}
+
 					if ('activeSharedFolder' in body) {
 						if (body.activeSharedFolder == null || body.activeSharedFolder === '') {
 							deviceUpdateData.activeSharedFolder = null;
@@ -343,6 +405,8 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 							create: {
 								userId,
 								deviceId,
+								noteCardFontScale: 1,
+								noteEditorFontScale: 1,
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
 								noteCardCompletedExpandedByNoteId: {},
@@ -365,6 +429,11 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 							deleteAfterDays: userPref.deleteAfterDays,
 							theme: devicePref.theme ?? null,
 							language: devicePref.language ?? null,
+							noteCardFontScale: normalizeFontScale(devicePref.noteCardFontScale),
+							noteEditorFontScale: normalizeFontScale(devicePref.noteEditorFontScale),
+							noteCardMaxHeightPx: Number.isFinite(Number(devicePref.noteCardMaxHeightPx))
+								? Number(devicePref.noteCardMaxHeightPx)
+								: null,
 							activeWorkspaceId: normalizedActiveWorkspaceId,
 							activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 							checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
@@ -421,6 +490,12 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 									deviceId,
 									theme: deviceData.theme ?? null,
 									language: deviceData.language ?? null,
+									noteCardFontScale:
+										typeof deviceData.noteCardFontScale === 'number' ? deviceData.noteCardFontScale : 1,
+									noteEditorFontScale:
+										typeof deviceData.noteEditorFontScale === 'number' ? deviceData.noteEditorFontScale : 1,
+									noteCardMaxHeightPx:
+										typeof deviceData.noteCardMaxHeightPx === 'number' ? deviceData.noteCardMaxHeightPx : null,
 									activeWorkspaceId: null,
 									activeSharedFolder: deviceData.activeSharedFolder ?? null,
 									checklistShowCompleted:
@@ -441,6 +516,8 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 								create: {
 									userId,
 									deviceId,
+									noteCardFontScale: 1,
+									noteEditorFontScale: 1,
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
 									noteCardCompletedExpandedByNoteId: {},
@@ -474,6 +551,11 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						deleteAfterDays: pref.userPref.deleteAfterDays,
 						theme: pref.devicePref.theme ?? null,
 						language: pref.devicePref.language ?? null,
+						noteCardFontScale: normalizeFontScale(pref.devicePref.noteCardFontScale),
+						noteEditorFontScale: normalizeFontScale(pref.devicePref.noteEditorFontScale),
+						noteCardMaxHeightPx: Number.isFinite(Number(pref.devicePref.noteCardMaxHeightPx))
+							? Number(pref.devicePref.noteCardMaxHeightPx)
+							: null,
 						activeWorkspaceId: normalizedActiveWorkspaceId,
 						activeSharedFolder: normalizeActiveSharedFolder(pref.devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(pref.devicePref.checklistShowCompleted),

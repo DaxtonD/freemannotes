@@ -8,6 +8,7 @@ import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc } from '../../core/noteLinks';
+import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
@@ -19,6 +20,7 @@ import {
 	type SharedNotePlacement,
 } from '../../core/noteShareApi';
 import { readArchiveState, readTrashState } from '../../core/noteModel';
+import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { measureDocumentRects } from './flip';
@@ -42,6 +44,7 @@ type Note = {
 
 export type NoteGridProps = {
 	authUserId?: string | null;
+	themeId: ThemeId;
 	activeWorkspaceId?: string | null;
 	selectedNoteId: string | null;
 	onSelectNote: (noteId: string) => void;
@@ -263,6 +266,7 @@ type GridNoteCardProps = {
 	note: Note;
 	docId: string | null;
 	authUserId?: string | null;
+	themeId: ThemeId;
 	doc: Y.Doc;
 	metaChips?: React.ReactNode;
 	hasPendingSync: boolean;
@@ -281,10 +285,25 @@ type GridNoteCardProps = {
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 };
 
+function getNoteColorVars(doc: Y.Doc, themeId: ThemeId): React.CSSProperties | undefined {
+	const token = readNoteColorToken(doc.getMap<any>('metadata'));
+	if (!token) return undefined;
+	const resolved = resolveThemeNoteColorModel(themeId).tokens[token];
+	return {
+		'--note-color-card-bg': resolved.cardBackground,
+		'--note-color-header-bg': resolved.headerBackground,
+		'--note-color-border': resolved.borderColor,
+		'--note-color-text': resolved.textColor,
+		'--note-color-muted': resolved.mutedTextColor,
+		'--note-color-accent': resolved.accentColor,
+	} as React.CSSProperties;
+}
+
 function renderNoteMetaChips(args: {
 	noteId: string;
 	docId: string | null;
 	doc: Y.Doc;
+	themeId: ThemeId;
 	authUserId?: string | null;
 	canEditNote: boolean;
 	suspendAttachmentRemoteRefresh?: boolean;
@@ -305,6 +324,7 @@ function renderNoteMetaChips(args: {
 	if ((!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && !args.docId) {
 		return undefined;
 	}
+	const chipColorStyle = getNoteColorVars(args.doc, args.themeId);
 
 	return (
 		<>
@@ -312,6 +332,7 @@ function renderNoteMetaChips(args: {
 				<button
 					type="button"
 					className={styles.noteChipButton}
+					style={chipColorStyle}
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={(event) => {
 						event.stopPropagation();
@@ -335,6 +356,7 @@ function renderNoteMetaChips(args: {
 					doc={args.doc}
 					authUserId={args.authUserId}
 					className={styles.noteChipButton}
+					colorStyle={chipColorStyle}
 					suspendRemoteRefresh={args.suspendAttachmentRemoteRefresh}
 					disableInitialRemoteRefresh={args.disableAttachmentInitialRemoteRefresh}
 					onOpenStateChange={(isOpen) => args.onAttachmentChipOpenStateChange?.(args.noteId, isOpen)}
@@ -392,6 +414,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					noteId={props.note.id}
 					docId={props.docId || undefined}
 					authUserId={props.authUserId}
+					themeId={props.themeId}
 					doc={props.doc}
 					metaChips={props.metaChips}
 					canEdit={props.canEdit}
@@ -1097,6 +1120,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const collaboratorOverlaySummary = openCollaboratorChip ? collaboratorSummariesByNoteId[openCollaboratorChip.noteId] ?? null : null;
 	const openOverlayNoteId = openCollaboratorChip?.noteId ?? openAttachmentChipNoteId;
 	const overlayActiveNoteId = openOverlayNoteId ?? latchedOverlayNoteId;
+	const collaboratorOverlayColorStyle = React.useMemo(() => {
+		if (!openCollaboratorChip) return undefined;
+		const doc = docsById[openCollaboratorChip.noteId];
+		if (!doc) return undefined;
+		return getNoteColorVars(doc, props.themeId);
+	}, [docsById, openCollaboratorChip, props.themeId]);
 
 	React.useEffect(() => {
 		if (overlayReleaseTimerRef.current) {
@@ -1297,6 +1326,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										note={note}
 										docId={docId}
 										authUserId={props.authUserId}
+											themeId={props.themeId}
 										doc={doc}
 										metaChips={renderNoteMetaChips({
 											noteId: note.id,
@@ -1318,6 +1348,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 												});
 											},
 											t,
+												themeId: props.themeId,
 											title,
 										})}
 										canEdit={canEditNote}
@@ -1366,6 +1397,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						noteId={activeNote.id}
 						docId={activeDocId || undefined}
 						authUserId={props.authUserId}
+						themeId={props.themeId}
 						doc={activeDoc}
 						metaChips={renderNoteMetaChips({
 							noteId: activeNote.id,
@@ -1384,6 +1416,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									});
 								},
 							t,
+											themeId: props.themeId,
 							title: activeDoc.getText('title').toString(),
 						})}
 						canEdit={activeCanEdit}
@@ -1402,6 +1435,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									<>
 										<motion.div
 											className={styles.overlayBackdrop}
+											style={collaboratorOverlayColorStyle}
 											aria-hidden="true"
 											initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
 											animate={{ opacity: 1, backdropFilter: 'blur(2px)' }}
@@ -1410,6 +1444,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										/>
 										<div
 											className={styles.collaboratorOverlayRoot}
+											style={collaboratorOverlayColorStyle}
 								onPointerDown={(event) => {
 									if (event.cancelable) event.preventDefault();
 									event.stopPropagation();
@@ -1426,7 +1461,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								<motion.div
 									ref={collaboratorOverlayPanelRef}
 									className={styles.collaboratorOverlayPanel}
-									style={collaboratorOverlayPosition}
+									style={{
+										...(collaboratorOverlayColorStyle ?? {}),
+										...collaboratorOverlayPosition,
+									}}
 									onPointerDown={(event) => event.stopPropagation()}
 									onClick={(event) => event.stopPropagation()}
 									onTouchStartCapture={(event) => {

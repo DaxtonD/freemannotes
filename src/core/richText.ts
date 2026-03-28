@@ -1,4 +1,4 @@
-import { generateText, getSchema, type Extensions, type JSONContent } from '@tiptap/core';
+import { generateText, getRenderedAttributes, getSchema, type Editor, type Extensions, type JSONContent } from '@tiptap/core';
 import Collaboration from '@tiptap/extension-collaboration';
 import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -10,6 +10,7 @@ import Underline from '@tiptap/extension-underline';
 import StarterKit from '@tiptap/starter-kit';
 import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { prosemirrorJSONToYXmlFragment, yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import * as Y from 'yjs';
 
@@ -34,6 +35,128 @@ const MARKDOWN_BLOCK_PATTERN = /(^|\n)(#{1,6}\s|>\s|[-+*]\s|\d+\.\s|```|~~~|\|.+
 const MARKDOWN_INLINE_PATTERN = /(\*\*[^*\n][\s\S]*?\*\*|__[^_\n][\s\S]*?__|~~[^~\n][\s\S]*?~~|`[^`\n]+`|\[[^\]]+\]\([^\)]+\)|!\[[^\]]*\]\([^\)]+\))/;
 const CLIPBOARD_BLOCK_SELECTOR = 'p,div,section,article,header,footer,aside,blockquote,pre,ul,ol,li,table,thead,tbody,tfoot,tr,hr,h1,h2,h3,h4,h5,h6';
 const CLIPBOARD_CELL_SELECTOR = 'th,td';
+
+const MobileSafeTaskItem = TaskItem.extend({
+	addNodeView() {
+		return ({ node, HTMLAttributes, getPos, editor }) => {
+			const listItem = document.createElement('li');
+			const checkboxWrapper = document.createElement('label');
+			const checkboxStyler = document.createElement('span');
+			const checkbox = document.createElement('input');
+			const content = document.createElement('div');
+
+			const updateA11y = (currentNode: ProseMirrorNode) => {
+				checkbox.ariaLabel =
+					this.options.a11y?.checkboxLabel?.(currentNode, checkbox.checked) ||
+					`Task item checkbox for ${currentNode.textContent || 'empty task item'}`;
+			};
+
+			const syncCheckedState = (checked: boolean) => {
+				listItem.dataset.checked = String(checked);
+				checkbox.checked = checked;
+			};
+
+			updateA11y(node);
+
+			checkboxWrapper.contentEditable = 'false';
+			checkbox.type = 'checkbox';
+			checkbox.addEventListener('mousedown', (event) => event.preventDefault());
+			checkbox.addEventListener('change', (event) => {
+				if (!editor.isEditable && !this.options.onReadOnlyChecked) {
+					checkbox.checked = !checkbox.checked;
+					return;
+				}
+
+				const { checked } = event.target as HTMLInputElement;
+
+				if (editor.isEditable && typeof getPos === 'function') {
+					const position = getPos();
+					if (typeof position !== 'number') {
+						syncCheckedState(node.attrs.checked);
+						return;
+					}
+
+					const transaction = editor.state.tr;
+					const currentNode = transaction.doc.nodeAt(position);
+					if (!currentNode) {
+						syncCheckedState(node.attrs.checked);
+						return;
+					}
+
+					transaction.setNodeMarkup(position, undefined, {
+						...currentNode.attrs,
+						checked,
+					});
+					editor.view.dispatch(transaction);
+				}
+
+				if (!editor.isEditable && this.options.onReadOnlyChecked) {
+					if (!this.options.onReadOnlyChecked(node, checked)) {
+						checkbox.checked = !checkbox.checked;
+					}
+				}
+			});
+
+			Object.entries(this.options.HTMLAttributes).forEach(([key, value]) => {
+				listItem.setAttribute(key, String(value));
+			});
+
+			syncCheckedState(Boolean(node.attrs.checked));
+
+			checkboxWrapper.append(checkbox, checkboxStyler);
+			listItem.append(checkboxWrapper, content);
+
+			Object.entries(HTMLAttributes).forEach(([key, value]) => {
+				listItem.setAttribute(key, String(value));
+			});
+
+			let previousRenderedAttributeKeys = new Set(Object.keys(HTMLAttributes));
+
+			return {
+				dom: listItem,
+				contentDOM: content,
+				update: (updatedNode) => {
+					if (updatedNode.type !== this.type) {
+						return false;
+					}
+
+					syncCheckedState(Boolean(updatedNode.attrs.checked));
+					updateA11y(updatedNode);
+
+					const extensionAttributes = editor.extensionManager.attributes;
+					const newHtmlAttributes = getRenderedAttributes(updatedNode, extensionAttributes);
+					const newKeys = new Set(Object.keys(newHtmlAttributes));
+					const staticAttributes = this.options.HTMLAttributes;
+
+					previousRenderedAttributeKeys.forEach((key) => {
+						if (!newKeys.has(key)) {
+							if (key in staticAttributes) {
+								listItem.setAttribute(key, String(staticAttributes[key]));
+							} else {
+								listItem.removeAttribute(key);
+							}
+						}
+					});
+
+					Object.entries(newHtmlAttributes).forEach(([key, value]) => {
+						if (value === null || value === undefined) {
+							if (key in staticAttributes) {
+								listItem.setAttribute(key, String(staticAttributes[key]));
+							} else {
+								listItem.removeAttribute(key);
+							}
+						} else {
+							listItem.setAttribute(key, String(value));
+						}
+					});
+
+					previousRenderedAttributeKeys = newKeys;
+					return true;
+				},
+			};
+		};
+	},
+});
 
 function buildStarterKit(variant: RichTextVariant) {
 	if (variant === 'minimal') {
@@ -77,7 +200,7 @@ export function createRichTextExtensions(args: {
 	if (args.variant === 'full') {
 		extensions.push(
 			TaskList,
-			TaskItem.configure({ nested: true }),
+			MobileSafeTaskItem.configure({ nested: true }),
 			Table.configure({ resizable: false }),
 			TableRow,
 			TableHeader,
@@ -123,6 +246,30 @@ function makeParagraphNode(text: string): JSONContent {
 	});
 
 	return { type: 'paragraph', content: content.length > 0 ? content : undefined };
+}
+
+function ensureMinimalRichTextDoc(json: JSONContent): JSONContent {
+	if (json.type === 'doc' && Array.isArray(json.content) && json.content.length > 0) {
+		return json;
+	}
+	return createRichTextDocFromPlainText('', 'minimal');
+}
+
+export function splitMinimalRichTextAtSelection(editor: Editor): {
+	before: JSONContent;
+	after: JSONContent;
+	beforeText: string;
+	afterText: string;
+} {
+	const { doc, selection } = editor.state;
+	const before = ensureMinimalRichTextDoc(doc.cut(0, selection.from).toJSON() as JSONContent);
+	const after = ensureMinimalRichTextDoc(doc.cut(selection.to, doc.content.size).toJSON() as JSONContent);
+	return {
+		before,
+		after,
+		beforeText: getPlainTextFromRichJson(before, 'minimal'),
+		afterText: getPlainTextFromRichJson(after, 'minimal'),
+	};
 }
 
 export function createRichTextDocFromPlainText(text: string, variant: RichTextVariant = 'minimal'): JSONContent {

@@ -25,6 +25,7 @@ type NoteAttachmentCountChipProps = {
 	doc: Y.Doc;
 	authUserId?: string | null;
 	className: string;
+	colorStyle?: React.CSSProperties;
 	onOpenBrowser: (kind: NoteAttachmentBrowserKind) => void;
 	onOpenStateChange?: (isOpen: boolean) => void;
 	suspendRemoteRefresh?: boolean;
@@ -305,6 +306,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 				ref={buttonRef}
 				type="button"
 				className={[props.className, styles.mainChip].join(' ')}
+				style={props.colorStyle}
 				onPointerDown={(event) => event.stopPropagation()}
 				onClick={handleToggle}
 				aria-haspopup="dialog"
@@ -353,6 +355,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 									onPointerDown={(event) => event.stopPropagation()}
 									onClick={(event) => event.stopPropagation()}
 									style={{
+										...(props.colorStyle ?? {}),
 										top: Math.min(anchorRect.top + anchorRect.height + 10, window.innerHeight - 164),
 										left: Math.min(anchorRect.left, Math.max(12, window.innerWidth - 272)),
 									}}

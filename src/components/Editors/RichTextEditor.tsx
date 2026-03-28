@@ -48,10 +48,11 @@ type RichTextEditorProps = {
 	contentClassName?: string;
 	onChange?: (payload?: { json: JSONContent; text: string }) => void;
 	onEditorChange?: (editor: Editor | null) => void;
-	onEnter?: () => void;
+	onEnter?: (editor: Editor) => void;
 	onShiftEnter?: () => void;
 	onBackspaceWhenEmpty?: () => void;
 	editable?: boolean;
+	suppressMobileTaskCheckboxFocus?: boolean;
 	onCreateUrlPreview?: () => void;
 	copyMode?: ClipboardConversionTarget;
 	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
@@ -111,6 +112,26 @@ function ensureEditorSelectionVisible(editor: Editor | null, bottomInset: number
 	}
 	if (selectionTop < visibleTop) {
 		scrollContainer.scrollTop -= visibleTop - selectionTop;
+	}
+}
+
+function ensureEditorElementVisible(element: HTMLElement | null, bottomInset: number): void {
+	if (!element) return;
+	const scrollContainer = getScrollContainer(element);
+	if (!scrollContainer) return;
+	const elementRect = element.getBoundingClientRect();
+	const containerRect = scrollContainer.getBoundingClientRect();
+	const topBuffer = 12;
+	const bottomBuffer = Math.max(12, bottomInset);
+	const visibleTop = containerRect.top + topBuffer;
+	const visibleBottom = containerRect.bottom - bottomBuffer;
+
+	if (elementRect.bottom > visibleBottom) {
+		scrollContainer.scrollTop += elementRect.bottom - visibleBottom;
+		return;
+	}
+	if (elementRect.top < visibleTop) {
+		scrollContainer.scrollTop -= visibleTop - elementRect.top;
 	}
 }
 
@@ -225,6 +246,30 @@ function getEditorSelectionClipboardInput(editor: Editor | null): { text: string
 	container.appendChild(serializer.serializeFragment(slice.content));
 	const text = editor.state.doc.textBetween(from, to, '\n\n');
 	return { text, html: container.innerHTML };
+}
+
+function getTaskListCheckboxTarget(target: EventTarget | null): HTMLInputElement | null {
+	if (!(target instanceof HTMLElement)) return null;
+	const checkbox = target.closest('input[type="checkbox"]');
+	if (!(checkbox instanceof HTMLInputElement)) return null;
+	return checkbox.closest('li[data-type="taskItem"]') instanceof HTMLElement ? checkbox : null;
+}
+
+function getTaskItemPositionFromTarget(view: Editor['view'], target: EventTarget | null): number | null {
+	const checkbox = getTaskListCheckboxTarget(target);
+	const taskItem = checkbox?.closest('li[data-type="taskItem"]');
+	if (!(taskItem instanceof HTMLElement)) return null;
+	try {
+		return view.posAtDOM(taskItem, 0);
+	} catch {
+		return null;
+	}
+}
+
+function getTaskItemElementFromTarget(target: EventTarget | null): HTMLElement | null {
+	const checkbox = getTaskListCheckboxTarget(target);
+	const taskItem = checkbox?.closest('li[data-type="taskItem"]');
+	return taskItem instanceof HTMLElement ? taskItem : null;
 }
 
 export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element {
@@ -718,6 +763,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	const { variant } = props;
 	const { t } = useI18n();
+	const suppressMobileTaskCheckboxFocus = props.suppressMobileTaskCheckboxFocus === true && variant === 'full';
 	const emitInitialChange = props.emitInitialChange ?? true;
 	const serializeChangePayload = props.serializeChangePayload ?? true;
 	const bubbleMenuEnabled = useBubbleMenuEnabled();
@@ -743,6 +789,8 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	const copyModeRef = React.useRef<ClipboardConversionTarget>('rich-text');
 	const [clipboardStatusMessage, setClipboardStatusMessage] = React.useState('');
 	const clipboardMessageTimeoutRef = React.useRef<number | null>(null);
+	const pendingTaskCheckboxRef = React.useRef<HTMLInputElement | null>(null);
+	const suppressNextTaskCheckboxClickRef = React.useRef(false);
 	const showFormattingBubble = showFormattingBubbleActions && hasSelection;
 	const publishClipboardStatus = React.useCallback((message: string): void => {
 		setClipboardStatusMessage(message);
@@ -769,6 +817,57 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 			ensureEditorSelectionVisible(editorRef.current, bottomInset);
 		});
 	}, []);
+	const handleMobileTaskCheckboxToggle = React.useCallback((view: Editor['view'], nodePos: number, checked: boolean): boolean => {
+		const node = view.state.doc.nodeAt(nodePos);
+		if (!node || node.type.name !== 'taskItem') return false;
+		view.dispatch(view.state.tr.setNodeMarkup(nodePos, undefined, { ...node.attrs, checked }));
+		const root = view.dom as HTMLElement | null;
+		if (root && document.activeElement === root) {
+			root.blur();
+		}
+		return true;
+	}, []);
+	const scheduleTaskItemVisibility = React.useCallback((target: EventTarget | null): void => {
+		const taskItem = getTaskItemElementFromTarget(target);
+		if (!taskItem) return;
+		const preferredInset = suppressMobileTaskCheckboxFocus
+			? Math.max(caretVisibilityBottomInsetRef.current, 88)
+			: caretVisibilityBottomInsetRef.current;
+		window.requestAnimationFrame(() => {
+			ensureEditorElementVisible(taskItem, preferredInset);
+		});
+		window.setTimeout(() => ensureEditorElementVisible(taskItem, preferredInset), 120);
+		window.setTimeout(() => ensureEditorElementVisible(taskItem, preferredInset), 260);
+	}, [suppressMobileTaskCheckboxFocus]);
+	const toggleMobileTaskCheckboxFromTarget = React.useCallback((view: Editor['view'], target: EventTarget | null): boolean => {
+		const nodePos = getTaskItemPositionFromTarget(view, target);
+		if (nodePos == null) return false;
+		const node = view.state.doc.nodeAt(nodePos);
+		if (!node || node.type.name !== 'taskItem') return false;
+		const didToggle = handleMobileTaskCheckboxToggle(view, nodePos, !Boolean(node.attrs.checked));
+		if (didToggle) scheduleTaskItemVisibility(target);
+		return didToggle;
+	}, [handleMobileTaskCheckboxToggle, scheduleTaskItemVisibility]);
+	const handleTaskCheckboxInteractionStart = React.useCallback((event: MouseEvent | PointerEvent | TouchEvent): boolean => {
+		if (!suppressMobileTaskCheckboxFocus) return false;
+		const checkbox = getTaskListCheckboxTarget(event.target);
+		if (!checkbox) return false;
+		pendingTaskCheckboxRef.current = checkbox;
+		if (event.cancelable) event.preventDefault();
+		return true;
+	}, [suppressMobileTaskCheckboxFocus]);
+	const handleTaskCheckboxInteractionEnd = React.useCallback((view: Editor['view'], event: MouseEvent | PointerEvent | TouchEvent): boolean => {
+		if (!suppressMobileTaskCheckboxFocus) return false;
+		const checkbox = getTaskListCheckboxTarget(event.target);
+		if (!checkbox || pendingTaskCheckboxRef.current !== checkbox) {
+			pendingTaskCheckboxRef.current = null;
+			return false;
+		}
+		pendingTaskCheckboxRef.current = null;
+		suppressNextTaskCheckboxClickRef.current = true;
+		if (event.cancelable) event.preventDefault();
+		return toggleMobileTaskCheckboxFromTarget(view, event.target);
+	}, [suppressMobileTaskCheckboxFocus, toggleMobileTaskCheckboxFromTarget]);
 	const editor = useEditor(
 		{
 			immediatelyRender: false,
@@ -791,6 +890,12 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 					'data-1p-ignore': 'true',
 				},
 				handleDOMEvents: {
+					pointerdown: (_view, event) => handleTaskCheckboxInteractionStart(event),
+					pointerup: (view, event) => handleTaskCheckboxInteractionEnd(view, event),
+					mousedown: (_view, event) => handleTaskCheckboxInteractionStart(event),
+					mouseup: (view, event) => handleTaskCheckboxInteractionEnd(view, event),
+					touchstart: (_view, event) => handleTaskCheckboxInteractionStart(event),
+					touchend: (view, event) => handleTaskCheckboxInteractionEnd(view, event),
 					copy: (_view, event) => {
 						const ed = editorRef.current;
 						if (!ed || variant !== 'full') return false;
@@ -810,6 +915,24 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 							return false;
 						}
 					},
+					click: (view, event) => {
+						if (!suppressMobileTaskCheckboxFocus) return false;
+						const checkbox = getTaskListCheckboxTarget(event.target);
+						if (!checkbox) return false;
+						if (event.cancelable) event.preventDefault();
+						if (suppressNextTaskCheckboxClickRef.current) {
+							suppressNextTaskCheckboxClickRef.current = false;
+							return true;
+						}
+						return toggleMobileTaskCheckboxFromTarget(view, event.target);
+					},
+				},
+				handleClickOn: (view, nodePos, node, _directPos, event, direct) => {
+					if (!suppressMobileTaskCheckboxFocus || !direct || node.type.name !== 'taskItem') return false;
+					const checkbox = getTaskListCheckboxTarget(event.target);
+					if (!checkbox) return false;
+					event.preventDefault();
+					return handleMobileTaskCheckboxToggle(view, nodePos, !Boolean(node.attrs.checked));
 				},
 				handlePaste: (_view, event) => {
 					const ed = editorRef.current;
@@ -837,7 +960,9 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 					}
 					if (event.key === 'Enter' && !event.shiftKey && latestHandlersRef.current.onEnter) {
 						event.preventDefault();
-						latestHandlersRef.current.onEnter();
+						if (ed) {
+							latestHandlersRef.current.onEnter(ed);
+						}
 						return true;
 					}
 					if (event.key === 'Enter' && event.shiftKey && latestHandlersRef.current.onShiftEnter) {
@@ -898,7 +1023,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				latestHandlersRef.current.onChange?.();
 			},
 		},
-		[emitInitialChange, props.editable, props.fragment, props.placeholder, serializeChangePayload, variant]
+		[emitInitialChange, handleMobileTaskCheckboxToggle, handleTaskCheckboxInteractionEnd, handleTaskCheckboxInteractionStart, props.editable, props.fragment, props.placeholder, serializeChangePayload, suppressMobileTaskCheckboxFocus, toggleMobileTaskCheckboxFromTarget, variant]
 	);
 
 	React.useEffect(() => {

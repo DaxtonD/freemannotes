@@ -22,7 +22,7 @@ import {
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
-import { createRichTextDocFromPlainText } from '../../core/richText';
+import { createRichTextDocFromPlainText, splitMinimalRichTextAtSelection } from '../../core/richText';
 import { applyChecklistDragToItems, normalizeChecklistHierarchy, removeChecklistItemWithChildren } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
@@ -34,6 +34,7 @@ import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
+import { resizeAutoHeightTextarea } from './autoSizeTextarea';
 import styles from './Editors.module.css';
 
 export type ChecklistEditorProps = {
@@ -282,7 +283,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			return Math.max(prev - 1, 0) as 0 | 1 | 2;
 		});
 	}, []);
-	const titleInputRef = React.useRef<HTMLInputElement | null>(null);
+	const titleInputRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const rowInputsRef = React.useRef<Map<string, HTMLDivElement | null>>(new Map());
 	const rowContainersRef = React.useRef<Map<string, HTMLLIElement | null>>(new Map());
 	// Drag “ghost” sizing:
@@ -419,6 +420,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		return () => window.cancelAnimationFrame(rafId);
 	}, []);
 
+	React.useLayoutEffect(() => {
+		resizeAutoHeightTextarea(titleInputRef.current);
+	}, [title]);
+
 	const handleCreateUrlPreview = React.useCallback((): void => {
 		const next = window.prompt(t('links.prompt'), 'https://');
 		if (!next) return;
@@ -454,13 +459,19 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		});
 	}, []);
 
-	const addItem = React.useCallback((index?: number): void => {
+	const addItem = React.useCallback((index?: number, seed?: Partial<DraftChecklistItem>): void => {
 		const nextId = makeId();
 		suppressAutoActivateAfterDeleteRef.current = false;
 		setItems((prev) => {
 			const next = prev.slice();
 			const insertAt = typeof index === 'number' ? Math.max(0, Math.min(prev.length, index + 1)) : prev.length;
-			next.splice(insertAt, 0, { id: nextId, text: '', completed: false, parentId: null, richContent: createRichTextDocFromPlainText('') });
+			next.splice(insertAt, 0, {
+				id: nextId,
+				text: seed?.text ?? '',
+				completed: seed?.completed ?? false,
+				parentId: seed?.parentId ?? null,
+				richContent: seed?.richContent ?? createRichTextDocFromPlainText(''),
+			});
 			return next;
 		});
 		// Preserve keyboard during row-switch by focusing the proxy before the
@@ -559,11 +570,24 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	}, []);
 
 	const insertItemAfter = React.useCallback(
-		(rowId: string): void => {
+		(rowId: string, editor?: Editor): void => {
+			if (editor) {
+				const split = splitMinimalRichTextAtSelection(editor);
+				latestRowPayloadRef.current = { id: rowId, text: split.beforeText, richContent: split.before };
+				updateItem(rowId, { text: split.beforeText, richContent: split.before });
+				const currentRow = items.find((row) => row.id === rowId) ?? null;
+				addItem(items.findIndex((row) => row.id === rowId), {
+					text: split.afterText,
+					completed: false,
+					parentId: currentRow?.parentId ?? null,
+					richContent: split.after,
+				});
+				return;
+			}
 			const currentIndex = items.findIndex((row) => row.id === rowId);
 			addItem(currentIndex === -1 ? undefined : currentIndex);
 		},
-		[addItem, items]
+		[addItem, items, updateItem]
 	);
 
 	const vibrateIfAvailable = React.useCallback((ms: number): void => {
@@ -840,9 +864,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						zIndex: -1,
 					}}
 				/>
-				<input
-					type="text"
+				<textarea
 					name="checklist-note-title"
+					rows={1}
 					autoComplete="off"
 					autoCorrect="off"
 					autoCapitalize="sentences"
@@ -854,6 +878,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					ref={titleInputRef}
 					value={title}
 					onChange={(e) => setTitle(e.target.value)}
+					onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
 					placeholder={t('editors.titlePlaceholder')}
 				/>
 
@@ -995,7 +1020,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	latestRowPayloadRef.current = { id: item.id, text: payload.text, richContent: payload.json };
 																	updateItem(item.id, { text: payload.text, richContent: payload.json });
 																}}
-																onEnter={() => insertItemAfter(item.id)}
+																onEnter={(editor) => insertItemAfter(item.id, editor)}
 																onShiftEnter={() => undefined}
 																onBackspaceWhenEmpty={() => {
 																	if (activeItems[0]?.id === item.id) return;
@@ -1084,7 +1109,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	latestRowPayloadRef.current = { id: item.id, text: payload.text, richContent: payload.json };
 																	updateItem(item.id, { text: payload.text, richContent: payload.json });
 																}}
-																onEnter={() => insertItemAfter(item.id)}
+																onEnter={(editor) => insertItemAfter(item.id, editor)}
 																onShiftEnter={() => undefined}
 																onBackspaceWhenEmpty={() => {
 																	if (activeItems[0]?.id === item.id) return;

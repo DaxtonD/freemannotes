@@ -195,6 +195,12 @@ model UserDevicePreference {
   /// Per-device appearance preferences.
   theme    String?
   language String?
+  /// Global text scale multiplier for note cards on this device.
+  noteCardFontScale Float @default(1) @map("note_card_font_scale")
+  /// Global text scale multiplier for note editors on this device.
+  noteEditorFontScale Float @default(1) @map("note_editor_font_scale")
+  /// Maximum rendered note-card height on the notes grid for this device.
+  noteCardMaxHeightPx Int? @map("note_card_max_height_px")
 
   /// Per-device workspace selection.
   activeWorkspaceId String? @map("active_workspace_id") @db.Uuid
