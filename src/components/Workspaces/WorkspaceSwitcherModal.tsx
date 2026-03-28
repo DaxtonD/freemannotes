@@ -11,7 +11,7 @@ import {
 	removeCachedWorkspace,
 	readCachedWorkspaceSnapshot,
 } from '../../core/workspaceMetadataStore';
-import { getWorkspaceDisplayName } from '../../core/workspaceDisplay';
+import { getWorkspaceDisplayName, isPersonalWorkspace } from '../../core/workspaceDisplay';
 import styles from './WorkspaceSwitcherModal.module.css';
 
 export type WorkspaceListItem = {
@@ -440,10 +440,12 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 	);
 
 	// Sort order: Personal workspace first, then Shared-With-Me, then user-created
-	// workspaces (alphabetical). Within the user-created group, the currently active
-	// workspace is floated to the top so it's always visible without scrolling.
+	// workspaces. Within the user-created group, the currently active workspace is
+	// floated to the top so it's always visible without scrolling.
+	// Personal is identified by its name pattern ("Personal (<userId>)"), NOT by
+	// systemKind — it has systemKind: null in the database.
 	const sortedWorkspaces = React.useMemo(() => {
-		const personalWorkspace = workspaces.find((workspace) => (workspace.systemKind || '').toUpperCase() === 'PERSONAL') || null;
+		const personalWorkspace = workspaces.find(isPersonalWorkspace) || null;
 		const sharedWorkspace = workspaces.find((workspace) => (workspace.systemKind || '').toUpperCase() === 'SHARED_WITH_ME') || null;
 		const pinnedWorkspaceIds = new Set<string>();
 		if (personalWorkspace) pinnedWorkspaceIds.add(personalWorkspace.id);

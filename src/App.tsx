@@ -85,7 +85,7 @@ import {
 } from './core/workspaceMetadataStore';
 
 const DOCUMENT_VIEWER_STATE_EVENT = 'freemannotes:document-viewer-state';
-import { getWorkspaceDisplayName } from './core/workspaceDisplay';
+import { getWorkspaceDisplayName, isPersonalWorkspace } from './core/workspaceDisplay';
 import { clearWorkspaceSelectionCache, readWorkspaceSelectionCache, writeWorkspaceSelectionCache } from './core/workspaceSelectionCache';
 
 type EditorMode = 'none' | 'text' | 'checklist';
@@ -2668,8 +2668,10 @@ export function App(): React.JSX.Element {
 	}, [authOfflineMode, authStatus, authUserId]);
 
 	const sidebarWorkspacesSorted = React.useMemo(() => {
-		// Keep system workspaces pinned before custom workspaces.
-		const personalWorkspace = sidebarWorkspaces.find((workspace) => (workspace.systemKind || '').toUpperCase() === 'PERSONAL') || null;
+		// Pin Personal (auto-created at registration, identified by name pattern) and
+		// Shared With Me (systemKind: SHARED_WITH_ME) to the top two positions.
+		// The active user workspace floats to the top of the remaining group.
+		const personalWorkspace = sidebarWorkspaces.find(isPersonalWorkspace) || null;
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => (workspace.systemKind || '').toUpperCase() === 'SHARED_WITH_ME') || null;
 		const pinnedWorkspaceIds = new Set<string>();
 		if (personalWorkspace) pinnedWorkspaceIds.add(personalWorkspace.id);
@@ -2893,7 +2895,7 @@ export function App(): React.JSX.Element {
 				setAuthStatus('unauth');
 				manager.setActiveWorkspaceId(null);
 				manager.setWebsocketEnabled(false);
-				setAuthError('Login succeeded, but the server session was not established. Check the production cookie and reverse-proxy setup, then try again.');
+				setAuthError('Login succeeded, but the session could not be confirmed. The server may be temporarily unavailable — please try again. If this persists, check the production cookie and reverse-proxy setup.');
 				return;
 			}
 
@@ -4374,6 +4376,18 @@ export function App(): React.JSX.Element {
 									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
 											<div ref={workspaceMenuRef} className="sidebar-submenu sidebar-workspace-menu" aria-label={t('workspace.listAria')} aria-hidden={!isOpen}>
+											{/* Sticky top action — always reachable regardless of list length. */}
+											<button
+												type="button"
+												className="sidebar-workspace-manage sidebar-workspace-manage-top sidebar-submenu-action"
+												onClick={() => {
+													closeWorkspaceSidebarGroup();
+													openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
+												}}
+												style={{ ['--sidebar-item-index' as const]: 0 }}
+											>
+												{t('workspace.manage')}
+											</button>
 											{sidebarWorkspacesBusy ? (
 													<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 0 }}>{t('common.loading')}</div>
 											) : null}
@@ -4484,35 +4498,45 @@ export function App(): React.JSX.Element {
 													</div>
 												);
 											})}
-											<button
-												type="button"
-													className="sidebar-workspace-manage sidebar-submenu-action"
-												onClick={() => {
-													closeWorkspaceSidebarGroup();
-													openWorkspaceSwitcher({ replaceTop: isMobileViewport && isMobileSidebarOpen });
-												}}
-													style={{ ['--sidebar-item-index' as const]: Math.max(3, sidebarWorkspacesSorted.length + 1) }}
-											>
-												{t('workspace.manage')}
-											</button>
 											</div>
 										</div>
 									) : null}
 
 									{entry.id !== 'workspaces' && isGroup && groupContent.length > 0 && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
-											<div className="sidebar-submenu" aria-hidden={!isOpen}>
-												{groupContent.map((item, index) => {
+											<div className={`sidebar-submenu${entry.id === 'collections' ? ' sidebar-collections-menu' : ''}`} aria-hidden={!isOpen}>
+												{entry.id === 'collections' ? (
+													// Sticky top action for collections — mirrors the workspace dropdown
+													// so "Manage Collections" is always reachable regardless of list length.
+													<button
+														type="button"
+														className="sidebar-submenu-action sidebar-submenu-manage-top"
+														onClick={() => {
+															setActiveSharedFolder(null);
+															setSidebarView('notes');
+															if (isMobileViewport) closeMobileSidebar();
+														}}
+														style={{ ['--sidebar-item-index' as const]: 0 }}
+													>
+														{t('app.sidebarManageCollections')}
+													</button>
+												) : null}
+												{groupContent
+													// Exclude the legacy inline "manage-collections" item — it is now rendered as
+													// the sticky top button above. Animation indexes are offset by +1 for the
+													// collections dropdown to reserve slot 0 for that top button.
+													.filter((item) => !(entry.id === 'collections' && item.id === 'manage-collections'))
+													.map((item, index) => {
 													if (item.kind === 'heading') {
 														return (
-															<div key={item.id} className="sidebar-submenu-heading" style={{ ['--sidebar-item-index' as const]: index }}>
+															<div key={item.id} className="sidebar-submenu-heading" style={{ ['--sidebar-item-index' as const]: entry.id === 'collections' ? index + 1 : index }}>
 																{item.label}
 															</div>
 														);
 													}
 													if (item.kind === 'muted') {
 														return (
-															<div key={item.id} className="sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: index }}>
+															<div key={item.id} className="sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: entry.id === 'collections' ? index + 1 : index }}>
 																{item.label}
 															</div>
 														);
@@ -4530,7 +4554,7 @@ export function App(): React.JSX.Element {
 																	if (isMobileViewport) closeMobileSidebar();
 																}
 															}}
-															style={{ ['--sidebar-item-index' as const]: index }}
+															style={{ ['--sidebar-item-index' as const]: entry.id === 'collections' ? index + 1 : index }}
 														>
 															{item.label}
 														</button>

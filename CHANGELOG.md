@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.17 - 2026-03-27
+
+### Fixed
+- **Infinite DB call storm when Share Workspace modal is open.** The `onInviteChanged` event handler in `SendInviteModal` was calling `loadInviteState(false)` (server fetch) in response to `WORKSPACE_INVITE_STATE_EVENT`, which fires after every local IndexedDB write. The server fetch wrote to IDB, re-emitted the event, and created an unbounded loop that exhausted the PostgreSQL connection pool over time. Fix: the handler now calls `loadInviteState(true)` (cache-read only), since the event signals "local cache updated" not "server has new data."
+- **Personal workspace not pinning to top of sidebar and switcher.** The `systemKind === 'PERSONAL'` check never matched because personal workspaces have `systemKind: null` in the database — they are identified by name pattern `Personal (<userId>)`. Added `isPersonalWorkspace()` to `workspaceDisplay.ts` and used it in both the sidebar sort and the workspace switcher modal.
+- **Misleading "check cookie/reverse-proxy" error after server overload.** The auth error shown when `/api/auth/me` fails after a successful login POST now reads "server may be temporarily unavailable — please try again" before suggesting proxy/cookie configuration.
+
+### Changed
+- **Manage Workspaces button moved to sticky top of workspace dropdown.** Previously at the bottom of the scroll container, it is now pinned above the list so it is always reachable regardless of workspace list length.
+- **Manage Collections button mirrored to sticky top of Collections dropdown.** Same pattern applied to the Collections sidebar submenu.
+- **Sidebar submenus are now bounded scrollable regions.** Both workspace and collections submenus have `max-height` and `overflow-y: auto` so long lists scroll within the sidebar instead of overflowing it.
+- **Mobile sidebar scrollbars hidden.** On touch devices, `scrollbar-width: none` and `::-webkit-scrollbar { width: 0 }` suppress overlapping scrollbar chrome inside the sidebar.
+- **Share icon redesigned for mobile.** The workspace share button is now a transparent icon-only button with accent highlight on hover/focus. On desktop it appears only on row hover; on mobile it is always visible at reduced visual weight.
+
 ## 1.1.16 - 2026-03-27
 
 ### Added
