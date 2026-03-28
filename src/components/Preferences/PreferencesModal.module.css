@@ -346,6 +346,16 @@
 	cursor: pointer;
 }
 
+.selectControl {
+	min-width: 168px;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	padding: 10px 12px;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	font-size: 14px;
+}
+
 .userSection {
 	display: flex;
 	align-items: center;
@@ -447,6 +457,192 @@
 	gap: 12px;
 }
 
+/* ── About section ───────────────────────────────────────────────────── */
+
+.aboutSection {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	position: relative;
+	padding-bottom: 48px;
+}
+
+.aboutTitle {
+	margin: 0;
+	font-size: 20px;
+	font-weight: 700;
+	color: var(--color-text);
+}
+
+.aboutHeroGroup {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px;
+	border: 1px solid var(--color-border);
+	border-radius: 12px;
+	background: var(--color-surface-2);
+}
+
+.aboutHero {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 132px;
+}
+
+.aboutHeroIcon {
+	width: 132px;
+	height: 132px;
+	border-radius: 10px;
+	object-fit: cover;
+	flex: 0 0 auto;
+	border: 0;
+	background: transparent;
+}
+
+.aboutHeroWordmark {
+	height: 30px;
+	width: auto;
+	max-width: 100%;
+	object-fit: contain;
+	display: block;
+}
+
+.aboutVersionRow {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	margin-bottom: 12px;
+}
+
+.aboutVersionIcon {
+	width: 16px;
+	height: 16px;
+	border-radius: 8px;
+	object-fit: contain;
+	background: transparent;
+	flex: 0 0 auto;
+}
+
+.aboutVersionText {
+	font-size: 15px;
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	color: var(--color-text);
+}
+
+.aboutDescription {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	color: var(--color-text-muted);
+	font-size: 14px;
+	line-height: 1.5;
+}
+
+.aboutDescription p {
+	margin: 0;
+}
+
+.aboutHudWrap {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 4px;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	overflow: hidden;
+}
+
+.aboutHudGrid {
+	display: grid;
+	grid-template-columns: repeat(6, minmax(0, 1fr));
+	gap: 4px;
+}
+
+.aboutHudCell {
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-start;
+	gap: 1px;
+	min-width: 0;
+	padding: 0;
+}
+
+.aboutHudLabel {
+	font-size: 9px;
+	font-weight: 700;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, #cab65b 86%, #ffffff 14%);
+	opacity: 0.7;
+	font-family: 'Consolas', 'Lucida Console', 'SFMono-Regular', Menlo, Monaco, monospace;
+	white-space: nowrap;
+}
+
+.aboutHudValue {
+	font-size: 16px;
+	line-height: 1.05;
+	font-weight: 500;
+	letter-spacing: 0.015em;
+	text-transform: uppercase;
+	color: #d6c24b;
+	text-shadow: 0 0 10px rgba(214, 194, 75, 0.2);
+	font-family: 'Consolas', 'Lucida Console', 'SFMono-Regular', Menlo, Monaco, monospace;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: clip;
+}
+
+.aboutHudMeta {
+	font-size: 10px;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, #d6c24b 78%, #ffffff 22%);
+	opacity: 0.68;
+	font-family: 'Consolas', 'Lucida Console', 'SFMono-Regular', Menlo, Monaco, monospace;
+	white-space: normal;
+	overflow-wrap: anywhere;
+}
+
+.aboutHealthCorner {
+	position: absolute;
+	left: 0;
+	bottom: 0;
+	display: inline-flex;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+	pointer-events: none;
+}
+
+.aboutHealthLabel {
+	font-size: 9px;
+	font-weight: 700;
+	letter-spacing: 0.09em;
+	text-transform: uppercase;
+	color: color-mix(in srgb, #cab65b 86%, #ffffff 14%);
+	opacity: 0.72;
+	font-family: 'Consolas', 'Lucida Console', 'SFMono-Regular', Menlo, Monaco, monospace;
+	white-space: nowrap;
+}
+
+.aboutHealthValue {
+	font-size: 18px;
+	line-height: 1;
+	font-weight: 500;
+	letter-spacing: 0.02em;
+	text-transform: uppercase;
+	color: #d6c24b;
+	text-shadow: 0 0 10px rgba(214, 194, 75, 0.2);
+	font-family: 'Consolas', 'Lucida Console', 'SFMono-Regular', Menlo, Monaco, monospace;
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+}
+
 @media (max-width: 720px) {
 	.overlay,
 	.subOverlay {
@@ -493,6 +689,47 @@
 
 	.userActions {
 		flex-direction: column;
+	}
+
+	.aboutHero {
+		min-height: 96px;
+	}
+
+	.aboutHeroIcon {
+		width: 96px;
+		height: 96px;
+	}
+
+	.aboutHudGrid {
+		grid-template-columns: repeat(6, minmax(0, 1fr));
+		gap: 2px;
+	}
+
+	.aboutHudLabel {
+		font-size: 8px;
+		letter-spacing: 0.06em;
+	}
+
+	.aboutHudValue {
+		font-size: 12px;
+		letter-spacing: 0;
+	}
+
+	.aboutHudMeta {
+		font-size: 9px;
+	}
+
+	.aboutSection {
+		padding-bottom: 42px;
+	}
+
+	.aboutHealthLabel {
+		font-size: 8px;
+		letter-spacing: 0.06em;
+	}
+
+	.aboutHealthValue {
+		font-size: 14px;
 	}
 
 	.appearanceLayout {

@@ -1143,6 +1143,11 @@
 	min-width: 0;
 }
 
+.app-sidebar-link.is-active .sidebar-label {
+	color: var(--color-accent);
+	font-weight: 600;
+}
+
 .app-sidebar.is-collapsed .app-sidebar-link {
 	justify-content: center;
 	padding: 10px 8px;
@@ -1198,8 +1203,17 @@
 	padding: 6px 0;
 	display: flex;
 	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
 	width: 100%;
 	box-sizing: border-box;
+}
+
+.note-grid-scope-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
 }
 
 .note-grid-scope-chip {
@@ -1242,6 +1256,26 @@
 .note-grid-scope-clear:hover,
 .note-grid-scope-clear:focus-visible {
 	background: color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.note-grid-scope-actionButton {
+	min-height: 30px;
+	padding: 0 12px;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	border: 1px solid color-mix(in srgb, var(--color-danger) 18%, var(--color-border));
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-danger) 8%, var(--color-surface));
+	color: var(--color-danger);
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	letter-spacing: 0.01em;
+}
+
+.note-grid-scope-actionButton:disabled {
+	opacity: 0.6;
+	cursor: progress;
 }
 
 .global-search-results {

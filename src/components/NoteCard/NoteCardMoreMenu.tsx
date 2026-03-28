@@ -5,9 +5,11 @@ import {
 	faUserPlus,
 	faImage,
 	faFileLines,
+	faFolderOpen,
 	faLink,
 	faBell,
 	faTrash,
+	faArrowRotateLeft,
 	faFolderPlus,
 	faTag,
 	faSquareCheck,
@@ -27,6 +29,8 @@ export type NoteCardMoreMenuProps = {
 	onAddImage?: (() => void) | undefined;
 	onAddDocument?: (() => void) | undefined;
 	onAddUrlPreview?: (() => void) | undefined;
+	onMoveToWorkspace?: (() => void) | undefined;
+	isTrashView?: boolean;
 	/** Bounding rect of the anchor element (e.g. note card). On desktop the
 	 *  menu renders as a popover positioned relative to this rect. */
 	anchorRect?: { top: number; left: number; width: number; height: number } | null;
@@ -43,6 +47,7 @@ type MenuItem = {
 
 export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Element {
 	const { t } = useI18n();
+	const isTrashView = props.isTrashView === true;
 	const overlayRef = React.useRef<HTMLDivElement>(null);
 	const menuRef = React.useRef<HTMLDivElement>(null);
 	const onCloseRef = React.useRef(props.onClose);
@@ -139,21 +144,35 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 		};
 	}, []);
 
-	// Suppress accidental selection from the long-press touch that opened
-	// the menu.  The finger is still down when the sheet mounts; if it
-	// lifts over a menu item within the first 300ms, ignore that tap.
-	const suppressUntilRef = React.useRef(isDesktop ? 0 : Date.now() + 300);
-	const awaitingInitialTouchReleaseRef = React.useRef(!isDesktop);
+	// Suppress only the synthetic/carry-over events immediately after a
+	// long-press opens the sheet. Relying on the sheet to observe the
+	// original touch release is unreliable because the menu mounts mid-gesture.
+	const suppressUntilRef = React.useRef(isDesktop ? 0 : Date.now() + 180);
+	const [isTouchInteractionLocked, setIsTouchInteractionLocked] = React.useState(!isDesktop);
+	const releaseUnlockTimerRef = React.useRef<number>(0);
+	const requiresFreshTouchRef = React.useRef(!isDesktop);
 
 	const isInitialTouchGuardActive = React.useCallback((): boolean => {
-		return awaitingInitialTouchReleaseRef.current || Date.now() < suppressUntilRef.current;
+		return Date.now() < suppressUntilRef.current;
 	}, []);
 
-	const armPostReleaseGuard = React.useCallback((): void => {
-		awaitingInitialTouchReleaseRef.current = false;
-		suppressUntilRef.current = Date.now() + 400;
+	const unlockTouchInteraction = React.useCallback((): void => {
+		setIsTouchInteractionLocked(false);
+		suppressUntilRef.current = Date.now() + 32;
 		window.getSelection()?.removeAllRanges();
 	}, []);
+
+	const scheduleTouchInteractionUnlock = React.useCallback((): void => {
+		if (typeof window === 'undefined') {
+			unlockTouchInteraction();
+			return;
+		}
+		if (releaseUnlockTimerRef.current) return;
+		releaseUnlockTimerRef.current = window.setTimeout(() => {
+			releaseUnlockTimerRef.current = 0;
+			unlockTouchInteraction();
+		}, 0);
+	}, [unlockTouchInteraction]);
 
 	const swallowSuppressedInteraction = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!isInitialTouchGuardActive()) return;
@@ -163,26 +182,63 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	}, [isInitialTouchGuardActive]);
 
 	const handleTouchEndCapture = React.useCallback((event: React.TouchEvent<HTMLDivElement>): void => {
-		if (awaitingInitialTouchReleaseRef.current) {
-			swallowSuppressedInteraction(event);
-			armPostReleaseGuard();
-			return;
-		}
 		swallowSuppressedInteraction(event);
-	}, [armPostReleaseGuard, swallowSuppressedInteraction]);
+	}, [swallowSuppressedInteraction]);
 
 	const handlePointerUpCapture = React.useCallback((event: React.PointerEvent<HTMLDivElement>): void => {
 		if (event.pointerType !== 'touch') {
 			swallowSuppressedInteraction(event);
 			return;
 		}
-		if (awaitingInitialTouchReleaseRef.current) {
-			swallowSuppressedInteraction(event);
-			armPostReleaseGuard();
-			return;
-		}
 		swallowSuppressedInteraction(event);
-	}, [armPostReleaseGuard, swallowSuppressedInteraction]);
+	}, [swallowSuppressedInteraction]);
+
+	React.useEffect(() => {
+		if (isDesktop || !isTouchInteractionLocked || typeof window === 'undefined') return;
+
+		const handleRelease = (): void => {
+			scheduleTouchInteractionUnlock();
+		};
+		const handleForceUnlock = (): void => {
+			scheduleTouchInteractionUnlock();
+		};
+		window.addEventListener('touchend', handleRelease, true);
+		window.addEventListener('touchcancel', handleRelease, true);
+		window.addEventListener('pointerup', handleRelease, true);
+		window.addEventListener('pointercancel', handleRelease, true);
+		window.addEventListener('blur', handleForceUnlock, true);
+		document.addEventListener('visibilitychange', handleForceUnlock, true);
+		return () => {
+			window.removeEventListener('touchend', handleRelease, true);
+			window.removeEventListener('touchcancel', handleRelease, true);
+			window.removeEventListener('pointerup', handleRelease, true);
+			window.removeEventListener('pointercancel', handleRelease, true);
+			window.removeEventListener('blur', handleForceUnlock, true);
+			document.removeEventListener('visibilitychange', handleForceUnlock, true);
+		};
+	}, [isDesktop, isTouchInteractionLocked, scheduleTouchInteractionUnlock]);
+
+	const handleFreshTouchStart = React.useCallback((): void => {
+		if (isTouchInteractionLocked) return;
+		if (isInitialTouchGuardActive()) return;
+		requiresFreshTouchRef.current = false;
+	}, [isInitialTouchGuardActive, isTouchInteractionLocked]);
+
+	const swallowLockedTouchInteraction = React.useCallback((event: React.SyntheticEvent): void => {
+		if (!isTouchInteractionLocked) return;
+		event.preventDefault();
+		event.stopPropagation();
+		window.getSelection()?.removeAllRanges();
+	}, [isTouchInteractionLocked]);
+
+	React.useEffect(() => {
+		return () => {
+			if (releaseUnlockTimerRef.current && typeof window !== 'undefined') {
+				window.clearTimeout(releaseUnlockTimerRef.current);
+				releaseUnlockTimerRef.current = 0;
+			}
+		};
+	}, []);
 
 	React.useEffect(() => {
 		if (typeof document === 'undefined') return;
@@ -208,12 +264,13 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	};
 
 	const items: MenuItem[] = [
-		{ key: 'pin', labelKey: 'noteMenu.pinNote', icon: faThumbtack, action: noop },
+		{ key: 'pin', labelKey: 'noteMenu.pinNote', icon: faThumbtack, disabled: isTrashView, action: noop },
 		...(props.onAddCollaborator
 			? [{
 				key: 'collaborator',
 				labelKey: 'noteMenu.addCollaborator',
 				icon: faUserPlus,
+				disabled: isTrashView,
 				action: () => {
 					props.onClose();
 					props.onAddCollaborator?.();
@@ -225,12 +282,13 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				key: 'image',
 				labelKey: 'noteMenu.addImage',
 				icon: faImage,
+				disabled: isTrashView,
 				action: () => {
 					props.onClose();
 					props.onAddImage?.();
 				},
 			}]
-			: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, action: noop }]),
+			: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, disabled: isTrashView, action: noop }]),
 		{
 			key: 'document',
 			labelKey: 'noteMenu.addDocument',
@@ -243,25 +301,44 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				key: 'url-preview',
 				labelKey: 'noteMenu.addUrlPreview',
 				icon: faLink,
+				disabled: isTrashView,
 				action: () => {
 					props.onClose();
 					props.onAddUrlPreview?.();
 				},
 			}]
 			: []),
-		{ key: 'reminder', labelKey: 'noteMenu.addReminder', icon: faBell, action: noop },
-		...(props.onTrash
-			? [{ key: 'trash', labelKey: 'noteMenu.moveToTrash', icon: faTrash, danger: true, action: props.onTrash }]
+		{ key: 'reminder', labelKey: 'noteMenu.addReminder', icon: faBell, disabled: isTrashView, action: noop },
+		...(props.onMoveToWorkspace
+			? [{
+				key: 'move-workspace',
+				labelKey: 'noteMenu.moveToWorkspace',
+				icon: faFolderOpen,
+				disabled: isTrashView,
+				action: () => {
+					props.onClose();
+					props.onMoveToWorkspace?.();
+				},
+			}]
 			: []),
-		{ key: 'collection', labelKey: 'noteMenu.addToCollection', icon: faFolderPlus, action: noop },
-		{ key: 'label', labelKey: 'noteMenu.addLabel', icon: faTag, action: noop },
+		...(props.onTrash
+			? [{
+				key: 'trash',
+				labelKey: isTrashView ? 'noteMenu.restoreNote' : 'noteMenu.moveToTrash',
+				icon: isTrashView ? faArrowRotateLeft : faTrash,
+				danger: true,
+				action: props.onTrash,
+			}]
+			: []),
+		{ key: 'collection', labelKey: 'noteMenu.addToCollection', icon: faFolderPlus, disabled: isTrashView, action: noop },
+		{ key: 'label', labelKey: 'noteMenu.addLabel', icon: faTag, disabled: isTrashView, action: noop },
 	];
 
 	const checklistItems: MenuItem[] =
 		props.noteType === 'checklist'
 			? [
-					{ key: 'uncheckAll', labelKey: 'noteMenu.uncheckAll', icon: faSquare, action: noop },
-					{ key: 'checkAll', labelKey: 'noteMenu.checkAll', icon: faSquareCheck, action: noop },
+					{ key: 'uncheckAll', labelKey: 'noteMenu.uncheckAll', icon: faSquare, disabled: isTrashView, action: noop },
+					{ key: 'checkAll', labelKey: 'noteMenu.checkAll', icon: faSquareCheck, disabled: isTrashView, action: noop },
 				]
 			: [];
 
@@ -319,7 +396,24 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				window.getSelection()?.removeAllRanges();
 			}}
 		>
-			<div ref={menuRef} className={anchor ? styles.popover : styles.sheet} style={anchor ? popoverStyle : undefined}>
+			<div
+				ref={menuRef}
+				className={anchor ? styles.popover : styles.sheet}
+				style={anchor ? popoverStyle : undefined}
+				onTouchStartCapture={!anchor ? handleFreshTouchStart : undefined}
+				onPointerDownCapture={!anchor ? (event) => {
+					if (isTouchInteractionLocked) {
+						swallowLockedTouchInteraction(event);
+						return;
+					}
+					if (event.pointerType === 'touch') handleFreshTouchStart();
+				} : undefined}
+				onTouchStart={!anchor ? swallowLockedTouchInteraction : undefined}
+				onTouchMove={!anchor ? swallowLockedTouchInteraction : undefined}
+				onTouchEnd={!anchor ? swallowLockedTouchInteraction : undefined}
+				onPointerDown={!anchor ? swallowLockedTouchInteraction : undefined}
+				onPointerUp={!anchor ? swallowLockedTouchInteraction : undefined}
+			>
 				{!anchor && <div className={styles.handle} />}
 				<ul className={styles.menuList} role="menu">
 					{items.map((item) => (
@@ -333,6 +427,10 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 								onClick={(e) => {
 									e.stopPropagation();
 									if (item.disabled) return;
+									if (!anchor && requiresFreshTouchRef.current) {
+										e.preventDefault();
+										return;
+									}
 									if (isInitialTouchGuardActive()) {
 										e.preventDefault();
 										return;
@@ -359,6 +457,10 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 										className={styles.menuItem}
 										onClick={(e) => {
 											e.stopPropagation();
+											if (!anchor && requiresFreshTouchRef.current) {
+												e.preventDefault();
+												return;
+											}
 											if (isInitialTouchGuardActive()) {
 												e.preventDefault();
 												return;

@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.20 - 2026-03-28
+
+### Added
+- **Workspace note move modal with offline-safe replay.** Added a dedicated Move Note flow plus a local pending-move queue that records note transfers while offline and replays them when connectivity returns.
+- **About telemetry HUD.** Preferences > About now includes a live status strip backed by a new authenticated `/api/system/hud-stats` endpoint exposing uptime, storage, and usage totals for signed-in users.
+
+### Changed
+- **Trash retention preference now supports "Never" with constrained presets.** User preferences now accept `7`, `14`, `30`, or `Never` (`null` in API payloads / `0` persisted server-side), and client parsing was updated to treat unset retention as `null` instead of forcing a numeric default.
+- **About section visual redesign.** The About panel now uses the updated branding layout, compact HUD typography, and a dedicated bottom-left numeric health indicator (`100/50/25`) to preserve one-row metric density on mobile.
+- **Trash view interaction model.** Trash scope now uses restore-first actions, read-only-safe note-card behavior, and updated menu/action wiring to match archive/trash context expectations.
+
+### Fixed
+- **Auto-delete cleanup respects disabled retention.** Scheduled trash cleanup now exits early when retention is disabled and logs the skipped cycle.
+- **Expired-share token cleanup on permanent trash deletion.** Cleanup now removes related note share tokens before deleting expired documents to prevent dangling share records.
+- **Mobile note interactions and menu consistency.** Addressed touch/menu edge cases in note cards and more-menu behavior that could conflict with trash-mode actions.
+
 ## 1.1.19 - 2026-03-27
 
 ### Added

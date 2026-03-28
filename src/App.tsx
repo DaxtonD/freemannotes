@@ -36,6 +36,7 @@ import { NoteLinkBrowserModal } from './components/NoteAttachments/NoteLinkBrows
 import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModal';
 import { NoteMediaBrowserModal } from './components/NoteMedia/NoteMediaBrowserModal';
 import { NoteDocumentUploadModal } from './components/NoteDocuments/NoteDocumentUploadModal';
+import { MoveNoteModal } from './components/Workspaces/MoveNoteModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid/NoteGrid';
@@ -72,6 +73,8 @@ import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLink
 import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
 import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkApi';
 import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
+import { emptyTrashNow, moveNoteToWorkspace } from './core/noteManagementApi';
+import { flushPendingNoteMoves, queuePendingNoteMove, removePendingNoteMove } from './core/noteMoveQueue';
 import { emitNoteMediaChanged, scheduleQueuedNoteImageFlush } from './core/noteMediaStore';
 import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
 import { emitNoteDocumentsChanged, scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
@@ -122,6 +125,11 @@ type NoteAttachmentBrowserState = {
 	docId: string;
 	title: string;
 	canEdit: boolean;
+};
+
+type MoveNoteModalState = {
+	noteId: string;
+	title: string;
 };
 
 type OverlaySnapshot = {
@@ -521,6 +529,7 @@ export function App(): React.JSX.Element {
 	const [noteCardMaxHeightPref, setNoteCardMaxHeightPref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()
 	);
+	const [trashDeleteAfterDaysPref, setTrashDeleteAfterDaysPref] = React.useState<number | null>(30);
 	const [checklistShowCompletedPref, setChecklistShowCompletedPref] = React.useState(false);
 	const [quickDeleteChecklistPref, setQuickDeleteChecklistPref] = React.useState(false);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
@@ -530,6 +539,10 @@ export function App(): React.JSX.Element {
 	const [searchResultsBusy, setSearchResultsBusy] = React.useState(false);
 	const [searchResultsError, setSearchResultsError] = React.useState<string | null>(null);
 	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
+	const [moveNoteModalState, setMoveNoteModalState] = React.useState<MoveNoteModalState | null>(null);
+	const [moveNoteBusy, setMoveNoteBusy] = React.useState(false);
+	const [moveNoteError, setMoveNoteError] = React.useState<string | null>(null);
+	const [emptyTrashBusy, setEmptyTrashBusy] = React.useState(false);
 	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(false);
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
@@ -1646,6 +1659,7 @@ export function App(): React.JSX.Element {
 						updatedAt: pref.updatedAt ?? new Date().toISOString(),
 					});
 				}
+				setTrashDeleteAfterDaysPref(pref.deleteAfterDays ?? null);
 				setChecklistShowCompletedPref(Boolean(pref.checklistShowCompleted));
 				setQuickDeleteChecklistPref(Boolean(pref.quickDeleteChecklist));
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
@@ -2317,6 +2331,10 @@ export function App(): React.JSX.Element {
 		return `All notes / ${activeWorkspaceSidebarPath}`;
 	}, [activeWorkspaceSidebarPath, noteGridCollaboratorFilter, sidebarView, t]);
 
+	const moveNoteWorkspaceOptions = React.useMemo(() => {
+		return sidebarWorkspaces.filter((workspace) => workspace.id !== authWorkspaceId && workspace.systemKind !== 'SHARED_WITH_ME' && canEditWorkspaceContent(workspace.role));
+	}, [authWorkspaceId, sidebarWorkspaces]);
+
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
 		return sharedWorkspace?.id ?? null;
@@ -2462,6 +2480,7 @@ export function App(): React.JSX.Element {
 
 	const flushPwaOfflineQueues = React.useCallback(async (): Promise<void> => {
 		if (authStatus !== 'authed' || !authUserId || authOfflineMode) return;
+		await flushPendingNoteMoves(authUserId).catch(() => undefined);
 		await syncPendingWorkspaceMutationsRef.current().catch(() => undefined);
 		await flushSyncOutbox(authUserId).catch(() => undefined);
 		await scheduleSyncOutboxFlush(authUserId).catch(() => undefined);
@@ -4009,6 +4028,122 @@ export function App(): React.JSX.Element {
 		[canEditActiveWorkspace, manager, sharedPlacements, showBriefDialog, t]
 	);
 
+	const closeMoveNoteModal = React.useCallback(() => {
+		if (moveNoteBusy) return;
+		setMoveNoteModalState(null);
+		setMoveNoteError(null);
+	}, [moveNoteBusy]);
+
+	const openMoveNoteModal = React.useCallback((noteId: string, title?: string) => {
+		if (authStatus !== 'authed' || !authWorkspaceId) {
+			return;
+		}
+		setMoveNoteError(null);
+		setMoveNoteModalState({ noteId, title: String(title || '').trim() });
+	}, [authStatus, authWorkspaceId]);
+
+	const handleMoveNoteToWorkspace = React.useCallback(async (targetWorkspaceId: string) => {
+		if (!moveNoteModalState || !authWorkspaceId) return;
+		const noteId = moveNoteModalState.noteId;
+		const noteTitle = moveNoteModalState.title;
+		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+		const shouldQueueImmediately = authOfflineMode || browserOffline;
+		let shouldShowQueuedMessage = shouldQueueImmediately;
+		setMoveNoteBusy(true);
+		setMoveNoteError(null);
+		try {
+			await manager.moveNoteToWorkspaceLocally(noteId, targetWorkspaceId, {
+				sourceWorkspaceId: authWorkspaceId,
+				title: noteTitle,
+			});
+			setSelectedNoteId((current) => current === noteId ? null : current);
+			setOpenDocId((current) => {
+				if (current !== noteId) return current;
+				setOpenDoc(null);
+				return null;
+			});
+			if (authUserId) {
+				queuePendingNoteMove({
+					userId: authUserId,
+					noteId,
+					sourceWorkspaceId: authWorkspaceId,
+					targetWorkspaceId,
+					title: noteTitle,
+				});
+			}
+			if (!shouldQueueImmediately) {
+				try {
+					await moveNoteToWorkspace(noteId, targetWorkspaceId, authWorkspaceId);
+					if (authUserId) {
+						removePendingNoteMove(authUserId, noteId);
+					}
+					shouldShowQueuedMessage = false;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : '';
+					const status = typeof (error as { status?: unknown } | null | undefined)?.status === 'number'
+						? (error as { status: number }).status
+						: null;
+					const isNetworkFailure = /failed to fetch|networkerror|load failed/i.test(message);
+					if (status === 409) {
+						if (authUserId) {
+							removePendingNoteMove(authUserId, noteId);
+						}
+						shouldShowQueuedMessage = false;
+					} else if (isNetworkFailure || status == null || status >= 500) {
+						// Keep the local move and persisted queue when the server response is
+						// ambiguous. The move may have already committed remotely.
+						shouldShowQueuedMessage = true;
+					} else {
+						await manager.moveNoteToWorkspaceLocally(noteId, authWorkspaceId, {
+							sourceWorkspaceId: targetWorkspaceId,
+							title: noteTitle,
+						});
+						if (authUserId) {
+							removePendingNoteMove(authUserId, noteId);
+						}
+						throw error;
+					}
+				}
+			}
+			setMoveNoteModalState(null);
+			showBriefDialog(t(shouldShowQueuedMessage ? 'workspace.moveNoteQueued' : 'workspace.moveNoteSuccess'));
+		} catch (error) {
+			setMoveNoteError(error instanceof Error ? error.message : t('workspace.moveNoteFailed'));
+		} finally {
+			setMoveNoteBusy(false);
+		}
+	}, [authOfflineMode, authUserId, authWorkspaceId, manager, moveNoteModalState, showBriefDialog, t]);
+
+	const handleEmptyTrashNow = React.useCallback(async () => {
+		if (authStatus !== 'authed' || authOfflineMode || typeof navigator !== 'undefined' && navigator.onLine === false) {
+			showBriefDialog(t('app.emptyTrashOfflineUnavailable'));
+			return;
+		}
+		if (!window.confirm(t('app.emptyTrashConfirm'))) return;
+		setEmptyTrashBusy(true);
+		try {
+			const result = await emptyTrashNow();
+			await Promise.all(result.noteIds.map((noteId) => manager.permanentlyDeleteNote(noteId).catch(() => undefined)));
+			setSelectedNoteId((current) => current && result.noteIds.includes(current) ? null : current);
+			setOpenDocId((current) => {
+				if (!current || !result.noteIds.includes(current)) return current;
+				setOpenDoc(null);
+				return null;
+			});
+			if (result.deletedCount <= 0) {
+				showBriefDialog(t('app.emptyTrashAlreadyEmpty'));
+			} else if (result.deletedCount === 1) {
+				showBriefDialog(t('app.emptyTrashSuccessSingle'));
+			} else {
+				showBriefDialog(`${result.deletedCount} ${t('app.emptyTrashSuccessPlural')}`);
+			}
+		} catch (error) {
+			showBriefDialog(error instanceof Error ? error.message : t('app.emptyTrashFailed'));
+		} finally {
+			setEmptyTrashBusy(false);
+		}
+	}, [authOfflineMode, authStatus, manager, showBriefDialog, t]);
+
 	React.useEffect(() => {
 		let cancelled = false;
 		// Branch: nothing selected.
@@ -4630,6 +4765,10 @@ export function App(): React.JSX.Element {
 																	}
 																	if (ws.id !== authWorkspaceId) {
 																		void activateWorkspaceFromSidebar(ws.id, { activeSharedFolder: null });
+																	} else if (sidebarView === 'trash' || sidebarView === 'archive') {
+																		setActiveSharedFolder(null);
+																		setSidebarView('notes');
+																		if (isMobileViewport) closeMobileSidebar();
 																	} else if (ws.systemKind === 'SHARED_WITH_ME') {
 																		void persistSharedWorkspaceSelection(ws.id, null);
 																	} else if (isMobileViewport) {
@@ -4860,10 +4999,10 @@ export function App(): React.JSX.Element {
 						</section>
 					) : null}
 
-					{/* Archive/trash views are read-focused, so hide quick-create affordances. */}
-					{sidebarView === 'notes' ? (
+					{/* Archive/trash views are read-focused; only notes view shows quick-create. */}
+					{(sidebarView === 'notes' || sidebarView === 'trash') ? (
 						<div ref={topControlsRef} className="app-main-sticky">
-							{canCreateNotesInActiveWorkspace ? (
+							{sidebarView === 'notes' && canCreateNotesInActiveWorkspace ? (
 								<div className="top-actions">
 									<button type="button" className="top-action-card" onClick={() => openCreateEditor('text')}>
 										{t('app.createNewNote')}
@@ -4888,6 +5027,18 @@ export function App(): React.JSX.Element {
 										</button>
 									) : null}
 								</div>
+								{sidebarView === 'trash' && canEditActiveWorkspace ? (
+									<div className="note-grid-scope-actions">
+										<button
+											type="button"
+											className="note-grid-scope-actionButton"
+											onClick={() => void handleEmptyTrashNow()}
+											disabled={emptyTrashBusy}
+										>
+											{emptyTrashBusy ? t('common.loading') : t('app.emptyTrashNow')}
+										</button>
+									</div>
+								) : null}
 							</div>
 						</div>
 					) : null}
@@ -4930,9 +5081,10 @@ export function App(): React.JSX.Element {
 						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
 						onAddImage={openNoteImageModal}
 						onAddDocument={undefined}
+						onMoveToWorkspace={(noteId, title) => openMoveNoteModal(noteId, title)}
 						onOpenAttachmentBrowser={openNoteAttachmentBrowser}
 						onSelectCollaboratorFilter={setNoteGridCollaboratorFilter}
-						canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter}
+								canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter && sidebarView !== 'trash'}
 						onSelectNote={(id) => {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
@@ -5096,6 +5248,7 @@ export function App(): React.JSX.Element {
 						openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
 					}}
 					onAddDocument={undefined}
+					onMoveToWorkspace={!selectedSharedPlacement && !selectedNoteReadOnly ? () => openMoveNoteModal(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}
@@ -5115,7 +5268,9 @@ export function App(): React.JSX.Element {
 					setIsPreferencesOpen(false);
 				}}
 				t={t}
+				isLightTheme={isLightTheme(themeId)}
 				quickDeleteChecklist={quickDeleteChecklistPref}
+				deleteAfterDays={trashDeleteAfterDaysPref}
 				installAvailable={pwaState.canInstall}
 				installMethod={pwaState.installMethod}
 				installBusy={pwaInstallBusy}
@@ -5136,11 +5291,29 @@ export function App(): React.JSX.Element {
 					if (authOfflineMode) return;
 					void updateUserPreferences(deviceId, { quickDeleteChecklist: next });
 				}}
+				onDeleteAfterDaysChange={(next) => {
+					setTrashDeleteAfterDaysPref(next);
+					if (authStatus !== 'authed') return;
+					if (authOfflineMode) return;
+					void updateUserPreferences(deviceId, { deleteAfterDays: next });
+				}}
 				onOpenAppearance={openAppearanceFromPreferences}
 				onOpenUser={openUserFromPreferences}
 				onUserManagement={openUserManagementFromPreferences}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}
+			/>
+
+			<MoveNoteModal
+				isOpen={Boolean(moveNoteModalState)}
+				onClose={closeMoveNoteModal}
+				onSelectWorkspace={(workspaceId) => void handleMoveNoteToWorkspace(workspaceId)}
+				t={t}
+				workspaces={moveNoteWorkspaceOptions}
+				currentWorkspaceId={authWorkspaceId}
+				noteTitle={moveNoteModalState?.title ?? ''}
+				busy={moveNoteBusy}
+				error={moveNoteError}
 			/>
 
 			<UserModal

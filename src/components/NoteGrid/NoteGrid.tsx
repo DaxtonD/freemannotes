@@ -51,6 +51,7 @@ export type NoteGridProps = {
 	onAddCollaborator?: (noteId: string, title?: string) => void;
 	onAddImage?: (noteId: string, docId: string, title?: string) => void;
 	onAddDocument?: (noteId: string, docId: string, title?: string) => void;
+	onMoveToWorkspace?: (noteId: string, title?: string) => void;
 	onOpenAttachmentBrowser?: (
 		kind: NoteAttachmentBrowserKind,
 		noteId: string,
@@ -272,7 +273,7 @@ type GridNoteCardProps = {
 	hasPendingSync: boolean;
 	selected: boolean;
 	isMoreMenuOpen: boolean;
-	onOpen: () => void;
+	onOpen?: () => void;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
 	onMoreMenu: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
@@ -488,6 +489,11 @@ function collaboratorMatchesFilter(summary: NoteCardCollaboratorSummary | null |
 	return summary.collaborators.some((collaborator) => collaborator.key === filter.key);
 }
 
+function preventChipOverlayFocusSteal(event: React.SyntheticEvent): void {
+	if (event.cancelable) event.preventDefault();
+	event.stopPropagation();
+}
+
 function collaboratorAvatarFallback(name: string): string {
 	const value = String(name || '').trim();
 	if (!value) return '?';
@@ -592,6 +598,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Tracks which note's long-press more-menu is currently open (null = closed).
 	const [moreMenuNoteId, setMoreMenuNoteId] = React.useState<string | null>(null);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
+	const isTrashView = Boolean(props.showTrashed);
 
 	React.useEffect(() => {
 		docsByIdRef.current = docsById;
@@ -1031,7 +1038,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		gridRef,
 		columns: resolvedBaseColumns,
 		visibleIds,
-		canStartDrag: () => props.canReorder !== false && !touchScrollDetectedRef.current && Date.now() >= suppressTouchDragUntilRef.current,
+		canStartDrag: () => !isTrashView && props.canReorder !== false && !touchScrollDetectedRef.current && Date.now() >= suppressTouchDragUntilRef.current,
 		isTouchDragCandidate: () => pendingTouchIntentRef.current,
 		onCommitOrder: commitVisibleOrder,
 	});
@@ -1108,14 +1115,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const activePlacement = activeNote ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === activeNote.id) : undefined;
 	const activeDocId = activeNote ? activePlacement?.roomId || resolveMediaDocId(activeNote.id) : undefined;
 	const activeCanEdit = Boolean(
-		activeNote && (activeNote.isShared ? activePlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
+		activeNote && !isTrashView && (activeNote.isShared ? activePlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
 	);
 	const activeCollaboratorSummary = activeNote ? collaboratorSummariesByNoteId[activeNote.id] ?? null : null;
 	const moreMenuDoc = moreMenuNoteId ? docsById[moreMenuNoteId] : undefined;
 	const moreMenuPlacement = moreMenuNoteId ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === moreMenuNoteId) : undefined;
 	const moreMenuDocId = moreMenuNoteId ? moreMenuPlacement?.roomId || resolveMediaDocId(moreMenuNoteId) : undefined;
 	const moreMenuCanEdit = Boolean(
-		moreMenuNoteId && (sharedNoteIdSet.has(moreMenuNoteId) ? moreMenuPlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
+		moreMenuNoteId && !isTrashView && (sharedNoteIdSet.has(moreMenuNoteId) ? moreMenuPlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
 	);
 	const collaboratorOverlaySummary = openCollaboratorChip ? collaboratorSummariesByNoteId[openCollaboratorChip.noteId] ?? null : null;
 	const openOverlayNoteId = openCollaboratorChip?.noteId ?? openAttachmentChipNoteId;
@@ -1318,7 +1325,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
 								const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
 								const docId = placement?.roomId || resolveMediaDocId(note.id);
-								const canEditNote = note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false;
+								const canEditNote = !isTrashView && (note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false);
 								const title = doc.getText('title').toString();
 								return (
 									<GridNoteCard
@@ -1355,8 +1362,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										hasPendingSync={pendingSyncNoteIds.has(note.id)}
 										selected={props.selectedNoteId === note.id}
 										isMoreMenuOpen={moreMenuNoteId === note.id}
-										onOpen={() => props.onSelectNote(note.id)}
-											onAddCollaborator={props.onAddCollaborator ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
+										onOpen={!isTrashView ? () => props.onSelectNote(note.id) : undefined}
+											onAddCollaborator={props.onAddCollaborator && canEditNote ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
 											onAddImage={props.onAddImage && canEditNote ? () => {
 												if (!docId) return;
 												props.onAddImage?.(note.id, docId, doc.getText('title').toString());
@@ -1373,7 +1380,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										isOverlayActiveCard={overlayActiveNoteId === note.id}
 										layoutReady={layoutReady}
 										setItemElement={dragManager.setItemElement}
-										setHandleElement={note.isShared ? () => {} : dragManager.setHandleElement}
+										setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 									/>
 								);
 							})}
@@ -1435,7 +1442,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									<>
 										<motion.div
 											className={styles.overlayBackdrop}
-											style={collaboratorOverlayColorStyle}
 											aria-hidden="true"
 											initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
 											animate={{ opacity: 1, backdropFilter: 'blur(2px)' }}
@@ -1444,7 +1450,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										/>
 										<div
 											className={styles.collaboratorOverlayRoot}
-											style={collaboratorOverlayColorStyle}
 								onPointerDown={(event) => {
 									if (event.cancelable) event.preventDefault();
 									event.stopPropagation();
@@ -1514,6 +1519,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 															mass: 0.6,
 															delay: contentDelay,
 														}}
+														onMouseDown={preventChipOverlayFocusSteal}
+														onPointerDown={preventChipOverlayFocusSteal}
 														onClick={() => {
 															props.onSelectCollaboratorFilter?.({
 																key: collaborator.key,
@@ -1556,8 +1563,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							: 'text'
 					}
 					anchorRect={moreMenuAnchorRect}
+					isTrashView={isTrashView}
 					onClose={() => { setMoreMenuNoteId(null); setMoreMenuAnchorRect(null); }}
-					onAddCollaborator={props.onAddCollaborator && moreMenuCanEdit ? () => {
+					onAddCollaborator={props.onAddCollaborator && (moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
 						// The more-menu now routes share/collaboration actions through the
 						// dedicated collaborator modal instead of creating ad-hoc share links.
 						const noteId = moreMenuNoteId;
@@ -1565,21 +1574,32 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						setMoreMenuAnchorRect(null);
 						props.onAddCollaborator?.(noteId);
 					} : undefined}
-					onAddImage={props.onAddImage && moreMenuCanEdit ? () => {
+					onAddImage={props.onAddImage && (moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
 						const noteId = moreMenuNoteId;
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
 						if (!moreMenuDocId || !moreMenuDoc) return;
 						props.onAddImage?.(noteId, moreMenuDocId, moreMenuDoc.getText('title').toString());
 					} : undefined}
-					onAddDocument={props.onAddDocument && moreMenuCanEdit ? () => {
+					onAddDocument={props.onAddDocument && (moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
 						const noteId = moreMenuNoteId;
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
 						if (!moreMenuDocId || !moreMenuDoc) return;
 						props.onAddDocument?.(noteId, moreMenuDocId, moreMenuDoc.getText('title').toString());
 					} : undefined}
-					onAddUrlPreview={moreMenuCanEdit ? () => {
+					onMoveToWorkspace={props.onMoveToWorkspace && !sharedNoteIdSet.has(moreMenuNoteId) && (moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
+						const noteId = moreMenuNoteId;
+						const title = moreMenuDoc.getText('title').toString();
+						setMoreMenuNoteId(null);
+						setMoreMenuAnchorRect(null);
+						props.onMoveToWorkspace?.(noteId, title);
+					} : undefined}
+					onAddUrlPreview={(moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
 						if (!moreMenuDoc) return;
@@ -1599,6 +1619,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						const noteId = moreMenuNoteId;
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
+						if (isTrashView) {
+							void manager.restoreNote(noteId);
+							return;
+						}
 						void manager.trashNote(noteId);
 					}}
 				/>
