@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Added
+- **About hero ambient portrait overlay.** Added a faint right-side `FreemanFace` graphic in Preferences > About to reinforce branding without overpowering the primary icon and copy.
+
+### Changed
+- **About HUD layout and metric grouping refinement.** Rebalanced About telemetry so top-row labels render more cleanly and bottom-row metrics are split into left/right groups (`Health`, `Memory` on the left; `Uptime`, `Users` on the right).
+- **HL2-inspired telemetry palette tuning.** Restored a stronger classic amber/yellow HUD look while retaining theme-aware blending so labels remain legible across custom light/dark palettes.
+
+### Fixed
+- **Live health state now follows connection status.** About health values now react to app connectivity transitions (`100` connected, `50` connecting, `25` offline) and refresh with telemetry polling.
+- **About icon recovery after offline transitions.** The About application icon now retries cleanly when reconnecting instead of remaining broken after an offline error.
+- **Missing desktop telemetry labels.** `Images`, `Docs`, and `Workspaces` now render as first-class HUD cells across desktop and mobile instead of collapsing into an inconsistent wrapped footer line.
+- **Mobile icon edge clipping in About.** Switched the About app icon rendering to fit without side crop on narrow screens.
+
 ## 1.1.20 - 2026-03-28
 
 ### Added
