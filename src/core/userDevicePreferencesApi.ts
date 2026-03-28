@@ -6,6 +6,9 @@ export type UserDevicePreferences = {
 	deleteAfterDays: number;
 	theme: string | null;
 	language: string | null;
+	noteCardFontScale: number;
+	noteEditorFontScale: number;
+	noteCardMaxHeightPx: number | null;
 	activeWorkspaceId: string | null;
 	activeSharedFolder: string | null;
 	checklistShowCompleted: boolean;
@@ -25,6 +28,19 @@ function safeJson(value: any): Record<string, boolean> {
 	return out;
 }
 
+function normalizeFontScale(value: unknown): number {
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return 1;
+	return Math.min(1.5, Math.max(0.75, parsed));
+}
+
+function normalizeNoteCardMaxHeightPx(value: unknown): number | null {
+	if (value == null || value === '') return null;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed)) return null;
+	return Math.round(parsed);
+}
+
 export async function fetchUserPreferences(deviceId: string): Promise<UserDevicePreferences | null> {
 	try {
 		const url = `/api/user/preferences?deviceId=${encodeURIComponent(deviceId)}`;
@@ -39,6 +55,9 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			deleteAfterDays: Number((body as any).deleteAfterDays || 0) || 30,
 			theme: (body as any).theme ? String((body as any).theme) : null,
 			language: (body as any).language ? String((body as any).language) : null,
+			noteCardFontScale: normalizeFontScale((body as any).noteCardFontScale),
+			noteEditorFontScale: normalizeFontScale((body as any).noteEditorFontScale),
+			noteCardMaxHeightPx: normalizeNoteCardMaxHeightPx((body as any).noteCardMaxHeightPx),
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
@@ -57,6 +76,9 @@ export async function updateUserPreferences(
 	patch: {
 		theme?: string | null;
 		language?: LocaleCode | null;
+		noteCardFontScale?: number;
+		noteEditorFontScale?: number;
+		noteCardMaxHeightPx?: number | null;
 		activeSharedFolder?: string | null;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
@@ -81,6 +103,9 @@ export async function updateUserPreferences(
 			deleteAfterDays: Number((body as any).deleteAfterDays || 0) || 30,
 			theme: (body as any).theme ? String((body as any).theme) : null,
 			language: (body as any).language ? String((body as any).language) : null,
+			noteCardFontScale: normalizeFontScale((body as any).noteCardFontScale),
+			noteEditorFontScale: normalizeFontScale((body as any).noteEditorFontScale),
+			noteCardMaxHeightPx: normalizeNoteCardMaxHeightPx((body as any).noteCardMaxHeightPx),
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),

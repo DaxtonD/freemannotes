@@ -27,6 +27,7 @@ import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
+import { readNoteColorToken, resolveThemeNoteColorModel, setNoteColorToken } from '../../core/noteColors';
 import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
@@ -35,6 +36,7 @@ import {
 	getChecklistItemRichPreviewJson,
 	replaceRichFragmentFromJson,
 	setYTextValue,
+	splitMinimalRichTextAtSelection,
 	snapshotChecklistRichContent,
 	syncChecklistItemPlainText,
 	TEXT_NOTE_RICH_FIELD,
@@ -42,21 +44,25 @@ import {
 	syncTextNotePlainText,
 } from '../../core/richText';
 import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
+import type { ThemeId } from '../../core/theme';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
+import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
+import { resizeAutoHeightTextarea } from './autoSizeTextarea';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
 	noteId: string;
 	docId: string;
 	authUserId?: string | null;
+	themeId: ThemeId;
 	doc: Y.Doc;
 	onClose: () => void;
 	onDelete: (noteId: string) => Promise<void>;
@@ -261,7 +267,7 @@ type ChecklistRowContentProps = {
 	activate: (id: string) => void;
 	toggleCompleted: (id: string, checked: boolean) => void;
 	remove: (id: string, options?: { clearSelection?: boolean }) => void;
-	insertAfter: (id: string) => void;
+	insertAfter: (id: string, editor?: Editor) => void;
 	setActiveEditor: (editor: Editor | null) => void;
 };
 
@@ -296,8 +302,8 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 		remove(item.id, { clearSelection: true });
 	}, [item.id, remove]);
 
-	const handleInsertAfter = React.useCallback((): void => {
-		insertAfter(item.id);
+	const handleInsertAfter = React.useCallback((editor: Editor): void => {
+		insertAfter(item.id, editor);
 	}, [insertAfter, item.id]);
 
 	if (!isActive) {
@@ -422,6 +428,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// - Mobile: bottom sheet menu (anchor rect is ignored).
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
+	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
+	const titleFieldRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
@@ -768,8 +776,48 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	// metadata.type controls which editor body is rendered.
 	const metadata = useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
+	const colorToken = useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			metadata.observe(observer);
+			return () => metadata.unobserve(observer);
+		},
+		() => readNoteColorToken(metadata),
+		() => readNoteColorToken(metadata)
+	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
+	const resolvedColor = useMemo(
+		() => (colorToken ? resolveThemeNoteColorModel(props.themeId).tokens[colorToken] : null),
+		[colorToken, props.themeId]
+	);
+	const editorColorStyle = useMemo(() => {
+		if (!resolvedColor) return undefined;
+		return {
+			'--note-editor-surface': resolvedColor.cardBackground,
+			'--note-editor-header': resolvedColor.headerBackground,
+			'--note-editor-border': resolvedColor.borderColor,
+			'--note-editor-text': resolvedColor.textColor,
+			'--note-editor-muted': resolvedColor.mutedTextColor,
+			'--note-editor-accent': resolvedColor.accentColor,
+		} as React.CSSProperties & Record<string, string>;
+	}, [resolvedColor]);
+	const editorShellStyle = useMemo(() => {
+		const style: React.CSSProperties & Record<string, string> = { ...(editorColorStyle ?? {}) };
+		if (mobileKeyboardOpen) {
+			style.height = `${keyboard.visibleBottom}px`;
+			style.maxHeight = `${keyboard.visibleBottom}px`;
+		}
+		return Object.keys(style).length > 0 ? style : undefined;
+	}, [editorColorStyle, keyboard.visibleBottom, mobileKeyboardOpen]);
+	const handleOpenColorPicker = React.useCallback((): void => {
+		if (readOnly) return;
+		setIsColorPickerOpen(true);
+	}, [readOnly]);
+	const handleSelectNoteColor = React.useCallback((token: Parameters<typeof setNoteColorToken>[1]): void => {
+		setNoteColorToken(props.doc, token);
+		setIsColorPickerOpen(false);
+	}, [props.doc]);
 
 	// Keyboard-close de-selection (checklist mode only):
 	// If the user explicitly dismisses the mobile keyboard, clear any active
@@ -805,6 +853,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const title = useYTextValue(titleYText);
 	const content = useOptionalYTextValue(contentYText);
 	const items = useOptionalChecklistItems(type === 'checklist' ? checklistArray : null);
+
+	React.useLayoutEffect(() => {
+		resizeAutoHeightTextarea(titleFieldRef.current);
+	}, [title]);
 
 	React.useEffect(() => {
 		if (type !== 'text') {
@@ -890,7 +942,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	}, [type]);
 
 	const addChecklistItem = React.useCallback(
-		(index?: number): void => {
+		(index?: number, seed?: { text?: string; parentId?: string | null; richContent?: ReturnType<typeof createRichTextDocFromPlainText> }): void => {
 			if (type !== 'checklist') return;
 			suppressAutoActivateAfterDeleteRef.current = false;
 			prepareChecklistRowFocusHandoff();
@@ -904,10 +956,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			const apply = (): void => {
 				const map = new Y.Map<any>();
 				map.set('id', nextId);
-				map.set('text', '');
+				map.set('text', seed?.text ?? '');
 				map.set('completed', false);
-				map.set('parentId', null);
+				map.set('parentId', seed?.parentId ?? null);
 				checklistArray.insert(insertIndex, [map]);
+				if (seed?.richContent) {
+					const fragment = ensureChecklistItemRichContent(map);
+					replaceRichFragmentFromJson(fragment, seed.richContent, 'minimal');
+				}
 			};
 
 			if (doc) doc.transact(apply);
@@ -1163,11 +1219,28 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 
 	const insertChecklistItemAfter = React.useCallback(
-		(rowId: string): void => {
+		(rowId: string, editor?: Editor): void => {
+			if (editor) {
+				const split = splitMinimalRichTextAtSelection(editor);
+				const currentMap = findChecklistItemMapById(checklistArray, rowId);
+				if (currentMap) {
+					currentMap.set('text', split.beforeText);
+					const fragment = ensureChecklistItemRichContent(currentMap);
+					replaceRichFragmentFromJson(fragment, split.before, 'minimal');
+				}
+				const currentItem = items.find((row) => row.id === rowId) ?? null;
+				const currentIndex = items.findIndex((row) => row.id === rowId);
+				addChecklistItem(currentIndex === -1 ? undefined : currentIndex, {
+					text: split.afterText,
+					parentId: currentItem?.parentId ?? null,
+					richContent: split.after,
+				});
+				return;
+			}
 			const currentIndex = items.findIndex((row) => row.id === rowId);
 			addChecklistItem(currentIndex === -1 ? undefined : currentIndex);
 		},
-		[addChecklistItem, items]
+		[addChecklistItem, checklistArray, items]
 	);
 
 	const activateChecklistRow = React.useCallback(
@@ -1271,7 +1344,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					ref={dragProvided.innerRef}
 					{...dragProvided.draggableProps}
 					className={`${styles.checklistItem} ${styles.rowDragging} ${styles.dragGhost}${isActiveClone ? ` ${styles.checklistItemActive}` : ''}${dragged?.parentId ? ` ${styles.childRow}` : ''}`}
-					style={{ ...dragStyle, ...(snapshot.isDropAnimating ? { transitionDuration: isCoarsePointer ? '1ms' : '60ms' } : null), width: rowWidth ?? undefined, minHeight: rowHeight ?? undefined, boxSizing: 'border-box' }}
+					style={{ ...(editorColorStyle ?? {}), ...dragStyle, ...(snapshot.isDropAnimating ? { transitionDuration: isCoarsePointer ? '1ms' : '60ms' } : null), width: rowWidth ?? undefined, minHeight: rowHeight ?? undefined, boxSizing: 'border-box' }}
 				>
 					<button type="button" className={styles.dragHandle} aria-label={t('editors.dragHandle')} {...dragProvided.dragHandleProps}>
 						<FontAwesomeIcon icon={faGripVertical} />
@@ -1298,7 +1371,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				</li>
 			);
 		},
-		[activeChecklistRowId, activeItems, checklistMapsById, isCoarsePointer, t]
+		[activeChecklistRowId, activeItems, checklistMapsById, editorColorStyle, isCoarsePointer, t]
 	);
 
 	if (readOnly) {
@@ -1313,6 +1386,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				<section
 					aria-label={`Editor ${props.noteId}`}
 					className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}
+					style={editorShellStyle}
 					onClick={(event) => event.stopPropagation()}
 				>
 					<header className={styles.editorTopBar}>
@@ -1320,11 +1394,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							✕
 						</button>
 					</header>
-					<input
+					<textarea
 						className={styles.editorTitleInput}
+						rows={1}
+						ref={titleFieldRef}
 						value={title}
 						placeholder={t('editors.titlePlaceholder')}
 						readOnly
+						onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
 					/>
 					{type === 'text' && richContentFragment ? (
 						<div className={styles.fullBodyFieldContainer}>
@@ -1538,7 +1615,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				// `keyboard.visibleBottom` is the bottom edge of the *visible* viewport from
 				// the Visual Viewport API. By clamping the editor to that exact height, the
 				// content area physically stops at the keyboard instead of continuing behind it.
-				style={mobileKeyboardOpen ? { height: `${keyboard.visibleBottom}px`, maxHeight: `${keyboard.visibleBottom}px` } : undefined}
+				style={editorShellStyle}
 				onClick={(event) => event.stopPropagation()}
 			>
 				{/* ── Hidden focus proxy <textarea> ────────────────────────────────
@@ -1600,9 +1677,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				) : null}
 
 				{type === 'checklist' ? (
-					<input
-						type="text"
+					<textarea
 						name="note-title"
+						rows={1}
 						autoComplete="off"
 						autoCorrect="off"
 						autoCapitalize="sentences"
@@ -1611,14 +1688,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						data-lpignore="true"
 						data-1p-ignore="true"
 						className={styles.editorTitleInput}
+						ref={titleFieldRef}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
+						onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
 						placeholder={t('editors.titlePlaceholder')}
 					/>
 				) : (
-					<input
-						type="text"
+					<textarea
 						name="text-note-title"
+						rows={1}
 						autoComplete="off"
 						autoCorrect="off"
 						autoCapitalize="sentences"
@@ -1627,8 +1706,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						data-lpignore="true"
 						data-1p-ignore="true"
 						className={styles.editorTitleInput}
+						ref={titleFieldRef}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
+						onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
 						placeholder={t('editors.titlePlaceholder')}
 					/>
 				)}
@@ -1643,6 +1724,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							onClipboardStatusChange={setClipboardStatusMessage}
 							placeholder={t('editors.startTyping')}
 							hideToolbar={isCoarsePointer}
+							suppressMobileTaskCheckboxFocus={isCoarsePointer}
 							caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 							// Keyboard-open branch:
 							// Reserve just enough space at the bottom of the scrolling viewport for the
@@ -1873,7 +1955,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							>
 								<FontAwesomeIcon icon={faEllipsisVertical} />
 							</button>
-							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+							<button
+								type="button"
+								className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`}
+								aria-label={t('noteColors.dialogTitle')}
+								onClick={handleOpenColorPicker}
+								disabled={readOnly}
+							>
 								<FontAwesomeIcon icon={faPalette} />
 							</button>
 							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
@@ -2064,6 +2152,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				}}
 			/>
 		) : null}
+
+		<NoteColorPickerModal
+			isOpen={isColorPickerOpen}
+			themeId={props.themeId}
+			selectedToken={colorToken}
+			onClose={() => setIsColorPickerOpen(false)}
+			onSelect={handleSelectNoteColor}
+		/>
 
 		{/* Floating keyboard toolbar + occlusion backdrop:
 		    The editor shell stops at `keyboard.visibleBottom`, so the remaining layout

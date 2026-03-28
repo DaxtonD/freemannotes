@@ -89,6 +89,40 @@ function createWorkspaceId(): string {
 	});
 }
 
+function normalizeWorkspaceNameKey(name: string): string {
+	return name.trim().toLocaleLowerCase();
+}
+
+function isReservedWorkspaceName(name: string, t: Props['t']): boolean {
+	// Match against the user-facing labels as well as the legacy stored forms so
+	// built-in workspaces cannot be recreated under a cosmetic alias.
+	const normalized = normalizeWorkspaceNameKey(name);
+	if (!normalized) return false;
+	if (normalized === normalizeWorkspaceNameKey(t('workspace.personal'))) return true;
+	if (normalized === normalizeWorkspaceNameKey(t('workspace.sharedWithMe'))) return true;
+	if (/^personal \([0-9a-f-]{36}\)$/i.test(name.trim())) return true;
+	if (/^shared with me \([0-9a-f-]{36}\)$/i.test(name.trim())) return true;
+	return false;
+}
+
+function hasDuplicateWorkspaceName(
+	workspaces: readonly WorkspaceListItem[],
+	name: string,
+	t: Props['t'],
+	excludeWorkspaceId?: string | null
+): boolean {
+	const normalized = normalizeWorkspaceNameKey(name);
+	if (!normalized) return false;
+	if (isReservedWorkspaceName(name, t)) return true;
+	return workspaces.some((workspace) => {
+		if (excludeWorkspaceId && workspace.id === excludeWorkspaceId) return false;
+		// Compare both raw stored names and normalized display labels so legacy system
+		// workspace names still block duplicates in the modal.
+		if (normalizeWorkspaceNameKey(workspace.name) === normalized) return true;
+		return normalizeWorkspaceNameKey(getWorkspaceDisplayName(workspace, t)) === normalized;
+	});
+}
+
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
 	const res = await fetch(input, { credentials: 'include', ...init });
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
@@ -239,6 +273,11 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 
 	const createWorkspace = React.useCallback(async () => {
 		if (busy) return;
+		const nextName = createName.trim();
+		if (hasDuplicateWorkspaceName(workspaces, nextName, props.t)) {
+			setError(props.t('workspace.duplicateName'));
+			return;
+		}
 		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
 			if (!props.authUserId) {
 				setError(props.t('workspace.createFailed'));
@@ -249,7 +288,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 			const now = new Date().toISOString();
 			const workspace: WorkspaceListItem = {
 				id: createWorkspaceId(),
-				name: createName.trim() || props.t('workspace.unnamed'),
+				name: nextName || props.t('workspace.unnamed'),
 				role: 'OWNER',
 				ownerUserId: props.authUserId,
 				createdAt: now,
@@ -275,7 +314,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 			const data = await fetchJson<{ workspace: WorkspaceListItem }>(`/api/workspaces`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ name: createName }),
+				body: JSON.stringify({ name: nextName }),
 			});
 			if (data.workspace) {
 				await cacheWorkspaceDetails({ workspace: data.workspace, userId: props.authUserId, role: 'OWNER' });
@@ -288,7 +327,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 		} finally {
 			setBusy(false);
 		}
-	}, [busy, createName, load, props]);
+	}, [busy, createName, load, props, workspaces]);
 
 	const renameWorkspace = React.useCallback(
 		async (workspaceId: string) => {
@@ -296,6 +335,10 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 			const nextName = renameValue.trim();
 			if (!nextName) {
 				setError(props.t('workspace.renameInvalid'));
+				return;
+			}
+			if (hasDuplicateWorkspaceName(workspaces, nextName, props.t, workspaceId)) {
+				setError(props.t('workspace.duplicateName'));
 				return;
 			}
 
@@ -351,7 +394,7 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 				setBusy(false);
 			}
 		},
-		[activeWorkspaceId, busy, load, props, renameValue]
+		[activeWorkspaceId, busy, load, props, renameValue, workspaces]
 	);
 
 	const deleteWorkspace = React.useCallback(

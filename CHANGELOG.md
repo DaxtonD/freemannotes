@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.19 - 2026-03-27
+
+### Added
+- **Per-device display-size controls for notes.** Added appearance settings for note-card text size, note-editor text size, and maximum note-card height, backed by local cached preferences, server preference sync, and Prisma migrations.
+- **Semantic note color themes.** Notes can now store a theme-aware color token that recolors cards, editors, collaborator overlays, and attachment chips without persisting raw color values.
+
+### Changed
+- **Editor title fields now auto-grow and wrap.** Text and checklist editor titles use autosizing textareas with reserved trailing space for upcoming action icons.
+- **Checklist editing flow is more caret-aware.** Pressing Enter inside a checklist row now splits content at the caret into a new row while preserving rich-text content and hierarchy.
+
+### Fixed
+- **Simultaneous note-card taps no longer open multiple editors.** The card open gesture now claims a single touch interaction and suppresses competing touches until the gesture resolves.
+- **Mobile shell navigation is more consistent.** The sidebar edge swipe now works from a fresh app state, mobile search participates in overlay history, Android Back closes search, and iOS/PWA has an explicit close path.
+- **Reserved workspace names are blocked.** Workspace creation and rename now reject duplicate names case-insensitively, including the built-in `Personal` and `Shared With Me` labels and their legacy stored forms.
+- **Notification and checklist polish.** Unified bell copy now says `Notifications`, multiline checklist rows have more breathing room, and wrapped title/checklist interactions behave correctly on mobile.
+
 ## 1.1.18 - 2026-03-27
 
 ### Fixed

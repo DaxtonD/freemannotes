@@ -67,6 +67,38 @@ function readJsonBody(req) {
 function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 	const LEGACY_DEVICE_ID = 'legacy';
 	const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+	const RESERVED_WORKSPACE_NAME_RE = /^(personal|shared with me)$/i;
+	const LEGACY_RESERVED_WORKSPACE_NAME_RE = /^(personal|shared with me) \([0-9a-f-]{36}\)$/i;
+
+	function isReservedWorkspaceName(name) {
+		// Server-side enforcement mirrors the modal guard so direct API calls cannot
+		// recreate the built-in Personal / Shared With Me workspaces.
+		const normalized = String(name || '').trim();
+		if (!normalized) return false;
+		return RESERVED_WORKSPACE_NAME_RE.test(normalized) || LEGACY_RESERVED_WORKSPACE_NAME_RE.test(normalized);
+	}
+
+	async function findCaseInsensitiveWorkspaceNameConflict(name, options = {}) {
+		const normalized = String(name || '').trim();
+		if (!normalized) return null;
+		if (isReservedWorkspaceName(normalized)) {
+			return { id: '__reserved__' };
+		}
+		const where = {
+			deletedAt: null,
+			name: {
+				equals: normalized,
+				mode: 'insensitive',
+			},
+		};
+		if (options.excludeWorkspaceId) {
+			where.id = { not: options.excludeWorkspaceId };
+		}
+		return prisma.workspace.findFirst({
+			where,
+			select: { id: true },
+		});
+	}
 
 	function normalizeDeviceId(raw) {
 		if (typeof raw !== 'string') return LEGACY_DEVICE_ID;
@@ -185,6 +217,11 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						jsonResponse(res, 400, { error: 'Invalid workspace id' });
 						return;
 					}
+					const conflictingWorkspace = await findCaseInsensitiveWorkspaceNameConflict(wsName);
+					if (conflictingWorkspace) {
+						jsonResponse(res, 409, { error: 'Workspace name already exists' });
+						return;
+					}
 
 					const created = await prisma.$transaction(async (tx) => {
 						if (requestedId) {
@@ -275,6 +312,13 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const name = String(body.name || '').trim();
 					if (!name || name.length < 1 || name.length > 120) {
 						jsonResponse(res, 400, { error: 'Invalid workspace name' });
+						return;
+					}
+					const conflictingWorkspace = await findCaseInsensitiveWorkspaceNameConflict(name, {
+						excludeWorkspaceId: workspaceId,
+					});
+					if (conflictingWorkspace) {
+						jsonResponse(res, 409, { error: 'Workspace name already exists' });
 						return;
 					}
 
