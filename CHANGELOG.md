@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## 1.1.18 - 2026-03-27
+
+### Fixed
+- **PWA icon renders correctly on all Android launchers and iOS.** The source icon is white/light on a transparent background; adaptive-icon launchers (and iOS) fill transparent areas with their own colour (often white), making the logo invisible. Added `purpose: "maskable"` icon variants (`pwa-192x192-maskable.png`, `pwa-512x512-maskable.png`) that have an opaque `#0b0f16` background with the logo scaled to fit the inner 80% safe zone. The web manifest now declares four entries: the original transparent icons with `purpose: "any"` (for contexts that preserve transparency) and the new opaque icons with `purpose: "maskable"` (for adaptive launchers). The `apple-touch-icon.png` was also replaced with the opaque 180×180 variant — iOS always adds a white layer behind transparent touch icons.
+- **App name corrected to "Freeman Notes".** The installed PWA label, page title, Apple touch icon title, and in-app update notifications previously read `FreemanNotes` (one word), which caused it to be clipped as `FreemanN…` on launcher home screens because the OS had no word-break point. Corrected to `Freeman Notes` everywhere (manifest `name`/`short_name`, `<title>`, `apple-mobile-web-app-title`, notification strings). Technical identifiers (package name, storage keys, DB names) are unchanged.
+
+### Added
+- **`scripts/generate-maskable-icons.mjs`** — utility script that regenerates the maskable icon variants and `apple-touch-icon.png` from the source `pwa-512x512.png` using `sharp`. Re-run this whenever the source icon is updated.
+
 ## 1.1.17 - 2026-03-27
 
 ### Fixed
