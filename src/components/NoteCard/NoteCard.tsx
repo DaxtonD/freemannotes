@@ -24,14 +24,18 @@ import {
 	getNoteCardCompletedExpanded,
 	setNoteCardCompletedExpanded,
 } from '../../core/noteCardCompletedExpansion';
+import { readNoteColorToken, resolveThemeNoteColorModel, setNoteColorToken } from '../../core/noteColors';
+import type { ThemeId } from '../../core/theme';
 import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
+import { NoteColorPickerModal } from './NoteColorPickerModal';
 import styles from './NoteCard.module.css';
 
 export type NoteCardProps = {
 	noteId: string;
 	docId?: string;
 	authUserId?: string | null;
+	themeId: ThemeId;
 	doc: Y.Doc;
 	metaChips?: React.ReactNode;
 	canEdit?: boolean;
@@ -50,6 +54,11 @@ export type NoteCardProps = {
 type NoteType = 'text' | 'checklist';
 
 type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null };
+
+// Note cards are opened from pointer-up, so claim the active touch gesture at module
+// scope and suppress competing touches until the first gesture resolves.
+let activeTouchOpenGesturePointerId: number | null = null;
+let activeTouchOpenGestureStartedAt = 0;
 
 function isInteractiveTarget(target: EventTarget | null): boolean {
 	if (!target || !(target instanceof HTMLElement)) return false;
@@ -463,8 +472,21 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const canEdit = props.canEdit !== false;
 	// metadata.type controls note rendering mode.
 	const metadata = React.useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
+	const colorToken = React.useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			metadata.observe(observer);
+			return () => metadata.unobserve(observer);
+		},
+		() => readNoteColorToken(metadata),
+		() => readNoteColorToken(metadata)
+	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
+	const resolvedColor = React.useMemo(
+		() => (colorToken ? resolveThemeNoteColorModel(props.themeId).tokens[colorToken] : null),
+		[colorToken, props.themeId]
+	);
 
 	const title = useOptionalYTextValue(React.useCallback(() => props.doc.getText('title'), [props.doc]));
 	const content = useOptionalYTextValue(
@@ -489,8 +511,20 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [canEdit, props.doc]);
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
+	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
 	const cardRef = React.useRef<HTMLElement | null>(null);
 	const footerRef = React.useRef<HTMLDivElement | null>(null);
+	const cardStyle = React.useMemo(() => {
+		if (!resolvedColor) return undefined;
+		return {
+			'--note-color-card-bg': resolvedColor.cardBackground,
+			'--note-color-header-bg': resolvedColor.headerBackground,
+			'--note-color-border': resolvedColor.borderColor,
+			'--note-color-text': resolvedColor.textColor,
+			'--note-color-muted': resolvedColor.mutedTextColor,
+			'--note-color-accent': resolvedColor.accentColor,
+		} as React.CSSProperties;
+	}, [resolvedColor]);
 
 	React.useEffect(() => {
 		setShowCompleted(getNoteCardCompletedExpanded(props.noteId));
@@ -525,6 +559,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [normalizedItems, showCompleted, type]);
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);
+	const suppressGestureOpenRef = React.useRef(false);
 	// Long-press timer: fires the more-menu after 400ms without movement on touch devices.
 	const longPressTimerRef = React.useRef<number>(0);
 	const longPressFiredRef = React.useRef(false);
@@ -559,6 +594,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		event.stopPropagation();
 	}, []);
 
+	const handlePaletteAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
+		event.stopPropagation();
+		if (!canEdit) return;
+		setIsColorPickerOpen(true);
+	}, [canEdit]);
+
+	const handleColorSelect = React.useCallback((token: Parameters<typeof setNoteColorToken>[1]): void => {
+		setNoteColorToken(props.doc, token);
+		setIsColorPickerOpen(false);
+	}, [props.doc]);
+
 	const handleAddCollaborator = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
 		props.onAddCollaborator?.();
@@ -592,6 +638,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		<article
 			ref={cardRef}
 			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}`}
+			style={cardStyle}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
 			role={props.onOpen ? 'button' : undefined}
@@ -600,6 +647,19 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				// Track initial point; open action is decided on pointer up if movement stayed small.
 				if (!props.onOpen) return;
 				if (isInteractiveTarget(e.target)) return;
+				suppressGestureOpenRef.current = false;
+				if (e.pointerType === 'touch' || isCoarsePointerDevice()) {
+					const now = Date.now();
+					const gestureRecentlyClaimed = activeTouchOpenGesturePointerId !== null && (now - activeTouchOpenGestureStartedAt) < 700;
+					if (gestureRecentlyClaimed && activeTouchOpenGesturePointerId !== e.pointerId) {
+						suppressGestureOpenRef.current = true;
+						pointerDownRef.current = null;
+						clearLongPressTimer();
+						return;
+					}
+					activeTouchOpenGesturePointerId = e.pointerId;
+					activeTouchOpenGestureStartedAt = now;
+				}
 				// If the touch started on the drag handle (header), let
 				// pragmatic-drag-and-drop own the gesture — don't capture the
 				// pointer or start the long-press (more-menu) timer.
@@ -644,6 +704,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			}}
 			onPointerMove={(e) => {
 				// Mark as moved beyond threshold to suppress accidental open during drag/scroll.
+				if (suppressGestureOpenRef.current) return;
 				const state = pointerDownRef.current;
 				if (!state) return;
 				if (state.pointerId !== e.pointerId) return;
@@ -657,6 +718,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			onPointerUp={(e) => {
 				// Treat as click/tap only if the pointer did not move significantly.
 				clearLongPressTimer();
+				if (activeTouchOpenGesturePointerId === e.pointerId) {
+					activeTouchOpenGesturePointerId = null;
+				}
 				if (e.currentTarget.hasPointerCapture && e.currentTarget.releasePointerCapture) {
 					try {
 						e.currentTarget.releasePointerCapture(e.pointerId);
@@ -666,6 +730,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				}
 				const state = pointerDownRef.current;
 				pointerDownRef.current = null;
+				if (suppressGestureOpenRef.current) {
+					suppressGestureOpenRef.current = false;
+					return;
+				}
 				if (!state) return;
 				if (state.pointerId !== e.pointerId) return;
 				if (state.moved) return;
@@ -685,6 +753,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				// Cancellation branch: always release any capture to avoid pointer
 				// lifecycle leaks that can affect subsequent gestures.
 				clearLongPressTimer();
+				if (activeTouchOpenGesturePointerId === e.pointerId) {
+					activeTouchOpenGesturePointerId = null;
+				}
 				if (e.currentTarget.hasPointerCapture && e.currentTarget.releasePointerCapture) {
 					try {
 						e.currentTarget.releasePointerCapture(e.pointerId);
@@ -693,6 +764,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					}
 				}
 				pointerDownRef.current = null;
+				suppressGestureOpenRef.current = false;
 			}}
 			onKeyDown={(e) => {
 				if (!props.onOpen) return;
@@ -824,8 +896,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							type="button"
 							className={styles.cardDockButton}
 							onPointerDown={(e) => e.stopPropagation()}
-							onClick={handleDockAction}
-							aria-label={t('editors.dockAction')}
+							onClick={handlePaletteAction}
+							aria-label={t('noteColors.dialogTitle')}
+							disabled={!canEdit}
 						>
 							<FontAwesomeIcon icon={faPalette} />
 						</button>
@@ -861,6 +934,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					</div>
 				</nav>
 			</div>
+			<NoteColorPickerModal
+				isOpen={isColorPickerOpen}
+				themeId={props.themeId}
+				selectedToken={colorToken}
+				onClose={() => setIsColorPickerOpen(false)}
+				onSelect={handleColorSelect}
+			/>
 		</article>
 	);
 }

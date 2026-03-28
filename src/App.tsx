@@ -42,6 +42,14 @@ import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid
 import type { NoteAttachmentBrowserKind } from './components/NoteAttachments/NoteAttachmentCountChip';
 import { type ChecklistItem } from './core/bindings';
 import { getDeviceId } from './core/deviceId';
+import {
+	clampFontScale,
+	clampNoteCardMaxHeightPx,
+	getDefaultNoteCardMaxHeightPx,
+	isLocalAppearancePreferenceNewer,
+	readCachedDeviceAppearancePreferences,
+	writeCachedDeviceAppearancePreferences,
+} from './core/deviceAppearancePreferences';
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
 import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId } from './core/noteModel';
@@ -119,6 +127,7 @@ type NoteAttachmentBrowserState = {
 type OverlaySnapshot = {
 	editorMode: EditorMode;
 	selectedNoteId: string | null;
+	isMobileSearchOpen: boolean;
 	isPreferencesOpen: boolean;
 	isAppearanceOpen: boolean;
 	isUserOpen: boolean;
@@ -173,6 +182,7 @@ type OverlayHistoryState = {
 const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	editorMode: 'none',
 	selectedNoteId: null,
+	isMobileSearchOpen: false,
 	isPreferencesOpen: false,
 	isAppearanceOpen: false,
 	isUserOpen: false,
@@ -223,6 +233,7 @@ function isNoteEditorMediaDockHistoryState(value: unknown): boolean {
 function hasOverlaySnapshotContent(snapshot: OverlaySnapshot): boolean {
 	return snapshot.editorMode !== 'none'
 		|| snapshot.selectedNoteId !== null
+		|| snapshot.isMobileSearchOpen
 		|| snapshot.isPreferencesOpen
 		|| snapshot.isAppearanceOpen
 		|| snapshot.isUserOpen
@@ -495,8 +506,21 @@ export function App(): React.JSX.Element {
 	// Loaded Y.Doc for the selected note.
 	const [openDoc, setOpenDoc] = React.useState<Y.Doc | null>(null);
 	const [openDocId, setOpenDocId] = React.useState<string | null>(null);
-	const [themeId, setThemeId] = React.useState<ThemeId>(() => getStoredThemeId());
 	const deviceId = React.useMemo(() => getDeviceId(), []);
+	const cachedDeviceAppearancePrefs = React.useMemo(
+		() => readCachedDeviceAppearancePreferences(deviceId),
+		[deviceId]
+	);
+	const [themeId, setThemeId] = React.useState<ThemeId>(() => getStoredThemeId());
+	const [noteCardFontScalePref, setNoteCardFontScalePref] = React.useState(
+		() => cachedDeviceAppearancePrefs?.noteCardFontScale ?? 1
+	);
+	const [noteEditorFontScalePref, setNoteEditorFontScalePref] = React.useState(
+		() => cachedDeviceAppearancePrefs?.noteEditorFontScale ?? 1
+	);
+	const [noteCardMaxHeightPref, setNoteCardMaxHeightPref] = React.useState(
+		() => cachedDeviceAppearancePrefs?.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()
+	);
 	const [checklistShowCompletedPref, setChecklistShowCompletedPref] = React.useState(false);
 	const [quickDeleteChecklistPref, setQuickDeleteChecklistPref] = React.useState(false);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
@@ -510,7 +534,7 @@ export function App(): React.JSX.Element {
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
-	const maxCardHeightPx = isCoarsePointer ? 720 : 920;
+	const maxCardHeightPx = noteCardMaxHeightPref;
 	const activeWorkspaceRole = React.useMemo<WorkspaceRole | null>(() => {
 		if (!authWorkspaceId) return null;
 		const match = sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId);
@@ -528,6 +552,7 @@ export function App(): React.JSX.Element {
 		return {
 			editorMode,
 			selectedNoteId,
+			isMobileSearchOpen,
 			isPreferencesOpen,
 			isAppearanceOpen,
 			isUserOpen,
@@ -542,6 +567,7 @@ export function App(): React.JSX.Element {
 	}, [
 		editorMode,
 		selectedNoteId,
+		isMobileSearchOpen,
 		isPreferencesOpen,
 		isAppearanceOpen,
 		isUserOpen,
@@ -561,6 +587,7 @@ export function App(): React.JSX.Element {
 	const applyOverlaySnapshot = React.useCallback((snapshot: OverlaySnapshot) => {
 		setEditorMode(snapshot.editorMode);
 		setSelectedNoteId(snapshot.selectedNoteId);
+		setIsMobileSearchOpen(snapshot.isMobileSearchOpen);
 		setIsPreferencesOpen(snapshot.isPreferencesOpen);
 		setIsAppearanceOpen(snapshot.isAppearanceOpen);
 		setIsUserOpen(snapshot.isUserOpen);
@@ -625,6 +652,7 @@ export function App(): React.JSX.Element {
 		commitOverlaySnapshot(
 			{
 				...current,
+				isMobileSearchOpen: false,
 				isPreferencesOpen: true,
 				isAppearanceOpen: false,
 				isUserOpen: false,
@@ -642,6 +670,7 @@ export function App(): React.JSX.Element {
 		commitOverlaySnapshot(
 			{
 				...current,
+				isMobileSearchOpen: false,
 				isPreferencesOpen: false,
 				isAppearanceOpen: true,
 				isUserOpen: false,
@@ -660,6 +689,7 @@ export function App(): React.JSX.Element {
 		commitOverlaySnapshot(
 			{
 				...current,
+				isMobileSearchOpen: false,
 				isPreferencesOpen: false,
 				isAppearanceOpen: false,
 				isUserOpen: true,
@@ -827,12 +857,31 @@ export function App(): React.JSX.Element {
 		commitOverlaySnapshot(
 			{
 				...current,
+				isMobileSearchOpen: false,
 				isMobileSidebarOpen: true,
 				isFabOpen: false,
 			},
 			'push'
 		);
 	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const openMobileSearch = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				isMobileSearchOpen: true,
+				isMobileSidebarOpen: false,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
+	const closeMobileSearch = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setIsMobileSearchOpen(false);
+	}, [goBackIfOverlayHistory]);
 
 	React.useEffect(() => {
 		const onPopState = () => {
@@ -933,6 +982,7 @@ export function App(): React.JSX.Element {
 			commitOverlaySnapshot(
 				{
 					...current,
+					isMobileSearchOpen: false,
 					editorMode: nextMode,
 					selectedNoteId: null,
 					isMobileSidebarOpen: false,
@@ -968,6 +1018,7 @@ export function App(): React.JSX.Element {
 			commitOverlaySnapshot(
 				{
 					...current,
+					isMobileSearchOpen: false,
 					editorMode: 'none',
 					selectedNoteId: noteId,
 					isMobileSidebarOpen: false,
@@ -1044,6 +1095,90 @@ export function App(): React.JSX.Element {
 			}
 		})();
 	}, [authStatus, authOfflineMode, deviceId, locale, prefsHydrationAttempted]);
+
+	const persistAppearancePrefsLocally = React.useCallback((next: {
+		noteCardFontScale?: number;
+		noteEditorFontScale?: number;
+		noteCardMaxHeightPx?: number;
+		updatedAt?: string;
+	}) => {
+		writeCachedDeviceAppearancePreferences({
+			deviceId,
+			noteCardFontScale: clampFontScale(next.noteCardFontScale ?? noteCardFontScalePref),
+			noteEditorFontScale: clampFontScale(next.noteEditorFontScale ?? noteEditorFontScalePref),
+			noteCardMaxHeightPx: clampNoteCardMaxHeightPx(next.noteCardMaxHeightPx ?? noteCardMaxHeightPref),
+			updatedAt: next.updatedAt ?? new Date().toISOString(),
+		});
+	}, [deviceId, noteCardFontScalePref, noteCardMaxHeightPref, noteEditorFontScalePref]);
+
+	const handleNoteCardFontScaleChange = React.useCallback((nextScale: number) => {
+		const normalized = clampFontScale(nextScale);
+		setNoteCardFontScalePref(normalized);
+		persistAppearancePrefsLocally({ noteCardFontScale: normalized });
+	}, [persistAppearancePrefsLocally]);
+
+	const commitNoteCardFontScaleChange = React.useCallback((nextScale: number) => {
+		const normalized = clampFontScale(nextScale);
+		setNoteCardFontScalePref(normalized);
+		persistAppearancePrefsLocally({ noteCardFontScale: normalized });
+		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
+		void (async () => {
+			const updated = await updateUserPreferences(deviceId, { noteCardFontScale: normalized });
+			if (!updated) return;
+			persistAppearancePrefsLocally({
+				noteCardFontScale: updated.noteCardFontScale,
+				noteEditorFontScale: updated.noteEditorFontScale,
+				noteCardMaxHeightPx: updated.noteCardMaxHeightPx ?? noteCardMaxHeightPref,
+				updatedAt: updated.updatedAt ?? new Date().toISOString(),
+			});
+		})();
+	}, [authOfflineMode, authStatus, deviceId, noteCardMaxHeightPref, persistAppearancePrefsLocally, prefsHydrationAttempted]);
+
+	const handleNoteEditorFontScaleChange = React.useCallback((nextScale: number) => {
+		const normalized = clampFontScale(nextScale);
+		setNoteEditorFontScalePref(normalized);
+		persistAppearancePrefsLocally({ noteEditorFontScale: normalized });
+	}, [persistAppearancePrefsLocally]);
+
+	const commitNoteEditorFontScaleChange = React.useCallback((nextScale: number) => {
+		const normalized = clampFontScale(nextScale);
+		setNoteEditorFontScalePref(normalized);
+		persistAppearancePrefsLocally({ noteEditorFontScale: normalized });
+		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
+		void (async () => {
+			const updated = await updateUserPreferences(deviceId, { noteEditorFontScale: normalized });
+			if (!updated) return;
+			persistAppearancePrefsLocally({
+				noteCardFontScale: updated.noteCardFontScale,
+				noteEditorFontScale: updated.noteEditorFontScale,
+				noteCardMaxHeightPx: updated.noteCardMaxHeightPx ?? noteCardMaxHeightPref,
+				updatedAt: updated.updatedAt ?? new Date().toISOString(),
+			});
+		})();
+	}, [authOfflineMode, authStatus, deviceId, noteCardMaxHeightPref, persistAppearancePrefsLocally, prefsHydrationAttempted]);
+
+	const handleNoteCardMaxHeightChange = React.useCallback((nextHeight: number) => {
+		const normalized = clampNoteCardMaxHeightPx(nextHeight);
+		setNoteCardMaxHeightPref(normalized);
+		persistAppearancePrefsLocally({ noteCardMaxHeightPx: normalized });
+	}, [persistAppearancePrefsLocally]);
+
+	const commitNoteCardMaxHeightChange = React.useCallback((nextHeight: number) => {
+		const normalized = clampNoteCardMaxHeightPx(nextHeight);
+		setNoteCardMaxHeightPref(normalized);
+		persistAppearancePrefsLocally({ noteCardMaxHeightPx: normalized });
+		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
+		void (async () => {
+			const updated = await updateUserPreferences(deviceId, { noteCardMaxHeightPx: normalized });
+			if (!updated) return;
+			persistAppearancePrefsLocally({
+				noteCardFontScale: updated.noteCardFontScale,
+				noteEditorFontScale: updated.noteEditorFontScale,
+				noteCardMaxHeightPx: updated.noteCardMaxHeightPx ?? normalized,
+				updatedAt: updated.updatedAt ?? new Date().toISOString(),
+			});
+		})();
+	}, [authOfflineMode, authStatus, deviceId, persistAppearancePrefsLocally, prefsHydrationAttempted]);
 
 	const sidebarWorkspacesRef = React.useRef<readonly SidebarWorkspaceListItem[]>([]);
 	const handleWorkspaceActivatedRef = React.useRef<(workspaceId: string) => void>(() => undefined);
@@ -1387,12 +1522,19 @@ export function App(): React.JSX.Element {
 			return;
 		}
 		if (authOfflineMode) {
+			const cachedAppearance = readCachedDeviceAppearancePreferences(deviceId);
+			if (cachedAppearance) {
+				setNoteCardFontScalePref(clampFontScale(cachedAppearance.noteCardFontScale));
+				setNoteEditorFontScalePref(clampFontScale(cachedAppearance.noteEditorFontScale));
+				setNoteCardMaxHeightPref(clampNoteCardMaxHeightPx(cachedAppearance.noteCardMaxHeightPx));
+			}
 			setPrefsHydrationAttempted(true);
 			return;
 		}
 		let cancelled = false;
 		(async () => {
 			const localSnapshot = authUserId ? await readCachedWorkspaceSnapshot(authUserId, deviceId) : null;
+			const localAppearanceSnapshot = readCachedDeviceAppearancePreferences(deviceId);
 			const pref = await fetchUserPreferences(deviceId);
 			if (cancelled) return;
 			if (pref) {
@@ -1471,6 +1613,39 @@ export function App(): React.JSX.Element {
 				} else if (pref.language) {
 					setLocale(pref.language as LocaleCode);
 				}
+				const localAppearanceNewer = Boolean(
+					localAppearanceSnapshot && isLocalAppearancePreferenceNewer(localAppearanceSnapshot.updatedAt, pref.updatedAt)
+				);
+				if (localAppearanceSnapshot && localAppearanceNewer) {
+					setNoteCardFontScalePref(clampFontScale(localAppearanceSnapshot.noteCardFontScale));
+					setNoteEditorFontScalePref(clampFontScale(localAppearanceSnapshot.noteEditorFontScale));
+					setNoteCardMaxHeightPref(clampNoteCardMaxHeightPx(localAppearanceSnapshot.noteCardMaxHeightPx));
+					const updatedAppearance = await updateUserPreferences(deviceId, {
+						noteCardFontScale: localAppearanceSnapshot.noteCardFontScale,
+						noteEditorFontScale: localAppearanceSnapshot.noteEditorFontScale,
+						noteCardMaxHeightPx: localAppearanceSnapshot.noteCardMaxHeightPx,
+					});
+					if (!cancelled && updatedAppearance) {
+						persistAppearancePrefsLocally({
+							noteCardFontScale: updatedAppearance.noteCardFontScale,
+							noteEditorFontScale: updatedAppearance.noteEditorFontScale,
+							noteCardMaxHeightPx: updatedAppearance.noteCardMaxHeightPx ?? localAppearanceSnapshot.noteCardMaxHeightPx,
+							updatedAt: updatedAppearance.updatedAt ?? new Date().toISOString(),
+						});
+					}
+				} else {
+					setNoteCardFontScalePref(clampFontScale(pref.noteCardFontScale));
+					setNoteEditorFontScalePref(clampFontScale(pref.noteEditorFontScale));
+					if (typeof pref.noteCardMaxHeightPx === 'number') {
+						setNoteCardMaxHeightPref(clampNoteCardMaxHeightPx(pref.noteCardMaxHeightPx));
+					}
+					persistAppearancePrefsLocally({
+						noteCardFontScale: pref.noteCardFontScale,
+						noteEditorFontScale: pref.noteEditorFontScale,
+						noteCardMaxHeightPx: pref.noteCardMaxHeightPx ?? noteCardMaxHeightPref,
+						updatedAt: pref.updatedAt ?? new Date().toISOString(),
+					});
+				}
 				setChecklistShowCompletedPref(Boolean(pref.checklistShowCompleted));
 				setQuickDeleteChecklistPref(Boolean(pref.quickDeleteChecklist));
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
@@ -1480,7 +1655,7 @@ export function App(): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [authOfflineMode, authStatus, authUserId, deviceId, setLocale]);
+	}, [authOfflineMode, authStatus, authUserId, deviceId, noteCardMaxHeightPref, persistAppearancePrefsLocally, setLocale]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) return;
@@ -3534,25 +3709,26 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		// Best-effort edge-swipe gesture:
 		// - Swipe right from the left edge opens the sidebar.
-		// Implemented on a dedicated swipe zone to maximize Chrome/Safari consistency.
+		// Listen on the document rather than a dedicated swipe-zone element so the
+		// gesture still works even when stacking/z-index changes put transient UI in
+		// front of the edge strip.
 		if (!isMobileViewport || typeof window === 'undefined') return;
-		const zone = mobileSwipeZoneRef.current;
-		if (!zone) return;
 
 		let tracking = false;
 		let startX = 0;
 		let startY = 0;
 		const TRIGGER_DX = 42;
 		const MAX_DY = 18;
+		const MAX_START_X = 28;
 
 		const onTouchStart = (event: TouchEvent) => {
 			if (isMobileSidebarOpen) return;
 			if (event.touches.length !== 1) return;
 			const touch = event.touches[0];
+			if (touch.clientX > MAX_START_X) return;
 			startX = touch.clientX;
 			startY = touch.clientY;
 			tracking = true;
-			if (event.cancelable) event.preventDefault();
 		};
 
 		const onTouchMove = (event: TouchEvent) => {
@@ -3572,15 +3748,15 @@ export function App(): React.JSX.Element {
 			tracking = false;
 		};
 
-		zone.addEventListener('touchstart', onTouchStart, { passive: false });
-		zone.addEventListener('touchmove', onTouchMove, { passive: false });
-		zone.addEventListener('touchend', onTouchEnd, { passive: true });
-		zone.addEventListener('touchcancel', onTouchEnd, { passive: true });
+		document.addEventListener('touchstart', onTouchStart, { passive: true });
+		document.addEventListener('touchmove', onTouchMove, { passive: false });
+		document.addEventListener('touchend', onTouchEnd, { passive: true });
+		document.addEventListener('touchcancel', onTouchEnd, { passive: true });
 		return () => {
-			zone.removeEventListener('touchstart', onTouchStart);
-			zone.removeEventListener('touchmove', onTouchMove);
-			zone.removeEventListener('touchend', onTouchEnd);
-			zone.removeEventListener('touchcancel', onTouchEnd);
+			document.removeEventListener('touchstart', onTouchStart);
+			document.removeEventListener('touchmove', onTouchMove);
+			document.removeEventListener('touchend', onTouchEnd);
+			document.removeEventListener('touchcancel', onTouchEnd);
 		};
 	}, [isMobileViewport, isMobileSidebarOpen, openMobileSidebar]);
 
@@ -3719,6 +3895,16 @@ export function App(): React.JSX.Element {
 			root.style.removeProperty('--note-card-max-height');
 		};
 	}, [maxCardHeightPx]);
+
+	React.useEffect(() => {
+		const root = document.documentElement;
+		root.style.setProperty('--note-card-font-scale', String(clampFontScale(noteCardFontScalePref)));
+		root.style.setProperty('--note-editor-font-scale', String(clampFontScale(noteEditorFontScalePref)));
+		return () => {
+			root.style.removeProperty('--note-card-font-scale');
+			root.style.removeProperty('--note-editor-font-scale');
+		};
+	}, [noteCardFontScalePref, noteEditorFontScalePref]);
 
 	React.useEffect(() => {
 		// When an editor is open, the rest of the app should be visually/background-inactive.
@@ -3984,8 +4170,8 @@ export function App(): React.JSX.Element {
 		setSearchResults([]);
 		setSearchResultsError(null);
 		setSearchResultsBusy(false);
-		setIsMobileSearchOpen(false);
-	}, []);
+		closeMobileSearch();
+	}, [closeMobileSearch]);
 	const groupedSearchResults = React.useMemo(() => {
 		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
 		for (const result of searchResults) {
@@ -4014,7 +4200,6 @@ export function App(): React.JSX.Element {
 		setSearchQuery('');
 		setSearchResults([]);
 		setSearchResultsError(null);
-		setIsMobileSearchOpen(false);
 		setNoteGridCollaboratorFilter(null);
 		if (result.openWorkspaceId && result.openWorkspaceId !== authWorkspaceId) {
 			await activateWorkspaceFromSidebar(result.openWorkspaceId, {
@@ -4131,12 +4316,18 @@ export function App(): React.JSX.Element {
 							<button
 								type="button"
 								className={`app-icon-button mobile-search-btn${isMobileSearchOpen ? ' is-active' : ''}`}
-								onClick={() => setIsMobileSearchOpen((prev) => !prev)}
-								aria-label={t('app.globalSearchPlaceholder')}
+								onClick={() => {
+									if (isMobileSearchOpen) {
+										closeMobileSearch();
+										return;
+									}
+									openMobileSearch();
+								}}
+								aria-label={isMobileSearchOpen ? t('common.close') : t('app.globalSearchPlaceholder')}
 								aria-pressed={isMobileSearchOpen}
-								title={t('app.globalSearchPlaceholder')}
+								title={isMobileSearchOpen ? t('common.close') : t('app.globalSearchPlaceholder')}
 							>
-								<FontAwesomeIcon icon={faMagnifyingGlass} />
+								<FontAwesomeIcon icon={isMobileSearchOpen ? faXmark : faMagnifyingGlass} />
 							</button>
 							<button
 								type="button"
@@ -4187,7 +4378,7 @@ export function App(): React.JSX.Element {
 									value={searchQuery}
 									onChange={(event) => setSearchQuery(event.target.value)}
 									onKeyDown={(event) => {
-										if (event.key === 'Escape') setIsMobileSearchOpen(false);
+										if (event.key === 'Escape') closeMobileSearch();
 									}}
 									placeholder={t('app.globalSearchPlaceholder')}
 									aria-label={t('app.globalSearchPlaceholder')}
@@ -4725,6 +4916,7 @@ export function App(): React.JSX.Element {
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
 						authUserId={authUserId}
+						themeId={themeId}
 						activeWorkspaceId={authWorkspaceId}
 						selectedNoteId={selectedNoteId}
 						canEditWorkspaceContent={canEditActiveWorkspace}
@@ -4894,6 +5086,7 @@ export function App(): React.JSX.Element {
 					noteId={selectedNoteId}
 					docId={selectedNoteDocId}
 					authUserId={authUserId}
+					themeId={themeId}
 					doc={openDoc}
 					onClose={closeNoteEditor}
 					onDelete={onDeleteSelectedNote}
@@ -4979,6 +5172,15 @@ export function App(): React.JSX.Element {
 				language={locale}
 				onLanguageChange={(next) => setLocale(next as LocaleCode)}
 				languageOptions={languageOptions}
+				noteCardFontScale={noteCardFontScalePref}
+				onNoteCardFontScaleChange={handleNoteCardFontScaleChange}
+				onNoteCardFontScaleCommit={commitNoteCardFontScaleChange}
+				noteEditorFontScale={noteEditorFontScalePref}
+				onNoteEditorFontScaleChange={handleNoteEditorFontScaleChange}
+				onNoteEditorFontScaleCommit={commitNoteEditorFontScaleChange}
+				noteCardMaxHeightPx={noteCardMaxHeightPref}
+				onNoteCardMaxHeightPxChange={handleNoteCardMaxHeightChange}
+				onNoteCardMaxHeightPxCommit={commitNoteCardMaxHeightChange}
 			/>
 
 			<SendInviteModal

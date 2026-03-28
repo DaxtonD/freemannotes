@@ -17,6 +17,7 @@
 
 import * as Y from 'yjs';
 import type { JSONContent } from '@tiptap/core';
+import type { NoteColorToken } from './noteColors';
 import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
@@ -87,6 +88,8 @@ export interface Note {
 	 * pipeline. Used by the server-side cleanup to determine retention expiry.
 	 */
 	trashedAt: string | null;
+	/** Semantic color token applied to this note across all themes. */
+	colorToken?: NoteColorToken | null;
 	/** Plain-text body. Present only when type === 'text'. */
 	content?: string;
 	/** Checklist rows. Present only when type === 'checklist'. */
@@ -159,6 +162,7 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 		metadata.set('trashedAt', null);
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
+		metadata.set('colorToken', null);
 		setNotePreviewLinksOnDoc(doc, previewLinks || []);
 	});
 }
@@ -203,6 +207,7 @@ export function initChecklistNoteDoc(
 		metadata.set('trashedAt', null);
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
+		metadata.set('colorToken', null);
 		setNotePreviewLinksOnDoc(doc, previewLinks || []);
 
 		/* Clear any pre-existing checklist data (safety net for re-initialization). */
@@ -267,8 +272,10 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	const archived = Boolean(metadata.get('archived'));
 	const rawArchivedAt = metadata.get('archivedAt');
 	const archivedAt = typeof rawArchivedAt === 'string' ? rawArchivedAt : null;
+	const rawColorToken = metadata.get('colorToken');
+	const colorToken = typeof rawColorToken === 'string' ? (rawColorToken as NoteColorToken) : null;
 
-	const base: Note = { id, type, title, createdAt, updatedAt, trashed, archived, archivedAt, trashedAt };
+	const base: Note = { id, type, title, createdAt, updatedAt, trashed, archived, archivedAt, trashedAt, colorToken };
 
 	if (type === 'text') {
 		const content = doc.getText('content').toString();

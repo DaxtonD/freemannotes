@@ -4,11 +4,22 @@ import type { ThemeId } from '../../core/theme';
 import styles from './PreferencesModal.module.css';
 
 type ThemeCategory = 'built-in' | 'earth' | 'nord' | 'catppuccin' | 'gruvbox' | 'everforest' | 'rose-pine' | 'tokyo-night';
-type AppearancePane = 'theme' | 'language';
+type AppearancePane = 'theme' | 'language' | 'display-size';
 
 type ThemeOption = { id: ThemeId; label: string };
 
 type LanguageOption = { code: LocaleCode; label: string };
+
+type SliderFieldProps = {
+	label: string;
+	valueLabel: string;
+	value: number;
+	min: number;
+	max: number;
+	step: number;
+	onChange: (nextValue: number) => void;
+	onCommit: (nextValue: number) => void;
+};
 
 function getThemeCategory(themeId: ThemeId): ThemeCategory {
 	if (themeId.startsWith('earth-')) return 'earth';
@@ -65,7 +76,74 @@ export type AppearanceModalProps = {
 	language: LocaleCode;
 	onLanguageChange: (nextLanguage: LocaleCode) => void;
 	languageOptions: readonly LanguageOption[];
+	noteCardFontScale: number;
+	onNoteCardFontScaleChange: (nextScale: number) => void;
+	onNoteCardFontScaleCommit: (nextScale: number) => void;
+	noteEditorFontScale: number;
+	onNoteEditorFontScaleChange: (nextScale: number) => void;
+	onNoteEditorFontScaleCommit: (nextScale: number) => void;
+	noteCardMaxHeightPx: number;
+	onNoteCardMaxHeightPxChange: (nextHeightPx: number) => void;
+	onNoteCardMaxHeightPxCommit: (nextHeightPx: number) => void;
 };
+
+const FONT_SCALE_MIN = 0.75;
+const FONT_SCALE_MAX = 1.5;
+const FONT_SCALE_STEP = 0.05;
+const NOTE_CARD_HEIGHT_MIN = 320;
+const NOTE_CARD_HEIGHT_MAX = 1400;
+const NOTE_CARD_HEIGHT_STEP = 20;
+
+function clampFontScale(value: number): number {
+	if (!Number.isFinite(value)) return 1;
+	return Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, value));
+}
+
+function formatFontScalePercent(value: number): string {
+	return `${Math.round(clampFontScale(value) * 100)}%`;
+}
+
+function formatHeightPx(value: number): string {
+	return `${Math.round(value)}px`;
+}
+
+function SliderField(props: SliderFieldProps): React.JSX.Element {
+	const dirtyRef = React.useRef(false);
+	const commitIfDirty = React.useCallback((value: number): void => {
+		if (!dirtyRef.current) return;
+		dirtyRef.current = false;
+		props.onCommit(value);
+	}, [props]);
+	const handleKeyUp = React.useCallback((event: React.KeyboardEvent<HTMLInputElement>): void => {
+		if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home', 'End', 'PageUp', 'PageDown'].includes(event.key)) return;
+		commitIfDirty(Number(event.currentTarget.value));
+	}, [commitIfDirty]);
+
+	return (
+		<label className={styles.scaleField}>
+			<div className={styles.scaleFieldHeader}>
+				<span>{props.label}</span>
+				<strong>{props.valueLabel}</strong>
+			</div>
+			<input
+				type="range"
+				className={styles.scaleSlider}
+				min={props.min}
+				max={props.max}
+				step={props.step}
+				value={props.value}
+				onChange={(event) => {
+					dirtyRef.current = true;
+					props.onChange(Number(event.target.value));
+				}}
+				onPointerUp={(event) => commitIfDirty(Number(event.currentTarget.value))}
+				onMouseUp={(event) => commitIfDirty(Number(event.currentTarget.value))}
+				onBlur={(event) => commitIfDirty(Number(event.currentTarget.value))}
+				onKeyUp={handleKeyUp}
+			/>
+		</label>
+	);
+}
 
 export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element | null {
 	const [category, setCategory] = React.useState<ThemeCategory>(() => getThemeCategory(props.themeId));
@@ -121,6 +199,14 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 							>
 								{props.t('prefs.language')}
 							</button>
+							<button
+								type="button"
+								className={`${styles.appearanceNavItem}${activePane === 'display-size' ? ` ${styles.appearanceNavItemActive}` : ''}`}
+								onClick={() => setActivePane('display-size')}
+								aria-current={activePane === 'display-size' ? 'true' : undefined}
+							>
+								{props.t('prefs.displaySize')}
+							</button>
 						</nav>
 
 						<div className={styles.appearanceContent}>
@@ -171,6 +257,43 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 										))}
 									</select>
 								</label>
+							) : null}
+
+							{activePane === 'display-size' ? (
+								<div className={styles.displaySizeSection}>
+									<SliderField
+										label={props.t('prefs.noteCardFontScale')}
+										valueLabel={formatFontScalePercent(props.noteCardFontScale)}
+										value={clampFontScale(props.noteCardFontScale)}
+										min={FONT_SCALE_MIN}
+										max={FONT_SCALE_MAX}
+										step={FONT_SCALE_STEP}
+										onChange={props.onNoteCardFontScaleChange}
+										onCommit={props.onNoteCardFontScaleCommit}
+									/>
+
+									<SliderField
+										label={props.t('prefs.noteEditorFontScale')}
+										valueLabel={formatFontScalePercent(props.noteEditorFontScale)}
+										value={clampFontScale(props.noteEditorFontScale)}
+										min={FONT_SCALE_MIN}
+										max={FONT_SCALE_MAX}
+										step={FONT_SCALE_STEP}
+										onChange={props.onNoteEditorFontScaleChange}
+										onCommit={props.onNoteEditorFontScaleCommit}
+									/>
+
+									<SliderField
+										label={props.t('prefs.noteCardMaxHeight')}
+										valueLabel={formatHeightPx(props.noteCardMaxHeightPx)}
+										value={props.noteCardMaxHeightPx}
+										min={NOTE_CARD_HEIGHT_MIN}
+										max={NOTE_CARD_HEIGHT_MAX}
+										step={NOTE_CARD_HEIGHT_STEP}
+										onChange={props.onNoteCardMaxHeightPxChange}
+										onCommit={props.onNoteCardMaxHeightPxCommit}
+									/>
+								</div>
 							) : null}
 						</div>
 					</div>
