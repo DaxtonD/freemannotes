@@ -96,6 +96,15 @@ function suppressNextDocumentCompatibilityMouseEvents(): void {
 	timeoutId = window.setTimeout(() => cleanup(), 500);
 }
 
+function triggerLongPressHaptic(): void {
+	if (typeof navigator === 'undefined' || typeof navigator.vibrate !== 'function') return;
+	try {
+		navigator.vibrate(12);
+	} catch {
+		// Ignore environments that reject haptic requests.
+	}
+}
+
 // Subscribe to an optional Y.Text and always return a string snapshot.
 function useOptionalYTextValue(getYText: () => Y.Text | null): string {
 	return React.useSyncExternalStore(
@@ -697,7 +706,14 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 						pointerDownRef.current = null;
 						// Clear any native text selection Android may have
 						// started during the long-press gesture.
-						window.getSelection()?.removeAllRanges();
+						window.getSelection()?.removeAllRanges();							// Release pointer capture now so the full-screen overlay that
+							// mounts next correctly receives the still-pressed touch events.
+							// Without this the note card keeps all pointer events via capture,
+							// preventing the sheet's absorption handlers from ever firing.
+							const capturedCard = cardRef.current;
+							if (capturedCard && typeof capturedCard.releasePointerCapture === 'function') {
+								try { capturedCard.releasePointerCapture(state.pointerId); } catch { /* ignore */ }
+							}						triggerLongPressHaptic();
 						onMoreMenu();
 					}, 400);
 				}
@@ -710,7 +726,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				if (state.pointerId !== e.pointerId) return;
 				const dx = e.clientX - state.x;
 				const dy = e.clientY - state.y;
-				if (dx * dx + dy * dy > 36) {
+				// Allow a bit of natural finger drift during long-press so mobile
+				// users don't have to hold perfectly still to open the menu.
+				if (dx * dx + dy * dy > 144) {
 					state.moved = true;
 					clearLongPressTimer();
 				}
@@ -765,6 +783,24 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				}
 				pointerDownRef.current = null;
 				suppressGestureOpenRef.current = false;
+			}}
+			onTouchEnd={(e) => {
+				// After a long-press opens the more-menu the finger is still down.
+				// Prevent the browser from synthesising a click from this touch
+				// sequence — otherwise the click fires at the finger's current
+				// position and lands on whichever menu item is underneath.
+				if (longPressFiredRef.current) {
+					e.preventDefault();
+				}
+			}}
+			onContextMenu={(e) => {
+				// On coarse (touch) devices suppress the browser/OS context-menu
+				// long-press gesture. We already handle long-press ourselves and
+				// the OS fires its own haptic feedback when it detects the gesture,
+				// which appears to the user as an unwanted second vibration.
+				if (isCoarsePointerDevice()) {
+					e.preventDefault();
+				}
 			}}
 			onKeyDown={(e) => {
 				if (!props.onOpen) return;
@@ -908,6 +944,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={handleDockAction}
 							aria-label={t('editors.dockAction')}
+							disabled={!canEdit}
 						>
 							<FontAwesomeIcon icon={faBell} />
 						</button>
@@ -917,7 +954,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={handleAddCollaborator}
 							aria-label={t('editors.dockAction')}
-							disabled={!props.onAddCollaborator}
+							disabled={!canEdit || !props.onAddCollaborator}
 						>
 							<FontAwesomeIcon icon={faUserPlus} />
 						</button>
@@ -927,7 +964,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={props.onAddImage ? handleAddImage : handleDockAction}
 							aria-label={t('editors.dockAction')}
-							disabled={!props.onAddImage}
+							disabled={!canEdit || !props.onAddImage}
 						>
 							<FontAwesomeIcon icon={faImage} />
 						</button>

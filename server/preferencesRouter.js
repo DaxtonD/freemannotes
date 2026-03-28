@@ -28,11 +28,11 @@ const { createTimestampFormatter } = require('./timezone');
 /** Default number of days a trashed note is retained before permanent deletion. */
 const DEFAULT_DELETE_AFTER_DAYS = 30;
 
-/** Minimum allowed value for deleteAfterDays (at least 1 day). */
-const MIN_DELETE_AFTER_DAYS = 1;
+/** Persisted sentinel for "never auto-delete trashed notes". */
+const NEVER_DELETE_AFTER_DAYS = 0;
 
-/** Maximum allowed value for deleteAfterDays (cap at 365 days / 1 year). */
-const MAX_DELETE_AFTER_DAYS = 365;
+/** Retention values exposed in the preferences UI. */
+const ALLOWED_DELETE_AFTER_DAYS = new Set([7, 14, 30]);
 
 /** Per-device display-size lower bound (75%). */
 const MIN_FONT_SCALE = 0.75;
@@ -118,11 +118,26 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 			userId: row.userId,
 			theme: row.theme ?? null,
 			language: row.language ?? null,
-			deleteAfterDays: row.deleteAfterDays,
+			deleteAfterDays: row.deleteAfterDays > 0 ? row.deleteAfterDays : null,
 			createdAt: fmt(row.createdAt),
 			updatedAt: fmt(row.updatedAt),
 			timezone: timezone || 'UTC',
 		};
+	}
+
+	function formatDeleteAfterDays(value) {
+		const days = Number(value);
+		if (!Number.isFinite(days) || days <= 0) return null;
+		return days;
+	}
+
+	function parseDeleteAfterDays(raw) {
+		if (raw == null || raw === '') return NEVER_DELETE_AFTER_DAYS;
+		const days = Number(raw);
+		if (!Number.isFinite(days) || !Number.isInteger(days)) return null;
+		if (days === NEVER_DELETE_AFTER_DAYS) return NEVER_DELETE_AFTER_DAYS;
+		if (!ALLOWED_DELETE_AFTER_DAYS.has(days)) return null;
+		return days;
 	}
 
 	function normalizeDeviceId(raw) {
@@ -225,7 +240,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 					jsonResponse(res, 200, {
 						userId: userPref.userId,
 						deviceId: devicePref.deviceId,
-						deleteAfterDays: userPref.deleteAfterDays,
+						deleteAfterDays: formatDeleteAfterDays(userPref.deleteAfterDays),
 						theme: devicePref.theme ?? null,
 						language: devicePref.language ?? null,
 						noteCardFontScale: normalizeFontScale(devicePref.noteCardFontScale),
@@ -276,15 +291,10 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 					// ── Validate deleteAfterDays (user-scoped) ─────────────────
 					const userUpdateData = {};
 					if ('deleteAfterDays' in body) {
-						const days = Number(body.deleteAfterDays);
-						if (
-							!Number.isFinite(days) ||
-							!Number.isInteger(days) ||
-							days < MIN_DELETE_AFTER_DAYS ||
-							days > MAX_DELETE_AFTER_DAYS
-						) {
+						const days = parseDeleteAfterDays(body.deleteAfterDays);
+						if (days == null) {
 							jsonResponse(res, 400, {
-								error: `deleteAfterDays must be an integer between ${MIN_DELETE_AFTER_DAYS} and ${MAX_DELETE_AFTER_DAYS}`,
+								error: 'deleteAfterDays must be one of 7, 14, 30, or null for never',
 							});
 							return;
 						}
@@ -426,7 +436,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						jsonResponse(res, 200, {
 							userId: userPref.userId,
 							deviceId: devicePref.deviceId,
-							deleteAfterDays: userPref.deleteAfterDays,
+							deleteAfterDays: formatDeleteAfterDays(userPref.deleteAfterDays),
 							theme: devicePref.theme ?? null,
 							language: devicePref.language ?? null,
 							noteCardFontScale: normalizeFontScale(devicePref.noteCardFontScale),
@@ -548,7 +558,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 					jsonResponse(res, 200, {
 						userId: pref.userPref.userId,
 						deviceId: pref.devicePref.deviceId,
-						deleteAfterDays: pref.userPref.deleteAfterDays,
+						deleteAfterDays: formatDeleteAfterDays(pref.userPref.deleteAfterDays),
 						theme: pref.devicePref.theme ?? null,
 						language: pref.devicePref.language ?? null,
 						noteCardFontScale: normalizeFontScale(pref.devicePref.noteCardFontScale),
@@ -580,4 +590,4 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 	return handleRequest;
 }
 
-module.exports = { createPreferencesRouter, DEFAULT_DELETE_AFTER_DAYS };
+module.exports = { createPreferencesRouter, DEFAULT_DELETE_AFTER_DAYS, NEVER_DELETE_AFTER_DAYS };

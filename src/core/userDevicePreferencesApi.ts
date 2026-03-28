@@ -3,7 +3,7 @@ import type { LocaleCode } from './i18n';
 export type UserDevicePreferences = {
 	userId: string;
 	deviceId: string;
-	deleteAfterDays: number;
+	deleteAfterDays: number | null;
 	theme: string | null;
 	language: string | null;
 	noteCardFontScale: number;
@@ -41,6 +41,13 @@ function normalizeNoteCardMaxHeightPx(value: unknown): number | null {
 	return Math.round(parsed);
 }
 
+function normalizeDeleteAfterDays(value: unknown): number | null {
+	if (value == null || value === '') return null;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) return null;
+	return parsed;
+}
+
 export async function fetchUserPreferences(deviceId: string): Promise<UserDevicePreferences | null> {
 	try {
 		const url = `/api/user/preferences?deviceId=${encodeURIComponent(deviceId)}`;
@@ -52,7 +59,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 		return {
 			userId: String((body as any).userId || ''),
 			deviceId: String((body as any).deviceId || deviceId),
-			deleteAfterDays: Number((body as any).deleteAfterDays || 0) || 30,
+			deleteAfterDays: normalizeDeleteAfterDays((body as any).deleteAfterDays),
 			theme: (body as any).theme ? String((body as any).theme) : null,
 			language: (body as any).language ? String((body as any).language) : null,
 			noteCardFontScale: normalizeFontScale((body as any).noteCardFontScale),
@@ -74,6 +81,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 export async function updateUserPreferences(
 	deviceId: string,
 	patch: {
+		deleteAfterDays?: number | null;
 		theme?: string | null;
 		language?: LocaleCode | null;
 		noteCardFontScale?: number;
@@ -100,7 +108,7 @@ export async function updateUserPreferences(
 		return {
 			userId: String((body as any).userId || ''),
 			deviceId: String((body as any).deviceId || deviceId),
-			deleteAfterDays: Number((body as any).deleteAfterDays || 0) || 30,
+			deleteAfterDays: normalizeDeleteAfterDays((body as any).deleteAfterDays),
 			theme: (body as any).theme ? String((body as any).theme) : null,
 			language: (body as any).language ? String((body as any).language) : null,
 			noteCardFontScale: normalizeFontScale((body as any).noteCardFontScale),

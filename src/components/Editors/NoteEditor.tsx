@@ -66,6 +66,7 @@ export type NoteEditorProps = {
 	doc: Y.Doc;
 	onClose: () => void;
 	onDelete: (noteId: string) => Promise<void>;
+	onMoveToWorkspace?: (() => void) | undefined;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
 	onAddDocument?: () => void;
@@ -2144,6 +2145,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
 					handleCreateUrlPreview();
+				} : undefined}
+				onMoveToWorkspace={!readOnly ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					props.onMoveToWorkspace?.();
 				} : undefined}
 				onTrash={() => {
 					setIsMoreMenuOpen(false);

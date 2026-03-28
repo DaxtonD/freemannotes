@@ -48,6 +48,9 @@ const NOTES_REGISTRY_ID = '__notes_registry__';
 /** Default retention period if no user preference exists (30 days). */
 const DEFAULT_DELETE_AFTER_DAYS = 30;
 
+/** Persisted sentinel for "never auto-delete trashed notes". */
+const NEVER_DELETE_AFTER_DAYS = 0;
+
 /** Maximum time (ms) to wait for a Redis operation before giving up. */
 const REDIS_TIMEOUT_MS = 3000;
 
@@ -128,6 +131,14 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 			console.warn('[trash-cleanup] Could not read user preferences, using default:', err.message);
 		}
 
+		if (deleteAfterDays <= NEVER_DELETE_AFTER_DAYS) {
+			console.info(
+				`[trash-cleanup] Cycle complete in ${Date.now() - cycleStart}ms — ` +
+				`auto-delete disabled for workspace ${workspaceId}`
+			);
+			return 0;
+		}
+
 		const retentionMs = deleteAfterDays * 24 * 60 * 60 * 1000;
 		const cutoffTimestamp = cycleStart - retentionMs;
 
@@ -190,6 +201,15 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 		// ── Step 4: Permanently delete expired docs from PostgreSQL ─────
 		let deletedCount = 0;
 		try {
+			await prisma.shareAccessToken.deleteMany({
+				where: {
+					entityType: 'NOTE',
+					entityId: { in: expiredNoteIds },
+				},
+			});
+			await prisma.shareToken.deleteMany({
+				where: { docId: { in: expiredNoteIds } },
+			});
 			const result = await prisma.document.deleteMany({
 				where: { id: { in: expiredDocIds } },
 			});
