@@ -155,7 +155,10 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		const onInviteChanged = (event: Event) => {
 			const workspaceId = (event as CustomEvent<{ workspaceId?: string }>).detail?.workspaceId;
 			if (!workspaceId || workspaceId !== props.workspaceId) return;
-			void loadInviteState(typeof navigator !== 'undefined' && navigator.onLine === false);
+			// This event signals the local cache was updated — re-read from cache only.
+			// Using preferCache=false here would re-fetch from the server, which then
+			// writes to the cache again, emits this same event, and creates an infinite loop.
+			void loadInviteState(true);
 		};
 		const onShareReady = (event: Event) => {
 			const detail = (event as CustomEvent<{ entityType: string; entityId: string; permission: string; expiresInDays: ShareExpiryDays }>).detail;
