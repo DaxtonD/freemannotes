@@ -229,7 +229,7 @@
 	border-radius: 0.7rem;
 	background: color-mix(in srgb, var(--color-surface-2) 78%, black 22%);
 	color: color-mix(in srgb, white 88%, var(--color-surface) 12%);
-	overflow-x: auto;
+	overflow: visible;
 	font-family: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 	font-size: calc(0.78rem * var(--note-card-font-scale, 1));
 	line-height: 1.45;

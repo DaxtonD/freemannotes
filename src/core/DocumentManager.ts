@@ -546,6 +546,47 @@ export class DocumentManager {
 		await this.deleteNote(noteId, true);
 	}
 
+	public async moveNoteToWorkspaceLocally(noteId: string, targetWorkspaceId: string, opts?: { sourceWorkspaceId?: string | null; title?: string | null }): Promise<void> {
+		const key = this.normalizeNoteId(noteId);
+		const sourceWorkspaceId = typeof opts?.sourceWorkspaceId === 'string' && opts.sourceWorkspaceId.trim()
+			? opts.sourceWorkspaceId.trim()
+			: this.activeWorkspaceId;
+		const normalizedTargetWorkspaceId = typeof targetWorkspaceId === 'string' ? targetWorkspaceId.trim() : '';
+		if (!sourceWorkspaceId) {
+			throw new Error('Cannot move a note without an active source workspace');
+		}
+		if (!normalizedTargetWorkspaceId) {
+			throw new Error('Target workspace is required');
+		}
+		if (sourceWorkspaceId !== this.activeWorkspaceId) {
+			throw new Error('Local note moves require the source workspace to be active');
+		}
+		if (normalizedTargetWorkspaceId === sourceWorkspaceId) {
+			return;
+		}
+
+		const sourceDoc = await this.getDocWithSync(key);
+		const noteTitle = String(opts?.title || sourceDoc.getText('title').toString() || key).trim() || key;
+		const noteState = Y.encodeStateAsUpdate(sourceDoc);
+		const targetNoteRoomName = `${normalizedTargetWorkspaceId}:${key}`;
+		const targetRegistryRoomName = `${normalizedTargetWorkspaceId}:${NOTES_REGISTRY_ID}`;
+		const targetNoteRoom = await this.openIsolatedRoom(targetNoteRoomName, { initializeRegistry: false });
+		const targetRegistryRoom = await this.openIsolatedRoom(targetRegistryRoomName, { initializeRegistry: true });
+
+		try {
+			Y.applyUpdate(targetNoteRoom.doc, noteState);
+			this.upsertRegistryNoteEntry(targetRegistryRoom.doc, key, noteTitle);
+			const sourceRegistryDoc = await this.getNotesRegistryDoc();
+			this.removeRegistryNoteEntry(sourceRegistryDoc, key);
+			await this.waitForPersistenceTurn();
+			this.destroyDoc(key);
+			await this.deleteIndexedDbDatabase(`${sourceWorkspaceId}:${key}`);
+		} finally {
+			targetNoteRoom.destroy();
+			targetRegistryRoom.destroy();
+		}
+	}
+
 	public destroyDoc(noteId: string): void {
 		const raw = this.normalizeNoteId(noteId);
 		this.destroyRoom(this.roomNameFor(raw));
@@ -600,6 +641,59 @@ export class DocumentManager {
 		this.registryHydrated = false;
 	}
 
+	private ensureRegistryStructure(doc: Y.Doc): void {
+		doc.transact(() => {
+			doc.getArray<Y.Map<any>>(NOTES_LIST_KEY);
+			doc.getArray<string>(NOTE_ORDER_KEY);
+			doc.getMap('noteLayout');
+		}, this.internalOrigin);
+	}
+
+	private removeRegistryNoteEntry(doc: Y.Doc, noteId: string): void {
+		this.ensureRegistryStructure(doc);
+		const notesList = doc.getArray<Y.Map<any>>(NOTES_LIST_KEY);
+		const noteOrder = doc.getArray<string>(NOTE_ORDER_KEY);
+		const normalizedNoteId = this.normalizeNoteId(noteId);
+		doc.transact(() => {
+			for (let index = notesList.length - 1; index >= 0; index--) {
+				const item = notesList.get(index);
+				if (String(item?.get?.('id') ?? '').trim() === normalizedNoteId) {
+					notesList.delete(index, 1);
+				}
+			}
+			for (let index = noteOrder.length - 1; index >= 0; index--) {
+				if (String(noteOrder.get(index) ?? '').trim() === normalizedNoteId) {
+					noteOrder.delete(index, 1);
+				}
+			}
+		}, this.internalOrigin);
+	}
+
+	private upsertRegistryNoteEntry(doc: Y.Doc, noteId: string, title: string): void {
+		this.ensureRegistryStructure(doc);
+		const notesList = doc.getArray<Y.Map<any>>(NOTES_LIST_KEY);
+		const noteOrder = doc.getArray<string>(NOTE_ORDER_KEY);
+		const normalizedNoteId = this.normalizeNoteId(noteId);
+		doc.transact(() => {
+			for (let index = notesList.length - 1; index >= 0; index--) {
+				const item = notesList.get(index);
+				if (String(item?.get?.('id') ?? '').trim() === normalizedNoteId) {
+					notesList.delete(index, 1);
+				}
+			}
+			const entry = new Y.Map<any>();
+			entry.set('id', normalizedNoteId);
+			entry.set('title', String(title || ''));
+			notesList.insert(0, [entry]);
+			for (let index = noteOrder.length - 1; index >= 0; index--) {
+				if (String(noteOrder.get(index) ?? '').trim() === normalizedNoteId) {
+					noteOrder.delete(index, 1);
+				}
+			}
+			noteOrder.insert(0, [normalizedNoteId]);
+		}, this.internalOrigin);
+	}
+
 	private ensureStructure(doc: Y.Doc): void {
 		// Yjs root types are created on first access and are stable thereafter.
 		// Re-running this method is safe and will not create duplicates.
@@ -612,6 +706,85 @@ export class DocumentManager {
 			doc.getArray<Y.Map<any>>('checklist');
 			doc.getMap<any>('metadata');
 		}, this.internalOrigin);
+	}
+
+	private async openIsolatedRoom(roomName: string, opts?: { initializeRegistry?: boolean }): Promise<{ doc: Y.Doc; destroy: () => void }> {
+		if (typeof (globalThis as any).indexedDB === 'undefined') {
+			throw new Error('IndexedDB is not available in this runtime');
+		}
+		const doc = new Y.Doc();
+		if (opts?.initializeRegistry) this.ensureRegistryStructure(doc);
+		else this.ensureStructure(doc);
+		const provider = new IndexeddbPersistence(roomName, doc);
+		await this.waitForIsolatedProviderSynced(provider);
+		return {
+			doc,
+			destroy: () => {
+				try {
+					provider.destroy();
+				} catch {
+					// ignore
+				}
+				try {
+					doc.destroy();
+				} catch {
+					// ignore
+				}
+			},
+		};
+	}
+
+	private waitForIsolatedProviderSynced(provider: IndexeddbPersistence): Promise<void> {
+		if ((provider as any).synced === true) {
+			return Promise.resolve();
+		}
+		return new Promise<void>((resolve, reject) => {
+			const onSynced = (): void => {
+				cleanup();
+				resolve();
+			};
+			const onError = (error: unknown): void => {
+				cleanup();
+				reject(error instanceof Error ? error : new Error(String(error)));
+			};
+			const cleanup = (): void => {
+				(provider as any).off?.('synced', onSynced);
+				(provider as any).off?.('error', onError);
+			};
+			(provider as any).on?.('synced', onSynced);
+			(provider as any).on?.('error', onError);
+			queueMicrotask(() => {
+				if ((provider as any).synced === true) {
+					onSynced();
+				}
+			});
+		});
+	}
+
+	private waitForPersistenceTurn(): Promise<void> {
+		return new Promise((resolve) => {
+			if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
+				window.setTimeout(resolve, 0);
+				return;
+			}
+			setTimeout(resolve, 0);
+		});
+	}
+
+	private deleteIndexedDbDatabase(name: string): Promise<void> {
+		if (typeof indexedDB === 'undefined' || !name) {
+			return Promise.resolve();
+		}
+		return new Promise((resolve) => {
+			try {
+				const request = indexedDB.deleteDatabase(name);
+				request.onsuccess = () => resolve();
+				request.onerror = () => resolve();
+				request.onblocked = () => resolve();
+			} catch {
+				resolve();
+			}
+		});
 	}
 
 	private ensureProvider(roomName: string, doc: Y.Doc): void {
