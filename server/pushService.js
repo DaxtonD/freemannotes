@@ -311,9 +311,12 @@ const REMINDER_CHECK_INTERVAL_MS = 60_000; // poll every 60 seconds
  *
  * @param {import('@prisma/client').PrismaClient} prisma
  * @param {import('ioredis').Redis | null} [redis]
+ * @param {((payload: { userId: string; workspaceId: string }) => void) | null} [onReminderFired]
+ *   Optional callback invoked after each reminder fires. Intended for in-process
+ *   WebSocket broadcast so the bell badge updates even when Redis is not configured.
  * @returns {NodeJS.Timeout} The interval handle; call clearInterval() to stop.
  */
-function startReminderScheduler(prisma, redis) {
+function startReminderScheduler(prisma, redis, onReminderFired) {
 	if (!prisma) return null;
 
 	async function checkAndFireReminders() {
@@ -375,17 +378,14 @@ function startReminderScheduler(prisma, redis) {
 				// Notify all open browser tabs for this user via the metadata WS
 				// channel. This drives the bell badge on devices that didn't receive
 				// (or blocked) the push notification.
-				if (redis) {
+				// onReminderFired handles BOTH the in-process WS broadcast and the
+				// cross-instance Redis publish (when configured). Centralising here
+				// avoids double-delivery when Redis is present.
+				if (typeof onReminderFired === 'function') {
 					try {
-						const { publishWorkspaceMetadataEvent } = require('./workspaceMetadataEvents');
-						await publishWorkspaceMetadataEvent(redis, {
-							type: 'workspace-metadata-changed',
-							reason: 'reminder-fired',
-							userIds: [capturedReminder.userId],
-							workspaceId: capturedReminder.workspaceId,
-						});
+						onReminderFired({ userId: capturedReminder.userId, workspaceId: capturedReminder.workspaceId });
 					} catch {
-						// Do not crash the scheduler if the WS broadcast fails.
+						// Do not crash the scheduler if the broadcast fails.
 					}
 				}
 			}, delayMs);

@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.26 - 2026-03-29
+
+### Fixed
+- **Notification bell badge now shows after re-scheduling a reminder.** When a note reminder fired, the user opened the notifications panel (which acknowledged it), and then re-scheduled a new reminder for the same note, the badge never showed again. The `PUT /api/push/reminder` upsert was not resetting `notificationAcknowledgedAt` in the update path, so the re-scheduled reminder's next firing still appeared acknowledged in the DB query. The upsert now explicitly clears `notificationAcknowledgedAt: null` on update, starting each new reminder cycle fresh.
+- **Notification bell badge now updates in real time without Redis.** In single-instance deployments without Redis, the reminder scheduler had no way to push a `reminder-fired` WS event to open browser tabs directly — it only published to Redis (a no-op when Redis is absent). The scheduler now accepts an `onReminderFired` callback that performs both the in-process WS broadcast and the Redis cross-instance publish, following the same pattern as all other workspace-metadata events. The badge now refreshes the moment a reminder fires, even without Redis.
+
 ## 1.1.25 - 2026-03-29
 
 ### Fixed

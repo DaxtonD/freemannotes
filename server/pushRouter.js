@@ -377,7 +377,11 @@ function createPushRouter({ prisma }) {
 				await prisma.noteReminder.upsert({
 					where: { userId_docId: { userId, docId } },
 					create: { userId, deviceId, docId, noteId, workspaceId, reminderAt, noteTitle, fired: false },
-					update: { deviceId, noteId, workspaceId, reminderAt, noteTitle, fired: false, firedAt: null },
+					// Reset fired, firedAt, and notificationAcknowledgedAt so the new
+					// reminder cycle starts fresh. Without clearing notificationAcknowledgedAt,
+					// a reminder that was previously fired and acknowledged would never show
+					// a bell badge again when re-scheduled on the same note.
+					update: { deviceId, noteId, workspaceId, reminderAt, noteTitle, fired: false, firedAt: null, notificationAcknowledgedAt: null },
 				});
 
 				jsonResponse(res, 200, { ok: true });

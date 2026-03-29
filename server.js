@@ -523,7 +523,25 @@ if (DATABASE_URL.length > 0) {
 		// Start reminder scheduler — fires push notifications for due note reminders.
 		try {
 			const { startReminderScheduler } = require('./server/pushService');
-			startReminderScheduler(prisma, redis);
+			// Pass a broadcast callback that (a) directly notifies WS clients in this
+			// process so the bell badge refreshes even without Redis, and (b) publishes
+			// to Redis for cross-instance delivery in multi-instance deployments.
+			// Using origin: SERVER_INSTANCE_ID prevents the Redis subscriber from
+			// re-broadcasting the event on this instance (no double delivery).
+			startReminderScheduler(prisma, redis, async ({ userId, workspaceId }) => {
+				const normalized = normalizeWorkspaceMetadataEvent({
+					type: 'workspace-metadata-changed',
+					reason: 'reminder-fired',
+					userIds: [userId],
+					workspaceId,
+					origin: SERVER_INSTANCE_ID,
+				});
+				if (!normalized) return;
+				broadcastWorkspaceMetadataChanged(normalized);
+				if (redis) {
+					await publishWorkspaceMetadataEvent(redis, normalized);
+				}
+			});
 		} catch (err) {
 			console.warn('[server] Reminder scheduler failed to start:', err.message);
 		}
