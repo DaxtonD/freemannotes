@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.25 - 2026-03-29
+
+### Fixed
+- **Infinite WS reconnect storm with multiple tabs eliminated.** When a user has two browser tabs open on different workspaces and switches workspace in one tab, the JWT cookie is updated to the newly-active workspace. The other tab's Yjs providers then reconnect carrying the new JWT but with the old workspace's room prefix (e.g. `oldWorkspaceId:__notes_registry__`). The server's namespace check saw the prefix mismatch, found no `noteCollaborator` row for registry rooms, and closed the connection — which the client immediately retried, flooding the server with queries and causing the connection indicator to flicker indefinitely. The fix: when the room prefix doesn't match the JWT's active workspace, the server now first checks whether the user is a **member of the room's workspace** (the correct security boundary). If they are, the connection is allowed with their role in that workspace. Only if they are not a workspace member does the server fall back to checking for a shared-note collaborator entry.
+
 ## 1.1.24 - 2026-03-30
 
 ### Fixed

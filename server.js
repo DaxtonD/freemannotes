@@ -1036,29 +1036,50 @@ wss.on('connection', (conn, req) => {
 			if (hasNamespace) {
 				if (!raw.startsWith(expectedPrefix)) {
 					const foreignRoom = splitDocRoomId(raw);
-					const foreignCollaborator = foreignRoom
-						? await prisma.noteCollaborator.findFirst({
-							where: {
-								docId: raw,
-								userId: session.userId,
-								revokedAt: null,
-							},
-							select: { id: true, role: true },
-						})
+
+					// A user legitimately has multiple browser tabs open on different
+					// workspaces.  When they switch workspaces in one tab the JWT cookie
+					// is updated to the newly-active workspace; the other tab's Yjs
+					// providers reconnect carrying the new JWT but with the old workspace's
+					// room prefix.  Allow the connection if the user is a member of the
+					// room's workspace — membership is the correct security boundary, not
+					// which workspace happens to be "active" in the session cookie.
+					const foreignWorkspaceMember = foreignRoom
+						? await findLiveWorkspaceMembership(prisma, session.userId, foreignRoom.sourceWorkspaceId, { role: true })
 						: null;
-					if (!foreignCollaborator) {
-						console.warn(
-							'[ws] close forbidden namespace',
-							JSON.stringify({
-								userId: session.userId,
-								workspaceId: session.workspaceId,
-								rawRoom: raw,
+
+					if (foreignWorkspaceMember) {
+						// User is a member of the room's workspace — grant access with the
+						// role they hold in that workspace.
+						readOnly = !canEditWorkspaceContent(normalizeWorkspaceRole(foreignWorkspaceMember.role, 'VIEWER'));
+					} else {
+						// Not a member of the room's workspace — check whether this is a
+						// note that was explicitly shared with this user (cross-workspace
+						// collaboration).
+						const foreignCollaborator = foreignRoom
+							? await prisma.noteCollaborator.findFirst({
+								where: {
+									docId: raw,
+									userId: session.userId,
+									revokedAt: null,
+								},
+								select: { id: true, role: true },
 							})
-						);
-						conn.close(1008, 'forbidden');
-						return;
+							: null;
+						if (!foreignCollaborator) {
+							console.warn(
+								'[ws] close forbidden namespace',
+								JSON.stringify({
+									userId: session.userId,
+									workspaceId: session.workspaceId,
+									rawRoom: raw,
+								})
+							);
+							conn.close(1008, 'forbidden');
+							return;
+						}
+						readOnly = foreignCollaborator.role === 'VIEWER';
 					}
-					readOnly = foreignCollaborator.role === 'VIEWER';
 				}
 			} else {
 				docName = `${session.workspaceId}:${raw}`;
