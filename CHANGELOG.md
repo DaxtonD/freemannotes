@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.23 - 2026-03-29
+
+### Fixed
+- **Note reminders now reliably fire push notifications.** The server-side scheduler previously only searched for reminders whose `reminderAt` was within the upcoming 60-second window (`gte: now`). Any reminder whose window had already elapsed — due to a row being created after the scheduler had already scanned that slot, or due to a server restart — was permanently missed. The query now uses only an upper bound (`lte: windowEnd`) so past-due unfired reminders are caught and fired immediately (0 ms delay) on the next cycle.
+- **Notification bell now badges for fired reminders.** The in-app notification bell previously had no concept of reminders — it only counted share invitations and app updates. A new `notificationAcknowledgedAt` column on `NoteReminder` tracks whether the user has seen the in-app entry. Two new API endpoints (`GET /api/push/reminders/pending` and `POST /api/push/reminders/acknowledge`) expose the unacknowledged count. `refreshNoteShareState` now fetches this count in parallel with share data, and `totalNotificationCount` includes it. Opening the notifications panel acknowledges all fired reminders and clears the badge.
+
 ## 1.1.22 - 2026-03-28
 
 ### Added
