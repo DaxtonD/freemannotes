@@ -1000,9 +1000,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							type="button"
 							className={styles.cardDockButton}
 							onPointerDown={(e) => e.stopPropagation()}
-							onClick={handleDockAction}
-							aria-label={t('editors.dockAction')}
-							disabled={!canEdit}
+							onClick={handleReminderAction}
+							aria-label={t('note.addReminder')}
+							disabled={!canEdit || !props.onAddReminder}
 						>
 							<FontAwesomeIcon icon={faBell} />
 						</button>

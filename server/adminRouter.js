@@ -193,12 +193,14 @@ function createAdminRouter({ prisma }) {
 					});
 
 					const users = await Promise.all(
-						rows.map(async (u) => {						// Fetch workspace stats and file-storage aggregates in parallel so
-						// a list of N users doesn't require N*3 sequential round-trips.							const [
-								ws,
-								noteImageAgg,
-								noteDocumentAgg,
-							] = await Promise.all([
+					rows.map(async (u) => {
+						// Fetch workspace stats and file-storage aggregates in parallel so
+						// a list of N users doesn't require N*3 sequential round-trips.
+						const [
+							ws,
+							noteImageAgg,
+							noteDocumentAgg,
+						] = await Promise.all([
 								prisma.workspace.findFirst({
 									where: { ownerUserId: u.id },
 									select: { id: true },
@@ -224,10 +226,11 @@ function createAdminRouter({ prisma }) {
 								notes = Number(first?.note_count || 0);
 								dbBytes = Number(first?.bytes || 0);
 							}
-						// Compute real file-storage totals from the aggregate results.							const imageBytes = Number(noteImageAgg?._sum?.byteSize || 0);
-							const documentBytes = Number(noteDocumentAgg?._sum?.byteSize || 0);
-							const images = Number(noteImageAgg?._count?._all || 0);
-							const filesBytes = imageBytes + documentBytes;
+						// Compute real file-storage totals from the aggregate results.
+						const imageBytes = Number(noteImageAgg?._sum?.byteSize || 0);
+						const documentBytes = Number(noteDocumentAgg?._sum?.byteSize || 0);
+						const images = Number(noteImageAgg?._count?._all || 0);
+						const filesBytes = imageBytes + documentBytes;
 							const totalBytes = dbBytes + filesBytes;
 
 							return {
