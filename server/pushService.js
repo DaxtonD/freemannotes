@@ -264,6 +264,23 @@ async function sendPushToUser(prisma, userId, payload) {
 		subscriptions.map((sub) => sendOneSubscription(sub, payload, prisma))
 	);
 
+	// Log each individual failure so it surfaces in docker logs / server output.
+	// (sendOneSubscription only writes to the DB log; Promise.allSettled silently
+	// swallows the throw, so without this the error is invisible at console level.)
+	for (let i = 0; i < results.length; i++) {
+		const result = results[i];
+		if (result.status === 'rejected') {
+			const sub = subscriptions[i];
+			const endpointHint = sub.platform === 'IOS'
+				? `fcm:${String(sub.fcmToken ?? '').slice(0, 20)}…`
+				: String(sub.endpoint ?? '').replace(/^https:\/\/[^/]+/, (host) => host.slice(0, 40));
+			console.error(
+				`[push] send failed (platform=${sub.platform} device=${sub.deviceId} endpoint=${endpointHint}):`,
+				result.reason?.message ?? result.reason
+			);
+		}
+	}
+
 	return {
 		sent: results.filter((r) => r.status === 'fulfilled').length,
 		failed: results.filter((r) => r.status === 'rejected').length,
