@@ -14,6 +14,7 @@ import {
 	type WorkspacePendingInvite,
 } from '../../core/workspaceInviteApi';
 import type { FailedNoteLinkRecord } from '../../core/noteLinkApi';
+import type { FiredReminder } from '../../core/pushApi';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import styles from './CollaborationModal.module.css';
@@ -23,6 +24,8 @@ type Props = {
 	onClose: () => void;
 	authUserId: string | null;
 	failedLinkNotifications?: FailedNoteLinkRecord[];
+	firedReminders?: FiredReminder[];
+	onOpenReminder?: (reminder: FiredReminder) => void;
 	hasAppUpdateNotification?: boolean;
 	hasAppUpdatedNotification?: boolean;
 	onApplyAppUpdate?: () => void;
@@ -101,6 +104,7 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const [folderByInvitationId, setFolderByInvitationId] = React.useState<Record<string, string>>({});
 	const [hiddenInvitationIds, setHiddenInvitationIds] = React.useState<Set<string>>(() => readHiddenNotificationIds(props.authUserId));
 	const failedLinkNotifications = React.useMemo(() => Array.isArray(props.failedLinkNotifications) ? props.failedLinkNotifications : [], [props.failedLinkNotifications]);
+	const firedReminders = React.useMemo(() => Array.isArray(props.firedReminders) ? props.firedReminders : [], [props.firedReminders]);
 	const hasAppUpdate = props.hasAppUpdateNotification === true;
 	const hasAppUpdated = props.hasAppUpdatedNotification === true;
 
@@ -147,7 +151,8 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const hasWorkspaceInvites = workspaceInvites.length > 0;
 	const hasNoteInvites = visibleInvitations.length > 0;
 	const hasFailedLinks = failedLinkNotifications.length > 0;
-	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks;
+	const hasFiredReminders = firedReminders.length > 0;
+	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders;
 	const hasAppNotification = hasAppUpdate || hasAppUpdated;
 	const modalTitle = hasAppNotification ? t('prefs.notifications') : hasWorkspaceInvites ? t('invite.notifications') : t('share.notifications');
 	const modalSubtitle = hasAppNotification
@@ -307,7 +312,38 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 
 				<div className={styles.modalBody}>
 					{error ? <div className={styles.error}>{error}</div> : null}
-					{visibleInvitations.length === 0 && workspaceInvites.length === 0 && failedLinkNotifications.length === 0 && !hasAppNotification ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
+				{visibleInvitations.length === 0 && workspaceInvites.length === 0 && failedLinkNotifications.length === 0 && firedReminders.length === 0 && !hasAppNotification ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
+
+				{hasFiredReminders ? (
+					<div className={`${styles.section} ${styles.notificationList}`}>
+						{firedReminders.map((reminder) => {
+							const noteTitle = (typeof reminder.noteTitle === 'string' && reminder.noteTitle.trim()) || 'Untitled note';
+							const dueTime = new Date(reminder.reminderAt).toLocaleString();
+							return (
+								<div key={reminder.id} className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
+									<div className={styles.notificationHeader}>
+										<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
+											⏰
+										</div>
+										<div className={styles.notificationCopy}>
+											<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
+												<strong>{noteTitle}</strong>
+											</div>
+											<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
+												{dueTime}
+											</div>
+										</div>
+									</div>
+									<div className={styles.actionRow}>
+										<button type="button" className={styles.primaryButton} onClick={() => props.onOpenReminder?.(reminder)}>
+											Open note
+										</button>
+									</div>
+								</div>
+							);
+						})}
+					</div>
+				) : null}
 
 					{hasAppUpdate ? (
 						<div className={`${styles.section} ${styles.notificationList}`}>

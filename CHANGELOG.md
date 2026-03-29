@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.24 - 2026-03-30
+
+### Fixed
+- **Bell badge now updates on all open tabs when a reminder fires.** Previously the notification bell only incremented on devices that actually received a push notification. The scheduler now publishes a `reminder-fired` workspace-metadata WS event (scoped to the owner) immediately after the push is sent. Any open browser tab for that user receives the event and calls `refreshNoteShareState` directly, updating the badge without waiting for a manual refresh or reconnect.
+- **Notification panel now lists fired reminders.** The bell panel previously showed only share invitations and app updates — fired reminders never appeared as actionable entries. A new `GET /api/push/reminders/fired` endpoint returns the list of unacknowledged fired reminders (note title, due time). The notifications panel now renders a reminder section at the top; clicking **Open note** closes the panel and navigates to the note, switching to the correct workspace if needed.
+- **Multiple reminder notifications no longer collapse into one.** All reminder push notifications previously shared the same `tag: 'freemannotes-reminder'`, meaning a second reminder would silently replace the first in the notification tray. Each reminder now uses a per-note tag (`freemannotes-reminder-{noteId}`) so they appear as distinct notifications.
+
 ## 1.1.23 - 2026-03-29
 
 ### Fixed
