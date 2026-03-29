@@ -3,9 +3,11 @@ import {
 	readCollectionState,
 	readLabelState,
 	readLastAccessedAt,
+	readPinState,
 	readReminderState,
 	setNoteCollection,
 	setNoteLabelIds,
+	setNotePinned,
 	setNoteReminder,
 	touchLastAccessedAt,
 } from '../core/noteModel';
@@ -24,6 +26,10 @@ export function assignNoteReminder(doc: Y.Doc, reminderAt: string | null): void 
 	setNoteReminder(doc, reminderAt);
 }
 
+export function assignNotePinned(doc: Y.Doc, isPinned: boolean): void {
+	setNotePinned(doc, isPinned);
+}
+
 export function markNoteAccessed(doc: Y.Doc): void {
 	touchLastAccessedAt(doc);
 }
@@ -32,12 +38,14 @@ export function readNoteMetadataState(doc: Y.Doc): {
 	collectionId: string | null;
 	labelIds: string[];
 	reminderAt: string | null;
+	isPinned: boolean;
 	lastAccessedAt: string;
 } {
 	return {
 		collectionId: readCollectionState(doc).collectionId,
 		labelIds: readLabelState(doc).labelIds,
 		reminderAt: readReminderState(doc).reminderAt,
+		isPinned: readPinState(doc).isPinned,
 		lastAccessedAt: readLastAccessedAt(doc),
 	};
 }

@@ -1370,6 +1370,12 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						setIsMoreMenuOpen(false);
 						setMoreMenuAnchorRect(null);
 					}}
+					onCheckAll={() => {
+						setItems((current) => current.map((item) => (item.completed ? item : { ...item, completed: true })));
+					}}
+					onUncheckAll={() => {
+						setItems((current) => current.map((item) => (!item.completed ? item : { ...item, completed: false })));
+					}}
 					onAddUrlPreview={() => {
 						setIsMoreMenuOpen(false);
 						setMoreMenuAnchorRect(null);

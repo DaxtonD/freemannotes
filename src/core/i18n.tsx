@@ -383,6 +383,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 	},
 	noteMenu: {
 		pinNote: 'Pin note',
+		unpinNote: 'Unpin note',
 		addCollaborator: 'Add collaborator',
 		addImage: 'Add image',
 		addDocument: 'Add Document',

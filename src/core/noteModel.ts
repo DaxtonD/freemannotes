@@ -96,6 +96,8 @@ export interface Note {
 	labelIds: string[];
 	/** Optional reminder timestamp in ISO-8601 form. */
 	reminderAt: string | null;
+	/** When true, the note is pinned and should stay at the top of note lists. */
+	isPinned: boolean;
 	/** Most recent time the note was opened/viewed by the user. */
 	lastAccessedAt: string;
 	/** Plain-text body. Present only when type === 'text'. */
@@ -202,6 +204,7 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 		metadata.set('collectionId', null);
 		metadata.set('labelIds', []);
 		metadata.set('reminderAt', null);
+		metadata.set('isPinned', false);
 		metadata.set('lastAccessedAt', nowIso);
 		setNotePreviewLinksOnDoc(doc, previewLinks || []);
 	});
@@ -252,6 +255,7 @@ export function initChecklistNoteDoc(
 		metadata.set('collectionId', null);
 		metadata.set('labelIds', []);
 		metadata.set('reminderAt', null);
+		metadata.set('isPinned', false);
 		metadata.set('lastAccessedAt', nowIso);
 		setNotePreviewLinksOnDoc(doc, previewLinks || []);
 
@@ -322,6 +326,7 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	const collectionId = normalizeOptionalId(metadata.get('collectionId'));
 	const labelIds = normalizeLabelIds(metadata.get('labelIds'));
 	const reminderAt = normalizeIsoString(metadata.get('reminderAt'));
+	const isPinned = Boolean(metadata.get('isPinned'));
 	const fallbackAccessedAt = Number.isFinite(createdAt) && createdAt > 0 ? new Date(createdAt).toISOString() : new Date(updatedAt || Date.now()).toISOString();
 	const lastAccessedAt = normalizeIsoString(metadata.get('lastAccessedAt')) ?? fallbackAccessedAt;
 
@@ -339,6 +344,7 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 		collectionId,
 		labelIds,
 		reminderAt,
+		isPinned,
 		lastAccessedAt,
 	};
 
@@ -529,11 +535,29 @@ export function readReminderState(doc: Y.Doc): { reminderAt: string | null } {
 	return { reminderAt: normalizeIsoString(metadata.get('reminderAt')) };
 }
 
+export function readPinState(doc: Y.Doc): { isPinned: boolean } {
+	const metadata = doc.getMap<any>('metadata');
+	return { isPinned: Boolean(metadata.get('isPinned')) };
+}
+
 export function setNoteReminder(doc: Y.Doc, reminderAt: string | null, origin?: symbol): void {
 	const metadata = doc.getMap<any>('metadata');
 	const normalizedReminderAt = normalizeIsoString(reminderAt);
 	const run = (): void => {
 		metadata.set('reminderAt', normalizedReminderAt);
+		metadata.set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
+}
+
+export function setNotePinned(doc: Y.Doc, isPinned: boolean, origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const run = (): void => {
+		metadata.set('isPinned', Boolean(isPinned));
 		metadata.set('updatedAt', Date.now());
 	};
 	if (origin) {
