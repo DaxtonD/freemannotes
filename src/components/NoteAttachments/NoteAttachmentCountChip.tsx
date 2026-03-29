@@ -68,18 +68,30 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		links: Math.max(getCachedRemoteNoteLinks(props.docId).length, extractNoteLinksFromDoc(props.doc).length),
 		documents: getCachedNoteDocuments(props.docId).length,
 	}));
+	const countsRef = React.useRef(counts);
 	const [isOpen, setIsOpen] = React.useState(false);
 	const [anchorRect, setAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
+	const onOpenStateChangeRef = React.useRef(props.onOpenStateChange);
 
 	React.useEffect(() => {
-		props.onOpenStateChange?.(isOpen);
-	}, [isOpen, props.onOpenStateChange]);
+		// Mirror callback props into refs so refresh/open handlers can stay stable and
+		// avoid effect churn while still calling the latest parent callback.
+		onOpenStateChangeRef.current = props.onOpenStateChange;
+	}, [props.onOpenStateChange]);
+
+	React.useEffect(() => {
+		onOpenStateChangeRef.current?.(isOpen);
+	}, [isOpen]);
+
+	React.useEffect(() => {
+		countsRef.current = counts;
+	}, [counts]);
 
 	const refresh = React.useCallback(async (options?: {
 		scope?: 'all' | 'media' | 'documents' | 'links';
 		syncRemote?: boolean;
 		forceRemote?: boolean;
-	}) => {
+	}): Promise<AttachmentCounts> => {
 		const scope = options?.scope ?? 'all';
 		const includeMedia = scope === 'all' || scope === 'media';
 		const includeDocuments = scope === 'all' || scope === 'documents';
@@ -95,20 +107,25 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 			includeLinks ? readStoredNoteLinks(props.docId) : Promise.resolve([]),
 		]);
 		const extractedLinkCount = extractNoteLinksFromDoc(props.doc).length;
-		setCounts((current) => ({
+		const localCounts: AttachmentCounts = {
 			images: includeMedia
 				? filterRemoteNoteImagesByPendingDeletes(
 					storedRemoteImages.length > 0 ? storedRemoteImages : getCachedRemoteNoteImages(props.docId),
 					queuedDeletes
 				).length + queuedImages.length
-				: current.images,
-			links: includeLinks ? Math.max(storedRemoteLinks.length, extractedLinkCount) : current.links,
+				: countsRef.current.images,
+			links: includeLinks ? Math.max(storedRemoteLinks.length, extractedLinkCount) : countsRef.current.links,
 			documents: includeDocuments
 				? Math.max(storedRemoteDocuments.length + queuedDocuments.length, getCachedNoteDocuments(props.docId).length)
-				: current.documents,
+				: countsRef.current.documents,
+		};
+		setCounts((current) => ({
+			images: includeMedia ? localCounts.images : current.images,
+			links: includeLinks ? localCounts.links : current.links,
+			documents: includeDocuments ? localCounts.documents : current.documents,
 		}));
 
-		if (!options?.syncRemote) return;
+		if (!options?.syncRemote) return localCounts;
 
 		try {
 			const [remoteImages, mergedDocuments, remoteLinks] = await Promise.all([
@@ -130,21 +147,39 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 					})
 					: Promise.resolve<readonly ReturnType<typeof getCachedRemoteNoteLinks>[number][]>([]),
 			]);
-			setCounts((current) => ({
+			const remoteCounts: AttachmentCounts = {
 				images: includeMedia
 					? filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes).length + queuedImages.length
-					: current.images,
-				links: includeLinks ? Math.max(remoteLinks.length, extractedLinkCount) : current.links,
-				documents: includeDocuments ? mergedDocuments.length : current.documents,
+					: localCounts.images,
+				links: includeLinks ? Math.max(remoteLinks.length, extractedLinkCount) : localCounts.links,
+				documents: includeDocuments ? mergedDocuments.length : localCounts.documents,
+			};
+			setCounts((current) => ({
+				images: includeMedia ? remoteCounts.images : current.images,
+				links: includeLinks ? remoteCounts.links : current.links,
+				documents: includeDocuments ? remoteCounts.documents : current.documents,
 			}));
+			return remoteCounts;
 		} catch {
 			// Keep the best local counts when refreshes fail.
+			return localCounts;
 		}
 	}, [props.authUserId, props.doc, props.docId]);
 
 	React.useEffect(() => {
 		if (props.suspendRemoteRefresh) return;
-		void refresh({ syncRemote: !props.disableInitialRemoteRefresh });
+		let cancelled = false;
+		void (async () => {
+			const currentCounts = await refresh({ syncRemote: !props.disableInitialRemoteRefresh });
+			if (cancelled || !props.disableInitialRemoteRefresh) return;
+			// On first paint some notes only have server-backed attachments, so do one
+			// follow-up remote refresh when the local snapshot is still empty.
+			if (currentCounts.images + currentCounts.links + currentCounts.documents > 0) return;
+			void refresh({ scope: 'all', syncRemote: true });
+		})();
+		return () => {
+			cancelled = true;
+		};
 	}, [props.disableInitialRemoteRefresh, props.suspendRemoteRefresh, refresh]);
 
 	React.useEffect(() => {
@@ -283,6 +318,24 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 			}
 		};
 	}, [isCoarsePointer, isOpen]);
+
+	React.useEffect(() => {
+		if (!isOpen || typeof window === 'undefined' || typeof document === 'undefined') return;
+		const closeOverlay = (): void => setIsOpen(false);
+		const onVisibilityChange = (): void => {
+			if (document.visibilityState === 'hidden') {
+				closeOverlay();
+			}
+		};
+		window.addEventListener('blur', closeOverlay);
+		window.addEventListener('pagehide', closeOverlay);
+		document.addEventListener('visibilitychange', onVisibilityChange);
+		return () => {
+			window.removeEventListener('blur', closeOverlay);
+			window.removeEventListener('pagehide', closeOverlay);
+			document.removeEventListener('visibilitychange', onVisibilityChange);
+		};
+	}, [isOpen]);
 
 	const totalCount = counts.images + counts.links + counts.documents;
 

@@ -79,6 +79,21 @@
 	color: var(--note-color-muted, var(--color-text-muted));
 }
 
+.reminderBadge {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 22px;
+	height: 22px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 28%, var(--note-color-border, var(--color-border)));
+	background: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 10%, var(--note-color-header-bg, var(--color-surface-2)));
+	color: var(--note-color-accent, var(--color-accent));
+	font-size: 11px;
+	line-height: 1;
+	flex-shrink: 0;
+}
+
 .metaChipRow {
 	display: flex;
 	flex-wrap: wrap;
