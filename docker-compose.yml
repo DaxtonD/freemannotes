@@ -42,6 +42,17 @@ services:
       OCR_PYTHON_BIN: ${OCR_PYTHON_BIN:-/opt/ocr-venv/bin/python}
       OCR_DISABLED: ${OCR_DISABLED:-0}
       OCR_LOG_OUTPUT: ${OCR_LOG_OUTPUT:-0}
+      # Push notifications — VAPID (Web / Android PWA)
+      # Generate keys with: npx web-push generate-vapid-keys
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      # Push notifications — Firebase Cloud Messaging (iOS via Capacitor)
+      # Download service-account JSON from Firebase Console → Service Accounts
+      FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
+      FCM_CLIENT_EMAIL: ${FCM_CLIENT_EMAIL:-}
+      FCM_PRIVATE_KEY: ${FCM_PRIVATE_KEY:-}
+      PUSH_PROVIDER: ${PUSH_PROVIDER:-hybrid}
     ports:
       - "${APP_PORT:-27015}:${PORT:-27015}"
     healthcheck:

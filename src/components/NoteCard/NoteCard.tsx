@@ -7,6 +7,7 @@ import {
 	faEllipsisVertical,
 	faImage,
 	faPalette,
+	faRotateLeft,
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import type { ChecklistItem } from '../../core/bindings';
@@ -43,6 +44,11 @@ export type NoteCardProps = {
 	isMoreMenuOpen?: boolean;
 	onOpen?: () => void;
 	onMoreMenu?: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
+	onAddReminder?: () => void;
+	/** Called when the user taps the restore button overlay on a trashed card. */
+	onRestoreNote?: () => void;
+	/** When true, renders the card with trash-view treatment: dimmed, blurred content, chips disabled, and a centered restore overlay. */
+	isTrashView?: boolean;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
 	shouldSuppressOpen?: () => boolean;
@@ -618,9 +624,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		});
 	}, [props.noteId]);
 
+	const handleReminderAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
+		event.stopPropagation();
+		props.onAddReminder?.();
+	}, [props]);
+
 	const handleDockAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
-		// Placeholder buttons should feel inert for now but must not bubble and
-		// accidentally open the note card underneath.
+		// Placeholder — stops propagation so the card doesn't open underneath.
 		event.stopPropagation();
 	}, []);
 
@@ -664,10 +674,15 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		event.currentTarget.blur();
 	}, [props]);
 
+	const handleRestoreAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
+		event.stopPropagation();
+		props.onRestoreNote?.();
+	}, [props]);
+
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}`}
+			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
@@ -675,7 +690,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			tabIndex={props.onOpen ? 0 : undefined}
 			onPointerDown={(e) => {
 				// Track initial point; open action is decided on pointer up if movement stayed small.
-				if (!props.onOpen) return;
+				if (!props.onOpen && !props.onMoreMenu) return;
 				if (isInteractiveTarget(e.target)) return;
 				suppressGestureOpenRef.current = false;
 				if (e.pointerType === 'touch' || isCoarsePointerDevice()) {
@@ -859,6 +874,23 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				// Keep a dedicated chip rail on the card so collaborator chips ship now
 				// and future label/image/collection chips can reuse the same slot.
 				<div className={styles.metaChipRow}>{props.metaChips}</div>
+			) : null}
+
+			{props.isTrashView && props.onRestoreNote ? (
+				<div className={styles.trashRestoreRow}>
+					<button
+						type="button"
+						className={styles.trashRestoreButton}
+						onPointerDown={(e) => e.stopPropagation()}
+						onClick={handleRestoreAction}
+						aria-label={t('noteMenu.restoreNote')}
+					>
+						<span className={styles.trashRestoreIcon} aria-hidden="true">
+							<FontAwesomeIcon icon={faRotateLeft} />
+						</span>
+						<span>{t('noteMenu.restoreNote')}</span>
+					</button>
+				</div>
 			) : null}
 
 			{type === 'text' ? (

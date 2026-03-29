@@ -94,7 +94,7 @@ export function TreeSelector(props: TreeSelectorProps): React.JSX.Element {
 		const isActive = props.selectedId === item.id;
 		return (
 			<div key={item.id} className={styles.treeNode}>
-				<div className={styles.treeRow} style={{ paddingLeft: `${depth * 16}px` }}>
+				<div className={styles.treeRow} style={{ paddingLeft: `${depth * 12}px` }}>
 					{hasChildren ? (
 						<button
 							type="button"

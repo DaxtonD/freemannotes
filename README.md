@@ -133,6 +133,38 @@ Optional environment variables you may want:
 - `OCR_DISABLED=1` if you intentionally want to disable OCR
 - `OCR_LOG_OUTPUT=1` if you want OCR child-process output and progress logs in the server logs
 
+### Push Notifications (optional)
+
+FreemanNotes supports hybrid push notifications: Web Push (VAPID) for Web/Android PWA and Firebase Cloud Messaging (FCM) for iOS via Capacitor.
+
+**VAPID keys (Web / Android PWA):**
+
+```bash
+npx web-push generate-vapid-keys
+```
+
+Copy the output into your `.env`:
+
+```
+VAPID_PUBLIC_KEY=<base64url public key>
+VAPID_PRIVATE_KEY=<base64url private key>
+VAPID_SUBJECT=mailto:admin@yourdomain.com
+```
+
+**FCM (iOS via Capacitor):**
+
+1. Open [Firebase Console](https://console.firebase.google.com/) → your project → Project Settings → Service Accounts.
+2. Click **Generate new private key** and download the JSON file.
+3. Copy three fields from the JSON into your `.env`:
+
+```
+FCM_PROJECT_ID=your-firebase-project-id
+FCM_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
+FCM_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
+```
+
+When neither VAPID nor FCM is configured, push notifications are silently disabled and the Notifications panel in Preferences shows an appropriate message.
+
 Startup behavior:
 
 - The container creates the database if permissions allow it.

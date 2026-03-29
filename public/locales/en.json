@@ -786,5 +786,24 @@
     "peach": "Peach",
     "cream": "Cream",
     "lavender": "Lavender"
+  },
+  "push": {
+    "statusEnabled": "Push notifications enabled",
+    "statusDisabled": "Push notifications disabled",
+    "statusDenied": "Notifications blocked by browser",
+    "lastSync": "Last sync",
+    "enableNotifications": "Enable Notifications",
+    "disableNotifications": "Disable Notifications",
+    "reregister": "Re-register Device",
+    "sendTest": "Send Test Notification",
+    "recentDeliveries": "Recent Deliveries",
+    "noDeliveries": "No deliveries yet. Send a test notification above.",
+    "permissionDenied": "Notifications are blocked. Open your browser or OS settings to re-enable.",
+    "iosGuidanceTitle": "📱 Add to Home Screen Required",
+    "iosStep1": "Tap the Share button (□↑) in Safari",
+    "iosStep2": "Select \"Add to Home Screen\"",
+    "iosStep3": "Open the app from your Home Screen",
+    "iosStep4": "Return here and enable notifications",
+    "iosDontAllow": "⚠️ Do NOT tap \"Don't Allow\" — iOS cannot re-prompt after denial."
   }
 }

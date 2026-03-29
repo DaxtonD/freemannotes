@@ -88,6 +88,8 @@ import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, s
 import { emitNoteDocumentsChanged, scheduleQueuedNoteDocumentFlush } from './core/noteDocumentStore';
 import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
+import { onPushReceived } from './core/pushManager';
+import { syncNoteReminder } from './core/pushApi';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -2620,7 +2622,18 @@ export function App(): React.JSX.Element {
 		if (!noteReminderDoc) return;
 		assignNoteReminder(noteReminderDoc, reminderAt);
 		setNoteReminderModalState(null);
-	}, [noteReminderDoc]);
+		// Sync reminder to server so the push scheduler can fire the notification.
+		if (authStatus === 'authed' && !authOfflineMode && noteReminderModalState) {
+			void syncNoteReminder({
+				deviceId,
+				docId: noteReminderModalState.noteId,
+				noteId: noteReminderModalState.noteId,
+				workspaceId: authWorkspaceId ?? '',
+				reminderAt,
+				noteTitle: noteReminderModalState.title || undefined,
+			}).catch(() => undefined);
+		}
+	}, [noteReminderDoc, authStatus, authOfflineMode, noteReminderModalState, deviceId, authWorkspaceId]);
 
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
@@ -2878,6 +2891,14 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		refreshNoteShareStateRef.current = refreshNoteShareState;
 	}, [refreshNoteShareState]);
+
+	// Refresh the notification badge whenever a push message arrives in the
+	// background (the service worker posts FREEMANNOTES_PUSH_RECEIVED).
+	React.useEffect(() => {
+		return onPushReceived(() => {
+			void refreshNoteShareStateRef.current();
+		});
+	}, []);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -5741,6 +5762,7 @@ export function App(): React.JSX.Element {
 				onOpenAppearance={openAppearanceFromPreferences}
 				onOpenUser={openUserFromPreferences}
 				connectionState={connection.state}
+				deviceId={deviceId}
 				onUserManagement={openUserManagementFromPreferences}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}

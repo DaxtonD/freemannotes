@@ -1,0 +1,187 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>FreemanNotes</Name>
+  <Repository>ghcr.io/daxtond/freemannotes:latest</Repository>
+  <Registry>https://ghcr.io/daxtond/freemannotes</Registry>
+  <Branch>
+    <Tag>latest</Tag>
+    <TagDescription>Latest stable release</TagDescription>
+  </Branch>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/DaxtonD/freemannotes/issues</Support>
+  <Project>https://github.com/DaxtonD/freemannotes</Project>
+  <Overview>FreemanNotes is a self-hosted, offline-first notes app inspired by Google Keep — but with real workspaces, collections, rich-text editing, image uploads with OCR search, document attachments, real-time collaboration via Yjs, workspace invites, and a note app that stays useful when the network disappears. Requires an external PostgreSQL instance (bring your own or use a separate Unraid PostgreSQL container).</Overview>
+  <Category>Productivity: Tools: Other:</Category>
+  <WebUI>http://[IP]:[PORT:27015]</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/third-party/freemannotes.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/public/icons/FreemanFace.png</Icon>
+  <ExtraParams></ExtraParams>
+  <PostArgs/>
+  <DonateText/>
+  <DonateLink/>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PORT
+  ═══════════════════════════════════════════════════════════════ -->
+  <Config Name="WebUI Port" Target="27015" Default="27015" Mode="tcp"
+    Description="Host port that maps to the FreemanNotes web server. Change the left-hand value if 27015 is already in use on your server."
+    Type="Port" Display="always" Required="true" Mask="false">27015</Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       VOLUMES
+  ═══════════════════════════════════════════════════════════════ -->
+  <Config Name="Uploads" Target="/app/uploads" Default="/mnt/user/appdata/freemannotes/uploads" Mode="rw"
+    Description="Persistent storage for user-uploaded images and document attachments. Map this to a path on your Unraid array or cache drive."
+    Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/freemannotes/uploads</Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       REQUIRED VARIABLES
+  ═══════════════════════════════════════════════════════════════ -->
+  <Config Name="DATABASE_URL" Target="DATABASE_URL" Default="" Mode=""
+    Description="PostgreSQL connection string. Example: postgresql://freemannotes:yourpassword@192.168.1.100:5432/freemannotes?schema=public — Point this at your existing PostgreSQL container or server. A separate postgres:16 Unraid container works great."
+    Type="Variable" Display="always" Required="true" Mask="false"></Config>
+
+  <Config Name="AUTH_JWT_SECRET" Target="AUTH_JWT_SECRET" Default="" Mode=""
+    Description="Long random secret used to sign session tokens. Generate one with: openssl rand -hex 32. Keep this private and consistent — changing it will log everyone out."
+    Type="Variable" Display="always" Required="true" Mask="true"></Config>
+
+  <Config Name="APP_URL" Target="APP_URL" Default="" Mode=""
+    Description="Public base URL of your FreemanNotes instance. Examples: http://192.168.1.100:27015 or https://notes.yourdomain.com. Required for invite emails and secure cookie settings."
+    Type="Variable" Display="always" Required="true" Mask="false"></Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       COMMON OPTIONAL VARIABLES
+  ═══════════════════════════════════════════════════════════════ -->
+  <Config Name="AUTH_ALLOW_REGISTER" Target="AUTH_ALLOW_REGISTER" Default="true" Mode=""
+    Description="Allow new users to register accounts. Set to false to lock down registration after initial setup."
+    Type="Variable" Display="always" Required="false" Mask="false">true</Config>
+
+  <Config Name="AUTH_SESSION_DAYS" Target="AUTH_SESSION_DAYS" Default="14" Mode=""
+    Description="How many days a login session stays valid before requiring re-authentication."
+    Type="Variable" Display="always" Required="false" Mask="false">14</Config>
+
+  <Config Name="AUTH_COOKIE_SECURE" Target="AUTH_COOKIE_SECURE" Default="" Mode=""
+    Description="Set to true when serving FreemanNotes over HTTPS. Causes session cookies to be sent only over secure connections. Leave blank for plain HTTP."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="PGTIMEZONE" Target="PGTIMEZONE" Default="" Mode=""
+    Description="IANA timezone name used when displaying timestamps from PostgreSQL. Storage remains UTC. Example: America/New_York. Leave blank to use UTC."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="REDIS_URL" Target="REDIS_URL" Default="" Mode=""
+    Description="Optional Redis connection string for shared Yjs document caching and pub/sub across multiple instances. Example: redis://192.168.1.100:6379. Leave blank to use in-process memory only."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       SMTP (INVITE EMAILS)
+  ═══════════════════════════════════════════════════════════════ -->
+  <Config Name="SMTP_HOST" Target="SMTP_HOST" Default="" Mode=""
+    Description="Hostname of your SMTP server for sending workspace invitation emails. Leave blank to disable email sending."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="SMTP_PORT" Target="SMTP_PORT" Default="587" Mode=""
+    Description="SMTP server port. Common values: 587 (STARTTLS), 465 (SSL), 25 (plain)."
+    Type="Variable" Display="always" Required="false" Mask="false">587</Config>
+
+  <Config Name="SMTP_SECURE" Target="SMTP_SECURE" Default="false" Mode=""
+    Description="Set to true to use SSL/TLS from the start of the connection (port 465). Leave false for STARTTLS (port 587)."
+    Type="Variable" Display="always" Required="false" Mask="false">false</Config>
+
+  <Config Name="SMTP_USER" Target="SMTP_USER" Default="" Mode=""
+    Description="SMTP authentication username."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="SMTP_PASS" Target="SMTP_PASS" Default="" Mode=""
+    Description="SMTP authentication password."
+    Type="Variable" Display="always" Required="false" Mask="true"></Config>
+
+  <Config Name="SMTP_FROM" Target="SMTP_FROM" Default="FreemanNotes &lt;no-reply@example.com&gt;" Mode=""
+    Description="The From address shown on outgoing invite emails. Example: FreemanNotes &lt;no-reply@yourdomain.com&gt;"
+    Type="Variable" Display="always" Required="false" Mask="false">FreemanNotes &lt;no-reply@example.com&gt;</Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PUSH NOTIFICATIONS — VAPID (WEB / ANDROID PWA)
+  ═══════════════════════════════════════════════════════════════ -->
+  <Config Name="VAPID_PUBLIC_KEY" Target="VAPID_PUBLIC_KEY" Default="" Mode=""
+    Description="VAPID public key for Web Push notifications (Web and Android PWA). Generate a key pair with: npx web-push generate-vapid-keys. Leave blank to disable Web Push."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="VAPID_PRIVATE_KEY" Target="VAPID_PRIVATE_KEY" Default="" Mode=""
+    Description="VAPID private key for Web Push notifications. Keep this secret. Must be the matching pair for VAPID_PUBLIC_KEY."
+    Type="Variable" Display="always" Required="false" Mask="true"></Config>
+
+  <Config Name="VAPID_SUBJECT" Target="VAPID_SUBJECT" Default="" Mode=""
+    Description="VAPID subject — a mailto: or https: URI that identifies the push sender. Example: mailto:admin@yourdomain.com. Required when VAPID keys are set."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       PUSH NOTIFICATIONS — FIREBASE CLOUD MESSAGING (IOS / CAPACITOR)
+  ═══════════════════════════════════════════════════════════════ -->
+  <Config Name="FCM_PROJECT_ID" Target="FCM_PROJECT_ID" Default="" Mode=""
+    Description="Firebase project ID for iOS push notifications via FCM. Found in Firebase Console → Project Settings → General. Leave blank to disable FCM."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="FCM_CLIENT_EMAIL" Target="FCM_CLIENT_EMAIL" Default="" Mode=""
+    Description="Firebase service-account client email. Download the service-account JSON from Firebase Console → Project Settings → Service Accounts → Generate new private key."
+    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+
+  <Config Name="FCM_PRIVATE_KEY" Target="FCM_PRIVATE_KEY" Default="" Mode=""
+    Description="Firebase service-account RSA private key (the full PEM string including BEGIN/END markers). Paste the private_key field value from your Firebase service-account JSON."
+    Type="Variable" Display="always" Required="false" Mask="true"></Config>
+
+  <Config Name="PUSH_PROVIDER" Target="PUSH_PROVIDER" Default="hybrid" Mode=""
+    Description="Push notification mode. hybrid = use VAPID for web/Android and FCM for iOS (default). vapid-only = VAPID only. fcm-only = FCM only. disabled = turn off all push delivery."
+    Type="Variable" Display="always" Required="false" Mask="false">hybrid</Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       ADVANCED / RARELY CHANGED
+  ═══════════════════════════════════════════════════════════════ -->
+  <Config Name="NODE_ENV" Target="NODE_ENV" Default="production" Mode=""
+    Description="Node.js environment. Leave as production."
+    Type="Variable" Display="advanced" Required="true" Mask="false">production</Config>
+
+  <Config Name="PORT" Target="PORT" Default="27015" Mode=""
+    Description="Internal port the Node.js server listens on inside the container. Change only if you have a conflict; also update the WebUI Port mapping above to match."
+    Type="Variable" Display="advanced" Required="false" Mask="false">27015</Config>
+
+  <Config Name="HOST" Target="HOST" Default="0.0.0.0" Mode=""
+    Description="Interface the server binds to inside the container. Leave as 0.0.0.0."
+    Type="Variable" Display="advanced" Required="false" Mask="false">0.0.0.0</Config>
+
+  <Config Name="DB_SCHEMA_SYNC" Target="DB_SCHEMA_SYNC" Default="deploy" Mode=""
+    Description="Controls database migration behavior at startup. deploy = apply committed migrations (recommended). push = prisma db push (development only). none = skip automatic sync."
+    Type="Variable" Display="advanced" Required="false" Mask="false">deploy</Config>
+
+  <Config Name="AUTH_BCRYPT_ROUNDS" Target="AUTH_BCRYPT_ROUNDS" Default="12" Mode=""
+    Description="bcrypt cost factor for password hashing. Higher = more secure but slower login. 12 is a good production default."
+    Type="Variable" Display="advanced" Required="false" Mask="false">12</Config>
+
+  <Config Name="AUTH_COOKIE_NAME" Target="AUTH_COOKIE_NAME" Default="freemannotes_session" Mode=""
+    Description="Name of the session cookie. Change only if running multiple instances on the same domain."
+    Type="Variable" Display="advanced" Required="false" Mask="false">freemannotes_session</Config>
+
+  <Config Name="UPLOAD_DIR" Target="UPLOAD_DIR" Default="/app/uploads" Mode=""
+    Description="Path inside the container where uploaded files are stored. Should match the container-side target of the Uploads volume mapping above."
+    Type="Variable" Display="advanced" Required="false" Mask="false">/app/uploads</Config>
+
+  <Config Name="OCR_DISABLED" Target="OCR_DISABLED" Default="0" Mode=""
+    Description="Set to 1 to disable OCR processing entirely. Useful on low-memory servers. Image and document text will not be indexed for search."
+    Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+
+  <Config Name="OCR_LOG_OUTPUT" Target="OCR_LOG_OUTPUT" Default="0" Mode=""
+    Description="Set to 1 to stream OCR child-process output and progress into the container logs."
+    Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+
+  <Config Name="TRASH_CLEANUP_INTERVAL_MS" Target="TRASH_CLEANUP_INTERVAL_MS" Default="3600000" Mode=""
+    Description="How often (in milliseconds) the server scans for trashed notes past their auto-delete threshold. Default is 3600000 (1 hour)."
+    Type="Variable" Display="advanced" Required="false" Mask="false">3600000</Config>
+
+  <Config Name="YPERSISTENCE" Target="YPERSISTENCE" Default="" Mode=""
+    Description="Optional path inside the container for LevelDB-backed Yjs document persistence. Example: /data/yjs. Leave blank to keep Yjs state in memory and PostgreSQL only."
+    Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+
+  <Config Name="DB_BASELINE_ON_NON_EMPTY" Target="DB_BASELINE_ON_NON_EMPTY" Default="" Mode=""
+    Description="Set to true for a single startup if a prior failed install already created FreemanNotes tables and prisma migrate deploy now exits with P3005. Revert to blank after the first successful start."
+    Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+</Container>

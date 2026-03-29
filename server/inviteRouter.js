@@ -351,6 +351,21 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						deliveredInApp: Boolean(existingUser),
 					});
 
+					// Push to existing user so they see the invite in-app immediately.
+					if (existingUser) {
+						try {
+							const { sendPushToUser } = require('./pushService');
+							await sendPushToUser(prisma, existingUser.id, {
+								type: 'workspace-invite',
+								title: '🏠 Workspace Invitation',
+								body: `You've been invited to join "${workspace.name}".`,
+								data: { type: 'workspace-invite', workspaceId, url: '/' },
+							});
+						} catch (pushErr) {
+							console.warn('[push] workspace-invite push failed:', pushErr.message);
+						}
+					}
+
 					await publishWorkspaceInviteMetadataChange(
 						onWorkspaceMetadataChanged,
 						{

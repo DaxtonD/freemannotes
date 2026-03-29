@@ -29,7 +29,7 @@
 }
 
 .compactModal {
-	width: min(520px, 100%);
+	width: min(560px, 100%);
 	max-height: min(72vh, 620px);
 	gap: 10px;
 	padding: 14px;
@@ -189,25 +189,25 @@
 .treeNode {
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: 2px;
 }
 
 .treeRow {
 	display: flex;
 	align-items: stretch;
-	gap: 8px;
+	gap: 4px;
 }
 
 .treeButton,
 .checkboxRow {
 	width: 100%;
-	padding: 8px 10px;
+	padding: 5px 8px;
 	cursor: pointer;
 	text-align: left;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 12px;
+	gap: 8px;
 }
 
 .treeButton {
@@ -217,32 +217,32 @@
 
 .treeDisclosure,
 .treeDisclosureSpacer {
-	width: 26px;
-	min-width: 26px;
-	border-radius: 10px;
+	width: 16px;
+	min-width: 16px;
+	border-radius: 0;
 	flex: 0 0 auto;
 }
 
 .treeDisclosure {
-	border: 1px solid var(--color-border);
-	background: var(--color-surface);
+	border: 0;
+	background: transparent;
 	color: var(--color-text-muted);
 	cursor: pointer;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+	padding: 0;
+	transition: color 160ms ease, transform 180ms ease;
 }
 
 .treeDisclosure:hover,
 .treeDisclosure:focus-visible {
-	border-color: var(--color-accent);
-	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface) 90%);
+	color: var(--color-accent);
 }
 
 .treeDisclosureIcon {
-	width: 14px;
-	height: 14px;
+	width: 12px;
+	height: 12px;
 	background-color: currentColor;
 	-webkit-mask-image: url('/icons/Arrow.png');
 	-webkit-mask-repeat: no-repeat;
@@ -276,8 +276,8 @@
 	overflow: hidden;
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
-	padding-top: 2px;
+	gap: 2px;
+	padding-top: 0;
 }
 
 .treeChildrenOpen > * {
@@ -300,7 +300,7 @@
 
 .treeLabel,
 .checkboxLabel {
-	font-size: 13px;
+	font-size: 12px;
 	font-weight: 600;
 	color: var(--color-text);
 }
@@ -308,13 +308,13 @@
 .treeMeta,
 .checkboxMeta,
 .muted {
-	font-size: 11px;
+	font-size: 10px;
 	color: var(--color-text-muted);
 }
 
 .treeActions {
 	display: flex;
-	gap: 8px;
+	gap: 4px;
 	flex: 0 0 auto;
 }
 
@@ -323,8 +323,8 @@
 	background: transparent;
 	color: var(--color-text-muted);
 	cursor: pointer;
-	padding: 4px;
-	font-size: 13px;
+	padding: 2px 4px;
+	font-size: 12px;
 }
 
 .checkboxInput {

@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.22 - 2026-03-28
+
+### Added
+- **Push notification system (VAPID / FCM).** New `server/pushService.js` delivers Web Push to browsers and PWA installs via VAPID, and Firebase Cloud Messaging to iOS Capacitor builds. A dedicated `server/pushRouter.js` exposes `/api/push/*` REST endpoints for subscription management, status and delivery-log retrieval, test notifications, and reminder registration. Three new Prisma models — `PushSubscription`, `PushNotificationLog`, and `NoteReminder` — back the feature (migration `phase17_push_subscriptions`). Environment variables `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` and `FCM_PROJECT_ID`/`FCM_CLIENT_EMAIL`/`FCM_PRIVATE_KEY` control which channels are active.
+- **Notifications settings panel in Preferences.** A new `NotificationsSection` component renders under a Notifications tab in Preferences. It shows subscription status, recent delivery logs, and controls for subscribing, unsubscribing, re-registering, and sending a test push.
+- **Server-side note reminder scheduling.** When a note reminder is set, the client syncs the reminder timestamp to the server via `PUT /api/push/reminder`. The server-side 60-second poll scheduler fires a push when the reminder time is reached even when the client is offline.
+- **Push on workspace invite.** When a workspace invite is sent to an existing registered user, a push notification is immediately dispatched alongside the in-app invite event.
+- **Push on note share.** Sharing a note with a registered user now fires an immediate push notification to the recipient.
+
+### Changed
+- **User Management modal uses accordion layout.** The Users list and Create User form are now independently collapsible disclosure panels, matching the design pattern of the Share Note and Share Workspace modals.
+- **Admin user usage stats now report real image and file-storage totals.** The `/api/admin/users` endpoint previously hardcoded `images: 0` and `filesBytes: 0`. It now runs parallel `NoteImage` and `NoteDocument` Prisma aggregates per user and returns accurate counts and byte totals.
+- **Manage Collections modal: clicking the active parent collection deselects it.** Previously there was no way to clear a parent selection from the tree picker without a separate button; clicking the highlighted item now toggles it off.
+- **Collection tree sub-item path text removed.** The secondary path label (e.g. "travel / mexico") that appeared below each collection name in management modals has been removed.
+- **Accordion section titles carry an accent-color pill.** The section summary label in all three accordion modals (Share Note, Share Workspace, User Management) renders with `--color-accent` foreground, tinted background, and a matching border for clearer visual hierarchy.
+- **Trash note cards have full visual treatment and one-tap restore.** Trashed cards render desaturated, dimmed, and with content blur. Metadata chips are pointer-events disabled. A centered circular restore button overlays the card. Long-press still opens the more-menu on trash cards as on normal cards.
+
+### Fixed
+- **Admin panel always showed 0 images and 0 file bytes for every user.** Root cause: `adminRouter.js` set `filesBytes = 0` unconditionally. Fixed by adding parallel `noteImage.aggregate` and `noteDocument.aggregate` queries and computing real totals from the results.
+
 ## 1.1.21 - 2026-03-28
 
 ### Added
