@@ -8,6 +8,7 @@ import {
 	faImage,
 	faPalette,
 	faRotateLeft,
+	faThumbtack,
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import type { ChecklistItem } from '../../core/bindings';
@@ -25,7 +26,8 @@ import {
 	getNoteCardCompletedExpanded,
 	setNoteCardCompletedExpanded,
 } from '../../core/noteCardCompletedExpansion';
-import { readNoteColorToken, resolveThemeNoteColorModel, setNoteColorToken } from '../../core/noteColors';
+import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import { getUserNoteColorToken, setUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import type { ThemeId } from '../../core/theme';
 import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
@@ -41,6 +43,7 @@ export type NoteCardProps = {
 	metaChips?: React.ReactNode;
 	canEdit?: boolean;
 	hasPendingSync?: boolean;
+	isPinned?: boolean;
 	isMoreMenuOpen?: boolean;
 	onOpen?: () => void;
 	onMoreMenu?: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
@@ -489,12 +492,15 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const metadata = React.useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const colorToken = React.useSyncExternalStore(
 		(onStoreChange) => {
+			// Subscribe to both the local preferences store and the Yjs metadata
+			// (Yjs is kept as a migration fallback for legacy colors already in the doc).
+			const unsubLocal = subscribeNoteColorPrefs(onStoreChange);
 			const observer = (): void => onStoreChange();
 			metadata.observe(observer);
-			return () => metadata.unobserve(observer);
+			return () => { unsubLocal(); metadata.unobserve(observer); };
 		},
-		() => readNoteColorToken(metadata),
-		() => readNoteColorToken(metadata)
+		() => getUserNoteColorToken(props.noteId) ?? readNoteColorToken(metadata),
+		() => getUserNoteColorToken(props.noteId) ?? readNoteColorToken(metadata)
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
@@ -640,10 +646,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		setIsColorPickerOpen(true);
 	}, [canEdit]);
 
-	const handleColorSelect = React.useCallback((token: Parameters<typeof setNoteColorToken>[1]): void => {
-		setNoteColorToken(props.doc, token);
+	// Write the color choice to the per-user local store only — never to the
+	// shared Yjs doc — so collaborators keep independent color preferences.
+	const handleColorSelect = React.useCallback((token: Parameters<typeof setUserNoteColorToken>[1]): void => {
+		setUserNoteColorToken(props.noteId, token);
 		setIsColorPickerOpen(false);
-	}, [props.doc]);
+	}, [props.noteId]);
 
 	const handleAddCollaborator = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
@@ -861,6 +869,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				}}
 			>
 				<span className={styles.headerTitle}>{title.trim().length > 0 ? title : t('note.untitled')}</span>
+				{props.isPinned ? (
+					<span aria-label={t('noteMenu.pinNote')} title={t('noteMenu.pinNote')} className={styles.pinBadge}>
+						<FontAwesomeIcon icon={faThumbtack} />
+					</span>
+				) : null}
 				{reminderAt ? (
 					<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={styles.reminderBadge}>
 						<FontAwesomeIcon icon={faBell} />

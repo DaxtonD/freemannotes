@@ -9,6 +9,7 @@ import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../Note
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc } from '../../core/noteLinks';
 import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import { getUserNoteColorToken } from '../../core/noteColorPreferences';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
@@ -21,7 +22,7 @@ import {
 	type NoteShareCollaboratorSnapshot,
 	type SharedNotePlacement,
 } from '../../core/noteShareApi';
-import { readNoteFromDoc } from '../../core/noteModel';
+import { readNoteFromDoc, setNotePinned } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
@@ -43,6 +44,7 @@ import styles from './NoteGrid.module.css';
 type Note = {
 	id: string;
 	isShared: boolean;
+	isPinned: boolean;
 };
 
 export type NoteGridProps = {
@@ -270,6 +272,7 @@ function createFallbackNoteSnapshot(id: string): VisibleNoteSnapshot {
 		collectionId: null,
 		labelIds: [],
 		reminderAt: null,
+		isPinned: false,
 		lastAccessedAt: '',
 		trashed: false,
 		archived: false,
@@ -394,8 +397,15 @@ type GridNoteCardProps = {
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 };
 
-function getNoteColorVars(doc: Y.Doc, themeId: ThemeId): React.CSSProperties | undefined {
-	const token = readNoteColorToken(doc.getMap<any>('metadata'));
+/**
+ * Resolves CSS custom-property overrides for a note's color scheme.
+ *
+ * Priority: per-user localStorage preference → legacy Yjs metadata token.
+ * Using the local preference first ensures color choices are private to each
+ * user and never broadcast to collaborators sharing the same note doc.
+ */
+function getNoteColorVars(noteId: string, doc: Y.Doc, themeId: ThemeId): React.CSSProperties | undefined {
+	const token = getUserNoteColorToken(noteId) ?? readNoteColorToken(doc.getMap<any>('metadata'));
 	if (!token) return undefined;
 	const resolved = resolveThemeNoteColorModel(themeId).tokens[token];
 	return {
@@ -448,7 +458,7 @@ function renderNoteMetaChips(args: {
 	if ((!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && !args.docId && !collectionPath && labelItems.length === 0) {
 		return undefined;
 	}
-	const chipColorStyle = getNoteColorVars(args.doc, args.themeId);
+	const chipColorStyle = getNoteColorVars(args.noteId, args.doc, args.themeId);
 	const collectionChipCount = collectionPath ? '1' : null;
 	const labelChipCount = `${labelItems.length}`;
 
@@ -602,6 +612,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					doc={props.doc}
 					metaChips={props.metaChips}
 					canEdit={props.canEdit}
+					isPinned={props.note.isPinned}
 					hasPendingSync={props.hasPendingSync}
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
@@ -684,6 +695,16 @@ function collaboratorAvatarFallback(name: string): string {
 	const value = String(name || '').trim();
 	if (!value) return '?';
 	return value.slice(0, 1).toUpperCase();
+}
+
+function setChecklistCompletedState(doc: Y.Doc, completed: boolean): void {
+	const checklist = doc.getArray<Y.Map<unknown>>('checklist');
+	if (checklist.length === 0) return;
+	doc.transact(() => {
+		for (const item of checklist.toArray()) {
+			item.set('completed', completed);
+		}
+	});
 }
 
 export function NoteGrid(props: NoteGridProps): React.JSX.Element {
@@ -907,6 +928,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				collectionId: note.collectionId,
 				labelIds: note.labelIds,
 				reminderAt: note.reminderAt,
+				isPinned: note.isPinned,
 				lastAccessedAt: note.lastAccessedAt,
 				trashed: note.trashed,
 				archived: note.archived,
@@ -1042,8 +1064,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			});
 			const columnSlots = committedColumns.map((column) => column.length);
 			const readingOrder = flattenColumns(committedColumns);
-			pendingCommittedVisibleOrderRef.current = readingOrder.slice();
-			setLayoutOrderIds((previous) => (arraysEqual(previous, readingOrder) ? previous : readingOrder));
+			const pinnedVisibleIds = new Set(
+				visibleIds.filter((id) => noteSnapshotById.get(id)?.isPinned === true)
+			);
+			const constrainedReadingOrder = [
+				...readingOrder.filter((id) => pinnedVisibleIds.has(id)),
+				...readingOrder.filter((id) => !pinnedVisibleIds.has(id)),
+			];
+			pendingCommittedVisibleOrderRef.current = constrainedReadingOrder.slice();
+			setLayoutOrderIds((previous) => (arraysEqual(previous, constrainedReadingOrder) ? previous : constrainedReadingOrder));
 			// Preserve the committed drag result as stickyColumns so the local
 			// device sees the exact column layout from the drag.  Other
 			// devices re-pack from the Yjs canonical order with their own
@@ -1064,7 +1093,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			}
 
 			const current = readOrderIds(noteOrder);
-			const next = mergeVisibleOrderIntoFullOrder(current, visibleIds, readingOrder);
+			const next = mergeVisibleOrderIntoFullOrder(current, visibleIds, constrainedReadingOrder);
 			if (arraysEqual(current, next)) return;
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
 			ydoc.transact(() => {
@@ -1072,7 +1101,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				noteOrder.insert(0, next);
 			});
 		},
-		[noteLayout, noteOrder, visibleIds, mobileGridGapPx, props.maxCardHeightPx]
+		[noteLayout, noteOrder, noteSnapshotById, visibleIds, mobileGridGapPx, props.maxCardHeightPx]
 	);
 
 	React.useEffect(() => {
@@ -1105,7 +1134,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const orphanIndices: number[] = [];
 		for (let i = rawOrder.length - 1; i >= 0; i--) {
 			const id = normalizeId(rawOrder[i]);
-			if (id && !registrySet.has(id)) orphanIndices.push(i);
+			// Shared note aliases are intentionally absent from the user's own
+			// notesList but are valid entries in noteOrder after being dragged.
+			// Do not treat them as orphans.
+			if (id && !registrySet.has(id) && !sharedNoteIdSet.has(id)) orphanIndices.push(i);
 		}
 		if (orphanIndices.length > 0) {
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
@@ -1212,9 +1244,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// Persist whether a card is a shared alias so downstream menu and drag logic
 		// can disable local-only actions like trashing or reordering that shared notes
 		// should not perform inside the receiver workspace.
-		for (const id of renderedIds) map.set(id, { id, isShared: sharedNoteIdSet.has(id) });
+		for (const id of renderedIds) {
+			map.set(id, {
+				id,
+				isShared: sharedNoteIdSet.has(id),
+				isPinned: noteSnapshotById.get(id)?.isPinned === true,
+			});
+		}
 		return map;
-	}, [renderedIds, sharedNoteIdSet]);
+	}, [noteSnapshotById, renderedIds, sharedNoteIdSet]);
 
 	// ── Column computation: packedColumns ─────────────────────────────────
 	// Greedy shortest-column masonry: each card from the canonical order is
@@ -1372,13 +1410,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!openCollaboratorChip) return undefined;
 		const doc = docsById[openCollaboratorChip.noteId];
 		if (!doc) return undefined;
-		return getNoteColorVars(doc, props.themeId);
+		return getNoteColorVars(openCollaboratorChip.noteId, doc, props.themeId);
 	}, [docsById, openCollaboratorChip, props.themeId]);
 	const metadataOverlayColorStyle = React.useMemo(() => {
 		if (!openMetadataChip) return undefined;
 		const doc = docsById[openMetadataChip.noteId];
 		if (!doc) return undefined;
-		return getNoteColorVars(doc, props.themeId);
+		return getNoteColorVars(openMetadataChip.noteId, doc, props.themeId);
 	}, [docsById, openMetadataChip, props.themeId]);
 	const closeChipOverlays = React.useCallback((): void => {
 		setOpenCollaboratorChip(null);
@@ -1952,9 +1990,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							? 'checklist'
 							: 'text'
 					}
+					isPinned={noteSnapshotById.get(moreMenuNoteId)?.isPinned === true}
 					anchorRect={moreMenuAnchorRect}
 					isTrashView={isTrashView}
 					onClose={() => { setMoreMenuNoteId(null); setMoreMenuAnchorRect(null); }}
+					onTogglePin={(moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
+						setNotePinned(moreMenuDoc, !(noteSnapshotById.get(moreMenuNoteId)?.isPinned === true));
+					} : undefined}
+					onCheckAll={(moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
+						setChecklistCompletedState(moreMenuDoc, true);
+					} : undefined}
+					onUncheckAll={(moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
+						setChecklistCompletedState(moreMenuDoc, false);
+					} : undefined}
 					onAddCollaborator={props.onAddCollaborator && (moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;
 						// The more-menu now routes share/collaboration actions through the

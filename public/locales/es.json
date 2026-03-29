@@ -739,6 +739,7 @@
   },
   "noteMenu": {
     "pinNote": "Fijar nota",
+    "unpinNote": "Desfijar nota",
     "addCollaborator": "Añadir colaborador",
     "addImage": "Añadir imagen",
     "addDocument": "Añadir documento",

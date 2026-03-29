@@ -14,6 +14,7 @@ export type VisibleNoteSnapshot = {
 	collectionId: string | null;
 	labelIds: string[];
 	reminderAt: string | null;
+	isPinned: boolean;
 	lastAccessedAt: string;
 	trashed: boolean;
 	archived: boolean;
@@ -94,6 +95,16 @@ function getEffectiveSortDirection(sortMode: NoteSortMode, sortDirection: SortDi
 	return 'desc';
 }
 
+function pinnedFirst(notes: readonly VisibleNoteSnapshot[]): VisibleNoteSnapshot[] {
+	const pinned: VisibleNoteSnapshot[] = [];
+	const unpinned: VisibleNoteSnapshot[] = [];
+	for (const note of notes) {
+		if (note.isPinned) pinned.push(note);
+		else unpinned.push(note);
+	}
+	return [...pinned, ...unpinned];
+}
+
 export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: VisibleNoteFilters = {}): VisibleNoteSnapshot[] {
 	const {
 		showArchived = false,
@@ -124,7 +135,7 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 		return true;
 	});
 
-	if (sortMode === 'manual') return filtered;
+	if (sortMode === 'manual') return pinnedFirst(filtered);
 	const sorted = [...filtered];
 	const effectiveSortDirection = getEffectiveSortDirection(sortMode, sortDirection);
 	const multiplier = effectiveSortDirection === 'asc' ? 1 : -1;
@@ -143,5 +154,5 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 		}
 		return 0;
 	});
-	return sorted;
+	return pinnedFirst(sorted);
 }

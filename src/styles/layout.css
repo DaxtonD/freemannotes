@@ -893,6 +893,9 @@
 .sidebar-submenu-toggle-label {
 	min-width: 0;
 	flex: 1;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .sidebar-submenu-toggle.is-open .sidebar-submenu-toggle-icon {
@@ -1330,7 +1333,7 @@
 }
 
 .note-grid-scope-chip {
-	max-width: 100%;
+	max-width: min(100%, 34rem);
 	min-height: 30px;
 	padding: 0 12px;
 	display: inline-flex;
@@ -1360,6 +1363,7 @@
 .note-grid-scope-label {
 	display: inline-block;
 	min-width: 0;
+	max-width: 100%;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;

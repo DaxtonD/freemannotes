@@ -27,7 +27,8 @@ import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
-import { readNoteColorToken, resolveThemeNoteColorModel, setNoteColorToken } from '../../core/noteColors';
+import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import { getUserNoteColorToken, setUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
@@ -782,12 +783,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const metadata = useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const colorToken = useSyncExternalStore(
 		(onStoreChange) => {
+			// Subscribe to both the local preferences store and the Yjs metadata
+			// (Yjs is kept as a migration fallback for legacy colors already in the doc).
+			const unsubLocal = subscribeNoteColorPrefs(onStoreChange);
 			const observer = (): void => onStoreChange();
 			metadata.observe(observer);
-			return () => metadata.unobserve(observer);
+			return () => { unsubLocal(); metadata.unobserve(observer); };
 		},
-		() => readNoteColorToken(metadata),
-		() => readNoteColorToken(metadata)
+		() => getUserNoteColorToken(props.noteId) ?? readNoteColorToken(metadata),
+		() => getUserNoteColorToken(props.noteId) ?? readNoteColorToken(metadata)
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
@@ -818,10 +822,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (readOnly) return;
 		setIsColorPickerOpen(true);
 	}, [readOnly]);
-	const handleSelectNoteColor = React.useCallback((token: Parameters<typeof setNoteColorToken>[1]): void => {
-		setNoteColorToken(props.doc, token);
+	// Write the color choice to the per-user local store only — never to the
+	// shared Yjs doc — so collaborators keep independent color preferences.
+	const handleSelectNoteColor = React.useCallback((token: Parameters<typeof setUserNoteColorToken>[1]): void => {
+		setUserNoteColorToken(props.noteId, token);
 		setIsColorPickerOpen(false);
-	}, [props.doc]);
+	}, [props.noteId]);
 
 	// Keyboard-close de-selection (checklist mode only):
 	// If the user explicitly dismisses the mobile keyboard, clear any active
