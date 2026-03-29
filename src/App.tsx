@@ -2957,6 +2957,7 @@ export function App(): React.JSX.Element {
 		let disposed = false;
 		let socket: WebSocket | null = null;
 		let reconnectTimer: number | null = null;
+		let refreshMetadataTimer: number | null = null;
 		const pendingNoteMediaTimers = new Map<string, number>();
 		const pendingNoteDocumentTimers = new Map<string, number>();
 		const pendingNoteLinkTimers = new Map<string, number>();
@@ -2992,11 +2993,18 @@ export function App(): React.JSX.Element {
 				pendingViewerRefreshRef.current = true;
 				return;
 			}
-			// Fan-out refresh for sidebar + active workspace label after websocket nudges.
-			void loadSidebarWorkspacesRef.current();
-			void refreshActiveWorkspaceRef.current();
-			void refreshNoteShareStateRef.current();
-			bumpCollaborationRefreshToken();
+			// Debounce: coalesce bursts of WS open + metadata-ready + metadata-changed events
+			// (common during initial session setup) into a single fan-out refresh.
+			if (refreshMetadataTimer !== null) {
+				window.clearTimeout(refreshMetadataTimer);
+			}
+			refreshMetadataTimer = window.setTimeout(() => {
+				refreshMetadataTimer = null;
+				void loadSidebarWorkspacesRef.current();
+				void refreshActiveWorkspaceRef.current();
+				void refreshNoteShareStateRef.current();
+				bumpCollaborationRefreshToken();
+			}, 300);
 		};
 
 		const scheduleReconnect = () => {
@@ -3171,6 +3179,10 @@ export function App(): React.JSX.Element {
 			disposed = true;
 			window.removeEventListener('online', handleOnline);
 			clearReconnectTimer();
+			if (refreshMetadataTimer !== null) {
+				window.clearTimeout(refreshMetadataTimer);
+				refreshMetadataTimer = null;
+			}
 			clearPendingNoteMediaTimers();
 			clearPendingNoteDocumentTimers();
 			clearPendingNoteLinkTimers();
