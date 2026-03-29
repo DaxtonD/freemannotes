@@ -121,6 +121,30 @@ export async function syncNoteReminder(opts: {
 	await checkResponse(res);
 }
 
+/**
+ * Fetch the count of fired reminders that haven't been acknowledged yet.
+ * Used to drive the notification bell badge.
+ */
+export async function fetchPendingReminderCount(): Promise<number> {
+	const res = await fetch('/api/push/reminders/pending', { cache: 'no-store' });
+	await checkResponse(res);
+	const data: { count: number } = await res.json();
+	return typeof data.count === 'number' ? data.count : 0;
+}
+
+/**
+ * Mark all fired reminders for the current user as acknowledged so the bell
+ * badge clears. Call this when the user opens the notifications panel.
+ */
+export async function acknowledgeReminderNotifications(): Promise<void> {
+	const res = await fetch('/api/push/reminders/acknowledge', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: '{}',
+	});
+	await checkResponse(res);
+}
+
 // ── Canonical subscription JSON shape ─────────────────────────────────────────
 // Used as a normalised intermediate type between the browser PushSubscription
 // object and the server API.

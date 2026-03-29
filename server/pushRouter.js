@@ -4,12 +4,14 @@
 // pushRouter.js — REST API for push notification subscriptions.
 //
 // Endpoints:
-//   GET  /api/push/vapid-public-key   – Returns the VAPID public key.
-//   GET  /api/push/status             – Subscription status + recent logs.
-//   POST /api/push/subscribe          – Upsert a push subscription.
-//   DELETE /api/push/subscribe        – Remove a push subscription.
-//   POST /api/push/test               – Send a test notification.
-//   PUT  /api/push/reminder           – Register or clear a note reminder.
+//   GET  /api/push/vapid-public-key           – Returns the VAPID public key.
+//   GET  /api/push/status                     – Subscription status + recent logs.
+//   POST /api/push/subscribe                  – Upsert a push subscription.
+//   DELETE /api/push/subscribe                – Remove a push subscription.
+//   POST /api/push/test                       – Send a test notification.
+//   GET  /api/push/reminders/pending          – Count of unacknowledged fired reminders.
+//   POST /api/push/reminders/acknowledge      – Mark all fired reminders as seen.
+//   PUT  /api/push/reminder                   – Register or clear a note reminder.
 //
 // All mutating endpoints enforce same-origin CSRF check and require auth.
 // Subscription endpoint URLs are validated to prevent SSRF.
@@ -264,6 +266,48 @@ function createPushRouter({ prisma }) {
 				jsonResponse(res, 200, { ok: true, sent: result.sent, failed: result.failed });
 			} catch (err) {
 				console.error('[push] test error:', err.message);
+				jsonResponse(res, 500, { error: 'Internal server error' });
+			}
+			return true;
+		}
+
+		// ── GET /api/push/reminders/pending — bell badge count ───────────────
+		// Returns the number of fired reminders the user hasn't acknowledged yet.
+		// Used by the frontend notification bell to display a badge.
+		if (method === 'GET' && url.pathname === '/api/push/reminders/pending') {
+			try {
+				const count = await prisma.noteReminder.count({
+					where: {
+						userId,
+						fired: true,
+						notificationAcknowledgedAt: null,
+					},
+				});
+				jsonResponse(res, 200, { count });
+			} catch (err) {
+				console.error('[push] reminders/pending error:', err.message);
+				jsonResponse(res, 500, { error: 'Internal server error' });
+			}
+			return true;
+		}
+
+		// ── POST /api/push/reminders/acknowledge — clear bell badge ──────────
+		// Marks all fired, unacknowledged reminders for this user as seen.
+		// The frontend calls this when the user opens the notifications panel.
+		if (method === 'POST' && url.pathname === '/api/push/reminders/acknowledge') {
+			if (!enforceSameOrigin(req, res)) return true;
+			try {
+				await prisma.noteReminder.updateMany({
+					where: {
+						userId,
+						fired: true,
+						notificationAcknowledgedAt: null,
+					},
+					data: { notificationAcknowledgedAt: new Date() },
+				});
+				jsonResponse(res, 200, { ok: true });
+			} catch (err) {
+				console.error('[push] reminders/acknowledge error:', err.message);
 				jsonResponse(res, 500, { error: 'Internal server error' });
 			}
 			return true;
