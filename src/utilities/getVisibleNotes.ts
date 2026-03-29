@@ -1,4 +1,6 @@
-export type ReminderFilterMode = 'all' | 'due-soon' | 'later-today' | 'tomorrow' | 'next-week';
+export type ReminderFilterMode = 'all' | 'past-due' | 'due-soon' | 'later-today' | 'tomorrow' | 'next-week';
+
+export type SortDirection = 'asc' | 'desc';
 
 export type NoteSortMode = 'manual' | 'date-created' | 'date-updated' | 'alphabetical' | 'least-accessed' | 'most-edited';
 
@@ -24,6 +26,7 @@ export type VisibleNoteFilters = {
 	selectedLabelIds?: readonly string[];
 	reminderFilter?: ReminderFilterMode;
 	sortMode?: NoteSortMode;
+	sortDirection?: SortDirection;
 };
 
 function normalizeId(value: unknown): string {
@@ -56,6 +59,10 @@ function withinReminderFilter(reminderAt: string | null, mode: ReminderFilterMod
 	if (!reminderAt) return false;
 	const reminderMs = toTimestamp(reminderAt, Number.NaN);
 	if (!Number.isFinite(reminderMs)) return false;
+	// Past-due is intentionally strict: reminders before "now" only.
+	if (mode === 'past-due') {
+		return reminderMs < nowMs;
+	}
 	if (mode === 'due-soon') {
 		return reminderMs >= nowMs && reminderMs <= nowMs + 72 * 60 * 60 * 1000;
 	}
@@ -80,6 +87,13 @@ function compareByTitle(left: VisibleNoteSnapshot, right: VisibleNoteSnapshot): 
 	return left.title.localeCompare(right.title, undefined, { sensitivity: 'base' });
 }
 
+function getEffectiveSortDirection(sortMode: NoteSortMode, sortDirection: SortDirection | undefined): SortDirection {
+	// Preserve legacy defaults when no explicit direction has been selected.
+	if (sortDirection === 'asc' || sortDirection === 'desc') return sortDirection;
+	if (sortMode === 'alphabetical') return 'asc';
+	return 'desc';
+}
+
 export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: VisibleNoteFilters = {}): VisibleNoteSnapshot[] {
 	const {
 		showArchived = false,
@@ -88,6 +102,7 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 		selectedLabelIds = [],
 		reminderFilter = 'all',
 		sortMode = 'manual',
+		sortDirection,
 	} = filters;
 	const activeCollectionId = normalizeId(selectedCollectionId) || null;
 	const activeLabelIds = Array.from(new Set(selectedLabelIds.map((value) => normalizeId(value)).filter(Boolean)));
@@ -111,15 +126,17 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 
 	if (sortMode === 'manual') return filtered;
 	const sorted = [...filtered];
+	const effectiveSortDirection = getEffectiveSortDirection(sortMode, sortDirection);
+	const multiplier = effectiveSortDirection === 'asc' ? 1 : -1;
 	sorted.sort((left, right) => {
 		if (sortMode === 'date-created') {
-			return right.createdAt - left.createdAt || compareByTitle(left, right);
+			return (left.createdAt - right.createdAt) * multiplier || compareByTitle(left, right);
 		}
 		if (sortMode === 'date-updated' || sortMode === 'most-edited') {
-			return right.updatedAt - left.updatedAt || compareByTitle(left, right);
+			return (left.updatedAt - right.updatedAt) * multiplier || compareByTitle(left, right);
 		}
 		if (sortMode === 'alphabetical') {
-			return compareByTitle(left, right);
+			return compareByTitle(left, right) * multiplier;
 		}
 		if (sortMode === 'least-accessed') {
 			return toTimestamp(left.lastAccessedAt, 0) - toTimestamp(right.lastAccessedAt, 0) || compareByTitle(left, right);

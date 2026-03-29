@@ -25,7 +25,7 @@ import { readNoteFromDoc } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
-import { getVisibleNotes, type NoteGroupingMode, type NoteSortMode, type ReminderFilterMode, type VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
+import { getVisibleNotes, type NoteGroupingMode, type NoteSortMode, type ReminderFilterMode, type SortDirection, type VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
 import { measureDocumentRects } from './flip';
 import {
 	arraysEqual,
@@ -70,6 +70,7 @@ export type NoteGridProps = {
 	labels?: readonly LabelRecord[];
 	reminderFilter?: ReminderFilterMode;
 	sortMode?: NoteSortMode;
+	sortDirection?: SortDirection;
 	sortGrouping?: NoteGroupingMode;
 	refreshCollaboratorsToken?: number;
 	canEditWorkspaceContent?: boolean;
@@ -922,8 +923,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			selectedLabelIds: props.activeLabelIds,
 			reminderFilter: props.reminderFilter,
 			sortMode: props.sortMode,
+			sortDirection: props.sortDirection,
 		}).map((note) => note.id);
-	}, [noteSnapshots, props.activeCollectionId, props.activeLabelIds, props.reminderFilter, props.showArchived, props.showTrashed, props.sortMode]);
+	}, [noteSnapshots, props.activeCollectionId, props.activeLabelIds, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode]);
 
 	const visibleNoteEntries = React.useMemo(() => {
 		const sharedPlacementByAlias = new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement]));

@@ -11,6 +11,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     volumes:
       - freemannotes-uploads:/app/uploads
     environment:
@@ -20,7 +22,7 @@ services:
       APP_URL: ${APP_URL:-}
       DATABASE_URL: ${DATABASE_URL:-postgresql://freemannotes:freemannotes@postgres:5432/freemannotes?schema=public}
       DB_SCHEMA_SYNC: ${DB_SCHEMA_SYNC:-deploy}
-      REDIS_URL: ${REDIS_URL:-}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       PGTIMEZONE: ${PGTIMEZONE:-}
       YPERSISTENCE: ${YPERSISTENCE:-}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
@@ -83,22 +85,24 @@ services:
       retries: 5
       start_period: 10s
 
-  # ─── Redis (optional — uncomment to enable caching layer) ────────────────
-  # redis:
-  #   image: redis:7-alpine
-  #   container_name: freemannotes-redis
-  #   restart: unless-stopped
-  #   volumes:
-  #     - freemannotes-redis:/data
-  #   ports:
-  #     - "6379:6379"
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
+  # ─── Redis — recommended; required for multi-instance deployments ─────────
+  # Enables real-time reminder-fired WS events across all connected browser tabs
+  # so the notification bell badge updates immediately when a reminder fires.
+  # Also required for workspace metadata pub/sub in multi-instance/HA setups.
+  # Set REDIS_URL= (empty) in your .env to disable and run without Redis.
+  redis:
+    image: redis:7-alpine
+    container_name: freemannotes-redis
+    restart: unless-stopped
+    volumes:
+      - freemannotes-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
 volumes:
   freemannotes-pgdata:
   freemannotes-uploads:
-  # freemannotes-redis:
+  freemannotes-redis:
