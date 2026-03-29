@@ -261,9 +261,11 @@ self.addEventListener('push', (event) => {
 		body: payload.body,
 		icon: NOTIFICATION_ICON,
 		badge: NOTIFICATION_BADGE,
-		// Collapse duplicate notifications from the same type (e.g. multiple
-		// rapid share invites) so the notification tray stays clean.
-		tag: payload.data.type ? `freemannotes-${String(payload.data.type)}` : 'freemannotes',
+		// Collapse duplicate notifications from the same type, but give each
+		// reminder its own slot so multiple due notes don't override each other.
+		tag: payload.data.type === 'reminder' && payload.data.noteId
+			? `freemannotes-reminder-${String(payload.data.noteId)}`
+			: payload.data.type ? `freemannotes-${String(payload.data.type)}` : 'freemannotes',
 		renotify: true,
 		data: payload.data,
 		// Vibration pattern for supported mobile browsers (150ms on, 50ms off, 150ms on)

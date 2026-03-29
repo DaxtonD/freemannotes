@@ -310,9 +310,10 @@ const REMINDER_CHECK_INTERVAL_MS = 60_000; // poll every 60 seconds
  * then delays the actual push send until the scheduled moment.
  *
  * @param {import('@prisma/client').PrismaClient} prisma
+ * @param {import('ioredis').Redis | null} [redis]
  * @returns {NodeJS.Timeout} The interval handle; call clearInterval() to stop.
  */
-function startReminderScheduler(prisma) {
+function startReminderScheduler(prisma, redis) {
 	if (!prisma) return null;
 
 	async function checkAndFireReminders() {
@@ -350,24 +351,42 @@ function startReminderScheduler(prisma) {
 			if (!marked) continue;
 
 			const delayMs = Math.max(0, reminder.reminderAt.getTime() - Date.now());
+			// Capture loop variable for the async closure below.
+			const capturedReminder = reminder;
 			setTimeout(async () => {
 				try {
-					await sendPushToUser(prisma, reminder.userId, {
+					await sendPushToUser(prisma, capturedReminder.userId, {
 						type: 'reminder',
 						title: '\u23F0 Reminder',
-						body: reminder.noteTitle
-							? `Reminder: ${reminder.noteTitle}`
+						body: capturedReminder.noteTitle
+							? `Reminder: ${capturedReminder.noteTitle}`
 							: 'You have a note reminder.',
 						data: {
 							type: 'reminder',
-							noteId: reminder.noteId,
-							docId: reminder.docId,
-							workspaceId: reminder.workspaceId,
-							url: `/?workspace=${reminder.workspaceId}&note=${reminder.noteId}`,
+							noteId: capturedReminder.noteId,
+							docId: capturedReminder.docId,
+							workspaceId: capturedReminder.workspaceId,
+							url: `/?workspace=${capturedReminder.workspaceId}&note=${capturedReminder.noteId}`,
 						},
 					});
 				} catch (err) {
 					console.error('[push] reminder send error:', err.message);
+				}
+				// Notify all open browser tabs for this user via the metadata WS
+				// channel. This drives the bell badge on devices that didn't receive
+				// (or blocked) the push notification.
+				if (redis) {
+					try {
+						const { publishWorkspaceMetadataEvent } = require('./workspaceMetadataEvents');
+						await publishWorkspaceMetadataEvent(redis, {
+							type: 'workspace-metadata-changed',
+							reason: 'reminder-fired',
+							userIds: [capturedReminder.userId],
+							workspaceId: capturedReminder.workspaceId,
+						});
+					} catch {
+						// Do not crash the scheduler if the WS broadcast fails.
+					}
 				}
 			}, delayMs);
 		}

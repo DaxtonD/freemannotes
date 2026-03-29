@@ -523,7 +523,7 @@ if (DATABASE_URL.length > 0) {
 		// Start reminder scheduler — fires push notifications for due note reminders.
 		try {
 			const { startReminderScheduler } = require('./server/pushService');
-			startReminderScheduler(prisma);
+			startReminderScheduler(prisma, redis);
 		} catch (err) {
 			console.warn('[server] Reminder scheduler failed to start:', err.message);
 		}
