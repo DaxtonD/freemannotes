@@ -1,6 +1,8 @@
 import type * as Y from 'yjs';
 import type { DocumentManager } from './DocumentManager';
 import type { NoteSearchGroup, NoteSearchMatchKind, NoteSearchResult } from './noteMediaApi';
+import { buildCollectionPathMap, type CollectionRecord } from '../services/collectionService';
+import type { LabelRecord } from '../services/labelService';
 import { readArchiveState, readTrashState } from './noteModel';
 import { getChecklistItemPlainText } from './richText';
 import { readCachedNoteShareCollaborators, type SharedNotePlacement } from './noteShareApi';
@@ -14,6 +16,8 @@ type SearchOfflineNotesArgs = {
 	authUserId?: string | null;
 	activeWorkspaceId?: string | null;
 	activeWorkspaceName?: string | null;
+	collections?: readonly CollectionRecord[];
+	labels?: readonly LabelRecord[];
 	sharedPlacements?: readonly SharedNotePlacement[];
 };
 
@@ -80,6 +84,8 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 	]);
 	const workspaceId = String(args.activeWorkspaceId || '').trim() || null;
 	const workspaceLabel = String(args.activeWorkspaceName || '').trim() || workspaceId || 'Workspace';
+	const collectionPathById = buildCollectionPathMap(args.collections ?? []);
+	const labelById = new Map((args.labels ?? []).map((label) => [label.id, label] as const));
 
 	const results = await Promise.all(noteIds.map(async (noteId) => {
 		if (!noteId) return null;
@@ -97,6 +103,14 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 		const title = normalizeText(doc.getText('title').toString());
 		const metadata = doc.getMap<any>('metadata');
 		const type = metadata.get('type') === 'checklist' ? 'checklist' : 'text';
+		const collectionPath = typeof metadata.get('collectionId') === 'string'
+			? collectionPathById.get(String(metadata.get('collectionId')).trim()) ?? ''
+			: '';
+		const labelMatches = Array.isArray(metadata.get('labelIds'))
+			? metadata.get('labelIds')
+				.map((labelId: unknown) => (typeof labelId === 'string' ? labelById.get(labelId.trim())?.name ?? '' : ''))
+				.filter((labelName: string) => Boolean(labelName) && includesQuery(labelName, normalizedQuery))
+			: [];
 		const noteText = normalizeText(type === 'checklist' ? getChecklistText(doc) : doc.getText('content').toString());
 		const [linkRows, imageRows, documentRows, collaboratorSnapshot] = await Promise.all([
 			readStoredNoteLinks(roomId).catch(() => []),
@@ -122,6 +136,8 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 		if (includesQuery(documentText, normalizedQuery)) matchKinds.push('document');
 		if (includesQuery(linkText, normalizedQuery)) matchKinds.push('link');
 		if (collaboratorMatches.length > 0) matchKinds.push('collaborator');
+		if (includesQuery(collectionPath, normalizedQuery)) matchKinds.push('collection');
+		if (labelMatches.length > 0) matchKinds.push('label');
 		if (matchKinds.length === 0) return null;
 
 		const snippetSource = matchKinds.includes('note')
@@ -132,6 +148,10 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 					? documentText
 					: matchKinds.includes('link')
 						? linkText
+						: matchKinds.includes('collection')
+							? collectionPath
+							: matchKinds.includes('label')
+								? labelMatches.join(' ')
 						: collaboratorMatches.join(' ');
 
 		const group: NoteSearchGroup = placement
@@ -146,6 +166,8 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 			group,
 			matchKinds,
 			collaboratorMatches,
+			collectionMatches: collectionPath && includesQuery(collectionPath, normalizedQuery) ? [collectionPath] : [],
+			labelMatches: labelMatches.slice(0, 4),
 			snippet: buildSearchSnippet(snippetSource, normalizedQuery),
 			imageCount: imageRows.length,
 			thumbnailUrl: null,

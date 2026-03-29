@@ -4,14 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.21 - 2026-03-28
+
 ### Added
-- **About hero ambient portrait overlay.** Added a faint right-side `FreemanFace` graphic in Preferences > About to reinforce branding without overpowering the primary icon and copy.
+- **Collections, labels, and reminders for notes.** Added workspace-scoped metadata registries, note assignment flows, reminder scheduling, metadata chips, and explorer-style management modals for organizing notes beyond folders.
 
 ### Changed
+- **Metadata-aware sidebar, filtering, and search.** Collections now render as a nested explorer in the sidebar and modals, active metadata filters show as removable chips, and global search now merges collection and label matches from both offline and server-backed results.
+- **Sorting and grouping controls restored.** The Sorting menu again supports manual/date/alphabetical modes plus nested filter and grouping controls, and the note grid can render grouped sections such as This week and Last week.
+- **Metadata modal and sidebar polish.** Metadata dialogs now share a compact tree picker system with internal scrolling, and nested sidebar submenu spacing was tightened for desktop and mobile layouts.
+- **About hero ambient portrait overlay.** Added a faint right-side `FreemanFace` graphic in Preferences > About to reinforce branding without overpowering the primary icon and copy.
 - **About HUD layout and metric grouping refinement.** Rebalanced About telemetry so top-row labels render more cleanly and bottom-row metrics are split into left/right groups (`Health`, `Memory` on the left; `Uptime`, `Users` on the right).
 - **HL2-inspired telemetry palette tuning.** Restored a stronger classic amber/yellow HUD look while retaining theme-aware blending so labels remain legible across custom light/dark palettes.
 
 ### Fixed
+- **WebSocket forbidden-namespace reconnect spam.** Session/bootstrap refresh now disables Yjs websocket sync before switching the client manager to a different workspace, preventing registry reconnect storms and repeated Prisma authorization queries.
+- **Attachment chip and metadata overlay stability.** Attachment counts now perform a guarded initial remote refresh when local state is empty, and note-card metadata/attachment overlays close more reliably across modal, blur, and visibility transitions.
+- **Manage Collections disclosure icon distortion.** Shared metadata modal tree icons now keep the correct aspect ratio, and the Manage Collections, Add Labels, and Add to Collection dialogs scroll cleanly when content grows tall.
 - **Live health state now follows connection status.** About health values now react to app connectivity transitions (`100` connected, `50` connecting, `25` offline) and refresh with telemetry polling.
 - **About icon recovery after offline transitions.** The About application icon now retries cleanly when reconnecting instead of remaining broken after an offline error.
 - **Missing desktop telemetry labels.** `Images`, `Docs`, and `Workspaces` now render as first-class HUD cells across desktop and mobile instead of collapsing into an inconsistent wrapped footer line.

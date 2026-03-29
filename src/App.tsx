@@ -37,6 +37,10 @@ import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModa
 import { NoteMediaBrowserModal } from './components/NoteMedia/NoteMediaBrowserModal';
 import { NoteDocumentUploadModal } from './components/NoteDocuments/NoteDocumentUploadModal';
 import { MoveNoteModal } from './components/Workspaces/MoveNoteModal';
+import { CollectionManagementModal } from './components/Workspaces/CollectionManagementModal';
+import { NoteCollectionModal } from './components/Workspaces/NoteCollectionModal';
+import { NoteLabelsModal } from './components/Workspaces/NoteLabelsModal';
+import { ReminderModal } from './components/Workspaces/ReminderModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid/NoteGrid';
@@ -61,6 +65,10 @@ import { useConnectionStatus } from './core/useConnectionStatus';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
+import { createCollection, deleteCollection, getCollectionsRegistryDoc, readCollectionsFromDoc, subscribeCollections, updateCollection, type CollectionRecord, type CollectionTreeNode, buildCollectionTree, buildCollectionPathMap } from './services/collectionService';
+import { createLabel, getLabelsRegistryDoc, readLabelsFromDoc, subscribeLabels, type LabelRecord } from './services/labelService';
+import { assignNoteLabels, assignNoteReminder, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
+import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode } from './utilities/getVisibleNotes';
 import {
 	flushPendingCollaboratorActions,
 	flushPendingNoteShareActions,
@@ -128,6 +136,53 @@ type NoteAttachmentBrowserState = {
 };
 
 type MoveNoteModalState = {
+	noteId: string;
+	title: string;
+};
+
+const EMPTY_NOTE_METADATA_STATE = { collectionId: null, labelIds: [], reminderAt: null, lastAccessedAt: '' };
+
+function metadataSnapshotsEqual(
+	left: { collectionId: string | null; labelIds: string[]; reminderAt: string | null; lastAccessedAt: string },
+	right: { collectionId: string | null; labelIds: string[]; reminderAt: string | null; lastAccessedAt: string }
+): boolean {
+	if (left.collectionId !== right.collectionId) return false;
+	if (left.reminderAt !== right.reminderAt) return false;
+	if (left.lastAccessedAt !== right.lastAccessedAt) return false;
+	if (left.labelIds.length !== right.labelIds.length) return false;
+	for (let index = 0; index < left.labelIds.length; index++) {
+		if (left.labelIds[index] !== right.labelIds[index]) return false;
+	}
+	return true;
+}
+
+function useNoteMetadataSnapshot(doc: Y.Doc | null): { collectionId: string | null; labelIds: string[]; reminderAt: string | null; lastAccessedAt: string } {
+	const snapshotRef = React.useRef(EMPTY_NOTE_METADATA_STATE);
+	const subscribe = React.useCallback((onStoreChange: () => void) => {
+		if (!doc) return () => undefined;
+		const metadata = doc.getMap<any>('metadata');
+		const notify = (): void => onStoreChange();
+		metadata.observe(notify);
+		return () => {
+			metadata.unobserve(notify);
+		};
+	}, [doc]);
+	const getSnapshot = React.useCallback(() => {
+		if (!doc) {
+			snapshotRef.current = EMPTY_NOTE_METADATA_STATE;
+			return EMPTY_NOTE_METADATA_STATE;
+		}
+		const next = readNoteMetadataState(doc);
+		if (metadataSnapshotsEqual(snapshotRef.current, next)) {
+			return snapshotRef.current;
+		}
+		snapshotRef.current = next;
+		return next;
+	}, [doc]);
+	return React.useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_NOTE_METADATA_STATE);
+}
+
+type MetadataNoteModalState = {
 	noteId: string;
 	title: string;
 };
@@ -539,6 +594,19 @@ export function App(): React.JSX.Element {
 	const [searchResultsBusy, setSearchResultsBusy] = React.useState(false);
 	const [searchResultsError, setSearchResultsError] = React.useState<string | null>(null);
 	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
+	const [collectionsDoc, setCollectionsDoc] = React.useState<Y.Doc | null>(null);
+	const [collections, setCollections] = React.useState<CollectionRecord[]>([]);
+	const [labelsDoc, setLabelsDoc] = React.useState<Y.Doc | null>(null);
+	const [labels, setLabels] = React.useState<LabelRecord[]>([]);
+	const [activeCollectionId, setActiveCollectionId] = React.useState<string | null>(null);
+	const [activeLabelIds, setActiveLabelIds] = React.useState<string[]>([]);
+	const [activeReminderFilter, setActiveReminderFilter] = React.useState<ReminderFilterMode>('all');
+	const [activeSortMode, setActiveSortMode] = React.useState<NoteSortMode>('manual');
+	const [activeSortGrouping, setActiveSortGrouping] = React.useState<NoteGroupingMode>('none');
+	const [isCollectionManagementOpen, setIsCollectionManagementOpen] = React.useState(false);
+	const [noteCollectionModalState, setNoteCollectionModalState] = React.useState<MetadataNoteModalState | null>(null);
+	const [noteLabelsModalState, setNoteLabelsModalState] = React.useState<MetadataNoteModalState | null>(null);
+	const [noteReminderModalState, setNoteReminderModalState] = React.useState<MetadataNoteModalState | null>(null);
 	const [moveNoteModalState, setMoveNoteModalState] = React.useState<MoveNoteModalState | null>(null);
 	const [moveNoteBusy, setMoveNoteBusy] = React.useState(false);
 	const [moveNoteError, setMoveNoteError] = React.useState<string | null>(null);
@@ -555,6 +623,52 @@ export function App(): React.JSX.Element {
 	}, [authWorkspaceId, sidebarWorkspaces]);
 	const canManageActiveWorkspace = canManageWorkspace(activeWorkspaceRole);
 	const canEditActiveWorkspace = canEditWorkspaceContent(activeWorkspaceRole);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authWorkspaceId) {
+			setCollectionsDoc(null);
+			setCollections([]);
+			return;
+		}
+		let cancelled = false;
+		let unsubscribe = (): void => {};
+		void (async () => {
+			const doc = await getCollectionsRegistryDoc(manager);
+			if (cancelled) return;
+			setCollectionsDoc(doc);
+			setCollections(readCollectionsFromDoc(doc));
+			unsubscribe = subscribeCollections(doc, () => {
+				setCollections(readCollectionsFromDoc(doc));
+			});
+		})();
+		return () => {
+			cancelled = true;
+			unsubscribe();
+		};
+	}, [authStatus, authWorkspaceId, manager]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authWorkspaceId) {
+			setLabelsDoc(null);
+			setLabels([]);
+			return;
+		}
+		let cancelled = false;
+		let unsubscribe = (): void => {};
+		void (async () => {
+			const doc = await getLabelsRegistryDoc(manager);
+			if (cancelled) return;
+			setLabelsDoc(doc);
+			setLabels(readLabelsFromDoc(doc));
+			unsubscribe = subscribeLabels(doc, () => {
+				setLabels(readLabelsFromDoc(doc));
+			});
+		})();
+		return () => {
+			cancelled = true;
+			unsubscribe();
+		};
+	}, [authStatus, authWorkspaceId, manager]);
 	const exitBackPressRef = React.useRef({ count: 0, lastAt: 0 });
 	// Guard: prevent queuing multiple history.back() calls from rapid taps.
 	// Reset in the popstate handler once the navigation actually completes.
@@ -844,6 +958,22 @@ export function App(): React.JSX.Element {
 		setNoteDocumentModalState(null);
 	}, []);
 
+	const openCollectionManagementModal = React.useCallback(() => {
+		setIsCollectionManagementOpen(true);
+	}, []);
+
+	const openNoteCollectionModal = React.useCallback((noteId: string, title?: string) => {
+		setNoteCollectionModalState({ noteId, title: title || '' });
+	}, []);
+
+	const openNoteLabelsModal = React.useCallback((noteId: string, title?: string) => {
+		setNoteLabelsModalState({ noteId, title: title || '' });
+	}, []);
+
+	const openNoteReminderModal = React.useCallback((noteId: string, title?: string) => {
+		setNoteReminderModalState({ noteId, title: title || '' });
+	}, []);
+
 	const openNoteAttachmentBrowser = React.useCallback((kind: NoteAttachmentBrowserKind, noteId: string, docId: string, title: string | undefined, canEdit: boolean) => {
 		// The note-card media browser participates in the same overlay history stack
 		// as editors and sidebars so mobile Back always peels off the top-most layer
@@ -1020,6 +1150,7 @@ export function App(): React.JSX.Element {
 	type NoteEditorOpenOptions = { replaceTop?: boolean };
 	const openNoteEditor = React.useCallback(
 		(noteId: string, opts?: NoteEditorOpenOptions) => {
+			markNoteAccessed(manager.getDoc(noteId));
 			const current = getOverlaySnapshot();
 			const historyState = typeof window !== 'undefined' ? window.history.state : null;
 			// When the editor is reopened from a nested media layer, replace that top
@@ -1040,7 +1171,7 @@ export function App(): React.JSX.Element {
 				shouldReplaceTop ? 'replace' : 'push'
 			);
 		},
-		[commitOverlaySnapshot, getOverlaySnapshot]
+		[commitOverlaySnapshot, getOverlaySnapshot, manager]
 	);
 
 	const closeNoteEditor = React.useCallback(() => {
@@ -1295,8 +1426,8 @@ export function App(): React.JSX.Element {
 		setAuthProfileImage(cached.profileImage);
 		setAuthWorkspaceId(restoredWorkspaceId);
 		setAuthOfflineMode(true);
-		manager.setActiveWorkspaceId(restoredWorkspaceId);
 		manager.setWebsocketEnabled(false);
+		manager.setActiveWorkspaceId(restoredWorkspaceId);
 		return true;
 	}, [manager]);
 
@@ -1354,7 +1485,6 @@ export function App(): React.JSX.Element {
 				setAuthProfileImage(profileImage);
 				setAuthWorkspaceId(effectiveWorkspaceId);
 				setAuthOfflineMode(false);
-				manager.setActiveWorkspaceId(effectiveWorkspaceId);
 				writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage });
 				// If the local selection differs from the server's active workspace (e.g. an
 				// offline switch that has not been synced yet), we MUST activate workspace B on
@@ -1366,6 +1496,9 @@ export function App(): React.JSX.Element {
 					// AFTER activation completes prevents "forbidden namespace" loops where
 					// the client opens workspace-B rooms before the server session is updated.
 					manager.setWebsocketEnabled(false);
+					// Point the manager at the intended workspace only after WS is disabled,
+					// otherwise it eagerly opens the new registry rooms against the old cookie.
+					manager.setActiveWorkspaceId(effectiveWorkspaceId);
 
 					// Flush offline edits from EVERY workspace that has local IndexedDB data,
 					// not just the server's current one. While offline the user may have switched
@@ -1452,6 +1585,7 @@ export function App(): React.JSX.Element {
 						}
 					}
 				} else {
+					manager.setActiveWorkspaceId(effectiveWorkspaceId);
 					manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
 				}
 			} catch {
@@ -1498,8 +1632,11 @@ export function App(): React.JSX.Element {
 			setAuthWorkspaceId(effectiveWorkspaceId);
 			setAuthStatus('authed');
 			setAuthOfflineMode(false);
+			if (effectiveWorkspaceId && effectiveWorkspaceId !== workspaceId) {
+				manager.setWebsocketEnabled(false);
+			}
 			manager.setActiveWorkspaceId(effectiveWorkspaceId);
-			manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
+			manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId) && effectiveWorkspaceId === workspaceId);
 			writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage });
 			return profileImage;
 		} catch {
@@ -1690,8 +1827,8 @@ export function App(): React.JSX.Element {
 			);
 			if (shouldHydrateFromSnapshot && snapshot.activeWorkspaceId) {
 				setAuthWorkspaceId(snapshot.activeWorkspaceId);
+				manager.setWebsocketEnabled(false);
 				manager.setActiveWorkspaceId(snapshot.activeWorkspaceId);
-				manager.setWebsocketEnabled(!authOfflineMode);
 				setPendingRestoredSharedFolder(snapshot.activeSharedFolder ?? null);
 				writeAuthCache({
 					v: 1,
@@ -2316,12 +2453,100 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		setNoteGridCollaboratorFilter(null);
+		setActiveCollectionId(null);
+		setActiveLabelIds([]);
+		setActiveReminderFilter('all');
+		setActiveSortMode('manual');
+		setActiveSortGrouping('none');
 	}, [activeSharedFolder, authWorkspaceId, sidebarView]);
 
-	const noteGridScopeLabel = React.useMemo(() => {
+	const collectionTree = React.useMemo(() => buildCollectionTree(collections), [collections]);
+	const collectionPathById = React.useMemo(() => buildCollectionPathMap(collections), [collections]);
+	const collectionParentById = React.useMemo(() => new Map(collections.map((collection) => [collection.id, collection.parentId] as const)), [collections]);
+	const activeCollection = React.useMemo(
+		() => collections.find((collection) => collection.id === activeCollectionId) ?? null,
+		[activeCollectionId, collections]
+	);
+	const activeLabels = React.useMemo(
+		() => labels.filter((label) => activeLabelIds.includes(label.id)),
+		[activeLabelIds, labels]
+	);
+	const activeFilterChips = React.useMemo(() => {
+		const chips: Array<{ key: string; label: string; onClear: () => void }> = [];
 		if (noteGridCollaboratorFilter) {
-			return `${t('app.withFilterPrefix')}: ${noteGridCollaboratorFilter.label}`;
+			chips.push({
+				key: `collaborator:${noteGridCollaboratorFilter.key}`,
+				label: `${t('app.withFilterPrefix')}: ${noteGridCollaboratorFilter.label}`,
+				onClear: () => setNoteGridCollaboratorFilter(null),
+			});
 		}
+		if (activeCollection) {
+			chips.push({
+				key: `collection:${activeCollection.id}`,
+				label: `Collection: ${collectionPathById.get(activeCollection.id) ?? activeCollection.name}`,
+				onClear: () => setActiveCollectionId(null),
+			});
+		}
+		for (const label of activeLabels) {
+			chips.push({
+				key: `label:${label.id}`,
+				label: `Label: ${label.name}`,
+				onClear: () => setActiveLabelIds((current) => current.filter((entry) => entry !== label.id)),
+			});
+		}
+		if (activeReminderFilter !== 'all') {
+			const reminderLabels: Record<ReminderFilterMode, string> = {
+				all: t('app.sidebarAll'),
+				'later-today': t('app.sidebarToday'),
+				tomorrow: 'Tomorrow',
+				'next-week': t('app.sidebarNextWeek'),
+				'due-soon': t('app.sidebarDueSoon'),
+			};
+			chips.push({
+				key: `reminder:${activeReminderFilter}`,
+				label: `Reminder: ${reminderLabels[activeReminderFilter]}`,
+				onClear: () => setActiveReminderFilter('all'),
+			});
+		}
+		if (activeSortMode !== 'manual') {
+			const sortLabels: Record<NoteSortMode, string> = {
+				manual: 'Manual',
+				'date-created': t('app.sidebarDateCreated'),
+				'date-updated': t('app.sidebarDateUpdated'),
+				alphabetical: t('app.sidebarAlphabetical'),
+				'least-accessed': t('app.sidebarLeastAccessed'),
+				'most-edited': t('app.sidebarMostEdited'),
+			};
+			chips.push({
+				key: `sort:${activeSortMode}`,
+				label: `Sort: ${sortLabels[activeSortMode]}`,
+				onClear: () => setActiveSortMode('manual'),
+			});
+		}
+		if (activeSortGrouping !== 'none') {
+			const groupingLabels: Record<NoteGroupingMode, string> = {
+				none: t('app.sidebarClear'),
+				week: t('app.sidebarByWeek'),
+				month: t('app.sidebarByMonth'),
+			};
+			chips.push({
+				key: `grouping:${activeSortGrouping}`,
+				label: `Grouping: ${groupingLabels[activeSortGrouping]}`,
+				onClear: () => setActiveSortGrouping('none'),
+			});
+		}
+		return chips;
+	}, [activeCollection, activeLabels, activeReminderFilter, activeSortGrouping, activeSortMode, collectionPathById, noteGridCollaboratorFilter, t]);
+
+	const noteGridEmptyStateLabel = React.useMemo(() => {
+		if (activeCollection) return 'No notes in this collection.';
+		if (activeFilterChips.length > 0) return 'No notes match current filters.';
+		if (sidebarView === 'archive') return 'No archived notes.';
+		if (sidebarView === 'trash') return 'Trash is empty.';
+		return 'No notes yet.';
+	}, [activeCollection, activeFilterChips.length, sidebarView]);
+
+	const noteGridScopeLabel = React.useMemo(() => {
 		if (sidebarView === 'archive') {
 			return `${t('app.sidebarArchive')} / ${activeWorkspaceSidebarPath}`;
 		}
@@ -2334,6 +2559,68 @@ export function App(): React.JSX.Element {
 	const moveNoteWorkspaceOptions = React.useMemo(() => {
 		return sidebarWorkspaces.filter((workspace) => workspace.id !== authWorkspaceId && workspace.systemKind !== 'SHARED_WITH_ME' && canEditWorkspaceContent(workspace.role));
 	}, [authWorkspaceId, sidebarWorkspaces]);
+
+	const noteCollectionDoc = React.useMemo(
+		() => (noteCollectionModalState ? manager.getDoc(noteCollectionModalState.noteId) : null),
+		[manager, noteCollectionModalState]
+	);
+	const noteLabelsDoc = React.useMemo(
+		() => (noteLabelsModalState ? manager.getDoc(noteLabelsModalState.noteId) : null),
+		[manager, noteLabelsModalState]
+	);
+	const noteReminderDoc = React.useMemo(
+		() => (noteReminderModalState ? manager.getDoc(noteReminderModalState.noteId) : null),
+		[manager, noteReminderModalState]
+	);
+	const noteCollectionMetadata = useNoteMetadataSnapshot(noteCollectionDoc);
+	const noteLabelsMetadata = useNoteMetadataSnapshot(noteLabelsDoc);
+	const noteReminderMetadata = useNoteMetadataSnapshot(noteReminderDoc);
+
+	React.useEffect(() => {
+		if (!activeCollectionId) return;
+		const nextOpenState: Record<string, boolean> = { collections: true };
+		let cursor = collectionParentById.get(activeCollectionId) ?? null;
+		while (cursor) {
+			nextOpenState[`collection-node:${cursor}`] = true;
+			cursor = collectionParentById.get(cursor) ?? null;
+		}
+		setSidebarGroupsOpen((prev) => ({ ...prev, ...nextOpenState }));
+	}, [activeCollectionId, collectionParentById]);
+	const handleCreateCollection = React.useCallback((args: { name: string; parentId: string | null }) => {
+		if (!collectionsDoc) return;
+		createCollection(collectionsDoc, args);
+	}, [collectionsDoc]);
+	const handleRenameCollection = React.useCallback((collectionId: string, nextName: string) => {
+		if (!collectionsDoc) return;
+		updateCollection(collectionsDoc, collectionId, { name: nextName });
+	}, [collectionsDoc]);
+	const handleDeleteCollection = React.useCallback((collectionId: string) => {
+		if (!collectionsDoc) return;
+		deleteCollection(collectionsDoc, collectionId);
+		setActiveCollectionId((current) => current === collectionId ? null : current);
+	}, [collectionsDoc]);
+	const handleCreateLabel = React.useCallback((args: { name: string; color?: string | null }): string | null => {
+		if (!labelsDoc) return null;
+		return createLabel(labelsDoc, args)?.id ?? null;
+	}, [labelsDoc]);
+	const handleSelectNoteCollection = React.useCallback((collectionId: string | null) => {
+		if (!noteCollectionDoc) return;
+		assignNoteToCollection(noteCollectionDoc, collectionId);
+		setNoteCollectionModalState(null);
+	}, [noteCollectionDoc]);
+	const handleToggleNoteLabel = React.useCallback((labelId: string) => {
+		if (!noteLabelsDoc) return;
+		const current = readNoteMetadataState(noteLabelsDoc).labelIds;
+		assignNoteLabels(
+			noteLabelsDoc,
+			current.includes(labelId) ? current.filter((entry) => entry !== labelId) : [...current, labelId]
+		);
+	}, [noteLabelsDoc]);
+	const handleSaveNoteReminder = React.useCallback((reminderAt: string | null) => {
+		if (!noteReminderDoc) return;
+		assignNoteReminder(noteReminderDoc, reminderAt);
+		setNoteReminderModalState(null);
+	}, [noteReminderDoc]);
 
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
@@ -3519,23 +3806,21 @@ export function App(): React.JSX.Element {
 		() => ({
 			reminders: [
 				{ id: 'all', label: t('app.sidebarAll'), kind: 'item' },
-				{ id: 'today', label: t('app.sidebarToday'), kind: 'item' },
-				{ id: 'this-week', label: t('app.sidebarThisWeek'), kind: 'item' },
+				{ id: 'later-today', label: t('app.sidebarToday'), kind: 'item' },
+				{ id: 'tomorrow', label: 'Tomorrow', kind: 'item' },
 				{ id: 'next-week', label: t('app.sidebarNextWeek'), kind: 'item' },
-				{ id: 'next-month', label: t('app.sidebarNextMonth'), kind: 'item' },
 			],
-			labels: [
-				{ id: 'no-labels', label: t('app.sidebarNoLabels'), kind: 'muted' },
-			],
-			collections: [
-				{ id: 'manage-collections', label: t('app.sidebarManageCollections'), kind: 'action' },
-			],
+			labels: labels.length > 0
+				? labels.map((label) => ({ id: label.id, label: label.name, kind: 'item' as const }))
+				: [{ id: 'no-labels', label: t('app.sidebarNoLabels'), kind: 'muted' }],
+			collections: [],
 		}),
-		[t]
+		[labels, t]
 	);
 
 	const sortingPrimaryItems = React.useMemo<SidebarSubmenuNode[]>(
 		() => [
+			{ id: 'manual', label: 'Manual', kind: 'item' },
 			{ id: 'date-created', label: t('app.sidebarDateCreated'), kind: 'item' },
 			{ id: 'date-updated', label: t('app.sidebarDateUpdated'), kind: 'item' },
 			{ id: 'alphabetical', label: t('app.sidebarAlphabetical'), kind: 'item' },
@@ -3566,6 +3851,49 @@ export function App(): React.JSX.Element {
 		],
 		[t]
 	);
+
+	const renderCollectionSidebarNodes = React.useCallback((nodes: readonly CollectionTreeNode[], depth = 0): React.ReactNode[] => {
+		return nodes.map((collection) => {
+			const toggleId = `collection-node:${collection.id}`;
+			const hasChildren = collection.children.length > 0;
+			const isExpanded = hasChildren && Boolean(sidebarGroupsOpen[toggleId]);
+			return (
+				<div key={collection.id} className="sidebar-collection-node">
+					<div className="sidebar-collection-row" style={{ ['--sidebar-collection-depth' as const]: depth } as React.CSSProperties}>
+						{hasChildren ? (
+							<button
+								type="button"
+								className={`sidebar-collection-disclosure${isExpanded ? ' is-open' : ''}`}
+								onClick={() => setSidebarGroupsOpen((prev) => ({ ...prev, [toggleId]: !Boolean(prev[toggleId]) }))}
+								aria-label={isExpanded ? 'Collapse collection' : 'Expand collection'}
+							>
+								<span className="sidebar-collection-disclosure-icon" aria-hidden="true" />
+							</button>
+						) : <span className="sidebar-collection-disclosure-spacer" aria-hidden="true" />}
+						<button
+							type="button"
+							className={`sidebar-submenu-item sidebar-collection-item${activeCollectionId === collection.id ? ' is-active' : ''}`}
+							onClick={() => {
+								setSidebarView('notes');
+								setActiveCollectionId((current) => current === collection.id ? null : collection.id);
+								if (isMobileViewport) closeMobileSidebar();
+							}}
+							title={collectionPathById.get(collection.id) ?? collection.name}
+						>
+							<span className="sidebar-collection-item-label">{collection.name}</span>
+						</button>
+					</div>
+					{hasChildren ? (
+						<div className={`sidebar-nested-submenu-shell${isExpanded ? ' is-open' : ''}`}>
+							<div className="sidebar-nested-submenu sidebar-collection-children">
+								{renderCollectionSidebarNodes(collection.children, depth + 1)}
+							</div>
+						</div>
+					) : null}
+				</div>
+			);
+		});
+	}, [activeCollectionId, closeMobileSidebar, collectionPathById, isMobileViewport, setSidebarView, sidebarGroupsOpen]);
 
 	React.useEffect(() => {
 		// Lock the page behind the mobile drawer so background content cannot
@@ -4268,16 +4596,46 @@ export function App(): React.JSX.Element {
 			setSearchResultsBusy(true);
 			setSearchResultsError(null);
 			const isOfflineSearch = authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false);
+			const offlineRequest = searchOfflineNotes({
+				manager,
+				query: deferredSearchQuery,
+				authUserId,
+				activeWorkspaceId: authWorkspaceId,
+				activeWorkspaceName,
+				collections,
+				labels,
+				sharedPlacements,
+			});
 			const request = isOfflineSearch
-				? searchOfflineNotes({
-					manager,
-					query: deferredSearchQuery,
-					authUserId,
-					activeWorkspaceId: authWorkspaceId,
-					activeWorkspaceName,
-					sharedPlacements,
-				}).then((results) => ({ results }))
-				: searchNotes(deferredSearchQuery);
+				? offlineRequest.then((results) => ({ results }))
+				: Promise.all([searchNotes(deferredSearchQuery), offlineRequest]).then(([remoteResponse, offlineResults]) => {
+					const merged = new Map<string, NoteSearchResult>();
+					for (const result of remoteResponse.results) {
+						merged.set(`${result.docId}:${result.openNoteId || result.noteId}`, result);
+					}
+					for (const result of offlineResults) {
+						const key = `${result.docId}:${result.openNoteId || result.noteId}`;
+						const current = merged.get(key);
+						if (!current) {
+							merged.set(key, result);
+							continue;
+						}
+						merged.set(key, {
+							...current,
+							matchKinds: Array.from(new Set([...current.matchKinds, ...result.matchKinds])),
+							collaboratorMatches: Array.from(new Set([...current.collaboratorMatches, ...result.collaboratorMatches])).slice(0, 3),
+							collectionMatches: Array.from(new Set([...current.collectionMatches, ...result.collectionMatches])).slice(0, 3),
+							labelMatches: Array.from(new Set([...current.labelMatches, ...result.labelMatches])).slice(0, 4),
+							snippet: current.snippet || result.snippet,
+							thumbnailUrl: current.thumbnailUrl || result.thumbnailUrl,
+							imageCount: Math.max(current.imageCount, result.imageCount),
+							updatedAt: Date.parse(current.updatedAt) >= Date.parse(result.updatedAt) ? current.updatedAt : result.updatedAt,
+						});
+					}
+					return {
+						results: Array.from(merged.values()).sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)),
+					};
+				});
 			void request
 				.then((response) => {
 					if (cancelled) return;
@@ -4298,7 +4656,7 @@ export function App(): React.JSX.Element {
 			cancelled = true;
 			window.clearTimeout(timer);
 		};
-	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, deferredSearchQuery, manager, sharedPlacements, t]);
+	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, collections, deferredSearchQuery, labels, manager, sharedPlacements, t]);
 
 	const clearSearchAndClose = React.useCallback(() => {
 		setSearchQuery('');
@@ -4329,6 +4687,8 @@ export function App(): React.JSX.Element {
 		if (kind === 'collaborator') return t('search.matchCollaborator');
 		if (kind === 'link') return t('search.matchLink');
 		if (kind === 'document') return t('search.matchDocument');
+		if (kind === 'collection') return 'Collection';
+		if (kind === 'label') return 'Label';
 		return t('search.matchNote');
 	}, [t]);
 	const handleSearchResultSelect = React.useCallback(async (result: NoteSearchResult) => {
@@ -4668,6 +5028,11 @@ export function App(): React.JSX.Element {
 											if (entry.id === 'notes') {
 												setActiveSharedFolder(null);
 												setSidebarView('notes');
+												setActiveCollectionId(null);
+												setActiveLabelIds([]);
+												setActiveReminderFilter('all');
+												setActiveSortMode('manual');
+												setActiveSortGrouping('none');
 												if (isMobileViewport) closeMobileSidebar();
 												return;
 											}
@@ -4832,7 +5197,7 @@ export function App(): React.JSX.Element {
 										</div>
 									) : null}
 
-									{entry.id !== 'workspaces' && isGroup && groupContent.length > 0 && !sidebarIsCollapsed ? (
+									{entry.id !== 'workspaces' && isGroup && (entry.id === 'collections' || groupContent.length > 0) && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
 											<div className={`sidebar-submenu${entry.id === 'collections' ? ' sidebar-collections-menu' : ''}`} aria-hidden={!isOpen}>
 												{entry.id === 'collections' ? (
@@ -4842,6 +5207,7 @@ export function App(): React.JSX.Element {
 														type="button"
 														className="sidebar-submenu-action sidebar-submenu-manage-top"
 														onClick={() => {
+															openCollectionManagementModal();
 															setActiveSharedFolder(null);
 															setSidebarView('notes');
 															if (isMobileViewport) closeMobileSidebar();
@@ -4851,45 +5217,52 @@ export function App(): React.JSX.Element {
 														{t('app.sidebarManageCollections')}
 													</button>
 												) : null}
-												{groupContent
-													// Exclude the legacy inline "manage-collections" item — it is now rendered as
-													// the sticky top button above. Animation indexes are offset by +1 for the
-													// collections dropdown to reserve slot 0 for that top button.
-													.filter((item) => !(entry.id === 'collections' && item.id === 'manage-collections'))
-													.map((item, index) => {
-													if (item.kind === 'heading') {
+												{entry.id === 'collections'
+													? (collectionTree.length > 0
+														? renderCollectionSidebarNodes(collectionTree)
+														: <div className="sidebar-submenu-muted">No collections yet.</div>)
+													: groupContent.map((item, index) => {
+														if (item.kind === 'heading') {
+															return (
+																<div key={item.id} className="sidebar-submenu-heading" style={{ ['--sidebar-item-index' as const]: index }}>
+																	{item.label}
+																</div>
+															);
+														}
+														if (item.kind === 'muted') {
+															return (
+																<div key={item.id} className="sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: index }}>
+																	{item.label}
+																</div>
+															);
+														}
+														const isLabelsItemActive = entry.id === 'labels' && item.kind === 'item' && activeLabelIds.includes(item.id);
+														const isReminderItemActive = entry.id === 'reminders' && item.kind === 'item' && activeReminderFilter === item.id;
+														const className = `${item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item'}${isLabelsItemActive || isReminderItemActive ? ' is-active' : ''}`;
 														return (
-															<div key={item.id} className="sidebar-submenu-heading" style={{ ['--sidebar-item-index' as const]: entry.id === 'collections' ? index + 1 : index }}>
+															<button
+																key={item.id}
+																type="button"
+																className={className}
+																onClick={() => {
+																	if (entry.id === 'labels' && item.kind === 'item') {
+																		setSidebarView('notes');
+																		setActiveLabelIds((current) => current.includes(item.id) ? current.filter((entryId) => entryId !== item.id) : [...current, item.id]);
+																		if (isMobileViewport) closeMobileSidebar();
+																		return;
+																	}
+																	if (entry.id === 'reminders' && item.kind === 'item') {
+																		setSidebarView('notes');
+																		setActiveReminderFilter(item.id as ReminderFilterMode);
+																		if (isMobileViewport) closeMobileSidebar();
+																	}
+																}}
+																style={{ ['--sidebar-item-index' as const]: index }}
+															>
 																{item.label}
-															</div>
+															</button>
 														);
-													}
-													if (item.kind === 'muted') {
-														return (
-															<div key={item.id} className="sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: entry.id === 'collections' ? index + 1 : index }}>
-																{item.label}
-															</div>
-														);
-													}
-													const className = item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item';
-													return (
-														<button
-															key={item.id}
-															type="button"
-															className={className}
-															onClick={() => {
-																if (entry.id === 'collections' && item.id === 'manage-collections') {
-																	setActiveSharedFolder(null);
-																	setSidebarView('notes');
-																	if (isMobileViewport) closeMobileSidebar();
-																}
-															}}
-															style={{ ['--sidebar-item-index' as const]: entry.id === 'collections' ? index + 1 : index }}
-														>
-															{item.label}
-														</button>
-													);
-												})}
+													})}
 											</div>
 										</div>
 									) : null}
@@ -4898,7 +5271,17 @@ export function App(): React.JSX.Element {
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
 											<div className="sidebar-submenu" aria-hidden={!isOpen}>
 												{sortingPrimaryItems.map((item, index) => (
-													<button key={item.id} type="button" className="sidebar-submenu-item" style={{ ['--sidebar-item-index' as const]: index }}>
+													<button
+														key={item.id}
+														type="button"
+														className={`sidebar-submenu-item${activeSortMode === item.id ? ' is-active' : ''}`}
+														onClick={() => {
+															setSidebarView('notes');
+															setActiveSortMode(item.id as NoteSortMode);
+															if (isMobileViewport) closeMobileSidebar();
+														}}
+														style={{ ['--sidebar-item-index' as const]: index }}
+													>
 														{item.label}
 													</button>
 												))}
@@ -4920,9 +5303,38 @@ export function App(): React.JSX.Element {
 															<div className={`sidebar-nested-submenu-shell${nestedOpen ? ' is-open' : ''}`}>
 																<div className="sidebar-nested-submenu" aria-hidden={!nestedOpen}>
 																	{group.items.map((item, itemIndex) => {
-																		const className = item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item';
+																		const isActive = item.id === 'due-soon'
+																			? activeReminderFilter === 'due-soon'
+																			: item.id === 'least-accessed' || item.id === 'most-edited'
+																				? activeSortMode === item.id
+																				: item.id === 'by-week'
+																					? activeSortGrouping === 'week'
+																					: item.id === 'by-month'
+																						? activeSortGrouping === 'month'
+																				: false;
+																		const className = `${item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item'}${isActive ? ' is-active' : ''}`;
 																		return (
-																			<button key={item.id} type="button" className={className} style={{ ['--sidebar-item-index' as const]: itemIndex }}>
+																			<button
+																				key={item.id}
+																				type="button"
+																				className={className}
+																				onClick={() => {
+																					setSidebarView('notes');
+																					if (item.id === 'clear') {
+																						setActiveReminderFilter('all');
+																						setActiveSortMode('manual');
+																						setActiveSortGrouping('none');
+																					} else if (item.id === 'due-soon') {
+																						setActiveReminderFilter('due-soon');
+																					} else if (item.id === 'least-accessed' || item.id === 'most-edited') {
+																						setActiveSortMode(item.id as NoteSortMode);
+																					} else if (item.id === 'by-week' || item.id === 'by-month') {
+																						setActiveSortGrouping(item.id === 'by-week' ? 'week' : 'month');
+																					}
+																					if (isMobileViewport) closeMobileSidebar();
+																				}}
+																				style={{ ['--sidebar-item-index' as const]: itemIndex }}
+																			>
 																				{item.label}
 																			</button>
 																		);
@@ -4983,9 +5395,11 @@ export function App(): React.JSX.Element {
 															{result.archived ? <span className="global-search-result-badge">{t('search.archivedBadge')}</span> : null}
 														</div>
 														<p className="global-search-result-snippet">{result.snippet}</p>
-														{result.collaboratorMatches.length > 0 ? (
+															{result.collaboratorMatches.length > 0 || result.collectionMatches.length > 0 || result.labelMatches.length > 0 ? (
 															<div className="global-search-result-contexts">
 																{result.collaboratorMatches.map((label) => <span key={`${result.docId}:${label}`} className="global-search-result-context">{t('search.collaboratorPrefix')} {label}</span>)}
+																	{result.collectionMatches.map((label) => <span key={`${result.docId}:collection:${label}`} className="global-search-result-context">Collection: {label}</span>)}
+																	{result.labelMatches.map((label) => <span key={`${result.docId}:label:${label}`} className="global-search-result-context">Label: {label}</span>)}
 															</div>
 														) : null}
 														<div className="global-search-result-meta">{result.imageCount > 0 ? `${result.imageCount} ${result.imageCount === 1 ? t('media.imageSingular') : t('media.imagePlural')} · ` : ''}{new Date(result.updatedAt).toLocaleString(locale)}</div>
@@ -5014,19 +5428,24 @@ export function App(): React.JSX.Element {
 							) : null}
 
 							<div className="note-grid-scope" aria-live="polite">
-								<div className="note-grid-scope-chip">
-									<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
-									{noteGridCollaboratorFilter ? (
+								{activeFilterChips.length === 0 ? (
+									<div className="note-grid-scope-chip">
+										<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
+									</div>
+								) : null}
+								{activeFilterChips.map((chip) => (
+									<div key={chip.key} className="note-grid-scope-chip">
+										<span className="note-grid-scope-label">{chip.label}</span>
 										<button
 											type="button"
 											className="note-grid-scope-clear"
-											onClick={() => setNoteGridCollaboratorFilter(null)}
+											onClick={chip.onClear}
 											aria-label={t('common.close')}
 										>
 											<FontAwesomeIcon icon={faXmark} />
 										</button>
-									) : null}
-								</div>
+									</div>
+								))}
 								{sidebarView === 'trash' && canEditActiveWorkspace ? (
 									<div className="note-grid-scope-actions">
 										<button
@@ -5073,6 +5492,13 @@ export function App(): React.JSX.Element {
 						canEditWorkspaceContent={canEditActiveWorkspace}
 						sharedNotes={sidebarView === 'trash' ? [] : visibleSharedPlacements}
 						activeCollaboratorFilter={noteGridCollaboratorFilter}
+						activeCollectionId={activeCollectionId}
+						activeLabelIds={activeLabelIds}
+						collections={collections}
+						labels={labels}
+						reminderFilter={activeReminderFilter}
+						sortMode={activeSortMode}
+						sortGrouping={activeSortGrouping}
 						refreshCollaboratorsToken={collaborationRefreshToken}
 						maxCardHeightPx={maxCardHeightPx}
 						// When the trash view is active, NoteGrid switches to rendering trashed notes.
@@ -5081,10 +5507,22 @@ export function App(): React.JSX.Element {
 						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
 						onAddImage={openNoteImageModal}
 						onAddDocument={undefined}
+						onAddReminder={openNoteReminderModal}
+						onAddToCollection={openNoteCollectionModal}
+						onAddLabels={openNoteLabelsModal}
 						onMoveToWorkspace={(noteId, title) => openMoveNoteModal(noteId, title)}
 						onOpenAttachmentBrowser={openNoteAttachmentBrowser}
 						onSelectCollaboratorFilter={setNoteGridCollaboratorFilter}
-								canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter && sidebarView !== 'trash'}
+						onSelectCollectionFilter={(collectionId) => {
+							setSidebarView('notes');
+							setActiveCollectionId(collectionId);
+						}}
+						onToggleLabelFilter={(labelId) => {
+							setSidebarView('notes');
+							setActiveLabelIds((current) => current.includes(labelId) ? current.filter((entry) => entry !== labelId) : [...current, labelId]);
+						}}
+									canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter && !activeCollectionId && activeLabelIds.length === 0 && activeReminderFilter === 'all' && activeSortMode === 'manual' && activeSortGrouping === 'none' && sidebarView === 'notes'}
+									emptyStateLabel={noteGridEmptyStateLabel}
 						onSelectNote={(id) => {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
@@ -5248,6 +5686,9 @@ export function App(): React.JSX.Element {
 						openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
 					}}
 					onAddDocument={undefined}
+						onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, openDoc.getText('title').toString())}
+						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString())}
+						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString())}
 					onMoveToWorkspace={!selectedSharedPlacement && !selectedNoteReadOnly ? () => openMoveNoteModal(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
@@ -5303,6 +5744,42 @@ export function App(): React.JSX.Element {
 				onUserManagement={openUserManagementFromPreferences}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}
+			/>
+
+			<CollectionManagementModal
+				isOpen={isCollectionManagementOpen}
+				onClose={() => setIsCollectionManagementOpen(false)}
+				collections={collections}
+				onCreate={handleCreateCollection}
+				onRename={handleRenameCollection}
+				onDelete={handleDeleteCollection}
+			/>
+
+			<NoteCollectionModal
+				isOpen={Boolean(noteCollectionModalState)}
+				onClose={() => setNoteCollectionModalState(null)}
+				collections={collections}
+				selectedCollectionId={noteCollectionMetadata.collectionId}
+				noteTitle={noteCollectionModalState?.title}
+				onSelectCollection={handleSelectNoteCollection}
+			/>
+
+			<NoteLabelsModal
+				isOpen={Boolean(noteLabelsModalState)}
+				onClose={() => setNoteLabelsModalState(null)}
+				labels={labels}
+				selectedLabelIds={noteLabelsMetadata.labelIds}
+				noteTitle={noteLabelsModalState?.title}
+				onToggleLabel={handleToggleNoteLabel}
+				onCreateLabel={handleCreateLabel}
+			/>
+
+			<ReminderModal
+				isOpen={Boolean(noteReminderModalState)}
+				onClose={() => setNoteReminderModalState(null)}
+				reminderAt={noteReminderMetadata.reminderAt}
+				noteTitle={noteReminderModalState?.title}
+				onSave={handleSaveNoteReminder}
 			/>
 
 			<MoveNoteModal

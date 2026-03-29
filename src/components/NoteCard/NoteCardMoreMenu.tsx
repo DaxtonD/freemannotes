@@ -29,6 +29,9 @@ export type NoteCardMoreMenuProps = {
 	onAddImage?: (() => void) | undefined;
 	onAddDocument?: (() => void) | undefined;
 	onAddUrlPreview?: (() => void) | undefined;
+	onAddReminder?: (() => void) | undefined;
+	onAddToCollection?: (() => void) | undefined;
+	onAddLabels?: (() => void) | undefined;
 	onMoveToWorkspace?: (() => void) | undefined;
 	isTrashView?: boolean;
 	/** Bounding rect of the anchor element (e.g. note card). On desktop the
@@ -308,7 +311,18 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				},
 			}]
 			: []),
-		{ key: 'reminder', labelKey: 'noteMenu.addReminder', icon: faBell, disabled: isTrashView, action: noop },
+		...(props.onAddReminder
+			? [{
+				key: 'reminder',
+				labelKey: 'noteMenu.addReminder',
+				icon: faBell,
+				disabled: isTrashView,
+				action: () => {
+					props.onClose();
+					props.onAddReminder?.();
+				},
+			}]
+			: [{ key: 'reminder', labelKey: 'noteMenu.addReminder', icon: faBell, disabled: isTrashView, action: noop }]),
 		...(props.onMoveToWorkspace
 			? [{
 				key: 'move-workspace',
@@ -330,8 +344,30 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				action: props.onTrash,
 			}]
 			: []),
-		{ key: 'collection', labelKey: 'noteMenu.addToCollection', icon: faFolderPlus, disabled: isTrashView, action: noop },
-		{ key: 'label', labelKey: 'noteMenu.addLabel', icon: faTag, disabled: isTrashView, action: noop },
+		...(props.onAddToCollection
+			? [{
+				key: 'collection',
+				labelKey: 'noteMenu.addToCollection',
+				icon: faFolderPlus,
+				disabled: isTrashView,
+				action: () => {
+					props.onClose();
+					props.onAddToCollection?.();
+				},
+			}]
+			: [{ key: 'collection', labelKey: 'noteMenu.addToCollection', icon: faFolderPlus, disabled: isTrashView, action: noop }]),
+		...(props.onAddLabels
+			? [{
+				key: 'label',
+				labelKey: 'noteMenu.addLabel',
+				icon: faTag,
+				disabled: isTrashView,
+				action: () => {
+					props.onClose();
+					props.onAddLabels?.();
+				},
+			}]
+			: [{ key: 'label', labelKey: 'noteMenu.addLabel', icon: faTag, disabled: isTrashView, action: noop }]),
 	];
 
 	const checklistItems: MenuItem[] =
@@ -386,10 +422,6 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 			onPointerUpCapture={handlePointerUpCapture}
 			onClickCapture={swallowSuppressedInteraction}
 			onTouchEndCapture={handleTouchEndCapture}
-			onSelectStart={(event) => {
-				if (!isInitialTouchGuardActive()) return;
-				event.preventDefault();
-			}}
 			onSelect={(event) => {
 				if (!isInitialTouchGuardActive()) return;
 				event.preventDefault();
