@@ -89,7 +89,7 @@ import { emitNoteDocumentsChanged, scheduleQueuedNoteDocumentFlush } from './cor
 import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { onPushReceived } from './core/pushManager';
-import { acknowledgeReminderNotifications, fetchPendingReminderCount, syncNoteReminder } from './core/pushApi';
+import { acknowledgeReminderNotifications, fetchFiredReminders, fetchPendingReminderCount, syncNoteReminder, type FiredReminder } from './core/pushApi';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -561,6 +561,7 @@ export function App(): React.JSX.Element {
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
 	const [pendingReminderNotificationCount, setPendingReminderNotificationCount] = React.useState(0);
+	const [firedReminders, setFiredReminders] = React.useState<FiredReminder[]>([]);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(null);
@@ -2751,6 +2752,7 @@ export function App(): React.JSX.Element {
 			setFailedLinkNotifications([]);
 			setPendingShareNotificationCount(0);
 			setPendingReminderNotificationCount(0);
+			setFiredReminders([]);
 			return;
 		}
 		const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -2767,16 +2769,18 @@ export function App(): React.JSX.Element {
 			}
 		}
 		try {
-			const [invitationData, placementData, workspaceInviteData, failedLinkData, pendingReminderCount] = await Promise.all([
+			const [invitationData, placementData, workspaceInviteData, failedLinkData, pendingReminderCount, firedRemindersData] = await Promise.all([
 				listNoteShareInvitations(),
 				authWorkspaceId ? listSharedNotePlacements(authWorkspaceId) : Promise.resolve({ placements: [] }),
 				listWorkspacePendingInvites(),
 				listFailedNoteLinks().catch(() => ({ failures: [], count: 0 })),
 				fetchPendingReminderCount().catch(() => 0),
+				fetchFiredReminders().catch(() => ({ reminders: [] })),
 			]);
 			setFailedLinkNotifications(failedLinkData.failures);
 			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length + failedLinkData.count);
 			setPendingReminderNotificationCount(pendingReminderCount);
+			setFiredReminders(firedRemindersData.reminders);
 			setSharedPlacements(placementData.placements);
 		} catch {
 			if (!offline) {
@@ -2784,6 +2788,7 @@ export function App(): React.JSX.Element {
 				setFailedLinkNotifications([]);
 				setPendingShareNotificationCount(0);
 				setPendingReminderNotificationCount(0);
+				setFiredReminders([]);
 			}
 		}
 	}, [authStatus, authUserId, authWorkspaceId]);
@@ -3127,6 +3132,14 @@ export function App(): React.JSX.Element {
 						if (isNoteShareMetadataEvent) {
 							void refreshNoteShareStateRef.current();
 							bumpCollaborationRefreshToken();
+							return;
+						}
+						if (payload.reason === 'reminder-fired') {
+							// Reminder became due — update the bell badge and notification
+							// panel immediately without going through the debounced metadata
+							// refresh path (which would delay badge update by ~300 ms and
+							// could drop the event if another refresh is in flight).
+							void refreshNoteShareStateRef.current();
 							return;
 						}
 						if (isUserProfileMetadataEvent) {
@@ -5904,6 +5917,18 @@ export function App(): React.JSX.Element {
 				onClose={() => setIsShareNotificationsOpen(false)}
 				authUserId={authUserId}
 				failedLinkNotifications={failedLinkNotifications}
+				firedReminders={firedReminders}
+				onOpenReminder={(reminder) => {
+					setIsShareNotificationsOpen(false);
+					void (async () => {
+						if (reminder.workspaceId && reminder.workspaceId !== authWorkspaceId) {
+							await activateWorkspaceFromSidebar(reminder.workspaceId, { activeSharedFolder: null });
+						}
+						if (reminder.noteId) {
+							openNoteEditor(reminder.noteId, { replaceTop: true });
+						}
+					})();
+				}}
 				hasAppUpdateNotification={hasAppUpdateNotification}
 				hasAppUpdatedNotification={hasAppUpdatedNotification}
 				onApplyAppUpdate={() => void applyPwaUpdate()}

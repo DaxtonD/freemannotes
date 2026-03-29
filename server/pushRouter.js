@@ -9,6 +9,7 @@
 //   POST /api/push/subscribe                  – Upsert a push subscription.
 //   DELETE /api/push/subscribe                – Remove a push subscription.
 //   POST /api/push/test                       – Send a test notification.
+//   GET  /api/push/reminders/fired           – List of unacknowledged fired reminders.
 //   GET  /api/push/reminders/pending          – Count of unacknowledged fired reminders.
 //   POST /api/push/reminders/acknowledge      – Mark all fired reminders as seen.
 //   PUT  /api/push/reminder                   – Register or clear a note reminder.
@@ -266,6 +267,36 @@ function createPushRouter({ prisma }) {
 				jsonResponse(res, 200, { ok: true, sent: result.sent, failed: result.failed });
 			} catch (err) {
 				console.error('[push] test error:', err.message);
+				jsonResponse(res, 500, { error: 'Internal server error' });
+			}
+			return true;
+		}
+
+		// ── GET /api/push/reminders/fired — list for notification panel ───────
+		// Returns fired reminders that haven't been acknowledged yet, so the
+		// notifications panel can display note title, due time, and a deep link.
+		if (method === 'GET' && url.pathname === '/api/push/reminders/fired') {
+			try {
+				const reminders = await prisma.noteReminder.findMany({
+					where: {
+						userId,
+						fired: true,
+						notificationAcknowledgedAt: null,
+					},
+					select: {
+						id: true,
+						noteId: true,
+						workspaceId: true,
+						noteTitle: true,
+						reminderAt: true,
+						firedAt: true,
+					},
+					orderBy: { firedAt: 'desc' },
+					take: 20,
+				});
+				jsonResponse(res, 200, { reminders });
+			} catch (err) {
+				console.error('[push] reminders/fired error:', err.message);
 				jsonResponse(res, 500, { error: 'Internal server error' });
 			}
 			return true;

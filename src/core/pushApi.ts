@@ -133,6 +133,28 @@ export async function fetchPendingReminderCount(): Promise<number> {
 }
 
 /**
+ * A single fired reminder entry returned by the /api/push/reminders/fired endpoint.
+ */
+export type FiredReminder = {
+	id: string;
+	noteId: string;
+	workspaceId: string;
+	noteTitle: string | null;
+	reminderAt: string;
+	firedAt: string | null;
+};
+
+/**
+ * Fetch the list of fired reminders that haven't been acknowledged yet.
+ * Used to populate the notifications panel with reminder entries.
+ */
+export async function fetchFiredReminders(): Promise<{ reminders: FiredReminder[] }> {
+	const res = await fetch('/api/push/reminders/fired', { cache: 'no-store' });
+	await checkResponse(res);
+	return res.json();
+}
+
+/**
  * Mark all fired reminders for the current user as acknowledged so the bell
  * badge clears. Call this when the user opens the notifications panel.
  */
