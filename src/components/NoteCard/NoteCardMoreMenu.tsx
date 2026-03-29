@@ -24,6 +24,8 @@ type NoteType = 'text' | 'checklist';
 export type NoteCardMoreMenuProps = {
 	noteType: NoteType;
 	onClose: () => void;
+	isPinned?: boolean;
+	onTogglePin?: (() => void) | undefined;
 	onTrash?: (() => void) | undefined;
 	onAddCollaborator?: (() => void) | undefined;
 	onAddImage?: (() => void) | undefined;
@@ -33,6 +35,8 @@ export type NoteCardMoreMenuProps = {
 	onAddToCollection?: (() => void) | undefined;
 	onAddLabels?: (() => void) | undefined;
 	onMoveToWorkspace?: (() => void) | undefined;
+	onCheckAll?: (() => void) | undefined;
+	onUncheckAll?: (() => void) | undefined;
 	isTrashView?: boolean;
 	/** Bounding rect of the anchor element (e.g. note card). On desktop the
 	 *  menu renders as a popover positioned relative to this rect. */
@@ -267,7 +271,17 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	};
 
 	const items: MenuItem[] = [
-		{ key: 'pin', labelKey: 'noteMenu.pinNote', icon: faThumbtack, disabled: isTrashView, action: noop },
+		{
+			key: 'pin',
+			labelKey: props.isPinned ? 'noteMenu.unpinNote' : 'noteMenu.pinNote',
+			icon: faThumbtack,
+			disabled: isTrashView || !props.onTogglePin,
+			action: () => {
+				if (isTrashView) return;
+				props.onClose();
+				props.onTogglePin?.();
+			},
+		},
 		...(props.onAddCollaborator
 			? [{
 				key: 'collaborator',
@@ -373,8 +387,28 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	const checklistItems: MenuItem[] =
 		props.noteType === 'checklist'
 			? [
-					{ key: 'uncheckAll', labelKey: 'noteMenu.uncheckAll', icon: faSquare, disabled: isTrashView, action: noop },
-					{ key: 'checkAll', labelKey: 'noteMenu.checkAll', icon: faSquareCheck, disabled: isTrashView, action: noop },
+					{
+						key: 'uncheckAll',
+						labelKey: 'noteMenu.uncheckAll',
+						icon: faSquare,
+						disabled: isTrashView || !props.onUncheckAll,
+						action: () => {
+							if (isTrashView) return;
+							props.onClose();
+							props.onUncheckAll?.();
+						},
+					},
+					{
+						key: 'checkAll',
+						labelKey: 'noteMenu.checkAll',
+						icon: faSquareCheck,
+						disabled: isTrashView || !props.onCheckAll,
+						action: () => {
+							if (isTrashView) return;
+							props.onClose();
+							props.onCheckAll?.();
+						},
+					},
 				]
 			: [];
 
@@ -486,9 +520,12 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 									<button
 										type="button"
 										role="menuitem"
-										className={styles.menuItem}
+										className={`${styles.menuItem}${item.disabled ? ` ${styles.menuItemDisabled}` : ''}`}
+										disabled={item.disabled}
+										aria-disabled={item.disabled ? 'true' : undefined}
 										onClick={(e) => {
 											e.stopPropagation();
+											if (item.disabled) return;
 											if (!anchor && requiresFreshTouchRef.current) {
 												e.preventDefault();
 												return;

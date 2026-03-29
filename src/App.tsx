@@ -152,14 +152,21 @@ function getSortDirectionMarker(direction: SortDirection): string {
 	return direction === 'asc' ? '▲' : '▼';
 }
 
-const EMPTY_NOTE_METADATA_STATE = { collectionId: null, labelIds: [], reminderAt: null, lastAccessedAt: '' };
+function truncateUiName(value: string, maxLength = 48): string {
+	const normalized = String(value ?? '').trim();
+	if (normalized.length <= maxLength) return normalized;
+	return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}...`;
+}
+
+const EMPTY_NOTE_METADATA_STATE = { collectionId: null, labelIds: [], reminderAt: null, isPinned: false, lastAccessedAt: '' };
 
 function metadataSnapshotsEqual(
-	left: { collectionId: string | null; labelIds: string[]; reminderAt: string | null; lastAccessedAt: string },
-	right: { collectionId: string | null; labelIds: string[]; reminderAt: string | null; lastAccessedAt: string }
+	left: { collectionId: string | null; labelIds: string[]; reminderAt: string | null; isPinned: boolean; lastAccessedAt: string },
+	right: { collectionId: string | null; labelIds: string[]; reminderAt: string | null; isPinned: boolean; lastAccessedAt: string }
 ): boolean {
 	if (left.collectionId !== right.collectionId) return false;
 	if (left.reminderAt !== right.reminderAt) return false;
+	if (left.isPinned !== right.isPinned) return false;
 	if (left.lastAccessedAt !== right.lastAccessedAt) return false;
 	if (left.labelIds.length !== right.labelIds.length) return false;
 	for (let index = 0; index < left.labelIds.length; index++) {
@@ -168,7 +175,7 @@ function metadataSnapshotsEqual(
 	return true;
 }
 
-function useNoteMetadataSnapshot(doc: Y.Doc | null): { collectionId: string | null; labelIds: string[]; reminderAt: string | null; lastAccessedAt: string } {
+function useNoteMetadataSnapshot(doc: Y.Doc | null): { collectionId: string | null; labelIds: string[]; reminderAt: string | null; isPinned: boolean; lastAccessedAt: string } {
 	const snapshotRef = React.useRef(EMPTY_NOTE_METADATA_STATE);
 	const subscribe = React.useCallback((onStoreChange: () => void) => {
 		if (!doc) return () => undefined;
@@ -2509,16 +2516,17 @@ export function App(): React.JSX.Element {
 			});
 		}
 		if (activeCollection) {
+			const collectionLabel = collectionPathById.get(activeCollection.id) ?? activeCollection.name;
 			chips.push({
 				key: `collection:${activeCollection.id}`,
-				label: `Collection: ${collectionPathById.get(activeCollection.id) ?? activeCollection.name}`,
+				label: `Collection: ${truncateUiName(collectionLabel, 52)}`,
 				onClear: () => setActiveCollectionId(null),
 			});
 		}
 		for (const label of activeLabels) {
 			chips.push({
 				key: `label:${label.id}`,
-				label: `Label: ${label.name}`,
+				label: `Label: ${truncateUiName(label.name, 44)}`,
 				onClear: () => setActiveLabelIds((current) => current.filter((entry) => entry !== label.id)),
 			});
 		}
@@ -3980,7 +3988,7 @@ export function App(): React.JSX.Element {
 							}}
 							title={collectionPathById.get(collection.id) ?? collection.name}
 						>
-							<span className="sidebar-collection-item-label">{collection.name}</span>
+							<span className="sidebar-collection-item-label">{truncateUiName(collection.name, 44)}</span>
 						</button>
 					</div>
 					{hasChildren ? (
@@ -5180,6 +5188,7 @@ export function App(): React.JSX.Element {
 													<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 2 }}>{t('workspace.none')}</div>
 											) : null}
 											{sidebarWorkspacesSorted.map((ws, index) => {
+												const workspaceDisplayName = getWorkspaceDisplayName(ws, t);
 												const isActive = Boolean(authWorkspaceId && ws.id === authWorkspaceId);
 												const canShareWorkspace = canManageWorkspace(ws.role) && ws.systemKind !== 'SHARED_WITH_ME';
 												const sharedFolderGroupId = `workspace-folders:${ws.id}`;
@@ -5200,7 +5209,7 @@ export function App(): React.JSX.Element {
 																			[sharedFolderGroupId]: !Boolean(prev[sharedFolderGroupId]),
 																		}));
 																	}}
-																	aria-label={getWorkspaceDisplayName(ws, t)}
+																	aria-label={workspaceDisplayName}
 																	aria-expanded={showSharedFolders}
 																>
 																	<span className={`sidebar-disclosure-icon${showSharedFolders ? ' is-open' : ''}`} aria-hidden="true" />
@@ -5231,10 +5240,10 @@ export function App(): React.JSX.Element {
 																		closeMobileSidebar();
 																	}
 																}}
-																title={getWorkspaceDisplayName(ws, t)}
+																title={workspaceDisplayName}
 																style={{ ['--sidebar-item-index' as const]: itemIndex }}
 															>
-																{getWorkspaceDisplayName(ws, t)}
+																<span className="sidebar-submenu-item-label">{truncateUiName(workspaceDisplayName, 44)}</span>
 															</button>
 																	{canShareWorkspace ? (
 																		<button
@@ -5275,7 +5284,7 @@ export function App(): React.JSX.Element {
 																			}}
 																			style={{ ['--sidebar-item-index' as const]: folderIndex }}
 																		>
-																			{folderName}
+																			<span className="sidebar-submenu-item-label">{truncateUiName(folderName, 44)}</span>
 																		</button>
 																	))}
 																</div>
@@ -5350,7 +5359,7 @@ export function App(): React.JSX.Element {
 																}}
 																style={{ ['--sidebar-item-index' as const]: index }}
 															>
-																{item.label}
+																<span className="sidebar-submenu-item-label" title={item.label}>{truncateUiName(item.label, 44)}</span>
 															</button>
 														);
 													})}
