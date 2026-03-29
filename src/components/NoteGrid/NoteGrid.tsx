@@ -378,10 +378,13 @@ type GridNoteCardProps = {
 	selected: boolean;
 	isMoreMenuOpen: boolean;
 	onOpen?: () => void;
+	onAddReminder?: () => void;
+	onRestoreNote?: () => void;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
 	onMoreMenu: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
 	canEdit: boolean;
+	isTrashView?: boolean;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
 	isOverlayActiveCard?: boolean;
@@ -602,9 +605,12 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
 					onOpen={props.onOpen}
+					onAddReminder={props.onAddReminder}
+					onRestoreNote={props.onRestoreNote}
 					onAddCollaborator={props.onAddCollaborator}
 					onAddImage={props.onAddImage}
 					onMoreMenu={props.onMoreMenu}
+					isTrashView={props.isTrashView}
 					dragHandleRef={handleDragHandleRef}
 				/>
 			</div>
@@ -1516,7 +1522,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				hasPendingSync={pendingSyncNoteIds.has(note.id)}
 				selected={props.selectedNoteId === note.id}
 				isMoreMenuOpen={moreMenuNoteId === note.id}
+				isTrashView={isTrashView}
+				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => props.onSelectNote(note.id) : undefined}
+				onAddReminder={props.onAddReminder && canEditNote ? () => props.onAddReminder?.(note.id, doc.getText('title').toString()) : undefined}
+				onRestoreNote={isTrashView ? () => { void manager.restoreNote(note.id); } : undefined}
 				onAddCollaborator={props.onAddCollaborator && canEditNote ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
 				onAddImage={props.onAddImage && canEditNote ? () => {
 					if (!docId) return;
@@ -1535,7 +1545,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isTrashView, labelById, layoutReady, moreMenuNoteId, noteById, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.onAddCollaborator, props.onAddImage, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
+	}, [collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);

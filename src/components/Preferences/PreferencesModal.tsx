@@ -2,6 +2,7 @@ import React from 'react';
 import { fetchAboutHudStats, type AboutHudStatsResponse } from '../../core/noteManagementApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
+import { NotificationsSection } from './NotificationsSection';
 import styles from './PreferencesModal.module.css';
 import aboutIconLightAsset from '../../../lighticon.png';
 import aboutIconDarkAsset from '../../../darkicon.png';
@@ -50,6 +51,8 @@ export type PreferencesModalProps = {
 	onOpenUser?: () => void;
 	onOpenAppearance?: () => void;
 	connectionState?: ConnectionState;
+	/** Stable device identifier (from getDeviceId) used by the push settings panel. */
+	deviceId?: string;
 	// Optional admin/session actions.
 	// These are injected by the App so Preferences can stay a mostly-presentational
 	// component and not depend directly on auth/admin service logic.
@@ -72,6 +75,7 @@ type SectionModalProps = {
 	installBusy?: boolean;
 	onInstallApp?: () => void | Promise<void>;
 	connectionState: ConnectionState;
+	deviceId: string;
 };
 
 const ABOUT_ICON_LIGHT = aboutIconLightAsset;
@@ -278,8 +282,6 @@ function EditorSectionContent(props: {
 	t: (key: string) => string;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
-	deleteAfterDays: number | null;
-	onDeleteAfterDaysChange: (next: number | null) => void;
 }): React.JSX.Element {
 	const bubbleEnabled = useBubbleMenuEnabled();
 	const isCoarsePointer = useIsCoarsePointer();
@@ -420,6 +422,12 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 						isLightTheme={props.isLightTheme}
 						connectionState={props.connectionState}
 					/>
+				) : props.section === 'notifications' ? (
+					<NotificationsSection
+						t={props.t}
+						deviceId={props.deviceId}
+						connectionState={props.connectionState}
+					/>
 				) : (
 					<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
 				)}
@@ -519,6 +527,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					installBusy={props.installBusy}
 					onInstallApp={props.onInstallApp}
 					connectionState={props.connectionState ?? 'connecting'}
+					deviceId={props.deviceId ?? ''}
 				/>
 			) : null}
 		</div>

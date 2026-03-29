@@ -100,6 +100,8 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 	const [resetPasswordTarget, setResetPasswordTarget] = React.useState<{ userId: string; email: string } | null>(null);
 	const [resetPasswordValue, setResetPasswordValue] = React.useState('');
 	const [resetPasswordConfirm, setResetPasswordConfirm] = React.useState('');
+	// Controls which accordion section is expanded — only one panel is open at a time.
+	const [openPanel, setOpenPanel] = React.useState<'users' | 'create'>('users');
 	const resetPasswordStrengthScore = React.useMemo(() => getPasswordStrengthScore(resetPasswordValue), [resetPasswordValue]);
 	const resetPasswordStrengthLabel = React.useMemo(() => getPasswordStrengthLabel(resetPasswordValue), [resetPasswordValue]);
 
@@ -259,30 +261,44 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 					</button>
 				</header>
 
-				<div className={styles.toolbar}>
-					<input
-						className={styles.search}
-						placeholder="Search users (email or name)"
-						value={query}
-						onChange={(e) => setQuery(e.target.value)}
-						disabled={busy}
-					/>
-					<button type="button" className={styles.refreshButton} onClick={() => void loadUsers()} disabled={busy}>
-						Refresh
-					</button>
-				</div>
-
 				{error ? <div className={styles.error}>{error}</div> : null}
 
-				<div className={styles.table}>
-					<div className={styles.tableHeader}>
-						<div>User</div>
-						<div>Role</div>
-						<div>Usage</div>
-						<div style={{ textAlign: 'right' }}>Actions</div>
-					</div>
+				<div className={`${styles.sectionDisclosure} ${openPanel === 'users' ? styles.sectionDisclosureExpanded : ''}`}>
+					<button
+						type="button"
+						className={`${styles.sectionSummaryButton} ${openPanel === 'users' ? styles.sectionSummaryButtonExpanded : ''}`}
+						onClick={() => setOpenPanel('users')}
+						aria-expanded={openPanel === 'users'}
+					>
+						<span className={styles.sectionSummaryLabel}>Users</span>
+						<span className={styles.summaryCount}>{filtered.length}</span>
+						<span className={styles.disclosureArrow} aria-hidden="true" />
+					</button>
+					<div className={`${styles.sectionPanel} ${openPanel === 'users' ? styles.sectionPanelExpanded : ''}`} aria-hidden={openPanel !== 'users'}>
+						<div className={styles.sectionPanelInner}>
+							<div className={styles.sectionCard}>
+								<div className={styles.toolbar}>
+									<input
+										className={styles.search}
+										placeholder="Search users (email or name)"
+										value={query}
+										onChange={(e) => setQuery(e.target.value)}
+										disabled={busy}
+									/>
+									<button type="button" className={styles.refreshButton} onClick={() => void loadUsers()} disabled={busy}>
+										Refresh
+									</button>
+								</div>
 
-					{filtered.map((u) => {
+								<div className={styles.table}>
+									<div className={styles.tableHeader}>
+										<div>User</div>
+										<div>Role</div>
+										<div>Usage</div>
+										<div style={{ textAlign: 'right' }}>Actions</div>
+									</div>
+
+									{filtered.map((u) => {
 						const isYou = props.currentUserId && u.id === props.currentUserId;
 						const isServerAdmin = serverAdminUserId && u.id === serverAdminUserId;
 						const displayEmail = `${u.email}${isYou ? ' (you)' : ''}`;
@@ -309,7 +325,7 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 									</div>
 								</div>
 
-								<div>
+								<div className={styles.roleCell}>
 									<select
 										className={styles.select}
 										value={u.role}
@@ -323,11 +339,11 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 								</div>
 
 								<div className={styles.usage}>
-									<div>{notes} notes</div>
-									<div className={styles.usageSecondary}>{images} images</div>
-									<div>Total {formatBytes(total)}</div>
-									<div className={styles.usageSecondary}>Files {formatBytes(files)}</div>
-									<div>DB {formatBytes(db)}</div>
+									<div className={styles.usageStat}><span className={styles.usageLabel}>Notes</span><span className={styles.usageValue}>{notes}</span></div>
+									<div className={styles.usageStat}><span className={styles.usageLabel}>Images</span><span className={styles.usageValue}>{images}</span></div>
+									<div className={styles.usageStat}><span className={styles.usageLabel}>Files</span><span className={styles.usageValue}>{formatBytes(files)}</span></div>
+									<div className={styles.usageStat}><span className={styles.usageLabel}>DB</span><span className={styles.usageValue}>{formatBytes(db)}</span></div>
+									<div className={styles.usageStat}><span className={styles.usageLabel}>Total</span><span className={styles.usageValue}>{formatBytes(total)}</span></div>
 								</div>
 
 								<div className={styles.actions}>
@@ -347,11 +363,26 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 							</div>
 						);
 					})}
+								</div>
+							</div>
+						</div>
+					</div>
 				</div>
 
-				<div className={styles.section}>
-					<h3 className={styles.sectionTitle}>Create user</h3>
-					<div className={styles.createRow}>
+				<div className={`${styles.sectionDisclosure} ${openPanel === 'create' ? styles.sectionDisclosureExpanded : ''}`}>
+					<button
+						type="button"
+						className={`${styles.sectionSummaryButton} ${openPanel === 'create' ? styles.sectionSummaryButtonExpanded : ''}`}
+						onClick={() => setOpenPanel('create')}
+						aria-expanded={openPanel === 'create'}
+					>
+						<span className={styles.sectionSummaryLabel}>Create user</span>
+						<span className={styles.disclosureArrow} aria-hidden="true" />
+					</button>
+					<div className={`${styles.sectionPanel} ${openPanel === 'create' ? styles.sectionPanelExpanded : ''}`} aria-hidden={openPanel !== 'create'}>
+						<div className={styles.sectionPanelInner}>
+							<div className={styles.sectionCard}>
+								<div className={styles.createRow}>
 						<input
 							className={styles.input}
 							placeholder="Email"
@@ -382,6 +413,9 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 						<button type="button" className={styles.refreshButton} onClick={() => void createUser()} disabled={busy}>
 							Create
 						</button>
+								</div>
+							</div>
+						</div>
 					</div>
 				</div>
 

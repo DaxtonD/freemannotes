@@ -143,6 +143,12 @@ enum NoteDocumentOcrStatus {
   FAILED
 }
 
+enum PushPlatform {
+  WEB
+  IOS
+  ANDROID
+}
+
 enum ShareAccessEntityType {
   NOTE
   WORKSPACE
@@ -178,6 +184,9 @@ model User {
   noteLinks NoteLink[]
   uploadedNoteDocuments NoteDocument[]
   noteDocumentAnnotations NoteDocumentAnnotation[]
+  pushSubscriptions PushSubscription[]
+  pushNotificationLogs PushNotificationLog[]
+  noteReminders NoteReminder[]
 
   @@map("user")
 }
@@ -608,4 +617,88 @@ model UserPreference {
   user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("user_preference")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PushSubscription – stores VAPID (web/android) and FCM (iOS) push tokens.
+//
+// Each device gets one row per user. Uses upsert on [userId, deviceId].
+// Expired/invalid subscriptions are removed automatically on 410 errors.
+// ─────────────────────────────────────────────────────────────────────────
+model PushSubscription {
+  id         String       @id @default(uuid()) @db.Uuid
+  userId     String       @map("user_id") @db.Uuid
+  deviceId   String       @map("device_id")
+  platform   PushPlatform @default(WEB)
+
+  /// VAPID Web Push fields (web + android PWA).
+  endpoint   String?
+  p256dh     String?      @map("p256dh")
+  auth       String?
+
+  /// FCM registration token (iOS via Capacitor + FCM).
+  fcmToken   String?      @map("fcm_token")
+
+  enabled    Boolean      @default(true)
+  createdAt  DateTime     @default(now()) @map("created_at")
+  updatedAt  DateTime     @updatedAt @map("updated_at")
+  lastSeenAt DateTime     @default(now()) @map("last_seen_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, deviceId])
+  @@index([userId])
+  @@map("push_subscription")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// PushNotificationLog – delivery log for auditing and health diagnostics.
+// ─────────────────────────────────────────────────────────────────────────
+model PushNotificationLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  type      String   // "note-share" | "workspace-invite" | "reminder" | "test"
+  title     String
+  body      String   @db.Text
+  data      Json?
+  status    String   @default("pending") // "sent" | "failed"
+  latencyMs Int?     @map("latency_ms")
+  error     String?  @db.Text
+  sentAt    DateTime @default(now()) @map("sent_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sentAt])
+  @@map("push_notification_log")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// NoteReminder – server-side copy of a note reminder so the scheduler can
+// fire pushes even when the client is offline.
+//
+// The client syncs reminder creation/deletion via PUT /api/push/reminder.
+// The Yjs reminderAt field remains the source of truth for the UI; this
+// table is used only for server-side scheduling.
+// ─────────────────────────────────────────────────────────────────────────
+model NoteReminder {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @map("user_id") @db.Uuid
+  deviceId    String    @map("device_id")
+  docId       String    @map("doc_id")
+  noteId      String    @map("note_id")
+  workspaceId String    @map("workspace_id")
+  reminderAt  DateTime  @map("reminder_at")
+  noteTitle   String?   @map("note_title")
+  fired       Boolean   @default(false)
+  firedAt     DateTime? @map("fired_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, docId])
+  @@index([userId])
+  @@index([reminderAt, fired])
+  @@map("note_reminder")
 }

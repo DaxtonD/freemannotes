@@ -1,0 +1,296 @@
+.notificationsSection {
+	display: flex;
+	flex-direction: column;
+	gap: 20px;
+	padding: 16px 0 8px;
+}
+
+/* ── Status card ─────────────────────────────────────────────────────────── */
+
+.statusCard {
+	background: var(--color-surface-raised, rgba(128, 128, 128, 0.08));
+	border: 1px solid var(--color-border, rgba(128, 128, 128, 0.15));
+	border-radius: 10px;
+	padding: 14px 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.statusRow {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 0.85rem;
+}
+
+.statusDot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.statusDotEnabled {
+	background-color: #22c55e;
+}
+
+.statusDotDisabled {
+	background-color: #ef4444;
+}
+
+.statusDotUnknown {
+	background-color: #94a3b8;
+}
+
+.statusLabel {
+	font-weight: 600;
+	color: var(--color-text-primary, inherit);
+}
+
+.statusMeta {
+	font-size: 0.78rem;
+	color: var(--color-text-muted, rgba(128, 128, 128, 0.8));
+}
+
+.statusPlatformBadge {
+	font-size: 0.72rem;
+	padding: 2px 7px;
+	border-radius: 12px;
+	background: var(--color-accent-alpha, rgba(var(--color-accent-rgb, 99, 102, 241), 0.12));
+	color: var(--color-accent, #6366f1);
+	font-weight: 600;
+	letter-spacing: 0.03em;
+	text-transform: uppercase;
+}
+
+/* ── Action buttons ──────────────────────────────────────────────────────── */
+
+.actions {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.actionBtn {
+	width: 100%;
+	padding: 11px 16px;
+	border-radius: 8px;
+	border: 1px solid var(--color-border, rgba(128, 128, 128, 0.2));
+	background: var(--color-surface, transparent);
+	color: var(--color-text-primary, inherit);
+	font-size: 0.88rem;
+	font-weight: 500;
+	cursor: pointer;
+	transition: background 0.15s, opacity 0.15s;
+	text-align: left;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.actionBtn:hover:not(:disabled) {
+	background: var(--color-surface-hover, rgba(128, 128, 128, 0.1));
+}
+
+.actionBtn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+.actionBtnPrimary {
+	background: var(--color-accent, #6366f1);
+	color: #fff;
+	border-color: transparent;
+}
+
+.actionBtnPrimary:hover:not(:disabled) {
+	background: var(--color-accent-hover, #4f52c9);
+}
+
+.actionBtnDanger {
+	color: #ef4444;
+	border-color: #ef4444;
+}
+
+.actionBtnDanger:hover:not(:disabled) {
+	background: rgba(239, 68, 68, 0.08);
+}
+
+.actionIcon {
+	font-size: 1em;
+	flex-shrink: 0;
+}
+
+/* ── Health / last delivery log ──────────────────────────────────────────── */
+
+.healthSection {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.healthTitle {
+	font-size: 0.78rem;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--color-text-muted, rgba(128, 128, 128, 0.7));
+	margin: 0 0 2px;
+}
+
+.logList {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.logRow {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 0.78rem;
+	padding: 5px 8px;
+	border-radius: 6px;
+	background: var(--color-surface-raised, rgba(128, 128, 128, 0.05));
+}
+
+.logStatus {
+	font-weight: 700;
+	min-width: 48px;
+}
+
+.logStatusSent {
+	color: #22c55e;
+}
+
+.logStatusFailed {
+	color: #ef4444;
+}
+
+.logType {
+	flex: 1;
+	color: var(--color-text-muted, rgba(128, 128, 128, 0.75));
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.logLatency {
+	color: var(--color-text-muted, rgba(128, 128, 128, 0.6));
+	font-variant-numeric: tabular-nums;
+	min-width: 40px;
+	text-align: right;
+}
+
+.noLogs {
+	font-size: 0.8rem;
+	color: var(--color-text-muted, rgba(128, 128, 128, 0.6));
+	text-align: center;
+	padding: 8px 0;
+}
+
+/* ── Test result feedback ────────────────────────────────────────────────── */
+
+.testResult {
+	font-size: 0.82rem;
+	padding: 8px 12px;
+	border-radius: 7px;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.testResultSuccess {
+	background: rgba(34, 197, 94, 0.1);
+	color: #16a34a;
+	border: 1px solid rgba(34, 197, 94, 0.2);
+}
+
+.testResultFail {
+	background: rgba(239, 68, 68, 0.08);
+	color: #dc2626;
+	border: 1px solid rgba(239, 68, 68, 0.18);
+}
+
+/* ── iOS guidance box ────────────────────────────────────────────────────── */
+
+.iosGuidance {
+	background: var(--color-surface-raised, rgba(128, 128, 128, 0.07));
+	border: 1px solid var(--color-border, rgba(128, 128, 128, 0.15));
+	border-left: 3px solid var(--color-accent, #6366f1);
+	border-radius: 8px;
+	padding: 12px 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.iosGuidanceTitle {
+	font-size: 0.85rem;
+	font-weight: 700;
+	color: var(--color-accent, #6366f1);
+}
+
+.iosGuidanceSteps {
+	margin: 0;
+	padding-left: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.iosGuidanceStep {
+	font-size: 0.82rem;
+	color: var(--color-text-primary, inherit);
+	line-height: 1.4;
+}
+
+.iosWarning {
+	font-size: 0.78rem;
+	color: #ea580c;
+	font-weight: 600;
+}
+
+/* ── Permission denied warning ───────────────────────────────────────────── */
+
+.deniedWarning {
+	font-size: 0.82rem;
+	padding: 10px 12px;
+	background: rgba(239, 68, 68, 0.07);
+	border: 1px solid rgba(239, 68, 68, 0.18);
+	border-radius: 7px;
+	color: #dc2626;
+	line-height: 1.45;
+}
+
+/* ── Loading state ───────────────────────────────────────────────────────── */
+
+.loading {
+	text-align: center;
+	padding: 20px 0;
+	color: var(--color-text-muted, rgba(128, 128, 128, 0.7));
+	font-size: 0.85rem;
+}
+
+/* ── Error state ─────────────────────────────────────────────────────────── */
+
+.errorBox {
+	font-size: 0.8rem;
+	color: #dc2626;
+	padding: 8px 10px;
+	background: rgba(239, 68, 68, 0.07);
+	border-radius: 6px;
+	border: 1px solid rgba(239, 68, 68, 0.15);
+}
+
+/* ── Offline notice ──────────────────────────────────────────────────────── */
+
+.offlineNotice {
+	font-size: 0.82rem;
+	color: var(--color-text-muted, rgba(128, 128, 128, 0.65));
+	text-align: center;
+	padding: 12px;
+	border: 1px dashed var(--color-border, rgba(128, 128, 128, 0.2));
+	border-radius: 8px;
+}
