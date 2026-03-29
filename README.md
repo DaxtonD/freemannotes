@@ -52,7 +52,7 @@ I wanted:
 - Frontend: React, TypeScript, Vite.
 - Collaboration and offline merge model: Yjs.
 - Backend: Node.js, Prisma, PostgreSQL.
-- Optional cache/pub-sub: Redis.
+- Cache/pub-sub: Redis (bundled, recommended).
 - OCR and document/image processing: Python runtime inside the container.
 - Deployment: Docker, Docker Compose, Unraid.
 
@@ -83,6 +83,7 @@ What this gives you:
 
 - The app on `http://localhost:27015`
 - PostgreSQL 16 with a persistent named volume
+- Redis for push notification bell badge delivery and workspace pub/sub
 - A persistent uploads volume for images and documents
 - Automatic Prisma migration deploy on startup
 - OCR runtime in the main app container for image/document processing
@@ -94,10 +95,7 @@ http://localhost:27015/healthz
 http://localhost:27015/readyz
 ```
 
-Optional Redis:
-
-- Uncomment the `redis` service in `docker-compose.yml`
-- Set `REDIS_URL=redis://redis:6379`
+Redis is included in `docker-compose.yml` and enabled by default. It handles in-process pub/sub so the notification bell badge updates immediately when a reminder fires. It is also required if you run multiple app instances behind a load balancer. To disable Redis, set `REDIS_URL=` (empty string) and remove the `redis` service from `docker-compose.yml`.
 
 ## Install With Docker
 
@@ -121,7 +119,7 @@ docker run -d \
 
 Optional environment variables you may want:
 
-- `REDIS_URL`
+- `REDIS_URL` — recommended; set to `redis://your-redis-host:6379` for push notification bell badge updates and multi-instance pub/sub
 - `PGTIMEZONE`
 - `DB_BASELINE_ON_NON_EMPTY=true` for one startup if a previous failed install already created tables and Prisma now exits with `P3005`
 - `SMTP_HOST`
@@ -196,7 +194,7 @@ Recommended Unraid fields:
 | `DATABASE_URL` | `postgresql://user:pass@your-postgres-host:5432/freemannotes?schema=public` |
 | `AUTH_JWT_SECRET` | your generated secret |
 | `APP_URL` | `http://your-unraid-ip:27015` or your domain |
-| `REDIS_URL` | optional |
+| `REDIS_URL` | recommended for push notification bell reliability and required for multi-instance deployments |
 | `PGTIMEZONE` | optional |
 
 Reverse proxy note:

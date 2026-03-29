@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.27 - 2026-03-29
+
+### Added
+- **Past-due reminder filter in two places.** Added `Past due` under both `Sorting > Filters` and `Reminders` so overdue reminder notes can be isolated quickly.
+- **Sort-direction toggles for primary sort modes.** `Date created`, `Date updated`, and `Alphabetical` now support explicit ascending/descending direction with visible direction markers.
+
+### Changed
+- **Sort chips support in-place direction toggling.** The `Sort:` filter chip at the top of the notes grid is now interactive for toggleable sort modes, so direction can be flipped directly from the grid without reopening sidebar menus.
+- **Mobile sidebar spacing and expansion behavior tuned.** Sub-item touch spacing was adjusted for coarse pointers while preserving tight vertical stacking; expanded sorting groups now remain visible without clipping inside an internal submenu scroller.
+- **Workspace sidebar row simplified.** Removed the inline `- <active workspace>` text next to the `Workspace` top-level entry.
+- **Redis deployment guidance clarified and enabled by default in compose.** Documentation and compose defaults now describe Redis as recommended for push badge reliability and required for multi-instance setups.
+
+### Fixed
+- **Mobile/PWA reminder notifications can now be cleared reliably.** Clear action enablement now respects pending reminder count in addition to currently loaded reminder rows, preventing disabled clear states when the count is non-zero.
+- **Sorting submenu overlap/legibility issues.** Adjusted submenu row metrics and nested spacing to avoid overlap and preserve readability when multiple sorting sections are expanded.
+
 ## 1.1.26 - 2026-03-29
 
 ### Fixed

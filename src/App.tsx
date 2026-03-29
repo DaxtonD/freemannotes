@@ -68,7 +68,7 @@ import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passw
 import { createCollection, deleteCollection, getCollectionsRegistryDoc, readCollectionsFromDoc, subscribeCollections, updateCollection, type CollectionRecord, type CollectionTreeNode, buildCollectionTree, buildCollectionPathMap } from './services/collectionService';
 import { createLabel, getLabelsRegistryDoc, readLabelsFromDoc, subscribeLabels, type LabelRecord } from './services/labelService';
 import { assignNoteLabels, assignNoteReminder, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
-import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode } from './utilities/getVisibleNotes';
+import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode, SortDirection } from './utilities/getVisibleNotes';
 import {
 	flushPendingCollaboratorActions,
 	flushPendingNoteShareActions,
@@ -141,6 +141,16 @@ type MoveNoteModalState = {
 	noteId: string;
 	title: string;
 };
+
+type ToggleableSortMode = Extract<NoteSortMode, 'date-created' | 'date-updated' | 'alphabetical'>;
+
+function isToggleableSortMode(value: string): value is ToggleableSortMode {
+	return value === 'date-created' || value === 'date-updated' || value === 'alphabetical';
+}
+
+function getSortDirectionMarker(direction: SortDirection): string {
+	return direction === 'asc' ? '▲' : '▼';
+}
 
 const EMPTY_NOTE_METADATA_STATE = { collectionId: null, labelIds: [], reminderAt: null, lastAccessedAt: '' };
 
@@ -606,6 +616,11 @@ export function App(): React.JSX.Element {
 	const [activeLabelIds, setActiveLabelIds] = React.useState<string[]>([]);
 	const [activeReminderFilter, setActiveReminderFilter] = React.useState<ReminderFilterMode>('all');
 	const [activeSortMode, setActiveSortMode] = React.useState<NoteSortMode>('manual');
+	const [sortDirectionByMode, setSortDirectionByMode] = React.useState<Record<ToggleableSortMode, SortDirection>>({
+		'date-created': 'desc',
+		'date-updated': 'desc',
+		alphabetical: 'asc',
+	});
 	const [activeSortGrouping, setActiveSortGrouping] = React.useState<NoteGroupingMode>('none');
 	const [isCollectionManagementOpen, setIsCollectionManagementOpen] = React.useState(false);
 	const [noteCollectionModalState, setNoteCollectionModalState] = React.useState<MetadataNoteModalState | null>(null);
@@ -2480,8 +2495,12 @@ export function App(): React.JSX.Element {
 		() => labels.filter((label) => activeLabelIds.includes(label.id)),
 		[activeLabelIds, labels]
 	);
+	const activeSortDirection = React.useMemo<SortDirection | undefined>(() => {
+		if (!isToggleableSortMode(activeSortMode)) return undefined;
+		return sortDirectionByMode[activeSortMode];
+	}, [activeSortMode, sortDirectionByMode]);
 	const activeFilterChips = React.useMemo(() => {
-		const chips: Array<{ key: string; label: string; onClear: () => void }> = [];
+		const chips: Array<{ key: string; label: string; onClear: () => void; onPrimaryAction?: () => void; primaryAriaLabel?: string }> = [];
 		if (noteGridCollaboratorFilter) {
 			chips.push({
 				key: `collaborator:${noteGridCollaboratorFilter.key}`,
@@ -2506,6 +2525,7 @@ export function App(): React.JSX.Element {
 		if (activeReminderFilter !== 'all') {
 			const reminderLabels: Record<ReminderFilterMode, string> = {
 				all: t('app.sidebarAll'),
+				'past-due': t('app.sidebarPastDue'),
 				'later-today': t('app.sidebarToday'),
 				tomorrow: 'Tomorrow',
 				'next-week': t('app.sidebarNextWeek'),
@@ -2526,10 +2546,25 @@ export function App(): React.JSX.Element {
 				'least-accessed': t('app.sidebarLeastAccessed'),
 				'most-edited': t('app.sidebarMostEdited'),
 			};
+			const sortDirectionSuffix = isToggleableSortMode(activeSortMode)
+				? `  ${getSortDirectionMarker(sortDirectionByMode[activeSortMode])}`
+				: '';
 			chips.push({
 				key: `sort:${activeSortMode}`,
-				label: `Sort: ${sortLabels[activeSortMode]}`,
+				label: `Sort: ${sortLabels[activeSortMode]}${sortDirectionSuffix}`,
 				onClear: () => setActiveSortMode('manual'),
+				// Sort chips can toggle direction in-place to avoid reopening sidebar menus.
+				onPrimaryAction: isToggleableSortMode(activeSortMode)
+					? () => {
+						setSortDirectionByMode((current) => ({
+							...current,
+							[activeSortMode]: current[activeSortMode] === 'asc' ? 'desc' : 'asc',
+						}));
+					}
+					: undefined,
+				primaryAriaLabel: isToggleableSortMode(activeSortMode)
+					? `Toggle sort direction for ${sortLabels[activeSortMode]}`
+					: undefined,
 			});
 		}
 		if (activeSortGrouping !== 'none') {
@@ -2545,7 +2580,7 @@ export function App(): React.JSX.Element {
 			});
 		}
 		return chips;
-	}, [activeCollection, activeLabels, activeReminderFilter, activeSortGrouping, activeSortMode, collectionPathById, noteGridCollaboratorFilter, t]);
+	}, [activeCollection, activeLabels, activeReminderFilter, activeSortGrouping, activeSortMode, collectionPathById, noteGridCollaboratorFilter, sortDirectionByMode, t]);
 
 	const noteGridEmptyStateLabel = React.useMemo(() => {
 		if (activeCollection) return 'No notes in this collection.';
@@ -3869,6 +3904,7 @@ export function App(): React.JSX.Element {
 		() => ({
 			reminders: [
 				{ id: 'all', label: t('app.sidebarAll'), kind: 'item' },
+				{ id: 'past-due', label: t('app.sidebarPastDue'), kind: 'item' },
 				{ id: 'later-today', label: t('app.sidebarToday'), kind: 'item' },
 				{ id: 'tomorrow', label: 'Tomorrow', kind: 'item' },
 				{ id: 'next-week', label: t('app.sidebarNextWeek'), kind: 'item' },
@@ -3897,6 +3933,7 @@ export function App(): React.JSX.Element {
 				id: 'sortingFilters',
 				label: t('app.sidebarFilters'),
 				items: [
+					{ id: 'past-due', label: t('app.sidebarPastDue'), kind: 'item' },
 					{ id: 'due-soon', label: t('app.sidebarDueSoon'), kind: 'item' },
 					{ id: 'least-accessed', label: t('app.sidebarLeastAccessed'), kind: 'item' },
 					{ id: 'most-edited', label: t('app.sidebarMostEdited'), kind: 'item' },
@@ -5115,16 +5152,7 @@ export function App(): React.JSX.Element {
 										<span className="sidebar-icon" aria-hidden="true">
 											<FontAwesomeIcon icon={entry.icon as never} />
 										</span>
-										{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
-											<span className="sidebar-workspace-inline-summary" aria-live="polite">
-												<span className="sidebar-label sidebar-workspace-inline-label">{label}</span>
-												<span className="sidebar-workspace-current-inline-text">
-													{`- ${activeWorkspaceName || t('workspace.unnamed')}`}
-												</span>
-											</span>
-										) : (
-											<span className="sidebar-label">{label}</span>
-										)}
+										<span className="sidebar-label">{label}</span>
 									</button>
 
 									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
@@ -5333,21 +5361,37 @@ export function App(): React.JSX.Element {
 									{entry.id === 'sorting' && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
 											<div className="sidebar-submenu" aria-hidden={!isOpen}>
-												{sortingPrimaryItems.map((item, index) => (
-													<button
-														key={item.id}
-														type="button"
-														className={`sidebar-submenu-item${activeSortMode === item.id ? ' is-active' : ''}`}
-														onClick={() => {
-															setSidebarView('notes');
-															setActiveSortMode(item.id as NoteSortMode);
-															if (isMobileViewport) closeMobileSidebar();
-														}}
-														style={{ ['--sidebar-item-index' as const]: index }}
-													>
-														{item.label}
-													</button>
-												))}
+												{sortingPrimaryItems.map((item, index) => {
+													const isActive = activeSortMode === item.id;
+													const isToggleable = isToggleableSortMode(item.id);
+													const displayLabel = isToggleable
+														? `${item.label}`
+														: item.label;
+													return (
+														<button
+															key={item.id}
+															type="button"
+															className={`sidebar-submenu-item${isActive ? ' is-active' : ''}`}
+															onClick={() => {
+																setSidebarView('notes');
+																if (isToggleable && isActive) {
+																	// Second tap on an active sortable field flips direction.
+																	setSortDirectionByMode((current) => ({
+																		...current,
+																		[item.id]: current[item.id] === 'asc' ? 'desc' : 'asc',
+																	}));
+																} else {
+																	setActiveSortMode(item.id as NoteSortMode);
+																}
+																if (isMobileViewport) closeMobileSidebar();
+															}}
+															style={{ ['--sidebar-item-index' as const]: index }}
+														>
+															<span className="sidebar-submenu-item-label">{displayLabel}</span>
+															{isToggleable ? <span className="sidebar-sort-direction">{getSortDirectionMarker(sortDirectionByMode[item.id])}</span> : null}
+														</button>
+													);
+												})}
 												{sortingNestedGroups.map((group, groupIndex) => {
 													const nestedOpen = Boolean(sidebarGroupsOpen[group.id]);
 													const baseIndex = sortingPrimaryItems.length + groupIndex;
@@ -5366,8 +5410,8 @@ export function App(): React.JSX.Element {
 															<div className={`sidebar-nested-submenu-shell${nestedOpen ? ' is-open' : ''}`}>
 																<div className="sidebar-nested-submenu" aria-hidden={!nestedOpen}>
 																	{group.items.map((item, itemIndex) => {
-																		const isActive = item.id === 'due-soon'
-																			? activeReminderFilter === 'due-soon'
+																		const isActive = item.id === 'past-due' || item.id === 'due-soon'
+																			? activeReminderFilter === item.id
 																			: item.id === 'least-accessed' || item.id === 'most-edited'
 																				? activeSortMode === item.id
 																				: item.id === 'by-week'
@@ -5387,8 +5431,8 @@ export function App(): React.JSX.Element {
 																						setActiveReminderFilter('all');
 																						setActiveSortMode('manual');
 																						setActiveSortGrouping('none');
-																					} else if (item.id === 'due-soon') {
-																						setActiveReminderFilter('due-soon');
+																					} else if (item.id === 'past-due' || item.id === 'due-soon') {
+																						setActiveReminderFilter(item.id as ReminderFilterMode);
 																					} else if (item.id === 'least-accessed' || item.id === 'most-edited') {
 																						setActiveSortMode(item.id as NoteSortMode);
 																					} else if (item.id === 'by-week' || item.id === 'by-month') {
@@ -5497,12 +5541,29 @@ export function App(): React.JSX.Element {
 									</div>
 								) : null}
 								{activeFilterChips.map((chip) => (
-									<div key={chip.key} className="note-grid-scope-chip">
+									<div
+										key={chip.key}
+										className={`note-grid-scope-chip is-clearable${chip.onPrimaryAction ? ' is-interactive' : ''}`}
+										onClick={chip.onPrimaryAction}
+										onKeyDown={(event) => {
+											if (!chip.onPrimaryAction) return;
+											if (event.key !== 'Enter' && event.key !== ' ') return;
+											event.preventDefault();
+											chip.onPrimaryAction();
+										}}
+										role={chip.onPrimaryAction ? 'button' : undefined}
+										tabIndex={chip.onPrimaryAction ? 0 : undefined}
+										aria-label={chip.onPrimaryAction ? chip.primaryAriaLabel : undefined}
+									>
 										<span className="note-grid-scope-label">{chip.label}</span>
 										<button
 											type="button"
 											className="note-grid-scope-clear"
-											onClick={chip.onClear}
+											onClick={(event) => {
+																	// Keep clear/remove behavior independent from chip primary action.
+												event.stopPropagation();
+												chip.onClear();
+											}}
 											aria-label={t('common.close')}
 										>
 											<FontAwesomeIcon icon={faXmark} />
@@ -5561,6 +5622,7 @@ export function App(): React.JSX.Element {
 						labels={labels}
 						reminderFilter={activeReminderFilter}
 						sortMode={activeSortMode}
+						sortDirection={activeSortDirection}
 						sortGrouping={activeSortGrouping}
 						refreshCollaboratorsToken={collaborationRefreshToken}
 						maxCardHeightPx={maxCardHeightPx}
@@ -5918,6 +5980,12 @@ export function App(): React.JSX.Element {
 				authUserId={authUserId}
 				failedLinkNotifications={failedLinkNotifications}
 				firedReminders={firedReminders}
+				pendingReminderCount={pendingReminderNotificationCount}
+				onClearReminders={() => {
+					setFiredReminders([]);
+					setPendingReminderNotificationCount(0);
+					void acknowledgeReminderNotifications().catch(() => undefined);
+				}}
 				onOpenReminder={(reminder) => {
 					setIsShareNotificationsOpen(false);
 					void (async () => {

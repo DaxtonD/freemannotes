@@ -25,6 +25,8 @@ type Props = {
 	authUserId: string | null;
 	failedLinkNotifications?: FailedNoteLinkRecord[];
 	firedReminders?: FiredReminder[];
+	pendingReminderCount?: number;
+	onClearReminders?: () => void;
 	onOpenReminder?: (reminder: FiredReminder) => void;
 	hasAppUpdateNotification?: boolean;
 	hasAppUpdatedNotification?: boolean;
@@ -152,7 +154,10 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const hasNoteInvites = visibleInvitations.length > 0;
 	const hasFailedLinks = failedLinkNotifications.length > 0;
 	const hasFiredReminders = firedReminders.length > 0;
-	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders;
+	// Use the authoritative pending count too, because reminder rows can be stale
+	// on mobile/PWA while the badge count is already non-zero.
+	const hasPendingReminderNotifications = (props.pendingReminderCount ?? 0) > 0;
+	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders || hasPendingReminderNotifications;
 	const hasAppNotification = hasAppUpdate || hasAppUpdated;
 	const modalTitle = hasAppNotification ? t('prefs.notifications') : hasWorkspaceInvites ? t('invite.notifications') : t('share.notifications');
 	const modalSubtitle = hasAppNotification
@@ -165,6 +170,7 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const clearableInvitationIds = React.useMemo(() => {
 		return visibleInvitations.filter((invitation) => invitation.status !== 'PENDING').map((invitation) => invitation.id);
 	}, [visibleInvitations]);
+	const canClearNotifications = clearableInvitationIds.length > 0 || firedReminders.length > 0 || hasPendingReminderNotifications;
 
 	const getWorkspaceRoleLabel = React.useCallback((role: WorkspacePendingInvite['role']): string => {
 		if (role === 'ADMIN') return t('invite.roleAdmin');
@@ -173,14 +179,18 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	}, [t]);
 
 	const handleClearNotifications = React.useCallback(() => {
-		if (!props.authUserId || clearableInvitationIds.length === 0) return;
-		setHiddenInvitationIds((current) => {
-			const next = new Set(current);
-			for (const id of clearableInvitationIds) next.add(id);
-			writeHiddenNotificationIds(props.authUserId, next);
-			return next;
-		});
-	}, [clearableInvitationIds, props.authUserId]);
+		if (props.authUserId && clearableInvitationIds.length > 0) {
+			setHiddenInvitationIds((current) => {
+				const next = new Set(current);
+				for (const id of clearableInvitationIds) next.add(id);
+				writeHiddenNotificationIds(props.authUserId, next);
+				return next;
+			});
+		}
+		if (firedReminders.length > 0 || hasPendingReminderNotifications) {
+			props.onClearReminders?.();
+		}
+	}, [clearableInvitationIds, firedReminders.length, hasPendingReminderNotifications, props]);
 
 	const queueAction = React.useCallback((action: PendingNoteShareAction) => {
 		enqueuePendingNoteShareAction(action);
@@ -532,7 +542,7 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 
 				{hasAnyShareNotifications ? (
 					<div className={styles.modalFooter}>
-						<button type="button" className={styles.secondaryButton} onClick={handleClearNotifications} disabled={clearableInvitationIds.length === 0}>
+						<button type="button" className={styles.secondaryButton} onClick={handleClearNotifications} disabled={!canClearNotifications}>
 							{t('share.clearNotifications')}
 						</button>
 					</div>
