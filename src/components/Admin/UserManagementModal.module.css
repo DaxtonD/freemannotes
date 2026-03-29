@@ -214,6 +214,128 @@
 	gap: 10px;
 }
 
+.sectionDisclosure {
+	border: 1px solid var(--color-border);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--color-surface) 84%, var(--color-surface-2));
+	overflow: hidden;
+	min-height: 0;
+	flex: 0 0 auto;
+	display: flex;
+	flex-direction: column;
+}
+
+.sectionDisclosureExpanded {
+	flex: 1 1 auto;
+}
+
+.sectionSummaryButton {
+	width: 100%;
+	border: 0;
+	background: transparent;
+	padding: 10px 12px;
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 10px;
+	color: var(--color-text-muted);
+	font-size: 11px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	cursor: pointer;
+	text-align: left;
+}
+
+.sectionSummaryLabel {
+	flex: 1 1 auto;
+	min-width: 0;
+	color: var(--color-accent);
+	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+	border: 1px solid color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+	border-radius: 999px;
+	padding: 3px 10px;
+	line-height: 1.25;
+	max-width: fit-content;
+}
+
+.disclosureArrow {
+	width: 12px;
+	height: 12px;
+	flex: 0 0 auto;
+	background-color: currentColor;
+	-webkit-mask-image: url('/icons/Arrow.png');
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	-webkit-mask-size: contain;
+	mask-image: url('/icons/Arrow.png');
+	mask-repeat: no-repeat;
+	mask-position: center;
+	mask-size: contain;
+	transform: rotate(0deg);
+	transition: transform 160ms ease;
+}
+
+.sectionSummaryButtonExpanded .disclosureArrow {
+	transform: rotate(90deg);
+}
+
+.summaryCount {
+	min-width: 24px;
+	height: 20px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0 6px;
+	margin-left: auto;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface));
+	color: var(--color-accent);
+	font-size: 11px;
+	font-weight: 700;
+}
+
+.sectionPanel {
+	display: grid;
+	grid-template-rows: 0fr;
+	opacity: 0;
+	transform: translateY(-4px);
+	pointer-events: none;
+	visibility: hidden;
+	transition:
+		grid-template-rows 180ms ease,
+		opacity 180ms ease,
+		transform 180ms ease,
+		visibility 0s linear 180ms;
+}
+
+.sectionPanelExpanded {
+	grid-template-rows: 1fr;
+	opacity: 1;
+	transform: translateY(0);
+	pointer-events: auto;
+	visibility: visible;
+	transition:
+		grid-template-rows 220ms ease,
+		opacity 180ms ease,
+		transform 220ms ease,
+		visibility 0s linear 0s;
+}
+
+.sectionPanelInner {
+	min-height: 0;
+	overflow: hidden;
+}
+
+.sectionCard {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 0 10px 10px;
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
 .sectionTitle {
 	font-size: 14px;
 	font-weight: 700;
@@ -374,11 +496,34 @@
 
 	.emailLink,
 	.name {
-		white-space: normal;
-		overflow: visible;
-		text-overflow: unset;
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 6px 10px;
+		font-size: 12px;
+		color: var(--color-text-muted);
+		line-height: 1.35;
 		word-break: break-word;
 	}
+	.usageStat {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 8px;
+		min-width: 0;
+	}
+
+	.usageLabel {
+		font-size: 11px;
+		color: var(--color-text-muted);
+		white-space: nowrap;
+	}
+
+	.usageValue {
+		font-weight: 700;
+		color: var(--color-text);
+		white-space: nowrap;
+	}
+
 
 	.actions {
 		grid-area: actions;
@@ -395,8 +540,21 @@
 	.usage {
 		grid-area: usage;
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		gap: 4px 10px;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 6px 8px;
+	}
+
+	.usageStat {
+		align-items: center;
+		padding: 2px 0;
+	}
+
+	.usageLabel {
+		font-size: 10px;
+	}
+
+	.usageValue {
+		font-size: 11px;
 	}
 
 	.usageSecondary {

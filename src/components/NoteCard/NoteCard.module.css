@@ -15,6 +15,30 @@
 	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border) 70%);
 }
 
+.trashCard {
+	filter: saturate(0.68) brightness(0.92);
+	opacity: 0.9;
+}
+
+.trashCard::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: color-mix(in srgb, var(--color-surface) 35%, transparent);
+	pointer-events: none;
+	z-index: 1;
+}
+
+.trashCard > * {
+	position: relative;
+	z-index: 2;
+}
+
+/* Keep trashed notes readable but visibly disabled; restore control remains sharp. */
+.trashCard > :not(.trashRestoreRow) {
+	filter: blur(1px);
+}
+
 @media (pointer: coarse) {
 	/* Mobile long-press UX:
 	   When a long-press is used to open the card's more-menu, we don't want the
@@ -102,6 +126,67 @@
 	position: relative;
 	z-index: 2;
 	flex: 0 0 auto;
+}
+
+.trashCard .metaChipRow {
+	pointer-events: none;
+	opacity: 0.52;
+}
+
+.trashRestoreRow {
+	position: absolute;
+	inset: 0;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	pointer-events: none;
+}
+
+.trashRestoreButton {
+	display: inline-flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 7px;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: var(--note-color-text, var(--color-text));
+	font-size: var(--font-size-xs);
+	font-weight: 600;
+	line-height: 1;
+	cursor: pointer;
+	pointer-events: auto;
+	transform: translateY(20px);
+	transition: transform 150ms ease, filter 150ms ease, opacity 150ms ease;
+}
+
+.trashRestoreIcon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 44px;
+	height: 44px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 45%, var(--note-color-border, var(--color-border)));
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--note-color-card-bg, var(--color-surface)));
+	font-size: 14px;
+	line-height: 1;
+	box-shadow:
+		0 8px 20px rgba(0, 0, 0, 0.14),
+		0 0 0 1px color-mix(in srgb, var(--color-accent) 30%, transparent),
+		0 0 18px color-mix(in srgb, var(--color-accent) 36%, transparent);
+}
+
+.trashRestoreButton:hover,
+.trashRestoreButton:focus-visible {
+	filter: brightness(1.04);
+	transform: translateY(19px);
+}
+
+.trashRestoreButton:active {
+	transform: translateY(20px) scale(0.98);
 }
 
 @media (pointer: coarse) {

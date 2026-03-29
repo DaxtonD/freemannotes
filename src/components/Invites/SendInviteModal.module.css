@@ -157,6 +157,13 @@
 .sectionSummaryLabel {
 	flex: 1 1 auto;
 	min-width: 0;
+	color: var(--color-accent);
+	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+	border: 1px solid color-mix(in srgb, var(--color-accent) 38%, var(--color-border));
+	border-radius: 999px;
+	padding: 3px 10px;
+	line-height: 1.25;
+	max-width: fit-content;
 }
 
 .disclosureArrow {

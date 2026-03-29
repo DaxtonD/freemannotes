@@ -193,12 +193,28 @@ function createAdminRouter({ prisma }) {
 					});
 
 					const users = await Promise.all(
-						rows.map(async (u) => {
-							const ws = await prisma.workspace.findFirst({
-								where: { ownerUserId: u.id },
-								select: { id: true },
-								orderBy: { createdAt: 'asc' },
-							});
+						rows.map(async (u) => {						// Fetch workspace stats and file-storage aggregates in parallel so
+						// a list of N users doesn't require N*3 sequential round-trips.							const [
+								ws,
+								noteImageAgg,
+								noteDocumentAgg,
+							] = await Promise.all([
+								prisma.workspace.findFirst({
+									where: { ownerUserId: u.id },
+									select: { id: true },
+									orderBy: { createdAt: 'asc' },
+								}),
+								prisma.noteImage.aggregate({
+									where: { uploadedByUserId: u.id, deletedAt: null },
+									_count: { _all: true },
+									_sum: { byteSize: true },
+								}),
+								prisma.noteDocument.aggregate({
+									where: { uploadedByUserId: u.id, deletedAt: null },
+									_count: { _all: true },
+									_sum: { byteSize: true },
+								}),
+							]);
 
 							let notes = 0;
 							let dbBytes = 0;
@@ -208,8 +224,10 @@ function createAdminRouter({ prisma }) {
 								notes = Number(first?.note_count || 0);
 								dbBytes = Number(first?.bytes || 0);
 							}
-
-							const filesBytes = 0;
+						// Compute real file-storage totals from the aggregate results.							const imageBytes = Number(noteImageAgg?._sum?.byteSize || 0);
+							const documentBytes = Number(noteDocumentAgg?._sum?.byteSize || 0);
+							const images = Number(noteImageAgg?._count?._all || 0);
+							const filesBytes = imageBytes + documentBytes;
 							const totalBytes = dbBytes + filesBytes;
 
 							return {
@@ -223,7 +241,7 @@ function createAdminRouter({ prisma }) {
 								lastLogin: u.lastLogin ? u.lastLogin.toISOString() : null,
 								usage: {
 									notes,
-									images: 0,
+									images,
 									totalBytes,
 									filesBytes,
 									dbBytes,

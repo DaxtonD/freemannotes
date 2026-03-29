@@ -30,7 +30,7 @@ export function CollectionManagementModal(props: CollectionManagementModalProps)
 		return nodes.map((node) => ({
 			id: node.id,
 			label: node.name,
-			meta: node.parentId ? pathById.get(node.id) ?? node.name : 'Top level',
+			meta: null,
 			children: toTreeItems(node.children),
 		}));
 	}, [pathById]);
@@ -56,12 +56,12 @@ export function CollectionManagementModal(props: CollectionManagementModalProps)
 					</div>
 					<div className={styles.field}>
 						<div className={styles.fieldLabel}>Parent collection</div>
-						<div className={styles.treePath}>{parentId ? pathById.get(parentId) ?? 'Top level' : 'Top level'}</div>
-						<button type="button" className={styles.ghostButton} onClick={() => setParentId('')}>Place at top level</button>
+						{parentId ? <div className={styles.treePath}>{pathById.get(parentId) ?? ''}</div> : null}
 						<TreeSelector
 							items={treeItems}
 							selectedId={parentId || null}
-							onSelect={(id) => setParentId(id)}
+							// Tapping the already-selected parent toggles it off, clearing to top-level.
+					onSelect={(id) => setParentId((current) => (current === id ? '' : id))}
 							renderActions={(item) => (
 								<>
 									<button

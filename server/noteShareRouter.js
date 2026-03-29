@@ -564,6 +564,21 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 
 					jsonResponse(res, 201, { invitation: mapInvitation(invitation) });
 
+					// Fire push notification to the invitee if they are a registered user.
+					if (invitee.user) {
+						try {
+							const { sendPushToUser } = require('./pushService');
+							await sendPushToUser(prisma, invitee.user.id, {
+								type: 'note-share',
+								title: '📝 Note Share Invitation',
+								body: `${actor.name || 'Someone'} shared a note with you.`,
+								data: { type: 'note-share', docId: access.docId, url: '/' },
+							});
+						} catch (pushErr) {
+							console.warn('[push] note-share push failed:', pushErr.message);
+						}
+					}
+
 					if (typeof onWorkspaceMetadataChanged === 'function') {
 						try {
 							await onWorkspaceMetadataChanged({

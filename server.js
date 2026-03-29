@@ -248,6 +248,9 @@ let adminRouter = null;
 /** @type {ReturnType<import('./server/preferencesRouter').createPreferencesRouter> | null} */
 let preferencesRouter = null;
 
+/** @type {ReturnType<import('./server/pushRouter').createPushRouter> | null} */
+let pushRouter = null;
+
 /** @type {ReturnType<import('./server/trashCleanup').createTrashCleanup> | null} */
 let trashCleanup = null;
 
@@ -507,6 +510,23 @@ if (DATABASE_URL.length > 0) {
 			console.error('[server] Failed to initialize Preferences API router:', err.message);
 			preferencesRouter = null;
 		}
+
+		try {
+			const { createPushRouter } = require('./server/pushRouter');
+			pushRouter = createPushRouter({ prisma });
+			console.info('[server] Push notification router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Push notification router:', err.message);
+			pushRouter = null;
+		}
+
+		// Start reminder scheduler — fires push notifications for due note reminders.
+		try {
+			const { startReminderScheduler } = require('./server/pushService');
+			startReminderScheduler(prisma);
+		} catch (err) {
+			console.warn('[server] Reminder scheduler failed to start:', err.message);
+		}
 	}
 } else {
 	console.info('[server] DATABASE_URL not set — running in relay-only mode (no PostgreSQL persistence)');
@@ -649,6 +669,12 @@ const server = http.createServer((req, res) => {
 		// ── Preferences API router ───────────────────────────────────────
 		// Handles /api/user/preferences GET and POST endpoints.
 		if (preferencesRouter && preferencesRouter(req, res)) {
+			return;
+		}
+
+		// ── Push notification router ─────────────────────────────────────
+		// Handles /api/push/* — subscription management, test push, reminders.
+		if (pushRouter && pushRouter(req, res)) {
 			return;
 		}
 

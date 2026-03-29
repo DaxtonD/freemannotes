@@ -786,5 +786,24 @@
     "peach": "Melocotón",
     "cream": "Crema",
     "lavender": "Lavanda"
+  },
+  "push": {
+    "statusEnabled": "Notificaciones push activadas",
+    "statusDisabled": "Notificaciones push desactivadas",
+    "statusDenied": "Notificaciones bloqueadas por el navegador",
+    "lastSync": "Última sincronización",
+    "enableNotifications": "Activar notificaciones",
+    "disableNotifications": "Desactivar notificaciones",
+    "reregister": "Volver a registrar dispositivo",
+    "sendTest": "Enviar notificación de prueba",
+    "recentDeliveries": "Entregas recientes",
+    "noDeliveries": "Aún no hay entregas. Envía una notificación de prueba arriba.",
+    "permissionDenied": "Las notificaciones están bloqueadas. Abre la configuración del navegador o del sistema para reactivarlas.",
+    "iosGuidanceTitle": "📱 Añadir a pantalla de inicio requerido",
+    "iosStep1": "Toca el botón Compartir (□↑) en Safari",
+    "iosStep2": "Selecciona \"Añadir a pantalla de inicio\"",
+    "iosStep3": "Abre la app desde tu pantalla de inicio",
+    "iosStep4": "Vuelve aquí y activa las notificaciones",
+    "iosDontAllow": "⚠️ NO toques \"No permitir\" — iOS no puede volver a solicitar permiso tras la denegación."
   }
 }

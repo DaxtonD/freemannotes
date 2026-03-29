@@ -1,6 +1,6 @@
 {
   "name": "freemannotes",
-  "version": "1.1.21",
+  "version": "1.1.22",
   "main": "index.js",
   "scripts": {
     "dev": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",
@@ -80,6 +80,7 @@
     "sharp": "^0.34.5",
     "turndown": "^7.2.2",
     "turndown-plugin-gfm": "^1.0.2",
+    "web-push": "^3.6.7",
     "ws": "^8.19.0",
     "xlsx": "^0.18.5",
     "y-indexeddb": "^9.0.12",

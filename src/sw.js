@@ -217,3 +217,100 @@ self.addEventListener('fetch', (event) => {
 		event.respondWith(cacheFirstImage(request));
 	}
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Push notification handlers
+//
+// The `push` event fires when a push message arrives from the server.
+// `notificationclick` handles user taps on displayed notifications.
+//
+// Architecture:
+//   1. Server sends a push via VAPID (web/android) or FCM (iOS).
+//   2. SW receives the payload, extracts { title, body, data } from JSON.
+//   3. SW shows a system notification with an icon + badge.
+//   4. On click: focus an existing window or open a new one, navigating to
+//      the note/workspace URL embedded in the notification data.
+//   5. SW posts a PUSH_NOTIFICATION_RECEIVED message to all clients so the
+//      in-app notification bell can refresh its badge count.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const NOTIFICATION_ICON = '/icons/icon-192x192.png';
+const NOTIFICATION_BADGE = '/icons/icon-72x72.png';
+
+self.addEventListener('push', (event) => {
+	// Safely extract notification payload — fall back to defaults if malformed.
+	let payload = { title: 'FreemanNotes', body: 'You have a new notification.', data: {} };
+	if (event.data) {
+		try {
+			const raw = event.data.json();
+			payload = {
+				title: String(raw.title || payload.title),
+				body: String(raw.body || payload.body),
+				data: raw.data && typeof raw.data === 'object' ? raw.data : {},
+			};
+		} catch {
+			try {
+				payload.body = event.data.text() || payload.body;
+			} catch {
+				// ignore
+			}
+		}
+	}
+
+	const showPromise = self.registration.showNotification(payload.title, {
+		body: payload.body,
+		icon: NOTIFICATION_ICON,
+		badge: NOTIFICATION_BADGE,
+		// Collapse duplicate notifications from the same type (e.g. multiple
+		// rapid share invites) so the notification tray stays clean.
+		tag: payload.data.type ? `freemannotes-${String(payload.data.type)}` : 'freemannotes',
+		renotify: true,
+		data: payload.data,
+		// Vibration pattern for supported mobile browsers (150ms on, 50ms off, 150ms on)
+		vibrate: [150, 50, 150],
+	}).then(async () => {
+		// Notify open app windows so the bell badge can refresh immediately.
+		await postMessageToClients({ type: 'FREEMANNOTES_PUSH_RECEIVED', notificationData: payload.data });
+	});
+
+	event.waitUntil(showPromise);
+});
+
+self.addEventListener('notificationclick', (event) => {
+	event.notification.close();
+
+	const data = event.notification.data || {};
+	// Determine the deep-link target URL from notification data.
+	// Format: /?workspace=<id>&note=<id>  or a fully-qualified URL in data.url
+	let targetUrl = '/';
+	if (data.url && typeof data.url === 'string') {
+		// Use the URL from the notification payload (already constructed by the server)
+		try {
+			const parsed = new URL(data.url, self.location.origin);
+			if (parsed.origin === self.location.origin) {
+				targetUrl = parsed.pathname + parsed.search + parsed.hash;
+			}
+		} catch {
+			targetUrl = '/';
+		}
+	} else if (data.workspaceId && data.noteId) {
+		targetUrl = `/?workspace=${encodeURIComponent(String(data.workspaceId))}&note=${encodeURIComponent(String(data.noteId))}`;
+	}
+
+	event.waitUntil(
+		(async () => {
+			// Try to reuse an already-open window on this origin rather than opening a new tab.
+			const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+			for (const client of clients) {
+				if (new URL(client.url).origin === self.location.origin) {
+					// Navigate the existing window to the target note
+					await client.navigate(targetUrl);
+					await client.focus();
+					return;
+				}
+			}
+			// No existing window — open a new one
+			await self.clients.openWindow(targetUrl);
+		})()
+	);
+});
