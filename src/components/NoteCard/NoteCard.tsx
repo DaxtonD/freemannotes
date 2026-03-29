@@ -827,6 +827,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				// position and lands on whichever menu item is underneath.
 				if (longPressFiredRef.current) {
 					e.preventDefault();
+					// Consume this guard once so later taps (for example metadata chips)
+					// are not blocked if they stop pointer-down propagation at the card root.
+					longPressFiredRef.current = false;
 				}
 			}}
 			onContextMenu={(e) => {
