@@ -89,7 +89,7 @@ import { emitNoteDocumentsChanged, scheduleQueuedNoteDocumentFlush } from './cor
 import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { onPushReceived } from './core/pushManager';
-import { syncNoteReminder } from './core/pushApi';
+import { acknowledgeReminderNotifications, fetchPendingReminderCount, syncNoteReminder } from './core/pushApi';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -560,6 +560,7 @@ export function App(): React.JSX.Element {
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
+	const [pendingReminderNotificationCount, setPendingReminderNotificationCount] = React.useState(0);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(null);
@@ -914,7 +915,12 @@ export function App(): React.JSX.Element {
 
 	const openShareNotifications = React.useCallback(() => {
 		setIsShareNotificationsOpen(true);
-	}, []);
+		// Acknowledge any pending reminder notifications so the bell badge clears.
+		if (pendingReminderNotificationCount > 0) {
+			setPendingReminderNotificationCount(0);
+			void acknowledgeReminderNotifications().catch(() => undefined);
+		}
+	}, [pendingReminderNotificationCount]);
 
 	const openCollaboratorModalForNote = React.useCallback((noteId: string, title?: string) => {
 		const placement = sharedPlacements.find((item) => item.aliasId === noteId);
@@ -1055,7 +1061,7 @@ export function App(): React.JSX.Element {
 		Boolean(noteDocumentModalState) ||
 		Boolean(noteAttachmentBrowserState) ||
 		userModalBusy;
-	const totalNotificationCount = pendingShareNotificationCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0);
+	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0);
 
 	React.useEffect(() => {
 		setPwaUpdateBlocked(isPwaUpdateBlocked);
@@ -2744,6 +2750,7 @@ export function App(): React.JSX.Element {
 			setSharedPlacements([]);
 			setFailedLinkNotifications([]);
 			setPendingShareNotificationCount(0);
+			setPendingReminderNotificationCount(0);
 			return;
 		}
 		const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -2760,20 +2767,23 @@ export function App(): React.JSX.Element {
 			}
 		}
 		try {
-			const [invitationData, placementData, workspaceInviteData, failedLinkData] = await Promise.all([
+			const [invitationData, placementData, workspaceInviteData, failedLinkData, pendingReminderCount] = await Promise.all([
 				listNoteShareInvitations(),
 				authWorkspaceId ? listSharedNotePlacements(authWorkspaceId) : Promise.resolve({ placements: [] }),
 				listWorkspacePendingInvites(),
 				listFailedNoteLinks().catch(() => ({ failures: [], count: 0 })),
+				fetchPendingReminderCount().catch(() => 0),
 			]);
 			setFailedLinkNotifications(failedLinkData.failures);
 			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length + failedLinkData.count);
+			setPendingReminderNotificationCount(pendingReminderCount);
 			setSharedPlacements(placementData.placements);
 		} catch {
 			if (!offline) {
 				setSharedPlacements([]);
 				setFailedLinkNotifications([]);
 				setPendingShareNotificationCount(0);
+				setPendingReminderNotificationCount(0);
 			}
 		}
 	}, [authStatus, authUserId, authWorkspaceId]);
@@ -2895,7 +2905,14 @@ export function App(): React.JSX.Element {
 	// Refresh the notification badge whenever a push message arrives in the
 	// background (the service worker posts FREEMANNOTES_PUSH_RECEIVED).
 	React.useEffect(() => {
-		return onPushReceived(() => {
+		return onPushReceived((data) => {
+			// For reminder pushes, re-fetch the server-side unacknowledged count
+			// so the bell badges even when the app is already open.
+			if ((data as { type?: string }).type === 'reminder') {
+				void fetchPendingReminderCount()
+					.then((count) => setPendingReminderNotificationCount(count))
+					.catch(() => undefined);
+			}
 			void refreshNoteShareStateRef.current();
 		});
 	}, []);

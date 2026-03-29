@@ -692,6 +692,10 @@ model NoteReminder {
   noteTitle   String?   @map("note_title")
   fired       Boolean   @default(false)
   firedAt     DateTime? @map("fired_at")
+  // Set by the client once the user has seen the in-app notification bell
+  // entry for this reminder. Rows where fired=true and this is null count
+  // towards the notification bell badge.
+  notificationAcknowledgedAt DateTime? @map("notification_acknowledged_at")
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 

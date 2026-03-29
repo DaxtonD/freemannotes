@@ -307,7 +307,11 @@ function startReminderScheduler(prisma) {
 			reminders = await prisma.noteReminder.findMany({
 				where: {
 					fired: false,
-					reminderAt: { gte: now, lte: windowEnd },
+					// Use only an upper bound so reminders that were missed
+					// (server restart, row created after the window already ran)
+					// are still caught on the next cycle. Past-due reminders
+					// fire immediately (delayMs = 0 via the Math.max below).
+					reminderAt: { lte: windowEnd },
 				},
 			});
 		} catch {
