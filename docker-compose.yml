@@ -53,6 +53,9 @@ services:
       FCM_CLIENT_EMAIL: ${FCM_CLIENT_EMAIL:-}
       FCM_PRIVATE_KEY: ${FCM_PRIVATE_KEY:-}
       PUSH_PROVIDER: ${PUSH_PROVIDER:-hybrid}
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
     ports:
       - "${APP_PORT:-27015}:${PORT:-27015}"
     healthcheck:
