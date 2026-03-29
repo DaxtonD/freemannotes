@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.28 - 2026-03-29
+
+### Added
+- **Per-user note color preferences.** Note background colors are now stored in each user's local device storage instead of the shared Yjs note document. Color choices are completely private — changing a note's color on one account no longer broadcasts the change to collaborators. Legacy color tokens already written to the Yjs doc remain visible as a migration fallback until the user makes a new selection.
+
+### Fixed
+- **Shared notes can now be drag-reordered.** Accepted shared notes silently snapped back to their original position after every drag. The note-order guard was treating shared note aliases as orphans (because they don't appear in the user's own notes registry) and deleting them from the order array on every render. Shared aliases are now whitelisted so committed drag positions are preserved correctly.
+
 ## 1.1.27 - 2026-03-29
 
 ### Added
