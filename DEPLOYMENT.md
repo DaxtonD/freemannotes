@@ -62,7 +62,7 @@ Important variables:
 | `AUTH_ALLOW_REGISTER` | `true` | Allows open user registration |
 | `UPLOAD_DIR` | `/app/uploads` | Upload storage path inside the container |
 | `PGTIMEZONE` | *(unset)* | Optional PostgreSQL display timezone |
-| `REDIS_URL` | *(unset)* | Optional Redis cache URL |
+| `REDIS_URL` | `redis://redis:6379` | Recommended for push notification bell badge reliability. Required for multi-instance/load-balanced deployments. Defaults to the bundled Redis service in `docker-compose.yml`. Set to empty to run without Redis |
 | `SMTP_HOST` | *(unset)* | SMTP host for invite mail |
 | `SMTP_PORT` | `587` | SMTP port |
 | `SMTP_SECURE` | `false` | SMTP TLS mode |

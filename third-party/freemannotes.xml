@@ -70,7 +70,7 @@
     Type="Variable" Display="always" Required="false" Mask="false"></Config>
 
   <Config Name="REDIS_URL" Target="REDIS_URL" Default="" Mode=""
-    Description="Optional Redis connection string for shared Yjs document caching and pub/sub across multiple instances. Example: redis://192.168.1.100:6379. Leave blank to use in-process memory only."
+    Description="Redis connection string. Recommended for push notification bell badge reliability — ensures the in-app bell updates immediately when a reminder fires. Required for multi-instance/load-balanced deployments (workspace pub/sub). Example: redis://192.168.1.100:6379. Leave blank to run without Redis."
     Type="Variable" Display="always" Required="false" Mask="false"></Config>
 
   <!-- ═══════════════════════════════════════════════════════════════
