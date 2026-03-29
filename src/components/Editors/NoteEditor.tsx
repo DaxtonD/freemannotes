@@ -70,6 +70,9 @@ export type NoteEditorProps = {
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
 	onAddDocument?: () => void;
+	onAddReminder?: () => void;
+	onAddToCollection?: () => void;
+	onAddLabels?: () => void;
 	readOnly?: boolean;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
@@ -1965,7 +1968,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							>
 								<FontAwesomeIcon icon={faPalette} />
 							</button>
-							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('editors.dockAction')} disabled>
+							<button
+								type="button"
+								className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`}
+								aria-label={t('noteMenu.addReminder')}
+								onClick={() => props.onAddReminder?.()}
+								disabled={!props.onAddReminder}
+							>
 								<FontAwesomeIcon icon={faBell} />
 							</button>
 							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('noteMenu.addCollaborator')} onClick={() => props.onAddCollaborator?.()} disabled={!props.onAddCollaborator}>
@@ -2140,6 +2149,21 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
 					props.onAddDocument?.();
+				} : undefined}
+				onAddReminder={props.onAddReminder ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					props.onAddReminder?.();
+				} : undefined}
+				onAddToCollection={props.onAddToCollection ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					props.onAddToCollection?.();
+				} : undefined}
+				onAddLabels={props.onAddLabels ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					props.onAddLabels?.();
 				} : undefined}
 				onAddUrlPreview={!readOnly ? () => {
 					setIsMoreMenuOpen(false);

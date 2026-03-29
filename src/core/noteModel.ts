@@ -90,10 +90,45 @@ export interface Note {
 	trashedAt: string | null;
 	/** Semantic color token applied to this note across all themes. */
 	colorToken?: NoteColorToken | null;
+	/** Optional collection assignment for tree-based workspace organization. */
+	collectionId: string | null;
+	/** Zero or more label ids assigned to the note. */
+	labelIds: string[];
+	/** Optional reminder timestamp in ISO-8601 form. */
+	reminderAt: string | null;
+	/** Most recent time the note was opened/viewed by the user. */
+	lastAccessedAt: string;
 	/** Plain-text body. Present only when type === 'text'. */
 	content?: string;
 	/** Checklist rows. Present only when type === 'checklist'. */
 	items?: ChecklistItemData[];
+}
+
+function normalizeOptionalId(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim();
+	return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeIsoString(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const normalized = value.trim();
+	if (!normalized) return null;
+	return Number.isFinite(Date.parse(normalized)) ? new Date(normalized).toISOString() : null;
+}
+
+function normalizeLabelIds(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set<string>();
+	const output: string[] = [];
+	for (const entry of value) {
+		if (typeof entry !== 'string') continue;
+		const normalized = entry.trim();
+		if (!normalized || seen.has(normalized)) continue;
+		seen.add(normalized);
+		output.push(normalized);
+	}
+	return output;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -137,6 +172,7 @@ export function makeNoteId(prefix: string): string {
  */
 export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richContent?: JSONContent | null, previewLinks?: readonly string[]): void {
 	const now = Date.now();
+	const nowIso = new Date(now).toISOString();
 	doc.transact(() => {
 		/* Title – replace any pre-existing text with the supplied value. */
 		const yTitle = doc.getText('title');
@@ -163,6 +199,10 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
 		metadata.set('colorToken', null);
+		metadata.set('collectionId', null);
+		metadata.set('labelIds', []);
+		metadata.set('reminderAt', null);
+		metadata.set('lastAccessedAt', nowIso);
 		setNotePreviewLinksOnDoc(doc, previewLinks || []);
 	});
 }
@@ -190,6 +230,7 @@ export function initChecklistNoteDoc(
 	previewLinks?: readonly string[]
 ): void {
 	const now = Date.now();
+	const nowIso = new Date(now).toISOString();
 	const yChecklist = doc.getArray<Y.Map<any>>('checklist');
 
 	doc.transact(() => {
@@ -208,6 +249,10 @@ export function initChecklistNoteDoc(
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
 		metadata.set('colorToken', null);
+		metadata.set('collectionId', null);
+		metadata.set('labelIds', []);
+		metadata.set('reminderAt', null);
+		metadata.set('lastAccessedAt', nowIso);
 		setNotePreviewLinksOnDoc(doc, previewLinks || []);
 
 		/* Clear any pre-existing checklist data (safety net for re-initialization). */
@@ -274,8 +319,28 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	const archivedAt = typeof rawArchivedAt === 'string' ? rawArchivedAt : null;
 	const rawColorToken = metadata.get('colorToken');
 	const colorToken = typeof rawColorToken === 'string' ? (rawColorToken as NoteColorToken) : null;
+	const collectionId = normalizeOptionalId(metadata.get('collectionId'));
+	const labelIds = normalizeLabelIds(metadata.get('labelIds'));
+	const reminderAt = normalizeIsoString(metadata.get('reminderAt'));
+	const fallbackAccessedAt = Number.isFinite(createdAt) && createdAt > 0 ? new Date(createdAt).toISOString() : new Date(updatedAt || Date.now()).toISOString();
+	const lastAccessedAt = normalizeIsoString(metadata.get('lastAccessedAt')) ?? fallbackAccessedAt;
 
-	const base: Note = { id, type, title, createdAt, updatedAt, trashed, archived, archivedAt, trashedAt, colorToken };
+	const base: Note = {
+		id,
+		type,
+		title,
+		createdAt,
+		updatedAt,
+		trashed,
+		archived,
+		archivedAt,
+		trashedAt,
+		colorToken,
+		collectionId,
+		labelIds,
+		reminderAt,
+		lastAccessedAt,
+	};
 
 	if (type === 'text') {
 		const content = doc.getText('content').toString();
@@ -409,4 +474,88 @@ export function readArchiveState(doc: Y.Doc): { archived: boolean; archivedAt: s
 	const rawArchivedAt = metadata.get('archivedAt');
 	const archivedAt = typeof rawArchivedAt === 'string' ? rawArchivedAt : null;
 	return { archived, archivedAt };
+}
+
+export function readCollectionState(doc: Y.Doc): { collectionId: string | null } {
+	const metadata = doc.getMap<any>('metadata');
+	return { collectionId: normalizeOptionalId(metadata.get('collectionId')) };
+}
+
+export function setNoteCollection(doc: Y.Doc, collectionId: string | null, origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const normalizedCollectionId = normalizeOptionalId(collectionId);
+	const run = (): void => {
+		metadata.set('collectionId', normalizedCollectionId);
+		metadata.set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
+}
+
+export function readLabelState(doc: Y.Doc): { labelIds: string[] } {
+	const metadata = doc.getMap<any>('metadata');
+	return { labelIds: normalizeLabelIds(metadata.get('labelIds')) };
+}
+
+export function setNoteLabelIds(doc: Y.Doc, labelIds: readonly string[], origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const normalizedLabelIds = normalizeLabelIds(labelIds);
+	const run = (): void => {
+		metadata.set('labelIds', normalizedLabelIds);
+		metadata.set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
+}
+
+export function toggleNoteLabelId(doc: Y.Doc, labelId: string, origin?: symbol): void {
+	const normalizedLabelId = normalizeOptionalId(labelId);
+	if (!normalizedLabelId) return;
+	const current = readLabelState(doc).labelIds;
+	const next = current.includes(normalizedLabelId)
+		? current.filter((entry) => entry !== normalizedLabelId)
+		: [...current, normalizedLabelId];
+	setNoteLabelIds(doc, next, origin);
+}
+
+export function readReminderState(doc: Y.Doc): { reminderAt: string | null } {
+	const metadata = doc.getMap<any>('metadata');
+	return { reminderAt: normalizeIsoString(metadata.get('reminderAt')) };
+}
+
+export function setNoteReminder(doc: Y.Doc, reminderAt: string | null, origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const normalizedReminderAt = normalizeIsoString(reminderAt);
+	const run = (): void => {
+		metadata.set('reminderAt', normalizedReminderAt);
+		metadata.set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
+}
+
+export function readLastAccessedAt(doc: Y.Doc): string {
+	const metadata = doc.getMap<any>('metadata');
+	return normalizeIsoString(metadata.get('lastAccessedAt')) ?? new Date().toISOString();
+}
+
+export function touchLastAccessedAt(doc: Y.Doc, origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const run = (): void => {
+		metadata.set('lastAccessedAt', new Date().toISOString());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
 }

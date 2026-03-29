@@ -501,6 +501,21 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const content = useOptionalYTextValue(
 		React.useCallback(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type])
 	);
+	const reminderAt = React.useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			metadata.observe(observer);
+			return () => metadata.unobserve(observer);
+		},
+		() => {
+			const value = metadata.get('reminderAt');
+			return typeof value === 'string' && value.trim().length > 0 ? value : '';
+		},
+		() => {
+			const value = metadata.get('reminderAt');
+			return typeof value === 'string' && value.trim().length > 0 ? value : '';
+		}
+	);
 	const richContent = useTextNoteRichPreview(props.doc, content);
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 	const checklistItems = useChecklistItems(checklistArray);
@@ -534,6 +549,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			'--note-color-accent': resolvedColor.accentColor,
 		} as React.CSSProperties;
 	}, [resolvedColor]);
+	const reminderLabel = React.useMemo(() => {
+		if (!reminderAt) return null;
+		const parsed = new Date(reminderAt);
+		if (!Number.isFinite(parsed.getTime())) return t('note.addReminder');
+		return parsed.toLocaleString();
+	}, [reminderAt, t]);
 
 	React.useEffect(() => {
 		setShowCompleted(getNoteCardCompletedExpanded(props.noteId));
@@ -822,6 +843,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				}}
 			>
 				<span className={styles.headerTitle}>{title.trim().length > 0 ? title : t('note.untitled')}</span>
+				{reminderAt ? (
+					<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={styles.reminderBadge}>
+						<FontAwesomeIcon icon={faBell} />
+					</span>
+				) : null}
 				{props.hasPendingSync ? (
 					<span aria-label={t('note.pendingSync')} title={t('note.pendingSync')} className={styles.pendingSync}>
 						↻

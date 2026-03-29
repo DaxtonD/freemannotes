@@ -1,0 +1,404 @@
+.overlay {
+	position: fixed;
+	inset: 0;
+	background: var(--color-overlay);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+	overflow-y: auto;
+	z-index: 260;
+}
+
+.modal {
+	width: min(640px, 100%);
+	max-height: min(80vh, 760px);
+	min-height: 0;
+	overflow-x: hidden;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	padding: 18px;
+	border-radius: 16px;
+	border: 1px solid var(--color-border);
+	background: linear-gradient(180deg, var(--color-surface), var(--color-surface-2));
+	box-shadow: 0 24px 50px rgba(0, 0, 0, 0.35);
+}
+
+.compactModal {
+	width: min(520px, 100%);
+	max-height: min(72vh, 620px);
+	gap: 10px;
+	padding: 14px;
+	border-radius: 14px;
+}
+
+.header {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 12px;
+}
+
+.titleBlock {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+}
+
+.title {
+	margin: 0;
+	font-size: 22px;
+	color: var(--color-text);
+}
+
+.description {
+	margin: 0;
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--color-text-muted);
+}
+
+.closeButton {
+	width: 34px;
+	height: 34px;
+	border: 0;
+	border-radius: 999px;
+	background: transparent;
+	color: var(--color-text);
+	cursor: pointer;
+	font-size: 24px;
+	line-height: 1;
+	flex: 0 0 auto;
+}
+
+.field {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.fieldLabel {
+	font-size: 12px;
+	font-weight: 700;
+	color: var(--color-text);
+}
+
+.input,
+.select,
+.search {
+	width: 100%;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	padding: 8px 10px;
+	background: var(--color-surface);
+	color: var(--color-text);
+	font-size: 13px;
+}
+
+.section {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	min-height: 0;
+	padding: 12px;
+	border-radius: 12px;
+	background: var(--color-surface-2);
+	border: 1px solid var(--color-border);
+}
+
+.compactSection {
+	gap: 8px;
+	padding: 10px;
+	border-radius: 10px;
+}
+
+.row {
+	display: flex;
+	gap: 10px;
+	align-items: center;
+	flex-wrap: wrap;
+}
+
+.primaryButton,
+.secondaryButton,
+.dangerButton,
+.ghostButton,
+.treeButton,
+.checkboxRow {
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	background: var(--color-surface);
+	color: var(--color-text);
+	font-size: 14px;
+}
+
+.primaryButton,
+.secondaryButton,
+.dangerButton,
+.ghostButton {
+	padding: 8px 11px;
+	cursor: pointer;
+	font-weight: 700;
+}
+
+.primaryButton {
+	background: color-mix(in srgb, var(--color-accent) 24%, var(--color-surface) 76%);
+	border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border) 64%);
+}
+
+.dangerButton {
+	color: var(--color-danger);
+	border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border) 60%);
+}
+
+.ghostButton {
+	background: transparent;
+}
+
+.actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.treeList,
+.checkboxList,
+.quickGrid {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	gap: 8px;
+}
+
+.treeList,
+.checkboxList {
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	max-height: min(42vh, 360px);
+	padding-right: 2px;
+	scrollbar-width: thin;
+}
+
+.treeNode {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.treeRow {
+	display: flex;
+	align-items: stretch;
+	gap: 8px;
+}
+
+.treeButton,
+.checkboxRow {
+	width: 100%;
+	padding: 8px 10px;
+	cursor: pointer;
+	text-align: left;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.treeButton {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.treeDisclosure,
+.treeDisclosureSpacer {
+	width: 26px;
+	min-width: 26px;
+	border-radius: 10px;
+	flex: 0 0 auto;
+}
+
+.treeDisclosure {
+	border: 1px solid var(--color-border);
+	background: var(--color-surface);
+	color: var(--color-text-muted);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: border-color 180ms ease, background-color 180ms ease, transform 180ms ease;
+}
+
+.treeDisclosure:hover,
+.treeDisclosure:focus-visible {
+	border-color: var(--color-accent);
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface) 90%);
+}
+
+.treeDisclosureIcon {
+	width: 14px;
+	height: 14px;
+	background-color: currentColor;
+	-webkit-mask-image: url('/icons/Arrow.png');
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	-webkit-mask-size: contain;
+	mask-image: url('/icons/Arrow.png');
+	mask-repeat: no-repeat;
+	mask-position: center;
+	mask-size: contain;
+	transition: transform 180ms ease;
+}
+
+.treeDisclosureOpen .treeDisclosureIcon {
+	transform: rotate(90deg);
+}
+
+.treeChildren {
+	display: grid;
+	grid-template-rows: 0fr;
+	overflow: hidden;
+	opacity: 0;
+	transition: grid-template-rows 200ms ease, opacity 160ms ease;
+}
+
+.treeChildrenOpen {
+	grid-template-rows: 1fr;
+	opacity: 1;
+}
+
+.treeChildrenContent {
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding-top: 2px;
+}
+
+.treeChildrenOpen > * {
+	min-height: 0;
+}
+
+.treeButtonActive,
+.checkboxRowActive {
+	border-color: var(--color-accent);
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface) 84%);
+}
+
+.treeLabelBlock,
+.checkboxLabelBlock {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.treeLabel,
+.checkboxLabel {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--color-text);
+}
+
+.treeMeta,
+.checkboxMeta,
+.muted {
+	font-size: 11px;
+	color: var(--color-text-muted);
+}
+
+.treeActions {
+	display: flex;
+	gap: 8px;
+	flex: 0 0 auto;
+}
+
+.treeActionButton {
+	border: 0;
+	background: transparent;
+	color: var(--color-text-muted);
+	cursor: pointer;
+	padding: 4px;
+	font-size: 13px;
+}
+
+.checkboxInput {
+	width: 18px;
+	height: 18px;
+	accent-color: var(--color-accent);
+	flex: 0 0 auto;
+}
+
+.checkboxAccent {
+	width: 10px;
+	height: 10px;
+	border-radius: 999px;
+	flex: 0 0 auto;
+	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.treePath {
+	font-size: 12px;
+	color: var(--color-text-muted);
+}
+
+.quickGrid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 8px;
+}
+
+.quickButton {
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	padding: 10px 12px;
+	background: var(--color-surface);
+	color: var(--color-text);
+	font-weight: 700;
+	cursor: pointer;
+}
+
+.inlineCreateRow {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.inlineCreateRow > *:first-child {
+	flex: 1 1 220px;
+}
+
+@media (max-width: 720px) {
+	.overlay {
+		align-items: flex-start;
+		padding: 12px;
+	}
+
+	.modal {
+		width: 100%;
+		max-height: calc(100dvh - 24px);
+		padding: 14px;
+	}
+
+	.treeList,
+	.checkboxList {
+		max-height: min(48dvh, 420px);
+	}
+
+	.quickGrid {
+		grid-template-columns: 1fr;
+	}
+
+	.actions {
+		justify-content: stretch;
+	}
+
+	.actions > button {
+		flex: 1 1 0;
+	}
+}

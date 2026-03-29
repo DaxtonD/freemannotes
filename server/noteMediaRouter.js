@@ -1,5 +1,6 @@
 'use strict';
 
+const Y = require('yjs');
 const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
@@ -30,6 +31,8 @@ const MAX_IMPORT_URL_BYTES = 32 * 1024 * 1024;
 const THUMB_SIZE_PX = 360;
 const LEGACY_PERSONAL_NAME_RE = /^Personal \([0-9a-f-]{36}\)$/i;
 const LEGACY_SHARED_WITH_ME_NAME_RE = /^Shared With Me \([0-9a-f-]{36}\)$/i;
+const COLLECTIONS_REGISTRY_DOC_ID = '__collections_registry__';
+const LABELS_REGISTRY_DOC_ID = '__labels_registry__';
 
 function jsonResponse(res, status, body) {
 	const json = JSON.stringify(body);
@@ -84,6 +87,51 @@ function formatCollaboratorLabel(user) {
 	const email = typeof user.email === 'string' ? user.email.trim() : '';
 	if (name && email && name.toLowerCase() !== email.toLowerCase()) return `${name} <${email}>`;
 	return name || email;
+}
+
+function decodeCollectionRegistryState(state) {
+	const doc = new Y.Doc();
+	Y.applyUpdate(doc, new Uint8Array(state));
+	const rows = doc.getArray('collections').toArray();
+	const collections = rows.map((row) => ({
+		id: typeof row.get('id') === 'string' ? String(row.get('id')).trim() : '',
+		name: typeof row.get('name') === 'string' ? String(row.get('name')).trim() : '',
+		parentId: typeof row.get('parentId') === 'string' ? String(row.get('parentId')).trim() || null : null,
+	})).filter((row) => row.id && row.name);
+	doc.destroy();
+	const byId = new Map(collections.map((collection) => [collection.id, collection]));
+	const cache = new Map();
+	const visit = (collectionId, seen = new Set()) => {
+		if (cache.has(collectionId)) return cache.get(collectionId);
+		const collection = byId.get(collectionId);
+		if (!collection) return '';
+		if (seen.has(collectionId)) return collection.name;
+		const nextSeen = new Set(seen);
+		nextSeen.add(collectionId);
+		const parentPath = collection.parentId ? visit(collection.parentId, nextSeen) : '';
+		const pathLabel = parentPath ? `${parentPath} / ${collection.name}` : collection.name;
+		cache.set(collectionId, pathLabel);
+		return pathLabel;
+	};
+	for (const collection of collections) {
+		visit(collection.id);
+	}
+	return cache;
+}
+
+function decodeLabelRegistryState(state) {
+	const doc = new Y.Doc();
+	Y.applyUpdate(doc, new Uint8Array(state));
+	const rows = doc.getArray('labels').toArray();
+	const labels = new Map();
+	for (const row of rows) {
+		const id = typeof row.get('id') === 'string' ? String(row.get('id')).trim() : '';
+		const name = typeof row.get('name') === 'string' ? String(row.get('name')).trim() : '';
+		if (!id || !name) continue;
+		labels.set(id, name);
+	}
+	doc.destroy();
+	return labels;
 }
 
 async function ensureMediaAccess(prisma, session, rawDocId, { requireEdit = false } = {}) {
@@ -1172,6 +1220,19 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					const collaboratorsByDocId = new Map();
 					const linksByDocId = new Map();
 					const documentsByDocId = new Map();
+					const collectionPathsByWorkspaceId = new Map();
+					const labelNamesByWorkspaceId = new Map();
+					// Decode the per-workspace metadata registries once so note-level search can
+					// match human-readable collection paths and label names without extra queries.
+					for (const row of docs) {
+						if (!row.state) continue;
+						if (row.docId === COLLECTIONS_REGISTRY_DOC_ID || String(row.docId).endsWith(`:${COLLECTIONS_REGISTRY_DOC_ID}`)) {
+							collectionPathsByWorkspaceId.set(row.workspaceId, decodeCollectionRegistryState(row.state));
+						}
+						if (row.docId === LABELS_REGISTRY_DOC_ID || String(row.docId).endsWith(`:${LABELS_REGISTRY_DOC_ID}`)) {
+							labelNamesByWorkspaceId.set(row.workspaceId, decodeLabelRegistryState(row.state));
+						}
+					}
 					for (const collaborator of noteCollaborators) {
 						const label = formatCollaboratorLabel(collaborator.user);
 						if (!label) continue;
@@ -1203,9 +1264,27 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					const normalizedQuery = query.toLowerCase();
 					const results = [];
 					for (const row of docs) {
-						if (!row.state || row.docId === '__notes_registry__' || row.docId.endsWith(':__notes_registry__')) continue;
+						if (
+							!row.state ||
+							row.docId === '__notes_registry__' ||
+							row.docId.endsWith(':__notes_registry__') ||
+							row.docId === COLLECTIONS_REGISTRY_DOC_ID ||
+							row.docId.endsWith(`:${COLLECTIONS_REGISTRY_DOC_ID}`) ||
+							row.docId === LABELS_REGISTRY_DOC_ID ||
+							row.docId.endsWith(`:${LABELS_REGISTRY_DOC_ID}`)
+						) continue;
 						const snapshot = decodeDocumentState(row.state);
 						if (snapshot.trashed) continue;
+						const collectionPathById = collectionPathsByWorkspaceId.get(row.workspaceId) || new Map();
+						const labelNamesById = labelNamesByWorkspaceId.get(row.workspaceId) || new Map();
+						const collectionPath = snapshot.metadata && typeof snapshot.metadata.collectionId === 'string'
+							? collectionPathById.get(String(snapshot.metadata.collectionId).trim()) || ''
+							: '';
+						const labelMatches = Array.isArray(snapshot.metadata && snapshot.metadata.labelIds)
+							? snapshot.metadata.labelIds
+								.map((labelId) => (typeof labelId === 'string' ? labelNamesById.get(labelId.trim()) || '' : ''))
+								.filter((labelName) => labelName && labelName.toLowerCase().includes(normalizedQuery))
+							: [];
 						const imageRows = imagesByDocId.get(row.docId) || [];
 						const collaboratorLabels = collaboratorsByDocId.get(row.docId) || [];
 						const linkRows = linksByDocId.get(row.docId) || [];
@@ -1228,7 +1307,9 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						const collaboratorMatch = collaboratorMatches.length > 0;
 						const linkMatch = linkText.toLowerCase().includes(normalizedQuery);
 						const documentMatch = documentText.toLowerCase().includes(normalizedQuery);
-						if (!noteMatch && !ocrMatch && !collaboratorMatch && !linkMatch && !documentMatch) continue;
+						const collectionMatch = collectionPath.toLowerCase().includes(normalizedQuery);
+						const labelMatch = labelMatches.length > 0;
+						if (!noteMatch && !ocrMatch && !collaboratorMatch && !linkMatch && !documentMatch && !collectionMatch && !labelMatch) continue;
 						const context = docContext.get(row.docId) || docContext.get(`workspace:${row.workspaceId}`) || {
 							kind: 'workspace',
 							label: 'Workspace',
@@ -1244,6 +1325,8 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						if (collaboratorMatch) matchKinds.push('collaborator');
 						if (linkMatch) matchKinds.push('link');
 						if (documentMatch) matchKinds.push('document');
+						if (collectionMatch) matchKinds.push('collection');
+						if (labelMatch) matchKinds.push('label');
 						const linkSnippetSource = linkRows.map((link) => [
 							link.title,
 							link.description,
@@ -1267,6 +1350,8 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							},
 							matchKinds,
 							collaboratorMatches: collaboratorMatches.slice(0, 3),
+							collectionMatches: collectionMatch ? [collectionPath] : [],
+							labelMatches: labelMatches.slice(0, 4),
 							snippet: noteMatch
 								? buildSearchSnippet(snapshot.plainText, query)
 								: ocrMatch
@@ -1275,6 +1360,10 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 										? buildSearchSnippet(collaboratorText, query)
 										: linkMatch
 											? buildSearchSnippet(linkSnippetSource, query)
+											: collectionMatch
+												? buildSearchSnippet(collectionPath, query)
+												: labelMatch
+													? buildSearchSnippet(labelMatches.join(' '), query)
 											: buildSearchSnippet(documentSnippetSource, query),
 							imageCount: imageRows.length,
 							thumbnailUrl: imageRows[0]
