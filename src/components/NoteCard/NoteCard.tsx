@@ -919,19 +919,24 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 						<ul className={styles.checklist}>
 							{activeChecklistItems.map((item) => (
 								<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
-									<input
-										type="checkbox"
-										className={styles.checklistCheckbox}
-										checked={item.completed}
-										disabled={!canEdit}
+									<label
+										className={styles.checklistCheckboxHitArea}
 										onPointerDown={(e) => e.stopPropagation()}
 										onPointerUp={(e) => e.stopPropagation()}
 										onClick={(e) => e.stopPropagation()}
-										onChange={(e) => {
-											if (!canEdit) return;
-											updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
-										}}
-									/>
+										aria-label={item.completed ? 'Completed' : 'Not completed'}
+									>
+										<input
+											type="checkbox"
+											className={styles.checklistCheckbox}
+											checked={item.completed}
+											disabled={!canEdit}
+											onChange={(e) => {
+												if (!canEdit) return;
+												updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
+											}}
+										/>
+									</label>
 									<div className={styles.checklistText} data-checklist-text-id={item.id}>
 										{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text)) ?? item.text}
 									</div>
@@ -951,25 +956,31 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 									toggleCompletedSection();
 								}}
 							>
-								{showCompleted ? '▾' : '▸'} {completedChecklistItems.length} {t('editors.completedItems')}
+								<span className={styles.completedToggleArrow} aria-hidden="true">{showCompleted ? '▾' : '▸'}</span>
+								<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
 							</button>
 							{showCompleted ? (
 								<ul className={styles.checklist}>
 									{completedChecklistItems.map((item) => (
 										<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
-											<input
-												type="checkbox"
-												className={styles.checklistCheckbox}
-												checked={item.completed}
-												disabled={!canEdit}
+											<label
+												className={styles.checklistCheckboxHitArea}
 												onPointerDown={(e) => e.stopPropagation()}
 												onPointerUp={(e) => e.stopPropagation()}
 												onClick={(e) => e.stopPropagation()}
-												onChange={(e) => {
-													if (!canEdit) return;
-													updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
-												}}
-											/>
+												aria-label={item.completed ? 'Completed' : 'Not completed'}
+											>
+												<input
+													type="checkbox"
+													className={styles.checklistCheckbox}
+													checked={item.completed}
+													disabled={!canEdit}
+													onChange={(e) => {
+														if (!canEdit) return;
+														updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
+													}}
+												/>
+											</label>
 											<div className={styles.checklistTextCompleted} data-checklist-text-id={item.id}>
 												{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text)) ?? item.text}
 											</div>

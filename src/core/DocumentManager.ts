@@ -2,6 +2,7 @@ import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import { touchUpdatedAt, setNoteTrashed, readTrashState } from './noteModel';
+import { RICHTEXT_INTERNAL_ORIGIN } from './richText';
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const NOTES_LIST_KEY = 'notesList';
@@ -87,6 +88,7 @@ export class DocumentManager {
 	//   separated per workspace.
 	private activeWorkspaceId: string | null = null;
 	private readonly internalOrigin = Symbol('DocumentManagerInternal');
+	private readonly accessOrigin = Symbol('DocumentManagerAccess');
 	// Dedicated origin for automatic updatedAt timestamp writes.
 	// Used to tag afterTransaction callbacks so they do not recursively re-trigger
 	// themselves or get confused with user-initiated edits.
@@ -207,6 +209,10 @@ export class DocumentManager {
 		if (this.activeWorkspaceId || this.websocketEnabled) {
 			this.initializeRegistry();
 		}
+	}
+
+	public getAccessOrigin(): symbol {
+		return this.accessOrigin;
 	}
 
 	public setActiveWorkspaceId(workspaceId: string | null): void {
@@ -1156,7 +1162,9 @@ export class DocumentManager {
 			/* Only stamp for local user edits, not remote sync or internal writes. */
 			if (!tx.local) return;
 			if (tx.origin === this.internalOrigin) return;
+			if (tx.origin === this.accessOrigin) return;
 			if (tx.origin === this.updatedAtOrigin) return;
+			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
 			/* Use the model-layer touchUpdatedAt so the timestamp format is canonical. */
 			touchUpdatedAt(doc, this.updatedAtOrigin);
 		};

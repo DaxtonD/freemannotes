@@ -65,6 +65,19 @@
 	min-width: 0;
 }
 
+.listGrid {
+	width: 100%;
+	min-width: 0;
+}
+
+.listColumn {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+	width: 100%;
+	min-width: 0;
+}
+
 .item {
 	width: var(--note-card-width);
 	min-width: var(--note-card-width);
@@ -138,6 +151,71 @@
 	opacity: 0.92;
 	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 	border-radius: var(--radius-sm);
+}
+
+.listDragGhost {
+	width: 100%;
+	height: 100%;
+	box-sizing: border-box;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 6px;
+	padding: 8px 12px;
+	border-radius: var(--radius-sm);
+	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 80%, var(--color-border));
+	background: var(--note-color-card-bg, var(--color-surface));
+	color: var(--note-color-text, var(--color-text));
+	box-shadow:
+		inset 3px 0 0 var(--note-color-accent, transparent),
+		0 1px 0 color-mix(in srgb, var(--color-border) 52%, transparent);
+	overflow: hidden;
+}
+
+.listDragGhostMain {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.listDragGhostType {
+	width: 20px;
+	height: 20px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 999px;
+	font-size: 11px;
+	color: var(--note-color-muted, var(--color-text-muted));
+	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 82%, var(--color-accent) 18%);
+	flex: 0 0 auto;
+}
+
+.listDragGhostTitle {
+	flex: 1 1 auto;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-size: var(--font-size-sm);
+	font-weight: 600;
+}
+
+.listDragGhostBadge {
+	font-size: 11px;
+	opacity: 0.72;
+	color: var(--note-color-muted, var(--color-text-muted));
+	flex: 0 0 auto;
+}
+
+.listDragGhostPreview {
+	font-size: var(--font-size-xs);
+	line-height: 1.35;
+	color: var(--note-color-muted, var(--color-text-muted));
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 .overlay {

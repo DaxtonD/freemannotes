@@ -5,14 +5,14 @@
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	padding: 20px;
+	padding: calc(env(safe-area-inset-top, 0px) + 20px) calc(env(safe-area-inset-right, 0px) + 20px) calc(env(safe-area-inset-bottom, 0px) + 20px) calc(env(safe-area-inset-left, 0px) + 20px);
 	overflow-y: auto;
 	z-index: 260;
 }
 
 .modal {
 	width: min(640px, 100%);
-	max-height: min(80vh, 760px);
+	max-height: min(calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px), 760px);
 	min-height: 0;
 	overflow-x: hidden;
 	overflow-y: auto;
@@ -30,7 +30,7 @@
 
 .compactModal {
 	width: min(560px, 100%);
-	max-height: min(72vh, 620px);
+	max-height: min(calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px), 620px);
 	gap: 10px;
 	padding: 14px;
 	border-radius: 14px;

@@ -31,6 +31,8 @@ const SW_UPDATE_IDLE_MS = 90_000;
 const PWA_VERSION_STORAGE_KEY = 'freemannotes.pwa.current-version.v1';
 const PWA_UPDATED_NOTICE_KEY = 'freemannotes.pwa.updated-notice.v1';
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
+const DEFAULT_VIEWPORT_CONTENT = 'width=device-width, initial-scale=1, viewport-fit=cover';
+const IOS_STANDALONE_VIEWPORT_CONTENT = `${DEFAULT_VIEWPORT_CONTENT}, maximum-scale=1, user-scalable=no`;
 
 let initialized = false;
 let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
@@ -41,6 +43,7 @@ let swAutoApplying = false;
 let swPendingApply = false;
 let pwaUpdateBlocked = false;
 let pwaLastInteractionAt = Date.now();
+let standaloneZoomLockCleanup: (() => void) | null = null;
 
 let snapshot: PwaSnapshot = {
 	canInstall: false,
@@ -78,6 +81,54 @@ function isIosSafari(): boolean {
 	const isCriOS = /CriOS/i.test(ua);
 	const isFxiOS = /FxiOS/i.test(ua);
 	return isIOS && isWebkit && !isCriOS && !isFxiOS;
+}
+
+function getViewportMeta(): HTMLMetaElement | null {
+	if (typeof document === 'undefined') return null;
+	return document.querySelector('meta[name="viewport"]');
+}
+
+function applyViewportConfiguration(): void {
+	if (typeof document === 'undefined') return;
+	const viewportMeta = getViewportMeta();
+	if (!viewportMeta) return;
+	const iosStandalone = isIosSafari() && isStandalone();
+	const nextContent = iosStandalone ? IOS_STANDALONE_VIEWPORT_CONTENT : DEFAULT_VIEWPORT_CONTENT;
+	if (viewportMeta.getAttribute('content') !== nextContent) {
+		viewportMeta.setAttribute('content', nextContent);
+	}
+	document.documentElement.classList.toggle('ios-standalone', iosStandalone);
+}
+
+function applyStandaloneZoomLock(): void {
+	standaloneZoomLockCleanup?.();
+	standaloneZoomLockCleanup = null;
+	if (typeof document === 'undefined') return;
+	if (!isIosSafari() || !isStandalone()) return;
+
+	const preventGesture = (event: Event): void => {
+		if (event.cancelable) event.preventDefault();
+	};
+	const preventPinchTouchMove = (event: TouchEvent): void => {
+		if (event.touches.length < 2) return;
+		if (event.cancelable) event.preventDefault();
+	};
+
+	document.addEventListener('gesturestart', preventGesture, { passive: false });
+	document.addEventListener('gesturechange', preventGesture, { passive: false });
+	document.addEventListener('gestureend', preventGesture, { passive: false });
+	document.addEventListener('touchmove', preventPinchTouchMove, { passive: false });
+	standaloneZoomLockCleanup = () => {
+		document.removeEventListener('gesturestart', preventGesture);
+		document.removeEventListener('gesturechange', preventGesture);
+		document.removeEventListener('gestureend', preventGesture);
+		document.removeEventListener('touchmove', preventPinchTouchMove);
+	};
+}
+
+function refreshMobileViewportBehavior(): void {
+	applyViewportConfiguration();
+	applyStandaloneZoomLock();
 }
 
 function recomputeInstallAvailability(): void {
@@ -229,6 +280,7 @@ export function initPwa(): void {
 	if (initialized || typeof window === 'undefined') return;
 	initialized = true;
 	reconcileVersionNotifications();
+	refreshMobileViewportBehavior();
 
 	if (import.meta.env.DEV) {
 		// Dev should always reflect the latest code, not whatever an older worker or
@@ -248,15 +300,18 @@ export function initPwa(): void {
 		event.preventDefault();
 		deferredInstallPrompt = event as BeforeInstallPromptEvent;
 		recomputeInstallAvailability();
+		refreshMobileViewportBehavior();
 	});
 
 	window.addEventListener('appinstalled', () => {
 		deferredInstallPrompt = null;
 		recomputeInstallAvailability();
+		refreshMobileViewportBehavior();
 	});
 
 	window.matchMedia?.('(display-mode: standalone)')?.addEventListener?.('change', () => {
 		recomputeInstallAvailability();
+		refreshMobileViewportBehavior();
 	});
 
 	if ('serviceWorker' in navigator) {
@@ -286,6 +341,7 @@ export function initPwa(): void {
 	}
 
 	recomputeInstallAvailability();
+	refreshMobileViewportBehavior();
 }
 
 export function subscribeToPwaState(listener: () => void): () => void {

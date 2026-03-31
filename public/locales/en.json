@@ -336,7 +336,11 @@
   },
   "grid": {
     "notes": "Notes",
-    "notesGrid": "Notes Grid"
+    "notesGrid": "Notes Grid",
+    "viewCard": "Card view",
+    "viewList": "List view",
+    "viewStrip": "Strip view",
+    "viewBubble": "Bubble view"
   },
   "workspace": {
     "title": "Workspaces",

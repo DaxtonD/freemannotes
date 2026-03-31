@@ -1,0 +1,205 @@
+/* NoteListView.module.css – styles for compact list / strip note rows */
+
+.containerList,
+.containerStrip {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	min-width: 0;
+	gap: 2px;
+}
+
+/* ── Row ──────────────────────────────────────────────────────────────── */
+
+.row {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 44px;
+	padding: 6px 40px 6px 14px;
+	border-radius: var(--radius-sm);
+	border: 1px solid transparent;
+	background: var(--list-row-bg, var(--color-surface-2));
+	color: var(--list-row-text, var(--color-text));
+	cursor: pointer;
+	user-select: none;
+	transition: background-color 120ms ease, border-color 120ms ease;
+	box-sizing: border-box;
+
+	/* Left accent stripe via box-shadow when color token active */
+	box-shadow:
+		inset 3px 0 0 var(--list-row-accent, transparent),
+		0 1px 0 color-mix(in srgb, var(--color-border) 50%, transparent);
+}
+
+.rowPlaceholder {
+	opacity: 0;
+	box-shadow: none;
+	border-color: transparent;
+	pointer-events: none;
+}
+
+.row:hover,
+.row:focus-visible {
+	background: var(--list-row-bg, var(--color-surface));
+	border-color: color-mix(in srgb, var(--color-accent) 20%, var(--color-border));
+	outline: none;
+}
+
+.rowSelected {
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface)) !important;
+	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border)) !important;
+}
+
+.rowMenuOpen {
+	border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+}
+
+.rowStrip {
+	flex-direction: column;
+	align-items: flex-start;
+	min-height: 64px;
+	padding-top: 8px;
+	padding-bottom: 8px;
+}
+
+/* ── Row main line (title + badges) ───────────────────────────────────── */
+
+.rowMain {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-width: 0;
+}
+
+.rowTypeIcon {
+	width: 22px;
+	height: 22px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-surface) 84%, var(--color-accent) 16%);
+	color: var(--list-row-muted, var(--color-text-muted));
+	font-size: 11px;
+	flex: 0 0 auto;
+	cursor: grab;
+}
+
+.rowTypeIcon:active {
+	cursor: grabbing;
+}
+
+.rowStrip .rowMain {
+	/* In strip mode the more button shifts so title may expand to full width */
+	padding-right: 0;
+}
+
+.rowTitle {
+	flex: 1 1 auto;
+	min-width: 0;
+	font-size: var(--font-size-sm);
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	color: inherit;
+}
+
+/* ── Content preview (strip mode) ─────────────────────────────────────── */
+
+.rowPreview {
+	width: 100%;
+	min-width: 0;
+	font-size: var(--font-size-xs);
+	color: var(--list-row-muted, var(--color-text-muted));
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	padding-right: 32px;
+	line-height: 1.45;
+}
+
+/* ── Badge icons ──────────────────────────────────────────────────────── */
+
+.rowBadges {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+	color: var(--list-row-muted, var(--color-text-muted));
+}
+
+.labelChip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 120px;
+	padding: 1px 7px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 88%, transparent);
+	font-size: 10px;
+	font-weight: 600;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	line-height: 1.3;
+}
+
+.labelChipSwatch {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+
+.badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	font-size: 11px;
+	opacity: 0.72;
+}
+
+.badgeCount {
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+}
+
+/* ── More menu button ──────────────────────────────────────────────────── */
+
+.moreBtn {
+	position: absolute;
+	right: 6px;
+	top: 50%;
+	transform: translateY(-50%);
+	width: 28px;
+	height: 28px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 0;
+	border-radius: var(--radius-xs, 4px);
+	background: transparent;
+	color: var(--color-text-muted);
+	opacity: 0.4;
+	transition: opacity 120ms ease, background-color 120ms ease;
+	cursor: pointer;
+	flex-shrink: 0;
+}
+
+.row:hover .moreBtn,
+.row:focus-visible .moreBtn,
+.rowMenuOpen .moreBtn {
+	opacity: 0.85;
+}
+
+.moreBtn:hover,
+.moreBtn:focus-visible {
+	opacity: 1 !important;
+	background: color-mix(in srgb, var(--color-text) 10%, transparent);
+}

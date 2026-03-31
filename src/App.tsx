@@ -5,12 +5,15 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
 	faArrowDownWideShort,
 	faBars,
+	faBarsStaggered,
 	faBell,
 	faBoxArchive,
+	faCircleDot,
 	faFileLines,
 	faFolder,
 	faGrip,
 	faImage,
+	faList,
 	faMagnifyingGlass,
 	faShareNodes,
 	faTag,
@@ -108,6 +111,10 @@ import {
 const DOCUMENT_VIEWER_STATE_EVENT = 'freemannotes:document-viewer-state';
 import { getWorkspaceDisplayName, isPersonalWorkspace } from './core/workspaceDisplay';
 import { clearWorkspaceSelectionCache, readWorkspaceSelectionCache, writeWorkspaceSelectionCache } from './core/workspaceSelectionCache';
+import { type ViewMode, cycleViewMode, loadViewMode, saveViewMode } from './core/viewMode';
+import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from './core/bubbleZoom';
+import { getWorkspaceBubbleColorScheme, toWorkspaceBubbleColorStyle } from './core/bubbleWorkspaceColors';
+import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
 
 type EditorMode = 'none' | 'text' | 'checklist';
 
@@ -468,6 +475,12 @@ export function App(): React.JSX.Element {
 		}
 		return cachedAuth?.workspaceId ?? null;
 	});
+	const [bubbleWorkspaceSelectionId, setBubbleWorkspaceSelectionId] = React.useState<string | null>(() => {
+		if (cachedAuth && cachedWorkspaceSelection?.userId === cachedAuth.userId) {
+			return cachedWorkspaceSelection.workspaceId;
+		}
+		return cachedAuth?.workspaceId ?? null;
+	});
 	const [workspaceDeletedNotice, setWorkspaceDeletedNotice] = React.useState<{ hasOtherWorkspaces: boolean } | null>(null);
 	const pwaState = usePwaState();
 	const [pwaInstallBusy, setPwaInstallBusy] = React.useState(false);
@@ -639,6 +652,23 @@ export function App(): React.JSX.Element {
 	const [emptyTrashBusy, setEmptyTrashBusy] = React.useState(false);
 	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(false);
 	const [isFabOpen, setIsFabOpen] = React.useState(false);
+	const [viewMode, setViewMode] = React.useState<ViewMode>(() => loadViewMode());
+	const [bubbleZoom, setBubbleZoom] = React.useState(() => loadBubbleZoom());
+	const viewModeIcon = viewMode === 'list'
+		? faList
+		: viewMode === 'strip'
+			? faBarsStaggered
+			: viewMode === 'bubble'
+				? faCircleDot
+				: faGrip;
+	const cycleGridViewMode = React.useCallback(() => {
+		const next = cycleViewMode(viewMode);
+		setViewMode(next);
+		saveViewMode(next);
+	}, [viewMode]);
+	React.useEffect(() => {
+		saveBubbleZoom(bubbleZoom);
+	}, [bubbleZoom]);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
 	const maxCardHeightPx = noteCardMaxHeightPref;
@@ -647,8 +677,30 @@ export function App(): React.JSX.Element {
 		const match = sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId);
 		return match ? normalizeWorkspaceRole(match.role) : null;
 	}, [authWorkspaceId, sidebarWorkspaces]);
+	const bubbleSelectedWorkspace = React.useMemo(() => {
+		const targetWorkspaceId = bubbleWorkspaceSelectionId || authWorkspaceId;
+		if (!targetWorkspaceId) return null;
+		return sidebarWorkspaces.find((workspace) => workspace.id === targetWorkspaceId) ?? null;
+	}, [authWorkspaceId, bubbleWorkspaceSelectionId, sidebarWorkspaces]);
+	const bubbleSelectedWorkspaceRole = React.useMemo<WorkspaceRole | null>(() => {
+		return bubbleSelectedWorkspace ? normalizeWorkspaceRole(bubbleSelectedWorkspace.role) : null;
+	}, [bubbleSelectedWorkspace]);
 	const canManageActiveWorkspace = canManageWorkspace(activeWorkspaceRole);
 	const canEditActiveWorkspace = canEditWorkspaceContent(activeWorkspaceRole);
+	const canEditBubbleSelectedWorkspace = canEditWorkspaceContent(bubbleSelectedWorkspaceRole);
+
+	React.useEffect(() => {
+		if (!authWorkspaceId) {
+			setBubbleWorkspaceSelectionId(null);
+			return;
+		}
+		setBubbleWorkspaceSelectionId((current) => {
+			if (current && sidebarWorkspaces.some((workspace) => workspace.id === current)) {
+				return current;
+			}
+			return authWorkspaceId;
+		});
+	}, [authWorkspaceId, sidebarWorkspaces]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authWorkspaceId) {
@@ -1181,7 +1233,7 @@ export function App(): React.JSX.Element {
 	type NoteEditorOpenOptions = { replaceTop?: boolean };
 	const openNoteEditor = React.useCallback(
 		(noteId: string, opts?: NoteEditorOpenOptions) => {
-			markNoteAccessed(manager.getDoc(noteId));
+			markNoteAccessed(manager.getDoc(noteId), manager.getAccessOrigin());
 			const current = getOverlaySnapshot();
 			const historyState = typeof window !== 'undefined' ? window.history.state : null;
 			// When the editor is reopened from a nested media layer, replace that top
@@ -1457,6 +1509,7 @@ export function App(): React.JSX.Element {
 		setAuthProfileImage(cached.profileImage);
 		setAuthWorkspaceId(restoredWorkspaceId);
 		setAuthOfflineMode(true);
+		writeWorkspaceSelectionCache({ userId: cached.userId, workspaceId: restoredWorkspaceId });
 		manager.setWebsocketEnabled(false);
 		manager.setActiveWorkspaceId(restoredWorkspaceId);
 		return true;
@@ -1517,6 +1570,10 @@ export function App(): React.JSX.Element {
 				setAuthWorkspaceId(effectiveWorkspaceId);
 				setAuthOfflineMode(false);
 				writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage });
+				// Keep the local workspace-selection cache warm even when the user never
+				// explicitly switches workspaces on this device. Refresh bootstrap may
+				// otherwise fall back to a transient server-side workspace cookie.
+				writeWorkspaceSelectionCache({ userId, workspaceId: effectiveWorkspaceId });
 				// If the local selection differs from the server's active workspace (e.g. an
 				// offline switch that has not been synced yet), we MUST activate workspace B on
 				// the server before enabling WebSocket sync. Enabling WS before activation
@@ -1610,6 +1667,7 @@ export function App(): React.JSX.Element {
 							manager.setActiveWorkspaceId(activatedWorkspaceId);
 							setAuthWorkspaceId(activatedWorkspaceId);
 							writeAuthCache({ v: 1, userId, workspaceId: activatedWorkspaceId, profileImage });
+							writeWorkspaceSelectionCache({ userId, workspaceId: activatedWorkspaceId });
 							manager.setWebsocketEnabled(Boolean(activatedWorkspaceId));
 						} else {
 							manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
@@ -1669,6 +1727,7 @@ export function App(): React.JSX.Element {
 			manager.setActiveWorkspaceId(effectiveWorkspaceId);
 			manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId) && effectiveWorkspaceId === workspaceId);
 			writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage });
+			writeWorkspaceSelectionCache({ userId, workspaceId: effectiveWorkspaceId });
 			return profileImage;
 		} catch {
 			return null;
@@ -2599,6 +2658,9 @@ export function App(): React.JSX.Element {
 	}, [activeCollection, activeFilterChips.length, sidebarView]);
 
 	const noteGridScopeLabel = React.useMemo(() => {
+		if (viewMode === 'bubble') {
+			return 'All Workspaces';
+		}
 		if (sidebarView === 'archive') {
 			return `${t('app.sidebarArchive')} / ${activeWorkspaceSidebarPath}`;
 		}
@@ -2606,7 +2668,7 @@ export function App(): React.JSX.Element {
 			return `${t('app.sidebarTrash')} / ${activeWorkspaceSidebarPath}`;
 		}
 		return `All notes / ${activeWorkspaceSidebarPath}`;
-	}, [activeWorkspaceSidebarPath, noteGridCollaboratorFilter, sidebarView, t]);
+	}, [activeWorkspaceSidebarPath, noteGridCollaboratorFilter, sidebarView, t, viewMode]);
 
 	const moveNoteWorkspaceOptions = React.useMemo(() => {
 		return sidebarWorkspaces.filter((workspace) => workspace.id !== authWorkspaceId && workspace.systemKind !== 'SHARED_WITH_ME' && canEditWorkspaceContent(workspace.role));
@@ -3333,6 +3395,20 @@ export function App(): React.JSX.Element {
 		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, closeWorkspaceSidebarGroup, confirmActivatedWorkspaceSession, deviceId, handleWorkspaceActivated, isMobileViewport, persistSharedWorkspaceSelection]
 	);
 
+	const openCreateEditorForCurrentContext = React.useCallback(
+		async (mode: 'text' | 'checklist', opts?: { replaceTop?: boolean }) => {
+			if (viewMode === 'bubble') {
+				const targetWorkspaceId = bubbleSelectedWorkspace?.id || authWorkspaceId;
+				if (!targetWorkspaceId) return;
+				if (targetWorkspaceId !== authWorkspaceId) {
+					await activateWorkspaceFromSidebar(targetWorkspaceId, { activeSharedFolder: null });
+				}
+			}
+			openCreateEditor(mode, opts);
+		},
+		[activateWorkspaceFromSidebar, authWorkspaceId, bubbleSelectedWorkspace, openCreateEditor, viewMode]
+	);
+
 	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
 		// Accepting into Shared With Me can require a workspace switch plus a sidebar
 		// reveal. We stage the reveal first, then let the activation path complete and
@@ -3517,6 +3593,7 @@ export function App(): React.JSX.Element {
 			setAuthOfflineMode(false);
 			manager.setActiveWorkspaceId(resolvedWorkspaceId);
 			writeAuthCache({ v: 1, userId: resolvedUserId, workspaceId: resolvedWorkspaceId, profileImage: resolvedProfileImage });
+			writeWorkspaceSelectionCache({ userId: resolvedUserId, workspaceId: resolvedWorkspaceId });
 			manager.setWebsocketEnabled(Boolean(resolvedWorkspaceId));
 		} catch {
 			setAuthError('Authentication failed');
@@ -3895,18 +3972,27 @@ export function App(): React.JSX.Element {
 
 	const sidebarEntries: SidebarEntry[] = React.useMemo(
 		() => [
-			{ id: 'notes', label: t('app.sidebarNotes'), icon: faFileLines, kind: 'link' },
-			{ id: 'workspaces', label: t('workspace.sidebarTitle'), icon: faGrip, kind: 'group' },
-			{ id: 'collections', label: t('app.sidebarCollections'), icon: faFolder, kind: 'group' },
-			{ id: 'labels', label: t('app.sidebarLabels'), icon: faTag, kind: 'group' },
+			{ id: 'notes', label: viewMode === 'bubble' ? 'All Notes' : t('app.sidebarNotes'), icon: faFileLines, kind: 'link' },
+			{ id: 'workspaces', label: viewMode === 'bubble' ? 'Workspaces' : t('workspace.sidebarTitle'), icon: faGrip, kind: 'group' },
+			{ id: 'collections', label: viewMode === 'bubble' ? 'All Collections' : t('app.sidebarCollections'), icon: faFolder, kind: 'group' },
+			{ id: 'labels', label: viewMode === 'bubble' ? 'All Labels' : t('app.sidebarLabels'), icon: faTag, kind: 'group' },
 			{ id: 'sorting', label: t('app.sidebarSorting'), icon: faArrowDownWideShort, kind: 'group' },
 			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
 			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
 			{ id: 'archive', label: t('app.sidebarArchive'), icon: faBoxArchive, kind: 'link' },
 			{ id: 'trash', label: t('app.sidebarTrash'), icon: faTrash, kind: 'link' },
-		],
-		[t]
+		].filter((entry) => viewMode !== 'bubble' || (entry.id !== 'collections' && entry.id !== 'labels' && entry.id !== 'sorting')),
+		[t, viewMode]
 	);
+
+	const bubbleWorkspaceLegend = React.useMemo(() => {
+		return sidebarWorkspacesSorted.map((workspace) => ({
+			id: workspace.id,
+			name: getWorkspaceDisplayName(workspace, t),
+			isActive: workspace.id === (viewMode === 'bubble' ? (bubbleWorkspaceSelectionId || authWorkspaceId) : authWorkspaceId),
+			style: toWorkspaceBubbleColorStyle(getWorkspaceBubbleColorScheme(themeId, workspace.id)),
+		}));
+	}, [authWorkspaceId, bubbleWorkspaceSelectionId, sidebarWorkspacesSorted, t, themeId, viewMode]);
 
 	const sidebarGroupContent = React.useMemo<Record<string, SidebarSubmenuNode[]>>(
 		() => ({
@@ -3917,12 +4003,14 @@ export function App(): React.JSX.Element {
 				{ id: 'tomorrow', label: 'Tomorrow', kind: 'item' },
 				{ id: 'next-week', label: t('app.sidebarNextWeek'), kind: 'item' },
 			],
-			labels: labels.length > 0
+			labels: viewMode === 'bubble'
+				? [{ id: 'all-labels', label: 'All Labels', kind: 'muted' }]
+				: labels.length > 0
 				? labels.map((label) => ({ id: label.id, label: label.name, kind: 'item' as const }))
 				: [{ id: 'no-labels', label: t('app.sidebarNoLabels'), kind: 'muted' }],
-			collections: [],
+			collections: viewMode === 'bubble' ? [{ id: 'all-collections', label: 'All Collections', kind: 'muted' }] : [],
 		}),
-		[labels, t]
+		[labels, t, viewMode]
 	);
 
 	const sortingPrimaryItems = React.useMemo<SidebarSubmenuNode[]>(
@@ -4002,6 +4090,20 @@ export function App(): React.JSX.Element {
 			);
 		});
 	}, [activeCollectionId, closeMobileSidebar, collectionPathById, isMobileViewport, setSidebarView, sidebarGroupsOpen]);
+
+	React.useEffect(() => {
+		if (viewMode !== 'bubble') return;
+		setSidebarGroupsOpen((prev) => ({
+			...prev,
+			workspaces: true,
+			collections: false,
+			labels: false,
+			sorting: false,
+		}));
+		if (sidebarWorkspaces.length === 0 && !sidebarWorkspacesBusy) {
+			void loadSidebarWorkspaces();
+		}
+	}, [loadSidebarWorkspaces, sidebarWorkspaces.length, sidebarWorkspacesBusy, viewMode]);
 
 	React.useEffect(() => {
 		// Lock the page behind the mobile drawer so background content cannot
@@ -4692,6 +4794,12 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed') return;
+		if (viewMode === 'bubble') {
+			setSearchResults([]);
+			setSearchResultsBusy(false);
+			setSearchResultsError(null);
+			return;
+		}
 		if (!deferredSearchQuery) {
 			setSearchResults([]);
 			setSearchResultsBusy(false);
@@ -4764,7 +4872,7 @@ export function App(): React.JSX.Element {
 			cancelled = true;
 			window.clearTimeout(timer);
 		};
-	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, collections, deferredSearchQuery, labels, manager, sharedPlacements, t]);
+	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, collections, deferredSearchQuery, labels, manager, sharedPlacements, t, viewMode]);
 
 	const clearSearchAndClose = React.useCallback(() => {
 		setSearchQuery('');
@@ -4858,6 +4966,9 @@ export function App(): React.JSX.Element {
 
 	const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
 	const canCreateNotesInActiveWorkspace = Boolean(authWorkspaceId && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' && canEditActiveWorkspace);
+	const canCreateNotesInCurrentContext = viewMode === 'bubble'
+		? Boolean(bubbleSelectedWorkspace?.id && bubbleSelectedWorkspace.systemKind !== 'SHARED_WITH_ME' && canEditBubbleSelectedWorkspace)
+		: canCreateNotesInActiveWorkspace;
 	const selectedSharedPlacement = selectedNoteId ? sharedPlacements.find((placement) => placement.aliasId === selectedNoteId) ?? null : null;
 	const selectedNoteDocId = selectedNoteId ? selectedSharedPlacement?.roomId || (authWorkspaceId ? `${authWorkspaceId}:${selectedNoteId}` : '') : '';
 	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
@@ -4949,10 +5060,11 @@ export function App(): React.JSX.Element {
 							<button
 								type="button"
 								className="app-icon-button mobile-appgrid-btn"
-								aria-label={t('app.globalSearchPlaceholder')}
-								title={t('app.globalSearchPlaceholder')}
+								onClick={cycleGridViewMode}
+								aria-label="Cycle note view"
+								title="Cycle note view"
 							>
-								<FontAwesomeIcon icon={faGrip} />
+								<FontAwesomeIcon icon={viewModeIcon} />
 							</button>
 							<button
 								type="button"
@@ -5052,10 +5164,11 @@ export function App(): React.JSX.Element {
 							<button
 								type="button"
 								className="app-icon-button"
-								aria-label={t('app.globalSearchPlaceholder')}
-								title={t('app.globalSearchPlaceholder')}
+								onClick={cycleGridViewMode}
+								aria-label="Cycle note view"
+								title="Cycle note view"
 							>
-								<FontAwesomeIcon icon={faGrip} />
+								<FontAwesomeIcon icon={viewModeIcon} />
 							</button>
 							<button
 								type="button"
@@ -5088,12 +5201,18 @@ export function App(): React.JSX.Element {
 					<nav className="app-sidebar-nav" aria-label={t('grid.notes')}>
 						{sidebarEntries.map((entry) => {
 							const isGroup = entry.kind === 'group';
-							const isOpen = Boolean(sidebarGroupsOpen[entry.id]);
+							const isOpen = entry.id === 'workspaces' && viewMode === 'bubble' ? true : Boolean(sidebarGroupsOpen[entry.id]);
 							const groupContent = sidebarGroupContent[entry.id] ?? [];
 							const ariaLabel = entry.id === 'workspaces'
-								? `${t('workspace.sidebarTitle')}: ${activeWorkspaceName || t('workspace.unnamed')}`
+								? (viewMode === 'bubble'
+									? 'Workspaces'
+									: `${t('workspace.sidebarTitle')}: ${activeWorkspaceName || t('workspace.unnamed')}`)
 								: entry.label;
 							const label = entry.label;
+							const isEntryActive =
+								(entry.id === 'trash' && sidebarView === 'trash') ||
+								(entry.id === 'archive' && sidebarView === 'archive') ||
+								(entry.id === 'notes' && sidebarView === 'notes');
 							return (
 								<div key={entry.id}>
 									<button
@@ -5101,9 +5220,12 @@ export function App(): React.JSX.Element {
 											sidebarEntryButtonRefs.current[entry.id] = node;
 										}}
 										type="button"
-										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${entry.id === 'trash' && sidebarView === 'trash' ? ' is-active' : ''}${entry.id === 'archive' && sidebarView === 'archive' ? ' is-active' : ''}${entry.id === 'notes' && sidebarView === 'notes' ? ' is-active' : ''}`}
+										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${isEntryActive ? ' is-active' : ''}`}
 										onClick={() => {
 											if (!isMobileViewport && sidebarIsCollapsed) {
+												if ((entry.id === 'collections' || entry.id === 'labels') && viewMode === 'bubble') {
+													return;
+												}
 												if (entry.id === 'workspaces' && sidebarWorkspaces.length === 0) {
 													void loadSidebarWorkspaces();
 												}
@@ -5111,6 +5233,12 @@ export function App(): React.JSX.Element {
 												return;
 											}
 											if (entry.id === 'workspaces') {
+												if (viewMode === 'bubble') {
+													if (sidebarIsCollapsed) {
+														expandDesktopSidebarForEntry(entry.id, isGroup);
+													}
+													return;
+												}
 												if (isOpen) {
 													closeWorkspaceSidebarGroup();
 													return;
@@ -5119,6 +5247,9 @@ export function App(): React.JSX.Element {
 													void loadSidebarWorkspaces();
 												}
 												setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: true }));
+												return;
+											}
+											if ((entry.id === 'collections' || entry.id === 'labels') && viewMode === 'bubble') {
 												return;
 											}
 											if (entry.id === 'trash') {
@@ -5165,9 +5296,47 @@ export function App(): React.JSX.Element {
 
 									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
-											<div ref={workspaceMenuRef} className="sidebar-submenu sidebar-workspace-menu" aria-label={t('workspace.listAria')} aria-hidden={!isOpen}>
-											{/* Sticky top action — always reachable regardless of list length. */}
-											<button
+											<div ref={workspaceMenuRef} className="sidebar-submenu sidebar-workspace-menu" aria-label={viewMode === 'bubble' ? 'Workspaces' : t('workspace.listAria')} aria-hidden={!isOpen}>
+											{viewMode === 'bubble' ? (
+												<>
+													<div className="sidebar-workspace-muted sidebar-submenu-muted sidebar-workspace-legend-summary" style={{ ['--sidebar-item-index' as const]: 0 }}>
+															Workspaces
+													</div>
+														<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 1 }}>
+															New notes placed in selected workspace
+														</div>
+													{sidebarWorkspacesBusy ? (
+															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 2 }}>{t('common.loading')}</div>
+													) : null}
+													{sidebarWorkspacesError ? (
+															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 3 }}>{sidebarWorkspacesError}</div>
+													) : null}
+													{bubbleWorkspaceLegend.length === 0 && !sidebarWorkspacesBusy ? (
+															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 4 }}>{t('workspace.none')}</div>
+													) : null}
+													{bubbleWorkspaceLegend.map((workspace, index) => (
+															<button
+															key={workspace.id}
+																type="button"
+															className={`sidebar-workspace-legend-item${workspace.isActive ? ' is-active' : ''}`}
+																onClick={() => {
+																	setBubbleWorkspaceSelectionId(workspace.id);
+																	if (sidebarView === 'trash' || sidebarView === 'archive') {
+																		setActiveSharedFolder(null);
+																		setSidebarView('notes');
+																	}
+																	if (isMobileViewport) closeMobileSidebar();
+																}}
+																style={{ ['--sidebar-item-index' as const]: index + 5 } as React.CSSProperties}
+														>
+															<span className="sidebar-workspace-legend-swatch" style={workspace.style} aria-hidden="true" />
+															<span className="sidebar-workspace-legend-label">{truncateUiName(workspace.name, 44)}</span>
+															</button>
+													))}
+												</>
+											) : (
+												<>
+												<button
 												type="button"
 												className="sidebar-workspace-manage sidebar-workspace-manage-top sidebar-submenu-action"
 												onClick={() => {
@@ -5293,6 +5462,8 @@ export function App(): React.JSX.Element {
 													</div>
 												);
 											})}
+												</>
+											)}
 											</div>
 										</div>
 									) : null}
@@ -5301,6 +5472,9 @@ export function App(): React.JSX.Element {
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
 											<div className={`sidebar-submenu${entry.id === 'collections' ? ' sidebar-collections-menu' : ''}`} aria-hidden={!isOpen}>
 												{entry.id === 'collections' ? (
+													viewMode === 'bubble' ? (
+														<div className="sidebar-submenu-muted">All Collections</div>
+													) : (
 													// Sticky top action for collections — mirrors the workspace dropdown
 													// so "Manage Collections" is always reachable regardless of list length.
 													<button
@@ -5316,11 +5490,14 @@ export function App(): React.JSX.Element {
 													>
 														{t('app.sidebarManageCollections')}
 													</button>
+													)
 												) : null}
 												{entry.id === 'collections'
-													? (collectionTree.length > 0
+													? (viewMode === 'bubble'
+														? null
+														: collectionTree.length > 0
 														? renderCollectionSidebarNodes(collectionTree)
-														: <div className="sidebar-submenu-muted">No collections yet.</div>)
+															: <div className="sidebar-submenu-muted">No collections yet.</div>)
 													: groupContent.map((item, index) => {
 														if (item.kind === 'heading') {
 															return (
@@ -5470,7 +5647,7 @@ export function App(): React.JSX.Element {
 				</aside>
 
 				<main className="app-main">
-					{deferredSearchQuery ? (
+					{deferredSearchQuery && viewMode !== 'bubble' ? (
 						<section className="global-search-results" aria-live="polite">
 							<div className="global-search-results-header">
 								<div>
@@ -5532,24 +5709,38 @@ export function App(): React.JSX.Element {
 					{/* Archive/trash views are read-focused; only notes view shows quick-create. */}
 					{(sidebarView === 'notes' || sidebarView === 'trash') ? (
 						<div ref={topControlsRef} className="app-main-sticky">
-							{sidebarView === 'notes' && canCreateNotesInActiveWorkspace ? (
+							{sidebarView === 'notes' && canCreateNotesInCurrentContext ? (
 								<div className="top-actions">
-									<button type="button" className="top-action-card" onClick={() => openCreateEditor('text')}>
+									<button type="button" className="top-action-card" onClick={() => void openCreateEditorForCurrentContext('text')}>
 										{t('app.createNewNote')}
 									</button>
-									<button type="button" className="top-action-card" onClick={() => openCreateEditor('checklist')}>
+									<button type="button" className="top-action-card" onClick={() => void openCreateEditorForCurrentContext('checklist')}>
 										{t('app.createNewChecklist')}
 									</button>
 								</div>
 							) : null}
 
 							<div className="note-grid-scope" aria-live="polite">
-								{activeFilterChips.length === 0 ? (
+								{viewMode === 'bubble' ? (
+									<div className="note-grid-scope-chip">
+										<span className="note-grid-scope-label">All Workspaces</span>
+										<input
+											type="range"
+											className="note-grid-scope-slider"
+											min={BUBBLE_ZOOM_MIN}
+											max={BUBBLE_ZOOM_MAX}
+											step={1}
+											value={bubbleZoom}
+											onChange={(event) => setBubbleZoom(Number(event.target.value))}
+											aria-label="Bubble zoom"
+										/>
+									</div>
+								) : activeFilterChips.length === 0 ? (
 									<div className="note-grid-scope-chip">
 										<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
 									</div>
 								) : null}
-								{activeFilterChips.map((chip) => (
+								{viewMode !== 'bubble' ? activeFilterChips.map((chip) => (
 									<div
 										key={chip.key}
 										className={`note-grid-scope-chip is-clearable${chip.onPrimaryAction ? ' is-interactive' : ''}`}
@@ -5578,7 +5769,7 @@ export function App(): React.JSX.Element {
 											<FontAwesomeIcon icon={faXmark} />
 										</button>
 									</div>
-								))}
+								)) : null}
 								{sidebarView === 'trash' && canEditActiveWorkspace ? (
 									<div className="note-grid-scope-actions">
 										<button
@@ -5591,6 +5782,7 @@ export function App(): React.JSX.Element {
 										</button>
 									</div>
 								) : null}
+
 							</div>
 						</div>
 					) : null}
@@ -5615,6 +5807,8 @@ export function App(): React.JSX.Element {
 						) : null}
 					</section>
 
+				{/* NoteGrid stays mounted in bubble mode (display:none) so DocumentManager keeps docs loaded. */}
+				<div style={{ display: viewMode === 'bubble' ? 'none' : undefined }}>
 					<NoteGrid
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
@@ -5657,6 +5851,9 @@ export function App(): React.JSX.Element {
 						}}
 									canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter && !activeCollectionId && activeLabelIds.length === 0 && activeReminderFilter === 'all' && activeSortMode === 'manual' && activeSortGrouping === 'none' && sidebarView === 'notes'}
 									emptyStateLabel={noteGridEmptyStateLabel}
+								onTouchReorderEnd={() => {
+									setSelectedNoteId(null);
+								}}
 						onSelectNote={(id) => {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
@@ -5666,7 +5863,29 @@ export function App(): React.JSX.Element {
 						onReady={handleGridReady}
 						// Layout animations are suppressed until after the splash overlay has faded out.
 						enableLayoutAnimations={splashDismissed}
-					/>
+						viewMode={viewMode === 'bubble' ? 'card' : viewMode}
+				/>
+				</div>
+				{/* BubbleView overlays the grid — NoteGrid stays mounted above (display:none) */}
+				{viewMode === 'bubble' && authWorkspaceId ? (
+						<BubbleView
+							workspaces={sidebarWorkspaces as BubbleWorkspaceInfo[]}
+							activeWorkspaceId={authWorkspaceId}
+							authUserId={authUserId}
+							themeId={themeId}
+							zoom={bubbleZoom}
+							showTrashed={sidebarView === 'trash'}
+							reminderFilter={activeReminderFilter}
+							searchQuery={deferredSearchQuery}
+							sidebarIsCollapsed={sidebarIsCollapsed}
+							onSelectNote={async (id, workspaceId) => {
+								if (workspaceId !== authWorkspaceId) {
+									await activateWorkspaceFromSidebar(workspaceId, { activeSharedFolder: null });
+								}
+								openNoteEditor(id, { replaceTop: editorMode !== 'none' });
+							}}
+						/>
+					) : null}
 				</main>
 			</div>
 			<NoteMediaBrowserModal
@@ -5759,12 +5978,12 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
-			{canCreateNotesInActiveWorkspace && sidebarView === 'notes' ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
+			{canCreateNotesInCurrentContext && sidebarView === 'notes' ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
 				<button
 					type="button"
 					className="mobile-fab-action"
 					onClick={() => {
-						openCreateEditor('text', { replaceTop: true });
+						void openCreateEditorForCurrentContext('text', { replaceTop: true });
 					}}
 				>
 					{t('app.createNote')}
@@ -5773,14 +5992,14 @@ export function App(): React.JSX.Element {
 					type="button"
 					className="mobile-fab-action"
 					onClick={() => {
-						openCreateEditor('checklist', { replaceTop: true });
+						void openCreateEditorForCurrentContext('checklist', { replaceTop: true });
 					}}
 				>
 					{t('app.createChecklist')}
 				</button>
 			</div> : null}
 
-			{canCreateNotesInActiveWorkspace && sidebarView === 'notes' ? (
+			{canCreateNotesInCurrentContext && sidebarView === 'notes' ? (
 				<button
 					type="button"
 					className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}

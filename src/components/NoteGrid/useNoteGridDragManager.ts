@@ -24,6 +24,7 @@ type DragManagerArgs = {
 	canStartDrag: () => boolean;
 	isTouchDragCandidate: () => boolean;
 	onCommitOrder: (finalColumns: string[][], draggedId: string, draggedHeight: number) => void;
+	onTouchDropCommit?: () => void;
 };
 
 type PragmaticDragData = {
@@ -84,6 +85,7 @@ export type DragManagerResult = {
 	previewColumns: string[][] | null;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
+	shouldSuppressOpen: () => boolean;
 	cancelDrag: () => void;
 };
 
@@ -130,6 +132,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const canStartDragRef = React.useRef(args.canStartDrag);
 	const isTouchDragCandidateRef = React.useRef(args.isTouchDragCandidate);
 	const onCommitOrderRef = React.useRef(args.onCommitOrder);
+	const onTouchDropCommitRef = React.useRef(args.onTouchDropCommit);
 	// Ghost position: the pointer offset records where within the card the user
 	// initially grabbed (pointerXY - cardRect.topLeft).  This is subtracted from
 	// the live pointer position to keep the ghost anchored at the grab point.
@@ -142,12 +145,15 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	// until Date.now() exceeds this value.  This prevents oscillation caused by
 	// framer-motion's spring animation returning intermediate rects.
 	const insertionCooldownRef = React.useRef(0);
+	const touchDragSessionRef = React.useRef(false);
+	const suppressOpenUntilRef = React.useRef(0);
 
 	visibleIdsRef.current = args.visibleIds;
 	columnsRef.current = args.columns;
 	canStartDragRef.current = args.canStartDrag;
 	isTouchDragCandidateRef.current = args.isTouchDragCandidate;
 	onCommitOrderRef.current = args.onCommitOrder;
+	onTouchDropCommitRef.current = args.onTouchDropCommit;
 
 	const getRectForId = React.useCallback((id: string): DOMRect | null => {
 		return itemElementsRef.current.get(id)?.getBoundingClientRect() ?? null;
@@ -216,10 +222,15 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		activeDragIdRef.current = null;
 		insertionPointRef.current = null;
 		insertionCooldownRef.current = 0;
+		touchDragSessionRef.current = false;
 		setActiveDragId(null);
 		setDragOverlay(null);
 		setInsertionPoint(null);
 		setIsTouchDragging(false);
+	}, []);
+
+	const shouldSuppressOpen = React.useCallback((): boolean => {
+		return Date.now() < suppressOpenUntilRef.current;
 	}, []);
 
 	const setItemElement = React.useCallback((id: string, node: HTMLDivElement | null): void => {
@@ -301,13 +312,15 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				const rect = element.getBoundingClientRect();
 				const input = event.location.current.input as PointerInput;
 				activeDragIdRef.current = activeId;
+				const isTouchDrag = isTouchDragCandidateRef.current();
+				touchDragSessionRef.current = isTouchDrag;
 				pointerOffsetRef.current = {
 					x: input.clientX - rect.left,
 					y: input.clientY - rect.top,
 				};
 				previewSizeRef.current = { width: rect.width, height: rect.height };
 				setActiveDragId(activeId);
-				setIsTouchDragging(isTouchDragCandidateRef.current());
+				setIsTouchDragging(isTouchDrag);
 				const overlayLeft = computeOverlayLeft(input);
 				const overlayTop = computeOverlayTop(input);
 				setDragOverlay({
@@ -353,6 +366,9 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					finalColumns.length !== originalColumns.length ||
 					finalColumns.some((col, i) => !arraysEqual(col, originalColumns[i]));
 				if (!columnsChanged) {
+					if (touchDragSessionRef.current) {
+						suppressOpenUntilRef.current = Date.now() + 400;
+					}
 					clearDragState();
 					return;
 				}
@@ -363,6 +379,10 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					Math.round(draggedElement?.getBoundingClientRect().height ?? previewSizeRef.current.height)
 				);
 				onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
+				if (touchDragSessionRef.current) {
+					suppressOpenUntilRef.current = Date.now() + 400;
+					onTouchDropCommitRef.current?.();
+				}
 				// Clear drag state after scheduling the committed layout so React can
 				// transition directly from the live preview into the final grid state
 				// instead of briefly re-rendering the pre-drop base columns.
@@ -404,6 +424,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		previewColumns,
 		setItemElement,
 		setHandleElement,
+		shouldSuppressOpen,
 		cancelDrag: clearDragState,
 	};
 }
