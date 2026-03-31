@@ -30,8 +30,8 @@ export function assignNotePinned(doc: Y.Doc, isPinned: boolean): void {
 	setNotePinned(doc, isPinned);
 }
 
-export function markNoteAccessed(doc: Y.Doc): void {
-	touchLastAccessedAt(doc);
+export function markNoteAccessed(doc: Y.Doc, origin?: symbol): void {
+	touchLastAccessedAt(doc, origin);
 }
 
 export function readNoteMetadataState(doc: Y.Doc): {

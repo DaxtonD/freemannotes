@@ -317,12 +317,14 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 
 		return (
 			<>
-				<input
-					type="checkbox"
-					className={styles.checklistCheckbox}
-					checked={item.completed}
-					onChange={handleToggleCompleted}
-				/>
+				<label className={styles.checklistCheckboxHitArea} aria-label={item.completed ? 'Completed' : 'Not completed'}>
+					<input
+						type="checkbox"
+						className={styles.checklistCheckbox}
+						checked={item.completed}
+						onChange={handleToggleCompleted}
+					/>
+				</label>
 				<div ref={contentRef} className={styles.checklistRowPreview} onClick={handleActivate}>
 					{richPreview || item.text || '\u00A0'}
 				</div>
@@ -344,12 +346,14 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 
 	return (
 		<>
-			<input
-				type="checkbox"
-				className={styles.checklistCheckbox}
-				checked={item.completed}
-				onChange={handleToggleCompleted}
-			/>
+			<label className={styles.checklistCheckboxHitArea} aria-label={item.completed ? 'Completed' : 'Not completed'}>
+				<input
+					type="checkbox"
+					className={styles.checklistCheckbox}
+					checked={item.completed}
+					onChange={handleToggleCompleted}
+				/>
+			</label>
 			{liveItemMap && fragment ? (
 				<div ref={contentRef} className={styles.checklistRowRichShell}>
 					<RichTextEditor

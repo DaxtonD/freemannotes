@@ -3,7 +3,7 @@ import type * as Y from 'yjs';
 import { createPortal } from 'react-dom';
 import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faFolder, faTag, faUsers } from '@fortawesome/free-solid-svg-icons';
+import { faBell, faFileLines, faFolder, faListCheck, faTag, faThumbtack, faUsers } from '@fortawesome/free-solid-svg-icons';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
@@ -16,6 +16,8 @@ import { useI18n } from '../../core/i18n';
 import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { buildCollectionPathMap, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
+import type { ViewMode } from '../../core/viewMode';
+import { NoteListView } from './NoteListView';
 import {
 	readCachedNoteShareCollaborators,
 	syncNoteShareCollaborators,
@@ -53,6 +55,7 @@ export type NoteGridProps = {
 	activeWorkspaceId?: string | null;
 	selectedNoteId: string | null;
 	onSelectNote: (noteId: string) => void;
+	onTouchReorderEnd?: () => void;
 	onAddCollaborator?: (noteId: string, title?: string) => void;
 	onAddImage?: (noteId: string, docId: string, title?: string) => void;
 	onAddDocument?: (noteId: string, docId: string, title?: string) => void;
@@ -90,6 +93,8 @@ export type NoteGridProps = {
 	onReady?: () => void;
 	/** Enable framer-motion layout animations. Keep false during splash reveal. */
 	enableLayoutAnimations?: boolean;
+	/** Active view mode. 'list' and 'strip' replace the masonry grid with flat rows. */
+	viewMode?: ViewMode;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -1298,6 +1303,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (slottedColumns && slottedColumns.length === columnCount) return slottedColumns;
 		return baseColumns;
 	}, [stickyColumns, baseColumns, slottedColumns, columnCount]);
+	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
+	const dragColumns = React.useMemo(() => (isListLikeView ? [visibleIds] : resolvedBaseColumns), [isListLikeView, resolvedBaseColumns, visibleIds]);
 
 	// Clear stickyColumns when a full repack wins (e.g. height imbalance or column count change)
 	React.useEffect(() => {
@@ -1313,11 +1320,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const dragManager = useNoteGridDragManager({
 		sectionRef,
 		gridRef,
-		columns: resolvedBaseColumns,
+		columns: dragColumns,
 		visibleIds,
 		canStartDrag: () => !isTrashView && props.canReorder !== false && !touchScrollDetectedRef.current && Date.now() >= suppressTouchDragUntilRef.current,
 		isTouchDragCandidate: () => pendingTouchIntentRef.current,
 		onCommitOrder: commitVisibleOrder,
+		onTouchDropCommit: props.onTouchReorderEnd,
 	});
 
 	// ── Active columns for rendering ──────────────────────────────────────
@@ -1325,7 +1333,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// and the placeholder holding the original space); otherwise use the
 	// stable baseColumns.  framer-motion's `layout` prop on each card
 	// automatically animates position changes when columns swap.
-	const columns = dragManager.previewColumns ?? resolvedBaseColumns;
+	const columns = dragManager.previewColumns ?? dragColumns;
+	const listOrderedIds = React.useMemo(() => flattenColumns(columns), [columns]);
 
 	// Freeze touch actions during touch drag to prevent browser scroll interference
 	React.useEffect(() => {
@@ -1394,6 +1403,28 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const activeCanEdit = Boolean(
 		activeNote && !isTrashView && (activeNote.isShared ? activePlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
 	);
+	const activeSnapshot = activeNote ? noteSnapshotById.get(activeNote.id) : undefined;
+	const activeIsPinned = activeSnapshot?.isPinned === true;
+	const activeHasReminder = Boolean(activeSnapshot?.reminderAt);
+	const activeTitle = activeDoc?.getText('title').toString().trim() || t('note.untitled');
+	const activeIsChecklist = Boolean(activeDoc && String(activeDoc.getMap<any>('metadata').get('type') ?? '') === 'checklist');
+	const activeStripPreview = React.useMemo(() => {
+		if (props.viewMode !== 'strip' || !activeDoc || !activeNote) return '';
+		try {
+			const note = readNoteFromDoc(activeDoc, activeNote.id);
+			if (note.type === 'checklist') {
+				const items = note.items ?? [];
+				if (items.length === 0) return '';
+				const done = items.filter((entry) => entry.completed).length;
+				return `${done} / ${items.length}`;
+			}
+			const content = (note.content ?? '').replace(/\s+/g, ' ').trim();
+			if (!content) return '';
+			return content.length > 110 ? `${content.slice(0, 109)}...` : content;
+		} catch {
+			return '';
+		}
+	}, [activeDoc, activeNote, props.viewMode]);
 	const activeCollaboratorSummary = activeNote ? collaboratorSummariesByNoteId[activeNote.id] ?? null : null;
 	const moreMenuDoc = moreMenuNoteId ? docsById[moreMenuNoteId] : undefined;
 	const moreMenuPlacement = moreMenuNoteId ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === moreMenuNoteId) : undefined;
@@ -1404,6 +1435,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const collaboratorOverlaySummary = openCollaboratorChip ? collaboratorSummariesByNoteId[openCollaboratorChip.noteId] ?? null : null;
 	const collectionPathById = React.useMemo(() => buildCollectionPathMap(props.collections ?? []), [props.collections]);
 	const labelById = React.useMemo(() => new Map((props.labels ?? []).map((label) => [label.id, label] as const)), [props.labels]);
+	const collaboratorCountByNoteId = React.useMemo<Record<string, number>>(() => {
+		const result: Record<string, number> = {};
+		for (const [noteId, summary] of Object.entries(collaboratorSummariesByNoteId)) {
+			result[noteId] = summary?.count ?? 0;
+		}
+		return result;
+	}, [collaboratorSummariesByNoteId]);
 	const openOverlayNoteId = openCollaboratorChip?.noteId ?? openMetadataChip?.noteId ?? openAttachmentChipNoteId;
 	const overlayActiveNoteId = openOverlayNoteId ?? latchedOverlayNoteId;
 	const collaboratorOverlayColorStyle = React.useMemo(() => {
@@ -1564,7 +1602,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				isMoreMenuOpen={moreMenuNoteId === note.id}
 				isTrashView={isTrashView}
 				// In trash view, opening is suppressed and restore is wired instead.
-				onOpen={!isTrashView ? () => props.onSelectNote(note.id) : undefined}
+				onOpen={!isTrashView ? () => {
+					if (dragManager.shouldSuppressOpen()) return;
+					props.onSelectNote(note.id);
+				} : undefined}
 				onAddReminder={props.onAddReminder && canEditNote ? () => props.onAddReminder?.(note.id, doc.getText('title').toString()) : undefined}
 				onRestoreNote={isTrashView ? () => { void manager.restoreNote(note.id); } : undefined}
 				onAddCollaborator={props.onAddCollaborator && canEditNote ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
@@ -1680,7 +1721,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			}
 			onTouchStartCapture={(event) => {
 				const target = event.target as HTMLElement | null;
-				if (!target?.closest('[data-note-card="true"]')) return;
+				if (!target?.closest('[data-note-card="true"], [data-note-list-row="true"]')) return;
 				if (target.closest('input, button, textarea, select, a, [role="textbox"]')) return;
 				const touch = event.touches[0];
 				pendingTouchIntentRef.current = true;
@@ -1718,6 +1759,39 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					{props.emptyStateLabel || t('search.noResults')}
 				</div>
 			) : null}
+			{(props.viewMode === 'list' || props.viewMode === 'strip') && visibleIds.length > 0 ? (
+				<div ref={gridRef} className={styles.listGrid} aria-label={t('grid.notesGrid')}>
+					<div className={styles.listColumn}>
+						<NoteListView
+							variant={props.viewMode}
+							orderedIds={listOrderedIds}
+							docsById={docsById}
+							noteSnapshotById={noteSnapshotById}
+							collectionPathById={collectionPathById}
+							labelById={labelById}
+							collaboratorCountByNoteId={collaboratorCountByNoteId}
+							selectedNoteId={props.selectedNoteId}
+							moreMenuNoteId={moreMenuNoteId}
+							themeId={props.themeId}
+							activeDragId={dragManager.activeDragId}
+							setItemElement={dragManager.setItemElement}
+							setHandleElement={dragManager.setHandleElement}
+							shouldSuppressOpen={dragManager.shouldSuppressOpen}
+							canDrag={(noteId) => {
+								const note = noteById.get(noteId);
+								if (!note) return false;
+								return !isTrashView && !note.isShared && props.canReorder !== false;
+							}}
+							onSelectNote={props.onSelectNote}
+							onMoreMenu={(noteId, rect) => {
+								setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
+								setMoreMenuNoteId(noteId);
+							}}
+						/>
+					</div>
+				</div>
+			) : null}
+			{props.viewMode !== 'list' && props.viewMode !== 'strip' ? (
 			<LayoutGroup>
 				<div ref={gridRef} className={isGroupedView ? styles.groupedSections : styles.grid} aria-label={t('grid.notesGrid')} style={{
 					['--grid-columns' as any]: String(columnCount),
@@ -1750,6 +1824,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						))}
 				</div>
 			</LayoutGroup>
+			) : null}
 			{dragManager.dragOverlay && activeNote && activeDoc ? (
 				<div
 					className={`${styles.item} ${styles.dragPreview}`}
@@ -1762,44 +1837,68 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						height: dragManager.dragOverlay.height,
 					}}
 				>
-					<NoteCard
-						noteId={activeNote.id}
-						docId={activeDocId || undefined}
-						authUserId={props.authUserId}
-						themeId={props.themeId}
-						doc={activeDoc}
-						metaChips={renderNoteMetaChips({
-							noteId: activeNote.id,
-							docId: activeDocId ?? null,
-							doc: activeDoc,
-							collectionPathById,
-							labelById,
-							activeCollectionId: props.activeCollectionId,
-							activeLabelIds: props.activeLabelIds,
-							authUserId: props.authUserId,
-							canEditNote: activeCanEdit,
-							suspendAttachmentRemoteRefresh,
-							disableAttachmentInitialRemoteRefresh,
-							collaboratorSummary: activeCollaboratorSummary,
-							onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
-							onOpenMetadataChip: ({ noteId, kind, anchorRect, entries }) => {
-								setOpenCollaboratorChip(null);
-								setOpenMetadataChip((current) => current && current.noteId === noteId && current.kind === kind ? null : { noteId, kind, anchorRect, entries });
-							},
+					{props.viewMode === 'list' || props.viewMode === 'strip' ? (
+						<div className={styles.listDragGhost} style={getNoteColorVars(activeNote.id, activeDoc, props.themeId)}>
+							<div className={styles.listDragGhostMain}>
+								<span className={styles.listDragGhostType}>
+									<FontAwesomeIcon icon={activeIsChecklist ? faListCheck : faFileLines} />
+								</span>
+								<span className={styles.listDragGhostTitle}>{activeTitle}</span>
+								{activeIsPinned ? (
+									<span className={styles.listDragGhostBadge}>
+										<FontAwesomeIcon icon={faThumbtack} />
+									</span>
+								) : null}
+								{activeHasReminder ? (
+									<span className={styles.listDragGhostBadge}>
+										<FontAwesomeIcon icon={faBell} />
+									</span>
+								) : null}
+							</div>
+							{props.viewMode === 'strip' && activeStripPreview ? (
+								<div className={styles.listDragGhostPreview}>{activeStripPreview}</div>
+							) : null}
+						</div>
+					) : (
+						<NoteCard
+							noteId={activeNote.id}
+							docId={activeDocId || undefined}
+							authUserId={props.authUserId}
+							themeId={props.themeId}
+							doc={activeDoc}
+							metaChips={renderNoteMetaChips({
+								noteId: activeNote.id,
+								docId: activeDocId ?? null,
+								doc: activeDoc,
+								collectionPathById,
+								labelById,
+								activeCollectionId: props.activeCollectionId,
+								activeLabelIds: props.activeLabelIds,
+								authUserId: props.authUserId,
+								canEditNote: activeCanEdit,
+								suspendAttachmentRemoteRefresh,
+								disableAttachmentInitialRemoteRefresh,
+								collaboratorSummary: activeCollaboratorSummary,
+								onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
+								onOpenMetadataChip: ({ noteId, kind, anchorRect, entries }) => {
+									setOpenCollaboratorChip(null);
+									setOpenMetadataChip((current) => current && current.noteId === noteId && current.kind === kind ? null : { noteId, kind, anchorRect, entries });
+								},
 								onAttachmentChipOpenStateChange: (chipNoteId, isOpen) => {
 									setOpenAttachmentChipNoteId((current) => {
 										if (isOpen) return chipNoteId;
 										return current === chipNoteId ? null : current;
 									});
 								},
-							t,
-											themeId: props.themeId,
-							title: activeDoc.getText('title').toString(),
-						})}
-						canEdit={activeCanEdit}
-						hasPendingSync={activeHasPendingSync}
-						maxCardHeightPx={props.maxCardHeightPx}
-					/>
+								t,
+								themeId: props.themeId,
+								title: activeDoc.getText('title').toString(),
+							})}
+							canEdit={activeCanEdit}
+							hasPendingSync={activeHasPendingSync}
+							maxCardHeightPx={props.maxCardHeightPx}
+						/>
+					)}
 				</div>
 			) : null}
 			{typeof document !== 'undefined'
