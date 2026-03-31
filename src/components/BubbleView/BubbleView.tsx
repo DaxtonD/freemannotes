@@ -492,29 +492,43 @@ function useBubbleNotes(
 				const orderedIds: string[] = noteOrder.toArray().filter(Boolean);
 
 				const activeEntries: Array<BubbleNote | null> = await Promise.all(orderedIds.map(async (noteId) => {
-					const title = titlesById.get(noteId) ?? '';
+					const registryTitle = titlesById.get(noteId) ?? '';
 					const doc = await manager.getDocReady(noteId);
 					const meta = doc.getMap<any>('metadata');
+					const titleText = doc.getText('title');
+					const contentText = doc.getText('content');
+					const checklist = doc.getArray<Y.Map<any>>('checklist');
 					const onMetadataChange = (): void => scheduleRefresh();
+					const onTitleChange = (): void => scheduleRefresh();
+					const onContentChange = (): void => scheduleRefresh();
+					const onChecklistChange = (): void => scheduleRefresh();
 					meta.observe(onMetadataChange);
+					titleText.observe(onTitleChange);
+					contentText.observe(onContentChange);
+					checklist.observeDeep(onChecklistChange);
 					cleanups.push(() => {
 						try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
+						try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
+						try { contentText.unobserve(onContentChange); } catch { /* ignore */ }
+						try { checklist.unobserveDeep(onChecklistChange); } catch { /* ignore */ }
 					});
 					const isTrashed = Boolean(meta.get('trashed'));
 					if (showTrashed ? !isTrashed : isTrashed) return null;
 					const reminderAtRaw = meta.get('reminderAt');
 					const reminderAt = typeof reminderAtRaw === 'string' ? reminderAtRaw : null;
 					if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+					const resolvedTitle = readNoteFromDoc(doc, noteId).title.trim();
 					const isPinned = Boolean(meta.get('isPinned'));
 					const updatedAt = Number(meta.get('updatedAt') ?? 0);
 					const reminderMs = reminderAt ? Date.parse(String(reminderAt)) : Number.NaN;
 					const hasReminder = Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS;
+					const title = resolvedTitle || registryTitle;
 					return {
 						noteId,
 						workspaceId: activeWorkspaceId,
 						workspaceName: activeWorkspaceName,
 						title,
-						searchText: title,
+						searchText: extractNoteSearchText(noteId, doc, title),
 						updatedAt,
 						reminderAt,
 						isPinned,

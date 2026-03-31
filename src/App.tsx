@@ -7,7 +7,6 @@ import {
 	faBars,
 	faBarsStaggered,
 	faBell,
-	faBoxArchive,
 	faCircleDot,
 	faFileLines,
 	faFolder,
@@ -38,6 +37,7 @@ import { NoteDocumentBrowserModal } from './components/NoteAttachments/NoteDocum
 import { NoteLinkBrowserModal } from './components/NoteAttachments/NoteLinkBrowserModal';
 import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModal';
 import { NoteMediaBrowserModal } from './components/NoteMedia/NoteMediaBrowserModal';
+import { WorkspaceImagesGallery } from './components/NoteMedia/WorkspaceImagesGallery';
 import { NoteDocumentUploadModal } from './components/NoteDocuments/NoteDocumentUploadModal';
 import { MoveNoteModal } from './components/Workspaces/MoveNoteModal';
 import { CollectionManagementModal } from './components/Workspaces/CollectionManagementModal';
@@ -565,8 +565,8 @@ export function App(): React.JSX.Element {
 	const workspaceMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const sidebarEntryButtonRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>(CLOSED_SIDEBAR_GROUPS);
-	// Which sidebar view is active: regular notes, archive, or the trash bin.
-	const [sidebarView, setSidebarView] = React.useState<'notes' | 'archive' | 'trash'>('notes');
+	// Which sidebar view is active: regular notes, workspace images, archive, or trash.
+	const [sidebarView, setSidebarView] = React.useState<'notes' | 'images' | 'archive' | 'trash'>('notes');
 	// UI mode for the "new note" panel.
 	const [editorMode, setEditorMode] = React.useState<EditorMode>('none');
 	// Phase 10 preferences shell entry point opened from top-right avatar.
@@ -2658,6 +2658,9 @@ export function App(): React.JSX.Element {
 	}, [activeCollection, activeFilterChips.length, sidebarView]);
 
 	const noteGridScopeLabel = React.useMemo(() => {
+		if (sidebarView === 'images') {
+			return `${t('app.sidebarImages')} / ${activeWorkspaceSidebarPath}`;
+		}
 		if (viewMode === 'bubble') {
 			return 'All Workspaces';
 		}
@@ -2668,7 +2671,7 @@ export function App(): React.JSX.Element {
 			return `${t('app.sidebarTrash')} / ${activeWorkspaceSidebarPath}`;
 		}
 		return `All notes / ${activeWorkspaceSidebarPath}`;
-	}, [activeWorkspaceSidebarPath, noteGridCollaboratorFilter, sidebarView, t, viewMode]);
+	}, [activeWorkspaceSidebarPath, sidebarView, t, viewMode]);
 
 	const moveNoteWorkspaceOptions = React.useMemo(() => {
 		return sidebarWorkspaces.filter((workspace) => workspace.id !== authWorkspaceId && workspace.systemKind !== 'SHARED_WITH_ME' && canEditWorkspaceContent(workspace.role));
@@ -3979,11 +3982,12 @@ export function App(): React.JSX.Element {
 			{ id: 'sorting', label: t('app.sidebarSorting'), icon: faArrowDownWideShort, kind: 'group' },
 			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
 			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
-			{ id: 'archive', label: t('app.sidebarArchive'), icon: faBoxArchive, kind: 'link' },
 			{ id: 'trash', label: t('app.sidebarTrash'), icon: faTrash, kind: 'link' },
-		].filter((entry) => viewMode !== 'bubble' || (entry.id !== 'collections' && entry.id !== 'labels' && entry.id !== 'sorting')),
-		[t, viewMode]
+		].filter((entry) => viewMode !== 'bubble' || sidebarView === 'images' || (entry.id !== 'collections' && entry.id !== 'labels' && entry.id !== 'sorting')),
+		[sidebarView, t, viewMode]
 	);
+	const sidebarUsesBubbleSummaryMenus = viewMode === 'bubble' && sidebarView !== 'images';
+	const filterSidebarView = sidebarView === 'images' ? 'images' : 'notes';
 
 	const bubbleWorkspaceLegend = React.useMemo(() => {
 		return sidebarWorkspacesSorted.map((workspace) => ({
@@ -4003,14 +4007,14 @@ export function App(): React.JSX.Element {
 				{ id: 'tomorrow', label: 'Tomorrow', kind: 'item' },
 				{ id: 'next-week', label: t('app.sidebarNextWeek'), kind: 'item' },
 			],
-			labels: viewMode === 'bubble'
+			labels: sidebarUsesBubbleSummaryMenus
 				? [{ id: 'all-labels', label: 'All Labels', kind: 'muted' }]
 				: labels.length > 0
 				? labels.map((label) => ({ id: label.id, label: label.name, kind: 'item' as const }))
 				: [{ id: 'no-labels', label: t('app.sidebarNoLabels'), kind: 'muted' }],
-			collections: viewMode === 'bubble' ? [{ id: 'all-collections', label: 'All Collections', kind: 'muted' }] : [],
+			collections: sidebarUsesBubbleSummaryMenus ? [{ id: 'all-collections', label: 'All Collections', kind: 'muted' }] : [],
 		}),
-		[labels, t, viewMode]
+		[labels, sidebarUsesBubbleSummaryMenus, t]
 	);
 
 	const sortingPrimaryItems = React.useMemo<SidebarSubmenuNode[]>(
@@ -4070,7 +4074,7 @@ export function App(): React.JSX.Element {
 							type="button"
 							className={`sidebar-submenu-item sidebar-collection-item${activeCollectionId === collection.id ? ' is-active' : ''}`}
 							onClick={() => {
-								setSidebarView('notes');
+								setSidebarView(filterSidebarView);
 								setActiveCollectionId((current) => current === collection.id ? null : collection.id);
 								if (isMobileViewport) closeMobileSidebar();
 							}}
@@ -4089,7 +4093,7 @@ export function App(): React.JSX.Element {
 				</div>
 			);
 		});
-	}, [activeCollectionId, closeMobileSidebar, collectionPathById, isMobileViewport, setSidebarView, sidebarGroupsOpen]);
+	}, [activeCollectionId, closeMobileSidebar, collectionPathById, filterSidebarView, isMobileViewport, setSidebarView, sidebarGroupsOpen]);
 
 	React.useEffect(() => {
 		if (viewMode !== 'bubble') return;
@@ -4731,7 +4735,7 @@ export function App(): React.JSX.Element {
 		const nextFolder = String(pendingSharedFolderReveal.folderName || '').trim();
 		if (nextFolder && !sharedFolderNames.includes(nextFolder)) return;
 
-		setSidebarView('notes');
+		setSidebarView(filterSidebarView);
 		setSidebarGroupsOpen((prev) => ({
 			...prev,
 			workspaces: true,
@@ -4748,6 +4752,7 @@ export function App(): React.JSX.Element {
 		activeWorkspaceSystemKind,
 		authWorkspaceId,
 		expandDesktopSidebarForEntry,
+		filterSidebarView,
 		isMobileViewport,
 		openMobileSidebar,
 		pendingSharedFolderReveal,
@@ -4794,7 +4799,7 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed') return;
-		if (viewMode === 'bubble') {
+		if (viewMode === 'bubble' || sidebarView === 'images') {
 			setSearchResults([]);
 			setSearchResultsBusy(false);
 			setSearchResultsError(null);
@@ -4872,7 +4877,7 @@ export function App(): React.JSX.Element {
 			cancelled = true;
 			window.clearTimeout(timer);
 		};
-	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, collections, deferredSearchQuery, labels, manager, sharedPlacements, t, viewMode]);
+	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, collections, deferredSearchQuery, labels, manager, sharedPlacements, sidebarView, t, viewMode]);
 
 	const clearSearchAndClose = React.useCallback(() => {
 		setSearchQuery('');
@@ -5201,17 +5206,17 @@ export function App(): React.JSX.Element {
 					<nav className="app-sidebar-nav" aria-label={t('grid.notes')}>
 						{sidebarEntries.map((entry) => {
 							const isGroup = entry.kind === 'group';
-							const isOpen = entry.id === 'workspaces' && viewMode === 'bubble' ? true : Boolean(sidebarGroupsOpen[entry.id]);
+							const isOpen = entry.id === 'workspaces' && sidebarUsesBubbleSummaryMenus ? true : Boolean(sidebarGroupsOpen[entry.id]);
 							const groupContent = sidebarGroupContent[entry.id] ?? [];
 							const ariaLabel = entry.id === 'workspaces'
-								? (viewMode === 'bubble'
+								? (sidebarUsesBubbleSummaryMenus
 									? 'Workspaces'
 									: `${t('workspace.sidebarTitle')}: ${activeWorkspaceName || t('workspace.unnamed')}`)
 								: entry.label;
 							const label = entry.label;
 							const isEntryActive =
 								(entry.id === 'trash' && sidebarView === 'trash') ||
-								(entry.id === 'archive' && sidebarView === 'archive') ||
+								(entry.id === 'images' && sidebarView === 'images') ||
 								(entry.id === 'notes' && sidebarView === 'notes');
 							return (
 								<div key={entry.id}>
@@ -5223,7 +5228,7 @@ export function App(): React.JSX.Element {
 										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${isEntryActive ? ' is-active' : ''}`}
 										onClick={() => {
 											if (!isMobileViewport && sidebarIsCollapsed) {
-												if ((entry.id === 'collections' || entry.id === 'labels') && viewMode === 'bubble') {
+												if ((entry.id === 'collections' || entry.id === 'labels') && sidebarUsesBubbleSummaryMenus) {
 													return;
 												}
 												if (entry.id === 'workspaces' && sidebarWorkspaces.length === 0) {
@@ -5233,7 +5238,7 @@ export function App(): React.JSX.Element {
 												return;
 											}
 											if (entry.id === 'workspaces') {
-												if (viewMode === 'bubble') {
+												if (sidebarUsesBubbleSummaryMenus) {
 													if (sidebarIsCollapsed) {
 														expandDesktopSidebarForEntry(entry.id, isGroup);
 													}
@@ -5249,7 +5254,7 @@ export function App(): React.JSX.Element {
 												setSidebarGroupsOpen((prev) => ({ ...prev, workspaces: true }));
 												return;
 											}
-											if ((entry.id === 'collections' || entry.id === 'labels') && viewMode === 'bubble') {
+											if ((entry.id === 'collections' || entry.id === 'labels') && sidebarUsesBubbleSummaryMenus) {
 												return;
 											}
 											if (entry.id === 'trash') {
@@ -5258,9 +5263,9 @@ export function App(): React.JSX.Element {
 												if (isMobileViewport) closeMobileSidebar();
 												return;
 											}
-											if (entry.id === 'archive') {
+											if (entry.id === 'images') {
 												setActiveSharedFolder(null);
-												setSidebarView('archive');
+												setSidebarView('images');
 												if (isMobileViewport) closeMobileSidebar();
 												return;
 											}
@@ -5296,8 +5301,8 @@ export function App(): React.JSX.Element {
 
 									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
-											<div ref={workspaceMenuRef} className="sidebar-submenu sidebar-workspace-menu" aria-label={viewMode === 'bubble' ? 'Workspaces' : t('workspace.listAria')} aria-hidden={!isOpen}>
-											{viewMode === 'bubble' ? (
+											<div ref={workspaceMenuRef} className="sidebar-submenu sidebar-workspace-menu" aria-label={sidebarUsesBubbleSummaryMenus ? 'Workspaces' : t('workspace.listAria')} aria-hidden={!isOpen}>
+											{sidebarUsesBubbleSummaryMenus ? (
 												<>
 													<div className="sidebar-workspace-muted sidebar-submenu-muted sidebar-workspace-legend-summary" style={{ ['--sidebar-item-index' as const]: 0 }}>
 															Workspaces
@@ -5398,8 +5403,9 @@ export function App(): React.JSX.Element {
 																		setSidebarGroupsOpen((prev) => ({ ...prev, [sharedFolderGroupId]: true }));
 																	}
 																	if (ws.id !== authWorkspaceId) {
+																		setSidebarView('notes');
 																		void activateWorkspaceFromSidebar(ws.id, { activeSharedFolder: null });
-																	} else if (sidebarView === 'trash' || sidebarView === 'archive') {
+																	} else if (sidebarView === 'trash' || sidebarView === 'archive' || sidebarView === 'images') {
 																		setActiveSharedFolder(null);
 																		setSidebarView('notes');
 																		if (isMobileViewport) closeMobileSidebar();
@@ -5441,7 +5447,7 @@ export function App(): React.JSX.Element {
 																			type="button"
 																			className={`sidebar-submenu-item sidebar-workspace-folder${activeSharedFolder === folderName ? ' is-active' : ''}`}
 																			onClick={() => {
-																				setSidebarView('notes');
+																				setSidebarView(filterSidebarView);
 																				if (ws.id !== authWorkspaceId) {
 																					setPendingSharedFolderReveal({ workspaceId: ws.id, folderName });
 																					void activateWorkspaceFromSidebar(ws.id, { activeSharedFolder: folderName });
@@ -5472,7 +5478,7 @@ export function App(): React.JSX.Element {
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
 											<div className={`sidebar-submenu${entry.id === 'collections' ? ' sidebar-collections-menu' : ''}`} aria-hidden={!isOpen}>
 												{entry.id === 'collections' ? (
-													viewMode === 'bubble' ? (
+														sidebarUsesBubbleSummaryMenus ? (
 														<div className="sidebar-submenu-muted">All Collections</div>
 													) : (
 													// Sticky top action for collections — mirrors the workspace dropdown
@@ -5483,7 +5489,7 @@ export function App(): React.JSX.Element {
 														onClick={() => {
 															openCollectionManagementModal();
 															setActiveSharedFolder(null);
-															setSidebarView('notes');
+																setSidebarView(filterSidebarView);
 															if (isMobileViewport) closeMobileSidebar();
 														}}
 														style={{ ['--sidebar-item-index' as const]: 0 }}
@@ -5492,8 +5498,8 @@ export function App(): React.JSX.Element {
 													</button>
 													)
 												) : null}
-												{entry.id === 'collections'
-													? (viewMode === 'bubble'
+													{entry.id === 'collections'
+														? (sidebarUsesBubbleSummaryMenus
 														? null
 														: collectionTree.length > 0
 														? renderCollectionSidebarNodes(collectionTree)
@@ -5523,13 +5529,13 @@ export function App(): React.JSX.Element {
 																className={className}
 																onClick={() => {
 																	if (entry.id === 'labels' && item.kind === 'item') {
-																		setSidebarView('notes');
+																		setSidebarView(filterSidebarView);
 																		setActiveLabelIds((current) => current.includes(item.id) ? current.filter((entryId) => entryId !== item.id) : [...current, item.id]);
 																		if (isMobileViewport) closeMobileSidebar();
 																		return;
 																	}
 																	if (entry.id === 'reminders' && item.kind === 'item') {
-																		setSidebarView('notes');
+																		setSidebarView(filterSidebarView);
 																		setActiveReminderFilter(item.id as ReminderFilterMode);
 																		if (isMobileViewport) closeMobileSidebar();
 																	}
@@ -5559,7 +5565,7 @@ export function App(): React.JSX.Element {
 															type="button"
 															className={`sidebar-submenu-item${isActive ? ' is-active' : ''}`}
 															onClick={() => {
-																setSidebarView('notes');
+																setSidebarView(filterSidebarView);
 																if (isToggleable && isActive) {
 																	// Second tap on an active sortable field flips direction.
 																	setSortDirectionByMode((current) => ({
@@ -5612,7 +5618,7 @@ export function App(): React.JSX.Element {
 																				type="button"
 																				className={className}
 																				onClick={() => {
-																					setSidebarView('notes');
+																					setSidebarView(filterSidebarView);
 																					if (item.id === 'clear') {
 																						setActiveReminderFilter('all');
 																						setActiveSortMode('manual');
@@ -5647,7 +5653,7 @@ export function App(): React.JSX.Element {
 				</aside>
 
 				<main className="app-main">
-					{deferredSearchQuery && viewMode !== 'bubble' ? (
+					{deferredSearchQuery && viewMode !== 'bubble' && sidebarView !== 'images' ? (
 						<section className="global-search-results" aria-live="polite">
 							<div className="global-search-results-header">
 								<div>
@@ -5707,7 +5713,7 @@ export function App(): React.JSX.Element {
 					) : null}
 
 					{/* Archive/trash views are read-focused; only notes view shows quick-create. */}
-					{(sidebarView === 'notes' || sidebarView === 'trash') ? (
+					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') ? (
 						<div ref={topControlsRef} className="app-main-sticky">
 							{sidebarView === 'notes' && canCreateNotesInCurrentContext ? (
 								<div className="top-actions">
@@ -5721,7 +5727,7 @@ export function App(): React.JSX.Element {
 							) : null}
 
 							<div className="note-grid-scope" aria-live="polite">
-								{viewMode === 'bubble' ? (
+								{viewMode === 'bubble' && sidebarView !== 'images' ? (
 									<div className="note-grid-scope-chip">
 										<span className="note-grid-scope-label">All Workspaces</span>
 										<input
@@ -5740,7 +5746,7 @@ export function App(): React.JSX.Element {
 										<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
 									</div>
 								) : null}
-								{viewMode !== 'bubble' ? activeFilterChips.map((chip) => (
+								{viewMode !== 'bubble' || sidebarView === 'images' ? activeFilterChips.map((chip) => (
 									<div
 										key={chip.key}
 										className={`note-grid-scope-chip is-clearable${chip.onPrimaryAction ? ' is-interactive' : ''}`}
@@ -5808,7 +5814,7 @@ export function App(): React.JSX.Element {
 					</section>
 
 				{/* NoteGrid stays mounted in bubble mode (display:none) so DocumentManager keeps docs loaded. */}
-				<div style={{ display: viewMode === 'bubble' ? 'none' : undefined }}>
+				<div style={{ display: viewMode === 'bubble' || sidebarView === 'images' ? 'none' : undefined }}>
 					<NoteGrid
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
@@ -5866,8 +5872,25 @@ export function App(): React.JSX.Element {
 						viewMode={viewMode === 'bubble' ? 'card' : viewMode}
 				/>
 				</div>
+				{sidebarView === 'images' ? (
+					<WorkspaceImagesGallery
+						authUserId={authUserId}
+						collections={collections}
+						labels={labels}
+						activeCollectionId={activeCollectionId}
+						activeLabelIds={activeLabelIds}
+						activeCollaboratorFilter={noteGridCollaboratorFilter}
+						reminderFilter={activeReminderFilter}
+						sortMode={activeSortMode}
+						sortDirection={activeSortDirection}
+						sortGrouping={activeSortGrouping}
+						refreshCollaboratorsToken={collaborationRefreshToken}
+						sharedNotes={visibleSharedPlacements}
+						searchQuery={deferredSearchQuery}
+					/>
+				) : null}
 				{/* BubbleView overlays the grid — NoteGrid stays mounted above (display:none) */}
-				{viewMode === 'bubble' && authWorkspaceId ? (
+				{viewMode === 'bubble' && sidebarView !== 'images' && authWorkspaceId ? (
 						<BubbleView
 							workspaces={sidebarWorkspaces as BubbleWorkspaceInfo[]}
 							activeWorkspaceId={authWorkspaceId}
