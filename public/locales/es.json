@@ -336,7 +336,11 @@
   },
   "grid": {
     "notes": "Notas",
-    "notesGrid": "Cuadrícula de notas"
+    "notesGrid": "Cuadrícula de notas",
+    "viewCard": "Vista de tarjetas",
+    "viewList": "Vista de lista",
+    "viewStrip": "Vista de tira",
+    "viewBubble": "Vista de burbujas"
   },
   "workspace": {
     "title": "Espacios de trabajo",

@@ -1594,6 +1594,34 @@ Drag handle:
 	transform: translateY(2px);
 }
 
+.checklistCheckboxHitArea {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 20px;
+	height: 20px;
+	min-width: 20px;
+	margin-top: 3px;
+	transform: translateY(2px);
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+	flex: 0 0 20px;
+}
+
+.checklistCheckboxHitArea::before {
+	content: '';
+	position: absolute;
+	inset: -10px -8px;
+}
+
+.checklistCheckboxHitArea .checklistCheckbox {
+	margin-top: 0;
+	transform: none;
+	pointer-events: none;
+}
+
 .checklistRowRichShell,
 .checklistRowPreview,
 .rowTextArea,

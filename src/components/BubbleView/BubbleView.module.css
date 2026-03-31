@@ -1,0 +1,404 @@
+/* BubbleView.module.css – floating bubble layout for cross-workspace note overview */
+
+.container {
+	width: 100%;
+	min-height: 300px;
+	position: relative;
+	padding: 16px 8px 32px;
+	box-sizing: border-box;
+	overflow-x: hidden;
+	overflow-y: visible;
+	--bv-scale: 1;
+	--bv-columns: 6;
+}
+
+.cloud {
+	position: relative;
+	margin: 0 auto;
+	overflow: visible;
+}
+
+@media (min-width: 769px) {
+	.cloud {
+		margin: 0;
+	}
+}
+
+.cloudItem {
+	position: absolute;
+	will-change: top, left, width, height;
+	transition:
+		left 240ms cubic-bezier(0.22, 1, 0.36, 1),
+		top 240ms cubic-bezier(0.22, 1, 0.36, 1),
+		width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+		height 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.cloudItem {
+		transition: none;
+	}
+}
+
+/*
+	BubbleView debug overlay styles intentionally left commented out.
+	Re-enable together with the commented debug markup/state in BubbleView.tsx.
+
+.debugDock {
+	position: sticky;
+	top: 8px;
+	z-index: 6;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 8px;
+	margin-bottom: 8px;
+	pointer-events: none;
+}
+
+.debugControls {
+	display: flex;
+	gap: 8px;
+	pointer-events: auto;
+}
+
+.debugToggle,
+.debugCopyButton {
+	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 92%, var(--color-app-bg));
+	color: var(--color-text);
+	border-radius: 999px;
+	padding: 8px 12px;
+	font: inherit;
+	font-size: var(--font-size-xs);
+	cursor: pointer;
+	box-shadow: 0 4px 14px rgba(0 0 0 / 0.18);
+}
+
+.debugPanel {
+	width: min(100%, 720px);
+	padding: 12px;
+	border-radius: 14px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 96%, var(--color-app-bg));
+	color: var(--color-text);
+	box-shadow: 0 8px 24px rgba(0 0 0 / 0.24);
+	pointer-events: auto;
+	backdrop-filter: blur(8px);
+	font-size: var(--font-size-xs);
+	line-height: 1.4;
+}
+
+.debugGrid {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+	gap: 6px 12px;
+	margin-bottom: 10px;
+}
+
+.debugEvents {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	max-height: 220px;
+	overflow: auto;
+	padding-top: 8px;
+	border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	font-family: Consolas, 'Courier New', monospace;
+	font-size: 11px;
+}
+
+.debugEventRow {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	opacity: 0.9;
+}
+*/
+
+.empty {
+	padding: 48px 16px;
+	text-align: center;
+	color: var(--color-text-muted);
+}
+
+.lanes {
+	display: grid;
+	grid-template-columns: repeat(var(--bv-columns, 3), minmax(0, 1fr));
+	gap: clamp(8px, 0.95vw, 16px);
+	align-items: start;
+	width: 100%;
+}
+
+.lane {
+	display: flex;
+	flex-direction: column;
+	gap: clamp(8px, 1.3vw, 18px);
+	align-items: center;
+	width: 100%;
+}
+
+.bubbleShell {
+	display: flex;
+	justify-content: center;
+	width: 100%;
+	box-sizing: border-box;
+	overflow: visible;
+}
+
+.bubble {
+	position: relative;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: calc(18px * var(--bv-scale, 1));
+	border-radius: 999px;
+	border: 1px solid var(--bv-bubble-border, hsl(var(--bv-bubble-hue, 220), 30%, 60%, 0.35));
+	background:
+		radial-gradient(circle at 28% 24%, rgba(255 255 255 / 0.52) 0%, rgba(255 255 255 / 0.24) 12%, rgba(255 255 255 / 0.04) 26%, transparent 40%),
+		radial-gradient(circle at 34% 30%, color-mix(in hsl, white 30%, transparent) 0%, transparent 48%),
+		radial-gradient(circle at 68% 72%, rgba(0 0 0 / 0.20) 0%, rgba(0 0 0 / 0.14) 24%, rgba(0 0 0 / 0.06) 42%, transparent 66%),
+		radial-gradient(circle at 50% 44%, var(--bv-bubble-bg, color-mix(in hsl, hsl(var(--bv-bubble-hue, 220) 28% 92%), var(--color-surface) 55%)) 0%, color-mix(in hsl, var(--bv-bubble-bg, hsl(var(--bv-bubble-hue, 220) 28% 92%)) 82%, hsl(var(--bv-bubble-hue, 220) 40% 74%)) 58%, color-mix(in hsl, var(--bv-bubble-bg, hsl(var(--bv-bubble-hue, 220) 28% 92%)) 54%, hsl(var(--bv-bubble-hue, 220) 24% 34%)) 100%);
+	color: var(--bv-bubble-text, var(--color-text));
+	cursor: pointer;
+	text-align: center;
+	width: min(100%, var(--bv-bubble-diameter, var(--bv-bubble-size, calc(72px * var(--bv-scale, 1)))));
+	aspect-ratio: 1 / 1;
+	box-sizing: border-box;
+	box-shadow:
+		0 1px 2px rgba(255 255 255 / 0.16) inset,
+		0 -10px 18px rgba(0 0 0 / 0.12) inset,
+		0 10px 18px rgba(255 255 255 / 0.08) inset,
+		0 10px 20px rgba(0 0 0 / 0.10),
+		0 3px 8px rgba(0 0 0 / 0.08);
+	transition:
+		transform 250ms ease,
+		box-shadow 180ms ease,
+		border-color 120ms ease;
+	transform-origin: center center;
+	transform: rotate(var(--bv-bubble-rotate, 0deg));
+	overflow: hidden;
+	isolation: isolate;
+}
+
+.bubble::before,
+.bubble::after {
+	content: '';
+	position: absolute;
+	pointer-events: none;
+	border-radius: inherit;
+}
+
+.bubble::before {
+	inset: 6% 12% auto 14%;
+	height: 32%;
+	background: radial-gradient(circle at 34% 34%, rgba(255 255 255 / 0.78) 0%, rgba(255 255 255 / 0.34) 28%, rgba(255 255 255 / 0.12) 48%, transparent 72%);
+	filter: blur(1px);
+	opacity: 0.9;
+	mix-blend-mode: screen;
+}
+
+.bubble::after {
+	inset: 3%;
+	border: 1px solid rgba(255 255 255 / 0.14);
+	box-shadow:
+		0 0 0 1px rgba(255 255 255 / 0.04) inset,
+		0 18px 24px rgba(255 255 255 / 0.08) inset,
+		0 -16px 24px rgba(0 0 0 / 0.12) inset;
+}
+
+.bubble:hover,
+.bubble:focus-visible {
+	transform: rotate(var(--bv-bubble-rotate, 0deg)) translateY(-2px) scale(1.02);
+	box-shadow:
+		0 1px 2px rgba(255 255 255 / 0.22) inset,
+		0 -10px 18px rgba(0 0 0 / 0.13) inset,
+		0 12px 22px rgba(255 255 255 / 0.12) inset,
+		0 14px 28px rgba(0 0 0 / 0.16),
+		0 3px 10px rgba(0 0 0 / 0.10);
+	border-color: color-mix(
+		in hsl,
+		hsl(var(--bv-bubble-hue, 220) 50% 50%),
+		var(--color-border)
+	);
+	outline: none;
+}
+
+.bubble:active {
+	transform: rotate(var(--bv-bubble-rotate, 0deg)) scale(0.97) !important;
+}
+
+.bubbleInactive {
+	opacity: 0.72;
+}
+
+.bubbleInactive:hover {
+	opacity: 0.88;
+}
+
+.bubbleContent {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+	box-sizing: border-box;
+	z-index: 1;
+}
+
+.bubbleTextBox {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+	overflow: hidden;
+	box-sizing: border-box;
+}
+
+.bubble_size1 {
+	--bv-bubble-size: calc(52px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-xs) * var(--bv-scale, 0.92));
+}
+
+.bubble_size2 {
+	--bv-bubble-size: calc(62px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-xs) * var(--bv-scale, 1));
+}
+
+.bubble_size3 {
+	--bv-bubble-size: calc(72px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-xs) * var(--bv-scale, 1.04));
+}
+
+.bubble_size4 {
+	--bv-bubble-size: calc(84px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-sm) * var(--bv-scale, 1));
+}
+
+.bubble_size5 {
+	--bv-bubble-size: calc(98px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-sm) * var(--bv-scale, 1.04));
+}
+
+.bubble_size6 {
+	--bv-bubble-size: calc(114px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-md, 14px) * var(--bv-scale, 1));
+	border-width: 2px;
+	box-shadow:
+		0 1px 2px rgba(255 255 255 / 0.18) inset,
+		0 -12px 22px rgba(0 0 0 / 0.13) inset,
+		0 14px 22px rgba(255 255 255 / 0.10) inset,
+		0 14px 24px rgba(0 0 0 / 0.12),
+		0 4px 14px rgba(0 0 0 / 0.08);
+}
+
+.bubble_size7 {
+	--bv-bubble-size: calc(132px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-md, 14px) * var(--bv-scale, 1.06));
+	border-width: 2px;
+	box-shadow:
+		0 1px 2px rgba(255 255 255 / 0.20) inset,
+		0 -14px 24px rgba(0 0 0 / 0.14) inset,
+		0 16px 24px rgba(255 255 255 / 0.10) inset,
+		0 16px 28px rgba(0 0 0 / 0.13),
+		0 5px 16px rgba(0 0 0 / 0.09);
+}
+
+.bubble_size8 {
+	--bv-bubble-size: calc(152px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-lg, 16px) * var(--bv-scale, 1.08));
+	border-width: 2px;
+	box-shadow:
+		0 1px 2px rgba(255 255 255 / 0.22) inset,
+		0 -16px 26px rgba(0 0 0 / 0.16) inset,
+		0 18px 28px rgba(255 255 255 / 0.11) inset,
+		0 18px 30px rgba(0 0 0 / 0.14),
+		0 6px 18px rgba(0 0 0 / 0.10);
+}
+
+.bubbleTitle {
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	font-weight: 600;
+	line-height: 1.12;
+	color: inherit;
+	word-break: break-word;
+	overflow-wrap: anywhere;
+	white-space: normal;
+	text-overflow: ellipsis;
+	max-width: 100%;
+}
+
+.bubblePreview {
+	position: absolute;
+	left: 15%;
+	right: 15%;
+	bottom: 10%;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+	line-height: 1.3;
+	color: var(--bv-bubble-muted, var(--color-text-muted));
+	font-size: 10px;
+	opacity: 0.86;
+	pointer-events: none;
+}
+
+.bubbleDetail_title .bubblePreview,
+.bubbleDetail_meta .bubblePreview {
+	display: none;
+}
+
+.bubblePreviewMedium {
+	line-clamp: 2;
+	-webkit-line-clamp: 2;
+}
+
+.bubblePreviewLarge {
+	line-clamp: 4;
+	-webkit-line-clamp: 4;
+}
+
+.bubbleBadges {
+	position: absolute;
+	top: 10%;
+	left: 50%;
+	transform: translateX(-50%);
+	display: flex;
+	gap: 5px;
+	align-items: center;
+	justify-content: center;
+	color: var(--bv-bubble-muted, var(--color-text-muted));
+	opacity: 0.7;
+	pointer-events: none;
+}
+
+.bubbleDetail_title .bubbleBadges {
+	display: none;
+}
+
+.bubbleBadgeIcon {
+	font-size: 10px;
+}
+
+@media (max-width: 900px) {
+	.container {
+		padding-bottom: 28px;
+	}
+}
+
+@media (max-width: 768px) {
+	.lanes {
+		gap: 8px;
+	}
+
+	.lane {
+		gap: 10px;
+	}
+
+	.bubble {
+		padding: calc(14px * var(--bv-scale, 1));
+	}
+}

@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.30 - 2026-03-30
+
+### Added
+- **Device-local note-card completed-state persistence.** Checklist note cards now restore the completed-items dropdown state immediately on the same device, including after reloads and offline restarts.
+
+### Changed
+- **iOS Safari and standalone mobile polish.** Updated viewport handling, safe-area layout, modal spacing, and note-card/checklist touch targets to behave more consistently on iPhone Safari and iOS installs.
+- **List and strip drag interactions now animate like checklist moves.** Flat note rows now use neighbor-shift reorder animation, suppress accidental post-drop opens on touch, and clear selection more cleanly after mobile drag commits.
+- **Completed-items controls on note cards are easier to use.** Expanded spacing, a clearer disclosure arrow, and larger invisible checkbox hit targets reduce accidental taps on mobile without changing the visible control sizes.
+
+### Fixed
+- **Bubble scoring no longer grows notes just from opening them.** Internal access/seeding writes are now excluded from note activity timestamps so bubble size reflects meaningful updates instead of editor/view lifecycle noise.
+- **Bubble size is now consistent across devices.** Bubble importance no longer mixes in device-local activity storage, so the same note renders with the same weight everywhere.
+- **iOS Safari refresh no longer jumps to a different workspace.** Startup now always seeds the local workspace-selection cache during auth/bootstrap flows, preventing refresh from landing on a transient server workspace left behind by background preload.
+
+## 1.1.29 - 2026-03-29
+
+### Added
+- **Four note-grid view modes with persistence.** Added `Card`, `List`, `Strip`, and `Bubble` view modes with a dedicated top-of-grid toggle. The selected mode is stored locally per device and restored on next load.
+- **List and strip layouts for notes.** `List` mode renders compact one-row notes (title + status badges), while `Strip` mode renders taller rows with a one-line content preview for faster scanning.
+- **Cross-workspace bubble overview.** Added a new `Bubble` mode that visualizes notes from all accessible workspaces in a three-lane layout with size-weighted emphasis, workspace color distinction, and zoom controls (Ctrl+scroll or pinch).
+
+### Changed
+- **Grid rendering now supports mode-specific layouts.** The Note Grid now conditionally renders masonry cards or flat rows depending on active mode while preserving existing selection and more-menu behavior.
+- **Localized view-mode labels.** Added English and Spanish locale strings for all view mode controls and accessibility labels.
+
 ## 1.1.28 - 2026-03-29
 
 ### Added

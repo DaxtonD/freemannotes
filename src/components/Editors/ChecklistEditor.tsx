@@ -991,12 +991,14 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 													>
 														<FontAwesomeIcon icon={faGripVertical} />
 													</button>
-													<input
-														type="checkbox"
-														className={styles.checklistCheckbox}
-														checked={item.completed}
-														onChange={(event) => toggleCompleted(item.id, event.target.checked)}
-													/>
+													<label className={styles.checklistCheckboxHitArea} aria-label={item.completed ? 'Completed' : 'Not completed'}>
+														<input
+															type="checkbox"
+															className={styles.checklistCheckbox}
+															checked={item.completed}
+															onChange={(event) => toggleCompleted(item.id, event.target.checked)}
+														/>
+													</label>
 													{activeRowId === item.id ? (
 														<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowRichShell}>
 															<RichTextEditor
@@ -1082,12 +1084,14 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 										<div className={styles.dragHandle} aria-hidden="true">
 													<FontAwesomeIcon icon={faGripVertical} />
 										</div>
-										<input
-											type="checkbox"
-											className={styles.checklistCheckbox}
-											checked={item.completed}
-											onChange={(event) => toggleCompleted(item.id, event.target.checked)}
-										/>
+										<label className={styles.checklistCheckboxHitArea} aria-label={item.completed ? 'Completed' : 'Not completed'}>
+											<input
+												type="checkbox"
+												className={styles.checklistCheckbox}
+												checked={item.completed}
+												onChange={(event) => toggleCompleted(item.id, event.target.checked)}
+											/>
+										</label>
 											{activeRowId === item.id ? (
 																	<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowRichShell}>
 															<RichTextEditor
