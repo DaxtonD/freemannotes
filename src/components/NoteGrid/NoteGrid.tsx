@@ -29,6 +29,7 @@ import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { getVisibleNotes, type NoteGroupingMode, type NoteSortMode, type ReminderFilterMode, type SortDirection, type VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
+import { buildNoteGroupSections } from '../../utilities/noteGrouping';
 import { measureDocumentRects } from './flip';
 import {
 	arraysEqual,
@@ -344,36 +345,6 @@ function addMonths(date: Date, months: number): Date {
 	const next = new Date(date);
 	next.setMonth(next.getMonth() + months);
 	return next;
-}
-
-function getGroupingTimestamp(note: VisibleNoteSnapshot, sortMode: NoteSortMode | undefined): number {
-	return sortMode === 'date-created' ? note.createdAt : note.updatedAt;
-}
-
-function getSectionStart(timestamp: number, grouping: NoteGroupingMode): number {
-	const source = new Date(timestamp);
-	const start = grouping === 'month' ? startOfMonth(source) : startOfWeek(source);
-	return start.getTime();
-}
-
-function formatSectionLabel(startMs: number, grouping: NoteGroupingMode, nowMs: number): string {
-	const start = new Date(startMs);
-	if (grouping === 'month') {
-		const thisMonthStart = startOfMonth(new Date(nowMs)).getTime();
-		const lastMonthStart = startOfMonth(addMonths(new Date(nowMs), -1)).getTime();
-		if (startMs === thisMonthStart) return 'This month';
-		if (startMs === lastMonthStart) return 'Last month';
-		return new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' }).format(start);
-	}
-	const thisWeekStart = startOfWeek(new Date(nowMs)).getTime();
-	const lastWeekStart = startOfWeek(addDays(new Date(nowMs), -7)).getTime();
-	if (startMs === thisWeekStart) return 'This week';
-	if (startMs === lastWeekStart) return 'Last week';
-	const end = addDays(start, 6);
-	const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
-	const startLabel = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(start);
-	const endLabel = new Intl.DateTimeFormat(undefined, sameMonth ? { day: 'numeric' } : { month: 'short', day: 'numeric' }).format(end);
-	return `${startLabel} - ${endLabel}`;
 }
 
 type GridNoteCardProps = {
@@ -1215,30 +1186,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
 	const groupedSections = React.useMemo<NoteGridSection[]>(() => {
-		if (!props.sortGrouping || props.sortGrouping === 'none') return [];
-		const nowMs = Date.now();
-		const sections: NoteGridSection[] = [];
-		const indexByKey = new Map<string, number>();
-		// Preserve the current visible-note order inside each bucket so grouping layers on
-		// top of the existing sort/filter pipeline instead of re-sorting a second time.
-		for (const noteId of renderedIds) {
-			const snapshot = noteSnapshotById.get(noteId);
-			if (!snapshot) continue;
-			const startMs = getSectionStart(getGroupingTimestamp(snapshot, props.sortMode), props.sortGrouping);
-			const key = `${props.sortGrouping}:${startMs}`;
-			const existingIndex = indexByKey.get(key);
-			if (existingIndex === undefined) {
-				indexByKey.set(key, sections.length);
-				sections.push({
-					key,
-					label: formatSectionLabel(startMs, props.sortGrouping, nowMs),
-					noteIds: [noteId],
-				});
-				continue;
-			}
-			sections[existingIndex].noteIds.push(noteId);
-		}
-		return sections;
+		return buildNoteGroupSections({
+			renderedIds,
+			noteSnapshotById,
+			sortGrouping: props.sortGrouping,
+			sortMode: props.sortMode,
+		});
 	}, [noteSnapshotById, props.sortGrouping, props.sortMode, renderedIds]);
 	const persistedColumnSlots = React.useMemo(
 		() => readColumnSlots(noteLayout, columnCount, renderedIds.length),
