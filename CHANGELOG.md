@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.31 - 2026-03-30
+
+### Added
+- **Workspace Images gallery.** Added a dedicated Images sidebar view that shows all visible note images in the current workspace with square thumbnails, shared filtering/sorting/grouping support, offline preview fallback, OCR-aware search, and full-image viewing.
+- **Shared note-grouping utility.** Extracted reusable week/month grouping helpers so the main note grid and the new Images gallery stay aligned on section labeling and bucket boundaries.
+
+### Changed
+- **Images gallery cards are denser on mobile.** Thumbnail metadata now stays compact with just the note title, optional collection name, label and collaborator counts, and date, reducing vertical space usage on phones.
+- **Images sidebar polish.** Removed the unused Archive sidebar entry and refined the gallery header into a compact sticky status bar while keeping active sidebar filters visible in the Images scope.
+
+### Fixed
+- **Bubble titles now refresh immediately after note edits.** Active-workspace bubbles now read the live note title/content from the note doc and resubscribe to title/content/checklist changes instead of relying on stale registry-only values.
+- **Switching workspaces from Images no longer gets stuck or hangs on loading.** Workspace clicks now return to the notes view, and the underlying note grid stays mounted so workspace activation can still complete and dismiss the splash screen.
+
 ## 1.1.30 - 2026-03-30
 
 ### Added

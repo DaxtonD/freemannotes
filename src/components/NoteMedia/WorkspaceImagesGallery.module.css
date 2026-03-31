@@ -1,0 +1,332 @@
+.section {
+	display: flex;
+	flex-direction: column;
+	gap: 14px;
+	min-height: 0;
+	padding: 8px 0 24px;
+	container-type: inline-size;
+}
+
+.heroAside,
+.empty,
+.groupSection {
+	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+	background:
+		linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 90%, transparent), color-mix(in srgb, var(--color-surface-2) 72%, transparent));
+	box-shadow: 0 18px 38px color-mix(in srgb, var(--color-shadow) 12%, transparent);
+	border-radius: 24px;
+}
+
+.heroAside {
+	position: sticky;
+	top: 10px;
+	z-index: 6;
+	padding: 10px 14px;
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+}
+
+.heroMeta {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.statRow {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12px;
+	color: var(--color-text-muted);
+	padding: 0;
+	border-bottom: 0;
+}
+
+.statLabel {
+	white-space: nowrap;
+}
+
+.statValue {
+	font-size: 13px;
+	font-weight: 800;
+	color: var(--color-text);
+	text-align: left;
+	white-space: nowrap;
+}
+
+.grid {
+	--gallery-mobile-columns: 2;
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+	gap: 16px;
+}
+
+.groupSection {
+	padding: 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.groupHeader {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.groupTitle {
+	margin: 0;
+	font-size: 15px;
+	font-weight: 800;
+}
+
+.groupMeta {
+	font-size: 12px;
+	color: var(--color-text-muted);
+}
+
+.tile {
+	position: relative;
+	border-radius: 22px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	background:
+		linear-gradient(180deg, color-mix(in srgb, var(--color-surface) 92%, transparent), color-mix(in srgb, var(--color-surface-2) 88%, transparent));
+	overflow: hidden;
+	min-width: 0;
+	transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+	box-shadow: 0 12px 28px color-mix(in srgb, var(--color-shadow) 8%, transparent);
+}
+
+.tile:hover,
+.tile:focus-within {
+	transform: translateY(-2px);
+	border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+	box-shadow: 0 18px 34px color-mix(in srgb, var(--color-shadow) 12%, transparent);
+}
+
+.tileButton {
+	width: 100%;
+	border: 0;
+	padding: 0;
+	margin: 0;
+	background: transparent;
+	color: inherit;
+	text-align: left;
+	cursor: pointer;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+
+.thumbWrap {
+	position: relative;
+	aspect-ratio: 1 / 1;
+	overflow: hidden;
+	background:
+		linear-gradient(135deg, color-mix(in srgb, var(--color-surface-2) 96%, transparent), color-mix(in srgb, var(--color-surface) 88%, transparent));
+	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.thumb {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	display: block;
+	transform: scale(1.001);
+}
+
+.thumbPlaceholder {
+	width: 100%;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 22px;
+	color: var(--color-text-muted);
+	background:
+		radial-gradient(circle at top, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 52%),
+		linear-gradient(180deg, color-mix(in srgb, var(--color-surface-2) 94%, transparent), color-mix(in srgb, var(--color-surface) 90%, transparent));
+}
+
+.thumbBadge {
+	position: absolute;
+	top: 10px;
+	left: 10px;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 5px 9px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 800;
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	box-shadow: 0 8px 18px color-mix(in srgb, var(--color-shadow) 10%, transparent);
+	z-index: 1;
+}
+
+.metadata {
+	padding: 10px 11px 11px;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	min-width: 0;
+}
+
+.noteTitle {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 800;
+	line-height: 1.2;
+	word-break: break-word;
+}
+
+.collectionLine,
+.countsLine,
+.footerLine {
+	font-size: 11px;
+	line-height: 1.2;
+	color: var(--color-text-muted);
+	min-width: 0;
+	word-break: break-word;
+	margin: 0;
+}
+
+
+.collectionLine {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.countsLine {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	word-break: normal;
+}
+
+.countBadge {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	white-space: nowrap;
+}
+
+.countBadge svg {
+	font-size: 10px;
+}
+
+.footerLine {
+	display: flex;
+	justify-content: flex-start;
+	gap: 8px;
+	align-items: center;
+	padding-top: 0;
+}
+
+.footerValue {
+	white-space: nowrap;
+	flex-shrink: 0;
+}
+
+.searchBadge {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 7px 10px;
+	border-radius: 999px;
+	font-size: 12px;
+	font-weight: 700;
+	background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface-2));
+	color: var(--color-text);
+}
+
+.empty {
+	padding: 28px 24px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	align-items: flex-start;
+}
+
+.emptyTitle {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 800;
+}
+
+.emptyBody {
+	margin: 0;
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--color-text-muted);
+	max-width: 58ch;
+}
+
+@media (max-width: 1024px) {
+	.heroAside {
+		top: 8px;
+	}
+}
+
+@media (max-width: 767px) {
+	.section {
+		padding-top: 4px;
+	}
+
+	.heroAside {
+		padding: 9px 10px;
+		gap: 8px;
+		align-items: flex-start;
+	}
+
+	.heroMeta {
+		gap: 8px;
+	}
+
+	.grid {
+		grid-template-columns: repeat(var(--gallery-mobile-columns), minmax(0, 1fr));
+		gap: 12px;
+	}
+
+	.groupSection {
+		padding: 12px;
+		gap: 10px;
+	}
+
+	.metadata {
+		padding: 8px 9px 9px;
+		gap: 2px;
+	}
+
+	.noteTitle {
+		font-size: 12px;
+	}
+
+	.collectionLine,
+	.countsLine,
+	.footerLine {
+		font-size: 10px;
+	}
+
+	.countsLine {
+		gap: 8px;
+	}
+
+	.countBadge {
+		gap: 4px;
+	}
+}
