@@ -1,5 +1,10 @@
 import React from 'react';
-import { fetchPushStatus, sendTestPushNotification, type PushSubscriptionStatus } from '../../core/pushApi';
+import {
+	fetchPushStatus,
+	sendTestPushNotification,
+	type NotificationDeliveryPolicy,
+	type PushSubscriptionStatus,
+} from '../../core/pushApi';
 import {
 	getPlatform,
 	isIosPlatform,
@@ -38,6 +43,33 @@ function formatRelativeTime(iso: string): string {
 	}
 }
 
+function getStatusLabel(
+	t: (key: string) => string,
+	policy: NotificationDeliveryPolicy | null,
+	isSubscribed: boolean,
+	permission: PushPermissionState
+): string {
+	if (policy?.effectiveMode === 'email') {
+		return t('push.statusEmail') || 'Reminder emails enabled';
+	}
+	if (policy?.effectiveMode === 'off') {
+		return t('push.statusServerDisabled') || 'External notifications disabled on server';
+	}
+	if (isSubscribed) {
+		return t('push.statusEnabled') || 'Push notifications enabled';
+	}
+	if (permission === 'denied') {
+		return t('push.statusDenied') || 'Notifications blocked by browser';
+	}
+	return t('push.statusDisabled') || 'Push notifications disabled';
+}
+
+function getDeliveryBadgeLabel(t: (key: string) => string, policy: NotificationDeliveryPolicy | null): string {
+	if (policy?.effectiveMode === 'email') return t('push.deliveryModeEmail') || 'Email delivery';
+	if (policy?.effectiveMode === 'off') return t('push.deliveryModeOff') || 'External delivery off';
+	return t('push.deliveryModePush') || 'Push delivery';
+}
+
 export function NotificationsSection(props: NotificationsSectionProps): React.JSX.Element {
 	const { t, deviceId, connectionState } = props;
 
@@ -74,14 +106,14 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 		try {
 			setLoadingStatus(true);
 			setStatusError(null);
-			const data = await fetchPushStatus(deviceId);
+			const data = await fetchPushStatus(deviceId, platform);
 			setStatus(data);
 		} catch (err) {
 			setStatusError(err instanceof Error ? err.message : 'Failed to load push status');
 		} finally {
 			setLoadingStatus(false);
 		}
-	}, [deviceId]); // connectionState intentionally omitted — read via ref to avoid re-fetch on every WS flap
+	}, [deviceId, platform]); // connectionState intentionally omitted — read via ref to avoid re-fetch on every WS flap
 
 	React.useEffect(() => {
 		void loadStatus();
@@ -93,7 +125,21 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 	}, []);
 
 	// ── Derived booleans ────────────────────────────────────────────────────
+	const deliveryPolicy = status?.deliveryPolicy ?? null;
+	const isPushMode = deliveryPolicy?.effectiveMode === 'push';
+	const isEmailMode = deliveryPolicy?.effectiveMode === 'email';
+	const isExternalDeliveryOff = deliveryPolicy?.effectiveMode === 'off';
 	const isSubscribed = Boolean(status?.subscription?.enabled);
+	const canManagePush = isPushMode && pushSupported;
+	const statusDotClass = isEmailMode
+		? styles.statusDotEnabled
+		: isExternalDeliveryOff
+			? styles.statusDotDisabled
+			: isSubscribed
+				? styles.statusDotEnabled
+				: permission === 'denied'
+					? styles.statusDotDisabled
+					: styles.statusDotUnknown;
 	const isAnyActionBusy = subscribing || unsubscribing || reregistering || testing;
 
 	// Reset test result when re-testing
@@ -156,13 +202,15 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 		clearFeedback();
 		setTesting(true);
 		try {
-			const result = await sendTestPushNotification();
+			const result = await sendTestPushNotification(platform);
 			if (result.sent > 0) {
 				setTestResult({ ok: true, message: `Sent to ${result.sent} device${result.sent !== 1 ? 's' : ''}. Check your notifications.` });
+			} else if (result.emailSent) {
+				setTestResult({ ok: true, message: t('push.testEmailSent') || 'Sent a test email notification. Check your inbox.' });
 			} else if (result.failed > 0) {
 				setTestResult({ ok: false, message: `Failed to send (${result.failed} device${result.failed !== 1 ? 's' : ''} failed). Check server logs.` });
 			} else {
-				setTestResult({ ok: false, message: 'No devices to send to. Enable notifications first.' });
+				setTestResult({ ok: false, message: t('push.noDeliveryTargets') || 'No delivery target is available for this account on the current platform.' });
 			}
 			// Refresh logs to show the test attempt
 			await loadStatus();
@@ -186,7 +234,7 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 
 	// ── iOS-in-browser block (not installed) ────────────────────────────────
 	// Web Push on iOS Safari requires the app to be added to the Home Screen first.
-	const showIosGuidance = isIos && !iosInstalled;
+	const showIosGuidance = isPushMode && isIos && !iosInstalled;
 
 	return (
 		<div className={styles.notificationsSection}>
@@ -201,34 +249,49 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 					<>
 						<div className={styles.statusRow}>
 							<span
-								className={`${styles.statusDot} ${
-									isSubscribed
-										? styles.statusDotEnabled
-										: permission === 'denied'
-											? styles.statusDotDisabled
-											: styles.statusDotUnknown
-								}`}
+								className={`${styles.statusDot} ${statusDotClass}`}
 							/>
 							<span className={styles.statusLabel}>
-								{isSubscribed
-									? (t('push.statusEnabled') || 'Push notifications enabled')
-									: permission === 'denied'
-										? (t('push.statusDenied') || 'Notifications blocked by browser')
-										: (t('push.statusDisabled') || 'Push notifications disabled')}
+										{getStatusLabel(t, deliveryPolicy, isSubscribed, permission)}
 							</span>
 						</div>
 
 						<div className={styles.statusRow}>
 							<span className={styles.statusPlatformBadge}>{platform}</span>
+									<span className={`${styles.deliveryBadge} ${isEmailMode ? styles.deliveryBadgeEmail : isExternalDeliveryOff ? styles.deliveryBadgeOff : styles.deliveryBadgePush}`}>
+										{getDeliveryBadgeLabel(t, deliveryPolicy)}
+									</span>
 							{status?.subscription?.lastSeenAt && (
 								<span className={styles.statusMeta}>
 									{t('push.lastSync') || 'Last sync'}: {formatRelativeTime(status.subscription.lastSeenAt)}
 								</span>
 							)}
 						</div>
+
+								{deliveryPolicy && (
+									<p className={styles.policyNote}>
+										{isEmailMode
+											? (t('push.serverEmailFallback') || 'This deployment is configured to send reminder emails instead of push notifications on this platform.')
+											: isExternalDeliveryOff
+												? (t('push.serverExternalOff') || 'This deployment has external notifications turned off for this platform.')
+												: (t('push.serverPushMode') || 'This deployment is configured to deliver push notifications on this platform when the device is registered.')}
+									</p>
+								)}
 					</>
 				)}
 			</div>
+
+					{isEmailMode && (
+						<div className={styles.infoBox}>
+							{t('push.emailRequiredNotice') || 'A valid account email address is required because email-only reminder delivery uses your login email.'}
+						</div>
+					)}
+
+					{!pushSupported && isPushMode && !showIosGuidance && (
+						<div className={styles.infoBox}>
+							{t('push.pushUnsupportedOnDevice') || 'Push delivery is enabled on the server, but this browser/device cannot register for push notifications.'}
+						</div>
+					)}
 
 			{/* ── iOS guidance (not yet installed to Home Screen) ──────── */}
 			{showIosGuidance && (
@@ -257,7 +320,7 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 			)}
 
 			{/* ── Permission denied notice ──────────────────────────────── */}
-			{permission === 'denied' && !showIosGuidance && (
+			{permission === 'denied' && !showIosGuidance && isPushMode && (
 				<div className={styles.deniedWarning}>
 					{t('push.permissionDenied') || 'Notifications are blocked. To re-enable, open your browser or OS settings and allow notifications for this site.'}
 				</div>
@@ -266,7 +329,7 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 			{/* ── Actions ──────────────────────────────────────────────── */}
 			{!showIosGuidance && (
 				<div className={styles.actions}>
-					{!isSubscribed && permission !== 'denied' && pushSupported && (
+					{!isSubscribed && permission !== 'denied' && canManagePush && (
 						<button
 							type="button"
 							className={`${styles.actionBtn} ${styles.actionBtnPrimary}`}
@@ -280,7 +343,7 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 						</button>
 					)}
 
-					{isSubscribed && (
+					{isPushMode && isSubscribed && (
 						<>
 							<button
 								type="button"
@@ -305,19 +368,21 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 									? (t('common.loading') || 'Re-registering…')
 									: (t('push.reregister') || 'Re-register Device')}
 							</button>
-
-							<button
-								type="button"
-								className={styles.actionBtn}
-								onClick={handleTest}
-								disabled={isAnyActionBusy || connectionState !== 'connected'}
-							>
-								<span className={styles.actionIcon}>📨</span>
-								{testing
-									? (t('common.loading') || 'Sending…')
-									: (t('push.sendTest') || 'Send Test Notification')}
-							</button>
 						</>
+					)}
+
+					{!isExternalDeliveryOff && (isEmailMode || (isPushMode && isSubscribed)) && (
+						<button
+							type="button"
+							className={styles.actionBtn}
+							onClick={handleTest}
+							disabled={isAnyActionBusy || connectionState !== 'connected'}
+						>
+							<span className={styles.actionIcon}>📨</span>
+							{testing
+								? (t('common.loading') || 'Sending…')
+								: (t('push.sendTest') || 'Send Test Notification')}
+						</button>
 					)}
 				</div>
 			)}
@@ -356,7 +421,7 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 				</div>
 			)}
 
-			{!loadingStatus && status?.recentLogs && status.recentLogs.length === 0 && isSubscribed && (
+			{!loadingStatus && status?.recentLogs && status.recentLogs.length === 0 && isPushMode && isSubscribed && (
 				<div className={styles.healthSection}>
 					<p className={styles.healthTitle}>{t('push.recentDeliveries') || 'Recent Deliveries'}</p>
 					<p className={styles.noLogs}>{t('push.noDeliveries') || 'No deliveries yet. Send a test notification above.'}</p>

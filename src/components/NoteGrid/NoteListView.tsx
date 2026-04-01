@@ -45,6 +45,7 @@ export type NoteListViewProps = {
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	shouldSuppressOpen: () => boolean;
+	canOpenNotes: boolean;
 	canDrag: (noteId: string) => boolean;
 	onSelectNote: (noteId: string) => void;
 	onMoreMenu: (noteId: string, anchorRect: DOMRect | null) => void;
@@ -96,6 +97,7 @@ type NoteRowProps = {
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	canDrag: boolean;
+	canOpenNotes: boolean;
 	onSelectNote: (noteId: string) => void;
 	onMoreMenu: (noteId: string, anchorRect: DOMRect | null) => void;
 };
@@ -126,6 +128,7 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 		(event: React.MouseEvent) => {
 			// Prevent the more-menu button from also triggering open
 			if ((event.target as HTMLElement).closest('[data-more-btn="true"]')) return;
+			if (!props.canOpenNotes) return;
 			if (props.shouldSuppressOpen()) return;
 			props.onSelectNote(noteId);
 		},
@@ -134,12 +137,13 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 
 	const handleKeyDown = React.useCallback(
 		(event: React.KeyboardEvent) => {
+			if (!props.canOpenNotes) return;
 			if (event.key === 'Enter' || event.key === ' ') {
 				event.preventDefault();
 				props.onSelectNote(noteId);
 			}
 		},
-		[noteId, props.onSelectNote]
+		[noteId, props.canOpenNotes, props.onSelectNote]
 	);
 
 	const handleMoreMenuClick = React.useCallback(
@@ -164,8 +168,8 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 				.filter(Boolean)
 				.join(' ')}
 			style={colorVars}
-			role="button"
-			tabIndex={0}
+			role={props.canOpenNotes ? 'button' : undefined}
+			tabIndex={props.canOpenNotes ? 0 : undefined}
 			data-note-card="true"
 			data-note-list-row="true"
 			data-note-id={noteId}
@@ -290,6 +294,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 						setItemElement={props.setItemElement}
 						setHandleElement={props.setHandleElement}
 						shouldSuppressOpen={props.shouldSuppressOpen}
+						canOpenNotes={props.canOpenNotes}
 						canDrag={props.canDrag(noteId)}
 						onSelectNote={props.onSelectNote}
 						onMoreMenu={props.onMoreMenu}

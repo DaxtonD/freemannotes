@@ -21,7 +21,7 @@ No manual Prisma step is required during normal startup. The server boot process
    - `AUTH_JWT_SECRET`
    - `APP_URL` for your beta URL or host
    - `POSTGRES_PASSWORD`
-   - `SMTP_*` values if invite email should work
+   - `SMTP_*` values if invite email or email-mode reminder notifications should work
 3. Start the stack:
    ```bash
    docker compose --env-file .env.docker up -d --build
@@ -68,7 +68,10 @@ Important variables:
 | `SMTP_SECURE` | `false` | SMTP TLS mode |
 | `SMTP_USER` | *(unset)* | SMTP username |
 | `SMTP_PASS` | *(unset)* | SMTP password |
-| `SMTP_FROM` | `FreemanNotes <no-reply@example.com>` | Sender address for invites |
+| `SMTP_FROM` | `FreemanNotes <no-reply@example.com>` | Sender address for invites and email-mode reminder delivery |
+| `WEB_NOTIFICATION_MODE` | `auto` | External notification mode for desktop and non-Android browsers: `auto`, `push`, `email`, or `off` |
+| `ANDROID_NOTIFICATION_MODE` | `auto` | External notification mode for Android browsers/PWAs: `auto`, `push`, `email`, or `off` |
+| `IOS_NOTIFICATION_MODE` | `auto` | External notification mode for iOS: `auto`, `push`, `email`, or `off` |
 | `OCR_DISABLED` | `0` | Set to `1` to disable OCR processing entirely |
 | `OCR_LOG_OUTPUT` | `0` | Set to `1` to stream OCR child-process output and progress messages into the container logs |
 
@@ -95,7 +98,14 @@ If you deploy behind Nginx, Caddy, Traefik, OpenResty, or another reverse proxy,
 
 - The bundled PostgreSQL service is not exposed on a host port by default.
 - `AUTH_JWT_SECRET` should be changed before any public beta.
-- For invite emails, configure `APP_URL` and the `SMTP_*` variables together.
+- For invite emails or email-mode reminders, configure `APP_URL` and the `SMTP_*` variables together.
+- Registration already requires a valid email address. That address doubles as the account identity and the destination for email-mode reminder delivery.
+- `WEB_NOTIFICATION_MODE`, `ANDROID_NOTIFICATION_MODE`, and `IOS_NOTIFICATION_MODE` control external reminder/test delivery per platform:
+   - `auto` prefers push and falls back to email when SMTP is configured.
+   - `push` disables fallback and requires the corresponding push transport.
+   - `email` bypasses push and always uses SMTP.
+   - `off` disables external reminder/test delivery for that platform while leaving in-app notification badges intact.
+- Web and Android browser push use VAPID. iOS push uses FCM.
 - For relay-only testing, you can unset `DATABASE_URL`, but that is not recommended for beta because server-side persistence is disabled.
 
 ## Recovering From P3005 After A Failed First Install

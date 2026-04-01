@@ -21,6 +21,7 @@ type NoteLinkPanelProps = {
 	maxItems?: number;
 	fallbackLinks?: readonly ExtractedNoteLink[];
 	canEdit?: boolean;
+	disableOpenLinks?: boolean;
 	onDeleteLink?: (normalizedUrl: string) => void;
 	onAddUrlPreview?: (() => void) | undefined;
 	disableInitialRemoteRefresh?: boolean;
@@ -358,13 +359,23 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 									<FontAwesomeIcon icon={faTrash} />
 								</button>
 							) : null}
-							<a className={styles.cardLink} href={link.originalUrl} target="_blank" rel="noreferrer noopener">
-							<LinkPreviewImage link={link} />
-							<div className={styles.copy}>
-								<p className={styles.description}>{summarizeLink(link)}</p>
-								<p className={styles.domain}>{link.rootDomain || link.hostname || link.originalUrl}</p>
-							</div>
-							</a>
+							{props.disableOpenLinks ? (
+								<div className={styles.cardLink}>
+									<LinkPreviewImage link={link} />
+									<div className={styles.copy}>
+										<p className={styles.description}>{summarizeLink(link)}</p>
+										<p className={styles.domain}>{link.rootDomain || link.hostname || link.originalUrl}</p>
+									</div>
+								</div>
+							) : (
+								<a className={styles.cardLink} href={link.originalUrl} target="_blank" rel="noreferrer noopener">
+									<LinkPreviewImage link={link} />
+									<div className={styles.copy}>
+										<p className={styles.description}>{summarizeLink(link)}</p>
+										<p className={styles.domain}>{link.rootDomain || link.hostname || link.originalUrl}</p>
+									</div>
+								</a>
+							)}
 						</div>
 					))}
 				</div>

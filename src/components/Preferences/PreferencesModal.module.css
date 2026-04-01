@@ -92,6 +92,30 @@
 	gap: 6px;
 }
 
+.hiddenFileInput {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.filePickerRow {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.filePickerSummary {
+	font-size: 13px;
+	color: var(--color-text-muted);
+	word-break: break-word;
+}
+
 .field span {
 	font-size: 14px;
 	font-weight: 600;

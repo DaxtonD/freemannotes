@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../../core/i18n';
 import styles from '../shared/MetadataModal.module.css';
 
 type ReminderModalProps = {
@@ -31,6 +32,7 @@ function combineLocalDateTime(date: string, time: string): string | null {
 }
 
 export function ReminderModal(props: ReminderModalProps): React.JSX.Element | null {
+	const { t } = useI18n();
 	const [dateValue, setDateValue] = React.useState('');
 	const [timeValue, setTimeValue] = React.useState('09:00');
 
@@ -68,35 +70,35 @@ export function ReminderModal(props: ReminderModalProps): React.JSX.Element | nu
 
 	return (
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
-			<section className={styles.modal} role="dialog" aria-modal="true" aria-label="Add reminder" onClick={(event) => event.stopPropagation()}>
+			<section className={styles.modal} role="dialog" aria-modal="true" aria-label={t('reminders.addTitle')} onClick={(event) => event.stopPropagation()}>
 				<header className={styles.header}>
 					<div className={styles.titleBlock}>
-						<h2 className={styles.title}>Add reminder</h2>
-						<p className={styles.description}>{props.noteTitle?.trim() ? props.noteTitle.trim() : 'Schedule a reminder for this note.'}</p>
+						<h2 className={styles.title}>{t('reminders.addTitle')}</h2>
+						<p className={styles.description}>{props.noteTitle?.trim() ? props.noteTitle.trim() : t('reminders.addDescription')}</p>
 					</div>
-					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label="Close">✕</button>
+					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label={t('common.close')}>✕</button>
 				</header>
 
 				<div className={styles.section}>
 					<div className={styles.quickGrid}>
-						<button type="button" className={styles.quickButton} onClick={() => applyQuickOption('later-today')}>Later today</button>
-						<button type="button" className={styles.quickButton} onClick={() => applyQuickOption('tomorrow')}>Tomorrow</button>
-						<button type="button" className={styles.quickButton} onClick={() => applyQuickOption('next-week')}>Next week</button>
+						<button type="button" className={styles.quickButton} onClick={() => applyQuickOption('later-today')}>{t('reminders.laterToday')}</button>
+						<button type="button" className={styles.quickButton} onClick={() => applyQuickOption('tomorrow')}>{t('reminders.tomorrow')}</button>
+						<button type="button" className={styles.quickButton} onClick={() => applyQuickOption('next-week')}>{t('reminders.nextWeek')}</button>
 					</div>
 					<div className={styles.row}>
 						<div className={styles.field} style={{ flex: '1 1 180px' }}>
-							<label className={styles.fieldLabel} htmlFor="reminder-date">Date</label>
+							<label className={styles.fieldLabel} htmlFor="reminder-date">{t('reminders.dateLabel')}</label>
 							<input id="reminder-date" className={styles.input} type="date" value={dateValue} onChange={(event) => setDateValue(event.target.value)} />
 						</div>
 						<div className={styles.field} style={{ flex: '1 1 160px' }}>
-							<label className={styles.fieldLabel} htmlFor="reminder-time">Time</label>
+							<label className={styles.fieldLabel} htmlFor="reminder-time">{t('reminders.timeLabel')}</label>
 							<input id="reminder-time" className={styles.input} type="time" value={timeValue} onChange={(event) => setTimeValue(event.target.value)} />
 						</div>
 					</div>
 					<div className={styles.actions}>
-						<button type="button" className={styles.ghostButton} onClick={() => props.onSave(null)}>Clear reminder</button>
+						<button type="button" className={styles.ghostButton} onClick={() => props.onSave(null)}>{t('reminders.clearAction')}</button>
 						<button type="button" className={styles.primaryButton} onClick={() => props.onSave(combineLocalDateTime(dateValue, timeValue))} disabled={!dateValue}>
-							Save reminder
+							{t('reminders.saveAction')}
 						</button>
 					</div>
 				</div>

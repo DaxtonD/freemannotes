@@ -26,6 +26,7 @@ import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizont
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
+import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken, setUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
@@ -56,7 +57,6 @@ import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
-import { resizeAutoHeightTextarea } from './autoSizeTextarea';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
@@ -65,6 +65,11 @@ export type NoteEditorProps = {
 	authUserId?: string | null;
 	themeId: ThemeId;
 	doc: Y.Doc;
+	quickCreateCollectionOption?: {
+		label: string;
+		checked: boolean;
+		onChange: (next: boolean) => void;
+	};
 	onClose: () => void;
 	onDelete: (noteId: string) => Promise<void>;
 	onMoveToWorkspace?: (() => void) | undefined;
@@ -95,6 +100,31 @@ function isMediaDockHistoryEntry(value: unknown): boolean {
  */
 function renderRichPreview(json: import('@tiptap/core').JSONContent | null | undefined): React.ReactNode {
 	if (!json?.content) return null;
+	const applyMarks = (node: import('@tiptap/core').JSONContent, content: React.ReactNode, key: React.Key): React.ReactNode => {
+		let element = content;
+		for (const mark of node.marks ?? []) {
+			if (mark.type === 'bold') element = <strong key={`${key}-bold`}>{element}</strong>;
+			if (mark.type === 'italic') element = <em key={`${key}-italic`}>{element}</em>;
+			if (mark.type === 'underline') element = <u key={`${key}-underline`}>{element}</u>;
+			if (mark.type === 'link') {
+				const href = typeof mark.attrs?.href === 'string' ? mark.attrs.href : '';
+				element = href
+					? (
+						<a
+							key={`${key}-link`}
+							href={href}
+							target="_blank"
+							rel="noreferrer noopener"
+							onClick={(event) => event.stopPropagation()}
+						>
+							{element}
+						</a>
+					)
+					: element;
+			}
+		}
+		return element;
+	};
 	let hasContent = false;
 	const elements = json.content.map((block, bi) => {
 		if (block.type !== 'paragraph') return null;
@@ -106,13 +136,7 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 				{block.content.map((node, ni) => {
 					if (node.type === 'hardBreak') return <br key={ni} />;
 					if (node.type !== 'text' || !node.text) return null;
-					let el: React.ReactNode = node.text;
-					for (const mark of node.marks ?? []) {
-						if (mark.type === 'bold') el = <strong>{el}</strong>;
-						if (mark.type === 'italic') el = <em>{el}</em>;
-						if (mark.type === 'underline') el = <u>{el}</u>;
-					}
-					return <React.Fragment key={ni}>{el}</React.Fragment>;
+					return <React.Fragment key={ni}>{applyMarks(node, node.text, `${bi}-${ni}`)}</React.Fragment>;
 				})}
 			</React.Fragment>
 		);
@@ -256,6 +280,38 @@ function useOptionalChecklistItems(yarray: Y.Array<Y.Map<any>> | null): readonly
 			return cacheRef.current.items;
 		}
 	);
+}
+
+function findScrollableAncestor(node: HTMLElement | null): HTMLElement | null {
+	let current = node?.parentElement ?? null;
+	while (current) {
+		if (current.scrollHeight > current.clientHeight + 1) return current;
+		current = current.parentElement;
+	}
+	return null;
+}
+
+function animateFastScrollToBottom(container: HTMLElement): () => void {
+	const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+	const startTop = container.scrollTop;
+	const distance = maxScrollTop - startTop;
+	if (Math.abs(distance) <= 1 || typeof window === 'undefined') {
+		container.scrollTop = maxScrollTop;
+		return () => undefined;
+	}
+	const durationMs = 180;
+	const startTime = window.performance.now();
+	let frameId = 0;
+	const step = (now: number): void => {
+		const progress = Math.min(1, (now - startTime) / durationMs);
+		const eased = 1 - Math.pow(1 - progress, 3);
+		container.scrollTop = startTop + (distance * eased);
+		if (progress < 1) {
+			frameId = window.requestAnimationFrame(step);
+		}
+	};
+	frameId = window.requestAnimationFrame(step);
+	return () => window.cancelAnimationFrame(frameId);
 }
 
 type ChecklistRowContentProps = {
@@ -438,7 +494,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
-	const titleFieldRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const titleFieldRef = React.useRef<HTMLInputElement | null>(null);
+	const textBodyFieldRef = React.useRef<HTMLDivElement | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
@@ -780,6 +837,22 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// Tracks keyboard open->closed transitions for de-selection.
 	const lastMobileKeyboardOpenRef = React.useRef(mobileKeyboardOpen);
 	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
+	const focusTextEditorBody = React.useCallback((): void => {
+		if (textEditor && !textEditor.isDestroyed) {
+			textEditor.commands.focus('start');
+			return;
+		}
+		const tryFocus = (remaining: number): void => {
+			const editorElement = textBodyFieldRef.current?.querySelector('[contenteditable="true"]');
+			if (editorElement instanceof HTMLElement) {
+				editorElement.focus();
+				return;
+			}
+			if (remaining <= 0 || typeof window === 'undefined') return;
+			window.setTimeout(() => tryFocus(remaining - 1), 16);
+		};
+		tryFocus(5);
+	}, [textEditor]);
 	const [draggingParentId, setDraggingParentId] = React.useState<string | null>(null);
 
 
@@ -799,10 +872,75 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
+	const noteAutoScrollEnabled = useSyncExternalStore(
+		(onStoreChange) => subscribeNoteAutoScrollPrefs(onStoreChange),
+		() => getUserNoteAutoScrollEnabled(props.docId, props.authUserId),
+		() => getUserNoteAutoScrollEnabled(props.docId, props.authUserId)
+	);
+	const autoScrollAppliedForRef = React.useRef<string | null>(null);
+	const activeScrollCancelRef = React.useRef<(() => void) | null>(null);
 	const resolvedColor = useMemo(
 		() => (colorToken ? resolveThemeNoteColorModel(props.themeId).tokens[colorToken] : null),
 		[colorToken, props.themeId]
 	);
+
+	const stopActiveScrollAnimation = React.useCallback((): void => {
+		activeScrollCancelRef.current?.();
+		activeScrollCancelRef.current = null;
+	}, []);
+
+	const scrollNoteBodyToBottom = React.useCallback((animated: boolean): boolean => {
+		const container = type === 'checklist'
+			? checklistScrollRef.current
+			: findScrollableAncestor(textBodyFieldRef.current?.querySelector('[contenteditable="true"]') as HTMLElement | null);
+		if (!container) return false;
+		stopActiveScrollAnimation();
+		if (animated) {
+			activeScrollCancelRef.current = animateFastScrollToBottom(container);
+		} else {
+			container.scrollTop = container.scrollHeight;
+		}
+		return true;
+	}, [stopActiveScrollAnimation, type]);
+
+	const handleToggleNoteAutoScroll = React.useCallback((): void => {
+		if (noteAutoScrollEnabled) {
+			setUserNoteAutoScrollEnabled(props.docId, props.authUserId, false);
+			autoScrollAppliedForRef.current = null;
+			stopActiveScrollAnimation();
+			return;
+		}
+		setUserNoteAutoScrollEnabled(props.docId, props.authUserId, true);
+		const scrollKey = `${props.docId}:${type}`;
+		if (scrollNoteBodyToBottom(true)) {
+			autoScrollAppliedForRef.current = scrollKey;
+		}
+	}, [noteAutoScrollEnabled, props.authUserId, props.docId, scrollNoteBodyToBottom, stopActiveScrollAnimation, type]);
+
+	React.useEffect(() => {
+		if (!noteAutoScrollEnabled) {
+			autoScrollAppliedForRef.current = null;
+			stopActiveScrollAnimation();
+			return;
+		}
+		const scrollKey = `${props.docId}:${type}`;
+		if (autoScrollAppliedForRef.current === scrollKey) return;
+		let cancelled = false;
+		const tryScroll = (remaining: number): void => {
+			if (cancelled) return;
+			if (scrollNoteBodyToBottom(true)) {
+				autoScrollAppliedForRef.current = scrollKey;
+				return;
+			}
+			if (remaining <= 0 || typeof window === 'undefined') return;
+			window.setTimeout(() => tryScroll(remaining - 1), 24);
+		};
+		tryScroll(12);
+		return () => {
+			cancelled = true;
+			stopActiveScrollAnimation();
+		};
+	}, [noteAutoScrollEnabled, props.docId, scrollNoteBodyToBottom, stopActiveScrollAnimation, type]);
 	const editorColorStyle = useMemo(() => {
 		if (!resolvedColor) return undefined;
 		return {
@@ -867,10 +1005,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const title = useYTextValue(titleYText);
 	const content = useOptionalYTextValue(contentYText);
 	const items = useOptionalChecklistItems(type === 'checklist' ? checklistArray : null);
-
-	React.useLayoutEffect(() => {
-		resizeAutoHeightTextarea(titleFieldRef.current);
-	}, [title]);
 
 	React.useEffect(() => {
 		if (type !== 'text') {
@@ -1276,6 +1410,22 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		rowInputsRef.current.set(id, node);
 	}, []);
 
+	const focusChecklistBody = React.useCallback((): void => {
+		const targetId = activeItems[0]?.id ?? normalizedItems[0]?.id ?? null;
+		if (!targetId) return;
+		activateChecklistRow(targetId);
+		const tryFocus = (remaining: number): void => {
+			const editorElement = rowInputsRef.current.get(targetId)?.querySelector('[contenteditable="true"]');
+			if (editorElement instanceof HTMLElement) {
+				editorElement.focus();
+				return;
+			}
+			if (remaining <= 0 || typeof window === 'undefined') return;
+			window.setTimeout(() => tryFocus(remaining - 1), 16);
+		};
+		tryFocus(6);
+	}, [activateChecklistRow, activeItems, normalizedItems]);
+
 	const pruneEmptyChecklistRows = React.useCallback((): void => {
 		if (type !== 'checklist') return;
 		if (!checklistArray) return;
@@ -1324,6 +1474,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		pruneEmptyChecklistRows();
 		props.onClose();
 	}, [pruneEmptyChecklistRows, props]);
+	const quickCreateCollectionOption = props.quickCreateCollectionOption;
 
 	const backdropPressStartedRef = React.useRef(false);
 	const handleOverlayBackdropPressStart = React.useCallback((event: React.PointerEvent | React.MouseEvent): void => {
@@ -1408,14 +1559,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							✕
 						</button>
 					</header>
-					<textarea
+					<input
+						type="text"
 						className={styles.editorTitleInput}
-						rows={1}
 						ref={titleFieldRef}
 						value={title}
 						placeholder={t('editors.titlePlaceholder')}
 						readOnly
-						onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
 					/>
 					{type === 'text' && richContentFragment ? (
 						<div className={styles.fullBodyFieldContainer}>
@@ -1691,9 +1841,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				) : null}
 
 				{type === 'checklist' ? (
-					<textarea
+					<input
+						type="text"
 						name="note-title"
-						rows={1}
 						autoComplete="off"
 						autoCorrect="off"
 						autoCapitalize="sentences"
@@ -1705,13 +1855,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						ref={titleFieldRef}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
-						onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
+						onKeyDown={(event) => {
+							if (event.key !== 'Enter') return;
+							event.preventDefault();
+							focusChecklistBody();
+						}}
 						placeholder={t('editors.titlePlaceholder')}
 					/>
 				) : (
-					<textarea
+					<input
+						type="text"
 						name="text-note-title"
-						rows={1}
 						autoComplete="off"
 						autoCorrect="off"
 						autoCapitalize="sentences"
@@ -1723,13 +1877,30 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						ref={titleFieldRef}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
-						onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
+						onKeyDown={(event) => {
+							if (event.key !== 'Enter') return;
+							event.preventDefault();
+							focusTextEditorBody();
+						}}
 						placeholder={t('editors.titlePlaceholder')}
 					/>
 				)}
 
+					{quickCreateCollectionOption ? (
+						<label className={styles.quickCreateCollectionOption}>
+							<input
+								type="checkbox"
+								checked={quickCreateCollectionOption.checked}
+								onChange={(event) => quickCreateCollectionOption.onChange(event.target.checked)}
+							/>
+							<span className={styles.quickCreateCollectionOptionCopy}>
+								Create note in current collection: {quickCreateCollectionOption.label}
+							</span>
+						</label>
+					) : null}
+
 				{type === 'text' && richContentFragment ? (
-						<div className={styles.fullBodyFieldContainer}>
+						<div ref={textBodyFieldRef} className={styles.fullBodyFieldContainer}>
 						<RichTextEditor
 							variant="full"
 							fragment={richContentFragment}
@@ -1739,6 +1910,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							placeholder={t('editors.startTyping')}
 							hideToolbar={isCoarsePointer}
 							suppressMobileTaskCheckboxFocus={isCoarsePointer}
+							noteAutoScrollEnabled={noteAutoScrollEnabled}
+							onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
 							caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 							// Keyboard-open branch:
 							// Reserve just enough space at the bottom of the scrolling viewport for the
@@ -1758,7 +1931,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 						<div className={styles.checklistToolbarSlot}>
-							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} />
+							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
 						</div>
 						{/* Keyboard-open branch:
 						    Checklist mode does not use the generic rich-text viewport above, so we add
@@ -2218,6 +2391,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						variant={type === 'text' ? 'full' : 'minimal'}
 						compact
 						onCreateUrlPreview={handleCreateUrlPreview}
+						noteAutoScrollEnabled={noteAutoScrollEnabled}
+						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
 						copyMode={type === 'text' ? copyMode : undefined}
 						onCopyModeChange={type === 'text' ? setCopyMode : undefined}
 					/>

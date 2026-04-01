@@ -3,14 +3,23 @@ export const MAX_FONT_SCALE = 1.5;
 export const MIN_NOTE_CARD_HEIGHT_PX = 320;
 export const MAX_NOTE_CARD_HEIGHT_PX = 1400;
 
-const STORAGE_KEY = 'freemannotes.deviceAppearancePreferences.v1';
+const STORAGE_KEY = 'freemannotes.deviceAppearancePreferences.v2';
+const LEGACY_STORAGE_KEY = 'freemannotes.deviceAppearancePreferences.v1';
 
 export type CachedDeviceAppearancePreferences = {
+	userId: string | null;
 	deviceId: string;
 	noteCardFontScale: number;
 	noteEditorFontScale: number;
 	noteCardMaxHeightPx: number;
+	checklistShowCompleted: boolean;
+	quickDeleteChecklist: boolean;
+	noteCardClickOpens: boolean;
 	updatedAt: string;
+};
+
+type CachedDevicePreferenceStore = {
+	entries: Record<string, CachedDeviceAppearancePreferences>;
 };
 
 export function clampFontScale(value: number): number {
@@ -28,21 +37,69 @@ export function clampNoteCardMaxHeightPx(value: number): number {
 	return Math.round(Math.min(MAX_NOTE_CARD_HEIGHT_PX, Math.max(MIN_NOTE_CARD_HEIGHT_PX, value)));
 }
 
-function readRaw(): CachedDeviceAppearancePreferences | null {
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+	if (typeof value === 'boolean') return value;
+	return fallback;
+}
+
+function normalizeSnapshot(value: Partial<CachedDeviceAppearancePreferences> | null | undefined): CachedDeviceAppearancePreferences | null {
+	if (!value || typeof value !== 'object') return null;
+	if (typeof value.deviceId !== 'string' || !value.deviceId) return null;
+	return {
+		userId: typeof value.userId === 'string' && value.userId.trim().length > 0 ? value.userId : null,
+		deviceId: value.deviceId,
+		noteCardFontScale: clampFontScale(Number(value.noteCardFontScale)),
+		noteEditorFontScale: clampFontScale(Number(value.noteEditorFontScale)),
+		noteCardMaxHeightPx: clampNoteCardMaxHeightPx(Number(value.noteCardMaxHeightPx)),
+		checklistShowCompleted: normalizeBoolean(value.checklistShowCompleted, false),
+		quickDeleteChecklist: normalizeBoolean(value.quickDeleteChecklist, false),
+		noteCardClickOpens: normalizeBoolean(value.noteCardClickOpens, true),
+		updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date(0).toISOString(),
+	};
+}
+
+function makeEntryKey(deviceId: string, userId?: string | null): string {
+	return `${userId ?? ''}::${deviceId}`;
+}
+
+function readRawStore(): CachedDevicePreferenceStore | null {
 	if (typeof window === 'undefined') return null;
 	try {
-		// Keep this payload tiny and self-healing because it is read during app boot
-		// before remote preferences are available.
 		const raw = window.localStorage.getItem(STORAGE_KEY);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as Partial<CachedDevicePreferenceStore> | null;
+		if (!parsed || typeof parsed !== 'object') return null;
+		const rawEntries = parsed.entries;
+		if (!rawEntries || typeof rawEntries !== 'object') return null;
+		const entries: Record<string, CachedDeviceAppearancePreferences> = {};
+		for (const [key, candidate] of Object.entries(rawEntries)) {
+			const snapshot = normalizeSnapshot(candidate as Partial<CachedDeviceAppearancePreferences>);
+			if (!snapshot) continue;
+			entries[key] = snapshot;
+		}
+		return { entries };
+	} catch {
+		return null;
+	}
+}
+
+function readLegacySnapshot(deviceId: string): CachedDeviceAppearancePreferences | null {
+	if (typeof window === 'undefined') return null;
+	try {
+		const raw = window.localStorage.getItem(LEGACY_STORAGE_KEY);
 		if (!raw) return null;
 		const parsed = JSON.parse(raw) as Partial<CachedDeviceAppearancePreferences> | null;
 		if (!parsed || typeof parsed !== 'object') return null;
-		if (typeof parsed.deviceId !== 'string' || !parsed.deviceId) return null;
+		if (typeof parsed.deviceId !== 'string' || parsed.deviceId !== deviceId) return null;
 		return {
-			deviceId: parsed.deviceId,
+			userId: null,
+			deviceId,
 			noteCardFontScale: clampFontScale(Number(parsed.noteCardFontScale)),
 			noteEditorFontScale: clampFontScale(Number(parsed.noteEditorFontScale)),
 			noteCardMaxHeightPx: clampNoteCardMaxHeightPx(Number(parsed.noteCardMaxHeightPx)),
+			checklistShowCompleted: false,
+			quickDeleteChecklist: false,
+			noteCardClickOpens: true,
 			updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date(0).toISOString(),
 		};
 	} catch {
@@ -50,26 +107,24 @@ function readRaw(): CachedDeviceAppearancePreferences | null {
 	}
 }
 
-export function readCachedDeviceAppearancePreferences(deviceId: string): CachedDeviceAppearancePreferences | null {
-	const cached = readRaw();
-	if (!cached || cached.deviceId !== deviceId) return null;
-	return cached;
+export function readCachedDeviceAppearancePreferences(deviceId: string, userId?: string | null): CachedDeviceAppearancePreferences | null {
+	const store = readRawStore();
+	const entry = store?.entries[makeEntryKey(deviceId, userId)] ?? null;
+	if (entry) return entry;
+	return readLegacySnapshot(deviceId);
 }
 
 export function writeCachedDeviceAppearancePreferences(snapshot: CachedDeviceAppearancePreferences): void {
 	if (typeof window === 'undefined') return;
 	try {
-		// Local writes let the UI apply appearance changes immediately, then reconcile
-		// with the server once authenticated preference sync finishes.
+		const normalized = normalizeSnapshot(snapshot);
+		if (!normalized) return;
+		const existing = readRawStore();
+		const nextEntries = { ...(existing?.entries ?? {}) };
+		nextEntries[makeEntryKey(normalized.deviceId, normalized.userId)] = normalized;
 		window.localStorage.setItem(
 			STORAGE_KEY,
-			JSON.stringify({
-				deviceId: snapshot.deviceId,
-				noteCardFontScale: clampFontScale(snapshot.noteCardFontScale),
-				noteEditorFontScale: clampFontScale(snapshot.noteEditorFontScale),
-				noteCardMaxHeightPx: clampNoteCardMaxHeightPx(snapshot.noteCardMaxHeightPx),
-				updatedAt: snapshot.updatedAt,
-			})
+			JSON.stringify({ entries: nextEntries })
 		);
 	} catch {
 		// best effort

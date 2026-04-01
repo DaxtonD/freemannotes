@@ -58,6 +58,7 @@ export type NoteCardProps = {
 	dragHandleRef?: (node: HTMLDivElement | null) => void;
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 	maxCardHeightPx?: number;
+	allowCardItemInteractions?: boolean;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -236,7 +237,7 @@ function extractPlainTextFromNodes(nodes: readonly JSONContent[] | null | undefi
 	return nodes.map((node) => extractPlainTextFromNode(node)).join('').replace(/\s+/g, ' ').trim();
 }
 
-function applyMarks(node: JSONContent, content: React.ReactNode, key: string): React.ReactNode {
+function applyMarks(node: JSONContent, content: React.ReactNode, key: string, allowLinkInteraction: boolean): React.ReactNode {
 	let result = content;
 	for (const [index, mark] of (node.marks ?? []).entries()) {
 		if (mark.type === 'bold') result = <strong key={`${key}:bold:${index}`}>{result}</strong>;
@@ -246,33 +247,33 @@ function applyMarks(node: JSONContent, content: React.ReactNode, key: string): R
 		if (mark.type === 'code') result = <code key={`${key}:code:${index}`} className={styles.richInlineCode}>{result}</code>;
 		if (mark.type === 'link') {
 			const href = getSafeHref((mark.attrs as { href?: unknown } | undefined)?.href);
-			result = href ? (
+			result = href && allowLinkInteraction ? (
 				<a key={`${key}:link:${index}`} className={styles.richLink} href={href} target="_blank" rel="noreferrer noopener">
 					{result}
 				</a>
-			) : result;
+			) : <span key={`${key}:link:${index}`} className={styles.richLink}>{result}</span>;
 		}
 	}
 	return result;
 }
 
-function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string): React.ReactNode[] {
+function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string, allowLinkInteraction: boolean): React.ReactNode[] {
 	return nodes.flatMap((node, index) => {
 		const key = `${keyPrefix}:${index}`;
 		if (node.type === 'hardBreak') return [<br key={key} />];
 		if (node.type !== 'text' || !node.text) return [];
-		return [<React.Fragment key={key}>{applyMarks(node, node.text, key)}</React.Fragment>];
+		return [<React.Fragment key={key}>{applyMarks(node, node.text, key, allowLinkInteraction)}</React.Fragment>];
 	});
 }
 
-function renderTableCellContent(nodes: readonly JSONContent[], keyPrefix: string): React.ReactNode {
+function renderTableCellContent(nodes: readonly JSONContent[], keyPrefix: string, allowLinkInteraction: boolean): React.ReactNode {
 	const children = nodes
-		.map((child, index) => renderBlockNode(child, `${keyPrefix}:${index}`, false, true))
+		.map((child, index) => renderBlockNode(child, `${keyPrefix}:${index}`, false, true, allowLinkInteraction))
 		.filter(Boolean);
 	return children.length > 0 ? children : <span className={styles.richTableEmpty}>&nbsp;</span>;
 }
 
-function renderTableNode(block: JSONContent, key: string): React.ReactNode {
+function renderTableNode(block: JSONContent, key: string, allowLinkInteraction: boolean): React.ReactNode {
 	const rows = (block.content ?? [])
 		.filter((row): row is JSONContent => row?.type === 'tableRow')
 		.map((row) => ({
@@ -307,7 +308,7 @@ function renderTableNode(block: JSONContent, key: string): React.ReactNode {
 							if (!cell) return null;
 							return (
 								<div key={`${key}:column:${columnIndex}:row:${rowIndex}`} className={styles.richTableValueRow}>
-									{renderTableCellContent(cell.content, `${key}:column:${columnIndex}:row:${rowIndex}`)}
+									{renderTableCellContent(cell.content, `${key}:column:${columnIndex}:row:${rowIndex}`, allowLinkInteraction)}
 								</div>
 							);
 						})
@@ -327,11 +328,11 @@ function renderTableNode(block: JSONContent, key: string): React.ReactNode {
 	);
 }
 
-function renderBlockNode(block: JSONContent, key: string, inListItem = false, inTableCell = false): React.ReactNode {
+function renderBlockNode(block: JSONContent, key: string, inListItem = false, inTableCell = false, allowLinkInteraction = true): React.ReactNode {
 	const style = getTextAlignStyle(block);
 
 	if (block.type === 'paragraph' || block.type === 'heading') {
-		const children = renderInlineNodes(block.content ?? [], key);
+		const children = renderInlineNodes(block.content ?? [], key, allowLinkInteraction);
 		if (block.type === 'heading') {
 			const level = getHeadingLevel(block);
 			const headingClassName = [styles.richHeading, styles[`richHeading${level}` as keyof typeof styles]].filter(Boolean).join(' ');
@@ -349,27 +350,27 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (block.type === 'bulletList' || block.type === 'orderedList') {
-		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`)).filter(Boolean);
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, false, inTableCell, allowLinkInteraction)).filter(Boolean);
 		if (items.length === 0) return null;
 		const ListTag = block.type === 'orderedList' ? 'ol' : 'ul';
 		return <ListTag key={key} className={block.type === 'orderedList' ? styles.richOrderedList : styles.richList}>{items}</ListTag>;
 	}
 
 	if (block.type === 'taskList') {
-		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`)).filter(Boolean);
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, false, inTableCell, allowLinkInteraction)).filter(Boolean);
 		if (items.length === 0) return null;
 		return <ul key={key} className={styles.richTaskList}>{items}</ul>;
 	}
 
 	if (block.type === 'listItem') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell, allowLinkInteraction)).filter(Boolean);
 		if (children.length === 0) return null;
 		return <li key={key} className={styles.richListItem}>{children}</li>;
 	}
 
 	if (block.type === 'taskItem') {
 		const checked = getTaskItemChecked(block);
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell, allowLinkInteraction)).filter(Boolean);
 		if (children.length === 0) return null;
 		return (
 			<li key={key} className={styles.richTaskItem} data-checked={checked ? 'true' : 'false'}>
@@ -382,7 +383,7 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (block.type === 'blockquote') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, false, inTableCell)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, false, inTableCell, allowLinkInteraction)).filter(Boolean);
 		if (children.length === 0) return null;
 		return <blockquote key={key} className={styles.richBlockquote}>{children}</blockquote>;
 	}
@@ -401,11 +402,11 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (block.type === 'table') {
-		return renderTableNode(block, key);
+		return renderTableNode(block, key, allowLinkInteraction);
 	}
 
 	if (Array.isArray(block.content) && block.content.length > 0) {
-		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, inListItem, inTableCell)).filter(Boolean);
+		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, inListItem, inTableCell, allowLinkInteraction)).filter(Boolean);
 		if (children.length === 0) return null;
 		return <React.Fragment key={key}>{children}</React.Fragment>;
 	}
@@ -413,10 +414,18 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	return null;
 }
 
-function renderRichPreview(json: JSONContent | null | undefined): React.ReactNode {
+function renderRichPreview(json: JSONContent | null | undefined, allowLinkInteraction = true): React.ReactNode {
 	if (!json?.content) return null;
-	const blocks = json.content.map((block, index) => renderBlockNode(block, `block:${index}`)).filter(Boolean);
+	const blocks = json.content.map((block, index) => renderBlockNode(block, `block:${index}`, false, false, allowLinkInteraction)).filter(Boolean);
 	return blocks.length > 0 ? blocks : null;
+}
+
+function getVerticalPadding(node: HTMLElement | null): number {
+	if (!node) return 0;
+	const style = window.getComputedStyle(node);
+	const paddingTop = Number.parseFloat(style.paddingTop || '0') || 0;
+	const paddingBottom = Number.parseFloat(style.paddingBottom || '0') || 0;
+	return paddingTop + paddingBottom;
 }
 
 function updateChecklistItemById(
@@ -488,6 +497,7 @@ function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardCheckl
 export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const { t } = useI18n();
 	const canEdit = props.canEdit !== false;
+	const allowCardItemInteractions = props.allowCardItemInteractions !== false;
 	// metadata.type controls note rendering mode.
 	const metadata = React.useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const colorToken = React.useSyncExternalStore(
@@ -547,8 +557,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [canEdit, props.doc]);
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
+	const [clampedById, setClampedById] = React.useState<Record<string, boolean>>({});
+	const [hasCardOverflow, setHasCardOverflow] = React.useState(false);
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
 	const cardRef = React.useRef<HTMLElement | null>(null);
+	const contentRegionRef = React.useRef<HTMLDivElement | null>(null);
+	const bodyRef = React.useRef<HTMLDivElement | null>(null);
+	const contentPreviewRef = React.useRef<HTMLDivElement | null>(null);
+	const checklistRef = React.useRef<HTMLUListElement | null>(null);
+	const completedSectionRef = React.useRef<HTMLDivElement | null>(null);
+	const linkPreviewRailRef = React.useRef<HTMLDivElement | null>(null);
 	const footerRef = React.useRef<HTMLDivElement | null>(null);
 	const cardStyle = React.useMemo(() => {
 		if (!resolvedColor) return undefined;
@@ -579,6 +597,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		const card = cardRef.current;
 		if (!card) return;
 		const next: Record<string, boolean> = {};
+		const nextClamped: Record<string, boolean> = {};
 		const textNodes = card.querySelectorAll<HTMLElement>('[data-checklist-text-id]');
 		for (const node of textNodes) {
 			const id = String(node.dataset.checklistTextId ?? '').trim();
@@ -588,7 +607,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			const parsedLineHeight = Number.parseFloat(style.lineHeight || '0') || 0;
 			const lineHeight = parsedLineHeight > 0 ? parsedLineHeight : fontSize * 1.35;
 			const expectedSingleLine = Math.ceil(lineHeight + 2);
+			const expectedClampHeight = Math.ceil(lineHeight * 3 + 4);
 			next[id] = node.scrollHeight > expectedSingleLine + 4;
+			nextClamped[id] = node.scrollHeight > expectedClampHeight;
 		}
 		setMultilineById((prev) => {
 			const prevKeys = Object.keys(prev);
@@ -598,7 +619,48 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			}
 			return next;
 		});
+		setClampedById((prev) => {
+			const prevKeys = Object.keys(prev);
+			const nextKeys = Object.keys(nextClamped);
+			if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === nextClamped[key])) {
+				return prev;
+			}
+			return nextClamped;
+		});
 	}, [normalizedItems, showCompleted, type]);
+
+	React.useLayoutEffect(() => {
+		const contentRegion = contentRegionRef.current;
+		if (!contentRegion) return;
+
+		const measureOverflow = (): void => {
+			const body = bodyRef.current;
+			const contentPreview = contentPreviewRef.current;
+			const checklist = checklistRef.current;
+			const completedSection = completedSectionRef.current;
+			const linkPreviewRail = linkPreviewRailRef.current;
+			const bodyHeight = type === 'text'
+				? (contentPreview ? contentPreview.scrollHeight + getVerticalPadding(body) : 0)
+				: (checklist ? checklist.scrollHeight + getVerticalPadding(body) : 0);
+			const completedHeight = completedSection ? completedSection.scrollHeight : 0;
+			const linkHeight = linkPreviewRail ? linkPreviewRail.scrollHeight : 0;
+			const naturalContentHeight = bodyHeight + completedHeight + linkHeight;
+			setHasCardOverflow(naturalContentHeight > contentRegion.clientHeight + 2);
+		};
+
+		measureOverflow();
+		if (typeof ResizeObserver === 'undefined') return;
+
+		const observer = new ResizeObserver(() => measureOverflow());
+		observer.observe(contentRegion);
+		if (bodyRef.current) observer.observe(bodyRef.current);
+		if (contentPreviewRef.current) observer.observe(contentPreviewRef.current);
+		if (checklistRef.current) observer.observe(checklistRef.current);
+		if (completedSectionRef.current) observer.observe(completedSectionRef.current);
+		if (linkPreviewRailRef.current) observer.observe(linkPreviewRailRef.current);
+		if (footerRef.current) observer.observe(footerRef.current);
+		return () => observer.disconnect();
+	}, [content, extractedLinks.length, normalizedItems, reminderAt, showCompleted, title, type]);
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);
 	const suppressGestureOpenRef = React.useRef(false);
@@ -690,7 +752,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}`}
+			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${hasCardOverflow ? ` ${styles.cardHasOverflow}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
@@ -909,93 +971,112 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				</div>
 			) : null}
 
-			{type === 'text' ? (
-				<div className={styles.body}>
-					<div className={styles.contentPreview}>{renderRichPreview(richContent) ?? content}</div>
-				</div>
-			) : (
-				<>
-					<div className={styles.body}>
-						<ul className={styles.checklist}>
-							{activeChecklistItems.map((item) => (
-								<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
-									<label
-										className={styles.checklistCheckboxHitArea}
-										onPointerDown={(e) => e.stopPropagation()}
-										onPointerUp={(e) => e.stopPropagation()}
-										onClick={(e) => e.stopPropagation()}
-										aria-label={item.completed ? 'Completed' : 'Not completed'}
-									>
-										<input
-											type="checkbox"
-											className={styles.checklistCheckbox}
-											checked={item.completed}
-											disabled={!canEdit}
-											onChange={(e) => {
-												if (!canEdit) return;
-												updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
-											}}
-										/>
-									</label>
-									<div className={styles.checklistText} data-checklist-text-id={item.id}>
-										{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text)) ?? item.text}
-									</div>
-								</li>
-							))}
-						</ul>
+			<div ref={contentRegionRef} className={styles.contentRegion}>
+				{type === 'text' ? (
+					<div ref={bodyRef} className={styles.body}>
+						<div ref={contentPreviewRef} className={styles.contentPreview}>{renderRichPreview(richContent, allowCardItemInteractions) ?? content}</div>
 					</div>
-
-					{completedChecklistItems.length > 0 ? (
-						<div className={styles.completedSection}>
-							<button
-								type="button"
-								className={styles.completedToggle}
-								onPointerDown={(e) => e.stopPropagation()}
-								onClick={(e) => {
-									e.stopPropagation();
-									toggleCompletedSection();
-								}}
-							>
-								<span className={styles.completedToggleArrow} aria-hidden="true">{showCompleted ? '▾' : '▸'}</span>
-								<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
-							</button>
-							{showCompleted ? (
-								<ul className={styles.checklist}>
-									{completedChecklistItems.map((item) => (
-										<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
-											<label
-												className={styles.checklistCheckboxHitArea}
-												onPointerDown={(e) => e.stopPropagation()}
-												onPointerUp={(e) => e.stopPropagation()}
-												onClick={(e) => e.stopPropagation()}
-												aria-label={item.completed ? 'Completed' : 'Not completed'}
-											>
-												<input
-													type="checkbox"
-													className={styles.checklistCheckbox}
-													checked={item.completed}
-													disabled={!canEdit}
-													onChange={(e) => {
-														if (!canEdit) return;
-														updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
-													}}
-												/>
-											</label>
-											<div className={styles.checklistTextCompleted} data-checklist-text-id={item.id}>
-												{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text)) ?? item.text}
-											</div>
-										</li>
-									))}
-								</ul>
-							) : null}
+				) : (
+					<>
+						<div ref={bodyRef} className={styles.body}>
+							<ul ref={checklistRef} className={styles.checklist}>
+								{activeChecklistItems.map((item) => (
+									<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
+										<span
+											className={styles.checklistCheckboxHitArea}
+											onPointerDown={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
+											onPointerUp={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
+											onClick={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
+											aria-label={item.completed ? 'Completed' : 'Not completed'}
+										>
+											<input
+												type="checkbox"
+												className={styles.checklistCheckbox}
+												checked={item.completed}
+												disabled={!canEdit || !allowCardItemInteractions}
+												style={!allowCardItemInteractions ? { pointerEvents: 'none' } : undefined}
+												onChange={(e) => {
+													if (!allowCardItemInteractions) return;
+													if (!canEdit) return;
+													updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
+												}}
+											/>
+										</span>
+										<div className={`${styles.checklistText}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
+											{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowCardItemInteractions) ?? item.text}
+										</div>
+									</li>
+								))}
+							</ul>
 						</div>
-					) : null}
-				</>
-			)}
 
-			{props.docId ? (
-				<div className={styles.linkPreviewRail}>
-					<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={3} disableInitialRemoteRefresh />
+						{completedChecklistItems.length > 0 ? (
+							<div ref={completedSectionRef} className={styles.completedSection}>
+								{allowCardItemInteractions ? (
+									<button
+										type="button"
+										className={styles.completedToggle}
+										onPointerDown={(e) => e.stopPropagation()}
+										onClick={(e) => {
+											e.stopPropagation();
+											toggleCompletedSection();
+										}}
+									>
+										<span className={styles.completedToggleArrow} aria-hidden="true">{showCompleted ? '▾' : '▸'}</span>
+										<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
+									</button>
+								) : (
+									<div className={styles.completedToggle}>
+										<span className={styles.completedToggleArrow} aria-hidden="true">{showCompleted ? '▾' : '▸'}</span>
+										<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
+									</div>
+								)}
+								{showCompleted ? (
+									<ul className={styles.checklist}>
+										{completedChecklistItems.map((item) => (
+											<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
+												<span
+													className={styles.checklistCheckboxHitArea}
+													onPointerDown={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
+													onPointerUp={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
+													onClick={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
+													aria-label={item.completed ? 'Completed' : 'Not completed'}
+												>
+													<input
+														type="checkbox"
+														className={styles.checklistCheckbox}
+														checked={item.completed}
+														disabled={!canEdit || !allowCardItemInteractions}
+														style={!allowCardItemInteractions ? { pointerEvents: 'none' } : undefined}
+														onChange={(e) => {
+															if (!allowCardItemInteractions) return;
+															if (!canEdit) return;
+															updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
+														}}
+													/>
+												</span>
+												<div className={`${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
+													{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowCardItemInteractions) ?? item.text}
+												</div>
+											</li>
+										))}
+									</ul>
+								) : null}
+							</div>
+						) : null}
+					</>
+				)}
+
+				{props.docId ? (
+					<div ref={linkPreviewRailRef} className={styles.linkPreviewRail}>
+						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={3} disableInitialRemoteRefresh disableOpenLinks={!allowCardItemInteractions} />
+					</div>
+				) : null}
+			</div>
+
+			{hasCardOverflow && !props.isTrashView ? (
+				<div className={styles.cardOverflowIndicator} aria-hidden="true">
+					<span className={styles.cardOverflowEllipsis}>...</span>
 				</div>
 			) : null}
 

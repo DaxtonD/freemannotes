@@ -54,6 +54,8 @@ type RichTextEditorProps = {
 	editable?: boolean;
 	suppressMobileTaskCheckboxFocus?: boolean;
 	onCreateUrlPreview?: () => void;
+	noteAutoScrollEnabled?: boolean;
+	onToggleNoteAutoScroll?: () => void;
 	copyMode?: ClipboardConversionTarget;
 	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
 	onClipboardStatusChange?: (message: string) => void;
@@ -64,6 +66,8 @@ type RichTextToolbarProps = {
 	variant: RichTextVariant;
 	compact?: boolean;
 	onCreateUrlPreview?: () => void;
+	noteAutoScrollEnabled?: boolean;
+	onToggleNoteAutoScroll?: () => void;
 	copyMode?: ClipboardConversionTarget;
 	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
 };
@@ -281,7 +285,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	// 1. a horizontal swipe intended to scroll a long toolbar row
 	// 2. a vertical drag that browsers may otherwise interpret as viewport scrolling
 	// The follow-up move handler uses this snapshot to block only the second case.
-	const touchStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const touchStartRef = React.useRef<{ x: number; y: number; scrollLeft: number } | null>(null);
 	const toolbarState = useEditorState({
 		editor: props.editor,
 		selector: ({ editor }) => ({
@@ -345,6 +349,12 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	};
 
 	const preventToolbarFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
+		const nativeEvent = event.nativeEvent as { pointerType?: string } | undefined;
+		// Touch/pen gestures need to keep their native default so horizontal pans can
+		// start immediately on toolbar buttons instead of requiring a second swipe.
+		if (nativeEvent?.pointerType && nativeEvent.pointerType !== 'mouse') {
+			return;
+		}
 		event.preventDefault();
 	}, []);
 	const toolbarRowRef = React.useRef<HTMLDivElement | null>(null);
@@ -373,15 +383,31 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		// preventDefault here because horizontal toolbar scrolling should remain native.
 		const touch = event.touches[0];
 		if (!touch) return;
-		touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+		touchStartRef.current = {
+			x: touch.clientX,
+			y: touch.clientY,
+			scrollLeft: toolbarRowRef.current?.scrollLeft ?? 0,
+		};
 	}, []);
 
 	const handleToolbarTouchMove = React.useCallback((event: React.TouchEvent): void => {
 		const start = touchStartRef.current;
 		const touch = event.touches[0];
 		if (!start || !touch) return;
-		const dx = Math.abs(touch.clientX - start.x);
+		const deltaX = touch.clientX - start.x;
+		const dx = Math.abs(deltaX);
 		const dy = Math.abs(touch.clientY - start.y);
+		const node = toolbarRowRef.current;
+
+		// Horizontal-scroll branch:
+		// Drive the row scroll directly so the very first swipe works even when mobile
+		// browsers/overlays hesitate to promote the gesture into native horizontal panning.
+		if (dx > dy && node && node.scrollWidth > node.clientWidth + 1) {
+			if (event.cancelable) event.preventDefault();
+			node.scrollLeft = start.scrollLeft - deltaX;
+			updateToolbarScrollState();
+			return;
+		}
 
 		// Vertical-drag branch:
 		// If movement is more vertical than horizontal, we treat it as an accidental
@@ -546,6 +572,9 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		: resolvedToolbarState.isHeading5 ? 'H5'
 		: resolvedToolbarState.isHeading6 ? 'H6'
 		: t('editors.headingMenu');
+	const noteAutoScrollLabel = props.noteAutoScrollEnabled
+		? t('editors.disableNoteAutoScroll')
+		: t('editors.enableNoteAutoScroll');
 
 	return (
 		<div className={styles.formatToolbarStack}>
@@ -597,6 +626,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				{props.onCreateUrlPreview ? (
 					<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
 						<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
+					</button>
+				) : null}
+				{props.onToggleNoteAutoScroll ? (
+					<button
+						type="button"
+						className={`${styles.formatButton}${compactButtonClass}${props.noteAutoScrollEnabled ? ` ${styles.formatButtonActive}` : ''}`}
+						aria-label={noteAutoScrollLabel}
+						aria-pressed={props.noteAutoScrollEnabled}
+						title={noteAutoScrollLabel}
+						onMouseDown={preventToolbarFocusSteal}
+						onPointerDown={preventToolbarFocusSteal}
+						onClick={props.onToggleNoteAutoScroll}
+					>
+						<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
 					</button>
 				) : null}
 				{props.variant === 'full' ? (
@@ -1072,7 +1115,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 
 	return (
 		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`}>
-			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} onCreateUrlPreview={props.onCreateUrlPreview} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} />}
+			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} onCreateUrlPreview={props.onCreateUrlPreview} noteAutoScrollEnabled={props.noteAutoScrollEnabled} onToggleNoteAutoScroll={props.onToggleNoteAutoScroll} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} />}
 			{clipboardStatusMessage && !(props.hideToolbar && props.onClipboardStatusChange) ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
 			<EditorContent editor={editor} className={`${styles.richEditorViewport}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}`} />
 			{/*
