@@ -219,6 +219,7 @@ function enforceSameOrigin(req, res) {
 module.exports = {
 	COOKIE_NAME,
 	SESSION_MAX_AGE_SEC,
+	baseUrlFromRequest,
 	isSecureRequest,
 	appendSetCookie,
 	makeSessionCookie,

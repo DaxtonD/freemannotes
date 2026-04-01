@@ -6,6 +6,18 @@
 
 export type PushPlatform = 'WEB' | 'IOS' | 'ANDROID';
 
+export type NotificationConfiguredMode = 'auto' | 'push' | 'email' | 'off';
+export type NotificationEffectiveMode = 'push' | 'email' | 'off';
+
+export type NotificationDeliveryPolicy = {
+	platform: PushPlatform;
+	configuredMode: NotificationConfiguredMode;
+	effectiveMode: NotificationEffectiveMode;
+	pushConfigured: boolean;
+	emailConfigured: boolean;
+	canRegisterPush: boolean;
+};
+
 export type PushSubscriptionStatus = {
 	subscription: {
 		platform: PushPlatform;
@@ -22,12 +34,15 @@ export type PushSubscriptionStatus = {
 		error: string | null;
 		sentAt: string;
 	}>;
+	deliveryPolicy: NotificationDeliveryPolicy;
+	deliveryPolicies: Record<PushPlatform, NotificationDeliveryPolicy>;
 };
 
 export type VapidPublicKeyResponse = {
 	publicKey: string;
 	vapidConfigured: boolean;
 	fcmConfigured: boolean;
+	deliveryPolicies: Record<PushPlatform, NotificationDeliveryPolicy>;
 };
 
 async function checkResponse(res: Response): Promise<void> {
@@ -51,8 +66,11 @@ export async function fetchVapidPublicKey(): Promise<VapidPublicKeyResponse> {
 }
 
 /** Fetch subscription status and recent delivery logs for the current user/device. */
-export async function fetchPushStatus(deviceId: string): Promise<PushSubscriptionStatus> {
-	const res = await fetch(`/api/push/status?deviceId=${encodeURIComponent(deviceId)}`, { cache: 'no-store' });
+export async function fetchPushStatus(deviceId: string, platform: PushPlatform): Promise<PushSubscriptionStatus> {
+	const res = await fetch(
+		`/api/push/status?deviceId=${encodeURIComponent(deviceId)}&platform=${encodeURIComponent(platform)}`,
+		{ cache: 'no-store' }
+	);
 	await checkResponse(res);
 	return res.json();
 }
@@ -91,11 +109,11 @@ export async function deletePushSubscription(deviceId: string): Promise<void> {
 }
 
 /** Trigger a test push notification for the current user. */
-export async function sendTestPushNotification(): Promise<{ sent: number; failed: number }> {
+export async function sendTestPushNotification(platform: PushPlatform): Promise<{ sent: number; failed: number; emailSent: boolean }> {
 	const res = await fetch('/api/push/test', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: '{}',
+		body: JSON.stringify({ platform }),
 	});
 	await checkResponse(res);
 	return res.json();

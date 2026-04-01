@@ -13,6 +13,7 @@ export type UserDevicePreferences = {
 	activeSharedFolder: string | null;
 	checklistShowCompleted: boolean;
 	quickDeleteChecklist: boolean;
+	noteCardClickOpens: boolean;
 	noteCardCompletedExpandedByNoteId: Record<string, boolean>;
 	createdAt: string | null;
 	updatedAt: string | null;
@@ -69,6 +70,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
+			noteCardClickOpens: (body as any).noteCardClickOpens !== false,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
@@ -90,6 +92,7 @@ export async function updateUserPreferences(
 		activeSharedFolder?: string | null;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
+		noteCardClickOpens?: boolean;
 		noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
 	}
 ): Promise<UserDevicePreferences | null> {
@@ -118,6 +121,7 @@ export async function updateUserPreferences(
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
+			noteCardClickOpens: (body as any).noteCardClickOpens !== false,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,

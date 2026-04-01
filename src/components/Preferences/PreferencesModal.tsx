@@ -1,7 +1,6 @@
 import React from 'react';
 import { fetchAboutHudStats, type AboutHudStatsResponse } from '../../core/noteManagementApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
-import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { NotificationsSection } from './NotificationsSection';
 import styles from './PreferencesModal.module.css';
 import aboutIconLightAsset from '../../../lighticon.png';
@@ -42,6 +41,8 @@ export type PreferencesModalProps = {
 	isLightTheme?: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	noteCardClickOpens: boolean;
+	onNoteCardClickOpensChange: (next: boolean) => void;
 	deleteAfterDays: number | null;
 	onDeleteAfterDaysChange: (next: number | null) => void;
 	installAvailable?: boolean;
@@ -68,6 +69,8 @@ type SectionModalProps = {
 	isLightTheme: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	noteCardClickOpens: boolean;
+	onNoteCardClickOpensChange: (next: boolean) => void;
 	deleteAfterDays: number | null;
 	onDeleteAfterDaysChange: (next: number | null) => void;
 	installAvailable?: boolean;
@@ -282,9 +285,10 @@ function EditorSectionContent(props: {
 	t: (key: string) => string;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	noteCardClickOpens: boolean;
+	onNoteCardClickOpensChange: (next: boolean) => void;
 }): React.JSX.Element {
 	const bubbleEnabled = useBubbleMenuEnabled();
-	const isCoarsePointer = useIsCoarsePointer();
 	return (
 		<div className={styles.editorSection}>
 			<label className={styles.toggleRow}>
@@ -299,7 +303,19 @@ function EditorSectionContent(props: {
 					className={styles.toggleCheckbox}
 				/>
 			</label>
-			<label className={`${styles.toggleRow}${!isCoarsePointer ? ` ${styles.toggleRowDisabled}` : ''}`}>
+			<label className={styles.toggleRow}>
+				<span className={styles.toggleLabel}>
+					<span className={styles.toggleTitle}>{props.t('prefs.noteCardClickOpens')}</span>
+					<span className={styles.toggleDescription}>{props.t('prefs.noteCardClickOpensDescription')}</span>
+				</span>
+				<input
+					type="checkbox"
+					checked={props.noteCardClickOpens}
+					onChange={(e) => props.onNoteCardClickOpensChange(e.target.checked)}
+					className={styles.toggleCheckbox}
+				/>
+			</label>
+			<label className={styles.toggleRow}>
 				<span className={styles.toggleLabel}>
 					<span className={styles.toggleTitle}>{props.t('prefs.quickDeleteChecklist')}</span>
 					<span className={styles.toggleDescription}>{props.t('prefs.quickDeleteChecklistDescription')}</span>
@@ -308,7 +324,6 @@ function EditorSectionContent(props: {
 					type="checkbox"
 					checked={props.quickDeleteChecklist}
 					onChange={(e) => props.onQuickDeleteChecklistChange(e.target.checked)}
-					disabled={!isCoarsePointer}
 					className={styles.toggleCheckbox}
 				/>
 			</label>
@@ -409,6 +424,8 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 						t={props.t}
 						quickDeleteChecklist={props.quickDeleteChecklist}
 						onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+						noteCardClickOpens={props.noteCardClickOpens}
+						onNoteCardClickOpensChange={props.onNoteCardClickOpensChange}
 					/>
 				) : props.section === 'note-management' ? (
 					<NoteManagementSectionContent
@@ -520,6 +537,8 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					isLightTheme={props.isLightTheme !== false}
 					quickDeleteChecklist={props.quickDeleteChecklist}
 					onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+					noteCardClickOpens={props.noteCardClickOpens}
+					onNoteCardClickOpensChange={props.onNoteCardClickOpensChange}
 					deleteAfterDays={props.deleteAfterDays}
 					onDeleteAfterDaysChange={props.onDeleteAfterDaysChange}
 					installAvailable={props.installAvailable}

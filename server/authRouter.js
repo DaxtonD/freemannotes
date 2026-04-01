@@ -31,8 +31,10 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { createRateLimiter, getClientIp } = require('./rateLimit');
+const { sendNotificationEmail } = require('./mailer');
 const {
 	appendSetCookie,
+	baseUrlFromRequest,
 	makeClearSessionCookie,
 	makeSessionCookie,
 	signSession,
@@ -49,9 +51,12 @@ const { validatePassword } = require('./passwordPolicy');
 
 const BCRYPT_ROUNDS = Number(process.env.AUTH_BCRYPT_ROUNDS || 12);
 const ALLOW_REGISTER = String(process.env.AUTH_ALLOW_REGISTER || 'true').trim().toLowerCase() !== 'false';
+const PASSWORD_RESET_WINDOW_MS = 60 * 60 * 1000;
 
 const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 30 });
 const registerLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10 });
+const forgotPasswordLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 10 });
+const resetPasswordLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20 });
 
 function jsonResponse(res, status, body) {
 	if (res.writableEnded) return;
@@ -93,6 +98,50 @@ function normalizeEmail(input) {
 
 function isValidEmail(email) {
 	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function sha256(value) {
+	return crypto.createHash('sha256').update(String(value)).digest('hex');
+}
+
+function buildPasswordResetUrl(req, token) {
+	const appUrl = String(process.env.APP_URL || '').trim().replace(/\/$/, '');
+	const base = appUrl || baseUrlFromRequest(req);
+	return `${base}/?resetPassword=${encodeURIComponent(token)}`;
+}
+
+function buildPasswordResetEmailHtml({ name, resetUrl }) {
+	const safeName = String(name || '').trim();
+	const greeting = safeName ? `Hello ${safeName},` : 'Hello,';
+	return `<!doctype html>
+<html>
+	<body style="margin:0;padding:24px;background:#eef2f7;font-family:Segoe UI,Arial,sans-serif;color:#152033;">
+		<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:20px;overflow:hidden;border:1px solid #d8e0ea;box-shadow:0 18px 50px rgba(17,24,39,0.08);">
+			<tr>
+				<td style="padding:28px 32px;background:linear-gradient(135deg,#18253f 0%,#284a77 55%,#5e8bc2 100%);color:#ffffff;">
+					<div style="font-size:12px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;opacity:0.84;">FreemanNotes</div>
+					<h1 style="margin:12px 0 0;font-size:28px;line-height:1.15;">Reset your password</h1>
+					<p style="margin:12px 0 0;font-size:15px;line-height:1.55;max-width:460px;opacity:0.92;">Use the secure link below to choose a new password for your FreemanNotes account.</p>
+				</td>
+			</tr>
+			<tr>
+				<td style="padding:28px 32px 8px;">
+					<p style="margin:0 0 18px;font-size:15px;line-height:1.6;">${greeting}</p>
+					<p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#334155;">We received a password reset request for your FreemanNotes account. This link expires in 1 hour.</p>
+					<div style="padding:0 0 24px;">
+						<a href="${resetUrl}" style="display:inline-block;background:#264b79;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;padding:14px 22px;border-radius:999px;">Reset password</a>
+					</div>
+					<p style="margin:0 0 12px;font-size:13px;line-height:1.6;color:#64748b;word-break:break-all;">If the button does not open, copy this link into your browser:<br>${resetUrl}</p>
+				</td>
+			</tr>
+			<tr>
+				<td style="padding:0 32px 28px;color:#64748b;font-size:13px;line-height:1.6;">
+					If you did not request this reset, you can ignore this email. Your current password will remain unchanged.
+				</td>
+			</tr>
+		</table>
+	</body>
+</html>`;
 }
 
 function createApiAuthRouter({ prisma }) {
@@ -311,6 +360,132 @@ function createApiAuthRouter({ prisma }) {
 					});
 				} catch (err) {
 					console.error('[auth] login error:', err);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		// ── POST /api/auth/forgot-password ───────────────────────────────
+		if (pathname === '/api/auth/forgot-password' && method === 'POST') {
+			const ip = getClientIp(req);
+			if (!forgotPasswordLimiter.allow(`${ip}:forgot-password`)) {
+				jsonResponse(res, 429, { error: 'Too many requests' });
+				return true;
+			}
+
+			(async () => {
+				try {
+					const body = await readJsonBody(req);
+					const email = normalizeEmail(body?.email);
+					if (!email || !isValidEmail(email)) {
+						jsonResponse(res, 200, { ok: true, message: 'If the email exists, a reset link has been sent.' });
+						return;
+					}
+
+					const user = await prisma.user.findUnique({
+						where: { email },
+						select: { id: true, name: true, email: true, disabled: true },
+					});
+
+					if (user && !user.disabled) {
+						const rawToken = crypto.randomBytes(32).toString('base64url');
+						const tokenHash = sha256(rawToken);
+						const expiresAt = new Date(Date.now() + PASSWORD_RESET_WINDOW_MS);
+
+						await prisma.$transaction(async (tx) => {
+							await tx.passwordResetToken.deleteMany({
+								where: {
+									userId: user.id,
+									OR: [{ usedAt: null }, { expiresAt: { lt: new Date() } }],
+								},
+							});
+							await tx.passwordResetToken.create({
+								data: { userId: user.id, tokenHash, expiresAt },
+							});
+						});
+
+						const resetUrl = buildPasswordResetUrl(req, rawToken);
+						await sendNotificationEmail({
+							to: user.email,
+							subject: 'FreemanNotes password reset',
+							text: [
+								'FreemanNotes password reset',
+								'',
+								'We received a request to reset your password.',
+								'This link expires in 1 hour.',
+								'',
+								resetUrl,
+								'',
+								'If you did not request this change, you can ignore this email.',
+							].join('\n'),
+							html: buildPasswordResetEmailHtml({ name: user.name, resetUrl }),
+						});
+					}
+
+					jsonResponse(res, 200, { ok: true, message: 'If the email exists, a reset link has been sent.' });
+				} catch (err) {
+					console.error('[auth] forgot-password error:', err);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		// ── POST /api/auth/reset-password ────────────────────────────────
+		if (pathname === '/api/auth/reset-password' && method === 'POST') {
+			const ip = getClientIp(req);
+			if (!resetPasswordLimiter.allow(`${ip}:reset-password`)) {
+				jsonResponse(res, 429, { error: 'Too many requests' });
+				return true;
+			}
+
+			(async () => {
+				try {
+					const body = await readJsonBody(req);
+					const token = String(body?.token || '').trim();
+					const password = String(body?.password || '');
+					if (!token) {
+						jsonResponse(res, 400, { error: 'Reset token is required' });
+						return;
+					}
+					const passwordError = validatePassword(password);
+					if (passwordError) {
+						jsonResponse(res, 400, { error: passwordError });
+						return;
+					}
+
+					const tokenHash = sha256(token);
+					const resetToken = await prisma.passwordResetToken.findUnique({
+						where: { tokenHash },
+						select: { id: true, userId: true, expiresAt: true, usedAt: true },
+					});
+					if (!resetToken || resetToken.usedAt || resetToken.expiresAt.getTime() < Date.now()) {
+						jsonResponse(res, 400, { error: 'This password reset link is invalid or has expired' });
+						return;
+					}
+
+					const passwordHash = await bcrypt.hash(password, Number.isFinite(BCRYPT_ROUNDS) ? BCRYPT_ROUNDS : 12);
+					await prisma.$transaction(async (tx) => {
+						await tx.user.update({
+							where: { id: resetToken.userId },
+							data: { passwordHash },
+						});
+						await tx.passwordResetToken.update({
+							where: { tokenHash },
+							data: { usedAt: new Date() },
+						});
+						await tx.passwordResetToken.deleteMany({
+							where: {
+								userId: resetToken.userId,
+								id: { not: resetToken.id },
+							},
+						});
+					});
+
+					jsonResponse(res, 200, { ok: true, message: 'Password updated successfully' });
+				} catch (err) {
+					console.error('[auth] reset-password error:', err);
 					jsonResponse(res, 500, { error: 'Internal server error' });
 				}
 			})();

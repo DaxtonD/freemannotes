@@ -70,6 +70,35 @@
 	font: inherit;
 }
 
+.fileInput {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+.filePickerRow {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.secondaryButton {
+	border: 1px solid var(--color-border);
+	border-radius: 12px;
+	padding: 12px 14px;
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+}
+
 .primaryButton {
 	border: 0;
 	border-radius: 12px;
@@ -82,6 +111,7 @@
 }
 
 .primaryButton:disabled,
+.secondaryButton:disabled,
 .fileInput:disabled {
 	opacity: 0.6;
 	cursor: not-allowed;

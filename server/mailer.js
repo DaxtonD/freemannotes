@@ -45,6 +45,15 @@ function getSmtpConfig() {
 	return { host, port, secure, user, pass, from };
 }
 
+function isSmtpConfigured() {
+	try {
+		getSmtpConfig();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 let cachedTransport = null;
 
 function getTransport() {
@@ -71,4 +80,17 @@ async function sendInviteEmail({ to, workspaceName, inviteUrl }) {
 	});
 }
 
-module.exports = { sendInviteEmail };
+async function sendNotificationEmail({ to, subject, text, html }) {
+	const cfg = getSmtpConfig();
+	const transport = getTransport();
+
+	await transport.sendMail({
+		from: cfg.from,
+		to,
+		subject: String(subject || 'FreemanNotes notification'),
+		text: String(text || ''),
+		html: html ? String(html) : undefined,
+	});
+}
+
+module.exports = { isSmtpConfigured, sendInviteEmail, sendNotificationEmail };

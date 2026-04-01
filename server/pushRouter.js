@@ -20,7 +20,15 @@
 
 const { enforceSameOrigin } = require('./auth');
 const { createRateLimiter, getClientIp } = require('./rateLimit');
-const { sendPushToUser, getVapidPublicKey, isVapidConfigured, isFcmConfigured } = require('./pushService');
+const {
+	createTestNotificationPayload,
+	sendExternalNotificationToUser,
+	getNotificationPolicies,
+	getNotificationPolicy,
+	getVapidPublicKey,
+	isVapidConfigured,
+	isFcmConfigured,
+} = require('./pushService');
 
 const subscribeLimiter = createRateLimiter({ windowMs: 60_000, max: 20 });
 const testLimiter = createRateLimiter({ windowMs: 60_000, max: 5 });
@@ -115,6 +123,7 @@ function createPushRouter({ prisma }) {
 				publicKey: getVapidPublicKey(),
 				vapidConfigured: isVapidConfigured(),
 				fcmConfigured: isFcmConfigured(),
+				deliveryPolicies: getNotificationPolicies(),
 			});
 			return true;
 		}
@@ -133,6 +142,7 @@ function createPushRouter({ prisma }) {
 		if (method === 'GET' && url.pathname === '/api/push/status') {
 			try {
 				const deviceId = normalizeDeviceId(url.searchParams.get('deviceId') ?? '');
+				const currentPlatform = normalizePlatform(url.searchParams.get('platform') ?? 'WEB');
 				const [sub, logs] = await Promise.all([
 					deviceId
 						? prisma.pushSubscription.findUnique({
@@ -153,7 +163,12 @@ function createPushRouter({ prisma }) {
 						select: { type: true, title: true, status: true, latencyMs: true, error: true, sentAt: true },
 					}),
 				]);
-				jsonResponse(res, 200, { subscription: sub ?? null, recentLogs: logs });
+				jsonResponse(res, 200, {
+					subscription: sub ?? null,
+					recentLogs: logs,
+					deliveryPolicy: getNotificationPolicy(sub?.platform ?? currentPlatform),
+					deliveryPolicies: getNotificationPolicies(),
+				});
 			} catch (err) {
 				console.error('[push] status error:', err.message);
 				jsonResponse(res, 500, { error: 'Internal server error' });
@@ -258,13 +273,16 @@ function createPushRouter({ prisma }) {
 				return true;
 			}
 			try {
-				const result = await sendPushToUser(prisma, userId, {
-					type: 'test',
-					title: '\uD83D\uDD14 Test Notification',
-					body: 'Push notifications are working! You\'re all set.',
-					data: { type: 'test', url: '/' },
+				const body = await readJsonBody(req);
+				const result = await sendExternalNotificationToUser(prisma, userId, createTestNotificationPayload(), {
+					platformHint: normalizePlatform(body?.platform),
 				});
-				jsonResponse(res, 200, { ok: true, sent: result.sent, failed: result.failed });
+				jsonResponse(res, 200, {
+					ok: true,
+					sent: result.sent,
+					failed: result.failed,
+					emailSent: result.emailSent,
+				});
 			} catch (err) {
 				console.error('[push] test error:', err.message);
 				jsonResponse(res, 500, { error: 'Internal server error' });

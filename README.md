@@ -71,7 +71,7 @@ Edit `.env.docker` and set at least these values:
 - `AUTH_JWT_SECRET`
 - `POSTGRES_PASSWORD`
 - `APP_URL`
-- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` if you want invite emails
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` if you want invite emails or email-mode reminder notifications
 
 Then start the stack:
 
@@ -131,11 +131,35 @@ Optional environment variables you may want:
 - `OCR_DISABLED=1` if you intentionally want to disable OCR
 - `OCR_LOG_OUTPUT=1` if you want OCR child-process output and progress logs in the server logs
 
-### Push Notifications (optional)
+### External Notifications (optional)
 
-FreemanNotes supports hybrid push notifications: Web Push (VAPID) for Web/Android PWA and Firebase Cloud Messaging (FCM) for iOS via Capacitor.
+FreemanNotes supports per-platform external notification delivery for reminder notifications and test notifications from Preferences:
 
-**VAPID keys (Web / Android PWA):**
+- `WEB_NOTIFICATION_MODE` for desktop and non-Android browsers
+- `ANDROID_NOTIFICATION_MODE` for Android browsers and installed PWAs
+- `IOS_NOTIFICATION_MODE` for iOS
+
+Each mode accepts:
+
+- `auto` — use push when that platform is configured, otherwise fall back to email if SMTP is configured
+- `push` — require push only
+- `email` — require email only
+- `off` — disable external reminder/test notifications on that platform
+
+User registration already requires a valid email address. That email is used both as the account identifier and as the destination for email-mode reminder delivery.
+
+**SMTP (required for any `email` or `auto` fallback path):**
+
+```text
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=mailer@example.com
+SMTP_PASS=your-password
+SMTP_FROM="FreemanNotes <no-reply@example.com>"
+```
+
+**VAPID keys (Web / Android browser/PWA push):**
 
 ```bash
 npx web-push generate-vapid-keys
@@ -149,7 +173,7 @@ VAPID_PRIVATE_KEY=<base64url private key>
 VAPID_SUBJECT=mailto:admin@yourdomain.com
 ```
 
-**FCM (iOS via Capacitor):**
+**FCM (iOS push):**
 
 1. Open [Firebase Console](https://console.firebase.google.com/) → your project → Project Settings → Service Accounts.
 2. Click **Generate new private key** and download the JSON file.
@@ -161,7 +185,14 @@ FCM_CLIENT_EMAIL=firebase-adminsdk-xxxxx@your-project.iam.gserviceaccount.com
 FCM_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----\n"
 ```
 
-When neither VAPID nor FCM is configured, push notifications are silently disabled and the Notifications panel in Preferences shows an appropriate message.
+**Example configurations:**
+
+- Web push + Android push + iOS push: set all three `*_NOTIFICATION_MODE=push`, configure both VAPID and FCM
+- Web push + Android push + iOS email fallback: set `WEB_NOTIFICATION_MODE=push`, `ANDROID_NOTIFICATION_MODE=push`, `IOS_NOTIFICATION_MODE=auto`, configure VAPID + SMTP
+- Web email + Android email + iOS email: set all three `*_NOTIFICATION_MODE=email`, configure SMTP only
+- External notifications off everywhere: set all three `*_NOTIFICATION_MODE=off`
+
+The Notifications panel in Preferences shows the effective delivery mode for the current platform so users can see whether they are using push, email fallback, or no external delivery at all.
 
 Startup behavior:
 

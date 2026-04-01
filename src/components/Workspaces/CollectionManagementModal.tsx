@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../../core/i18n';
 import { buildCollectionPathMap, buildCollectionTree, type CollectionRecord, type CollectionTreeNode } from '../../services/collectionService';
 import { TreeSelector, type TreeSelectorItem } from '../shared/TreeSelector';
 import styles from '../shared/MetadataModal.module.css';
@@ -13,6 +14,7 @@ type CollectionManagementModalProps = {
 };
 
 export function CollectionManagementModal(props: CollectionManagementModalProps): React.JSX.Element | null {
+	const { t } = useI18n();
 	const [name, setName] = React.useState('');
 	const [parentId, setParentId] = React.useState<string>('');
 
@@ -40,22 +42,22 @@ export function CollectionManagementModal(props: CollectionManagementModalProps)
 
 	return (
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
-			<section className={`${styles.modal} ${styles.compactModal}`} role="dialog" aria-modal="true" aria-label="Manage collections" onClick={(event) => event.stopPropagation()}>
+			<section className={`${styles.modal} ${styles.compactModal}`} role="dialog" aria-modal="true" aria-label={t('collections.manageTitle')} onClick={(event) => event.stopPropagation()}>
 				<header className={styles.header}>
 					<div className={styles.titleBlock}>
-						<h2 className={styles.title}>Manage collections</h2>
-						<p className={styles.description}>Create, nest, rename, and remove collections.</p>
+						<h2 className={styles.title}>{t('collections.manageTitle')}</h2>
+						<p className={styles.description}>{t('collections.manageDescription')}</p>
 					</div>
-					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label="Close">✕</button>
+					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label={t('common.close')}>✕</button>
 				</header>
 
 				<div className={`${styles.section} ${styles.compactSection}`}>
 					<div className={styles.field}>
-						<label className={styles.fieldLabel} htmlFor="collection-name">Collection name</label>
-						<input id="collection-name" className={styles.input} value={name} onChange={(event) => setName(event.target.value)} placeholder="New collection" />
+						<label className={styles.fieldLabel} htmlFor="collection-name">{t('collections.nameLabel')}</label>
+						<input id="collection-name" className={styles.input} value={name} onChange={(event) => setName(event.target.value)} placeholder={t('collections.newPlaceholder')} />
 					</div>
 					<div className={styles.field}>
-						<div className={styles.fieldLabel}>Parent collection</div>
+						<div className={styles.fieldLabel}>{t('collections.parentLabel')}</div>
 						{parentId ? <div className={styles.treePath}>{pathById.get(parentId) ?? ''}</div> : null}
 						<TreeSelector
 							items={treeItems}
@@ -70,12 +72,12 @@ export function CollectionManagementModal(props: CollectionManagementModalProps)
 										onClick={(event) => {
 											event.stopPropagation();
 											const collection = props.collections.find((entry) => entry.id === item.id);
-											const nextName = window.prompt('Rename collection', collection?.name ?? item.label)?.trim();
+											const nextName = window.prompt(t('collections.renamePrompt'), collection?.name ?? item.label)?.trim();
 											if (!nextName) return;
 											props.onRename(item.id, nextName);
 										}}
 									>
-										Rename
+										{t('collections.renameAction')}
 									</button>
 									<button
 										type="button"
@@ -83,15 +85,15 @@ export function CollectionManagementModal(props: CollectionManagementModalProps)
 										onClick={(event) => {
 											event.stopPropagation();
 											const collection = props.collections.find((entry) => entry.id === item.id);
-											if (!window.confirm(`Delete ${collection?.name ?? item.label}?`)) return;
+											if (!window.confirm(t('collections.deleteConfirmPrefix').replace('{name}', collection?.name ?? item.label))) return;
 											props.onDelete(item.id);
 										}}
 									>
-										Delete
+										{t('collections.deleteAction')}
 									</button>
 								</>
 							)}
-							emptyLabel="No collections yet."
+							emptyLabel={t('collections.emptyState')}
 						/>
 					</div>
 					<div className={styles.actions}>
@@ -105,7 +107,7 @@ export function CollectionManagementModal(props: CollectionManagementModalProps)
 							}}
 							disabled={!name.trim()}
 						>
-							Create collection
+							{t('collections.createAction')}
 						</button>
 					</div>
 				</div>

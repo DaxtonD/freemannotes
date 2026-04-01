@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import type { Editor, JSONContent } from '@tiptap/core';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -12,6 +12,7 @@ import {
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
+import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { createRichTextDocFromPlainText } from '../../core/richText';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
@@ -20,13 +21,46 @@ import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
-import { resizeAutoHeightTextarea } from './autoSizeTextarea';
 import styles from './Editors.module.css';
 
 export type TextEditorProps = {
 	onSave: (args: { title: string; body: string; richContent: JSONContent; previewLinks: string[] }) => void | Promise<void>;
 	onCancel: () => void;
 };
+
+const DRAFT_TEXT_AUTOSCROLL_ID = '__draft_text_editor__';
+
+function findScrollableAncestor(node: HTMLElement | null): HTMLElement | null {
+	let current = node?.parentElement ?? null;
+	while (current) {
+		if (current.scrollHeight > current.clientHeight + 1) return current;
+		current = current.parentElement;
+	}
+	return null;
+}
+
+function animateFastScrollToBottom(container: HTMLElement): () => void {
+	const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+	const startTop = container.scrollTop;
+	const distance = maxScrollTop - startTop;
+	if (Math.abs(distance) <= 1 || typeof window === 'undefined') {
+		container.scrollTop = maxScrollTop;
+		return () => undefined;
+	}
+	const durationMs = 180;
+	const startTime = window.performance.now();
+	let frameId = 0;
+	const step = (now: number): void => {
+		const progress = Math.min(1, (now - startTime) / durationMs);
+		const eased = 1 - Math.pow(1 - progress, 3);
+		container.scrollTop = startTop + (distance * eased);
+		if (progress < 1) {
+			frameId = window.requestAnimationFrame(step);
+		}
+	};
+	frameId = window.requestAnimationFrame(step);
+	return () => window.cancelAnimationFrame(frameId);
+}
 
 export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const { t } = useI18n();
@@ -55,6 +89,12 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const isMobileLandscape = useIsMobileLandscape();
 	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
 	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
+	const noteAutoScrollEnabled = useSyncExternalStore(
+		(onStoreChange) => subscribeNoteAutoScrollPrefs(onStoreChange),
+		() => getUserNoteAutoScrollEnabled(DRAFT_TEXT_AUTOSCROLL_ID),
+		() => getUserNoteAutoScrollEnabled(DRAFT_TEXT_AUTOSCROLL_ID)
+	);
+	const activeScrollCancelRef = React.useRef<(() => void) | null>(null);
 	// Parent-owned copy state keeps the hidden inline editor toolbar and the visible
 	// floating mobile toolbar in sync.
 	const [copyMode, setCopyMode] = React.useState<ClipboardConversionTarget>('rich-text');
@@ -86,12 +126,57 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	}, [isCoarsePointer]);
 	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
-	const titleInputRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const titleInputRef = React.useRef<HTMLInputElement | null>(null);
+	const bodyFieldRef = React.useRef<HTMLDivElement | null>(null);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
 		event.preventDefault();
 		event.stopPropagation();
 	}, [interactionGuardActive]);
+
+	const focusBodyEditor = React.useCallback((): void => {
+		if (textEditor && !textEditor.isDestroyed) {
+			textEditor.commands.focus('start');
+			return;
+		}
+		const tryFocus = (remaining: number): void => {
+			const editorElement = bodyFieldRef.current?.querySelector('[contenteditable="true"]');
+			if (editorElement instanceof HTMLElement) {
+				editorElement.focus();
+				return;
+			}
+			if (remaining <= 0 || typeof window === 'undefined') return;
+			window.setTimeout(() => tryFocus(remaining - 1), 16);
+		};
+		tryFocus(5);
+	}, [textEditor]);
+
+	const stopActiveScrollAnimation = React.useCallback((): void => {
+		activeScrollCancelRef.current?.();
+		activeScrollCancelRef.current = null;
+	}, []);
+
+	const scrollBodyToBottom = React.useCallback((animated: boolean): boolean => {
+		const container = findScrollableAncestor(bodyFieldRef.current?.querySelector('[contenteditable="true"]') as HTMLElement | null);
+		if (!container) return false;
+		stopActiveScrollAnimation();
+		if (animated) {
+			activeScrollCancelRef.current = animateFastScrollToBottom(container);
+		} else {
+			container.scrollTop = container.scrollHeight;
+		}
+		return true;
+	}, [stopActiveScrollAnimation]);
+
+	const handleToggleNoteAutoScroll = React.useCallback((): void => {
+		const next = !noteAutoScrollEnabled;
+		setUserNoteAutoScrollEnabled(DRAFT_TEXT_AUTOSCROLL_ID, null, next);
+		if (next) {
+			scrollBodyToBottom(true);
+		} else {
+			stopActiveScrollAnimation();
+		}
+	}, [noteAutoScrollEnabled, scrollBodyToBottom, stopActiveScrollAnimation]);
 
 	const handleTouchStart = React.useCallback((event: React.TouchEvent): void => {
 		const t0 = event.touches[0];
@@ -166,9 +251,24 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		return () => window.cancelAnimationFrame(rafId);
 	}, []);
 
-	React.useLayoutEffect(() => {
-		resizeAutoHeightTextarea(titleInputRef.current);
-	}, [title]);
+	React.useEffect(() => {
+		if (!noteAutoScrollEnabled) {
+			stopActiveScrollAnimation();
+			return;
+		}
+		let cancelled = false;
+		const tryScroll = (remaining: number): void => {
+			if (cancelled) return;
+			if (scrollBodyToBottom(true)) return;
+			if (remaining <= 0 || typeof window === 'undefined') return;
+			window.setTimeout(() => tryScroll(remaining - 1), 24);
+		};
+		tryScroll(12);
+		return () => {
+			cancelled = true;
+			stopActiveScrollAnimation();
+		};
+	}, [noteAutoScrollEnabled, scrollBodyToBottom, stopActiveScrollAnimation]);
 
 	const onSubmit = async (event: React.FormEvent): Promise<void> => {
 		// Standard async submit guard to prevent duplicate saves.
@@ -220,9 +320,9 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 				style={mobileKeyboardOpen ? { height: `${keyboard.visibleBottom}px`, maxHeight: `${keyboard.visibleBottom}px` } : undefined}
 				onClick={(event) => event.stopPropagation()}
 			>
-				<textarea
+				<input
+					type="text"
 					name="text-note-title"
-					rows={1}
 					autoComplete="off"
 					autoCorrect="off"
 					autoCapitalize="sentences"
@@ -234,11 +334,15 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					ref={titleInputRef}
 					value={title}
 					onChange={(e) => setTitle(e.target.value)}
-					onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
+					onKeyDown={(event) => {
+						if (event.key !== 'Enter') return;
+						event.preventDefault();
+						focusBodyEditor();
+					}}
 					placeholder={t('editors.titlePlaceholder')}
 				/>
 
-				<div className={styles.fullBodyFieldContainer}>
+				<div ref={bodyFieldRef} className={styles.fullBodyFieldContainer}>
 					<RichTextEditor
 						variant="full"
 						placeholder={t('editors.bodyPlaceholder')}
@@ -246,7 +350,8 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						copyMode={copyMode}
 						onCopyModeChange={setCopyMode}
 						onClipboardStatusChange={setClipboardStatusMessage}
-						autoFocus
+						noteAutoScrollEnabled={noteAutoScrollEnabled}
+						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
 						// Hide the inline toolbar on coarse pointers because it is re-mounted as a
 						// portal above the keyboard while the keyboard is open.
 						hideToolbar={isCoarsePointer}
@@ -500,7 +605,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 					>
 						{clipboardStatusMessage ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
-						<RichTextToolbar editor={textEditor} variant="full" compact onCreateUrlPreview={handleCreateUrlPreview} copyMode={copyMode} onCopyModeChange={setCopyMode} />
+						<RichTextToolbar editor={textEditor} variant="full" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} copyMode={copyMode} onCopyModeChange={setCopyMode} />
 					</div>
 				</>,
 				document.body

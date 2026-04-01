@@ -38,6 +38,14 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_FROM: ${SMTP_FROM:-FreemanNotes <no-reply@example.com>}
+      # External notifications per platform:
+      # auto = push if configured, otherwise email if SMTP is configured
+      # push = push only
+      # email = email only
+      # off = disable external reminder/test notifications
+      WEB_NOTIFICATION_MODE: ${WEB_NOTIFICATION_MODE:-auto}
+      ANDROID_NOTIFICATION_MODE: ${ANDROID_NOTIFICATION_MODE:-auto}
+      IOS_NOTIFICATION_MODE: ${IOS_NOTIFICATION_MODE:-auto}
       TRASH_CLEANUP_INTERVAL_MS: ${TRASH_CLEANUP_INTERVAL_MS:-3600000}
       # Override these when OCR lives in a separate Python environment or when
       # production nodes should skip OCR entirely.
@@ -54,7 +62,6 @@ services:
       FCM_PROJECT_ID: ${FCM_PROJECT_ID:-}
       FCM_CLIENT_EMAIL: ${FCM_CLIENT_EMAIL:-}
       FCM_PRIVATE_KEY: ${FCM_PRIVATE_KEY:-}
-      PUSH_PROVIDER: ${PUSH_PROVIDER:-hybrid}
     dns:
       - 8.8.8.8
       - 8.8.4.4
