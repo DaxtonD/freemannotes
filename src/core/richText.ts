@@ -192,7 +192,7 @@ export function createRichTextExtensions(args: {
 		Underline,
 		Link.configure({
 			autolink: true,
-			openOnClick: false,
+			openOnClick: true,
 			defaultProtocol: 'https',
 		}),
 	];

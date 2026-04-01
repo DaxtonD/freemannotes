@@ -27,6 +27,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const webpush = require('web-push');
+const { isSmtpConfigured, sendNotificationEmail } = require('./mailer');
 
 // ── Environment configuration ─────────────────────────────────────────────────
 const VAPID_SUBJECT = String(process.env.VAPID_SUBJECT || 'mailto:admin@example.com').trim();
@@ -37,6 +38,31 @@ const FCM_PROJECT_ID = String(process.env.FCM_PROJECT_ID || '').trim();
 // Service account private key — newlines may be escaped as '\n' in env files.
 const FCM_PRIVATE_KEY = String(process.env.FCM_PRIVATE_KEY || '').replace(/\\n/g, '\n').trim();
 const FCM_CLIENT_EMAIL = String(process.env.FCM_CLIENT_EMAIL || '').trim();
+const APP_URL = String(process.env.APP_URL || '').trim().replace(/\/$/, '');
+
+function normalizeNotificationMode(value, fallback = 'auto') {
+	const normalized = String(value || '').trim().toLowerCase();
+	if (!normalized) return fallback;
+	if (normalized === 'push-only') return 'push';
+	if (normalized === 'email-only') return 'email';
+	if (normalized === 'disabled') return 'off';
+	if (normalized === 'auto' || normalized === 'push' || normalized === 'email' || normalized === 'off') {
+		return normalized;
+	}
+	return fallback;
+}
+
+const WEB_NOTIFICATION_MODE = normalizeNotificationMode(process.env.WEB_NOTIFICATION_MODE, 'auto');
+const ANDROID_NOTIFICATION_MODE = normalizeNotificationMode(
+	process.env.ANDROID_NOTIFICATION_MODE,
+	WEB_NOTIFICATION_MODE
+);
+const IOS_NOTIFICATION_MODE = normalizeNotificationMode(process.env.IOS_NOTIFICATION_MODE, 'auto');
+const smtpReady = isSmtpConfigured();
+const BRAND_NAME = 'FreemanNotes';
+const DEFAULT_NOTIFICATION_ICON = '/apple-touch-icon.png';
+const DEFAULT_NOTIFICATION_BADGE = '/apple-touch-icon.png';
+const DEFAULT_NOTIFICATION_IMAGE = '/icons/FreemanFace.png';
 
 // ── VAPID initialisation ──────────────────────────────────────────────────────
 let vapidReady = false;
@@ -60,6 +86,223 @@ if (fcmReady) {
 	console.info('[push] FCM configured');
 } else {
 	console.info('[push] FCM not configured — set FCM_PROJECT_ID / FCM_CLIENT_EMAIL / FCM_PRIVATE_KEY to enable iOS push');
+}
+if (smtpReady) {
+	console.info('[push] SMTP configured');
+} else {
+	console.info('[push] SMTP not configured — set SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM to enable email fallback');
+}
+
+function getConfiguredNotificationMode(platform) {
+	if (platform === 'IOS') return IOS_NOTIFICATION_MODE;
+	if (platform === 'ANDROID') return ANDROID_NOTIFICATION_MODE;
+	return WEB_NOTIFICATION_MODE;
+}
+
+function isPushConfiguredForPlatform(platform) {
+	return platform === 'IOS' ? fcmReady : vapidReady;
+}
+
+function getNotificationPolicy(platform) {
+	const resolvedPlatform = platform === 'IOS' ? 'IOS' : platform === 'ANDROID' ? 'ANDROID' : 'WEB';
+	const configuredMode = getConfiguredNotificationMode(resolvedPlatform);
+	const pushConfigured = isPushConfiguredForPlatform(resolvedPlatform);
+	const emailConfigured = smtpReady;
+	let effectiveMode = 'off';
+
+	// The configured mode is an operator preference; the effective mode is what this
+	// server can actually deliver after accounting for missing push or SMTP config.
+	if (configuredMode === 'push') {
+		effectiveMode = pushConfigured ? 'push' : 'off';
+	} else if (configuredMode === 'email') {
+		effectiveMode = emailConfigured ? 'email' : 'off';
+	} else if (configuredMode === 'auto') {
+		if (pushConfigured) {
+			effectiveMode = 'push';
+		} else if (emailConfigured) {
+			effectiveMode = 'email';
+		}
+	}
+
+	return {
+		platform: resolvedPlatform,
+		configuredMode,
+		effectiveMode,
+		pushConfigured,
+		emailConfigured,
+		canRegisterPush: effectiveMode === 'push' && pushConfigured,
+	};
+}
+
+function getNotificationPolicies() {
+	return {
+		WEB: getNotificationPolicy('WEB'),
+		ANDROID: getNotificationPolicy('ANDROID'),
+		IOS: getNotificationPolicy('IOS'),
+	};
+}
+
+function escapeHtml(value) {
+	return String(value ?? '')
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;');
+}
+
+function formatReminderDateTime(value) {
+	if (!value) return '';
+	const date = value instanceof Date ? value : new Date(value);
+	if (Number.isNaN(date.getTime())) return '';
+	return new Intl.DateTimeFormat('en-US', {
+		dateStyle: 'medium',
+		timeStyle: 'short',
+	}).format(date);
+}
+
+function buildReminderUrl(reminder) {
+	return `/?workspace=${encodeURIComponent(String(reminder.workspaceId))}&note=${encodeURIComponent(String(reminder.noteId))}`;
+}
+
+async function loadReminderMetadata(prisma, reminder) {
+	const [workspace, user] = await Promise.all([
+		prisma.workspace.findUnique({
+			where: { id: reminder.workspaceId },
+			select: { name: true },
+		}).catch(() => null),
+		prisma.user.findUnique({
+			where: { id: reminder.userId },
+			select: { name: true, email: true },
+		}).catch(() => null),
+	]);
+	return {
+		workspaceName: workspace?.name ? String(workspace.name) : 'Workspace',
+		userName: user?.name ? String(user.name) : '',
+		userEmail: user?.email ? String(user.email) : '',
+	};
+}
+
+function createReminderNotificationPayload(reminder, metadata) {
+	const noteTitle = String(reminder.noteTitle || 'Untitled note').trim() || 'Untitled note';
+	const workspaceName = String(metadata.workspaceName || 'Workspace').trim() || 'Workspace';
+	const reminderAtLabel = formatReminderDateTime(reminder.reminderAt);
+	const noteUrl = buildReminderUrl(reminder);
+	const title = `${BRAND_NAME} Reminder`;
+	const body = reminderAtLabel
+		? `${noteTitle} is due ${reminderAtLabel} in ${workspaceName}.`
+		: `${noteTitle} is due in ${workspaceName}.`;
+	const richLines = [
+		`Note: ${noteTitle}`,
+		`Workspace: ${workspaceName}`,
+		reminderAtLabel ? `Scheduled for: ${reminderAtLabel}` : '',
+	].filter(Boolean);
+	const iconUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_ICON);
+	const badgeUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_BADGE);
+	const imageUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_IMAGE);
+	return {
+		type: 'reminder',
+		title,
+		body,
+		emailSubject: `${BRAND_NAME} reminder: ${noteTitle}`,
+		emailText: [
+			`${BRAND_NAME} reminder`,
+			'',
+			...richLines,
+			'',
+			`Open note: ${toAbsoluteAppUrl(noteUrl)}`,
+			'',
+			`Signed in as: ${metadata.userEmail || 'your FreemanNotes account'}`,
+		].join('\n'),
+		emailHtml: buildReminderEmailHtml({
+			noteTitle,
+			workspaceName,
+			reminderAtLabel,
+			noteUrl: toAbsoluteAppUrl(noteUrl),
+			userName: metadata.userName,
+		}),
+		data: {
+			type: 'reminder',
+			noteId: reminder.noteId,
+			docId: reminder.docId,
+			workspaceId: reminder.workspaceId,
+			noteTitle,
+			workspaceName,
+			reminderAt: reminder.reminderAt instanceof Date ? reminder.reminderAt.toISOString() : String(reminder.reminderAt || ''),
+			url: noteUrl,
+			tag: `freemannotes-reminder-${String(reminder.noteId)}`,
+			icon: iconUrl,
+			badge: badgeUrl,
+			image: imageUrl,
+			brand: BRAND_NAME,
+			vibrate: '180,60,180',
+			requireInteraction: true,
+		},
+	};
+}
+
+function buildReminderEmailHtml({ noteTitle, workspaceName, reminderAtLabel, noteUrl, userName }) {
+	const greeting = userName ? `Hello ${escapeHtml(userName)},` : 'Hello,';
+	const whenMarkup = reminderAtLabel
+		? `<tr><td style="padding:0 0 12px;color:#5b6677;font-size:13px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Scheduled for</td><td style="padding:0 0 12px;color:#152033;font-size:15px;font-weight:600;text-align:right;">${escapeHtml(reminderAtLabel)}</td></tr>`
+		: '';
+	return `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#eef2f7;font-family:Segoe UI,Arial,sans-serif;color:#152033;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:640px;margin:0 auto;background:#ffffff;border-radius:20px;overflow:hidden;border:1px solid #d8e0ea;box-shadow:0 18px 50px rgba(17,24,39,0.08);">
+      <tr>
+        <td style="padding:28px 32px;background:linear-gradient(135deg,#18253f 0%,#284a77 55%,#5e8bc2 100%);color:#ffffff;">
+          <div style="font-size:12px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;opacity:0.84;">${BRAND_NAME}</div>
+          <h1 style="margin:12px 0 0;font-size:28px;line-height:1.15;">Reminder ready</h1>
+          <p style="margin:12px 0 0;font-size:15px;line-height:1.55;max-width:460px;opacity:0.92;">${escapeHtml(noteTitle)} is ready for your attention in ${escapeHtml(workspaceName)}.</p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:28px 32px 8px;">
+          <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">${greeting}</p>
+          <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#334155;">FreemanNotes fired a scheduled reminder for one of your notes. The summary below includes the key details and a direct link back into the note.</p>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:18px 20px;">
+            <tr><td style="padding:0 0 12px;color:#5b6677;font-size:13px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Note</td><td style="padding:0 0 12px;color:#152033;font-size:15px;font-weight:700;text-align:right;">${escapeHtml(noteTitle)}</td></tr>
+            <tr><td style="padding:0 0 12px;color:#5b6677;font-size:13px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Workspace</td><td style="padding:0 0 12px;color:#152033;font-size:15px;font-weight:600;text-align:right;">${escapeHtml(workspaceName)}</td></tr>
+            ${whenMarkup}
+          </table>
+          <div style="padding:28px 0 18px;">
+            <a href="${escapeHtml(noteUrl)}" style="display:inline-block;background:#264b79;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;padding:14px 22px;border-radius:999px;">Open in ${BRAND_NAME}</a>
+          </div>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0 32px 28px;color:#64748b;font-size:13px;line-height:1.6;">
+          This message was generated by the notification settings for your FreemanNotes deployment. If this server is configured for email-mode reminders on your platform, this email is the primary external reminder channel.
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+}
+
+function createTestNotificationPayload() {
+	const iconUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_ICON);
+	const badgeUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_BADGE);
+	const imageUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_IMAGE);
+	return {
+		type: 'test',
+		title: `${BRAND_NAME} notifications ready`,
+		body: 'External notifications are configured and ready for this account.',
+		emailSubject: `${BRAND_NAME} test notification`,
+		emailText: `${BRAND_NAME} notifications are working. This is a branded test notification from your configured delivery channel.`,
+		emailHtml: `<!doctype html><html><body style="margin:0;padding:24px;background:#eef2f7;font-family:Segoe UI,Arial,sans-serif;color:#152033;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:18px;border:1px solid #d8e0ea;overflow:hidden;"><tr><td style="padding:24px 28px;background:linear-gradient(135deg,#18253f 0%,#284a77 55%,#5e8bc2 100%);color:#fff;"><div style="font-size:12px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;opacity:0.84;">${BRAND_NAME}</div><h1 style="margin:10px 0 0;font-size:26px;">Notifications ready</h1></td></tr><tr><td style="padding:24px 28px;font-size:15px;line-height:1.6;color:#334155;">Your current FreemanNotes notification channel is working. You can return to Preferences and send another test whenever you change delivery settings.</td></tr></table></body></html>`,
+		data: {
+			type: 'test',
+			url: '/',
+			icon: iconUrl,
+			badge: badgeUrl,
+			image: imageUrl,
+			brand: BRAND_NAME,
+			tag: 'freemannotes-test',
+			vibrate: '120,50,120',
+		},
+	};
 }
 
 /**
@@ -181,12 +424,39 @@ async function sendOneSubscription(sub, payload, prisma) {
 					body: JSON.stringify({
 						message: {
 							token: sub.fcmToken,
-							notification: { title: payload.title, body: payload.body },
+							notification: {
+								title: payload.title,
+								body: payload.body,
+								image: typeof payload.data?.image === 'string' ? payload.data.image : undefined,
+							},
 							// FCM data values must be strings
 							data: Object.fromEntries(
 								Object.entries(payload.data ?? {}).map(([k, v]) => [k, String(v)])
 							),
-							apns: { payload: { aps: { badge: 1, sound: 'default' } } },
+							android: {
+								notification: {
+									channelId: 'freemannotes-reminders',
+									icon: 'ic_launcher',
+									color: '#264b79',
+									tag: typeof payload.data?.tag === 'string' ? payload.data.tag : undefined,
+									image: typeof payload.data?.image === 'string' ? payload.data.image : undefined,
+								},
+							},
+							apns: {
+								headers: { 'apns-priority': '10' },
+								payload: {
+									aps: {
+										badge: 1,
+										sound: 'default',
+										category: typeof payload.type === 'string' ? payload.type : 'generic',
+										threadId: typeof payload.data?.tag === 'string' ? payload.data.tag : 'freemannotes',
+										mutableContent: 1,
+									},
+								},
+								fcm_options: {
+									image: typeof payload.data?.image === 'string' ? payload.data.image : undefined,
+								},
+							},
 						},
 					}),
 				});
@@ -212,6 +482,9 @@ async function sendOneSubscription(sub, payload, prisma) {
 					title: payload.title,
 					body: payload.body,
 					type: payload.type,
+					icon: payload.data?.icon,
+					badge: payload.data?.badge,
+					image: payload.data?.image,
 					data: payload.data ?? {},
 				}))
 			);
@@ -234,6 +507,79 @@ async function sendOneSubscription(sub, payload, prisma) {
 
 		throw err;
 	}
+}
+
+function logPushSendFailures(results, subscriptions) {
+	for (let i = 0; i < results.length; i++) {
+		const result = results[i];
+		if (result.status === 'rejected') {
+			const sub = subscriptions[i];
+			const endpointHint = sub.platform === 'IOS'
+				? `fcm:${String(sub.fcmToken ?? '').slice(0, 20)}…`
+				: String(sub.endpoint ?? '').replace(/^https:\/\/[^/]+/, (host) => host.slice(0, 40));
+			console.error(
+				`[push] send failed (platform=${sub.platform} device=${sub.deviceId} endpoint=${endpointHint}):`,
+				result.reason?.message ?? result.reason
+			);
+		}
+	}
+}
+
+function buildEmailBody(payload) {
+	const segments = [];
+	if (payload.body) segments.push(String(payload.body));
+	if (payload.data?.noteTitle) segments.push(`Note: ${String(payload.data.noteTitle)}`);
+	if (payload.data?.workspaceName) segments.push(`Workspace: ${String(payload.data.workspaceName)}`);
+	if (payload.data?.reminderAt) {
+		const label = formatReminderDateTime(payload.data.reminderAt);
+		if (label) segments.push(`Scheduled for: ${label}`);
+	}
+	const url = payload && payload.data && typeof payload.data.url === 'string'
+		? toAbsoluteAppUrl(payload.data.url)
+		: '';
+	if (url) segments.push(`Open FreemanNotes: ${url}`);
+	segments.push('You are receiving this email because this FreemanNotes deployment is configured to use email delivery for notifications on at least one platform.');
+	return segments.join('\n\n');
+}
+
+function toAbsoluteAppUrl(path) {
+	const normalizedPath = String(path || '').trim();
+	if (!normalizedPath) return APP_URL;
+	if (/^https?:\/\//i.test(normalizedPath)) return normalizedPath;
+	if (!APP_URL) return normalizedPath;
+	return `${APP_URL}${normalizedPath.startsWith('/') ? '' : '/'}${normalizedPath}`;
+}
+
+async function sendEmailNotificationToUser(prisma, userId, payload) {
+	if (!smtpReady) return false;
+	const user = await prisma.user.findUnique({
+		where: { id: userId },
+		select: { email: true },
+	});
+	if (!user?.email) return false;
+
+	await sendNotificationEmail({
+		to: user.email,
+		subject: String(payload.emailSubject || payload.title || 'FreemanNotes notification'),
+		text: String(payload.emailText || buildEmailBody(payload)),
+		html: payload.emailHtml ? String(payload.emailHtml) : undefined,
+	});
+	return true;
+}
+
+function shouldSendEmailFallback(subscriptions, platformHint) {
+	if (!smtpReady) return false;
+	if (platformHint && getNotificationPolicy(platformHint).effectiveMode === 'email') {
+		return true;
+	}
+	if (subscriptions.some((sub) => getNotificationPolicy(sub.platform).effectiveMode === 'email')) {
+		return true;
+	}
+	if (subscriptions.length > 0) return false;
+
+	const policies = Object.values(getNotificationPolicies());
+	return policies.some((policy) => policy.effectiveMode === 'email')
+		&& !policies.some((policy) => policy.effectiveMode === 'push');
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -263,28 +609,53 @@ async function sendPushToUser(prisma, userId, payload) {
 	const results = await Promise.allSettled(
 		subscriptions.map((sub) => sendOneSubscription(sub, payload, prisma))
 	);
-
-	// Log each individual failure so it surfaces in docker logs / server output.
-	// (sendOneSubscription only writes to the DB log; Promise.allSettled silently
-	// swallows the throw, so without this the error is invisible at console level.)
-	for (let i = 0; i < results.length; i++) {
-		const result = results[i];
-		if (result.status === 'rejected') {
-			const sub = subscriptions[i];
-			const endpointHint = sub.platform === 'IOS'
-				? `fcm:${String(sub.fcmToken ?? '').slice(0, 20)}…`
-				: String(sub.endpoint ?? '').replace(/^https:\/\/[^/]+/, (host) => host.slice(0, 40));
-			console.error(
-				`[push] send failed (platform=${sub.platform} device=${sub.deviceId} endpoint=${endpointHint}):`,
-				result.reason?.message ?? result.reason
-			);
-		}
-	}
+	logPushSendFailures(results, subscriptions);
 
 	return {
 		sent: results.filter((r) => r.status === 'fulfilled').length,
 		failed: results.filter((r) => r.status === 'rejected').length,
 	};
+}
+
+async function sendExternalNotificationToUser(prisma, userId, payload, options = {}) {
+	if (!prisma || !userId) return { sent: 0, failed: 0, emailSent: false };
+
+	let subscriptions;
+	try {
+		subscriptions = await prisma.pushSubscription.findMany({
+			where: { userId, enabled: true },
+		});
+	} catch {
+		subscriptions = [];
+	}
+
+	const eligiblePushSubscriptions = subscriptions.filter(
+		(sub) => getNotificationPolicy(sub.platform).effectiveMode === 'push'
+	);
+
+	let sent = 0;
+	let failed = 0;
+	if (eligiblePushSubscriptions.length > 0) {
+		const results = await Promise.allSettled(
+			eligiblePushSubscriptions.map((sub) => sendOneSubscription(sub, payload, prisma))
+		);
+		logPushSendFailures(results, eligiblePushSubscriptions);
+		sent = results.filter((result) => result.status === 'fulfilled').length;
+		failed = results.filter((result) => result.status === 'rejected').length;
+	}
+
+	let emailSent = false;
+	// Email acts as the delivery fallback only when push did not reach any eligible
+	// endpoint and the platform policy explicitly resolves to email delivery.
+	if (sent === 0 && shouldSendEmailFallback(subscriptions, options.platformHint)) {
+		try {
+			emailSent = await sendEmailNotificationToUser(prisma, userId, payload);
+		} catch (err) {
+			console.error('[push] email fallback failed:', err.message ?? err);
+		}
+	}
+
+	return { sent, failed, emailSent };
 }
 
 /**
@@ -358,20 +729,12 @@ function startReminderScheduler(prisma, redis, onReminderFired) {
 			const capturedReminder = reminder;
 			setTimeout(async () => {
 				try {
-					await sendPushToUser(prisma, capturedReminder.userId, {
-						type: 'reminder',
-						title: '\u23F0 Reminder',
-						body: capturedReminder.noteTitle
-							? `Reminder: ${capturedReminder.noteTitle}`
-							: 'You have a note reminder.',
-						data: {
-							type: 'reminder',
-							noteId: capturedReminder.noteId,
-							docId: capturedReminder.docId,
-							workspaceId: capturedReminder.workspaceId,
-							url: `/?workspace=${capturedReminder.workspaceId}&note=${capturedReminder.noteId}`,
-						},
-					});
+					const metadata = await loadReminderMetadata(prisma, capturedReminder);
+					await sendExternalNotificationToUser(
+						prisma,
+						capturedReminder.userId,
+						createReminderNotificationPayload(capturedReminder, metadata)
+					);
 				} catch (err) {
 					console.error('[push] reminder send error:', err.message);
 				}
@@ -422,7 +785,11 @@ function isFcmConfigured() {
 }
 
 module.exports = {
+	createTestNotificationPayload,
+	getNotificationPolicy,
+	getNotificationPolicies,
 	sendPushToUser,
+	sendExternalNotificationToUser,
 	sendPushToUsers,
 	startReminderScheduler,
 	getVapidPublicKey,

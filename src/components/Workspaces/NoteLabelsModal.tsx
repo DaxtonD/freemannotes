@@ -1,4 +1,5 @@
 import React from 'react';
+import { useI18n } from '../../core/i18n';
 import type { LabelRecord } from '../../services/labelService';
 import styles from '../shared/MetadataModal.module.css';
 
@@ -13,6 +14,7 @@ type NoteLabelsModalProps = {
 };
 
 export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element | null {
+	const { t } = useI18n();
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const [newLabelName, setNewLabelName] = React.useState('');
 	const [newLabelColor, setNewLabelColor] = React.useState('#d6c24b');
@@ -33,13 +35,13 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 
 	return (
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
-			<section className={styles.modal} role="dialog" aria-modal="true" aria-label="Add labels" onClick={(event) => event.stopPropagation()}>
+			<section className={styles.modal} role="dialog" aria-modal="true" aria-label={t('labels.addTitle')} onClick={(event) => event.stopPropagation()}>
 				<header className={styles.header}>
 					<div className={styles.titleBlock}>
-						<h2 className={styles.title}>Add labels</h2>
-						<p className={styles.description}>{props.noteTitle?.trim() ? props.noteTitle.trim() : 'Tag this note with one or more labels.'}</p>
+						<h2 className={styles.title}>{t('labels.addTitle')}</h2>
+						<p className={styles.description}>{props.noteTitle?.trim() ? props.noteTitle.trim() : t('labels.addDescription')}</p>
 					</div>
-					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label="Close">✕</button>
+					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label={t('common.close')}>✕</button>
 				</header>
 
 				<div className={styles.section}>
@@ -48,21 +50,21 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 						type="search"
 						value={searchQuery}
 						onChange={(event) => setSearchQuery(event.target.value)}
-						placeholder="Search labels"
+						placeholder={t('labels.searchPlaceholder')}
 					/>
 					<div className={styles.inlineCreateRow}>
 						<input
 							className={styles.input}
 							value={newLabelName}
 							onChange={(event) => setNewLabelName(event.target.value)}
-							placeholder="Create new label"
+							placeholder={t('labels.createPlaceholder')}
 						/>
 						<input
 							type="color"
 							className={styles.input}
 							value={newLabelColor}
 							onChange={(event) => setNewLabelColor(event.target.value)}
-							aria-label="New label color"
+							aria-label={t('labels.colorAria')}
 						/>
 						<button
 							type="button"
@@ -75,11 +77,11 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 							}}
 							disabled={!newLabelName.trim()}
 						>
-							Create
+							{t('labels.createAction')}
 						</button>
 					</div>
 					<div className={styles.checkboxList}>
-						{filteredLabels.length === 0 ? <div className={styles.muted}>No matching labels.</div> : filteredLabels.map((label) => {
+						{filteredLabels.length === 0 ? <div className={styles.muted}>{t('labels.noMatches')}</div> : filteredLabels.map((label) => {
 							const checked = props.selectedLabelIds.includes(label.id);
 							return (
 								<label key={label.id} className={`${styles.checkboxRow}${checked ? ` ${styles.checkboxRowActive}` : ''}`}>

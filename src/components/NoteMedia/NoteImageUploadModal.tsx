@@ -20,6 +20,7 @@ function isOfflineRequest(props: Pick<NoteImageUploadModalProps, 'offlineMode'>)
 
 export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
+	const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 	const [files, setFiles] = React.useState<File[]>([]);
 	const [imageUrl, setImageUrl] = React.useState('');
 	const [busy, setBusy] = React.useState(false);
@@ -119,6 +120,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 
 					<label className={styles.label} htmlFor="note-image-files">{t('media.chooseFiles')}</label>
 					<input
+						ref={fileInputRef}
 						id="note-image-files"
 						className={styles.fileInput}
 						type="file"
@@ -127,7 +129,12 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 						onChange={(event) => setFiles(Array.from(event.target.files || []))}
 						disabled={busy}
 					/>
-					{files.length > 0 ? <div className={styles.fileSummary}>{files.length} {t('media.filesSelected')}</div> : null}
+					<div className={styles.filePickerRow}>
+						<button type="button" className={styles.secondaryButton} onClick={() => fileInputRef.current?.click()} disabled={busy}>
+							{t('common.chooseFiles')}
+						</button>
+						<div className={styles.fileSummary}>{files.length > 0 ? `${files.length} ${t('media.filesSelected')}` : t('common.noFilesChosen')}</div>
+					</div>
 					<button type="button" className={styles.primaryButton} onClick={() => void handleFileSubmit()} disabled={busy || files.length === 0}>
 						{busy ? t('media.uploading') : t('media.uploadSelected')}
 					</button>

@@ -15,7 +15,9 @@ export type UserModalProps = {
 };
 
 export function UserModal(props: UserModalProps): React.JSX.Element | null {
+	const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 	const [selectedImageUrl, setSelectedImageUrl] = React.useState<string | null>(null);
+	const [selectedFileName, setSelectedFileName] = React.useState('');
 	const [crop, setCrop] = React.useState({ x: 0, y: 0 });
 	const [zoom, setZoom] = React.useState(1);
 	const [areaPixels, setAreaPixels] = React.useState<CropAreaPixels | null>(null);
@@ -23,6 +25,7 @@ export function UserModal(props: UserModalProps): React.JSX.Element | null {
 	React.useEffect(() => {
 		if (props.isOpen) return;
 		setSelectedImageUrl(null);
+		setSelectedFileName('');
 		setCrop({ x: 0, y: 0 });
 		setZoom(1);
 		setAreaPixels(null);
@@ -69,7 +72,9 @@ export function UserModal(props: UserModalProps): React.JSX.Element | null {
 					<label className={styles.field}>
 						<span>{props.t('prefs.chooseProfilePhoto')}</span>
 						<input
+							ref={fileInputRef}
 							type="file"
+							className={styles.hiddenFileInput}
 							accept="image/*"
 							disabled={Boolean(props.busy)}
 							onChange={(event) => {
@@ -78,12 +83,19 @@ export function UserModal(props: UserModalProps): React.JSX.Element | null {
 								if (selectedImageUrl) URL.revokeObjectURL(selectedImageUrl);
 								const nextUrl = URL.createObjectURL(file);
 								setSelectedImageUrl(nextUrl);
+								setSelectedFileName(file.name);
 								setCrop({ x: 0, y: 0 });
 								setZoom(1);
 								setAreaPixels(null);
 								event.currentTarget.value = '';
 							}}
 						/>
+						<div className={styles.filePickerRow}>
+							<button type="button" className={styles.footerButton} onClick={() => fileInputRef.current?.click()} disabled={Boolean(props.busy)}>
+								{props.t('common.chooseFiles')}
+							</button>
+							<div className={styles.filePickerSummary}>{selectedFileName || props.t('common.noFilesChosen')}</div>
+						</div>
 					</label>
 
 					{selectedImageUrl ? (

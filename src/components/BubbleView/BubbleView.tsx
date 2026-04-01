@@ -27,7 +27,13 @@ import type { ThemeId } from '../../core/theme';
 import { readNoteFromDoc } from '../../core/noteModel';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN } from '../../core/bubbleZoom';
 import { getWorkspaceBubbleColorScheme, toWorkspaceBubbleColorStyle } from '../../core/bubbleWorkspaceColors';
-import { readCachedNoteShareCollaborators, syncNoteShareCollaborators } from '../../core/noteShareApi';
+import {
+	listSharedNotePlacements,
+	readCachedNoteShareCollaborators,
+	syncNoteShareCollaborators,
+	type SharedNotePlacement,
+	type WorkspaceSystemKind,
+} from '../../core/noteShareApi';
 import type { ReminderFilterMode } from '../../utilities/getVisibleNotes';
 import styles from './BubbleView.module.css';
 
@@ -52,6 +58,7 @@ const ZOOM_MAX = BUBBLE_ZOOM_MAX;
 export type BubbleWorkspaceInfo = {
 	id: string;
 	name: string;
+	systemKind?: WorkspaceSystemKind;
 };
 
 type BubbleNote = {
@@ -400,6 +407,68 @@ async function loadInactiveWorkspaceNote(
 	}
 }
 
+async function loadInactiveSharedPlacementNote(
+	workspaceId: string,
+	workspaceName: string,
+	placement: SharedNotePlacement,
+	showTrashed: boolean,
+	reminderFilter: ReminderFilterMode,
+	nowMs: number
+): Promise<BubbleNote | null> {
+	const doc = new Y.Doc();
+	const idb = new IndexeddbPersistence(placement.roomId, doc);
+
+	await Promise.race([
+		new Promise<void>((resolve) => {
+			if ((idb as any).synced) { resolve(); return; }
+			idb.on('synced', () => resolve());
+		}),
+		new Promise<void>((resolve) => { window.setTimeout(resolve, IDB_LOAD_TIMEOUT_MS); }),
+	]);
+
+	try {
+		const metadata = doc.getMap<any>('metadata');
+		const isTrashed = Boolean(metadata.get('trashed'));
+		if (showTrashed ? !isTrashed : isTrashed) return null;
+		const reminderAtRaw = metadata.get('reminderAt');
+		const reminderAt = typeof reminderAtRaw === 'string' ? reminderAtRaw : null;
+		if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+		const resolvedTitle = readNoteFromDoc(doc, placement.aliasId).title.trim();
+		const reminderMs = reminderAt ? Date.parse(reminderAt) : Number.NaN;
+		const title = resolvedTitle || placement.sourceNoteId;
+		return {
+			noteId: placement.aliasId,
+			workspaceId,
+			workspaceName,
+			title,
+			searchText: extractNoteSearchText(placement.aliasId, doc, title),
+			updatedAt: Number(metadata.get('updatedAt') ?? 0),
+			reminderAt,
+			isPinned: Boolean(metadata.get('isPinned')),
+			hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
+			hasCollaborators: false,
+			isActiveWorkspace: false,
+		};
+	} catch {
+		return {
+			noteId: placement.aliasId,
+			workspaceId,
+			workspaceName,
+			title: placement.sourceNoteId,
+			searchText: placement.sourceNoteId,
+			updatedAt: 0,
+			reminderAt: null,
+			isPinned: false,
+			hasReminder: false,
+			hasCollaborators: false,
+			isActiveWorkspace: false,
+		};
+	} finally {
+		try { idb.destroy(); } catch { /* ignore */ }
+		try { doc.destroy(); } catch { /* ignore */ }
+	}
+}
+
 async function loadWorkspaceRegistry(workspaceId: string): Promise<RegistryEntry[]> {
 	const roomName = `${workspaceId}:${NOTES_REGISTRY_ID}`;
 	const doc = new Y.Doc();
@@ -439,6 +508,7 @@ async function loadWorkspaceRegistry(workspaceId: string): Promise<RegistryEntry
 function useBubbleNotes(
 	workspaces: BubbleWorkspaceInfo[],
 	activeWorkspaceId: string | null,
+	sharedPlacements: readonly SharedNotePlacement[],
 	showTrashed: boolean,
 	reminderFilter: ReminderFilterMode
 ): BubbleNote[] {
@@ -476,86 +546,152 @@ function useBubbleNotes(
 			// ── Active workspace ─────────────────────────────────────────────────────
 			const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 			const activeWorkspaceName = activeWorkspace?.name ?? '';
+			const activeWorkspaceIsShared = activeWorkspace?.systemKind === 'SHARED_WITH_ME';
 
-			try {
-				const registryDoc = await manager.getNotesRegistryDoc();
-				if (cancelled) return;
-				const notesList = registryDoc.getArray<Y.Map<any>>(NOTES_LIST_KEY);
-				const noteOrder = registryDoc.getArray<string>(NOTE_ORDER_KEY);
-
-				const titlesById = new Map<string, string>();
-				for (const item of notesList.toArray()) {
-					const id = String(item.get?.('id') ?? '').trim();
-					const title = String(item.get?.('title') ?? '').trim();
-					if (id) titlesById.set(id, title);
-				}
-				const orderedIds: string[] = noteOrder.toArray().filter(Boolean);
-
-				const activeEntries: Array<BubbleNote | null> = await Promise.all(orderedIds.map(async (noteId) => {
-					const registryTitle = titlesById.get(noteId) ?? '';
-					const doc = await manager.getDocReady(noteId);
-					const meta = doc.getMap<any>('metadata');
-					const titleText = doc.getText('title');
-					const contentText = doc.getText('content');
-					const checklist = doc.getArray<Y.Map<any>>('checklist');
-					const onMetadataChange = (): void => scheduleRefresh();
-					const onTitleChange = (): void => scheduleRefresh();
-					const onContentChange = (): void => scheduleRefresh();
-					const onChecklistChange = (): void => scheduleRefresh();
-					meta.observe(onMetadataChange);
-					titleText.observe(onTitleChange);
-					contentText.observe(onContentChange);
-					checklist.observeDeep(onChecklistChange);
-					cleanups.push(() => {
-						try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
-						try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
-						try { contentText.unobserve(onContentChange); } catch { /* ignore */ }
-						try { checklist.unobserveDeep(onChecklistChange); } catch { /* ignore */ }
-					});
-					const isTrashed = Boolean(meta.get('trashed'));
-					if (showTrashed ? !isTrashed : isTrashed) return null;
-					const reminderAtRaw = meta.get('reminderAt');
-					const reminderAt = typeof reminderAtRaw === 'string' ? reminderAtRaw : null;
-					if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
-					const resolvedTitle = readNoteFromDoc(doc, noteId).title.trim();
-					const isPinned = Boolean(meta.get('isPinned'));
-					const updatedAt = Number(meta.get('updatedAt') ?? 0);
-					const reminderMs = reminderAt ? Date.parse(String(reminderAt)) : Number.NaN;
-					const hasReminder = Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS;
-					const title = resolvedTitle || registryTitle;
-					return {
-						noteId,
-						workspaceId: activeWorkspaceId,
-						workspaceName: activeWorkspaceName,
-						title,
-						searchText: extractNoteSearchText(noteId, doc, title),
-						updatedAt,
-						reminderAt,
-						isPinned,
-						hasReminder,
-						hasCollaborators: false,
-						isActiveWorkspace: true,
-					};
+			if (activeWorkspaceIsShared) {
+				const activeEntries = await Promise.all(sharedPlacements.slice(0, MAX_NOTES_PER_INACTIVE_WORKSPACE).map(async (placement) => {
+					try {
+						const doc = await manager.getDocReady(placement.aliasId);
+						const meta = doc.getMap<any>('metadata');
+						const titleText = doc.getText('title');
+						const contentText = doc.getText('content');
+						const checklist = doc.getArray<Y.Map<any>>('checklist');
+						const onMetadataChange = (): void => scheduleRefresh();
+						const onTitleChange = (): void => scheduleRefresh();
+						const onContentChange = (): void => scheduleRefresh();
+						const onChecklistChange = (): void => scheduleRefresh();
+						meta.observe(onMetadataChange);
+						titleText.observe(onTitleChange);
+						contentText.observe(onContentChange);
+						checklist.observeDeep(onChecklistChange);
+						cleanups.push(() => {
+							try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
+							try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
+							try { contentText.unobserve(onContentChange); } catch { /* ignore */ }
+							try { checklist.unobserveDeep(onChecklistChange); } catch { /* ignore */ }
+						});
+						const isTrashed = Boolean(meta.get('trashed'));
+						if (showTrashed ? !isTrashed : isTrashed) return null;
+						const reminderAtRaw = meta.get('reminderAt');
+						const reminderAt = typeof reminderAtRaw === 'string' ? reminderAtRaw : null;
+						if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+						const resolvedTitle = readNoteFromDoc(doc, placement.aliasId).title.trim();
+						const title = resolvedTitle || placement.sourceNoteId;
+						const reminderMs = reminderAt ? Date.parse(String(reminderAt)) : Number.NaN;
+						return {
+							noteId: placement.aliasId,
+							workspaceId: activeWorkspaceId,
+							workspaceName: activeWorkspaceName,
+							title,
+							searchText: extractNoteSearchText(placement.aliasId, doc, title),
+							updatedAt: Number(meta.get('updatedAt') ?? 0),
+							reminderAt,
+							isPinned: Boolean(meta.get('isPinned')),
+							hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
+							hasCollaborators: false,
+							isActiveWorkspace: true,
+						};
+					} catch {
+						return null;
+					}
 				}));
 				nextNotes.push(...activeEntries.filter((entry): entry is BubbleNote => entry !== null));
+			} else {
+				try {
+					const registryDoc = await manager.getNotesRegistryDoc();
+					if (cancelled) return;
+					const notesList = registryDoc.getArray<Y.Map<any>>(NOTES_LIST_KEY);
+					const noteOrder = registryDoc.getArray<string>(NOTE_ORDER_KEY);
 
-				// Subscribe to registry changes to keep the active workspace fresh
-				const onRegistryChange = (): void => { scheduleRefresh(); };
-				registryDoc.getArray(NOTES_LIST_KEY).observe(onRegistryChange);
-				registryDoc.getArray(NOTE_ORDER_KEY).observe(onRegistryChange);
-				cleanups.push(() => {
-					try {
-						registryDoc.getArray(NOTES_LIST_KEY).unobserve(onRegistryChange);
-						registryDoc.getArray(NOTE_ORDER_KEY).unobserve(onRegistryChange);
-					} catch { /* ignore */ }
-				});
-			} catch { /* active workspace load failed – skip */ }
+					const titlesById = new Map<string, string>();
+					for (const item of notesList.toArray()) {
+						const id = String(item.get?.('id') ?? '').trim();
+						const title = String(item.get?.('title') ?? '').trim();
+						if (id) titlesById.set(id, title);
+					}
+					const orderedIds: string[] = noteOrder.toArray().filter(Boolean);
+
+					const activeEntries: Array<BubbleNote | null> = await Promise.all(orderedIds.map(async (noteId) => {
+						const registryTitle = titlesById.get(noteId) ?? '';
+						const doc = await manager.getDocReady(noteId);
+						const meta = doc.getMap<any>('metadata');
+						const titleText = doc.getText('title');
+						const contentText = doc.getText('content');
+						const checklist = doc.getArray<Y.Map<any>>('checklist');
+						const onMetadataChange = (): void => scheduleRefresh();
+						const onTitleChange = (): void => scheduleRefresh();
+						const onContentChange = (): void => scheduleRefresh();
+						const onChecklistChange = (): void => scheduleRefresh();
+						meta.observe(onMetadataChange);
+						titleText.observe(onTitleChange);
+						contentText.observe(onContentChange);
+						checklist.observeDeep(onChecklistChange);
+						cleanups.push(() => {
+							try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
+							try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
+							try { contentText.unobserve(onContentChange); } catch { /* ignore */ }
+							try { checklist.unobserveDeep(onChecklistChange); } catch { /* ignore */ }
+						});
+						const isTrashed = Boolean(meta.get('trashed'));
+						if (showTrashed ? !isTrashed : isTrashed) return null;
+						const reminderAtRaw = meta.get('reminderAt');
+						const reminderAt = typeof reminderAtRaw === 'string' ? reminderAtRaw : null;
+						if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+						const resolvedTitle = readNoteFromDoc(doc, noteId).title.trim();
+						const isPinned = Boolean(meta.get('isPinned'));
+						const updatedAt = Number(meta.get('updatedAt') ?? 0);
+						const reminderMs = reminderAt ? Date.parse(String(reminderAt)) : Number.NaN;
+						const hasReminder = Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS;
+						const title = resolvedTitle || registryTitle;
+						return {
+							noteId,
+							workspaceId: activeWorkspaceId,
+							workspaceName: activeWorkspaceName,
+							title,
+							searchText: extractNoteSearchText(noteId, doc, title),
+							updatedAt,
+							reminderAt,
+							isPinned,
+							hasReminder,
+							hasCollaborators: false,
+							isActiveWorkspace: true,
+						};
+					}));
+					nextNotes.push(...activeEntries.filter((entry): entry is BubbleNote => entry !== null));
+
+					const onRegistryChange = (): void => { scheduleRefresh(); };
+					registryDoc.getArray(NOTES_LIST_KEY).observe(onRegistryChange);
+					registryDoc.getArray(NOTE_ORDER_KEY).observe(onRegistryChange);
+					cleanups.push(() => {
+						try {
+							registryDoc.getArray(NOTES_LIST_KEY).unobserve(onRegistryChange);
+							registryDoc.getArray(NOTE_ORDER_KEY).unobserve(onRegistryChange);
+						} catch { /* ignore */ }
+					});
+				} catch { /* active workspace load failed – skip */ }
+			}
 
 			// ── Non-active workspaces ────────────────────────────────────────────────
 			const otherWorkspaces = workspaces.filter((w) => w.id !== activeWorkspaceId);
 			await Promise.all(
 				otherWorkspaces.map(async (workspace) => {
 					if (cancelled) return;
+					if (workspace.systemKind === 'SHARED_WITH_ME') {
+						try {
+							const placementData = await listSharedNotePlacements(workspace.id);
+							if (cancelled) return;
+							const visiblePlacements = await Promise.all(
+								placementData.placements
+									.slice(0, MAX_NOTES_PER_INACTIVE_WORKSPACE)
+									.map((placement) => loadInactiveSharedPlacementNote(workspace.id, workspace.name, placement, showTrashed, reminderFilter, nowMs))
+							);
+							for (const visiblePlacement of visiblePlacements) {
+								if (!visiblePlacement) continue;
+								nextNotes.push(visiblePlacement);
+							}
+						} catch { /* skip shared placements if unavailable */ }
+						return;
+					}
 					try {
 						const entries = await loadWorkspaceRegistry(workspace.id);
 						if (cancelled) return;
@@ -592,7 +728,7 @@ function useBubbleNotes(
 			if (refreshTimer) window.clearTimeout(refreshTimer);
 			disposeRefreshSubscriptions();
 		};
-	}, [activeWorkspaceId, manager, reminderFilter, showTrashed, workspaces]);
+	}, [activeWorkspaceId, manager, reminderFilter, sharedPlacements, showTrashed, workspaces]);
 
 	return notes;
 }
@@ -857,6 +993,7 @@ export type BubbleViewProps = {
 	workspaces: BubbleWorkspaceInfo[];
 	activeWorkspaceId: string | null;
 	authUserId?: string | null;
+	sharedPlacements?: readonly SharedNotePlacement[];
 	themeId: ThemeId;
 	zoom: number;
 	showTrashed: boolean;
@@ -870,6 +1007,7 @@ export function BubbleView({
 	workspaces,
 	activeWorkspaceId,
 	authUserId,
+	sharedPlacements = [],
 	themeId,
 	zoom,
 	showTrashed,
@@ -881,7 +1019,7 @@ export function BubbleView({
 	const manager = useDocumentManager();
 	const containerRef = React.useRef<HTMLDivElement | null>(null);
 	// const cloudRef = React.useRef<HTMLDivElement | null>(null);
-	const notes = useBubbleNotes(workspaces, activeWorkspaceId, showTrashed, reminderFilter);
+	const notes = useBubbleNotes(workspaces, activeWorkspaceId, sharedPlacements, showTrashed, reminderFilter);
 	const collaboratorCountByNoteId = useBubbleCollaboratorCounts(authUserId, notes, manager);
 	const [viewportWidth, setViewportWidth] = React.useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
 	const [containerWidth, setContainerWidth] = React.useState(0);

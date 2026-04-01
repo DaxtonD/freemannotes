@@ -30,11 +30,12 @@ export function getPlatform(): PushPlatform {
 	const cap = (window as unknown as { Capacitor?: { getPlatform?: () => string } }).Capacitor;
 	if (cap?.getPlatform?.() === 'ios') return 'IOS';
 	if (cap?.getPlatform?.() === 'android') return 'ANDROID';
-	// Detect iOS Safari in a browser context (no Capacitor)
 	const ua = navigator.userAgent || '';
+	// Detect iOS Safari in a browser context (no Capacitor)
 	const isIOS = /iPad|iPhone|iPod/.test(ua)
 		|| (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 	if (isIOS) return 'IOS';
+	if (/Android/i.test(ua)) return 'ANDROID';
 	return 'WEB';
 }
 

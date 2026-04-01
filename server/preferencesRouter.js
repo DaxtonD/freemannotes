@@ -222,6 +222,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 							noteEditorFontScale: 1,
 							checklistShowCompleted: false,
 							quickDeleteChecklist: false,
+							noteCardClickOpens: true,
 							noteCardCompletedExpandedByNoteId: {},
 						},
 					});
@@ -252,6 +253,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
 						quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
+						noteCardClickOpens: devicePref.noteCardClickOpens !== false,
 						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 						createdAt: fmt(devicePref.createdAt),
 						updatedAt: fmt(devicePref.updatedAt),
@@ -381,6 +383,10 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						deviceUpdateData.quickDeleteChecklist = Boolean(body.quickDeleteChecklist);
 					}
 
+					if ('noteCardClickOpens' in body) {
+						deviceUpdateData.noteCardClickOpens = Boolean(body.noteCardClickOpens);
+					}
+
 					if ('noteCardCompletedExpandedPatch' in body) {
 						const patch = body.noteCardCompletedExpandedPatch;
 						if (!patch || typeof patch !== 'object') {
@@ -419,6 +425,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 								noteEditorFontScale: 1,
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
+								noteCardClickOpens: true,
 								noteCardCompletedExpandedByNoteId: {},
 							},
 						});
@@ -448,6 +455,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 							activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 							checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
 							quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
+							noteCardClickOpens: devicePref.noteCardClickOpens !== false,
 							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 							createdAt: fmt(devicePref.createdAt),
 							updatedAt: fmt(devicePref.updatedAt),
@@ -516,6 +524,10 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 										typeof deviceData.quickDeleteChecklist === 'boolean'
 											? deviceData.quickDeleteChecklist
 											: false,
+									noteCardClickOpens:
+										typeof deviceData.noteCardClickOpens === 'boolean'
+											? deviceData.noteCardClickOpens
+											: true,
 									noteCardCompletedExpandedByNoteId:
 										deviceData.noteCardCompletedExpandedByNoteId ?? {},
 								},
@@ -530,6 +542,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 									noteEditorFontScale: 1,
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
+									noteCardClickOpens: true,
 									noteCardCompletedExpandedByNoteId: {},
 								},
 							});
@@ -570,6 +583,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						activeSharedFolder: normalizeActiveSharedFolder(pref.devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(pref.devicePref.checklistShowCompleted),
 						quickDeleteChecklist: Boolean(pref.devicePref.quickDeleteChecklist),
+						noteCardClickOpens: pref.devicePref.noteCardClickOpens !== false,
 						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
 						createdAt: fmt(pref.devicePref.createdAt),
 						updatedAt: fmt(pref.devicePref.updatedAt),

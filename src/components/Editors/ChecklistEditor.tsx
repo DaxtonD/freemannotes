@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import type { Editor, JSONContent } from '@tiptap/core';
 import {
@@ -22,6 +22,7 @@ import {
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
+import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { createRichTextDocFromPlainText, splitMinimalRichTextAtSelection } from '../../core/richText';
 import { applyChecklistDragToItems, normalizeChecklistHierarchy, removeChecklistItemWithChildren } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
@@ -34,7 +35,6 @@ import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
-import { resizeAutoHeightTextarea } from './autoSizeTextarea';
 import styles from './Editors.module.css';
 
 export type ChecklistEditorProps = {
@@ -47,12 +47,62 @@ export type ChecklistEditorProps = {
 
 type DraftChecklistItem = ChecklistItem & { richContent: JSONContent };
 
+const DRAFT_CHECKLIST_AUTOSCROLL_ID = '__draft_checklist_editor__';
+
+function animateFastScrollToBottom(container: HTMLElement): () => void {
+	const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+	const startTop = container.scrollTop;
+	const distance = maxScrollTop - startTop;
+	if (Math.abs(distance) <= 1 || typeof window === 'undefined') {
+		container.scrollTop = maxScrollTop;
+		return () => undefined;
+	}
+	const durationMs = 180;
+	const startTime = window.performance.now();
+	let frameId = 0;
+	const step = (now: number): void => {
+		const progress = Math.min(1, (now - startTime) / durationMs);
+		const eased = 1 - Math.pow(1 - progress, 3);
+		container.scrollTop = startTop + (distance * eased);
+		if (progress < 1) {
+			frameId = window.requestAnimationFrame(step);
+		}
+	};
+	frameId = window.requestAnimationFrame(step);
+	return () => window.cancelAnimationFrame(frameId);
+}
+
 /**
  * Lightweight renderer for ProseMirror JSON content in non-active rows.
  * Handles bold, italic, underline, and hard breaks — no TipTap instance needed.
  */
 function renderRichPreview(json: JSONContent | null | undefined): React.ReactNode {
 	if (!json?.content) return null;
+	const applyMarks = (node: JSONContent, content: React.ReactNode, key: React.Key): React.ReactNode => {
+		let element = content;
+		for (const mark of (node.marks ?? []) as Array<{ type: string; attrs?: { href?: unknown } }>) {
+			if (mark.type === 'bold') element = <strong key={`${key}-bold`}>{element}</strong>;
+			if (mark.type === 'italic') element = <em key={`${key}-italic`}>{element}</em>;
+			if (mark.type === 'underline') element = <u key={`${key}-underline`}>{element}</u>;
+			if (mark.type === 'link') {
+				const href = typeof mark.attrs?.href === 'string' ? mark.attrs.href : '';
+				element = href
+					? (
+						<a
+							key={`${key}-link`}
+							href={href}
+							target="_blank"
+							rel="noreferrer noopener"
+							onClick={(event) => event.stopPropagation()}
+						>
+							{element}
+						</a>
+					)
+					: element;
+			}
+		}
+		return element;
+	};
 	let hasContent = false;
 	const elements = json.content.map((block: JSONContent, bi: number) => {
 		if (block.type !== 'paragraph') return null;
@@ -64,13 +114,7 @@ function renderRichPreview(json: JSONContent | null | undefined): React.ReactNod
 				{block.content.map((node: JSONContent, ni: number) => {
 					if (node.type === 'hardBreak') return <br key={ni} />;
 					if (node.type !== 'text' || !node.text) return null;
-					let el: React.ReactNode = node.text;
-					for (const mark of (node.marks ?? []) as Array<{ type: string }>) {
-						if (mark.type === 'bold') el = <strong>{el}</strong>;
-						if (mark.type === 'italic') el = <em>{el}</em>;
-						if (mark.type === 'underline') el = <u>{el}</u>;
-					}
-					return <React.Fragment key={ni}>{el}</React.Fragment>;
+					return <React.Fragment key={ni}>{applyMarks(node, node.text, `${bi}-${ni}`)}</React.Fragment>;
 				})}
 			</React.Fragment>
 		);
@@ -122,6 +166,12 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const [previewLinks, setPreviewLinks] = React.useState<string[]>([]);
 	const [saving, setSaving] = React.useState(false);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
+	const noteAutoScrollEnabled = useSyncExternalStore(
+		(onStoreChange) => subscribeNoteAutoScrollPrefs(onStoreChange),
+		() => getUserNoteAutoScrollEnabled(DRAFT_CHECKLIST_AUTOSCROLL_ID),
+		() => getUserNoteAutoScrollEnabled(DRAFT_CHECKLIST_AUTOSCROLL_ID)
+	);
+	const activeScrollCancelRef = React.useRef<(() => void) | null>(null);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(0);
 	// More-menu state (editor 3-dot button):
@@ -196,6 +246,31 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		if (!isCoarsePointer) return;
 		setInteractionGuardActive(false);
 	}, [isCoarsePointer]);
+	React.useEffect(() => {
+		if (!noteAutoScrollEnabled) {
+			activeScrollCancelRef.current?.();
+			activeScrollCancelRef.current = null;
+			return;
+		}
+		let cancelled = false;
+		const tryScroll = (remaining: number): void => {
+			if (cancelled) return;
+			const container = checklistScrollRef.current;
+			if (container) {
+				activeScrollCancelRef.current?.();
+				activeScrollCancelRef.current = animateFastScrollToBottom(container);
+				return;
+			}
+			if (remaining <= 0 || typeof window === 'undefined') return;
+			window.setTimeout(() => tryScroll(remaining - 1), 24);
+		};
+		tryScroll(12);
+		return () => {
+			cancelled = true;
+			activeScrollCancelRef.current?.();
+			activeScrollCancelRef.current = null;
+		};
+	}, [noteAutoScrollEnabled]);
 	const dockHandleTouchStartRef = React.useRef<{ x: number; y: number; id: number } | null>(null);
 	const dockTabSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
@@ -204,6 +279,19 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		event.preventDefault();
 		event.stopPropagation();
 	}, [interactionGuardActive]);
+	const handleToggleNoteAutoScroll = React.useCallback((): void => {
+		const next = !noteAutoScrollEnabled;
+		setUserNoteAutoScrollEnabled(DRAFT_CHECKLIST_AUTOSCROLL_ID, null, next);
+		if (!next) {
+			activeScrollCancelRef.current?.();
+			activeScrollCancelRef.current = null;
+			return;
+		}
+		const container = checklistScrollRef.current;
+		if (!container) return;
+		activeScrollCancelRef.current?.();
+		activeScrollCancelRef.current = animateFastScrollToBottom(container);
+	}, [noteAutoScrollEnabled]);
 	const clearDockHandleGesture = React.useCallback((): void => {
 		dockHandleTouchStartRef.current = null;
 	}, []);
@@ -283,7 +371,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			return Math.max(prev - 1, 0) as 0 | 1 | 2;
 		});
 	}, []);
-	const titleInputRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const titleInputRef = React.useRef<HTMLInputElement | null>(null);
 	const rowInputsRef = React.useRef<Map<string, HTMLDivElement | null>>(new Map());
 	const rowContainersRef = React.useRef<Map<string, HTMLLIElement | null>>(new Map());
 	// Drag “ghost” sizing:
@@ -360,6 +448,24 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		},
 		[activeRowId, prepareRowFocusHandoff]
 	);
+	const focusChecklistRowEditor = React.useCallback((rowId: string): void => {
+		const tryFocus = (remaining: number): void => {
+			const editorElement = rowInputsRef.current.get(rowId)?.querySelector('[contenteditable="true"]');
+			if (editorElement instanceof HTMLElement) {
+				editorElement.focus();
+				return;
+			}
+			if (remaining <= 0 || typeof window === 'undefined') return;
+			window.setTimeout(() => tryFocus(remaining - 1), 16);
+		};
+		tryFocus(6);
+	}, []);
+	const focusFirstChecklistItem = React.useCallback((): void => {
+		const firstItemId = latestItemsRef.current[0]?.id ?? null;
+		if (!firstItemId) return;
+		activateRow(firstItemId);
+		focusChecklistRowEditor(firstItemId);
+	}, [activateRow, focusChecklistRowEditor]);
 	// Keyboard-close de-selection:
 	// If the user dismisses the software keyboard, we intentionally de-select
 	// any active checklist row on mobile. This ensures a subsequent drag gesture
@@ -419,10 +525,6 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		});
 		return () => window.cancelAnimationFrame(rafId);
 	}, []);
-
-	React.useLayoutEffect(() => {
-		resizeAutoHeightTextarea(titleInputRef.current);
-	}, [title]);
 
 	const handleCreateUrlPreview = React.useCallback((): void => {
 		const next = window.prompt(t('links.prompt'), 'https://');
@@ -864,9 +966,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						zIndex: -1,
 					}}
 				/>
-				<textarea
+				<input
+					type="text"
 					name="checklist-note-title"
-					rows={1}
 					autoComplete="off"
 					autoCorrect="off"
 					autoCapitalize="sentences"
@@ -878,13 +980,17 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					ref={titleInputRef}
 					value={title}
 					onChange={(e) => setTitle(e.target.value)}
-					onInput={(event) => resizeAutoHeightTextarea(event.currentTarget)}
+					onKeyDown={(event) => {
+						if (event.key !== 'Enter') return;
+						event.preventDefault();
+						focusFirstChecklistItem();
+					}}
 					placeholder={t('editors.titlePlaceholder')}
 				/>
 
 				<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 					<div className={styles.checklistToolbarSlot}>
-						<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} />
+						<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
 					</div>
 					{/* Keyboard-open branch:
 					    Reserve space for the floating toolbar only. This preserves comfortable text
@@ -1400,7 +1506,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					className={styles.floatingToolbar}
 					style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 				>
-					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} />
+					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
 				</div>
 			</>,
 			document.body

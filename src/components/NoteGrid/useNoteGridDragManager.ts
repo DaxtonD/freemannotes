@@ -85,6 +85,7 @@ export type DragManagerResult = {
 	previewColumns: string[][] | null;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
+	getItemElement: (id: string) => HTMLDivElement | null;
 	shouldSuppressOpen: () => boolean;
 	cancelDrag: () => void;
 };
@@ -247,6 +248,10 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		if (node) handleElementsRef.current.set(id, node);
 		else handleElementsRef.current.delete(id);
 		setRegistrationVersion((version) => version + 1);
+	}, []);
+
+	const getItemElement = React.useCallback((id: string): HTMLDivElement | null => {
+		return itemElementsRef.current.get(id) ?? null;
 	}, []);
 
 	// Register the section as a drop target + auto-scroll zones
@@ -424,6 +429,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		previewColumns,
 		setItemElement,
 		setHandleElement,
+		getItemElement,
 		shouldSuppressOpen,
 		cancelDrag: clearDragState,
 	};

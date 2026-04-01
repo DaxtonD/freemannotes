@@ -237,15 +237,38 @@ self.addEventListener('fetch', (event) => {
 const NOTIFICATION_ICON = '/icons/icon-192x192.png';
 const NOTIFICATION_BADGE = '/icons/icon-72x72.png';
 
+function normalizeVibrate(value) {
+	if (Array.isArray(value)) {
+		return value.map((entry) => Number(entry)).filter((entry) => Number.isFinite(entry) && entry >= 0);
+	}
+	if (typeof value === 'string') {
+		return value
+			.split(',')
+			.map((entry) => Number(entry.trim()))
+			.filter((entry) => Number.isFinite(entry) && entry >= 0);
+	}
+	return [150, 50, 150];
+}
+
 self.addEventListener('push', (event) => {
 	// Safely extract notification payload — fall back to defaults if malformed.
-	let payload = { title: 'FreemanNotes', body: 'You have a new notification.', data: {} };
+	let payload = {
+		title: 'FreemanNotes',
+		body: 'You have a new notification.',
+		icon: NOTIFICATION_ICON,
+		badge: NOTIFICATION_BADGE,
+		image: undefined,
+		data: {},
+	};
 	if (event.data) {
 		try {
 			const raw = event.data.json();
 			payload = {
 				title: String(raw.title || payload.title),
 				body: String(raw.body || payload.body),
+				icon: typeof raw.icon === 'string' && raw.icon ? raw.icon : (raw.data?.icon || payload.icon),
+				badge: typeof raw.badge === 'string' && raw.badge ? raw.badge : (raw.data?.badge || payload.badge),
+				image: typeof raw.image === 'string' && raw.image ? raw.image : (raw.data?.image || undefined),
 				data: raw.data && typeof raw.data === 'object' ? raw.data : {},
 			};
 		} catch {
@@ -259,17 +282,26 @@ self.addEventListener('push', (event) => {
 
 	const showPromise = self.registration.showNotification(payload.title, {
 		body: payload.body,
-		icon: NOTIFICATION_ICON,
-		badge: NOTIFICATION_BADGE,
+		icon: payload.icon || NOTIFICATION_ICON,
+		badge: payload.badge || NOTIFICATION_BADGE,
+		image: typeof payload.image === 'string' && payload.image ? payload.image : undefined,
 		// Collapse duplicate notifications from the same type, but give each
 		// reminder its own slot so multiple due notes don't override each other.
-		tag: payload.data.type === 'reminder' && payload.data.noteId
-			? `freemannotes-reminder-${String(payload.data.noteId)}`
-			: payload.data.type ? `freemannotes-${String(payload.data.type)}` : 'freemannotes',
+		tag: typeof payload.data.tag === 'string' && payload.data.tag
+			? payload.data.tag
+			: payload.data.type === 'reminder' && payload.data.noteId
+				? `freemannotes-reminder-${String(payload.data.noteId)}`
+				: payload.data.type ? `freemannotes-${String(payload.data.type)}` : 'freemannotes',
 		renotify: true,
 		data: payload.data,
-		// Vibration pattern for supported mobile browsers (150ms on, 50ms off, 150ms on)
-		vibrate: [150, 50, 150],
+		vibrate: normalizeVibrate(payload.data?.vibrate),
+		requireInteraction: payload.data?.requireInteraction === true,
+		actions: payload.data?.type === 'reminder'
+			? [
+				{ action: 'open-note', title: 'Open note' },
+				{ action: 'dismiss', title: 'Dismiss' },
+			]
+			: undefined,
 	}).then(async () => {
 		// Notify open app windows so the bell badge can refresh immediately.
 		await postMessageToClients({ type: 'FREEMANNOTES_PUSH_RECEIVED', notificationData: payload.data });
@@ -280,6 +312,7 @@ self.addEventListener('push', (event) => {
 
 self.addEventListener('notificationclick', (event) => {
 	event.notification.close();
+	if (event.action === 'dismiss') return;
 
 	const data = event.notification.data || {};
 	// Determine the deep-link target URL from notification data.

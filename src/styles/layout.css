@@ -484,6 +484,24 @@
 	font-size: var(--font-size-sm);
 }
 
+.auth-link {
+	align-self: flex-start;
+	margin-top: -2px;
+	padding: 0;
+	border: 0;
+	background: transparent;
+	color: var(--color-accent);
+	font-size: var(--font-size-xs);
+	font-weight: 600;
+	text-decoration: underline;
+	text-underline-offset: 0.16em;
+}
+
+.auth-link:hover,
+.auth-link:focus-visible {
+	color: color-mix(in srgb, var(--color-accent) 82%, var(--color-text) 18%);
+}
+
 .auth-error {
 	font-size: var(--font-size-sm);
 	color: var(--color-text);
@@ -491,6 +509,15 @@
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-sm);
 	background: color-mix(in srgb, var(--color-surface-2) 65%, transparent);
+}
+
+.auth-success {
+	font-size: var(--font-size-sm);
+	color: var(--color-text);
+	padding: 8px;
+	border: 1px solid color-mix(in srgb, #3f8d5f 32%, var(--color-border));
+	border-radius: var(--radius-sm);
+	background: color-mix(in srgb, #3f8d5f 12%, var(--color-surface));
 }
 
 .auth-password-strength {
@@ -540,6 +567,55 @@
 .auth-hint {
 	font-size: var(--font-size-xs);
 	color: var(--color-text-muted);
+}
+
+.auth-modal-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 1200;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: var(--space-4);
+	background: rgba(15, 23, 42, 0.48);
+	backdrop-filter: blur(10px);
+}
+
+.auth-modal {
+	width: min(440px, 100%);
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-surface);
+	padding: var(--space-4);
+	box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+	display: flex;
+	flex-direction: column;
+	gap: var(--space-3);
+}
+
+.auth-modal-title {
+	font-size: var(--font-size-md);
+	font-weight: 700;
+	line-height: 1.2;
+}
+
+.auth-modal-copy {
+	font-size: var(--font-size-sm);
+	color: var(--color-text-muted);
+	line-height: 1.5;
+}
+
+.auth-modal-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: var(--space-2);
+	flex-wrap: wrap;
+}
+
+.auth-secondary-button {
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	border: 1px solid var(--color-border);
 }
 
 .app-shell {

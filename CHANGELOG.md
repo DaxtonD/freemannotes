@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.32 - 2026-04-01
+
+### Added
+- **Password reset by email link.** Users can now request a reset link from the login form, receive a one-hour password reset email, and securely choose a new password from the app.
+- **Per-platform external notification delivery.** Server notification delivery can now be configured independently for Web, Android, and iOS with push, email, auto-fallback, or off modes, including branded reminder and test emails when SMTP is available.
+- **Full-featured quick-create note editing.** New text notes and checklists now open as real notes immediately so reminders, labels, collections, collaborators, links, media, images, and editor undo/redo are available during creation instead of only after the first save.
+- **Per-note auto-scroll toggle and note-card interaction preference.** Editors now expose an auto-scroll toggle, and Preferences now lets each device choose whether note cards open on tap or allow direct interaction with checklist items and links.
+
+### Changed
+- **Collection-aware note creation.** Creating a note while filtered to a collection now seeds the new note into that collection and shows an inline checkbox in the editor so it can be returned to Personal immediately.
+- **Notification and upload UI polish.** Preferences now shows the effective delivery mode for the current platform, and file/image/avatar pickers now use explicit choose-file controls with clearer empty-state messaging.
+- **Note presentation and bubble-view polish.** Note cards now clamp long checklist lines, show a softer overflow indicator, and optionally expose live checklist/link interaction, while bubble view better handles shared placements and uses the borderless bubble treatment.
+
+### Fixed
+- **Empty draft cleanup is now metadata-aware.** Auto-discard for newly created notes now preserves drafts that contain reminders, labels, collections, links, media, documents, or collaborator changes even when the text body is still blank.
+- **Quick-create collection flow no longer breaks App hook order.** The selected-note metadata hook now stays in the stable top-level hook section, eliminating the runtime hook-order error introduced during the new collection-aware create flow.
+
 ## 1.1.31 - 2026-03-30
 
 ### Added
