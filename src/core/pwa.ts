@@ -44,6 +44,9 @@ let swPendingApply = false;
 let pwaUpdateBlocked = false;
 let pwaLastInteractionAt = Date.now();
 let standaloneZoomLockCleanup: (() => void) | null = null;
+let networkVersionPending = false;
+let lastNetworkVersionCheckAt = 0;
+let networkVersionCheckInFlight = false;
 
 let snapshot: PwaSnapshot = {
 	canInstall: false,
@@ -200,9 +203,56 @@ function canSafelyApplyPwaUpdate(): boolean {
 	return Date.now() - pwaLastInteractionAt >= SW_UPDATE_IDLE_MS;
 }
 
+async function applyNetworkVersionUpdate(): Promise<void> {
+	networkVersionPending = false;
+	swPendingApply = false;
+	setSnapshot({ updateAvailable: false });
+	if (typeof window !== 'undefined') {
+		// Use replace() rather than reload() — more reliable on iOS standalone PWA
+		// where location.reload() can fail to escape a frozen WKWebView snapshot.
+		window.location.replace('/');
+	}
+}
+
+async function checkNetworkVersion(): Promise<void> {
+	if (typeof window === 'undefined' || APP_VERSION === 'dev') return;
+	if (networkVersionCheckInFlight) return;
+	// Throttle to match the SW update polling interval.
+	if (Date.now() - lastNetworkVersionCheckAt < SW_UPDATE_POLL_MS) return;
+	networkVersionCheckInFlight = true;
+	lastNetworkVersionCheckAt = Date.now();
+	try {
+		const res = await fetch('/api/version', { cache: 'no-store' });
+		if (!res.ok) return;
+		const data = await (res.json() as Promise<{ version?: string }>);
+		const serverVersion = typeof data?.version === 'string' ? data.version : null;
+		if (!serverVersion || serverVersion === APP_VERSION) return;
+		// Server is running a newer version. Force a hard navigation so the
+		// new index.html + hashed assets are loaded. This is the most reliable
+		// approach for iOS Safari standalone where the SW update mechanism is
+		// insufficient to escape a frozen WKWebView session.
+		networkVersionPending = true;
+		if (canSafelyApplyPwaUpdate()) {
+			await applyNetworkVersionUpdate();
+		} else {
+			swPendingApply = true;
+			setSnapshot({ updateAvailable: true });
+		}
+	} catch {
+		// Offline or endpoint missing — skip silently.
+	} finally {
+		networkVersionCheckInFlight = false;
+	}
+}
+
 function scheduleDeferredPwaApplyCheck(): void {
-	if (!swPendingApply || !updateServiceWorker) return;
+	if (!swPendingApply) return;
 	if (!canSafelyApplyPwaUpdate()) return;
+	if (networkVersionPending) {
+		void applyNetworkVersionUpdate();
+		return;
+	}
+	if (!updateServiceWorker) return;
 	void applyPwaUpdateImmediately();
 }
 
@@ -211,6 +261,7 @@ function scheduleServiceWorkerUpdateChecks(): void {
 	const updateNow = () => {
 		void swRegistration?.update().catch(() => undefined);
 		scheduleDeferredPwaApplyCheck();
+		void checkNetworkVersion();
 	};
 	if (swUpdateTimer !== null) {
 		window.clearInterval(swUpdateTimer);
@@ -320,7 +371,9 @@ export function initPwa(): void {
 			swAutoApplying = false;
 			swPendingApply = false;
 			if (typeof window !== 'undefined') {
-				window.location.reload();
+				// Use replace() rather than reload() — more reliable on iOS standalone
+				// PWA where location.reload() can fail after a controller change.
+				window.location.replace(window.location.href);
 			}
 		});
 		updateServiceWorker = registerSW({
@@ -368,8 +421,12 @@ export async function promptInstallApp(): Promise<'accepted' | 'dismissed' | 'un
 }
 
 export async function applyPwaUpdate(): Promise<void> {
-	if (!updateServiceWorker) return;
 	swPendingApply = false;
+	if (networkVersionPending) {
+		await applyNetworkVersionUpdate();
+		return;
+	}
+	if (!updateServiceWorker) return;
 	await updateServiceWorker(true);
 	swAutoApplying = false;
 	setSnapshot({ updateAvailable: false });

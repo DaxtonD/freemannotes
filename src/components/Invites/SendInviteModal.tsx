@@ -8,9 +8,11 @@ import {
 	getShareLinkReadyEventName,
 	normalizeWorkspaceInviteRole,
 	normalizeWorkspaceShareRole,
+	readAllCachedWorkspaceShareLinks,
 	readCachedWorkspaceInviteLink,
 	readCachedWorkspaceShareLink,
 	sendWorkspaceInviteEmail,
+	type CachedWorkspaceShareLink,
 	type ShareExpiryDays,
 	type WorkspaceInviteLink,
 	type WorkspaceInviteRole,
@@ -72,6 +74,10 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 	const [shareLink, setShareLink] = React.useState<WorkspaceShareLink | null>(null);
 	const [inviteQrDataUrl, setInviteQrDataUrl] = React.useState<string | null>(null);
 	const [shareQrDataUrl, setShareQrDataUrl] = React.useState<string | null>(null);
+	// All non-expired workspace share links across every role/expiry combo.
+	// Populated from localStorage on open so previously generated tokens are
+	// visible without a server round-trip.
+	const [cachedShareLinks, setCachedShareLinks] = React.useState<CachedWorkspaceShareLink[]>([]);
 	const [inviteState, setInviteState] = React.useState<WorkspaceInviteState>({ members: [], invites: [] });
 
 	useBodyScrollLock(props.isOpen);
@@ -93,7 +99,18 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		setInviteQrDataUrl(null);
 		setShareQrDataUrl(null);
 		setInviteState({ members: [], invites: [] });
+		setCachedShareLinks([]);
 	}, [props.isOpen]);
+
+	// Reload cached workspace share links whenever the modal opens so previously
+	// generated tokens are visible without generating a new one.
+	React.useEffect(() => {
+		if (!props.isOpen || !props.workspaceId) {
+			setCachedShareLinks([]);
+			return;
+		}
+		setCachedShareLinks(readAllCachedWorkspaceShareLinks(props.workspaceId));
+	}, [props.isOpen, props.workspaceId]);
 
 	React.useEffect(() => {
 		if (!inviteLink?.inviteUrl) {
@@ -238,6 +255,8 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 			setShareLink(next);
 			if (next.shareUrl) setShareQrModalOpen(true);
 			setSuccess(next.pending ? props.t('share.linkQueued') : props.t('share.linkReady'));
+			// Refresh the active-links list so the newly generated token appears immediately.
+			if (props.workspaceId) setCachedShareLinks(readAllCachedWorkspaceShareLinks(props.workspaceId));
 		} catch (err) {
 			setError(err instanceof Error ? err.message : props.t('share.createFailed'));
 		} finally {
@@ -448,11 +467,33 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 							aria-expanded={openPanel === 'qr-link'}
 						>
 							<span className={styles.sectionSummaryLabel}>{props.t('invite.qrSectionTitle')}</span>
+							{cachedShareLinks.length > 0 ? <span className={styles.summaryCount}>{cachedShareLinks.length}</span> : null}
 							<span className={styles.disclosureArrow} aria-hidden="true" />
 						</button>
 						<div className={`${styles.sectionPanel} ${openPanel === 'qr-link' ? styles.sectionPanelExpanded : ''}`} aria-hidden={openPanel !== 'qr-link'}>
 							<div className={styles.sectionPanelInner}>
+								{cachedShareLinks.length > 0 ? (
+									<div className={styles.activeLinkList}>
+										{cachedShareLinks.map((link) => (
+											<div key={`${link.permission}::${link.expiresInDays}`} className={styles.activeLinkRow}>
+												<div className={styles.activeLinkMeta}>
+													<span className={styles.badge}>{renderRole(link.permission, props.t)}</span>
+													{link.expiresAt ? <span className={styles.meta}>{props.t('share.expiresAt')}: {formatExpiry(link.expiresAt)}</span> : null}
+												</div>
+												<div className={styles.activeLinkActions}>
+													<button type="button" className={styles.secondaryAction} onClick={() => void copyLink(link.shareUrl, 'share.copied', 'share.copyFailed')} disabled={!link.shareUrl || busy || Boolean(actionBusyKey)}>
+														{props.t('share.copy')}
+													</button>
+													<button type="button" className={styles.secondaryAction} onClick={() => { setShareLink(link); setLinkRole(link.permission); setExpiryDays(link.expiresInDays); setShareQrModalOpen(true); }} disabled={!link.shareUrl || busy || Boolean(actionBusyKey)}>
+														{props.t('share.viewQrCode')}
+													</button>
+												</div>
+											</div>
+										))}
+									</div>
+								) : null}
 								<div className={`${styles.sectionCard} ${styles.inviteSectionCard}`}>
+									<p className={styles.activeLinkSectionLabel}>{props.t('share.generateNew')}</p>
 									<div className={styles.fieldGrid}>
 										<label className={styles.field}>
 											<span>{props.t('share.requiredRole')}</span>
@@ -473,24 +514,10 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 										</label>
 									</div>
 									<div className={styles.inlineActions}>
-										<button type="button" onClick={() => void generateWorkspaceShare(Boolean(shareLink))} disabled={busy || Boolean(actionBusyKey) || !canGenerateShareLink}>
-											{busy ? props.t('common.loading') : shareLink ? props.t('share.refresh') : props.t('share.generateLink')}
+										<button type="button" onClick={() => void generateWorkspaceShare(false)} disabled={busy || Boolean(actionBusyKey) || !canGenerateShareLink}>
+											{busy ? props.t('common.loading') : props.t('share.generateLink')}
 										</button>
-										{shareLink?.shareUrl ? (
-											<button type="button" className={styles.secondaryAction} onClick={() => setShareQrModalOpen(true)} disabled={busy || Boolean(actionBusyKey)}>
-												{props.t('share.viewQrCode')}
-											</button>
-										) : null}
 									</div>
-									{shareLink ? (
-										<div className={styles.generatedStatus}>
-											<div className={styles.metaRow}>
-												<span className={styles.badge}>{renderRole(shareLink.permission, props.t)}</span>
-												{shareLink.expiresAt ? <span className={styles.meta}>{props.t('share.expiresAt')}: {formatExpiry(shareLink.expiresAt)}</span> : null}
-											</div>
-											{shareLink.shareUrl ? <div className={styles.info}>{props.t('share.viewQrCode')}</div> : <div className={styles.info}>{props.t('share.linkQueued')}</div>}
-										</div>
-									) : null}
 								</div>
 							</div>
 						</div>

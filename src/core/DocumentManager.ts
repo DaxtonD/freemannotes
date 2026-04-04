@@ -3,6 +3,14 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import { touchUpdatedAt, setNoteTrashed, readTrashState } from './noteModel';
 import { RICHTEXT_INTERNAL_ORIGIN } from './richText';
+import {
+	logClientEvent,
+	getOrCreateNoteDebugSessionId,
+	clearNoteDebugSession,
+	getNoteDebugContext,
+	peekNoteDebugContext,
+	initIndexedDbDebugLogging,
+} from './debugLogger';
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const NOTES_LIST_KEY = 'notesList';
@@ -118,6 +126,8 @@ export class DocumentManager {
 		// Normalize trailing slashes to avoid duplicate room URLs.
 		this.websocketUrl = String(websocketUrl || 'ws://localhost:1234').replace(/\/+$/, '');
 		this.websocketEnabled = options?.enableWebsocketSync ?? true;
+
+		initIndexedDbDebugLogging();
 
 		// Pre-seed workspace so room names use the correct prefix from the start.
 		const initialWs = typeof options?.initialWorkspaceId === 'string' ? options.initialWorkspaceId.trim() : '';
@@ -342,6 +352,9 @@ export class DocumentManager {
 			this.ensureProvider(key, existing);
 			return { key, doc: existing };
 		}
+
+		getOrCreateNoteDebugSessionId(key);
+		logClientEvent('DOC_LIFECYCLE', { ...getNoteDebugContext(key), event: 'doc-create' });
 
 		// Create once, register immediately to prevent accidental duplicate creation
 		// if higher-level code re-enters getDoc during initialization.
@@ -602,6 +615,9 @@ export class DocumentManager {
 		const doc = this.docs.get(roomName);
 		if (!doc) return;
 
+		logClientEvent('DOC_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'doc-destroy' });
+		clearNoteDebugSession(roomName);
+
 		const wsProvider = this.websocketProviders.get(roomName);
 		const provider = this.providers.get(roomName);
 
@@ -808,6 +824,7 @@ export class DocumentManager {
 		// One IndexedDB room per Yjs room name.
 		const provider = new IndexeddbPersistence(roomName, doc);
 		this.providers.set(roomName, provider);
+		logClientEvent('IDB_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'hydration-start' });
 
 		if (!this.readyPromises.has(roomName)) {
 			this.readyPromises.set(roomName, this.waitForSynced(roomName, provider));
@@ -849,7 +866,10 @@ export class DocumentManager {
 			maxBackoffTime: 5_000,
 		});
 
+		logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-provider-create' });
+
 		const onStatus = (event: { status: string }): void => {
+			logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-status', status: event.status });
 			if (this.wsDebug) {
 				console.info(`[yjs-ws] room=${roomName} status=${event.status} url=${this.websocketUrl}`);
 			}
@@ -870,6 +890,7 @@ export class DocumentManager {
 			this.emitConnectionStatus();
 		};
 		const onSync = (isSynced: boolean): void => {
+			logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-sync', isSynced });
 			if (isSynced) {
 				this.pendingSyncRooms.delete(roomName);
 				this.emitConnectionStatus();
@@ -878,10 +899,17 @@ export class DocumentManager {
 		const onAfterTransaction = (tx: Y.Transaction): void => {
 			if (!tx.local) return;
 			if (tx.origin === this.internalOrigin) return;
+			if (tx.origin === this.accessOrigin) return;
+			if (tx.origin === this.updatedAtOrigin) return;
+			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
 			// Registry room writes (order/title metadata) should not produce per-note pending badges.
 			// Without this filter, routine registry mutations could produce false-positive sync indicators
 			// after refresh/startup even when no actual note content edits occurred offline.
 			if (this.isNotesRegistryRoom(roomName)) return;
+			// Skip transactions that didn't actually change any Y.Types (e.g. structure
+			// assertions, read-only bindings). Without this guard, editor mount can mark a
+			// room as pending even when no content was modified.
+			if (tx.changed.size === 0) return;
 			const connected = (wsProvider as any).wsconnected === true;
 			if (!connected) {
 				this.pendingSyncRooms.add(roomName);
@@ -1075,11 +1103,13 @@ export class DocumentManager {
 			});
 
 			const onSynced = (): void => {
+				logClientEvent('IDB_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'hydration-end' });
 				cleanup();
 				resolve();
 			};
 
 			const onError = (error: unknown): void => {
+				logClientEvent('IDB_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'hydration-error', error: error instanceof Error ? error.message : String(error) });
 				cleanup();
 				reject(error instanceof Error ? error : new Error(String(error)));
 			};

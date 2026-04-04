@@ -312,7 +312,10 @@ export function setYTextValue(ytext: Y.Text, next: string): void {
 }
 
 export function getPlainTextFromRichJson(json: JSONContent, variant: RichTextVariant): string {
-	return generateText(json, createRichTextExtensions({ variant }), { blockSeparator: variant === 'full' ? '\n' : '\n\n' }).trimEnd();
+	// trim() (not just trimEnd) prevents leading/trailing whitespace from
+	// leaking into the plain-text 'content' field and being re-seeded on a
+	// subsequent cache clear, which would compound blank-paragraph corruption.
+	return generateText(json, createRichTextExtensions({ variant }), { blockSeparator: variant === 'full' ? '\n' : '\n\n' }).trim();
 }
 
 export function getPlainTextFromRichFragment(fragment: Y.XmlFragment, variant: RichTextVariant): string {
@@ -330,10 +333,20 @@ export function replaceRichFragmentFromJson(fragment: Y.XmlFragment, json: JSONC
 export function ensureTextNoteRichContent(doc: Y.Doc): Y.XmlFragment {
 	const fragment = doc.getXmlFragment(TEXT_NOTE_RICH_FIELD);
 	if (fragment.length === 0) {
-		const seed = (): void => {
-			replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(doc.getText('content').toString(), 'full'), 'full');
-		};
-		doc.transact(seed, RICHTEXT_INTERNAL_ORIGIN);
+		const plainText = doc.getText('content').toString();
+		if (plainText.length > 0) {
+			// Only seed when the plain-text field already has content.
+			// If both fields are empty the document has not yet received its
+			// initial state from the WebSocket server — seeding now would write
+			// ghost CRDT items (e.g. an empty paragraph) into the fragment.
+			// When the real server state arrives it cannot overwrite those items;
+			// instead they merge, producing extra blank paragraphs that persist
+			// and compound across subsequent cache clears.
+			const seed = (): void => {
+				replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(plainText, 'full'), 'full');
+			};
+			doc.transact(seed, RICHTEXT_INTERNAL_ORIGIN);
+		}
 	}
 	return fragment;
 }

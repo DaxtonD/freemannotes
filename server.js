@@ -41,6 +41,15 @@ try {
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const {
+	logEvent,
+	getRoomDebugContext,
+	registerRoomSession,
+	unregisterRoomSession,
+	attachPrismaDebugLogging,
+	instrumentRedisClient,
+	DEBUG_LOGGING_ENABLED,
+} = require('./server/debugLogger');
 
 // ── Configuration (read from environment) ────────────────────────────────
 const YPERSISTENCE = String(process.env.YPERSISTENCE || '').trim();
@@ -52,6 +61,7 @@ const APP_URL = String(process.env.APP_URL || '').trim();
 const PGTIMEZONE = String(process.env.PGTIMEZONE || '').trim();
 const DIST_DIR = path.join(__dirname, 'dist');
 const UPLOAD_DIR = String(process.env.UPLOAD_DIR || path.join(__dirname, 'uploads')).trim();
+const APP_VERSION_STRING = (() => { try { return String(require('./package.json').version || 'dev'); } catch { return 'dev'; } })();
 
 // ── y-websocket LevelDB persistence normalization ────────────────────────
 // y-websocket reads process.env.YPERSISTENCE at import time.
@@ -88,7 +98,19 @@ const WS_READY_STATE_CONNECTING = 0;
 const WS_READY_STATE_OPEN = 1;
 const PING_TIMEOUT_MS = 30_000;
 
+if (DEBUG_LOGGING_ENABLED) {
+	logEvent('SERVER_EVENT', {
+		event: 'startup',
+		pid: process.pid,
+		nodeEnv: String(process.env.NODE_ENV || 'development'),
+	});
+}
+
 function closeRoleAwareConn(doc, conn) {
+	logEvent('WS_EVENT', {
+		...getRoomDebugContext(doc && doc.name ? doc.name : null),
+		event: 'close-connection',
+	});
 	if (doc.conns.has(conn)) {
 		const controlledIds = doc.conns.get(conn);
 		doc.conns.delete(conn);
@@ -105,6 +127,11 @@ function closeRoleAwareConn(doc, conn) {
 }
 
 function sendRoleAware(doc, conn, message) {
+	logEvent('WS_EVENT', {
+		...getRoomDebugContext(doc && doc.name ? doc.name : null),
+		event: 'send',
+		size: message ? message.length ?? message.byteLength ?? 0 : 0,
+	});
 	if (conn.readyState !== WS_READY_STATE_CONNECTING && conn.readyState !== WS_READY_STATE_OPEN) {
 		closeRoleAwareConn(doc, conn);
 		return;
@@ -125,6 +152,11 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 
 	conn.on('message', (message) => {
 		try {
+			logEvent('WS_EVENT', {
+				...getRoomDebugContext(docName),
+				event: 'receive',
+				size: message ? message.length ?? message.byteLength ?? 0 : 0,
+			});
 			const encoder = encoding.createEncoder();
 			const decoder = decoding.createDecoder(new Uint8Array(message));
 			const messageType = decoding.readVarUint(decoder);
@@ -177,10 +209,18 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 	}, PING_TIMEOUT_MS);
 
 	conn.on('close', () => {
+		logEvent('WS_EVENT', {
+			...getRoomDebugContext(docName),
+			event: 'socket-close',
+		});
 		closeRoleAwareConn(doc, conn);
 		clearInterval(pingInterval);
 	});
 	conn.on('pong', () => {
+		logEvent('WS_EVENT', {
+			...getRoomDebugContext(docName),
+			event: 'pong',
+		});
 		pongReceived = true;
 	});
 
@@ -264,6 +304,7 @@ if (DATABASE_URL.length > 0) {
 				? ['query', 'warn', 'error']
 				: ['warn', 'error'],
 		});
+		attachPrismaDebugLogging(prisma);
 		console.info('[server] Prisma client initialized (DATABASE_URL is set)');
 
 		// Log PGTIMEZONE if configured. The actual SET timezone = '...' runs
@@ -282,7 +323,7 @@ if (DATABASE_URL.length > 0) {
 	if (REDIS_URL.length > 0) {
 		try {
 			const Redis = require('ioredis');
-			redis = new Redis(REDIS_URL, {
+			const redisClient = new Redis(REDIS_URL, {
 				// Reconnect automatically with exponential backoff (max 10 s).
 				retryStrategy: (times) => Math.min(times * 200, 10_000),
 				// ── Key resilience settings ──
@@ -301,17 +342,19 @@ if (DATABASE_URL.length > 0) {
 					return msg.includes('READONLY') || msg.includes('ECONNRESET');
 				},
 			});
-			redis.on('connect', () => console.info('[server] Redis connected'));
-			redis.on('ready', () => console.info('[server] Redis ready'));
-			redis.on('close', () => console.warn('[server] Redis connection closed'));
-			redis.on('reconnecting', (ms) => console.info(`[server] Redis reconnecting in ${ms}ms`));
-			redis.on('error', (err) => console.warn('[server] Redis error:', err.message));
-			redisSubscriber = redis.duplicate();
-			redisSubscriber.on('connect', () => console.info('[server] Redis subscriber connected'));
-			redisSubscriber.on('ready', () => console.info('[server] Redis subscriber ready'));
-			redisSubscriber.on('close', () => console.warn('[server] Redis subscriber connection closed'));
-			redisSubscriber.on('reconnecting', (ms) => console.info(`[server] Redis subscriber reconnecting in ${ms}ms`));
-			redisSubscriber.on('error', (err) => console.warn('[server] Redis subscriber error:', err.message));
+			redisClient.on('connect', () => console.info('[server] Redis connected'));
+			redisClient.on('ready', () => console.info('[server] Redis ready'));
+			redisClient.on('close', () => console.warn('[server] Redis connection closed'));
+			redisClient.on('reconnecting', (ms) => console.info(`[server] Redis reconnecting in ${ms}ms`));
+			redisClient.on('error', (err) => console.warn('[server] Redis error:', err.message));
+			const subscriberClient = redisClient.duplicate();
+			subscriberClient.on('connect', () => console.info('[server] Redis subscriber connected'));
+			subscriberClient.on('ready', () => console.info('[server] Redis subscriber ready'));
+			subscriberClient.on('close', () => console.warn('[server] Redis subscriber connection closed'));
+			subscriberClient.on('reconnecting', (ms) => console.info(`[server] Redis subscriber reconnecting in ${ms}ms`));
+			subscriberClient.on('error', (err) => console.warn('[server] Redis subscriber error:', err.message));
+			redis = instrumentRedisClient(redisClient, 'redis');
+			redisSubscriber = instrumentRedisClient(subscriberClient, 'redis-subscriber');
 			console.info('[server] Redis client initialized (REDIS_URL is set)');
 		} catch (err) {
 			console.error('[server] Failed to initialize Redis client:', err.message);
@@ -639,6 +682,45 @@ const server = http.createServer((req, res) => {
 
 		const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 
+		if (req.method === 'POST' && url.pathname === '/api/debug-log') {
+			const chunks = [];
+			req.on('data', (chunk) => chunks.push(chunk));
+			req.on('end', () => {
+				try {
+					const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}');
+					const events = Array.isArray(body)
+						? body
+						: Array.isArray(body?.events)
+							? body.events
+							: [body];
+					for (const entry of events) {
+						if (!entry || typeof entry !== 'object') continue;
+						const eventType = typeof entry.type === 'string' && entry.type.trim() ? entry.type.trim() : 'CLIENT_EVENT';
+						logEvent(eventType, {
+							source: 'client',
+							ip: req.socket.remoteAddress || null,
+							...entry,
+						});
+					}
+					res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+					res.end('{"ok":true}');
+				} catch (err) {
+					logEvent('CLIENT_EVENT_ERROR', {
+						source: 'client',
+						ip: req.socket.remoteAddress || null,
+						error: err && err.message ? err.message : String(err),
+					});
+					res.writeHead(400);
+					res.end('Bad Request');
+				}
+			});
+			req.on('error', () => {
+				res.writeHead(400);
+				res.end('Bad Request');
+			});
+			return;
+		}
+
 		// ── Auth API router ──────────────────────────────────────────────
 		if (authRouter && authRouter(req, res)) {
 			return;
@@ -707,6 +789,16 @@ const server = http.createServer((req, res) => {
 		if (url.pathname === '/healthz') {
 			res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
 			res.end('ok');
+			return;
+		}
+
+		// ── Version endpoint (unauthenticated — used by PWA update polling) ──
+		// Returns the running server build version so the client can detect
+		// when a new deployment is available without relying solely on the
+		// service-worker update mechanism (unreliable on iOS standalone PWA).
+		if (url.pathname === '/api/version') {
+			res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+			res.end(JSON.stringify({ version: APP_VERSION_STRING }));
 			return;
 		}
 
@@ -1018,8 +1110,11 @@ wss.on('connection', (conn, req) => {
 				);
 			}
 
+			const requestUrl = new URL(req.url || '/', 'http://localhost');
+			const clientSessionId = String(requestUrl.searchParams.get('sessionId') || '').trim();
+
 			// Extract raw room from /yjs/<room>
-			const raw = String(req.url || '/').replace(/^\/yjs\/?/, '').replace(/^\/+/, '');
+			const raw = String(requestUrl.pathname || '/').replace(/^\/yjs\/?/, '').replace(/^\/+/, '');
 			if (!raw) {
 				console.warn('[ws] close invalid room', JSON.stringify({ path: String(req.url || '') }));
 				conn.close(1008, 'invalid room');
@@ -1104,6 +1199,23 @@ wss.on('connection', (conn, req) => {
 			}
 			const room = splitDocRoomId(docName);
 			persistAdapter?.registerDocWorkspace(docName, room ? room.sourceWorkspaceId : session.workspaceId);
+			if (clientSessionId) {
+				registerRoomSession(docName, clientSessionId, {
+					userId: session.userId,
+					workspaceId: session.workspaceId,
+				});
+				conn.on('close', () => {
+					unregisterRoomSession(docName, clientSessionId);
+				});
+			}
+			logEvent('WS_EVENT', {
+				...getRoomDebugContext(docName, {
+					sessionId: clientSessionId || null,
+					userId: session.userId,
+				}),
+				event: 'connection-open',
+				readOnly,
+			});
 
 			// y-websocket expects req.url === '/<room>'
 			req.url = `/${docName}`;

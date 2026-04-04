@@ -29,6 +29,21 @@
 	z-index: 121;
 }
 
+/* Fill the bottom system-navbar / home-indicator area with the app
+   background colour so content doesn't bleed through the translucent
+   system chrome on iOS and Android. Same approach as the top ::before. */
+.test-harness-root::after {
+	content: '';
+	position: fixed;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	height: var(--app-safe-bottom);
+	background: var(--color-app-bg);
+	pointer-events: none;
+	z-index: 121;
+}
+
 .app-header {
 	position: sticky;
 	top: 0;
@@ -292,6 +307,10 @@
 	position: fixed;
 	inset: 0;
 	z-index: 9999;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--color-app-bg);
 	transition: opacity 0.4s ease-out;
 }
 

@@ -627,6 +627,8 @@ const FALLBACK_MESSAGES: Dictionary = {
 		linkReady: 'Share link ready',
 		linkQueued: 'Share link queued and will be generated when you are back online',
 		linkSectionTitle: 'QR code invite',
+		activeLinks: 'Active share links',
+		generateNew: 'Generate new link',
 		requiredRole: 'Required role',
 		selectRole: 'Select a role',
 		roleRequired: 'Choose a role before generating a share link',

@@ -236,6 +236,51 @@
 	pointer-events: none;
 }
 
+/* ── Skeleton card: placeholder rendered at the cached card height while
+ * the Yjs doc for that note is still loading from IndexedDB / network.
+ * The ElectricFenceShimmer canvas is layered on top of this. */
+.skeletonCard {
+	width: 100%;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background-color: var(--color-surface);
+	box-sizing: border-box;
+}
+
+/* ── Simple CSS shimmer (VITE_NOTE_CARD_EFFECT=0 / default) ───────────────
+ * A translucent gradient sweeps across the card while loading.
+ * The component adds/removes .shimmerVisible to drive the opacity transition. */
+@keyframes shimmerSweep {
+	0%   { background-position: -200% 0; }
+	100% { background-position:  200% 0; }
+}
+.shimmerOverlay {
+	position: absolute;
+	inset: 0;
+	z-index: 10;
+	border-radius: var(--radius-sm);
+	pointer-events: none;
+	/* Solid surface colour covers content; a lighter strip sweeps across it. */
+	background-color: var(--color-surface);
+	background-image: linear-gradient(
+		90deg,
+		transparent 0%,
+		rgba(255, 255, 255, 0.10) 50%,
+		transparent 100%
+	);
+	background-size: 200% 100%;
+	animation: shimmerSweep 1.6s ease-in-out infinite;
+	opacity: 0;
+	transition: opacity 0.45s ease-out;
+}
+.shimmerOverlay.shimmerVisible {
+	opacity: 1;
+}
+
+/* ── HL2 electric-fence shimmer (VITE_NOTE_CARD_EFFECT=1) ────────────────
+ * The ElectricFenceShimmer component manages its own inline styles;
+ * no extra CSS needed here. */
+
 .noteChipButton {
 	height: 24px;
 	padding: 0 8px;
