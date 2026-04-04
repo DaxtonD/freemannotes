@@ -1105,7 +1105,10 @@ export function applyTheme(themeId: ThemeId): void {
 	}
 	const themeColorMeta = document.querySelector('meta[name="theme-color"]');
 	if (themeColorMeta) {
-		themeColorMeta.setAttribute('content', surfaceColor);
+		// Use the app background colour (not surface) because this value also
+		// controls the Android system navigation bar at the bottom — which sits
+		// over the app-bg, not a card surface.
+		themeColorMeta.setAttribute('content', appBackground);
 	}
 	const appleStatusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
 	if (appleStatusBarMeta) {

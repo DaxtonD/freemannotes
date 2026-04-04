@@ -21,6 +21,8 @@ import {
 	getChecklistItemPlainText,
 	getChecklistItemRichPreviewJson,
 	getTextNoteRichPreviewJson,
+	replaceRichFragmentFromJson,
+	TEXT_NOTE_RICH_FIELD,
 } from '../../core/richText';
 import {
 	getNoteCardCompletedExpanded,
@@ -328,7 +330,7 @@ function renderTableNode(block: JSONContent, key: string, allowLinkInteraction: 
 	);
 }
 
-function renderBlockNode(block: JSONContent, key: string, inListItem = false, inTableCell = false, allowLinkInteraction = true): React.ReactNode {
+function renderBlockNode(block: JSONContent, key: string, inListItem = false, inTableCell = false, allowLinkInteraction = true, onToggleTaskItem?: (indexPath: number[]) => void): React.ReactNode {
 	const style = getTextAlignStyle(block);
 
 	if (block.type === 'paragraph' || block.type === 'heading') {
@@ -350,32 +352,47 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (block.type === 'bulletList' || block.type === 'orderedList') {
-		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, false, inTableCell, allowLinkInteraction)).filter(Boolean);
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, false, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
 		if (items.length === 0) return null;
 		const ListTag = block.type === 'orderedList' ? 'ol' : 'ul';
 		return <ListTag key={key} className={block.type === 'orderedList' ? styles.richOrderedList : styles.richList}>{items}</ListTag>;
 	}
 
 	if (block.type === 'taskList') {
-		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, false, inTableCell, allowLinkInteraction)).filter(Boolean);
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, false, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
 		if (items.length === 0) return null;
 		return <ul key={key} className={styles.richTaskList}>{items}</ul>;
 	}
 
 	if (block.type === 'listItem') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell, allowLinkInteraction)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
 		if (children.length === 0) return null;
 		return <li key={key} className={styles.richListItem}>{children}</li>;
 	}
 
 	if (block.type === 'taskItem') {
 		const checked = getTaskItemChecked(block);
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell, allowLinkInteraction)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
 		if (children.length === 0) return null;
+		const indexPath = onToggleTaskItem ? key.split(':').slice(1).map(Number) : null;
 		return (
-			<li key={key} className={styles.richTaskItem} data-checked={checked ? 'true' : 'false'}>
+			<li
+				key={key}
+				className={styles.richTaskItem}
+				data-checked={checked ? 'true' : 'false'}
+				onPointerDown={indexPath ? (e) => e.stopPropagation() : undefined}
+				onPointerUp={indexPath ? (e) => e.stopPropagation() : undefined}
+				onClick={indexPath ? (e) => e.stopPropagation() : undefined}
+			>
 				<span className={styles.richTaskCheckbox} aria-hidden="true">
-					<input type="checkbox" checked={checked} readOnly tabIndex={-1} />
+					<input
+						type="checkbox"
+						checked={checked}
+						readOnly={!indexPath}
+						tabIndex={-1}
+						style={{ pointerEvents: indexPath ? 'auto' : 'none' }}
+						onChange={indexPath ? () => onToggleTaskItem!(indexPath) : undefined}
+					/>
 				</span>
 				<div className={styles.richTaskContent}>{children}</div>
 			</li>
@@ -383,7 +400,7 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (block.type === 'blockquote') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, false, inTableCell, allowLinkInteraction)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, false, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
 		if (children.length === 0) return null;
 		return <blockquote key={key} className={styles.richBlockquote}>{children}</blockquote>;
 	}
@@ -406,7 +423,7 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (Array.isArray(block.content) && block.content.length > 0) {
-		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, inListItem, inTableCell, allowLinkInteraction)).filter(Boolean);
+		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, inListItem, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
 		if (children.length === 0) return null;
 		return <React.Fragment key={key}>{children}</React.Fragment>;
 	}
@@ -414,9 +431,9 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	return null;
 }
 
-function renderRichPreview(json: JSONContent | null | undefined, allowLinkInteraction = true): React.ReactNode {
+function renderRichPreview(json: JSONContent | null | undefined, allowLinkInteraction = true, onToggleTaskItem?: (indexPath: number[]) => void): React.ReactNode {
 	if (!json?.content) return null;
-	const blocks = json.content.map((block, index) => renderBlockNode(block, `block:${index}`, false, false, allowLinkInteraction)).filter(Boolean);
+	const blocks = json.content.map((block, index) => renderBlockNode(block, `block:${index}`, false, false, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
 	return blocks.length > 0 ? blocks : null;
 }
 
@@ -540,6 +557,23 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	);
 	const richContent = useTextNoteRichPreview(props.doc, content);
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
+
+	const handleToggleRichTaskItem = React.useCallback((indexPath: number[]) => {
+		if (!canEdit) return;
+		const updated = JSON.parse(JSON.stringify(richContent)) as JSONContent;
+		let node: JSONContent = updated;
+		for (let i = 0; i < indexPath.length - 1; i++) {
+			const child = node.content?.[indexPath[i]];
+			if (!child) return;
+			node = child;
+		}
+		const lastIdx = indexPath[indexPath.length - 1];
+		const target = node.content?.[lastIdx];
+		if (!target || target.type !== 'taskItem') return;
+		target.attrs = { ...((target.attrs as object) ?? {}), checked: !getTaskItemChecked(target) };
+		const fragment = props.doc.getXmlFragment(TEXT_NOTE_RICH_FIELD);
+		props.doc.transact(() => { replaceRichFragmentFromJson(fragment, updated, 'full'); });
+	}, [canEdit, props.doc, richContent]);
 	const checklistItems = useChecklistItems(checklistArray);
 	const normalizedItems = React.useMemo(() => normalizeChecklistHierarchy(checklistItems), [checklistItems]);
 	const extractedLinks = React.useSyncExternalStore(
@@ -974,7 +1008,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			<div ref={contentRegionRef} className={styles.contentRegion}>
 				{type === 'text' ? (
 					<div ref={bodyRef} className={styles.body}>
-						<div ref={contentPreviewRef} className={styles.contentPreview}>{renderRichPreview(richContent, allowCardItemInteractions) ?? content}</div>
+						<div ref={contentPreviewRef} className={styles.contentPreview}>{renderRichPreview(richContent, allowCardItemInteractions, allowCardItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
 					</div>
 				) : (
 					<>
@@ -986,7 +1020,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 											className={styles.checklistCheckboxHitArea}
 											onPointerDown={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
 											onPointerUp={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
-											onClick={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
+											onClick={allowCardItemInteractions ? (e) => {
+												e.stopPropagation();
+												if (canEdit) updateChecklistItemById(checklistArray, item.id, { completed: !item.completed });
+											} : undefined}
 											aria-label={item.completed ? 'Completed' : 'Not completed'}
 										>
 											<input
@@ -994,12 +1031,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 												className={styles.checklistCheckbox}
 												checked={item.completed}
 												disabled={!canEdit || !allowCardItemInteractions}
-												style={!allowCardItemInteractions ? { pointerEvents: 'none' } : undefined}
-												onChange={(e) => {
-													if (!allowCardItemInteractions) return;
-													if (!canEdit) return;
-													updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
-												}}
+												readOnly
 											/>
 										</span>
 										<div className={`${styles.checklistText}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
@@ -1039,7 +1071,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 													className={styles.checklistCheckboxHitArea}
 													onPointerDown={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
 													onPointerUp={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
-													onClick={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
+													onClick={allowCardItemInteractions ? (e) => {
+											e.stopPropagation();
+											if (canEdit) updateChecklistItemById(checklistArray, item.id, { completed: !item.completed });
+										} : undefined}
 													aria-label={item.completed ? 'Completed' : 'Not completed'}
 												>
 													<input
@@ -1047,12 +1082,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 														className={styles.checklistCheckbox}
 														checked={item.completed}
 														disabled={!canEdit || !allowCardItemInteractions}
-														style={!allowCardItemInteractions ? { pointerEvents: 'none' } : undefined}
-														onChange={(e) => {
-															if (!allowCardItemInteractions) return;
-															if (!canEdit) return;
-															updateChecklistItemById(checklistArray, item.id, { completed: e.target.checked });
-														}}
+														readOnly
 													/>
 												</span>
 												<div className={`${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>

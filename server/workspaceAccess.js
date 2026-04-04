@@ -7,13 +7,65 @@ const { findPreferredWorkspaceMembership } = require('./systemWorkspaces');
 // instead of raw Prisma lookups so reconnect flows never reactivate a workspace
 // that has already been soft-deleted for the user.
 
+// ─── In-memory membership cache ─────────────────────────────────────────────
+// Short-lived TTL cache to avoid repeating the same WorkspaceMember.findFirst
+// query hundreds of times during bursts of WS connections and API requests from
+// the same authenticated user+workspace pair. Entries expire after CACHE_TTL_MS
+// and are evicted eagerly on read. The cache stores resolved membership objects
+// or explicit `null` (meaning "not a member or workspace deleted") so negative
+// lookups are also cached.
+const MEMBERSHIP_CACHE_TTL_MS = 30_000;
+const _membershipCache = new Map();
+
+function _membershipCacheKey(userId, workspaceId) {
+	return `${userId}\0${workspaceId}`;
+}
+
+function _getCachedMembership(userId, workspaceId) {
+	const key = _membershipCacheKey(userId, workspaceId);
+	const entry = _membershipCache.get(key);
+	if (!entry) return undefined; // cache miss
+	if (Date.now() > entry.expiresAt) {
+		_membershipCache.delete(key);
+		return undefined; // expired
+	}
+	return entry.value; // may be null (negative cache)
+}
+
+function _setCachedMembership(userId, workspaceId, value) {
+	const key = _membershipCacheKey(userId, workspaceId);
+	_membershipCache.set(key, { value, expiresAt: Date.now() + MEMBERSHIP_CACHE_TTL_MS });
+}
+
+/**
+ * Invalidate cached membership for a user+workspace pair. Call this when
+ * membership changes (invite acceptance, role change, workspace deletion).
+ */
+function invalidateMembershipCache(userId, workspaceId) {
+	if (userId && workspaceId) {
+		_membershipCache.delete(_membershipCacheKey(userId, workspaceId));
+	}
+}
+
 /**
  * Return the caller's membership for a workspace only if the workspace is still live.
  * Null means either "not a member" or "workspace has already been deleted".
+ *
+ * Results are cached for MEMBERSHIP_CACHE_TTL_MS to avoid redundant DB queries
+ * during bursts of WS connections and API requests. Only the `{ role: true }`
+ * select shape is cacheable; other select shapes bypass the cache.
  */
 async function findLiveWorkspaceMembership(prisma, userId, workspaceId, select = { role: true }) {
 	if (!prisma || !userId || !workspaceId) return null;
-	return prisma.workspaceMember.findFirst({
+
+	// Only cache the common `{ role: true }` select shape to keep the cache simple.
+	const isRoleSelect = select && Object.keys(select).length === 1 && select.role === true;
+	if (isRoleSelect) {
+		const cached = _getCachedMembership(userId, workspaceId);
+		if (cached !== undefined) return cached;
+	}
+
+	const result = await prisma.workspaceMember.findFirst({
 		where: {
 			userId,
 			workspaceId,
@@ -21,6 +73,12 @@ async function findLiveWorkspaceMembership(prisma, userId, workspaceId, select =
 		},
 		select,
 	});
+
+	if (isRoleSelect) {
+		_setCachedMembership(userId, workspaceId, result);
+	}
+
+	return result;
 }
 
 /**
@@ -66,5 +124,6 @@ module.exports = {
 	findFirstLiveWorkspaceMembership,
 	findLiveWorkspace,
 	findLiveWorkspaceMembership,
+	invalidateMembershipCache,
 	resolveLiveWorkspaceId,
 };

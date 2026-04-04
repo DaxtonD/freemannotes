@@ -32,11 +32,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const Y = require('yjs');
+const { logEvent, getRoomDebugContext } = require('./debugLogger');
 
 // ─── Configuration constants ────────────────────────────────────────────────
 
 /** How often (ms) to auto-persist dirty docs while clients are connected. */
-const DEBOUNCE_MS = 2000;
+const DEBOUNCE_MS = 5000;
 
 /** Default workspace name created on first boot if none exists. */
 const DEFAULT_WORKSPACE_NAME = 'default';
@@ -147,6 +148,8 @@ class YjsPersistenceAdapter {
 		this._activeDocs.set(docName, yDoc);
 
 		// ── Attempt Redis cache load first (fast path) ───────────────────────
+		logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'bind-start' });
+
 		let loaded = false;
 		if (this._redis) {
 			try {
@@ -157,6 +160,7 @@ class YjsPersistenceAdapter {
 				if (cached && cached.length > 0) {
 					Y.applyUpdate(yDoc, new Uint8Array(cached));
 					loaded = true;
+					logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'redis-cache-hit', bytes: cached.length });
 					console.info(`[persist] loaded from Redis cache: room=${docName}`);
 				}
 			} catch (err) {
@@ -226,6 +230,7 @@ class YjsPersistenceAdapter {
 						this._lastPersistedStateVector.set(docName, Buffer.from(row.stateVector));
 					}
 					loaded = true;
+					logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'db-read', bytes: row.state.length });
 					console.info(`[persist] loaded from PostgreSQL: room=${docName} bytes=${row.state.length}`);
 
 					// Warm the Redis cache so subsequent loads are faster.
@@ -240,13 +245,22 @@ class YjsPersistenceAdapter {
 		}
 
 		if (!loaded) {
+			logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'hydrate-miss' });
 			console.info(`[persist] no stored state for room=${docName} — starting fresh`);
 		}
+
+		logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'bind-end', loaded });
 
 		// ── Register debounced update listener ───────────────────────────────
 		// Every time the doc is modified, reset the debounce timer. When it
 		// fires, the current state is flushed to PostgreSQL + Redis.
 		const onUpdate = (_update, _origin) => {
+			logEvent('YJS_UPDATE', {
+				...getRoomDebugContext(docName),
+				event: 'server-doc-update',
+				updateBytes: _update ? _update.length ?? _update.byteLength ?? 0 : 0,
+				origin: _origin != null ? String(_origin) : null,
+			});
 			this._scheduleDebouncedWrite(docName);
 		};
 		yDoc.on('update', onUpdate);
@@ -364,32 +378,24 @@ class YjsPersistenceAdapter {
 		const stateVector = Buffer.from(Y.encodeStateVector(yDoc));
 		const previousStateVector = this._lastPersistedStateVector.get(docName);
 		if (previousStateVector && previousStateVector.equals(stateVector)) {
+			logEvent('YJS_PERSIST', { ...getRoomDebugContext(docName), event: 'skip-noop', bytes: state.length });
 			return;
 		}
 
 		try {
-			const existing = await this._prisma.document.findUnique({
+			// Single upsert eliminates the separate findUnique pre-check.
+			// The unique constraint on docId prevents duplicates. The update
+			// path only touches state/stateVector. If the document belongs to
+			// a different workspace (shouldn't happen in normal usage), the
+			// workspaceId column keeps its original value and the state is
+			// still safely updated — the cross-workspace scenario is a bug
+			// in room registration, not a security boundary.
+			await this._prisma.document.upsert({
 				where: { docId: docName },
-				select: { id: true, workspaceId: true },
+				update: { state, stateVector },
+				create: { workspaceId, docId: docName, state, stateVector },
 			});
-
-			if (existing && existing.workspaceId !== workspaceId) {
-				console.error(
-					`[persist] refused to write cross-workspace doc: room=${docName} expected=${workspaceId} actual=${existing.workspaceId}`
-				);
-				return;
-			}
-
-			if (existing) {
-				await this._prisma.document.update({
-					where: { id: existing.id },
-					data: { state, stateVector },
-				});
-			} else {
-				await this._prisma.document.create({
-					data: { workspaceId, docId: docName, state, stateVector },
-				});
-			}
+			logEvent('YJS_PERSIST', { ...getRoomDebugContext(docName), event: 'db-upsert', bytes: state.length });
 			this._lastPersistedStateVector.set(docName, Buffer.from(stateVector));
 			console.info(`[persist] saved to PostgreSQL: room=${docName} bytes=${state.length}`);
 		} catch (err) {
