@@ -4,7 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 1.1.32 - 2026-04-01
+## 1.1.33 - 2026-04-04
+
+### Added
+- **Persistent QR code share links.** The QR Code Invite section of the Share Note and Share Workspace modals now displays all previously generated, non-expired share links immediately when the modal opens — no regeneration required. Each active link shows its role badge and expiry, with Copy and View QR buttons. A count badge on the section header indicates how many active links exist. Links are stored in `localStorage` keyed by entity, role, and expiry, so a 7-day Viewer link and a 30-day Editor link are tracked independently and remain accessible until they expire.
+- **Multi-link QR code list.** Generating multiple links for the same note or workspace (e.g. different roles or expiry windows) now produces a visible list entry for each unique combination rather than replacing the previous one.
+
+### Fixed
+- **iOS PWA never received app updates.** iOS Safari standalone mode does not reliably trigger the service worker `controllerchange` event or `window.location.reload()` in a frozen WKWebView. Added a `GET /api/version` endpoint and a polling loop in the PWA module that compares the server version to the build-time `__APP_VERSION__`. When a mismatch is detected, the app navigates via `window.location.replace('/')` which reliably escapes the frozen snapshot and loads fresh assets.
+- **iOS bottom navigation bar transparency.** The system home-indicator / gesture bar area rendered transparent on iOS PWA, letting the note grid bleed through. Added a `::after` pseudo-element on `.test-harness-root` (mirroring the existing `::before` for the status bar) that fills the bottom safe-area inset with `--color-app-bg`.
+- **Android navigation bar theme color.** The `meta[name="theme-color"]` value was using `surfaceColor` instead of `appBackground`, causing Android's system navigation bar to mismatch the app background. Corrected to use `appBackground` in `applyTheme()` and aligned the initial HTML value with the actual dark theme color.
+- **Disclosure arrow misaligned in accordion headers without a count badge.** The chevron arrow on the "Send Invite", "QR Code Invite", and "Create User" section headers appeared beside the label text instead of at the right edge. Root cause: the `.sectionSummaryLabel` pill uses `max-width: fit-content`, so without a `summaryCount` element carrying `margin-left: auto` there was nothing to push the arrow right. Fixed with a `:has()` CSS selector that applies `margin-left: auto` to the arrow whenever no `summaryCount` sibling is present. Applied to all three accordion modal stylesheets.
+- **Service worker `controllerchange` now uses `replace()` instead of `reload()`.** Changed the handler to use `window.location.replace(window.location.href)` for consistency with the network-version update path and improved iOS reliability.
+
 
 ### Added
 - **Password reset by email link.** Users can now request a reset link from the login form, receive a one-hour password reset email, and securely choose a new password from the app.

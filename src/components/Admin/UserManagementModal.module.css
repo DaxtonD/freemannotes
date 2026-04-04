@@ -280,6 +280,10 @@
 	transform: rotate(90deg);
 }
 
+.sectionSummaryButton:not(:has(.summaryCount)) .disclosureArrow {
+	margin-left: auto;
+}
+
 .summaryCount {
 	min-width: 24px;
 	height: 20px;

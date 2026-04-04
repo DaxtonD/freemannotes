@@ -80,21 +80,45 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 	}
 }
 
-export async function updateUserPreferences(
-	deviceId: string,
-	patch: {
-		deleteAfterDays?: number | null;
-		theme?: string | null;
-		language?: LocaleCode | null;
-		noteCardFontScale?: number;
-		noteEditorFontScale?: number;
-		noteCardMaxHeightPx?: number | null;
-		activeSharedFolder?: string | null;
-		checklistShowCompleted?: boolean;
-		quickDeleteChecklist?: boolean;
-		noteCardClickOpens?: boolean;
-		noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
+type PreferencePatch = {
+	deleteAfterDays?: number | null;
+	theme?: string | null;
+	language?: LocaleCode | null;
+	noteCardFontScale?: number;
+	noteEditorFontScale?: number;
+	noteCardMaxHeightPx?: number | null;
+	activeSharedFolder?: string | null;
+	checklistShowCompleted?: boolean;
+	quickDeleteChecklist?: boolean;
+	noteCardClickOpens?: boolean;
+	noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
+};
+
+const PREF_DEBOUNCE_MS = 1000;
+let _pendingPatch: PreferencePatch = {};
+let _pendingDeviceId: string | null = null;
+let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
+let _pendingResolvers: Array<(result: UserDevicePreferences | null) => void> = [];
+
+async function _flushPreferences(): Promise<void> {
+	if (_debounceTimer) { clearTimeout(_debounceTimer); _debounceTimer = null; }
+	const deviceId = _pendingDeviceId;
+	const patch = _pendingPatch;
+	const resolvers = _pendingResolvers;
+	_pendingDeviceId = null;
+	_pendingPatch = {};
+	_pendingResolvers = [];
+	if (!deviceId || Object.keys(patch).length === 0) {
+		resolvers.forEach(r => r(null));
+		return;
 	}
+	const result = await _sendPreferences(deviceId, patch);
+	resolvers.forEach(r => r(result));
+}
+
+async function _sendPreferences(
+	deviceId: string,
+	patch: PreferencePatch,
 ): Promise<UserDevicePreferences | null> {
 	try {
 		const url = `/api/user/preferences?deviceId=${encodeURIComponent(deviceId)}`;
@@ -129,6 +153,23 @@ export async function updateUserPreferences(
 	} catch {
 		return null;
 	}
+}
+
+export function updateUserPreferences(
+	deviceId: string,
+	patch: PreferencePatch,
+): Promise<UserDevicePreferences | null> {
+	return new Promise((resolve) => {
+		// Different device → flush pending immediately so we don't mix devices.
+		if (_pendingDeviceId && _pendingDeviceId !== deviceId) {
+			void _flushPreferences();
+		}
+		_pendingDeviceId = deviceId;
+		Object.assign(_pendingPatch, patch);
+		_pendingResolvers.push(resolve);
+		if (_debounceTimer) clearTimeout(_debounceTimer);
+		_debounceTimer = setTimeout(() => void _flushPreferences(), PREF_DEBOUNCE_MS);
+	});
 }
 
 export async function activateWorkspace(deviceId: string, workspaceId: string): Promise<string | null> {

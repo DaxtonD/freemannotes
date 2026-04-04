@@ -169,6 +169,10 @@
 	transform: rotate(90deg);
 }
 
+.sectionSummaryButton:not(:has(.summaryCount)) .disclosureArrow {
+	margin-left: auto;
+}
+
 .summaryCount {
 	min-width: 24px;
 	height: 20px;
@@ -262,6 +266,48 @@
 	align-items: center;
 	justify-content: space-between;
 	flex-wrap: wrap;
+}
+
+.activeLinkList {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	padding: 0 10px 8px;
+}
+
+.activeLinkRow {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 7px 10px;
+	background: color-mix(in srgb, var(--color-surface) 70%, var(--color-surface-2));
+	border: 1px solid var(--color-border);
+	border-radius: 8px;
+	flex-wrap: wrap;
+}
+
+.activeLinkMeta {
+	flex: 1 1 auto;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	flex-wrap: wrap;
+}
+
+.activeLinkActions {
+	display: flex;
+	gap: 6px;
+	flex: 0 0 auto;
+}
+
+.activeLinkSectionLabel {
+	margin: 0 0 2px;
+	font-size: 11px;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	color: var(--color-text-muted);
 }
 
 .listSection {

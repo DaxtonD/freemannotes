@@ -361,6 +361,57 @@ export function readCachedWorkspaceShareLink(args: { workspaceId: string; permis
 	return readCachedSecureLink<WorkspaceShareLink>(WORKSPACE_SHARE_CACHE_KEY, args.workspaceId, args.permission, normalizeExpiryDays(args.expiresInDays));
 }
 
+// Share link entries augmented with their requested expiry window so callers
+// can display the original TTL and pre-fill the generate form for refresh.
+export type CachedNoteShareLink = NoteShareLink & { expiresInDays: ShareExpiryDays };
+export type CachedWorkspaceShareLink = WorkspaceShareLink & { expiresInDays: ShareExpiryDays };
+
+/**
+ * Scans the entire share-link cache for a given entity and returns every
+ * non-expired entry across all role / expiry combinations.  The result is
+ * sorted by expiry time (earliest first) so the UI can show the most
+ * time-critical links at the top.
+ *
+ * Cache keys have the shape `<entityId>::<permission>::<expiresInDays>`, so
+ * this function decodes the expiresInDays segment from the key and attaches
+ * it to each result for downstream use (e.g. Refresh on the QR modal).
+ */
+function readAllCachedShareLinks<T extends { expiresAt: string | null }>(
+	storageKey: string,
+	entityId: string,
+): Array<T & { expiresInDays: ShareExpiryDays }> {
+	const id = normalizeId(entityId);
+	if (!id) return [];
+	const map = readCacheMap<T>(storageKey);
+	const prefix = `${id}::`;
+	const results: Array<T & { expiresInDays: ShareExpiryDays }> = [];
+	for (const [key, value] of Object.entries(map)) {
+		if (!key.startsWith(prefix)) continue;
+		// Skip expired tokens — there is no point showing links the server will reject.
+		if (!isUsableExpiry(value.expiresAt)) continue;
+		// Key tail: '<permission>::<expiresInDays>'
+		const tail = key.slice(prefix.length).split('::');
+		const expiresInDays = normalizeExpiryDays(Number(tail[1]));
+		results.push({ ...value, expiresInDays });
+	}
+	results.sort((a, b) => {
+		const at = a.expiresAt ? Date.parse(a.expiresAt) : 0;
+		const bt = b.expiresAt ? Date.parse(b.expiresAt) : 0;
+		return at - bt;
+	});
+	return results;
+}
+
+/** Returns all non-expired share links for the given note across all roles and expiry windows. */
+export function readAllCachedNoteShareLinks(docId: string): CachedNoteShareLink[] {
+	return readAllCachedShareLinks<NoteShareLink>(NOTE_SHARE_CACHE_KEY, docId);
+}
+
+/** Returns all non-expired share links for the given workspace across all roles and expiry windows. */
+export function readAllCachedWorkspaceShareLinks(workspaceId: string): CachedWorkspaceShareLink[] {
+	return readAllCachedShareLinks<WorkspaceShareLink>(WORKSPACE_SHARE_CACHE_KEY, workspaceId);
+}
+
 export async function ensureDocShareLink(docId: string, opts?: { forceRefresh?: boolean }): Promise<NoteShareLink> {
 	return ensureNoteShareLink({ userId: null, docId, permission: 'VIEWER', expiresInDays: 7, forceRefresh: opts?.forceRefresh });
 }

@@ -87,6 +87,7 @@ import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata 
 import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkApi';
 import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
 import { emptyTrashNow, moveNoteToWorkspace } from './core/noteManagementApi';
+import { getAppDebugSessionId, logClientEvent } from './core/debugLogger';
 import { flushPendingNoteMoves, queuePendingNoteMove, removePendingNoteMove } from './core/noteMoveQueue';
 import {
 	emitNoteMediaChanged,
@@ -476,6 +477,24 @@ export function App(): React.JSX.Element {
 	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
 		canRestoreCachedAuthImmediately ? 'authed' : 'loading'
 	);
+	// Splash overlay: shown only after an explicit login (unauth → authed).
+	// On a normal page refresh the data comes from IndexedDB quickly, so we
+	// skip the splash and rely on the card shimmer instead.
+	// gridReady → starts fade-out; splashGone → removes the DOM node entirely.
+	const [gridReady, setGridReady] = React.useState(false);
+	const [splashGone, setSplashGone] = React.useState(true); // hidden by default
+	const splashTimerRef = React.useRef<number>(0);
+	const prevAuthStatusRef = React.useRef(authStatus);
+	// Detect unauth → authed transition (user just logged in from scratch).
+	// Using an effect so we get the previous value cleanly without render-side setState.
+	React.useEffect(() => {
+		if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed') {
+			clearTimeout(splashTimerRef.current);
+			setGridReady(false);
+			setSplashGone(false); // show splash
+		}
+		prevAuthStatusRef.current = authStatus;
+	}, [authStatus]);
 	const [authMode, setAuthMode] = React.useState<'login' | 'register'>('login');
 	const [authEmail, setAuthEmail] = React.useState('');
 	const [authName, setAuthName] = React.useState('');
@@ -533,6 +552,14 @@ export function App(): React.JSX.Element {
 		}, 1500);
 	}, []);
 	React.useEffect(() => {
+		logClientEvent('APP_INIT', {
+			appDebugSessionId: getAppDebugSessionId(),
+			userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+			online: typeof navigator !== 'undefined' ? navigator.onLine : null,
+			url: typeof window !== 'undefined' ? window.location.href : null,
+		});
+	}, []);
+	React.useEffect(() => {
 		return () => {
 			if (briefDialogTimeoutRef.current !== null) {
 				window.clearTimeout(briefDialogTimeoutRef.current);
@@ -551,18 +578,10 @@ export function App(): React.JSX.Element {
 		offlineReadyNoticeRef.current = true;
 		showBriefDialog(t('prefs.offlineReadyToast'));
 	}, [pwaState.offlineReady, showBriefDialog, t]);
-	// Splash overlay:
-	// - During auth "loading": show a full-page splash immediately.
-	// - After auth "authed": keep an overlay until NoteGrid signals its initial
-	//   data is loaded. This covers both reloads and fresh-device startup so the
-	//   grid never paints placeholder/empty cards before IndexedDB hydration
-	//   and initial note docs are ready.
-	const [splashFading, setSplashFading] = React.useState(false);
-	const [splashDismissed, setSplashDismissed] = React.useState(false);
-	const handleGridReady = React.useCallback(() => {
-		setSplashFading(true);
-		setTimeout(() => setSplashDismissed(true), 400);
-	}, []);
+	// When the user is not yet authenticated and no cached auth exists, show a
+	// minimal blank shell while the auth check completes (typically <200 ms).
+	// No spinner or icon — the grid skeleton makes the startup feel instant.
+
 	// Stable workspace key for NoteGrid:
 	// Retains the last non-null workspace ID so transient auth churn (e.g. network
 	// handoffs) doesn't unmount/remount the grid and lose in-memory measurement
@@ -2251,11 +2270,8 @@ export function App(): React.JSX.Element {
 
 	const handleWorkspaceActivated = React.useCallback(
 		(workspaceId: string) => {
-			// Re-show the splash overlay while the new workspace's notes load.
-			// NoteGrid remounts (key changes) and fires onReady once loaded,
-			// which triggers handleGridReady → fade-out → dismiss.
-			setSplashFading(false);
-			setSplashDismissed(false);
+			// NoteGrid remounts (key changes) when the workspace changes; the new
+			// instance resets allDocsLoaded and shows skeleton cards during hydration.
 			setAuthWorkspaceId(workspaceId);
 			manager.setActiveWorkspaceId(workspaceId);
 			setSelectedNoteId(null);
@@ -4644,7 +4660,10 @@ export function App(): React.JSX.Element {
 		// Listen on the document rather than a dedicated swipe-zone element so the
 		// gesture still works even when stacking/z-index changes put transient UI in
 		// front of the edge strip.
+		// Suppressed while the note editor is open so that the editor's own swipe
+		// gestures (e.g. media panel tab switching) don't accidentally open the sidebar.
 		if (!isMobileViewport || typeof window === 'undefined') return;
+		if (editorMode !== 'none' || selectedNoteId !== null) return;
 
 		let tracking = false;
 		let startX = 0;
@@ -4690,7 +4709,7 @@ export function App(): React.JSX.Element {
 			document.removeEventListener('touchend', onTouchEnd);
 			document.removeEventListener('touchcancel', onTouchEnd);
 		};
-	}, [isMobileViewport, isMobileSidebarOpen, openMobileSidebar]);
+	}, [editorMode, isMobileViewport, isMobileSidebarOpen, openMobileSidebar, selectedNoteId]);
 
 	React.useEffect(() => {
 		if (!isMobileViewport || !isMobileSidebarOpen || typeof window === 'undefined') return;
@@ -5324,23 +5343,15 @@ export function App(): React.JSX.Element {
 	if (authStatus === 'unauth') return authGateView;
 
 	if (authStatus === 'loading') {
-		const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
-		return (
-			<div className="splash-shell">
-				<div className="splash-content">
-					<img src={splashIcon} alt="" className="splash-icon" />
-					<div className="splash-title">FreemanNotes</div>
-					<div className="splash-spinner" />
-				</div>
-			</div>
-		);
+		// Auth check in progress — render a blank app-background screen.
+		// Resolves in <200 ms for cached auth, after which the grid skeleton takes over.
+		return <div className="splash-shell" />;
 	}
 
 	if (externalRoute?.kind === 'share') return shareRouteView;
 
 	if (externalRoute?.kind === 'invite') return inviteRouteView;
 
-	const splashIcon = isLightTheme(themeId) ? appIconLight : appIconDark;
 	const canCreateNotesInActiveWorkspace = Boolean(authWorkspaceId && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' && canEditActiveWorkspace);
 	const canCreateNotesInCurrentContext = viewMode === 'bubble'
 		? Boolean(bubbleSelectedWorkspace?.id && bubbleSelectedWorkspace.systemKind !== 'SHARED_WITH_ME' && canEditBubbleSelectedWorkspace)
@@ -5362,21 +5373,17 @@ export function App(): React.JSX.Element {
 
 	return (
 		<>
-			{/*
-				In-app splash overlay:
-				Even after auth is "authed", we keep a full-screen overlay until NoteGrid
-				signals it has loaded initial data and layout measurements. This prevents a
-				reload flash where cards briefly paint in a default layout and then spring.
-			*/}
-			{!splashDismissed && (
-			<div className={`splash-shell splash-overlay${splashFading ? ' splash-fade-out' : ''}`}>
+		{!splashGone && (
+			<div
+				aria-hidden="true"
+				className={`splash-overlay${gridReady ? ' splash-fade-out' : ''}`}
+			>
 				<div className="splash-content">
-					<img src={splashIcon} alt="" className="splash-icon" />
-					<div className="splash-title">FreemanNotes</div>
+					<img className="splash-icon" src={headerIconSrc} alt="" />
 					<div className="splash-spinner" />
 				</div>
 			</div>
-			)}
+		)}
 		<div
 			className={`test-harness-root${themeId.startsWith('catppuccin-') ? ' theme-catppuccin' : ''}${
 				isFabOpen ? ' fab-open' : ''
@@ -6096,12 +6103,24 @@ export function App(): React.JSX.Element {
 					{/* Archive/trash views are read-focused; only notes view shows quick-create. */}
 					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') ? (
 						<div ref={topControlsRef} className="app-main-sticky">
-							{sidebarView === 'notes' && canCreateNotesInCurrentContext ? (
-								<div className="top-actions">
-									<button type="button" className="top-action-card" onClick={() => void openCreateEditorForCurrentContext('text')}>
-										{t('app.createNewNote')}
-									</button>
-									<button type="button" className="top-action-card" onClick={() => void openCreateEditorForCurrentContext('checklist')}>
+{sidebarView === 'notes' ? (
+						// Reserve the button-row height unconditionally so the grid
+						// doesn't shift down when canCreateNotesInCurrentContext resolves.
+						<div className="top-actions">
+							<button
+								type="button"
+								className="top-action-card"
+								disabled={!canCreateNotesInCurrentContext}
+								onClick={() => void openCreateEditorForCurrentContext('text')}
+							>
+								{t('app.createNewNote')}
+							</button>
+							<button
+								type="button"
+								className="top-action-card"
+								disabled={!canCreateNotesInCurrentContext}
+								onClick={() => void openCreateEditorForCurrentContext('checklist')}
+							>
 										{t('app.createNewChecklist')}
 									</button>
 								</div>
@@ -6243,11 +6262,21 @@ export function App(): React.JSX.Element {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
 						}}
-						// NoteGrid calls onReady once it has loaded initial note metadata and performed its
-						// first layout pass (including DOM measurement needed for masonry packing).
-						onReady={handleGridReady}
-						// Layout animations are suppressed until after the splash overlay has faded out.
-						enableLayoutAnimations={splashDismissed}
+						// NoteGrid calls onReady once it has loaded all docs.
+						// Dismiss the splash overlay when this fires.
+						onReady={() => {
+							setGridReady(true);
+							// Give the CSS fade-out transition 500 ms to complete,
+							// then unmount the overlay node entirely.
+							clearTimeout(splashTimerRef.current);
+							splashTimerRef.current = window.setTimeout(() => setSplashGone(true), 500);
+						}}
+						// Layout animations are managed internally by NoteGrid
+						// (held until allDocsLoaded, then enabled after 2 rAFs).
+						enableLayoutAnimations={true}
+						// Device ID scopes the height cache so skeleton cards render
+						// at the correct size for this device/viewport combination.
+						deviceId={deviceId}
 						viewMode={viewMode === 'bubble' ? 'card' : viewMode}
 				/>
 				</div>

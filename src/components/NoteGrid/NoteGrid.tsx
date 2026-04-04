@@ -42,6 +42,8 @@ import {
 	splitIntoColumnsByHeight,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
+import { loadNoteHeightCache, saveNoteHeightCache } from '../../core/noteHeightCache';
+import { ElectricFenceShimmer } from './ElectricFenceShimmer';
 import styles from './NoteGrid.module.css';
 
 type Note = {
@@ -93,8 +95,10 @@ export type NoteGridProps = {
 	emptyStateLabel?: string;
 	sharedNotes?: readonly SharedNotePlacement[];
 	onReady?: () => void;
-	/** Enable framer-motion layout animations. Keep false during splash reveal. */
+	/** Enable framer-motion layout animations. Keep false during initially cold loads. */
 	enableLayoutAnimations?: boolean;
+	/** Device ID for persisting measured card heights across page loads. */
+	deviceId?: string;
 	/** Active view mode. 'list' and 'strip' replace the masonry grid with flat rows. */
 	viewMode?: ViewMode;
 };
@@ -371,6 +375,8 @@ type GridNoteCardProps = {
 	isPlaceholder: boolean;
 	isOverlayActiveCard?: boolean;
 	layoutReady: boolean;
+	/** True while any note doc is still loading — shows a solid shimmer overlay. */
+	isHydrating: boolean;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 };
@@ -586,6 +592,8 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					.filter(Boolean)
 					.join(' ')}
 			>
+				{/* HL2 electric fence shimmer — covers the card during hydration, fades out when all docs are loaded */}
+				<ElectricFenceShimmer visible={props.isHydrating} themeId={props.themeId} />
 				<NoteCard
 					noteId={props.note.id}
 					docId={props.docId || undefined}
@@ -713,13 +721,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		[props.sharedNotes]
 	);
 
-	// Suppress framer-motion layout animations until the parent explicitly
-	// enables them (after the splash overlay is fully dismissed). A 2-frame
-	// defer after the prop flips ensures cards paint at their final positions
-	// before animations can fire.
+	// all docs are loaded → shimmer fades out and layout animations can start.
+	const [allDocsLoaded, setAllDocsLoaded] = React.useState(false);
+	// Prevents allDocsLoaded from reverting to false after the initial load
+	// completes (e.g. when creating a new note later shouldn't re-shimmer cards).
+	const initialLoadCompleteRef = React.useRef(false);
+
+	// Suppress framer-motion layout animations until all docs are loaded and two
+	// paint frames have passed (so cards settle before springs can fire).
 	const [layoutReady, setLayoutReady] = React.useState(false);
 	React.useEffect(() => {
 		if (!props.enableLayoutAnimations) return;
+		if (!allDocsLoaded) return; // wait for shimmer to finish before enabling springs
 		if (layoutReady) return;
 		// Two rAFs:
 		// - rAF #1: wait for React commit + first paint
@@ -732,7 +745,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			cancelAnimationFrame(raf1);
 			if (raf2) cancelAnimationFrame(raf2);
 		};
-	}, [props.enableLayoutAnimations, layoutReady]);
+	}, [props.enableLayoutAnimations, allDocsLoaded, layoutReady]);
 
 	const pendingSyncNoteIds = React.useMemo(() => new Set(connection.pendingSyncNoteIds), [connection.pendingSyncNoteIds]);
 	const [collaboratorSummariesByNoteId, setCollaboratorSummariesByNoteId] = React.useState<Record<string, NoteCardCollaboratorSummary>>({});
@@ -759,8 +772,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [noteOrder, setNoteOrder] = React.useState<Y.Array<string> | null>(null);
 	const [noteLayout, setNoteLayout] = React.useState<Y.Map<unknown> | null>(null);
 
-	// Signal to the parent that the grid's initial data is loaded.
-	const readyFiredRef = React.useRef(false);
+	// ── Height cache: load stored heights from localStorage on mount ───────
+	// Seeding noteHeightByIdRef before the first render ensures masonry packing
+	// uses correct heights immediately — no repack during hydration.
+	const heightCacheLoadedRef = React.useRef(false);
+	const heightSaveTimerRef = React.useRef<number>(0);
 
 	// ── Yjs-backed note data ─────────────────────────────────────────────
 	const [docsById, setDocsById] = React.useState<Record<string, Y.Doc>>({});
@@ -786,6 +802,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
 	const noteHeightBumpRafRef = React.useRef<number>(0);
+
+	// Seed height cache on first render from localStorage (before first pack)
+	if (!heightCacheLoadedRef.current) {
+		heightCacheLoadedRef.current = true;
+		if (props.deviceId) {
+			const cached = loadNoteHeightCache(props.deviceId);
+			for (const [k, v] of cached) noteHeightByIdRef.current.set(k, v);
+		}
+	}
 	const touchStartPointRef = React.useRef<{ x: number; y: number } | null>(null);
 	const pendingTouchIntentRef = React.useRef(false);
 	const touchScrollDetectedRef = React.useRef(false);
@@ -1178,18 +1203,41 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		}
 	}, [manager, noteOrder, orderedIds, sharedAliasSignature]);
 
-	// ── Fire onReady once initial docs are loaded ──────────────────────────
-	// Wait for every ordered note to have a loaded Y.Doc (or for 0 notes).
-	// This tells the parent "data is ready" so the splash can begin fading.
-	// Layout animations are NOT enabled here — that's controlled by the
-	// enableLayoutAnimations prop (set after splash is fully dismissed).
+	// ── Track when all docs are loaded (drives shimmer + layout animations) ─
+	//
+	// On a page refresh, IndexedDB caches the note list so orderedIds is
+	// non-empty immediately — the shimmer shows while Yjs syncs.
+	//
+	// On first login (cleared cache) IndexedDB is empty, so orderedIds starts
+	// as [] and the old code immediately set allDocsLoaded=true.  When notes
+	// arrived from the server shortly after, the `if (allDocsLoaded) return`
+	// guard blocked the reset, so no shimmer ever appeared.
+	//
+	// Fix: allow allDocsLoaded to reset to false while the initial load is
+	// still in progress (initialLoadCompleteRef not yet set).  Once a full
+	// set of notes has been loaded we freeze it at true so that creating a
+	// new note doesn't re-shimmer every existing card.
 	React.useEffect(() => {
-		if (readyFiredRef.current) return;
 		if (!noteOrder) return;
-		if (orderedIds.length > 0 && orderedIds.some((id) => !docsById[id])) return;
-		readyFiredRef.current = true;
-		props.onReady?.();
-	}, [noteOrder, orderedIds, docsById, props.onReady]);
+		if (orderedIds.length > 0 && orderedIds.some((id) => !docsById[id])) {
+			// Notes are present but their docs haven't arrived yet.
+			// Reset to hydrating only during the initial boot phase so that
+			// the shimmer shows on first login (not just on page refresh).
+			if (!initialLoadCompleteRef.current) {
+				setAllDocsLoaded(false);
+			}
+			return;
+		}
+		// All present notes have loaded docs (or the workspace is genuinely empty).
+		if (orderedIds.length > 0) {
+			// Freeze: from now on don't allow going back to false.
+			initialLoadCompleteRef.current = true;
+		}
+		if (!allDocsLoaded) {
+			setAllDocsLoaded(true);
+			props.onReady?.();
+		}
+	}, [noteOrder, orderedIds, docsById, allDocsLoaded, props.onReady]);
 
 	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
 	const groupedSections = React.useMemo<NoteGridSection[]>(() => {
@@ -1346,6 +1394,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				noteHeightBumpRafRef.current = 0;
 				setNoteHeightsVersion((version) => version + 1);
 			});
+			// Debounced persist: write heights 2 s after the last measurement change
+			if (props.deviceId) {
+				if (heightSaveTimerRef.current) window.clearTimeout(heightSaveTimerRef.current);
+				heightSaveTimerRef.current = window.setTimeout(() => {
+					heightSaveTimerRef.current = 0;
+					saveNoteHeightCache(props.deviceId!, noteHeightByIdRef.current);
+				}, 2000);
+			}
 		}
 		return () => {
 			if (noteHeightBumpRafRef.current && typeof window !== 'undefined') {
@@ -1514,9 +1570,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!note) return null;
 		const doc = docsById[note.id];
 		if (!doc) {
+			// Render a skeleton card at the cached height so masonry packing is stable
+			// and no layout repack occurs when the doc loads.
+			//
+			// When the cache is cold (first ever load) derive a pseudo-random height
+			// from the note ID so cards have varied heights instead of all 220 px.
+			// The hash mixes the last 8 char codes so it's cheap and deterministic.
+			const idHash = note.id.slice(-8).split('').reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) | 0, 0x9e3779b9);
+			const fallbackH = Math.min(props.maxCardHeightPx, 160 + (Math.abs(idHash) % 220));
+			const skeletonH = noteHeightByIdRef.current.get(note.id) ?? fallbackH;
 			return (
-				<div key={note.id} className={styles.item} data-note-id={note.id}>
-					<div>{t('common.loading')}</div>
+				<div key={note.id} className={styles.item} data-note-id={note.id} style={{ height: skeletonH }}>
+					<div className={styles.skeletonCard} style={{ height: skeletonH }} />
+					{/* Electric fence shimmer on skeleton cards — always visible until the doc loads */}
+					<ElectricFenceShimmer visible={true} themeId={props.themeId} />
 				</div>
 			);
 		}
@@ -1593,11 +1660,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				isPlaceholder={isPlaceholder}
 				isOverlayActiveCard={overlayActiveNoteId === note.id}
 				layoutReady={layoutReady}
+				isHydrating={!allDocsLoaded}
 				setItemElement={dragManager.setItemElement}
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardClickOpens, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardClickOpens, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
