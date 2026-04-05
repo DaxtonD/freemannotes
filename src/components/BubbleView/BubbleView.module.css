@@ -1,5 +1,11 @@
 /* BubbleView.module.css – floating bubble layout for cross-workspace note overview */
 
+@keyframes bubbleFloat {
+	0%, 100% { translate: 0 0px; }
+	38%       { translate: 0 -5px; }
+	72%       { translate: 0 3px; }
+}
+
 .container {
 	width: 100%;
 	min-height: 300px;
@@ -37,6 +43,9 @@
 @media (prefers-reduced-motion: reduce) {
 	.cloudItem {
 		transition: none;
+	}
+	.bubble {
+		animation: none;
 	}
 }
 
@@ -176,6 +185,8 @@
 		box-shadow 180ms ease;
 	transform-origin: center center;
 	transform: rotate(var(--bv-bubble-rotate, 0deg));
+	touch-action: manipulation;
+	animation: bubbleFloat var(--bv-float-duration, 8s) ease-in-out var(--bv-float-delay, 0s) infinite;
 	overflow: hidden;
 	isolation: isolate;
 }
@@ -207,6 +218,7 @@
 
 .bubble:hover,
 .bubble:focus-visible {
+	animation-play-state: paused;
 	transform: rotate(var(--bv-bubble-rotate, 0deg)) translateY(-2px) scale(1.02);
 	box-shadow:
 		0 1px 2px rgba(255 255 255 / 0.22) inset,
@@ -219,6 +231,7 @@
 }
 
 .bubble:active {
+	animation-play-state: paused;
 	transform: rotate(var(--bv-bubble-rotate, 0deg)) scale(0.97) !important;
 }
 
