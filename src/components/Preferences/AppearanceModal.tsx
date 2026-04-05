@@ -18,7 +18,7 @@ type SliderFieldProps = {
 	max: number;
 	step: number;
 	onChange: (nextValue: number) => void;
-	onCommit: (nextValue: number) => void;
+	onCommit?: (nextValue: number) => void;
 };
 
 function getThemeCategory(themeId: ThemeId): ThemeCategory {
@@ -110,7 +110,7 @@ function formatHeightPx(value: number): string {
 function SliderField(props: SliderFieldProps): React.JSX.Element {
 	const dirtyRef = React.useRef(false);
 	const commitIfDirty = React.useCallback((value: number): void => {
-		if (!dirtyRef.current) return;
+		if (!dirtyRef.current || !props.onCommit) return;
 		dirtyRef.current = false;
 		props.onCommit(value);
 	}, [props]);
@@ -149,6 +149,22 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 	const [category, setCategory] = React.useState<ThemeCategory>(() => getThemeCategory(props.themeId));
 	const [activePane, setActivePane] = React.useState<AppearancePane>('theme');
 
+	const [displaySizeDraft, setDisplaySizeDraft] = React.useState(() => ({
+		noteCardFontScale: props.noteCardFontScale,
+		noteEditorFontScale: props.noteEditorFontScale,
+		noteCardMaxHeightPx: props.noteCardMaxHeightPx,
+	}));
+	const [displaySizeInitial, setDisplaySizeInitial] = React.useState(() => ({
+		noteCardFontScale: props.noteCardFontScale,
+		noteEditorFontScale: props.noteEditorFontScale,
+		noteCardMaxHeightPx: props.noteCardMaxHeightPx,
+	}));
+	const hasDisplaySizeChanges = (
+		displaySizeDraft.noteCardFontScale !== displaySizeInitial.noteCardFontScale ||
+		displaySizeDraft.noteEditorFontScale !== displaySizeInitial.noteEditorFontScale ||
+		displaySizeDraft.noteCardMaxHeightPx !== displaySizeInitial.noteCardMaxHeightPx
+	);
+
 	React.useEffect(() => {
 		if (!props.isOpen) return;
 		setCategory(getThemeCategory(props.themeId));
@@ -159,10 +175,27 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 		return props.themeOptions.filter((theme) => getThemeCategory(theme.id) === category);
 	}, [category, props.themeOptions]);
 
+	const activateDisplaySizePane = () => {
+		const initial = {
+			noteCardFontScale: props.noteCardFontScale,
+			noteEditorFontScale: props.noteEditorFontScale,
+			noteCardMaxHeightPx: props.noteCardMaxHeightPx,
+		};
+		setDisplaySizeInitial(initial);
+		setDisplaySizeDraft(initial);
+		setActivePane('display-size');
+	};
+
+	const revertDisplaySizePreview = () => {
+		props.onNoteCardFontScaleChange(displaySizeInitial.noteCardFontScale);
+		props.onNoteEditorFontScaleChange(displaySizeInitial.noteEditorFontScale);
+		props.onNoteCardMaxHeightPxChange(displaySizeInitial.noteCardMaxHeightPx);
+	};
+
 	if (!props.isOpen) return null;
 
 	return (
-		<div className={styles.subOverlay} role="presentation" onClick={props.onClose}>
+		<div className={styles.subOverlay} role="presentation" onClick={() => { if (hasDisplaySizeChanges) revertDisplaySizePreview(); props.onClose(); }}>
 			<section
 				className={styles.subModal}
 				role="dialog"
@@ -171,11 +204,11 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 				onClick={(e) => e.stopPropagation()}
 			>
 				<header className={styles.subHeader}>
-					<button type="button" className={styles.iconButtonLeft} onClick={props.onBack} aria-label={props.t('common.back')}>
-						←
-					</button>
-					<h3 className={styles.subTitle}>{props.t('prefs.appearance')}</h3>
-					<button type="button" className={styles.iconButton} onClick={props.onClose} aria-label={props.t('common.close')}>
+				<button type="button" className={styles.iconButtonLeft} onClick={() => { if (hasDisplaySizeChanges) revertDisplaySizePreview(); props.onBack(); }} aria-label={props.t('common.back')}>
+					←
+				</button>
+				<h3 className={styles.subTitle}>{props.t('prefs.appearance')}</h3>
+				<button type="button" className={styles.iconButton} onClick={() => { if (hasDisplaySizeChanges) revertDisplaySizePreview(); props.onClose(); }} aria-label={props.t('common.close')}>
 						✕
 					</button>
 				</header>
@@ -202,7 +235,7 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 							<button
 								type="button"
 								className={`${styles.appearanceNavItem}${activePane === 'display-size' ? ` ${styles.appearanceNavItemActive}` : ''}`}
-								onClick={() => setActivePane('display-size')}
+							onClick={() => activateDisplaySizePane()}
 								aria-current={activePane === 'display-size' ? 'true' : undefined}
 							>
 								{props.t('prefs.displaySize')}
@@ -263,36 +296,58 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 								<div className={styles.displaySizeSection}>
 									<SliderField
 										label={props.t('prefs.noteCardFontScale')}
-										valueLabel={formatFontScalePercent(props.noteCardFontScale)}
-										value={clampFontScale(props.noteCardFontScale)}
+										valueLabel={formatFontScalePercent(displaySizeDraft.noteCardFontScale)}
+										value={clampFontScale(displaySizeDraft.noteCardFontScale)}
 										min={FONT_SCALE_MIN}
 										max={FONT_SCALE_MAX}
 										step={FONT_SCALE_STEP}
-										onChange={props.onNoteCardFontScaleChange}
-										onCommit={props.onNoteCardFontScaleCommit}
+										onChange={(v) => {
+											setDisplaySizeDraft((d) => ({ ...d, noteCardFontScale: v }));
+											props.onNoteCardFontScaleChange(v);
+										}}
 									/>
 
 									<SliderField
 										label={props.t('prefs.noteEditorFontScale')}
-										valueLabel={formatFontScalePercent(props.noteEditorFontScale)}
-										value={clampFontScale(props.noteEditorFontScale)}
+										valueLabel={formatFontScalePercent(displaySizeDraft.noteEditorFontScale)}
+										value={clampFontScale(displaySizeDraft.noteEditorFontScale)}
 										min={FONT_SCALE_MIN}
 										max={FONT_SCALE_MAX}
 										step={FONT_SCALE_STEP}
-										onChange={props.onNoteEditorFontScaleChange}
-										onCommit={props.onNoteEditorFontScaleCommit}
+										onChange={(v) => {
+											setDisplaySizeDraft((d) => ({ ...d, noteEditorFontScale: v }));
+											props.onNoteEditorFontScaleChange(v);
+										}}
 									/>
 
 									<SliderField
 										label={props.t('prefs.noteCardMaxHeight')}
-										valueLabel={formatHeightPx(props.noteCardMaxHeightPx)}
-										value={props.noteCardMaxHeightPx}
+										valueLabel={formatHeightPx(displaySizeDraft.noteCardMaxHeightPx)}
+										value={displaySizeDraft.noteCardMaxHeightPx}
 										min={NOTE_CARD_HEIGHT_MIN}
 										max={NOTE_CARD_HEIGHT_MAX}
 										step={NOTE_CARD_HEIGHT_STEP}
-										onChange={props.onNoteCardMaxHeightPxChange}
-										onCommit={props.onNoteCardMaxHeightPxCommit}
+										onChange={(v) => {
+											setDisplaySizeDraft((d) => ({ ...d, noteCardMaxHeightPx: v }));
+											props.onNoteCardMaxHeightPxChange(v);
+										}}
 									/>
+
+									<div className={styles.displaySizeSaveRow}>
+										<button
+											type="button"
+											className={styles.displaySizeSaveButton}
+											disabled={!hasDisplaySizeChanges}
+											onClick={() => {
+												props.onNoteCardFontScaleCommit(displaySizeDraft.noteCardFontScale);
+												props.onNoteEditorFontScaleCommit(displaySizeDraft.noteEditorFontScale);
+												props.onNoteCardMaxHeightPxCommit(displaySizeDraft.noteCardMaxHeightPx);
+												setDisplaySizeInitial({ ...displaySizeDraft });
+											}}
+										>
+											{props.t('common.save')}
+										</button>
+									</div>
 								</div>
 							) : null}
 						</div>

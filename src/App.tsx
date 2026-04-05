@@ -4666,6 +4666,7 @@ export function App(): React.JSX.Element {
 		if (editorMode !== 'none' || selectedNoteId !== null) return;
 
 		let tracking = false;
+		let didOpen = false;
 		let startX = 0;
 		let startY = 0;
 		const TRIGGER_DX = 42;
@@ -4680,18 +4681,25 @@ export function App(): React.JSX.Element {
 			startX = touch.clientX;
 			startY = touch.clientY;
 			tracking = true;
+			didOpen = false;
 		};
 
 		const onTouchMove = (event: TouchEvent) => {
-			if (!tracking || isMobileSidebarOpen || event.touches.length !== 1) return;
+			if (!tracking || event.touches.length !== 1) return;
 			const touch = event.touches[0];
 			const dx = touch.clientX - startX;
 			const dy = touch.clientY - startY;
-			if (Math.abs(dy) > MAX_DY) return;
-			if (dx > TRIGGER_DX) {
-				openMobileSidebar();
+			if (Math.abs(dy) > MAX_DY) {
 				tracking = false;
-				if (event.cancelable) event.preventDefault();
+				return;
+			}
+			// Always preventDefault while tracking a horizontal open-gesture: prevents
+			// iOS from rubber-banding the page rightward when the finger continues moving
+			// after the sidebar has opened mid-swipe.
+			if (event.cancelable) event.preventDefault();
+			if (!didOpen && dx > TRIGGER_DX) {
+				didOpen = true;
+				openMobileSidebar();
 			}
 		};
 
@@ -4717,6 +4725,10 @@ export function App(): React.JSX.Element {
 		if (!drawer) return;
 
 		let tracking = false;
+		// Once the gesture is identified as horizontal we keep preventing default even
+		// if MAX_DY is later exceeded mid-gesture, preventing iOS from rubber-banding
+		// the page to the right after the user initially moved horizontally.
+		let horizontalLocked = false;
 		let startX = 0;
 		let startY = 0;
 		const TRIGGER_DX = 54;
@@ -4728,26 +4740,41 @@ export function App(): React.JSX.Element {
 			startX = touch.clientX;
 			startY = touch.clientY;
 			tracking = true;
+			horizontalLocked = false;
 		};
 
 		const onTouchMove = (event: TouchEvent) => {
-			if (!tracking || event.touches.length !== 1) return;
+			if (event.touches.length !== 1) return;
 			const touch = event.touches[0];
 			const dx = touch.clientX - startX;
 			const dy = touch.clientY - startY;
+
+			// If we already locked into a horizontal gesture, keep preventing the
+			// browser default so iOS can't rubber-band the sidebar off screen.
+			if (horizontalLocked) {
+				if (event.cancelable) event.preventDefault();
+				// Close trigger still honoured even after horizontalLocked
+				if (tracking && dx < -TRIGGER_DX) {
+					tracking = false;
+					horizontalLocked = false;
+					closeMobileSidebar();
+				}
+				return;
+			}
+
+			if (!tracking) return;
+
 			if (Math.abs(dy) > MAX_DY) {
 				tracking = false;
 				return;
 			}
-			// Prevent iOS from rubber-banding the viewport on any clearly horizontal
-			// gesture (both right AND left) while we're tracking. Without this, a
-			// rightward swipe on the open sidebar causes the entire viewport to slide
-			// off the right edge of the screen.
-			if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8 && event.cancelable) {
-				event.preventDefault();
+			if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) {
+				horizontalLocked = true;
+				if (event.cancelable) event.preventDefault();
 			}
 			if (dx < -TRIGGER_DX) {
 				tracking = false;
+				horizontalLocked = false;
 				closeMobileSidebar();
 			}
 		};
@@ -6144,6 +6171,15 @@ export function App(): React.JSX.Element {
 											step={1}
 											value={bubbleZoom}
 											onChange={(event) => setBubbleZoom(Number(event.target.value))}
+											onPointerDown={(event) => {
+												try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
+											}}
+											onPointerMove={(event) => {
+												if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
+												const rect = event.currentTarget.getBoundingClientRect();
+												const relX = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+												setBubbleZoom(Math.round(BUBBLE_ZOOM_MIN + relX * (BUBBLE_ZOOM_MAX - BUBBLE_ZOOM_MIN)));
+											}}
 											aria-label="Bubble zoom"
 										/>
 									</div>

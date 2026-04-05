@@ -87,7 +87,7 @@ function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
 	return null;
 }
 
-function ensureEditorSelectionVisible(editor: Editor | null, bottomInset: number): void {
+export function ensureEditorSelectionVisible(editor: Editor | null, bottomInset: number): void {
 	if (!editor || typeof window === 'undefined') return;
 	const root = editor.view.dom as HTMLElement | null;
 	if (!root || !root.isConnected) return;
