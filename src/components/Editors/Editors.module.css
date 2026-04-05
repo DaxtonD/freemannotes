@@ -190,9 +190,14 @@
 @media (pointer: coarse) {
 	.fullscreenOverlay {
 		/* Mobile: editors must cover everything (header/search/sidebar). */
-		/* iOS notch / safe area */
+		/* Only apply top safe-area padding here. The overlay must extend all the
+		   way to the physical bottom so the underlying notes grid does not show
+		   through the semi-transparent overlay background below the editor card.
+		   Bottom safe-area (home indicator) is handled exclusively by the
+		   editorBottomArea padding-bottom inside the editor. Adding it here AND
+		   inside the editor was double-counting it, leaving the dock ~68px too
+		   high and exposing a gap at the bottom of the screen. */
 		padding-top: env(safe-area-inset-top, 0px);
-		padding-bottom: env(safe-area-inset-bottom, 0px);
 	}
 
 	.fullscreenEditor {
@@ -200,13 +205,12 @@
 			Use dynamic viewport units so the editor never runs past the visible
 			viewport on desktop-as-narrow-window and mobile browsers with dynamic
 			UI chrome. Percentage heights inside fixed/grid containers can drift.
+			Do NOT subtract env(safe-area-inset-bottom) here — the overlay no
+			longer reserves bottom padding, so the editor fills to the physical
+			bottom. editorBottomArea's padding-bottom handles the home indicator.
 		*/
-		height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-		/* The overlay already reserves env(safe-area-inset-bottom) via its own
-		   padding-bottom -- the editor's default 16px bottom padding would stack
-		   on top of that, pushing the bottom dock ~50px above the home indicator.
-		   Zero it here so the dock sits flush at the overlay's content-box bottom. */
+		height: calc(100dvh - env(safe-area-inset-top, 0px));
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px));
 		padding-bottom: 0;
 	}
 }
