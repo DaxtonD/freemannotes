@@ -560,7 +560,16 @@ function useBubbleNotes(
 						const titleText = doc.getText('title');
 						const contentText = doc.getText('content');
 						const checklist = doc.getArray<Y.Map<any>>('checklist');
-						const onMetadataChange = (): void => scheduleRefresh();
+						const onMetadataChange = (event: Y.YMapEvent<any>): void => {
+							if (window.DEBUG) {
+								console.debug('[BubbleScore] meta change', placement.aliasId, {
+									keys: [...event.keysChanged],
+									updatedAt: meta.get('updatedAt'),
+								});
+							}
+							if (event.keysChanged.size === 1 && event.keysChanged.has('lastAccessedAt')) return;
+							scheduleRefresh();
+						};
 						const onTitleChange = (): void => scheduleRefresh();
 						const onContentChange = (): void => scheduleRefresh();
 						const onChecklistChange = (): void => scheduleRefresh();
@@ -622,7 +631,16 @@ function useBubbleNotes(
 						const titleText = doc.getText('title');
 						const contentText = doc.getText('content');
 						const checklist = doc.getArray<Y.Map<any>>('checklist');
-						const onMetadataChange = (): void => scheduleRefresh();
+						const onMetadataChange = (event: Y.YMapEvent<any>): void => {
+							if (window.DEBUG) {
+								console.debug('[BubbleScore] meta change', noteId, {
+									keys: [...event.keysChanged],
+									updatedAt: meta.get('updatedAt'),
+								});
+							}
+							if (event.keysChanged.size === 1 && event.keysChanged.has('lastAccessedAt')) return;
+							scheduleRefresh();
+						};
 						const onTitleChange = (): void => scheduleRefresh();
 						const onContentChange = (): void => scheduleRefresh();
 						const onChecklistChange = (): void => scheduleRefresh();
