@@ -21,7 +21,7 @@ import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBell, faThumbtack, faUsers } from '@fortawesome/free-solid-svg-icons';
-import { motion } from 'framer-motion';
+import { motion, LayoutGroup } from 'framer-motion';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import type { ThemeId } from '../../core/theme';
 import { readNoteFromDoc } from '../../core/noteModel';
@@ -262,7 +262,14 @@ function computeBalancedActivityScore(inputs: BubbleScoreInputs, now = Date.now(
 
 function smoothScore(previous: number | null | undefined, next: number): number {
 	if (!Number.isFinite(previous ?? Number.NaN)) return next;
-	return (previous as number) * 0.8 + next * 0.2;
+	// Very conservative smoothing: alpha=0.05 so a single metadata write (e.g., opening
+	// a note) cannot jump the displayed score and thus the bubble size. Visual size
+	// changes only emerge after many re-evaluations (several minutes of real activity).
+	// Also cap the per-call delta so a sudden score spike takes many ticks to converge.
+	const prev = previous as number;
+	const smooth = prev * 0.95 + next * 0.05;
+	const maxDelta = 0.12;
+	return smooth > prev + maxDelta ? prev + maxDelta : smooth < prev - maxDelta ? prev - maxDelta : smooth;
 }
 
 // ── IDB reading helpers ────────────────────────────────────────────────────
@@ -811,9 +818,11 @@ type BubbleProps = {
 	detailLevel: BubbleDetailLevel;
 	bubbleDiameter: number;
 	workspaceColorStyle: React.CSSProperties;
-	swirlX: number;
-	swirlY: number;
 	rotateDeg: number;
+	/** Float animation duration in seconds (6–10, seeded per note). */
+	floatDuration: number;
+	/** Float animation delay in seconds (0–6, seeded per note). */
+	floatDelay: number;
 	onSelect: () => void | Promise<void>;
 };
 
@@ -913,16 +922,37 @@ function getBubbleDetailLevel(zoom: number, sizeClass: BubbleSizeClass): BubbleD
 	return sizeRank <= 2 ? 'meta' : 'full';
 }
 
-const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, swirlX, swirlY, rotateDeg, onSelect }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, onSelect }: BubbleProps) {
 	const displayTitle = resolveBubbleTitle(note.noteId, note.title);
 	const preview = getBubblePreview(note.noteId, doc, sizeClass);
 	const titleLayout = resolveBubbleTitleLayout(displayTitle || '(untitled)', bubbleDiameter);
 	const showBadges = detailLevel !== 'title' && (note.isPinned || note.hasReminder || note.hasCollaborators);
 	const showPreview = detailLevel === 'full' && Boolean(preview);
 
+	// Track touch start position so we can distinguish taps from scrolls and call
+	// e.preventDefault() on touchend to block the 300 ms ghost click iOS emits.
+	const touchStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const handleTouchStart = React.useCallback((e: React.TouchEvent<HTMLButtonElement>) => {
+		const t = e.touches[0];
+		touchStartRef.current = { x: t.clientX, y: t.clientY };
+	}, []);
+	const handleTouchEnd = React.useCallback((e: React.TouchEvent<HTMLButtonElement>) => {
+		const start = touchStartRef.current;
+		touchStartRef.current = null;
+		if (!start) return;
+		const t = e.changedTouches[0];
+		const dx = Math.abs(t.clientX - start.x);
+		const dy = Math.abs(t.clientY - start.y);
+		if (dx > 10 || dy > 10) return; // was a scroll gesture, not a tap
+		e.preventDefault(); // block delayed ghost click so editor doesn't immediately close
+		void onSelect();
+	}, [onSelect]);
+
 	const baseStyle: React.CSSProperties = {
 		'--bv-bubble-rotate': `${rotateDeg}deg`,
 		'--bv-bubble-diameter': `${titleLayout.grownDiameter}px`,
+		'--bv-float-duration': `${floatDuration}s`,
+		'--bv-float-delay': `${floatDelay}s`,
 		...workspaceColorStyle,
 	} as React.CSSProperties;
 	const contentStyle: React.CSSProperties = {
@@ -942,14 +972,13 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 
 	return (
 		<motion.div
+			// layoutId enables framer-motion to animate this bubble to its new lane
+			// position (FLIP) when scores change and it moves between columns or rows.
+			layoutId={`bubble-${note.workspaceId}-${note.noteId}`}
 			layout
 			className={styles.bubbleShell}
-			style={{
-				marginTop: `${Math.max(0, swirlY)}px`,
-				marginBottom: `${Math.max(0, -swirlY)}px`,
-				paddingInline: `${Math.max(0, swirlX)}px ${Math.max(0, -swirlX)}px`,
-			}}
-			transition={{ type: 'spring', stiffness: 180, damping: 26, mass: 0.8 }}
+			// Slow, gentle spring — movements are perceptible but not jarring.
+			transition={{ type: 'spring', stiffness: 22, damping: 14, mass: 1.2 }}
 		>
 			<button
 				type="button"
@@ -960,7 +989,9 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 					note.isActiveWorkspace ? styles.bubbleActive : styles.bubbleInactive,
 				].join(' ')}
 				style={baseStyle}
-				onClick={onSelect}
+				onTouchStart={handleTouchStart}
+				onTouchEnd={handleTouchEnd}
+				onClick={(e) => { e.stopPropagation(); void onSelect(); }}
 				title={displayTitle || '(untitled)'}
 			>
 				{showBadges ? (
@@ -988,6 +1019,18 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 });
 
 // ── BubbleView props & component ───────────────────────────────────────────
+
+type ColumnLayoutItem = {
+	note: ScoredBubbleNote;
+	sizeClass: BubbleSizeClass;
+	detailLevel: BubbleDetailLevel;
+	bubbleDiameter: number;
+	rotateDeg: number;
+	floatDuration: number;
+	floatDelay: number;
+	workspaceColorStyle: React.CSSProperties;
+	doc: Y.Doc | null;
+};
 
 export type BubbleViewProps = {
 	workspaces: BubbleWorkspaceInfo[];
@@ -1017,59 +1060,23 @@ export function BubbleView({
 	onSelectNote,
 }: BubbleViewProps): React.JSX.Element {
 	const manager = useDocumentManager();
-	const containerRef = React.useRef<HTMLDivElement | null>(null);
-	// const cloudRef = React.useRef<HTMLDivElement | null>(null);
 	const notes = useBubbleNotes(workspaces, activeWorkspaceId, sharedPlacements, showTrashed, reminderFilter);
 	const collaboratorCountByNoteId = useBubbleCollaboratorCounts(authUserId, notes, manager);
 	const [viewportWidth, setViewportWidth] = React.useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
-	const [containerWidth, setContainerWidth] = React.useState(0);
 	// const [debugEnabled, setDebugEnabled] = React.useState(() => isBubbleDebugEnabled());
 	// const [lastMeasureSource, setLastMeasureSource] = React.useState('initial');
 	// const [debugEvents, setDebugEvents] = React.useState<BubbleDebugEvent[]>([]);
 	// const [debugCopyState, setDebugCopyState] = React.useState<'idle' | 'copied' | 'failed'>('idle');
 	const smoothedScoreRef = React.useRef<Record<string, number>>({});
 	// const lastDebugKeyRef = React.useRef('');
-	const measureContainerWidth = React.useCallback((source: string): void => {
-		const node = containerRef.current;
-		if (!node) return;
-		const nextWidth = Math.max(0, node.clientWidth - 16);
-		void source;
-		// setLastMeasureSource(source);
-		setContainerWidth((current) => (current === nextWidth ? current : nextWidth));
-	}, []);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
-		const onResize = (): void => {
-			setViewportWidth(window.innerWidth);
-			measureContainerWidth('window-resize');
-		};
+		const onResize = (): void => setViewportWidth(window.innerWidth);
 		onResize();
 		window.addEventListener('resize', onResize);
 		return () => window.removeEventListener('resize', onResize);
-	}, [measureContainerWidth]);
-
-	React.useEffect(() => {
-		if (typeof window === 'undefined') return;
-		const node = containerRef.current;
-		if (!node) return;
-		const update = (source: string): void => measureContainerWidth(source);
-		update('mount');
-		if (typeof ResizeObserver === 'undefined') {
-			const onResize = (): void => update('window-resize-fallback');
-			window.addEventListener('resize', onResize);
-			return () => window.removeEventListener('resize', onResize);
-		}
-		const observer = new ResizeObserver(() => update('resize-observer'));
-		observer.observe(node);
-		return () => observer.disconnect();
-	}, [measureContainerWidth]);
-
-	// Re-measure synchronously after any resize-driven render or sidebar toggle so
-	// packedLayout always sees the current DOM width rather than stale state.
-	React.useLayoutEffect(() => {
-		measureContainerWidth(sidebarIsCollapsed ? 'layout-effect-collapsed' : 'layout-effect-expanded');
-	}, [measureContainerWidth, sidebarIsCollapsed, viewportWidth]);
+	}, []);
 
 	const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
 	const workspaceColorSchemeById = React.useMemo(() => {
@@ -1110,87 +1117,33 @@ export function BubbleView({
 	}, [activeWorkspaceId, manager, scoredNotes, searchQuery]);
 	const scale = 0.62 + clampedZoom / 120;
 	const mobile = viewportWidth <= 768;
-	const measuredWidth = containerWidth > 0 ? containerWidth : null;
-	const fallbackWidth = mobile
-		? Math.max(260, viewportWidth - 32)
-		: Math.max(200, viewportWidth - (sidebarIsCollapsed ? 88 : 356));
-	const innerWidth = Math.max(1, measuredWidth ?? fallbackWidth);
-	const packedLayout = React.useMemo(() => {
-		const sorted = [...filteredNotes].sort((a, b) => {
-			if (b.score !== a.score) return b.score - a.score;
-			return a.title.localeCompare(b.title);
-		});
-		const horizontalStep = mobile ? 24 : 30;
-		const verticalStep = mobile ? 18 : 22;
-		const minGap = mobile ? 8 : 10;
-		const topInset = 10;
-		const anchorX = mobile ? innerWidth / 2 : 18;
-		const preferLeft = !mobile;
-		const placed: PackedBubbleLayoutItem[] = [];
+	// Round-robin column count: 3 on mobile, 3–6 on desktop based on available width.
+	const columnCount = mobile
+		? 3
+		: Math.max(3, Math.min(6, Math.floor(Math.max(1, viewportWidth - (sidebarIsCollapsed ? 88 : 368)) / 200)));
 
-		for (const note of sorted) {
+	const laneLayout = React.useMemo((): ColumnLayoutItem[][] => {
+		const sorted = [...filteredNotes].sort((a, b) =>
+			b.score !== a.score ? b.score - a.score : a.title.localeCompare(b.title)
+		);
+		const columns: ColumnLayoutItem[][] = Array.from({ length: columnCount }, () => []);
+		for (let i = 0; i < sorted.length; i++) {
+			const note = sorted[i];
+			const colIndex = i % columnCount; // round-robin preserves score-descending order within each column
 			const sizeClass = scoreToSizeClass(note.score);
 			const detailLevel = getBubbleDetailLevel(clampedZoom, sizeClass);
 			const bubbleDiameter = BUBBLE_BASE_DIAMETER[sizeClass] * scale;
-			const displayTitle = resolveBubbleTitle(note.noteId, note.title);
-			const titleLayout = resolveBubbleTitleLayout(displayTitle || '(untitled)', bubbleDiameter);
-			const layoutDiameter = titleLayout.grownDiameter + (detailLevel === 'full' ? 10 : 6);
-			const radius = layoutDiameter / 2;
-			const driftX = (seededRandom(`${note.noteId}:pack:x`) - 0.5) * horizontalStep * 1.1;
-			const driftY = Math.max(0, (seededRandom(`${note.noteId}:pack:y`) - 0.15) * verticalStep * 1.4);
-			const maxLeft = Math.max(0, innerWidth - layoutDiameter);
-			let chosenLeft = Math.max(0, Math.min(maxLeft, (mobile ? innerWidth / 2 : anchorX + radius) - radius + (preferLeft ? driftX * 0.25 : driftX)));
-			let chosenTop = topInset;
-			let found = false;
-			const maxRows = Math.max(40, sorted.length * 6);
-
-			for (let rowIndex = 0; rowIndex < maxRows && !found; rowIndex += 1) {
-				const centerY = topInset + radius + rowIndex * verticalStep + driftY;
-				for (const candidateCenterX of candidateCenterXs(innerWidth, mobile ? innerWidth / 2 : anchorX + radius, horizontalStep, rowIndex, driftX, preferLeft)) {
-					const clampedCenterX = innerWidth <= layoutDiameter
-						? radius
-						: Math.max(radius, Math.min(innerWidth - radius, candidateCenterX));
-					const left = clampedCenterX - radius;
-					const top = centerY - radius;
-					if (placed.some((other) => circlesOverlap(left, top, layoutDiameter, other, minGap))) {
-						continue;
-					}
-					chosenLeft = left;
-					chosenTop = top;
-					found = true;
-					break;
-				}
-			}
-
-			if (!found) {
-				const fallbackBottom = placed.reduce((max, item) => Math.max(max, item.top + item.layoutDiameter), topInset);
-				chosenTop = fallbackBottom + minGap;
-			}
-
 			const rotateDeg = (seededRandom(`${note.noteId}:r`) - 0.5) * 8;
-			const doc = activeWorkspaceId === note.workspaceId
-				? (manager.peekDoc(note.noteId) ?? null)
-				: null;
+			const floatDuration = 6 + seededRandom(`${note.noteId}:float`) * 4;
+			const floatDelay = seededRandom(`${note.noteId}:delay`) * 6;
+			const doc = activeWorkspaceId === note.workspaceId ? (manager.peekDoc(note.noteId) ?? null) : null;
 			const workspaceColorStyle = toWorkspaceBubbleColorStyle(
 				workspaceColorSchemeById.get(note.workspaceId) ?? getWorkspaceBubbleColorScheme(themeId, note.workspaceId)
 			);
-			placed.push({
-				note,
-				sizeClass,
-				detailLevel,
-				bubbleDiameter,
-				layoutDiameter,
-				left: chosenLeft,
-				top: chosenTop,
-				rotateDeg,
-				workspaceColorStyle,
-				doc,
-			});
+			columns[colIndex].push({ note, sizeClass, detailLevel, bubbleDiameter, rotateDeg, floatDuration, floatDelay, workspaceColorStyle, doc });
 		}
-
-		const height = placed.reduce((max, item) => Math.max(max, item.top + item.layoutDiameter), 0) + 24;
-		return { items: placed, width: Math.max(1, innerWidth), height };
-	}, [activeWorkspaceId, clampedZoom, filteredNotes, innerWidth, manager, mobile, scale, themeId, workspaceColorSchemeById]);
+		return columns;
+	}, [activeWorkspaceId, clampedZoom, columnCount, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
 
 	// const debugSummary = React.useMemo(() => {
 	// 	const rightmostEdge = packedLayout.items.reduce((max, item) => Math.max(max, item.left + item.layoutDiameter), 0);
@@ -1297,50 +1250,31 @@ export function BubbleView({
 	}
 
 	return (
-		<div
-			ref={containerRef}
-			className={styles.container}
-			style={{ '--bv-scale': String(scale) } as React.CSSProperties}
-		>
-			{/*
-				BubbleView debug overlay intentionally left commented out.
-				Re-enable this block with the debug state/effects above when layout
-				instrumentation is needed again.
-			<div className={styles.debugDock}>
-				...
-			</div>
-			*/}
-			<div className={styles.cloud} style={{ width: `${packedLayout.width}px`, minHeight: `${packedLayout.height}px` }}>
-				{packedLayout.items.map((item) => (
-					<motion.div
-						key={`${item.note.workspaceId}:${item.note.noteId}`}
-						initial={{ scale: 0.7, opacity: 0 }}
-						animate={{ scale: 1, opacity: 1 }}
-						className={styles.cloudItem}
-						style={{
-							left: `${item.left}px`,
-							top: `${item.top}px`,
-							width: `${item.layoutDiameter}px`,
-							height: `${item.layoutDiameter}px`,
-						}}
-						transition={{ type: 'spring', stiffness: 300, damping: 22, mass: 0.6 }}
-					>
+		<LayoutGroup>
+			<div
+				className={styles.lanes}
+				style={{ '--bv-scale': String(scale), '--bv-columns': String(columnCount) } as React.CSSProperties}
+			>
+				{laneLayout.map((column, colIdx) => (
+					<div key={colIdx} className={styles.lane}>
+						{column.map((item) => (
 							<Bubble
+								key={`${item.note.workspaceId}:${item.note.noteId}`}
 								note={item.note}
 								doc={item.doc}
 								sizeClass={item.sizeClass}
 								detailLevel={item.detailLevel}
 								bubbleDiameter={item.bubbleDiameter}
 								workspaceColorStyle={item.workspaceColorStyle}
-								swirlX={0}
-								swirlY={0}
 								rotateDeg={item.rotateDeg}
+								floatDuration={item.floatDuration}
+								floatDelay={item.floatDelay}
 								onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
 							/>
-					</motion.div>
-				))
-				}
+						))}
+					</div>
+				))}
 			</div>
-		</div>
+		</LayoutGroup>
 	);
 }
