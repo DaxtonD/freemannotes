@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.39 - 2026-04-05
+
+### Added
+- **BubbleView cross-workspace notes overview.** A new bubble-layout mode for the note grid shows all notes as sized, floating circles. Importance is encoded by bubble size using an eight-class scale derived from pin status, reminder presence, recent edits, and collaborator count. Bubbles are arranged in a seeded organic scatter layout — each bubble uses a deterministic y-stagger, rotation, and float-animation timing derived from its id hash so the layout is stable across devices and re-renders. A zoom slider (also Ctrl+scroll / pinch) resizes all bubbles uniformly. Workspaces with the same note are distinguished with a subtle color border. Ghost-click prevention ensures iOS taps on animated bubbles do not accidentally open a note.
+
+### Changed
+- **Bubble activity scores converge smoothly for remote clients.** Rather than jumping to a new size class when a collaborator edits a shared note, scores are now advanced by a 1.5 s exponential-moving-average tick (α = 0.10) so size changes converge gradually over ~37 s instead of snapping.
+- **Display-Size sliders use an explicit Save commit.** The Bubble Zoom and Font Scale sliders in Preferences → Appearance now show a live preview while dragging but only write to the database when the user presses Save. Closing or navigating back without saving reverts the sliders to their last committed values.
+
+### Fixed
+- **Bubble scores no longer inflate when a note is opened.** `lastAccessedAt`-only writes and empty Y.js transactions no longer advance `updatedAt`, preventing a note from appearing freshly edited simply because it was viewed.
+- **iOS editor caret hidden under the keyboard.** After the iOS virtual keyboard animates in, a 320 ms delayed re-check of `ensureEditorSelectionVisible` scrolls the caret into view once the keyboard has fully settled.
+- **Sidebar swipe gesture rubber-banded on iOS.** The open handler now sets a `didOpen` flag and always calls `preventDefault` while a touch is being tracked; the close handler sets `horizontalLocked` once vertical drift exceeds the threshold, which prevents an accidental dismiss when the user is scrolling vertically.
+- **Bubble zoom slider drag unresponsive on iOS PWA.** WebKit's internal range-input drag handler is disabled by `touch-action:none`. Replaced with explicit `setPointerCapture` plus manual `clientX`-to-value computation so the slider responds correctly to touch-drag in standalone mode.
+- **Editor toolbar double-counted the bottom safe area on iOS.** A duplicate `padding-bottom: env(safe-area-inset-bottom)` on `fullscreenOverlay` pushed the toolbar too far down; the redundant declaration was removed.
+- **Checklist checkbox misaligned at non-default font scales.** Note-card checkboxes now use a scale-aware `calc(var(--note-card-font-scale, 1) * 0.675rem - 9px)` top margin so the checkbox centre tracks the first text line correctly at any font size.
+
 ## 1.1.33 - 2026-04-04
 
 ### Added

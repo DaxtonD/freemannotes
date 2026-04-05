@@ -1195,7 +1195,11 @@ export class DocumentManager {
 			if (tx.origin === this.accessOrigin) return;
 			if (tx.origin === this.updatedAtOrigin) return;
 			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
+			// Guard: a transaction with no actual Yjs map/array changes (e.g. a
+			// metadata-only read that wrote `lastAccessedAt` as a side-effect)
+			// should not advance `updatedAt` and trigger a bubble score bump.
 			if (tx.changed.size === 0) return;
+			// Optional diagnostics — enable via window.DEBUG = true in DevTools.
 			if (window.DEBUG) {
 				console.debug('[BubbleScore] touchUpdatedAt triggered', noteId, 'tx.origin=', tx.origin);
 			}
