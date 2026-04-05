@@ -262,14 +262,11 @@ function computeBalancedActivityScore(inputs: BubbleScoreInputs, now = Date.now(
 
 function smoothScore(previous: number | null | undefined, next: number): number {
 	if (!Number.isFinite(previous ?? Number.NaN)) return next;
-	// Very conservative smoothing: alpha=0.05 so a single metadata write (e.g., opening
-	// a note) cannot jump the displayed score and thus the bubble size. Visual size
-	// changes only emerge after many re-evaluations (several minutes of real activity).
-	// Also cap the per-call delta so a sudden score spike takes many ticks to converge.
+	// alpha=0.10: a single "note opened" event only jumps the visual score by 10% of
+	// the delta (imperceptible size change), but after 25 ticks at the 1.5 s interval
+	// below (~37 s) remote clients have converged to ~93% of the new score.
 	const prev = previous as number;
-	const smooth = prev * 0.95 + next * 0.05;
-	const maxDelta = 0.12;
-	return smooth > prev + maxDelta ? prev + maxDelta : smooth < prev - maxDelta ? prev - maxDelta : smooth;
+	return prev * 0.90 + next * 0.10;
 }
 
 // ── IDB reading helpers ────────────────────────────────────────────────────
@@ -823,10 +820,8 @@ type BubbleProps = {
 	floatDuration: number;
 	/** Float animation delay in seconds (0–6, seeded per note). */
 	floatDelay: number;
-	/** Vertical stagger offset in px (−25 to +65) relative to the flex row’s top. */
-	marginTop: number;
-	/** Extra left gap in px (0–18) for horizontal spacing variety. */
-	marginInlineStart: number;
+	/** Seeded random top padding (0–60 px) — part of the shell’s box so flex never overlaps. */
+	paddingTop: number;
 	onSelect: () => void | Promise<void>;
 };
 
@@ -926,7 +921,7 @@ function getBubbleDetailLevel(zoom: number, sizeClass: BubbleSizeClass): BubbleD
 	return sizeRank <= 2 ? 'meta' : 'full';
 }
 
-const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, marginTop, marginInlineStart, onSelect }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, paddingTop, onSelect }: BubbleProps) {
 	const displayTitle = resolveBubbleTitle(note.noteId, note.title);
 	const preview = getBubblePreview(note.noteId, doc, sizeClass);
 	const titleLayout = resolveBubbleTitleLayout(displayTitle || '(untitled)', bubbleDiameter);
@@ -979,10 +974,10 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 			layoutId={`bubble-${note.workspaceId}-${note.noteId}`}
 			layout
 			className={styles.bubbleShell}
-			// Explicit width drives correct bubble sizing in flex context:
-			// without it, 100% in the button’s min(100%, var(--bv-bubble-diameter))
-			// resolves against an unsized flex item, collapsing to padding-minimum.
-			style={{ marginTop: `${marginTop}px`, marginInlineStart: `${marginInlineStart}px`, width: `${titleLayout.grownDiameter}px` }}
+			// paddingTop (not marginTop) staggersthe bubble downward while remaining
+			// part of the shell’s box model, so flex correctly accounts for the space
+			// and adjacent rows never visually overlap.
+			style={{ paddingTop: `${paddingTop}px`, width: `${titleLayout.grownDiameter}px` }}
 			transition={{ type: 'spring', stiffness: 22, damping: 14, mass: 1.2 }}
 		>
 			<button
@@ -1033,8 +1028,7 @@ type ColumnLayoutItem = {
 	rotateDeg: number;
 	floatDuration: number;
 	floatDelay: number;
-	marginTop: number;
-	marginInlineStart: number;
+	paddingTop: number;
 	workspaceColorStyle: React.CSSProperties;
 	doc: Y.Doc | null;
 };
@@ -1076,6 +1070,14 @@ export function BubbleView({
 	// const [debugCopyState, setDebugCopyState] = React.useState<'idle' | 'copied' | 'failed'>('idle');
 	const smoothedScoreRef = React.useRef<Record<string, number>>({});
 	// const lastDebugKeyRef = React.useRef('');
+	// Advance smooth scores on a regular tick so they converge on remote clients
+	// that receive infrequent Y.js sync events (otherwise bubble sizes/positions
+	// on the remote client barely change until the user manually refreshes).
+	const [scoreTick, setScoreTick] = React.useState(0);
+	React.useEffect(() => {
+		const id = window.setInterval(() => setScoreTick((t) => t + 1), 1500);
+		return () => window.clearInterval(id);
+	}, []);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -1094,6 +1096,7 @@ export function BubbleView({
 		return entries;
 	}, [themeId, workspaces]);
 	const scoredNotes = React.useMemo(() => {
+		void scoreTick; // re-run each tick so smooth scores converge between Y.js events
 		const nowMs = Date.now();
 		return notes.map((note) => {
 			const activityKey = `${note.workspaceId}:${note.noteId}`;
@@ -1113,7 +1116,7 @@ export function BubbleView({
 				hasCollaborators: collaboratorCount > 0,
 			};
 		});
-	}, [collaboratorCountByNoteId, notes]);
+	}, [collaboratorCountByNoteId, notes, scoreTick]);
 	const filteredNotes = React.useMemo(() => {
 		return scoredNotes.filter((note) => {
 			const doc = activeWorkspaceId === note.workspaceId
@@ -1135,16 +1138,14 @@ export function BubbleView({
 			const rotateDeg = (seededRandom(`${note.noteId}:r`) - 0.5) * 8;
 			const floatDuration = 6 + seededRandom(`${note.noteId}:float`) * 4;
 			const floatDelay = seededRandom(`${note.noteId}:delay`) * 6;
-			// Bidirectional vertical stagger (−22 to +68 px) so bubbles scatter both
-			// above and below each flex row’s top, eliminating repeating W patterns.
-			const marginTop = (seededRandom(`${note.noteId}:mt`) - 0.25) * 90;
-			// Random extra left gap (0–18 px) so horizontal wrap points vary too.
-			const marginInlineStart = seededRandom(`${note.noteId}:hx`) * 18;
+			// All-positive paddingTop (0–60 px) so the bubble’s shell is taller than the
+			// bubble itself, preventing flex rows from overlapping.
+			const paddingTop = seededRandom(`${note.noteId}:mt`) * 60;
 			const doc = activeWorkspaceId === note.workspaceId ? (manager.peekDoc(note.noteId) ?? null) : null;
 			const workspaceColorStyle = toWorkspaceBubbleColorStyle(
 				workspaceColorSchemeById.get(note.workspaceId) ?? getWorkspaceBubbleColorScheme(themeId, note.workspaceId)
 			);
-			return { note, sizeClass, detailLevel, bubbleDiameter, rotateDeg, floatDuration, floatDelay, marginTop, marginInlineStart, workspaceColorStyle, doc };
+			return { note, sizeClass, detailLevel, bubbleDiameter, rotateDeg, floatDuration, floatDelay, paddingTop, workspaceColorStyle, doc };
 		});
 	}, [activeWorkspaceId, clampedZoom, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
 
@@ -1270,8 +1271,7 @@ export function BubbleView({
 						rotateDeg={item.rotateDeg}
 						floatDuration={item.floatDuration}
 						floatDelay={item.floatDelay}
-						marginTop={item.marginTop}
-						marginInlineStart={item.marginInlineStart}
+						paddingTop={item.paddingTop}
 						onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
 					/>
 				))}
