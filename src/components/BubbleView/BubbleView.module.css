@@ -144,8 +144,9 @@
 	flex-wrap: wrap;
 	justify-content: center;
 	align-items: flex-start;
-	gap: clamp(6px, 1vw, 14px);
-	padding: 8px 12px 32px;
+	gap: clamp(4px, 0.7vw, 10px);
+	/* Top padding ensures bubbles with negative marginTop (staggered upward) aren't clipped. */
+	padding: 32px 12px 40px;
 	width: 100%;
 	box-sizing: border-box;
 }
