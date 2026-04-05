@@ -823,8 +823,10 @@ type BubbleProps = {
 	floatDuration: number;
 	/** Float animation delay in seconds (0–6, seeded per note). */
 	floatDelay: number;
-	/** Seeded random top margin (0–60 px) for organic vertical staggering in scatter layout. */
+	/** Vertical stagger offset in px (−25 to +65) relative to the flex row’s top. */
 	marginTop: number;
+	/** Extra left gap in px (0–18) for horizontal spacing variety. */
+	marginInlineStart: number;
 	onSelect: () => void | Promise<void>;
 };
 
@@ -924,7 +926,7 @@ function getBubbleDetailLevel(zoom: number, sizeClass: BubbleSizeClass): BubbleD
 	return sizeRank <= 2 ? 'meta' : 'full';
 }
 
-const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, marginTop, onSelect }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, marginTop, marginInlineStart, onSelect }: BubbleProps) {
 	const displayTitle = resolveBubbleTitle(note.noteId, note.title);
 	const preview = getBubblePreview(note.noteId, doc, sizeClass);
 	const titleLayout = resolveBubbleTitleLayout(displayTitle || '(untitled)', bubbleDiameter);
@@ -977,7 +979,10 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 			layoutId={`bubble-${note.workspaceId}-${note.noteId}`}
 			layout
 			className={styles.bubbleShell}
-			style={{ marginTop: `${marginTop}px` }}
+			// Explicit width drives correct bubble sizing in flex context:
+			// without it, 100% in the button’s min(100%, var(--bv-bubble-diameter))
+			// resolves against an unsized flex item, collapsing to padding-minimum.
+			style={{ marginTop: `${marginTop}px`, marginInlineStart: `${marginInlineStart}px`, width: `${titleLayout.grownDiameter}px` }}
 			transition={{ type: 'spring', stiffness: 22, damping: 14, mass: 1.2 }}
 		>
 			<button
@@ -1029,6 +1034,7 @@ type ColumnLayoutItem = {
 	floatDuration: number;
 	floatDelay: number;
 	marginTop: number;
+	marginInlineStart: number;
 	workspaceColorStyle: React.CSSProperties;
 	doc: Y.Doc | null;
 };
@@ -1129,12 +1135,16 @@ export function BubbleView({
 			const rotateDeg = (seededRandom(`${note.noteId}:r`) - 0.5) * 8;
 			const floatDuration = 6 + seededRandom(`${note.noteId}:float`) * 4;
 			const floatDelay = seededRandom(`${note.noteId}:delay`) * 6;
-			const marginTop = seededRandom(`${note.noteId}:mt`) * 60;
+			// Bidirectional vertical stagger (−22 to +68 px) so bubbles scatter both
+			// above and below each flex row’s top, eliminating repeating W patterns.
+			const marginTop = (seededRandom(`${note.noteId}:mt`) - 0.25) * 90;
+			// Random extra left gap (0–18 px) so horizontal wrap points vary too.
+			const marginInlineStart = seededRandom(`${note.noteId}:hx`) * 18;
 			const doc = activeWorkspaceId === note.workspaceId ? (manager.peekDoc(note.noteId) ?? null) : null;
 			const workspaceColorStyle = toWorkspaceBubbleColorStyle(
 				workspaceColorSchemeById.get(note.workspaceId) ?? getWorkspaceBubbleColorScheme(themeId, note.workspaceId)
 			);
-			return { note, sizeClass, detailLevel, bubbleDiameter, rotateDeg, floatDuration, floatDelay, marginTop, workspaceColorStyle, doc };
+			return { note, sizeClass, detailLevel, bubbleDiameter, rotateDeg, floatDuration, floatDelay, marginTop, marginInlineStart, workspaceColorStyle, doc };
 		});
 	}, [activeWorkspaceId, clampedZoom, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
 
@@ -1261,6 +1271,7 @@ export function BubbleView({
 						floatDuration={item.floatDuration}
 						floatDelay={item.floatDelay}
 						marginTop={item.marginTop}
+						marginInlineStart={item.marginInlineStart}
 						onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
 					/>
 				))}
