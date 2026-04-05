@@ -21,7 +21,7 @@ import {
 import * as Y from 'yjs';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
-import { applyChecklistDragToItems, normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
+import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
@@ -1047,6 +1047,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const normalizedItems = useMemo(() => normalizeChecklistHierarchy(items), [items]);
 	const activeItems = useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedItems = useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
+	const completedRows = useMemo(() => buildChecklistCompletedRows(normalizedItems), [normalizedItems]);
 	const firstActiveItemId = activeItems[0]?.id ?? null;
 	const checklistItemPlaceholder = t('editors.checklistItemPlaceholder');
 	const checklistRemoveLabel = t('editors.remove');
@@ -1220,14 +1221,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const toggleChecklistCompleted = React.useCallback(
 		(id: string, checked: boolean): void => {
 			if (type !== 'checklist') return;
-			const childIds = new Set(normalizedItems.filter((item) => item.parentId === id).map((item) => item.id));
-			for (const item of normalizedItems) {
-				if (item.id === id || childIds.has(item.id)) {
-					updateChecklistItemById(checklistArray, item.id, { completed: checked });
-				}
-			}
+			replaceChecklistItems(toggleChecklistItemCompleted(normalizedItems, id, checked));
 		},
-		[checklistArray, normalizedItems, type]
+		[normalizedItems, replaceChecklistItems, type]
 	);
 
 	const removeChecklistItem = React.useCallback(
@@ -2087,30 +2083,40 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								</button>
 								{showCompleted ? (
 									<ul className={styles.checklistList}>
-										{completedItems.map((item) => (
-											<li key={item.id} className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-												<div className={styles.dragHandle} aria-hidden="true">
-															<FontAwesomeIcon icon={faGripVertical} />
-												</div>
-										<ChecklistRowContent
-											item={item}
-											itemMap={checklistMapsById.get(item.id) ?? null}
-											checklistArray={checklistArray}
-											contentRef={(node) => setChecklistRowInputRef(item.id, node)}
-											isActive={activeChecklistRowId === item.id}
-											autoFocus={focusRowId === item.id}
-											isProtectedFromEmptyBackspace={false}
-											placeholderText={checklistItemPlaceholder}
-											removeLabel={checklistRemoveLabel}
-											caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
-											activate={activateChecklistRow}
-											toggleCompleted={toggleChecklistCompleted}
-											remove={removeChecklistItem}
-											insertAfter={insertChecklistItemAfter}
-											setActiveEditor={setActiveChecklistRowEditor}
-										/>
-											</li>
-										))}
+											{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
+												<li key={`ghost-${item.id}`} className={`${styles.checklistItem} ${styles.checklistGhostItem}`} aria-hidden="true">
+													<div className={styles.dragHandle} aria-hidden="true" />
+													<label className={styles.checklistCheckboxHitArea}>
+														<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
+													</label>
+													<div className={styles.checklistRowPreview}>
+														{renderRichPreview(getChecklistItemRichPreviewJson(checklistMapsById.get(item.id) ?? null)) || item.text || '\u00A0'}
+													</div>
+												</li>
+											) : (
+												<li key={item.id} className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+													<div className={styles.dragHandle} aria-hidden="true">
+														<FontAwesomeIcon icon={faGripVertical} />
+													</div>
+													<ChecklistRowContent
+														item={item}
+														itemMap={checklistMapsById.get(item.id) ?? null}
+														checklistArray={checklistArray}
+														contentRef={(node) => setChecklistRowInputRef(item.id, node)}
+														isActive={activeChecklistRowId === item.id}
+														autoFocus={focusRowId === item.id}
+														isProtectedFromEmptyBackspace={false}
+														placeholderText={checklistItemPlaceholder}
+														removeLabel={checklistRemoveLabel}
+														caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
+														activate={activateChecklistRow}
+														toggleCompleted={toggleChecklistCompleted}
+														remove={removeChecklistItem}
+														insertAfter={insertChecklistItemAfter}
+														setActiveEditor={setActiveChecklistRowEditor}
+													/>
+												</li>
+											))}
 									</ul>
 								) : null}
 							</section>

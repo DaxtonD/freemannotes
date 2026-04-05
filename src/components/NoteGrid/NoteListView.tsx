@@ -197,12 +197,6 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 							<FontAwesomeIcon icon={faBell} />
 						</span>
 					) : null}
-					{props.labels.map((label) => (
-						<span key={label.id} className={styles.labelChip} title={label.name}>
-							{label.color ? <span className={styles.labelChipSwatch} style={{ backgroundColor: label.color }} aria-hidden="true" /> : null}
-							<span>{label.name}</span>
-						</span>
-					))}
 					{props.collectionPath ? (
 						<span className={styles.badge} title={props.collectionPath}>
 							<FontAwesomeIcon icon={faFolder} />

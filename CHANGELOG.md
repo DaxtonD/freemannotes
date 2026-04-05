@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.40 - 2026-04-05
+
+### Changed
+- **Checklist completion behavior is now shared across note cards and editors.** Parent/child checklist completion rules, including ghost parent rows in completed sections, now use a shared hierarchy helper so note cards, the checklist editor, and the full note editor stay in sync.
+- **Admin user usage totals now span all owned workspaces.** User Management now reports database, document/file, and image usage across every live workspace owned by the user instead of only the earliest workspace.
+
+### Fixed
+- **Checklist editors now match note-card parent/child completion UX.** Toggling a parent cascades to its children, and unchecking a child correctly reopens a completed parent in both checklist editing surfaces.
+- **Mobile checklist alignment survives note-card view changes.** Checklist rows now remeasure line wrapping when the card or viewport layout changes, preventing checkbox/text drift after switching views.
+- **Card masonry layout no longer remeasures while hidden or in list-style views.** Hidden card grids now freeze their resolved columns, and list/strip layouts no longer overwrite the masonry height cache used by card view.
+- **User Management modal layout and scroll behavior were tightened.** The modal now locks background scrolling, shows clearer usage categories, and uses a more compact control layout on desktop and mobile.
+- **List and detailed-list label metadata no longer duplicates label text.** List-style note rows now keep only the single label summary badge instead of repeating label names inline.
+
 ## 1.1.39 - 2026-04-05
 
 ### Added

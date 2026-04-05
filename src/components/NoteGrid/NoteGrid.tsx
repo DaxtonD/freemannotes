@@ -101,6 +101,8 @@ export type NoteGridProps = {
 	deviceId?: string;
 	/** Active view mode. 'list' and 'strip' replace the masonry grid with flat rows. */
 	viewMode?: ViewMode;
+	/** True only when the grid is actually visible in layout, not kept mounted under display:none. */
+	isVisible?: boolean;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -820,6 +822,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [moreMenuNoteId, setMoreMenuNoteId] = React.useState<string | null>(null);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const isTrashView = Boolean(props.showTrashed);
+	const isGridVisible = props.isVisible !== false;
 
 	React.useEffect(() => {
 		docsByIdRef.current = docsById;
@@ -827,16 +830,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	const recalculateColumnCount = React.useCallback((): void => {
 		if (typeof window === 'undefined') return;
+		if (!isGridVisible) return;
 		const containerWidth = sectionRef.current?.clientWidth ?? window.innerWidth;
+		if (containerWidth <= 0) return;
 		const next = getGridLayoutForViewport(containerWidth, window.innerWidth, window.innerHeight);
 		setColumnCount((previous) => (previous === next.columnCount ? previous : next.columnCount));
 		setMobileCardWidthPx((previous) => (previous === next.mobileCardWidthPx ? previous : next.mobileCardWidthPx));
 		setMobileGridGapPx((previous) => (previous === next.mobileGapPx ? previous : next.mobileGapPx));
 		setMobileSectionBleedPx((previous) => (previous === next.mobileSectionBleedPx ? previous : next.mobileSectionBleedPx));
-	}, []);
+	}, [isGridVisible]);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
+		if (!isGridVisible) return;
 		recalculateColumnCount();
 		const onResize = (): void => { recalculateColumnCount(); };
 		window.addEventListener('resize', onResize);
@@ -849,7 +855,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			window.removeEventListener('orientationchange', onResize);
 			observer?.disconnect();
 		};
-	}, [recalculateColumnCount]);
+	}, [isGridVisible, recalculateColumnCount]);
 
 	React.useEffect(() => {
 		const onScroll = (): void => {
@@ -1336,6 +1342,25 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		onTouchDropCommit: props.onTouchReorderEnd,
 	});
 
+	React.useEffect(() => {
+		if (isGridVisible) return;
+		if (isListLikeView) return;
+		if (dragManager.activeDragId) return;
+		if (resolvedBaseColumns.length !== columnCount) return;
+		// When the card grid is hidden behind bubble/images views, keep the last
+		// resolved masonry columns sticky so hidden measurement passes cannot
+		// reshuffle the visible packing order.
+		const frozenColumns = resolvedBaseColumns.map((column) => column.slice());
+		setStickyColumns((previous) => {
+			if (previous && previous.length === frozenColumns.length) {
+				const previousFlat = flattenColumns(previous);
+				const nextFlat = flattenColumns(frozenColumns);
+				if (arraysEqual(previousFlat, nextFlat)) return previous;
+			}
+			return frozenColumns;
+		});
+	}, [columnCount, dragManager.activeDragId, isGridVisible, isListLikeView, resolvedBaseColumns]);
+
 	// ── Active columns for rendering ──────────────────────────────────────
 	// During drag, use previewColumns (with the card at the insertion point
 	// and the placeholder holding the original space); otherwise use the
@@ -1370,12 +1395,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	// Measure card heights for masonry packing (runs after render)
 	React.useLayoutEffect(() => {
+		if (!isGridVisible) return;
+		if (isListLikeView) return;
+		// Only card view contributes masonry heights. List/strip rows have a
+		// different layout model and would poison the cached packing heights.
 		const grid = gridRef.current;
 		if (!grid) return;
 		const documentRects = measureDocumentRects(grid);
+		if (documentRects.size === 0) return;
 		let heightsChanged = false;
 		for (const [id, rect] of documentRects) {
 			const nextHeight = Math.max(0, Math.round(rect.height));
+			if (nextHeight <= 0) continue;
 			const previousHeight = noteHeightByIdRef.current.get(id);
 			if (previousHeight !== nextHeight) {
 				noteHeightByIdRef.current.set(id, nextHeight);
@@ -1409,7 +1440,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				noteHeightBumpRafRef.current = 0;
 			}
 		};
-	}, [columns, docsById, dragManager.activeDragId]);
+	}, [columns, docsById, dragManager.activeDragId, isGridVisible, isListLikeView]);
 
 	const activeDoc = dragManager.activeDragId ? docsById[dragManager.activeDragId] : undefined;
 	const activeNote = dragManager.activeDragId ? noteById.get(dragManager.activeDragId) : undefined;

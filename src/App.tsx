@@ -6324,6 +6324,7 @@ export function App(): React.JSX.Element {
 						// at the correct size for this device/viewport combination.
 						deviceId={deviceId}
 						viewMode={viewMode === 'bubble' ? 'card' : viewMode}
+						isVisible={viewMode !== 'bubble' && sidebarView !== 'images'}
 				/>
 				</div>
 				{sidebarView === 'images' ? (

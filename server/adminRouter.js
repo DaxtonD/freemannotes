@@ -94,6 +94,27 @@ function usageForWorkspace(prisma, workspaceId) {
 	`;
 }
 
+async function usageForWorkspaces(prisma, workspaceIds) {
+	// Admin usage is shown per user, but a user may own more than one live
+	// workspace. Sum the per-workspace document usage so the modal reports the
+	// total footprint across all owned workspaces.
+	const ids = Array.isArray(workspaceIds)
+		? workspaceIds.map((id) => String(id || '').trim()).filter(Boolean)
+		: [];
+	if (ids.length === 0) {
+		return { noteCount: 0, bytes: 0 };
+	}
+	const rows = await Promise.all(ids.map((workspaceId) => usageForWorkspace(prisma, workspaceId)));
+	let noteCount = 0;
+	let bytes = 0;
+	for (const result of rows) {
+		const first = Array.isArray(result) ? result[0] : result;
+		noteCount += Number(first?.note_count || 0);
+		bytes += Number(first?.bytes || 0);
+	}
+	return { noteCount, bytes };
+}
+
 function createAdminRouter({ prisma }) {
 	async function getServerAdminUserId() {
 		const first = await prisma.user.findFirst({
@@ -194,44 +215,46 @@ function createAdminRouter({ prisma }) {
 
 					const users = await Promise.all(
 					rows.map(async (u) => {
-						// Fetch workspace stats and file-storage aggregates in parallel so
-						// a list of N users doesn't require N*3 sequential round-trips.
-						const [
-							ws,
-							noteImageAgg,
-							noteDocumentAgg,
-						] = await Promise.all([
-								prisma.workspace.findFirst({
-									where: { ownerUserId: u.id },
-									select: { id: true },
-									orderBy: { createdAt: 'asc' },
-								}),
-								prisma.noteImage.aggregate({
-									where: { uploadedByUserId: u.id, deletedAt: null },
-									_count: { _all: true },
-									_sum: { byteSize: true },
-								}),
-								prisma.noteDocument.aggregate({
-									where: { uploadedByUserId: u.id, deletedAt: null },
-									_count: { _all: true },
-									_sum: { byteSize: true },
-								}),
-							]);
+						// Pull every live workspace owned by the user so usage totals do not
+						// silently drop content that lives outside the earliest workspace.
+						const workspaces = await prisma.workspace.findMany({
+							where: {
+								ownerUserId: u.id,
+								deletedAt: null,
+							},
+							select: { id: true },
+						});
+						const workspaceIds = workspaces.map((workspace) => workspace.id);
 
 							let notes = 0;
 							let dbBytes = 0;
-							if (ws) {
-								const result = await usageForWorkspace(prisma, ws.id);
-								const first = Array.isArray(result) ? result[0] : result;
-								notes = Number(first?.note_count || 0);
-								dbBytes = Number(first?.bytes || 0);
+							let imageBytes = 0;
+							let documentBytes = 0;
+							let images = 0;
+							if (workspaceIds.length > 0) {
+								const [workspaceUsage, noteImageAgg, noteDocumentAgg] = await Promise.all([
+									usageForWorkspaces(prisma, workspaceIds),
+									prisma.noteImage.aggregate({
+										where: { sourceWorkspaceId: { in: workspaceIds }, deletedAt: null },
+										_count: { _all: true },
+										_sum: { byteSize: true },
+									}),
+									prisma.noteDocument.aggregate({
+										where: { sourceWorkspaceId: { in: workspaceIds }, deletedAt: null },
+										_count: { _all: true },
+										_sum: { byteSize: true },
+									}),
+								]);
+								notes = Number(workspaceUsage.noteCount || 0);
+								dbBytes = Number(workspaceUsage.bytes || 0);
+								imageBytes = Number(noteImageAgg?._sum?.byteSize || 0);
+								documentBytes = Number(noteDocumentAgg?._sum?.byteSize || 0);
+								images = Number(noteImageAgg?._count?._all || 0);
 							}
-						// Compute real file-storage totals from the aggregate results.
-						const imageBytes = Number(noteImageAgg?._sum?.byteSize || 0);
-						const documentBytes = Number(noteDocumentAgg?._sum?.byteSize || 0);
-						const images = Number(noteImageAgg?._count?._all || 0);
-						const filesBytes = imageBytes + documentBytes;
-							const totalBytes = dbBytes + filesBytes;
+						// Show usage for what exists in the user's workspace, not only the
+						// subset they personally uploaded.
+						const filesBytes = documentBytes;
+						const totalBytes = dbBytes + documentBytes + imageBytes;
 
 							return {
 								id: u.id,
@@ -245,6 +268,7 @@ function createAdminRouter({ prisma }) {
 								usage: {
 									notes,
 									images,
+									imageBytes,
 									totalBytes,
 									filesBytes,
 									dbBytes,
