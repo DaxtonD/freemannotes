@@ -1195,6 +1195,10 @@ export class DocumentManager {
 			if (tx.origin === this.accessOrigin) return;
 			if (tx.origin === this.updatedAtOrigin) return;
 			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
+			if (tx.changed.size === 0) return;
+			if (window.DEBUG) {
+				console.debug('[BubbleScore] touchUpdatedAt triggered', noteId, 'tx.origin=', tx.origin);
+			}
 			/* Use the model-layer touchUpdatedAt so the timestamp format is canonical. */
 			touchUpdatedAt(doc, this.updatedAtOrigin);
 		};
