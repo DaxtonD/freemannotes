@@ -139,6 +139,17 @@
 	width: 100%;
 }
 
+.scatter {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: center;
+	align-items: flex-start;
+	gap: clamp(6px, 1vw, 14px);
+	padding: 8px 12px 32px;
+	width: 100%;
+	box-sizing: border-box;
+}
+
 .lane {
 	display: flex;
 	flex-direction: column;
@@ -150,7 +161,6 @@
 .bubbleShell {
 	display: flex;
 	justify-content: center;
-	width: 100%;
 	box-sizing: border-box;
 	overflow: visible;
 }
