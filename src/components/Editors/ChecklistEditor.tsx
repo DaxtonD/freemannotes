@@ -24,7 +24,7 @@ import type { ChecklistItem } from '../../core/bindings';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { createRichTextDocFromPlainText, splitMinimalRichTextAtSelection } from '../../core/richText';
-import { applyChecklistDragToItems, normalizeChecklistHierarchy, removeChecklistItemWithChildren } from '../../core/checklistHierarchy';
+import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, removeChecklistItemWithChildren, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
@@ -504,24 +504,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const normalizedItems = React.useMemo(() => reconcileDraftItems(normalizeChecklistHierarchy(items), items), [items]);
 	const activeItems = React.useMemo(() => normalizedItems.filter((row) => !row.completed), [normalizedItems]);
 	const completedItems = React.useMemo(() => normalizedItems.filter((row) => row.completed), [normalizedItems]);
-	const completedRows = React.useMemo((): Array<{ kind: 'item' | 'ghost'; item: DraftChecklistItem }> => {
-		const completedIdSet = new Set(completedItems.map((i) => i.id));
-		const itemById = new Map<string, DraftChecklistItem>(normalizedItems.map((i) => [i.id, i]));
-		const rows: Array<{ kind: 'item' | 'ghost'; item: DraftChecklistItem }> = [];
-		const insertedGhosts = new Set<string>();
-		for (const item of normalizedItems) {
-			if (!item.completed) continue;
-			if (item.parentId) {
-				const parent = itemById.get(item.parentId);
-				if (parent && !completedIdSet.has(parent.id) && !insertedGhosts.has(parent.id)) {
-					insertedGhosts.add(parent.id);
-					rows.push({ kind: 'ghost', item: parent });
-				}
-			}
-			rows.push({ kind: 'item', item });
-		}
-		return rows;
-	}, [normalizedItems, completedItems]);
+	const completedRows = React.useMemo(() => buildChecklistCompletedRows(normalizedItems), [normalizedItems]);
 
 	React.useEffect(() => {
 		latestItemsRef.current = items;
@@ -626,16 +609,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 
 	const toggleCompleted = React.useCallback((id: string, checked: boolean): void => {
 		setItems((prev) => {
-			const normalized = normalizeChecklistHierarchy(prev);
-			const childIds = new Set(
-				normalized.filter((item) => item.parentId === id).map((item) => item.id)
-			);
-			return reconcileDraftItems(normalized.map((item) => {
-				if (item.id === id || childIds.has(item.id)) {
-					return { ...item, completed: checked };
-				}
-				return item;
-			}), prev);
+			return reconcileDraftItems(toggleChecklistItemCompleted(prev, id, checked), prev);
 		});
 	}, []);
 

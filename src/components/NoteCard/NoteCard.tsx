@@ -12,7 +12,7 @@ import {
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import type { ChecklistItem } from '../../core/bindings';
-import { normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
+import { buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getDeviceId } from '../../core/deviceId';
 import { useI18n } from '../../core/i18n';
 import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
@@ -620,46 +620,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		return parsed.toLocaleString();
 	}, [reminderAt, t]);
 
-	React.useEffect(() => {
-		setShowCompleted(getNoteCardCompletedExpanded(props.noteId));
-	}, [props.noteId]);
-	const activeChecklistItems = React.useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
-	const completedChecklistItems = React.useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
-	// Build the display list for the completed section.  For each completed item
-	// we emit an 'item' row.  When a completed child's parent is not yet completed
-	// we first insert a 'ghost' row for that parent so the user can see which
-	// group the completed children belong to.
-	const completedRows = React.useMemo((): Array<{ kind: 'item' | 'ghost'; item: NoteCardChecklistItem }> => {
-		if (type !== 'checklist') return [];
-		const completedIdSet = new Set(completedChecklistItems.map((i) => i.id));
-		const itemById = new Map<string, NoteCardChecklistItem>(normalizedItems.map((i) => [i.id, i]));
-		const rows: Array<{ kind: 'item' | 'ghost'; item: NoteCardChecklistItem }> = [];
-		const insertedGhostParents = new Set<string>();
-		for (const item of normalizedItems) {
-			if (!item.completed) continue;
-			if (item.parentId) {
-				const parent = itemById.get(item.parentId);
-				if (parent && !completedIdSet.has(parent.id) && !insertedGhostParents.has(parent.id)) {
-					insertedGhostParents.add(parent.id);
-					rows.push({ kind: 'ghost', item: parent });
-				}
-			}
-			rows.push({ kind: 'item', item });
-		}
-		return rows;
-	}, [type, normalizedItems, completedChecklistItems]);
-
-	const toggleNoteCardChecklistItem = React.useCallback((id: string, checked: boolean): void => {
-		if (!canEdit) return;
-		const childIds = new Set(normalizedItems.filter((i) => i.parentId === id).map((i) => i.id));
-		for (const ni of normalizedItems) {
-			if (ni.id === id || childIds.has(ni.id)) {
-				updateChecklistItemById(checklistArray, ni.id, { completed: checked });
-			}
-		}
-	}, [canEdit, checklistArray, normalizedItems]);
-
-	React.useLayoutEffect(() => {
+	const measureChecklistTextLayout = React.useCallback((): void => {
 		if (type !== 'checklist') return;
 		const card = cardRef.current;
 		if (!card) return;
@@ -694,7 +655,61 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			}
 			return nextClamped;
 		});
-	}, [normalizedItems, showCompleted, type]);
+	}, [type]);
+
+	React.useEffect(() => {
+		setShowCompleted(getNoteCardCompletedExpanded(props.noteId));
+	}, [props.noteId]);
+	const activeChecklistItems = React.useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
+	const completedChecklistItems = React.useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
+	const completedRows = React.useMemo(() => (type === 'checklist' ? buildChecklistCompletedRows(normalizedItems) : []), [type, normalizedItems]);
+
+	const toggleNoteCardChecklistItem = React.useCallback((id: string, checked: boolean): void => {
+		if (!canEdit) return;
+		// Apply the shared parent/child completion rules, then only write the rows
+		// whose completion state actually changed back into Yjs.
+		const nextItems = toggleChecklistItemCompleted(normalizedItems, id, checked);
+		for (const item of nextItems) {
+			const previous = normalizedItems.find((entry) => entry.id === item.id);
+			if (!previous || previous.completed === item.completed) continue;
+			updateChecklistItemById(checklistArray, item.id, { completed: item.completed });
+		}
+	}, [canEdit, checklistArray, normalizedItems]);
+
+	React.useLayoutEffect(() => {
+		if (type !== 'checklist') return;
+		// Checklist line wrapping changes when the card width, viewport, or
+		// completed-section height changes, so remeasure on those layout signals.
+		measureChecklistTextLayout();
+		if (typeof ResizeObserver === 'undefined' || typeof window === 'undefined') return;
+
+		let frameId = 0;
+		const scheduleMeasure = (): void => {
+			if (frameId) window.cancelAnimationFrame(frameId);
+			frameId = window.requestAnimationFrame(() => {
+				frameId = 0;
+				measureChecklistTextLayout();
+			});
+		};
+
+		const observer = new ResizeObserver(() => scheduleMeasure());
+		if (cardRef.current) observer.observe(cardRef.current);
+		if (contentRegionRef.current) observer.observe(contentRegionRef.current);
+		if (bodyRef.current) observer.observe(bodyRef.current);
+		if (checklistRef.current) observer.observe(checklistRef.current);
+		if (completedSectionRef.current) observer.observe(completedSectionRef.current);
+
+		const viewport = window.visualViewport;
+		window.addEventListener('resize', scheduleMeasure);
+		viewport?.addEventListener('resize', scheduleMeasure);
+
+		return () => {
+			if (frameId) window.cancelAnimationFrame(frameId);
+			observer.disconnect();
+			window.removeEventListener('resize', scheduleMeasure);
+			viewport?.removeEventListener('resize', scheduleMeasure);
+		};
+	}, [measureChecklistTextLayout, normalizedItems, showCompleted, type]);
 
 	React.useLayoutEffect(() => {
 		const contentRegion = contentRegionRef.current;
