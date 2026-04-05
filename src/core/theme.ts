@@ -1099,11 +1099,19 @@ export function applyTheme(themeId: ThemeId): void {
 		root.style.setProperty(key, value);
 	}
 	root.style.setProperty('color-scheme', prefersLightChrome ? 'light' : 'dark');
+	root.style.backgroundColor = appBackground;
 	if (document.body) {
 		document.body.style.backgroundColor = appBackground;
 		document.body.style.colorScheme = prefersLightChrome ? 'light' : 'dark';
 	}
-	const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+	let themeColorMeta = document.querySelector('meta[name="theme-color"]');
+	if (!themeColorMeta && document.head) {
+		// Some Android standalone contexts cache the manifest theme color very
+		// aggressively, so keep a concrete theme-color meta node present and live.
+		themeColorMeta = document.createElement('meta');
+		themeColorMeta.setAttribute('name', 'theme-color');
+		document.head.appendChild(themeColorMeta);
+	}
 	if (themeColorMeta) {
 		// Use the app background colour (not surface) because this value also
 		// controls the Android system navigation bar at the bottom — which sits

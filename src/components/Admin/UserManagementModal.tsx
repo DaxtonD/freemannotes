@@ -360,8 +360,8 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 										<option value="ADMIN">Admin</option>
 										<option value="USER">User</option>
 									</select>
-									<button type="button" className={`${styles.actionButton} ${styles.compactControl}`} onClick={() => openResetPasswordModal(u.id, u.email)} disabled={busy}>
-										Reset password
+									<button type="button" className={`${styles.actionButton} ${styles.compactControl} ${styles.mobileTwoLineButton}`} onClick={() => openResetPasswordModal(u.id, u.email)} disabled={busy}>
+										<span>Reset<br />password</span>
 									</button>
 									<button
 										type="button"

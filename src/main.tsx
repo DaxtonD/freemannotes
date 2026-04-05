@@ -4,6 +4,7 @@ import { App } from './App';
 import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
 import { initPwa } from './core/pwa';
+import { applyTheme, getStoredThemeId } from './core/theme';
 import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
 import { readWorkspaceSelectionCache } from './core/workspaceSelectionCache';
@@ -71,6 +72,10 @@ if (!rootEl) {
 // Install a polyfill that bridges touch events → DragEvents so
 // @atlaskit/pragmatic-drag-and-drop works on Firefox Android.
 installTouchDragPolyfill();
+
+// Apply the last-used theme before React mounts so Android standalone chrome
+// sees the current app background immediately instead of the HTML fallback.
+applyTheme(getStoredThemeId());
 
 createRoot(rootEl).render(
 	<React.StrictMode>
