@@ -1,6 +1,11 @@
 import type { ChecklistItem } from './bindings';
 import type { ChecklistDragAxis, ChecklistHorizontalDirection } from './checklistDragState';
 
+export type ChecklistCompletedRow<T extends ChecklistItem = ChecklistItem> = {
+	kind: 'item' | 'ghost';
+	item: T;
+};
+
 // ── Normalization ──────────────────────────────────────────────────────────
 
 /**
@@ -64,6 +69,68 @@ export function normalizeChecklistHierarchy(items: readonly ChecklistItem[]): Ch
 	}
 
 	return grouped;
+}
+
+export function buildChecklistCompletedRows<T extends ChecklistItem>(items: readonly T[]): ChecklistCompletedRow<T>[] {
+	// In completed sections, show a lightweight parent "ghost" row before a
+	// completed child when the parent itself is still active.
+	const completedItems = items.filter((item) => item.completed);
+	const completedIdSet = new Set(completedItems.map((item) => item.id));
+	const itemById = new Map(items.map((item) => [item.id, item]));
+	const rows: ChecklistCompletedRow<T>[] = [];
+	const insertedGhosts = new Set<string>();
+
+	for (const item of items) {
+		if (!item.completed) continue;
+		if (item.parentId) {
+			const parent = itemById.get(item.parentId);
+			if (parent && !completedIdSet.has(parent.id) && !insertedGhosts.has(parent.id)) {
+				insertedGhosts.add(parent.id);
+				rows.push({ kind: 'ghost', item: parent });
+			}
+		}
+		rows.push({ kind: 'item', item });
+	}
+
+	return rows;
+}
+
+export function toggleChecklistItemCompleted<T extends ChecklistItem>(
+	items: readonly T[],
+	id: string,
+	checked: boolean,
+): T[] {
+	// Parent toggles cascade to direct children. Child unchecks also reopen a
+	// completed parent so the hierarchy never shows an active child under a
+	// completed parent state.
+	const normalized = normalizeChecklistHierarchy(items) as T[];
+	const target = normalized.find((item) => item.id === id);
+	if (!target) return normalized;
+
+	const nextCompletedById = new Map<string, boolean>();
+	const childIds = getChildIds(normalized, id);
+
+	if (!target.parentId) {
+		nextCompletedById.set(target.id, checked);
+		for (const childId of childIds) nextCompletedById.set(childId, checked);
+	} else {
+		nextCompletedById.set(target.id, checked);
+		if (!checked) {
+			const parent = normalized.find((item) => item.id === target.parentId) ?? null;
+			if (parent?.completed) {
+				nextCompletedById.set(parent.id, false);
+			}
+		}
+	}
+
+	if (nextCompletedById.size === 0) return normalized;
+
+	return normalized.map((item) => {
+		const nextCompleted = nextCompletedById.get(item.id);
+		return nextCompleted === undefined || nextCompleted === item.completed
+			? item
+			: { ...item, completed: nextCompleted };
+	});
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

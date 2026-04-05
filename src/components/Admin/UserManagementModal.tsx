@@ -1,4 +1,7 @@
 import React from 'react';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faDatabase, faFile, faFileLines, faImage, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from '../../core/passwordStrength';
 import styles from './UserManagementModal.module.css';
 
@@ -34,6 +37,7 @@ export type AdminUserRow = {
 	usage: {
 		notes: number;
 		images: number;
+		imageBytes: number;
 		totalBytes: number;
 		filesBytes: number;
 		dbBytes: number;
@@ -91,6 +95,7 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 	const [busy, setBusy] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	const [query, setQuery] = React.useState('');
+	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
 	const [users, setUsers] = React.useState<readonly AdminUserRow[]>([]);
 
 	const [createEmail, setCreateEmail] = React.useState('');
@@ -257,7 +262,7 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 				<header className={styles.header}>
 					<h2 className={styles.title}>User management</h2>
 					<button type="button" className={styles.iconButton} onClick={props.onClose} aria-label="Close">
-						✕
+						<FontAwesomeIcon icon={faXmark} />
 					</button>
 				</header>
 
@@ -293,20 +298,25 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 								<div className={styles.table}>
 									<div className={styles.tableHeader}>
 										<div>User</div>
-										<div>Role</div>
 										<div>Usage</div>
-										<div style={{ textAlign: 'right' }}>Actions</div>
+										<div className={styles.controlsHeader}>Controls</div>
 									</div>
 
 									{filtered.map((u) => {
 						const isYou = props.currentUserId && u.id === props.currentUserId;
 						const isServerAdmin = serverAdminUserId && u.id === serverAdminUserId;
 						const displayEmail = `${u.email}${isYou ? ' (you)' : ''}`;
-						const total = Number(u.usage?.totalBytes || 0);
 						const files = Number(u.usage?.filesBytes || 0);
 						const db = Number(u.usage?.dbBytes || 0);
-						const notes = Number(u.usage?.notes || 0);
 						const images = Number(u.usage?.images || 0);
+						const imageBytes = Number(u.usage?.imageBytes || 0);
+						const notes = Number(u.usage?.notes || 0);
+						const usageItems = [
+							{ key: 'db', icon: faDatabase, label: 'Database', value: formatBytes(db) },
+							{ key: 'files', icon: faFile, label: 'Files', value: formatBytes(files) },
+							{ key: 'images', icon: faImage, label: 'Images', value: formatBytes(imageBytes), title: `${images.toLocaleString()} image${images === 1 ? '' : 's'}` },
+							{ key: 'notes', icon: faFileLines, label: 'Notes', value: String(notes) },
+						] as const;
 						return (
 							<div key={u.id} className={styles.row}>
 								<div className={styles.userCell}>
@@ -325,9 +335,23 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 									</div>
 								</div>
 
-								<div className={styles.roleCell}>
+								<div className={styles.usage}>
+									{usageItems.map((item) => (
+										<div key={item.key} className={styles.usageStat}>
+											<span className={styles.usageIcon} aria-hidden="true">
+												<FontAwesomeIcon icon={item.icon} />
+											</span>
+											<span className={styles.usageText} title={item.title}>
+												<span className={styles.usageLabel}>{item.label}</span>
+												<span className={styles.usageValue}>{item.value}</span>
+											</span>
+										</div>
+									))}
+								</div>
+
+								<div className={styles.controls}>
 									<select
-										className={styles.select}
+										className={`${styles.select} ${styles.compactControl}`}
 										value={u.role}
 										disabled={busy || Boolean(isServerAdmin)}
 										title={isServerAdmin ? 'Server admin role cannot be changed' : undefined}
@@ -336,23 +360,12 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 										<option value="ADMIN">Admin</option>
 										<option value="USER">User</option>
 									</select>
-								</div>
-
-								<div className={styles.usage}>
-									<div className={styles.usageStat}><span className={styles.usageLabel}>Notes</span><span className={styles.usageValue}>{notes}</span></div>
-									<div className={styles.usageStat}><span className={styles.usageLabel}>Images</span><span className={styles.usageValue}>{images}</span></div>
-									<div className={styles.usageStat}><span className={styles.usageLabel}>Files</span><span className={styles.usageValue}>{formatBytes(files)}</span></div>
-									<div className={styles.usageStat}><span className={styles.usageLabel}>DB</span><span className={styles.usageValue}>{formatBytes(db)}</span></div>
-									<div className={styles.usageStat}><span className={styles.usageLabel}>Total</span><span className={styles.usageValue}>{formatBytes(total)}</span></div>
-								</div>
-
-								<div className={styles.actions}>
-									<button type="button" className={styles.actionButton} onClick={() => openResetPasswordModal(u.id, u.email)} disabled={busy}>
+									<button type="button" className={`${styles.actionButton} ${styles.compactControl}`} onClick={() => openResetPasswordModal(u.id, u.email)} disabled={busy}>
 										Reset password
 									</button>
 									<button
 										type="button"
-										className={styles.actionButton}
+										className={`${styles.actionButton} ${styles.compactControl}`}
 										onClick={() => void deleteUser(u.id, u.email)}
 										disabled={busy || Boolean(isServerAdmin)}
 										title={isServerAdmin ? 'Server admin cannot be deleted' : undefined}
@@ -434,10 +447,9 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 						<header className={styles.header}>
 							<div>
 								<h3 className={styles.sectionTitle}>Reset password</h3>
-								<div className={styles.name}>{resetPasswordTarget.email}</div>
 							</div>
 							<button type="button" className={styles.iconButton} onClick={() => setResetPasswordTarget(null)} aria-label="Close">
-								✕
+								<FontAwesomeIcon icon={faXmark} />
 							</button>
 						</header>
 						<div className={styles.resetPasswordBody}>
