@@ -4739,9 +4739,15 @@ export function App(): React.JSX.Element {
 				tracking = false;
 				return;
 			}
+			// Prevent iOS from rubber-banding the viewport on any clearly horizontal
+			// gesture (both right AND left) while we're tracking. Without this, a
+			// rightward swipe on the open sidebar causes the entire viewport to slide
+			// off the right edge of the screen.
+			if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8 && event.cancelable) {
+				event.preventDefault();
+			}
 			if (dx < -TRIGGER_DX) {
 				tracking = false;
-				if (event.cancelable) event.preventDefault();
 				closeMobileSidebar();
 			}
 		};

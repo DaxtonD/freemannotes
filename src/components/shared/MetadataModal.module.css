@@ -3,7 +3,11 @@
 	inset: 0;
 	background: var(--color-overlay);
 	display: flex;
-	align-items: center;
+	/* flex-start anchors items to the top of the content box (inside padding).
+	   Combined with margin: auto on the modal, items are visually centred when
+	   there is free space, but can never overflow above the safe-area padding
+	   (e.g. when the virtual keyboard shrinks the viewport). */
+	align-items: flex-start;
 	justify-content: center;
 	padding: calc(env(safe-area-inset-top, 0px) + 20px) calc(env(safe-area-inset-right, 0px) + 20px) calc(env(safe-area-inset-bottom, 0px) + 20px) calc(env(safe-area-inset-left, 0px) + 20px);
 	overflow-y: auto;
@@ -14,6 +18,11 @@
 	width: min(640px, 100%);
 	max-height: min(calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px), 760px);
 	min-height: 0;
+	/* Auto margins centre the modal vertically within the overlay's content box.
+	   When the modal is at max-height (e.g. keyboard raised), they collapse to 0
+	   so the modal stays flush with the top padding rather than creeping up into
+	   the status-bar area. */
+	margin: auto;
 	overflow-x: hidden;
 	overflow-y: auto;
 	overscroll-behavior: contain;
