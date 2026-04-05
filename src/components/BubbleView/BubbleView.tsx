@@ -125,6 +125,7 @@ const BUBBLE_BASE_DIAMETER: Record<BubbleSizeClass, number> = {
 
 const BUBBLE_SIZE_CLASSES: readonly BubbleSizeClass[] = ['size1', 'size2', 'size3', 'size4', 'size5', 'size6', 'size7', 'size8'];
 
+/** Maps a raw importance score (0–15) to one of the eight visual size classes. */
 function scoreToSizeClass(score: number): BubbleSizeClass {
 	if (score >= 14) return 'size8';
 	if (score >= 12) return 'size7';
@@ -157,6 +158,15 @@ function circlesOverlap(
 	return distance < radius + otherRadius + gap;
 }
 
+/**
+ * Returns an ordered list of candidate horizontal centre positions for the
+ * scatter layout, starting at the seeded anchor and fanning outward.
+ *
+ * `preferLeft` is true for the left lane (active workspace); false for the
+ * right lane.  The alternating row offset (`rowIndex % 2`) produces the
+ * staggered-brick pattern that prevents bubbles from lining up in grid-like
+ * columns.
+ */
 function candidateCenterXs(
 	innerWidth: number,
 	anchorX: number,
@@ -181,6 +191,10 @@ function candidateCenterXs(
 }
 
 // ── Seeded deterministic hash (no crypto) ─────────────────────────────────
+// These helpers produce a stable float in [0, 1) for any string key.
+// Using a deterministic seed (noteId + suffix) means layout values such as
+// rotation, float timing, and vertical stagger remain constant across re-renders
+// and across devices, so the bubble cloud looks the same to every user.
 
 function hashCode(str: string): number {
 	let hash = 0;
@@ -244,6 +258,15 @@ type BubbleScoreInputs = {
 	collaboratorCount: number;
 };
 
+/**
+ * Computes a 0–15 importance score used to size bubbles.
+ *
+ * Score contributions (capped at 15):
+ *   +3  reminder due within 24 h
+ *   +2  note is pinned
+ *   +2  edited < 5 min ago   (+1 if edited < 30 min ago)
+ *   +log2(collaborators+2)×0.5  shared notes get a logarithmic boost
+ */
 function computeBalancedActivityScore(inputs: BubbleScoreInputs, now = Date.now()): number {
 	const reminderMs = inputs.reminderAt ? Date.parse(inputs.reminderAt) : Number.NaN;
 	const hasReminderSoon = Number.isFinite(reminderMs) && reminderMs >= now && reminderMs - now < ONE_DAY_MS;
@@ -260,11 +283,18 @@ function computeBalancedActivityScore(inputs: BubbleScoreInputs, now = Date.now(
 	return Math.min(reminderScore + pinScore + recencyScore + collabScore, 15);
 }
 
+/**
+ * Exponential moving average smoothing applied to bubble scores.
+ *
+ * alpha = 0.10 means:
+ *   - A single transient event (e.g. opening a note) nudges the visual size by
+ *     only 10 % of the delta — nearly imperceptible.
+ *   - After 25 ticks at the 1.5 s interval (~37 s) any remote client that
+ *     received a sync event has converged to ≥ 93 % of the new score, so
+ *     bubbles resize smoothly rather than snapping.
+ */
 function smoothScore(previous: number | null | undefined, next: number): number {
 	if (!Number.isFinite(previous ?? Number.NaN)) return next;
-	// alpha=0.10: a single "note opened" event only jumps the visual score by 10% of
-	// the delta (imperceptible size change), but after 25 ticks at the 1.5 s interval
-	// below (~37 s) remote clients have converged to ~93% of the new score.
 	const prev = previous as number;
 	return prev * 0.90 + next * 0.10;
 }
@@ -1088,9 +1118,10 @@ export function BubbleView({
 	// const [debugCopyState, setDebugCopyState] = React.useState<'idle' | 'copied' | 'failed'>('idle');
 	const smoothedScoreRef = React.useRef<Record<string, number>>({});
 	// const lastDebugKeyRef = React.useRef('');
-	// Advance smooth scores on a regular tick so they converge on remote clients
-	// that receive infrequent Y.js sync events (otherwise bubble sizes/positions
-	// on the remote client barely change until the user manually refreshes).
+	// Advance smooth scores on a regular 1.5 s tick so scores converge on devices
+	// that receive infrequent Y.js sync pulses. Without this, a remote client that
+	// gets a single sync event would only apply one EMA step, leaving scores
+	// visually lagging well behind the local originator.
 	const [scoreTick, setScoreTick] = React.useState(0);
 	React.useEffect(() => {
 		const id = window.setInterval(() => setScoreTick((t) => t + 1), 1500);
@@ -1145,6 +1176,9 @@ export function BubbleView({
 	}, [activeWorkspaceId, manager, scoredNotes, searchQuery]);
 	const scale = 0.62 + clampedZoom / 120;
 
+	// Build the visual layout list.  Notes are sorted score-descending (title
+	// as a stable tiebreaker) so the most important bubbles get first pick of
+	// the central position candidates in candidateCenterXs.
 	const scatterLayout = React.useMemo((): ColumnLayoutItem[] => {
 		const sorted = [...filteredNotes].sort((a, b) =>
 			b.score !== a.score ? b.score - a.score : a.title.localeCompare(b.title)

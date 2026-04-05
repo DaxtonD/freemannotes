@@ -149,6 +149,15 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 	const [category, setCategory] = React.useState<ThemeCategory>(() => getThemeCategory(props.themeId));
 	const [activePane, setActivePane] = React.useState<AppearancePane>('theme');
 
+	// Display-size uses a deferred-commit pattern to prevent a database write
+	// on every tick of the sliders:
+	//   displaySizeDraft  – live values shown in the UI while dragging
+	//   displaySizeInitial – values captured when the pane was opened, used both
+	//                        to detect changes (enables the Save button) and to
+	//                        revert the live preview when the user discards.
+	// The props.onChange callbacks are still called on every slider move so the
+	// rest of the app shows a live preview; only the Commit callbacks (which
+	// trigger a persistence write) are deferred to the explicit Save click.
 	const [displaySizeDraft, setDisplaySizeDraft] = React.useState(() => ({
 		noteCardFontScale: props.noteCardFontScale,
 		noteEditorFontScale: props.noteEditorFontScale,

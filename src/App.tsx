@@ -6171,6 +6171,10 @@ export function App(): React.JSX.Element {
 											step={1}
 											value={bubbleZoom}
 											onChange={(event) => setBubbleZoom(Number(event.target.value))}
+											// iOS PWA: touch-action:none prevents page-scroll interference but also
+											// breaks WebKit's internal range-input drag handler. Instead we claim
+											// pointer capture on pointerdown and manually compute the value from
+											// clientX so the slider responds reliably to touch-drag on iOS.
 											onPointerDown={(event) => {
 												try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
 											}}
