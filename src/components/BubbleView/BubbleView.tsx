@@ -823,6 +823,8 @@ type BubbleProps = {
 	floatDuration: number;
 	/** Float animation delay in seconds (0–6, seeded per note). */
 	floatDelay: number;
+	/** Seeded random top margin (0–60 px) for organic vertical staggering in scatter layout. */
+	marginTop: number;
 	onSelect: () => void | Promise<void>;
 };
 
@@ -922,7 +924,7 @@ function getBubbleDetailLevel(zoom: number, sizeClass: BubbleSizeClass): BubbleD
 	return sizeRank <= 2 ? 'meta' : 'full';
 }
 
-const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, onSelect }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, marginTop, onSelect }: BubbleProps) {
 	const displayTitle = resolveBubbleTitle(note.noteId, note.title);
 	const preview = getBubblePreview(note.noteId, doc, sizeClass);
 	const titleLayout = resolveBubbleTitleLayout(displayTitle || '(untitled)', bubbleDiameter);
@@ -972,12 +974,10 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 
 	return (
 		<motion.div
-			// layoutId enables framer-motion to animate this bubble to its new lane
-			// position (FLIP) when scores change and it moves between columns or rows.
 			layoutId={`bubble-${note.workspaceId}-${note.noteId}`}
 			layout
 			className={styles.bubbleShell}
-			// Slow, gentle spring — movements are perceptible but not jarring.
+			style={{ marginTop: `${marginTop}px` }}
 			transition={{ type: 'spring', stiffness: 22, damping: 14, mass: 1.2 }}
 		>
 			<button
@@ -1028,6 +1028,7 @@ type ColumnLayoutItem = {
 	rotateDeg: number;
 	floatDuration: number;
 	floatDelay: number;
+	marginTop: number;
 	workspaceColorStyle: React.CSSProperties;
 	doc: Y.Doc | null;
 };
@@ -1116,34 +1117,26 @@ export function BubbleView({
 		});
 	}, [activeWorkspaceId, manager, scoredNotes, searchQuery]);
 	const scale = 0.62 + clampedZoom / 120;
-	const mobile = viewportWidth <= 768;
-	// Round-robin column count: 3 on mobile, 3–6 on desktop based on available width.
-	const columnCount = mobile
-		? 3
-		: Math.max(3, Math.min(6, Math.floor(Math.max(1, viewportWidth - (sidebarIsCollapsed ? 88 : 368)) / 200)));
 
-	const laneLayout = React.useMemo((): ColumnLayoutItem[][] => {
+	const scatterLayout = React.useMemo((): ColumnLayoutItem[] => {
 		const sorted = [...filteredNotes].sort((a, b) =>
 			b.score !== a.score ? b.score - a.score : a.title.localeCompare(b.title)
 		);
-		const columns: ColumnLayoutItem[][] = Array.from({ length: columnCount }, () => []);
-		for (let i = 0; i < sorted.length; i++) {
-			const note = sorted[i];
-			const colIndex = i % columnCount; // round-robin preserves score-descending order within each column
+		return sorted.map((note) => {
 			const sizeClass = scoreToSizeClass(note.score);
 			const detailLevel = getBubbleDetailLevel(clampedZoom, sizeClass);
 			const bubbleDiameter = BUBBLE_BASE_DIAMETER[sizeClass] * scale;
 			const rotateDeg = (seededRandom(`${note.noteId}:r`) - 0.5) * 8;
 			const floatDuration = 6 + seededRandom(`${note.noteId}:float`) * 4;
 			const floatDelay = seededRandom(`${note.noteId}:delay`) * 6;
+			const marginTop = seededRandom(`${note.noteId}:mt`) * 60;
 			const doc = activeWorkspaceId === note.workspaceId ? (manager.peekDoc(note.noteId) ?? null) : null;
 			const workspaceColorStyle = toWorkspaceBubbleColorStyle(
 				workspaceColorSchemeById.get(note.workspaceId) ?? getWorkspaceBubbleColorScheme(themeId, note.workspaceId)
 			);
-			columns[colIndex].push({ note, sizeClass, detailLevel, bubbleDiameter, rotateDeg, floatDuration, floatDelay, workspaceColorStyle, doc });
-		}
-		return columns;
-	}, [activeWorkspaceId, clampedZoom, columnCount, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
+			return { note, sizeClass, detailLevel, bubbleDiameter, rotateDeg, floatDuration, floatDelay, marginTop, workspaceColorStyle, doc };
+		});
+	}, [activeWorkspaceId, clampedZoom, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
 
 	// const debugSummary = React.useMemo(() => {
 	// 	const rightmostEdge = packedLayout.items.reduce((max, item) => Math.max(max, item.left + item.layoutDiameter), 0);
@@ -1252,27 +1245,24 @@ export function BubbleView({
 	return (
 		<LayoutGroup>
 			<div
-				className={styles.lanes}
-				style={{ '--bv-scale': String(scale), '--bv-columns': String(columnCount) } as React.CSSProperties}
+				className={styles.scatter}
+				style={{ '--bv-scale': String(scale) } as React.CSSProperties}
 			>
-				{laneLayout.map((column, colIdx) => (
-					<div key={colIdx} className={styles.lane}>
-						{column.map((item) => (
-							<Bubble
-								key={`${item.note.workspaceId}:${item.note.noteId}`}
-								note={item.note}
-								doc={item.doc}
-								sizeClass={item.sizeClass}
-								detailLevel={item.detailLevel}
-								bubbleDiameter={item.bubbleDiameter}
-								workspaceColorStyle={item.workspaceColorStyle}
-								rotateDeg={item.rotateDeg}
-								floatDuration={item.floatDuration}
-								floatDelay={item.floatDelay}
-								onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
-							/>
-						))}
-					</div>
+				{scatterLayout.map((item) => (
+					<Bubble
+						key={`${item.note.workspaceId}:${item.note.noteId}`}
+						note={item.note}
+						doc={item.doc}
+						sizeClass={item.sizeClass}
+						detailLevel={item.detailLevel}
+						bubbleDiameter={item.bubbleDiameter}
+						workspaceColorStyle={item.workspaceColorStyle}
+						rotateDeg={item.rotateDeg}
+						floatDuration={item.floatDuration}
+						floatDelay={item.floatDelay}
+						marginTop={item.marginTop}
+						onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
+					/>
 				))}
 			</div>
 		</LayoutGroup>
