@@ -221,6 +221,8 @@
     "numberedList": "Numbered list",
     "taskList": "Task list",
     "blockquote": "Blockquote",
+    "nestContent": "Increase nesting",
+    "outdentContent": "Decrease nesting",
     "codeBlock": "Code block",
     "horizontalRule": "Horizontal rule",
     "table": "Table",

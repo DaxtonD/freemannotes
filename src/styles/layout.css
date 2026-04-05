@@ -1915,13 +1915,15 @@
 	background: color-mix(in srgb, var(--color-app-bg) 38%, transparent);
 	backdrop-filter: blur(4px);
 	-webkit-backdrop-filter: blur(4px);
-	z-index: 70;
+	/* Keep the FAB veil above the header/sidebar so opening quick-create blurs
+	   the full app viewport rather than only the notes pane underneath it. */
+	z-index: 980;
 }
 
 .mobile-fab-stack {
 	position: fixed;
-	right: var(--space-3);
-	bottom: calc(var(--space-3) + 64px);
+	right: calc(var(--space-3) + var(--app-safe-right));
+	bottom: calc(var(--space-3) + var(--app-safe-bottom) + 64px);
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-2);
@@ -1929,7 +1931,7 @@
 	pointer-events: none;
 	transform: translateY(8px);
 	transition: opacity 180ms ease, transform 180ms ease;
-	z-index: 81;
+	z-index: 981;
 }
 
 .mobile-fab-stack.is-open {
@@ -1968,8 +1970,8 @@
 
 .mobile-fab {
 	position: fixed;
-	right: var(--space-3);
-	bottom: var(--space-3);
+	right: calc(var(--space-3) + var(--app-safe-right));
+	bottom: calc(var(--space-3) + var(--app-safe-bottom));
 	width: 56px;
 	height: 56px;
 	display: inline-flex;
@@ -1984,7 +1986,7 @@
 	appearance: none;
 	transform: rotate(0deg);
 	transition: transform 220ms ease;
-	z-index: 82;
+	z-index: 982;
 }
 
 .mobile-fab.is-open {

@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.41 - 2026-04-05
+
+### Changed
+- **Rich-text nesting controls now work consistently across toolbar, keyboard, and mobile editors.** The full editor toolbar now exposes nest/outdent actions beside blockquote, mobile and PWA editor toolbars surface the same controls when list or quote nesting is active, and `Tab` / `Shift+Tab` follow the same structured nesting rules.
+- **Android standalone chrome now picks up the app theme earlier and more reliably.** Theme bootstrap now runs before React mounts, the root element background is synced alongside `body`, and the generated PWA manifest defaults to the app background instead of a white fallback.
+
+### Fixed
+- **The mobile User Management Reset Password button now fits without changing button width.** The label now wraps as a controlled two-line button on small screens with slightly smaller control text.
+- **iOS PWA quick-create controls now respect safe areas and blur the full app.** The FAB and its action stack now offset against safe-area insets, and the quick-create backdrop sits above the full shell so opening it blurs the entire viewport.
+
 ## 1.1.40 - 2026-04-05
 
 ### Changed
