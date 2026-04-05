@@ -203,6 +203,11 @@
 		*/
 		height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
 		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+		/* The overlay already reserves env(safe-area-inset-bottom) via its own
+		   padding-bottom -- the editor's default 16px bottom padding would stack
+		   on top of that, pushing the bottom dock ~50px above the home indicator.
+		   Zero it here so the dock sits flush at the overlay's content-box bottom. */
+		padding-bottom: 0;
 	}
 }
 
@@ -1117,11 +1122,7 @@
 @media (pointer: coarse) {
 	.editorBottomArea {
 		gap: 6px;
-		/* padding-bottom is intentionally NOT set here.
-		   .fullscreenOverlay already has padding-bottom: env(safe-area-inset-bottom)
-		   which positions the entire editor above the home-indicator safe area.
-		   Adding a second safe-area padding here was doubling the offset and pushing
-		   the dock ~34px too high on iOS PWA / notched devices. */
+		padding-bottom: env(safe-area-inset-bottom, 0px);
 	}
 
 	/* Match mobile dock screenshot: no visible divider lines. */
