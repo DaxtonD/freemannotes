@@ -566,6 +566,22 @@
 	text-decoration: line-through;
 }
 
+/* Ghost parent: not yet completed itself, but one or more of its children are.
+   Rendered in the completed section as a non-interactive context label to show
+   the hierarchy.  Dimmed so it reads clearly as secondary / not-done. */
+.checklistGhostItem {
+	opacity: 0.45;
+	pointer-events: none;
+}
+
+/* Ghost parent: not yet completed itself, but at least one child is.
+   Shown in the completed section as a non-interactive, dimmed context label
+   so the user can see which parent group the completed children belong to. */
+.checklistGhostItem {
+	opacity: 0.45;
+	pointer-events: none;
+}
+
 .checklistTextClamped::after {
 	content: '...';
 	position: absolute;
@@ -616,6 +632,48 @@
 
 .completedSection .checklist {
 	margin-top: 8px;
+}
+
+/* When the completed section is expanded, share available vertical space between
+   active items and the completed list instead of letting the completed list push
+   the active items (body) off the top of the card.
+
+   - .body keeps a guaranteed minimum height so at least a couple of active items
+     are always visible when the card is at its max-height.
+   - .completedSection becomes a flex child that can shrink/grow; its inner list
+     scrolls within whatever vertical share it receives. */
+.contentRegionCompletedExpanded .body {
+	min-height: 2.5em;
+}
+
+.contentRegionCompletedExpanded .completedSection {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.contentRegionCompletedExpanded .completedSection .checklist {
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--note-color-border, var(--color-border)) 60%, transparent) transparent;
+}
+
+.contentRegionCompletedExpanded .completedSection .checklist::-webkit-scrollbar {
+	width: 3px;
+}
+
+.contentRegionCompletedExpanded .completedSection .checklist::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.contentRegionCompletedExpanded .completedSection .checklist::-webkit-scrollbar-thumb {
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--note-color-border, var(--color-border)) 60%, transparent);
+}
+
+.contentRegionCompletedExpanded .completedSection .checklist::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in srgb, var(--note-color-border, var(--color-border)) 90%, transparent);
 }
 
 .linkPreviewRail {

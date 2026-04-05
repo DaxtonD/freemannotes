@@ -225,6 +225,38 @@
 	overflow: hidden;
 }
 
+/* When a section is the expanded one, its panel must fill the remaining modal
+   height so the inner content can scroll rather than overflowing the
+   fixed-height modal. */
+.sectionDisclosureExpanded .sectionPanelExpanded {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.sectionDisclosureExpanded .sectionPanelExpanded .sectionPanelInner {
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-width: thin;
+	scrollbar-color: color-mix(in srgb, var(--color-border) 60%, transparent) transparent;
+}
+
+.sectionDisclosureExpanded .sectionPanelExpanded .sectionPanelInner::-webkit-scrollbar {
+	width: 3px;
+}
+
+.sectionDisclosureExpanded .sectionPanelExpanded .sectionPanelInner::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+.sectionDisclosureExpanded .sectionPanelExpanded .sectionPanelInner::-webkit-scrollbar-thumb {
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.sectionDisclosureExpanded .sectionPanelExpanded .sectionPanelInner::-webkit-scrollbar-thumb:hover {
+	background: color-mix(in srgb, var(--color-border) 90%, transparent);
+}
+
 .sectionCard {
 	display: flex;
 	flex-direction: column;
@@ -755,5 +787,15 @@
 
 	.qrModalActions > button {
 		flex: 1 1 140px;
+	}
+
+	/* Keep Copy / View QR Code buttons compact and single-line on mobile;
+	   the catch-all rule above would otherwise stretch them to full width. */
+	.activeLinkActions .secondaryButton {
+		flex: 0 0 auto;
+		width: auto;
+		height: 30px;
+		padding: 0 10px;
+		white-space: nowrap;
 	}
 }
