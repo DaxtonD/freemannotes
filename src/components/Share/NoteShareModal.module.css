@@ -3,7 +3,7 @@
 	inset: 0;
 	background: var(--color-overlay);
 	display: flex;
-	align-items: center;
+	align-items: flex-start;
 	justify-content: center;
 	padding: calc(env(safe-area-inset-top, 0px) + 20px) calc(env(safe-area-inset-right, 0px) + 20px) calc(env(safe-area-inset-bottom, 0px) + 20px) calc(env(safe-area-inset-left, 0px) + 20px);
 	z-index: 130;
@@ -12,6 +12,7 @@
 .modal {
 	width: min(560px, 100%);
 	max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px);
+	margin: auto;
 	overflow: auto;
 	background: linear-gradient(180deg, var(--color-surface), var(--color-surface-2));
 	border: 1px solid var(--color-border);
