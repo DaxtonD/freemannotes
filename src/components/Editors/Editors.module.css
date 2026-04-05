@@ -1117,7 +1117,11 @@
 @media (pointer: coarse) {
 	.editorBottomArea {
 		gap: 6px;
-		padding-bottom: env(safe-area-inset-bottom, 0px);
+		/* padding-bottom is intentionally NOT set here.
+		   .fullscreenOverlay already has padding-bottom: env(safe-area-inset-bottom)
+		   which positions the entire editor above the home-indicator safe area.
+		   Adding a second safe-area padding here was doubling the offset and pushing
+		   the dock ~34px too high on iOS PWA / notched devices. */
 	}
 
 	/* Match mobile dock screenshot: no visible divider lines. */
