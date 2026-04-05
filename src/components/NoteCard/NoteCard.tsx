@@ -625,6 +625,39 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [props.noteId]);
 	const activeChecklistItems = React.useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedChecklistItems = React.useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
+	// Build the display list for the completed section.  For each completed item
+	// we emit an 'item' row.  When a completed child's parent is not yet completed
+	// we first insert a 'ghost' row for that parent so the user can see which
+	// group the completed children belong to.
+	const completedRows = React.useMemo((): Array<{ kind: 'item' | 'ghost'; item: NoteCardChecklistItem }> => {
+		if (type !== 'checklist') return [];
+		const completedIdSet = new Set(completedChecklistItems.map((i) => i.id));
+		const itemById = new Map<string, NoteCardChecklistItem>(normalizedItems.map((i) => [i.id, i]));
+		const rows: Array<{ kind: 'item' | 'ghost'; item: NoteCardChecklistItem }> = [];
+		const insertedGhostParents = new Set<string>();
+		for (const item of normalizedItems) {
+			if (!item.completed) continue;
+			if (item.parentId) {
+				const parent = itemById.get(item.parentId);
+				if (parent && !completedIdSet.has(parent.id) && !insertedGhostParents.has(parent.id)) {
+					insertedGhostParents.add(parent.id);
+					rows.push({ kind: 'ghost', item: parent });
+				}
+			}
+			rows.push({ kind: 'item', item });
+		}
+		return rows;
+	}, [type, normalizedItems, completedChecklistItems]);
+
+	const toggleNoteCardChecklistItem = React.useCallback((id: string, checked: boolean): void => {
+		if (!canEdit) return;
+		const childIds = new Set(normalizedItems.filter((i) => i.parentId === id).map((i) => i.id));
+		for (const ni of normalizedItems) {
+			if (ni.id === id || childIds.has(ni.id)) {
+				updateChecklistItemById(checklistArray, ni.id, { completed: checked });
+			}
+		}
+	}, [canEdit, checklistArray, normalizedItems]);
 
 	React.useLayoutEffect(() => {
 		if (type !== 'checklist') return;
@@ -1005,7 +1038,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				</div>
 			) : null}
 
-			<div ref={contentRegionRef} className={styles.contentRegion}>
+			<div ref={contentRegionRef} className={`${styles.contentRegion}${showCompleted && completedChecklistItems.length > 0 ? ` ${styles.contentRegionCompletedExpanded}` : ''}`}>
 				{type === 'text' ? (
 					<div ref={bodyRef} className={styles.body}>
 						<div ref={contentPreviewRef} className={styles.contentPreview}>{renderRichPreview(richContent, allowCardItemInteractions, allowCardItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
@@ -1022,7 +1055,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 											onPointerUp={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
 											onClick={allowCardItemInteractions ? (e) => {
 												e.stopPropagation();
-												if (canEdit) updateChecklistItemById(checklistArray, item.id, { completed: !item.completed });
+												toggleNoteCardChecklistItem(item.id, !item.completed);
 											} : undefined}
 											aria-label={item.completed ? 'Completed' : 'Not completed'}
 										>
@@ -1065,7 +1098,19 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 								)}
 								{showCompleted ? (
 									<ul className={styles.checklist}>
-										{completedChecklistItems.map((item) => (
+										{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
+											// Ghost parent: this item is not completed but some of its children are.
+											// Rendered as a dimmed, non-interactive label so the user can see which
+											// group the completed children belong to.
+											<li key={`ghost-${item.id}`} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''} ${styles.checklistGhostItem}`} aria-hidden="true">
+												<span className={styles.checklistCheckboxHitArea}>
+													<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
+												</span>
+												<div className={styles.checklistText}>
+													{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false) ?? item.text}
+												</div>
+											</li>
+										) : (
 											<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
 												<span
 													className={styles.checklistCheckboxHitArea}
@@ -1073,7 +1118,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 													onPointerUp={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
 													onClick={allowCardItemInteractions ? (e) => {
 											e.stopPropagation();
-											if (canEdit) updateChecklistItemById(checklistArray, item.id, { completed: !item.completed });
+											toggleNoteCardChecklistItem(item.id, !item.completed);
 										} : undefined}
 													aria-label={item.completed ? 'Completed' : 'Not completed'}
 												>

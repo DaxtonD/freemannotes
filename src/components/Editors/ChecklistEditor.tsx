@@ -504,6 +504,24 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const normalizedItems = React.useMemo(() => reconcileDraftItems(normalizeChecklistHierarchy(items), items), [items]);
 	const activeItems = React.useMemo(() => normalizedItems.filter((row) => !row.completed), [normalizedItems]);
 	const completedItems = React.useMemo(() => normalizedItems.filter((row) => row.completed), [normalizedItems]);
+	const completedRows = React.useMemo((): Array<{ kind: 'item' | 'ghost'; item: DraftChecklistItem }> => {
+		const completedIdSet = new Set(completedItems.map((i) => i.id));
+		const itemById = new Map<string, DraftChecklistItem>(normalizedItems.map((i) => [i.id, i]));
+		const rows: Array<{ kind: 'item' | 'ghost'; item: DraftChecklistItem }> = [];
+		const insertedGhosts = new Set<string>();
+		for (const item of normalizedItems) {
+			if (!item.completed) continue;
+			if (item.parentId) {
+				const parent = itemById.get(item.parentId);
+				if (parent && !completedIdSet.has(parent.id) && !insertedGhosts.has(parent.id)) {
+					insertedGhosts.add(parent.id);
+					rows.push({ kind: 'ghost', item: parent });
+				}
+			}
+			rows.push({ kind: 'item', item });
+		}
+		return rows;
+	}, [normalizedItems, completedItems]);
 
 	React.useEffect(() => {
 		latestItemsRef.current = items;
@@ -1185,7 +1203,19 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						</button>
 						{showCompleted ? (
 							<ul className={styles.checklistList}>
-								{completedItems.map((item) => (
+								{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
+											<li key={`ghost-${item.id}`}
+												className={`${styles.checklistItem} ${styles.checklistGhostItem}`}
+												aria-hidden="true">
+										<div className={styles.dragHandle} aria-hidden="true" />
+										<label className={styles.checklistCheckboxHitArea}>
+											<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
+										</label>
+										<div className={styles.checklistRowPreview}>
+											{renderRichPreview(item.richContent) || item.text || '\u00A0'}
+										</div>
+									</li>
+								) : (
 											<li key={item.id} className={`${styles.checklistItem}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
 										<div className={styles.dragHandle} aria-hidden="true">
 													<FontAwesomeIcon icon={faGripVertical} />
