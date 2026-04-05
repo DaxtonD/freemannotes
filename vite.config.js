@@ -123,7 +123,9 @@ module.exports = defineConfig(({ mode }) => {
 					scope: '/',
 					display: 'standalone',
 					orientation: 'portrait',
-					theme_color: '#ffffff',
+					// Match the default app background so Android standalone chrome does
+					// not flash a white navigation bar before the runtime theme sync runs.
+					theme_color: '#0b0f16',
 					background_color: '#0b0f16',
 					icons: [
 						// 'any' icons are displayed as-is (transparent background preserved).

@@ -221,6 +221,8 @@
     "numberedList": "Lista numerada",
     "taskList": "Lista de tareas",
     "blockquote": "Cita",
+    "nestContent": "Aumentar sangrado",
+    "outdentContent": "Reducir sangrado",
     "codeBlock": "Bloque de código",
     "horizontalRule": "Línea horizontal",
     "table": "Tabla",

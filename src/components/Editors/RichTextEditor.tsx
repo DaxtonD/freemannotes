@@ -13,12 +13,14 @@ import {
 	faAlignRight,
 	faBold,
 	faCode,
+	faIndent,
 	faItalic,
 	faLink,
 	faListCheck,
 	faListOl,
 	faListUl,
 	faMinus,
+	faOutdent,
 	faQuoteLeft,
 	faRotateLeft,
 	faRotateRight,
@@ -240,6 +242,63 @@ function exitEmptyListItem(editor: Editor | null | undefined): boolean {
 	return false;
 }
 
+function getToolbarNestingContext(editor: Editor | null | undefined): 'listItem' | 'taskItem' | 'blockquote' | null {
+	if (!editor) return null;
+	// Prefer list nesting when the selection sits inside both a list and a blockquote.
+	// That keeps the toolbar aligned with the most common expectation: indenting the
+	// current list row instead of wrapping the entire quoted section again.
+	if (editor.isActive('taskList')) return 'taskItem';
+	if (editor.isActive('bulletList') || editor.isActive('orderedList')) return 'listItem';
+	if (editor.isActive('blockquote')) return 'blockquote';
+	return null;
+}
+
+function canIndentStructuredBlock(editor: Editor | null | undefined): boolean {
+	const context = getToolbarNestingContext(editor);
+	if (context === 'taskItem') return canRunRichTextCommand(editor, 'sinkListItem', 'taskItem');
+	if (context === 'listItem') return canRunRichTextCommand(editor, 'sinkListItem', 'listItem');
+	if (context === 'blockquote') return canRunRichTextCommand(editor, 'wrapIn', 'blockquote');
+	return false;
+}
+
+function canOutdentStructuredBlock(editor: Editor | null | undefined): boolean {
+	const context = getToolbarNestingContext(editor);
+	if (context === 'taskItem') return canRunRichTextCommand(editor, 'liftListItem', 'taskItem');
+	if (context === 'listItem') return canRunRichTextCommand(editor, 'liftListItem', 'listItem');
+	if (context === 'blockquote') return canRunRichTextCommand(editor, 'lift', 'blockquote');
+	return false;
+}
+
+function indentStructuredBlock(editor: Editor | null | undefined): void {
+	const context = getToolbarNestingContext(editor);
+	if (context === 'taskItem') {
+		runRichTextCommand(editor, 'sinkListItem', 'taskItem');
+		return;
+	}
+	if (context === 'listItem') {
+		runRichTextCommand(editor, 'sinkListItem', 'listItem');
+		return;
+	}
+	if (context === 'blockquote') {
+		runRichTextCommand(editor, 'wrapIn', 'blockquote');
+	}
+}
+
+function outdentStructuredBlock(editor: Editor | null | undefined): void {
+	const context = getToolbarNestingContext(editor);
+	if (context === 'taskItem') {
+		runRichTextCommand(editor, 'liftListItem', 'taskItem');
+		return;
+	}
+	if (context === 'listItem') {
+		runRichTextCommand(editor, 'liftListItem', 'listItem');
+		return;
+	}
+	if (context === 'blockquote') {
+		runRichTextCommand(editor, 'lift', 'blockquote');
+	}
+}
+
 function getEditorSelectionClipboardInput(editor: Editor | null): { text: string; html: string } | null {
 	if (!editor) return null;
 	const { from, to, empty } = editor.state.selection;
@@ -291,6 +350,8 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		selector: ({ editor }) => ({
 			canUndo: canRunUndo(editor),
 			canRedo: canRunRedo(editor),
+			canIndentStructuredBlock: canIndentStructuredBlock(editor),
+			canOutdentStructuredBlock: canOutdentStructuredBlock(editor),
 			canInsertTable: canRunRichTextCommand(editor, 'insertTable', { rows: 3, cols: 3, withHeaderRow: true }),
 			canAddTableColumn: canRunRichTextCommand(editor, 'addColumnAfter'),
 			canDeleteTableColumn: canRunRichTextCommand(editor, 'deleteColumn'),
@@ -321,6 +382,8 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const resolvedToolbarState = toolbarState ?? {
 		canUndo: false,
 		canRedo: false,
+		canIndentStructuredBlock: false,
+		canOutdentStructuredBlock: false,
 		canInsertTable: false,
 		canAddTableColumn: false,
 		canDeleteTableColumn: false,
@@ -575,6 +638,15 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const noteAutoScrollLabel = props.noteAutoScrollEnabled
 		? t('editors.disableNoteAutoScroll')
 		: t('editors.enableNoteAutoScroll');
+	// Minimal/mobile toolbars do not render the full list/blockquote section, so
+	// surface nest/outdent only when the current selection is already inside a
+	// structured context that can actually be deepened or lifted.
+	const showStructuredNestingButtons = resolvedToolbarState.canIndentStructuredBlock
+		|| resolvedToolbarState.canOutdentStructuredBlock
+		|| resolvedToolbarState.isBulletList
+		|| resolvedToolbarState.isOrderedList
+		|| resolvedToolbarState.isTaskList
+		|| resolvedToolbarState.isBlockquote;
 
 	return (
 		<div className={styles.formatToolbarStack}>
@@ -642,6 +714,34 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
 					</button>
 				) : null}
+				{props.variant !== 'full' && showStructuredNestingButtons ? (
+					<>
+						<button
+							type="button"
+							className={`${styles.formatButton}${compactButtonClass}`}
+							aria-label={t('editors.nestContent')}
+							title={t('editors.nestContent')}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => indentStructuredBlock(props.editor)}
+							disabled={!resolvedToolbarState.canIndentStructuredBlock}
+						>
+							<FontAwesomeIcon icon={faIndent} />
+						</button>
+						<button
+							type="button"
+							className={`${styles.formatButton}${compactButtonClass}`}
+							aria-label={t('editors.outdentContent')}
+							title={t('editors.outdentContent')}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => outdentStructuredBlock(props.editor)}
+							disabled={!resolvedToolbarState.canOutdentStructuredBlock}
+						>
+							<FontAwesomeIcon icon={faOutdent} />
+						</button>
+					</>
+				) : null}
 				{props.variant === 'full' ? (
 					<>
 						<div className={styles.formatDivider} aria-hidden="true" />
@@ -670,6 +770,34 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBlockquote ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.blockquote')} title={t('editors.blockquote')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleBlockquote')}>
 							<FontAwesomeIcon icon={faQuoteLeft} />
 						</button>
+						{showStructuredNestingButtons ? (
+							<>
+								<button
+									type="button"
+									className={`${styles.formatButton}${compactButtonClass}`}
+									aria-label={t('editors.nestContent')}
+									title={t('editors.nestContent')}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={() => indentStructuredBlock(props.editor)}
+									disabled={!resolvedToolbarState.canIndentStructuredBlock}
+								>
+									<FontAwesomeIcon icon={faIndent} />
+								</button>
+								<button
+									type="button"
+									className={`${styles.formatButton}${compactButtonClass}`}
+									aria-label={t('editors.outdentContent')}
+									title={t('editors.outdentContent')}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={() => outdentStructuredBlock(props.editor)}
+									disabled={!resolvedToolbarState.canOutdentStructuredBlock}
+								>
+									<FontAwesomeIcon icon={faOutdent} />
+								</button>
+							</>
+						) : null}
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isCodeBlock ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.codeBlock')} title={t('editors.codeBlock')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleCodeBlock')}>
 							<FontAwesomeIcon icon={faCode} />
 						</button>
@@ -997,6 +1125,18 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				},
 				handleKeyDown: (_view, event) => {
 					const ed = editorRef.current;
+					if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+						// Keep keyboard nesting aligned with the toolbar: Tab deepens the current
+						// list/quote context, Shift+Tab backs it out, and unsupported contexts
+						// fall through so native focus navigation still works.
+						const handled = event.shiftKey
+							? canOutdentStructuredBlock(ed) && (outdentStructuredBlock(ed), true)
+							: canIndentStructuredBlock(ed) && (indentStructuredBlock(ed), true);
+						if (handled) {
+							event.preventDefault();
+							return true;
+						}
+					}
 					if (event.key === 'Enter' && !event.shiftKey && shouldExitEmptyListItem(ed)) {
 						event.preventDefault();
 						return exitEmptyListItem(ed);

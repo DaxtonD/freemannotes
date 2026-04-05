@@ -252,6 +252,12 @@
 	white-space: nowrap;
 }
 
+.mobileTwoLineButton {
+	/* Default to single-line on wider layouts so the compact desktop row heights
+	   do not change; the mobile override below opts into wrapping instead. */
+	white-space: nowrap;
+}
+
 .compactControl {
 	min-height: 36px;
 	padding: 7px 10px;
@@ -582,7 +588,17 @@
 	.compactControl {
 		min-height: 34px;
 		padding: 6px 8px;
-		font-size: 12px;
+		font-size: 11px;
+	}
+
+	.mobileTwoLineButton {
+		white-space: normal;
+		line-height: 1.05;
+		text-align: center;
+	}
+
+	.mobileTwoLineButton span {
+		display: inline-block;
 	}
 
 	.usage {
