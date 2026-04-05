@@ -56,7 +56,7 @@ import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
-import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
+import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
@@ -941,6 +941,21 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			stopActiveScrollAnimation();
 		};
 	}, [noteAutoScrollEnabled, props.docId, scrollNoteBodyToBottom, stopActiveScrollAnimation, type]);
+
+	// iOS caret visibility fix: after keyboard animation settles, re-check caret visibility.
+	React.useEffect(() => {
+		// When the keyboard opens, `mobileKeyboardOpen` becomes true and the editor
+		// shell height is clamped to `keyboard.visibleBottom`. However TipTap's
+		// `selectionUpdate` / `focus` event fires BEFORE visualViewport finishes
+		// animating, so the caret may still be hidden under the keyboard.
+		// Schedule a second check after the iOS keyboard animation settles (~300 ms).
+		if (!mobileKeyboardOpen || type !== 'text') return;
+		const timer = window.setTimeout(() => {
+			ensureEditorSelectionVisible(textEditor, keyboardVisibilityPaddingPx);
+		}, 320);
+		return () => window.clearTimeout(timer);
+	}, [mobileKeyboardOpen, textEditor, type]);
+
 	const editorColorStyle = useMemo(() => {
 		if (!resolvedColor) return undefined;
 		return {

@@ -230,6 +230,33 @@
 	padding: 12px;
 }
 
+.displaySizeSaveRow {
+	display: flex;
+	justify-content: flex-end;
+	margin-top: 4px;
+}
+
+.displaySizeSaveButton {
+	border: 1px solid color-mix(in srgb, var(--color-accent) 44%, transparent);
+	border-radius: 8px;
+	padding: 8px 20px;
+	font-size: 14px;
+	font-weight: 600;
+	cursor: pointer;
+	background: var(--color-accent);
+	color: var(--color-accent-contrast, white);
+	transition: opacity 0.15s;
+}
+
+.displaySizeSaveButton:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
+
+.displaySizeSaveButton:not(:disabled):hover {
+	opacity: 0.85;
+}
+
 .scaleField {
 	display: flex;
 	flex-direction: column;
