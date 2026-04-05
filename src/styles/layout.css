@@ -1559,6 +1559,10 @@
 	accent-color: var(--color-accent);
 	background: transparent;
 	flex: 0 1 auto;
+	/* iOS Safari / PWA: prevent the browser from claiming horizontal touch
+	   gestures as page-scroll before the native <input type="range"> can
+	   enter drag mode. Without this the slider thumb refuses to drag. */
+	touch-action: none;
 }
 
 .note-grid-scope-clear {
