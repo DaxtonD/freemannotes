@@ -410,6 +410,18 @@ function getNoteColorVars(noteId: string, doc: Y.Doc, themeId: ThemeId): React.C
 	} as React.CSSProperties;
 }
 
+function readChipOverlayAnchorRect(element: HTMLElement | null): { top: number; left: number; width: number; height: number } | null {
+	if (!element) return null;
+	// Use the full note-card shell for horizontal geometry so every chip dropdown
+	// has the same width/centering, but keep the trigger button's vertical rect so
+	// the panel opens directly below the chip row (or flips above that row).
+	const triggerRect = element.getBoundingClientRect();
+	const cardShell = element.closest('[data-note-content="true"]');
+	const target = cardShell instanceof HTMLElement ? cardShell : element;
+	const cardRect = target.getBoundingClientRect();
+	return { top: triggerRect.top, left: cardRect.left, width: cardRect.width, height: triggerRect.height };
+}
+
 function renderNoteMetaChips(args: {
 	noteId: string;
 	docId: string | null;
@@ -464,7 +476,8 @@ function renderNoteMetaChips(args: {
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={(event) => {
 						event.stopPropagation();
-						const rect = event.currentTarget.getBoundingClientRect();
+						const rect = readChipOverlayAnchorRect(event.currentTarget);
+						if (!rect) return;
 						args.onOpenMetadataChip?.({
 							noteId: args.noteId,
 							kind: 'collection',
@@ -493,7 +506,8 @@ function renderNoteMetaChips(args: {
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={(event) => {
 						event.stopPropagation();
-						const rect = event.currentTarget.getBoundingClientRect();
+						const rect = readChipOverlayAnchorRect(event.currentTarget);
+						if (!rect) return;
 						args.onOpenMetadataChip?.({
 							noteId: args.noteId,
 							kind: 'label',
@@ -522,7 +536,8 @@ function renderNoteMetaChips(args: {
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={(event) => {
 						event.stopPropagation();
-						const rect = event.currentTarget.getBoundingClientRect();
+						const rect = readChipOverlayAnchorRect(event.currentTarget);
+						if (!rect) return;
 						args.onToggleCollaboratorChip?.(args.noteId, {
 							top: rect.top,
 							left: rect.left,
@@ -1590,31 +1605,32 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const disableAttachmentInitialRemoteRefresh = true;
 	const collaboratorOverlayPosition = React.useMemo(() => {
 		if (!openCollaboratorChip || typeof window === 'undefined') return null;
-		const overlayWidth = Math.min(230, Math.max(170, Math.round(openCollaboratorChip.anchorRect.width + 34)));
+		const overlayWidth = Math.min(Math.round(openCollaboratorChip.anchorRect.width), window.innerWidth - 24);
 		const viewportWidth = window.innerWidth;
 		const viewportHeight = window.innerHeight;
-		const left = Math.min(Math.max(12, openCollaboratorChip.anchorRect.left), Math.max(12, viewportWidth - overlayWidth - 12));
+		const centeredLeft = openCollaboratorChip.anchorRect.left + (openCollaboratorChip.anchorRect.width - overlayWidth) / 2;
+		const left = Math.min(Math.max(12, centeredLeft), Math.max(12, viewportWidth - overlayWidth - 12));
 		const visibleRows = Math.min(MAX_VISIBLE_COLLABORATORS, collaboratorOverlaySummary?.count ?? 1);
 		const estimatedHeight = Math.min(240, Math.max(84, visibleRows * 44 + 16));
-		const preferredTop = openCollaboratorChip.anchorRect.top + openCollaboratorChip.anchorRect.height + 10;
+		const preferredTop = openCollaboratorChip.anchorRect.top + openCollaboratorChip.anchorRect.height + 8;
 		const top = preferredTop + estimatedHeight <= viewportHeight - 12
 			? preferredTop
-			: Math.max(12, openCollaboratorChip.anchorRect.top - estimatedHeight - 10);
+			: Math.max(12, openCollaboratorChip.anchorRect.top - estimatedHeight - 8);
 		return { top, left, width: overlayWidth };
 	}, [collaboratorOverlaySummary?.count, openCollaboratorChip]);
 	const metadataOverlayPosition = React.useMemo(() => {
 		if (!openMetadataChip || typeof window === 'undefined') return null;
-		// Anchor the metadata overlay near the chip button, but flip above the card when
-		// there is not enough room below in shorter mobile viewports.
-		const overlayWidth = Math.min(280, Math.max(190, Math.round(openMetadataChip.anchorRect.width + 80)));
+		// Align metadata overlays to the same card-width anchor as other note chips.
+		const overlayWidth = Math.min(Math.round(openMetadataChip.anchorRect.width), window.innerWidth - 24);
 		const viewportWidth = window.innerWidth;
 		const viewportHeight = window.innerHeight;
-		const left = Math.min(Math.max(12, openMetadataChip.anchorRect.left), Math.max(12, viewportWidth - overlayWidth - 12));
+		const centeredLeft = openMetadataChip.anchorRect.left + (openMetadataChip.anchorRect.width - overlayWidth) / 2;
+		const left = Math.min(Math.max(12, centeredLeft), Math.max(12, viewportWidth - overlayWidth - 12));
 		const estimatedHeight = Math.min(260, Math.max(84, openMetadataChip.entries.length * 38 + 18));
-		const preferredTop = openMetadataChip.anchorRect.top + openMetadataChip.anchorRect.height + 10;
+		const preferredTop = openMetadataChip.anchorRect.top + openMetadataChip.anchorRect.height + 8;
 		const top = preferredTop + estimatedHeight <= viewportHeight - 12
 			? preferredTop
-			: Math.max(12, openMetadataChip.anchorRect.top - estimatedHeight - 10);
+			: Math.max(12, openMetadataChip.anchorRect.top - estimatedHeight - 8);
 		return { top, left, width: overlayWidth };
 	}, [openMetadataChip]);
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
@@ -2011,7 +2027,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 											initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
 											animate={{ opacity: 1, backdropFilter: 'blur(2px)' }}
 											exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
-											transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+											transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 										/>
 										<div
 											className={styles.collaboratorOverlayRoot}
@@ -2041,10 +2057,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										const touch = event.touches[0];
 										collaboratorTouchYRef.current = touch ? touch.clientY : null;
 									}}
-									initial={{ opacity: 0, y: -8, scale: 0.985 }}
-									animate={{ opacity: 1, y: 0, scale: 1 }}
-									exit={{ opacity: 0, y: -8, scale: 0.98 }}
-									transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+									initial={{ opacity: 0, y: -6 }}
+									animate={{ opacity: 1, y: 0 }}
+									exit={{ opacity: 0, y: -6 }}
+									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 								>
 									<div
 										ref={collaboratorOverlayListRef}
@@ -2052,37 +2068,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									>
 										{collaboratorOverlaySummary.collaborators.map((collaborator, index) => {
 											const isActive = props.activeCollaboratorFilter?.key === collaborator.key;
-											// Each row grows the panel first, then drops in from above the settled rows.
-											const shellDelay = 0.01 + index * 0.035;
-											const contentDelay = shellDelay + 0.0125;
-											// Later rows start higher so they visibly hop over the earlier collaborators.
-											const entryOffset = 18 + index * 32;
+											const rowDelay = 0.016 + index * 0.024;
 											return (
-												<motion.div
+												<div
 													key={collaborator.key}
 													className={styles.collaboratorOverlayItemShell}
-													initial={{ height: 0, marginTop: 0 }}
-													animate={{ height: 'auto', marginTop: index === 0 ? 0 : 4 }}
-													exit={{ height: 0, marginTop: 0 }}
-													transition={{
-														height: { duration: 0.06, ease: [0.22, 1, 0.36, 1], delay: shellDelay },
-														marginTop: { duration: 0.04, ease: 'easeOut', delay: shellDelay },
-													}}
 												>
 													<motion.button
 														type="button"
 														className={`${styles.collaboratorOverlayItem}${isActive ? ` ${styles.collaboratorOverlayItemActive}` : ''}`}
-														// Keep the newest row above earlier ones while it flies through the stack.
-														style={{ zIndex: index + 1 }}
-														initial={{ y: -entryOffset, scale: 0.97 }}
-														animate={{ y: 0, scale: 1 }}
-														exit={{ y: -12, scale: 0.98 }}
+															initial={{ opacity: 0, y: -10 }}
+															animate={{ opacity: 1, y: 0 }}
+															exit={{ opacity: 0, y: -6 }}
 														transition={{
-															type: 'spring',
-															stiffness: 620,
-															damping: 30,
-															mass: 0.6,
-															delay: contentDelay,
+																duration: 0.15,
+																ease: [0.22, 1, 0.36, 1],
+																delay: rowDelay,
 														}}
 														onMouseDown={preventChipOverlayFocusSteal}
 														onPointerDown={preventChipOverlayFocusSteal}
@@ -2106,7 +2107,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 														)}
 														<span className={styles.collaboratorOverlayName}>{collaborator.name}</span>
 													</motion.button>
-												</motion.div>
+												</div>
 											);
 										})}
 									</div>
@@ -2124,7 +2125,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
 									animate={{ opacity: 1, backdropFilter: 'blur(2px)' }}
 									exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
-									transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 								/>
 								<div
 									className={styles.collaboratorOverlayRoot}
@@ -2143,17 +2144,25 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										style={{ ...(metadataOverlayColorStyle ?? {}), ...metadataOverlayPosition }}
 										onPointerDown={(event) => event.stopPropagation()}
 										onClick={(event) => event.stopPropagation()}
-										initial={{ opacity: 0, y: -8, scale: 0.985 }}
-										animate={{ opacity: 1, y: 0, scale: 1 }}
-										exit={{ opacity: 0, y: -8, scale: 0.98 }}
-										transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+										initial={{ opacity: 0, y: -6 }}
+										animate={{ opacity: 1, y: 0 }}
+										exit={{ opacity: 0, y: -6 }}
+										transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 									>
 										<div className={styles.collaboratorOverlayList}>
-											{openMetadataChip.entries.map((entry) => (
-												<button
+											{openMetadataChip.entries.map((entry, index) => (
+												<motion.button
 													key={entry.key}
 													type="button"
 													className={`${styles.collaboratorOverlayItem}${entry.active ? ` ${styles.collaboratorOverlayItemActive}` : ''}`}
+													initial={{ opacity: 0, y: -10 }}
+													animate={{ opacity: 1, y: 0 }}
+													exit={{ opacity: 0, y: -6 }}
+													transition={{
+														duration: 0.15,
+														ease: [0.22, 1, 0.36, 1],
+														delay: 0.016 + index * 0.024,
+													}}
 													onMouseDown={preventChipOverlayFocusSteal}
 													onPointerDown={preventChipOverlayFocusSteal}
 													onClick={() => {
@@ -2167,7 +2176,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 												>
 													{entry.color ? <span className={styles.metadataOverlaySwatch} style={{ backgroundColor: entry.color }} aria-hidden="true" /> : null}
 													<span className={styles.collaboratorOverlayName}>{entry.label}</span>
-												</button>
+												</motion.button>
 											))}
 										</div>
 									</motion.div>
