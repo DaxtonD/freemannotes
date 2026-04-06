@@ -389,6 +389,14 @@ function detectStandaloneDisplayMode(): boolean {
 	);
 }
 
+function detectIosStandaloneDisplayMode(): boolean {
+	if (typeof window === 'undefined') return false;
+	const navigatorValue = window.navigator;
+	const ua = navigatorValue.userAgent || '';
+	const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigatorValue.platform === 'MacIntel' && navigatorValue.maxTouchPoints > 1);
+	return isIOS && detectStandaloneDisplayMode();
+}
+
 type AuthCacheV1 = {
 	v: 1;
 	userId: string;
@@ -654,6 +662,9 @@ export function App(): React.JSX.Element {
 	const [openDocId, setOpenDocId] = React.useState<string | null>(null);
 	const pendingNewNoteIdsRef = React.useRef<Set<string>>(new Set());
 	const pendingNewNoteCleanupIdsRef = React.useRef<Set<string>>(new Set());
+	// Tracks the note currently being created as a draft — kept hidden from the grid
+	// and bubble view until finalization (saved = visible, discarded = never shown).
+	const [draftNoteId, setDraftNoteId] = React.useState<string | null>(null);
 	const pendingNewNoteCollectionSeedRef = React.useRef<Map<string, { collectionId: string; label: string }>>(new Map());
 	const previousSelectedNoteIdRef = React.useRef<string | null>(null);
 	const deviceId = React.useMemo(() => getDeviceId(), []);
@@ -1382,6 +1393,8 @@ export function App(): React.JSX.Element {
 				const disposition = await getPendingNewNoteDisposition(noteId);
 				pendingNewNoteIdsRef.current.delete(noteId);
 				pendingNewNoteCollectionSeedRef.current.delete(noteId);
+				// Unhide the note (it will appear in grid if kept, or disappear if deleted).
+				setDraftNoteId((prev) => prev === noteId ? null : prev);
 				if (disposition.keep) return;
 				await manager.permanentlyDeleteNote(noteId).catch(() => undefined);
 				showBriefDialog(disposition.type === 'checklist' ? 'empty checklist discarded' : 'empty note discarded');
@@ -1409,6 +1422,14 @@ export function App(): React.JSX.Element {
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot({ ...current, isFabOpen: true }, 'push');
 	}, [commitOverlaySnapshot, getOverlaySnapshot, goBackIfOverlayHistory, isFabOpen]);
+
+	React.useEffect(() => {
+		if (!isFabOpen || !isEditorOverlayOpen) return;
+		// Opening an editor should fully supersede quick-create on mobile so the
+		// FAB button/backdrop cannot linger above the editor overlay.
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot({ ...current, isFabOpen: false }, 'replace');
+	}, [commitOverlaySnapshot, getOverlaySnapshot, isEditorOverlayOpen, isFabOpen]);
 
 	React.useEffect(() => {
 		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -3605,6 +3626,11 @@ export function App(): React.JSX.Element {
 			// surface as editing an existing note, including media, collaborators, and
 			// metadata assignment while the note is still effectively a draft.
 			const noteId = makeNoteId(mode === 'checklist' ? 'checklist-note' : 'text-note');
+			// Mark as draft BEFORE any async IDB/network operations so NoteGrid/BubbleView
+			// never render the note during the creation window (avoids a brief flash and
+			// the 403 API calls that follow from attachment chips being mounted).
+			pendingNewNoteIdsRef.current.add(noteId);
+			setDraftNoteId(noteId);
 			const doc = await manager.getDocWithSync(noteId);
 			if (mode === 'checklist') {
 				initChecklistNoteDoc(doc, '', [], []);
@@ -3623,7 +3649,6 @@ export function App(): React.JSX.Element {
 				pendingNewNoteCollectionSeedRef.current.delete(noteId);
 			}
 			await manager.createNote(noteId, '');
-			pendingNewNoteIdsRef.current.add(noteId);
 			openNoteEditor(noteId, opts);
 		},
 		[activateWorkspaceFromSidebar, activeCollection, activeCollectionId, authWorkspaceId, bubbleSelectedWorkspace, canEditActiveWorkspace, collectionPathById, manager, openNoteEditor, showBriefDialog, sidebarView, t, viewMode]
@@ -3968,47 +3993,21 @@ export function App(): React.JSX.Element {
 		[authStatus, authUserId, authWorkspaceId, bumpCollaborationRefreshToken, showBriefDialog, t, userModalBusy]
 	);
 
+	const authGateSubtitle = externalRoute?.kind === 'invite'
+		? t('invite.authPrompt')
+		: externalRoute?.kind === 'share'
+			? 'Sign in to open this shared item.'
+			: authStatus === 'loading'
+				? 'Checking session…'
+				: null;
+
 	const authGateView = (
 		<div className="auth-shell">
 			<div className="auth-card">
-				<div className="auth-title">FreemanNotes</div>
-				<div className="auth-subtitle">
-					{externalRoute?.kind === 'invite'
-						? t('invite.authPrompt')
-						: externalRoute?.kind === 'share'
-							? 'Sign in to open this shared item.'
-						: authStatus === 'loading'
-							? 'Checking session…'
-							: 'Sign in to enable sync'}
-				</div>
+				<div className="auth-title">Freeman Notes</div>
+				{authGateSubtitle ? <div className="auth-subtitle">{authGateSubtitle}</div> : null}
 				{externalRoute?.kind === 'invite' ? <div className="auth-hint">{t('invite.emailMatchNotice')}</div> : null}
 				{externalRoute?.kind === 'share' ? <div className="auth-hint">Share links require an authenticated account before access is applied.</div> : null}
-				<div className="auth-mode-row">
-					<button
-						type="button"
-						className={authMode === 'login' ? 'auth-mode is-active' : 'auth-mode'}
-						onClick={() => {
-							setAuthMode('login');
-								setAuthPasswordConfirm('');
-							setAuthError(null);
-						}}
-						disabled={authBusy || authStatus === 'loading'}
-					>
-						Login
-					</button>
-					<button
-						type="button"
-						className={authMode === 'register' ? 'auth-mode is-active' : 'auth-mode'}
-						onClick={() => {
-							setAuthMode('register');
-								setAuthPasswordConfirm('');
-							setAuthError(null);
-						}}
-						disabled={authBusy || authStatus === 'loading'}
-					>
-						Register
-					</button>
-				</div>
 				<form
 					className="auth-form"
 					onSubmit={(e) => {
@@ -4027,21 +4026,6 @@ export function App(): React.JSX.Element {
 							required
 						/>
 					</label>
-					{authMode === 'login' ? (
-						<button
-							type="button"
-							className="auth-link"
-							onClick={() => {
-								setForgotPasswordOpen(true);
-								setForgotPasswordEmail(authEmail);
-								setForgotPasswordError(null);
-								setForgotPasswordMessage(null);
-							}}
-							disabled={authBusy || authStatus === 'loading'}
-						>
-							Forgot password?
-						</button>
-					) : null}
 					{authMode === 'register' ? (
 						<label className="auth-label">
 							Name
@@ -4125,6 +4109,21 @@ export function App(): React.JSX.Element {
 							required
 						/>
 					</label>
+					{authMode === 'login' ? (
+						<button
+							type="button"
+							className="auth-link"
+							onClick={() => {
+								setForgotPasswordOpen(true);
+								setForgotPasswordEmail(authEmail);
+								setForgotPasswordError(null);
+								setForgotPasswordMessage(null);
+							}}
+							disabled={authBusy || authStatus === 'loading'}
+						>
+							Forgot password?
+						</button>
+					) : null}
 					{authMode === 'register' ? (
 						<>
 							<div className="auth-password-strength" aria-live="polite">
@@ -4151,8 +4150,36 @@ export function App(): React.JSX.Element {
 					<button type="submit" disabled={authBusy || authStatus === 'loading'}>
 						{authBusy ? 'Please wait…' : authMode === 'register' ? 'Create account' : 'Sign in'}
 					</button>
+					{authMode === 'login' ? (
+						<button
+							type="button"
+							className="auth-secondary-button auth-form-secondary-button"
+							onClick={() => {
+								// Keep registration reachable without the old top toggle while
+								// preserving the same underlying auth mode/state transitions.
+								setAuthMode('register');
+								setAuthPasswordConfirm('');
+								setAuthError(null);
+							}}
+							disabled={authBusy || authStatus === 'loading'}
+						>
+							Register
+						</button>
+					) : (
+						<button
+							type="button"
+							className="auth-secondary-button auth-form-secondary-button"
+							onClick={() => {
+								setAuthMode('login');
+								setAuthPasswordConfirm('');
+								setAuthError(null);
+							}}
+							disabled={authBusy || authStatus === 'loading'}
+						>
+							Back to sign in
+						</button>
+					)}
 				</form>
-				<div className="auth-hint">Sync is disabled until you sign in.</div>
 				{forgotPasswordOpen ? (
 					<div className="auth-modal-backdrop" role="presentation" onClick={() => setForgotPasswordOpen(false)}>
 						<div className="auth-modal" role="dialog" aria-modal="true" aria-label="Reset password" onClick={(event) => event.stopPropagation()}>
@@ -4653,6 +4680,77 @@ export function App(): React.JSX.Element {
 			document.documentElement.style.removeProperty('--app-header-offset');
 		};
 	}, [isMobileLandscape, isMobileViewport]);
+
+	React.useEffect(() => {
+		// iOS standalone PWAs still expose the native left-edge swipe-back gesture,
+		// which can pop our overlay history and visually drag the app shell even when
+		// the user meant to interact with the editor. Capture that edge gesture early
+		// and cancel it once it resolves into a horizontal right-swipe.
+		if (!isMobileViewport || typeof window === 'undefined') return;
+		if (!detectIosStandaloneDisplayMode()) return;
+
+		let tracking = false;
+		let horizontalLocked = false;
+		let startX = 0;
+		let startY = 0;
+		const MAX_START_X = 28;
+		const MAX_DY = 24;
+		const MIN_BLOCK_DX = 8;
+
+		const onTouchStart = (event: TouchEvent) => {
+			if (event.touches.length !== 1) {
+				tracking = false;
+				horizontalLocked = false;
+				return;
+			}
+			const touch = event.touches[0];
+			if (touch.clientX > MAX_START_X) {
+				tracking = false;
+				horizontalLocked = false;
+				return;
+			}
+			startX = touch.clientX;
+			startY = touch.clientY;
+			tracking = true;
+			horizontalLocked = false;
+		};
+
+		const onTouchMove = (event: TouchEvent) => {
+			if (!tracking || event.touches.length !== 1) return;
+			const touch = event.touches[0];
+			const dx = touch.clientX - startX;
+			const dy = touch.clientY - startY;
+
+			if (!horizontalLocked && Math.abs(dy) > MAX_DY && Math.abs(dy) > Math.abs(dx)) {
+				tracking = false;
+				return;
+			}
+
+			if (dx > MIN_BLOCK_DX && Math.abs(dx) > Math.abs(dy)) {
+				horizontalLocked = true;
+			}
+
+			if (horizontalLocked && event.cancelable) {
+				event.preventDefault();
+			}
+		};
+
+		const onTouchEnd = () => {
+			tracking = false;
+			horizontalLocked = false;
+		};
+
+		document.addEventListener('touchstart', onTouchStart, { passive: true, capture: true });
+		document.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+		document.addEventListener('touchend', onTouchEnd, { passive: true, capture: true });
+		document.addEventListener('touchcancel', onTouchEnd, { passive: true, capture: true });
+		return () => {
+			document.removeEventListener('touchstart', onTouchStart, { capture: true });
+			document.removeEventListener('touchmove', onTouchMove, { capture: true });
+			document.removeEventListener('touchend', onTouchEnd, { capture: true });
+			document.removeEventListener('touchcancel', onTouchEnd, { capture: true });
+		};
+	}, [isMobileViewport]);
 
 	React.useEffect(() => {
 		// Best-effort edge-swipe gesture:
@@ -5427,7 +5525,7 @@ export function App(): React.JSX.Element {
 			}`}
 		>
 			{isMobileViewport && !isMobileSidebarOpen ? <div ref={mobileSwipeZoneRef} className="mobile-swipe-zone" aria-hidden="true" /> : null}
-			{isFabOpen ? (
+			{isFabOpen && !isEditorOverlayOpen ? (
 				<button
 					type="button"
 					className="mobile-fab-backdrop"
@@ -6325,6 +6423,7 @@ export function App(): React.JSX.Element {
 						deviceId={deviceId}
 						viewMode={viewMode === 'bubble' ? 'card' : viewMode}
 						isVisible={viewMode !== 'bubble' && sidebarView !== 'images'}
+						hiddenNoteId={draftNoteId}
 				/>
 				</div>
 				{sidebarView === 'images' ? (
@@ -6357,6 +6456,7 @@ export function App(): React.JSX.Element {
 							reminderFilter={activeReminderFilter}
 							searchQuery={deferredSearchQuery}
 							sidebarIsCollapsed={sidebarIsCollapsed}
+							hiddenNoteId={draftNoteId}
 							onSelectNote={handleBubbleNoteSelect}
 						/>
 					) : null}
@@ -6452,7 +6552,7 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
-			{canCreateNotesInCurrentContext && sidebarView === 'notes' ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
+			{canCreateNotesInCurrentContext && sidebarView === 'notes' && !isEditorOverlayOpen ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
 				<button
 					type="button"
 					className="mobile-fab-action"
@@ -6473,7 +6573,7 @@ export function App(): React.JSX.Element {
 				</button>
 			</div> : null}
 
-			{canCreateNotesInCurrentContext && sidebarView === 'notes' ? (
+			{canCreateNotesInCurrentContext && sidebarView === 'notes' && !isEditorOverlayOpen ? (
 				<button
 					type="button"
 					className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
@@ -6508,6 +6608,7 @@ export function App(): React.JSX.Element {
 					quickCreateCollectionOption={selectedQuickCreateCollectionOption}
 					onClose={closeNoteEditor}
 					onDelete={onDeleteSelectedNote}
+					isPendingNew={draftNoteId === selectedNoteId}
 					onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 					onAddImage={selectedNoteReadOnly ? undefined : () => {
 						if (!selectedNoteDocId) return;

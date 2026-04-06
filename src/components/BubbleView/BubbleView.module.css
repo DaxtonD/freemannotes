@@ -20,8 +20,10 @@
 
 .cloud {
 	position: relative;
-	margin: 0 auto;
-	overflow: visible;
+	width: 100%;
+	min-height: 300px;
+	overflow-x: hidden;
+	overflow-y: visible;
 }
 
 @media (min-width: 769px) {
@@ -140,27 +142,20 @@
 }
 
 .scatter {
-	display: flex;
-	flex-wrap: wrap;
-	justify-content: center;
-	align-items: flex-start;
-	gap: clamp(4px, 0.7vw, 10px);
-	/* Top padding ensures bubbles with negative marginTop (staggered upward) aren't clipped. */
-	padding: 32px 12px 40px;
-	width: 100%;
-	box-sizing: border-box;
+	/* Kept for reference; actual layout now uses .cloud + .cloudItem (absolute positioning). */
+	display: none;
 }
 
+/* .lane is unused in the packed layout but kept to avoid CSS module warnings. */
 .lane {
-	display: flex;
-	flex-direction: column;
-	gap: clamp(8px, 1.3vw, 18px);
-	align-items: center;
-	width: 100%;
+	display: none;
 }
 
 .bubbleShell {
+	width: 100%;
+	height: 100%;
 	display: flex;
+	align-items: center;
 	justify-content: center;
 	box-sizing: border-box;
 	overflow: visible;

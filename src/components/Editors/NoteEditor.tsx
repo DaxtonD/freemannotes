@@ -83,6 +83,8 @@ export type NoteEditorProps = {
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
 	allowQuickDelete?: boolean;
+	/** When true, the close button always shows an X (discard) regardless of modification state. */
+	isPendingNew?: boolean;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -749,6 +751,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					authUserId={props.authUserId}
 					canEdit={!readOnly}
 					onAddImage={props.onAddImage}
+					isPendingNew={props.isPendingNew}
 				/>
 			);
 		}
@@ -2200,7 +2203,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							</button>
 						</div>
 						<button type="button" className={styles.bottomDockClose} onClick={handleClose} aria-label={t('common.close')} title={t('common.close')}>
-							<FontAwesomeIcon icon={isModified ? byPrefixAndName.fas.check : byPrefixAndName.far.xmark} />
+							<FontAwesomeIcon icon={!props.isPendingNew && isModified ? byPrefixAndName.fas.check : byPrefixAndName.far.xmark} />
 						</button>
 					</nav>
 				</div>}
