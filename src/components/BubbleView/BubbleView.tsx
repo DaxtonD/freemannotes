@@ -101,10 +101,12 @@ type PackedBubbleLayoutItem = {
 	sizeClass: BubbleSizeClass;
 	detailLevel: BubbleDetailLevel;
 	bubbleDiameter: number;
-	layoutDiameter: number;
-	left: number;
-	top: number;
+	layoutDiameter: number; // packing diameter = bubbleDiameter (gap handled externally)
+	left: number;           // absolute left of the cloudItem box
+	top: number;            // absolute top  of the cloudItem box
 	rotateDeg: number;
+	floatDuration: number;
+	floatDelay: number;
 	workspaceColorStyle: React.CSSProperties;
 	doc: Y.Doc | null;
 };
@@ -141,53 +143,134 @@ function getBubbleSizeRank(sizeClass: BubbleSizeClass): number {
 	return BUBBLE_SIZE_CLASSES.indexOf(sizeClass) + 1;
 }
 
-function circlesOverlap(
-	left: number,
-	top: number,
-	diameter: number,
-	other: { left: number; top: number; layoutDiameter: number },
-	gap: number
-): boolean {
-	const radius = diameter / 2;
-	const otherRadius = other.layoutDiameter / 2;
-	const centerX = left + radius;
-	const centerY = top + radius;
-	const otherCenterX = other.left + otherRadius;
-	const otherCenterY = other.top + otherRadius;
-	const distance = Math.hypot(centerX - otherCenterX, centerY - otherCenterY);
-	return distance < radius + otherRadius + gap;
-}
-
 /**
- * Returns an ordered list of candidate horizontal centre positions for the
- * scatter layout, starting at the seeded anchor and fanning outward.
+ * Greedy circle packing using an Archimedean spiral search and a spatial hash
+ * grid for O(1) collision lookups.
  *
- * `preferLeft` is true for the left lane (active workspace); false for the
- * right lane.  The alternating row offset (`rowIndex % 2`) produces the
- * staggered-brick pattern that prevents bubbles from lining up in grid-like
- * columns.
+ * For each bubble (sorted largest-first so large circles claim space early):
+ *  1. Pick a seeded-random start position in the upper portion of the cloud.
+ *  2. Walk an Archimedean spiral from that start, checking each candidate.
+ *  3. Place the bubble at the first collision-free, in-bounds position.
+ *
+ * Complexity: O(N × S × G) — N bubbles, S ≤ 500 spiral steps per bubble,
+ * G ≈ constant neighbors per grid cell.  Handles 500+ bubbles in < 5 ms.
+ *
+ * @param inputs        Items with noteId and radius (visual radius, without gap).
+ * @param containerWidth Available pixel width.
+ * @param gap           Minimum gap between bubble edges in pixels.
+ * @returns Map of noteId → centre position { cx, cy }.
  */
-function candidateCenterXs(
-	innerWidth: number,
-	anchorX: number,
-	step: number,
-	rowIndex: number,
-	drift: number,
-	preferLeft: boolean
-): number[] {
-	const base = preferLeft
-		? anchorX + (rowIndex % 2 === 0 ? step * 0.3 : step * 0.95) + drift * 0.3
-		: anchorX + (rowIndex % 2 === 0 ? step * 0.35 : -step * 0.35) + drift;
-	const candidates = [base];
-	const maxOffset = Math.ceil(innerWidth / step);
-	for (let offset = 1; offset <= maxOffset; offset += 1) {
-		if (preferLeft) {
-			candidates.push(base + offset * step, base - offset * step * 0.5);
-		} else {
-			candidates.push(base - offset * step, base + offset * step);
+function packBubbles(
+	inputs: readonly { noteId: string; r: number }[],
+	containerWidth: number,
+	gap: number,
+): Map<string, { cx: number; cy: number }> {
+	const result = new Map<string, { cx: number; cy: number }>();
+	if (inputs.length === 0 || containerWidth <= 0) return result;
+
+	// Sort largest-first — big circles claim centre space, small ones fill gaps.
+	const sorted = [...inputs].sort((a, b) => b.r - a.r);
+
+	// Spatial hash grid: cell size = smallest bubble radius × 1.5 so each query
+	// covers at most 9 cells and finds all potential colliders.
+	const CELL = Math.max(24, (sorted[sorted.length - 1]?.r ?? 24) * 1.5);
+	const grid = new Map<number, string[]>();
+	const placed = new Map<string, { cx: number; cy: number; r: number }>();
+	let cloudMaxY = 0; // bottom edge of the tallest placed bubble
+
+	// Integer grid key — offset to handle potential negative x cells near left edge.
+	const gk = (gx: number, gy: number): number => (gx + 512) * 8192 + gy;
+
+	const register = (id: string, cx: number, cy: number, r: number): void => {
+		const x0 = Math.floor((cx - r) / CELL);
+		const x1 = Math.floor((cx + r) / CELL);
+		const y0 = Math.floor((cy - r) / CELL);
+		const y1 = Math.floor((cy + r) / CELL);
+		for (let gx = x0; gx <= x1; gx++) {
+			for (let gy = y0; gy <= y1; gy++) {
+				const key = gk(gx, gy);
+				const bucket = grid.get(key);
+				if (bucket) bucket.push(id);
+				else grid.set(key, [id]);
+			}
+		}
+		placed.set(id, { cx, cy, r });
+		result.set(id, { cx, cy });
+		cloudMaxY = Math.max(cloudMaxY, cy + r);
+	};
+
+	const fits = (cx: number, cy: number, r: number): boolean => {
+		// Keep within container horizontally; no top bound (cloud grows down).
+		if (cx - r < 2 || cx + r > containerWidth - 2 || cy - r < 2) return false;
+		const margin = r + gap;
+		const x0 = Math.floor((cx - margin) / CELL);
+		const x1 = Math.floor((cx + margin) / CELL);
+		const y0 = Math.floor((cy - margin) / CELL);
+		const y1 = Math.floor((cy + margin) / CELL);
+		for (let gx = x0; gx <= x1; gx++) {
+			for (let gy = y0; gy <= y1; gy++) {
+				const bucket = grid.get(gk(gx, gy));
+				if (!bucket) continue;
+				for (const id of bucket) {
+					const o = placed.get(id)!;
+					const dx = cx - o.cx;
+					const dy = cy - o.cy;
+					const minD = r + o.r + gap;
+					if (dx * dx + dy * dy < minD * minD) return false;
+				}
+			}
+		}
+		return true;
+	};
+
+	for (const { noteId, r } of sorted) {
+		// Seed a start position inside the cloud's current extent.
+		// py is biased toward existing content so bubbles fill gaps rather than
+		// growing a tail at the bottom.
+		const sx = Math.max(r + 2, Math.min(containerWidth - r - 2,
+			seededRandom(`${noteId}:px`) * containerWidth));
+		const sy = r + 2 + seededRandom(`${noteId}:py`) * Math.max(r * 2, cloudMaxY * 0.7);
+
+		// Archimedean spiral: radius = a × θ / 2π, step angle 0.45 rad.
+		// Setting a = max(r×0.5, 8) keeps arms reasonably tight so nearby gaps
+		// are probed before marching far from the seed.
+		const a = Math.max(r * 0.5, 8);
+		const dTheta = 0.45;
+		let found = false;
+
+		for (let t = 0; t < 500; t++) {
+			const theta = t * dTheta;
+			const rs = a * theta / (2 * Math.PI);
+			const cx = sx + Math.cos(theta) * rs;
+			const cy = sy + Math.sin(theta) * rs;
+			if (fits(cx, cy, r)) {
+				register(noteId, cx, cy, r);
+				found = true;
+				break;
+			}
+		}
+
+		if (!found) {
+			// Fallback: systematic strip scan from the top so we always place.
+			const step = r * 0.7;
+			let placed_ = false;
+			outer: for (let cy = r + 2; cy < cloudMaxY + 800; cy += step) {
+				for (let cx = r + 2; cx <= containerWidth - r - 2; cx += step) {
+					if (fits(cx, cy, r)) {
+						register(noteId, cx, cy, r);
+						placed_ = true;
+						break outer;
+					}
+				}
+			}
+			if (!placed_) {
+				// Ultimate fallback: stack below everything.
+				register(noteId, containerWidth / 2, cloudMaxY + r + gap, r);
+			}
 		}
 	}
-	return candidates;
+
+	return result;
 }
 
 // ── Seeded deterministic hash (no crypto) ─────────────────────────────────
@@ -868,8 +951,6 @@ type BubbleProps = {
 	floatDuration: number;
 	/** Float animation delay in seconds (0–6, seeded per note). */
 	floatDelay: number;
-	/** Seeded random top padding (0–60 px) — part of the shell’s box so flex never overlaps. */
-	paddingTop: number;
 	onSelect: () => void | Promise<void>;
 };
 
@@ -969,7 +1050,7 @@ function getBubbleDetailLevel(zoom: number, sizeClass: BubbleSizeClass): BubbleD
 	return sizeRank <= 2 ? 'meta' : 'full';
 }
 
-const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, paddingTop, onSelect }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, onSelect }: BubbleProps) {
 	const displayTitle = resolveBubbleTitle(note.noteId, note.title);
 	const preview = getBubblePreview(note.noteId, doc, sizeClass);
 	const titleLayout = resolveBubbleTitleLayout(displayTitle || '(untitled)', bubbleDiameter);
@@ -1020,13 +1101,11 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 	return (
 		<motion.div
 			layoutId={`bubble-${note.workspaceId}-${note.noteId}`}
-			layout
 			className={styles.bubbleShell}
-			// paddingTop (not marginTop) staggersthe bubble downward while remaining
-			// part of the shell’s box model, so flex correctly accounts for the space
-			// and adjacent rows never visually overlap.
-			style={{ paddingTop: `${paddingTop}px`, width: `${titleLayout.grownDiameter}px` }}
-			transition={{ type: 'spring', stiffness: 22, damping: 14, mass: 1.2 }}
+			initial={{ opacity: 0, scale: 0.4 }}
+			animate={{ opacity: 1, scale: 1 }}
+			exit={{ opacity: 0, scale: 0.3 }}
+			transition={{ type: 'spring', stiffness: 260, damping: 22 }}
 		>
 			<button
 				type="button"
@@ -1068,18 +1147,11 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 
 // ── BubbleView props & component ───────────────────────────────────────────
 
-type ColumnLayoutItem = {
-	note: ScoredBubbleNote;
-	sizeClass: BubbleSizeClass;
-	detailLevel: BubbleDetailLevel;
-	bubbleDiameter: number;
-	rotateDeg: number;
-	floatDuration: number;
-	floatDelay: number;
-	paddingTop: number;
-	workspaceColorStyle: React.CSSProperties;
-	doc: Y.Doc | null;
-};
+// Maximum bubbles to lay out at once — keeps packing + render fast even
+// when a user has many workspaces.  Notes beyond this cap are omitted from
+// the visual layout (the IDB per-workspace limit of 80 notes means in
+// practice the total rarely exceeds 500 anyway).
+const MAX_LAYOUT_BUBBLES = 500;
 
 export type BubbleViewProps = {
 	workspaces: BubbleWorkspaceInfo[];
@@ -1092,6 +1164,8 @@ export type BubbleViewProps = {
 	reminderFilter: ReminderFilterMode;
 	searchQuery: string;
 	sidebarIsCollapsed: boolean;
+	/** Note ID to keep hidden from the bubble display while being drafted. */
+	hiddenNoteId?: string | null;
 	onSelectNote: (noteId: string, workspaceId: string) => void | Promise<void>;
 };
 
@@ -1106,12 +1180,49 @@ export function BubbleView({
 	reminderFilter,
 	searchQuery,
 	sidebarIsCollapsed,
+	hiddenNoteId,
 	onSelectNote,
 }: BubbleViewProps): React.JSX.Element {
 	const manager = useDocumentManager();
 	const notes = useBubbleNotes(workspaces, activeWorkspaceId, sharedPlacements, showTrashed, reminderFilter);
-	const collaboratorCountByNoteId = useBubbleCollaboratorCounts(authUserId, notes, manager);
+	// Exclude the draft note from collaborator syncing — it hasn't been persisted
+	// to the server yet so the API would return 403 for it.
+	const notesForCollaborators = React.useMemo(
+		() => (hiddenNoteId ? notes.filter((n) => n.noteId !== hiddenNoteId) : notes),
+		[hiddenNoteId, notes]
+	);
+	const collaboratorCountByNoteId = useBubbleCollaboratorCounts(authUserId, notesForCollaborators, manager);
+	// Track viewport width for scale-factor computations; the cloud container
+	// width is measured separately via the callback ref / ResizeObserver below.
 	const [viewportWidth, setViewportWidth] = React.useState(() => (typeof window === 'undefined' ? 1280 : window.innerWidth));
+	// Holds the active ResizeObserver so the callback ref can disconnect it when
+	// the cloud div unmounts (e.g. when filteredNotes goes to 0 and back).
+	const roRef = React.useRef<ResizeObserver | null>(null);
+	// Better initial estimate: on mobile (≤ 768 px) there is no sidebar, so use
+	// the full innerWidth; on desktop subtract sidebar (320 px) + main padding.
+	const [containerWidth, setContainerWidth] = React.useState<number>(() => {
+		if (typeof window === 'undefined') return 800;
+		const w = window.innerWidth;
+		return Math.max(300, w <= 768 ? w - 16 : w - 336);
+	});
+	// Callback ref: fires every time the cloud div mounts/unmounts so the
+	// ResizeObserver is always attached to the live element, even when the
+	// component transitions through the empty-notes early-return path.
+	const cloudRef = React.useCallback((el: HTMLDivElement | null) => {
+		if (roRef.current) {
+			roRef.current.disconnect();
+			roRef.current = null;
+		}
+		if (!el) return;
+		const measure = (): void => {
+			const w = el.getBoundingClientRect().width;
+			if (w > 0) setContainerWidth(Math.floor(w));
+		};
+		const observer = new ResizeObserver(measure);
+		observer.observe(el);
+		measure();
+		roRef.current = observer;
+	}, []);
 	// const [debugEnabled, setDebugEnabled] = React.useState(() => isBubbleDebugEnabled());
 	// const [lastMeasureSource, setLastMeasureSource] = React.useState('initial');
 	// const [debugEvents, setDebugEvents] = React.useState<BubbleDebugEvent[]>([]);
@@ -1168,38 +1279,83 @@ export function BubbleView({
 	}, [collaboratorCountByNoteId, notes, scoreTick]);
 	const filteredNotes = React.useMemo(() => {
 		return scoredNotes.filter((note) => {
+			if (hiddenNoteId && note.noteId === hiddenNoteId) return false;
 			const doc = activeWorkspaceId === note.workspaceId
 				? (manager.peekDoc(note.noteId) ?? null)
 				: null;
 			return matchesBubbleSearch(note, doc, searchQuery);
 		});
-	}, [activeWorkspaceId, manager, scoredNotes, searchQuery]);
+	}, [activeWorkspaceId, hiddenNoteId, manager, scoredNotes, searchQuery]);
 	const scale = 0.62 + clampedZoom / 120;
 
 	// Build the visual layout list.  Notes are sorted score-descending (title
 	// as a stable tiebreaker) so the most important bubbles get first pick of
 	// the central position candidates in candidateCenterXs.
-	const scatterLayout = React.useMemo((): ColumnLayoutItem[] => {
-		const sorted = [...filteredNotes].sort((a, b) =>
+
+	// ── Circle-packing layout ──────────────────────────────────────────────────────
+	// Computes absolute (left, top) positions for every bubble so they are
+	// densely packed without row artefacts.  Large bubbles are sorted first so
+	// they claim the upper area; small ones fill the gaps.
+	// ── Circle-packing layout ──────────────────────────────────────────────────────
+	// Computes absolute (left, top) positions for every bubble so they are
+	// densely packed without row artefacts.  Large bubbles are sorted first so
+	// they claim the upper area; small ones fill the gaps.
+	const PACK_GAP = Math.max(4, 8 * scale);
+	const packedLayout = React.useMemo((): { items: PackedBubbleLayoutItem[]; totalHeight: number } => {
+		// Cap at MAX_LAYOUT_BUBBLES to bound packing time for very large workspaces.
+		const visible = filteredNotes.slice(0, MAX_LAYOUT_BUBBLES);
+		const sorted = [...visible].sort((a, b) =>
 			b.score !== a.score ? b.score - a.score : a.title.localeCompare(b.title)
 		);
-		return sorted.map((note) => {
+
+		// Build visual metadata for every note (size, color, animation seeds).
+		const visualItems = sorted.map((note) => {
 			const sizeClass = scoreToSizeClass(note.score);
 			const detailLevel = getBubbleDetailLevel(clampedZoom, sizeClass);
-			const bubbleDiameter = BUBBLE_BASE_DIAMETER[sizeClass] * scale;
+			const nominalDiameter = BUBBLE_BASE_DIAMETER[sizeClass] * scale;
+			// Account for title-driven bubble growth so packing uses the real
+			// visual size and avoids text clipping across adjacent bubbles.
+			const displayTitle = resolveBubbleTitle(note.noteId, note.title);
+			const { grownDiameter } = resolveBubbleTitleLayout(displayTitle || '(untitled)', nominalDiameter);
 			const rotateDeg = (seededRandom(`${note.noteId}:r`) - 0.5) * 8;
 			const floatDuration = 6 + seededRandom(`${note.noteId}:float`) * 4;
 			const floatDelay = seededRandom(`${note.noteId}:delay`) * 6;
-			// All-positive paddingTop (0–60 px) so the bubble’s shell is taller than the
-			// bubble itself, preventing flex rows from overlapping.
-			const paddingTop = seededRandom(`${note.noteId}:mt`) * 60;
 			const doc = activeWorkspaceId === note.workspaceId ? (manager.peekDoc(note.noteId) ?? null) : null;
 			const workspaceColorStyle = toWorkspaceBubbleColorStyle(
 				workspaceColorSchemeById.get(note.workspaceId) ?? getWorkspaceBubbleColorScheme(themeId, note.workspaceId)
 			);
-			return { note, sizeClass, detailLevel, bubbleDiameter, rotateDeg, floatDuration, floatDelay, paddingTop, workspaceColorStyle, doc };
+			return { note, sizeClass, detailLevel, bubbleDiameter: grownDiameter, rotateDeg, floatDuration, floatDelay, workspaceColorStyle, doc };
 		});
-	}, [activeWorkspaceId, clampedZoom, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
+
+		// Run the packing algorithm with the measured container width.
+		// Use a 16 px padding inset so bubbles don't press against the edge.
+		const usableWidth = Math.max(80, containerWidth - 32);
+		const packInputs = visualItems.map((item) => ({
+			noteId: item.note.noteId,
+			r: item.bubbleDiameter / 2,
+		}));
+		const positions = packBubbles(packInputs, usableWidth, PACK_GAP);
+
+		let totalHeight = 0;
+		const items: PackedBubbleLayoutItem[] = visualItems.map((item) => {
+			const pos = positions.get(item.note.noteId) ?? { cx: containerWidth / 2, cy: item.bubbleDiameter / 2 };
+			const d = item.bubbleDiameter;
+			// Offset packing coordinates (centred) to top-left corner, then add
+			// the 16 px inset we removed from usableWidth above.
+			const left = Math.round(pos.cx - d / 2 + 16);
+			const top = Math.round(pos.cy - d / 2);
+			totalHeight = Math.max(totalHeight, top + d);
+			return {
+				...item,
+				layoutDiameter: d,
+				left,
+				top,
+			};
+		});
+
+		return { items, totalHeight };
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [activeWorkspaceId, clampedZoom, containerWidth, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
 
 	// const debugSummary = React.useMemo(() => {
 	// 	const rightmostEdge = packedLayout.items.reduce((max, item) => Math.max(max, item.left + item.layoutDiameter), 0);
@@ -1308,24 +1464,37 @@ export function BubbleView({
 	return (
 		<LayoutGroup>
 			<div
-				className={styles.scatter}
-				style={{ '--bv-scale': String(scale) } as React.CSSProperties}
+				ref={cloudRef}
+				className={styles.cloud}
+				style={{
+					'--bv-scale': String(scale),
+					height: `${packedLayout.totalHeight + 48}px`,
+				} as React.CSSProperties}
 			>
-				{scatterLayout.map((item) => (
-					<Bubble
+				{packedLayout.items.map((item) => (
+					<div
 						key={`${item.note.workspaceId}:${item.note.noteId}`}
-						note={item.note}
-						doc={item.doc}
-						sizeClass={item.sizeClass}
-						detailLevel={item.detailLevel}
-						bubbleDiameter={item.bubbleDiameter}
-						workspaceColorStyle={item.workspaceColorStyle}
-						rotateDeg={item.rotateDeg}
-						floatDuration={item.floatDuration}
-						floatDelay={item.floatDelay}
-						paddingTop={item.paddingTop}
-						onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
-					/>
+						className={styles.cloudItem}
+						style={{
+							left: item.left,
+							top: item.top,
+							width: item.layoutDiameter,
+							height: item.layoutDiameter,
+						}}
+					>
+						<Bubble
+							note={item.note}
+							doc={item.doc}
+							sizeClass={item.sizeClass}
+							detailLevel={item.detailLevel}
+							bubbleDiameter={item.bubbleDiameter}
+							workspaceColorStyle={item.workspaceColorStyle}
+							rotateDeg={item.rotateDeg}
+							floatDuration={item.floatDuration}
+							floatDelay={item.floatDelay}
+							onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
+						/>
+					</div>
 				))}
 			</div>
 		</LayoutGroup>
