@@ -328,8 +328,8 @@
 
 .collaboratorOverlayPanel {
 	position: fixed;
-	min-width: 170px;
-	max-width: min(230px, calc(100vw - 24px));
+	min-width: 0;
+	max-width: calc(100vw - 24px);
 	max-height: calc(100vh - 24px);
 	overflow: hidden;
 	padding: 7px;
@@ -449,6 +449,6 @@
 	}
 
 	.collaboratorOverlayPanel {
-		width: min(230px, calc(100vw - 24px));
+		width: min(var(--chip-overlay-width, 100%), calc(100vw - 24px));
 	}
 }
