@@ -11,10 +11,6 @@
 	flex-direction: column;
 }
 
-.cardHasOverflow {
-	padding-bottom: 26px;
-}
-
 .moreMenuOpen {
 	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border) 70%);
 }
@@ -688,40 +684,6 @@
 	display: none;
 }
 
-.cardOverflowIndicator {
-	position: absolute;
-	left: 0;
-	right: 0;
-	bottom: 0;
-	height: 48px;
-	display: flex;
-	align-items: flex-end;
-	justify-content: center;
-	padding: 0 0 10px;
-	background: linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 82%, transparent) 54%, var(--note-color-card-bg, var(--color-surface)) 100%);
-	pointer-events: none;
-	z-index: 2;
-}
-
-.cardOverflowEllipsis {
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	min-width: 34px;
-	height: 22px;
-	padding: 0 10px;
-	border-radius: 999px;
-	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 88%, var(--note-color-header-bg, var(--color-surface-2)) 12%);
-	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 72%, transparent);
-	color: var(--note-color-muted, var(--color-text-muted));
-	font-size: 11px;
-	font-weight: 700;
-	letter-spacing: 0.18em;
-	text-indent: 0.18em;
-	line-height: 1;
-	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
-}
-
 @media (pointer: fine) {
 	.checklistCard {
 		max-height: calc(var(--note-card-max-height) + 18px);
@@ -743,10 +705,6 @@
 
 	.card {
 		padding-bottom: 50px;
-	}
-
-	.cardHasOverflow {
-		padding-bottom: 74px;
 	}
 
 	.cardFooter {
@@ -825,9 +783,6 @@
 		padding-bottom: 6px;
 	}
 
-	.cardOverflowIndicator {
-		bottom: 50px;
-	}
 }
 
 @media (pointer: coarse) {

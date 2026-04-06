@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.42 - 2026-04-06
+
+### Added
+- **New notes are hidden from the grid and Bubble View until saved.** Creating a note/checklist no longer flashes an empty card in the note grid or an extra bubble in Bubble View. The note only appears after the editor is closed with content — cancelling an empty note leaves the UI completely unchanged.
+- **Cancel always shows an X on new notes.** The editor close button now always displays a discard icon (✕) while composing a brand-new note, regardless of whether any content has been typed. Previously the button could flip to a save-checkmark in Bubble View, incorrectly suggesting the note would be saved.
+
+### Fixed
+- **403 errors no longer fire when opening the editor from Bubble View.** Creating a note while in Bubble View previously triggered immediate API calls for media, documents, links, and share collaborators on a note that hadn't synced to the server yet. The draft note ID is now registered before any async IDB/network work begins, so NoteGrid and BubbleView filter it out and attachment chips are never mounted during the creation window.
+- **Bubble View widths are now measured correctly on first render and after resize.** The previous `useEffect([], [])` ResizeObserver registration was a no-op when notes weren't yet loaded (the cloud div wasn't mounted). Replaced with a callback ref that attaches the ResizeObserver the moment the container appears in the DOM. The initial width estimate also correctly omits the sidebar on narrow/mobile viewports.
+
 ## 1.1.41 - 2026-04-05
 
 ### Changed

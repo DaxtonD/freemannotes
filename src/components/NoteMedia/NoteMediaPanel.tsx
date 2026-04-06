@@ -28,6 +28,8 @@ type NoteMediaPanelProps = {
 	authUserId?: string | null;
 	canEdit: boolean;
 	onAddImage?: (() => void) | undefined;
+	/** When true, skip server-side API calls — the note hasn't been persisted yet. */
+	isPendingNew?: boolean;
 };
 
 type LocalPreviewItem = QueuedNoteImageRow & {
@@ -122,10 +124,12 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		setError(null);
 		try {
 			const [remoteImages, queuedResponse, queuedDeleteResponse, previewRows] = await Promise.all([
-				refreshRemoteNoteImages(props.docId).catch(async () => {
-					const stored = await readStoredRemoteNoteImages(props.docId);
-					return stored.length > 0 ? stored : getCachedRemoteNoteImages(props.docId);
-				}),
+				props.isPendingNew
+					? Promise.resolve([] as readonly ReturnType<typeof getCachedRemoteNoteImages>[number][])
+					: refreshRemoteNoteImages(props.docId).catch(async () => {
+						const stored = await readStoredRemoteNoteImages(props.docId);
+						return stored.length > 0 ? stored : getCachedRemoteNoteImages(props.docId);
+					}),
 				props.authUserId ? readQueuedNoteImages(props.authUserId, props.docId) : Promise.resolve([]),
 				props.authUserId ? readQueuedNoteImageDeletions(props.authUserId, props.docId) : Promise.resolve([]),
 				readStoredNoteImagePreviewRows(props.docId),
@@ -143,7 +147,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		} finally {
 			setLoading(false);
 		}
-	}, [props.authUserId, props.docId]);
+	}, [props.authUserId, props.docId, props.isPendingNew]);
 
 	React.useEffect(() => {
 		void refresh();

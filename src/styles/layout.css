@@ -430,6 +430,40 @@
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-3);
+	position: relative;
+	overflow: hidden;
+	isolation: isolate;
+}
+
+.auth-card::before {
+	content: '';
+	position: absolute;
+	inset: 4% 6% 6% 6%;
+	/* Use the crowbar PNG as a theme-colored mask so the backdrop stays in the
+	   current palette instead of hard-coding the source image's orange tone. */
+	background: linear-gradient(
+		135deg,
+		color-mix(in srgb, var(--color-accent) 40%, transparent) 0%,
+		color-mix(in srgb, var(--color-text) 22%, transparent) 100%
+	);
+	mask-image: url('/icons/crowbar.png');
+	mask-repeat: no-repeat;
+	mask-position: center;
+	mask-size: 88% auto;
+	-webkit-mask-image: url('/icons/crowbar.png');
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	-webkit-mask-size: 88% auto;
+	opacity: 0.28;
+	transform: rotate(-6deg);
+	filter: drop-shadow(0 0 24px color-mix(in srgb, var(--color-accent) 24%, transparent));
+	pointer-events: none;
+	z-index: 0;
+}
+
+.auth-card > :not(.auth-modal-backdrop) {
+	position: relative;
+	z-index: 1;
 }
 
 .auth-title {
@@ -461,6 +495,21 @@
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-2);
+}
+
+.auth-form input,
+.auth-form button:not(.auth-link) {
+	/* Keep the auth controls legible while letting the crowbar art tint show
+	   through a little instead of sitting behind fully opaque blocks. */
+	background: color-mix(in srgb, var(--color-surface) 84%, transparent);
+	backdrop-filter: blur(6px);
+	-webkit-backdrop-filter: blur(6px);
+}
+
+.auth-form-secondary-button {
+	width: 100%;
+	justify-content: center;
+	margin-top: 4px;
 }
 
 .auth-avatar {
@@ -632,6 +681,9 @@
 }
 
 .auth-secondary-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
 	background: var(--color-surface-2);
 	color: var(--color-text);
 	border: 1px solid var(--color-border);

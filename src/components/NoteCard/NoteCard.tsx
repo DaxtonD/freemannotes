@@ -437,14 +437,6 @@ function renderRichPreview(json: JSONContent | null | undefined, allowLinkIntera
 	return blocks.length > 0 ? blocks : null;
 }
 
-function getVerticalPadding(node: HTMLElement | null): number {
-	if (!node) return 0;
-	const style = window.getComputedStyle(node);
-	const paddingTop = Number.parseFloat(style.paddingTop || '0') || 0;
-	const paddingBottom = Number.parseFloat(style.paddingBottom || '0') || 0;
-	return paddingTop + paddingBottom;
-}
-
 function updateChecklistItemById(
 	yarray: Y.Array<Y.Map<any>>,
 	id: string,
@@ -592,7 +584,6 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const [clampedById, setClampedById] = React.useState<Record<string, boolean>>({});
-	const [hasCardOverflow, setHasCardOverflow] = React.useState(false);
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
 	const cardRef = React.useRef<HTMLElement | null>(null);
 	const contentRegionRef = React.useRef<HTMLDivElement | null>(null);
@@ -603,15 +594,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const linkPreviewRailRef = React.useRef<HTMLDivElement | null>(null);
 	const footerRef = React.useRef<HTMLDivElement | null>(null);
 	const cardStyle = React.useMemo(() => {
-		if (!resolvedColor) return undefined;
-		return {
-			'--note-color-card-bg': resolvedColor.cardBackground,
-			'--note-color-header-bg': resolvedColor.headerBackground,
-			'--note-color-border': resolvedColor.borderColor,
-			'--note-color-text': resolvedColor.textColor,
-			'--note-color-muted': resolvedColor.mutedTextColor,
-			'--note-color-accent': resolvedColor.accentColor,
-		} as React.CSSProperties;
+		const nextStyle: React.CSSProperties = {};
+		if (resolvedColor) {
+			nextStyle['--note-color-card-bg'] = resolvedColor.cardBackground;
+			nextStyle['--note-color-header-bg'] = resolvedColor.headerBackground;
+			nextStyle['--note-color-border'] = resolvedColor.borderColor;
+			nextStyle['--note-color-text'] = resolvedColor.textColor;
+			nextStyle['--note-color-muted'] = resolvedColor.mutedTextColor;
+			nextStyle['--note-color-accent'] = resolvedColor.accentColor;
+		}
+		return Object.keys(nextStyle).length > 0 ? nextStyle : undefined;
 	}, [resolvedColor]);
 	const reminderLabel = React.useMemo(() => {
 		if (!reminderAt) return null;
@@ -711,38 +703,6 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		};
 	}, [measureChecklistTextLayout, normalizedItems, showCompleted, type]);
 
-	React.useLayoutEffect(() => {
-		const contentRegion = contentRegionRef.current;
-		if (!contentRegion) return;
-
-		const measureOverflow = (): void => {
-			const body = bodyRef.current;
-			const contentPreview = contentPreviewRef.current;
-			const checklist = checklistRef.current;
-			const completedSection = completedSectionRef.current;
-			const linkPreviewRail = linkPreviewRailRef.current;
-			const bodyHeight = type === 'text'
-				? (contentPreview ? contentPreview.scrollHeight + getVerticalPadding(body) : 0)
-				: (checklist ? checklist.scrollHeight + getVerticalPadding(body) : 0);
-			const completedHeight = completedSection ? completedSection.scrollHeight : 0;
-			const linkHeight = linkPreviewRail ? linkPreviewRail.scrollHeight : 0;
-			const naturalContentHeight = bodyHeight + completedHeight + linkHeight;
-			setHasCardOverflow(naturalContentHeight > contentRegion.clientHeight + 2);
-		};
-
-		measureOverflow();
-		if (typeof ResizeObserver === 'undefined') return;
-
-		const observer = new ResizeObserver(() => measureOverflow());
-		observer.observe(contentRegion);
-		if (bodyRef.current) observer.observe(bodyRef.current);
-		if (contentPreviewRef.current) observer.observe(contentPreviewRef.current);
-		if (checklistRef.current) observer.observe(checklistRef.current);
-		if (completedSectionRef.current) observer.observe(completedSectionRef.current);
-		if (linkPreviewRailRef.current) observer.observe(linkPreviewRailRef.current);
-		if (footerRef.current) observer.observe(footerRef.current);
-		return () => observer.disconnect();
-	}, [content, extractedLinks.length, normalizedItems, reminderAt, showCompleted, title, type]);
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);
 	const suppressGestureOpenRef = React.useRef(false);
@@ -834,7 +794,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${hasCardOverflow ? ` ${styles.cardHasOverflow}` : ''}`}
+			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
@@ -1163,13 +1123,6 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					</div>
 				) : null}
 			</div>
-
-			{hasCardOverflow && !props.isTrashView ? (
-				<div className={styles.cardOverflowIndicator} aria-hidden="true">
-					<span className={styles.cardOverflowEllipsis}>...</span>
-				</div>
-			) : null}
-
 			<div ref={footerRef} className={styles.cardFooter}>
 				{/* Desktop-only footer dock mirrors the editor action strip so note
 				    cards and editors share the same action vocabulary. */}

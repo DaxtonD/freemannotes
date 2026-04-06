@@ -103,6 +103,8 @@ export type NoteGridProps = {
 	viewMode?: ViewMode;
 	/** True only when the grid is actually visible in layout, not kept mounted under display:none. */
 	isVisible?: boolean;
+	/** Note ID to suppress from the display — used while a new note is being drafted. */
+	hiddenNoteId?: string | null;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -787,10 +789,25 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const versionRef = React.useRef(0);
 	const [metadataVersion, setMetadataVersion] = React.useState(0);
 	const [layoutOrderIds, setLayoutOrderIds] = React.useState<string[]>([]);
-	const [columnCount, setColumnCount] = React.useState<number>(2);
-	const [mobileCardWidthPx, setMobileCardWidthPx] = React.useState<number | null>(null);
-	const [mobileGridGapPx, setMobileGridGapPx] = React.useState<number | null>(null);
-	const [mobileSectionBleedPx, setMobileSectionBleedPx] = React.useState<number>(0);
+	// Lazy-initialize layout state from the current viewport so the very first render
+	// already uses the correct column count and card widths — eliminating the jarring
+	// 2-column → N-column reflash that previously occurred during the skeleton phase.
+	const [columnCount, setColumnCount] = React.useState<number>(() => {
+		if (typeof window === 'undefined') return 2;
+		return getGridLayoutForViewport(window.innerWidth, window.innerWidth, window.innerHeight).columnCount;
+	});
+	const [mobileCardWidthPx, setMobileCardWidthPx] = React.useState<number | null>(() => {
+		if (typeof window === 'undefined') return null;
+		return getGridLayoutForViewport(window.innerWidth, window.innerWidth, window.innerHeight).mobileCardWidthPx;
+	});
+	const [mobileGridGapPx, setMobileGridGapPx] = React.useState<number | null>(() => {
+		if (typeof window === 'undefined') return null;
+		return getGridLayoutForViewport(window.innerWidth, window.innerWidth, window.innerHeight).mobileGapPx;
+	});
+	const [mobileSectionBleedPx, setMobileSectionBleedPx] = React.useState<number>(() => {
+		if (typeof window === 'undefined') return 0;
+		return getGridLayoutForViewport(window.innerWidth, window.innerWidth, window.innerHeight).mobileSectionBleedPx;
+	});
 	const [noteHeightsVersion, setNoteHeightsVersion] = React.useState(0);
 	// ── Sticky columns ───────────────────────────────────────────────────
 	// After a drag-and-drop commit, the balanced column layout is saved here
@@ -952,7 +969,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 
 	const baseVisibleIds = React.useMemo<string[]>(() => {
-		return getVisibleNotes(noteSnapshots, {
+		const ids = getVisibleNotes(noteSnapshots, {
 			showTrashed: props.showTrashed,
 			showArchived: props.showArchived,
 			selectedCollectionId: props.activeCollectionId,
@@ -961,7 +978,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			sortMode: props.sortMode,
 			sortDirection: props.sortDirection,
 		}).map((note) => note.id);
-	}, [noteSnapshots, props.activeCollectionId, props.activeLabelIds, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode]);
+		if (props.hiddenNoteId) return ids.filter((id) => id !== props.hiddenNoteId);
+		// ^ Suppress the draft note ID from the visible list so it never renders as
+		//   an empty card while the user is composing it in the editor overlay.
+		return ids;
+	}, [noteSnapshots, props.activeCollectionId, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode]);
 
 	const visibleNoteEntries = React.useMemo(() => {
 		const sharedPlacementByAlias = new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement]));
