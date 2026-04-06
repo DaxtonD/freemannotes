@@ -34,8 +34,13 @@ type NoteAttachmentCountChipProps = {
 
 function readAnchorRect(element: HTMLElement | null): { top: number; left: number; width: number; height: number } | null {
 	if (!element) return null;
-	const rect = element.getBoundingClientRect();
-	return { top: rect.top, left: rect.left, width: rect.width, height: rect.height };
+	// Match the other note-card chips by using the card shell for width/centering
+	// while preserving the trigger button's vertical position for below/above flip.
+	const triggerRect = element.getBoundingClientRect();
+	const cardShell = element.closest('[data-note-content="true"]');
+	const target = cardShell instanceof HTMLElement ? cardShell : element;
+	const cardRect = target.getBoundingClientRect();
+	return { top: triggerRect.top, left: cardRect.left, width: cardRect.width, height: triggerRect.height };
 }
 
 function suppressNextDocumentCompatibilityMouseEvents(): void {
@@ -338,6 +343,20 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	}, [isOpen]);
 
 	const totalCount = counts.images + counts.links + counts.documents;
+	const overlayPosition = React.useMemo(() => {
+		if (!anchorRect || typeof window === 'undefined') return null;
+		// Match the other note-card chip overlays: card-width and horizontally
+		// centered, but vertically attached to the chip row with above/below flip.
+		const overlayWidth = Math.min(Math.round(anchorRect.width), window.innerWidth - 24);
+		const centeredLeft = anchorRect.left + (anchorRect.width - overlayWidth) / 2;
+		const left = Math.min(Math.max(12, centeredLeft), Math.max(12, window.innerWidth - overlayWidth - 12));
+		const estimatedHeight = 156;
+		const preferredTop = anchorRect.top + anchorRect.height + 8;
+		const top = preferredTop + estimatedHeight <= window.innerHeight - 12
+			? preferredTop
+			: Math.max(12, anchorRect.top - estimatedHeight - 8);
+		return { top, left, width: overlayWidth };
+	}, [anchorRect]);
 
 	const handleToggle = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
 		event.stopPropagation();
@@ -373,7 +392,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 			{typeof document !== 'undefined'
 				? createPortal(
 					<AnimatePresence>
-						{isOpen && anchorRect ? (
+						{isOpen && anchorRect && overlayPosition ? (
 							<>
 								<motion.div
 									className={styles.overlayBackdrop}
@@ -381,7 +400,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 									initial={{ opacity: 0, backdropFilter: 'blur(0px)' }}
 									animate={{ opacity: 1, backdropFilter: 'blur(2px)' }}
 									exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
-									transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
+									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 								/>
 								<div
 									className={styles.overlayRoot}
@@ -409,13 +428,12 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 									onClick={(event) => event.stopPropagation()}
 									style={{
 										...(props.colorStyle ?? {}),
-										top: Math.min(anchorRect.top + anchorRect.height + 10, window.innerHeight - 164),
-										left: Math.min(anchorRect.left, Math.max(12, window.innerWidth - 272)),
+										...overlayPosition,
 									}}
-									initial={{ opacity: 0, y: -8, scale: 0.985 }}
-									animate={{ opacity: 1, y: 0, scale: 1 }}
-									exit={{ opacity: 0, y: -8, scale: 0.98 }}
-									transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+									initial={{ opacity: 0, y: -6 }}
+									animate={{ opacity: 1, y: 0 }}
+									exit={{ opacity: 0, y: -6 }}
+									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 								>
 									<div className={styles.overlayList}>
 										{([
@@ -423,20 +441,11 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 											{ kind: 'links', icon: faLink, label: t('editors.mediaTabLinks'), count: counts.links },
 											{ kind: 'documents', icon: faFileLines, label: t('editors.mediaTabDocuments'), count: counts.documents },
 										] as const).map((item, index) => {
-											const shellDelay = 0.01 + index * 0.035;
-											const contentDelay = shellDelay + 0.0125;
-											const entryOffset = 18 + index * 32;
+											const rowDelay = 0.016 + index * 0.024;
 											return (
-												<motion.div
+												<div
 													key={item.kind}
 													className={styles.overlayItemShell}
-													initial={{ height: 0, marginTop: 0 }}
-													animate={{ height: 'auto', marginTop: index === 0 ? 0 : 4 }}
-													exit={{ height: 0, marginTop: 0 }}
-													transition={{
-														height: { duration: 0.06, ease: [0.22, 1, 0.36, 1], delay: shellDelay },
-														marginTop: { duration: 0.04, ease: 'easeOut', delay: shellDelay },
-													}}
 												>
 													<motion.button
 														type="button"
@@ -444,16 +453,13 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 														disabled={item.kind === 'documents'}
 														aria-disabled={item.kind === 'documents' ? 'true' : undefined}
 														data-disabled={item.kind === 'documents' ? 'true' : undefined}
-														style={{ zIndex: index + 1 }}
-														initial={{ y: -entryOffset, scale: 0.97 }}
-														animate={{ y: 0, scale: 1 }}
-														exit={{ y: -12, scale: 0.98 }}
+														initial={{ opacity: 0, y: -10 }}
+														animate={{ opacity: 1, y: 0 }}
+														exit={{ opacity: 0, y: -6 }}
 														transition={{
-															type: 'spring',
-															stiffness: 620,
-															damping: 30,
-															mass: 0.6,
-															delay: contentDelay,
+															duration: 0.15,
+															ease: [0.22, 1, 0.36, 1],
+															delay: rowDelay,
 														}}
 														onClick={() => handleOpenBrowser(item.kind)}
 													>
@@ -463,7 +469,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 														</span>
 														<span className={styles.overlayItemCount}>{item.count}</span>
 													</motion.button>
-												</motion.div>
+												</div>
 											);
 										})}
 									</div>

@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.1.43 - 2026-04-06
+
+### Changed
+- **Note-card chip dropdowns now share one card-aligned layout.** Label, collaborator, collection, and attachment chip menus now use the full note-card width and stay horizontally centered on the card instead of drifting based on whichever chip button opened them.
+
+### Fixed
+- **Chip dropdown vertical placement now follows the chip row.** The first pass at card-width anchoring used the full card rect for vertical placement as well, which made menus appear below the whole card or too far above it. The anchor logic now keeps card-based width/centering but uses the actual chip trigger for the above/below flip so menus open directly under the chip row when there is room and directly above it when there is not.
+- **Chip dropdown animations are smoother and more consistent.** All note-card chip menus now use a lighter, slightly faster stagger with reduced bounce and no height-jitter between rows.
+
 ## 1.1.42 - 2026-04-06
 
 ### Added
