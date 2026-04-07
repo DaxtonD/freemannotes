@@ -1177,6 +1177,41 @@
 @media (pointer: fine) {
 	.app-sidebar {
 		--sidebar-entry-font-size: calc(var(--font-size-sm) + 2px);
+		overflow-y: auto;
+		overflow-x: hidden;
+		scrollbar-width: thin;
+		scrollbar-color: color-mix(in srgb, var(--color-border) 60%, transparent) transparent;
+	}
+
+	.sidebar-workspace-menu,
+	.sidebar-collections-menu {
+		scrollbar-width: thin;
+		scrollbar-color: color-mix(in srgb, var(--color-border) 60%, transparent) transparent;
+	}
+
+	.app-sidebar::-webkit-scrollbar,
+	.sidebar-workspace-menu::-webkit-scrollbar,
+	.sidebar-collections-menu::-webkit-scrollbar {
+		width: 3px;
+	}
+
+	.app-sidebar::-webkit-scrollbar-track,
+	.sidebar-workspace-menu::-webkit-scrollbar-track,
+	.sidebar-collections-menu::-webkit-scrollbar-track {
+		background: transparent;
+	}
+
+	.app-sidebar::-webkit-scrollbar-thumb,
+	.sidebar-workspace-menu::-webkit-scrollbar-thumb,
+	.sidebar-collections-menu::-webkit-scrollbar-thumb {
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--color-border) 60%, transparent);
+	}
+
+	.app-sidebar::-webkit-scrollbar-thumb:hover,
+	.sidebar-workspace-menu::-webkit-scrollbar-thumb:hover,
+	.sidebar-collections-menu::-webkit-scrollbar-thumb:hover {
+		background: color-mix(in srgb, var(--color-border) 90%, transparent);
 	}
 
 	.app-sidebar-link {
@@ -1391,21 +1426,14 @@
 	min-height: 30px;
 	width: 100%;
 	text-align: left;
-	cursor: pointer;
+	cursor: default;
 	opacity: 0;
 	transform: translateY(-6px) scale(0.985);
 	transition:
 		opacity 220ms ease,
 		transform 260ms cubic-bezier(0.22, 1, 0.36, 1),
-		background-color 160ms ease,
-		border-color 160ms ease;
+		background-color 160ms ease;
 	transition-delay: calc(var(--sidebar-item-index, 0) * 20ms);
-}
-
-.sidebar-workspace-legend-item:focus-visible {
-	outline: none;
-	border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
-	background: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface));
 }
 
 .sidebar-submenu-shell.is-open .sidebar-workspace-legend-item {
@@ -1413,15 +1441,8 @@
 	transform: translateY(0) scale(1);
 }
 
-.sidebar-workspace-legend-item.is-active {
-	background: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface));
-	border-color: color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
-	color: var(--color-accent);
-	font-weight: 600;
-}
-
 .sidebar-workspace-legend-swatch {
-	width: 12px;
+	width: 26px;
 	height: 12px;
 	flex: 0 0 auto;
 	border-radius: 999px;

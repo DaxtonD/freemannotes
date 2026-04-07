@@ -47,6 +47,7 @@ type WorkspaceImagesGalleryProps = {
 	activeLabelIds?: readonly string[];
 	activeCollaboratorFilter?: CollaboratorFilter | null;
 	reminderFilter?: ReminderFilterMode;
+	noteReminderByDocId?: Record<string, string | null>;
 	sortMode?: NoteSortMode;
 	sortDirection?: SortDirection;
 	sortGrouping?: NoteGroupingMode;
@@ -348,6 +349,8 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 			const doc = docsById[id];
 			if (!doc) return createFallbackNoteSnapshot(id);
 			const note = readNoteFromDoc(doc, id);
+			const placement = sharedPlacementByAlias.get(id) ?? null;
+			const docId = placement?.roomId || resolveMediaDocId(id);
 			return {
 				id,
 				title: note.title,
@@ -355,14 +358,14 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 				updatedAt: note.updatedAt,
 				collectionId: note.collectionId,
 				labelIds: note.labelIds,
-				reminderAt: note.reminderAt,
+				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
 				isPinned: note.isPinned,
 				lastAccessedAt: note.lastAccessedAt,
 				trashed: note.trashed,
 				archived: note.archived,
 			};
 		});
-	}, [docsById, metadataVersion, orderedIds]);
+	}, [docsById, metadataVersion, orderedIds, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias]);
 
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 	const baseVisibleIds = React.useMemo(() => {
@@ -374,6 +377,10 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 			reminderFilter: props.reminderFilter,
 			sortMode: props.sortMode,
 			sortDirection: props.sortDirection,
+			prioritizePinned: !props.activeCollectionId
+				&& (props.activeLabelIds?.length ?? 0) === 0
+				&& props.reminderFilter === 'all'
+				&& props.sortMode === 'manual',
 		}).map((note) => note.id);
 	}, [noteSnapshots, props.activeCollectionId, props.activeLabelIds, props.reminderFilter, props.sortDirection, props.sortMode]);
 

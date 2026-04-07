@@ -53,6 +53,8 @@ type RichTextEditorProps = {
 	onEnter?: (editor: Editor) => void;
 	onShiftEnter?: () => void;
 	onBackspaceWhenEmpty?: () => void;
+	onArrowUpAtBoundary?: () => void;
+	onArrowDownAtBoundary?: () => void;
 	editable?: boolean;
 	suppressMobileTaskCheckboxFocus?: boolean;
 	onCreateUrlPreview?: () => void;
@@ -119,6 +121,19 @@ export function ensureEditorSelectionVisible(editor: Editor | null, bottomInset:
 	if (selectionTop < visibleTop) {
 		scrollContainer.scrollTop -= visibleTop - selectionTop;
 	}
+}
+
+export function focusRichTextEditable(element: HTMLElement | null, placement: 'start' | 'end' = 'end'): void {
+	if (!element) return;
+	element.focus();
+	if (typeof window === 'undefined' || typeof document === 'undefined') return;
+	const selection = window.getSelection();
+	if (!selection) return;
+	const range = document.createRange();
+	range.selectNodeContents(element);
+	range.collapse(placement === 'start');
+	selection.removeAllRanges();
+	selection.addRange(range);
 }
 
 function ensureEditorElementVisible(element: HTMLElement | null, bottomInset: number): void {
@@ -946,12 +961,16 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		onEnter: props.onEnter,
 		onShiftEnter: props.onShiftEnter,
 		onBackspaceWhenEmpty: props.onBackspaceWhenEmpty,
+		onArrowUpAtBoundary: props.onArrowUpAtBoundary,
+		onArrowDownAtBoundary: props.onArrowDownAtBoundary,
 	});
 	latestHandlersRef.current = {
 		onChange: props.onChange,
 		onEnter: props.onEnter,
 		onShiftEnter: props.onShiftEnter,
 		onBackspaceWhenEmpty: props.onBackspaceWhenEmpty,
+		onArrowUpAtBoundary: props.onArrowUpAtBoundary,
+		onArrowDownAtBoundary: props.onArrowDownAtBoundary,
 	};
 	const editorRef = React.useRef<Editor | null>(null);
 	const [hasSelection, setHasSelection] = React.useState(false);
@@ -1156,6 +1175,34 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 					if (event.key === 'Backspace' && latestHandlersRef.current.onBackspaceWhenEmpty && editorRef.current?.isEmpty) {
 						event.preventDefault();
 						latestHandlersRef.current.onBackspaceWhenEmpty();
+						return true;
+					}
+					if (
+						event.key === 'ArrowUp' &&
+						!event.shiftKey &&
+						!event.metaKey &&
+						!event.ctrlKey &&
+						!event.altKey &&
+						latestHandlersRef.current.onArrowUpAtBoundary &&
+						ed?.state.selection.empty &&
+						_view.endOfTextblock('up')
+					) {
+						event.preventDefault();
+						latestHandlersRef.current.onArrowUpAtBoundary();
+						return true;
+					}
+					if (
+						event.key === 'ArrowDown' &&
+						!event.shiftKey &&
+						!event.metaKey &&
+						!event.ctrlKey &&
+						!event.altKey &&
+						latestHandlersRef.current.onArrowDownAtBoundary &&
+						ed?.state.selection.empty &&
+						_view.endOfTextblock('down')
+					) {
+						event.preventDefault();
+						latestHandlersRef.current.onArrowDownAtBoundary();
 						return true;
 					}
 					// Ctrl/Cmd+B/I/U at end of text with collapsed selection → select all then toggle

@@ -70,7 +70,7 @@ import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
 import { createCollection, deleteCollection, getCollectionsRegistryDoc, readCollectionsFromDoc, subscribeCollections, updateCollection, type CollectionRecord, type CollectionTreeNode, buildCollectionTree, buildCollectionPathMap } from './services/collectionService';
 import { createLabel, getLabelsRegistryDoc, readLabelsFromDoc, subscribeLabels, type LabelRecord } from './services/labelService';
-import { assignNoteLabels, assignNoteReminder, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
+import { assignNoteLabels, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
 import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode, SortDirection } from './utilities/getVisibleNotes';
 import {
 	flushPendingCollaboratorActions,
@@ -109,7 +109,7 @@ import {
 import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { onPushReceived } from './core/pushManager';
-import { acknowledgeReminderNotifications, fetchFiredReminders, fetchPendingReminderCount, syncNoteReminder, type FiredReminder } from './core/pushApi';
+import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -167,9 +167,22 @@ type MoveNoteModalState = {
 };
 
 type ToggleableSortMode = Extract<NoteSortMode, 'date-created' | 'date-updated' | 'alphabetical'>;
+type SidebarFilterReminderMode = Extract<ReminderFilterMode, 'past-due' | 'due-soon'>;
+type SidebarFilterSortMode = Extract<NoteSortMode, 'least-accessed' | 'most-edited'>;
+
+const SIDEBAR_FILTER_REMINDER_MODES: readonly SidebarFilterReminderMode[] = ['past-due', 'due-soon'];
+const SIDEBAR_FILTER_SORT_MODES: readonly SidebarFilterSortMode[] = ['least-accessed', 'most-edited'];
 
 function isToggleableSortMode(value: string): value is ToggleableSortMode {
 	return value === 'date-created' || value === 'date-updated' || value === 'alphabetical';
+}
+
+function isSidebarFilterReminderMode(value: string): value is SidebarFilterReminderMode {
+	return value === 'past-due' || value === 'due-soon';
+}
+
+function isSidebarFilterSortMode(value: string): value is SidebarFilterSortMode {
+	return value === 'least-accessed' || value === 'most-edited';
 }
 
 function getSortDirectionMarker(direction: SortDirection): string {
@@ -225,8 +238,67 @@ function useNoteMetadataSnapshot(doc: Y.Doc | null): { collectionId: string | nu
 	return React.useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_NOTE_METADATA_STATE);
 }
 
+function buildReminderLookup(reminders: readonly NoteReminderState[]): Record<string, string | null> {
+	const next: Record<string, string | null> = {};
+	for (const reminder of reminders) {
+		// Store both the canonical doc id and the local alias/note id so shared
+		// placements, bubble view, and direct note editors can resolve the same
+		// reminder timestamp without duplicating lookup rules.
+		const reminderAt = typeof reminder.reminderAt === 'string' && reminder.reminderAt.trim().length > 0
+			? reminder.reminderAt
+			: null;
+		if (reminder.docId) {
+			next[reminder.docId] = reminderAt;
+		}
+		if (reminder.noteId && !(reminder.noteId in next)) {
+			next[reminder.noteId] = reminderAt;
+		}
+	}
+	return next;
+}
+
+function updateReminderLookup(
+	lookup: Record<string, string | null>,
+	docId: string,
+	noteId: string,
+	reminderAt: string | null
+): Record<string, string | null> {
+	const next = { ...lookup };
+	if (docId) {
+		if (reminderAt) next[docId] = reminderAt;
+		else delete next[docId];
+	}
+	if (noteId) {
+		if (reminderAt) next[noteId] = reminderAt;
+		else delete next[noteId];
+	}
+	return next;
+}
+
+function readReminderLookupValue(
+	lookup: Record<string, string | null>,
+	docId: string | null | undefined,
+	noteId?: string | null
+): string | null {
+	if (docId) {
+		const direct = lookup[docId];
+		if (typeof direct === 'string' && direct.trim().length > 0) return direct;
+	}
+	if (noteId) {
+		const fallback = lookup[noteId];
+		if (typeof fallback === 'string' && fallback.trim().length > 0) return fallback;
+	}
+	return null;
+}
+
 type MetadataNoteModalState = {
 	noteId: string;
+	title: string;
+};
+
+type ReminderNoteModalState = {
+	noteId: string;
+	docId: string;
 	title: string;
 };
 
@@ -716,7 +788,8 @@ export function App(): React.JSX.Element {
 	const [isCollectionManagementOpen, setIsCollectionManagementOpen] = React.useState(false);
 	const [noteCollectionModalState, setNoteCollectionModalState] = React.useState<MetadataNoteModalState | null>(null);
 	const [noteLabelsModalState, setNoteLabelsModalState] = React.useState<MetadataNoteModalState | null>(null);
-	const [noteReminderModalState, setNoteReminderModalState] = React.useState<MetadataNoteModalState | null>(null);
+	const [noteReminderModalState, setNoteReminderModalState] = React.useState<ReminderNoteModalState | null>(null);
+	const [noteReminderByDocId, setNoteReminderByDocId] = React.useState<Record<string, string | null>>({});
 	const [moveNoteModalState, setMoveNoteModalState] = React.useState<MoveNoteModalState | null>(null);
 	const [moveNoteBusy, setMoveNoteBusy] = React.useState(false);
 	const [moveNoteError, setMoveNoteError] = React.useState<string | null>(null);
@@ -772,6 +845,13 @@ export function App(): React.JSX.Element {
 			return authWorkspaceId;
 		});
 	}, [authWorkspaceId, sidebarWorkspaces]);
+
+	React.useEffect(() => {
+		if (viewMode !== 'bubble') return;
+		if (sidebarView !== 'images' && sidebarView !== 'trash') return;
+		setActiveSharedFolder(null);
+		setSidebarView('notes');
+	}, [sidebarView, viewMode]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authWorkspaceId) {
@@ -1124,8 +1204,9 @@ export function App(): React.JSX.Element {
 		setNoteLabelsModalState({ noteId, title: title || '' });
 	}, []);
 
-	const openNoteReminderModal = React.useCallback((noteId: string, title?: string) => {
-		setNoteReminderModalState({ noteId, title: title || '' });
+	const openNoteReminderModal = React.useCallback((noteId: string, docId: string, title?: string) => {
+		if (!docId) return;
+		setNoteReminderModalState({ noteId, docId, title: title || '' });
 	}, []);
 
 	const openNoteAttachmentBrowser = React.useCallback((kind: NoteAttachmentBrowserKind, noteId: string, docId: string, title: string | undefined, canEdit: boolean) => {
@@ -1193,6 +1274,33 @@ export function App(): React.JSX.Element {
 		return manager.getDoc(noteAttachmentBrowserState.noteId);
 	}, [manager, noteAttachmentBrowserState]);
 	const isEditorOverlayOpen = editorMode !== 'none' || Boolean(selectedNoteId);
+	const isFabBlockedByOverlay =
+		isEditorOverlayOpen ||
+		isMobileSidebarOpen ||
+		isMobileSearchOpen ||
+		isPreferencesOpen ||
+		isAppearanceOpen ||
+		isUserOpen ||
+		isUserManagementOpen ||
+		isSendInviteOpen ||
+		isShareNotificationsOpen ||
+		isWorkspaceSwitcherOpen ||
+		Boolean(collaboratorModalState) ||
+		Boolean(noteAttachmentBrowserState) ||
+		Boolean(noteImageModalState) ||
+		Boolean(noteDocumentModalState) ||
+		Boolean(noteCollectionModalState) ||
+		Boolean(noteLabelsModalState) ||
+		Boolean(noteReminderModalState) ||
+		Boolean(moveNoteModalState) ||
+		isCollectionManagementOpen ||
+		Boolean(workspaceDeletedNotice);
+	const showMobileFab =
+		isMobileViewport &&
+		viewMode !== 'bubble' &&
+		sidebarView === 'notes' &&
+		Boolean(authWorkspaceId && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' && canEditActiveWorkspace) &&
+		!isFabBlockedByOverlay;
 	const isPwaUpdateBlocked =
 		isEditorOverlayOpen ||
 		isPreferencesOpen ||
@@ -1328,16 +1436,11 @@ export function App(): React.JSX.Element {
 		[commitOverlaySnapshot, getOverlaySnapshot, manager]
 	);
 
-	const closeNoteEditor = React.useCallback(() => {
-		if (goBackIfOverlayHistory()) return;
-		setSelectedNoteId(null);
-		setEditorMode('none');
-	}, [goBackIfOverlayHistory]);
-
 	const getPendingNewNoteDisposition = React.useCallback(
 		async (noteId: string): Promise<{ keep: boolean; type: 'text' | 'checklist' }> => {
 			const doc = manager.getDoc(noteId);
 			if (!doc) return { keep: true, type: 'text' };
+			const reminderDocId = manager.resolveRoomName(noteId);
 
 			// New notes are created immediately so the full editor can enable attachments,
 			// collaborators, reminders, and collection actions. Cleanup therefore needs to
@@ -1352,7 +1455,7 @@ export function App(): React.JSX.Element {
 			if (snapshot.type === 'checklist' && (snapshot.items ?? []).some((item) => String(item.text ?? '').trim().length > 0)) {
 				return { keep: true, type: snapshot.type };
 			}
-			if (snapshot.collectionId || snapshot.reminderAt || snapshot.labelIds.length > 0) {
+			if (snapshot.collectionId || readReminderLookupValue(noteReminderByDocId, reminderDocId, noteId) || snapshot.labelIds.length > 0) {
 				return { keep: true, type: snapshot.type };
 			}
 			if (getNotePreviewLinksFromDoc(doc).length > 0) {
@@ -1386,29 +1489,66 @@ export function App(): React.JSX.Element {
 	);
 
 	const finalizePendingNewNote = React.useCallback(
-		async (noteId: string): Promise<void> => {
+		async (noteId: string, mode: 'cancel' | 'save' = 'cancel'): Promise<void> => {
 			if (!pendingNewNoteIdsRef.current.has(noteId) || pendingNewNoteCleanupIdsRef.current.has(noteId)) return;
 			pendingNewNoteCleanupIdsRef.current.add(noteId);
 			try {
-				const disposition = await getPendingNewNoteDisposition(noteId);
+				const noteType = String(manager.getDoc(noteId)?.getMap('metadata')?.get('type') ?? 'text') === 'checklist'
+					? 'checklist' as const
+					: 'text' as const;
+				const disposition = mode === 'save'
+					? await getPendingNewNoteDisposition(noteId)
+					: { keep: false, type: noteType };
 				pendingNewNoteIdsRef.current.delete(noteId);
 				pendingNewNoteCollectionSeedRef.current.delete(noteId);
-				// Unhide the note (it will appear in grid if kept, or disappear if deleted).
-				setDraftNoteId((prev) => prev === noteId ? null : prev);
+				// If the draft is no longer the actively open editor note, unhide it now.
+				// When the editor is still mounted we keep the pending flag until close so
+				// attachment/media panels never switch into server-refresh mode mid-teardown.
+				if (selectedNoteId !== noteId) {
+					setDraftNoteId((prev) => prev === noteId ? null : prev);
+				}
 				if (disposition.keep) return;
 				await manager.permanentlyDeleteNote(noteId).catch(() => undefined);
-				showBriefDialog(disposition.type === 'checklist' ? 'empty checklist discarded' : 'empty note discarded');
+				if (mode === 'save') {
+					showBriefDialog(disposition.type === 'checklist' ? 'empty checklist discarded' : 'empty note discarded');
+				}
 			} finally {
 				pendingNewNoteCleanupIdsRef.current.delete(noteId);
 			}
 		},
-		[getPendingNewNoteDisposition, manager, showBriefDialog]
+		[getPendingNewNoteDisposition, manager, noteReminderByDocId, showBriefDialog]
 	);
+
+	const closeNoteEditor = React.useCallback(async () => {
+		const closingNoteId = selectedNoteId;
+		if (selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)) {
+			await finalizePendingNewNote(selectedNoteId, 'cancel');
+		}
+		if (goBackIfOverlayHistory()) return;
+		setSelectedNoteId(null);
+		setEditorMode('none');
+		if (closingNoteId) {
+			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
+		}
+	}, [finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId]);
+
+	const savePendingNewNoteAndClose = React.useCallback(async () => {
+		const closingNoteId = selectedNoteId;
+		if (selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)) {
+			await finalizePendingNewNote(selectedNoteId, 'save');
+		}
+		if (goBackIfOverlayHistory()) return;
+		setSelectedNoteId(null);
+		setEditorMode('none');
+		if (closingNoteId) {
+			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
+		}
+	}, [finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId]);
 
 	React.useEffect(() => {
 		const previousSelectedNoteId = previousSelectedNoteIdRef.current;
 		if (previousSelectedNoteId && previousSelectedNoteId !== selectedNoteId && pendingNewNoteIdsRef.current.has(previousSelectedNoteId)) {
-			void finalizePendingNewNote(previousSelectedNoteId);
+			void finalizePendingNewNote(previousSelectedNoteId, 'cancel');
 		}
 		previousSelectedNoteIdRef.current = selectedNoteId;
 	}, [finalizePendingNewNote, selectedNoteId]);
@@ -1422,6 +1562,11 @@ export function App(): React.JSX.Element {
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot({ ...current, isFabOpen: true }, 'push');
 	}, [commitOverlaySnapshot, getOverlaySnapshot, goBackIfOverlayHistory, isFabOpen]);
+
+	React.useEffect(() => {
+		if (!isFabOpen || showMobileFab) return;
+		setIsFabOpen(false);
+	}, [isFabOpen, showMobileFab]);
 
 	React.useEffect(() => {
 		if (!isFabOpen || !isEditorOverlayOpen) return;
@@ -2785,13 +2930,13 @@ export function App(): React.JSX.Element {
 				all: t('app.sidebarAll'),
 				'past-due': t('app.sidebarPastDue'),
 				'later-today': t('app.sidebarToday'),
-				tomorrow: 'Tomorrow',
+				tomorrow: t('reminders.tomorrow'),
 				'next-week': t('app.sidebarNextWeek'),
 				'due-soon': t('app.sidebarDueSoon'),
 			};
 			chips.push({
 				key: `reminder:${activeReminderFilter}`,
-				label: `Reminder: ${reminderLabels[activeReminderFilter]}`,
+				label: `${t('app.sidebarReminders')}: ${reminderLabels[activeReminderFilter]}`,
 				onClear: () => setActiveReminderFilter('all'),
 			});
 		}
@@ -2809,7 +2954,7 @@ export function App(): React.JSX.Element {
 				: '';
 			chips.push({
 				key: `sort:${activeSortMode}`,
-				label: `Sort: ${sortLabels[activeSortMode]}${sortDirectionSuffix}`,
+				label: `${t('app.sidebarSorting')}: ${sortLabels[activeSortMode]}${sortDirectionSuffix}`,
 				onClear: () => setActiveSortMode('manual'),
 				// Sort chips can toggle direction in-place to avoid reopening sidebar menus.
 				onPrimaryAction: isToggleableSortMode(activeSortMode)
@@ -2833,7 +2978,7 @@ export function App(): React.JSX.Element {
 			};
 			chips.push({
 				key: `grouping:${activeSortGrouping}`,
-				label: `Grouping: ${groupingLabels[activeSortGrouping]}`,
+				label: `${t('app.sidebarGroupBy')}: ${groupingLabels[activeSortGrouping]}`,
 				onClear: () => setActiveSortGrouping('none'),
 			});
 		}
@@ -2876,13 +3021,8 @@ export function App(): React.JSX.Element {
 		() => (noteLabelsModalState ? manager.getDoc(noteLabelsModalState.noteId) : null),
 		[manager, noteLabelsModalState]
 	);
-	const noteReminderDoc = React.useMemo(
-		() => (noteReminderModalState ? manager.getDoc(noteReminderModalState.noteId) : null),
-		[manager, noteReminderModalState]
-	);
 	const noteCollectionMetadata = useNoteMetadataSnapshot(noteCollectionDoc);
 	const noteLabelsMetadata = useNoteMetadataSnapshot(noteLabelsDoc);
-	const noteReminderMetadata = useNoteMetadataSnapshot(noteReminderDoc);
 	const selectedNoteMetadata = useNoteMetadataSnapshot(editorMode === 'none' && selectedNoteId ? openDoc : null);
 
 	React.useEffect(() => {
@@ -2926,21 +3066,46 @@ export function App(): React.JSX.Element {
 		);
 	}, [noteLabelsDoc]);
 	const handleSaveNoteReminder = React.useCallback((reminderAt: string | null) => {
-		if (!noteReminderDoc) return;
-		assignNoteReminder(noteReminderDoc, reminderAt);
+		if (!noteReminderModalState) return;
+		const { docId, noteId, title } = noteReminderModalState;
+		setNoteReminderByDocId((current) => updateReminderLookup(current, docId, noteId, reminderAt));
 		setNoteReminderModalState(null);
 		// Sync reminder to server so the push scheduler can fire the notification.
-		if (authStatus === 'authed' && !authOfflineMode && noteReminderModalState) {
+		if (authStatus === 'authed' && !authOfflineMode) {
 			void syncNoteReminder({
 				deviceId,
-				docId: noteReminderModalState.noteId,
-				noteId: noteReminderModalState.noteId,
+				docId,
+				noteId,
 				workspaceId: authWorkspaceId ?? '',
 				reminderAt,
-				noteTitle: noteReminderModalState.title || undefined,
-			}).catch(() => undefined);
+				noteTitle: title || undefined,
+			}).catch(() => {
+				void fetchNoteReminderStates()
+					.then((data) => setNoteReminderByDocId(buildReminderLookup(data.reminders)))
+					.catch(() => undefined);
+			});
 		}
-	}, [noteReminderDoc, authStatus, authOfflineMode, noteReminderModalState, deviceId, authWorkspaceId]);
+	}, [authStatus, authOfflineMode, noteReminderModalState, deviceId, authWorkspaceId]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId) {
+			setNoteReminderByDocId({});
+			return;
+		}
+		if (authOfflineMode) return;
+		let cancelled = false;
+		// Reminder filtering now uses the server scheduler state instead of the
+		// editor metadata field so every surface sees the same reminder source.
+		void fetchNoteReminderStates()
+			.then((data) => {
+				if (cancelled) return;
+				setNoteReminderByDocId(buildReminderLookup(data.reminders));
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, [authOfflineMode, authStatus, authUserId]);
 
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
@@ -4397,10 +4562,17 @@ export function App(): React.JSX.Element {
 			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
 			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
 			{ id: 'trash', label: t('app.sidebarTrash'), icon: faTrash, kind: 'link' },
-		].filter((entry) => viewMode !== 'bubble' || sidebarView === 'images' || (entry.id !== 'collections' && entry.id !== 'labels' && entry.id !== 'sorting')),
+		].filter((entry) => {
+			if (viewMode !== 'bubble') return true;
+			return entry.id !== 'collections'
+				&& entry.id !== 'labels'
+				&& entry.id !== 'sorting'
+				&& entry.id !== 'images'
+				&& entry.id !== 'trash';
+		}),
 		[sidebarView, t, viewMode]
 	);
-	const sidebarUsesBubbleSummaryMenus = viewMode === 'bubble' && sidebarView !== 'images';
+	const sidebarUsesBubbleSummaryMenus = viewMode === 'bubble';
 	const filterSidebarView = sidebarView === 'images' ? 'images' : 'notes';
 
 	const bubbleWorkspaceLegend = React.useMemo(() => {
@@ -4412,14 +4584,57 @@ export function App(): React.JSX.Element {
 		}));
 	}, [authWorkspaceId, bubbleWorkspaceSelectionId, sidebarWorkspacesSorted, t, themeId, viewMode]);
 
+	const clearReminderSidebarFilter = React.useCallback(() => {
+		setActiveReminderFilter('all');
+	}, []);
+
+	const clearSidebarSortMode = React.useCallback(() => {
+		setActiveSortMode('manual');
+	}, []);
+
+	const clearSidebarGrouping = React.useCallback(() => {
+		setActiveSortGrouping('none');
+	}, []);
+
+	const clearSidebarFilters = React.useCallback(() => {
+		setActiveReminderFilter((current) => (isSidebarFilterReminderMode(current) ? 'all' : current));
+		setActiveSortMode((current) => (isSidebarFilterSortMode(current) ? 'manual' : current));
+	}, []);
+
+	const applyReminderSidebarFilter = React.useCallback((mode: ReminderFilterMode) => {
+		setSidebarView(filterSidebarView);
+		setActiveReminderFilter(mode);
+		if (isSidebarFilterReminderMode(mode)) {
+			setActiveSortMode((current) => (isSidebarFilterSortMode(current) ? 'manual' : current));
+		}
+		if (isMobileViewport) closeMobileSidebar();
+	}, [closeMobileSidebar, filterSidebarView, isMobileViewport]);
+
+	const applySidebarFilterSelection = React.useCallback((mode: SidebarFilterReminderMode | SidebarFilterSortMode) => {
+		setSidebarView(filterSidebarView);
+		if (isSidebarFilterReminderMode(mode)) {
+			setActiveReminderFilter(mode);
+			setActiveSortMode((current) => (isSidebarFilterSortMode(current) ? 'manual' : current));
+		} else {
+			setActiveSortMode(mode);
+			setActiveReminderFilter((current) => (isSidebarFilterReminderMode(current) ? 'all' : current));
+		}
+		if (isMobileViewport) closeMobileSidebar();
+	}, [closeMobileSidebar, filterSidebarView, isMobileViewport]);
+
+	const activeSidebarFilterItem = React.useMemo<SidebarFilterReminderMode | SidebarFilterSortMode | null>(() => {
+		if (isSidebarFilterReminderMode(activeReminderFilter)) return activeReminderFilter;
+		if (isSidebarFilterSortMode(activeSortMode)) return activeSortMode;
+		return null;
+	}, [activeReminderFilter, activeSortMode]);
+
 	const sidebarGroupContent = React.useMemo<Record<string, SidebarSubmenuNode[]>>(
 		() => ({
 			reminders: [
-				{ id: 'all', label: t('app.sidebarAll'), kind: 'item' },
-				{ id: 'past-due', label: t('app.sidebarPastDue'), kind: 'item' },
 				{ id: 'later-today', label: t('app.sidebarToday'), kind: 'item' },
-				{ id: 'tomorrow', label: 'Tomorrow', kind: 'item' },
+				{ id: 'tomorrow', label: t('reminders.tomorrow'), kind: 'item' },
 				{ id: 'next-week', label: t('app.sidebarNextWeek'), kind: 'item' },
+				{ id: 'clear-reminders', label: t('app.sidebarClearReminders'), kind: 'action' },
 			],
 			labels: sidebarUsesBubbleSummaryMenus
 				? [{ id: 'all-labels', label: 'All Labels', kind: 'muted' }]
@@ -4433,7 +4648,6 @@ export function App(): React.JSX.Element {
 
 	const sortingPrimaryItems = React.useMemo<SidebarSubmenuNode[]>(
 		() => [
-			{ id: 'manual', label: 'Manual', kind: 'item' },
 			{ id: 'date-created', label: t('app.sidebarDateCreated'), kind: 'item' },
 			{ id: 'date-updated', label: t('app.sidebarDateUpdated'), kind: 'item' },
 			{ id: 'alphabetical', label: t('app.sidebarAlphabetical'), kind: 'item' },
@@ -4445,21 +4659,22 @@ export function App(): React.JSX.Element {
 		() => [
 			{
 				id: 'sortingFilters',
-				label: t('app.sidebarFilters'),
+				label: t('app.sidebarQuickFilters'),
 				items: [
 					{ id: 'past-due', label: t('app.sidebarPastDue'), kind: 'item' },
 					{ id: 'due-soon', label: t('app.sidebarDueSoon'), kind: 'item' },
 					{ id: 'least-accessed', label: t('app.sidebarLeastAccessed'), kind: 'item' },
 					{ id: 'most-edited', label: t('app.sidebarMostEdited'), kind: 'item' },
-					{ id: 'clear', label: t('app.sidebarClear'), kind: 'action' },
+					{ id: 'clear-filters', label: t('app.sidebarClearFilters'), kind: 'action' },
 				],
 			},
 			{
 				id: 'sortingGrouping',
-				label: t('app.sidebarGrouping'),
+				label: t('app.sidebarGroupBy'),
 				items: [
 					{ id: 'by-week', label: t('app.sidebarByWeek'), kind: 'item' },
 					{ id: 'by-month', label: t('app.sidebarByMonth'), kind: 'item' },
+					{ id: 'clear-grouping', label: t('app.sidebarClearGrouping'), kind: 'action' },
 				],
 			},
 		],
@@ -5525,7 +5740,7 @@ export function App(): React.JSX.Element {
 			}`}
 		>
 			{isMobileViewport && !isMobileSidebarOpen ? <div ref={mobileSwipeZoneRef} className="mobile-swipe-zone" aria-hidden="true" /> : null}
-			{isFabOpen && !isEditorOverlayOpen ? (
+			{isFabOpen && showMobileFab ? (
 				<button
 					type="button"
 					className="mobile-fab-backdrop"
@@ -5826,36 +6041,36 @@ export function App(): React.JSX.Element {
 													<div className="sidebar-workspace-muted sidebar-submenu-muted sidebar-workspace-legend-summary" style={{ ['--sidebar-item-index' as const]: 0 }}>
 															Workspaces
 													</div>
-														<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 1 }}>
-															New notes placed in selected workspace
-														</div>
 													{sidebarWorkspacesBusy ? (
-															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 2 }}>{t('common.loading')}</div>
+															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 1 }}>{t('common.loading')}</div>
 													) : null}
 													{sidebarWorkspacesError ? (
-															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 3 }}>{sidebarWorkspacesError}</div>
+															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 2 }}>{sidebarWorkspacesError}</div>
 													) : null}
 													{bubbleWorkspaceLegend.length === 0 && !sidebarWorkspacesBusy ? (
-															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 4 }}>{t('workspace.none')}</div>
+															<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 3 }}>{t('workspace.none')}</div>
 													) : null}
 													{bubbleWorkspaceLegend.map((workspace, index) => (
-															<button
+															<div
 															key={workspace.id}
-																type="button"
-															className={`sidebar-workspace-legend-item${workspace.isActive ? ' is-active' : ''}`}
-																onClick={() => {
-																	setBubbleWorkspaceSelectionId(workspace.id);
-																	if (sidebarView === 'trash' || sidebarView === 'archive') {
-																		setActiveSharedFolder(null);
-																		setSidebarView('notes');
-																	}
-																	if (isMobileViewport) closeMobileSidebar();
-																}}
-																style={{ ['--sidebar-item-index' as const]: index + 5 } as React.CSSProperties}
+															className="sidebar-workspace-legend-item"
+															style={{ ['--sidebar-item-index' as const]: index + 4 } as React.CSSProperties}
 														>
+															{/* Bubble view is read-only for now. Keep the old workspace
+															    selection logic commented so per-workspace creation can be
+															    restored later without re-deriving the behavior.
+															    onClick={() => {
+																setBubbleWorkspaceSelectionId(workspace.id);
+																if (sidebarView === 'trash' || sidebarView === 'archive') {
+																	setActiveSharedFolder(null);
+																	setSidebarView('notes');
+																}
+																if (isMobileViewport) closeMobileSidebar();
+															    }}
+															*/}
 															<span className="sidebar-workspace-legend-swatch" style={workspace.style} aria-hidden="true" />
 															<span className="sidebar-workspace-legend-label">{truncateUiName(workspace.name, 44)}</span>
-															</button>
+															</div>
 													))}
 												</>
 											) : (
@@ -6054,8 +6269,12 @@ export function App(): React.JSX.Element {
 																		return;
 																	}
 																	if (entry.id === 'reminders' && item.kind === 'item') {
+																		applyReminderSidebarFilter(item.id as ReminderFilterMode);
+																		return;
+																	}
+																	if (entry.id === 'reminders' && item.id === 'clear-reminders') {
 																		setSidebarView(filterSidebarView);
-																		setActiveReminderFilter(item.id as ReminderFilterMode);
+																		clearReminderSidebarFilter();
 																		if (isMobileViewport) closeMobileSidebar();
 																	}
 																}}
@@ -6103,9 +6322,21 @@ export function App(): React.JSX.Element {
 														</button>
 													);
 												})}
+														<button
+															type="button"
+															className="sidebar-submenu-action"
+															onClick={() => {
+																setSidebarView(filterSidebarView);
+																clearSidebarSortMode();
+																if (isMobileViewport) closeMobileSidebar();
+															}}
+															style={{ ['--sidebar-item-index' as const]: sortingPrimaryItems.length }}
+														>
+															{t('app.sidebarClearSort')}
+														</button>
 												{sortingNestedGroups.map((group, groupIndex) => {
 													const nestedOpen = Boolean(sidebarGroupsOpen[group.id]);
-													const baseIndex = sortingPrimaryItems.length + groupIndex;
+															const baseIndex = sortingPrimaryItems.length + 1 + groupIndex;
 													return (
 														<div key={group.id} className="sidebar-nested-group">
 															<button
@@ -6121,10 +6352,8 @@ export function App(): React.JSX.Element {
 															<div className={`sidebar-nested-submenu-shell${nestedOpen ? ' is-open' : ''}`}>
 																<div className="sidebar-nested-submenu" aria-hidden={!nestedOpen}>
 																	{group.items.map((item, itemIndex) => {
-																		const isActive = item.id === 'past-due' || item.id === 'due-soon'
-																			? activeReminderFilter === item.id
-																			: item.id === 'least-accessed' || item.id === 'most-edited'
-																				? activeSortMode === item.id
+																		const isActive = item.id === 'past-due' || item.id === 'due-soon' || item.id === 'least-accessed' || item.id === 'most-edited'
+																			? activeSidebarFilterItem === item.id
 																				: item.id === 'by-week'
 																					? activeSortGrouping === 'week'
 																					: item.id === 'by-month'
@@ -6138,16 +6367,16 @@ export function App(): React.JSX.Element {
 																				className={className}
 																				onClick={() => {
 																					setSidebarView(filterSidebarView);
-																					if (item.id === 'clear') {
-																						setActiveReminderFilter('all');
-																						setActiveSortMode('manual');
-																						setActiveSortGrouping('none');
+																					if (item.id === 'clear-filters') {
+																						clearSidebarFilters();
 																					} else if (item.id === 'past-due' || item.id === 'due-soon') {
-																						setActiveReminderFilter(item.id as ReminderFilterMode);
+																						applySidebarFilterSelection(item.id as SidebarFilterReminderMode);
 																					} else if (item.id === 'least-accessed' || item.id === 'most-edited') {
-																						setActiveSortMode(item.id as NoteSortMode);
+																						applySidebarFilterSelection(item.id as SidebarFilterSortMode);
 																					} else if (item.id === 'by-week' || item.id === 'by-month') {
 																						setActiveSortGrouping(item.id === 'by-week' ? 'week' : 'month');
+																					} else if (item.id === 'clear-grouping') {
+																						clearSidebarGrouping();
 																					}
 																					if (isMobileViewport) closeMobileSidebar();
 																				}}
@@ -6231,10 +6460,10 @@ export function App(): React.JSX.Element {
 						</section>
 					) : null}
 
-					{/* Archive/trash views are read-focused; only notes view shows quick-create. */}
+					{/* Bubble view is read-only; quick-create stays in the grid/list views only. */}
 					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') ? (
 						<div ref={topControlsRef} className="app-main-sticky">
-{sidebarView === 'notes' ? (
+							{sidebarView === 'notes' && viewMode !== 'bubble' && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' ? (
 						// Reserve the button-row height unconditionally so the grid
 						// doesn't shift down when canCreateNotesInCurrentContext resolves.
 						<div className="top-actions">
@@ -6371,6 +6600,7 @@ export function App(): React.JSX.Element {
 						collections={collections}
 						labels={labels}
 						reminderFilter={activeReminderFilter}
+						noteReminderByDocId={noteReminderByDocId}
 						sortMode={activeSortMode}
 						sortDirection={activeSortDirection}
 						sortGrouping={activeSortGrouping}
@@ -6435,6 +6665,7 @@ export function App(): React.JSX.Element {
 						activeLabelIds={activeLabelIds}
 						activeCollaboratorFilter={noteGridCollaboratorFilter}
 						reminderFilter={activeReminderFilter}
+						noteReminderByDocId={noteReminderByDocId}
 						sortMode={activeSortMode}
 						sortDirection={activeSortDirection}
 						sortGrouping={activeSortGrouping}
@@ -6454,6 +6685,7 @@ export function App(): React.JSX.Element {
 							zoom={bubbleZoom}
 							showTrashed={sidebarView === 'trash'}
 							reminderFilter={activeReminderFilter}
+							noteReminderByDocId={noteReminderByDocId}
 							searchQuery={deferredSearchQuery}
 							sidebarIsCollapsed={sidebarIsCollapsed}
 							hiddenNoteId={draftNoteId}
@@ -6552,7 +6784,7 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
-			{canCreateNotesInCurrentContext && sidebarView === 'notes' && !isEditorOverlayOpen ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
+			{showMobileFab ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
 				<button
 					type="button"
 					className="mobile-fab-action"
@@ -6573,7 +6805,7 @@ export function App(): React.JSX.Element {
 				</button>
 			</div> : null}
 
-			{canCreateNotesInCurrentContext && sidebarView === 'notes' && !isEditorOverlayOpen ? (
+			{showMobileFab ? (
 				<button
 					type="button"
 					className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
@@ -6607,6 +6839,7 @@ export function App(): React.JSX.Element {
 					doc={openDoc}
 					quickCreateCollectionOption={selectedQuickCreateCollectionOption}
 					onClose={closeNoteEditor}
+					onSavePendingNew={draftNoteId === selectedNoteId ? savePendingNewNoteAndClose : undefined}
 					onDelete={onDeleteSelectedNote}
 					isPendingNew={draftNoteId === selectedNoteId}
 					onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
@@ -6615,7 +6848,7 @@ export function App(): React.JSX.Element {
 						openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
 					}}
 					onAddDocument={undefined}
-						onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, openDoc.getText('title').toString())}
+						onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
 						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString())}
 						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString())}
 					onMoveToWorkspace={!selectedSharedPlacement && !selectedNoteReadOnly ? () => openMoveNoteModal(selectedNoteId, openDoc.getText('title').toString()) : undefined}
@@ -6705,7 +6938,7 @@ export function App(): React.JSX.Element {
 			<ReminderModal
 				isOpen={Boolean(noteReminderModalState)}
 				onClose={() => setNoteReminderModalState(null)}
-				reminderAt={noteReminderMetadata.reminderAt}
+				reminderAt={readReminderLookupValue(noteReminderByDocId, noteReminderModalState?.docId, noteReminderModalState?.noteId ?? null)}
 				noteTitle={noteReminderModalState?.title}
 				onSave={handleSaveNoteReminder}
 			/>

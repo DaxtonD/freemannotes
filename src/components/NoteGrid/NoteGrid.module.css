@@ -288,6 +288,7 @@
 	align-items: center;
 	justify-content: center;
 	gap: 5px;
+	position: relative;
 	touch-action: manipulation;
 	border: 1px solid var(--note-color-border, color-mix(in srgb, var(--color-border) 72%, var(--color-text) 28%));
 	border-radius: 999px;
@@ -446,6 +447,12 @@
 		min-width: 0;
 		padding: 0 6px;
 		gap: 4px;
+	}
+
+	.noteChipButton::before {
+		content: '';
+		position: absolute;
+		inset: -6px -2px;
 	}
 
 	.collaboratorOverlayPanel {

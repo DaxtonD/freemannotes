@@ -34,6 +34,12 @@ function addMonths(date: Date, months: number): Date {
 	return next;
 }
 
+const MONTH_ABBREVIATIONS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'] as const;
+
+function formatMonthDay(date: Date): string {
+	return `${MONTH_ABBREVIATIONS[date.getMonth()]} ${date.getDate()}`;
+}
+
 export function getGroupingTimestamp(note: VisibleNoteSnapshot, sortMode: NoteSortMode | undefined): number {
 	return sortMode === 'date-created' ? note.createdAt : note.updatedAt;
 }
@@ -59,8 +65,8 @@ export function formatSectionLabel(startMs: number, grouping: NoteGroupingMode, 
 	if (startMs === lastWeekStart) return 'Last week';
 	const end = addDays(start, 6);
 	const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
-	const startLabel = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(start);
-	const endLabel = new Intl.DateTimeFormat(undefined, sameMonth ? { day: 'numeric' } : { month: 'short', day: 'numeric' }).format(end);
+	const startLabel = formatMonthDay(start);
+	const endLabel = sameMonth ? `${end.getDate()}` : formatMonthDay(end);
 	return `${startLabel} - ${endLabel}`;
 }
 

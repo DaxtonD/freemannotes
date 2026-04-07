@@ -162,6 +162,19 @@ export type FiredReminder = {
 	firedAt: string | null;
 };
 
+export type NoteReminderState = {
+	docId: string;
+	noteId: string;
+	workspaceId: string;
+	reminderAt: string;
+};
+
+export async function fetchNoteReminderStates(): Promise<{ reminders: NoteReminderState[] }> {
+	const res = await fetch('/api/push/reminders', { cache: 'no-store' });
+	await checkResponse(res);
+	return res.json();
+}
+
 /**
  * Fetch the list of fired reminders that haven't been acknowledged yet.
  * Used to populate the notifications panel with reminder entries.
