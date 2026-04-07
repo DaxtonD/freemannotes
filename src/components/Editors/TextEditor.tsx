@@ -126,8 +126,14 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	}, [isCoarsePointer]);
 	const dockTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
-	const titleInputRef = React.useRef<HTMLInputElement | null>(null);
+	const titleInputRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const bodyFieldRef = React.useRef<HTMLDivElement | null>(null);
+	const resizeTitleField = React.useCallback((): void => {
+		const field = titleInputRef.current;
+		if (!field) return;
+		field.style.height = '0px';
+		field.style.height = `${Math.max(36, field.scrollHeight)}px`;
+	}, []);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
 		event.preventDefault();
@@ -244,12 +250,21 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		});
 	}, []);
 
+	React.useLayoutEffect(() => {
+		resizeTitleField();
+	}, [resizeTitleField, title]);
+
 	React.useEffect(() => {
 		const rafId = window.requestAnimationFrame(() => {
-			titleInputRef.current?.focus();
+			const field = titleInputRef.current;
+			if (!field) return;
+			resizeTitleField();
+			field.focus();
+			const caret = field.value.length;
+			field.setSelectionRange(caret, caret);
 		});
 		return () => window.cancelAnimationFrame(rafId);
-	}, []);
+	}, [resizeTitleField]);
 
 	React.useEffect(() => {
 		if (!noteAutoScrollEnabled) {
@@ -320,8 +335,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 				style={mobileKeyboardOpen ? { height: `${keyboard.visibleBottom}px`, maxHeight: `${keyboard.visibleBottom}px` } : undefined}
 				onClick={(event) => event.stopPropagation()}
 			>
-				<input
-					type="text"
+				<textarea
 					name="text-note-title"
 					autoComplete="off"
 					autoCorrect="off"
@@ -332,8 +346,10 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 					data-1p-ignore="true"
 					className={styles.editorTitleInput}
 					ref={titleInputRef}
+					rows={1}
 					value={title}
 					onChange={(e) => setTitle(e.target.value)}
+					onInput={resizeTitleField}
 					onKeyDown={(event) => {
 						if (event.key !== 'Enter') return;
 						event.preventDefault();

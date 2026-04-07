@@ -257,6 +257,7 @@
 	display: flex;
 	justify-content: flex-end;
 	align-items: center;
+	gap: 8px;
 }
 
 @media (pointer: coarse) {
@@ -300,15 +301,20 @@
 	border-radius: 0;
 	padding: 4px 84px 4px 0;
 	width: 100%;
-	height: 36px;
 	min-height: 36px;
-	max-height: 36px;
-	overflow-x: auto;
-	overflow-y: hidden;
+	height: auto;
+	max-height: 30vh;
+	overflow-x: hidden;
+	overflow-y: auto;
+	resize: none;
+	display: block;
 	font-size: calc(var(--font-size-md) + 2px);
 	font-weight: 700;
 	line-height: 1.25;
-	white-space: nowrap;
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow-wrap: anywhere;
+	font-family: inherit;
 	color: var(--note-editor-text, var(--color-text));
 }
 

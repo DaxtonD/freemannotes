@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Freeman Notes Reminder Email Preview</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --page-bg: #eef2f7;
+        --card-bg: #ffffff;
+        --card-border: #d8e0ea;
+        --text: #152033;
+        --muted: #64748b;
+        --subtle: #334155;
+        --panel-bg: #f8fafc;
+        --panel-border: #e2e8f0;
+        --accent: #264b79;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 24px;
+        background: var(--page-bg);
+        font-family: "Segoe UI", Arial, sans-serif;
+        color: var(--text);
+      }
+
+      .shell {
+        max-width: 640px;
+        margin: 0 auto;
+      }
+
+      .label {
+        margin: 0 0 12px;
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .card {
+        background: var(--card-bg);
+        border: 1px solid var(--card-border);
+        border-radius: 20px;
+        overflow: hidden;
+        box-shadow: 0 18px 50px rgba(17, 24, 39, 0.08);
+      }
+
+      .hero {
+        padding: 28px 32px;
+        color: #fff;
+        background: linear-gradient(135deg, #18253f 0%, #284a77 55%, #5e8bc2 100%);
+      }
+
+      .brand {
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        opacity: 0.84;
+      }
+
+      .hero h1 {
+        margin: 12px 0 0;
+        font-size: 28px;
+        line-height: 1.15;
+      }
+
+      .hero p {
+        margin: 12px 0 0;
+        max-width: 460px;
+        font-size: 15px;
+        line-height: 1.55;
+        opacity: 0.92;
+      }
+
+      .content {
+        padding: 28px 32px 8px;
+      }
+
+      .content p {
+        margin: 0 0 18px;
+        font-size: 15px;
+        line-height: 1.6;
+      }
+
+      .content .intro {
+        margin-bottom: 24px;
+        color: var(--subtle);
+      }
+
+      .summary {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        background: var(--panel-bg);
+        border: 1px solid var(--panel-border);
+        border-radius: 16px;
+        overflow: hidden;
+      }
+
+      .summary td {
+        padding: 0 20px 12px;
+        vertical-align: top;
+      }
+
+      .summary tr:first-child td {
+        padding-top: 18px;
+      }
+
+      .summary tr:last-child td {
+        padding-bottom: 18px;
+      }
+
+      .summary .key {
+        width: 34%;
+        color: #5b6677;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      .summary .value {
+        color: var(--text);
+        font-size: 15px;
+        font-weight: 600;
+        text-align: right;
+      }
+
+      .summary .value.note {
+        font-weight: 700;
+      }
+
+      .summary .value.preview {
+        line-height: 1.55;
+        font-weight: 500;
+      }
+
+      .actions {
+        padding: 28px 0 18px;
+      }
+
+      .button {
+        display: inline-block;
+        padding: 14px 22px;
+        border-radius: 999px;
+        background: var(--accent);
+        color: #fff;
+        text-decoration: none;
+        font-size: 15px;
+        font-weight: 700;
+      }
+
+      .footer {
+        padding: 0 32px 28px;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .meta {
+        margin-top: 18px;
+        padding: 16px 18px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.66);
+        border: 1px dashed #c3cfdd;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      @media (max-width: 640px) {
+        body {
+          padding: 12px;
+        }
+
+        .hero,
+        .content,
+        .footer {
+          padding-left: 20px;
+          padding-right: 20px;
+        }
+
+        .summary td {
+          display: block;
+          width: 100%;
+          padding-right: 18px;
+          padding-left: 18px;
+        }
+
+        .summary .value {
+          text-align: left;
+          padding-top: 2px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <p class="label">Browser Preview</p>
+      <article class="card" aria-label="Freeman Notes reminder email preview">
+        <header class="hero">
+          <div class="brand">Freeman Notes</div>
+          <h1>Reminder ready</h1>
+          <p>Project kickoff checklist is ready for your attention in Product Roadmap.</p>
+        </header>
+
+        <section class="content">
+          <p>Hello Dax,</p>
+          <p class="intro">Freeman Notes fired a scheduled reminder for one of your notes. The summary below includes the key details and a direct link back into the note.</p>
+
+          <table class="summary" role="presentation" cellspacing="0" cellpadding="0">
+            <tr>
+              <td class="key">Note</td>
+              <td class="value note">Project kickoff checklist</td>
+            </tr>
+            <tr>
+              <td class="key">Workspace</td>
+              <td class="value">Product Roadmap</td>
+            </tr>
+            <tr>
+              <td class="key">Scheduled for</td>
+              <td class="value">Apr 6, 2026, 9:30 AM</td>
+            </tr>
+            <tr>
+              <td class="key">Preview</td>
+              <td class="value preview">Finalize scope, confirm launch date, send invite notes, and prepare the handoff checklist.</td>
+            </tr>
+          </table>
+
+          <div class="actions">
+            <a class="button" href="https://dev.freeman.daxtond.com/?workspace=workspace-123&note=note-456">Open in Freeman Notes</a>
+          </div>
+        </section>
+
+        <footer class="footer">
+          This message was generated by the notification settings for your Freeman Notes deployment. If this server is configured for email-mode reminders on your platform, this email is the primary external reminder channel.
+        </footer>
+      </article>
+
+      <div class="meta">
+        This is a static preview file generated from the current reminder email template in server/pushService.js. It uses sample reminder content so you can review the layout in a browser without sending a real email.
+      </div>
+    </div>
+  </body>
+</html>

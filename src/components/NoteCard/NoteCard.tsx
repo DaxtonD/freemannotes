@@ -46,6 +46,7 @@ export type NoteCardProps = {
 	canEdit?: boolean;
 	hasPendingSync?: boolean;
 	isPinned?: boolean;
+	reminderAt?: string | null;
 	isMoreMenuOpen?: boolean;
 	onOpen?: () => void;
 	onMoreMenu?: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
@@ -532,21 +533,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const content = useOptionalYTextValue(
 		React.useCallback(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type])
 	);
-	const reminderAt = React.useSyncExternalStore(
-		(onStoreChange) => {
-			const observer = (): void => onStoreChange();
-			metadata.observe(observer);
-			return () => metadata.unobserve(observer);
-		},
-		() => {
-			const value = metadata.get('reminderAt');
-			return typeof value === 'string' && value.trim().length > 0 ? value : '';
-		},
-		() => {
-			const value = metadata.get('reminderAt');
-			return typeof value === 'string' && value.trim().length > 0 ? value : '';
-		}
-	);
+	const reminderAt = props.reminderAt ?? '';
 	const richContent = useTextNoteRichPreview(props.doc, content);
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 

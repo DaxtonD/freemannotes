@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: freemannotes:1.0.97
+    image: freemannotes:1.2.0
     container_name: freemannotes
     init: true
     restart: unless-stopped
@@ -16,28 +16,41 @@ services:
     volumes:
       - freemannotes-uploads:/app/uploads
     environment:
+      # Core runtime
       NODE_ENV: ${NODE_ENV:-production}
       HOST: ${HOST:-0.0.0.0}
       PORT: ${PORT:-27015}
       APP_URL: ${APP_URL:-}
+
+      # Database and persistence
       DATABASE_URL: ${DATABASE_URL:-postgresql://freemannotes:freemannotes@postgres:5432/freemannotes?schema=public}
       DB_SCHEMA_SYNC: ${DB_SCHEMA_SYNC:-deploy}
+      # One-time recovery flag for P3005 after a failed first install.
+      DB_BASELINE_ON_NON_EMPTY: ${DB_BASELINE_ON_NON_EMPTY:-}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       PGTIMEZONE: ${PGTIMEZONE:-}
       YPERSISTENCE: ${YPERSISTENCE:-}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+
+      # Authentication
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-change-me-before-beta}
       AUTH_COOKIE_NAME: ${AUTH_COOKIE_NAME:-freemannotes_session}
       AUTH_COOKIE_SECURE: ${AUTH_COOKIE_SECURE:-}
       AUTH_SESSION_DAYS: ${AUTH_SESSION_DAYS:-14}
       AUTH_BCRYPT_ROUNDS: ${AUTH_BCRYPT_ROUNDS:-12}
       AUTH_ALLOW_REGISTER: ${AUTH_ALLOW_REGISTER:-true}
+
+      # Mail delivery
       SMTP_HOST: ${SMTP_HOST:-}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_SECURE: ${SMTP_SECURE:-false}
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASS: ${SMTP_PASS:-}
-      SMTP_FROM: ${SMTP_FROM:-FreemanNotes <no-reply@example.com>}
+      SMTP_FROM: ${SMTP_FROM:-Freeman Notes <no-reply@example.com>}
+
+      # Optional server-side debug tracing
+      DEBUG_LOGGING: ${DEBUG_LOGGING:-0}
+
       # External notifications per platform:
       # auto = push if configured, otherwise email if SMTP is configured
       # push = push only
@@ -52,6 +65,8 @@ services:
       OCR_PYTHON_BIN: ${OCR_PYTHON_BIN:-/opt/ocr-venv/bin/python}
       OCR_DISABLED: ${OCR_DISABLED:-0}
       OCR_LOG_OUTPUT: ${OCR_LOG_OUTPUT:-0}
+      PADDLE_HOME: ${PADDLE_HOME:-/app/.paddleocr}
+      PADDLE_PDX_MODEL_SOURCE: ${PADDLE_PDX_MODEL_SOURCE:-BOS}
       # Push notifications — VAPID (Web / Android PWA)
       # Generate keys with: npx web-push generate-vapid-keys
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}

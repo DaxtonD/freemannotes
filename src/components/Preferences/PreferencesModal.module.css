@@ -571,19 +571,6 @@
 	z-index: 1;
 }
 
-.aboutHeroFace {
-	position: absolute;
-	right: 4px;
-	bottom: -2px;
-	height: 124px;
-	width: auto;
-	max-width: 42%;
-	object-fit: contain;
-	opacity: 0.12;
-	pointer-events: none;
-	filter: saturate(0.8) contrast(1.03);
-}
-
 .aboutVersionRow {
 	display: inline-flex;
 	align-items: center;
@@ -796,12 +783,6 @@
 	.aboutHeroIcon {
 		width: 96px;
 		height: 96px;
-	}
-
-	.aboutHeroFace {
-		height: 94px;
-		max-width: 44%;
-		opacity: 0.1;
 	}
 
 	.aboutHudGrid {

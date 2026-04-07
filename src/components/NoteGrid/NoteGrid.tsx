@@ -77,6 +77,7 @@ export type NoteGridProps = {
 	collections?: readonly CollectionRecord[];
 	labels?: readonly LabelRecord[];
 	reminderFilter?: ReminderFilterMode;
+	noteReminderByDocId?: Record<string, string | null>;
 	sortMode?: NoteSortMode;
 	sortDirection?: SortDirection;
 	sortGrouping?: NoteGroupingMode;
@@ -84,7 +85,7 @@ export type NoteGridProps = {
 	canEditWorkspaceContent?: boolean;
 	canReorder?: boolean;
 	noteCardClickOpens?: boolean;
-	onAddReminder?: (noteId: string, title?: string) => void;
+	onAddReminder?: (noteId: string, docId: string, title?: string) => void;
 	onAddToCollection?: (noteId: string, title?: string) => void;
 	onAddLabels?: (noteId: string, title?: string) => void;
 	onSelectCollectionFilter?: (collectionId: string) => void;
@@ -368,6 +369,7 @@ type GridNoteCardProps = {
 	isMoreMenuOpen: boolean;
 	onOpen?: () => void;
 	onAddReminder?: () => void;
+	reminderAt?: string | null;
 	onRestoreNote?: () => void;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
@@ -622,6 +624,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					metaChips={props.metaChips}
 					canEdit={props.canEdit}
 					isPinned={props.note.isPinned}
+					reminderAt={props.reminderAt}
 					hasPendingSync={props.hasPendingSync}
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
@@ -966,6 +969,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			const doc = docsById[id];
 			if (!doc) return createFallbackNoteSnapshot(id);
 			const note = readNoteFromDoc(doc, id);
+			const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === id);
+			const docId = placement?.roomId || resolveMediaDocId(id);
 			return {
 				id,
 				title: note.title,
@@ -973,14 +978,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				updatedAt: note.updatedAt,
 				collectionId: note.collectionId,
 				labelIds: note.labelIds,
-				reminderAt: note.reminderAt,
+				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
 				isPinned: note.isPinned,
 				lastAccessedAt: note.lastAccessedAt,
 				trashed: note.trashed,
 				archived: note.archived,
 			};
 		});
-	}, [docsById, metadataVersion, orderedIds]);
+	}, [docsById, metadataVersion, orderedIds, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 
 	const baseVisibleIds = React.useMemo<string[]>(() => {
@@ -992,12 +997,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			reminderFilter: props.reminderFilter,
 			sortMode: props.sortMode,
 			sortDirection: props.sortDirection,
+			prioritizePinned: !props.showTrashed
+				&& !props.showArchived
+				&& !props.activeCollaboratorFilter
+				&& !props.activeCollectionId
+				&& (props.activeLabelIds?.length ?? 0) === 0
+				&& props.reminderFilter === 'all'
+				&& props.sortMode === 'manual'
+				&& props.sortGrouping === 'none',
 		}).map((note) => note.id);
 		if (props.hiddenNoteId) return ids.filter((id) => id !== props.hiddenNoteId);
 		// ^ Suppress the draft note ID from the visible list so it never renders as
 		//   an empty card while the user is composing it in the editor overlay.
 		return ids;
-	}, [noteSnapshots, props.activeCollectionId, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode]);
+	}, [noteSnapshots, props.activeCollectionId, props.activeCollaboratorFilter, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortGrouping, props.sortMode]);
 
 	const visibleNoteEntries = React.useMemo(() => {
 		const sharedPlacementByAlias = new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement]));
@@ -1044,22 +1057,25 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			const cached = await Promise.all(
 				visibleNoteEntriesForCollaboratorSync.map(async (entry) => ({
 					noteId: entry.noteId,
-					summary: snapshotToCollaboratorSummary(entry.docId, await readCachedNoteShareCollaborators(props.authUserId || '', entry.docId)),
+					snapshot: await readCachedNoteShareCollaborators(props.authUserId || '', entry.docId),
 				}))
 			);
-			applySummaries(cached);
+			applySummaries(cached.map((entry) => ({
+				noteId: entry.noteId,
+				summary: snapshotToCollaboratorSummary(visibleNoteEntriesForCollaboratorSync.find((row) => row.noteId === entry.noteId)?.docId ?? '', entry.snapshot),
+			})));
 
 			if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
 
 			// Refresh visible notes in small batches so collaborator chips converge to
 			// server state without stalling the rest of the grid on large workspaces.
 			// Brand-new local notes can still be missing from the server document table,
-			// which produces 403s if we probe them immediately. Once a local note is
-			// synced, though, a fresh device still needs one server read to discover any
-			// collaborators because there is no local collaborator cache yet.
-			const cachedSummaryByNoteId = new Map(cached.map((row) => [row.noteId, row.summary] as const));
+			// which produces 403s if we probe them before any collaborator snapshot has
+			// ever been cached. Only notes with cached collaborator state (or shared
+			// aliases, which must resolve remotely) should do an eager background read.
+			const hasCachedSnapshotByNoteId = new Map(cached.map((row) => [row.noteId, Boolean(row.snapshot)] as const));
 			const entriesToRefresh = visibleNoteEntriesForCollaboratorSync.filter(
-				(entry) => entry.isSharedAlias || Boolean(cachedSummaryByNoteId.get(entry.noteId)) || !pendingSyncNoteIds.has(entry.noteId)
+				(entry) => entry.isSharedAlias || Boolean(hasCachedSnapshotByNoteId.get(entry.noteId))
 			);
 			if (entriesToRefresh.length === 0) return;
 			const refreshed: Array<{ noteId: string; summary: NoteCardCollaboratorSummary | null }> = [];
@@ -1659,6 +1675,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
 		const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
 		const docId = placement?.roomId || resolveMediaDocId(note.id);
+		const reminderAt = (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[note.id] ?? null;
 		const canEditNote = !isTrashView && (note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false);
 		const title = doc.getText('title').toString();
 		return (
@@ -1669,6 +1686,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				authUserId={props.authUserId}
 				themeId={props.themeId}
 				doc={doc}
+				reminderAt={reminderAt}
 				metaChips={renderNoteMetaChips({
 					noteId: note.id,
 					docId,
@@ -1712,7 +1730,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					props.onSelectNote(note.id);
 				} : undefined}
 				allowCardItemInteractions={props.noteCardClickOpens !== false}
-				onAddReminder={props.onAddReminder && canEditNote ? () => props.onAddReminder?.(note.id, doc.getText('title').toString()) : undefined}
+				onAddReminder={props.onAddReminder && canEditNote ? () => props.onAddReminder?.(note.id, docId, doc.getText('title').toString()) : undefined}
 				onRestoreNote={isTrashView ? () => { void manager.restoreNote(note.id); } : undefined}
 				onAddCollaborator={props.onAddCollaborator && canEditNote ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
 				onAddImage={props.onAddImage && canEditNote ? () => {
@@ -1733,7 +1751,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardClickOpens, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardClickOpens, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -1867,36 +1885,76 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				</div>
 			) : null}
 			{(props.viewMode === 'list' || props.viewMode === 'strip') && visibleIds.length > 0 ? (
-				<div ref={gridRef} className={styles.listGrid} aria-label={t('grid.notesGrid')}>
-					<div className={styles.listColumn}>
-						<NoteListView
-							variant={props.viewMode}
-							orderedIds={listOrderedIds}
-							docsById={docsById}
-							noteSnapshotById={noteSnapshotById}
-							collectionPathById={collectionPathById}
-							labelById={labelById}
-							collaboratorCountByNoteId={collaboratorCountByNoteId}
-							selectedNoteId={props.selectedNoteId}
-							moreMenuNoteId={moreMenuNoteId}
-							themeId={props.themeId}
-							activeDragId={dragManager.activeDragId}
-							setItemElement={dragManager.setItemElement}
-							setHandleElement={dragManager.setHandleElement}
-							shouldSuppressOpen={dragManager.shouldSuppressOpen}
-							canOpenNotes={!isTrashView}
-							canDrag={(noteId) => {
-								const note = noteById.get(noteId);
-								if (!note) return false;
-								return !isTrashView && !note.isShared && props.canReorder !== false;
-							}}
-							onSelectNote={props.onSelectNote}
-							onMoreMenu={(noteId, rect) => {
-								setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
-								setMoreMenuNoteId(noteId);
-							}}
-						/>
-					</div>
+				<div ref={gridRef} className={isGroupedView ? styles.groupedSections : styles.listGrid} aria-label={t('grid.notesGrid')}>
+					{isGroupedView ? groupedSections.map((section) => (
+						<div key={section.key} className={styles.groupSection}>
+							<div className={styles.groupHeader}>
+								<h3 className={styles.groupTitle}>{section.label}</h3>
+								<span className={styles.groupHeaderRule} aria-hidden="true" />
+							</div>
+							<div className={styles.listGrid}>
+								<div className={styles.listColumn}>
+									<NoteListView
+										variant={props.viewMode}
+										orderedIds={section.noteIds}
+										docsById={docsById}
+										noteSnapshotById={noteSnapshotById}
+										collectionPathById={collectionPathById}
+										labelById={labelById}
+										collaboratorCountByNoteId={collaboratorCountByNoteId}
+										selectedNoteId={props.selectedNoteId}
+										moreMenuNoteId={moreMenuNoteId}
+										themeId={props.themeId}
+										activeDragId={dragManager.activeDragId}
+										setItemElement={dragManager.setItemElement}
+										setHandleElement={dragManager.setHandleElement}
+										shouldSuppressOpen={dragManager.shouldSuppressOpen}
+										canOpenNotes={!isTrashView}
+										canDrag={(noteId) => {
+											const note = noteById.get(noteId);
+											if (!note) return false;
+											return !isTrashView && !note.isShared && props.canReorder !== false;
+										}}
+										onSelectNote={props.onSelectNote}
+										onMoreMenu={(noteId, rect) => {
+											setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
+											setMoreMenuNoteId(noteId);
+										}}
+									/>
+								</div>
+							</div>
+						</div>
+					)) : (
+						<div className={styles.listColumn}>
+							<NoteListView
+								variant={props.viewMode}
+								orderedIds={listOrderedIds}
+								docsById={docsById}
+								noteSnapshotById={noteSnapshotById}
+								collectionPathById={collectionPathById}
+								labelById={labelById}
+								collaboratorCountByNoteId={collaboratorCountByNoteId}
+								selectedNoteId={props.selectedNoteId}
+								moreMenuNoteId={moreMenuNoteId}
+								themeId={props.themeId}
+								activeDragId={dragManager.activeDragId}
+								setItemElement={dragManager.setItemElement}
+								setHandleElement={dragManager.setHandleElement}
+								shouldSuppressOpen={dragManager.shouldSuppressOpen}
+								canOpenNotes={!isTrashView}
+								canDrag={(noteId) => {
+									const note = noteById.get(noteId);
+									if (!note) return false;
+									return !isTrashView && !note.isShared && props.canReorder !== false;
+								}}
+								onSelectNote={props.onSelectNote}
+								onMoreMenu={(noteId, rect) => {
+									setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
+									setMoreMenuNoteId(noteId);
+								}}
+							/>
+						</div>
+					)}
 				</div>
 			) : null}
 			{props.viewMode !== 'list' && props.viewMode !== 'strip' ? (
@@ -2238,10 +2296,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					onAddReminder={props.onAddReminder && (moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;
 						const noteId = moreMenuNoteId;
+						if (!moreMenuDocId) return;
 						const title = moreMenuDoc.getText('title').toString();
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
-						props.onAddReminder?.(noteId, title);
+						props.onAddReminder?.(noteId, moreMenuDocId, title);
 					} : undefined}
 					onAddToCollection={props.onAddToCollection && (moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;

@@ -28,6 +28,7 @@
 
 const webpush = require('web-push');
 const { isSmtpConfigured, sendNotificationEmail } = require('./mailer');
+const { decodeDocumentState, normalizeText } = require('./noteSnapshot');
 
 // ── Environment configuration ─────────────────────────────────────────────────
 const VAPID_SUBJECT = String(process.env.VAPID_SUBJECT || 'mailto:admin@example.com').trim();
@@ -59,10 +60,9 @@ const ANDROID_NOTIFICATION_MODE = normalizeNotificationMode(
 );
 const IOS_NOTIFICATION_MODE = normalizeNotificationMode(process.env.IOS_NOTIFICATION_MODE, 'auto');
 const smtpReady = isSmtpConfigured();
-const BRAND_NAME = 'FreemanNotes';
+const BRAND_NAME = 'Freeman Notes';
 const DEFAULT_NOTIFICATION_ICON = '/apple-touch-icon.png';
 const DEFAULT_NOTIFICATION_BADGE = '/apple-touch-icon.png';
-const DEFAULT_NOTIFICATION_IMAGE = '/icons/FreemanFace.png';
 
 // ── VAPID initialisation ──────────────────────────────────────────────────────
 let vapidReady = false;
@@ -166,7 +166,7 @@ function buildReminderUrl(reminder) {
 }
 
 async function loadReminderMetadata(prisma, reminder) {
-	const [workspace, user] = await Promise.all([
+	const [workspace, user, document] = await Promise.all([
 		prisma.workspace.findUnique({
 			where: { id: reminder.workspaceId },
 			select: { name: true },
@@ -175,11 +175,35 @@ async function loadReminderMetadata(prisma, reminder) {
 			where: { id: reminder.userId },
 			select: { name: true, email: true },
 		}).catch(() => null),
+		prisma.document.findUnique({
+			where: { docId: reminder.docId },
+			select: { state: true },
+		}).catch(() => null),
 	]);
+	let notePreviewText = '';
+	if (document?.state) {
+		try {
+			// Reminders can fire when the originating client is offline, so derive a
+			// plain-text preview directly from the persisted Yjs document snapshot.
+			const decoded = decodeDocumentState(document.state);
+			const bodyText = decoded.type === 'checklist'
+				? decoded.checklist.map((item) => normalizeText(item.text)).filter(Boolean).join(' • ')
+				: normalizeText(decoded.content);
+			const normalizedTitle = normalizeText(decoded.title);
+			let preview = bodyText || normalizeText(decoded.plainText);
+			if (normalizedTitle && preview.toLowerCase().startsWith(normalizedTitle.toLowerCase())) {
+				preview = normalizeText(preview.slice(normalizedTitle.length));
+			}
+			notePreviewText = preview.length > 180 ? `${preview.slice(0, 177).trimEnd()}...` : preview;
+		} catch {
+			notePreviewText = '';
+		}
+	}
 	return {
 		workspaceName: workspace?.name ? String(workspace.name) : 'Workspace',
 		userName: user?.name ? String(user.name) : '',
 		userEmail: user?.email ? String(user.email) : '',
+		notePreviewText,
 	};
 }
 
@@ -188,52 +212,54 @@ function createReminderNotificationPayload(reminder, metadata) {
 	const workspaceName = String(metadata.workspaceName || 'Workspace').trim() || 'Workspace';
 	const reminderAtLabel = formatReminderDateTime(reminder.reminderAt);
 	const noteUrl = buildReminderUrl(reminder);
-	const title = `${BRAND_NAME} Reminder`;
-	const body = reminderAtLabel
-		? `${noteTitle} is due ${reminderAtLabel} in ${workspaceName}.`
-		: `${noteTitle} is due in ${workspaceName}.`;
-	const richLines = [
-		`Note: ${noteTitle}`,
+	const previewText = normalizeText(metadata.notePreviewText || '');
+	const title = noteTitle;
+	const bodyLines = [
+		reminderAtLabel ? `Due ${reminderAtLabel}` : 'Reminder due',
 		`Workspace: ${workspaceName}`,
+		previewText,
+	].filter(Boolean);
+	const body = bodyLines.join('\n');
+	const richLines = [
+		`${BRAND_NAME}`,
+		'',
+		`Note: ${noteTitle}`,
 		reminderAtLabel ? `Scheduled for: ${reminderAtLabel}` : '',
+		`Workspace: ${workspaceName}`,
+		previewText ? `Preview: ${previewText}` : '',
 	].filter(Boolean);
 	const iconUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_ICON);
 	const badgeUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_BADGE);
-	const imageUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_IMAGE);
 	return {
 		type: 'reminder',
 		title,
 		body,
 		emailSubject: `${BRAND_NAME} reminder: ${noteTitle}`,
 		emailText: [
-			`${BRAND_NAME} reminder`,
-			'',
 			...richLines,
 			'',
 			`Open note: ${toAbsoluteAppUrl(noteUrl)}`,
 			'',
-			`Signed in as: ${metadata.userEmail || 'your FreemanNotes account'}`,
+			`Signed in as: ${metadata.userEmail || `your ${BRAND_NAME} account`}`,
 		].join('\n'),
 		emailHtml: buildReminderEmailHtml({
 			noteTitle,
 			workspaceName,
 			reminderAtLabel,
+			previewText,
 			noteUrl: toAbsoluteAppUrl(noteUrl),
 			userName: metadata.userName,
 		}),
 		data: {
 			type: 'reminder',
-			noteId: reminder.noteId,
-			docId: reminder.docId,
-			workspaceId: reminder.workspaceId,
 			noteTitle,
 			workspaceName,
+			previewText,
 			reminderAt: reminder.reminderAt instanceof Date ? reminder.reminderAt.toISOString() : String(reminder.reminderAt || ''),
 			url: noteUrl,
-			tag: `freemannotes-reminder-${String(reminder.noteId)}`,
+			tag: `freeman-notes-reminder-${String(reminder.docId)}`,
 			icon: iconUrl,
 			badge: badgeUrl,
-			image: imageUrl,
 			brand: BRAND_NAME,
 			vibrate: '180,60,180',
 			requireInteraction: true,
@@ -241,10 +267,13 @@ function createReminderNotificationPayload(reminder, metadata) {
 	};
 }
 
-function buildReminderEmailHtml({ noteTitle, workspaceName, reminderAtLabel, noteUrl, userName }) {
+function buildReminderEmailHtml({ noteTitle, workspaceName, reminderAtLabel, previewText, noteUrl, userName }) {
 	const greeting = userName ? `Hello ${escapeHtml(userName)},` : 'Hello,';
 	const whenMarkup = reminderAtLabel
 		? `<tr><td style="padding:0 0 12px;color:#5b6677;font-size:13px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Scheduled for</td><td style="padding:0 0 12px;color:#152033;font-size:15px;font-weight:600;text-align:right;">${escapeHtml(reminderAtLabel)}</td></tr>`
+		: '';
+	const previewMarkup = previewText
+		? `<tr><td style="padding:0;color:#5b6677;font-size:13px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;vertical-align:top;">Preview</td><td style="padding:0;color:#152033;font-size:15px;line-height:1.55;font-weight:500;text-align:right;">${escapeHtml(previewText)}</td></tr>`
 		: '';
 	return `<!doctype html>
 <html>
@@ -260,11 +289,12 @@ function buildReminderEmailHtml({ noteTitle, workspaceName, reminderAtLabel, not
       <tr>
         <td style="padding:28px 32px 8px;">
           <p style="margin:0 0 18px;font-size:15px;line-height:1.6;">${greeting}</p>
-          <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#334155;">FreemanNotes fired a scheduled reminder for one of your notes. The summary below includes the key details and a direct link back into the note.</p>
+	          <p style="margin:0 0 24px;font-size:15px;line-height:1.6;color:#334155;">${BRAND_NAME} fired a scheduled reminder for one of your notes. The summary below includes the key details and a direct link back into the note.</p>
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:16px;padding:18px 20px;">
             <tr><td style="padding:0 0 12px;color:#5b6677;font-size:13px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Note</td><td style="padding:0 0 12px;color:#152033;font-size:15px;font-weight:700;text-align:right;">${escapeHtml(noteTitle)}</td></tr>
             <tr><td style="padding:0 0 12px;color:#5b6677;font-size:13px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;">Workspace</td><td style="padding:0 0 12px;color:#152033;font-size:15px;font-weight:600;text-align:right;">${escapeHtml(workspaceName)}</td></tr>
             ${whenMarkup}
+	            ${previewMarkup}
           </table>
           <div style="padding:28px 0 18px;">
             <a href="${escapeHtml(noteUrl)}" style="display:inline-block;background:#264b79;color:#ffffff;text-decoration:none;font-weight:700;font-size:15px;padding:14px 22px;border-radius:999px;">Open in ${BRAND_NAME}</a>
@@ -273,7 +303,7 @@ function buildReminderEmailHtml({ noteTitle, workspaceName, reminderAtLabel, not
       </tr>
       <tr>
         <td style="padding:0 32px 28px;color:#64748b;font-size:13px;line-height:1.6;">
-          This message was generated by the notification settings for your FreemanNotes deployment. If this server is configured for email-mode reminders on your platform, this email is the primary external reminder channel.
+	          This message was generated by the notification settings for your ${BRAND_NAME} deployment. If this server is configured for email-mode reminders on your platform, this email is the primary external reminder channel.
         </td>
       </tr>
     </table>
@@ -284,22 +314,20 @@ function buildReminderEmailHtml({ noteTitle, workspaceName, reminderAtLabel, not
 function createTestNotificationPayload() {
 	const iconUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_ICON);
 	const badgeUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_BADGE);
-	const imageUrl = toAbsoluteAppUrl(DEFAULT_NOTIFICATION_IMAGE);
 	return {
 		type: 'test',
 		title: `${BRAND_NAME} notifications ready`,
 		body: 'External notifications are configured and ready for this account.',
 		emailSubject: `${BRAND_NAME} test notification`,
 		emailText: `${BRAND_NAME} notifications are working. This is a branded test notification from your configured delivery channel.`,
-		emailHtml: `<!doctype html><html><body style="margin:0;padding:24px;background:#eef2f7;font-family:Segoe UI,Arial,sans-serif;color:#152033;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:18px;border:1px solid #d8e0ea;overflow:hidden;"><tr><td style="padding:24px 28px;background:linear-gradient(135deg,#18253f 0%,#284a77 55%,#5e8bc2 100%);color:#fff;"><div style="font-size:12px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;opacity:0.84;">${BRAND_NAME}</div><h1 style="margin:10px 0 0;font-size:26px;">Notifications ready</h1></td></tr><tr><td style="padding:24px 28px;font-size:15px;line-height:1.6;color:#334155;">Your current FreemanNotes notification channel is working. You can return to Preferences and send another test whenever you change delivery settings.</td></tr></table></body></html>`,
+		emailHtml: `<!doctype html><html><body style="margin:0;padding:24px;background:#eef2f7;font-family:Segoe UI,Arial,sans-serif;color:#152033;"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;margin:0 auto;background:#ffffff;border-radius:18px;border:1px solid #d8e0ea;overflow:hidden;"><tr><td style="padding:24px 28px;background:linear-gradient(135deg,#18253f 0%,#284a77 55%,#5e8bc2 100%);color:#fff;"><div style="font-size:12px;font-weight:700;letter-spacing:0.22em;text-transform:uppercase;opacity:0.84;">${BRAND_NAME}</div><h1 style="margin:10px 0 0;font-size:26px;">Notifications ready</h1></td></tr><tr><td style="padding:24px 28px;font-size:15px;line-height:1.6;color:#334155;">Your current ${BRAND_NAME} notification channel is working. You can return to Preferences and send another test whenever you change delivery settings.</td></tr></table></body></html>`,
 		data: {
 			type: 'test',
 			url: '/',
 			icon: iconUrl,
 			badge: badgeUrl,
-			image: imageUrl,
 			brand: BRAND_NAME,
-			tag: 'freemannotes-test',
+			tag: 'freeman-notes-test',
 			vibrate: '120,50,120',
 		},
 	};
@@ -435,7 +463,7 @@ async function sendOneSubscription(sub, payload, prisma) {
 							),
 							android: {
 								notification: {
-									channelId: 'freemannotes-reminders',
+									channelId: 'freeman-notes-reminders',
 									icon: 'ic_launcher',
 									color: '#264b79',
 									tag: typeof payload.data?.tag === 'string' ? payload.data.tag : undefined,
@@ -449,7 +477,7 @@ async function sendOneSubscription(sub, payload, prisma) {
 										badge: 1,
 										sound: 'default',
 										category: typeof payload.type === 'string' ? payload.type : 'generic',
-										threadId: typeof payload.data?.tag === 'string' ? payload.data.tag : 'freemannotes',
+										threadId: typeof payload.data?.tag === 'string' ? payload.data.tag : 'freeman-notes',
 										mutableContent: 1,
 									},
 								},
@@ -537,8 +565,8 @@ function buildEmailBody(payload) {
 	const url = payload && payload.data && typeof payload.data.url === 'string'
 		? toAbsoluteAppUrl(payload.data.url)
 		: '';
-	if (url) segments.push(`Open FreemanNotes: ${url}`);
-	segments.push('You are receiving this email because this FreemanNotes deployment is configured to use email delivery for notifications on at least one platform.');
+	if (url) segments.push(`Open ${BRAND_NAME}: ${url}`);
+	segments.push(`You are receiving this email because this ${BRAND_NAME} deployment is configured to use email delivery for notifications on at least one platform.`);
 	return segments.join('\n\n');
 }
 
@@ -560,7 +588,7 @@ async function sendEmailNotificationToUser(prisma, userId, payload) {
 
 	await sendNotificationEmail({
 		to: user.email,
-		subject: String(payload.emailSubject || payload.title || 'FreemanNotes notification'),
+		subject: String(payload.emailSubject || payload.title || `${BRAND_NAME} notification`),
 		text: String(payload.emailText || buildEmailBody(payload)),
 		html: payload.emailHtml ? String(payload.emailHtml) : undefined,
 	});
@@ -569,17 +597,27 @@ async function sendEmailNotificationToUser(prisma, userId, payload) {
 
 function shouldSendEmailFallback(subscriptions, platformHint) {
 	if (!smtpReady) return false;
-	if (platformHint && getNotificationPolicy(platformHint).effectiveMode === 'email') {
-		return true;
+	if (platformHint) {
+		const platformPolicy = getNotificationPolicy(platformHint);
+		if (platformPolicy.effectiveMode === 'off') return false;
+		if (platformPolicy.effectiveMode === 'email') return true;
+		if (platformPolicy.configuredMode === 'auto') {
+			const hasEligiblePlatformPush = subscriptions.some(
+				(sub) => sub.platform === platformHint && getNotificationPolicy(sub.platform).effectiveMode === 'push'
+			);
+			if (!hasEligiblePlatformPush) {
+				return true;
+			}
+		}
 	}
 	if (subscriptions.some((sub) => getNotificationPolicy(sub.platform).effectiveMode === 'email')) {
 		return true;
 	}
-	if (subscriptions.length > 0) return false;
+	const hasEligiblePush = subscriptions.some((sub) => getNotificationPolicy(sub.platform).effectiveMode === 'push');
+	if (hasEligiblePush) return false;
 
 	const policies = Object.values(getNotificationPolicies());
-	return policies.some((policy) => policy.effectiveMode === 'email')
-		&& !policies.some((policy) => policy.effectiveMode === 'push');
+	return policies.some((policy) => policy.effectiveMode === 'email' || policy.configuredMode === 'auto');
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────

@@ -28,6 +28,7 @@ export type VisibleNoteFilters = {
 	reminderFilter?: ReminderFilterMode;
 	sortMode?: NoteSortMode;
 	sortDirection?: SortDirection;
+	prioritizePinned?: boolean;
 };
 
 function normalizeId(value: unknown): string {
@@ -114,6 +115,7 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 		reminderFilter = 'all',
 		sortMode = 'manual',
 		sortDirection,
+		prioritizePinned = true,
 	} = filters;
 	const activeCollectionId = normalizeId(selectedCollectionId) || null;
 	const activeLabelIds = Array.from(new Set(selectedLabelIds.map((value) => normalizeId(value)).filter(Boolean)));
@@ -135,7 +137,7 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 		return true;
 	});
 
-	if (sortMode === 'manual') return pinnedFirst(filtered);
+	if (sortMode === 'manual') return prioritizePinned ? pinnedFirst(filtered) : filtered;
 	const sorted = [...filtered];
 	const effectiveSortDirection = getEffectiveSortDirection(sortMode, sortDirection);
 	const multiplier = effectiveSortDirection === 'asc' ? 1 : -1;
@@ -154,5 +156,5 @@ export function getVisibleNotes(notes: readonly VisibleNoteSnapshot[], filters: 
 		}
 		return 0;
 	});
-	return pinnedFirst(sorted);
+	return prioritizePinned ? pinnedFirst(sorted) : sorted;
 }

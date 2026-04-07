@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <Container version="2">
-  <Name>FreemanNotes</Name>
+  <Name>Freeman Notes</Name>
   <Repository>ghcr.io/daxtond/freemannotes:latest</Repository>
   <Registry>https://ghcr.io/daxtond/freemannotes</Registry>
   <Branch>
@@ -11,11 +11,11 @@
   <Privileged>false</Privileged>
   <Support>https://github.com/DaxtonD/freemannotes/issues</Support>
   <Project>https://github.com/DaxtonD/freemannotes</Project>
-  <Overview>FreemanNotes is a self-hosted, offline-first notes app inspired by Google Keep — but with real workspaces, collections, rich-text editing, image uploads with OCR search, document attachments, real-time collaboration via Yjs, workspace invites, and a note app that stays useful when the network disappears. Requires an external PostgreSQL instance (bring your own or use a separate Unraid PostgreSQL container).</Overview>
+  <Overview>Freeman Notes is a self-hosted, offline-first notes app inspired by Google Keep — but with real workspaces, collections, rich-text editing, image uploads with OCR search, document attachments, real-time collaboration via Yjs, workspace invites, and a note app that stays useful when the network disappears. Requires an external PostgreSQL instance (bring your own or use a separate Unraid PostgreSQL container).</Overview>
   <Category>Productivity: Tools: Other:</Category>
   <WebUI>http://[IP]:[PORT:27015]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/third-party/freemannotes.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/public/icons/FreemanFace.png</Icon>
+  <Icon>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/public/apple-touch-icon.png</Icon>
   <ExtraParams></ExtraParams>
   <PostArgs/>
   <DonateText/>
@@ -96,9 +96,9 @@
     Description="SMTP authentication password."
     Type="Variable" Display="always" Required="false" Mask="true"></Config>
 
-  <Config Name="SMTP_FROM" Target="SMTP_FROM" Default="FreemanNotes &lt;no-reply@example.com&gt;" Mode=""
-    Description="The From address shown on outgoing invite emails. Example: FreemanNotes &lt;no-reply@yourdomain.com&gt;"
-    Type="Variable" Display="always" Required="false" Mask="false">FreemanNotes &lt;no-reply@example.com&gt;</Config>
+  <Config Name="SMTP_FROM" Target="SMTP_FROM" Default="Freeman Notes &lt;no-reply@example.com&gt;" Mode=""
+    Description="The From address shown on outgoing invite and reminder emails. Example: Freeman Notes &lt;no-reply@yourdomain.com&gt;"
+    Type="Variable" Display="always" Required="false" Mask="false">Freeman Notes &lt;no-reply@example.com&gt;</Config>
 
   <!-- ═══════════════════════════════════════════════════════════════
        PUSH NOTIFICATIONS — VAPID (WEB / ANDROID PWA)
@@ -130,9 +130,17 @@
     Description="Firebase service-account RSA private key (the full PEM string including BEGIN/END markers). Paste the private_key field value from your Firebase service-account JSON."
     Type="Variable" Display="always" Required="false" Mask="true"></Config>
 
-  <Config Name="PUSH_PROVIDER" Target="PUSH_PROVIDER" Default="hybrid" Mode=""
-    Description="Push notification mode. hybrid = use VAPID for web/Android and FCM for iOS (default). vapid-only = VAPID only. fcm-only = FCM only. disabled = turn off all push delivery."
-    Type="Variable" Display="always" Required="false" Mask="false">hybrid</Config>
+  <Config Name="WEB_NOTIFICATION_MODE" Target="WEB_NOTIFICATION_MODE" Default="auto" Mode=""
+    Description="External reminder/test notification mode for desktop and non-Android browsers. auto = prefer push and fall back to email when SMTP is configured, push = push only, email = email only, off = disable external delivery."
+    Type="Variable" Display="always" Required="false" Mask="false">auto</Config>
+
+  <Config Name="ANDROID_NOTIFICATION_MODE" Target="ANDROID_NOTIFICATION_MODE" Default="auto" Mode=""
+    Description="External reminder/test notification mode for Android browsers and installed PWAs. Accepts auto, push, email, or off."
+    Type="Variable" Display="always" Required="false" Mask="false">auto</Config>
+
+  <Config Name="IOS_NOTIFICATION_MODE" Target="IOS_NOTIFICATION_MODE" Default="auto" Mode=""
+    Description="External reminder/test notification mode for iOS. Accepts auto, push, email, or off. iOS push requires the FCM settings below."
+    Type="Variable" Display="always" Required="false" Mask="false">auto</Config>
 
   <!-- ═══════════════════════════════════════════════════════════════
        ADVANCED / RARELY CHANGED
@@ -173,6 +181,18 @@
     Description="Set to 1 to stream OCR child-process output and progress into the container logs."
     Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
 
+  <Config Name="OCR_PYTHON_BIN" Target="OCR_PYTHON_BIN" Default="/opt/ocr-venv/bin/python" Mode=""
+    Description="Python executable used by the bundled OCR worker. Override only if you mount a custom OCR runtime into the container."
+    Type="Variable" Display="advanced" Required="false" Mask="false">/opt/ocr-venv/bin/python</Config>
+
+  <Config Name="PADDLE_HOME" Target="PADDLE_HOME" Default="/app/.paddleocr" Mode=""
+    Description="Writable cache directory for PaddleOCR model downloads inside the container."
+    Type="Variable" Display="advanced" Required="false" Mask="false">/app/.paddleocr</Config>
+
+  <Config Name="PADDLE_PDX_MODEL_SOURCE" Target="PADDLE_PDX_MODEL_SOURCE" Default="BOS" Mode=""
+    Description="Model download source used by PaddleOCR. Leave as BOS unless you have a custom mirror requirement."
+    Type="Variable" Display="advanced" Required="false" Mask="false">BOS</Config>
+
   <Config Name="TRASH_CLEANUP_INTERVAL_MS" Target="TRASH_CLEANUP_INTERVAL_MS" Default="3600000" Mode=""
     Description="How often (in milliseconds) the server scans for trashed notes past their auto-delete threshold. Default is 3600000 (1 hour)."
     Type="Variable" Display="advanced" Required="false" Mask="false">3600000</Config>
@@ -180,6 +200,10 @@
   <Config Name="YPERSISTENCE" Target="YPERSISTENCE" Default="" Mode=""
     Description="Optional path inside the container for LevelDB-backed Yjs document persistence. Example: /data/yjs. Leave blank to keep Yjs state in memory and PostgreSQL only."
     Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+
+  <Config Name="DEBUG_LOGGING" Target="DEBUG_LOGGING" Default="0" Mode=""
+    Description="Set to 1 to enable structured server-side debug logging for beta diagnostics. Leave disabled during normal operation."
+    Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
 
   <Config Name="DB_BASELINE_ON_NON_EMPTY" Target="DB_BASELINE_ON_NON_EMPTY" Default="" Mode=""
     Description="Set to true for a single startup if a prior failed install already created FreemanNotes tables and prisma migrate deploy now exits with P3005. Revert to blank after the first successful start."

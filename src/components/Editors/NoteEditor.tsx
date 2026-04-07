@@ -56,7 +56,7 @@ import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
-import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible } from './RichTextEditor';
+import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible, focusRichTextEditable } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type NoteEditorProps = {
@@ -71,6 +71,7 @@ export type NoteEditorProps = {
 		onChange: (next: boolean) => void;
 	};
 	onClose: () => void;
+	onSavePendingNew?: () => void | Promise<void>;
 	onDelete: (noteId: string) => Promise<void>;
 	onMoveToWorkspace?: (() => void) | undefined;
 	onAddCollaborator?: () => void;
@@ -332,6 +333,8 @@ type ChecklistRowContentProps = {
 	remove: (id: string, options?: { clearSelection?: boolean }) => void;
 	insertAfter: (id: string, editor?: Editor) => void;
 	setActiveEditor: (editor: Editor | null) => void;
+	onArrowUpAtBoundary?: () => void;
+	onArrowDownAtBoundary?: () => void;
 };
 
 const ChecklistRowContent = React.memo(function ChecklistRowContent(props: ChecklistRowContentProps): React.JSX.Element {
@@ -351,6 +354,8 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 		remove,
 		insertAfter,
 		setActiveEditor,
+		onArrowUpAtBoundary,
+		onArrowDownAtBoundary,
 	} = props;
 
 	const handleActivate = React.useCallback((): void => {
@@ -444,6 +449,8 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 							if (isProtectedFromEmptyBackspace) return;
 							remove(item.id);
 						}}
+						onArrowUpAtBoundary={onArrowUpAtBoundary}
+						onArrowDownAtBoundary={onArrowDownAtBoundary}
 					/>
 				</div>
 			) : (
@@ -477,7 +484,9 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	prev.toggleCompleted === next.toggleCompleted &&
 	prev.remove === next.remove &&
 	prev.insertAfter === next.insertAfter &&
-	prev.setActiveEditor === next.setActiveEditor
+	prev.setActiveEditor === next.setActiveEditor &&
+	prev.onArrowUpAtBoundary === next.onArrowUpAtBoundary &&
+	prev.onArrowDownAtBoundary === next.onArrowDownAtBoundary
 ));
 
 export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
@@ -496,8 +505,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
-	const titleFieldRef = React.useRef<HTMLInputElement | null>(null);
+	const titleFieldRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const textBodyFieldRef = React.useRef<HTMLDivElement | null>(null);
+	const resizeTitleField = React.useCallback((): void => {
+		const field = titleFieldRef.current;
+		if (!field) return;
+		field.style.height = '0px';
+		field.style.height = `${Math.max(36, field.scrollHeight)}px`;
+	}, []);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
@@ -813,6 +828,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	//                                during keyboard-sensitive drags.
 	const focusProxyRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const isDraggingWithKeyboardRef = React.useRef(false);
+	const allowAutomaticChecklistRowFocusRef = React.useRef(!props.isPendingNew);
 	// Quick-delete mode clears checklist-row focus entirely, so skip the normal
 	// "auto-activate the first remaining row" behavior on the next render.
 	const suppressAutoActivateAfterDeleteRef = React.useRef(false);
@@ -1051,6 +1067,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const activeItems = useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedItems = useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
 	const completedRows = useMemo(() => buildChecklistCompletedRows(normalizedItems), [normalizedItems]);
+	const visibleChecklistRowIds = useMemo(
+		() => [
+			...activeItems.map((item) => item.id),
+			...(showCompleted ? completedRows.flatMap(({ kind, item }) => kind === 'ghost' ? [] : [item.id]) : []),
+		],
+		[activeItems, completedRows, showCompleted]
+	);
 	const firstActiveItemId = activeItems[0]?.id ?? null;
 	const checklistItemPlaceholder = t('editors.checklistItemPlaceholder');
 	const checklistRemoveLabel = t('editors.remove');
@@ -1072,6 +1095,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		// When the keyboard is closed, allow "no active row" as a stable state.
 		// (See the keyboard-close de-selection effect above.)
 		if (isCoarsePointer && !mobileKeyboardOpen) return;
+		if (!allowAutomaticChecklistRowFocusRef.current) return;
 		if (activeChecklistRowId && normalizedItems.some((item) => item.id === activeChecklistRowId)) return;
 		if (suppressAutoActivateAfterDeleteRef.current) return;
 		setActiveChecklistRowId(normalizedItems[0]?.id ?? null);
@@ -1408,6 +1432,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const activateChecklistRow = React.useCallback(
 		(id: string): void => {
 			if (activeChecklistRowId === id) return;
+			allowAutomaticChecklistRowFocusRef.current = true;
 			suppressAutoActivateAfterDeleteRef.current = false;
 			// Row-switch focus handoff (mobile):
 			// When moving between checklist rows while the keyboard is open, we
@@ -1423,22 +1448,35 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const setChecklistRowInputRef = React.useCallback((id: string, node: HTMLDivElement | null): void => {
 		rowInputsRef.current.set(id, node);
 	}, []);
-
-	const focusChecklistBody = React.useCallback((): void => {
-		const targetId = activeItems[0]?.id ?? normalizedItems[0]?.id ?? null;
-		if (!targetId) return;
-		activateChecklistRow(targetId);
+	const focusChecklistRowEditor = React.useCallback((rowId: string, placement: 'start' | 'end' = 'end'): void => {
 		const tryFocus = (remaining: number): void => {
-			const editorElement = rowInputsRef.current.get(targetId)?.querySelector('[contenteditable="true"]');
+			const editorElement = rowInputsRef.current.get(rowId)?.querySelector('[contenteditable="true"]');
 			if (editorElement instanceof HTMLElement) {
-				editorElement.focus();
+				focusRichTextEditable(editorElement, placement);
 				return;
 			}
 			if (remaining <= 0 || typeof window === 'undefined') return;
 			window.setTimeout(() => tryFocus(remaining - 1), 16);
 		};
 		tryFocus(6);
-	}, [activateChecklistRow, activeItems, normalizedItems]);
+	}, []);
+	const moveFocusToAdjacentChecklistRow = React.useCallback((rowId: string, direction: 'previous' | 'next'): void => {
+		const currentIndex = visibleChecklistRowIds.indexOf(rowId);
+		if (currentIndex === -1) return;
+		const targetId = direction === 'previous'
+			? visibleChecklistRowIds[currentIndex - 1] ?? null
+			: visibleChecklistRowIds[currentIndex + 1] ?? null;
+		if (!targetId) return;
+		activateChecklistRow(targetId);
+		focusChecklistRowEditor(targetId, direction === 'previous' ? 'end' : 'start');
+	}, [activateChecklistRow, focusChecklistRowEditor, visibleChecklistRowIds]);
+
+	const focusChecklistBody = React.useCallback((): void => {
+		const targetId = activeItems[0]?.id ?? normalizedItems[0]?.id ?? null;
+		if (!targetId) return;
+		activateChecklistRow(targetId);
+		focusChecklistRowEditor(targetId);
+	}, [activateChecklistRow, activeItems, focusChecklistRowEditor, normalizedItems]);
 
 	const pruneEmptyChecklistRows = React.useCallback((): void => {
 		if (type !== 'checklist') return;
@@ -1486,8 +1524,28 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	const handleClose = React.useCallback((): void => {
 		pruneEmptyChecklistRows();
-		props.onClose();
+		void props.onClose();
 	}, [pruneEmptyChecklistRows, props]);
+	const handleSavePendingNew = React.useCallback((): void => {
+		pruneEmptyChecklistRows();
+		void props.onSavePendingNew?.();
+	}, [pruneEmptyChecklistRows, props]);
+	React.useLayoutEffect(() => {
+		resizeTitleField();
+	}, [resizeTitleField, title]);
+	React.useEffect(() => {
+		allowAutomaticChecklistRowFocusRef.current = !props.isPendingNew;
+		if (!props.isPendingNew || typeof window === 'undefined') return;
+		const rafId = window.requestAnimationFrame(() => {
+			const field = titleFieldRef.current;
+			if (!field) return;
+			resizeTitleField();
+			field.focus();
+			const caret = field.value.length;
+			field.setSelectionRange(caret, caret);
+		});
+		return () => window.cancelAnimationFrame(rafId);
+	}, [props.isPendingNew, props.noteId, resizeTitleField]);
 	const quickCreateCollectionOption = props.quickCreateCollectionOption;
 
 	const backdropPressStartedRef = React.useRef(false);
@@ -1848,15 +1906,35 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				/>
 				{type === 'checklist' ? (
 					<header className={styles.editorTopBar}>
-						<button type="button" className={styles.closeIconButton} onClick={handleClose} aria-label={t('common.close')}>
+						{props.isPendingNew && isModified && props.onSavePendingNew ? (
+							<button
+								type="button"
+								className={styles.closeIconButton}
+								onClick={handleSavePendingNew}
+								aria-label={t('common.save')}
+								title={t('common.save')}
+							>
+								<FontAwesomeIcon icon={byPrefixAndName.fas['floppy-disk']} />
+							</button>
+						) : !props.isPendingNew ? (
+							<button
+								type="button"
+								className={styles.closeIconButton}
+								onClick={handleClose}
+								aria-label={t('common.save')}
+								title={t('common.save')}
+							>
+								<FontAwesomeIcon icon={byPrefixAndName.fas['floppy-disk']} />
+							</button>
+						) : null}
+						{props.isPendingNew ? <button type="button" className={styles.closeIconButton} onClick={handleClose} aria-label={t('common.close')}>
 							✕
-						</button>
+						</button> : null}
 					</header>
 				) : null}
 
 				{type === 'checklist' ? (
-					<input
-						type="text"
+					<textarea
 						name="note-title"
 						autoComplete="off"
 						autoCorrect="off"
@@ -1867,8 +1945,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						data-1p-ignore="true"
 						className={styles.editorTitleInput}
 						ref={titleFieldRef}
+						rows={1}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
+						onInput={resizeTitleField}
 						onKeyDown={(event) => {
 							if (event.key !== 'Enter') return;
 							event.preventDefault();
@@ -1877,8 +1957,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						placeholder={t('editors.titlePlaceholder')}
 					/>
 				) : (
-					<input
-						type="text"
+					<textarea
 						name="text-note-title"
 						autoComplete="off"
 						autoCorrect="off"
@@ -1889,8 +1968,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						data-1p-ignore="true"
 						className={styles.editorTitleInput}
 						ref={titleFieldRef}
+						rows={1}
 						value={title}
 						onChange={(e) => setYTextValue(titleYText, e.target.value)}
+						onInput={resizeTitleField}
 						onKeyDown={(event) => {
 							if (event.key !== 'Enter') return;
 							event.preventDefault();
@@ -2056,6 +2137,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																remove={removeChecklistItem}
 																insertAfter={insertChecklistItemAfter}
 																setActiveEditor={setActiveChecklistRowEditor}
+																onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'previous')}
+																onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
 															/>
 														</li>
 															);
@@ -2117,6 +2200,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 														remove={removeChecklistItem}
 														insertAfter={insertChecklistItemAfter}
 														setActiveEditor={setActiveChecklistRowEditor}
+															onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'previous')}
+															onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
 													/>
 												</li>
 											))}
@@ -2202,9 +2287,34 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								{t('editors.mediaTabMedia')}
 							</button>
 						</div>
-						<button type="button" className={styles.bottomDockClose} onClick={handleClose} aria-label={t('common.close')} title={t('common.close')}>
-							<FontAwesomeIcon icon={!props.isPendingNew && isModified ? byPrefixAndName.fas.check : byPrefixAndName.far.xmark} />
-						</button>
+						<div className={styles.bottomDockRightActions}>
+							{props.isPendingNew ? (
+								<button type="button" className={styles.bottomDockClose} onClick={handleClose} aria-label={t('common.close')} title={t('common.close')}>
+									<FontAwesomeIcon icon={byPrefixAndName.far.xmark} />
+								</button>
+							) : null}
+							{props.isPendingNew && isModified && props.onSavePendingNew ? (
+								<button
+									type="button"
+									className={styles.bottomDockClose}
+									onClick={handleSavePendingNew}
+									aria-label={t('common.save')}
+									title={t('common.save')}
+								>
+									<FontAwesomeIcon icon={byPrefixAndName.fas['floppy-disk']} />
+								</button>
+							) : !props.isPendingNew ? (
+								<button
+									type="button"
+									className={styles.bottomDockClose}
+									onClick={handleClose}
+									aria-label={t('common.save')}
+									title={t('common.save')}
+								>
+									<FontAwesomeIcon icon={byPrefixAndName.fas['floppy-disk']} />
+								</button>
+							) : null}
+						</div>
 					</nav>
 				</div>}
 				<div
