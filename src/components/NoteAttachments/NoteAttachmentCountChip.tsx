@@ -175,12 +175,8 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		if (props.suspendRemoteRefresh) return;
 		let cancelled = false;
 		void (async () => {
-			const currentCounts = await refresh({ syncRemote: !props.disableInitialRemoteRefresh });
-			if (cancelled || !props.disableInitialRemoteRefresh) return;
-			// On first paint some notes only have server-backed attachments, so do one
-			// follow-up remote refresh when the local snapshot is still empty.
-			if (currentCounts.images + currentCounts.links + currentCounts.documents > 0) return;
-			void refresh({ scope: 'all', syncRemote: true });
+			await refresh({ syncRemote: !props.disableInitialRemoteRefresh });
+			if (cancelled) return;
 		})();
 		return () => {
 			cancelled = true;

@@ -21,12 +21,12 @@ import type { NoteColorToken } from './noteColors';
 import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
-	ensureTextNoteRichContent,
+	getChecklistItemRichPreviewJson,
 	getPlainTextFromRichJson,
 	getPlainTextFromRichFragment,
+	getTextNoteRichPreviewJson,
 	replaceRichFragmentFromJson,
 	syncChecklistItemPlainText,
-	syncTextNotePlainText,
 } from './richText';
 import { setNotePreviewLinksOnDoc } from './noteLinks';
 
@@ -350,7 +350,12 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 
 	if (type === 'text') {
 		const content = doc.getText('content').toString();
-		base.content = content.length > 0 ? content : getPlainTextFromRichFragment(ensureTextNoteRichContent(doc), 'full');
+		const richPreview = getTextNoteRichPreviewJson(doc);
+		base.content = content.length > 0
+			? content
+			: richPreview
+				? getPlainTextFromRichJson(richPreview, 'full')
+				: '';
 	} else {
 		const yChecklist = doc.getArray<Y.Map<any>>('checklist');
 		base.items = yChecklist
@@ -359,7 +364,12 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 				id: String(m.get('id') ?? ''),
 				text: (() => {
 					const plainText = String(m.get('text') ?? '');
-					return plainText.length > 0 ? plainText : getPlainTextFromRichFragment(ensureChecklistItemRichContent(m), 'minimal');
+					const richPreview = getChecklistItemRichPreviewJson(m);
+					return plainText.length > 0
+						? plainText
+						: richPreview
+							? getPlainTextFromRichJson(richPreview, 'minimal')
+							: '';
 				})(),
 				completed: Boolean(m.get('completed')),
 				parentId:
@@ -368,10 +378,6 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 						: null,
 			}))
 			.filter((item) => item.id.length > 0);
-	}
-
-	if (type === 'text') {
-		syncTextNotePlainText(doc, ensureTextNoteRichContent(doc));
 	}
 
 	return base;

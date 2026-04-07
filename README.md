@@ -73,6 +73,8 @@ Edit `.env.docker` and set at least these values:
 - `APP_URL`
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, and `SMTP_FROM` if you want invite emails or email-mode reminder notifications
 
+For the full Docker and `.env.docker` variable matrix, including notification, OCR, Redis, and recovery flags, see `DEPLOYMENT.md`.
+
 Then start the stack:
 
 ```bash
@@ -156,7 +158,7 @@ SMTP_PORT=587
 SMTP_SECURE=false
 SMTP_USER=mailer@example.com
 SMTP_PASS=your-password
-SMTP_FROM="FreemanNotes <no-reply@example.com>"
+SMTP_FROM="Freeman Notes <no-reply@example.com>"
 ```
 
 **VAPID keys (Web / Android browser/PWA push):**

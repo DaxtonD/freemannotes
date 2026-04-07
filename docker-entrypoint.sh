@@ -17,6 +17,8 @@ if [ "${NODE_ENV:-production}" = "production" ] && [ "${AUTH_JWT_SECRET:-}" = "c
 fi
 
 if [ "${OCR_DISABLED:-0}" != "1" ]; then
+	# Validate the overridable OCR paths early so a broken beta deployment fails
+	# loudly in logs before the first upload tries to invoke the OCR worker.
 	if [ ! -x "${OCR_PYTHON_BIN:-}" ]; then
 		echo "[entrypoint] Warning: OCR_PYTHON_BIN is not executable: ${OCR_PYTHON_BIN:-<unset>}" >&2
 	fi
@@ -30,6 +32,8 @@ if [ -n "${SMTP_HOST:-}" ] && [ -n "${SMTP_USER:-}" ] && [ -n "${SMTP_PASS:-}" ]
 	SMTP_READY=1
 fi
 
+# Keep the notification-mode checks explicit so Compose, Docker run, and Unraid
+# all surface the same configuration mistakes in container logs.
 case "${WEB_NOTIFICATION_MODE:-auto}" in
 	push|push-only)
 		if [ -z "${VAPID_PUBLIC_KEY:-}" ] || [ -z "${VAPID_PRIVATE_KEY:-}" ]; then

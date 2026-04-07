@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.0 - 2026-04-06
+
+### Added
+- **First beta release baseline.** Freeman Notes now ships with a release-aligned Docker Compose stack, refreshed deployment docs, and an updated Unraid template so the packaged deployment story matches the current runtime behavior.
+- **Richer reminder delivery.** Reminder notifications and reminder emails now include note context, workspace context, and preview text, with a browser-viewable reminder email preview added under `scripts/reminder-email-preview.html`.
+
+### Changed
+- **Reminder delivery now prefers clearer branding and fallback behavior.** User-facing reminder/test delivery now uses `Freeman Notes` branding, app-icon-based notification assets, and clearer notification-state copy when email fallback is active.
+- **Sidebar organization is simpler.** Reminder shortcuts, quick filters, grouping, and sort controls now have scoped clear actions, cleaner labels, and grouped rendering parity across card, list, strip, image-gallery, and bubble-derived reminder views.
+- **Editor title fields and quick-create flows are more resilient.** New-note editing now preserves metadata-aware drafts more reliably, uses autosizing title fields, and keeps checklist keyboard navigation/focus behavior consistent across editor surfaces.
+
+### Fixed
+- **Auto notification mode now falls back to email when push is unavailable or unregistered.** Server-side policy checks and client messaging now agree on when SMTP should be used instead of silently dropping reminder delivery.
+- **Reminder-driven filtering now uses the server reminder source of truth.** Note grid, image gallery, bubble view, and reminder modals now resolve reminder timestamps through synced reminder state instead of relying on stale local metadata.
+- **Desktop sidebar scrolling is less intrusive.** Desktop sidebars now use the same minimal scrollbar treatment already used in note-card completed-item lists, while mobile keeps its existing hidden-scrollbar behavior.
+
 ## 1.1.43 - 2026-04-06
 
 ### Changed

@@ -34,7 +34,7 @@ import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DocumentsPanel } from './DocumentsPanel';
-import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
+import { RichTextEditor, RichTextToolbar, focusRichTextEditable } from './RichTextEditor';
 import styles from './Editors.module.css';
 
 export type ChecklistEditorProps = {
@@ -371,7 +371,13 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			return Math.max(prev - 1, 0) as 0 | 1 | 2;
 		});
 	}, []);
-	const titleInputRef = React.useRef<HTMLInputElement | null>(null);
+	const titleInputRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const resizeTitleField = React.useCallback((): void => {
+		const field = titleInputRef.current;
+		if (!field) return;
+		field.style.height = '0px';
+		field.style.height = `${Math.max(36, field.scrollHeight)}px`;
+	}, []);
 	const rowInputsRef = React.useRef<Map<string, HTMLDivElement | null>>(new Map());
 	const rowContainersRef = React.useRef<Map<string, HTMLLIElement | null>>(new Map());
 	// Drag “ghost” sizing:
@@ -406,6 +412,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	//                                during keyboard-sensitive drags.
 	const focusProxyRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const isDraggingWithKeyboardRef = React.useRef(false);
+	const allowAutomaticRowFocusRef = React.useRef(false);
 	// Quick-delete branch intentionally leaves no active row selected after delete.
 	// This ref suppresses the usual "always keep one row active" effect on the next render.
 	const suppressAutoActivateAfterDeleteRef = React.useRef(false);
@@ -441,6 +448,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const activateRow = React.useCallback(
 		(id: string): void => {
 			if (activeRowId === id) return;
+			allowAutomaticRowFocusRef.current = true;
 			suppressAutoActivateAfterDeleteRef.current = false;
 			prepareRowFocusHandoff();
 			setActiveRowId(id);
@@ -448,11 +456,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		},
 		[activeRowId, prepareRowFocusHandoff]
 	);
-	const focusChecklistRowEditor = React.useCallback((rowId: string): void => {
+	const focusChecklistRowEditor = React.useCallback((rowId: string, placement: 'start' | 'end' = 'end'): void => {
 		const tryFocus = (remaining: number): void => {
 			const editorElement = rowInputsRef.current.get(rowId)?.querySelector('[contenteditable="true"]');
 			if (editorElement instanceof HTMLElement) {
-				editorElement.focus();
+				focusRichTextEditable(editorElement, placement);
 				return;
 			}
 			if (remaining <= 0 || typeof window === 'undefined') return;
@@ -466,6 +474,16 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		activateRow(firstItemId);
 		focusChecklistRowEditor(firstItemId);
 	}, [activateRow, focusChecklistRowEditor]);
+	const moveFocusToAdjacentRow = React.useCallback((rowId: string, direction: 'previous' | 'next'): void => {
+		const currentIndex = visibleChecklistRowIds.indexOf(rowId);
+		if (currentIndex === -1) return;
+		const targetId = direction === 'previous'
+			? visibleChecklistRowIds[currentIndex - 1] ?? null
+			: visibleChecklistRowIds[currentIndex + 1] ?? null;
+		if (!targetId) return;
+		activateRow(targetId);
+		focusChecklistRowEditor(targetId, direction === 'previous' ? 'end' : 'start');
+	}, [activateRow, focusChecklistRowEditor, visibleChecklistRowIds]);
 	// Keyboard-close de-selection:
 	// If the user dismisses the software keyboard, we intentionally de-select
 	// any active checklist row on mobile. This ensures a subsequent drag gesture
@@ -505,6 +523,13 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const activeItems = React.useMemo(() => normalizedItems.filter((row) => !row.completed), [normalizedItems]);
 	const completedItems = React.useMemo(() => normalizedItems.filter((row) => row.completed), [normalizedItems]);
 	const completedRows = React.useMemo(() => buildChecklistCompletedRows(normalizedItems), [normalizedItems]);
+	const visibleChecklistRowIds = React.useMemo(
+		() => [
+			...activeItems.map((item) => item.id),
+			...(showCompleted ? completedRows.flatMap(({ kind, item }) => kind === 'ghost' ? [] : [item.id]) : []),
+		],
+		[activeItems, completedRows, showCompleted]
+	);
 
 	React.useEffect(() => {
 		latestItemsRef.current = items;
@@ -515,17 +540,27 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		// When the keyboard is closed, allow "no active row" as a stable state.
 		// (See the keyboard-close de-selection effect above.)
 		if (isCoarsePointer && !mobileKeyboardOpen) return;
+		if (!allowAutomaticRowFocusRef.current) return;
 		if (activeRowId && normalizedItems.some((item) => item.id === activeRowId)) return;
 		if (suppressAutoActivateAfterDeleteRef.current) return;
 		setActiveRowId(normalizedItems[0]?.id ?? null);
 	}, [activeRowId, isCoarsePointer, mobileKeyboardOpen, normalizedItems]);
 
+	React.useLayoutEffect(() => {
+		resizeTitleField();
+	}, [resizeTitleField, title]);
+
 	React.useEffect(() => {
 		const rafId = window.requestAnimationFrame(() => {
-			titleInputRef.current?.focus();
+			const field = titleInputRef.current;
+			if (!field) return;
+			resizeTitleField();
+			field.focus();
+			const caret = field.value.length;
+			field.setSelectionRange(caret, caret);
 		});
 		return () => window.cancelAnimationFrame(rafId);
-	}, []);
+	}, [resizeTitleField]);
 
 	const handleCreateUrlPreview = React.useCallback((): void => {
 		const next = window.prompt(t('links.prompt'), 'https://');
@@ -958,8 +993,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						zIndex: -1,
 					}}
 				/>
-				<input
-					type="text"
+				<textarea
 					name="checklist-note-title"
 					autoComplete="off"
 					autoCorrect="off"
@@ -970,8 +1004,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					data-1p-ignore="true"
 					className={styles.editorTitleInput}
 					ref={titleInputRef}
+					rows={1}
 					value={title}
 					onChange={(e) => setTitle(e.target.value)}
+					onInput={resizeTitleField}
 					onKeyDown={(event) => {
 						if (event.key !== 'Enter') return;
 						event.preventDefault();
@@ -1126,6 +1162,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	if (activeItems[0]?.id === item.id) return;
 																	removeItemAndFocus(item.id);
 																}}
+																	onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
+																	onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
 															/>
 														</div>
 													) : (
@@ -1229,6 +1267,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	if (activeItems[0]?.id === item.id) return;
 																	removeItem(item.id);
 																}}
+																	onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
+																	onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
 													/>
 												</div>
 													) : (

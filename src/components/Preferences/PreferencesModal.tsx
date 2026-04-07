@@ -84,7 +84,6 @@ type SectionModalProps = {
 const ABOUT_ICON_LIGHT = aboutIconLightAsset;
 const ABOUT_ICON_DARK = aboutIconDarkAsset;
 const ABOUT_WORDMARK = '/icons/freemannotes.png';
-const ABOUT_FACE_IMAGE = '/icons/FreemanFace.png';
 const VERSION_ICON_LIGHT = '/icons/version-light.png';
 const VERSION_ICON_DARK = '/icons/version.png';
 
@@ -206,7 +205,6 @@ function AboutSectionContent(props: {
 			<h4 className={styles.aboutTitle}>{props.t('prefs.aboutTitle')}</h4>
 			<div className={styles.aboutHeroGroup}>
 				<div className={styles.aboutHero} aria-label={props.t('prefs.aboutBrandingAria')}>
-					<img src={ABOUT_FACE_IMAGE} alt="" role="presentation" className={styles.aboutHeroFace} />
 					<img
 						key={`about-icon-${props.isLightTheme ? 'light' : 'dark'}-${iconRetryToken}`}
 						src={iconLoadFailed ? (props.isLightTheme ? ABOUT_ICON_DARK : ABOUT_ICON_LIGHT) : (props.isLightTheme ? ABOUT_ICON_LIGHT : ABOUT_ICON_DARK)}

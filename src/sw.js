@@ -234,8 +234,8 @@ self.addEventListener('fetch', (event) => {
 //      in-app notification bell can refresh its badge count.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NOTIFICATION_ICON = '/icons/icon-192x192.png';
-const NOTIFICATION_BADGE = '/icons/icon-72x72.png';
+const NOTIFICATION_ICON = '/apple-touch-icon.png';
+const NOTIFICATION_BADGE = '/apple-touch-icon.png';
 
 function normalizeVibrate(value) {
 	if (Array.isArray(value)) {
@@ -253,7 +253,7 @@ function normalizeVibrate(value) {
 self.addEventListener('push', (event) => {
 	// Safely extract notification payload — fall back to defaults if malformed.
 	let payload = {
-		title: 'FreemanNotes',
+		title: 'Freeman Notes',
 		body: 'You have a new notification.',
 		icon: NOTIFICATION_ICON,
 		badge: NOTIFICATION_BADGE,
@@ -289,9 +289,7 @@ self.addEventListener('push', (event) => {
 		// reminder its own slot so multiple due notes don't override each other.
 		tag: typeof payload.data.tag === 'string' && payload.data.tag
 			? payload.data.tag
-			: payload.data.type === 'reminder' && payload.data.noteId
-				? `freemannotes-reminder-${String(payload.data.noteId)}`
-				: payload.data.type ? `freemannotes-${String(payload.data.type)}` : 'freemannotes',
+			: payload.data.type ? `freeman-notes-${String(payload.data.type)}` : 'freeman-notes',
 		renotify: true,
 		data: payload.data,
 		vibrate: normalizeVibrate(payload.data?.vibrate),

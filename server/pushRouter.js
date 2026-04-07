@@ -293,6 +293,32 @@ function createPushRouter({ prisma }) {
 		// ── GET /api/push/reminders/fired — list for notification panel ───────
 		// Returns fired reminders that haven't been acknowledged yet, so the
 		// notifications panel can display note title, due time, and a deep link.
+		if (method === 'GET' && url.pathname === '/api/push/reminders') {
+			try {
+				const reminders = await prisma.noteReminder.findMany({
+					where: { userId },
+					select: {
+						docId: true,
+						noteId: true,
+						workspaceId: true,
+						reminderAt: true,
+					},
+				});
+				jsonResponse(res, 200, {
+					reminders: reminders.map((reminder) => ({
+						docId: reminder.docId,
+						noteId: reminder.noteId,
+						workspaceId: reminder.workspaceId,
+						reminderAt: reminder.reminderAt.toISOString(),
+					})),
+				});
+			} catch (err) {
+				console.error('[push] reminders error:', err.message);
+				jsonResponse(res, 500, { error: 'Internal server error' });
+			}
+			return true;
+		}
+
 		if (method === 'GET' && url.pathname === '/api/push/reminders/fired') {
 			try {
 				const reminders = await prisma.noteReminder.findMany({

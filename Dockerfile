@@ -15,6 +15,8 @@ RUN npx prisma generate
 FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
 
+# These defaults match the bundled OCR runtime inside the container. Compose or
+# `docker run -e ...` can override them when operators mount a custom OCR stack.
 ENV NODE_ENV=production
 ENV PORT=27015
 ENV HOST=0.0.0.0

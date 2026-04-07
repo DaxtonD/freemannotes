@@ -129,7 +129,9 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 	const isPushMode = deliveryPolicy?.effectiveMode === 'push';
 	const isEmailMode = deliveryPolicy?.effectiveMode === 'email';
 	const isExternalDeliveryOff = deliveryPolicy?.effectiveMode === 'off';
+	const supportsEmailFallback = Boolean(deliveryPolicy?.configuredMode === 'auto' && deliveryPolicy?.emailConfigured);
 	const isSubscribed = Boolean(status?.subscription?.enabled);
+	const isPushUnavailableOnDevice = isPushMode && !pushSupported;
 	const canManagePush = isPushMode && pushSupported;
 	const statusDotClass = isEmailMode
 		? styles.statusDotEnabled
@@ -235,6 +237,37 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 	// ── iOS-in-browser block (not installed) ────────────────────────────────
 	// Web Push on iOS Safari requires the app to be added to the Home Screen first.
 	const showIosGuidance = isPushMode && isIos && !iosInstalled;
+	const contextNotice = React.useMemo((): { tone: 'info' | 'warning'; message: string } | null => {
+		if (isEmailMode) return null;
+		if (showIosGuidance) return null;
+		if (permission === 'denied' && isPushMode) {
+			if (supportsEmailFallback) {
+				return {
+					tone: 'info',
+					message: t('push.deniedEmailFallback') || 'Push notifications are blocked on this device. Reminder emails will be used instead.',
+				};
+			}
+			return {
+				tone: 'warning',
+				message: t('push.permissionDenied') || 'Notifications are blocked. Open your browser or OS settings to re-enable.',
+			};
+		}
+		if (isPushUnavailableOnDevice) {
+			return {
+				tone: 'info',
+				message: supportsEmailFallback
+					? (t('push.pushUnsupportedEmailFallback') || 'Push delivery is enabled on the server, but this browser/device cannot register for push notifications. Reminder emails will be used instead.')
+					: (t('push.pushUnsupportedOnDevice') || 'Push delivery is enabled on the server, but this browser/device cannot register for push notifications.'),
+			};
+		}
+		if (!isSubscribed && isPushMode && supportsEmailFallback) {
+			return {
+				tone: 'info',
+				message: t('push.emailFallbackWhenUnregistered') || 'Push is not enabled on this device. Reminder emails will be used instead.',
+			};
+		}
+		return null;
+	}, [isEmailMode, isPushMode, isPushUnavailableOnDevice, isSubscribed, permission, showIosGuidance, supportsEmailFallback, t]);
 
 	return (
 		<div className={styles.notificationsSection}>
@@ -274,7 +307,9 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 											? (t('push.serverEmailFallback') || 'This deployment is configured to send reminder emails instead of push notifications on this platform.')
 											: isExternalDeliveryOff
 												? (t('push.serverExternalOff') || 'This deployment has external notifications turned off for this platform.')
-												: (t('push.serverPushMode') || 'This deployment is configured to deliver push notifications on this platform when the device is registered.')}
+												: supportsEmailFallback
+													? (t('push.serverAutoFallback') || 'Push is preferred on this platform. Email fallback is available when no active push subscription exists.')
+													: (t('push.serverPushMode') || 'This deployment is configured to deliver push notifications on this platform when the device is registered.')}
 									</p>
 								)}
 					</>
@@ -287,11 +322,11 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 						</div>
 					)}
 
-					{!pushSupported && isPushMode && !showIosGuidance && (
-						<div className={styles.infoBox}>
-							{t('push.pushUnsupportedOnDevice') || 'Push delivery is enabled on the server, but this browser/device cannot register for push notifications.'}
-						</div>
-					)}
+							{contextNotice && (
+								<div className={contextNotice.tone === 'warning' ? styles.deniedWarning : styles.infoBox}>
+									{contextNotice.message}
+								</div>
+							)}
 
 			{/* ── iOS guidance (not yet installed to Home Screen) ──────── */}
 			{showIosGuidance && (
@@ -316,13 +351,6 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 					<div className={styles.iosWarning}>
 						{t('push.iosDontAllow') || '⚠️ Do NOT tap "Don\'t Allow" — iOS cannot re-prompt after denial without resetting Safari settings.'}
 					</div>
-				</div>
-			)}
-
-			{/* ── Permission denied notice ──────────────────────────────── */}
-			{permission === 'denied' && !showIosGuidance && isPushMode && (
-				<div className={styles.deniedWarning}>
-					{t('push.permissionDenied') || 'Notifications are blocked. To re-enable, open your browser or OS settings and allow notifications for this site.'}
 				</div>
 			)}
 
@@ -371,7 +399,7 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 						</>
 					)}
 
-					{!isExternalDeliveryOff && (isEmailMode || (isPushMode && isSubscribed)) && (
+					{!isExternalDeliveryOff && (isEmailMode || (isPushMode && (isSubscribed || supportsEmailFallback))) && (
 						<button
 							type="button"
 							className={styles.actionBtn}
