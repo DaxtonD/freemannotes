@@ -4766,41 +4766,9 @@ export function App(): React.JSX.Element {
 		}
 	}, [loadSidebarWorkspaces, sidebarWorkspaces.length, sidebarWorkspacesBusy, viewMode]);
 
-	React.useEffect(() => {
-		// Lock the page behind the mobile drawer so background content cannot
-		// scroll or rubber-band while the sidebar is open.
-		//
-		// Important: avoid `body { position: fixed }` here. That pattern can cause
-		// visible mid-scroll jumps when the drawer opens/closes because the entire
-		// document is re-positioned relative to the viewport. An overflow-only lock
-		// keeps the current scroll position stable while the backdrop/sidebar absorb
-		// interaction above the page content.
-		if (!isMobileViewport || !isMobileSidebarOpen || typeof window === 'undefined' || typeof document === 'undefined') return;
-		const body = document.body;
-		const root = document.documentElement;
-		const previous = {
-			rootOverflow: root.style.overflow,
-			rootOverscrollBehavior: (root.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior ?? '',
-			rootTouchAction: root.style.touchAction,
-			overflow: body.style.overflow,
-			bodyTouchAction: body.style.touchAction,
-			overscrollBehavior: (body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior ?? '',
-		};
-		root.style.overflow = 'hidden';
-		(root.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = 'none';
-		root.style.touchAction = 'none';
-		body.style.overflow = 'hidden';
-		body.style.touchAction = 'none';
-		(body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = 'none';
-		return () => {
-			root.style.overflow = previous.rootOverflow;
-			(root.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = previous.rootOverscrollBehavior;
-			root.style.touchAction = previous.rootTouchAction;
-			body.style.overflow = previous.overflow;
-			body.style.touchAction = previous.bodyTouchAction;
-			(body.style as CSSStyleDeclaration & { overscrollBehavior?: string }).overscrollBehavior = previous.overscrollBehavior;
-		};
-	}, [isMobileSidebarOpen, isMobileViewport]);
+	// The sidebar shares the same global lock stack as modals so opening one
+	// overlay from another cannot restore stale hidden/touch-action styles.
+	useBodyScrollLock(isMobileViewport && isMobileSidebarOpen);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;

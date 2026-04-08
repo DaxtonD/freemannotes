@@ -1,4 +1,5 @@
 import React from 'react';
+import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { useI18n } from '../../core/i18n';
 import { buildCollectionPathMap, buildCollectionTree, hasCollectionNameConflict, type CollectionRecord, type CollectionTreeNode } from '../../services/collectionService';
 import styles from '../shared/MetadataModal.module.css';
@@ -60,6 +61,7 @@ type NoteCollectionModalProps = {
 
 export function NoteCollectionModal(props: NoteCollectionModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
+	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const [expandedIds, setExpandedIds] = React.useState<string[]>([]);
 	const [draftAction, setDraftAction] = React.useState<DraftTreeAction | null>(null);
@@ -98,24 +100,6 @@ export function NoteCollectionModal(props: NoteCollectionModalProps): React.JSX.
 		}
 		wasOpenRef.current = props.isOpen;
 	}, [props.isOpen, selectedAncestorIds]);
-
-	React.useEffect(() => {
-		if (typeof document === 'undefined' || !props.isOpen) return;
-		const prevBodyOverflow = document.body.style.overflow;
-		const prevBodyOverscroll = (document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior;
-		const prevHtmlOverflow = document.documentElement.style.overflow;
-		const prevHtmlOverscroll = (document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior;
-		document.body.style.overflow = 'hidden';
-		(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
-		document.documentElement.style.overflow = 'hidden';
-		(document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
-		return () => {
-			document.body.style.overflow = prevBodyOverflow;
-			(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = prevBodyOverscroll || '';
-			document.documentElement.style.overflow = prevHtmlOverflow;
-			(document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = prevHtmlOverscroll || '';
-		};
-	}, [props.isOpen]);
 
 	React.useEffect(() => {
 		if (!props.isOpen || typeof window === 'undefined') return;
