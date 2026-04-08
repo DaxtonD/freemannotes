@@ -14,7 +14,7 @@ import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
 import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
-import { buildCollectionPathMap, type CollectionRecord } from '../../services/collectionService';
+import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
 import type { ViewMode } from '../../core/viewMode';
 import { NoteListView } from './NoteListView';
@@ -28,7 +28,14 @@ import { readNoteFromDoc, setNotePinned } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
-import { getVisibleNotes, type NoteGroupingMode, type NoteSortMode, type ReminderFilterMode, type SortDirection, type VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
+import {
+	getVisibleNotes,
+	type NoteGroupingMode,
+	type NoteSortMode,
+	type ReminderFilterMode,
+	type SortDirection,
+	type VisibleNoteSnapshot,
+} from '../../utilities/getVisibleNotes';
 import { buildNoteGroupSections } from '../../utilities/noteGrouping';
 import { measureDocumentRects } from './flip';
 import {
@@ -129,6 +136,7 @@ type NoteMetaOverlayEntry = {
 	key: string;
 	id: string;
 	label: string;
+	fullLabel?: string;
 	kind: 'collection' | 'label';
 	active: boolean;
 	color: string | null;
@@ -141,24 +149,26 @@ type NoteGridSection = {
 };
 
 const MAX_VISIBLE_COLLABORATORS = 6;
+const MAX_VISIBLE_METADATA_ENTRIES = 6;
 
-function suppressNextDocumentCompatibilityMouseEvents(): void {
-	if (typeof window === 'undefined') return;
-	let timeoutId = 0;
-	const handler = (event: MouseEvent): void => {
-		if (event.cancelable) event.preventDefault();
-		event.stopPropagation();
-	};
-	const cleanup = (): void => {
-		window.removeEventListener('mousedown', handler, true);
-		window.removeEventListener('mouseup', handler, true);
-		window.removeEventListener('click', handler, true);
-		if (timeoutId) window.clearTimeout(timeoutId);
-	};
-	window.addEventListener('mousedown', handler, true);
-	window.addEventListener('mouseup', handler, true);
-	window.addEventListener('click', handler, true);
-	timeoutId = window.setTimeout(() => cleanup(), 500);
+function ChipOverlayDismissSurface(props: { children: React.ReactNode }): React.JSX.Element {
+	return (
+		<div
+			className={styles.collaboratorOverlayRoot}
+			// The shell keeps backdrop taps off the underlying note card while the
+			// menu panel itself continues to opt back into pointer interaction.
+			style={{ pointerEvents: 'none' }}
+		>
+			{props.children}
+		</div>
+	);
+}
+
+function isBlockedNoteCardInteractionTarget(target: EventTarget | null): target is HTMLElement {
+	if (!(target instanceof HTMLElement)) return false;
+	if (target.closest('[data-note-chip-trigger="true"]')) return false;
+	if (target.closest('[data-note-chip-panel="true"]')) return false;
+	return Boolean(target.closest('[data-note-card="true"], [data-note-list-row="true"]'));
 }
 
 function computeColumnHeights(
@@ -312,11 +322,16 @@ function uniqueIds(values: readonly string[]): string[] {
 }
 
 function readRegistryIds(notesList: Y.Array<Y.Map<unknown>>): string[] {
-	return uniqueIds(notesList.toArray().map((item) => normalizeId(item.get('id'))));
+	return uniqueIds(
+		notesList
+			.toArray()
+			.map((row) => normalizeId(row.get('id')))
+			.filter(Boolean)
+	);
 }
 
 function readOrderIds(noteOrder: Y.Array<string>): string[] {
-	return uniqueIds(noteOrder.toArray().map((id) => normalizeId(id)));
+	return uniqueIds(noteOrder.toArray().map((value) => normalizeId(value)).filter(Boolean));
 }
 
 function ensureOrderContainsAllRegistryIds(noteOrder: Y.Array<string>, registryIds: readonly string[]): void {
@@ -437,6 +452,7 @@ function renderNoteMetaChips(args: {
 	canEditNote: boolean;
 	suspendAttachmentRemoteRefresh?: boolean;
 	disableAttachmentInitialRemoteRefresh?: boolean;
+	forceCloseAttachmentChip?: boolean;
 	collaboratorSummary?: NoteCardCollaboratorSummary | null;
 	onOpenAttachmentBrowser?: (
 		kind: NoteAttachmentBrowserKind,
@@ -474,6 +490,7 @@ function renderNoteMetaChips(args: {
 				<button
 					type="button"
 					className={styles.noteChipButton}
+					data-note-chip-trigger="true"
 					style={chipColorStyle}
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={(event) => {
@@ -487,7 +504,8 @@ function renderNoteMetaChips(args: {
 							entries: [{
 								key: `collection:${note.collectionId}`,
 								id: note.collectionId,
-								label: collectionPath,
+								label: formatCompactCollectionPath(collectionPath),
+								fullLabel: collectionPath,
 								kind: 'collection',
 								active: args.activeCollectionId === note.collectionId,
 								color: null,
@@ -504,6 +522,7 @@ function renderNoteMetaChips(args: {
 				<button
 					type="button"
 					className={styles.noteChipButton}
+					data-note-chip-trigger="true"
 					style={chipColorStyle}
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={(event) => {
@@ -534,6 +553,7 @@ function renderNoteMetaChips(args: {
 				<button
 					type="button"
 					className={styles.noteChipButton}
+					data-note-chip-trigger="true"
 					style={chipColorStyle}
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={(event) => {
@@ -560,6 +580,7 @@ function renderNoteMetaChips(args: {
 					authUserId={args.authUserId}
 					className={styles.noteChipButton}
 					colorStyle={chipColorStyle}
+					forceClosed={args.forceCloseAttachmentChip}
 					suspendRemoteRefresh={args.suspendAttachmentRemoteRefresh}
 					disableInitialRemoteRefresh={args.disableAttachmentInitialRemoteRefresh}
 					onOpenStateChange={(isOpen) => args.onAttachmentChipOpenStateChange?.(args.noteId, isOpen)}
@@ -786,9 +807,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const isCoarsePointer = useIsCoarsePointer();
 	const collaboratorOverlayPanelRef = React.useRef<HTMLDivElement | null>(null);
 	const collaboratorOverlayListRef = React.useRef<HTMLDivElement | null>(null);
+	const metadataOverlayPanelRef = React.useRef<HTMLDivElement | null>(null);
 	const collaboratorTouchYRef = React.useRef<number | null>(null);
 	const collaboratorBackStatePushedRef = React.useRef(false);
+	const chipInteractionGuardTimerRef = React.useRef<number>(0);
 	const overlayReleaseTimerRef = React.useRef<number>(0);
+	const suppressGridOpenUntilRef = React.useRef(0);
+	const suppressNoteCardInteractionUntilRef = React.useRef(0);
+	const [isChipInteractionGuardActive, setIsChipInteractionGuardActive] = React.useState(false);
 
 	const [notesList, setNotesList] = React.useState<Y.Array<Y.Map<unknown>> | null>(null);
 	const [noteOrder, setNoteOrder] = React.useState<Y.Array<string> | null>(null);
@@ -1067,16 +1093,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 			if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
 
-			// Refresh visible notes in small batches so collaborator chips converge to
-			// server state without stalling the rest of the grid on large workspaces.
-			// Brand-new local notes can still be missing from the server document table,
-			// which produces 403s if we probe them before any collaborator snapshot has
-			// ever been cached. Only notes with cached collaborator state (or shared
-			// aliases, which must resolve remotely) should do an eager background read.
-			const hasCachedSnapshotByNoteId = new Map(cached.map((row) => [row.noteId, Boolean(row.snapshot)] as const));
-			const entriesToRefresh = visibleNoteEntriesForCollaboratorSync.filter(
-				(entry) => entry.isSharedAlias || Boolean(hasCachedSnapshotByNoteId.get(entry.noteId))
-			);
+			// Refresh all visible notes in small batches so collaborator chips converge
+			// to server state consistently across devices. Rely on suppressError=true
+			// to turn missing-access or not-yet-shared notes into a no-op instead of
+			// requiring a device-local collaborator cache before the chip can appear.
+			const entriesToRefresh = visibleNoteEntriesForCollaboratorSync;
 			if (entriesToRefresh.length === 0) return;
 			const refreshed: Array<{ noteId: string; summary: NoteCardCollaboratorSummary | null }> = [];
 			for (let start = 0; start < entriesToRefresh.length; start += 6) {
@@ -1392,6 +1413,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		isTouchDragCandidate: () => pendingTouchIntentRef.current,
 		onCommitOrder: commitVisibleOrder,
 		onTouchDropCommit: props.onTouchReorderEnd,
+		insertionSettleMs: isListLikeView ? 96 : 280,
 	});
 
 	React.useEffect(() => {
@@ -1544,6 +1566,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const collaboratorOverlaySummary = openCollaboratorChip ? collaboratorSummariesByNoteId[openCollaboratorChip.noteId] ?? null : null;
 	const collectionPathById = React.useMemo(() => buildCollectionPathMap(props.collections ?? []), [props.collections]);
 	const labelById = React.useMemo(() => new Map((props.labels ?? []).map((label) => [label.id, label] as const)), [props.labels]);
+	const hasOpenChipOverlay = Boolean(openCollaboratorChip || openMetadataChip || openAttachmentChipNoteId);
 	const collaboratorCountByNoteId = React.useMemo<Record<string, number>>(() => {
 		const result: Record<string, number> = {};
 		for (const [noteId, summary] of Object.entries(collaboratorSummariesByNoteId)) {
@@ -1571,6 +1594,31 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		setOpenAttachmentChipNoteId(null);
 		setLatchedOverlayNoteId(null);
 	}, []);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') {
+			setIsChipInteractionGuardActive(hasOpenChipOverlay);
+			return;
+		}
+		if (chipInteractionGuardTimerRef.current) {
+			window.clearTimeout(chipInteractionGuardTimerRef.current);
+			chipInteractionGuardTimerRef.current = 0;
+		}
+		if (hasOpenChipOverlay) {
+			setIsChipInteractionGuardActive(true);
+			return;
+		}
+		chipInteractionGuardTimerRef.current = window.setTimeout(() => {
+			chipInteractionGuardTimerRef.current = 0;
+			setIsChipInteractionGuardActive(false);
+		}, 420);
+		return () => {
+			if (chipInteractionGuardTimerRef.current) {
+				window.clearTimeout(chipInteractionGuardTimerRef.current);
+				chipInteractionGuardTimerRef.current = 0;
+			}
+		};
+	}, [hasOpenChipOverlay]);
 
 	React.useEffect(() => {
 		if (overlayReleaseTimerRef.current) {
@@ -1699,17 +1747,24 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					canEditNote,
 					suspendAttachmentRemoteRefresh,
 					disableAttachmentInitialRemoteRefresh,
+					forceCloseAttachmentChip: Boolean(openCollaboratorChip || openMetadataChip || (openAttachmentChipNoteId !== null && openAttachmentChipNoteId !== note.id)),
 					collaboratorSummary,
 					onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 					onToggleCollaboratorChip: (chipNoteId, anchorRect) => {
+						setOpenAttachmentChipNoteId(null);
 						setOpenMetadataChip(null);
 						setOpenCollaboratorChip((current) => current?.noteId === chipNoteId ? null : { noteId: chipNoteId, anchorRect });
 					},
 					onOpenMetadataChip: ({ noteId: chipNoteId, kind, anchorRect, entries }) => {
+						setOpenAttachmentChipNoteId(null);
 						setOpenCollaboratorChip(null);
 						setOpenMetadataChip((current) => current && current.noteId === chipNoteId && current.kind === kind ? null : { noteId: chipNoteId, kind, anchorRect, entries });
 					},
 					onAttachmentChipOpenStateChange: (chipNoteId, isOpen) => {
+						if (isOpen) {
+							setOpenCollaboratorChip(null);
+							setOpenMetadataChip(null);
+						}
 						setOpenAttachmentChipNoteId((current) => {
 							if (isOpen) return chipNoteId;
 							return current === chipNoteId ? null : current;
@@ -1727,9 +1782,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => {
 					if (dragManager.shouldSuppressOpen()) return;
+					if (isChipInteractionGuardActive) return;
+					if (openCollaboratorChip || openMetadataChip || openAttachmentChipNoteId) return;
+					if (Date.now() < suppressGridOpenUntilRef.current) return;
 					props.onSelectNote(note.id);
 				} : undefined}
 				allowCardItemInteractions={props.noteCardClickOpens !== false}
+				suppressContentInteractions={isChipInteractionGuardActive}
 				onAddReminder={props.onAddReminder && canEditNote ? () => props.onAddReminder?.(note.id, docId, doc.getText('title').toString()) : undefined}
 				onRestoreNote={isTrashView ? () => { void manager.restoreNote(note.id); } : undefined}
 				onAddCollaborator={props.onAddCollaborator && canEditNote ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
@@ -1751,7 +1810,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardClickOpens, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isChipInteractionGuardActive, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardClickOpens, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -1767,6 +1826,51 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			window.removeEventListener('scroll', closeOverlay, true);
 		};
 	}, [closeChipOverlays, isCoarsePointer, openCollaboratorChip, openMetadataChip]);
+
+	React.useEffect(() => {
+		if ((!openCollaboratorChip && !openMetadataChip && !openAttachmentChipNoteId) || typeof document === 'undefined') return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			if (target.closest('[data-note-chip-trigger="true"]')) return;
+			if (target.closest('[data-note-chip-panel="true"]')) return;
+			if (collaboratorOverlayPanelRef.current?.contains(target)) return;
+			if (metadataOverlayPanelRef.current?.contains(target)) return;
+			if (event.cancelable) event.preventDefault();
+			event.stopPropagation();
+			// Delay card-opening gestures long enough for the overlay close to win,
+			// otherwise touch devices can treat the dismiss tap as a note open.
+			suppressGridOpenUntilRef.current = Date.now() + 320;
+			suppressNoteCardInteractionUntilRef.current = Date.now() + 520;
+			closeChipOverlays();
+		};
+		document.addEventListener('pointerdown', handlePointerDown, true);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown, true);
+		};
+	}, [closeChipOverlays, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip]);
+
+	React.useEffect(() => {
+		if (typeof document === 'undefined') return;
+		const blockSuppressedInteraction = (event: Event): void => {
+			if (Date.now() >= suppressNoteCardInteractionUntilRef.current) return;
+			if (!isBlockedNoteCardInteractionTarget(event.target)) return;
+			if (event.cancelable) event.preventDefault();
+			event.stopPropagation();
+			const nativeEvent = event as Event & { stopImmediatePropagation?: () => void };
+			nativeEvent.stopImmediatePropagation?.();
+		};
+		document.addEventListener('click', blockSuppressedInteraction, true);
+		document.addEventListener('pointerup', blockSuppressedInteraction, true);
+		document.addEventListener('mouseup', blockSuppressedInteraction, true);
+		document.addEventListener('touchend', blockSuppressedInteraction, true);
+		return () => {
+			document.removeEventListener('click', blockSuppressedInteraction, true);
+			document.removeEventListener('pointerup', blockSuppressedInteraction, true);
+			document.removeEventListener('mouseup', blockSuppressedInteraction, true);
+			document.removeEventListener('touchend', blockSuppressedInteraction, true);
+		};
+	}, []);
 
 	React.useEffect(() => {
 		if (!openCollaboratorChip || !isCoarsePointer) return;
@@ -2087,24 +2191,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 											exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
 											transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 										/>
-										<div
-											className={styles.collaboratorOverlayRoot}
-								onPointerDown={(event) => {
-									if (event.cancelable) event.preventDefault();
-									event.stopPropagation();
-									if (isCoarsePointer) {
-										suppressNextDocumentCompatibilityMouseEvents();
-									}
-									setOpenCollaboratorChip(null);
-								}}
-								onClick={(event) => {
-									event.preventDefault();
-									event.stopPropagation();
-								}}
-										>
+										<ChipOverlayDismissSurface>
 								<motion.div
 									ref={collaboratorOverlayPanelRef}
 									className={styles.collaboratorOverlayPanel}
+										data-note-chip-panel="true"
 									style={{
 										...(collaboratorOverlayColorStyle ?? {}),
 										...collaboratorOverlayPosition,
@@ -2169,8 +2260,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 											);
 										})}
 									</div>
-								</motion.div>
-										</div>
+									</motion.div>
+								</ChipOverlayDismissSurface>
 									</>
 								);
 							})()
@@ -2185,20 +2276,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
 									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 								/>
-								<div
-									className={styles.collaboratorOverlayRoot}
-									onPointerDown={(event) => {
-										if (event.cancelable) event.preventDefault();
-										event.stopPropagation();
-										setOpenMetadataChip(null);
-									}}
-									onClick={(event) => {
-										event.preventDefault();
-										event.stopPropagation();
-									}}
-								>
+								<ChipOverlayDismissSurface>
+									{(() => {
+										const shouldCapMetadataList = openMetadataChip.entries.length > MAX_VISIBLE_METADATA_ENTRIES;
+										return (
 									<motion.div
+										ref={metadataOverlayPanelRef}
 										className={styles.collaboratorOverlayPanel}
+										data-note-chip-panel="true"
 										style={{ ...(metadataOverlayColorStyle ?? {}), ...metadataOverlayPosition }}
 										onPointerDown={(event) => event.stopPropagation()}
 										onClick={(event) => event.stopPropagation()}
@@ -2207,12 +2292,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										exit={{ opacity: 0, y: -6 }}
 										transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 									>
-										<div className={styles.collaboratorOverlayList}>
+										<div className={`${styles.collaboratorOverlayList} ${styles.metadataOverlayList}${shouldCapMetadataList ? ` ${styles.metadataOverlayListScrollable}` : ''}`}>
 											{openMetadataChip.entries.map((entry, index) => (
 												<motion.button
 													key={entry.key}
 													type="button"
 													className={`${styles.collaboratorOverlayItem}${entry.active ? ` ${styles.collaboratorOverlayItemActive}` : ''}`}
+													title={entry.fullLabel ?? entry.label}
+													aria-label={entry.fullLabel ?? entry.label}
 													initial={{ opacity: 0, y: -10 }}
 													animate={{ opacity: 1, y: 0 }}
 													exit={{ opacity: 0, y: -6 }}
@@ -2232,13 +2319,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 														setOpenMetadataChip(null);
 													}}
 												>
+														{entry.kind === 'collection' ? <FontAwesomeIcon icon={faFolder} className={styles.metadataOverlayKindIcon} /> : null}
 													{entry.color ? <span className={styles.metadataOverlaySwatch} style={{ backgroundColor: entry.color }} aria-hidden="true" /> : null}
 													<span className={styles.collaboratorOverlayName}>{entry.label}</span>
 												</motion.button>
 											))}
 										</div>
 									</motion.div>
-								</div>
+										);
+									})()}
+								</ChipOverlayDismissSurface>
 							</>
 						) : null}
 					</AnimatePresence>,

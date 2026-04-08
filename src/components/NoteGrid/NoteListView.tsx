@@ -255,6 +255,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 			activeId: props.activeDragId,
 			suppressAnimations: false,
 			skipForScroll: false,
+			suppressUniformGlobalShift: props.activeDragId == null,
 		});
 	}, [props.activeDragId, props.orderedIds, showPreview]);
 

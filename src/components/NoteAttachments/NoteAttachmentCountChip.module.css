@@ -31,24 +31,26 @@
 	position: fixed;
 	min-width: 0;
 	max-width: calc(100vw - 24px);
+	max-height: calc(100vh - 24px);
+	overflow: hidden;
 	padding: 7px;
 	display: flex;
 	flex-direction: column;
-	gap: 6px;
+	gap: 5px;
 	border: 1px solid var(--note-color-border, color-mix(in srgb, var(--color-border) 70%, var(--color-text) 30%));
 	border-radius: 18px;
 	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 96%, rgba(20, 20, 20, 0.2));
 	color: var(--note-color-text, var(--color-text));
 	backdrop-filter: blur(16px);
 	-webkit-backdrop-filter: blur(16px);
-	box-shadow: 0 20px 40px rgba(0, 0, 0, 0.18);
+	box-shadow: none;
 	pointer-events: auto;
 }
 
 .overlayList {
 	display: flex;
 	flex-direction: column;
-	gap: 0;
+	gap: 6px;
 }
 
 .overlayItemShell {
@@ -59,19 +61,18 @@
 
 .overlayItem {
 	width: 100%;
-	min-height: 34px;
-	padding: 0 10px;
-	display: inline-flex;
+	position: relative;
+	padding: 5px 7px;
+	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 10px;
+	gap: 7px;
 	border: 1px solid var(--note-color-border, color-mix(in srgb, var(--color-border) 72%, transparent));
-	border-radius: 999px;
+	border-radius: 10px;
 	background: color-mix(in srgb, var(--note-color-header-bg, var(--color-surface-2)) 80%, var(--note-color-card-bg, var(--color-surface)) 20%);
 	color: var(--note-color-text, var(--color-text));
 	text-align: left;
-	font-size: 11px;
-	font-weight: 700;
+	font-size: 12px;
 	transition:
 		transform 180ms ease,
 		border-color 180ms ease,
@@ -99,7 +100,7 @@
 .overlayItemCopy {
 	display: inline-flex;
 	align-items: center;
-	gap: 8px;
+	gap: 7px;
 	min-width: 0;
 }
 
@@ -108,12 +109,15 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	font-weight: 600;
 }
 
 .overlayItemCount {
 	font-variant-numeric: tabular-nums;
 	line-height: 1;
 	flex-shrink: 0;
+	font-weight: 700;
+	color: var(--note-color-accent, var(--color-accent));
 }
 
 @media (pointer: coarse) {

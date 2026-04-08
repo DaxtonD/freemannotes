@@ -349,11 +349,31 @@
 .collaboratorOverlayList {
 	display: flex;
 	flex-direction: column;
-	gap: 0;
+	gap: 6px;
+}
+
+.metadataOverlayList {
+	gap: 6px;
+}
+
+.metadataOverlayListScrollable {
+	max-height: min(calc((34px * 6) + (6px * 5)), calc(100vh - 72px));
+	overflow-y: auto;
+	overflow-x: hidden;
+	padding-right: 2px;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	touch-action: pan-y;
+	scrollbar-width: none;
+	-ms-overflow-style: none;
+}
+
+.metadataOverlayListScrollable::-webkit-scrollbar {
+	display: none;
 }
 
 .collaboratorOverlayListScrollable {
-	max-height: min(calc((30px * 6) + (4px * 5)), calc(100vh - 72px));
+	max-height: min(calc((34px * 6) + (6px * 5)), calc(100vh - 72px));
 	overflow-y: auto;
 	overflow-x: hidden;
 	padding-right: 2px;
@@ -438,6 +458,12 @@
 	border-radius: 999px;
 	flex: 0 0 auto;
 	border: 1px solid var(--note-color-border, color-mix(in srgb, var(--color-border) 72%, transparent));
+}
+
+.metadataOverlayKindIcon {
+	flex: 0 0 auto;
+	font-size: 11px;
+	color: inherit;
 }
 
 @media (pointer: coarse) {

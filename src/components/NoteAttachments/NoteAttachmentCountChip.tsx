@@ -26,6 +26,7 @@ type NoteAttachmentCountChipProps = {
 	authUserId?: string | null;
 	className: string;
 	colorStyle?: React.CSSProperties;
+	forceClosed?: boolean;
 	onOpenBrowser: (kind: NoteAttachmentBrowserKind) => void;
 	onOpenStateChange?: (isOpen: boolean) => void;
 	suspendRemoteRefresh?: boolean;
@@ -43,23 +44,16 @@ function readAnchorRect(element: HTMLElement | null): { top: number; left: numbe
 	return { top: triggerRect.top, left: cardRect.left, width: cardRect.width, height: triggerRect.height };
 }
 
-function suppressNextDocumentCompatibilityMouseEvents(): void {
-	if (typeof window === 'undefined') return;
-	let timeoutId = 0;
-	const handler = (event: MouseEvent): void => {
-		if (event.cancelable) event.preventDefault();
-		event.stopPropagation();
-	};
-	const cleanup = (): void => {
-		window.removeEventListener('mousedown', handler, true);
-		window.removeEventListener('mouseup', handler, true);
-		window.removeEventListener('click', handler, true);
-		if (timeoutId) window.clearTimeout(timeoutId);
-	};
-	window.addEventListener('mousedown', handler, true);
-	window.addEventListener('mouseup', handler, true);
-	window.addEventListener('click', handler, true);
-	timeoutId = window.setTimeout(() => cleanup(), 500);
+function AttachmentChipDismissSurface(props: { children: React.ReactNode }): React.JSX.Element {
+	return (
+		<div
+			className={styles.overlayRoot}
+			role="presentation"
+			style={{ pointerEvents: 'none' }}
+		>
+			{props.children}
+		</div>
+	);
 }
 
 export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): React.JSX.Element | null {
@@ -87,6 +81,11 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	React.useEffect(() => {
 		onOpenStateChangeRef.current?.(isOpen);
 	}, [isOpen]);
+
+	React.useEffect(() => {
+		if (!props.forceClosed) return;
+		setIsOpen(false);
+	}, [props.forceClosed]);
 
 	React.useEffect(() => {
 		countsRef.current = counts;
@@ -338,6 +337,23 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		};
 	}, [isOpen]);
 
+	React.useEffect(() => {
+		if (!isOpen || typeof document === 'undefined') return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			if (target.closest('[data-note-chip-trigger="true"]')) return;
+			if (overlayPanelRef.current?.contains(target)) return;
+			if (event.cancelable) event.preventDefault();
+			event.stopPropagation();
+			setIsOpen(false);
+		};
+		document.addEventListener('pointerdown', handlePointerDown, true);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown, true);
+		};
+	}, [isOpen]);
+
 	const totalCount = counts.images + counts.links + counts.documents;
 	const overlayPosition = React.useMemo(() => {
 		if (!anchorRect || typeof window === 'undefined') return null;
@@ -374,6 +390,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 				ref={buttonRef}
 				type="button"
 				className={[props.className, styles.mainChip].join(' ')}
+				data-note-chip-trigger="true"
 				style={props.colorStyle}
 				onPointerDown={(event) => event.stopPropagation()}
 				onClick={handleToggle}
@@ -398,25 +415,11 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 									exit={{ opacity: 0, backdropFilter: 'blur(0px)' }}
 									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 								/>
-								<div
-									className={styles.overlayRoot}
-									role="presentation"
-									onPointerDown={(event) => {
-										if (event.cancelable) event.preventDefault();
-										event.stopPropagation();
-										if (isCoarsePointer) {
-											suppressNextDocumentCompatibilityMouseEvents();
-										}
-										setIsOpen(false);
-									}}
-									onClick={(event) => {
-										event.preventDefault();
-										event.stopPropagation();
-									}}
-								>
+								<AttachmentChipDismissSurface>
 								<motion.div
 									ref={overlayPanelRef}
 									className={styles.overlayPanel}
+									data-note-chip-panel="true"
 									role="dialog"
 									aria-modal="false"
 									aria-label={t('attachments.chipLabel')}
@@ -470,7 +473,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 										})}
 									</div>
 								</motion.div>
-								</div>
+							</AttachmentChipDismissSurface>
 							</>
 						) : null}
 					</AnimatePresence>,

@@ -1,114 +1,356 @@
 import React from 'react';
 import { useI18n } from '../../core/i18n';
-import { buildCollectionPathMap, buildCollectionTree, type CollectionRecord, type CollectionTreeNode } from '../../services/collectionService';
-import { TreeSelector, type TreeSelectorItem } from '../shared/TreeSelector';
+import { buildCollectionPathMap, buildCollectionTree, hasCollectionNameConflict, type CollectionRecord, type CollectionTreeNode } from '../../services/collectionService';
 import styles from '../shared/MetadataModal.module.css';
+
+type DraftTreeAction =
+	| { mode: 'create'; parentId: string | null; name: string }
+	| { mode: 'rename'; collectionId: string; name: string };
+
+function filterCollectionTree(nodes: readonly CollectionTreeNode[], normalizedQuery: string): CollectionTreeNode[] {
+	if (!normalizedQuery) return [...nodes];
+	const next: CollectionTreeNode[] = [];
+	for (const node of nodes) {
+		const childMatches = filterCollectionTree(node.children, normalizedQuery);
+		const matchesSelf = node.name.toLowerCase().includes(normalizedQuery);
+		if (!matchesSelf && childMatches.length === 0) continue;
+		next.push({
+			...node,
+			children: matchesSelf ? node.children : childMatches,
+		});
+	}
+	return next;
+}
+
+function collectAncestorIds(nodes: readonly CollectionTreeNode[], targetId: string | null | undefined, ancestors: string[] = []): string[] {
+	if (!targetId) return [];
+	for (const node of nodes) {
+		if (node.id === targetId) return ancestors;
+		const nested = collectAncestorIds(node.children, targetId, [...ancestors, node.id]);
+		if (nested.length > 0) return nested;
+	}
+	return [];
+}
+
+function collectBranchIds(nodes: readonly CollectionTreeNode[]): string[] {
+	const output: string[] = [];
+	const walk = (list: readonly CollectionTreeNode[]): void => {
+		for (const node of list) {
+			output.push(node.id);
+			walk(node.children);
+		}
+	};
+	walk(nodes);
+	return output;
+}
 
 type CollectionManagementModalProps = {
 	isOpen: boolean;
 	onClose: () => void;
 	collections: readonly CollectionRecord[];
-	onCreate: (args: { name: string; parentId: string | null }) => void;
-	onRename: (collectionId: string, nextName: string) => void;
+	onCreate: (args: { name: string; parentId: string | null }) => string | null;
+	onRename: (collectionId: string, nextName: string) => boolean;
 	onDelete: (collectionId: string) => void;
 };
 
 export function CollectionManagementModal(props: CollectionManagementModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
-	const [name, setName] = React.useState('');
-	const [parentId, setParentId] = React.useState<string>('');
-
-	React.useEffect(() => {
-		if (!props.isOpen) return;
-		// Reset the draft fields on each open so stale input from a previous edit
-		// session does not leak into the next collection action.
-		setName('');
-		setParentId('');
-	}, [props.isOpen]);
+	const [searchQuery, setSearchQuery] = React.useState('');
+	const [expandedIds, setExpandedIds] = React.useState<string[]>([]);
+	const [draftAction, setDraftAction] = React.useState<DraftTreeAction | null>(null);
+	const [selectedCollectionId, setSelectedCollectionId] = React.useState<string | null>(null);
+	const [validationMessage, setValidationMessage] = React.useState<string | null>(null);
+	const wasOpenRef = React.useRef(false);
 
 	const collectionTree = React.useMemo(() => buildCollectionTree(props.collections), [props.collections]);
+	const collectionById = React.useMemo(() => new Map(props.collections.map((entry) => [entry.id, entry] as const)), [props.collections]);
 	const pathById = React.useMemo(() => buildCollectionPathMap(props.collections), [props.collections]);
-	const toTreeItems = React.useCallback((nodes: readonly CollectionTreeNode[]): TreeSelectorItem[] => {
-		return nodes.map((node) => ({
-			id: node.id,
-			label: node.name,
-			meta: null,
-			children: toTreeItems(node.children),
-		}));
-	}, [pathById]);
-	const treeItems = React.useMemo<TreeSelectorItem[]>(() => toTreeItems(collectionTree), [collectionTree, toTreeItems]);
+	const normalizedQuery = searchQuery.trim().toLowerCase();
+	const filteredTree = React.useMemo(() => filterCollectionTree(collectionTree, normalizedQuery), [collectionTree, normalizedQuery]);
+	const draftTargetId = draftAction ? (draftAction.mode === 'create' ? draftAction.parentId : draftAction.collectionId) : null;
+	const draftAncestorIds = React.useMemo(() => collectAncestorIds(collectionTree, draftTargetId), [collectionTree, draftTargetId]);
+	const expandedSet = React.useMemo(
+		() => new Set<string>([...expandedIds, ...draftAncestorIds]),
+		[draftAncestorIds, expandedIds]
+	);
+	const selectedCollectionName = selectedCollectionId ? (collectionById.get(selectedCollectionId)?.name ?? '') : '';
+
+	React.useEffect(() => {
+		if (props.isOpen && !wasOpenRef.current) {
+			setSearchQuery('');
+			setExpandedIds([]);
+			setDraftAction(null);
+			setSelectedCollectionId(null);
+			setValidationMessage(null);
+		}
+		wasOpenRef.current = props.isOpen;
+	}, [props.isOpen]);
+
+	React.useEffect(() => {
+		if (typeof document === 'undefined' || !props.isOpen) return;
+		const prevBodyOverflow = document.body.style.overflow;
+		const prevBodyOverscroll = (document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior;
+		const prevHtmlOverflow = document.documentElement.style.overflow;
+		const prevHtmlOverscroll = (document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior;
+		document.body.style.overflow = 'hidden';
+		(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
+		document.documentElement.style.overflow = 'hidden';
+		(document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
+		return () => {
+			document.body.style.overflow = prevBodyOverflow;
+			(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = prevBodyOverscroll || '';
+			document.documentElement.style.overflow = prevHtmlOverflow;
+			(document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = prevHtmlOverscroll || '';
+		};
+	}, [props.isOpen]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || !normalizedQuery) return;
+		setExpandedIds(collectBranchIds(filteredTree));
+	}, [filteredTree, normalizedQuery, props.isOpen]);
+
+	const toggleExpanded = React.useCallback((collectionId: string): void => {
+		setExpandedIds((current) => current.includes(collectionId)
+			? current.filter((entry) => entry !== collectionId)
+			: [...current, collectionId]);
+	}, []);
+
+	const openCreateDraft = React.useCallback((parentId: string | null): void => {
+		if (parentId) {
+			setExpandedIds((current) => current.includes(parentId) ? current : [...current, parentId]);
+		}
+		setValidationMessage(null);
+		setDraftAction({ mode: 'create', parentId, name: '' });
+	}, []);
+
+	const openRenameDraft = React.useCallback((collectionId: string, name: string): void => {
+		setValidationMessage(null);
+		setDraftAction({ mode: 'rename', collectionId, name });
+	}, []);
+
+	const updateDraftName = React.useCallback((name: string): void => {
+		setValidationMessage(null);
+		setDraftAction((current) => current ? { ...current, name } : current);
+	}, []);
+
+	const closeDraft = React.useCallback((): void => {
+		setValidationMessage(null);
+		setDraftAction(null);
+	}, []);
+
+	const submitDraft = React.useCallback((): void => {
+		if (!draftAction) return;
+		const nextName = draftAction.name.trim();
+		if (!nextName) return;
+		const conflict = draftAction.mode === 'create'
+			? hasCollectionNameConflict(props.collections, nextName, draftAction.parentId)
+			: hasCollectionNameConflict(props.collections, nextName, collectionById.get(draftAction.collectionId)?.parentId ?? null, draftAction.collectionId);
+		if (conflict) {
+			setValidationMessage(t('collections.duplicateNameError'));
+			return;
+		}
+		if (draftAction.mode === 'create') {
+			const createdId = props.onCreate({ name: nextName, parentId: draftAction.parentId });
+			if (!createdId) {
+				setValidationMessage(t('collections.duplicateNameError'));
+				return;
+			}
+			setValidationMessage(null);
+			setDraftAction(null);
+			setSelectedCollectionId(createdId);
+			return;
+		}
+		if (!props.onRename(draftAction.collectionId, nextName)) {
+			setValidationMessage(t('collections.duplicateNameError'));
+			return;
+		}
+		setValidationMessage(null);
+		setDraftAction(null);
+	}, [collectionById, draftAction, props, t]);
+
+	const handleDelete = React.useCallback((collectionId: string, name: string): void => {
+		if (!window.confirm(t('collections.deleteConfirmPrefix').replace('{name}', name))) return;
+		props.onDelete(collectionId);
+		setDraftAction((current) => {
+			if (!current) return null;
+			if (current.mode === 'rename' && current.collectionId === collectionId) return null;
+			if (current.mode === 'create' && current.parentId === collectionId) return null;
+			return current;
+		});
+		setExpandedIds((current) => current.filter((entry) => entry !== collectionId));
+		setSelectedCollectionId((current) => current === collectionId ? null : current);
+		setValidationMessage(null);
+	}, [props, t]);
+
+	const startCreateFromSelection = React.useCallback((): void => {
+		openCreateDraft(selectedCollectionId);
+	}, [openCreateDraft, selectedCollectionId]);
+
+	const startRenameFromSelection = React.useCallback((): void => {
+		if (!selectedCollectionId || !selectedCollectionName) return;
+		openRenameDraft(selectedCollectionId, selectedCollectionName);
+	}, [openRenameDraft, selectedCollectionId, selectedCollectionName]);
+
+	const deleteSelectedCollection = React.useCallback((): void => {
+		if (!selectedCollectionId || !selectedCollectionName) return;
+		handleDelete(selectedCollectionId, selectedCollectionName);
+	}, [handleDelete, selectedCollectionId, selectedCollectionName]);
+
+	const handleDraftKeyDown = React.useCallback((event: React.KeyboardEvent<HTMLInputElement>): void => {
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			submitDraft();
+			return;
+		}
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			closeDraft();
+		}
+	}, [closeDraft, submitDraft]);
+
+	const renderDraftEditor = React.useCallback((): React.JSX.Element | null => {
+		if (!draftAction) return null;
+		return (
+			<div className={styles.collectionTreeInlineEditor}>
+				{draftAction.mode === 'rename' ? <span className={styles.collectionTreeInlineGlyph} aria-hidden="true">Rename</span> : null}
+				<input
+					autoFocus
+					className={styles.collectionTreeInlineInput}
+					value={draftAction.name}
+					onChange={(event) => updateDraftName(event.target.value)}
+					onKeyDown={handleDraftKeyDown}
+					placeholder={t('collections.newPlaceholder')}
+				/>
+				<div className={styles.collectionTreeInlineActions}>
+					<button
+						type="button"
+						className={styles.collectionTreeActionButton}
+						onClick={submitDraft}
+						disabled={!draftAction.name.trim()}
+					>
+						{t('common.save')}
+					</button>
+					<button type="button" className={styles.collectionTreeActionButton} onClick={closeDraft}>
+						{t('common.cancel')}
+					</button>
+				</div>
+			</div>
+		);
+	}, [closeDraft, draftAction, handleDraftKeyDown, submitDraft, t, updateDraftName]);
+
+	const renderTreeNode = React.useCallback((node: CollectionTreeNode, depth: number): React.JSX.Element => {
+		const isExpanded = expandedSet.has(node.id);
+		const isActive = selectedCollectionId === node.id;
+		const isRenaming = draftAction?.mode === 'rename' && draftAction.collectionId === node.id;
+		const isCreatingHere = draftAction?.mode === 'create' && draftAction.parentId === node.id;
+		const pathLabel = pathById.get(node.id) ?? node.name;
+		const showPathMeta = normalizedQuery.length > 0 && pathLabel !== node.name;
+
+		return (
+			<div key={node.id} className={styles.collectionTreeNode}>
+				<div
+					className={styles.collectionTreeRow}
+					style={{ ['--collection-tree-depth' as const]: depth } as React.CSSProperties}
+				>
+					<button
+						type="button"
+						className={`${styles.collectionTreeDisclosure}${isExpanded ? ` ${styles.collectionTreeDisclosureOpen}` : ''}`}
+						onClick={() => toggleExpanded(node.id)}
+						aria-label={isExpanded ? 'Collapse branch' : 'Expand branch'}
+					>
+						<span className={styles.collectionTreeDisclosureIcon} aria-hidden="true" />
+					</button>
+					{isRenaming ? (
+						renderDraftEditor()
+					) : (
+						<button
+							type="button"
+							className={`${styles.collectionTreeButton}${isActive ? ` ${styles.collectionTreeButtonActive}` : ''}`}
+							onClick={() => {
+								setDraftAction(null);
+								setSelectedCollectionId(node.id);
+							}}
+							title={pathLabel}
+						>
+							<span className={styles.collectionTreeLabelBlock}>
+								<span className={styles.collectionTreeLabel}>{node.name}</span>
+								{showPathMeta ? <span className={styles.collectionTreeMeta}>{pathLabel}</span> : null}
+							</span>
+						</button>
+					)}
+				</div>
+				{isExpanded ? (
+					<div className={styles.collectionTreeBranch}>
+						{isCreatingHere ? <div className={styles.collectionTreeDraftRow}>{renderDraftEditor()}</div> : null}
+						{node.children.map((child) => renderTreeNode(child, depth + 1))}
+					</div>
+				) : null}
+			</div>
+		);
+	}, [draftAction, expandedSet, normalizedQuery.length, pathById, renderDraftEditor, selectedCollectionId, toggleExpanded]);
 
 	if (!props.isOpen) return null;
 
 	return (
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
-			<section className={`${styles.modal} ${styles.compactModal}`} role="dialog" aria-modal="true" aria-label={t('collections.manageTitle')} onClick={(event) => event.stopPropagation()}>
+			<section className={`${styles.modal} ${styles.compactModal} ${styles.collectionModal}`} role="dialog" aria-modal="true" aria-label={t('collections.manageTitle')} onClick={(event) => event.stopPropagation()}>
 				<header className={styles.header}>
 					<div className={styles.titleBlock}>
 						<h2 className={styles.title}>{t('collections.manageTitle')}</h2>
-						<p className={styles.description}>{t('collections.manageDescription')}</p>
 					</div>
 					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label={t('common.close')}>✕</button>
 				</header>
-
-				<div className={`${styles.section} ${styles.compactSection}`}>
-					<div className={styles.field}>
-						<label className={styles.fieldLabel} htmlFor="collection-name">{t('collections.nameLabel')}</label>
-						<input id="collection-name" className={styles.input} value={name} onChange={(event) => setName(event.target.value)} placeholder={t('collections.newPlaceholder')} />
+				<div className={`${styles.section} ${styles.compactSection} ${styles.collectionModalSection}`}>
+					<input
+						className={styles.search}
+						type="search"
+						value={searchQuery}
+						onChange={(event) => setSearchQuery(event.target.value)}
+						placeholder={t('collections.searchPlaceholder')}
+					/>
+					<div className={styles.collectionTreeToolbar}>
+						<div className={styles.collectionTreeToolbarActions}>
+							<button type="button" className={styles.primaryButton} onClick={startCreateFromSelection}>
+								{t('collections.createAction')}
+							</button>
+							<button type="button" className={styles.secondaryButton} onClick={startRenameFromSelection} disabled={!selectedCollectionId}>
+								{t('collections.renameAction')}
+							</button>
+							<button type="button" className={styles.dangerButton} onClick={deleteSelectedCollection} disabled={!selectedCollectionId}>
+								{t('collections.deleteAction')}
+							</button>
+						</div>
 					</div>
-					<div className={styles.field}>
-						<div className={styles.fieldLabel}>{t('collections.parentLabel')}</div>
-						{parentId ? <div className={styles.treePath}>{pathById.get(parentId) ?? ''}</div> : null}
-						<TreeSelector
-							items={treeItems}
-							selectedId={parentId || null}
-							// Tapping the already-selected parent toggles it off, clearing to top-level.
-					onSelect={(id) => setParentId((current) => (current === id ? '' : id))}
-							renderActions={(item) => (
-								<>
-									<button
-										type="button"
-										className={styles.treeActionButton}
-										onClick={(event) => {
-											event.stopPropagation();
-											const collection = props.collections.find((entry) => entry.id === item.id);
-											const nextName = window.prompt(t('collections.renamePrompt'), collection?.name ?? item.label)?.trim();
-											if (!nextName) return;
-											props.onRename(item.id, nextName);
-										}}
-									>
-										{t('collections.renameAction')}
-									</button>
-									<button
-										type="button"
-										className={styles.treeActionButton}
-										onClick={(event) => {
-											event.stopPropagation();
-											const collection = props.collections.find((entry) => entry.id === item.id);
-											if (!window.confirm(t('collections.deleteConfirmPrefix').replace('{name}', collection?.name ?? item.label))) return;
-											props.onDelete(item.id);
-										}}
-									>
-										{t('collections.deleteAction')}
-									</button>
-								</>
-							)}
-							emptyLabel={t('collections.emptyState')}
-						/>
-					</div>
-					<div className={styles.actions}>
-						<button
-							type="button"
-							className={styles.primaryButton}
-							onClick={() => {
-								props.onCreate({ name, parentId: parentId || null });
-								setName('');
-								setParentId('');
-							}}
-							disabled={!name.trim()}
-						>
-							{t('collections.createAction')}
-						</button>
+					{validationMessage ? <p className={styles.validationMessage}>{validationMessage}</p> : null}
+					<div className={styles.collectionTreeShell} aria-label={t('collections.manageTitle')}>
+						<div className={`${styles.treeList} ${styles.collectionTreeList}`}>
+							<div className={styles.collectionTreeNode}>
+								<div className={styles.collectionTreeRow}>
+									<span className={styles.collectionTreeDisclosureSpacer} aria-hidden="true" />
+									{draftAction?.mode === 'create' && draftAction.parentId === null ? (
+										renderDraftEditor()
+									) : (
+										<button
+											type="button"
+											className={`${styles.collectionTreeButton}${selectedCollectionId ? '' : ` ${styles.collectionTreeButtonActive}`}`}
+											onClick={() => {
+												setDraftAction(null);
+												setSelectedCollectionId(null);
+											}}
+										>
+											<span className={styles.collectionTreeLabelBlock}>
+												<span className={styles.collectionTreeLabel}>{t('collections.topLevelLabel')}</span>
+											</span>
+										</button>
+									)}
+								</div>
+							</div>
+							{!props.collections.length && !normalizedQuery && !(draftAction?.mode === 'create' && draftAction.parentId === null)
+								? <div className={styles.collectionTreeEmpty}>{t('collections.emptyState')}</div>
+								: null}
+							{filteredTree.map((node) => renderTreeNode(node, 0))}
+							{normalizedQuery && filteredTree.length === 0 ? <div className={styles.collectionTreeEmpty}>{t('collections.noMatches')}</div> : null}
+						</div>
 					</div>
 				</div>
 			</section>

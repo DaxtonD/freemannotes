@@ -41,6 +41,7 @@ export type ChecklistEditorProps = {
 	onSave: (args: { title: string; items: Array<ChecklistItem & { richContent: JSONContent }>; previewLinks: string[] }) => void | Promise<void>;
 	onCancel: () => void;
 	initialShowCompleted?: boolean;
+	onShowBriefDialog?: (message: string) => void;
 	onShowCompletedChange?: (next: boolean) => void;
 	allowQuickDelete?: boolean;
 };
@@ -566,7 +567,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		const next = window.prompt(t('links.prompt'), 'https://');
 		if (!next) return;
 		setPreviewLinks((current) => mergeNotePreviewLinkInputs(current, next));
-	}, [t]);
+		props.onShowBriefDialog?.(t('links.addedToast'));
+	}, [props.onShowBriefDialog, t]);
 	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
 		if (mediaDockTab === 2) return <DocumentsPanel showComingSoonPlaceholder />;
 		return <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />;
@@ -1524,12 +1526,12 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						setIsMoreMenuOpen(false);
 						setMoreMenuAnchorRect(null);
 					}}
-					onCheckAll={() => {
+					onCheckAll={items.length > 0 ? () => {
 						setItems((current) => current.map((item) => (item.completed ? item : { ...item, completed: true })));
-					}}
-					onUncheckAll={() => {
+					} : undefined}
+					onUncheckAll={items.length > 0 ? () => {
 						setItems((current) => current.map((item) => (!item.completed ? item : { ...item, completed: false })));
-					}}
+					} : undefined}
 					onAddUrlPreview={() => {
 						setIsMoreMenuOpen(false);
 						setMoreMenuAnchorRect(null);

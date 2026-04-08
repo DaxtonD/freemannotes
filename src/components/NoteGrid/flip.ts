@@ -9,6 +9,32 @@ export type DocumentRect = {
 };
 export type DocumentRectMap = Map<string, DocumentRect>;
 
+const FLIP_ANIMATION_MS = 140;
+const FLIP_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
+const flipCleanupTimers = new WeakMap<HTMLElement, number>();
+
+function clearFlipStyles(container: HTMLElement): void {
+	for (const node of Array.from(container.querySelectorAll<HTMLElement>('[data-note-id]'))) {
+		const content = (node.querySelector('[data-note-content="true"]') as HTMLElement | null) ?? node;
+		content.style.transition = '';
+		content.style.transform = '';
+		content.style.willChange = '';
+	}
+}
+
+function scheduleFlipCleanup(container: HTMLElement): void {
+	if (typeof window === 'undefined') return;
+	const previousTimer = flipCleanupTimers.get(container);
+	if (previousTimer) {
+		window.clearTimeout(previousTimer);
+	}
+	const nextTimer = window.setTimeout(() => {
+		clearFlipStyles(container);
+		flipCleanupTimers.delete(container);
+	}, FLIP_ANIMATION_MS + 40);
+	flipCleanupTimers.set(container, nextTimer);
+}
+
 export function measureDocumentRects(container: HTMLElement): DocumentRectMap {
 	const scrollX = typeof window !== 'undefined' ? window.scrollX : 0;
 	const scrollY = typeof window !== 'undefined' ? window.scrollY : 0;
@@ -45,6 +71,7 @@ export function applyFlipAnimations(args: {
 	activeId: string | null;
 	suppressAnimations: boolean;
 	skipForScroll: boolean;
+	suppressUniformGlobalShift?: boolean;
 }): ViewportRectMap {
 	const nextRects = measureViewportRects(args.container);
 	const nodes = Array.from(args.container.querySelectorAll<HTMLElement>('[data-note-id]'));
@@ -68,12 +95,19 @@ export function applyFlipAnimations(args: {
 			const base = deltas[0];
 			return Math.abs(dx - base.dx) <= 1.5 && Math.abs(dy - base.dy) <= 1.5;
 		});
+	const shouldSuppressUniformGlobalShift = args.suppressUniformGlobalShift !== false;
 
-	if (args.suppressAnimations || args.skipForScroll || hasUniformGlobalShift) {
+	if (args.suppressAnimations || args.skipForScroll || (shouldSuppressUniformGlobalShift && hasUniformGlobalShift)) {
+		const previousTimer = flipCleanupTimers.get(args.container);
+		if (previousTimer && typeof window !== 'undefined') {
+			window.clearTimeout(previousTimer);
+			flipCleanupTimers.delete(args.container);
+		}
 		for (const { node } of deltas) {
 			const content = (node.querySelector('[data-note-content="true"]') as HTMLElement | null) ?? node;
 			content.style.transition = 'none';
-			content.style.transform = 'translate(0px, 0px)';
+			content.style.transform = 'translate3d(0px, 0px, 0px)';
+			content.style.willChange = '';
 		}
 		return nextRects;
 	}
@@ -81,11 +115,14 @@ export function applyFlipAnimations(args: {
 	for (const { node, dx, dy } of deltas) {
 		const content = (node.querySelector('[data-note-content="true"]') as HTMLElement | null) ?? node;
 		content.style.transition = 'none';
-		content.style.transform = `translate(${dx}px, ${dy}px)`;
+		content.style.transform = `translate3d(${dx}px, ${dy}px, 0px)`;
+		content.style.willChange = 'transform';
 		void content.getBoundingClientRect();
-		content.style.transition = 'transform 180ms ease-out';
-		content.style.transform = 'translate(0px, 0px)';
+		content.style.transition = `transform ${FLIP_ANIMATION_MS}ms ${FLIP_EASING}`;
+		content.style.transform = 'translate3d(0px, 0px, 0px)';
 	}
+
+	scheduleFlipCleanup(args.container);
 
 	return nextRects;
 }
