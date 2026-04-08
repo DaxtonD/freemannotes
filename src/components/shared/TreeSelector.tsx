@@ -92,6 +92,7 @@ export function TreeSelector(props: TreeSelectorProps): React.JSX.Element {
 		const hasChildren = (item.children?.length ?? 0) > 0;
 		const isExpanded = expandedSet.has(item.id);
 		const isActive = props.selectedId === item.id;
+		const actions = props.renderActions?.(item) ?? null;
 		return (
 			<div key={item.id} className={styles.treeNode}>
 				<div className={styles.treeRow} style={{ paddingLeft: `${depth * 12}px` }}>
@@ -114,8 +115,8 @@ export function TreeSelector(props: TreeSelectorProps): React.JSX.Element {
 							<span className={styles.treeLabel}>{item.label}</span>
 							{item.meta ? <span className={styles.treeMeta}>{item.meta}</span> : null}
 						</span>
-						{props.renderActions ? <span className={styles.treeActions}>{props.renderActions(item)}</span> : null}
 					</button>
+					{actions ? <div className={styles.treeActions}>{actions}</div> : null}
 				</div>
 				{hasChildren ? (
 					<div className={`${styles.treeChildren}${isExpanded ? ` ${styles.treeChildrenOpen}` : ''}`}>

@@ -73,13 +73,14 @@ export type NoteEditorProps = {
 	onClose: () => void;
 	onSavePendingNew?: () => void | Promise<void>;
 	onDelete: (noteId: string) => Promise<void>;
-	onMoveToWorkspace?: (() => void) | undefined;
+	onTogglePin?: (() => void) | undefined;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
 	onAddDocument?: () => void;
 	onAddReminder?: () => void;
 	onAddToCollection?: () => void;
 	onAddLabels?: () => void;
+	onShowBriefDialog?: (message: string) => void;
 	readOnly?: boolean;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
@@ -531,8 +532,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (readOnly) return;
 		const next = window.prompt(t('links.prompt'), 'https://');
 		if (!next) return;
-		addNotePreviewLinkToDoc(props.doc, next);
-	}, [props.doc, readOnly, t]);
+		const added = addNotePreviewLinkToDoc(props.doc, next);
+		if (!added) return;
+		props.onShowBriefDialog?.(t('links.addedToast'));
+	}, [props.doc, props.onShowBriefDialog, readOnly, t]);
 	const handleDeleteUrlPreview = React.useCallback((normalizedUrl: string): void => {
 		if (readOnly) return;
 		removeNotePreviewLinkFromDoc(props.doc, normalizedUrl);
@@ -891,6 +894,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
+	const isPinned = useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			metadata.observe(observer);
+			return () => metadata.unobserve(observer);
+		},
+		() => Boolean(metadata.get('isPinned')),
+		() => Boolean(metadata.get('isPinned'))
+	);
 	const noteAutoScrollEnabled = useSyncExternalStore(
 		(onStoreChange) => subscribeNoteAutoScrollPrefs(onStoreChange),
 		() => getUserNoteAutoScrollEnabled(props.docId, props.authUserId),
@@ -1252,6 +1264,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		},
 		[normalizedItems, replaceChecklistItems, type]
 	);
+
+	const checkAllChecklistItems = React.useCallback((): void => {
+		if (type !== 'checklist' || readOnly || normalizedItems.length === 0) return;
+		replaceChecklistItems(normalizedItems.map((item) => (item.completed ? item : { ...item, completed: true })));
+	}, [normalizedItems, readOnly, replaceChecklistItems, type]);
+
+	const uncheckAllChecklistItems = React.useCallback((): void => {
+		if (type !== 'checklist' || readOnly || normalizedItems.length === 0) return;
+		replaceChecklistItems(normalizedItems.map((item) => (!item.completed ? item : { ...item, completed: false })));
+	}, [normalizedItems, readOnly, replaceChecklistItems, type]);
 
 	const removeChecklistItem = React.useCallback(
 		(id: string, options?: { clearSelection?: boolean }): void => {
@@ -2448,10 +2470,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			<NoteCardMoreMenu
 				noteType={type}
 				anchorRect={moreMenuAnchorRect}
+				isPinned={isPinned}
 				onClose={() => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
 				}}
+				onTogglePin={props.onTogglePin ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					props.onTogglePin?.();
+				} : undefined}
 				onAddCollaborator={props.onAddCollaborator ? () => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
@@ -2487,10 +2515,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setMoreMenuAnchorRect(null);
 					handleCreateUrlPreview();
 				} : undefined}
-				onMoveToWorkspace={!readOnly ? () => {
+				onCheckAll={type === 'checklist' && !readOnly && normalizedItems.length > 0 ? () => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
-					props.onMoveToWorkspace?.();
+					checkAllChecklistItems();
+				} : undefined}
+				onUncheckAll={type === 'checklist' && !readOnly && normalizedItems.length > 0 ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					uncheckAllChecklistItems();
 				} : undefined}
 				onTrash={() => {
 					setIsMoreMenuOpen(false);

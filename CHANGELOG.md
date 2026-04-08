@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.10 - 2026-04-07
+
+### Added
+- **Collection and label management is now inline and self-validating.** The Add to collection, Manage collections, and Add labels flows now support in-place create and rename actions, duplicate-name validation, and richer label color selection with preset swatches plus a custom picker.
+
+### Changed
+- **Note actions and metadata chips are more consistent across cards and editors.** Collection chip menus now show themed folder rows with compact nested paths, attachment counts use the note accent color, note editors expose pin and bulk checklist actions in the more menu, and link/image additions surface the same brief confirmation feedback in editors and attachment browsers.
+- **Collection trees and label tools are more usable on mobile.** Collection modals now use their full height, support horizontal scrolling for deeply nested trees, and the custom label color picker opens in its own anchored container instead of shifting modal content.
+
+### Fixed
+- **Chip overlays no longer leak taps through to note cards.** Collaborator, metadata, and attachment chip menus now suppress ghost taps and close cleanly without opening the underlying note on touch devices.
+- **Android back now closes the Add to collection modal.** Coarse-pointer devices push a temporary history entry so the system back gesture dismisses the modal first.
+- **Checklist and list interactions settle more cleanly after touch edits.** Expanded completed-item sections can hand scrolling back to the page, list and strip reorders use a shorter settle window, and touch reorder cleanup now avoids accidental post-drop note opens.
+
 ## 1.2.0 - 2026-04-06
 
 ### Added

@@ -56,6 +56,11 @@
 	flex-direction: column;
 }
 
+.checklistCardCompletedExpanded {
+	/* Mobile overrides below allow the full card to grow when the completed
+	   section opens so the page scroll owns the gesture instead of an inner list. */
+}
+
 .contentRegion {
 	display: flex;
 	flex: 1 1 auto;
@@ -63,6 +68,15 @@
 	flex-direction: column;
 	overflow: hidden;
 	position: relative;
+}
+
+.contentInteractionGuard {
+	position: absolute;
+	inset: 0;
+	z-index: 4;
+	background: transparent;
+	pointer-events: auto;
+	touch-action: none;
 }
 
 .header {
@@ -684,6 +698,10 @@
 	display: none;
 }
 
+.cardFooterGuarded {
+	pointer-events: none;
+}
+
 @media (pointer: fine) {
 	.checklistCard {
 		max-height: calc(var(--note-card-max-height) + 18px);
@@ -788,6 +806,26 @@
 @media (pointer: coarse) {
 	.body {
 		padding-bottom: calc(var(--space-2) + 6px);
+	}
+
+	.checklistCardCompletedExpanded {
+		max-height: none;
+		overflow: visible;
+	}
+
+	.checklistCardCompletedExpanded .contentRegion,
+	.checklistCardCompletedExpanded .completedSection,
+	.checklistCardCompletedExpanded .completedSection .checklist {
+		overflow: visible;
+	}
+
+	.checklistCardCompletedExpanded .completedSection {
+		flex: 0 0 auto;
+		min-height: auto;
+	}
+
+	.checklistCardCompletedExpanded .completedSection .checklist {
+		overscroll-behavior: auto;
 	}
 
 	.completedSection .checklist {
