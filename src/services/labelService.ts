@@ -24,6 +24,10 @@ function normalizeName(value: unknown): string {
 	return typeof value === 'string' ? value.trim() : String(value ?? '').trim();
 }
 
+function normalizeComparableName(value: unknown): string {
+	return normalizeName(value).toLocaleLowerCase();
+}
+
 function normalizeColor(value: unknown): string | null {
 	if (typeof value !== 'string') return null;
 	const normalized = value.trim();
@@ -77,6 +81,7 @@ export function readLabelsFromDoc(doc: Y.Doc): LabelRecord[] {
 export function createLabel(doc: Y.Doc, args: { name: string; color?: string | null }): LabelRecord | null {
 	const name = normalizeName(args.name);
 	if (!name) return null;
+	if (hasLabelNameConflict(readLabelsFromDoc(doc), name)) return null;
 	const label: LabelRecord = {
 		id: makeLabelId(),
 		name,
@@ -102,6 +107,7 @@ export function updateLabel(doc: Y.Doc, labelId: string, patch: { name?: string;
 	if (!target) return false;
 	const nextName = patch.name === undefined ? undefined : normalizeName(patch.name);
 	if (patch.name !== undefined && !nextName) return false;
+	if (nextName !== undefined && hasLabelNameConflict(readLabelsFromDoc(doc), nextName, targetId)) return false;
 	doc.transact(() => {
 		if (nextName !== undefined) target.set('name', nextName);
 		if (patch.color !== undefined) target.set('color', normalizeColor(patch.color));
@@ -120,4 +126,14 @@ export function deleteLabel(doc: Y.Doc, labelId: string): boolean {
 		labels.delete(index, 1);
 	});
 	return true;
+}
+
+export function hasLabelNameConflict(labels: readonly LabelRecord[], name: string, ignoreLabelId?: string | null): boolean {
+	const comparableName = normalizeComparableName(name);
+	if (!comparableName) return false;
+	const ignoredId = normalizeId(ignoreLabelId);
+	return labels.some((label) => {
+		if (ignoredId && label.id === ignoredId) return false;
+		return normalizeComparableName(label.name) === comparableName;
+	});
 }

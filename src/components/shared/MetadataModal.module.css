@@ -45,6 +45,12 @@
 	border-radius: 14px;
 }
 
+.collectionModal {
+	height: min(calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px), 720px);
+	max-height: min(calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 40px), 720px);
+	overflow: hidden;
+}
+
 .header {
 	display: flex;
 	justify-content: space-between;
@@ -70,6 +76,70 @@
 	font-size: 13px;
 	line-height: 1.5;
 	color: var(--color-text-muted);
+}
+
+.collectionHeaderMeta {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin-top: 2px;
+	min-width: 0;
+}
+
+.collectionHeaderLine {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: baseline;
+	min-width: 0;
+}
+
+.collectionHeaderLabel {
+	font-size: 11px;
+	font-weight: 800;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--color-accent);
+}
+
+.collectionHeaderValue {
+	font-size: 14px;
+	font-weight: 700;
+	color: var(--color-text);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.metaSummary {
+	display: grid;
+	gap: 8px;
+	padding: 10px 12px;
+	border-radius: 12px;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 24%, var(--color-border) 76%);
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-2) 90%);
+}
+
+.metaSummaryItem {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: baseline;
+}
+
+.metaSummaryLabel {
+	font-size: 11px;
+	font-weight: 800;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--color-accent);
+}
+
+.metaSummaryValue {
+	font-size: 14px;
+	font-weight: 700;
+	color: var(--color-text);
 }
 
 .closeButton {
@@ -109,6 +179,260 @@
 	font-size: 13px;
 }
 
+.labelColorPickerRow {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+}
+
+.labelColorPickerStack {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 0;
+}
+
+.labelColorSelector {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 0;
+	width: 100%;
+	position: relative;
+	overflow: visible;
+}
+
+.labelColorPresetRow {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.labelColorPresetPill {
+	width: 34px;
+	height: 24px;
+	padding: 0;
+	border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-surface) 80%, transparent);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.labelColorPresetPill:hover,
+.labelColorPresetPill:focus-visible {
+	transform: translateY(-1px);
+	border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border) 66%);
+}
+
+.labelColorPresetPillActive {
+	border-color: color-mix(in srgb, var(--color-accent) 52%, var(--color-border) 48%);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+
+.labelColorCustomButton {
+	min-width: 0;
+	height: 24px;
+	padding: 0 10px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+	color: var(--color-text-muted);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	font-size: 11px;
+	font-weight: 700;
+	transition: transform 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.labelColorCustomButton:hover,
+.labelColorCustomButton:focus-visible {
+	transform: translateY(-1px);
+	border-color: color-mix(in srgb, var(--color-accent) 34%, var(--color-border) 66%);
+	color: var(--color-text);
+}
+
+.labelColorCustomButtonActive {
+	border-color: color-mix(in srgb, var(--color-accent) 52%, var(--color-border) 48%);
+	color: var(--color-accent);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 24%, transparent);
+}
+
+.labelColorCustomSwatch {
+	width: 24px;
+	height: 14px;
+	border-radius: 999px;
+	flex: 0 0 auto;
+	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.labelColorPresetSwatch {
+	width: 22px;
+	height: 12px;
+	border-radius: 999px;
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+	border: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.labelColorPickerPanel {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	width: 100%;
+	padding: 10px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+	border-radius: 14px;
+	background: color-mix(in srgb, var(--color-surface) 84%, var(--color-surface-2) 16%);
+	overflow: hidden;
+	box-shadow:
+		0 14px 28px rgba(0, 0, 0, 0.22),
+		inset 0 1px 0 color-mix(in srgb, var(--color-surface) 72%, transparent);
+}
+
+.labelColorPickerPopover {
+	position: absolute;
+	top: calc(100% + 8px);
+	left: 0;
+	z-index: 6;
+	width: min(320px, calc(100vw - 72px));
+	max-width: 100%;
+	pointer-events: auto;
+}
+
+.labelColorSaturationBox {
+	position: relative;
+	height: 164px;
+	border-radius: 12px;
+	overflow: hidden;
+	cursor: crosshair;
+	background-image:
+		linear-gradient(180deg, transparent 0%, #000 100%),
+		linear-gradient(90deg, #fff 0%, transparent 100%);
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+	touch-action: none;
+}
+
+.labelColorSaturationThumb {
+	position: absolute;
+	width: 18px;
+	height: 18px;
+	border-radius: 999px;
+	border: 4px solid #fff;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+}
+
+.labelColorControlsRow {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-width: 0;
+}
+
+.labelColorPreview {
+	width: 36px;
+	height: 36px;
+	border-radius: 999px;
+	flex: 0 0 auto;
+	border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.labelColorHueSlider {
+	position: relative;
+	flex: 1 1 auto;
+	height: 16px;
+	border-radius: 999px;
+	background: linear-gradient(90deg, #ff3b30 0%, #ff9500 16%, #ffcc00 32%, #34c759 48%, #0a84ff 66%, #5e5ce6 82%, #ff2d55 100%);
+	cursor: ew-resize;
+	touch-action: none;
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.labelColorHueThumb {
+	position: absolute;
+	top: 50%;
+	width: 18px;
+	height: 18px;
+	border-radius: 999px;
+	border: 3px solid #fff;
+	background: transparent;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+}
+
+.labelColorPickerFooter {
+	display: flex;
+	justify-content: flex-end;
+}
+
+.labelColorPickerCloseButton {
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+	color: var(--color-text);
+	padding: 6px 12px;
+	font-size: 12px;
+	font-weight: 700;
+	cursor: pointer;
+	transition: transform 160ms ease, border-color 160ms ease, background-color 160ms ease;
+}
+
+.labelColorPickerCloseButton:hover,
+.labelColorPickerCloseButton:focus-visible {
+	transform: translateY(-1px);
+	border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border) 72%);
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface) 90%);
+}
+
+.labelColorInput {
+	width: 88px;
+	min-width: 88px;
+	height: 34px;
+	padding: 0;
+	border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+	border-radius: 999px;
+	background: var(--color-surface);
+	cursor: pointer;
+	appearance: none;
+	-webkit-appearance: none;
+	overflow: hidden;
+	box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-surface-2) 70%, transparent);
+}
+
+.labelColorValue {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.04em;
+	color: var(--color-text-muted);
+	white-space: nowrap;
+}
+
+.labelColorInput::-webkit-color-swatch-wrapper {
+	padding: 3px;
+	border-radius: inherit;
+}
+
+.labelColorInput::-webkit-color-swatch {
+	border: 0;
+	border-radius: 999px;
+}
+
+.labelColorInput::-moz-color-swatch {
+	border: 0;
+	border-radius: 999px;
+}
+
 .section {
 	display: flex;
 	flex-direction: column;
@@ -124,6 +448,13 @@
 	gap: 8px;
 	padding: 10px;
 	border-radius: 10px;
+}
+
+.collectionModalSection {
+	flex: 1 1 auto;
+	overflow: hidden;
+	display: flex;
+	flex-direction: column;
 }
 
 .row {
@@ -176,6 +507,13 @@
 	flex-wrap: wrap;
 }
 
+.validationMessage {
+	margin: 0;
+	font-size: 12px;
+	font-weight: 700;
+	color: var(--color-danger);
+}
+
 .treeList,
 .checkboxList,
 .quickGrid {
@@ -210,16 +548,80 @@
 .treeButton,
 .checkboxRow {
 	width: 100%;
-	padding: 5px 8px;
+	padding: 4px 8px;
 	cursor: pointer;
 	text-align: left;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	gap: 8px;
+	gap: 6px;
+}
+
+.checkboxRowShell {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.checkboxRowEditing {
+	border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border) 60%);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 20%, transparent);
+}
+
+.checkboxRowToggle {
+	flex: 1 1 auto;
+	min-width: 0;
+	border: 0;
+	background: transparent;
+	padding: 0;
+	margin: 0;
+	text-align: left;
+	color: inherit;
+	font: inherit;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	min-height: 0;
+}
+
+.checkboxRowActions {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex: 0 0 auto;
+}
+
+.checkboxManageButton {
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-surface) 82%, transparent);
+	color: var(--color-text-muted);
+	font-size: 11px;
+	font-weight: 700;
+	line-height: 1;
+	padding: 5px 8px;
+	cursor: pointer;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 160ms ease, color 160ms ease, border-color 160ms ease, background-color 160ms ease;
+}
+
+.checkboxRow:hover .checkboxManageButton,
+.checkboxRow:focus-within .checkboxManageButton,
+.checkboxRowEditing .checkboxManageButton {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.checkboxManageButton:hover,
+.checkboxManageButton:focus-visible {
+	color: var(--color-text);
+	border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border) 76%);
+	background: color-mix(in srgb, var(--color-accent) 8%, var(--color-surface) 92%);
 }
 
 .treeButton {
+	width: auto;
 	flex: 1 1 auto;
 	min-width: 0;
 }
@@ -303,7 +705,7 @@
 .checkboxLabelBlock {
 	display: flex;
 	flex-direction: column;
-	gap: 2px;
+	gap: 1px;
 	min-width: 0;
 }
 
@@ -312,6 +714,37 @@
 	font-size: 12px;
 	font-weight: 600;
 	color: var(--color-text);
+}
+
+.checkboxLabel {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	line-height: 1.2;
+}
+
+.labelInlineEditor {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	padding: 8px 10px;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 28%, var(--color-border) 72%);
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface) 94%);
+}
+
+.labelInlineNameInput {
+	flex: 1 1 200px;
+	min-width: 0;
+}
+
+.labelInlineActions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-left: auto;
 }
 
 .treeMeta,
@@ -325,6 +758,7 @@
 	display: flex;
 	gap: 4px;
 	flex: 0 0 auto;
+	align-items: center;
 }
 
 .treeActionButton {
@@ -336,6 +770,357 @@
 	font-size: 12px;
 }
 
+.treeInlineEditor {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	background: var(--color-surface);
+}
+
+.treeInlineGlyph {
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--color-accent);
+	flex: 0 0 auto;
+	line-height: 1;
+}
+
+.treeInlineInput {
+	flex: 1 1 auto;
+	min-width: 0;
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	font-size: 13px;
+	padding: 0;
+	outline: none;
+}
+
+.treeInlineActions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: 0 0 auto;
+}
+
+.treeAddPlaceholder {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 5px 8px;
+	border: 1px dashed color-mix(in srgb, var(--color-accent) 35%, var(--color-border) 65%);
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface) 94%);
+	color: var(--color-text);
+	cursor: pointer;
+	text-align: left;
+}
+
+.treeAddGlyph {
+	font-size: 16px;
+	font-weight: 700;
+	color: var(--color-accent);
+	flex: 0 0 auto;
+	line-height: 1;
+}
+
+.treeAddLabel {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--color-text-muted);
+}
+
+.collectionTreeShell {
+	display: flex;
+	flex-direction: column;
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 0;
+	padding: 8px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+	border-radius: 16px;
+	background: color-mix(in srgb, var(--color-surface-2) 54%, var(--color-surface) 46%);
+	box-shadow: inset 0 1px 0 color-mix(in srgb, var(--color-surface) 78%, transparent);
+	overflow: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+}
+
+.collectionTreeList {
+	flex: 1 1 auto;
+	min-height: 0;
+	min-width: 100%;
+	width: max-content;
+	max-height: none;
+	gap: 4px;
+	padding-right: 4px;
+	padding-bottom: 4px;
+	overflow: visible;
+}
+
+.collectionTreeToolbar {
+	display: flex;
+	justify-content: flex-start;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	padding: 10px 12px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--color-surface) 70%, var(--color-surface-2) 30%);
+}
+
+.collectionTreeToolbarActions {
+	display: flex;
+	gap: 8px;
+	flex-wrap: wrap;
+	justify-content: flex-start;
+	flex: 1 1 auto;
+}
+
+.collectionTreeToolbarActions > button {
+	display: inline-flex;
+	align-items: center;
+}
+
+.collectionTreeNode {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+}
+
+.collectionTreeRow {
+	--collection-tree-depth: 0;
+	display: flex;
+	align-items: flex-start;
+	gap: 4px;
+	min-width: 0;
+	padding-left: calc(var(--collection-tree-depth) * 6px);
+	font-size: 12px;
+	line-height: 1.15;
+}
+
+.collectionTreeDisclosure,
+.collectionTreeDisclosureSpacer {
+	width: 24px;
+	min-width: 24px;
+	height: 32px;
+	border-radius: var(--radius-sm);
+	flex: 0 0 auto;
+}
+
+.collectionTreeDisclosure {
+	border: 0;
+	background: transparent;
+	color: var(--color-text-muted);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition: background-color 160ms ease, color 160ms ease;
+}
+
+.collectionTreeDisclosure:hover,
+.collectionTreeDisclosure:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 72%, transparent);
+	color: var(--color-text);
+}
+
+.collectionTreeDisclosure:disabled {
+	opacity: 0.5;
+	cursor: default;
+	background: transparent;
+	color: var(--color-text-muted);
+}
+
+.collectionTreeDisclosureIcon {
+	display: inline-flex;
+	width: 14px;
+	height: 14px;
+	flex: 0 0 auto;
+	opacity: 0.85;
+	background-color: currentColor;
+	-webkit-mask-image: url('/icons/Arrow.png');
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	-webkit-mask-size: 100% 100%;
+	mask-image: url('/icons/Arrow.png');
+	mask-repeat: no-repeat;
+	mask-position: center;
+	mask-size: 100% 100%;
+	transition: transform 180ms ease;
+}
+
+.collectionTreeDisclosureOpen .collectionTreeDisclosureIcon {
+	transform: rotate(90deg);
+}
+
+.collectionTreeButton {
+	min-width: 0;
+	flex: 1 1 auto;
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	padding: 7px 10px;
+	min-height: 32px;
+	border-radius: 10px;
+	text-align: left;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	transition: background-color 160ms ease, color 160ms ease, box-shadow 160ms ease;
+}
+
+.collectionTreeButton:hover,
+.collectionTreeButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface) 46%, var(--color-surface-2) 54%);
+}
+
+.collectionTreeButtonActive {
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface) 84%);
+	color: var(--color-accent);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 38%, transparent);
+}
+
+.collectionTreeLabelBlock {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+
+.collectionTreeLabel {
+	font-size: 12px;
+	font-weight: 600;
+	color: currentColor;
+	min-width: 0;
+	white-space: nowrap;
+}
+
+.collectionTreeMeta,
+.collectionTreeEmpty {
+	font-size: 10px;
+	color: var(--color-text-muted);
+}
+
+.collectionTreeActionButton {
+	border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 86%, transparent);
+	color: var(--color-text-muted);
+	border-radius: 999px;
+	padding: 5px 8px;
+	min-height: 28px;
+	font-size: 11px;
+	font-weight: 600;
+	cursor: pointer;
+	line-height: 1;
+	transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.collectionTreeActionButton:hover,
+.collectionTreeActionButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+	color: var(--color-text);
+	border-color: color-mix(in srgb, var(--color-text-muted) 16%, var(--color-border) 84%);
+}
+
+.collectionTreeActionButtonAccent {
+	color: var(--color-accent);
+	min-width: 28px;
+	padding-left: 0;
+	padding-right: 0;
+	font-size: 15px;
+	font-weight: 700;
+}
+
+.collectionTreeActionButtonDanger {
+	color: var(--color-danger);
+	border-color: color-mix(in srgb, var(--color-danger) 18%, var(--color-border) 82%);
+}
+
+.collectionTreeBranch {
+	margin-left: 11px;
+	padding-left: 11px;
+	border-left: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: max-content;
+}
+
+.collectionTreeDraftRow {
+	display: flex;
+	min-width: 0;
+}
+
+.collectionTreeInlineEditor {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+	min-height: 44px;
+	padding: 8px 10px;
+	border: 2px solid color-mix(in srgb, var(--color-accent) 42%, var(--color-border) 58%);
+	border-radius: 12px;
+	background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface) 94%);
+	box-shadow:
+		0 0 0 1px color-mix(in srgb, var(--color-accent) 14%, transparent),
+		inset 0 1px 0 color-mix(in srgb, var(--color-surface-2) 58%, transparent);
+}
+
+.collectionTreeInlineGlyph {
+	font-size: 11px;
+	font-weight: 800;
+	letter-spacing: 0.02em;
+	color: var(--color-accent);
+	flex: 0 0 auto;
+	text-transform: uppercase;
+}
+
+.collectionTreeInlineInput {
+	flex: 1 1 180px;
+	min-width: 0;
+	min-height: 22px;
+	border: 0;
+	background: transparent;
+	color: var(--color-text);
+	font-size: 14px;
+	padding: 0;
+	outline: none;
+	line-height: 1.2;
+}
+
+.collectionTreeInlineActions {
+	display: flex;
+	align-items: center;
+	justify-content: flex-end;
+	gap: 6px;
+	flex: 0 0 auto;
+	flex-wrap: wrap;
+	margin-left: auto;
+}
+
+.collectionTreeEmpty {
+	padding: 6px 8px 2px 36px;
+}
+
+.collectionTreeFooter {
+	display: flex;
+	justify-content: flex-start;
+	padding-top: 4px;
+}
+
 .checkboxInput {
 	width: 18px;
 	height: 18px;
@@ -344,11 +1129,12 @@
 }
 
 .checkboxAccent {
-	width: 10px;
-	height: 10px;
+	width: 12px;
+	height: 12px;
 	border-radius: 999px;
 	flex: 0 0 auto;
 	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
 
 .treePath {
@@ -382,6 +1168,32 @@
 	flex: 1 1 220px;
 }
 
+.splitLayout {
+	display: grid;
+	grid-template-columns: minmax(220px, 260px) minmax(0, 1fr);
+	gap: 12px;
+	min-height: 0;
+}
+
+.splitSidebar,
+.splitMain {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	min-height: 0;
+}
+
+.paneSection {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+
+.paneList {
+	flex: 1 1 auto;
+	min-height: 280px;
+	max-height: none;
+}
+
 @media (max-width: 720px) {
 	.overlay {
 		align-items: flex-start;
@@ -394,13 +1206,111 @@
 		padding: 14px;
 	}
 
+	.collectionModal {
+		height: calc(100dvh - 24px);
+		max-height: calc(100dvh - 24px);
+	}
+
 	.treeList,
 	.checkboxList {
 		max-height: min(48dvh, 420px);
 	}
 
+	.collectionTreeShell {
+		padding: 6px;
+	}
+
+	.collectionTreeToolbar {
+		padding: 8px;
+	}
+
+	.collectionTreeToolbarActions {
+		width: 100%;
+		justify-content: stretch;
+	}
+
+	.collectionTreeToolbarActions > button {
+		flex: 1 1 0;
+		justify-content: center;
+	}
+
+	.collectionTreeRow {
+		padding-left: calc(var(--collection-tree-depth) * 4px);
+	}
+
+	.collectionTreeBranch {
+		margin-left: 9px;
+		padding-left: 8px;
+	}
+
+	.collectionTreeInlineEditor {
+		align-items: center;
+		gap: 6px;
+		padding: 8px 9px;
+	}
+
+	.collectionTreeInlineInput {
+		flex: 1 1 120px;
+		min-height: 22px;
+	}
+
+	.collectionTreeInlineActions {
+		width: auto;
+		justify-content: flex-end;
+		margin-left: auto;
+	}
+
 	.quickGrid {
 		grid-template-columns: 1fr;
+	}
+
+	.splitLayout {
+		grid-template-columns: 1fr;
+	}
+
+	.labelColorPickerRow {
+		justify-content: space-between;
+	}
+
+	.labelColorPresetRow {
+		gap: 6px;
+	}
+
+	.labelColorPresetPill {
+		flex: 1 1 calc(25% - 6px);
+		min-width: 0;
+	}
+
+	.labelColorSaturationBox {
+		height: 148px;
+	}
+
+	.labelColorControlsRow {
+		gap: 8px;
+	}
+
+	.labelColorPreview {
+		width: 32px;
+		height: 32px;
+	}
+
+
+	.checkboxManageButton {
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.labelInlineActions {
+		width: 100%;
+		margin-left: 0;
+	}
+
+	.labelInlineActions > button {
+		flex: 1 1 0;
+	}
+
+	.paneList {
+		min-height: 220px;
 	}
 
 	.actions {

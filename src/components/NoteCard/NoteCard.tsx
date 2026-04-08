@@ -62,6 +62,7 @@ export type NoteCardProps = {
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 	maxCardHeightPx?: number;
 	allowCardItemInteractions?: boolean;
+	suppressContentInteractions?: boolean;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -219,6 +220,7 @@ function getHeadingLevel(node: JSONContent): 3 | 4 | 5 | 6 {
 	if (level === 5) return 5;
 	return 6;
 }
+
 
 function getTaskItemChecked(node: JSONContent): boolean {
 	const attrs = (node.attrs as { checked?: unknown; ['data-checked']?: unknown } | undefined) ?? {};
@@ -508,6 +510,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const { t } = useI18n();
 	const canEdit = props.canEdit !== false;
 	const allowCardItemInteractions = props.allowCardItemInteractions !== false;
+	const suppressContentInteractions = props.suppressContentInteractions === true;
 	// metadata.type controls note rendering mode.
 	const metadata = React.useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const colorToken = React.useSyncExternalStore(
@@ -781,7 +784,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}`}
+			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
@@ -1001,6 +1004,24 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			) : null}
 
 			<div ref={contentRegionRef} className={`${styles.contentRegion}${showCompleted && completedChecklistItems.length > 0 ? ` ${styles.contentRegionCompletedExpanded}` : ''}`}>
+				{suppressContentInteractions ? (
+					<div
+						className={styles.contentInteractionGuard}
+						aria-hidden="true"
+						onPointerDown={(event) => {
+							if (event.cancelable) event.preventDefault();
+							event.stopPropagation();
+						}}
+						onPointerUp={(event) => {
+							if (event.cancelable) event.preventDefault();
+							event.stopPropagation();
+						}}
+						onClick={(event) => {
+							event.preventDefault();
+							event.stopPropagation();
+						}}
+					/>
+				) : null}
 				{type === 'text' ? (
 					<div ref={bodyRef} className={styles.body}>
 						<div ref={contentPreviewRef} className={styles.contentPreview}>{renderRichPreview(richContent, allowCardItemInteractions, allowCardItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
@@ -1110,7 +1131,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					</div>
 				) : null}
 			</div>
-			<div ref={footerRef} className={styles.cardFooter}>
+			<div ref={footerRef} className={`${styles.cardFooter}${suppressContentInteractions ? ` ${styles.cardFooterGuarded}` : ''}`}>
 				{/* Desktop-only footer dock mirrors the editor action strip so note
 				    cards and editors share the same action vocabulary. */}
 				<nav className={styles.cardDock} aria-label={t('editors.bottomDock')}>

@@ -35,6 +35,10 @@ function normalizeName(value: unknown): string {
 	return typeof value === 'string' ? value.trim() : String(value ?? '').trim();
 }
 
+function normalizeComparableName(value: unknown): string {
+	return normalizeName(value).toLocaleLowerCase();
+}
+
 function makeCollectionId(): string {
 	if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
 		return crypto.randomUUID();
@@ -85,10 +89,12 @@ export function readCollectionsFromDoc(doc: Y.Doc): CollectionRecord[] {
 export function createCollection(doc: Y.Doc, args: { name: string; parentId?: string | null }): CollectionRecord | null {
 	const name = normalizeName(args.name);
 	if (!name) return null;
+	const parentId = normalizeOptionalId(args.parentId);
+	if (hasCollectionNameConflict(readCollectionsFromDoc(doc), name, parentId)) return null;
 	const collection: CollectionRecord = {
 		id: makeCollectionId(),
 		name,
-		parentId: normalizeOptionalId(args.parentId),
+		parentId,
 		createdAt: nowIso(),
 		updatedAt: nowIso(),
 	};
@@ -114,6 +120,11 @@ export function updateCollection(doc: Y.Doc, collectionId: string, patch: { name
 	const nextName = patch.name === undefined ? undefined : normalizeName(patch.name);
 	if (patch.name !== undefined && !nextName) return false;
 	const nextParentId = patch.parentId === undefined ? undefined : normalizeOptionalId(patch.parentId);
+	const current = normalizeCollectionRow(target);
+	if (!current) return false;
+	const resolvedParentId = nextParentId === undefined ? current.parentId : (nextParentId === targetId ? null : nextParentId);
+	const resolvedName = nextName ?? current.name;
+	if (hasCollectionNameConflict(readCollectionsFromDoc(doc), resolvedName, resolvedParentId, targetId)) return false;
 	doc.transact(() => {
 		if (nextName !== undefined) target.set('name', nextName);
 		if (nextParentId !== undefined) target.set('parentId', nextParentId === targetId ? null : nextParentId);
@@ -217,4 +228,34 @@ export function buildCollectionPath(
 	const normalizedId = typeof collectionId === 'string' ? collectionId.trim() : '';
 	if (!normalizedId) return null;
 	return buildCollectionPathMap(collections, separator).get(normalizedId) ?? null;
+}
+
+export function hasCollectionNameConflict(
+	collections: readonly CollectionRecord[],
+	name: string,
+	parentId: string | null | undefined,
+	ignoreCollectionId?: string | null
+): boolean {
+	const comparableName = normalizeComparableName(name);
+	if (!comparableName) return false;
+	const comparableParentId = normalizeOptionalId(parentId);
+	const ignoredId = normalizeOptionalId(ignoreCollectionId);
+	return collections.some((collection) => {
+		if (ignoredId && collection.id === ignoredId) return false;
+		return normalizeOptionalId(collection.parentId) === comparableParentId
+			&& normalizeComparableName(collection.name) === comparableName;
+	});
+}
+
+export function formatCompactCollectionPath(path: string, separator = ' / ', maxLeafLength = 18): string {
+	const normalized = normalizeName(path);
+	if (!normalized) return '';
+	const parts = normalized.split(separator).map((part) => part.trim()).filter(Boolean);
+	const truncate = (value: string): string => value.length > maxLeafLength ? `${value.slice(0, Math.max(1, maxLeafLength - 3)).trimEnd()}...` : value;
+	// Preserve the root and active leaf so deep collection paths stay readable in
+	// tight chip/dropdown layouts without losing their most useful context.
+	if (parts.length <= 1) return truncate(normalized);
+	const root = parts[0] ?? '';
+	const leaf = truncate(parts[parts.length - 1] ?? '');
+	return `${root}${separator}...${separator}${leaf}`;
 }

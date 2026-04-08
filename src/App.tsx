@@ -65,12 +65,13 @@ import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedE
 import { applyTheme, getStoredThemeId, isLightTheme, persistThemeId, THEMES, type ThemeId } from './core/theme';
 import { activateWorkspace, fetchUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
 import { useConnectionStatus } from './core/useConnectionStatus';
+import { useBodyScrollLock } from './core/useBodyScrollLock';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
 import { createCollection, deleteCollection, getCollectionsRegistryDoc, readCollectionsFromDoc, subscribeCollections, updateCollection, type CollectionRecord, type CollectionTreeNode, buildCollectionTree, buildCollectionPathMap } from './services/collectionService';
-import { createLabel, getLabelsRegistryDoc, readLabelsFromDoc, subscribeLabels, type LabelRecord } from './services/labelService';
-import { assignNoteLabels, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
+import { createLabel, deleteLabel, getLabelsRegistryDoc, readLabelsFromDoc, subscribeLabels, updateLabel, type LabelRecord } from './services/labelService';
+import { assignNoteLabels, assignNotePinned, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
 import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode, SortDirection } from './utilities/getVisibleNotes';
 import {
 	flushPendingCollaboratorActions,
@@ -1141,12 +1142,7 @@ export function App(): React.JSX.Element {
 
 	const openShareNotifications = React.useCallback(() => {
 		setIsShareNotificationsOpen(true);
-		// Acknowledge any pending reminder notifications so the bell badge clears.
-		if (pendingReminderNotificationCount > 0) {
-			setPendingReminderNotificationCount(0);
-			void acknowledgeReminderNotifications().catch(() => undefined);
-		}
-	}, [pendingReminderNotificationCount]);
+	}, []);
 
 	const openCollaboratorModalForNote = React.useCallback((noteId: string, title?: string) => {
 		const placement = sharedPlacements.find((item) => item.aliasId === noteId);
@@ -1331,12 +1327,13 @@ export function App(): React.JSX.Element {
 		const doc = manager.getDoc(noteAttachmentBrowserState.noteId);
 		const added = addNotePreviewLinkToDoc(doc, next);
 		if (!added) return;
+		showBriefDialog(t('links.addedToast'));
 		void syncNoteLinksForDoc({
 			userId: authUserId,
 			docId: noteAttachmentBrowserState.docId,
 			links: extractNoteLinksFromDoc(doc),
 		});
-	}, [authUserId, manager, noteAttachmentBrowserState, t]);
+	}, [authUserId, manager, noteAttachmentBrowserState, showBriefDialog, t]);
 
 	const handleDeleteUrlPreviewFromBrowser = React.useCallback((normalizedUrl: string) => {
 		if (!noteAttachmentBrowserState?.canEdit) return;
@@ -1575,6 +1572,8 @@ export function App(): React.JSX.Element {
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot({ ...current, isFabOpen: false }, 'replace');
 	}, [commitOverlaySnapshot, getOverlaySnapshot, isEditorOverlayOpen, isFabOpen]);
+
+	useBodyScrollLock(isFabOpen && showMobileFab && !isEditorOverlayOpen);
 
 	React.useEffect(() => {
 		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -3035,27 +3034,44 @@ export function App(): React.JSX.Element {
 		}
 		setSidebarGroupsOpen((prev) => ({ ...prev, ...nextOpenState }));
 	}, [activeCollectionId, collectionParentById]);
-	const handleCreateCollection = React.useCallback((args: { name: string; parentId: string | null }) => {
+	const handleCreateCollection = React.useCallback((args: { name: string; parentId: string | null }): string | null => {
 		if (!collectionsDoc) return;
-		createCollection(collectionsDoc, args);
+		return createCollection(collectionsDoc, args)?.id ?? null;
 	}, [collectionsDoc]);
-	const handleRenameCollection = React.useCallback((collectionId: string, nextName: string) => {
-		if (!collectionsDoc) return;
-		updateCollection(collectionsDoc, collectionId, { name: nextName });
+	const handleRenameCollection = React.useCallback((collectionId: string, nextName: string): boolean => {
+		if (!collectionsDoc) return false;
+		return updateCollection(collectionsDoc, collectionId, { name: nextName });
 	}, [collectionsDoc]);
 	const handleDeleteCollection = React.useCallback((collectionId: string) => {
 		if (!collectionsDoc) return;
 		deleteCollection(collectionsDoc, collectionId);
+		if (noteCollectionDoc && readNoteMetadataState(noteCollectionDoc).collectionId === collectionId) {
+			assignNoteToCollection(noteCollectionDoc, null);
+		}
 		setActiveCollectionId((current) => current === collectionId ? null : current);
-	}, [collectionsDoc]);
+	}, [collectionsDoc, noteCollectionDoc]);
 	const handleCreateLabel = React.useCallback((args: { name: string; color?: string | null }): string | null => {
 		if (!labelsDoc) return null;
 		return createLabel(labelsDoc, args)?.id ?? null;
 	}, [labelsDoc]);
+	const handleUpdateLabel = React.useCallback((labelId: string, patch: { name?: string; color?: string | null }): boolean => {
+		if (!labelsDoc) return false;
+		return updateLabel(labelsDoc, labelId, patch);
+	}, [labelsDoc]);
+	const handleDeleteLabel = React.useCallback((labelId: string) => {
+		if (!labelsDoc) return;
+		deleteLabel(labelsDoc, labelId);
+		if (noteLabelsDoc) {
+			const current = readNoteMetadataState(noteLabelsDoc).labelIds;
+			if (current.includes(labelId)) {
+				assignNoteLabels(noteLabelsDoc, current.filter((entry) => entry !== labelId));
+			}
+		}
+		setActiveLabelIds((current) => current.filter((entry) => entry !== labelId));
+	}, [labelsDoc, noteLabelsDoc]);
 	const handleSelectNoteCollection = React.useCallback((collectionId: string | null) => {
 		if (!noteCollectionDoc) return;
 		assignNoteToCollection(noteCollectionDoc, collectionId);
-		setNoteCollectionModalState(null);
 	}, [noteCollectionDoc]);
 	const handleToggleNoteLabel = React.useCallback((labelId: string) => {
 		if (!noteLabelsDoc) return;
@@ -6574,6 +6590,7 @@ export function App(): React.JSX.Element {
 							<ChecklistEditor
 								onSave={onSaveChecklist}
 								onCancel={closeCreateEditor}
+								onShowBriefDialog={showBriefDialog}
 								initialShowCompleted={checklistShowCompletedPref}
 								allowQuickDelete={quickDeleteChecklistPref}
 								onShowCompletedChange={(next) => {
@@ -6630,7 +6647,9 @@ export function App(): React.JSX.Element {
 									canReorder={canEditActiveWorkspace && !noteGridCollaboratorFilter && !activeCollectionId && activeLabelIds.length === 0 && activeReminderFilter === 'all' && activeSortMode === 'manual' && activeSortGrouping === 'none' && sidebarView === 'notes'}
 									emptyStateLabel={noteGridEmptyStateLabel}
 								onTouchReorderEnd={() => {
-									setSelectedNoteId(null);
+										if (viewMode === 'list' || viewMode === 'strip') {
+											setSelectedNoteId(null);
+										}
 								}}
 						onSelectNote={(id) => {
 							// Branch: selecting a note should close the create editor.
@@ -6733,7 +6752,11 @@ export function App(): React.JSX.Element {
 				offlineMode={authOfflineMode}
 				noteTitle={noteImageModalState?.title ?? null}
 				onClose={closeNoteImageModal}
-				onUploaded={(result) => showBriefDialog(result.queued ? `${result.count} ${result.count === 1 ? t('media.queuedUploadToastSingular') : t('media.queuedUploadToastPlural')}` : t('media.queuedForOcrToast'))}
+				onUploaded={(result) => showBriefDialog(
+					result.queued
+						? `${result.count} ${result.count === 1 ? t('media.queuedUploadToastSingular') : t('media.queuedUploadToastPlural')}`
+						: (result.count === 1 ? t('media.addedToastSingular') : `${result.count} ${t('media.addedToastPlural')}`)
+				)}
 			/>
 			<NoteDocumentUploadModal
 				isOpen={Boolean(noteDocumentModalState)}
@@ -6848,10 +6871,11 @@ export function App(): React.JSX.Element {
 						openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
 					}}
 					onAddDocument={undefined}
-						onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
-						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString())}
-						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString())}
-					onMoveToWorkspace={!selectedSharedPlacement && !selectedNoteReadOnly ? () => openMoveNoteModal(selectedNoteId, openDoc.getText('title').toString()) : undefined}
+					onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
+					onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString())}
+					onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString())}
+					onTogglePin={selectedNoteReadOnly ? undefined : () => assignNotePinned(openDoc, !readNoteMetadataState(openDoc).isPinned)}
+					onShowBriefDialog={showBriefDialog}
 					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}
@@ -6922,6 +6946,9 @@ export function App(): React.JSX.Element {
 				collections={collections}
 				selectedCollectionId={noteCollectionMetadata.collectionId}
 				noteTitle={noteCollectionModalState?.title}
+				onCreate={handleCreateCollection}
+				onRename={handleRenameCollection}
+				onDelete={handleDeleteCollection}
 				onSelectCollection={handleSelectNoteCollection}
 			/>
 
@@ -6933,6 +6960,8 @@ export function App(): React.JSX.Element {
 				noteTitle={noteLabelsModalState?.title}
 				onToggleLabel={handleToggleNoteLabel}
 				onCreateLabel={handleCreateLabel}
+				onUpdateLabel={handleUpdateLabel}
+				onDeleteLabel={handleDeleteLabel}
 			/>
 
 			<ReminderModal
