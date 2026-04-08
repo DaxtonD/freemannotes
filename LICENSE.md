@@ -7,7 +7,7 @@ Welcome! Freeman Notes is open for **personal use and contributions**. We apprec
 ---
 
 ### 📞 Commercial Licensing
-If you represent a company or want to use Freeman Notes commercially, please **contact Daxton Day** for licensing opportunities. This helps keep the app protected while allowing legitimate partnerships or buyouts.  
+If you represent a company or want to use Freeman Notes commercially, please **contact Daxton Day** for licensing opportunities. This helps keep the app protected while allowing legitimate partnerships.
 
 ---
 
