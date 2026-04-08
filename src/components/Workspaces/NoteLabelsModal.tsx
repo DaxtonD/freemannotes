@@ -1,4 +1,5 @@
 import React from 'react';
+import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { useI18n } from '../../core/i18n';
 import { hasLabelNameConflict, type LabelRecord } from '../../services/labelService';
 import styles from '../shared/MetadataModal.module.css';
@@ -238,6 +239,7 @@ type NoteLabelsModalProps = {
 
 export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
+	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const [newLabelName, setNewLabelName] = React.useState('');
 	const [newLabelColor, setNewLabelColor] = React.useState('#d6c24b');
@@ -248,6 +250,11 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 	const [editingLabelCustomPickerOpen, setEditingLabelCustomPickerOpen] = React.useState(false);
 	const [deleteConfirmLabelId, setDeleteConfirmLabelId] = React.useState<string | null>(null);
 	const [validationMessage, setValidationMessage] = React.useState<string | null>(null);
+	const onCloseRef = React.useRef(props.onClose);
+
+	React.useEffect(() => {
+		onCloseRef.current = props.onClose;
+	}, [props.onClose]);
 
 	React.useEffect(() => {
 		if (!props.isOpen) return;
@@ -260,6 +267,44 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 		setEditingLabelCustomPickerOpen(false);
 		setDeleteConfirmLabelId(null);
 		setValidationMessage(null);
+	}, [props.isOpen]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || typeof window === 'undefined') return;
+		const mql = window.matchMedia('(pointer: coarse)');
+		if (!mql.matches) return;
+
+		const isNoteLabelsHistoryEntry = (state: unknown): state is { __noteLabelsModal: true } => {
+			if (!state || typeof state !== 'object') return false;
+			return (state as { __noteLabelsModal?: unknown }).__noteLabelsModal === true;
+		};
+
+		let active = true;
+		let didPush = false;
+
+		const pushTimer = window.setTimeout(() => {
+			if (!active) return;
+			didPush = true;
+			window.history.pushState({ __noteLabelsModal: true }, '');
+		}, 0);
+
+		const onPopState = (): void => {
+			if (active && didPush) {
+				active = false;
+				onCloseRef.current();
+			}
+		};
+
+		window.addEventListener('popstate', onPopState);
+		return () => {
+			window.clearTimeout(pushTimer);
+			window.removeEventListener('popstate', onPopState);
+			if (active && didPush && isNoteLabelsHistoryEntry(window.history.state)) {
+				active = false;
+				window.history.back();
+			}
+			active = false;
+		};
 	}, [props.isOpen]);
 
 	React.useEffect(() => {

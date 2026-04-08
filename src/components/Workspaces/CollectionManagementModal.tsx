@@ -1,4 +1,5 @@
 import React from 'react';
+import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { useI18n } from '../../core/i18n';
 import { buildCollectionPathMap, buildCollectionTree, hasCollectionNameConflict, type CollectionRecord, type CollectionTreeNode } from '../../services/collectionService';
 import styles from '../shared/MetadataModal.module.css';
@@ -55,12 +56,18 @@ type CollectionManagementModalProps = {
 
 export function CollectionManagementModal(props: CollectionManagementModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
+	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const [expandedIds, setExpandedIds] = React.useState<string[]>([]);
 	const [draftAction, setDraftAction] = React.useState<DraftTreeAction | null>(null);
 	const [selectedCollectionId, setSelectedCollectionId] = React.useState<string | null>(null);
 	const [validationMessage, setValidationMessage] = React.useState<string | null>(null);
 	const wasOpenRef = React.useRef(false);
+	const onCloseRef = React.useRef(props.onClose);
+
+	React.useEffect(() => {
+		onCloseRef.current = props.onClose;
+	}, [props.onClose]);
 
 	const collectionTree = React.useMemo(() => buildCollectionTree(props.collections), [props.collections]);
 	const collectionById = React.useMemo(() => new Map(props.collections.map((entry) => [entry.id, entry] as const)), [props.collections]);
@@ -87,20 +94,40 @@ export function CollectionManagementModal(props: CollectionManagementModalProps)
 	}, [props.isOpen]);
 
 	React.useEffect(() => {
-		if (typeof document === 'undefined' || !props.isOpen) return;
-		const prevBodyOverflow = document.body.style.overflow;
-		const prevBodyOverscroll = (document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior;
-		const prevHtmlOverflow = document.documentElement.style.overflow;
-		const prevHtmlOverscroll = (document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior;
-		document.body.style.overflow = 'hidden';
-		(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
-		document.documentElement.style.overflow = 'hidden';
-		(document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
+		if (!props.isOpen || typeof window === 'undefined') return;
+		const mql = window.matchMedia('(pointer: coarse)');
+		if (!mql.matches) return;
+
+		const isCollectionManagementHistoryEntry = (state: unknown): state is { __collectionManagementModal: true } => {
+			if (!state || typeof state !== 'object') return false;
+			return (state as { __collectionManagementModal?: unknown }).__collectionManagementModal === true;
+		};
+
+		let active = true;
+		let didPush = false;
+
+		const pushTimer = window.setTimeout(() => {
+			if (!active) return;
+			didPush = true;
+			window.history.pushState({ __collectionManagementModal: true }, '');
+		}, 0);
+
+		const onPopState = (): void => {
+			if (active && didPush) {
+				active = false;
+				onCloseRef.current();
+			}
+		};
+
+		window.addEventListener('popstate', onPopState);
 		return () => {
-			document.body.style.overflow = prevBodyOverflow;
-			(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = prevBodyOverscroll || '';
-			document.documentElement.style.overflow = prevHtmlOverflow;
-			(document.documentElement.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = prevHtmlOverscroll || '';
+			window.clearTimeout(pushTimer);
+			window.removeEventListener('popstate', onPopState);
+			if (active && didPush && isCollectionManagementHistoryEntry(window.history.state)) {
+				active = false;
+				window.history.back();
+			}
+			active = false;
 		};
 	}, [props.isOpen]);
 
