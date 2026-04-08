@@ -19,6 +19,13 @@ export function AttachmentBrowserModalFrame(props: AttachmentBrowserModalFramePr
 	const isCoarsePointer = useIsCoarsePointer();
 	const backdropPressStartedRef = React.useRef(false);
 	const handleTouchStartRef = React.useRef<{ x: number; y: number; id: number } | null>(null);
+	const openScrollPositionRef = React.useRef<{ x: number; y: number } | null>(null);
+
+	if (!props.isOpen) {
+		openScrollPositionRef.current = null;
+	} else if (!openScrollPositionRef.current && typeof window !== 'undefined') {
+		openScrollPositionRef.current = { x: window.scrollX, y: window.scrollY };
+	}
 
 	const clearHandleGesture = React.useCallback((): void => {
 		handleTouchStartRef.current = null;
@@ -60,6 +67,21 @@ export function AttachmentBrowserModalFrame(props: AttachmentBrowserModalFramePr
 		if (Math.abs(dy) < 28 || Math.abs(dy) < Math.abs(dx)) return;
 		if (dy > 0) props.onClose();
 	}, [clearHandleGesture, props]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || isCoarsePointer || typeof window === 'undefined') return;
+		const snapshot = openScrollPositionRef.current;
+		if (!snapshot) return;
+		const restore = (): void => {
+			window.scrollTo({ left: snapshot.x, top: snapshot.y, behavior: 'auto' });
+		};
+		const frameId = window.requestAnimationFrame(restore);
+		const timeoutId = window.setTimeout(restore, 32);
+		return () => {
+			window.cancelAnimationFrame(frameId);
+			window.clearTimeout(timeoutId);
+		};
+	}, [isCoarsePointer, props.isOpen]);
 
 	if (!props.isOpen) return null;
 

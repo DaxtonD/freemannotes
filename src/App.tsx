@@ -1206,6 +1206,8 @@ export function App(): React.JSX.Element {
 	}, []);
 
 	const openNoteAttachmentBrowser = React.useCallback((kind: NoteAttachmentBrowserKind, noteId: string, docId: string, title: string | undefined, canEdit: boolean) => {
+		const scrollX = typeof window !== 'undefined' ? window.scrollX : 0;
+		const scrollY = typeof window !== 'undefined' ? window.scrollY : 0;
 		// The note-card media browser participates in the same overlay history stack
 		// as editors and sidebars so mobile Back always peels off the top-most layer
 		// before closing the underlying note or workspace UI.
@@ -1219,6 +1221,13 @@ export function App(): React.JSX.Element {
 			},
 			'push'
 		);
+		if (typeof window !== 'undefined') {
+			// Opening the attachment browser should not change the user's place in the
+			// note grid just because focus or history state changed under the overlay.
+			window.requestAnimationFrame(() => {
+				window.scrollTo({ left: scrollX, top: scrollY, behavior: 'auto' });
+			});
+		}
 	}, [commitOverlaySnapshot, getOverlaySnapshot]);
 
 	const closeNoteAttachmentBrowser = React.useCallback(() => {
@@ -4557,6 +4566,7 @@ export function App(): React.JSX.Element {
 		id: string;
 		label: string;
 		kind: 'item' | 'heading' | 'muted' | 'action';
+		color?: string | null;
 	};
 
 	type SidebarSubmenuToggle = {
@@ -4655,7 +4665,9 @@ export function App(): React.JSX.Element {
 			labels: sidebarUsesBubbleSummaryMenus
 				? [{ id: 'all-labels', label: 'All Labels', kind: 'muted' }]
 				: labels.length > 0
-				? labels.map((label) => ({ id: label.id, label: label.name, kind: 'item' as const }))
+				// Carry label colors through the shared sidebar item model so the
+				// dropdown renderer can stay common across groups.
+				? labels.map((label) => ({ id: label.id, label: label.name, kind: 'item' as const, color: label.color ?? null }))
 				: [{ id: 'no-labels', label: t('app.sidebarNoLabels'), kind: 'muted' }],
 			collections: sidebarUsesBubbleSummaryMenus ? [{ id: 'all-collections', label: 'All Collections', kind: 'muted' }] : [],
 		}),
@@ -6226,7 +6238,7 @@ export function App(): React.JSX.Element {
 
 									{entry.id !== 'workspaces' && isGroup && (entry.id === 'collections' || groupContent.length > 0) && !sidebarIsCollapsed ? (
 										<div className={`sidebar-submenu-shell${isOpen ? ' is-open' : ''}`}>
-											<div className={`sidebar-submenu${entry.id === 'collections' ? ' sidebar-collections-menu' : ''}`} aria-hidden={!isOpen}>
+											<div className={`sidebar-submenu${entry.id === 'collections' ? ' sidebar-collections-menu' : ''}${entry.id === 'labels' ? ' sidebar-labels-menu' : ''}`} aria-hidden={!isOpen}>
 												{entry.id === 'collections' ? (
 														sidebarUsesBubbleSummaryMenus ? (
 														<div className="sidebar-submenu-muted">All Collections</div>
@@ -6296,7 +6308,10 @@ export function App(): React.JSX.Element {
 																}}
 																style={{ ['--sidebar-item-index' as const]: index }}
 															>
-																<span className="sidebar-submenu-item-label" title={item.label}>{truncateUiName(item.label, 44)}</span>
+																<span className="sidebar-submenu-item-copy">
+																	{entry.id === 'labels' && item.kind === 'item' && item.color ? <span className="sidebar-submenu-color-pill" style={{ backgroundColor: item.color }} aria-hidden="true" /> : null}
+																	<span className="sidebar-submenu-item-label" title={item.label}>{truncateUiName(item.label, 44)}</span>
+																</span>
 															</button>
 														);
 													})}

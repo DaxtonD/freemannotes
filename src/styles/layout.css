@@ -889,7 +889,21 @@
 	overscroll-behavior: contain;
 }
 
+.sidebar-labels-menu {
+	max-height: min(40vh, 320px);
+	overflow-y: auto;
+	overflow-x: hidden;
+	scrollbar-gutter: stable;
+	overscroll-behavior: contain;
+}
+
 .sidebar-submenu.sidebar-collections-menu {
+	padding-top: 0;
+	overflow-y: auto;
+	overflow-x: hidden;
+}
+
+.sidebar-submenu.sidebar-labels-menu {
 	padding-top: 0;
 	overflow-y: auto;
 	overflow-x: hidden;
@@ -954,6 +968,23 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+.sidebar-submenu-item-copy {
+	min-width: 0;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	flex: 1 1 auto;
+}
+
+.sidebar-submenu-color-pill {
+	width: 12px;
+	height: 12px;
+	border-radius: 999px;
+	flex: 0 0 auto;
+	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
 }
 
 .sidebar-submenu-item:hover,
@@ -2334,8 +2365,13 @@
 		max-height: min(46vh, 360px);
 	}
 
+	.sidebar-labels-menu {
+		max-height: min(46vh, 360px);
+	}
+
 	.sidebar-submenu.sidebar-workspace-menu,
-	.sidebar-submenu.sidebar-collections-menu {
+	.sidebar-submenu.sidebar-collections-menu,
+	.sidebar-submenu.sidebar-labels-menu {
 		padding-top: 0;
 	}
 
@@ -2343,7 +2379,8 @@
 	   so it does not overlap row highlights or sticky manage actions. */
 	.app-sidebar,
 	.sidebar-workspace-menu,
-	.sidebar-collections-menu {
+	.sidebar-collections-menu,
+	.sidebar-labels-menu {
 		scrollbar-width: none;
 		-ms-overflow-style: none;
 		scrollbar-gutter: auto;
@@ -2351,7 +2388,8 @@
 
 	.app-sidebar::-webkit-scrollbar,
 	.sidebar-workspace-menu::-webkit-scrollbar,
-	.sidebar-collections-menu::-webkit-scrollbar {
+	.sidebar-collections-menu::-webkit-scrollbar,
+	.sidebar-labels-menu::-webkit-scrollbar {
 		width: 0;
 		height: 0;
 	}

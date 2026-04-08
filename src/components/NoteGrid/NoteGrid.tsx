@@ -720,8 +720,9 @@ function collaboratorMatchesFilter(summary: NoteCardCollaboratorSummary | null |
 	return summary.collaborators.some((collaborator) => collaborator.key === filter.key);
 }
 
-function preventChipOverlayFocusSteal(event: React.SyntheticEvent): void {
-	if (event.cancelable) event.preventDefault();
+function preventChipOverlayRowPressBubble(event: React.SyntheticEvent): void {
+	// Overlay rows need to stop the press from reaching the card beneath them, but
+	// must still complete their own click so filter actions continue to fire.
 	event.stopPropagation();
 }
 
@@ -2234,8 +2235,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 																ease: [0.22, 1, 0.36, 1],
 																delay: rowDelay,
 														}}
-														onMouseDown={preventChipOverlayFocusSteal}
-														onPointerDown={preventChipOverlayFocusSteal}
+														onMouseDown={preventChipOverlayRowPressBubble}
+														onPointerDown={preventChipOverlayRowPressBubble}
 														onClick={() => {
 															props.onSelectCollaboratorFilter?.({
 																key: collaborator.key,
@@ -2308,16 +2309,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 														ease: [0.22, 1, 0.36, 1],
 														delay: 0.016 + index * 0.024,
 													}}
-													onMouseDown={preventChipOverlayFocusSteal}
-													onPointerDown={preventChipOverlayFocusSteal}
-													onClick={() => {
+													onMouseDown={preventChipOverlayRowPressBubble}
+													onPointerDown={preventChipOverlayRowPressBubble}
+															onClick={() => {
 														if (entry.kind === 'collection') {
 															props.onSelectCollectionFilter?.(entry.id);
 														} else {
 															props.onToggleLabelFilter?.(entry.id);
 														}
 														setOpenMetadataChip(null);
-													}}
+															}}
 												>
 														{entry.kind === 'collection' ? <FontAwesomeIcon icon={faFolder} className={styles.metadataOverlayKindIcon} /> : null}
 													{entry.color ? <span className={styles.metadataOverlaySwatch} style={{ backgroundColor: entry.color }} aria-hidden="true" /> : null}

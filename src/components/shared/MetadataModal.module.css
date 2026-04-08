@@ -1197,18 +1197,20 @@
 @media (max-width: 720px) {
 	.overlay {
 		align-items: flex-start;
-		padding: 12px;
+		/* Small-screen PWAs still need the fullscreen overlay to sit below the
+		   iOS status bar rather than replacing the safe-area padding with a flat inset. */
+		padding: calc(env(safe-area-inset-top, 0px) + 12px) calc(env(safe-area-inset-right, 0px) + 12px) calc(env(safe-area-inset-bottom, 0px) + 12px) calc(env(safe-area-inset-left, 0px) + 12px);
 	}
 
 	.modal {
 		width: 100%;
-		max-height: calc(100dvh - 24px);
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
 		padding: 14px;
 	}
 
 	.collectionModal {
-		height: calc(100dvh - 24px);
-		max-height: calc(100dvh - 24px);
+		height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
 	}
 
 	.treeList,
