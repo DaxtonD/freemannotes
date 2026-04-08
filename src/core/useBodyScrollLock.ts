@@ -10,6 +10,8 @@ let previousBodyTouchAction = '';
 let previousHtmlOverflow = '';
 let previousHtmlOverscroll = '';
 let previousHtmlTouchAction = '';
+let lockedScrollX = 0;
+let lockedScrollY = 0;
 
 export function useBodyScrollLock(locked: boolean, options?: { disableTouchAction?: boolean }): void {
 	React.useEffect(() => {
@@ -20,6 +22,8 @@ export function useBodyScrollLock(locked: boolean, options?: { disableTouchActio
 		if (activeLockCount === 0) {
 			// Capture and restore both html/body styles because this app uses nested scroll
 			// containers and mobile browsers happily keep scrolling whichever root still can.
+			lockedScrollX = typeof window !== 'undefined' ? window.scrollX : 0;
+			lockedScrollY = typeof window !== 'undefined' ? window.scrollY : 0;
 			previousBodyOverflow = body.style.overflow;
 			previousBodyOverscroll = (body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior || '';
 			previousBodyTouchAction = body.style.touchAction;
@@ -40,6 +44,11 @@ export function useBodyScrollLock(locked: boolean, options?: { disableTouchActio
 			if (disableTouchAction) {
 				html.style.touchAction = 'none';
 				body.style.touchAction = 'none';
+			}
+			if (typeof window !== 'undefined') {
+				window.requestAnimationFrame(() => {
+					window.scrollTo({ left: lockedScrollX, top: lockedScrollY, behavior: 'auto' });
+				});
 			}
 		}
 		activeLockCount += 1;

@@ -56,6 +56,17 @@ function AttachmentChipDismissSurface(props: { children: React.ReactNode }): Rea
 	);
 }
 
+function preventAttachmentOverlayMouseFocus(event: React.MouseEvent<HTMLButtonElement>): void {
+	// Prevent the portal-hosted row button from stealing focus on desktop clicks,
+	// which can trigger an unexpected scroll jump before the browser modal opens.
+	if (event.cancelable) event.preventDefault();
+	event.stopPropagation();
+}
+
+function stopAttachmentOverlayPressBubble(event: React.SyntheticEvent): void {
+	event.stopPropagation();
+}
+
 export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): React.JSX.Element | null {
 	const { t } = useI18n();
 	const isCoarsePointer = useIsCoarsePointer();
@@ -378,6 +389,8 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 
 	const handleOpenBrowser = React.useCallback((kind: NoteAttachmentBrowserKind) => {
 		if (kind === 'documents') return;
+		const activeElement = typeof document !== 'undefined' ? document.activeElement : null;
+		if (activeElement instanceof HTMLElement) activeElement.blur();
 		setIsOpen(false);
 		props.onOpenBrowser(kind);
 	}, [props]);
@@ -460,6 +473,8 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 															ease: [0.22, 1, 0.36, 1],
 															delay: rowDelay,
 														}}
+														onMouseDown={preventAttachmentOverlayMouseFocus}
+														onPointerDown={stopAttachmentOverlayPressBubble}
 														onClick={() => handleOpenBrowser(item.kind)}
 													>
 														<span className={styles.overlayItemCopy}>
