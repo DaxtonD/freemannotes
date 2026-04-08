@@ -332,6 +332,7 @@
 	min-width: 0;
 	max-width: calc(100vw - 24px);
 	max-height: calc(100vh - 24px);
+	pointer-events: auto;
 	overflow: hidden;
 	padding: 7px;
 	display: flex;
@@ -401,6 +402,7 @@
 	display: flex;
 	align-items: center;
 	gap: 7px;
+	cursor: pointer;
 	border: 1px solid var(--note-color-border, color-mix(in srgb, var(--color-border) 72%, transparent));
 	border-radius: 10px;
 	background: color-mix(in srgb, var(--note-color-header-bg, var(--color-surface-2)) 80%, var(--note-color-card-bg, var(--color-surface)) 20%);
