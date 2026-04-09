@@ -275,6 +275,7 @@ function createPushRouter({ prisma }) {
 			try {
 				const body = await readJsonBody(req);
 				const result = await sendExternalNotificationToUser(prisma, userId, createTestNotificationPayload(), {
+					deviceId: normalizeDeviceId(body?.deviceId),
 					platformHint: normalizePlatform(body?.platform),
 				});
 				jsonResponse(res, 200, {
@@ -282,6 +283,7 @@ function createPushRouter({ prisma }) {
 					sent: result.sent,
 					failed: result.failed,
 					emailSent: result.emailSent,
+					emailError: result.emailError,
 				});
 			} catch (err) {
 				console.error('[push] test error:', err.message);

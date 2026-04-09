@@ -234,8 +234,8 @@ self.addEventListener('fetch', (event) => {
 //      in-app notification bell can refresh its badge count.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const NOTIFICATION_ICON = '/apple-touch-icon.png';
-const NOTIFICATION_BADGE = '/apple-touch-icon.png';
+const NOTIFICATION_ICON = '/notification-icon.png';
+const NOTIFICATION_BADGE = '/notification-badge.png';
 
 function normalizeVibrate(value) {
 	if (Array.isArray(value)) {

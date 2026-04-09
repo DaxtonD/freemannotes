@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.11 - 2026-04-09
+
+### Added
+- **Sidebar label management is now available outside note editing.** The sidebar now includes a dedicated `Manage labels...` entry, and the labels modal can switch into a standalone management mode with focused side-pane editing on mobile.
+- **Pending note-share invites can now be cancelled.** Owners can revoke queued or server-persisted note-share invitations, and share notification panels now refresh live when invitation metadata changes elsewhere.
+
+### Changed
+- **Backend route edits now hot-reload in development.** The dev server script now runs `node --watch server.js` after database init so server-side fixes no longer require manual restarts.
+- **Reminder and test delivery now resolve against the originating device.** Test notifications and reminder fallbacks now target the current device registration before deciding whether email should be used.
+
+### Fixed
+- **Mobile and installed iOS PWA scrolling is more stable.** Mobile sidebar scrolling, short-editor auto-scroll, and the installed iOS quick-create FAB now stay anchored without pull-down drift.
+- **Notification branding and fallback diagnostics are clearer.** Push notifications now use dedicated app icon/badge assets, and failed email fallback attempts now surface the SMTP transport error in the test UI.
+- **Metadata management layouts no longer overflow on narrow screens.** Collection tree rows and the labels management layout now stay within the modal width while keeping edit controls accessible.
+
 ## 1.2.10 - 2026-04-07
 
 ### Added

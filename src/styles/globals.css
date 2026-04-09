@@ -38,6 +38,19 @@ html.body-scroll-locked #root {
 	height: 100%;
 }
 
+html.ios-standalone-pwa,
+body.ios-standalone-pwa,
+html.ios-standalone-pwa #root {
+	height: 100%;
+	overflow: hidden;
+	overscroll-behavior: none;
+}
+
+body.ios-standalone-pwa {
+	position: fixed;
+	inset: 0;
+}
+
 @media (pointer: coarse) {
 	html,
 	body {

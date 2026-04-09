@@ -1,4 +1,14 @@
 :root {
+	--app-safe-top: env(safe-area-inset-top, 0px);
+	--app-safe-right: env(safe-area-inset-right, 0px);
+	--app-safe-bottom: env(safe-area-inset-bottom, 0px);
+	--app-safe-left: env(safe-area-inset-left, 0px);
+	--app-fab-safe-right: clamp(0px, var(--app-safe-right), 18px);
+	--app-fab-safe-bottom: clamp(0px, var(--app-safe-bottom), 36px);
+	--app-fab-viewport-right: 0px;
+	--app-fab-viewport-bottom: 0px;
+	--app-fab-offset-right: max(var(--app-fab-safe-right), var(--app-fab-viewport-right));
+	--app-fab-offset-bottom: max(var(--app-fab-safe-bottom), var(--app-fab-viewport-bottom));
 	--color-app-bg: #f5f7fb;
 	--color-surface: #fff;
 	--color-surface-2: #f0f3f7;

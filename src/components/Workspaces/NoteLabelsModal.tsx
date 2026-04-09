@@ -229,17 +229,22 @@ type NoteLabelsModalProps = {
 	isOpen: boolean;
 	onClose: () => void;
 	labels: readonly LabelRecord[];
-	selectedLabelIds: readonly string[];
+	selectedLabelIds?: readonly string[];
 	noteTitle?: string;
-	onToggleLabel: (labelId: string) => void;
+	onToggleLabel?: (labelId: string) => void;
 	onCreateLabel: (args: { name: string; color?: string | null }) => string | null;
 	onUpdateLabel: (labelId: string, patch: { name?: string; color?: string | null }) => boolean;
 	onDeleteLabel: (labelId: string) => void;
+	showSelection?: boolean;
 };
 
 export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
 	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
+	// The same modal now serves both note label selection and standalone label
+	// management, so selection-specific props become optional in manage mode.
+	const showSelection = props.showSelection !== false;
+	const selectedLabelIds = props.selectedLabelIds ?? [];
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const [newLabelName, setNewLabelName] = React.useState('');
 	const [newLabelColor, setNewLabelColor] = React.useState('#d6c24b');
@@ -251,6 +256,8 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 	const [deleteConfirmLabelId, setDeleteConfirmLabelId] = React.useState<string | null>(null);
 	const [validationMessage, setValidationMessage] = React.useState<string | null>(null);
 	const onCloseRef = React.useRef(props.onClose);
+	const formCardRef = React.useRef<HTMLDivElement | null>(null);
+	const labelNameInputRef = React.useRef<HTMLInputElement | null>(null);
 
 	React.useEffect(() => {
 		onCloseRef.current = props.onClose;
@@ -317,6 +324,15 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 		setDeleteConfirmLabelId(null);
 	}, [editingLabelId, props.labels]);
 
+	React.useEffect(() => {
+		if (!editingLabelId) return;
+		// On mobile the edit form may be partially offscreen after tapping a row in
+		// the list pane, so bring the form back into view before focusing its input.
+		formCardRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+		labelNameInputRef.current?.focus();
+		labelNameInputRef.current?.select();
+	}, [editingLabelId]);
+
 	const filteredLabels = React.useMemo(() => {
 		const normalizedQuery = searchQuery.trim().toLowerCase();
 		if (!normalizedQuery) return props.labels;
@@ -369,15 +385,17 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 		cancelEditingLabel();
 	}, [cancelEditingLabel, deleteConfirmLabelId, props]);
 
+	const isEditingLabel = Boolean(editingLabelId);
+
 	if (!props.isOpen) return null;
 
 	return (
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
-			<section className={styles.modal} role="dialog" aria-modal="true" aria-label={t('labels.addTitle')} onClick={(event) => event.stopPropagation()}>
+			<section className={styles.modal} role="dialog" aria-modal="true" aria-label={showSelection ? t('labels.addTitle') : t('labels.manageTitle')} onClick={(event) => event.stopPropagation()}>
 				<header className={styles.header}>
 					<div className={styles.titleBlock}>
-						<h2 className={styles.title}>{t('labels.addTitle')}</h2>
-						<p className={styles.description}>{props.noteTitle?.trim() ? props.noteTitle.trim() : t('labels.addDescription')}</p>
+						<h2 className={styles.title}>{showSelection ? t('labels.addTitle') : t('labels.manageTitle')}</h2>
+						<p className={styles.description}>{props.noteTitle?.trim() ? props.noteTitle.trim() : showSelection ? t('labels.addDescription') : t('labels.manageDescription')}</p>
 					</div>
 					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label={t('common.close')}>✕</button>
 				</header>
@@ -392,55 +410,87 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 					/>
 					<div className={styles.splitLayout}>
 						<div className={styles.splitSidebar}>
-							<div className={`${styles.section} ${styles.compactSection}`}>
+							<div ref={formCardRef} className={`${styles.section} ${styles.compactSection}`}>
+								<p className={styles.formModeLabel}>
+									{isEditingLabel ? t('labels.manageAction') : t('labels.createAction')}
+								</p>
 								<div className={styles.field}>
-									<label className={styles.fieldLabel} htmlFor="note-label-name">{t('labels.createPlaceholder')}</label>
+									<label className={styles.fieldLabel} htmlFor="note-label-name">{isEditingLabel ? t('labels.changePlaceholder') : t('labels.createPlaceholder')}</label>
 									<input
 										id="note-label-name"
+										ref={labelNameInputRef}
 										className={styles.input}
-										value={newLabelName}
-										onChange={(event) => setNewLabelName(event.target.value)}
-										placeholder={t('labels.createPlaceholder')}
+										value={isEditingLabel ? editingLabelName : newLabelName}
+										onChange={(event) => {
+											setValidationMessage(null);
+											if (isEditingLabel) {
+												setEditingLabelName(event.target.value);
+												return;
+											}
+											setNewLabelName(event.target.value);
+										}}
+										placeholder={isEditingLabel ? t('labels.changePlaceholder') : t('labels.createPlaceholder')}
 									/>
 								</div>
 								<div className={styles.field}>
-									<label className={styles.fieldLabel}>{t('labels.colorAria')}</label>
+									<label className={styles.fieldLabel}>{isEditingLabel ? t('labels.editColorAria') : t('labels.colorAria')}</label>
 									<LabelColorSelector
-										value={newLabelColor}
-										onChange={(nextColor) => setNewLabelColor(nextColor)}
-										ariaLabel={t('labels.colorAria')}
-										isCustomOpen={newLabelCustomPickerOpen}
-										onCustomOpenChange={setNewLabelCustomPickerOpen}
+										value={isEditingLabel ? editingLabelColor : newLabelColor}
+										onChange={(nextColor) => {
+											setValidationMessage(null);
+											if (isEditingLabel) {
+												setEditingLabelColor(nextColor);
+												return;
+											}
+											setNewLabelColor(nextColor);
+										}}
+										ariaLabel={isEditingLabel ? t('labels.editColorAria') : t('labels.colorAria')}
+										isCustomOpen={isEditingLabel ? editingLabelCustomPickerOpen : newLabelCustomPickerOpen}
+										onCustomOpenChange={isEditingLabel ? setEditingLabelCustomPickerOpen : setNewLabelCustomPickerOpen}
 										customLabel={t('labels.customColorAction')}
 										closeLabel={t('common.close')}
 									/>
 								</div>
 								{validationMessage ? <p className={styles.validationMessage}>{validationMessage}</p> : null}
 								<div className={styles.actions}>
-									<button
-										type="button"
-										className={styles.primaryButton}
-										onClick={() => {
-											const nextName = newLabelName.trim();
-											if (!nextName) return;
-											if (hasLabelNameConflict(props.labels, nextName)) {
-												setValidationMessage(t('labels.duplicateNameError'));
-												return;
-											}
-											const nextId = props.onCreateLabel({ name: newLabelName, color: newLabelColor });
-											if (!nextId) {
-												setValidationMessage(t('labels.duplicateNameError'));
-												return;
-											}
-											props.onToggleLabel(nextId);
-											setNewLabelName('');
-											setNewLabelCustomPickerOpen(false);
-											setValidationMessage(null);
-										}}
-										disabled={!newLabelName.trim()}
-									>
-										{t('labels.createAction')}
-									</button>
+									{isEditingLabel ? (
+										<>
+											<button type="button" className={styles.primaryButton} onClick={saveEditingLabel} disabled={!editingLabelName.trim()}>
+												{t('common.save')}
+											</button>
+											<button type="button" className={styles.ghostButton} onClick={cancelEditingLabel}>
+												{t('common.cancel')}
+											</button>
+											<button type="button" className={styles.dangerButton} onClick={() => deleteEditingLabel(editingLabelId)}>
+												{deleteConfirmLabelId === editingLabelId ? t('labels.confirmDeleteAction') : t('labels.deleteAction')}
+											</button>
+										</>
+									) : (
+										<button
+											type="button"
+											className={styles.primaryButton}
+											onClick={() => {
+												const nextName = newLabelName.trim();
+												if (!nextName) return;
+												if (hasLabelNameConflict(props.labels, nextName)) {
+													setValidationMessage(t('labels.duplicateNameError'));
+													return;
+												}
+												const nextId = props.onCreateLabel({ name: newLabelName, color: newLabelColor });
+												if (!nextId) {
+													setValidationMessage(t('labels.duplicateNameError'));
+													return;
+												}
+												props.onToggleLabel(nextId);
+												setNewLabelName('');
+												setNewLabelCustomPickerOpen(false);
+												setValidationMessage(null);
+											}}
+											disabled={!newLabelName.trim()}
+										>
+											{t('labels.createAction')}
+										</button>
+									)}
 								</div>
 							</div>
 						</div>
@@ -448,23 +498,34 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 							<div className={`${styles.section} ${styles.paneSection}`}>
 								<div className={`${styles.checkboxList} ${styles.paneList}`}>
 									{filteredLabels.length === 0 ? <div className={styles.muted}>{t('labels.noMatches')}</div> : filteredLabels.map((label) => {
-										const checked = props.selectedLabelIds.includes(label.id);
+										const checked = showSelection && selectedLabelIds.includes(label.id);
 										const isEditing = editingLabelId === label.id;
 										return (
 											<div key={label.id} className={styles.checkboxRowShell}>
 												<div className={`${styles.checkboxRow}${checked ? ` ${styles.checkboxRowActive}` : ''}${isEditing ? ` ${styles.checkboxRowEditing}` : ''}`}>
-													<button
-														type="button"
-														className={styles.checkboxRowToggle}
-														onClick={() => props.onToggleLabel(label.id)}
-													>
-														<span className={styles.checkboxLabelBlock}>
-															<span className={styles.checkboxLabel}>
-																{label.color ? <span className={styles.checkboxAccent} style={{ backgroundColor: label.color }} aria-hidden="true" /> : null}
-																{label.name}
+													{showSelection ? (
+														<button
+															type="button"
+															className={styles.checkboxRowToggle}
+															onClick={() => props.onToggleLabel?.(label.id)}
+														>
+															<span className={styles.checkboxLabelBlock}>
+																<span className={styles.checkboxLabel}>
+																	{label.color ? <span className={styles.checkboxAccent} style={{ backgroundColor: label.color }} aria-hidden="true" /> : null}
+																	{label.name}
+																</span>
 															</span>
-														</span>
-													</button>
+														</button>
+													) : (
+														<div className={styles.checkboxRowStaticCopy}>
+															<span className={styles.checkboxLabelBlock}>
+																<span className={styles.checkboxLabel}>
+																	{label.color ? <span className={styles.checkboxAccent} style={{ backgroundColor: label.color }} aria-hidden="true" /> : null}
+																	{label.name}
+																</span>
+															</span>
+														</div>
+													)}
 													<div className={styles.checkboxRowActions}>
 														<button
 															type="button"
@@ -479,46 +540,9 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 														>
 															{isEditing ? t('common.close') : t('labels.manageAction')}
 														</button>
-														<input className={styles.checkboxInput} type="checkbox" checked={checked} onChange={() => props.onToggleLabel(label.id)} />
+														{showSelection ? <input className={styles.checkboxInput} type="checkbox" checked={checked} onChange={() => props.onToggleLabel?.(label.id)} /> : null}
 													</div>
 												</div>
-												{isEditing ? (
-													<div className={styles.labelInlineEditor}>
-														<input
-															className={`${styles.input} ${styles.labelInlineNameInput}`}
-															value={editingLabelName}
-															onChange={(event) => {
-																setValidationMessage(null);
-																setEditingLabelName(event.target.value);
-															}}
-															placeholder={t('labels.nameLabel')}
-														/>
-														<LabelColorSelector
-															value={editingLabelColor}
-															onChange={(nextColor) => {
-																setValidationMessage(null);
-																setEditingLabelColor(nextColor);
-															}}
-															ariaLabel={t('labels.editColorAria')}
-															isCustomOpen={editingLabelCustomPickerOpen}
-															onCustomOpenChange={setEditingLabelCustomPickerOpen}
-															customLabel={t('labels.customColorAction')}
-															closeLabel={t('common.close')}
-														/>
-														<div className={styles.labelInlineActions}>
-															<button type="button" className={styles.primaryButton} onClick={saveEditingLabel} disabled={!editingLabelName.trim()}>
-																{t('common.save')}
-															</button>
-															<button type="button" className={styles.ghostButton} onClick={cancelEditingLabel}>
-																{t('common.cancel')}
-															</button>
-															<button type="button" className={styles.dangerButton} onClick={() => deleteEditingLabel(label.id)}>
-																{deleteConfirmLabelId === label.id ? t('labels.confirmDeleteAction') : t('labels.deleteAction')}
-															</button>
-														</div>
-														{validationMessage && isEditing ? <p className={styles.validationMessage}>{validationMessage}</p> : null}
-													</div>
-												) : null}
 											</div>
 										);
 									})}
