@@ -1,6 +1,7 @@
 import React from 'react';
 import QRCode from 'qrcode';
 import {
+	cancelNoteShareInvitation,
 	createNoteShareInvitation,
 	flushPendingCollaboratorActions,
 	queueNoteShareCollaboratorInviteAction,
@@ -384,6 +385,31 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		}
 	}, [load, loadCachedState, props, snapshot.currentUserId, snapshot.selfCollaboratorId, t]);
 
+	const handleCancelPendingInvitation = React.useCallback(async (invitationId: string) => {
+		if (!props.docId) return;
+		setBusy(true);
+		setError(null);
+		try {
+			const result = await cancelNoteShareInvitation({
+				userId: props.authUserId,
+				docId: props.docId,
+				invitationId,
+			});
+			if (result.localOnly) {
+				// Queued offline invites only exist in local pending state, so a cache
+				// reload is enough until the server has seen the invitation.
+				await loadCachedState();
+			} else {
+				await load();
+			}
+			props.onChanged?.();
+		} catch (err) {
+			setError(err instanceof Error ? err.message : t('invite.cancelInviteFailed'));
+		} finally {
+			setBusy(false);
+		}
+	}, [load, loadCachedState, props, t]);
+
 	const handleRoleChange = React.useCallback(async (collaboratorId: string, collaboratorUserId: string, nextRole: NoteShareRole) => {
 		if (!props.authUserId || !props.docId) return;
 		setBusy(true);
@@ -550,6 +576,16 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 																<div className={styles.rowSecondary}>{invitation.inviteeEmail}</div>
 																<div className={styles.rowTertiary}>{renderNoteRole(invitation.role, t)}</div>
 															</div>
+														</div>
+														<div className={styles.memberActions}>
+															<button
+																type="button"
+																className={`${styles.secondaryButton} ${styles.memberActionButton}`}
+																onClick={() => void handleCancelPendingInvitation(invitation.id)}
+																disabled={busy || loading || (isOffline && !invitation.id.startsWith('queued:'))}
+															>
+																{t('invite.cancelInvite')}
+															</button>
 														</div>
 													</div>
 												))}

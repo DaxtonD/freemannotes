@@ -201,14 +201,17 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 
 	// ── Test notification ───────────────────────────────────────────────────
 	async function handleTest() {
+		if (!deviceId) return;
 		clearFeedback();
 		setTesting(true);
 		try {
-			const result = await sendTestPushNotification(platform);
+			const result = await sendTestPushNotification(platform, deviceId);
 			if (result.sent > 0) {
 				setTestResult({ ok: true, message: `Sent to ${result.sent} device${result.sent !== 1 ? 's' : ''}. Check your notifications.` });
 			} else if (result.emailSent) {
 				setTestResult({ ok: true, message: t('push.testEmailSent') || 'Sent a test email notification. Check your inbox.' });
+			} else if (result.emailError) {
+				setTestResult({ ok: false, message: result.emailError });
 			} else if (result.failed > 0) {
 				setTestResult({ ok: false, message: `Failed to send (${result.failed} device${result.failed !== 1 ? 's' : ''} failed). Check server logs.` });
 			} else {

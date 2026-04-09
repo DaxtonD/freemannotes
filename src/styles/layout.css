@@ -4,6 +4,16 @@
 	--app-safe-right: env(safe-area-inset-right, 0px);
 	--app-safe-bottom: env(safe-area-inset-bottom, 0px);
 	--app-safe-left: env(safe-area-inset-left, 0px);
+	/* iOS PWAs can report larger bottom/right safe-area insets on some newer
+	   devices or viewport states than we actually want for floating overlays.
+	   Clamp the FAB offsets so it stays visually anchored to the same corner
+	   across phones instead of drifting inward/upward. */
+	--app-fab-safe-right: clamp(0px, var(--app-safe-right), 18px);
+	--app-fab-safe-bottom: clamp(0px, var(--app-safe-bottom), 36px);
+	--app-fab-viewport-right: 0px;
+	--app-fab-viewport-bottom: 0px;
+	--app-fab-offset-right: max(var(--app-fab-safe-right), var(--app-fab-viewport-right));
+	--app-fab-offset-bottom: max(var(--app-fab-safe-bottom), var(--app-fab-viewport-bottom));
 	--app-header-total-height: calc(var(--app-header-height) + var(--app-safe-top));
 	--app-sticky-top-offset: var(--app-header-offset, var(--app-header-total-height));
 	/* Fallback: mobile header + in-header search row reserved height. */
@@ -15,6 +25,12 @@
 	box-sizing: border-box;
 	overscroll-behavior-x: contain;
 	position: relative;
+}
+
+.test-harness-root.ios-standalone-pwa {
+	--app-fab-viewport-right: 0px;
+	--app-fab-viewport-bottom: 0px;
+	--app-fab-safe-bottom: clamp(0px, var(--app-safe-bottom), 20px);
 }
 
 .test-harness-root::before {
@@ -2026,22 +2042,49 @@
 
 .mobile-fab-stack {
 	position: fixed;
-	right: calc(var(--space-3) + var(--app-safe-right));
-	bottom: calc(var(--space-3) + var(--app-safe-bottom) + 64px);
+	right: calc(var(--space-3) + var(--app-fab-offset-right));
+	bottom: calc(var(--space-3) + var(--app-fab-offset-bottom) + 76px);
 	display: flex;
 	flex-direction: column;
 	gap: var(--space-2);
 	opacity: 0;
 	pointer-events: none;
-	transform: translateY(8px);
-	transition: opacity 180ms ease, transform 180ms ease;
+	transition: opacity 180ms ease;
 	z-index: 981;
 }
 
 .mobile-fab-stack.is-open {
 	opacity: 1;
 	pointer-events: auto;
-	transform: translateY(0);
+}
+
+.mobile-fab-anchor {
+	position: fixed;
+	width: 56px;
+	height: 56px;
+	pointer-events: none;
+	z-index: 982;
+}
+
+.mobile-fab-stack-anchored,
+.mobile-fab-anchored {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+}
+
+.mobile-fab-stack-anchored {
+	bottom: 72px;
+	z-index: 2;
+}
+
+.mobile-fab-anchored {
+	z-index: 1;
+}
+
+.mobile-fab-anchor > .mobile-fab,
+.mobile-fab-anchor > .mobile-fab-stack {
+	pointer-events: auto;
 }
 
 .mobile-fab-action {
@@ -2074,8 +2117,8 @@
 
 .mobile-fab {
 	position: fixed;
-	right: calc(var(--space-3) + var(--app-safe-right));
-	bottom: calc(var(--space-3) + var(--app-safe-bottom));
+	right: calc(var(--space-3) + var(--app-fab-offset-right));
+	bottom: calc(var(--space-3) + var(--app-fab-offset-bottom));
 	width: 56px;
 	height: 56px;
 	display: inline-flex;
@@ -2088,13 +2131,7 @@
 	-webkit-tap-highlight-color: transparent;
 	-webkit-appearance: none;
 	appearance: none;
-	transform: rotate(0deg);
-	transition: transform 220ms ease;
 	z-index: 982;
-}
-
-.mobile-fab.is-open {
-	transform: rotate(180deg);
 }
 
 .mobile-fab-icon {
@@ -2110,6 +2147,11 @@
 	mask-size: contain;
 	pointer-events: none;
 	transform: rotate(180deg);
+	transition: transform 220ms ease;
+}
+
+.mobile-fab.is-open .mobile-fab-icon {
+	transform: rotate(360deg);
 }
 
 .test-harness-root.theme-catppuccin .mobile-fab-icon {
@@ -2189,6 +2231,15 @@
 
 	.test-harness-root {
 		--app-mobile-header-offset: calc(var(--app-header-total-height) + var(--space-2));
+	}
+
+	.test-harness-root.ios-standalone-pwa {
+		min-height: 100%;
+		height: 100%;
+		overflow-y: auto;
+		overflow-x: hidden;
+		overscroll-behavior-y: none;
+		-webkit-overflow-scrolling: touch;
 	}
 
 	.app-header {
@@ -2448,6 +2499,15 @@
 
 	.test-harness-root.mobile-sidebar-open .app-main {
 		pointer-events: none;
+	}
+
+	/* The shared body scroll lock intentionally freezes background panes, but the
+	   mobile drawer itself still needs its own scroll container to remain live. */
+	.test-harness-root.mobile-sidebar-open .app-sidebar {
+		overflow-y: auto !important;
+		overflow-x: hidden !important;
+		overscroll-behavior: contain;
+		-webkit-overflow-scrolling: touch;
 	}
 
 	.test-harness-root.mobile-sidebar-open .app-sidebar,

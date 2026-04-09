@@ -149,6 +149,13 @@ async function requestCreateNoteShareInvitation(args: { docId: string; identifie
 	});
 }
 
+async function requestCancelNoteShareInvitation(invitationId: string): Promise<{ invitation: NoteShareInvitation }> {
+	return fetchJson(`/api/note-shares/invitations/${encodeURIComponent(invitationId)}`, {
+		method: 'DELETE',
+		body: JSON.stringify({}),
+	});
+}
+
 async function requestRevokeNoteShareCollaborator(collaboratorId: string): Promise<{ ok: true; collaboratorId: string }> {
 	return fetchJson(`/api/note-shares/collaborators/${encodeURIComponent(collaboratorId)}`, {
 		method: 'DELETE',
@@ -305,6 +312,20 @@ export async function declineNoteShareInvitation(invitationId: string): Promise<
 		method: 'POST',
 		body: JSON.stringify({}),
 	});
+}
+
+export async function cancelNoteShareInvitation(args: { userId?: string | null; docId: string; invitationId: string }): Promise<{ invitation?: NoteShareInvitation; invitationId: string; localOnly: boolean }> {
+	const invitationId = String(args.invitationId || '').trim();
+	if (!invitationId) throw new Error('Missing invitation data');
+	if (invitationId.startsWith('queued:')) {
+		await removePendingCollaboratorAction(invitationId.slice('queued:'.length));
+		return { invitationId, localOnly: true };
+	}
+	if (isOffline()) {
+		throw new Error('Pending invite cancellation requires an online connection');
+	}
+	const result = await requestCancelNoteShareInvitation(invitationId);
+	return { invitation: result.invitation, invitationId, localOnly: false };
 }
 
 export async function revokeNoteShareCollaborator(collaboratorId: string): Promise<{ ok: true; collaboratorId: string }> {

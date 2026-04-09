@@ -13,6 +13,7 @@ import {
 	listWorkspacePendingInvites,
 	type WorkspacePendingInvite,
 } from '../../core/workspaceInviteApi';
+import { getWorkspaceMetadataChangedEventName } from '../../core/workspaceMetadataStore';
 import type { FailedNoteLinkRecord } from '../../core/noteLinkApi';
 import type { FiredReminder } from '../../core/pushApi';
 import { useI18n } from '../../core/i18n';
@@ -135,6 +136,20 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	React.useEffect(() => {
 		if (!props.isOpen) return;
 		void load();
+	}, [load, props.isOpen]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || typeof window === 'undefined') return;
+		const eventName = getWorkspaceMetadataChangedEventName();
+		// Keep the panel live while it is open so revoked/cancelled invitations drop
+		// out immediately when another tab or modal changes workspace metadata.
+		const onMetadataChanged = (): void => {
+			void load();
+		};
+		window.addEventListener(eventName, onMetadataChanged as EventListener);
+		return () => {
+			window.removeEventListener(eventName, onMetadataChanged as EventListener);
+		};
 	}, [load, props.isOpen]);
 
 	React.useEffect(() => {

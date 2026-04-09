@@ -289,7 +289,13 @@ function useOptionalChecklistItems(yarray: Y.Array<Y.Map<any>> | null): readonly
 function findScrollableAncestor(node: HTMLElement | null): HTMLElement | null {
 	let current = node?.parentElement ?? null;
 	while (current) {
-		if (current.scrollHeight > current.clientHeight + 1) return current;
+		const style = window.getComputedStyle(current);
+		const overflowY = style.overflowY;
+		// Ignore overflow:visible wrappers so short editors do not scroll the first
+		// merely taller ancestor instead of the element that actually owns scrolling.
+		const isScrollable = (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
+			&& current.scrollHeight > current.clientHeight + 1;
+		if (isScrollable) return current;
 		current = current.parentElement;
 	}
 	return null;

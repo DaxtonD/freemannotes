@@ -297,6 +297,10 @@ type MetadataNoteModalState = {
 	title: string;
 };
 
+type LabelManagementModalState = {
+	title: string;
+};
+
 type ReminderNoteModalState = {
 	noteId: string;
 	docId: string;
@@ -789,6 +793,7 @@ export function App(): React.JSX.Element {
 	const [isCollectionManagementOpen, setIsCollectionManagementOpen] = React.useState(false);
 	const [noteCollectionModalState, setNoteCollectionModalState] = React.useState<MetadataNoteModalState | null>(null);
 	const [noteLabelsModalState, setNoteLabelsModalState] = React.useState<MetadataNoteModalState | null>(null);
+	const [labelManagementModalState, setLabelManagementModalState] = React.useState<LabelManagementModalState | null>(null);
 	const [noteReminderModalState, setNoteReminderModalState] = React.useState<ReminderNoteModalState | null>(null);
 	const [noteReminderByDocId, setNoteReminderByDocId] = React.useState<Record<string, string | null>>({});
 	const [moveNoteModalState, setMoveNoteModalState] = React.useState<MoveNoteModalState | null>(null);
@@ -1198,6 +1203,10 @@ export function App(): React.JSX.Element {
 
 	const openNoteLabelsModal = React.useCallback((noteId: string, title?: string) => {
 		setNoteLabelsModalState({ noteId, title: title || '' });
+	}, []);
+
+	const openLabelManagementModal = React.useCallback(() => {
+		setLabelManagementModalState({ title: '' });
 	}, []);
 
 	const openNoteReminderModal = React.useCallback((noteId: string, docId: string, title?: string) => {
@@ -4548,6 +4557,68 @@ export function App(): React.JSX.Element {
 	const fabIconSrc = React.useMemo(() => {
 		return isLightTheme(themeId) ? fabIconDark : fabIconLight;
 	}, [themeId]);
+	const isIosStandalonePwa = isMobileViewport && detectIosStandaloneDisplayMode();
+
+	// Keep the FAB trigger, action stack, and backdrop in one overlay block so
+	// iOS standalone scrolling cannot split their stacking or anchoring contexts.
+	const mobileFabOverlay = React.useMemo(() => {
+		if (!showMobileFab) return null;
+		const fabButton = (
+			<button
+				type="button"
+				className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
+				onClick={toggleFab}
+				aria-label={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
+				title={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
+			>
+				<span
+					aria-hidden="true"
+					className="mobile-fab-icon"
+					style={{
+						WebkitMaskImage: `url(${fabIconSrc})`,
+						maskImage: `url(${fabIconSrc})`,
+					}}
+				/>
+			</button>
+		);
+		const fabStack = (
+			<div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
+				<button
+					type="button"
+					className="mobile-fab-action"
+					onClick={() => {
+						void openCreateEditorForCurrentContext('text', { replaceTop: true });
+					}}
+				>
+					{t('app.createNote')}
+				</button>
+				<button
+					type="button"
+					className="mobile-fab-action"
+					onClick={() => {
+						void openCreateEditorForCurrentContext('checklist', { replaceTop: true });
+					}}
+				>
+					{t('app.createChecklist')}
+				</button>
+			</div>
+		);
+		const content = (
+			<>
+				{isFabOpen ? (
+					<button
+						type="button"
+						className="mobile-fab-backdrop"
+						onClick={toggleFab}
+						aria-label={t('app.closeQuickCreate')}
+					/>
+				) : null}
+				{fabStack}
+				{fabButton}
+			</>
+		);
+		return content;
+	}, [fabIconSrc, isFabOpen, openCreateEditorForCurrentContext, showMobileFab, t, toggleFab]);
 
 	const headerIconSrc = React.useMemo(() => {
 		return isLightTheme(themeId) ? appIconLight : appIconDark;
@@ -4891,6 +4962,27 @@ export function App(): React.JSX.Element {
 			document.documentElement.style.removeProperty('--app-header-offset');
 		};
 	}, [isMobileLandscape, isMobileViewport]);
+
+	React.useEffect(() => {
+		// In installed iOS PWAs the document shell can still rubber-band even when
+		// the app root is meant to be the only scroll container. Mirror a root class
+		// onto html/body so global CSS can fully lock the outer page.
+		if (typeof document === 'undefined') return;
+		const className = 'ios-standalone-pwa';
+		const html = document.documentElement;
+		const body = document.body;
+		if (!isIosStandalonePwa) {
+			html.classList.remove(className);
+			body.classList.remove(className);
+			return;
+		}
+		html.classList.add(className);
+		body.classList.add(className);
+		return () => {
+			html.classList.remove(className);
+			body.classList.remove(className);
+		};
+	}, [isIosStandalonePwa]);
 
 	React.useEffect(() => {
 		// iOS standalone PWAs still expose the native left-edge swipe-back gesture,
@@ -5729,21 +5821,13 @@ export function App(): React.JSX.Element {
 		<div
 			className={`test-harness-root${themeId.startsWith('catppuccin-') ? ' theme-catppuccin' : ''}${
 				isFabOpen ? ' fab-open' : ''
-			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${isEditorOverlayOpen ? ' editor-open' : ''}${
+			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${isEditorOverlayOpen ? ' editor-open' : ''}${isIosStandalonePwa ? ' ios-standalone-pwa' : ''}${
 				// Landscape branch: expose a root class so CSS can hard-disable the
 				// portrait header morph transitions during rotation.
 				isMobileLandscape ? ' mobile-landscape' : ''
 			}`}
 		>
 			{isMobileViewport && !isMobileSidebarOpen ? <div ref={mobileSwipeZoneRef} className="mobile-swipe-zone" aria-hidden="true" /> : null}
-			{isFabOpen && showMobileFab ? (
-				<button
-					type="button"
-					className="mobile-fab-backdrop"
-					onClick={toggleFab}
-					aria-label={t('app.closeQuickCreate')}
-				/>
-			) : null}
 			<header ref={headerRef} className="app-header">
 				{isMobileViewport ? (
 					<>
@@ -6228,6 +6312,20 @@ export function App(): React.JSX.Element {
 													</button>
 													)
 												) : null}
+													{entry.id === 'labels' ? (
+														<button
+															type="button"
+															className="sidebar-submenu-action sidebar-submenu-manage-top"
+															onClick={() => {
+																openLabelManagementModal();
+																setSidebarView(filterSidebarView);
+																if (isMobileViewport) closeMobileSidebar();
+															}}
+															style={{ ['--sidebar-item-index' as const]: 0 }}
+														>
+															{t('app.sidebarManageLabels')}
+														</button>
+													) : null}
 													{entry.id === 'collections'
 														? (sidebarUsesBubbleSummaryMenus
 														? null
@@ -6790,45 +6888,7 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
-			{showMobileFab ? <div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
-				<button
-					type="button"
-					className="mobile-fab-action"
-					onClick={() => {
-						void openCreateEditorForCurrentContext('text', { replaceTop: true });
-					}}
-				>
-					{t('app.createNote')}
-				</button>
-				<button
-					type="button"
-					className="mobile-fab-action"
-					onClick={() => {
-						void openCreateEditorForCurrentContext('checklist', { replaceTop: true });
-					}}
-				>
-					{t('app.createChecklist')}
-				</button>
-			</div> : null}
-
-			{showMobileFab ? (
-				<button
-					type="button"
-					className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
-					onClick={toggleFab}
-					aria-label={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
-					title={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
-				>
-					<span
-						aria-hidden="true"
-						className="mobile-fab-icon"
-						style={{
-							WebkitMaskImage: `url(${fabIconSrc})`,
-							maskImage: `url(${fabIconSrc})`,
-						}}
-					/>
-				</button>
-			) : null}
+			{mobileFabOverlay}
 
 			{/* Branch: selection exists but doc not yet loaded.
 			   Mutual exclusion: suppress when a create editor is active to prevent
@@ -6945,6 +7005,16 @@ export function App(): React.JSX.Element {
 				onCreateLabel={handleCreateLabel}
 				onUpdateLabel={handleUpdateLabel}
 				onDeleteLabel={handleDeleteLabel}
+			/>
+
+			<NoteLabelsModal
+				isOpen={Boolean(labelManagementModalState)}
+				onClose={() => setLabelManagementModalState(null)}
+				labels={labels}
+				onCreateLabel={handleCreateLabel}
+				onUpdateLabel={handleUpdateLabel}
+				onDeleteLabel={handleDeleteLabel}
+				showSelection={false}
 			/>
 
 			<ReminderModal
