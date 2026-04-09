@@ -273,7 +273,20 @@
     "mediaTabLinks": "Enlaces",
     "mediaTabDocuments": "Documentos",
     "bottomDock": "Barra inferior",
-    "dockAction": "Acción de barra"
+    "dockAction": "Acción de barra",
+    "highlight": "Color de resaltado",
+    "highlightYellow": "Resaltado amarillo",
+    "highlightGreen": "Resaltado verde",
+    "highlightBlue": "Resaltado azul",
+    "highlightPink": "Resaltado rosa",
+    "highlightPurple": "Resaltado morado",
+    "highlightOrange": "Resaltado naranja",
+    "highlightTeal": "Resaltado azul verdoso",
+    "highlightRed": "Resaltado rojo",
+    "highlightClear": "Quitar resaltado",
+    "emojiPicker": "Insertar emoji",
+    "undoCheckbox": "Deshacer cambio de casilla",
+    "redoCheckbox": "Rehacer cambio de casilla"
   },
   "documents": {
     "emptyTitle": "Todavía no hay documentos",

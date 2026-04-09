@@ -250,6 +250,10 @@ function applyMarks(node: JSONContent, content: React.ReactNode, key: string, al
 		if (mark.type === 'underline') result = <u key={`${key}:underline:${index}`}>{result}</u>;
 		if (mark.type === 'strike') result = <s key={`${key}:strike:${index}`}>{result}</s>;
 		if (mark.type === 'code') result = <code key={`${key}:code:${index}`} className={styles.richInlineCode}>{result}</code>;
+		if (mark.type === 'highlight') {
+			const color = (mark.attrs as { color?: string } | undefined)?.color;
+			result = <mark key={`${key}:highlight:${index}`} className={styles.richHighlight} style={color ? { backgroundColor: color } : undefined}>{result}</mark>;
+		}
 		if (mark.type === 'link') {
 			const href = getSafeHref((mark.attrs as { href?: unknown } | undefined)?.href);
 			result = href && allowLinkInteraction ? (
