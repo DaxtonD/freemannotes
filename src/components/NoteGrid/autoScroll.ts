@@ -9,8 +9,21 @@ type AutoScrollerOptions = {
 	getPointerInput: () => PointerInput | null;
 	getScrollContainer: () => ScrollContainer;
 	edgePx?: number;
-	maxStepPx?: number;
+	minSpeedPxPerSecond?: number;
+	maxSpeedPxPerSecond?: number;
 	onDidScroll?: () => void;
+};
+
+type EdgeScrollDeltaOptions = {
+	pointerY: number;
+	top: number;
+	bottom: number;
+	canScrollUp: boolean;
+	canScrollDown: boolean;
+	edgePx: number;
+	minSpeedPxPerSecond: number;
+	maxSpeedPxPerSecond: number;
+	dtMs: number;
 };
 
 function isScrollableElement(element: HTMLElement): boolean {
@@ -28,20 +41,57 @@ export function getClosestVerticalScrollContainer(start: HTMLElement | null): Sc
 	return window;
 }
 
+export function getEdgeScrollDelta(options: EdgeScrollDeltaOptions): number {
+	const {
+		pointerY,
+		top,
+		bottom,
+		canScrollUp,
+		canScrollDown,
+		edgePx,
+		minSpeedPxPerSecond,
+		maxSpeedPxPerSecond,
+		dtMs,
+	} = options;
+	const distanceToTop = pointerY - top;
+	const distanceToBottom = bottom - pointerY;
+	const dtSeconds = Math.max(0, dtMs) / 1000;
+
+	const resolveDelta = (ratio: number, direction: -1 | 1): number => {
+		const easedRatio = ratio * ratio;
+		const speed = minSpeedPxPerSecond + easedRatio * (maxSpeedPxPerSecond - minSpeedPxPerSecond);
+		return direction * speed * dtSeconds;
+	};
+
+	if (distanceToTop < edgePx && canScrollUp) {
+		const ratio = Math.max(0, Math.min(1, (edgePx - distanceToTop) / edgePx));
+		return resolveDelta(ratio, -1);
+	}
+	if (distanceToBottom < edgePx && canScrollDown) {
+		const ratio = Math.max(0, Math.min(1, (edgePx - distanceToBottom) / edgePx));
+		return resolveDelta(ratio, 1);
+	}
+	return 0;
+}
+
 export function createPointerEdgeAutoScroller(options: AutoScrollerOptions): {
 	start: () => void;
 	stop: () => void;
 } {
 	const edgePx = options.edgePx ?? 60;
-	const maxStepPx = options.maxStepPx ?? 18;
+	const minSpeedPxPerSecond = options.minSpeedPxPerSecond ?? 90;
+	const maxSpeedPxPerSecond = options.maxSpeedPxPerSecond ?? 1500;
 	let rafId = 0;
 	let running = false;
+	let lastTickAt = 0;
 
-	const tick = (): void => {
+	const tick = (now: number): void => {
 		if (!running) return;
 		rafId = window.requestAnimationFrame(tick);
 		const pointer = options.getPointerInput();
 		if (!pointer) return;
+		const dtMs = lastTickAt > 0 ? Math.min(34, now - lastTickAt) : 16;
+		lastTickAt = now;
 
 		const container = options.getScrollContainer();
 		let top = 0;
@@ -69,17 +119,17 @@ export function createPointerEdgeAutoScroller(options: AutoScrollerOptions): {
 			canScrollDown = window.scrollY + window.innerHeight < doc.scrollHeight - 1;
 		}
 
-		const distanceToTop = pointer.clientY - top;
-		const distanceToBottom = bottom - pointer.clientY;
-		let deltaY = 0;
-		if (distanceToTop < edgePx && canScrollUp) {
-			const ratio = Math.max(0, Math.min(1, (edgePx - distanceToTop) / edgePx));
-			deltaY = -Math.ceil(2 + ratio * (maxStepPx - 2));
-		} else if (distanceToBottom < edgePx && canScrollDown) {
-			const ratio = Math.max(0, Math.min(1, (edgePx - distanceToBottom) / edgePx));
-			deltaY = Math.ceil(2 + ratio * (maxStepPx - 2));
-		}
-
+		const deltaY = getEdgeScrollDelta({
+			pointerY: pointer.clientY,
+			top,
+			bottom,
+			canScrollUp,
+			canScrollDown,
+			edgePx,
+			minSpeedPxPerSecond,
+			maxSpeedPxPerSecond,
+			dtMs,
+		});
 		if (deltaY === 0) return;
 		scrollBy(deltaY);
 		options.onDidScroll?.();
@@ -89,10 +139,12 @@ export function createPointerEdgeAutoScroller(options: AutoScrollerOptions): {
 		start(): void {
 			if (running) return;
 			running = true;
+			lastTickAt = 0;
 			rafId = window.requestAnimationFrame(tick);
 		},
 		stop(): void {
 			running = false;
+			lastTickAt = 0;
 			if (rafId) {
 				window.cancelAnimationFrame(rafId);
 				rafId = 0;

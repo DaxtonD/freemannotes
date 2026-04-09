@@ -18,10 +18,13 @@
  * touch event stream.
  */
 
+import { getEdgeScrollDelta } from '../components/NoteGrid/autoScroll';
+
 const LONG_PRESS_MS = 400;
 const MOVE_THRESHOLD_SQ = 10 * 10; // 10 px, squared for cheap distance check
 const EDGE_SCROLL_THRESHOLD_PX = 72;
-const MAX_EDGE_SCROLL_STEP_PX = 18;
+const MIN_EDGE_SCROLL_SPEED_PX_PER_SECOND = 90;
+const MAX_EDGE_SCROLL_SPEED_PX_PER_SECOND = 1500;
 
 let syntheticTouchDragActive = false;
 
@@ -50,24 +53,31 @@ export function installTouchDragPolyfill(): void {
 	let lastScreenX = 0;
 	let lastScreenY = 0;
 	let edgeScrollRaf = 0;
+	let lastEdgeScrollAt = 0;
 
 	function scheduleEdgeScroll(): void {
 		if (edgeScrollRaf || !isDragging) return;
-		edgeScrollRaf = window.requestAnimationFrame(() => {
+		edgeScrollRaf = window.requestAnimationFrame((now) => {
 			edgeScrollRaf = 0;
 			if (!isDragging) return;
 			const viewportHeight = window.innerHeight;
 			if (viewportHeight <= 0) return;
-			let scrollStep = 0;
-			if (lastClientY < EDGE_SCROLL_THRESHOLD_PX) {
-				const proximity = EDGE_SCROLL_THRESHOLD_PX - lastClientY;
-				scrollStep = -Math.min(MAX_EDGE_SCROLL_STEP_PX, Math.max(4, proximity * 0.22));
-			} else if (lastClientY > viewportHeight - EDGE_SCROLL_THRESHOLD_PX) {
-				const proximity = lastClientY - (viewportHeight - EDGE_SCROLL_THRESHOLD_PX);
-				scrollStep = Math.min(MAX_EDGE_SCROLL_STEP_PX, Math.max(4, proximity * 0.22));
-			}
+			const dtMs = lastEdgeScrollAt > 0 ? Math.min(34, now - lastEdgeScrollAt) : 16;
+			lastEdgeScrollAt = now;
+			const doc = document.documentElement;
+			const scrollStep = getEdgeScrollDelta({
+				pointerY: lastClientY,
+				top: 0,
+				bottom: viewportHeight,
+				canScrollUp: window.scrollY > 0,
+				canScrollDown: window.scrollY + viewportHeight < doc.scrollHeight - 1,
+				edgePx: EDGE_SCROLL_THRESHOLD_PX,
+				minSpeedPxPerSecond: MIN_EDGE_SCROLL_SPEED_PX_PER_SECOND,
+				maxSpeedPxPerSecond: MAX_EDGE_SCROLL_SPEED_PX_PER_SECOND,
+				dtMs,
+			});
 			if (scrollStep !== 0) {
-				const maxScrollY = Math.max(0, document.documentElement.scrollHeight - viewportHeight);
+				const maxScrollY = Math.max(0, doc.scrollHeight - viewportHeight);
 				const nextScrollY = Math.max(0, Math.min(maxScrollY, window.scrollY + scrollStep));
 				if (nextScrollY !== window.scrollY) {
 					window.scrollTo({ top: nextScrollY, behavior: 'auto' });
@@ -102,6 +112,7 @@ export function installTouchDragPolyfill(): void {
 			window.cancelAnimationFrame(edgeScrollRaf);
 			edgeScrollRaf = 0;
 		}
+		lastEdgeScrollAt = 0;
 		dragSource = null;
 		dataTransfer = null;
 		isDragging = false;
@@ -187,8 +198,8 @@ export function installTouchDragPolyfill(): void {
 					return;
 				}
 				isDragging = true;
-					syntheticTouchDragActive = true;
-					scheduleEdgeScroll();
+				syntheticTouchDragActive = true;
+				scheduleEdgeScroll();
 			}, LONG_PRESS_MS);
 		},
 		{ passive: true, capture: true },
