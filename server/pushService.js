@@ -61,8 +61,8 @@ const ANDROID_NOTIFICATION_MODE = normalizeNotificationMode(
 const IOS_NOTIFICATION_MODE = normalizeNotificationMode(process.env.IOS_NOTIFICATION_MODE, 'auto');
 const smtpReady = isSmtpConfigured();
 const BRAND_NAME = 'Freeman Notes';
-const DEFAULT_NOTIFICATION_ICON = '/apple-touch-icon.png';
-const DEFAULT_NOTIFICATION_BADGE = '/apple-touch-icon.png';
+const DEFAULT_NOTIFICATION_ICON = '/notification-icon.png';
+const DEFAULT_NOTIFICATION_BADGE = '/notification-badge.png';
 
 // ── VAPID initialisation ──────────────────────────────────────────────────────
 let vapidReady = false;
@@ -656,7 +656,7 @@ async function sendPushToUser(prisma, userId, payload) {
 }
 
 async function sendExternalNotificationToUser(prisma, userId, payload, options = {}) {
-	if (!prisma || !userId) return { sent: 0, failed: 0, emailSent: false };
+	if (!prisma || !userId) return { sent: 0, failed: 0, emailSent: false, emailError: null };
 
 	let subscriptions;
 	try {
@@ -666,8 +666,15 @@ async function sendExternalNotificationToUser(prisma, userId, payload, options =
 	} catch {
 		subscriptions = [];
 	}
+	// Reminder sends and manual tests should resolve delivery against the device
+	// that triggered them so another registration on the same account does not
+	// incorrectly suppress the email fallback path.
+	const candidateSubscriptions = options.deviceId
+		? subscriptions.filter((sub) => sub.deviceId === options.deviceId)
+		: subscriptions;
+	const resolvedPlatformHint = options.platformHint || candidateSubscriptions[0]?.platform || null;
 
-	const eligiblePushSubscriptions = subscriptions.filter(
+	const eligiblePushSubscriptions = candidateSubscriptions.filter(
 		(sub) => getNotificationPolicy(sub.platform).effectiveMode === 'push'
 	);
 
@@ -683,17 +690,19 @@ async function sendExternalNotificationToUser(prisma, userId, payload, options =
 	}
 
 	let emailSent = false;
-	// Email acts as the delivery fallback only when push did not reach any eligible
-	// endpoint and the platform policy explicitly resolves to email delivery.
-	if (sent === 0 && shouldSendEmailFallback(subscriptions, options.platformHint)) {
+	let emailError = null;
+	// Email acts as the delivery fallback only when the targeted device did not
+	// receive a push and the platform policy allows email delivery.
+	if (sent === 0 && shouldSendEmailFallback(candidateSubscriptions, resolvedPlatformHint)) {
 		try {
 			emailSent = await sendEmailNotificationToUser(prisma, userId, payload);
 		} catch (err) {
-			console.error('[push] email fallback failed:', err.message ?? err);
+			emailError = err instanceof Error ? err.message : String(err);
+			console.error('[push] email fallback failed:', emailError);
 		}
 	}
 
-	return { sent, failed, emailSent };
+	return { sent, failed, emailSent, emailError };
 }
 
 /**
@@ -771,7 +780,8 @@ function startReminderScheduler(prisma, redis, onReminderFired) {
 					await sendExternalNotificationToUser(
 						prisma,
 						capturedReminder.userId,
-						createReminderNotificationPayload(capturedReminder, metadata)
+						createReminderNotificationPayload(capturedReminder, metadata),
+						{ deviceId: capturedReminder.deviceId }
 					);
 				} catch (err) {
 					console.error('[push] reminder send error:', err.message);

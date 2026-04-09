@@ -167,6 +167,15 @@
 	color: var(--color-text);
 }
 
+.formModeLabel {
+	margin: 0;
+	font-size: 11px;
+	font-weight: 800;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--color-accent);
+}
+
 .input,
 .select,
 .search {
@@ -584,6 +593,14 @@
 	min-height: 0;
 }
 
+.checkboxRowStaticCopy {
+	flex: 1 1 auto;
+	min-width: 0;
+	display: inline-flex;
+	align-items: center;
+	min-height: 0;
+}
+
 .checkboxRowActions {
 	display: inline-flex;
 	align-items: center;
@@ -856,8 +873,8 @@
 .collectionTreeList {
 	flex: 1 1 auto;
 	min-height: 0;
-	min-width: 100%;
-	width: max-content;
+	min-width: 0;
+	width: 100%;
 	max-height: none;
 	gap: 4px;
 	padding-right: 4px;
@@ -895,6 +912,7 @@
 	flex-direction: column;
 	gap: 4px;
 	min-width: 0;
+	width: 100%;
 }
 
 .collectionTreeRow {
@@ -903,6 +921,7 @@
 	align-items: flex-start;
 	gap: 4px;
 	min-width: 0;
+	width: 100%;
 	padding-left: calc(var(--collection-tree-depth) * 6px);
 	font-size: 12px;
 	line-height: 1.15;
@@ -1054,16 +1073,18 @@
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
-	min-width: max-content;
+	min-width: 0;
+	width: 100%;
 }
 
 .collectionTreeDraftRow {
 	display: flex;
 	min-width: 0;
+	width: 100%;
 }
 
 .collectionTreeInlineEditor {
-	flex: 1 1 auto;
+	flex: 1 1 0;
 	min-width: 0;
 	display: flex;
 	align-items: center;
@@ -1106,7 +1127,8 @@
 	align-items: center;
 	justify-content: flex-end;
 	gap: 6px;
-	flex: 0 0 auto;
+	flex: 0 1 auto;
+	min-width: 0;
 	flex-wrap: wrap;
 	margin-left: auto;
 }

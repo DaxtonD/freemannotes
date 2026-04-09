@@ -108,12 +108,15 @@ export async function deletePushSubscription(deviceId: string): Promise<void> {
 	await checkResponse(res);
 }
 
-/** Trigger a test push notification for the current user. */
-export async function sendTestPushNotification(platform: PushPlatform): Promise<{ sent: number; failed: number; emailSent: boolean }> {
+/** Trigger a test push notification for the current user/device. */
+export async function sendTestPushNotification(
+	platform: PushPlatform,
+	deviceId: string
+): Promise<{ sent: number; failed: number; emailSent: boolean; emailError?: string | null }> {
 	const res = await fetch('/api/push/test', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ platform }),
+		body: JSON.stringify({ platform, deviceId }),
 	});
 	await checkResponse(res);
 	return res.json();

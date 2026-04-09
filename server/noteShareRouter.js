@@ -698,6 +698,79 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 			return true;
 		}
 
+		const invitationRevokeMatch = pathname.match(/^\/api\/note-shares\/invitations\/([^/]+)$/);
+		if (invitationRevokeMatch && method === 'DELETE') {
+			const invitationId = decodeURIComponent(invitationRevokeMatch[1]);
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+
+					const invitation = await prisma.noteShareInvitation.findUnique({
+						where: { id: invitationId },
+						include: {
+							inviter: { select: { id: true, name: true, email: true, profileImage: true } },
+							placement: true,
+							document: { select: { state: true } },
+						},
+					});
+					if (!invitation) {
+						jsonResponse(res, 404, { error: 'Invitation not found' });
+						return;
+					}
+
+					const membership = await findLiveWorkspaceMembership(prisma, session.userId, invitation.sourceWorkspaceId, { role: true });
+					if (!membership || !canManageWorkspace(normalizeWorkspaceRole(membership.role, 'VIEWER'))) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					if (invitation.status !== 'PENDING' || invitation.revokedAt) {
+						jsonResponse(res, 409, { error: 'Invitation changed before this action could sync', code: 'STALE_INVITATION' });
+						return;
+					}
+
+					const revoked = await prisma.noteShareInvitation.update({
+						where: { id: invitation.id },
+						data: {
+							status: 'REVOKED',
+							revokedAt: new Date(),
+						},
+						include: {
+							inviter: { select: { id: true, name: true, email: true, profileImage: true } },
+							placement: true,
+							document: { select: { state: true } },
+						},
+					});
+
+					jsonResponse(res, 200, { invitation: mapInvitation(revoked) });
+
+					if (typeof onWorkspaceMetadataChanged === 'function') {
+						try {
+							// Refresh every open client after the cancel succeeds so pending invite
+							// rows disappear without waiting for a manual reload.
+							await onWorkspaceMetadataChanged({
+								reason: 'note-share-invite-revoked',
+								workspaceId: revoked.sourceWorkspaceId,
+								docId: revoked.docId,
+								userIds: Array.from(new Set([
+									session.userId,
+									revoked.inviterUserId,
+									revoked.inviteeUserId,
+								].filter(Boolean))),
+							});
+						} catch (publishErr) {
+							console.warn('[note-share] revoke invitation publish failed:', publishErr.message);
+						}
+					}
+				} catch (err) {
+					console.error('[note-share] revoke invitation error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		const invitationActionMatch = pathname.match(/^\/api\/note-shares\/invitations\/([^/]+)\/(accept|decline)$/);
 		if (invitationActionMatch && method === 'POST') {
 			const invitationId = decodeURIComponent(invitationActionMatch[1]);
