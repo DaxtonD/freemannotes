@@ -4,7 +4,7 @@ FreemanNotes is my "Google Keep, but let me actually do the stuff I keep wishing
 
 I love Google Keep. I use it a lot. But I kept running into the same wall: I wanted workspaces, collections, real self-hosting, better media support, markdown-friendly writing, document attachments, richer collaboration, and a note app that does not panic the second the network gets weird. So I built the note app my inner tinkering goblin wanted.
 
-The "Freeman" part is the other half of my brain. I also love Half-Life 2, and Gordon Freeman has the exact kind of silent "fine, I'll solve it myself" energy that feels correct for a self-hosted notes app. So this became FreemanNotes: part Keep-inspired scratchpad, part Black Mesa lab notebook.
+The "Freeman" part is the other half of my brain. I also love Half-Life 2, and Gordon Freeman has the exact kind of silent "fine, I'll solve it myself" energy that feels correct for a self-hosted notes app. So this became Freeman Notes: part Keep-inspired scratchpad, part Black Mesa lab notebook.
 
 ## What It Is
 
@@ -20,15 +20,15 @@ It is designed to feel quick like a sticky-note app, but without being boxed int
 - Realtime sync powered by Yjs.
 - Self-hosted deployment with Docker, Docker Compose, and Unraid-friendly container settings.
 - Multiple workspaces, including sharing flows and a Shared With Me workspace model.
-- Collections and nested workspace organization.
+- Workspaces and nested Collections organization.
 - Drag-and-drop masonry note grid with improved cross-device ordering persistence.
 - Note collaboration with roles for owners, admins, editors, and viewers.
 - Workspace invites, note collaboration flows, and in-app notifications.
 - Rich note-card previews that understand formatted content instead of flattening everything into sad plain text.
 - Image uploads, galleries, fullscreen viewers, and OCR-backed search support for note images.
-- Document attachments with in-app browsing, generated previews, extracted text, and PDF viewing.
+- Document attachments with in-app browsing, generated previews and extracted text.
 - URL previews with stored metadata, preview cards, and failure notifications when a site refuses to cooperate.
-- Aggregate attachment chips on note cards for images, links, and documents.
+- Aggregate attachment chips on note cards for attachments, collaborators, labels and collections.
 - Search across notes, OCR text, collaborators, links, and documents.
 - Theme and language preferences, plus per-device UI preferences.
 - Mobile-aware editor and modal behavior, including better scroll locking and overlay handling.
@@ -40,7 +40,7 @@ The short version is: I wanted Google Keep with more gears exposed.
 I wanted:
 
 - Workspaces instead of one flat pile of thoughts.
-- Collections and better structure.
+- Collections, Workspaces and better structure.
 - Images and documents as real first-class note content.
 - Markdown-friendly writing instead of fighting a text box.
 - Self-hosting because sometimes I want my notes to live on my machine, not somebody else's product roadmap.
