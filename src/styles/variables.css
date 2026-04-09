@@ -43,4 +43,18 @@
 	--note-card-max-height: 300px;
 	--grid-gap: 16px;
 	--grid-row-unit: 25px;
+
+	/* ── TipTap multi-color highlight tokens ──────────────────────────────────
+	   Semi-transparent values chosen to be readable on both light and dark
+	   note surfaces without requiring per-theme overrides.  Each theme that
+	   has a very light or very dark background can override individual tokens
+	   via its own variable override block if needed. */
+	--hl-yellow:  rgba(245, 190,   0, 0.42);
+	--hl-green:   rgba( 40, 200,  80, 0.35);
+	--hl-blue:    rgba( 50, 130, 240, 0.35);
+	--hl-pink:    rgba(230,  60, 150, 0.30);
+	--hl-purple:  rgba(150,  60, 230, 0.28);
+	--hl-orange:  rgba(240, 120,  20, 0.40);
+	--hl-teal:    rgba( 20, 175, 165, 0.35);
+	--hl-red:     rgba(220,  50,  50, 0.32);
 }

@@ -167,6 +167,15 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const [previewLinks, setPreviewLinks] = React.useState<string[]>([]);
 	const [saving, setSaving] = React.useState(false);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
+	// ── Checkbox undo/redo ───────────────────────────────────────────────────────
+	// Tracks only checkbox check/uncheck actions, separate from text undo. Uses
+	// refs to avoid re-renders on every action; boolean state flags drive button
+	// enabled/disabled so the UI updates when stacks become empty or non-empty.
+	const checkboxUndoStack = React.useRef<DraftChecklistItem[][]>([]);
+	const checkboxRedoStack = React.useRef<DraftChecklistItem[][]>([]);
+	const [checkboxUndoAvail, setCheckboxUndoAvail] = React.useState(false);
+	const [checkboxRedoAvail, setCheckboxRedoAvail] = React.useState(false);
+	const checklistFormRef = React.useRef<HTMLFormElement | null>(null);
 	const noteAutoScrollEnabled = useSyncExternalStore(
 		(onStoreChange) => subscribeNoteAutoScrollPrefs(onStoreChange),
 		() => getUserNoteAutoScrollEnabled(DRAFT_CHECKLIST_AUTOSCROLL_ID),
@@ -644,11 +653,67 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		});
 	}, []);
 
+	const CHECKBOX_UNDO_LIMIT = 40;
+
 	const toggleCompleted = React.useCallback((id: string, checked: boolean): void => {
 		setItems((prev) => {
-			return reconcileDraftItems(toggleChecklistItemCompleted(prev, id, checked), prev);
+			const next = reconcileDraftItems(toggleChecklistItemCompleted(prev, id, checked), prev);
+			if (next === prev) return prev;
+			// Push snapshot to undo stack before applying the change.
+			checkboxUndoStack.current = [
+				...checkboxUndoStack.current.slice(-(CHECKBOX_UNDO_LIMIT - 1)),
+				prev,
+			];
+			checkboxRedoStack.current = [];
+			setCheckboxUndoAvail(true);
+			setCheckboxRedoAvail(false);
+			return next;
 		});
 	}, []);
+
+	const undoCheckboxChange = React.useCallback((): void => {
+		const snapshot = checkboxUndoStack.current[checkboxUndoStack.current.length - 1];
+		if (!snapshot) return;
+		checkboxUndoStack.current = checkboxUndoStack.current.slice(0, -1);
+		setItems((prev) => {
+			checkboxRedoStack.current = [...checkboxRedoStack.current, prev];
+			return snapshot;
+		});
+		setCheckboxUndoAvail(checkboxUndoStack.current.length > 0);
+		setCheckboxRedoAvail(true);
+	}, []);
+
+	const redoCheckboxChange = React.useCallback((): void => {
+		const snapshot = checkboxRedoStack.current[checkboxRedoStack.current.length - 1];
+		if (!snapshot) return;
+		checkboxRedoStack.current = checkboxRedoStack.current.slice(0, -1);
+		setItems((prev) => {
+			checkboxUndoStack.current = [...checkboxUndoStack.current, prev];
+			return snapshot;
+		});
+		setCheckboxUndoAvail(true);
+		setCheckboxRedoAvail(checkboxRedoStack.current.length > 0);
+	}, []);
+
+	// Keyboard shortcut: Ctrl/Cmd+Z undoes last checkbox change; Ctrl/Cmd+Shift+Z
+	// or Ctrl+Y redoes it. Only intercepts when focus is inside the checklist form.
+	React.useEffect(() => {
+		const handleKeyDown = (e: KeyboardEvent): void => {
+			const modKey = e.metaKey || e.ctrlKey;
+			if (!modKey) return;
+			const form = checklistFormRef.current;
+			if (!form || !form.contains(document.activeElement)) return;
+			if (e.key === 'z' && !e.shiftKey && checkboxUndoStack.current.length > 0) {
+				e.preventDefault();
+				undoCheckboxChange();
+			} else if ((e.key === 'z' && e.shiftKey || e.key === 'y') && checkboxRedoStack.current.length > 0) {
+				e.preventDefault();
+				redoCheckboxChange();
+			}
+		};
+		document.addEventListener('keydown', handleKeyDown);
+		return () => document.removeEventListener('keydown', handleKeyDown);
+	}, [undoCheckboxChange, redoCheckboxChange]);
 
 	const removeItem = React.useCallback((id: string, options?: { preserveKeyboard?: boolean }): void => {
 		if (options?.preserveKeyboard !== false) {
@@ -938,6 +1003,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			onClick={handleOverlayBackdropClick}
 		>
 			<form
+				ref={checklistFormRef}
 				onSubmit={onSubmit}
 				className={`${styles.fullscreenEditor} ${styles.editorContainer} ${styles.editorBlurred}${mediaDockOpen ? ` ${styles.mediaOpen}` : ''}${interactionGuardActive ? ` ${styles.editorInteractionGuardActive}` : ''}${isCoarsePointer ? ` ${styles.mobileHideToolbar}` : ''}`}
 				// Keyboard-open branch:
@@ -1360,6 +1426,27 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 							</button>
 						</div>
 						<div className={styles.bottomDockRightActions}>
+							{/* Checkbox undo / redo — lets the user recover from accidental check/uncheck */}
+							<button
+								type="button"
+								className={styles.bottomDockClose}
+								onClick={undoCheckboxChange}
+								disabled={!checkboxUndoAvail}
+								aria-label={t('editors.undoCheckbox')}
+								title={t('editors.undoCheckbox')}
+							>
+								<span aria-hidden="true" className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconUndoCheckbox}`} />
+							</button>
+							<button
+								type="button"
+								className={styles.bottomDockClose}
+								onClick={redoCheckboxChange}
+								disabled={!checkboxRedoAvail}
+								aria-label={t('editors.redoCheckbox')}
+								title={t('editors.redoCheckbox')}
+							>
+								<span aria-hidden="true" className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconRedoCheckbox}`} />
+							</button>
 							<button
 								type="button"
 								className={styles.bottomDockClose}
@@ -1552,7 +1639,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					className={styles.floatingToolbar}
 					style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 				>
-					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
+					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={undoCheckboxChange} onRedoCheckbox={redoCheckboxChange} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} />
 				</div>
 			</>,
 			document.body

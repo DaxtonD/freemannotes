@@ -13,6 +13,8 @@ import {
 	faAlignRight,
 	faBold,
 	faCode,
+	faFaceSmile,
+	faHighlighter,
 	faIndent,
 	faItalic,
 	faLink,
@@ -74,6 +76,11 @@ type RichTextToolbarProps = {
 	onToggleNoteAutoScroll?: () => void;
 	copyMode?: ClipboardConversionTarget;
 	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
+	/** Checkbox undo / redo — only wired up when the toolbar is used in checklist mode */
+	onUndoCheckbox?: () => void;
+	onRedoCheckbox?: () => void;
+	checkboxUndoAvail?: boolean;
+	checkboxRedoAvail?: boolean;
 };
 
 function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
@@ -350,6 +357,33 @@ function getTaskItemElementFromTarget(target: EventTarget | null): HTMLElement |
 	return taskItem instanceof HTMLElement ? taskItem : null;
 }
 
+// ── Highlight color palette ────────────────────────────────────────────────
+// Colors are CSS variable references so they automatically respect theme
+// overrides declared in variables.css or per-theme override blocks.
+type HighlightColor = { id: string; labelKey: string; cssVar: string };
+const HIGHLIGHT_COLORS: readonly HighlightColor[] = [
+	{ id: 'yellow', labelKey: 'editors.highlightYellow', cssVar: 'var(--hl-yellow)' },
+	{ id: 'green',  labelKey: 'editors.highlightGreen',  cssVar: 'var(--hl-green)'  },
+	{ id: 'blue',   labelKey: 'editors.highlightBlue',   cssVar: 'var(--hl-blue)'   },
+	{ id: 'pink',   labelKey: 'editors.highlightPink',   cssVar: 'var(--hl-pink)'   },
+	{ id: 'purple', labelKey: 'editors.highlightPurple', cssVar: 'var(--hl-purple)' },
+	{ id: 'orange', labelKey: 'editors.highlightOrange', cssVar: 'var(--hl-orange)' },
+	{ id: 'teal',   labelKey: 'editors.highlightTeal',   cssVar: 'var(--hl-teal)'   },
+	{ id: 'red',    labelKey: 'editors.highlightRed',    cssVar: 'var(--hl-red)'    },
+];
+
+// ── Quick emoji palette ────────────────────────────────────────────────────
+// A curated flat list of the most useful emojis for notes and documents.
+// Grouped by theme: status, time/reference, thinking/creative, technical, reactions.
+const QUICK_EMOJIS: readonly string[] = [
+	'✅', '❌', '⚠️', '🚧', '🔥', '⭐', '🛑', '💥',
+	'📅', '⏰', '⏳', '📌', '📝', '📋', '🗓️', '🔔',
+	'💡', '🧠', '✍️', '🎯', '📊', '📈', '📉', '✨',
+	'🔧', '⚡', '🏗️', '📐', '🔍', '🔗', '📎', '🔒',
+	'👍', '👎', '💪', '🙌', '🤔', '🎉', '🏆', '💬',
+	'🔴', '🟡', '🟢', '🔵', 'ℹ️', '❓', '💰', '🌟',
+];
+
 export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element {
 	const { t } = useI18n();
 	const resolvedCopyMode = props.copyMode ?? 'rich-text';
@@ -392,6 +426,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			isAlignLeft: Boolean(editor?.isActive({ textAlign: 'left' })),
 			isAlignCenter: Boolean(editor?.isActive({ textAlign: 'center' })),
 			isAlignRight: Boolean(editor?.isActive({ textAlign: 'right' })),
+			isHighlight: Boolean(editor?.isActive('highlight')),
 		}),
 	});
 	const resolvedToolbarState = toolbarState ?? {
@@ -424,6 +459,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		isAlignLeft: false,
 		isAlignCenter: false,
 		isAlignRight: false,
+		isHighlight: false,
 	};
 
 	const preventToolbarFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
@@ -440,9 +476,17 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const headingMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const tableMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const tableMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const highlightMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
+	const highlightMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const emojiMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
+	const emojiMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const [headingMenuOpen, setHeadingMenuOpen] = React.useState(false);
 	const [tableMenuOpen, setTableMenuOpen] = React.useState(false);
 	const [tableMenuPosition, setTableMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
+	const [highlightMenuOpen, setHighlightMenuOpen] = React.useState(false);
+	const [highlightMenuPosition, setHighlightMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
+	const [emojiMenuOpen, setEmojiMenuOpen] = React.useState(false);
+	const [emojiMenuPosition, setEmojiMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
 	const [canScrollToolbarLeft, setCanScrollToolbarLeft] = React.useState(false);
 	const [canScrollToolbarRight, setCanScrollToolbarRight] = React.useState(false);
 	const updateToolbarScrollState = React.useCallback((): void => {
@@ -574,6 +618,62 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			left,
 		});
 	}, []);
+	const updateHighlightMenuPosition = React.useCallback((): void => {
+		const button = highlightMenuButtonRef.current;
+		if (!button || typeof window === 'undefined') {
+			setHighlightMenuPosition(null);
+			return;
+		}
+		const visualViewport = window.visualViewport;
+		const viewportLeft = visualViewport ? Math.round(visualViewport.offsetLeft) : 0;
+		const viewportTop = visualViewport ? Math.round(visualViewport.offsetTop) : 0;
+		const viewportWidth = visualViewport ? Math.round(visualViewport.width) : window.innerWidth;
+		const viewportHeight = visualViewport ? Math.round(visualViewport.height) : window.innerHeight;
+		const viewportRight = viewportLeft + viewportWidth;
+		const viewportBottom = viewportTop + viewportHeight;
+		const rect = button.getBoundingClientRect();
+		const menuWidth = 218;
+		const menuHeight = 88;
+		const viewportPadding = 8;
+		const left = Math.min(
+			Math.max(viewportLeft + viewportPadding, rect.left),
+			viewportRight - menuWidth - viewportPadding,
+		);
+		const preferredTop = rect.bottom + 8;
+		const fitsBelow = preferredTop + menuHeight <= viewportBottom - viewportPadding;
+		const top = fitsBelow
+			? preferredTop
+			: Math.max(viewportTop + viewportPadding, rect.top - menuHeight - 8);
+		setHighlightMenuPosition({ top, left });
+	}, []);
+	const updateEmojiMenuPosition = React.useCallback((): void => {
+		const button = emojiMenuButtonRef.current;
+		if (!button || typeof window === 'undefined') {
+			setEmojiMenuPosition(null);
+			return;
+		}
+		const visualViewport = window.visualViewport;
+		const viewportLeft = visualViewport ? Math.round(visualViewport.offsetLeft) : 0;
+		const viewportTop = visualViewport ? Math.round(visualViewport.offsetTop) : 0;
+		const viewportWidth = visualViewport ? Math.round(visualViewport.width) : window.innerWidth;
+		const viewportHeight = visualViewport ? Math.round(visualViewport.height) : window.innerHeight;
+		const viewportRight = viewportLeft + viewportWidth;
+		const viewportBottom = viewportTop + viewportHeight;
+		const rect = button.getBoundingClientRect();
+		const menuWidth = 264;
+		const menuHeight = 210;
+		const viewportPadding = 8;
+		const left = Math.min(
+			Math.max(viewportLeft + viewportPadding, rect.left),
+			viewportRight - menuWidth - viewportPadding,
+		);
+		const preferredTop = rect.bottom + 8;
+		const fitsBelow = preferredTop + menuHeight <= viewportBottom - viewportPadding;
+		const top = fitsBelow
+			? preferredTop
+			: Math.max(viewportTop + viewportPadding, rect.top - menuHeight - 8);
+		setEmojiMenuPosition({ top, left });
+	}, []);
 	const runTableMenuCommand = React.useCallback((commandName: string, ...args: unknown[]): void => {
 		runRichTextCommand(props.editor, commandName, ...args);
 		setTableMenuOpen(false);
@@ -640,6 +740,56 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			window.removeEventListener('scroll', handleViewportChange, true);
 		};
 	}, [tableMenuOpen, updateTableMenuPosition]);
+	React.useEffect(() => {
+		if (!highlightMenuOpen) return;
+		updateHighlightMenuPosition();
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target as Node | null;
+			if (!target) return;
+			if (highlightMenuRef.current?.contains(target)) return;
+			if (highlightMenuButtonRef.current?.contains(target)) return;
+			setHighlightMenuOpen(false);
+		};
+		const handleKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === 'Escape') setHighlightMenuOpen(false);
+		};
+		const handleViewportChange = (): void => updateHighlightMenuPosition();
+		document.addEventListener('pointerdown', handlePointerDown);
+		document.addEventListener('keydown', handleKeyDown);
+		window.addEventListener('resize', handleViewportChange);
+		window.addEventListener('scroll', handleViewportChange, true);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown);
+			document.removeEventListener('keydown', handleKeyDown);
+			window.removeEventListener('resize', handleViewportChange);
+			window.removeEventListener('scroll', handleViewportChange, true);
+		};
+	}, [highlightMenuOpen, updateHighlightMenuPosition]);
+	React.useEffect(() => {
+		if (!emojiMenuOpen) return;
+		updateEmojiMenuPosition();
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target as Node | null;
+			if (!target) return;
+			if (emojiMenuRef.current?.contains(target)) return;
+			if (emojiMenuButtonRef.current?.contains(target)) return;
+			setEmojiMenuOpen(false);
+		};
+		const handleKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === 'Escape') setEmojiMenuOpen(false);
+		};
+		const handleViewportChange = (): void => updateEmojiMenuPosition();
+		document.addEventListener('pointerdown', handlePointerDown);
+		document.addEventListener('keydown', handleKeyDown);
+		window.addEventListener('resize', handleViewportChange);
+		window.addEventListener('scroll', handleViewportChange, true);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown);
+			document.removeEventListener('keydown', handleKeyDown);
+			window.removeEventListener('resize', handleViewportChange);
+			window.removeEventListener('scroll', handleViewportChange, true);
+		};
+	}, [emojiMenuOpen, updateEmojiMenuPosition]);
 
 	const noEditor = !props.editor;
 	const compactButtonClass = props.compact ? ` ${styles.formatButtonCompact}` : '';
@@ -710,6 +860,25 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
 					<FontAwesomeIcon icon={faLink} />
 				</button>
+				{/* Emoji quick-insert — available in all toolbar variants */}
+				<div className={styles.formatMenuAnchor}>
+					<button
+						ref={emojiMenuButtonRef}
+						type="button"
+						className={`${styles.formatButton}${compactButtonClass}${emojiMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+						aria-label={t('editors.emojiPicker')}
+						title={t('editors.emojiPicker')}
+						aria-expanded={emojiMenuOpen}
+						onMouseDown={preventToolbarFocusSteal}
+						onPointerDown={preventToolbarFocusSteal}
+						onClick={() => {
+							updateEmojiMenuPosition();
+							setEmojiMenuOpen((open) => !open);
+						}}
+					>
+						<FontAwesomeIcon icon={faFaceSmile} />
+					</button>
+				</div>
 				{props.onCreateUrlPreview ? (
 					<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
 						<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
@@ -728,6 +897,35 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					>
 						<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
 					</button>
+				) : null}
+				{props.onUndoCheckbox ? (
+					<>
+						<div className={styles.formatDivider} aria-hidden="true" />
+						<button
+							type="button"
+							className={`${styles.formatButton}${compactButtonClass}`}
+							aria-label={t('editors.undoCheckbox')}
+							title={t('editors.undoCheckbox')}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={props.onUndoCheckbox}
+							disabled={!props.checkboxUndoAvail}
+						>
+							<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconUndoCheckbox}`} aria-hidden="true" />
+						</button>
+						<button
+							type="button"
+							className={`${styles.formatButton}${compactButtonClass}`}
+							aria-label={t('editors.redoCheckbox')}
+							title={t('editors.redoCheckbox')}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={props.onRedoCheckbox}
+							disabled={!props.checkboxRedoAvail}
+						>
+							<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconRedoCheckbox}`} aria-hidden="true" />
+						</button>
+					</>
 				) : null}
 				{props.variant !== 'full' && showStructuredNestingButtons ? (
 					<>
@@ -760,6 +958,25 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				{props.variant === 'full' ? (
 					<>
 						<div className={styles.formatDivider} aria-hidden="true" />
+						{/* Multi-color highlight picker */}
+						<div className={styles.formatMenuAnchor}>
+							<button
+								ref={highlightMenuButtonRef}
+								type="button"
+								className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHighlight || highlightMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+								aria-label={t('editors.highlight')}
+								title={t('editors.highlight')}
+								aria-expanded={highlightMenuOpen}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => {
+									updateHighlightMenuPosition();
+									setHighlightMenuOpen((open) => !open);
+								}}
+							>
+								<FontAwesomeIcon icon={faHighlighter} />
+							</button>
+						</div>
 						<button
 							ref={headingMenuButtonRef}
 							type="button"
@@ -938,6 +1155,94 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<button type="button" className={styles.formatMenuButton} role="menuitem" onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runTableMenuCommand('deleteTable')} disabled={!resolvedToolbarState.canDeleteTable}>
 							{t('editors.deleteTable')}
 						</button>
+					</div>,
+					document.body,
+				)
+				: null}
+			{/* Highlight color picker portal */}
+			{highlightMenuOpen && highlightMenuPosition && typeof document !== 'undefined'
+				? createPortal(
+					<div
+						ref={highlightMenuRef}
+						className={styles.highlightMenu}
+						role="menu"
+						aria-label={t('editors.highlight')}
+						style={{ position: 'fixed', top: `${highlightMenuPosition.top}px`, left: `${highlightMenuPosition.left}px` }}
+						onPointerDown={stopToolbarPropagation}
+						onMouseDown={stopToolbarPropagation}
+						onClick={stopToolbarPropagation}
+					>
+						{HIGHLIGHT_COLORS.map((color) => (
+							<button
+								key={color.id}
+								type="button"
+								className={styles.highlightSwatch}
+								aria-label={t(color.labelKey as Parameters<typeof t>[0])}
+								title={t(color.labelKey as Parameters<typeof t>[0])}
+								style={{ background: color.cssVar }}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => {
+									// Toggle: if already active with this color, remove highlight.
+									const isActive = props.editor?.isActive('highlight', { color: color.cssVar });
+									if (isActive) {
+										props.editor?.chain().focus().unsetHighlight().run();
+									} else {
+										(props.editor?.chain().focus() as unknown as { setHighlight: (opts: { color: string }) => { run: () => boolean } })
+											.setHighlight({ color: color.cssVar }).run();
+									}
+									setHighlightMenuOpen(false);
+								}}
+							/>
+						))}
+						<button
+							type="button"
+							className={styles.highlightClearButton}
+							aria-label={t('editors.highlightClear')}
+							title={t('editors.highlightClear')}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => {
+								props.editor?.chain().focus().unsetHighlight().run();
+								setHighlightMenuOpen(false);
+							}}
+						>
+							{t('editors.highlightClear')}
+						</button>
+					</div>,
+					document.body,
+				)
+				: null}
+			{/* Emoji quick-insert portal */}
+			{emojiMenuOpen && emojiMenuPosition && typeof document !== 'undefined'
+				? createPortal(
+					<div
+						ref={emojiMenuRef}
+						className={styles.emojiMenu}
+						role="menu"
+						aria-label={t('editors.emojiPicker')}
+						style={{ position: 'fixed', top: `${emojiMenuPosition.top}px`, left: `${emojiMenuPosition.left}px` }}
+						onPointerDown={stopToolbarPropagation}
+						onMouseDown={stopToolbarPropagation}
+						onClick={stopToolbarPropagation}
+					>
+						{QUICK_EMOJIS.map((emoji) => (
+							<button
+								key={emoji}
+								type="button"
+								className={styles.emojiButton}
+								aria-label={emoji}
+								title={emoji}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => {
+									props.editor?.chain().focus().insertContent(emoji).run();
+									setEmojiMenuOpen(false);
+								}}
+							>
+								{emoji}
+							</button>
+						))}
 					</div>,
 					document.body,
 				)

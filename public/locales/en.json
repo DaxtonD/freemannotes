@@ -273,7 +273,20 @@
     "mediaTabLinks": "Links",
     "mediaTabDocuments": "Documents",
     "bottomDock": "Bottom dock",
-    "dockAction": "Dock action"
+    "dockAction": "Dock action",
+    "highlight": "Highlight color",
+    "highlightYellow": "Yellow highlight",
+    "highlightGreen": "Green highlight",
+    "highlightBlue": "Blue highlight",
+    "highlightPink": "Pink highlight",
+    "highlightPurple": "Purple highlight",
+    "highlightOrange": "Orange highlight",
+    "highlightTeal": "Teal highlight",
+    "highlightRed": "Red highlight",
+    "highlightClear": "Remove highlight",
+    "emojiPicker": "Insert emoji",
+    "undoCheckbox": "Undo checkbox change",
+    "redoCheckbox": "Redo checkbox change"
   },
   "documents": {
     "emptyTitle": "No documents yet",
