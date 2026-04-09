@@ -4,7 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 1.2.11 - 2026-04-09
+## 1.2.12 - 2026-04-09
+
+### Added
+- **Multi-color text highlighting in the rich-text editor.** The TipTap toolbar now includes a highlight button that opens an 8-color swatch picker (yellow, green, blue, pink, purple, orange, teal, red). Colors are stored as CSS variables and adapt to the active theme.
+- **Emoji picker in the rich-text toolbar.** A quick-access emoji grid (48 emojis, no external dependency) is available directly in the TipTap toolbar for all rich-text note types.
+- **Checklist undo / redo.** Both the new-note (`ChecklistEditor`) and existing-note (`NoteEditor`) checklist editors now support undoing and redoing check/uncheck actions via toolbar buttons and the standard `Ctrl+Z` / `Ctrl+Shift+Z` keyboard shortcuts.
+
+### Fixed
+- **Highlight colors now render in note card and list views.** The rich-text preview renderer in note cards and the detailed list view now handles the `highlight` mark and renders the stored color, matching the in-editor appearance.
+- **Checklist undo/redo toolbar buttons are properly sized and theme-adaptive.** The undo/redo icons use the same CSS `mask-image` technique as other toolbar icons so they scale correctly at 16 × 16 and inherit the current theme color.
 
 ### Added
 - **Sidebar label management is now available outside note editing.** The sidebar now includes a dedicated `Manage labels...` entry, and the labels modal can switch into a standalone management mode with focused side-pane editing on mobile.

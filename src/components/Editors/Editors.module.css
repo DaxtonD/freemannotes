@@ -606,6 +606,94 @@
 	z-index: 10000;
 }
 
+/* ── Highlight color picker ────────────────────────────────────────────── */
+.highlightMenu {
+	padding: 8px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-surface);
+	box-shadow: 0 14px 28px -18px rgba(0, 0, 0, 0.55);
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	z-index: 10001;
+	/* 8 swatches × 28px + 7 gaps × 6px = 266px, fits 4 per row comfortably */
+	max-width: 218px;
+}
+
+.highlightSwatch {
+	border: 2px solid transparent;
+	border-radius: 50%;
+	width: 28px;
+	height: 28px;
+	cursor: pointer;
+	flex: 0 0 auto;
+	transition: transform var(--transition-fast), border-color var(--transition-fast);
+}
+
+.highlightSwatch:hover,
+.highlightSwatch:focus-visible {
+	border-color: color-mix(in srgb, var(--color-text) 60%, transparent);
+	transform: scale(1.15);
+	outline: none;
+}
+
+.highlightClearButton {
+	width: 100%;
+	margin-top: 2px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: transparent;
+	color: var(--color-text);
+	font: inherit;
+	font-size: var(--font-size-xs);
+	padding: 4px 8px;
+	cursor: pointer;
+	text-align: center;
+}
+
+.highlightClearButton:hover,
+.highlightClearButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
+/* ── Emoji quick-insert picker ─────────────────────────────────────────── */
+.emojiMenu {
+	padding: 8px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: var(--color-surface);
+	box-shadow: 0 14px 28px -18px rgba(0, 0, 0, 0.55);
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px;
+	z-index: 10001;
+	max-width: 264px;
+}
+
+.emojiButton {
+	border: 0;
+	background: transparent;
+	font-size: 20px;
+	line-height: 1;
+	width: 36px;
+	height: 36px;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex: 0 0 auto;
+	transition: background-color var(--transition-fast), transform var(--transition-fast);
+}
+
+.emojiButton:hover,
+.emojiButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+	transform: scale(1.12);
+	outline: none;
+}
+
 .formatMenuButton {
 	border: 0;
 	background: transparent;
@@ -654,6 +742,16 @@
 .formatButtonMaskIconAutoScroll {
 	-webkit-mask-image: url('/icons/autoscroll.png');
 	mask-image: url('/icons/autoscroll.png');
+}
+
+.formatButtonMaskIconUndoCheckbox {
+	-webkit-mask-image: url('/icons/undo-checkbox.png');
+	mask-image: url('/icons/undo-checkbox.png');
+}
+
+.formatButtonMaskIconRedoCheckbox {
+	-webkit-mask-image: url('/icons/redo-checkbox.png');
+	mask-image: url('/icons/redo-checkbox.png');
 }
 
 .formatDivider {
@@ -1320,6 +1418,15 @@
 	padding-inline-start: 1.5em;
 }
 
+/* Highlight marks: use the inline style background set by TipTap, with a
+   slight border-radius so the highlight looks polished. */
+.richEditorContent:global(.ProseMirror) mark {
+	border-radius: 2px;
+	padding: 0.05em 0.15em;
+	/* Preserve the TipTap-set background-color from the inline style attribute. */
+	color: inherit;
+}
+
 .richEditorContent:global(.ProseMirror) h1 {
 	font-size: calc(clamp(1.45rem, 2vw, 2rem) * var(--note-editor-font-scale, 1));
 	line-height: 1.12;
@@ -1528,6 +1635,7 @@
 	min-height: 0;
 	overflow: hidden;
 }
+
 .checklistScrollArea {
 	flex: 1;
 	min-height: 0;

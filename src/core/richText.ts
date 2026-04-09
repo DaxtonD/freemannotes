@@ -1,5 +1,6 @@
 import { generateText, getRenderedAttributes, getSchema, type Editor, type Extensions, type JSONContent } from '@tiptap/core';
 import Collaboration from '@tiptap/extension-collaboration';
+import Highlight from '@tiptap/extension-highlight';
 import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
 import { Table, TableCell, TableHeader, TableRow } from '@tiptap/extension-table';
@@ -199,6 +200,7 @@ export function createRichTextExtensions(args: {
 
 	if (args.variant === 'full') {
 		extensions.push(
+			Highlight.configure({ multicolor: true }),
 			TaskList,
 			MobileSafeTaskItem.configure({ nested: true }),
 			Table.configure({ resizable: false }),

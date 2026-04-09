@@ -1,4 +1,4 @@
-import React, { useMemo, useSyncExternalStore } from 'react';
+﻿import React, { useMemo, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import type { Editor } from '@tiptap/core';
 import {
@@ -814,6 +814,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowEditor, setActiveChecklistRowEditor] = React.useState<Editor | null>(null);
+	const checkboxUndoStack = React.useRef<readonly ChecklistItem[][]>([]);
+	const checkboxRedoStack = React.useRef<readonly ChecklistItem[][]>([]);
+	const [checkboxUndoAvail, setCheckboxUndoAvail] = React.useState(false);
+	const [checkboxRedoAvail, setCheckboxRedoAvail] = React.useState(false);
 	// Text-note copy mode is lifted here so the coarse-pointer floating toolbar can
 	// reflect and update the same selection-copy mode as the inline desktop toolbar.
 	const [copyMode, setCopyMode] = React.useState<ClipboardConversionTarget>('rich-text');
@@ -1266,10 +1270,35 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const toggleChecklistCompleted = React.useCallback(
 		(id: string, checked: boolean): void => {
 			if (type !== 'checklist') return;
+			const snapshot = normalizedItems;
+			checkboxUndoStack.current = [...checkboxUndoStack.current.slice(-39), snapshot];
+			checkboxRedoStack.current = [];
+			setCheckboxUndoAvail(true);
+			setCheckboxRedoAvail(false);
 			replaceChecklistItems(toggleChecklistItemCompleted(normalizedItems, id, checked));
 		},
 		[normalizedItems, replaceChecklistItems, type]
 	);
+
+	const undoCheckboxChange = React.useCallback((): void => {
+		if (checkboxUndoStack.current.length === 0) return;
+		const snapshot = checkboxUndoStack.current[checkboxUndoStack.current.length - 1];
+		checkboxUndoStack.current = checkboxUndoStack.current.slice(0, -1);
+		checkboxRedoStack.current = [...checkboxRedoStack.current, normalizedItems];
+		setCheckboxUndoAvail(checkboxUndoStack.current.length > 0);
+		setCheckboxRedoAvail(true);
+		replaceChecklistItems(snapshot);
+	}, [normalizedItems, replaceChecklistItems]);
+
+	const redoCheckboxChange = React.useCallback((): void => {
+		if (checkboxRedoStack.current.length === 0) return;
+		const snapshot = checkboxRedoStack.current[checkboxRedoStack.current.length - 1];
+		checkboxRedoStack.current = checkboxRedoStack.current.slice(0, -1);
+		checkboxUndoStack.current = [...checkboxUndoStack.current, normalizedItems];
+		setCheckboxUndoAvail(true);
+		setCheckboxRedoAvail(checkboxRedoStack.current.length > 0);
+		replaceChecklistItems(snapshot);
+	}, [normalizedItems, replaceChecklistItems]);
 
 	const checkAllChecklistItems = React.useCallback((): void => {
 		if (type !== 'checklist' || readOnly || normalizedItems.length === 0) return;
@@ -1280,6 +1309,41 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (type !== 'checklist' || readOnly || normalizedItems.length === 0) return;
 		replaceChecklistItems(normalizedItems.map((item) => (!item.completed ? item : { ...item, completed: false })));
 	}, [normalizedItems, readOnly, replaceChecklistItems, type]);
+
+	// Keyboard undo/redo for checkbox toggles (Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z)
+	React.useEffect(() => {
+		if (type !== 'checklist' || readOnly) return;
+		const onKey = (e: KeyboardEvent): void => {
+			const meta = e.ctrlKey || e.metaKey;
+			if (!meta) return;
+			if (e.key === 'z' || e.key === 'Z') {
+				if (e.shiftKey) {
+					if (checkboxRedoStack.current.length === 0) return;
+					e.preventDefault();
+					redoCheckboxChange();
+				} else {
+					if (checkboxUndoStack.current.length === 0) return;
+					// Only intercept when focus is NOT inside a TipTap contenteditable
+					// so the editor's own Ctrl+Z still works on typed text.
+					const active = document.activeElement;
+					const inEditor = active instanceof HTMLElement && active.isContentEditable;
+					if (inEditor) return;
+					e.preventDefault();
+					undoCheckboxChange();
+				}
+			} else if (e.key === 'y' || e.key === 'Y') {
+				if (!e.shiftKey && checkboxRedoStack.current.length > 0) {
+					const active = document.activeElement;
+					const inEditor = active instanceof HTMLElement && active.isContentEditable;
+					if (inEditor) return;
+					e.preventDefault();
+					redoCheckboxChange();
+				}
+			}
+		};
+		document.addEventListener('keydown', onKey);
+		return () => document.removeEventListener('keydown', onKey);
+	}, [readOnly, redoCheckboxChange, type, undoCheckboxChange]);
 
 	const removeChecklistItem = React.useCallback(
 		(id: string, options?: { clearSelection?: boolean }): void => {
@@ -2054,7 +2118,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 						<div className={styles.checklistToolbarSlot}>
-							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
+							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} />
 						</div>
 						{/* Keyboard-open branch:
 						    Checklist mode does not use the generic rich-text viewport above, so we add
@@ -2568,6 +2632,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
 						copyMode={type === 'text' ? copyMode : undefined}
 						onCopyModeChange={type === 'text' ? setCopyMode : undefined}
+						onUndoCheckbox={type === 'checklist' && !readOnly ? undoCheckboxChange : undefined}
+						onRedoCheckbox={type === 'checklist' && !readOnly ? redoCheckboxChange : undefined}
+						checkboxUndoAvail={type === 'checklist' ? checkboxUndoAvail : undefined}
+						checkboxRedoAvail={type === 'checklist' ? checkboxRedoAvail : undefined}
 					/>
 				</div>
 			</>,
