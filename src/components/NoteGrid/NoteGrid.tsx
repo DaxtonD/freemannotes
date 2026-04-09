@@ -1415,6 +1415,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		onCommitOrder: commitVisibleOrder,
 		onTouchDropCommit: props.onTouchReorderEnd,
 		insertionSettleMs: isListLikeView ? 96 : 280,
+		usePointerEdgeAutoScroll: isListLikeView,
 	});
 
 	React.useEffect(() => {

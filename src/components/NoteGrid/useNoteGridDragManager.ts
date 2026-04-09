@@ -3,6 +3,7 @@ import { combine } from '@atlaskit/pragmatic-drag-and-drop/combine';
 import { draggable, dropTargetForElements, monitorForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import { disableNativeDragPreview } from '@atlaskit/pragmatic-drag-and-drop/element/disable-native-drag-preview';
 import { autoScrollForElements, autoScrollWindowForElements } from '@atlaskit/pragmatic-drag-and-drop-auto-scroll/element';
+import { createPointerEdgeAutoScroller, getClosestVerticalScrollContainer } from './autoScroll';
 import { isTouchDragPolyfillActive } from '../../core/touchDragPolyfill';
 import { arraysEqual, findInsertionPoint, insertIntoColumns } from './layout';
 
@@ -26,6 +27,7 @@ type DragManagerArgs = {
 	onCommitOrder: (finalColumns: string[][], draggedId: string, draggedHeight: number) => void;
 	onTouchDropCommit?: () => void;
 	insertionSettleMs?: number;
+	usePointerEdgeAutoScroll?: boolean;
 };
 
 type PragmaticDragData = {
@@ -136,6 +138,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const onCommitOrderRef = React.useRef(args.onCommitOrder);
 	const onTouchDropCommitRef = React.useRef(args.onTouchDropCommit);
 	const insertionSettleMsRef = React.useRef(args.insertionSettleMs ?? 280);
+	const usePointerEdgeAutoScrollRef = React.useRef(Boolean(args.usePointerEdgeAutoScroll));
 	// Ghost position: the pointer offset records where within the card the user
 	// initially grabbed (pointerXY - cardRect.topLeft).  This is subtracted from
 	// the live pointer position to keep the ghost anchored at the grab point.
@@ -150,6 +153,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const insertionCooldownRef = React.useRef(0);
 	const touchDragSessionRef = React.useRef(false);
 	const suppressOpenUntilRef = React.useRef(0);
+	const lastPointerRef = React.useRef<PointerInput | null>(null);
 
 	visibleIdsRef.current = args.visibleIds;
 	columnsRef.current = args.columns;
@@ -158,6 +162,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	onCommitOrderRef.current = args.onCommitOrder;
 	onTouchDropCommitRef.current = args.onTouchDropCommit;
 	insertionSettleMsRef.current = args.insertionSettleMs ?? 280;
+	usePointerEdgeAutoScrollRef.current = Boolean(args.usePointerEdgeAutoScroll);
 
 	const getRectForId = React.useCallback((id: string): DOMRect | null => {
 		return itemElementsRef.current.get(id)?.getBoundingClientRect() ?? null;
@@ -226,6 +231,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		insertionPointRef.current = null;
 		insertionCooldownRef.current = 0;
 		touchDragSessionRef.current = false;
+		lastPointerRef.current = null;
 		setActiveDragId(null);
 		setDragOverlay(null);
 		setInsertionPoint(null);
@@ -271,18 +277,23 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				element: section,
 				canDrop: ({ source }) => isPragmaticDragData(source.data),
 			}),
-			autoScrollWindowForElements({
-				canScroll: ({ source }) => isPragmaticDragData(source.data) && !isTouchDragPolyfillActive(),
-			}),
 		];
 
-		if (isScrollableElement(section)) {
+		if (!usePointerEdgeAutoScrollRef.current) {
 			cleanupParts.push(
-				autoScrollForElements({
-					element: section,
+				autoScrollWindowForElements({
 					canScroll: ({ source }) => isPragmaticDragData(source.data) && !isTouchDragPolyfillActive(),
 				})
 			);
+
+			if (isScrollableElement(section)) {
+				cleanupParts.push(
+					autoScrollForElements({
+						element: section,
+						canScroll: ({ source }) => isPragmaticDragData(source.data) && !isTouchDragPolyfillActive(),
+					})
+				);
+			}
 		}
 
 		return combine(
@@ -314,6 +325,18 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 
 	// Global drag monitor
 	React.useEffect(() => {
+		const edgeAutoScroller = createPointerEdgeAutoScroller({
+			getPointerInput: () => lastPointerRef.current,
+			getScrollContainer: () => getClosestVerticalScrollContainer(args.sectionRef.current),
+			edgePx: 88,
+			minSpeedPxPerSecond: 90,
+			maxSpeedPxPerSecond: 1500,
+			onDidScroll: () => {
+				const pointer = lastPointerRef.current;
+				if (!pointer) return;
+				updateInsertionPoint(pointer);
+			},
+		});
 		const cleanup = monitorForElements({
 			canMonitor: ({ source }) => isPragmaticDragData(source.data),
 			onDragStart: (event: any) => {
@@ -331,6 +354,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					x: input.clientX - rect.left,
 					y: input.clientY - rect.top,
 				};
+				lastPointerRef.current = input;
 				previewSizeRef.current = { width: rect.width, height: rect.height };
 				setActiveDragId(activeId);
 				setIsTouchDragging(isTouchDrag);
@@ -343,12 +367,16 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
 				});
+				if (usePointerEdgeAutoScrollRef.current) {
+					edgeAutoScroller.start();
+				}
 				updateInsertionPoint(input);
 			},
 			onDrag: (event: any) => {
 				const activeId = activeDragIdRef.current;
 				if (!activeId) return;
 				const pointer = event.location.current.input as PointerInput;
+				lastPointerRef.current = pointer;
 				const overlayLeft = computeOverlayLeft(pointer);
 				const overlayTop = computeOverlayTop(pointer);
 				setDragOverlay({
@@ -361,6 +389,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				updateInsertionPoint(pointer);
 			},
 			onDrop: () => {
+				edgeAutoScroller.stop();
 				const activeId = activeDragIdRef.current;
 				const ip = insertionPointRef.current;
 
@@ -402,6 +431,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			},
 		});
 		return () => {
+			edgeAutoScroller.stop();
 			cleanup();
 			clearDragState();
 		};

@@ -25,7 +25,7 @@ import { readNoteFromDoc } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import type { VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
 import type { LabelRecord } from '../../services/labelService';
-import { applyFlipAnimations, measureViewportRects } from './flip';
+import { applyDocumentFlipAnimations, measureDocumentRects, type DocumentRectMap } from './flip';
 import styles from './NoteListView.module.css';
 
 export type NoteListViewProps = {
@@ -238,24 +238,24 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 	const showPreview = props.variant === 'strip';
 	const containerRef = React.useRef<HTMLDivElement | null>(null);
-	const previousRectsRef = React.useRef<Map<string, DOMRect>>(new Map());
+	const previousRectsRef = React.useRef<DocumentRectMap>(new Map());
 	const hasMeasuredRef = React.useRef(false);
 
 	React.useLayoutEffect(() => {
 		const container = containerRef.current;
 		if (!container) return;
 		if (!hasMeasuredRef.current) {
-			previousRectsRef.current = measureViewportRects(container);
+			previousRectsRef.current = measureDocumentRects(container);
 			hasMeasuredRef.current = true;
 			return;
 		}
-		previousRectsRef.current = applyFlipAnimations({
+		previousRectsRef.current = applyDocumentFlipAnimations({
 			container,
 			previousRects: previousRectsRef.current,
 			activeId: props.activeDragId,
 			suppressAnimations: false,
 			skipForScroll: false,
-			suppressUniformGlobalShift: props.activeDragId == null,
+			suppressUniformGlobalShift: true,
 		});
 	}, [props.activeDragId, props.orderedIds, showPreview]);
 

@@ -9,6 +9,11 @@ export type DocumentRect = {
 };
 export type DocumentRectMap = Map<string, DocumentRect>;
 
+type RectSnapshot = {
+	left: number;
+	top: number;
+};
+
 const FLIP_ANIMATION_MS = 140;
 const FLIP_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const flipCleanupTimers = new WeakMap<HTMLElement, number>();
@@ -65,15 +70,16 @@ export function measureViewportRects(container: HTMLElement): ViewportRectMap {
 	return rects;
 }
 
-export function applyFlipAnimations(args: {
+function runFlipAnimations<T extends RectSnapshot>(args: {
 	container: HTMLElement;
-	previousRects: ViewportRectMap;
+	previousRects: Map<string, T>;
+	measureRects: (container: HTMLElement) => Map<string, T>;
 	activeId: string | null;
 	suppressAnimations: boolean;
 	skipForScroll: boolean;
 	suppressUniformGlobalShift?: boolean;
-}): ViewportRectMap {
-	const nextRects = measureViewportRects(args.container);
+}): Map<string, T> {
+	const nextRects = args.measureRects(args.container);
 	const nodes = Array.from(args.container.querySelectorAll<HTMLElement>('[data-note-id]'));
 	const deltas: Array<{ node: HTMLElement; dx: number; dy: number }> = [];
 
@@ -125,4 +131,32 @@ export function applyFlipAnimations(args: {
 	scheduleFlipCleanup(args.container);
 
 	return nextRects;
+}
+
+export function applyFlipAnimations(args: {
+	container: HTMLElement;
+	previousRects: ViewportRectMap;
+	activeId: string | null;
+	suppressAnimations: boolean;
+	skipForScroll: boolean;
+	suppressUniformGlobalShift?: boolean;
+}): ViewportRectMap {
+	return runFlipAnimations({
+		...args,
+		measureRects: measureViewportRects,
+	});
+}
+
+export function applyDocumentFlipAnimations(args: {
+	container: HTMLElement;
+	previousRects: DocumentRectMap;
+	activeId: string | null;
+	suppressAnimations: boolean;
+	skipForScroll: boolean;
+	suppressUniformGlobalShift?: boolean;
+}): DocumentRectMap {
+	return runFlipAnimations({
+		...args,
+		measureRects: measureDocumentRects,
+	});
 }
