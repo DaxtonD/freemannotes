@@ -1,4 +1,5 @@
 import React from 'react';
+import * as ReactDOM from 'react-dom';
 import type * as Y from 'yjs';
 import Cropper from 'react-easy-crop';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -63,7 +64,7 @@ import { type LocaleCode, useI18n } from './core/i18n';
 import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId, readNoteFromDoc } from './core/noteModel';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, isLightTheme, persistThemeId, THEMES, type ThemeId } from './core/theme';
-import { activateWorkspace, fetchUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
+import { activateWorkspace, fetchUserPreferences, flushUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
 import { useConnectionStatus } from './core/useConnectionStatus';
 import { useBodyScrollLock } from './core/useBodyScrollLock';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
@@ -131,8 +132,9 @@ import { getWorkspaceDisplayName, isPersonalWorkspace } from './core/workspaceDi
 import { clearWorkspaceSelectionCache, readWorkspaceSelectionCache, writeWorkspaceSelectionCache } from './core/workspaceSelectionCache';
 import { type ViewMode, cycleViewMode, loadViewMode, saveViewMode } from './core/viewMode';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from './core/bubbleZoom';
-import { getWorkspaceBubbleColorScheme, toWorkspaceBubbleColorStyle } from './core/bubbleWorkspaceColors';
+import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle, WORKSPACE_COLOR_TOKENS } from './core/bubbleWorkspaceColors';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
+import { CrossWorkspaceNoteModal } from './components/BubbleView/CrossWorkspaceNoteModal';
 
 type EditorMode = 'none' | 'text' | 'checklist';
 
@@ -319,6 +321,8 @@ type OverlaySnapshot = {
 	isWorkspaceSwitcherOpen: boolean;
 	collaboratorModalState: CollaboratorModalState | null;
 	noteAttachmentBrowserState: NoteAttachmentBrowserState | null;
+	/** Cross-workspace note viewer opened from bubble view. */
+	crossWorkspaceNote: { noteId: string; workspaceId: string; workspaceName: string } | null;
 	isMobileSidebarOpen: boolean;
 	isFabOpen: boolean;
 };
@@ -374,6 +378,7 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	isWorkspaceSwitcherOpen: false,
 	collaboratorModalState: null,
 	noteAttachmentBrowserState: null,
+	crossWorkspaceNote: null,
 	isMobileSidebarOpen: false,
 	isFabOpen: false,
 };
@@ -425,6 +430,7 @@ function hasOverlaySnapshotContent(snapshot: OverlaySnapshot): boolean {
 		|| snapshot.isWorkspaceSwitcherOpen
 		|| snapshot.collaboratorModalState !== null
 		|| snapshot.noteAttachmentBrowserState !== null
+		|| snapshot.crossWorkspaceNote !== null
 		|| snapshot.isMobileSidebarOpen
 		|| snapshot.isFabOpen;
 }
@@ -770,6 +776,17 @@ export function App(): React.JSX.Element {
 		() => cachedDeviceAppearancePrefs?.noteCardClickOpens ?? true
 	);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
+	// Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken }.
+	// Loaded from /api/user/preferences on auth, saved back on each change.
+	const [bubbleWorkspaceColorOverrides, setBubbleWorkspaceColorOverrides] = React.useState<Record<string, string>>({});
+	// Which workspace's color picker popover is open in the sidebar legend.
+	const [bubbleColorPickerWorkspaceId, setBubbleColorPickerWorkspaceId] = React.useState<string | null>(null);
+	// Viewport-relative rect of the swatch button that opened the color picker.
+	const [bubbleColorPickerAnchorRect, setBubbleColorPickerAnchorRect] = React.useState<DOMRect | null>(null);
+	// Ref to the portal-rendered picker div, used to skip close() when clicking inside it.
+	const bubbleColorPickerRef = React.useRef<HTMLDivElement | null>(null);
+	// Cross-workspace note opened from bubble view without switching active workspace.
+	const [crossWorkspaceNote, setCrossWorkspaceNote] = React.useState<{ noteId: string; workspaceId: string; workspaceName: string } | null>(null);
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const deferredSearchQuery = React.useDeferredValue(searchQuery.trim());
 	const [searchResults, setSearchResults] = React.useState<readonly NoteSearchResult[]>([]);
@@ -2246,6 +2263,9 @@ export function App(): React.JSX.Element {
 				}
 				setTrashDeleteAfterDaysPref(pref.deleteAfterDays ?? null);
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
+				if (pref.bubbleWorkspaceColors && Object.keys(pref.bubbleWorkspaceColors).length > 0) {
+					setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors);
+				}
 			}
 			setPrefsHydrationAttempted(true);
 		})();
@@ -2360,7 +2380,7 @@ export function App(): React.JSX.Element {
 		return () => {
 			cancelSyncOutboxWorker(authUserId);
 		};
-	}, [authOfflineMode, authStatus, authUserId]);
+	}, [authOfflineMode, authStatus, authUserId, deviceId]);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -3699,6 +3719,15 @@ export function App(): React.JSX.Element {
 							bumpCollaborationRefreshToken();
 							return;
 						}
+						if (payload.type === 'workspace-metadata-changed' && payload.reason === 'user-preferences-changed') {
+							// Another session changed a user-scoped preference (e.g. bubble colors).
+							void fetchUserPreferences(deviceId).then((pref) => {
+								if (pref && Object.keys(pref.bubbleWorkspaceColors).length > 0) {
+									setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors);
+								}
+							});
+							return;
+						}
 						refreshWorkspaceMetadata();
 					}
 				} catch {
@@ -3840,10 +3869,17 @@ export function App(): React.JSX.Element {
 	);
 
 	const handleBubbleNoteSelect = React.useCallback(async (noteId: string, workspaceId: string): Promise<void> => {
-		const targetWorkspace = sidebarWorkspaces.find((workspace) => workspace.id === workspaceId) ?? null;
 		if (workspaceId !== authWorkspaceId) {
-			await activateWorkspaceFromSidebar(workspaceId, { activeSharedFolder: null });
+			// Open a standalone cross-workspace viewer instead of switching the
+			// active workspace — avoids history entries, "back to exit" prompts,
+			// and the async tear-down / reconnect latency.
+			const targetWorkspace = sidebarWorkspaces.find((ws) => ws.id === workspaceId) ?? null;
+			const workspaceName = targetWorkspace ? getWorkspaceDisplayName(targetWorkspace, t) : workspaceId;
+			setCrossWorkspaceNote({ noteId, workspaceId, workspaceName });
+			return;
 		}
+		// Same workspace — normal editor open flow.
+		const targetWorkspace = sidebarWorkspaces.find((ws) => ws.id === workspaceId) ?? null;
 		if (noteId.startsWith('shared-placement:') || targetWorkspace?.systemKind === 'SHARED_WITH_ME') {
 			await refreshNoteShareStateRef.current();
 		}
@@ -3853,7 +3889,37 @@ export function App(): React.JSX.Element {
 			// Fall back to the normal loading state if preloading cannot complete yet.
 		}
 		openNoteEditor(noteId, { replaceTop: editorMode !== 'none' });
-	}, [activateWorkspaceFromSidebar, authWorkspaceId, editorMode, manager, openNoteEditor, sidebarWorkspaces]);
+	}, [authWorkspaceId, editorMode, manager, openNoteEditor, sidebarWorkspaces, t]);
+
+	/** Persist a new color token for a workspace's bubble color and sync to server. */
+	const handleBubbleWorkspaceColorChange = React.useCallback((workspaceId: string, token: string) => {
+		// Build next outside the state setter to avoid React StrictMode double-invoke side-effects.
+		const next = { ...bubbleWorkspaceColorOverrides, [workspaceId]: token };
+		setBubbleWorkspaceColorOverrides(next);
+		setBubbleColorPickerWorkspaceId(null);
+		setBubbleColorPickerAnchorRect(null);
+		// Queue the update then flush immediately — bypasses the 1-second debounce so
+		// the save goes out before the user can navigate away or refresh the page.
+		void updateUserPreferences(deviceId, { bubbleWorkspaceColors: next });
+		void flushUserPreferences();
+	}, [bubbleWorkspaceColorOverrides, deviceId]);
+
+	// Close the bubble color picker when the user clicks or taps outside it.
+	React.useEffect(() => {
+		if (!bubbleColorPickerWorkspaceId) return;
+		const close = (e: MouseEvent | TouchEvent): void => {
+			// Skip closing when the interaction is inside the picker itself.
+			if (bubbleColorPickerRef.current?.contains(e.target as Node)) return;
+			setBubbleColorPickerWorkspaceId(null);
+			setBubbleColorPickerAnchorRect(null);
+		};
+		window.addEventListener('mousedown', close, true);
+		window.addEventListener('touchstart', close, true);
+		return () => {
+			window.removeEventListener('mousedown', close, true);
+			window.removeEventListener('touchstart', close, true);
+		};
+	}, [bubbleColorPickerWorkspaceId]);
 
 	const openCreateEditorForCurrentContext = React.useCallback(
 		async (mode: 'text' | 'checklist', opts?: { replaceTop?: boolean }) => {
@@ -4725,9 +4791,9 @@ export function App(): React.JSX.Element {
 			id: workspace.id,
 			name: getWorkspaceDisplayName(workspace, t),
 			isActive: workspace.id === (viewMode === 'bubble' ? (bubbleWorkspaceSelectionId || authWorkspaceId) : authWorkspaceId),
-			style: toWorkspaceBubbleColorStyle(getWorkspaceBubbleColorScheme(themeId, workspace.id)),
+			style: toWorkspaceBubbleColorStyle(getWorkspaceBubbleColorSchemeOverridden(themeId, workspace.id, bubbleWorkspaceColorOverrides)),
 		}));
-	}, [authWorkspaceId, bubbleWorkspaceSelectionId, sidebarWorkspacesSorted, t, themeId, viewMode]);
+	}, [authWorkspaceId, bubbleWorkspaceColorOverrides, bubbleWorkspaceSelectionId, sidebarWorkspacesSorted, t, themeId, viewMode]);
 
 	const clearReminderSidebarFilter = React.useCallback(() => {
 		setActiveReminderFilter('all');
@@ -6184,19 +6250,22 @@ export function App(): React.JSX.Element {
 															className="sidebar-workspace-legend-item"
 															style={{ ['--sidebar-item-index' as const]: index + 4 } as React.CSSProperties}
 														>
-															{/* Bubble view is read-only for now. Keep the old workspace
-															    selection logic commented so per-workspace creation can be
-															    restored later without re-deriving the behavior.
-															    onClick={() => {
-																setBubbleWorkspaceSelectionId(workspace.id);
-																if (sidebarView === 'trash' || sidebarView === 'archive') {
-																	setActiveSharedFolder(null);
-																	setSidebarView('notes');
-																}
-																if (isMobileViewport) closeMobileSidebar();
-															    }}
-															*/}
-															<span className="sidebar-workspace-legend-swatch" style={workspace.style} aria-hidden="true" />
+															<button
+																type="button"
+																className={`sidebar-workspace-legend-swatch-btn${bubbleColorPickerWorkspaceId === workspace.id ? ' is-active' : ''}`}
+																style={workspace.style}
+																aria-label={`Change color for ${workspace.name}`}
+																onClick={(e) => {
+																	e.stopPropagation();
+																	if (bubbleColorPickerWorkspaceId === workspace.id) {
+																		setBubbleColorPickerWorkspaceId(null);
+																		setBubbleColorPickerAnchorRect(null);
+																	} else {
+																		setBubbleColorPickerWorkspaceId(workspace.id);
+																		setBubbleColorPickerAnchorRect(e.currentTarget.getBoundingClientRect());
+																	}
+																}}
+															/>
 															<span className="sidebar-workspace-legend-label">{truncateUiName(workspace.name, 44)}</span>
 															</div>
 													))}
@@ -6838,10 +6907,69 @@ export function App(): React.JSX.Element {
 							sidebarIsCollapsed={sidebarIsCollapsed}
 							hiddenNoteId={draftNoteId}
 							onSelectNote={handleBubbleNoteSelect}
+							workspaceColorOverrides={bubbleWorkspaceColorOverrides}
 						/>
 					) : null}
 				</main>
 			</div>
+			{crossWorkspaceNote ? (
+				<CrossWorkspaceNoteModal
+					noteId={crossWorkspaceNote.noteId}
+					workspaceId={crossWorkspaceNote.workspaceId}
+					workspaceName={crossWorkspaceNote.workspaceName}
+					themeId={themeId}
+					authUserId={authUserId}
+					websocketUrl={manager.getWebsocketUrl()}
+					onClose={() => setCrossWorkspaceNote(null)}
+				/>
+			) : null}
+			{/* Bubble workspace color picker — rendered as a portal so it escapes
+			    the sidebar's overflow:hidden clipping, regardless of scroll position. */}
+			{bubbleColorPickerWorkspaceId && bubbleColorPickerAnchorRect ? ReactDOM.createPortal(
+				<div
+					ref={bubbleColorPickerRef}
+					className="sidebar-bubble-color-picker"
+					role="listbox"
+					aria-label="Bubble color"
+					style={(() => {
+						const PICKER_HEIGHT = 162;
+						const PICKER_WIDTH = 212;
+						const MARGIN = 6;
+						const spaceBelow = window.innerHeight - bubbleColorPickerAnchorRect.bottom;
+						const top = spaceBelow >= PICKER_HEIGHT + MARGIN
+							? bubbleColorPickerAnchorRect.bottom + MARGIN
+							: bubbleColorPickerAnchorRect.top - PICKER_HEIGHT - MARGIN;
+						const left = Math.min(
+							bubbleColorPickerAnchorRect.left,
+							window.innerWidth - PICKER_WIDTH - MARGIN,
+						);
+						return { top, left };
+					})()}
+					onMouseDown={(e) => e.stopPropagation()}
+					onTouchStart={(e) => e.stopPropagation()}
+				>
+					{WORKSPACE_COLOR_TOKENS.map((token) => {
+						const scheme = getWorkspaceBubbleColorSchemeOverridden(themeId, bubbleColorPickerWorkspaceId, { [bubbleColorPickerWorkspaceId]: token });
+						const isSelected = bubbleWorkspaceColorOverrides[bubbleColorPickerWorkspaceId] === token;
+						return (
+							<button
+								key={token}
+								type="button"
+								role="option"
+								aria-selected={isSelected}
+								className={`sidebar-bubble-color-picker-swatch${isSelected ? ' is-selected' : ''}`}
+								style={toWorkspaceBubbleColorStyle(scheme)}
+								title={token}
+								onClick={(e) => {
+									e.stopPropagation();
+									handleBubbleWorkspaceColorChange(bubbleColorPickerWorkspaceId, token);
+								}}
+							/>
+						);
+					})}
+				</div>,
+				document.body,
+			) : null}
 			<NoteMediaBrowserModal
 				isOpen={noteAttachmentBrowserState?.kind === 'images'}
 				docId={noteAttachmentBrowserState?.kind === 'images' ? noteAttachmentBrowserState.docId : null}

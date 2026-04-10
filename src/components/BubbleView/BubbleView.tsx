@@ -12,7 +12,8 @@
  * Lane assignment: active workspace → center; others distributed left/right.
  * Within a lane: sorted by score descending, stable secondary key = title.
  *
- * Zoom: CSS custom property --bv-scale = 0.5 + (zoom/100).
+ * Zoom: CSS custom property --bv-scale follows a viewport-aware curve so the
+ * same slider value remains usable on both desktop and narrow mobile PWAs.
  * Input: Ctrl+scroll (desktop) or pinch (touch).
  */
 
@@ -26,7 +27,7 @@ import { useDocumentManager } from '../../core/DocumentManagerContext';
 import type { ThemeId } from '../../core/theme';
 import { readNoteFromDoc } from '../../core/noteModel';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN } from '../../core/bubbleZoom';
-import { getWorkspaceBubbleColorScheme, toWorkspaceBubbleColorStyle } from '../../core/bubbleWorkspaceColors';
+import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle } from '../../core/bubbleWorkspaceColors';
 import {
 	listSharedNotePlacements,
 	readCachedNoteShareCollaborators,
@@ -47,11 +48,40 @@ const MAX_NOTES_PER_INACTIVE_WORKSPACE = 80;
 
 const ZOOM_MIN = BUBBLE_ZOOM_MIN;
 const ZOOM_MAX = BUBBLE_ZOOM_MAX;
+// Blend from a mobile-specific zoom curve into the historical desktop curve so
+// 100% keeps its existing desktop meaning without making mobile/PWA bubbles huge.
+const MOBILE_ZOOM_BLEND_START_PX = 520;
+const MOBILE_ZOOM_BLEND_END_PX = 960;
 // BubbleView layout debugging is intentionally kept in comments for future
 // troubleshooting. Re-enable the constants, types, state, and overlay below if
 // another resize/measurement regression needs instrumentation.
 // const BUBBLE_DEBUG_STORAGE_KEY = 'freemannotes.bubbleDebug';
 // const MAX_DEBUG_EVENTS = 12;
+
+function clamp01(value: number): number {
+	return Math.max(0, Math.min(1, value));
+}
+
+function lerp(start: number, end: number, amount: number): number {
+	return start + (end - start) * amount;
+}
+
+function getBubbleZoomScale(zoom: number, viewportWidth: number): number {
+	const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+	const normalizedZoom = (clampedZoom - ZOOM_MIN) / Math.max(1, ZOOM_MAX - ZOOM_MIN);
+	// Preserve the original desktop feel while compressing the upper half of the
+	// slider on narrow screens where the same physical bubble size feels much larger.
+	const desktopScale = 0.62 + clampedZoom / 120;
+	const mobileScale = 0.9 + Math.pow(normalizedZoom, 1.15) * 0.34;
+	const desktopBlend = clamp01((viewportWidth - MOBILE_ZOOM_BLEND_START_PX) / (MOBILE_ZOOM_BLEND_END_PX - MOBILE_ZOOM_BLEND_START_PX));
+	return lerp(mobileScale, desktopScale, desktopBlend);
+}
+
+function getDesktopEquivalentZoom(scale: number): number {
+	// Detail thresholds were tuned against the old desktop scale. Convert back to
+	// that equivalent space so text/badge density still tracks visual size.
+	return Math.max(0, (scale - 0.62) * 120);
+}
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -115,27 +145,27 @@ type BubbleSizeClass = 'size1' | 'size2' | 'size3' | 'size4' | 'size5' | 'size6'
 type BubbleDetailLevel = 'title' | 'meta' | 'full';
 
 const BUBBLE_BASE_DIAMETER: Record<BubbleSizeClass, number> = {
-	size1: 52,
-	size2: 62,
-	size3: 72,
-	size4: 84,
-	size5: 98,
-	size6: 114,
-	size7: 132,
-	size8: 152,
+	size1: 38,
+	size2: 52,
+	size3: 68,
+	size4: 88,
+	size5: 112,
+	size6: 140,
+	size7: 170,
+	size8: 204,
 };
 
 const BUBBLE_SIZE_CLASSES: readonly BubbleSizeClass[] = ['size1', 'size2', 'size3', 'size4', 'size5', 'size6', 'size7', 'size8'];
 
 /** Maps a raw importance score (0–15) to one of the eight visual size classes. */
 function scoreToSizeClass(score: number): BubbleSizeClass {
-	if (score >= 14) return 'size8';
-	if (score >= 12) return 'size7';
-	if (score >= 10) return 'size6';
-	if (score >= 8) return 'size5';
-	if (score >= 6) return 'size4';
-	if (score >= 4) return 'size3';
-	if (score >= 2) return 'size2';
+	if (score >= 13) return 'size8';
+	if (score >= 11) return 'size7';
+	if (score >= 9) return 'size6';
+	if (score >= 7) return 'size5';
+	if (score >= 5) return 'size4';
+	if (score >= 3.25) return 'size3';
+	if (score >= 1.5) return 'size2';
 	return 'size1';
 }
 
@@ -148,7 +178,7 @@ function getBubbleSizeRank(sizeClass: BubbleSizeClass): number {
  * grid for O(1) collision lookups.
  *
  * For each bubble (sorted largest-first so large circles claim space early):
- *  1. Pick a seeded-random start position in the upper portion of the cloud.
+ *  1. Pick a seeded-random start position inside a score-weighted vertical band.
  *  2. Walk an Archimedean spiral from that start, checking each candidate.
  *  3. Place the bubble at the first collision-free, in-bounds position.
  *
@@ -161,7 +191,7 @@ function getBubbleSizeRank(sizeClass: BubbleSizeClass): number {
  * @returns Map of noteId → centre position { cx, cy }.
  */
 function packBubbles(
-	inputs: readonly { noteId: string; r: number }[],
+	inputs: readonly { noteId: string; r: number; score: number }[],
 	containerWidth: number,
 	gap: number,
 ): Map<string, { cx: number; cy: number }> {
@@ -169,7 +199,9 @@ function packBubbles(
 	if (inputs.length === 0 || containerWidth <= 0) return result;
 
 	// Sort largest-first — big circles claim centre space, small ones fill gaps.
-	const sorted = [...inputs].sort((a, b) => b.r - a.r);
+	const sorted = [...inputs].sort((a, b) => (b.r - a.r) || (b.score - a.score));
+	const maxR = sorted[0]?.r ?? 0;
+	const minR = sorted[sorted.length - 1]?.r ?? maxR;
 
 	// Spatial hash grid: cell size = smallest bubble radius × 1.5 so each query
 	// covers at most 9 cells and finds all potential colliders.
@@ -223,13 +255,25 @@ function packBubbles(
 		return true;
 	};
 
-	for (const { noteId, r } of sorted) {
+	for (const [index, { noteId, r }] of sorted.entries()) {
+		const sizeBias = maxR > minR ? 1 - ((r - minR) / (maxR - minR)) : 0;
+		const orderBias = sorted.length > 1 ? index / (sorted.length - 1) : 0;
+		const depthReference = Math.max(cloudMaxY, maxR * 1.35);
+		const verticalBandProgress = Math.min(
+			1,
+			Math.pow(sizeBias, 1.12) * 0.52 + orderBias * 0.18,
+		);
+		const topFloor = r + 2 + depthReference * verticalBandProgress;
+		const seedBandHeight = index === 0
+			? Math.max(10, r * 0.16)
+			: Math.max(r * 0.45, depthReference * 0.12);
+
 		// Seed a start position inside the cloud's current extent.
-		// py is biased toward existing content so bubbles fill gaps rather than
-		// growing a tail at the bottom.
+		// The vertical seed band is always rank-aware so important bubbles keep
+		// first access to the upper region even in narrow/mobile layouts.
 		const sx = Math.max(r + 2, Math.min(containerWidth - r - 2,
 			seededRandom(`${noteId}:px`) * containerWidth));
-		const sy = r + 2 + seededRandom(`${noteId}:py`) * Math.max(r * 2, cloudMaxY * 0.7);
+		const sy = topFloor + seededRandom(`${noteId}:py`) * seedBandHeight;
 
 		// Archimedean spiral: radius = a × θ / 2π, step angle 0.45 rad.
 		// Setting a = max(r×0.5, 8) keeps arms reasonably tight so nearby gaps
@@ -243,7 +287,7 @@ function packBubbles(
 			const rs = a * theta / (2 * Math.PI);
 			const cx = sx + Math.cos(theta) * rs;
 			const cy = sy + Math.sin(theta) * rs;
-			if (fits(cx, cy, r)) {
+			if (cy >= topFloor && fits(cx, cy, r)) {
 				register(noteId, cx, cy, r);
 				found = true;
 				break;
@@ -254,7 +298,7 @@ function packBubbles(
 			// Fallback: systematic strip scan from the top so we always place.
 			const step = r * 0.7;
 			let placed_ = false;
-			outer: for (let cy = r + 2; cy < cloudMaxY + 800; cy += step) {
+			outer: for (let cy = Math.max(r + 2, topFloor); cy < cloudMaxY + 800; cy += step) {
 				for (let cx = r + 2; cx <= containerWidth - r - 2; cx += step) {
 					if (fits(cx, cy, r)) {
 						register(noteId, cx, cy, r);
@@ -347,8 +391,8 @@ type BubbleScoreInputs = {
  * Score contributions (capped at 15):
  *   +3  reminder due within 24 h
  *   +2  note is pinned
- *   +2  edited < 5 min ago   (+1 if edited < 30 min ago)
- *   +log2(collaborators+2)×0.5  shared notes get a logarithmic boost
+ *   +0..7 freshness window from "edited moments ago" down to "edited within 30 days"
+ *   +log2(collaborators+2)×0.75 shared notes get a logarithmic boost
  */
 function computeBalancedActivityScore(inputs: BubbleScoreInputs, now = Date.now()): number {
 	const reminderMs = inputs.reminderAt ? Date.parse(inputs.reminderAt) : Number.NaN;
@@ -356,13 +400,18 @@ function computeBalancedActivityScore(inputs: BubbleScoreInputs, now = Date.now(
 	const reminderScore = hasReminderSoon ? 3 : 0;
 	const pinScore = inputs.isPinned ? 2 : 0;
 
-	const minutesAgo = inputs.updatedAt > 0 ? (now - inputs.updatedAt) / 60000 : Number.POSITIVE_INFINITY;
+	const ageMs = inputs.updatedAt > 0 ? now - inputs.updatedAt : Number.POSITIVE_INFINITY;
 	let recencyScore = 0;
-	if (minutesAgo < FIVE_MINUTES_MS / 60000) recencyScore = 2;
-	else if (minutesAgo < THIRTY_MINUTES_MS / 60000) recencyScore = 1;
+	if (ageMs < FIVE_MINUTES_MS) recencyScore = 7;
+	else if (ageMs < THIRTY_MINUTES_MS) recencyScore = 6;
+	else if (ageMs < 3 * 60 * 60 * 1000) recencyScore = 5;
+	else if (ageMs < 12 * 60 * 60 * 1000) recencyScore = 4;
+	else if (ageMs < ONE_DAY_MS) recencyScore = 3;
+	else if (ageMs < 3 * ONE_DAY_MS) recencyScore = 2;
+	else if (ageMs < 30 * ONE_DAY_MS) recencyScore = 1;
 
 	const users = Math.max(inputs.collaboratorCount + 1, 1);
-	const collabScore = Math.log2(users + 1) * 0.5;
+	const collabScore = Math.log2(users + 1) * 0.75;
 	return Math.min(reminderScore + pinScore + recencyScore + collabScore, 15);
 }
 
@@ -1049,7 +1098,7 @@ function resolveBubbleTitleLayout(title: string, bubbleDiameter: number): { font
 	const clamp = getBubbleTitleClamp(bubbleDiameter);
 	const maxLineWidth = clamp === 1 ? trimmed.length : minMaxLineLength(words, clamp);
 	const requiredSafeBox = approximateTextWidth(maxLineWidth, baseFontPx);
-	const growRatio = Math.min(1.24, Math.max(1, requiredSafeBox / Math.max(safeBox, 1)));
+	const growRatio = Math.min(1.14, Math.max(1, requiredSafeBox / Math.max(safeBox, 1)));
 	const grownDiameter = bubbleDiameter * growRatio;
 	const grownSafeBox = getBubbleSafeBox(grownDiameter);
 	const fittedFontPx = Math.min(baseFontPx, Math.max(9, grownSafeBox / Math.max(maxLineWidth * 0.54, 1)));
@@ -1186,6 +1235,8 @@ export type BubbleViewProps = {
 	sidebarIsCollapsed: boolean;
 	/** Note ID to keep hidden from the bubble display while being drafted. */
 	hiddenNoteId?: string | null;
+	/** Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken } */
+	workspaceColorOverrides?: Readonly<Record<string, string>>;
 	onSelectNote: (noteId: string, workspaceId: string) => void | Promise<void>;
 };
 
@@ -1202,6 +1253,7 @@ export function BubbleView({
 	searchQuery,
 	sidebarIsCollapsed,
 	hiddenNoteId,
+	workspaceColorOverrides,
 	onSelectNote,
 }: BubbleViewProps): React.JSX.Element {
 	const manager = useDocumentManager();
@@ -1269,13 +1321,15 @@ export function BubbleView({
 	}, []);
 
 	const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
+	const scale = getBubbleZoomScale(clampedZoom, viewportWidth);
+	const effectiveZoom = getDesktopEquivalentZoom(scale);
 	const workspaceColorSchemeById = React.useMemo(() => {
-		const entries = new Map<string, ReturnType<typeof getWorkspaceBubbleColorScheme>>();
+		const entries = new Map<string, ReturnType<typeof getWorkspaceBubbleColorSchemeOverridden>>();
 		for (const workspace of workspaces) {
-			entries.set(workspace.id, getWorkspaceBubbleColorScheme(themeId, workspace.id));
+			entries.set(workspace.id, getWorkspaceBubbleColorSchemeOverridden(themeId, workspace.id, workspaceColorOverrides));
 		}
 		return entries;
-	}, [themeId, workspaces]);
+	}, [themeId, workspaces, workspaceColorOverrides]);
 	const scoredNotes = React.useMemo(() => {
 		void scoreTick; // re-run each tick so smooth scores converge between Y.js events
 		const nowMs = Date.now();
@@ -1307,8 +1361,6 @@ export function BubbleView({
 			return matchesBubbleSearch(note, doc, searchQuery);
 		});
 	}, [activeWorkspaceId, hiddenNoteId, manager, scoredNotes, searchQuery]);
-	const scale = 0.62 + clampedZoom / 120;
-
 	// Build the visual layout list.  Notes are sorted score-descending (title
 	// as a stable tiebreaker) so the most important bubbles get first pick of
 	// the central position candidates in candidateCenterXs.
@@ -1332,7 +1384,7 @@ export function BubbleView({
 		// Build visual metadata for every note (size, color, animation seeds).
 		const visualItems = sorted.map((note) => {
 			const sizeClass = scoreToSizeClass(note.score);
-			const detailLevel = getBubbleDetailLevel(clampedZoom, sizeClass);
+			const detailLevel = getBubbleDetailLevel(effectiveZoom, sizeClass);
 			const nominalDiameter = BUBBLE_BASE_DIAMETER[sizeClass] * scale;
 			// Account for title-driven bubble growth so packing uses the real
 			// visual size and avoids text clipping across adjacent bubbles.
@@ -1343,7 +1395,7 @@ export function BubbleView({
 			const floatDelay = seededRandom(`${note.noteId}:delay`) * 6;
 			const doc = activeWorkspaceId === note.workspaceId ? (manager.peekDoc(note.noteId) ?? null) : null;
 			const workspaceColorStyle = toWorkspaceBubbleColorStyle(
-				workspaceColorSchemeById.get(note.workspaceId) ?? getWorkspaceBubbleColorScheme(themeId, note.workspaceId)
+				workspaceColorSchemeById.get(note.workspaceId) ?? getWorkspaceBubbleColorSchemeOverridden(themeId, note.workspaceId, workspaceColorOverrides)
 			);
 			return { note, sizeClass, detailLevel, bubbleDiameter: grownDiameter, rotateDeg, floatDuration, floatDelay, workspaceColorStyle, doc };
 		});
@@ -1354,6 +1406,7 @@ export function BubbleView({
 		const packInputs = visualItems.map((item) => ({
 			noteId: item.note.noteId,
 			r: item.bubbleDiameter / 2,
+			score: item.note.score,
 		}));
 		const positions = packBubbles(packInputs, usableWidth, PACK_GAP);
 
@@ -1376,7 +1429,7 @@ export function BubbleView({
 
 		return { items, totalHeight };
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [activeWorkspaceId, clampedZoom, containerWidth, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
+	}, [activeWorkspaceId, containerWidth, effectiveZoom, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
 
 	// const debugSummary = React.useMemo(() => {
 	// 	const rightmostEdge = packedLayout.items.reduce((max, item) => Math.max(max, item.left + item.layoutDiameter), 0);

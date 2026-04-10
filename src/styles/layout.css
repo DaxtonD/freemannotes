@@ -1474,6 +1474,8 @@
 	width: 100%;
 	text-align: left;
 	cursor: default;
+	/* needed so the absolute color-picker popover is positioned relative to this row */
+	position: relative;
 	opacity: 0;
 	transform: translateY(-6px) scale(0.985);
 	transition:
@@ -1494,8 +1496,63 @@
 	flex: 0 0 auto;
 	border-radius: 999px;
 	background: var(--bv-bubble-bg, var(--color-accent));
-	border: 1px solid var(--bv-bubble-border, var(--color-border));
-	box-shadow: inset 0 1px 0 rgba(255 255 255 / 0.18);
+	box-shadow: inset 0 1px 0 rgba(255 255 255 / 0.22);
+}
+
+/* Clickable swatch variant — replaces the static .sidebar-workspace-legend-swatch span */
+.sidebar-workspace-legend-swatch-btn {
+	width: 26px;
+	height: 12px;
+	flex: 0 0 auto;
+	border-radius: 999px;
+	background: var(--bv-bubble-bg, var(--color-accent));
+	border: none;
+	box-shadow: inset 0 1px 0 rgba(255 255 255 / 0.22);
+	padding: 0;
+	cursor: pointer;
+	transition: transform 130ms ease, box-shadow 130ms ease;
+}
+
+.sidebar-workspace-legend-swatch-btn:hover,
+.sidebar-workspace-legend-swatch-btn.is-active {
+	transform: scale(1.22);
+	box-shadow: inset 0 1px 0 rgba(255 255 255 / 0.32), 0 0 0 3px rgba(var(--color-text-rgb, 0 0 0) / 0.08);
+}
+
+/* Color-picker popover — rendered via React portal so it escapes sidebar
+   overflow clipping. Position is injected as an inline top/left style. */
+.sidebar-bubble-color-picker {
+	position: fixed;
+	z-index: 9999;
+	display: grid;
+	grid-template-columns: repeat(8, 20px);
+	gap: 5px;
+	padding: 8px;
+	background: var(--color-surface);
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	box-shadow: 0 6px 24px rgba(0 0 0 / 0.22), 0 1px 4px rgba(0 0 0 / 0.10);
+}
+
+.sidebar-bubble-color-picker-swatch {
+	width: 20px;
+	height: 20px;
+	flex: 0 0 auto;
+	border-radius: 50%;
+	background: var(--bv-bubble-bg, var(--color-accent));
+	border: none;
+	padding: 0;
+	cursor: pointer;
+	transition: transform 100ms ease;
+	box-shadow: inset 0 1px 0 rgba(255 255 255 / 0.3);
+}
+
+.sidebar-bubble-color-picker-swatch:hover {
+	transform: scale(1.28);
+}
+
+.sidebar-bubble-color-picker-swatch.is-selected {
+	box-shadow: inset 0 1px 0 rgba(255 255 255 / 0.3), 0 0 0 2px var(--color-surface), 0 0 0 4px var(--bv-bubble-bg, var(--color-accent));
 }
 
 .sidebar-workspace-legend-label {

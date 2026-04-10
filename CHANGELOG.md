@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.14 - 2026-04-09
+
+### Added
+- **Workspace bubble colors are now user-customizable and theme-aware.** Each workspace can be assigned a personal semantic bubble color that persists per user, syncs across sessions/devices, and resolves into light/medium/dark theme-adaptive shades instead of storing raw hex values.
+- **Cross-workspace bubble opens now mount a dedicated standalone editor.** Tapping a bubble from another workspace opens that note directly without switching the active workspace, using a dedicated modal/editor hydration path that reuses the background-cached Yjs room.
+
+### Changed
+- **Bubble importance is now expressed with a much wider size and placement range.** Bubble sizing uses a broader diameter ladder, a stronger freshness curve, a tighter title-growth cap, and rank-aware vertical packing so important notes float higher while stale notes sink lower more consistently across desktop and mobile.
+- **Bubble zoom now scales by viewport.** Desktop retains the existing 100% zoom feel, while mobile/PWA uses a flatter upper zoom curve so the same slider value remains practical on narrow screens.
+
+### Fixed
+- **Workspace bubble color overrides now survive refresh and sync live to other sessions.** Preference fetch/save responses now always include bubble color overrides, discrete picker actions flush immediately, and a user-preferences WebSocket metadata event triggers other sessions to refresh without overwriting local changes.
+- **Bubble workspace color picking is more reliable and usable.** Picker outside-click handling no longer swallows swatch clicks, the palette offers a broader mix of light/medium/dark families, and the portal-based picker stays within view without button-like borders or clipping.
+- **Cross-workspace note opening no longer flashes a malformed nested mobile layout.** The modal now delays its loading state slightly and only shows a lightweight loading shell while IndexedDB/websocket hydration settles, avoiding the transient fullscreen editor glitch.
+
 ## 1.2.13 - 2026-04-09
 
 ### Fixed
