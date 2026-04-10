@@ -2561,24 +2561,60 @@ export function App(): React.JSX.Element {
 		};
 	}, [authOfflineMode, authStatus, confirmActivatedWorkspaceSession, deviceId, externalRoute, handleExitExternalRoute, handleWorkspaceActivated, inviteAttemptKey, manager, showBriefDialog, t]);
 
+	// Tracks workspace IDs that were deleted by the local user and whose switch is in progress.
+	// Used by handleRemoteWorkspaceDeletedEvent to skip the metadata-WebSocket echo that arrives
+	// on the same connection during the async gap in handleWorkspaceDeleted — without this guard,
+	// the stale authWorkspaceId closure in the remote handler matches the deleted workspace and
+	// calls clearActiveWorkspaceState, which disables WebSocket sync before handleWorkspaceActivated
+	// can set up the new workspace providers.
+	const locallyDeletingWorkspaceIdsRef = React.useRef<Set<string>>(new Set());
+
 	const handleWorkspaceDeleted = React.useCallback(
 		async (deletedWorkspaceId: string, nextActiveWorkspaceId: string | null) => {
-			// Local delete flow: remove cached metadata for the deleted workspace, then either
-			// activate the server-selected fallback workspace or clear workspace state entirely.
-			if (authUserId) {
-				await removeCachedWorkspace({ workspaceId: deletedWorkspaceId, userId: authUserId, deviceId });
-			}
-			setSidebarWorkspaces((prev) => prev.filter((workspace) => workspace.id !== deletedWorkspaceId));
-			if (nextActiveWorkspaceId) {
-				if (nextActiveWorkspaceId !== authWorkspaceId) {
-					handleWorkspaceActivated(nextActiveWorkspaceId);
+			// Ensure the workspace is in the suppression set even if handleBeforeWorkspaceDelete
+			// was already called (idempotent add).
+			locallyDeletingWorkspaceIdsRef.current.add(deletedWorkspaceId);
+			try {
+				setSidebarWorkspaces((prev) => prev.filter((workspace) => workspace.id !== deletedWorkspaceId));
+				if (nextActiveWorkspaceId) {
+					if (nextActiveWorkspaceId !== authWorkspaceId) {
+						handleWorkspaceActivated(nextActiveWorkspaceId);
+					}
+					// Re-enable WebSocket sync explicitly.  The metadata-WS echo may have
+					// raced ahead of this fetch response and called clearActiveWorkspaceState
+					// (which sets websocketEnabled=false).  The DELETE response already
+					// carries the new JWT session cookie, so it is safe to enable WS now.
+					manager.setWebsocketEnabled(true);
+				} else {
+					clearActiveWorkspaceState({ preserveAuthCache: true });
 				}
-				return;
+				// Cache cleanup is async-only; runs after the switch is committed.
+				if (authUserId) {
+					await removeCachedWorkspace({ workspaceId: deletedWorkspaceId, userId: authUserId, deviceId });
+				}
+			} finally {
+				locallyDeletingWorkspaceIdsRef.current.delete(deletedWorkspaceId);
 			}
-			clearActiveWorkspaceState({ preserveAuthCache: true });
 		},
-		[authUserId, authWorkspaceId, clearActiveWorkspaceState, deviceId, handleWorkspaceActivated]
+		[authUserId, authWorkspaceId, clearActiveWorkspaceState, deviceId, handleWorkspaceActivated, manager]
 	);
+
+	// Called by WorkspaceSwitcherModal BEFORE the HTTP DELETE request is sent so we
+	// can suppress the metadata-WebSocket echo that races against the fetch response.
+	// On fast/local connections the server publishes the echo right after sending the
+	// HTTP response; the browser can process the WS message macrotask BEFORE the fetch
+	// Promise resolves, causing handleRemoteWorkspaceDeletedEvent to fire before
+	// handleWorkspaceDeleted — when locallyDeletingWorkspaceIdsRef is still empty.
+	const handleBeforeWorkspaceDelete = React.useCallback((workspaceId: string) => {
+		locallyDeletingWorkspaceIdsRef.current.add(workspaceId);
+		// Safety valve: remove after 10 s in case the request fails and
+		// handleWorkspaceDeleted (which cleans up in finally) is never called.
+		if (typeof window !== 'undefined') {
+			window.setTimeout(() => {
+				locallyDeletingWorkspaceIdsRef.current.delete(workspaceId);
+			}, 10_000);
+		}
+	}, []);
 
 	const handleRemoteWorkspaceRemoval = React.useCallback(
 		(args: { nextActiveWorkspaceId: string | null; hasOtherWorkspaces: boolean }) => {
@@ -2598,13 +2634,25 @@ export function App(): React.JSX.Element {
 		(deletedWorkspaceId: string) => {
 			// Remote delete flow: another tab/device/user action removed the workspace we are
 			// currently in. Clear the active workspace immediately and show the recovery notice.
-			if (!authWorkspaceId || deletedWorkspaceId !== authWorkspaceId) return;
+			//
+			// Two guards prevent the metadata-WS echo from the local delete action from
+			// incorrectly calling clearActiveWorkspaceState after the workspace switch:
+			//
+			// Guard 1 (fast path): the ref-based set captures the window while
+			//   handleWorkspaceDeleted is still executing.
+			//
+			// Guard 2 (reliable fallback): manager.setActiveWorkspaceId(nextId) runs
+			//   synchronously inside handleWorkspaceActivated, BEFORE any await.  So by
+			//   the time any async callback fires, getActiveWorkspaceId() already returns
+			//   the new workspace — even when the React authWorkspaceId closure is stale.
+			if (locallyDeletingWorkspaceIdsRef.current.has(deletedWorkspaceId)) return;
+			if (manager.getActiveWorkspaceId() !== deletedWorkspaceId) return;
 			const hasOtherWorkspaces = sidebarWorkspacesRef.current.some((workspace) => workspace.id !== deletedWorkspaceId);
 			setSidebarWorkspaces((prev) => prev.filter((workspace) => workspace.id !== deletedWorkspaceId));
 			clearActiveWorkspaceState({ preserveAuthCache: true });
 			setWorkspaceDeletedNotice({ hasOtherWorkspaces });
 		},
-		[authWorkspaceId, clearActiveWorkspaceState]
+		[clearActiveWorkspaceState, manager]
 	);
 	const handleRemoteWorkspaceDeletedEventRef = React.useRef(handleRemoteWorkspaceDeletedEvent);
 
@@ -7170,6 +7218,7 @@ export function App(): React.JSX.Element {
 				t={t}
 				authUserId={authUserId}
 				onWorkspaceActivated={handleWorkspaceActivated}
+				onBeforeWorkspaceDelete={handleBeforeWorkspaceDelete}
 				onWorkspaceDeleted={(deletedWorkspaceId, nextActiveWorkspaceId) => void handleWorkspaceDeleted(deletedWorkspaceId, nextActiveWorkspaceId)}
 				onActiveWorkspaceRenamed={() => void refreshActiveWorkspace()}
 			/>
