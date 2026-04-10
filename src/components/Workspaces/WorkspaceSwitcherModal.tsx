@@ -37,6 +37,12 @@ type Props = {
 	t: (key: string) => string;
 	authUserId: string | null;
 	onWorkspaceActivated: (workspaceId: string) => void;
+	/**
+	 * Called immediately before the DELETE request is sent so the parent can
+	 * suppress the metadata-WebSocket echo that will arrive on the same connection
+	 * shortly after the response — before the fetch Promise resolves.
+	 */
+	onBeforeWorkspaceDelete?: (workspaceId: string) => void;
 	onWorkspaceDeleted?: (deletedWorkspaceId: string, nextActiveWorkspaceId: string | null) => void;
 	onActiveWorkspaceRenamed?: () => void;
 };
@@ -447,6 +453,14 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 			try {
 				// Online-delete branch: ask the server to tombstone the workspace first, then
 				// mirror that authoritative result into the local cache.
+				//
+				// Notify the parent BEFORE sending the request so it can register a
+				// suppression guard for the metadata-WebSocket echo.  The server publishes
+				// the echo right after issuing the HTTP response; on fast/local connections
+				// the WebSocket message can arrive and be processed by the browser BEFORE
+				// the fetch Promise resolves, creating a race where clearActiveWorkspaceState
+				// disables WebSocket sync before the workspace switch completes.
+				props.onBeforeWorkspaceDelete?.(workspace.id);
 				const data = await fetchJson<{ deletedWorkspaceId: string; activeWorkspaceId: string | null }>(
 					`/api/workspaces/${encodeURIComponent(workspace.id)}`,
 					{

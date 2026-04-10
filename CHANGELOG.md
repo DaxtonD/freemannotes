@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.13 - 2026-04-09
+
+### Fixed
+- **Workspace deletion no longer leaves the connection indicator permanently red.** On fast or local connections the server's metadata WebSocket echo could arrive and be processed by the browser *before* the `fetch` Promise for the DELETE request resolved, causing `clearActiveWorkspaceState` to disable WebSocket sync before the new workspace's providers were set up. The fix registers a suppression guard *before* the HTTP request is sent (`onBeforeWorkspaceDelete`), adds a synchronous workspace-ID check via `DocumentManager.getActiveWorkspaceId()` as a reliable fallback, and explicitly re-enables WebSocket sync in `handleWorkspaceDeleted` as a recovery safety valve.
+
 ## 1.2.12 - 2026-04-09
 
 ### Added

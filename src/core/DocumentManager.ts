@@ -16,6 +16,17 @@ const NOTES_REGISTRY_ID = '__notes_registry__';
 const NOTES_LIST_KEY = 'notesList';
 const NOTE_ORDER_KEY = 'noteOrder';
 
+/**
+ * Thrown by getDocReady when the active workspace changes mid-flight.
+ * Caught by initializeRegistry to silently abort stale initialization chains.
+ */
+class WorkspaceChangedError extends Error {
+	constructor() {
+		super('doc-init aborted: workspace changed');
+		this.name = 'WorkspaceChangedError';
+	}
+}
+
 export type NoteRegistryItem = {
 	id: string;
 	title: string;
@@ -245,6 +256,11 @@ export class DocumentManager {
 		}
 	}
 
+	/** Returns the currently active workspace ID, or null if no workspace is active. */
+	public getActiveWorkspaceId(): string | null {
+		return this.activeWorkspaceId;
+	}
+
 	public setWebsocketEnabled(enabled: boolean): void {
 		// This is intentionally idempotent and safe to call frequently.
 		// The App uses it to turn sync on/off based on authentication state.
@@ -369,7 +385,15 @@ export class DocumentManager {
 
 	public async getDocReady(noteId: string): Promise<Y.Doc> {
 		const raw = this.normalizeNoteId(noteId);
+		// Capture the workspace at call time so we can detect mid-flight switches.
+		// If setActiveWorkspaceId is called while we are waiting for IDB hydration,
+		// the room we just created belongs to the wrong workspace and must be abandoned.
+		const expectedWorkspaceId = this.activeWorkspaceId;
 		for (let attempt = 0; attempt < 4; attempt++) {
+			// Guard: abort if workspace changed between retries.
+			if (this.activeWorkspaceId !== expectedWorkspaceId) {
+				throw new WorkspaceChangedError();
+			}
 			const { key, doc } = this.getOrCreateDocEntry(raw);
 			const ready = this.readyPromises.get(key);
 			if (!ready) {
@@ -377,6 +401,14 @@ export class DocumentManager {
 				throw new Error(`Document provider was not initialized for noteId: ${key}`);
 			}
 			await ready;
+			// Guard: abort if workspace changed while waiting for IDB hydration.
+			// Without this check a teardownAllRooms() during the await resolves the
+			// ready promise vacuously; on retry getOrCreateDocEntry uses the new
+			// (possibly null) workspace ID and creates a disconnected unscoped provider,
+			// leaving websocketProviders with a permanently-offline entry.
+			if (this.activeWorkspaceId !== expectedWorkspaceId) {
+				throw new WorkspaceChangedError();
+			}
 			if (this.docs.get(key) === doc) {
 				return doc;
 			}
@@ -1473,7 +1505,11 @@ export class DocumentManager {
 				this.registryHydrated = true;
 				this.emitConnectionStatus();
 			})
-			.catch((err) => {
+			.catch((err: unknown) => {
+				// WorkspaceChangedError is expected whenever setActiveWorkspaceId is called
+				// while the registry is still hydrating — silently abort, the new workspace
+				// will spin up its own initializeRegistry call.
+				if (err instanceof WorkspaceChangedError) return;
 				console.error('[DocumentManager] Registry initialization failed:', err);
 			});
 	}
