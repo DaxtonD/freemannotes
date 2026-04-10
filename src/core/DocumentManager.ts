@@ -343,6 +343,11 @@ export class DocumentManager {
 		return this.roomNameFor(raw);
 	}
 
+	/** Returns the Yjs WebSocket server URL used by this manager. */
+	public getWebsocketUrl(): string {
+		return this.websocketUrl;
+	}
+
 	public subscribeConnectionStatus(listener: () => void): () => void {
 		this.connectionSubscribers.add(listener);
 		return () => {

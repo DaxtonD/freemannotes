@@ -1,0 +1,63 @@
+/* CrossWorkspaceNoteModal – overlay that opens a note from a non-active workspace */
+
+.overlay {
+	position: fixed;
+	inset: 0;
+	background: var(--color-overlay);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: calc(env(safe-area-inset-top, 0px) + 16px)
+	         calc(env(safe-area-inset-right, 0px) + 16px)
+	         calc(env(safe-area-inset-bottom, 0px) + 16px)
+	         calc(env(safe-area-inset-left, 0px) + 16px);
+	z-index: 130;
+	overscroll-behavior: none;
+}
+
+.loadingCard {
+	width: min(420px, 100%);
+	background: linear-gradient(180deg, var(--color-surface), var(--color-surface-2));
+	border: 1px solid var(--color-border);
+	border-radius: 14px;
+	display: flex;
+	flex-direction: column;
+	box-shadow: 0 24px 50px rgba(0, 0, 0, 0.24);
+	overflow: hidden;
+}
+
+.workspaceTag {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 16px 8px;
+	border-bottom: 1px solid var(--color-border);
+	flex-shrink: 0;
+}
+
+.workspaceTagDot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--color-accent);
+	flex-shrink: 0;
+}
+
+.workspaceTagName {
+	font-size: var(--font-size-xs);
+	font-weight: 600;
+	color: var(--color-text-muted);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.loading {
+	padding: 32px 24px;
+	text-align: center;
+	color: var(--color-text-muted);
+	font-size: var(--font-size-sm);
+}

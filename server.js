@@ -547,7 +547,23 @@ if (DATABASE_URL.length > 0) {
 
 		try {
 			const { createPreferencesRouter } = require('./server/preferencesRouter');
-			preferencesRouter = createPreferencesRouter({ prisma, timezone: PGTIMEZONE || null });
+			preferencesRouter = createPreferencesRouter({
+				prisma,
+				timezone: PGTIMEZONE || null,
+				onUserPreferencesChanged: async (userId) => {
+					const normalized = normalizeWorkspaceMetadataEvent({
+						type: 'workspace-metadata-changed',
+						reason: 'user-preferences-changed',
+						userIds: [userId],
+						origin: SERVER_INSTANCE_ID,
+					});
+					if (!normalized) return;
+					broadcastWorkspaceMetadataChanged(normalized);
+					if (redis) {
+						await publishWorkspaceMetadataEvent(redis, normalized);
+					}
+				},
+			});
 			console.info('[server] Preferences API router initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize Preferences API router:', err.message);

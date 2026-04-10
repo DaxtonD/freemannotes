@@ -15,12 +15,10 @@
 	overflow-x: hidden;
 	overflow-y: visible;
 	--bv-scale: 1;
-	--bv-columns: 6;
-}
+	}
 
 .cloud {
 	position: relative;
-	width: 100%;
 	min-height: 300px;
 	overflow-x: hidden;
 	overflow-y: visible;
@@ -30,7 +28,7 @@
 	.cloud {
 		margin: 0;
 	}
-}
+	}
 
 .cloudItem {
 	position: absolute;
@@ -40,7 +38,7 @@
 		top 240ms cubic-bezier(0.22, 1, 0.36, 1),
 		width 220ms cubic-bezier(0.22, 1, 0.36, 1),
 		height 220ms cubic-bezier(0.22, 1, 0.36, 1);
-}
+	}
 
 @media (prefers-reduced-motion: reduce) {
 	.cloudItem {
@@ -50,7 +48,6 @@
 		animation: none;
 	}
 }
-
 /*
 	BubbleView debug overlay styles intentionally left commented out.
 	Re-enable together with the commented debug markup/state in BubbleView.tsx.
@@ -173,7 +170,7 @@
 		radial-gradient(circle at 28% 24%, rgba(255 255 255 / 0.52) 0%, rgba(255 255 255 / 0.24) 12%, rgba(255 255 255 / 0.04) 26%, transparent 40%),
 		radial-gradient(circle at 34% 30%, color-mix(in hsl, white 30%, transparent) 0%, transparent 48%),
 		radial-gradient(circle at 68% 72%, rgba(0 0 0 / 0.20) 0%, rgba(0 0 0 / 0.14) 24%, rgba(0 0 0 / 0.06) 42%, transparent 66%),
-		radial-gradient(circle at 50% 44%, var(--bv-bubble-bg, color-mix(in hsl, hsl(var(--bv-bubble-hue, 220) 28% 92%), var(--color-surface) 55%)) 0%, color-mix(in hsl, var(--bv-bubble-bg, hsl(var(--bv-bubble-hue, 220) 28% 92%)) 82%, hsl(var(--bv-bubble-hue, 220) 40% 74%)) 58%, color-mix(in hsl, var(--bv-bubble-bg, hsl(var(--bv-bubble-hue, 220) 28% 92%)) 54%, hsl(var(--bv-bubble-hue, 220) 24% 34%)) 100%);
+		radial-gradient(circle at 50% 44%, var(--bv-bubble-bg, color-mix(in hsl, hsl(var(--bv-bubble-hue, 220) 28% 92%), var(--color-surface) 55%)) 0%, color-mix(in hsl, var(--bv-bubble-bg, hsl(var(--bv-bubble-hue, 220) 28% 92%)) 90%, hsl(var(--bv-bubble-hue, 220) 34% 80%)) 60%, color-mix(in hsl, var(--bv-bubble-bg, hsl(var(--bv-bubble-hue, 220) 28% 92%)) 86%, hsl(var(--bv-bubble-hue, 220) 24% 70%)) 100%);
 	color: var(--bv-bubble-text, var(--color-text));
 	cursor: pointer;
 	text-align: center;
@@ -181,11 +178,10 @@
 	aspect-ratio: 1 / 1;
 	box-sizing: border-box;
 	box-shadow:
-		0 1px 2px rgba(255 255 255 / 0.16) inset,
-		0 -10px 18px rgba(0 0 0 / 0.1) inset,
-		0 10px 18px rgba(255 255 255 / 0.06) inset,
-		0 10px 20px rgba(0 0 0 / 0.10),
-		0 3px 8px rgba(0 0 0 / 0.08);
+		0 1px 2px rgba(255 255 255 / 0.18) inset,
+		0 -6px 12px rgba(0 0 0 / 0.08) inset,
+		0 9px 18px rgba(0 0 0 / 0.10),
+		0 3px 8px rgba(0 0 0 / 0.07);
 	transition:
 		transform 250ms ease,
 		box-shadow 180ms ease;
@@ -217,9 +213,9 @@
 .bubble::after {
 	inset: 4.5%;
 	box-shadow:
-		0 20px 28px rgba(255 255 255 / 0.05) inset,
-		0 -18px 28px rgba(0 0 0 / 0.08) inset;
-	opacity: 0.72;
+		0 14px 22px rgba(255 255 255 / 0.04) inset,
+		0 -10px 18px rgba(0 0 0 / 0.05) inset;
+	opacity: 0.5;
 }
 
 .bubble:hover,
@@ -270,32 +266,32 @@
 }
 
 .bubble_size1 {
-	--bv-bubble-size: calc(52px * var(--bv-scale, 1));
-	font-size: calc(var(--font-size-xs) * var(--bv-scale, 0.92));
+	--bv-bubble-size: calc(38px * var(--bv-scale, 1));
+	font-size: calc(var(--font-size-xs) * var(--bv-scale, 0.86));
 }
 
 .bubble_size2 {
-	--bv-bubble-size: calc(62px * var(--bv-scale, 1));
+	--bv-bubble-size: calc(52px * var(--bv-scale, 1));
 	font-size: calc(var(--font-size-xs) * var(--bv-scale, 1));
 }
 
 .bubble_size3 {
-	--bv-bubble-size: calc(72px * var(--bv-scale, 1));
+	--bv-bubble-size: calc(68px * var(--bv-scale, 1));
 	font-size: calc(var(--font-size-xs) * var(--bv-scale, 1.04));
 }
 
 .bubble_size4 {
-	--bv-bubble-size: calc(84px * var(--bv-scale, 1));
+	--bv-bubble-size: calc(88px * var(--bv-scale, 1));
 	font-size: calc(var(--font-size-sm) * var(--bv-scale, 1));
 }
 
 .bubble_size5 {
-	--bv-bubble-size: calc(98px * var(--bv-scale, 1));
+	--bv-bubble-size: calc(112px * var(--bv-scale, 1));
 	font-size: calc(var(--font-size-sm) * var(--bv-scale, 1.04));
 }
 
 .bubble_size6 {
-	--bv-bubble-size: calc(114px * var(--bv-scale, 1));
+	--bv-bubble-size: calc(140px * var(--bv-scale, 1));
 	font-size: calc(var(--font-size-md, 14px) * var(--bv-scale, 1));
 	box-shadow:
 		0 1px 2px rgba(255 255 255 / 0.18) inset,
@@ -307,7 +303,7 @@
 }
 
 .bubble_size7 {
-	--bv-bubble-size: calc(132px * var(--bv-scale, 1));
+	--bv-bubble-size: calc(170px * var(--bv-scale, 1));
 	font-size: calc(var(--font-size-md, 14px) * var(--bv-scale, 1.06));
 	box-shadow:
 		0 1px 2px rgba(255 255 255 / 0.20) inset,
@@ -319,7 +315,7 @@
 }
 
 .bubble_size8 {
-	--bv-bubble-size: calc(152px * var(--bv-scale, 1));
+	--bv-bubble-size: calc(204px * var(--bv-scale, 1));
 	font-size: calc(var(--font-size-lg, 16px) * var(--bv-scale, 1.08));
 	box-shadow:
 		0 1px 2px rgba(255 255 255 / 0.22) inset,

@@ -15,6 +15,8 @@ export type UserDevicePreferences = {
 	quickDeleteChecklist: boolean;
 	noteCardClickOpens: boolean;
 	noteCardCompletedExpandedByNoteId: Record<string, boolean>;
+	/** Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken } */
+	bubbleWorkspaceColors: Record<string, string>;
 	createdAt: string | null;
 	updatedAt: string | null;
 };
@@ -25,6 +27,17 @@ function safeJson(value: any): Record<string, boolean> {
 	for (const [k, v] of Object.entries(value)) {
 		if (typeof k !== 'string' || !k) continue;
 		out[k] = Boolean(v);
+	}
+	return out;
+}
+
+/** Like safeJson but preserves string values (for e.g. bubbleWorkspaceColors). */
+function safeJsonStringRecord(value: any): Record<string, string> {
+	if (!value || typeof value !== 'object') return {};
+	const out: Record<string, string> = {};
+	for (const [k, v] of Object.entries(value)) {
+		if (typeof k !== 'string' || !k) continue;
+		if (typeof v === 'string' && v) out[k] = v;
 	}
 	return out;
 }
@@ -72,6 +85,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
 			noteCardClickOpens: (body as any).noteCardClickOpens !== false,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
+			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};
@@ -92,6 +106,7 @@ type PreferencePatch = {
 	quickDeleteChecklist?: boolean;
 	noteCardClickOpens?: boolean;
 	noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
+	bubbleWorkspaceColors?: Record<string, string>;
 };
 
 const PREF_DEBOUNCE_MS = 1000;
@@ -147,12 +162,20 @@ async function _sendPreferences(
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
 			noteCardClickOpens: (body as any).noteCardClickOpens !== false,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
+			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};
 	} catch {
 		return null;
 	}
+}
+
+/** Immediately flush any pending debounced preference save.  Call after discrete
+ *  user actions (e.g. color-picker selection) to ensure data is persisted even if
+ *  the user navigates away within the normal 1-second debounce window. */
+export function flushUserPreferences(): Promise<void> {
+	return _flushPreferences();
 }
 
 export function updateUserPreferences(

@@ -629,6 +629,11 @@ model UserPreference {
   /// Default: 30 days.
   deleteAfterDays Int @default(30) @map("delete_after_days")
 
+  /// Per-user workspace bubble color overrides.
+  /// Shape: { [workspaceId: string]: NoteColorToken }
+  /// Applied in bubble view only; not shared with collaborators.
+  bubbleWorkspaceColors Json @default("{}") @map("bubble_workspace_colors") @db.JsonB
+
   /// Timestamps for auditing.
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

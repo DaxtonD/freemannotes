@@ -60,10 +60,20 @@ function normalizeFontScale(raw) {
  * @param {object} deps — Injected dependencies.
  * @param {import('@prisma/client').PrismaClient} deps.prisma — Prisma client instance.
  * @param {string | null} [deps.timezone] — IANA timezone for formatting timestamps.
+ * @param {(userId: string) => Promise<void>} [deps.onUserPreferencesChanged] — Optional callback fired after successful user preference updates.
  * @returns {(req: import('http').IncomingMessage, res: import('http').ServerResponse) => boolean}
  */
-function createPreferencesRouter({ prisma, timezone = null }) {
+function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesChanged = null }) {
 	const fmt = createTimestampFormatter(timezone);
+
+	async function notifyUserPreferencesChanged(userId) {
+		if (typeof onUserPreferencesChanged !== 'function' || !userId) return;
+		try {
+			await onUserPreferencesChanged(userId);
+		} catch {
+			// Non-fatal: preference save succeeded even if broadcast fails.
+		}
+	}
 
 	const LEGACY_DEVICE_ID = 'legacy';
 
@@ -165,12 +175,42 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 		return folderName;
 	}
 
+	/** Safely parses a JSONB value as a flat Record<string, string>. */
+	function safeJsonRecord(value) {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+		const out = {};
+		for (const [k, v] of Object.entries(value)) {
+			if (typeof k === 'string' && k && typeof v === 'string' && v) out[k] = v;
+		}
+		return out;
+	}
+
+	// Keep server-side validation aligned with the frontend semantic palette. Raw
+	// hex colors are intentionally rejected so theme adaptation stays consistent.
+	const BUBBLE_COLOR_VISIBLE_BASES = [
+		'yellow', 'amber', 'orange', 'coral', 'red', 'rose', 'pink', 'magenta',
+		'purple', 'indigo', 'blue', 'cyan', 'teal', 'green', 'brown', 'slate',
+	];
+
+	const BUBBLE_COLOR_LEGACY_MEDIUM_BASES = [
+		'violet', 'sky', 'mint', 'lime', 'olive', 'copper', 'gray',
+		'graphite', 'sand', 'peach', 'cream', 'lavender',
+	];
+
+	const VALID_BUBBLE_COLOR_TOKENS = new Set([
+		...BUBBLE_COLOR_VISIBLE_BASES.flatMap((base) => [`${base}-light`, base, `${base}-dark`]),
+		...BUBBLE_COLOR_LEGACY_MEDIUM_BASES,
+	]);
+
 	/**
-	 * Returns authenticated userId (UUID) or null.
+	 * Returns the authenticated userId from the request, or null if the
+	 * request is not authenticated.
+	 *
 	 * @param {import('http').IncomingMessage} req
+	 * @returns {string | null}
 	 */
 	function getUserId(req) {
-		return req.auth && typeof req.auth.userId === 'string' && req.auth.userId.length > 0
+		return req.auth && req.auth.userId
 			? req.auth.userId
 			: null;
 	}
@@ -255,6 +295,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
 						noteCardClickOpens: devicePref.noteCardClickOpens !== false,
 						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
+						bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
 						createdAt: fmt(devicePref.createdAt),
 						updatedAt: fmt(devicePref.updatedAt),
 						timezone: timezone || 'UTC',
@@ -303,7 +344,31 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						userUpdateData.deleteAfterDays = days;
 					}
 
-					// ── Device-scoped updates ─────────────────────────────────
+					// ── bubbleWorkspaceColors (user-scoped) ─────────────────────
+					if ('bubbleWorkspaceColors' in body) {
+						const colors = body.bubbleWorkspaceColors;
+						if (colors == null || colors === '') {
+							userUpdateData.bubbleWorkspaceColors = {};
+						} else if (colors && typeof colors === 'object' && !Array.isArray(colors)) {
+							const normalized = {};
+							for (const [k, v] of Object.entries(colors)) {
+								if (typeof k === 'string' && k.length > 0 && k.length <= 40
+									&& typeof v === 'string' && VALID_BUBBLE_COLOR_TOKENS.has(v)) {
+									normalized[k] = v;
+								}
+							}
+							if (Object.keys(normalized).length <= 100) {
+								userUpdateData.bubbleWorkspaceColors = normalized;
+							} else {
+								jsonResponse(res, 400, { error: 'bubbleWorkspaceColors exceeds 100 entries' });
+								return;
+							}
+						} else {
+							jsonResponse(res, 400, { error: 'bubbleWorkspaceColors must be an object or null' });
+							return;
+						}
+					}
+
 					const deviceUpdateData = {};
 					if ('theme' in body) {
 						if (body.theme == null || body.theme === '') {
@@ -457,6 +522,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 							quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
 							noteCardClickOpens: devicePref.noteCardClickOpens !== false,
 							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
+							bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
 							createdAt: fmt(devicePref.createdAt),
 							updatedAt: fmt(devicePref.updatedAt),
 							timezone: timezone || 'UTC',
@@ -568,6 +634,9 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						`[api] POST /api/user/preferences updated:`,
 						JSON.stringify({ userUpdateData, deviceUpdateData })
 					);
+					if (hasUserUpdates) {
+						await notifyUserPreferencesChanged(userId);
+					}
 					jsonResponse(res, 200, {
 						userId: pref.userPref.userId,
 						deviceId: pref.devicePref.deviceId,
@@ -585,6 +654,7 @@ function createPreferencesRouter({ prisma, timezone = null }) {
 						quickDeleteChecklist: Boolean(pref.devicePref.quickDeleteChecklist),
 						noteCardClickOpens: pref.devicePref.noteCardClickOpens !== false,
 						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
+						bubbleWorkspaceColors: safeJsonRecord(pref.userPref.bubbleWorkspaceColors),
 						createdAt: fmt(pref.devicePref.createdAt),
 						updatedAt: fmt(pref.devicePref.updatedAt),
 						timezone: timezone || 'UTC',
