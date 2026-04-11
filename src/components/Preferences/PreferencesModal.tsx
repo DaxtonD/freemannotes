@@ -41,8 +41,12 @@ export type PreferencesModalProps = {
 	isLightTheme?: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
-	noteCardClickOpens: boolean;
-	onNoteCardClickOpensChange: (next: boolean) => void;
+	noteCardCheckboxInteractions: boolean;
+	onNoteCardCheckboxInteractionsChange: (next: boolean) => void;
+	noteCardLinkInteractions: boolean;
+	onNoteCardLinkInteractionsChange: (next: boolean) => void;
+	noteCardCompletedInteractions: boolean;
+	onNoteCardCompletedInteractionsChange: (next: boolean) => void;
 	deleteAfterDays: number | null;
 	onDeleteAfterDaysChange: (next: number | null) => void;
 	installAvailable?: boolean;
@@ -69,8 +73,12 @@ type SectionModalProps = {
 	isLightTheme: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
-	noteCardClickOpens: boolean;
-	onNoteCardClickOpensChange: (next: boolean) => void;
+	noteCardCheckboxInteractions: boolean;
+	onNoteCardCheckboxInteractionsChange: (next: boolean) => void;
+	noteCardLinkInteractions: boolean;
+	onNoteCardLinkInteractionsChange: (next: boolean) => void;
+	noteCardCompletedInteractions: boolean;
+	onNoteCardCompletedInteractionsChange: (next: boolean) => void;
 	deleteAfterDays: number | null;
 	onDeleteAfterDaysChange: (next: number | null) => void;
 	installAvailable?: boolean;
@@ -283,8 +291,12 @@ function EditorSectionContent(props: {
 	t: (key: string) => string;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
-	noteCardClickOpens: boolean;
-	onNoteCardClickOpensChange: (next: boolean) => void;
+	noteCardCheckboxInteractions: boolean;
+	onNoteCardCheckboxInteractionsChange: (next: boolean) => void;
+	noteCardLinkInteractions: boolean;
+	onNoteCardLinkInteractionsChange: (next: boolean) => void;
+	noteCardCompletedInteractions: boolean;
+	onNoteCardCompletedInteractionsChange: (next: boolean) => void;
 }): React.JSX.Element {
 	const bubbleEnabled = useBubbleMenuEnabled();
 	return (
@@ -303,13 +315,37 @@ function EditorSectionContent(props: {
 			</label>
 			<label className={styles.toggleRow}>
 				<span className={styles.toggleLabel}>
-					<span className={styles.toggleTitle}>{props.t('prefs.noteCardClickOpens')}</span>
-					<span className={styles.toggleDescription}>{props.t('prefs.noteCardClickOpensDescription')}</span>
+					<span className={styles.toggleTitle}>{props.t('prefs.noteCardCheckboxInteractions')}</span>
+					<span className={styles.toggleDescription}>{props.t('prefs.noteCardCheckboxInteractionsDescription')}</span>
 				</span>
 				<input
 					type="checkbox"
-					checked={props.noteCardClickOpens}
-					onChange={(e) => props.onNoteCardClickOpensChange(e.target.checked)}
+					checked={props.noteCardCheckboxInteractions}
+					onChange={(e) => props.onNoteCardCheckboxInteractionsChange(e.target.checked)}
+					className={styles.toggleCheckbox}
+				/>
+			</label>
+			<label className={styles.toggleRow}>
+				<span className={styles.toggleLabel}>
+					<span className={styles.toggleTitle}>{props.t('prefs.noteCardLinkInteractions')}</span>
+					<span className={styles.toggleDescription}>{props.t('prefs.noteCardLinkInteractionsDescription')}</span>
+				</span>
+				<input
+					type="checkbox"
+					checked={props.noteCardLinkInteractions}
+					onChange={(e) => props.onNoteCardLinkInteractionsChange(e.target.checked)}
+					className={styles.toggleCheckbox}
+				/>
+			</label>
+			<label className={styles.toggleRow}>
+				<span className={styles.toggleLabel}>
+					<span className={styles.toggleTitle}>{props.t('prefs.noteCardCompletedInteractions')}</span>
+					<span className={styles.toggleDescription}>{props.t('prefs.noteCardCompletedInteractionsDescription')}</span>
+				</span>
+				<input
+					type="checkbox"
+					checked={props.noteCardCompletedInteractions}
+					onChange={(e) => props.onNoteCardCompletedInteractionsChange(e.target.checked)}
 					className={styles.toggleCheckbox}
 				/>
 			</label>
@@ -422,8 +458,12 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 						t={props.t}
 						quickDeleteChecklist={props.quickDeleteChecklist}
 						onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
-						noteCardClickOpens={props.noteCardClickOpens}
-						onNoteCardClickOpensChange={props.onNoteCardClickOpensChange}
+						noteCardCheckboxInteractions={props.noteCardCheckboxInteractions}
+						onNoteCardCheckboxInteractionsChange={props.onNoteCardCheckboxInteractionsChange}
+						noteCardLinkInteractions={props.noteCardLinkInteractions}
+						onNoteCardLinkInteractionsChange={props.onNoteCardLinkInteractionsChange}
+						noteCardCompletedInteractions={props.noteCardCompletedInteractions}
+						onNoteCardCompletedInteractionsChange={props.onNoteCardCompletedInteractionsChange}
 					/>
 				) : props.section === 'note-management' ? (
 					<NoteManagementSectionContent
@@ -535,8 +575,12 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					isLightTheme={props.isLightTheme !== false}
 					quickDeleteChecklist={props.quickDeleteChecklist}
 					onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
-					noteCardClickOpens={props.noteCardClickOpens}
-					onNoteCardClickOpensChange={props.onNoteCardClickOpensChange}
+					noteCardCheckboxInteractions={props.noteCardCheckboxInteractions}
+					onNoteCardCheckboxInteractionsChange={props.onNoteCardCheckboxInteractionsChange}
+					noteCardLinkInteractions={props.noteCardLinkInteractions}
+					onNoteCardLinkInteractionsChange={props.onNoteCardLinkInteractionsChange}
+					noteCardCompletedInteractions={props.noteCardCompletedInteractions}
+					onNoteCardCompletedInteractionsChange={props.onNoteCardCompletedInteractionsChange}
 					deleteAfterDays={props.deleteAfterDays}
 					onDeleteAfterDaysChange={props.onDeleteAfterDaysChange}
 					installAvailable={props.installAvailable}

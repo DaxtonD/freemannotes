@@ -450,6 +450,7 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 		<div
 			ref={overlayRef}
 			className={anchor ? styles.overlayDesktop : styles.overlay}
+			data-note-more-menu-overlay="true"
 			role="dialog"
 			aria-modal="true"
 			onPointerDown={handleOverlayPointerDown}
@@ -465,6 +466,7 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 			<div
 				ref={menuRef}
 				className={anchor ? styles.popover : styles.sheet}
+				data-note-more-menu-panel="true"
 				style={anchor ? popoverStyle : undefined}
 				onTouchStartCapture={!anchor ? handleFreshTouchStart : undefined}
 				onPointerDownCapture={!anchor ? (event) => {

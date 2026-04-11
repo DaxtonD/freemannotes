@@ -27,6 +27,7 @@ import {
 } from '../../core/shareLinks';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
+import { getWorkspaceMetadataChangedEventName } from '../../core/workspaceMetadataStore';
 import styles from './CollaboratorModal.module.css';
 
 type Props = {
@@ -37,6 +38,8 @@ type Props = {
 	offlineCanManageHint?: boolean;
 	noteTitle: string;
 	onChanged?: () => void;
+	onAccessRemoved?: () => void;
+	onSelfRemoved?: () => void;
 };
 
 const EMPTY_SNAPSHOT: NoteShareCollaboratorSnapshot = {
@@ -53,6 +56,11 @@ const EMPTY_SNAPSHOT: NoteShareCollaboratorSnapshot = {
 	collaborators: [],
 	pendingInvitations: [],
 };
+
+function isGatewayError(error: unknown): boolean {
+	const status = (error as { status?: number } | null)?.status;
+	return status === 502 || status === 503 || status === 504;
+}
 
 function buildOfflineManagerSnapshot(authUserId: string, docId: string, base?: NoteShareCollaboratorSnapshot | null): NoteShareCollaboratorSnapshot {
 	return {
@@ -115,6 +123,13 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const [isOffline, setIsOffline] = React.useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
 	const [snapshot, setSnapshot] = React.useState<NoteShareCollaboratorSnapshot>(EMPTY_SNAPSHOT);
 	const loadRequestIdRef = React.useRef(0);
+	const statusMessage = error ?? success;
+	const statusClassName = error ? styles.error : styles.success;
+	const sourceWorkspaceId = React.useMemo(() => {
+		if (!props.docId) return null;
+		const separator = props.docId.indexOf(':');
+		return separator > 0 ? props.docId.slice(0, separator) : props.docId;
+	}, [props.docId]);
 
 	useBodyScrollLock(props.isOpen);
 
@@ -195,7 +210,13 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			await flushPendingCollaboratorActions(props.authUserId);
 			const fresh = await syncNoteShareCollaborators(props.authUserId, props.docId, { suppressError: true });
 			if (loadRequestIdRef.current !== requestId) return;
-			if (fresh) setSnapshot(fresh);
+			if (!fresh) {
+				setSnapshot(EMPTY_SNAPSHOT);
+				setPendingActionCount(0);
+				props.onAccessRemoved?.();
+				return;
+			}
+			setSnapshot(fresh);
 			const pendingActions = await readPendingCollaboratorActions(props.authUserId, props.docId);
 			if (loadRequestIdRef.current !== requestId) return;
 			setPendingActionCount(pendingActions.length);
@@ -210,7 +231,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			setSyncing(false);
 			setLoading(false);
 		}
-	}, [loadCachedState, props.authUserId, props.docId, props.offlineCanManageHint]);
+	}, [loadCachedState, props.authUserId, props.docId, props.offlineCanManageHint, props.onAccessRemoved]);
 
 	const loadRef = React.useRef(load);
 
@@ -227,6 +248,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		if (!props.isOpen) return;
 		if (typeof window === 'undefined') return;
 		const eventName = getShareLinkReadyEventName();
+		const metadataEventName = getWorkspaceMetadataChangedEventName();
 		const onShareReady = (event: Event) => {
 			const detail = (event as CustomEvent<{ entityType: string; entityId: string; permission: string; expiresInDays: ShareExpiryDays }>).detail;
 			if (!detail || detail.entityType !== 'note' || detail.entityId !== props.docId) return;
@@ -236,11 +258,20 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				if (cached.shareUrl) setShareQrModalOpen(true);
 			}
 		};
+		const onMetadataChanged = (event: Event) => {
+			const detail = (event as CustomEvent<{ reason?: string; workspaceId?: string | null; docId?: string | null }>).detail;
+			const matchesCurrentDoc = typeof detail?.docId === 'string' && detail.docId === props.docId;
+			const matchesSourceWorkspace = typeof detail?.workspaceId === 'string' && detail.workspaceId === sourceWorkspaceId;
+			if (detail?.reason !== 'user-profile-updated' && !matchesCurrentDoc && !matchesSourceWorkspace) return;
+			void loadRef.current();
+		};
 		window.addEventListener(eventName, onShareReady as EventListener);
+		window.addEventListener(metadataEventName, onMetadataChanged as EventListener);
 		return () => {
 			window.removeEventListener(eventName, onShareReady as EventListener);
+			window.removeEventListener(metadataEventName, onMetadataChanged as EventListener);
 		};
-	}, [props.docId, props.isOpen]);
+	}, [props.docId, props.isOpen, sourceWorkspaceId]);
 
 	React.useEffect(() => {
 		if (props.isOpen) return;
@@ -277,14 +308,26 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
 				await queueNoteShareCollaboratorInviteAction({ userId: props.authUserId, docId: props.docId, identifier: normalizedIdentifier, role });
 				setIdentifier('');
+				setSuccess(t('invite.pendingQueued'));
 				await loadCachedState();
 				props.onChanged?.();
 				return;
 			}
-			await createNoteShareInvitation({ docId: props.docId, identifier: normalizedIdentifier, role });
-			setIdentifier('');
-			await load();
-			props.onChanged?.();
+			try {
+				await createNoteShareInvitation({ docId: props.docId, identifier: normalizedIdentifier, role });
+				setIdentifier('');
+				setSuccess(t('invite.sent'));
+				await load();
+				props.onChanged?.();
+			} catch (err) {
+				if (!isGatewayError(err)) throw err;
+				// Server unreachable (502/503/504) — queue the invite for replay once online.
+				await queueNoteShareCollaboratorInviteAction({ userId: props.authUserId, docId: props.docId, identifier: normalizedIdentifier, role });
+				setIdentifier('');
+				setSuccess(t('invite.pendingQueued'));
+				await loadCachedState();
+				props.onChanged?.();
+			}
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t('share.inviteFailed'));
 		} finally {
@@ -349,9 +392,22 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				props.onChanged?.();
 				return;
 			}
-			await revokeNoteShareCollaborator(collaboratorId);
-			await load();
-			props.onChanged?.();
+			try {
+				await revokeNoteShareCollaborator(collaboratorId);
+				await load();
+				props.onChanged?.();
+			} catch (err) {
+				if (!isGatewayError(err)) throw err;
+				// Server unreachable — queue revoke for replay once online.
+				await queueNoteShareCollaboratorRevokeAction({
+					userId: props.authUserId,
+					docId: props.docId,
+					collaboratorId,
+					collaboratorUserId: collaborator?.userId ?? null,
+				});
+				await loadCachedState();
+				props.onChanged?.();
+			}
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t('share.revokeFailed'));
 		} finally {
@@ -375,15 +431,28 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				props.onChanged?.();
 				return;
 			}
-			await revokeNoteShareCollaborator(snapshot.selfCollaboratorId);
-			await load();
-			props.onChanged?.();
+			try {
+				await revokeNoteShareCollaborator(snapshot.selfCollaboratorId);
+				props.onSelfRemoved?.();
+				props.onChanged?.();
+			} catch (err) {
+				if (!isGatewayError(err)) throw err;
+				// Server unreachable — queue self-removal for replay once online.
+				await queueNoteShareCollaboratorRevokeAction({
+					userId: props.authUserId,
+					docId: props.docId,
+					collaboratorId: snapshot.selfCollaboratorId,
+					collaboratorUserId: snapshot.currentUserId,
+				});
+				await loadCachedState();
+				props.onChanged?.();
+			}
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t('share.removeFailed'));
 		} finally {
 			setBusy(false);
 		}
-	}, [load, loadCachedState, props, snapshot.currentUserId, snapshot.selfCollaboratorId, t]);
+	}, [loadCachedState, props, snapshot.currentUserId, snapshot.selfCollaboratorId, t]);
 
 	const handleCancelPendingInvitation = React.useCallback(async (invitationId: string) => {
 		if (!props.docId) return;
@@ -427,9 +496,23 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				props.onChanged?.();
 				return;
 			}
-			await updateNoteShareCollaboratorRole(collaboratorId, nextRole);
-			await load();
-			props.onChanged?.();
+			try {
+				await updateNoteShareCollaboratorRole(collaboratorId, nextRole);
+				await load();
+				props.onChanged?.();
+			} catch (err) {
+				if (!isGatewayError(err)) throw err;
+				// Server unreachable — queue role change for replay once online.
+				await queueNoteShareCollaboratorRoleAction({
+					userId: props.authUserId,
+					docId: props.docId,
+					collaboratorId,
+					collaboratorUserId,
+					role: nextRole,
+				});
+				await loadCachedState();
+				props.onChanged?.();
+			}
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t('share.roleUpdateFailed'));
 		} finally {
@@ -457,8 +540,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 						</button>
 					</header>
 
-					{error ? <div className={styles.error}>{error}</div> : null}
-					{success ? <div className={styles.success}>{success}</div> : null}
+					{statusMessage ? <div className={statusClassName}>{statusMessage}</div> : null}
 					{!isOffline && (syncing || pendingActionCount > 0) ? <div className={styles.info}>{t('share.collaboratorSyncPending')}</div> : null}
 					{accessResolved && !snapshot.canManage ? <div className={styles.info}>{t('share.viewOnlyAccess')}</div> : null}
 
@@ -563,18 +645,24 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 											<div className={styles.listSection}>
 												{snapshot.pendingInvitations.length === 0 ? <div className={styles.emptyState}>{t('share.nonePending')}</div> : null}
 												{snapshot.pendingInvitations.map((invitation) => (
-													<div key={invitation.id} className={styles.listRow}>
+													<div key={invitation.id} className={`${styles.listRow} ${styles.pendingInviteRow}`}>
 														<div className={styles.memberIdentity}>
 															<div className={styles.memberAvatarStack}>
-																<div className={styles.memberAvatarFallback} aria-hidden="true">
-																	{(invitation.inviteeName || invitation.inviteeEmail).slice(0, 1).toUpperCase()}
-																</div>
-																<span className={`${styles.badge} ${styles.badgePending}`}>{t('share.statusPending')}</span>
+																{invitation.inviteeProfileImage ? (
+																	<img className={styles.memberAvatar} src={invitation.inviteeProfileImage} alt="" />
+																) : (
+																	<div className={styles.memberAvatarFallback} aria-hidden="true">
+																		{(invitation.inviteeName || invitation.inviteeEmail).slice(0, 1).toUpperCase()}
+																	</div>
+																)}
 															</div>
 															<div className={styles.rowCopy}>
 																<div className={styles.rowPrimary}>{invitation.inviteeName || invitation.inviteeEmail}</div>
 																<div className={styles.rowSecondary}>{invitation.inviteeEmail}</div>
-																<div className={styles.rowTertiary}>{renderNoteRole(invitation.role, t)}</div>
+																<div className={styles.rowMetaInline}>
+																	<span className={`${styles.badge} ${styles.badgePending}`}>{t('share.statusPending')}</span>
+																	<span className={styles.rowTertiary}>{renderNoteRole(invitation.role, t)}</span>
+																</div>
 															</div>
 														</div>
 														<div className={styles.memberActions}>
@@ -628,7 +716,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 												{snapshot.selfCollaboratorId ? (
 													<div className={styles.memberActions}>
 														<button type="button" className={`${styles.secondaryButton} ${styles.memberActionButton}`} onClick={() => void handleRemove()} disabled={busy || !snapshot.selfCollaboratorId}>
-															{t('editors.remove')}
+															{t('share.leaveNote')}
 														</button>
 													</div>
 												) : null}

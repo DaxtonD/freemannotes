@@ -218,6 +218,7 @@ function mapInvitation(invitation) {
 		status: invitation.status,
 		inviteeEmail: invitation.inviteeEmail,
 		inviteeName: invitation.inviteeName,
+		inviteeProfileImage: invitation.invitee ? invitation.invitee.profileImage || null : null,
 		createdAt: invitation.createdAt.toISOString(),
 		updatedAt: invitation.updatedAt.toISOString(),
 		respondedAt: invitation.respondedAt ? invitation.respondedAt.toISOString() : null,
@@ -541,7 +542,8 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								revokedAt: null,
 							},
 							include: {
-								inviter: { select: { id: true, name: true, email: true } },
+								inviter: { select: { id: true, name: true, email: true, profileImage: true } },
+								invitee: { select: { id: true, name: true, email: true, profileImage: true } },
 								placement: true,
 							},
 						})
@@ -557,7 +559,8 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								role,
 							},
 							include: {
-								inviter: { select: { id: true, name: true, email: true } },
+								inviter: { select: { id: true, name: true, email: true, profileImage: true } },
+								invitee: { select: { id: true, name: true, email: true, profileImage: true } },
 								placement: true,
 							},
 						});
@@ -619,7 +622,11 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						}),
 						prisma.noteShareInvitation.findMany({
 							where: { docId: access.docId, status: 'PENDING', revokedAt: null },
-							include: { inviter: { select: { id: true, name: true, email: true } }, placement: true },
+							include: {
+								inviter: { select: { id: true, name: true, email: true, profileImage: true } },
+								invitee: { select: { id: true, name: true, email: true, profileImage: true } },
+								placement: true,
+							},
 							orderBy: { createdAt: 'desc' },
 						}),
 						access.via === 'collaborator' && access.collaboratorId
@@ -1045,13 +1052,26 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 
 					if (typeof onWorkspaceMetadataChanged === 'function') {
 						try {
+							const sourceWorkspaceMembers = await prisma.workspaceMember.findMany({
+								where: {
+									workspaceId: collaborator.sourceWorkspaceId,
+									workspace: { is: { deletedAt: null } },
+								},
+								select: { userId: true },
+							});
 							await onWorkspaceMetadataChanged({
 								reason: 'note-share-revoked',
 								workspaceId: collaborator.sourceWorkspaceId,
 								docId: collaborator.docId,
-								// Include both sides so the removed collaborator and the actor's other
-								// devices converge without waiting for a manual refresh.
-								userIds: Array.from(new Set([collaborator.userId, session.userId].filter(Boolean))),
+								// Include the removed collaborator, the acting session, the original
+								// inviter when known, and the source-workspace members so open
+								// collaborator lists converge immediately for everyone managing the note.
+								userIds: Array.from(new Set([
+									collaborator.userId,
+									session.userId,
+									collaborator.invitation ? collaborator.invitation.inviterUserId : null,
+									...sourceWorkspaceMembers.map((member) => member.userId),
+								].filter(Boolean))),
 							});
 						} catch (publishErr) {
 							console.warn('[note-share] revoke publish failed:', publishErr.message);

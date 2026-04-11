@@ -14,6 +14,9 @@ export type UserDevicePreferences = {
 	checklistShowCompleted: boolean;
 	quickDeleteChecklist: boolean;
 	noteCardClickOpens: boolean;
+	noteCardCheckboxInteractions: boolean;
+	noteCardLinkInteractions: boolean;
+	noteCardCompletedInteractions: boolean;
 	noteCardCompletedExpandedByNoteId: Record<string, boolean>;
 	/** Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken } */
 	bubbleWorkspaceColors: Record<string, string>;
@@ -70,6 +73,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 		if (!res.ok || !contentType.includes('application/json')) return null;
 		const body = await res.json().catch(() => null);
 		if (!body || typeof body !== 'object') return null;
+		const legacyNoteCardInteractions = (body as any).noteCardClickOpens !== false;
 		return {
 			userId: String((body as any).userId || ''),
 			deviceId: String((body as any).deviceId || deviceId),
@@ -83,7 +87,10 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
-			noteCardClickOpens: (body as any).noteCardClickOpens !== false,
+			noteCardClickOpens: legacyNoteCardInteractions,
+			noteCardCheckboxInteractions: (body as any).noteCardCheckboxInteractions !== false && legacyNoteCardInteractions,
+			noteCardLinkInteractions: (body as any).noteCardLinkInteractions !== false && legacyNoteCardInteractions,
+			noteCardCompletedInteractions: (body as any).noteCardCompletedInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
@@ -105,6 +112,9 @@ type PreferencePatch = {
 	checklistShowCompleted?: boolean;
 	quickDeleteChecklist?: boolean;
 	noteCardClickOpens?: boolean;
+	noteCardCheckboxInteractions?: boolean;
+	noteCardLinkInteractions?: boolean;
+	noteCardCompletedInteractions?: boolean;
 	noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
 	bubbleWorkspaceColors?: Record<string, string>;
 };
@@ -147,6 +157,7 @@ async function _sendPreferences(
 		if (!res.ok || !contentType.includes('application/json')) return null;
 		const body = await res.json().catch(() => null);
 		if (!body || typeof body !== 'object') return null;
+		const legacyNoteCardInteractions = (body as any).noteCardClickOpens !== false;
 		return {
 			userId: String((body as any).userId || ''),
 			deviceId: String((body as any).deviceId || deviceId),
@@ -160,7 +171,10 @@ async function _sendPreferences(
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
-			noteCardClickOpens: (body as any).noteCardClickOpens !== false,
+			noteCardClickOpens: legacyNoteCardInteractions,
+			noteCardCheckboxInteractions: (body as any).noteCardCheckboxInteractions !== false && legacyNoteCardInteractions,
+			noteCardLinkInteractions: (body as any).noteCardLinkInteractions !== false && legacyNoteCardInteractions,
+			noteCardCompletedInteractions: (body as any).noteCardCompletedInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,

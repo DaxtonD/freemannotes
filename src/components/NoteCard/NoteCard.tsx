@@ -61,7 +61,9 @@ export type NoteCardProps = {
 	dragHandleRef?: (node: HTMLDivElement | null) => void;
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 	maxCardHeightPx?: number;
-	allowCardItemInteractions?: boolean;
+	allowChecklistItemInteractions?: boolean;
+	allowLinkInteractions?: boolean;
+	allowCompletedItemInteractions?: boolean;
 	suppressContentInteractions?: boolean;
 };
 
@@ -513,7 +515,9 @@ function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardCheckl
 export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const { t } = useI18n();
 	const canEdit = props.canEdit !== false;
-	const allowCardItemInteractions = props.allowCardItemInteractions !== false;
+	const allowChecklistItemInteractions = props.allowChecklistItemInteractions !== false;
+	const allowLinkInteractions = props.allowLinkInteractions !== false;
+	const allowCompletedItemInteractions = props.allowCompletedItemInteractions !== false;
 	const suppressContentInteractions = props.suppressContentInteractions === true;
 	// metadata.type controls note rendering mode.
 	const metadata = React.useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
@@ -1028,7 +1032,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				) : null}
 				{type === 'text' ? (
 					<div ref={bodyRef} className={styles.body}>
-						<div ref={contentPreviewRef} className={styles.contentPreview}>{renderRichPreview(richContent, allowCardItemInteractions, allowCardItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
+						<div ref={contentPreviewRef} className={styles.contentPreview}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
 					</div>
 				) : (
 					<>
@@ -1038,9 +1042,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 									<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
 										<span
 											className={styles.checklistCheckboxHitArea}
-											onPointerDown={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
-											onPointerUp={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
-											onClick={allowCardItemInteractions ? (e) => {
+											onPointerDown={allowChecklistItemInteractions ? (e) => e.stopPropagation() : undefined}
+											onPointerUp={allowChecklistItemInteractions ? (e) => e.stopPropagation() : undefined}
+											onClick={allowChecklistItemInteractions ? (e) => {
 												e.stopPropagation();
 												toggleNoteCardChecklistItem(item.id, !item.completed);
 											} : undefined}
@@ -1050,12 +1054,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 												type="checkbox"
 												className={styles.checklistCheckbox}
 												checked={item.completed}
-												disabled={!canEdit || !allowCardItemInteractions}
+												disabled={!canEdit || !allowChecklistItemInteractions}
 												readOnly
 											/>
 										</span>
 										<div className={`${styles.checklistText}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
-											{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowCardItemInteractions) ?? item.text}
+											{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text}
 										</div>
 									</li>
 								))}
@@ -1064,7 +1068,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 						{completedChecklistItems.length > 0 ? (
 							<div ref={completedSectionRef} className={styles.completedSection}>
-								{allowCardItemInteractions ? (
+								{allowCompletedItemInteractions ? (
 									<button
 										type="button"
 										className={styles.completedToggle}
@@ -1101,9 +1105,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 											<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
 												<span
 													className={styles.checklistCheckboxHitArea}
-													onPointerDown={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
-													onPointerUp={allowCardItemInteractions ? (e) => e.stopPropagation() : undefined}
-													onClick={allowCardItemInteractions ? (e) => {
+													onPointerDown={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
+													onPointerUp={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
+													onClick={allowCompletedItemInteractions ? (e) => {
 											e.stopPropagation();
 											toggleNoteCardChecklistItem(item.id, !item.completed);
 										} : undefined}
@@ -1113,12 +1117,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 														type="checkbox"
 														className={styles.checklistCheckbox}
 														checked={item.completed}
-														disabled={!canEdit || !allowCardItemInteractions}
+														disabled={!canEdit || !allowCompletedItemInteractions}
 														readOnly
 													/>
 												</span>
 												<div className={`${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
-													{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowCardItemInteractions) ?? item.text}
+													{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text}
 												</div>
 											</li>
 										))}
@@ -1131,7 +1135,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 				{props.docId ? (
 					<div ref={linkPreviewRailRef} className={styles.linkPreviewRail}>
-						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={3} disableInitialRemoteRefresh disableOpenLinks={!allowCardItemInteractions} />
+						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={3} disableInitialRemoteRefresh disableOpenLinks={!allowLinkInteractions} />
 					</div>
 				) : null}
 			</div>

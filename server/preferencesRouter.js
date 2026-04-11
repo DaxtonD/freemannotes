@@ -263,6 +263,9 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							checklistShowCompleted: false,
 							quickDeleteChecklist: false,
 							noteCardClickOpens: true,
+							noteCardCheckboxInteractions: true,
+							noteCardLinkInteractions: true,
+							noteCardCompletedInteractions: true,
 							noteCardCompletedExpandedByNoteId: {},
 						},
 					});
@@ -294,6 +297,9 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
 						quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
 						noteCardClickOpens: devicePref.noteCardClickOpens !== false,
+						noteCardCheckboxInteractions: devicePref.noteCardCheckboxInteractions !== false,
+						noteCardLinkInteractions: devicePref.noteCardLinkInteractions !== false,
+						noteCardCompletedInteractions: devicePref.noteCardCompletedInteractions !== false,
 						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 						bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
 						createdAt: fmt(devicePref.createdAt),
@@ -448,8 +454,27 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						deviceUpdateData.quickDeleteChecklist = Boolean(body.quickDeleteChecklist);
 					}
 
+					// noteCardClickOpens is a MASTER TOGGLE that overrides all three sub-prefs.
+					// If you add a new noteCard*Interactions pref, add it here too so the
+					// Preferences toggle correctly enables/disables the whole group at once.
 					if ('noteCardClickOpens' in body) {
-						deviceUpdateData.noteCardClickOpens = Boolean(body.noteCardClickOpens);
+						const enabled = Boolean(body.noteCardClickOpens);
+						deviceUpdateData.noteCardClickOpens = enabled;
+						deviceUpdateData.noteCardCheckboxInteractions = enabled;
+						deviceUpdateData.noteCardLinkInteractions = enabled;
+						deviceUpdateData.noteCardCompletedInteractions = enabled;
+					}
+
+					if ('noteCardCheckboxInteractions' in body) {
+						deviceUpdateData.noteCardCheckboxInteractions = Boolean(body.noteCardCheckboxInteractions);
+					}
+
+					if ('noteCardLinkInteractions' in body) {
+						deviceUpdateData.noteCardLinkInteractions = Boolean(body.noteCardLinkInteractions);
+					}
+
+					if ('noteCardCompletedInteractions' in body) {
+						deviceUpdateData.noteCardCompletedInteractions = Boolean(body.noteCardCompletedInteractions);
 					}
 
 					if ('noteCardCompletedExpandedPatch' in body) {
@@ -491,6 +516,9 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
 								noteCardClickOpens: true,
+								noteCardCheckboxInteractions: true,
+								noteCardLinkInteractions: true,
+								noteCardCompletedInteractions: true,
 								noteCardCompletedExpandedByNoteId: {},
 							},
 						});
@@ -521,6 +549,9 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
 							quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
 							noteCardClickOpens: devicePref.noteCardClickOpens !== false,
+							noteCardCheckboxInteractions: devicePref.noteCardCheckboxInteractions !== false,
+							noteCardLinkInteractions: devicePref.noteCardLinkInteractions !== false,
+							noteCardCompletedInteractions: devicePref.noteCardCompletedInteractions !== false,
 							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 							bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
 							createdAt: fmt(devicePref.createdAt),
@@ -594,6 +625,18 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 										typeof deviceData.noteCardClickOpens === 'boolean'
 											? deviceData.noteCardClickOpens
 											: true,
+									noteCardCheckboxInteractions:
+										typeof deviceData.noteCardCheckboxInteractions === 'boolean'
+											? deviceData.noteCardCheckboxInteractions
+											: true,
+									noteCardLinkInteractions:
+										typeof deviceData.noteCardLinkInteractions === 'boolean'
+											? deviceData.noteCardLinkInteractions
+											: true,
+									noteCardCompletedInteractions:
+										typeof deviceData.noteCardCompletedInteractions === 'boolean'
+											? deviceData.noteCardCompletedInteractions
+											: true,
 									noteCardCompletedExpandedByNoteId:
 										deviceData.noteCardCompletedExpandedByNoteId ?? {},
 								},
@@ -609,6 +652,9 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
 									noteCardClickOpens: true,
+									noteCardCheckboxInteractions: true,
+									noteCardLinkInteractions: true,
+									noteCardCompletedInteractions: true,
 									noteCardCompletedExpandedByNoteId: {},
 								},
 							});
@@ -653,6 +699,9 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						checklistShowCompleted: Boolean(pref.devicePref.checklistShowCompleted),
 						quickDeleteChecklist: Boolean(pref.devicePref.quickDeleteChecklist),
 						noteCardClickOpens: pref.devicePref.noteCardClickOpens !== false,
+						noteCardCheckboxInteractions: pref.devicePref.noteCardCheckboxInteractions !== false,
+						noteCardLinkInteractions: pref.devicePref.noteCardLinkInteractions !== false,
+						noteCardCompletedInteractions: pref.devicePref.noteCardCompletedInteractions !== false,
 						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
 						bubbleWorkspaceColors: safeJsonRecord(pref.userPref.bubbleWorkspaceColors),
 						createdAt: fmt(pref.devicePref.createdAt),

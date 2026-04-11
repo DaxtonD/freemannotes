@@ -105,6 +105,7 @@ enum WorkspaceRole {
 }
 
 enum WorkspaceSystemKind {
+  PERSONAL
   SHARED_WITH_ME
 }
 
@@ -239,6 +240,15 @@ model UserDevicePreference {
 
   /// Per-device note-grid preference: clicking/tapping a note card opens the note.
   noteCardClickOpens Boolean @default(true) @map("note_card_click_opens")
+
+  /// Per-device note-card preference: allow checkbox toggles on note cards.
+  noteCardCheckboxInteractions Boolean @default(true) @map("note_card_checkbox_interactions")
+
+  /// Per-device note-card preference: allow opening links and URL previews on note cards.
+  noteCardLinkInteractions Boolean @default(true) @map("note_card_link_interactions")
+
+  /// Per-device note-card preference: allow completed-section actions on checklist cards.
+  noteCardCompletedInteractions Boolean @default(true) @map("note_card_completed_interactions")
 
   /// Per-device UI state: completed items expanded/collapsed per note card.
   /// Shape: { [noteId: string]: boolean }

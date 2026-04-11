@@ -30,6 +30,7 @@ export type NoteShareInvitation = {
 	status: NoteShareStatus;
 	inviteeEmail: string;
 	inviteeName: string | null;
+	inviteeProfileImage?: string | null;
 	createdAt: string;
 	updatedAt: string;
 	respondedAt: string | null;
@@ -263,21 +264,37 @@ export function removePendingNoteShareAction(userId: string, invitationId: strin
 	writeQueue(userId, readQueue(userId).filter((item) => item.invitationId !== invitationId));
 }
 
+const pendingNoteShareFlushes = new Map<string, Promise<void>>();
+
 export async function flushPendingNoteShareActions(userId: string): Promise<void> {
-	const pending = readQueue(userId);
-	// Replay in insertion order so the queued local view converges with the server
-	// in the same order the user acted on invitations while offline.
-	for (const action of pending) {
-		if (action.action === 'decline') {
-			await declineNoteShareInvitation(action.invitationId);
-		} else {
-			await acceptNoteShareInvitation(action.invitationId, {
-				target: action.target,
-				folderName: action.folderName || undefined,
-			});
-		}
-		removePendingNoteShareAction(userId, action.invitationId);
+	if (!userId) return;
+	const existing = pendingNoteShareFlushes.get(userId);
+	if (existing) {
+		await existing;
+		return;
 	}
+	const task = (async () => {
+		const pending = readQueue(userId);
+		// Replay in insertion order so the queued local view converges with the server
+		// in the same order the user acted on invitations while offline.
+		for (const action of pending) {
+			if (action.action === 'decline') {
+				await declineNoteShareInvitation(action.invitationId);
+			} else {
+				await acceptNoteShareInvitation(action.invitationId, {
+					target: action.target,
+					folderName: action.folderName || undefined,
+				});
+			}
+			removePendingNoteShareAction(userId, action.invitationId);
+		}
+	})().finally(() => {
+		if (pendingNoteShareFlushes.get(userId) === task) {
+			pendingNoteShareFlushes.delete(userId);
+		}
+	});
+	pendingNoteShareFlushes.set(userId, task);
+	await task;
 }
 
 export async function listNoteShareInvitations(): Promise<{ invitations: NoteShareInvitation[]; pendingCount: number }> {

@@ -143,7 +143,16 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 		const eventName = getWorkspaceMetadataChangedEventName();
 		// Keep the panel live while it is open so revoked/cancelled invitations drop
 		// out immediately when another tab or modal changes workspace metadata.
-		const onMetadataChanged = (): void => {
+		// Only reload for events that actually affect the notification panel contents:
+		// workspace invite changes, note-share invite changes, and profile updates.
+		const onMetadataChanged = (event: Event): void => {
+			const detail = (event as CustomEvent<{ reason?: string }>).detail;
+			const reason = detail?.reason;
+			if (reason &&
+				!reason.startsWith('workspace-invite-') &&
+				!reason.startsWith('note-share-') &&
+				reason !== 'user-profile-updated'
+			) return;
 			void load();
 		};
 		window.addEventListener(eventName, onMetadataChanged as EventListener);

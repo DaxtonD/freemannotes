@@ -177,17 +177,44 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						orderBy: { workspaceId: 'asc' },
 					});
 
+					// Fetch owner profiles for workspaces the current user does not own
+					// so the client can show the owner's name/avatar on duplicate-named tabs.
+					const foreignOwnerIds = [
+						...new Set(
+							memberships
+								.map((m) => m.workspace.ownerUserId)
+								.filter((ownerId) => ownerId && ownerId !== session.userId)
+						),
+					];
+					const ownerProfileMap = new Map();
+					if (foreignOwnerIds.length > 0) {
+						const owners = await prisma.user.findMany({
+							where: { id: { in: foreignOwnerIds } },
+							select: { id: true, name: true, profileImage: true },
+						});
+						for (const owner of owners) {
+							ownerProfileMap.set(owner.id, { name: owner.name, profileImage: owner.profileImage });
+						}
+					}
+
 					jsonResponse(res, 200, {
 						activeWorkspaceId,
-						workspaces: memberships.map((m) => ({
-							id: m.workspace.id,
-							name: m.workspace.name,
-							role: normalizeWorkspaceRole(m.role, 'VIEWER'),
-							ownerUserId: m.workspace.ownerUserId,
-							systemKind: m.workspace.systemKind,
-							createdAt: m.workspace.createdAt.toISOString(),
-							updatedAt: m.workspace.updatedAt.toISOString(),
-						})),
+						workspaces: memberships.map((m) => {
+							const ownerProfile = m.workspace.ownerUserId && m.workspace.ownerUserId !== session.userId
+								? ownerProfileMap.get(m.workspace.ownerUserId) || null
+								: null;
+							return {
+								id: m.workspace.id,
+								name: m.workspace.name,
+								role: normalizeWorkspaceRole(m.role, 'VIEWER'),
+								ownerUserId: m.workspace.ownerUserId,
+								ownerName: ownerProfile ? ownerProfile.name : null,
+								ownerProfileImage: ownerProfile ? ownerProfile.profileImage : null,
+								systemKind: m.workspace.systemKind,
+								createdAt: m.workspace.createdAt.toISOString(),
+								updatedAt: m.workspace.updatedAt.toISOString(),
+							};
+						}),
 					});
 				} catch (err) {
 					console.error('[workspace] list error:', err.message);

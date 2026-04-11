@@ -342,6 +342,8 @@ function mapWorkspaceList(value: unknown): SidebarWorkspaceListItem[] {
 				name: typeof workspace.name === 'string' ? workspace.name : '',
 				role: normalizeWorkspaceRole(workspace.role),
 				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
+				ownerName: typeof workspace.ownerName === 'string' ? workspace.ownerName : null,
+				ownerProfileImage: typeof workspace.ownerProfileImage === 'string' ? workspace.ownerProfileImage : null,
 				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind.toUpperCase() : null,
 				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
 				updatedAt: typeof workspace.updatedAt === 'string' ? workspace.updatedAt : typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
@@ -478,6 +480,11 @@ function detectIosStandaloneDisplayMode(): boolean {
 	const ua = navigatorValue.userAgent || '';
 	const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigatorValue.platform === 'MacIntel' && navigatorValue.maxTouchPoints > 1);
 	return isIOS && detectStandaloneDisplayMode();
+}
+
+function detectAndroidStandaloneDisplayMode(): boolean {
+	if (typeof window === 'undefined') return false;
+	return /Android/i.test(window.navigator.userAgent || '') && detectStandaloneDisplayMode();
 }
 
 type AuthCacheV1 = {
@@ -775,6 +782,15 @@ export function App(): React.JSX.Element {
 	const [noteCardClickOpensPref, setNoteCardClickOpensPref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.noteCardClickOpens ?? true
 	);
+	const [noteCardCheckboxInteractionsPref, setNoteCardCheckboxInteractionsPref] = React.useState(
+		() => cachedDeviceAppearancePrefs?.noteCardCheckboxInteractions ?? cachedDeviceAppearancePrefs?.noteCardClickOpens ?? true
+	);
+	const [noteCardLinkInteractionsPref, setNoteCardLinkInteractionsPref] = React.useState(
+		() => cachedDeviceAppearancePrefs?.noteCardLinkInteractions ?? cachedDeviceAppearancePrefs?.noteCardClickOpens ?? true
+	);
+	const [noteCardCompletedInteractionsPref, setNoteCardCompletedInteractionsPref] = React.useState(
+		() => cachedDeviceAppearancePrefs?.noteCardCompletedInteractions ?? cachedDeviceAppearancePrefs?.noteCardClickOpens ?? true
+	);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
 	// Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken }.
 	// Loaded from /api/user/preferences on auth, saved back on each change.
@@ -785,6 +801,9 @@ export function App(): React.JSX.Element {
 	const [bubbleColorPickerAnchorRect, setBubbleColorPickerAnchorRect] = React.useState<DOMRect | null>(null);
 	// Ref to the portal-rendered picker div, used to skip close() when clicking inside it.
 	const bubbleColorPickerRef = React.useRef<HTMLDivElement | null>(null);
+	// Popup shown on mobile long-press of an owner avatar chip in the workspace sidebar.
+	const [wsOwnerPopup, setWsOwnerPopup] = React.useState<{ workspaceId: string; x: number; y: number } | null>(null);
+	const wsOwnerLongPressTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 	// Cross-workspace note opened from bubble view without switching active workspace.
 	const [crossWorkspaceNote, setCrossWorkspaceNote] = React.useState<{ noteId: string; workspaceId: string; workspaceName: string } | null>(null);
 	const [searchQuery, setSearchQuery] = React.useState('');
@@ -1193,6 +1212,16 @@ export function App(): React.JSX.Element {
 		if (goBackIfOverlayHistory()) return;
 		setCollaboratorModalState(null);
 	}, [goBackIfOverlayHistory]);
+
+	const handleCollaboratorAccessRemoved = React.useCallback(() => {
+		closeCollaboratorModal();
+		showBriefDialog(t('share.accessRemovedToast'));
+	}, [closeCollaboratorModal, showBriefDialog, t]);
+
+	const handleCollaboratorSelfRemoved = React.useCallback(() => {
+		closeCollaboratorModal();
+		showBriefDialog(t('share.leftNoteToast'));
+	}, [closeCollaboratorModal, showBriefDialog, t]);
 
 	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string) => {
 		setNoteImageModalState({ noteId, docId, title: title || '' });
@@ -1667,13 +1696,20 @@ export function App(): React.JSX.Element {
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
 		noteCardClickOpens?: boolean;
+		noteCardCheckboxInteractions?: boolean;
+		noteCardLinkInteractions?: boolean;
+		noteCardCompletedInteractions?: boolean;
 	}) => {
+		const legacyNoteCardInteractions = next.noteCardClickOpens !== false;
 		setNoteCardFontScalePref(clampFontScale(next.noteCardFontScale ?? 1));
 		setNoteEditorFontScalePref(clampFontScale(next.noteEditorFontScale ?? 1));
 		setNoteCardMaxHeightPref(clampNoteCardMaxHeightPx(next.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()));
 		setChecklistShowCompletedPref(Boolean(next.checklistShowCompleted));
 		setQuickDeleteChecklistPref(Boolean(next.quickDeleteChecklist));
-		setNoteCardClickOpensPref(next.noteCardClickOpens !== false);
+		setNoteCardClickOpensPref(legacyNoteCardInteractions);
+		setNoteCardCheckboxInteractionsPref(next.noteCardCheckboxInteractions !== false && legacyNoteCardInteractions);
+		setNoteCardLinkInteractionsPref(next.noteCardLinkInteractions !== false && legacyNoteCardInteractions);
+		setNoteCardCompletedInteractionsPref(next.noteCardCompletedInteractions !== false && legacyNoteCardInteractions);
 	}, []);
 
 	const persistDevicePrefsLocally = React.useCallback((next: {
@@ -1683,6 +1719,9 @@ export function App(): React.JSX.Element {
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
 		noteCardClickOpens?: boolean;
+		noteCardCheckboxInteractions?: boolean;
+		noteCardLinkInteractions?: boolean;
+		noteCardCompletedInteractions?: boolean;
 		updatedAt?: string;
 	}) => {
 		writeCachedDeviceAppearancePreferences({
@@ -1694,9 +1733,12 @@ export function App(): React.JSX.Element {
 			checklistShowCompleted: next.checklistShowCompleted ?? checklistShowCompletedPref,
 			quickDeleteChecklist: next.quickDeleteChecklist ?? quickDeleteChecklistPref,
 			noteCardClickOpens: next.noteCardClickOpens ?? noteCardClickOpensPref,
+			noteCardCheckboxInteractions: next.noteCardCheckboxInteractions ?? noteCardCheckboxInteractionsPref,
+			noteCardLinkInteractions: next.noteCardLinkInteractions ?? noteCardLinkInteractionsPref,
+			noteCardCompletedInteractions: next.noteCardCompletedInteractions ?? noteCardCompletedInteractionsPref,
 			updatedAt: next.updatedAt ?? new Date().toISOString(),
 		});
-	}, [authUserId, checklistShowCompletedPref, deviceId, noteCardClickOpensPref, noteCardFontScalePref, noteCardMaxHeightPref, noteEditorFontScalePref, quickDeleteChecklistPref]);
+	}, [authUserId, checklistShowCompletedPref, deviceId, noteCardCheckboxInteractionsPref, noteCardClickOpensPref, noteCardCompletedInteractionsPref, noteCardFontScalePref, noteCardLinkInteractionsPref, noteCardMaxHeightPref, noteEditorFontScalePref, quickDeleteChecklistPref]);
 
 	const syncLocalDevicePrefsFromServer = React.useCallback((pref: UserDevicePreferences): void => {
 		applyDevicePreferenceState(pref);
@@ -1707,6 +1749,9 @@ export function App(): React.JSX.Element {
 			checklistShowCompleted: pref.checklistShowCompleted,
 			quickDeleteChecklist: pref.quickDeleteChecklist,
 			noteCardClickOpens: pref.noteCardClickOpens,
+			noteCardCheckboxInteractions: pref.noteCardCheckboxInteractions,
+			noteCardLinkInteractions: pref.noteCardLinkInteractions,
+			noteCardCompletedInteractions: pref.noteCardCompletedInteractions,
 			updatedAt: pref.updatedAt ?? new Date().toISOString(),
 		});
 	}, [applyDevicePreferenceState, persistDevicePrefsLocally]);
@@ -1793,6 +1838,39 @@ export function App(): React.JSX.Element {
 		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
 		void (async () => {
 			const updated = await updateUserPreferences(deviceId, { noteCardClickOpens: next });
+			if (!updated) return;
+			syncLocalDevicePrefsFromServer(updated);
+		})();
+	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+
+	const commitNoteCardCheckboxInteractionsPref = React.useCallback((next: boolean) => {
+		setNoteCardCheckboxInteractionsPref(next);
+		persistDevicePrefsLocally({ noteCardCheckboxInteractions: next });
+		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
+		void (async () => {
+			const updated = await updateUserPreferences(deviceId, { noteCardCheckboxInteractions: next });
+			if (!updated) return;
+			syncLocalDevicePrefsFromServer(updated);
+		})();
+	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+
+	const commitNoteCardLinkInteractionsPref = React.useCallback((next: boolean) => {
+		setNoteCardLinkInteractionsPref(next);
+		persistDevicePrefsLocally({ noteCardLinkInteractions: next });
+		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
+		void (async () => {
+			const updated = await updateUserPreferences(deviceId, { noteCardLinkInteractions: next });
+			if (!updated) return;
+			syncLocalDevicePrefsFromServer(updated);
+		})();
+	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+
+	const commitNoteCardCompletedInteractionsPref = React.useCallback((next: boolean) => {
+		setNoteCardCompletedInteractionsPref(next);
+		persistDevicePrefsLocally({ noteCardCompletedInteractions: next });
+		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
+		void (async () => {
+			const updated = await updateUserPreferences(deviceId, { noteCardCompletedInteractions: next });
 			if (!updated) return;
 			syncLocalDevicePrefsFromServer(updated);
 		})();
@@ -2254,6 +2332,9 @@ export function App(): React.JSX.Element {
 						checklistShowCompleted: localAppearanceSnapshot.checklistShowCompleted,
 						quickDeleteChecklist: localAppearanceSnapshot.quickDeleteChecklist,
 						noteCardClickOpens: localAppearanceSnapshot.noteCardClickOpens,
+						noteCardCheckboxInteractions: localAppearanceSnapshot.noteCardCheckboxInteractions,
+						noteCardLinkInteractions: localAppearanceSnapshot.noteCardLinkInteractions,
+						noteCardCompletedInteractions: localAppearanceSnapshot.noteCardCompletedInteractions,
 					});
 					if (!cancelled && updatedAppearance) {
 						syncLocalDevicePrefsFromServer(updatedAppearance);
@@ -3466,7 +3547,23 @@ export function App(): React.JSX.Element {
 	}, [authOfflineMode, authStatus, externalRoute, shareAttemptKey]);
 
 	const refreshNoteShareStateRef = React.useRef(refreshNoteShareState);
+	// ── DEBUG: rate-tracking refs for collaboration token bumps ──
+	const collabBumpDebugRef = React.useRef<{ count: number; windowStart: number }>({ count: 0, windowStart: Date.now() });
+	// ── DEBUG: rate-tracking ref for WS metadata messages ──
+	const wsMetaMsgDebugRef = React.useRef<{ count: number; windowStart: number; lastTypes: string[] }>({ count: 0, windowStart: Date.now(), lastTypes: [] });
 	const bumpCollaborationRefreshToken = React.useCallback(() => {
+		if (process.env.NODE_ENV !== 'production') {
+			const now = Date.now();
+			const debug = collabBumpDebugRef.current;
+			if (now - debug.windowStart > 2000) {
+				if (debug.count > 3) {
+					console.warn(`[collab-debug] bumpCollaborationRefreshToken called ${debug.count}x in last 2 s — possible rapid loop`);
+				}
+				debug.count = 0;
+				debug.windowStart = now;
+			}
+			debug.count++;
+		}
 		setCollaborationRefreshToken((value) => value + 1);
 	}, []);
 	const documentViewerOpenRef = React.useRef(false);
@@ -3532,6 +3629,7 @@ export function App(): React.JSX.Element {
 		let socket: WebSocket | null = null;
 		let reconnectTimer: number | null = null;
 		let refreshMetadataTimer: number | null = null;
+		let collaborationRefreshTimer: number | null = null;
 		const pendingNoteMediaTimers = new Map<string, number>();
 		const pendingNoteDocumentTimers = new Map<string, number>();
 		const pendingNoteLinkTimers = new Map<string, number>();
@@ -3577,7 +3675,12 @@ export function App(): React.JSX.Element {
 				void loadSidebarWorkspacesRef.current();
 				void refreshActiveWorkspaceRef.current();
 				void refreshNoteShareStateRef.current();
-				bumpCollaborationRefreshToken();
+				// Do NOT call bumpCollaborationRefreshToken() here — workspace-level events
+				// (invite accepted/created/cancelled, workspace deleted, etc.) do not change
+				// per-note collaborator data.  Bumping here causes NoteGrid to re-sync every
+				// visible note on every WS metadata event, generating hundreds of DB queries.
+				// Note-share collaborator bumps are handled by the isNoteShareMetadataEvent
+				// and isUserProfileMetadataEvent branches that already call bumpCollaborationRefreshToken.
 			}, 300);
 		};
 
@@ -3613,6 +3716,22 @@ export function App(): React.JSX.Element {
 						workspaceId?: string | null;
 							docId?: string | null;
 					};
+					// ── DEBUG: rate-track incoming metadata WS messages ──
+					if (process.env.NODE_ENV !== 'production') {
+						const now = Date.now();
+						const wd = wsMetaMsgDebugRef.current;
+						if (now - wd.windowStart > 2000) {
+							if (wd.count > 10) {
+								console.warn(`[ws-meta-debug] ${wd.count} metadata messages in 2 s — possible rapid event loop. Types: ${wd.lastTypes.slice(-8).join(', ')}`);
+							}
+							wd.count = 0;
+							wd.windowStart = now;
+							wd.lastTypes = [];
+						}
+						wd.count++;
+						const label = `${payload.type ?? '?'}/${payload.reason ?? '?'}`;
+						if (wd.lastTypes.length < 20) wd.lastTypes.push(label);
+					}
 					const isNoteShareMetadataEvent = payload.type === 'workspace-metadata-changed'
 						&& typeof payload.reason === 'string'
 						&& payload.reason.startsWith('note-share-');
@@ -3640,12 +3759,22 @@ export function App(): React.JSX.Element {
 					) {
 						if (
 							payload.type === 'workspace-metadata-changed' &&
+							typeof window.dispatchEvent === 'function'
+						) {
+							window.dispatchEvent(
+								new CustomEvent(getWorkspaceMetadataChangedEventName(), {
+									detail: payload,
+								})
+							);
+						}
+						if (
+							payload.type === 'workspace-metadata-changed' &&
 							typeof payload.workspaceId === 'string' &&
 							typeof window.dispatchEvent === 'function'
 						) {
 							window.dispatchEvent(
 								new CustomEvent(getWorkspaceInviteStateEventName(), {
-									detail: { workspaceId: payload.workspaceId },
+									detail: { workspaceId: payload.workspaceId, source: 'remote', reason: payload.reason },
 								})
 							);
 						}
@@ -3694,13 +3823,23 @@ export function App(): React.JSX.Element {
 							authUserId &&
 							!isNoteMediaMetadataEvent &&
 							!isNoteDocumentsMetadataEvent &&
-							!isNoteLinksMetadataEvent
+							!isNoteLinksMetadataEvent &&
+							!isNoteShareMetadataEvent
 						) {
+							// Non-share per-doc event: update this note's collaborator cache directly.
 							void syncNoteShareCollaborators(authUserId, payload.docId, { suppressError: true });
 						}
 						if (isNoteShareMetadataEvent) {
-							void refreshNoteShareStateRef.current();
-							bumpCollaborationRefreshToken();
+							// Debounce BOTH the share-state refresh and the full-grid token
+							// bump together so that a burst of N note-share events (e.g.
+							// bulk invitation sends or workspace-acceptance echoes) produces
+							// ONE pair of calls instead of N×refreshNoteShareState + 1 bump.
+							if (collaborationRefreshTimer !== null) window.clearTimeout(collaborationRefreshTimer);
+							collaborationRefreshTimer = window.setTimeout(() => {
+								collaborationRefreshTimer = null;
+								void refreshNoteShareStateRef.current();
+								bumpCollaborationRefreshToken();
+							}, 300);
 							return;
 						}
 						if (payload.reason === 'reminder-fired') {
@@ -3773,6 +3912,10 @@ export function App(): React.JSX.Element {
 			if (refreshMetadataTimer !== null) {
 				window.clearTimeout(refreshMetadataTimer);
 				refreshMetadataTimer = null;
+			}
+			if (collaborationRefreshTimer !== null) {
+				window.clearTimeout(collaborationRefreshTimer);
+				collaborationRefreshTimer = null;
 			}
 			clearPendingNoteMediaTimers();
 			clearPendingNoteDocumentTimers();
@@ -4951,10 +5094,6 @@ export function App(): React.JSX.Element {
 		}
 	}, [loadSidebarWorkspaces, sidebarWorkspaces.length, sidebarWorkspacesBusy, viewMode]);
 
-	// The sidebar shares the same global lock stack as modals so opening one
-	// overlay from another cannot restore stale hidden/touch-action styles.
-	useBodyScrollLock(isMobileViewport && isMobileSidebarOpen);
-
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
 		const mql = window.matchMedia('(pointer: coarse)');
@@ -5097,6 +5236,20 @@ export function App(): React.JSX.Element {
 			body.classList.remove(className);
 		};
 	}, [isIosStandalonePwa]);
+
+	React.useEffect(() => {
+		if (typeof document === 'undefined') return;
+		const viewportMeta = document.querySelector('meta[name="viewport"]');
+		if (!(viewportMeta instanceof HTMLMetaElement)) return;
+		const defaultContent = 'width=device-width, initial-scale=1, viewport-fit=cover';
+		const nextContent = detectAndroidStandaloneDisplayMode()
+			? `${defaultContent}, maximum-scale=1, user-scalable=no`
+			: defaultContent;
+		viewportMeta.setAttribute('content', nextContent);
+		return () => {
+			viewportMeta.setAttribute('content', defaultContent);
+		};
+	}, [isMobileViewport]);
 
 	React.useEffect(() => {
 		// iOS standalone PWAs still expose the native left-edge swipe-back gesture,
@@ -6295,14 +6448,23 @@ export function App(): React.JSX.Element {
 											{sidebarWorkspacesSorted.map((ws, index) => {
 												const workspaceDisplayName = getWorkspaceDisplayName(ws, t);
 												const isActive = Boolean(authWorkspaceId && ws.id === authWorkspaceId);
-												const canShareWorkspace = canManageWorkspace(ws.role) && ws.systemKind !== 'SHARED_WITH_ME';
+												const canShareWorkspace = canManageWorkspace(ws.role) && ws.systemKind !== 'SHARED_WITH_ME' && !isPersonalWorkspace(ws);
 												const sharedFolderGroupId = `workspace-folders:${ws.id}`;
 												const hasSharedFolders = ws.systemKind === 'SHARED_WITH_ME' && sharedFolderNames.length > 0;
 												const showSharedFolders = hasSharedFolders && Boolean(sidebarGroupsOpen[sharedFolderGroupId]);
 												const itemIndex = (sidebarWorkspacesBusy || sidebarWorkspacesError ? 3 : 0) + index;
+												// Show owner avatar when a foreign workspace's display name collides
+												// with one of the user's own workspaces.
+												const showOwnerAvatar = ws.ownerUserId !== authUserId && ws.ownerUserId != null &&
+													sidebarWorkspacesSorted.some(
+														(other) => other.id !== ws.id && getWorkspaceDisplayName(other, t) === workspaceDisplayName
+													);
+												const ownerInitials = ws.ownerName
+													? ws.ownerName.trim().split(/\s+/).map((n) => n[0]).join('').toUpperCase().slice(0, 2)
+													: (ws.ownerUserId ? '?' : '');
 												return (
 													<div key={ws.id} className="sidebar-workspace-group">
-														<div className={`sidebar-workspace-row${canShareWorkspace ? ' has-share-action' : ''}`}>
+														<div className={`sidebar-workspace-row${canShareWorkspace ? ' has-share-action' : ''}${showOwnerAvatar ? ' has-owner-avatar' : ''}`}>
 															{hasSharedFolders ? (
 																<button
 																	type="button"
@@ -6351,6 +6513,52 @@ export function App(): React.JSX.Element {
 															>
 																<span className="sidebar-submenu-item-label">{truncateUiName(workspaceDisplayName, 44)}</span>
 															</button>
+															{showOwnerAvatar ? (
+																<button
+																	type="button"
+																	className="sidebar-workspace-owner-avatar"
+																	title={ws.ownerName ?? undefined}
+																	aria-label={ws.ownerName ? `${t('workspace.ownedBy')} ${ws.ownerName}` : t('workspace.ownedByUnknown')}
+																	onPointerDown={(e) => {
+																		// Long-press (≥500 ms) shows a name popup — primarily for touch / PWA.
+																		if (e.pointerType === 'mouse') return;
+																		e.currentTarget.setPointerCapture(e.pointerId);
+																		if (wsOwnerLongPressTimer.current !== null) clearTimeout(wsOwnerLongPressTimer.current);
+																		const rect = e.currentTarget.getBoundingClientRect();
+																		wsOwnerLongPressTimer.current = setTimeout(() => {
+																			wsOwnerLongPressTimer.current = null;
+																			setWsOwnerPopup({ workspaceId: ws.id, x: rect.left, y: rect.bottom + 4 });
+																		}, 500);
+																	}}
+																	onPointerUp={() => {
+																		if (wsOwnerLongPressTimer.current !== null) {
+																			clearTimeout(wsOwnerLongPressTimer.current);
+																			wsOwnerLongPressTimer.current = null;
+																		}
+																	}}
+																	onPointerCancel={() => {
+																		if (wsOwnerLongPressTimer.current !== null) {
+																			clearTimeout(wsOwnerLongPressTimer.current);
+																			wsOwnerLongPressTimer.current = null;
+																		}
+																	}}
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		// Dismiss the popup if it is open for this workspace.
+																		if (wsOwnerPopup?.workspaceId === ws.id) setWsOwnerPopup(null);
+																	}}
+																>
+																	{ws.ownerProfileImage ? (
+																		<img
+																			src={ws.ownerProfileImage}
+																			alt=""
+																			className="sidebar-workspace-owner-img"
+																		/>
+																	) : (
+																		<span className="sidebar-workspace-owner-initials" aria-hidden="true">{ownerInitials}</span>
+																	)}
+																</button>
+															) : null}
 																	{canShareWorkspace ? (
 																		<button
 																			type="button"
@@ -6821,7 +7029,9 @@ export function App(): React.JSX.Element {
 						sortGrouping={activeSortGrouping}
 						refreshCollaboratorsToken={collaborationRefreshToken}
 						maxCardHeightPx={maxCardHeightPx}
-						noteCardClickOpens={noteCardClickOpensPref}
+						noteCardCheckboxInteractions={noteCardCheckboxInteractionsPref}
+						noteCardLinkInteractions={noteCardLinkInteractionsPref}
+						noteCardCompletedInteractions={noteCardCompletedInteractionsPref}
 						// When the trash view is active, NoteGrid switches to rendering trashed notes.
 						showTrashed={sidebarView === 'trash'}
 						showArchived={sidebarView === 'archive'}
@@ -6970,6 +7180,29 @@ export function App(): React.JSX.Element {
 				</div>,
 				document.body,
 			) : null}
+			{/* Owner popup for mobile long-press on workspace avatar chip — rendered
+			    as a portal so it is not clipped by the sidebar's overflow:hidden. */}
+			{wsOwnerPopup ? ReactDOM.createPortal(
+				<div
+					className="sidebar-workspace-owner-popup"
+					style={{ top: wsOwnerPopup.y, left: wsOwnerPopup.x }}
+					onPointerDown={() => setWsOwnerPopup(null)}
+				>
+					{(() => {
+						const popup = sidebarWorkspacesSorted.find((ws) => ws.id === wsOwnerPopup.workspaceId);
+						if (!popup) return null;
+						return (
+							<>
+								{popup.ownerProfileImage ? (
+									<img src={popup.ownerProfileImage} alt="" className="sidebar-workspace-owner-popup-img" />
+								) : null}
+								<span className="sidebar-workspace-owner-popup-name">{popup.ownerName ?? ''}</span>
+							</>
+						);
+					})()}
+				</div>,
+				document.body
+			) : null}
 			<NoteMediaBrowserModal
 				isOpen={noteAttachmentBrowserState?.kind === 'images'}
 				docId={noteAttachmentBrowserState?.kind === 'images' ? noteAttachmentBrowserState.docId : null}
@@ -7113,7 +7346,9 @@ export function App(): React.JSX.Element {
 				t={t}
 				isLightTheme={isLightTheme(themeId)}
 				quickDeleteChecklist={quickDeleteChecklistPref}
-				noteCardClickOpens={noteCardClickOpensPref}
+				noteCardCheckboxInteractions={noteCardCheckboxInteractionsPref}
+				noteCardLinkInteractions={noteCardLinkInteractionsPref}
+				noteCardCompletedInteractions={noteCardCompletedInteractionsPref}
 				deleteAfterDays={trashDeleteAfterDaysPref}
 				installAvailable={pwaState.canInstall}
 				installMethod={pwaState.installMethod}
@@ -7132,8 +7367,14 @@ export function App(): React.JSX.Element {
 				onQuickDeleteChecklistChange={(next) => {
 					commitQuickDeleteChecklistPref(next);
 				}}
-				onNoteCardClickOpensChange={(next) => {
-					commitNoteCardClickOpensPref(next);
+				onNoteCardCheckboxInteractionsChange={(next) => {
+					commitNoteCardCheckboxInteractionsPref(next);
+				}}
+				onNoteCardLinkInteractionsChange={(next) => {
+					commitNoteCardLinkInteractionsPref(next);
+				}}
+				onNoteCardCompletedInteractionsChange={(next) => {
+					commitNoteCardCompletedInteractionsPref(next);
 				}}
 				onDeleteAfterDaysChange={(next) => {
 					setTrashDeleteAfterDaysPref(next);
@@ -7331,6 +7572,8 @@ export function App(): React.JSX.Element {
 				docId={collaboratorModalState?.docId ?? null}
 				offlineCanManageHint={Boolean(collaboratorModalState && !sharedPlacements.some((item) => item.aliasId === collaboratorModalState.noteId))}
 				noteTitle={collaboratorModalState?.title ?? ''}
+				onAccessRemoved={handleCollaboratorAccessRemoved}
+				onSelfRemoved={handleCollaboratorSelfRemoved}
 				onChanged={() => {
 					bumpCollaborationRefreshToken();
 					void refreshNoteShareState();
