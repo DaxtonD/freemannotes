@@ -161,6 +161,18 @@ function formatReminderDateTime(value) {
 	}).format(date);
 }
 
+const LEGACY_PERSONAL_NAME_RE = /^Personal \([0-9a-f-]{36}\)$/i;
+const LEGACY_SHARED_WITH_ME_NAME_RE = /^Shared With Me \([0-9a-f-]{36}\)$/i;
+
+function getWorkspaceDisplayName(name, systemKind) {
+	if (systemKind === 'SHARED_WITH_ME') return 'Shared With Me';
+	const rawName = String(name || '').trim();
+	if (!rawName) return 'Workspace';
+	if (LEGACY_PERSONAL_NAME_RE.test(rawName)) return 'Personal';
+	if (LEGACY_SHARED_WITH_ME_NAME_RE.test(rawName)) return 'Shared With Me';
+	return rawName;
+}
+
 function buildReminderUrl(reminder) {
 	return `/?workspace=${encodeURIComponent(String(reminder.workspaceId))}&note=${encodeURIComponent(String(reminder.noteId))}`;
 }
@@ -169,7 +181,7 @@ async function loadReminderMetadata(prisma, reminder) {
 	const [workspace, user, document] = await Promise.all([
 		prisma.workspace.findUnique({
 			where: { id: reminder.workspaceId },
-			select: { name: true },
+			select: { name: true, systemKind: true },
 		}).catch(() => null),
 		prisma.user.findUnique({
 			where: { id: reminder.userId },
@@ -200,7 +212,7 @@ async function loadReminderMetadata(prisma, reminder) {
 		}
 	}
 	return {
-		workspaceName: workspace?.name ? String(workspace.name) : 'Workspace',
+		workspaceName: getWorkspaceDisplayName(workspace?.name, workspace?.systemKind),
 		userName: user?.name ? String(user.name) : '',
 		userEmail: user?.email ? String(user.email) : '',
 		notePreviewText,

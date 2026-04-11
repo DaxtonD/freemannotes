@@ -149,6 +149,8 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 	conn.binaryType = 'arraybuffer';
 	const doc = getYDoc(docName, gc);
 	doc.conns.set(conn, new Set());
+	// ── DEBUG: log every Yjs WS connection open so rapid reconnect loops are visible ──
+	console.log(`[ws-debug] open  room=${docName} readOnly=${readOnly} totalConns=${doc.conns.size}`);
 
 	conn.on('message', (message) => {
 		try {
@@ -163,7 +165,12 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 			switch (messageType) {
 				case MESSAGE_SYNC: {
 					const syncMessageType = decoding.readVarUint(decoder);
-					if (readOnly && (syncMessageType === syncProtocol.messageYjsSyncStep2 || syncMessageType === syncProtocol.messageYjsUpdate)) {
+					// Only updates are write operations — close read-only connections that attempt one.
+					// SyncStep2 is the client's required response to the server's own SyncStep1 and
+					// is part of the normal handshake.  Closing on SyncStep2 would put the Yjs
+					// provider into an infinite reconnect loop because the server itself requested it.
+					if (readOnly && syncMessageType === syncProtocol.messageYjsUpdate) {
+						console.warn('[ws] read-only client attempted write update, closing:', docName);
 						conn.close(1008, 'read-only');
 						return;
 					}
@@ -171,7 +178,13 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 					if (syncMessageType === syncProtocol.messageYjsSyncStep1) {
 						syncProtocol.readSyncStep1(decoder, encoder, doc);
 					} else if (syncMessageType === syncProtocol.messageYjsSyncStep2) {
-						syncProtocol.readSyncStep2(decoder, doc, conn);
+						if (readOnly) {
+							// Consume bytes without applying to the doc.  Read-only clients must not
+							// push their local state to the server document.
+							decoding.readVarUint8Array(decoder);
+						} else {
+							syncProtocol.readSyncStep2(decoder, doc, conn);
+						}
 					} else if (syncMessageType === syncProtocol.messageYjsUpdate) {
 						syncProtocol.readUpdate(decoder, doc, conn);
 					}
@@ -208,7 +221,9 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 		}
 	}, PING_TIMEOUT_MS);
 
-	conn.on('close', () => {
+	conn.on('close', (code, reason) => {
+		// ── DEBUG: log every close; rapid sequential opens for the same room = reconnect loop ──
+		console.log(`[ws-debug] close room=${docName} readOnly=${readOnly} code=${code} reason=${reason || '(none)'}`);
 		logEvent('WS_EVENT', {
 			...getRoomDebugContext(docName),
 			event: 'socket-close',

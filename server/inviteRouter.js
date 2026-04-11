@@ -47,6 +47,17 @@ function isValidEmail(email) {
 	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+const LEGACY_PERSONAL_NAME_RE = /^Personal \([0-9a-f-]{36}\)$/i;
+const LEGACY_SHARED_WITH_ME_NAME_RE = /^Shared With Me \([0-9a-f-]{36}\)$/i;
+
+function getWorkspaceDisplayName(name) {
+	const rawName = String(name || '').trim();
+	if (!rawName) return 'Workspace';
+	if (LEGACY_PERSONAL_NAME_RE.test(rawName)) return 'Personal';
+	if (LEGACY_SHARED_WITH_ME_NAME_RE.test(rawName)) return 'Shared With Me';
+	return rawName;
+}
+
 async function resolveInvitee(prisma, identifier) {
 	const normalized = normalizeIdentifier(identifier);
 	if (!normalized) return null;
@@ -134,6 +145,14 @@ async function listWorkspaceInviteState(prisma, workspaceId, baseUrl) {
 			orderBy: [{ expiresAt: 'asc' }, { email: 'asc' }],
 		}),
 	]);
+	const inviteEmails = Array.from(new Set(invites.map((invite) => normalizeEmail(invite.email)).filter(Boolean)));
+	const inviteUsers = inviteEmails.length > 0
+		? await prisma.user.findMany({
+			where: { email: { in: inviteEmails } },
+			select: { email: true, name: true, profileImage: true },
+		})
+		: [];
+	const inviteUserByEmail = new Map(inviteUsers.map((user) => [normalizeEmail(user.email), user]));
 
 	return {
 		members: members.map((member) => ({
@@ -144,21 +163,25 @@ async function listWorkspaceInviteState(prisma, workspaceId, baseUrl) {
 			profileImage: member.user ? member.user.profileImage || null : null,
 			role: normalizeWorkspaceRole(member.role),
 		})),
-		invites: invites.map((invite) => ({
-			id: invite.id,
-			email: normalizeEmail(invite.email),
-			role: normalizeWorkspaceRole(invite.role),
-			expiresAt: invite.expiresAt.toISOString(),
-			inviteUrl: `${baseUrl.replace(/\/$/, '')}/invite/${invite.token}`,
-			name: null,
-			creator: invite.creator
-				? {
-					id: invite.creator.id,
-					name: invite.creator.name,
-					email: invite.creator.email,
-				}
-				: null,
-		})),
+		invites: invites.map((invite) => {
+			const invitee = inviteUserByEmail.get(normalizeEmail(invite.email));
+			return {
+				id: invite.id,
+				email: normalizeEmail(invite.email),
+				role: normalizeWorkspaceRole(invite.role),
+				expiresAt: invite.expiresAt.toISOString(),
+				inviteUrl: `${baseUrl.replace(/\/$/, '')}/invite/${invite.token}`,
+				name: invitee?.name || null,
+				profileImage: invitee?.profileImage || null,
+				creator: invite.creator
+					? {
+						id: invite.creator.id,
+						name: invite.creator.name,
+						email: invite.creator.email,
+					}
+					: null,
+			};
+		}),
 	};
 }
 
@@ -276,11 +299,16 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						return;
 					}
 
-					const workspace = await findLiveWorkspace(prisma, workspaceId, { id: true, name: true });
+					const workspace = await findLiveWorkspace(prisma, workspaceId, { id: true, name: true, systemKind: true });
 					if (!workspace) {
 						jsonResponse(res, 404, { error: 'Workspace not found' });
 						return;
 					}
+					if (workspace.systemKind === 'PERSONAL' || LEGACY_PERSONAL_NAME_RE.test(workspace.name)) {
+						jsonResponse(res, 403, { error: 'Personal workspace cannot be shared' });
+						return;
+					}
+					const workspaceLabel = getWorkspaceDisplayName(workspace.name);
 
 					const resolvedInvitee = await resolveInvitee(prisma, identifier);
 					if (!resolvedInvitee) {
@@ -337,7 +365,7 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 					// Existing users receive the invite in-app, so email is only sent when the
 					// identifier did not resolve to a local account.
 					if (sentEmail) {
-						await sendInviteEmail({ to: email, workspaceName: workspace.name, inviteUrl });
+						await sendInviteEmail({ to: email, workspaceName: workspaceLabel, inviteUrl });
 					}
 
 					jsonResponse(res, 201, {
@@ -358,7 +386,7 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 							await sendPushToUser(prisma, existingUser.id, {
 								type: 'workspace-invite',
 								title: '🏠 Workspace Invitation',
-								body: `You've been invited to join "${workspace.name}".`,
+								body: `You've been invited to join "${workspaceLabel}".`,
 								data: { type: 'workspace-invite', workspaceId, url: '/' },
 							});
 						} catch (pushErr) {
@@ -562,7 +590,7 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						invites: invites.map((invite) => ({
 							id: invite.id,
 							workspaceId: invite.workspaceId,
-							workspaceName: invite.workspace ? invite.workspace.name : '',
+							workspaceName: getWorkspaceDisplayName(invite.workspace ? invite.workspace.name : ''),
 							role: normalizeWorkspaceRole(invite.role),
 							email: normalizeEmail(invite.email),
 							createdAt: invite.createdAt.toISOString(),
@@ -633,7 +661,7 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						await tx.inviteToken.update({ where: { id: invite.id }, data: { used: true } });
 					});
 
-					jsonResponse(res, 200, { ok: true, workspaceId: invite.workspaceId, workspaceName: workspace.name, role: normalizeWorkspaceRole(invite.role) });
+					jsonResponse(res, 200, { ok: true, workspaceId: invite.workspaceId, workspaceName: getWorkspaceDisplayName(workspace.name), role: normalizeWorkspaceRole(invite.role) });
 					await publishWorkspaceInviteMetadataChange(
 						onWorkspaceMetadataChanged,
 						{

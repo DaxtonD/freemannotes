@@ -91,7 +91,9 @@ export type NoteGridProps = {
 	refreshCollaboratorsToken?: number;
 	canEditWorkspaceContent?: boolean;
 	canReorder?: boolean;
-	noteCardClickOpens?: boolean;
+	noteCardCheckboxInteractions?: boolean;
+	noteCardLinkInteractions?: boolean;
+	noteCardCompletedInteractions?: boolean;
 	onAddReminder?: (noteId: string, docId: string, title?: string) => void;
 	onAddToCollection?: (noteId: string, title?: string) => void;
 	onAddLabels?: (noteId: string, title?: string) => void;
@@ -390,7 +392,9 @@ type GridNoteCardProps = {
 	onAddImage?: () => void;
 	onMoreMenu: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
 	canEdit: boolean;
-	allowCardItemInteractions?: boolean;
+	allowChecklistItemInteractions?: boolean;
+	allowLinkInteractions?: boolean;
+	allowCompletedItemInteractions?: boolean;
 	isTrashView?: boolean;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
@@ -655,7 +659,9 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					onAddCollaborator={props.onAddCollaborator}
 					onAddImage={props.onAddImage}
 					onMoreMenu={props.onMoreMenu}
-					allowCardItemInteractions={props.allowCardItemInteractions}
+					allowChecklistItemInteractions={props.allowChecklistItemInteractions}
+					allowLinkInteractions={props.allowLinkInteractions}
+					allowCompletedItemInteractions={props.allowCompletedItemInteractions}
 					isTrashView={props.isTrashView}
 					dragHandleRef={handleDragHandleRef}
 				/>
@@ -792,6 +798,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [props.enableLayoutAnimations, allDocsLoaded, layoutReady]);
 
 	const pendingSyncNoteIds = React.useMemo(() => new Set(connection.pendingSyncNoteIds), [connection.pendingSyncNoteIds]);
+	// Stable primitive signature for use as effect dep.  The Set object above is a new
+	// reference whenever `connectionSnapshot` is emitted (even if content is identical),
+	// which would cause the collaborator sync effect to re-run spuriously every time the
+	// Yjs WS connection state changes (e.g., offline → connecting → synced).
+	// DocumentManager already sorts the IDs, so a plain join produces a deterministic key.
+	const pendingSyncNoteIdsSignature = React.useMemo(
+		() => connection.pendingSyncNoteIds.join('|'),
+		[connection.pendingSyncNoteIds],
+	);
 	const [collaboratorSummariesByNoteId, setCollaboratorSummariesByNoteId] = React.useState<Record<string, NoteCardCollaboratorSummary>>({});
 	const [openCollaboratorChip, setOpenCollaboratorChip] = React.useState<{
 		noteId: string;
@@ -807,6 +822,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [latchedOverlayNoteId, setLatchedOverlayNoteId] = React.useState<string | null>(null);
 	const isCoarsePointer = useIsCoarsePointer();
 	const collaboratorOverlayPanelRef = React.useRef<HTMLDivElement | null>(null);
+	// ── DEBUG: tracks previous collaborator-sync effect deps to surface which one changed ──
+	const prevCollabSyncDepsRef = React.useRef<{
+		pendingSyncSig: string;
+		authUserId: string | null | undefined;
+		refreshToken: number;
+		noteSig: string;
+	} | null>(null);
 	const collaboratorOverlayListRef = React.useRef<HTMLDivElement | null>(null);
 	const metadataOverlayPanelRef = React.useRef<HTMLDivElement | null>(null);
 	const collaboratorTouchYRef = React.useRef<number | null>(null);
@@ -1069,6 +1091,23 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		}
 		let cancelled = false;
 
+		// ── DEBUG: log which dep changed to surface infinite-loop causes ──
+		if (process.env.NODE_ENV !== 'production') {
+			const prev = prevCollabSyncDepsRef.current;
+			const changed: string[] = [];
+			if (!prev || prev.pendingSyncSig !== pendingSyncNoteIdsSignature) changed.push(`pendingSyncNoteIds(${pendingSyncNoteIdsSignature || 'empty'})`);
+			if (!prev || prev.authUserId !== props.authUserId) changed.push(`authUserId(${props.authUserId})`);
+			if (!prev || prev.refreshToken !== props.refreshCollaboratorsToken) changed.push(`refreshCollaboratorsToken(${props.refreshCollaboratorsToken})`);
+			if (!prev || prev.noteSig !== visibleNoteEntriesForCollaboratorSyncSignature) changed.push(`notesSig`);
+			console.log('[collab-sync] effect fired — changed deps:', changed.join(', ') || '(none?)');
+			prevCollabSyncDepsRef.current = {
+				pendingSyncSig: pendingSyncNoteIdsSignature,
+				authUserId: props.authUserId,
+				refreshToken: props.refreshCollaboratorsToken,
+				noteSig: visibleNoteEntriesForCollaboratorSyncSignature,
+			};
+		}
+
 		const applySummaries = (rows: readonly { noteId: string; summary: NoteCardCollaboratorSummary | null }[]) => {
 			if (cancelled) return;
 			setCollaboratorSummariesByNoteId(() => {
@@ -1118,7 +1157,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [pendingSyncNoteIds, props.authUserId, props.refreshCollaboratorsToken, visibleNoteEntriesForCollaboratorSyncSignature]);
+	}, [pendingSyncNoteIdsSignature, props.authUserId, props.refreshCollaboratorsToken, visibleNoteEntriesForCollaboratorSyncSignature]);
 
 	const visibleIds = React.useMemo<string[]>(() => {
 		if (!props.activeCollaboratorFilter) return baseVisibleIds;
@@ -1783,13 +1822,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				isTrashView={isTrashView}
 				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => {
+					if (moreMenuNoteId) return;
 					if (dragManager.shouldSuppressOpen()) return;
 					if (isChipInteractionGuardActive) return;
 					if (openCollaboratorChip || openMetadataChip || openAttachmentChipNoteId) return;
 					if (Date.now() < suppressGridOpenUntilRef.current) return;
 					props.onSelectNote(note.id);
 				} : undefined}
-				allowCardItemInteractions={props.noteCardClickOpens !== false}
+				allowChecklistItemInteractions={props.noteCardCheckboxInteractions !== false}
+				allowLinkInteractions={props.noteCardLinkInteractions !== false}
+				allowCompletedItemInteractions={props.noteCardCompletedInteractions !== false}
 				suppressContentInteractions={isChipInteractionGuardActive}
 				onAddReminder={props.onAddReminder && canEditNote ? () => props.onAddReminder?.(note.id, docId, doc.getText('title').toString()) : undefined}
 				onRestoreNote={isTrashView ? () => { void manager.restoreNote(note.id); } : undefined}
@@ -1812,7 +1854,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isChipInteractionGuardActive, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardClickOpens, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isChipInteractionGuardActive, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -1851,6 +1893,28 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			document.removeEventListener('pointerdown', handlePointerDown, true);
 		};
 	}, [closeChipOverlays, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip]);
+
+	React.useEffect(() => {
+		if (!moreMenuNoteId || typeof document === 'undefined') return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target;
+			if (!(target instanceof HTMLElement)) return;
+			if (target.closest('[data-note-more-menu-panel="true"]')) return;
+			if (target.closest('[data-note-more-menu-overlay="true"]')) return;
+			if (target.closest('[data-more-btn="true"]')) return;
+			if (!target.closest('[data-note-card="true"], [data-note-list-row="true"]')) return;
+			if (event.cancelable) event.preventDefault();
+			event.stopPropagation();
+			suppressGridOpenUntilRef.current = Date.now() + 320;
+			suppressNoteCardInteractionUntilRef.current = Date.now() + 520;
+			setMoreMenuNoteId(null);
+			setMoreMenuAnchorRect(null);
+		};
+		document.addEventListener('pointerdown', handlePointerDown, true);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown, true);
+		};
+	}, [moreMenuNoteId]);
 
 	React.useEffect(() => {
 		if (typeof document === 'undefined') return;
@@ -2014,7 +2078,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										activeDragId={dragManager.activeDragId}
 										setItemElement={dragManager.setItemElement}
 										setHandleElement={dragManager.setHandleElement}
-										shouldSuppressOpen={dragManager.shouldSuppressOpen}
+										shouldSuppressOpen={() => dragManager.shouldSuppressOpen() || moreMenuNoteId !== null}
 										canOpenNotes={!isTrashView}
 										canDrag={(noteId) => {
 											const note = noteById.get(noteId);
@@ -2046,7 +2110,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								activeDragId={dragManager.activeDragId}
 								setItemElement={dragManager.setItemElement}
 								setHandleElement={dragManager.setHandleElement}
-								shouldSuppressOpen={dragManager.shouldSuppressOpen}
+								shouldSuppressOpen={() => dragManager.shouldSuppressOpen() || moreMenuNoteId !== null}
 								canOpenNotes={!isTrashView}
 								canDrag={(noteId) => {
 									const note = noteById.get(noteId);

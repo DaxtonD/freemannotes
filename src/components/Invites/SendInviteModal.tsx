@@ -31,6 +31,7 @@ import {
 	type WorkspaceInviteState,
 } from '../../core/syncOutbox';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
+import { getWorkspaceMetadataChangedEventName } from '../../core/workspaceMetadataStore';
 import { getWorkspaceRoleLabelKey } from '../../core/workspaceRoles';
 
 type Props = {
@@ -168,14 +169,24 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 	React.useEffect(() => {
 		if (!props.isOpen || typeof window === 'undefined') return;
 		const inviteEventName = getWorkspaceInviteStateEventName();
+		const metadataEventName = getWorkspaceMetadataChangedEventName();
 		const shareEventName = getShareLinkReadyEventName();
 		const onInviteChanged = (event: Event) => {
-			const workspaceId = (event as CustomEvent<{ workspaceId?: string }>).detail?.workspaceId;
+			const detail = (event as CustomEvent<{ workspaceId?: string; source?: 'cache' | 'remote' }>).detail;
+			const workspaceId = detail?.workspaceId;
 			if (!workspaceId || workspaceId !== props.workspaceId) return;
-			// This event signals the local cache was updated — re-read from cache only.
-			// Using preferCache=false here would re-fetch from the server, which then
-			// writes to the cache again, emits this same event, and creates an infinite loop.
+			if (detail?.source === 'remote') {
+				void loadInviteState(false);
+				return;
+			}
+			// Cache refreshes re-emit this same event after the local snapshot is written,
+			// so those must stay cache-only to avoid a fetch loop.
 			void loadInviteState(true);
+		};
+		const onMetadataChanged = (event: Event) => {
+			const detail = (event as CustomEvent<{ reason?: string }>).detail;
+			if (detail?.reason !== 'user-profile-updated') return;
+			void loadInviteState(false);
 		};
 		const onShareReady = (event: Event) => {
 			const detail = (event as CustomEvent<{ entityType: string; entityId: string; permission: string; expiresInDays: ShareExpiryDays }>).detail;
@@ -194,10 +205,12 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 			void loadInviteState(false);
 		};
 		window.addEventListener(inviteEventName, onInviteChanged as EventListener);
+		window.addEventListener(metadataEventName, onMetadataChanged as EventListener);
 		window.addEventListener(shareEventName, onShareReady as EventListener);
 		window.addEventListener('online', onOnline);
 		return () => {
 			window.removeEventListener(inviteEventName, onInviteChanged as EventListener);
+			window.removeEventListener(metadataEventName, onMetadataChanged as EventListener);
 			window.removeEventListener(shareEventName, onShareReady as EventListener);
 			window.removeEventListener('online', onOnline);
 		};
@@ -205,6 +218,8 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 
 	const canSendInvite = Boolean(props.workspaceId) && identifier.trim().length > 0;
 	const canGenerateShareLink = Boolean(props.workspaceId && linkRole);
+	const statusMessage = error ?? success;
+	const statusClassName = error ? styles.error : styles.success;
 
 	const generateInviteLink = React.useCallback(async (forceRefresh: boolean) => {
 		if (busy) return;
@@ -283,6 +298,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 				if (!props.authUserId) throw new Error(props.t('invite.sendFailed'));
 				const queued = await queueWorkspaceInviteEmail({ userId: props.authUserId, workspaceId: props.workspaceId, identifier, role: inviteRole });
 				setInviteLink(queued.inviteLink);
+				setIdentifier('');
 				setSuccess(props.t('invite.pendingQueued'));
 				await loadInviteState(true);
 				return;
@@ -300,6 +316,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 					expiresAt: next.expiresAt,
 				});
 			}
+			setIdentifier('');
 			await loadInviteState(false);
 			setSuccess(next.sentEmail ? props.t('invite.sent') : props.t('invite.sentInApp'));
 		} catch (err) {
@@ -309,6 +326,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 					// the admin keeps the action instead of re-entering the invite later.
 					const queued = await queueWorkspaceInviteEmail({ userId: props.authUserId, workspaceId: props.workspaceId, identifier, role: inviteRole });
 					setInviteLink(queued.inviteLink);
+					setIdentifier('');
 					setSuccess(props.t('invite.pendingQueued'));
 					setError(null);
 					await loadInviteState(true);
@@ -420,8 +438,7 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 				</header>
 
 				<div className={styles.info}>{props.t('invite.identifierNotice')}</div>
-				{error ? <div className={styles.error}>{error}</div> : null}
-				{success ? <div className={styles.success}>{success}</div> : null}
+				{statusMessage ? <div className={statusClassName}>{statusMessage}</div> : null}
 
 				<div className={styles.modalBody}>
 					<div className={`${styles.sectionDisclosure} ${openPanel === 'email' ? styles.sectionDisclosureExpanded : ''}`}>
@@ -601,30 +618,38 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 								<div className={styles.listSection}>
 									{inviteState.invites.length === 0 ? <div className={styles.emptyState}>{props.t('invite.noneInvites')}</div> : null}
 									{inviteState.invites.map((invite) => (
-								<div key={invite.id} className={styles.listRow}>
+								<div key={invite.id} className={`${styles.listRow} ${styles.pendingInviteRow}`}>
 									<div className={styles.memberIdentity}>
 										<div className={styles.memberAvatarStack}>
-											<div className={styles.memberAvatarFallback} aria-hidden="true">
-												{(invite.name || invite.email).slice(0, 1).toUpperCase()}
-											</div>
-											<span className={`${styles.badge} ${invite.status === 'failed' ? styles.badgeFailed : ''}`}>{inviteStatusLabel(invite.status)}</span>
+											{invite.profileImage ? (
+												<img className={styles.memberAvatar} src={invite.profileImage} alt="" />
+											) : (
+												<div className={styles.memberAvatarFallback} aria-hidden="true">
+													{(invite.name || invite.email).slice(0, 1).toUpperCase()}
+												</div>
+											)}
 										</div>
 										<div className={styles.rowCopy}>
 											<div className={styles.rowPrimary}>{invite.name || invite.email}</div>
 											<div className={styles.rowSecondary}>{invite.email}</div>
-											<div className={styles.rowTertiary}>
-												{[renderRole(invite.role, props.t), inviteStatusDetail(invite)].filter(Boolean).join(' • ')}
+											<div className={styles.rowMetaInline}>
+												<span className={`${styles.badge} ${invite.status === 'failed' ? styles.badgeFailed : ''}`}>{inviteStatusLabel(invite.status)}</span>
+												<span className={styles.rowTertiary}>
+													{[renderRole(invite.role, props.t), inviteStatusDetail(invite)].filter(Boolean).join(' • ')}
+												</span>
 											</div>
 										</div>
 									</div>
-									{invite.inviteUrl ? (
-										<button type="button" className={`${styles.secondaryAction} ${styles.memberActionButton}`} onClick={() => void copyLink(invite.inviteUrl, 'invite.copied', 'invite.copyFailed')} disabled={Boolean(actionBusyKey) || busy}>
-											{props.t('share.copy')}
+									<div className={styles.rowMetaActions}>
+										{invite.inviteUrl ? (
+											<button type="button" className={`${styles.secondaryAction} ${styles.memberActionButton}`} onClick={() => void copyLink(invite.inviteUrl, 'invite.copied', 'invite.copyFailed')} disabled={Boolean(actionBusyKey) || busy}>
+												{props.t('share.copy')}
+											</button>
+										) : null}
+										<button type="button" className={`${styles.secondaryAction} ${styles.memberActionButton}`} onClick={() => void handleCancelInvite(invite)} disabled={Boolean(actionBusyKey) || busy}>
+											{props.t('invite.cancelInvite')}
 										</button>
-									) : null}
-									<button type="button" className={`${styles.secondaryAction} ${styles.memberActionButton}`} onClick={() => void handleCancelInvite(invite)} disabled={Boolean(actionBusyKey) || busy}>
-										{props.t('invite.cancelInvite')}
-									</button>
+									</div>
 								</div>
 									))}
 								</div>

@@ -222,9 +222,12 @@ function createApiAuthRouter({ prisma }) {
 
 						// Workspace names are globally unique in the DB schema.
 						// Using the full user UUID guarantees uniqueness while staying human-readable.
+						// IMPORTANT: Always set systemKind = 'PERSONAL' at creation so new users are
+						// identified canonically without relying on the legacy UUID-name pattern.
+						// The name pattern is kept as a display fallback only (see workspaceDisplay.ts).
 						const workspaceName = `Personal (${user.id})`;
 						const workspace = await tx.workspace.create({
-							data: { name: workspaceName, ownerUserId: user.id },
+							data: { name: workspaceName, ownerUserId: user.id, systemKind: 'PERSONAL' },
 							select: { id: true, name: true },
 						});
 

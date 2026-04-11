@@ -471,6 +471,20 @@
 	color: var(--color-accent);
 }
 
+.formatHighlightSwatchButton {
+	padding-inline: 6px;
+	min-width: 30px;
+}
+
+.formatHighlightSwatch {
+	display: inline-flex;
+	width: 14px;
+	height: 14px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--color-text) 18%, transparent);
+	box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.32);
+}
+
 .formatButton:disabled {
 	opacity: 0.45;
 	cursor: default;
@@ -1423,8 +1437,6 @@
 .richEditorContent:global(.ProseMirror) mark {
 	border-radius: 2px;
 	padding: 0.05em 0.15em;
-	/* Preserve the TipTap-set background-color from the inline style attribute. */
-	color: inherit;
 }
 
 .richEditorContent:global(.ProseMirror) h1 {
@@ -1714,7 +1726,7 @@ Drag handle:
 	display: inline-flex;
 	align-items: flex-start;
 	justify-content: center;
-	padding-top: 7px;
+	padding-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 7px));
 	box-sizing: border-box;
 	border: 0;
 	border-radius: var(--radius-sm);
@@ -1725,7 +1737,6 @@ Drag handle:
 	-webkit-touch-callout: none;
 	-webkit-tap-highlight-color: transparent;
 	user-select: none;
-	transform: translateY(1px);
 }
 
 .dragHandle svg {
@@ -1745,10 +1756,9 @@ Drag handle:
 	width: 20px;
 	height: 20px;
 	min-width: 20px;
-	margin-top: 3px;
+	margin-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 10px));
 	accent-color: var(--note-editor-accent, var(--color-accent));
 	cursor: pointer;
-	transform: translateY(2px);
 }
 
 .checklistCheckboxHitArea {
@@ -1759,8 +1769,7 @@ Drag handle:
 	width: 20px;
 	height: 20px;
 	min-width: 20px;
-	margin-top: 3px;
-	transform: translateY(2px);
+	margin-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 10px));
 	cursor: pointer;
 	touch-action: manipulation;
 	-webkit-tap-highlight-color: transparent;
@@ -1784,7 +1793,7 @@ Drag handle:
 .rowTextArea,
 .checklistAddItemButton,
 .dragPreviewText {
-	transform: translateY(3px);
+	transform: none;
 }
 
 .rowRemoveButton {
@@ -1931,32 +1940,20 @@ Drag handle:
 		min-width: 32px;
 		width: 32px;
 		align-items: flex-start;
-		padding-top: 7px;
+		padding-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 7px));
 		line-height: 1;
 	}
 
 	.checklistCheckbox {
-		margin-top: 4px;
+		margin-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 10px));
 	}
-
-	.checklistRowRichShell,
-	.checklistRowPreview {
-		transform: translateY(4px);
-	}
-
-	.rowTextArea {
-		transform: translateY(4px);
 
 	.checklistRowRichShell,
 	.checklistRowPreview,
 	.rowTextArea,
 	.dragPreviewText {
+		transform: none;
 		padding-bottom: 3px;
-	}
-	}
-
-	.dragPreviewText {
-		transform: translateY(4px);
 	}
 
 	.rowRemoveButton {

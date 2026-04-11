@@ -353,6 +353,7 @@
 	border-radius: 2px;
 	padding: 0.05em 0.15em;
 	color: inherit;
+	-webkit-text-fill-color: currentColor;
 }
 
 .richBlockquote {
@@ -852,31 +853,6 @@
 	}
 
 	.checklistItem {
-		align-items: center;
-	}
-
-	.checklistCheckbox {
-		margin-top: 0;
-		align-self: center;
-	}
-
-	.checklistCheckboxHitArea {
-		margin-top: 0;
-		align-self: center;
-	}
-
-	/* Wrapped rows: align checkbox centre with first text line centre. */
-	.checklistItemMultiline {
 		align-items: flex-start;
-	}
-
-	.checklistItemMultiline .checklistCheckbox {
-		align-self: flex-start;
-		margin-top: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
-	}
-
-	.checklistItemMultiline .checklistCheckboxHitArea {
-		align-self: flex-start;
-		margin-top: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
 	}
 }

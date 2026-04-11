@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.15 - 2026-04-10
+
+### Added
+- **Personal workspace is now canonically identified in the database.** A new `PERSONAL` value in the `WorkspaceSystemKind` enum replaces the legacy UUID-name pattern heuristic. New registrations receive `systemKind = PERSONAL` at creation; existing workspaces are backfilled by migration. The name-pattern fallback is retained for any rows that predate the migration.
+- **Workspace list now includes owner name and profile image for foreign workspaces.** Shared workspaces carry `ownerName` and `ownerProfileImage` in the API response so the UI can distinguish identically-named workspaces from different owners.
+- **Note-share invitations now carry the invitee's profile image.** The collaborator and invitation payload includes the invitee avatar alongside the inviter's, enabling richer accept/decline UI.
+- **Granular note-card interaction preferences.** Three new per-device toggles — `noteCardCheckboxInteractions`, `noteCardLinkInteractions`, `noteCardCompletedInteractions` — allow fine-grained control of checkbox tapping, link opening, and completed-item collapse on note cards. The existing `noteCardClickOpens` flag continues to act as a master toggle that sets all three at once.
+
+### Fixed
+- **VIEWER-role collaborators can now sync Yjs rooms and use the editor.** The Yjs WebSocket handler was closing connections on `messageYjsSyncStep2` for read-only clients. `SyncStep2` is the client's *required handshake reply* to the server's own `SyncStep1`; closing on it created an infinite reconnect loop that caused a perpetually flashing connection indicator, a locked/unusable editor, and continuous Prisma query spam on the server.
+- **Collaborator-sync effect no longer runs on every Yjs connection state change.** `NoteGrid`'s collaborator-sync `useEffect` depended on a `new Set(...)` that gets a fresh object reference on every `DocumentManager` snapshot emission, even when the pending note IDs are unchanged. The effect dependency is now a stable `string` signature, eliminating spurious database queries whenever the WebSocket transitions between `connecting`, `synced`, and `offline` states.
+- **Note-share revoke now notifies all source-workspace members.** `onWorkspaceMetadataChanged` on collaborator revoke now includes all workspace members of the note's source workspace so open collaborator lists on any connected device converge immediately.
+- **Gateway errors (502/503/504) during sharing operations queue offline rather than failing.** Share link generation (`ensureNoteShareLink`, `ensureWorkspaceShareLink`), workspace invite removal (`removeWorkspaceMemberAccess`), workspace creation, and collaborator role/revoke operations all catch 502/503/504 responses and fall back to the offline queue.
+- **`WS metadata debounce` prevents Prisma query bursts on note-share events.** Note-share WS events now debounce both `refreshNoteShareState` and `bumpCollaborationRefreshToken` together (300 ms), so a burst of N events produces one pair of calls instead of N × DB queries.
+
+### Infrastructure
+- **PostgreSQL enum split migration pattern.** `ALTER TYPE ... ADD VALUE` commits the new enum value only when its enclosing transaction ends; any `UPDATE` referencing the new value in the same transaction fails with error 55P04. The `20260412000000_personal_workspace_kind` migration now contains only the `ALTER TYPE`; the backfill `UPDATE` runs in a separate migration `20260412000001_personal_workspace_kind_backfill`.
+
+### Debug instrumentation (development only)
+- Server logs `[ws-debug] open/close room=… readOnly=… code=…` for every Yjs WS connection, making rapid reconnect loops immediately visible in the server terminal.
+- Browser console emits `[collab-debug]` when `bumpCollaborationRefreshToken` is called more than 3 times in 2 seconds.
+- Browser console emits `[ws-meta-debug]` when more than 10 metadata WS messages arrive in 2 seconds.
+- Browser console emits `[collab-sync]` listing which dep changed each time the NoteGrid collaborator-sync effect fires.
+
 ## 1.2.14 - 2026-04-09
 
 ### Added

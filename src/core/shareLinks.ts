@@ -165,6 +165,11 @@ function isOffline(): boolean {
 	return typeof navigator !== 'undefined' && navigator.onLine === false;
 }
 
+function isGatewayError(error: unknown): boolean {
+	const status = (error as { status?: number } | null)?.status;
+	return status === 502 || status === 503 || status === 504;
+}
+
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
 	const res = await fetch(input, { credentials: 'include', ...init });
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
@@ -309,9 +314,33 @@ export async function ensureNoteShareLink(args: {
 			pending: true,
 		};
 	}
-	const next = await requestSecureShareLink<NoteShareLink>({ entityType: 'note', entityId: docId, permission: args.permission, expiresInDays });
-	writeCachedSecureLink(NOTE_SHARE_CACHE_KEY, docId, args.permission, expiresInDays, next);
-	return next;
+	try {
+		const next = await requestSecureShareLink<NoteShareLink>({ entityType: 'note', entityId: docId, permission: args.permission, expiresInDays });
+		writeCachedSecureLink(NOTE_SHARE_CACHE_KEY, docId, args.permission, expiresInDays, next);
+		return next;
+	} catch (err) {
+		if (!isGatewayError(err)) throw err;
+		// Server unreachable (502/503/504) — queue the request and return a pending link.
+		if (args.userId) {
+			enqueuePendingShareLinkRequest({
+				id: `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+				userId: args.userId,
+				entityType: 'note',
+				entityId: docId,
+				permission: args.permission,
+				expiresInDays,
+				createdAt: new Date().toISOString(),
+			});
+		}
+		return {
+			entityType: 'note',
+			permission: args.permission,
+			shareUrl: cached?.shareUrl ?? null,
+			expiresAt: cached?.expiresAt ?? null,
+			label: cached?.label,
+			pending: true,
+		};
+	}
 }
 
 export async function ensureWorkspaceShareLink(args: {
@@ -348,9 +377,33 @@ export async function ensureWorkspaceShareLink(args: {
 			pending: true,
 		};
 	}
-	const next = await requestSecureShareLink<WorkspaceShareLink>({ entityType: 'workspace', entityId: workspaceId, permission: args.permission, expiresInDays });
-	writeCachedSecureLink(WORKSPACE_SHARE_CACHE_KEY, workspaceId, args.permission, expiresInDays, next);
-	return next;
+	try {
+		const next = await requestSecureShareLink<WorkspaceShareLink>({ entityType: 'workspace', entityId: workspaceId, permission: args.permission, expiresInDays });
+		writeCachedSecureLink(WORKSPACE_SHARE_CACHE_KEY, workspaceId, args.permission, expiresInDays, next);
+		return next;
+	} catch (err) {
+		if (!isGatewayError(err)) throw err;
+		// Server unreachable (502/503/504) — queue the request and return a pending link.
+		if (args.userId) {
+			enqueuePendingShareLinkRequest({
+				id: `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+				userId: args.userId,
+				entityType: 'workspace',
+				entityId: workspaceId,
+				permission: args.permission,
+				expiresInDays,
+				createdAt: new Date().toISOString(),
+			});
+		}
+		return {
+			entityType: 'workspace',
+			permission: args.permission,
+			shareUrl: cached?.shareUrl ?? null,
+			expiresAt: cached?.expiresAt ?? null,
+			label: cached?.label,
+			pending: true,
+		};
+	}
 }
 
 export function readCachedNoteShareLink(args: { docId: string; permission: NoteShareRole; expiresInDays: ShareExpiryDays }): NoteShareLink | null {

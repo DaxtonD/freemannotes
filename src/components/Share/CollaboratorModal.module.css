@@ -372,6 +372,9 @@
 	border-top: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
 }
 
+.pendingInviteRow {
+}
+
 .listRow:first-of-type {
 	border-top: 0;
 	padding-top: 0;
@@ -409,12 +412,23 @@
 	gap: 8px;
 }
 
+.rowMetaInline {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+
 .memberAvatarStack {
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	gap: 6px;
 	flex: 0 0 auto;
+}
+
+.pendingInviteRow .memberAvatarStack {
+	justify-content: flex-start;
 }
 
 .memberAvatar,
@@ -704,6 +718,11 @@
 
 	.listRow {
 		flex-direction: column;
+	}
+
+	.memberIdentity {
+		flex: 0 0 auto;
+		width: 100%;
 	}
 
 	.memberRow {

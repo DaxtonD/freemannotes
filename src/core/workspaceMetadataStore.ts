@@ -53,6 +53,8 @@ export type CachedWorkspaceListItem = {
 	name: string;
 	role: WorkspaceRole;
 	ownerUserId: string | null;
+	ownerName?: string | null;
+	ownerProfileImage?: string | null;
 	systemKind?: string | null;
 	createdAt: string;
 	updatedAt: string;

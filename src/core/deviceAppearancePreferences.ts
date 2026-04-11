@@ -15,6 +15,9 @@ export type CachedDeviceAppearancePreferences = {
 	checklistShowCompleted: boolean;
 	quickDeleteChecklist: boolean;
 	noteCardClickOpens: boolean;
+	noteCardCheckboxInteractions: boolean;
+	noteCardLinkInteractions: boolean;
+	noteCardCompletedInteractions: boolean;
 	updatedAt: string;
 };
 
@@ -54,6 +57,9 @@ function normalizeSnapshot(value: Partial<CachedDeviceAppearancePreferences> | n
 		checklistShowCompleted: normalizeBoolean(value.checklistShowCompleted, false),
 		quickDeleteChecklist: normalizeBoolean(value.quickDeleteChecklist, false),
 		noteCardClickOpens: normalizeBoolean(value.noteCardClickOpens, true),
+		noteCardCheckboxInteractions: normalizeBoolean(value.noteCardCheckboxInteractions, normalizeBoolean(value.noteCardClickOpens, true)),
+		noteCardLinkInteractions: normalizeBoolean(value.noteCardLinkInteractions, normalizeBoolean(value.noteCardClickOpens, true)),
+		noteCardCompletedInteractions: normalizeBoolean(value.noteCardCompletedInteractions, normalizeBoolean(value.noteCardClickOpens, true)),
 		updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date(0).toISOString(),
 	};
 }
@@ -100,6 +106,9 @@ function readLegacySnapshot(deviceId: string): CachedDeviceAppearancePreferences
 			checklistShowCompleted: false,
 			quickDeleteChecklist: false,
 			noteCardClickOpens: true,
+			noteCardCheckboxInteractions: true,
+			noteCardLinkInteractions: true,
+			noteCardCompletedInteractions: true,
 			updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date(0).toISOString(),
 		};
 	} catch {

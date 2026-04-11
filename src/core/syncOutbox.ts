@@ -64,6 +64,7 @@ export type WorkspaceInviteItem = {
 	id: string;
 	email: string;
 	name: string | null;
+	profileImage?: string | null;
 	role: WorkspaceInviteRole;
 	inviteUrl: string | null;
 	expiresAt: string | null;
@@ -94,6 +95,7 @@ type WorkspaceInviteServerItem = {
 	expiresAt: string;
 	inviteUrl: string;
 	name?: string | null;
+	profileImage?: string | null;
 };
 
 type WorkspaceInviteServerResponse = {
@@ -198,9 +200,14 @@ function isOffline(): boolean {
 	return typeof navigator !== 'undefined' && navigator.onLine === false;
 }
 
-function emitWorkspaceInviteStateChanged(workspaceId: string): void {
+function isGatewayError(error: unknown): boolean {
+	const status = (error as { status?: number } | null)?.status;
+	return status === 502 || status === 503 || status === 504;
+}
+
+function emitWorkspaceInviteStateChanged(workspaceId: string, source: 'cache' | 'remote' = 'cache'): void {
 	if (!workspaceId || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
-	window.dispatchEvent(new CustomEvent(WORKSPACE_INVITE_STATE_EVENT, { detail: { workspaceId } }));
+	window.dispatchEvent(new CustomEvent(WORKSPACE_INVITE_STATE_EVENT, { detail: { workspaceId, source } }));
 }
 
 export function getWorkspaceInviteStateEventName(): string {
@@ -308,6 +315,7 @@ function mergeWorkspaceInviteRows(rows: readonly WorkspaceInviteCacheRow[]): Wor
 			id: row.inviteId || row.id,
 			email: normalizeEmail(row.email),
 			name: row.name,
+			profileImage: row.profileImage ?? null,
 			role: row.role === 'ADMIN' ? 'ADMIN' : row.role === 'EDITOR' ? 'EDITOR' : 'VIEWER',
 			inviteUrl: row.inviteUrl,
 			expiresAt: row.expiresAt,
@@ -368,6 +376,7 @@ async function replaceServerWorkspaceInviteSnapshot(workspaceId: string, state: 
 				kind: 'invite',
 				email,
 				name: invite.name ?? null,
+				profileImage: invite.profileImage ?? null,
 				role: normalizeWorkspaceInviteRole(invite.role),
 				userId: null,
 				inviteId: invite.id,
@@ -585,7 +594,7 @@ export async function removeWorkspaceMemberAccess(args: { workspaceId: string; u
 			return;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : 'Request failed';
-			if (!args.actorUserId || !/failed to fetch|networkerror|load failed/i.test(message)) {
+			if (!args.actorUserId || (!/failed to fetch|networkerror|load failed/i.test(message) && !isGatewayError(error))) {
 				throw error;
 			}
 		}

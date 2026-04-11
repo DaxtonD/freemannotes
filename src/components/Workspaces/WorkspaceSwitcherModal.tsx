@@ -135,9 +135,16 @@ async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): P
 	const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
 	if (!res.ok) {
 		const message = body && typeof body.error === 'string' ? body.error : `Request failed (${res.status})`;
-		throw new Error(message);
+		const error = new Error(message) as Error & { status?: number };
+		error.status = res.status;
+		throw error;
 	}
 	return body as T;
+}
+
+function isGatewayError(error: unknown): boolean {
+	const status = (error as { status?: number } | null)?.status;
+	return status === 502 || status === 503 || status === 504;
 }
 
 export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
@@ -328,8 +335,32 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 			setCreateName('');
 			await load();
 		} catch (err) {
-			const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
-			setError(err instanceof Error ? err.message : isOffline ? props.t('workspace.createFailed') : props.t('workspace.createFailed'));
+			if (isGatewayError(err) && props.authUserId) {
+				// Server unreachable (502/503/504) — queue the create for replay once online.
+				const now = new Date().toISOString();
+				const workspace: WorkspaceListItem = {
+					id: createWorkspaceId(),
+					name: nextName || props.t('workspace.unnamed'),
+					role: 'OWNER',
+					ownerUserId: props.authUserId,
+					createdAt: now,
+					updatedAt: now,
+					pendingSync: true,
+					pendingSyncKind: 'create',
+				};
+				await queueOfflineWorkspaceCreate({
+					userId: props.authUserId,
+					deviceId,
+					workspace,
+					role: 'OWNER',
+				});
+				setCreateName('');
+				const merged = await readCachedWorkspaceSnapshot(props.authUserId, deviceId);
+				setActiveWorkspaceId(merged.activeWorkspaceId);
+				setWorkspaces(merged.workspaces);
+			} else {
+				setError(err instanceof Error ? err.message : props.t('workspace.createFailed'));
+			}
 		} finally {
 			setBusy(false);
 		}

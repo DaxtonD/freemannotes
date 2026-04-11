@@ -29,6 +29,7 @@ type CachedInvitation = {
 	status: 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'REVOKED';
 	inviteeEmail: string;
 	inviteeName: string | null;
+	inviteeProfileImage?: string | null;
 	createdAt: string;
 	updatedAt: string;
 	respondedAt: string | null;
@@ -114,6 +115,7 @@ type InvitationRow = {
 	status: 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'REVOKED';
 	inviteeEmail: string;
 	inviteeName: string | null;
+	inviteeProfileImage: string | null;
 	createdAt: string;
 	updatedAt: string;
 	respondedAt: string | null;
@@ -269,6 +271,7 @@ function applyPendingActions(snapshot: CachedCollaboratorSnapshot, rows: readonl
 				status: 'PENDING',
 				inviteeEmail: action.identifier,
 				inviteeName: action.identifier,
+				inviteeProfileImage: null,
 				createdAt: action.createdAt,
 				updatedAt: action.updatedAt,
 				respondedAt: null,
@@ -388,6 +391,7 @@ export async function cacheCollaboratorSnapshot(args: { userId: string; docId: s
 				status: invitation.status,
 				inviteeEmail: invitation.inviteeEmail,
 				inviteeName: invitation.inviteeName ?? null,
+				inviteeProfileImage: invitation.inviteeProfileImage ?? null,
 				createdAt: asIsoString(invitation.createdAt),
 				updatedAt: asIsoString(invitation.updatedAt, asIsoString(invitation.createdAt)),
 				respondedAt: invitation.respondedAt ? asIsoString(invitation.respondedAt) : null,
@@ -504,6 +508,7 @@ export async function readCachedCollaboratorSnapshot(userId: string, docId: stri
 					status: row.status,
 					inviteeEmail: row.inviteeEmail,
 					inviteeName: row.inviteeName ?? null,
+					inviteeProfileImage: row.inviteeProfileImage ?? null,
 					createdAt: asIsoString(row.createdAt),
 					updatedAt: asIsoString(row.updatedAt, asIsoString(row.createdAt)),
 					respondedAt: row.respondedAt ? asIsoString(row.respondedAt) : null,

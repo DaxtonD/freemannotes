@@ -396,38 +396,43 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const touchStartRef = React.useRef<{ x: number; y: number; scrollLeft: number } | null>(null);
 	const toolbarState = useEditorState({
 		editor: props.editor,
-		selector: ({ editor }) => ({
-			canUndo: canRunUndo(editor),
-			canRedo: canRunRedo(editor),
-			canIndentStructuredBlock: canIndentStructuredBlock(editor),
-			canOutdentStructuredBlock: canOutdentStructuredBlock(editor),
-			canInsertTable: canRunRichTextCommand(editor, 'insertTable', { rows: 3, cols: 3, withHeaderRow: true }),
-			canAddTableColumn: canRunRichTextCommand(editor, 'addColumnAfter'),
-			canDeleteTableColumn: canRunRichTextCommand(editor, 'deleteColumn'),
-			canAddTableRow: canRunRichTextCommand(editor, 'addRowAfter'),
-			canDeleteTableRow: canRunRichTextCommand(editor, 'deleteRow'),
-			canDeleteTable: canRunRichTextCommand(editor, 'deleteTable'),
-			isBold: Boolean(editor?.isActive('bold')),
-			isItalic: Boolean(editor?.isActive('italic')),
-			isUnderline: Boolean(editor?.isActive('underline')),
-			isLink: Boolean(editor?.isActive('link')),
-			isHeading1: Boolean(editor?.isActive('heading', { level: 1 })),
-			isHeading2: Boolean(editor?.isActive('heading', { level: 2 })),
-			isHeading3: Boolean(editor?.isActive('heading', { level: 3 })),
+		selector: ({ editor }) => {
+			const isHighlight = Boolean(editor?.isActive('highlight'));
+			const highlightAttrs = isHighlight ? (editor?.getAttributes('highlight') as { color?: unknown } | undefined) : undefined;
+			return {
+				canUndo: canRunUndo(editor),
+				canRedo: canRunRedo(editor),
+				canIndentStructuredBlock: canIndentStructuredBlock(editor),
+				canOutdentStructuredBlock: canOutdentStructuredBlock(editor),
+				canInsertTable: canRunRichTextCommand(editor, 'insertTable', { rows: 3, cols: 3, withHeaderRow: true }),
+				canAddTableColumn: canRunRichTextCommand(editor, 'addColumnAfter'),
+				canDeleteTableColumn: canRunRichTextCommand(editor, 'deleteColumn'),
+				canAddTableRow: canRunRichTextCommand(editor, 'addRowAfter'),
+				canDeleteTableRow: canRunRichTextCommand(editor, 'deleteRow'),
+				canDeleteTable: canRunRichTextCommand(editor, 'deleteTable'),
+				isBold: Boolean(editor?.isActive('bold')),
+				isItalic: Boolean(editor?.isActive('italic')),
+				isUnderline: Boolean(editor?.isActive('underline')),
+				isLink: Boolean(editor?.isActive('link')),
+				isHeading1: Boolean(editor?.isActive('heading', { level: 1 })),
+				isHeading2: Boolean(editor?.isActive('heading', { level: 2 })),
+				isHeading3: Boolean(editor?.isActive('heading', { level: 3 })),
 				isHeading4: Boolean(editor?.isActive('heading', { level: 4 })),
 				isHeading5: Boolean(editor?.isActive('heading', { level: 5 })),
 				isHeading6: Boolean(editor?.isActive('heading', { level: 6 })),
-			isBulletList: Boolean(editor?.isActive('bulletList')),
-			isOrderedList: Boolean(editor?.isActive('orderedList')),
-			isTaskList: Boolean(editor?.isActive('taskList')),
-			isBlockquote: Boolean(editor?.isActive('blockquote')),
-			isCodeBlock: Boolean(editor?.isActive('codeBlock')),
-			isTable: Boolean(editor?.isActive('table')),
-			isAlignLeft: Boolean(editor?.isActive({ textAlign: 'left' })),
-			isAlignCenter: Boolean(editor?.isActive({ textAlign: 'center' })),
-			isAlignRight: Boolean(editor?.isActive({ textAlign: 'right' })),
-			isHighlight: Boolean(editor?.isActive('highlight')),
-		}),
+				isBulletList: Boolean(editor?.isActive('bulletList')),
+				isOrderedList: Boolean(editor?.isActive('orderedList')),
+				isTaskList: Boolean(editor?.isActive('taskList')),
+				isBlockquote: Boolean(editor?.isActive('blockquote')),
+				isCodeBlock: Boolean(editor?.isActive('codeBlock')),
+				isTable: Boolean(editor?.isActive('table')),
+				isAlignLeft: Boolean(editor?.isActive({ textAlign: 'left' })),
+				isAlignCenter: Boolean(editor?.isActive({ textAlign: 'center' })),
+				isAlignRight: Boolean(editor?.isActive({ textAlign: 'right' })),
+				isHighlight,
+				activeHighlightColor: typeof highlightAttrs?.color === 'string' ? highlightAttrs.color : null,
+			};
+		},
 	});
 	const resolvedToolbarState = toolbarState ?? {
 		canUndo: false,
@@ -460,6 +465,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		isAlignCenter: false,
 		isAlignRight: false,
 		isHighlight: false,
+		activeHighlightColor: null,
 	};
 
 	const preventToolbarFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
@@ -660,8 +666,10 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		const viewportRight = viewportLeft + viewportWidth;
 		const viewportBottom = viewportTop + viewportHeight;
 		const rect = button.getBoundingClientRect();
-		const menuWidth = 264;
-		const menuHeight = 210;
+		const measuredMenuWidth = emojiMenuRef.current?.offsetWidth ?? 0;
+		const measuredMenuHeight = emojiMenuRef.current?.offsetHeight ?? 0;
+		const menuWidth = Math.max(264, measuredMenuWidth);
+		const menuHeight = Math.max(210, measuredMenuHeight);
 		const viewportPadding = 8;
 		const left = Math.min(
 			Math.max(viewportLeft + viewportPadding, rect.left),
@@ -779,15 +787,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			if (event.key === 'Escape') setEmojiMenuOpen(false);
 		};
 		const handleViewportChange = (): void => updateEmojiMenuPosition();
+		const visualViewport = window.visualViewport;
 		document.addEventListener('pointerdown', handlePointerDown);
 		document.addEventListener('keydown', handleKeyDown);
 		window.addEventListener('resize', handleViewportChange);
 		window.addEventListener('scroll', handleViewportChange, true);
+		visualViewport?.addEventListener('resize', handleViewportChange);
+		visualViewport?.addEventListener('scroll', handleViewportChange);
 		return () => {
 			document.removeEventListener('pointerdown', handlePointerDown);
 			document.removeEventListener('keydown', handleKeyDown);
 			window.removeEventListener('resize', handleViewportChange);
 			window.removeEventListener('scroll', handleViewportChange, true);
+			visualViewport?.removeEventListener('resize', handleViewportChange);
+			visualViewport?.removeEventListener('scroll', handleViewportChange);
 		};
 	}, [emojiMenuOpen, updateEmojiMenuPosition]);
 
@@ -803,6 +816,9 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const noteAutoScrollLabel = props.noteAutoScrollEnabled
 		? t('editors.disableNoteAutoScroll')
 		: t('editors.enableNoteAutoScroll');
+	const activeHighlightDefinition = resolvedToolbarState.activeHighlightColor
+		? HIGHLIGHT_COLORS.find((color) => color.cssVar === resolvedToolbarState.activeHighlightColor) ?? null
+		: null;
 	// Minimal/mobile toolbars do not render the full list/blockquote section, so
 	// surface nest/outdent only when the current selection is already inside a
 	// structured context that can actually be deepened or lifted.
@@ -977,6 +993,19 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<FontAwesomeIcon icon={faHighlighter} />
 							</button>
 						</div>
+						{resolvedToolbarState.activeHighlightColor ? (
+							<button
+								type="button"
+								className={`${styles.formatButton}${compactButtonClass} ${styles.formatHighlightSwatchButton}`}
+								aria-label={t('editors.highlightClear')}
+								title={activeHighlightDefinition ? `${t(activeHighlightDefinition.labelKey as Parameters<typeof t>[0])} · ${t('editors.highlightClear')}` : t('editors.highlightClear')}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => props.editor?.chain().focus().unsetHighlight().run()}
+							>
+								<span className={styles.formatHighlightSwatch} style={{ backgroundColor: resolvedToolbarState.activeHighlightColor }} aria-hidden="true" />
+							</button>
+						) : null}
 						<button
 							ref={headingMenuButtonRef}
 							type="button"
