@@ -904,6 +904,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
+	// Mirror the draft checklist editor: only surface the mobile undo/redo affordance
+	// when checklist checkbox history exists and no competing mobile overlay is open.
+	const showMobileChecklistUndoFab = isCoarsePointer
+		&& type === 'checklist'
+		&& !readOnly
+		&& !mobileKeyboardOpen
+		&& !mediaDockOpen
+		&& !isMoreMenuOpen
+		&& (checkboxUndoAvail || checkboxRedoAvail);
 	const isPinned = useSyncExternalStore(
 		(onStoreChange) => {
 			const observer = (): void => onStoreChange();
@@ -2310,7 +2319,36 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				    layout at all. Rendering `null` here removes the footer from the document flow,
 				    which prevents it from being scrolled into view behind the keyboard. */}
 				{mobileKeyboardOpen ? null : <div className={styles.editorBottomArea}>
-					<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
+					<div className={type === 'checklist' ? styles.mobileChecklistMediaRow : undefined}>
+						{showMobileChecklistUndoFab ? (
+							<div
+								className={styles.mobileChecklistUndoFabCluster}
+								onPointerDown={(event) => event.stopPropagation()}
+								onClick={(event) => event.stopPropagation()}
+							>
+								<button
+									type="button"
+									className={styles.mobileChecklistUndoFabButton}
+									onClick={undoCheckboxChange}
+									disabled={!checkboxUndoAvail}
+									aria-label={t('editors.undoCheckbox')}
+									title={t('editors.undoCheckbox')}
+								>
+									<FontAwesomeIcon icon={byPrefixAndName.fas.undo} />
+								</button>
+								<button
+									type="button"
+									className={styles.mobileChecklistUndoFabButton}
+									onClick={redoCheckboxChange}
+									disabled={!checkboxRedoAvail}
+									aria-label={t('editors.redoCheckbox')}
+									title={t('editors.redoCheckbox')}
+								>
+									<FontAwesomeIcon icon={byPrefixAndName.fas.redo} />
+								</button>
+							</div>
+						) : null}
+						<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
 						<button
 							type="button"
 							className={styles.mediaDockHandle}
@@ -2326,7 +2364,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							<span className={styles.mediaDockPill} aria-hidden="true" />
 							<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
 						</button>
-					</section>
+						</section>
+					</div>
 
 					<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')}>
 						<div className={styles.bottomDockLeft}>
@@ -2595,11 +2634,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setMoreMenuAnchorRect(null);
 					uncheckAllChecklistItems();
 				} : undefined}
-				onTrash={() => {
+				onTrash={!readOnly ? () => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
 					void props.onDelete(props.noteId);
-				}}
+				} : undefined}
 			/>
 		) : null}
 
@@ -2632,10 +2671,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
 						copyMode={type === 'text' ? copyMode : undefined}
 						onCopyModeChange={type === 'text' ? setCopyMode : undefined}
-						onUndoCheckbox={type === 'checklist' && !readOnly ? undoCheckboxChange : undefined}
-						onRedoCheckbox={type === 'checklist' && !readOnly ? redoCheckboxChange : undefined}
-						checkboxUndoAvail={type === 'checklist' ? checkboxUndoAvail : undefined}
-						checkboxRedoAvail={type === 'checklist' ? checkboxRedoAvail : undefined}
 					/>
 				</div>
 			</>,

@@ -114,7 +114,7 @@ import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
-import { canEditWorkspaceContent, canManageWorkspace, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
+import { canEditWorkspaceContent, canManageWorkspace, getWorkspaceRoleLabelKey, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
 import {
 	cacheActiveWorkspaceSelection,
 	cacheWorkspaceDetails,
@@ -296,6 +296,8 @@ function readReminderLookupValue(
 
 type MetadataNoteModalState = {
 	noteId: string;
+	docId?: string;
+	doc?: Y.Doc | null;
 	title: string;
 };
 
@@ -343,6 +345,7 @@ function mapWorkspaceList(value: unknown): SidebarWorkspaceListItem[] {
 				role: normalizeWorkspaceRole(workspace.role),
 				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
 				ownerName: typeof workspace.ownerName === 'string' ? workspace.ownerName : null,
+				ownerEmail: typeof workspace.ownerEmail === 'string' ? workspace.ownerEmail : null,
 				ownerProfileImage: typeof workspace.ownerProfileImage === 'string' ? workspace.ownerProfileImage : null,
 				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind.toUpperCase() : null,
 				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
@@ -467,8 +470,14 @@ function clearExternalRoute(): void {
 
 function detectStandaloneDisplayMode(): boolean {
 	if (typeof window === 'undefined') return false;
-	return (
+	const isManifestStandalone = Boolean(
 		window.matchMedia?.('(display-mode: standalone)')?.matches ||
+		window.matchMedia?.('(display-mode: fullscreen)')?.matches ||
+		window.matchMedia?.('(display-mode: minimal-ui)')?.matches ||
+		document.referrer.startsWith('android-app://')
+	);
+	return (
+		isManifestStandalone ||
 		// iOS Safari
 		Boolean((window.navigator as unknown as { standalone?: boolean }).standalone)
 	);
@@ -484,7 +493,14 @@ function detectIosStandaloneDisplayMode(): boolean {
 
 function detectAndroidStandaloneDisplayMode(): boolean {
 	if (typeof window === 'undefined') return false;
-	return /Android/i.test(window.navigator.userAgent || '') && detectStandaloneDisplayMode();
+	const ua = window.navigator.userAgent || '';
+	if (!/Android/i.test(ua)) return false;
+	return Boolean(
+		window.matchMedia?.('(display-mode: standalone)')?.matches ||
+		window.matchMedia?.('(display-mode: fullscreen)')?.matches ||
+		window.matchMedia?.('(display-mode: minimal-ui)')?.matches ||
+		document.referrer.startsWith('android-app://')
+	);
 }
 
 type AuthCacheV1 = {
@@ -801,9 +817,45 @@ export function App(): React.JSX.Element {
 	const [bubbleColorPickerAnchorRect, setBubbleColorPickerAnchorRect] = React.useState<DOMRect | null>(null);
 	// Ref to the portal-rendered picker div, used to skip close() when clicking inside it.
 	const bubbleColorPickerRef = React.useRef<HTMLDivElement | null>(null);
-	// Popup shown on mobile long-press of an owner avatar chip in the workspace sidebar.
-	const [wsOwnerPopup, setWsOwnerPopup] = React.useState<{ workspaceId: string; x: number; y: number } | null>(null);
-	const wsOwnerLongPressTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+	// Inline owner overlay shown when clicking an owner avatar chip in the workspace sidebar.
+	const [wsOwnerPopup, setWsOwnerPopup] = React.useState<{ workspaceId: string } | null>(null);
+	const [wsOwnerPopupClosing, setWsOwnerPopupClosing] = React.useState(false);
+	const wsOwnerPopupCloseTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+	const closeOwnerPopup = React.useCallback(() => {
+		// Keep the row mounted long enough for the close animation to play before
+		// removing the inline owner overlay from the sidebar.
+		if (wsOwnerPopupCloseTimer.current !== null) {
+			clearTimeout(wsOwnerPopupCloseTimer.current);
+			wsOwnerPopupCloseTimer.current = null;
+		}
+		setWsOwnerPopupClosing(true);
+		wsOwnerPopupCloseTimer.current = setTimeout(() => {
+			setWsOwnerPopup(null);
+			setWsOwnerPopupClosing(false);
+			wsOwnerPopupCloseTimer.current = null;
+		}, 210);
+	}, []);
+	React.useEffect(() => {
+		return () => {
+			if (wsOwnerPopupCloseTimer.current !== null) {
+				clearTimeout(wsOwnerPopupCloseTimer.current);
+			}
+		};
+	}, []);
+	React.useEffect(() => {
+		if (!wsOwnerPopup) return;
+		const handlePointerDown = (event: PointerEvent) => {
+			const target = event.target;
+			if (!(target instanceof Element)) return;
+			if (target.closest('.sidebar-workspace-owner-inline-overlay')) return;
+			if (target.closest('.sidebar-workspace-owner-avatar')) return;
+			closeOwnerPopup();
+		};
+		document.addEventListener('pointerdown', handlePointerDown, true);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown, true);
+		};
+	}, [closeOwnerPopup, wsOwnerPopup]);
 	// Cross-workspace note opened from bubble view without switching active workspace.
 	const [crossWorkspaceNote, setCrossWorkspaceNote] = React.useState<{ noteId: string; workspaceId: string; workspaceName: string } | null>(null);
 	const [searchQuery, setSearchQuery] = React.useState('');
@@ -1185,11 +1237,15 @@ export function App(): React.JSX.Element {
 		setIsShareNotificationsOpen(true);
 	}, []);
 
-	const openCollaboratorModalForNote = React.useCallback((noteId: string, title?: string) => {
+	const openCollaboratorModalForNote = React.useCallback((noteId: string, title?: string, options?: { docId?: string; canManage?: boolean }) => {
 		const placement = sharedPlacements.find((item) => item.aliasId === noteId);
-		if (placement && placement.role === 'VIEWER') return;
-		if (!placement && !canEditActiveWorkspace) return;
-		const docId = placement ? placement.roomId : authWorkspaceId ? `${authWorkspaceId}:${noteId}` : null;
+		const canManage = typeof options?.canManage === 'boolean'
+			? options.canManage
+			: placement
+				? placement.role === 'EDITOR'
+				: canEditActiveWorkspace;
+		if (!canManage) return;
+		const docId = options?.docId ?? (placement ? placement.roomId : authWorkspaceId ? `${authWorkspaceId}:${noteId}` : null);
 		if (!docId) return;
 		const nextState: CollaboratorModalState = {
 			noteId,
@@ -1243,12 +1299,12 @@ export function App(): React.JSX.Element {
 		setIsCollectionManagementOpen(true);
 	}, []);
 
-	const openNoteCollectionModal = React.useCallback((noteId: string, title?: string) => {
-		setNoteCollectionModalState({ noteId, title: title || '' });
+	const openNoteCollectionModal = React.useCallback((noteId: string, title?: string, options?: { docId?: string; doc?: Y.Doc | null }) => {
+		setNoteCollectionModalState({ noteId, docId: options?.docId, doc: options?.doc ?? null, title: title || '' });
 	}, []);
 
-	const openNoteLabelsModal = React.useCallback((noteId: string, title?: string) => {
-		setNoteLabelsModalState({ noteId, title: title || '' });
+	const openNoteLabelsModal = React.useCallback((noteId: string, title?: string, options?: { docId?: string; doc?: Y.Doc | null }) => {
+		setNoteLabelsModalState({ noteId, docId: options?.docId, doc: options?.doc ?? null, title: title || '' });
 	}, []);
 
 	const openLabelManagementModal = React.useCallback(() => {
@@ -3180,11 +3236,11 @@ export function App(): React.JSX.Element {
 	}, [authWorkspaceId, sidebarWorkspaces]);
 
 	const noteCollectionDoc = React.useMemo(
-		() => (noteCollectionModalState ? manager.getDoc(noteCollectionModalState.noteId) : null),
+		() => noteCollectionModalState ? (noteCollectionModalState.doc ?? manager.getDoc(noteCollectionModalState.docId || noteCollectionModalState.noteId)) : null,
 		[manager, noteCollectionModalState]
 	);
 	const noteLabelsDoc = React.useMemo(
-		() => (noteLabelsModalState ? manager.getDoc(noteLabelsModalState.noteId) : null),
+		() => noteLabelsModalState ? (noteLabelsModalState.doc ?? manager.getDoc(noteLabelsModalState.docId || noteLabelsModalState.noteId)) : null,
 		[manager, noteLabelsModalState]
 	);
 	const noteCollectionMetadata = useNoteMetadataSnapshot(noteCollectionDoc);
@@ -4815,6 +4871,7 @@ export function App(): React.JSX.Element {
 		return isLightTheme(themeId) ? fabIconDark : fabIconLight;
 	}, [themeId]);
 	const isIosStandalonePwa = isMobileViewport && detectIosStandaloneDisplayMode();
+	const isAndroidStandalonePwa = isMobileViewport && detectAndroidStandaloneDisplayMode();
 
 	// Keep the FAB trigger, action stack, and backdrop in one overlay block so
 	// iOS standalone scrolling cannot split their stacking or anchoring contexts.
@@ -5239,17 +5296,40 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (typeof document === 'undefined') return;
+		const className = 'android-standalone-pwa';
+		const html = document.documentElement;
+		const body = document.body;
+		if (!body) return;
+		// Mirror the detection on both html/body so layout and overscroll CSS can key
+		// off the same standalone-PWA flag without fighting React render timing.
+		if (!isAndroidStandalonePwa) {
+			html.classList.remove(className);
+			body.classList.remove(className);
+			return;
+		}
+		html.classList.add(className);
+		body.classList.add(className);
+		return () => {
+			html.classList.remove(className);
+			body.classList.remove(className);
+		};
+	}, [isAndroidStandalonePwa]);
+
+	React.useEffect(() => {
+		if (typeof document === 'undefined') return;
 		const viewportMeta = document.querySelector('meta[name="viewport"]');
 		if (!(viewportMeta instanceof HTMLMetaElement)) return;
 		const defaultContent = 'width=device-width, initial-scale=1, viewport-fit=cover';
-		const nextContent = detectAndroidStandaloneDisplayMode()
-			? `${defaultContent}, maximum-scale=1, user-scalable=no`
+		// Installed Android PWAs need the stricter viewport content immediately when
+		// React hydrates or the system chrome can reserve stale zoom insets.
+		const nextContent = isAndroidStandalonePwa
+			? 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover'
 			: defaultContent;
 		viewportMeta.setAttribute('content', nextContent);
 		return () => {
 			viewportMeta.setAttribute('content', defaultContent);
 		};
-	}, [isMobileViewport]);
+	}, [isAndroidStandalonePwa]);
 
 	React.useEffect(() => {
 		// iOS standalone PWAs still expose the native left-edge swipe-back gesture,
@@ -5803,6 +5883,12 @@ export function App(): React.JSX.Element {
 	}, [manager, selectedNoteId]);
 
 	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
+	React.useEffect(() => {
+		if (!wsOwnerPopup) return;
+		if (sidebarIsCollapsed || (isMobileViewport && !isMobileSidebarOpen)) {
+			closeOwnerPopup();
+		}
+	}, [closeOwnerPopup, isMobileSidebarOpen, isMobileViewport, sidebarIsCollapsed, wsOwnerPopup]);
 	const collapseAllSidebarGroups = React.useCallback(() => {
 		restoreFocusFromHiddenRegion(workspaceMenuRef.current, sidebarEntryButtonRefs.current.workspaces);
 		setSidebarGroupsOpen(CLOSED_SIDEBAR_GROUPS);
@@ -6061,6 +6147,18 @@ export function App(): React.JSX.Element {
 	const selectedNoteDocId = selectedNoteId ? selectedSharedPlacement?.roomId || (authWorkspaceId ? `${authWorkspaceId}:${selectedNoteId}` : '') : '';
 	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
 	const canManageSelectedNoteCollaborators = selectedSharedPlacement ? selectedSharedPlacement.role === 'EDITOR' : canEditActiveWorkspace;
+	const crossWorkspacePlacement = crossWorkspaceNote ? sharedPlacements.find((placement) => placement.aliasId === crossWorkspaceNote.noteId) ?? null : null;
+	const crossWorkspaceTarget = crossWorkspaceNote ? sidebarWorkspaces.find((workspace) => workspace.id === crossWorkspaceNote.workspaceId) ?? null : null;
+	const crossWorkspaceDocId = crossWorkspaceNote
+		? crossWorkspacePlacement?.roomId ?? `${crossWorkspaceNote.workspaceId}:${crossWorkspaceNote.noteId}`
+		: '';
+	const canEditCrossWorkspace = crossWorkspacePlacement
+		? crossWorkspacePlacement.role === 'EDITOR'
+		: canEditWorkspaceContent(normalizeWorkspaceRole(crossWorkspaceTarget?.role));
+	const crossWorkspaceReadOnly = crossWorkspaceNote ? !canEditCrossWorkspace : true;
+	const canManageCrossWorkspaceCollaborators = crossWorkspacePlacement
+		? crossWorkspacePlacement.role === 'EDITOR'
+		: canEditCrossWorkspace;
 	const selectedNewNoteCollectionSeed = selectedNoteId ? pendingNewNoteCollectionSeedRef.current.get(selectedNoteId) ?? null : null;
 	const selectedQuickCreateCollectionOption = selectedNoteId && openDoc && selectedNewNoteCollectionSeed && !selectedNoteReadOnly
 		? {
@@ -6088,7 +6186,7 @@ export function App(): React.JSX.Element {
 		<div
 			className={`test-harness-root${themeId.startsWith('catppuccin-') ? ' theme-catppuccin' : ''}${
 				isFabOpen ? ' fab-open' : ''
-			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${isEditorOverlayOpen ? ' editor-open' : ''}${isIosStandalonePwa ? ' ios-standalone-pwa' : ''}${
+			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${isEditorOverlayOpen ? ' editor-open' : ''}${isIosStandalonePwa ? ' ios-standalone-pwa' : ''}${isAndroidStandalonePwa ? ' android-standalone-pwa' : ''}${
 				// Landscape branch: expose a root class so CSS can hard-disable the
 				// portrait header morph transitions during rotation.
 				isMobileLandscape ? ' mobile-landscape' : ''
@@ -6453,18 +6551,16 @@ export function App(): React.JSX.Element {
 												const hasSharedFolders = ws.systemKind === 'SHARED_WITH_ME' && sharedFolderNames.length > 0;
 												const showSharedFolders = hasSharedFolders && Boolean(sidebarGroupsOpen[sharedFolderGroupId]);
 												const itemIndex = (sidebarWorkspacesBusy || sidebarWorkspacesError ? 3 : 0) + index;
-												// Show owner avatar when a foreign workspace's display name collides
-												// with one of the user's own workspaces.
-												const showOwnerAvatar = ws.ownerUserId !== authUserId && ws.ownerUserId != null &&
-													sidebarWorkspacesSorted.some(
-														(other) => other.id !== ws.id && getWorkspaceDisplayName(other, t) === workspaceDisplayName
-													);
+												// Show owner avatar for any workspace the current user does not own
+												// so they can always see whose workspace they are in.
+												const showOwnerAvatar = ws.ownerUserId !== authUserId && ws.ownerUserId != null;
+												const isOwnerOverlayOpen = wsOwnerPopup?.workspaceId === ws.id;
 												const ownerInitials = ws.ownerName
 													? ws.ownerName.trim().split(/\s+/).map((n) => n[0]).join('').toUpperCase().slice(0, 2)
 													: (ws.ownerUserId ? '?' : '');
 												return (
 													<div key={ws.id} className="sidebar-workspace-group">
-														<div className={`sidebar-workspace-row${canShareWorkspace ? ' has-share-action' : ''}${showOwnerAvatar ? ' has-owner-avatar' : ''}`}>
+														<div className={`sidebar-workspace-row${canShareWorkspace ? ' has-share-action' : ''}${showOwnerAvatar ? ' has-owner-avatar' : ''}${isOwnerOverlayOpen ? ' is-owner-overlay-open' : ''}`}>
 															{hasSharedFolders ? (
 																<button
 																	type="button"
@@ -6519,33 +6615,10 @@ export function App(): React.JSX.Element {
 																	className="sidebar-workspace-owner-avatar"
 																	title={ws.ownerName ?? undefined}
 																	aria-label={ws.ownerName ? `${t('workspace.ownedBy')} ${ws.ownerName}` : t('workspace.ownedByUnknown')}
-																	onPointerDown={(e) => {
-																		// Long-press (≥500 ms) shows a name popup — primarily for touch / PWA.
-																		if (e.pointerType === 'mouse') return;
-																		e.currentTarget.setPointerCapture(e.pointerId);
-																		if (wsOwnerLongPressTimer.current !== null) clearTimeout(wsOwnerLongPressTimer.current);
-																		const rect = e.currentTarget.getBoundingClientRect();
-																		wsOwnerLongPressTimer.current = setTimeout(() => {
-																			wsOwnerLongPressTimer.current = null;
-																			setWsOwnerPopup({ workspaceId: ws.id, x: rect.left, y: rect.bottom + 4 });
-																		}, 500);
-																	}}
-																	onPointerUp={() => {
-																		if (wsOwnerLongPressTimer.current !== null) {
-																			clearTimeout(wsOwnerLongPressTimer.current);
-																			wsOwnerLongPressTimer.current = null;
-																		}
-																	}}
-																	onPointerCancel={() => {
-																		if (wsOwnerLongPressTimer.current !== null) {
-																			clearTimeout(wsOwnerLongPressTimer.current);
-																			wsOwnerLongPressTimer.current = null;
-																		}
-																	}}
 																	onClick={(e) => {
 																		e.stopPropagation();
-																		// Dismiss the popup if it is open for this workspace.
-																		if (wsOwnerPopup?.workspaceId === ws.id) setWsOwnerPopup(null);
+																		setWsOwnerPopupClosing(false);
+																		setWsOwnerPopup({ workspaceId: ws.id });
 																	}}
 																>
 																	{ws.ownerProfileImage ? (
@@ -6573,6 +6646,36 @@ export function App(): React.JSX.Element {
 																		>
 																			<FontAwesomeIcon icon={faShareNodes} aria-hidden="true" />
 																		</button>
+																	) : null}
+																	{showOwnerAvatar && isOwnerOverlayOpen ? (
+																		<div
+																			className={`sidebar-workspace-owner-inline-overlay${wsOwnerPopupClosing ? ' is-closing' : ''}`}
+																			onClick={(event) => event.stopPropagation()}
+																		>
+																			<div className="sidebar-workspace-owner-inline-avatar-shell" aria-hidden="true">
+																				{ws.ownerProfileImage ? (
+																					<img src={ws.ownerProfileImage} alt="" className="sidebar-workspace-owner-inline-avatar" />
+																				) : (
+																					<div className="sidebar-workspace-owner-inline-avatar-initials">{ownerInitials}</div>
+																				)}
+																			</div>
+																			<div className="sidebar-workspace-owner-inline-copy">
+																				<span className="sidebar-workspace-owner-inline-name">{ws.ownerName ?? t('workspace.ownedByUnknown')}</span>
+																				<span className="sidebar-workspace-owner-inline-role">({t(getWorkspaceRoleLabelKey('OWNER'))})</span>
+																			</div>
+																			<button
+																				type="button"
+																				className="sidebar-workspace-owner-inline-close"
+																				onClick={(event) => {
+																					event.stopPropagation();
+																					closeOwnerPopup();
+																				}}
+																				aria-label={t('common.close')}
+																				title={t('common.close')}
+																			>
+																				<FontAwesomeIcon icon={faXmark} aria-hidden="true" />
+																			</button>
+																		</div>
 																	) : null}
 														</div>
 														{showSharedFolders ? (
@@ -7125,11 +7228,22 @@ export function App(): React.JSX.Element {
 			{crossWorkspaceNote ? (
 				<CrossWorkspaceNoteModal
 					noteId={crossWorkspaceNote.noteId}
+					docId={crossWorkspaceDocId}
 					workspaceId={crossWorkspaceNote.workspaceId}
 					workspaceName={crossWorkspaceNote.workspaceName}
 					themeId={themeId}
 					authUserId={authUserId}
 					websocketUrl={manager.getWebsocketUrl()}
+					readOnly={crossWorkspaceReadOnly}
+					onAddCollaborator={canManageCrossWorkspaceCollaborators ? ({ noteId, docId, title }) => openCollaboratorModalForNote(noteId, title, { docId, canManage: true }) : undefined}
+					onAddImage={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteImageModal(noteId, docId, title)}
+					onAddDocument={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteDocumentModal(noteId, docId, title)}
+					onAddReminder={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteReminderModal(noteId, docId, title)}
+					onAddToCollection={crossWorkspaceReadOnly ? undefined : ({ noteId, doc, docId, title }) => openNoteCollectionModal(noteId, title, { docId, doc })}
+					onAddLabels={crossWorkspaceReadOnly ? undefined : ({ noteId, doc, docId, title }) => openNoteLabelsModal(noteId, title, { docId, doc })}
+					onShowBriefDialog={showBriefDialog}
+					initialShowCompleted={checklistShowCompletedPref}
+					allowQuickDelete={quickDeleteChecklistPref}
 					onClose={() => setCrossWorkspaceNote(null)}
 				/>
 			) : null}
@@ -7179,29 +7293,6 @@ export function App(): React.JSX.Element {
 					})}
 				</div>,
 				document.body,
-			) : null}
-			{/* Owner popup for mobile long-press on workspace avatar chip — rendered
-			    as a portal so it is not clipped by the sidebar's overflow:hidden. */}
-			{wsOwnerPopup ? ReactDOM.createPortal(
-				<div
-					className="sidebar-workspace-owner-popup"
-					style={{ top: wsOwnerPopup.y, left: wsOwnerPopup.x }}
-					onPointerDown={() => setWsOwnerPopup(null)}
-				>
-					{(() => {
-						const popup = sidebarWorkspacesSorted.find((ws) => ws.id === wsOwnerPopup.workspaceId);
-						if (!popup) return null;
-						return (
-							<>
-								{popup.ownerProfileImage ? (
-									<img src={popup.ownerProfileImage} alt="" className="sidebar-workspace-owner-popup-img" />
-								) : null}
-								<span className="sidebar-workspace-owner-popup-name">{popup.ownerName ?? ''}</span>
-							</>
-						);
-					})()}
-				</div>,
-				document.body
 			) : null}
 			<NoteMediaBrowserModal
 				isOpen={noteAttachmentBrowserState?.kind === 'images'}
@@ -7324,8 +7415,8 @@ export function App(): React.JSX.Element {
 					}}
 					onAddDocument={undefined}
 					onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
-					onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString())}
-					onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString())}
+					onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
+					onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 					onTogglePin={selectedNoteReadOnly ? undefined : () => assignNotePinned(openDoc, !readNoteMetadataState(openDoc).isPinned)}
 					onShowBriefDialog={showBriefDialog}
 					readOnly={selectedNoteReadOnly}

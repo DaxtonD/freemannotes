@@ -360,16 +360,20 @@ function getTaskItemElementFromTarget(target: EventTarget | null): HTMLElement |
 // ── Highlight color palette ────────────────────────────────────────────────
 // Colors are CSS variable references so they automatically respect theme
 // overrides declared in variables.css or per-theme override blocks.
-type HighlightColor = { id: string; labelKey: string; cssVar: string };
+type HighlightColor = { id: string; labelKey: string; previewColor: string; cssVar: string | null };
 const HIGHLIGHT_COLORS: readonly HighlightColor[] = [
-	{ id: 'yellow', labelKey: 'editors.highlightYellow', cssVar: 'var(--hl-yellow)' },
-	{ id: 'green',  labelKey: 'editors.highlightGreen',  cssVar: 'var(--hl-green)'  },
-	{ id: 'blue',   labelKey: 'editors.highlightBlue',   cssVar: 'var(--hl-blue)'   },
-	{ id: 'pink',   labelKey: 'editors.highlightPink',   cssVar: 'var(--hl-pink)'   },
-	{ id: 'purple', labelKey: 'editors.highlightPurple', cssVar: 'var(--hl-purple)' },
-	{ id: 'orange', labelKey: 'editors.highlightOrange', cssVar: 'var(--hl-orange)' },
-	{ id: 'teal',   labelKey: 'editors.highlightTeal',   cssVar: 'var(--hl-teal)'   },
-	{ id: 'red',    labelKey: 'editors.highlightRed',    cssVar: 'var(--hl-red)'    },
+	{ id: 'default', labelKey: 'editors.highlightDefault', previewColor: 'var(--hl-default-bg)', cssVar: null },
+	{ id: 'yellow', labelKey: 'editors.highlightYellow', previewColor: 'var(--hl-yellow)', cssVar: 'var(--hl-yellow)' },
+	{ id: 'green',  labelKey: 'editors.highlightGreen',  previewColor: 'var(--hl-green)',  cssVar: 'var(--hl-green)'  },
+	{ id: 'blue',   labelKey: 'editors.highlightBlue',   previewColor: 'var(--hl-blue)',   cssVar: 'var(--hl-blue)'   },
+	{ id: 'pink',   labelKey: 'editors.highlightPink',   previewColor: 'var(--hl-pink)',   cssVar: 'var(--hl-pink)'   },
+	{ id: 'purple', labelKey: 'editors.highlightPurple', previewColor: 'var(--hl-purple)', cssVar: 'var(--hl-purple)' },
+	{ id: 'orange', labelKey: 'editors.highlightOrange', previewColor: 'var(--hl-orange)', cssVar: 'var(--hl-orange)' },
+	{ id: 'teal',   labelKey: 'editors.highlightTeal',   previewColor: 'var(--hl-teal)',   cssVar: 'var(--hl-teal)'   },
+	{ id: 'red',    labelKey: 'editors.highlightRed',    previewColor: 'var(--hl-red)',    cssVar: 'var(--hl-red)'    },
+	{ id: 'lime',   labelKey: 'editors.highlightLime',   previewColor: 'var(--hl-lime)',   cssVar: 'var(--hl-lime)'   },
+	{ id: 'cyan',   labelKey: 'editors.highlightCyan',   previewColor: 'var(--hl-cyan)',   cssVar: 'var(--hl-cyan)'   },
+	{ id: 'rose',   labelKey: 'editors.highlightRose',   previewColor: 'var(--hl-rose)',   cssVar: 'var(--hl-rose)'   },
 ];
 
 // ── Quick emoji palette ────────────────────────────────────────────────────
@@ -816,9 +820,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const noteAutoScrollLabel = props.noteAutoScrollEnabled
 		? t('editors.disableNoteAutoScroll')
 		: t('editors.enableNoteAutoScroll');
-	const activeHighlightDefinition = resolvedToolbarState.activeHighlightColor
-		? HIGHLIGHT_COLORS.find((color) => color.cssVar === resolvedToolbarState.activeHighlightColor) ?? null
-		: null;
 	// Minimal/mobile toolbars do not render the full list/blockquote section, so
 	// surface nest/outdent only when the current selection is already inside a
 	// structured context that can actually be deepened or lifted.
@@ -993,19 +994,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<FontAwesomeIcon icon={faHighlighter} />
 							</button>
 						</div>
-						{resolvedToolbarState.activeHighlightColor ? (
-							<button
-								type="button"
-								className={`${styles.formatButton}${compactButtonClass} ${styles.formatHighlightSwatchButton}`}
-								aria-label={t('editors.highlightClear')}
-								title={activeHighlightDefinition ? `${t(activeHighlightDefinition.labelKey as Parameters<typeof t>[0])} · ${t('editors.highlightClear')}` : t('editors.highlightClear')}
-								onMouseDown={preventToolbarFocusSteal}
-								onPointerDown={preventToolbarFocusSteal}
-								onClick={() => props.editor?.chain().focus().unsetHighlight().run()}
-							>
-								<span className={styles.formatHighlightSwatch} style={{ backgroundColor: resolvedToolbarState.activeHighlightColor }} aria-hidden="true" />
-							</button>
-						) : null}
 						<button
 							ref={headingMenuButtonRef}
 							type="button"
@@ -1208,17 +1196,25 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								className={styles.highlightSwatch}
 								aria-label={t(color.labelKey as Parameters<typeof t>[0])}
 								title={t(color.labelKey as Parameters<typeof t>[0])}
-								style={{ background: color.cssVar }}
+								style={{ background: color.previewColor }}
 								onMouseDown={preventToolbarFocusSteal}
 								onPointerDown={preventToolbarFocusSteal}
 								onClick={() => {
 									// Toggle: if already active with this color, remove highlight.
-									const isActive = props.editor?.isActive('highlight', { color: color.cssVar });
+									const isActive = color.cssVar === null
+										? Boolean(props.editor?.isActive('highlight')) && resolvedToolbarState.activeHighlightColor === null
+										: props.editor?.isActive('highlight', { color: color.cssVar });
 									if (isActive) {
 										props.editor?.chain().focus().unsetHighlight().run();
 									} else {
-										(props.editor?.chain().focus() as unknown as { setHighlight: (opts: { color: string }) => { run: () => boolean } })
-											.setHighlight({ color: color.cssVar }).run();
+										const chain = props.editor?.chain().focus() as unknown as { setHighlight: (opts?: { color?: string }) => { run: () => boolean } } | undefined;
+										if (chain && typeof chain.setHighlight === 'function') {
+											if (color.cssVar === null) {
+												chain.setHighlight({}).run();
+											} else {
+												chain.setHighlight({ color: color.cssVar }).run();
+											}
+										}
 									}
 									setHighlightMenuOpen(false);
 								}}

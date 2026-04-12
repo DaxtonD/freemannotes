@@ -38,21 +38,43 @@ function docHasRenderableContent(doc: Y.Doc, noteId: string): boolean {
 
 export type CrossWorkspaceNoteModalProps = {
 	noteId: string;
+	docId: string;
 	workspaceId: string;
 	workspaceName: string;
 	themeId: ThemeId;
 	authUserId?: string | null;
 	websocketUrl: string;
+	readOnly?: boolean;
+	onAddCollaborator?: (args: { noteId: string; docId: string; title: string }) => void;
+	onAddImage?: (args: { noteId: string; docId: string; title: string }) => void;
+	onAddDocument?: (args: { noteId: string; docId: string; title: string }) => void;
+	onAddReminder?: (args: { noteId: string; docId: string; title: string }) => void;
+	onAddToCollection?: (args: { noteId: string; doc: Y.Doc; docId: string; title: string }) => void;
+	onAddLabels?: (args: { noteId: string; doc: Y.Doc; docId: string; title: string }) => void;
+	onShowBriefDialog?: (message: string) => void;
+	initialShowCompleted?: boolean;
+	allowQuickDelete?: boolean;
 	onClose: () => void;
 };
 
 export function CrossWorkspaceNoteModal({
 	noteId,
+	docId,
 	workspaceId,
 	workspaceName,
 	themeId,
 	authUserId,
 	websocketUrl,
+	readOnly = false,
+	onAddCollaborator,
+	onAddImage,
+	onAddDocument,
+	onAddReminder,
+	onAddToCollection,
+	onAddLabels,
+	onShowBriefDialog,
+	initialShowCompleted,
+	allowQuickDelete,
 	onClose,
 }: CrossWorkspaceNoteModalProps): React.JSX.Element {
 	const [doc, setDoc] = React.useState<Y.Doc | null>(null);
@@ -67,7 +89,7 @@ export function CrossWorkspaceNoteModal({
 	} | null>(null);
 
 	React.useEffect(() => {
-		const roomName = `${workspaceId}:${noteId}`;
+		const roomName = docId;
 		const ydoc = new Y.Doc();
 		const idb = new IndexeddbPersistence(roomName, ydoc);
 		let ws: WebsocketProvider | null = null;
@@ -151,7 +173,7 @@ export function CrossWorkspaceNoteModal({
 			providersRef.current = null;
 		};
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [noteId, workspaceId, websocketUrl]);
+	}, [docId, noteId, websocketUrl]);
 
 	// Close on Escape key.
 	React.useEffect(() => {
@@ -180,18 +202,28 @@ export function CrossWorkspaceNoteModal({
 	return (
 		<NoteEditor
 			noteId={noteId}
-			docId={`${workspaceId}:${noteId}`}
+			docId={docId}
 			authUserId={authUserId}
 			themeId={themeId}
 			doc={doc}
 			onClose={onClose}
+			onAddCollaborator={onAddCollaborator ? () => onAddCollaborator({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
+			onAddImage={onAddImage ? () => onAddImage({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
+			onAddDocument={onAddDocument ? () => onAddDocument({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
+			onAddReminder={onAddReminder ? () => onAddReminder({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
+			onAddToCollection={onAddToCollection ? () => onAddToCollection({ noteId, doc, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
+			onAddLabels={onAddLabels ? () => onAddLabels({ noteId, doc, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
+			onShowBriefDialog={onShowBriefDialog}
+			readOnly={readOnly}
+			initialShowCompleted={initialShowCompleted}
+			allowQuickDelete={allowQuickDelete}
 			onDelete={async (_deletedNoteId) => {
 				// Soft-delete via the Y.Doc so the WS provider syncs the trashed
 				// flag to the server. The note will appear in that workspace's trash.
 				setNoteTrashed(doc, true);
 				onClose();
 			}}
-			onTogglePin={() => {
+			onTogglePin={readOnly ? undefined : () => {
 				const isPinned = readNoteMetadataState(doc).isPinned;
 				assignNotePinned(doc, !isPinned);
 			}}
