@@ -14,6 +14,12 @@ type WorkspaceRow = {
 	id: string;
 	name: string;
 	ownerUserId: string | null;
+	// ownerName/ownerEmail/ownerProfileImage are only populated for foreign workspaces
+	// (owned by another user) and come from the /api/workspaces list response.  Older
+	// cached rows will simply lack these fields; treat missing as null.
+	ownerName?: string | null;
+	ownerEmail?: string | null;
+	ownerProfileImage?: string | null;
 	systemKind: string | null;
 	createdAt: string;
 	updatedAt: string;
@@ -54,6 +60,7 @@ export type CachedWorkspaceListItem = {
 	role: WorkspaceRole;
 	ownerUserId: string | null;
 	ownerName?: string | null;
+	ownerEmail?: string | null;
 	ownerProfileImage?: string | null;
 	systemKind?: string | null;
 	createdAt: string;
@@ -317,6 +324,9 @@ export async function readCachedWorkspaceSnapshot(userId: string, deviceId: stri
 						name: workspace.name,
 						role: asWorkspaceRole(member.role),
 						ownerUserId: workspace.ownerUserId ?? null,
+						ownerName: workspace.ownerName ?? null,
+						ownerEmail: workspace.ownerEmail ?? null,
+						ownerProfileImage: workspace.ownerProfileImage ?? null,
 						systemKind: workspace.systemKind ?? null,
 						createdAt: asIsoString(workspace.createdAt),
 						updatedAt: asIsoString(workspace.updatedAt, asIsoString(workspace.createdAt)),
@@ -361,6 +371,9 @@ export async function cacheWorkspaceSnapshot(args: {
 				id: workspace.id,
 				name: workspace.name,
 				ownerUserId: workspace.ownerUserId ?? null,
+				ownerName: workspace.ownerName ?? null,
+				ownerEmail: workspace.ownerEmail ?? null,
+				ownerProfileImage: workspace.ownerProfileImage ?? null,
 				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind : null,
 				createdAt: asIsoString(workspace.createdAt, now),
 				updatedAt: asIsoString(workspace.updatedAt, asIsoString(workspace.createdAt, now)),
@@ -399,6 +412,9 @@ export async function cacheWorkspaceDetails(args: {
 		id: string;
 		name: string;
 		ownerUserId?: string | null;
+		ownerName?: string | null;
+		ownerEmail?: string | null;
+		ownerProfileImage?: string | null;
 		systemKind?: string | null;
 		createdAt?: string | null;
 		updatedAt?: string | null;
@@ -420,6 +436,18 @@ export async function cacheWorkspaceDetails(args: {
 			id: args.workspace.id,
 			name: args.workspace.name,
 			ownerUserId: args.workspace.ownerUserId ?? existingWorkspace?.ownerUserId ?? null,
+			ownerName:
+				typeof args.workspace.ownerName === 'undefined'
+					? existingWorkspace?.ownerName ?? null
+					: args.workspace.ownerName ?? null,
+			ownerEmail:
+				typeof args.workspace.ownerEmail === 'undefined'
+					? existingWorkspace?.ownerEmail ?? null
+					: args.workspace.ownerEmail ?? null,
+			ownerProfileImage:
+				typeof args.workspace.ownerProfileImage === 'undefined'
+					? existingWorkspace?.ownerProfileImage ?? null
+					: args.workspace.ownerProfileImage ?? null,
 			systemKind: args.workspace.systemKind ?? existingWorkspace?.systemKind ?? null,
 			createdAt: asIsoString(args.workspace.createdAt ?? existingWorkspace?.createdAt ?? now, now),
 			updatedAt: asIsoString(args.workspace.updatedAt ?? existingWorkspace?.updatedAt ?? now, now),

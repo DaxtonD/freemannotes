@@ -84,13 +84,32 @@
 	width: 100%;
 }
 
-.checklistItem {
-	display: flex;
-	gap: var(--space-2);
-	align-items: flex-start;
-	padding: 1px;
+.checklistItem,
+.checklistComposerRow {
+	--checklist-row-gap: 8px;
+	--checklist-handle-size: 30px;
+	--checklist-checkbox-size: 20px;
+	--checklist-text-pad-y: 2px;
+	--checklist-text-line-height: 1.3;
+	--checklist-text-vertical-adjust: 0px;
+	--checklist-text-bottom-extra: 0px;
+	--checklist-control-optical-adjust: 0px;
+	--checklist-handle-optical-adjust: 1px;
+	--checklist-text-line-box: calc(1em * var(--checklist-text-line-height));
+	--checklist-control-top-offset: max(0px, calc(var(--checklist-text-pad-y) + ((var(--checklist-text-line-box) - var(--checklist-checkbox-size)) / 2) + var(--checklist-control-optical-adjust)));
+	--checklist-handle-top-offset: max(0px, calc(var(--checklist-text-pad-y) + ((var(--checklist-text-line-box) - var(--checklist-handle-size)) / 2) + var(--checklist-handle-optical-adjust)));
+	display: grid;
+	grid-template-columns: var(--checklist-handle-size) var(--checklist-checkbox-size) minmax(0, 1fr) auto;
+	column-gap: var(--checklist-row-gap);
+	align-items: start;
 	width: 100%;
 	box-sizing: border-box;
+}
+
+.checklistItem {
+	padding: 1px;
+	position: relative;
+	isolation: isolate;
 	border-radius: var(--radius-md);
 	background: transparent;
 	user-select: none;
@@ -117,12 +136,53 @@
 	  highlighted.
 */
 @media (pointer: coarse) {
+	.checklistItem,
+	.checklistComposerRow {
+		/*
+			Precise mobile checklist alignment knobs:
+			- Increase text to move the text content lower.
+			- Increase either value to move that control lower.
+			- The handle usually needs a slightly larger value than the checkbox.
+		*/
+		--checklist-text-vertical-adjust: 7px;
+		--checklist-text-bottom-extra: 8px;
+		--checklist-control-optical-adjust: 7px;
+		--checklist-handle-optical-adjust: 11px;
+	}
+
 	.checklistItemActive {
+		background: transparent;
+	}
+
+	.checklistItemActive::before {
+		content: '';
+		position: absolute;
+		left: 0;
+		right: 0;
+		top: 0;
+		bottom: 0;
+		border-radius: inherit;
 		background: var(--checklist-row-highlight);
+		pointer-events: none;
+		z-index: -1;
 	}
 }
 
 @media (pointer: fine) {
+	.checklistItem,
+	.checklistComposerRow {
+		/*
+			Precise desktop checklist alignment knobs:
+			- Increase text to move the text content lower.
+			- Increase either value to move that control lower.
+			- The handle usually needs a slightly larger value than the checkbox.
+		*/
+		--checklist-text-vertical-adjust: 3px;
+		--checklist-text-bottom-extra: 5px;
+		--checklist-control-optical-adjust: 5px;
+		--checklist-handle-optical-adjust: 9px;
+	}
+
 	.checklistItem:hover,
 	.checklistItem:focus-within {
 		background: var(--checklist-row-highlight);
@@ -784,6 +844,10 @@
 	z-index: 2;
 }
 
+.mobileChecklistMediaRow {
+	display: block;
+}
+
 .mediaDock {
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-lg);
@@ -1247,6 +1311,36 @@
 		padding-bottom: env(safe-area-inset-bottom, 0px);
 	}
 
+	.mobileChecklistMediaRow {
+		position: relative;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		width: calc(100% + 24px);
+		margin-left: -12px;
+		min-height: 40px;
+	}
+
+	.mobileChecklistMediaRow .mobileChecklistUndoFabCluster {
+		/* Keep the undo/redo cluster docked to the left edge while the media handle
+		   remains centered independently of the button widths. */
+		position: absolute;
+		left: max(calc(env(safe-area-inset-left, 0px) + 8px), 8px);
+		top: 50%;
+		transform: translateY(-50%);
+	}
+
+	.mobileChecklistMediaRow .mediaDock {
+		flex: 0 0 auto;
+		width: auto;
+	}
+
+	.mobileChecklistMediaRow .mediaDockHandle {
+		width: auto;
+		min-width: 160px;
+		padding: 8px 0;
+	}
+
 	/* Match mobile dock screenshot: no visible divider lines. */
 	.mediaDock {
 		border: 0;
@@ -1439,6 +1533,12 @@
 	padding: 0.05em 0.15em;
 }
 
+.richEditorContent:global(.ProseMirror) mark:not([style]) {
+	background: var(--hl-default-bg);
+	color: var(--hl-default-text);
+	-webkit-text-fill-color: var(--hl-default-text);
+}
+
 .richEditorContent:global(.ProseMirror) h1 {
 	font-size: calc(clamp(1.45rem, 2vw, 2rem) * var(--note-editor-font-scale, 1));
 	line-height: 1.12;
@@ -1575,12 +1675,12 @@
 	flex: 1;
 	min-width: 0;
 	min-height: 22px;
-	padding: 1px 6px;
+	padding: var(--checklist-text-pad-y) 6px calc(var(--checklist-text-pad-y) + var(--checklist-text-bottom-extra));
 	border-radius: var(--radius-sm);
 	background: transparent;
 	cursor: text;
 	display: flex;
-	align-items: center;
+	align-items: flex-start;
 }
 
 .checklistRowRichStack {
@@ -1607,14 +1707,14 @@
 	padding: 0;
 	background: transparent;
 	font-size: calc(1rem * var(--note-editor-font-scale, 1));
-	line-height: 1.3;
+	line-height: var(--checklist-text-line-height);
 }
 
 .checklistRowRichEditor:global(.ProseMirror) {
 	min-height: 16px;
 	background: transparent;
 	white-space: pre-wrap;
-	line-height: 1.3;
+	line-height: var(--checklist-text-line-height);
 }
 
 .checklistRowRichEditor :global(p) {
@@ -1625,9 +1725,9 @@
 	flex: 1;
 	min-width: 0;
 	min-height: 22px;
-	padding: 2px 6px;
+	padding: var(--checklist-text-pad-y) 6px calc(var(--checklist-text-pad-y) + var(--checklist-text-bottom-extra));
 	font-size: calc(1rem * var(--note-editor-font-scale, 1));
-	line-height: 1.3;
+	line-height: var(--checklist-text-line-height);
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 	color: inherit;
@@ -1671,6 +1771,7 @@
 		width: 0;
 		height: 0;
 	}
+
 }
 
 .checklistComposer {
@@ -1684,19 +1785,14 @@
 }
 
 /*
-Checklist row layout (multiline-friendly):
-- Use `align-items: flex-start` so the drag handle + checkbox visually align to
-  the first line of text when items wrap.
-- Keep everything in a single flex row so the width we measure for the drag
-  clone matches the on-screen row.
+Checklist row layout:
+	- Keep everything in a single grid row so the width we measure for the drag
+	clone matches the on-screen row.
+- Base styles stay neutral; fine/coarse pointer media queries provide the final
+	alignment rules so desktop and mobile can diverge cleanly.
 */
 .checklistComposerRow {
-	display: flex;
-	align-items: flex-start;
-	gap: 8px;
 	padding: 6px;
-	width: 100%;
-	box-sizing: border-box;
 	border: 0;
 	border-radius: var(--radius-md);
 	background: transparent;
@@ -1717,16 +1813,17 @@ Checklist row layout (multiline-friendly):
 Drag handle:
 - `touch-action: none` and pointer-based sensors (see `dndSensors.ts`) work
   together to prevent scroll from stealing the first drag on mobile.
-- `padding-top` is tuned so the grip icon aligns with the first text line.
 */
 .dragHandle {
-	width: 30px;
-	height: 30px;
-	min-width: 30px;
+	width: var(--checklist-handle-size);
+	height: var(--checklist-handle-size);
+	min-width: var(--checklist-handle-size);
 	display: inline-flex;
-	align-items: flex-start;
+	align-items: center;
 	justify-content: center;
-	padding-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 7px));
+	padding-top: 0;
+	margin-top: var(--checklist-handle-top-offset);
+	align-self: start;
 	box-sizing: border-box;
 	border: 0;
 	border-radius: var(--radius-sm);
@@ -1753,10 +1850,11 @@ Drag handle:
 }
 
 .checklistCheckbox {
-	width: 20px;
-	height: 20px;
-	min-width: 20px;
-	margin-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 10px));
+	width: var(--checklist-checkbox-size);
+	height: var(--checklist-checkbox-size);
+	min-width: var(--checklist-checkbox-size);
+	margin-top: var(--checklist-control-top-offset);
+	align-self: start;
 	accent-color: var(--note-editor-accent, var(--color-accent));
 	cursor: pointer;
 }
@@ -1766,14 +1864,15 @@ Drag handle:
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 20px;
-	height: 20px;
-	min-width: 20px;
-	margin-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 10px));
+	width: var(--checklist-checkbox-size);
+	height: var(--checklist-checkbox-size);
+	min-width: var(--checklist-checkbox-size);
+	margin-top: var(--checklist-control-top-offset);
+	align-self: start;
 	cursor: pointer;
 	touch-action: manipulation;
 	-webkit-tap-highlight-color: transparent;
-	flex: 0 0 20px;
+	flex: 0 0 var(--checklist-checkbox-size);
 }
 
 .checklistCheckboxHitArea::before {
@@ -1797,12 +1896,19 @@ Drag handle:
 }
 
 .rowRemoveButton {
-	margin-top: 2px;
+	margin-top: 0;
+	justify-self: center;
+	align-self: center;
 	opacity: 0;
 	pointer-events: none;
 	border: 0;
 	background: transparent;
 	color: var(--color-text-muted);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
 	padding: 2px 6px;
 	line-height: 1;
 	font-size: 18px;
@@ -1853,8 +1959,8 @@ Drag handle:
 	*/
 	min-width: 0;
 	min-height: 22px;
-	padding: 2px 6px;
-	line-height: 1.3;
+	padding: var(--checklist-text-pad-y) 6px calc(var(--checklist-text-pad-y) + var(--checklist-text-bottom-extra));
+	line-height: var(--checklist-text-line-height);
 	color: inherit;
 	background: transparent;
 	border: 0;
@@ -1880,13 +1986,13 @@ Drag handle:
 	flex: 1;
 	min-width: 0;
 	min-height: 22px;
-	padding: 2px 6px;
+	padding: var(--checklist-text-pad-y) 6px calc(var(--checklist-text-pad-y) + var(--checklist-text-bottom-extra));
 	border: 0;
 	background: transparent;
 	color: var(--color-text-muted);
 	text-align: left;
 	font: inherit;
-	line-height: 1.3;
+	line-height: var(--checklist-text-line-height);
 	cursor: pointer;
 }
 
@@ -1901,16 +2007,24 @@ Drag handle:
 	flex: 1;
 	box-sizing: border-box;
 	min-height: 22px;
-	padding: 2px 6px;
-	line-height: 1.3;
+	padding: var(--checklist-text-pad-y) 6px calc(var(--checklist-text-pad-y) + var(--checklist-text-bottom-extra));
+	line-height: var(--checklist-text-line-height);
 	white-space: pre-wrap;
 	overflow-wrap: anywhere;
 	display: flex;
 	align-items: flex-start;
 }
 
+.checklistRowRichEditor,
+.dragPreviewText,
+.checklistRowPreview,
+.rowTextArea,
+.checklistAddItemButton {
+	transform: translateY(var(--checklist-text-vertical-adjust));
+}
+
 @media (pointer: coarse) {
-	/* Mobile: keep checklist rows visually compact and vertically centered. */
+	/* Mobile: same row model, only tweak measurements/offsets. */
 	.checklistList,
 	.checklistComposer {
 		gap: 1px;
@@ -1918,46 +2032,13 @@ Drag handle:
 
 	.checklistItem,
 	.checklistComposerRow {
-		align-items: flex-start;
-		padding: 1px 1px 6px;
-	}
-
-	.rowTextArea {
-		min-height: 22px;
-		padding: 2px 6px;
-		line-height: 1.28;
-	}
-
-	.dragPreviewText {
-		min-height: 22px;
-		padding: 2px 6px;
-		line-height: 1.28;
-		align-items: flex-start;
-	}
-
-	.dragHandle {
-		height: 32px;
-		min-width: 32px;
-		width: 32px;
-		align-items: flex-start;
-		padding-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 7px));
-		line-height: 1;
-	}
-
-	.checklistCheckbox {
-		margin-top: max(0px, calc(var(--note-editor-font-scale, 1) * 0.65rem - 10px));
-	}
-
-	.checklistRowRichShell,
-	.checklistRowPreview,
-	.rowTextArea,
-	.dragPreviewText {
-		transform: none;
-		padding-bottom: 3px;
+		--checklist-handle-size: 32px;
+		--checklist-text-line-height: 1.28;
+		padding: 1px;
 	}
 
 	.rowRemoveButton {
-		margin-top: 2px;
+		margin-top: 0;
 	}
 }
 
@@ -2082,6 +2163,48 @@ Drag ghost:
 	border-radius: var(--radius-md);
 }
 
+
+.mobileChecklistUndoFabCluster {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 0 0 auto;
+}
+
+.mobileChecklistUndoFabButton {
+	width: 40px;
+	height: 40px;
+	padding: 0;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 94%, var(--color-surface-2));
+	color: var(--color-text);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	box-shadow: 0 14px 28px -18px rgba(0, 0, 0, 0.55);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	transition: transform 160ms ease, background-color 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+.mobileChecklistUndoFabButton:hover,
+.mobileChecklistUndoFabButton:focus-visible {
+	background: color-mix(in srgb, var(--color-surface) 88%, var(--color-surface-2));
+	border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+	transform: translateY(-1px);
+}
+
+.mobileChecklistUndoFabButton:active {
+	transform: translateY(0);
+}
+
+.mobileChecklistUndoFabButton:disabled {
+	opacity: 0.42;
+	transform: none;
+	box-shadow: none;
+}
+
 /* ── BubbleMenu (inline selection formatting) ────────────────────────── */
 
 .bubbleMenu {
@@ -2171,6 +2294,17 @@ Drag ghost:
 		padding: 4px;
 	}
 	.bottomDockButton {
+		width: 36px;
+		height: 36px;
+	}
+	.bottomDockButtonCompact {
+		width: 36px;
+		height: 36px;
+		border-radius: var(--radius-md);
+		font-size: 16px;
+	}
+
+	.mobileChecklistUndoFabButton {
 		width: 36px;
 		height: 36px;
 	}

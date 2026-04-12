@@ -281,6 +281,7 @@
     "bottomDock": "Barra inferior",
     "dockAction": "Acción de barra",
     "highlight": "Color de resaltado",
+    "highlightDefault": "Resaltado predeterminado",
     "highlightYellow": "Resaltado amarillo",
     "highlightGreen": "Resaltado verde",
     "highlightBlue": "Resaltado azul",
@@ -289,6 +290,9 @@
     "highlightOrange": "Resaltado naranja",
     "highlightTeal": "Resaltado azul verdoso",
     "highlightRed": "Resaltado rojo",
+    "highlightLime": "Resaltado lima",
+    "highlightCyan": "Resaltado cian",
+    "highlightRose": "Resaltado rosa intenso",
     "highlightClear": "Quitar resaltado",
     "emojiPicker": "Insertar emoji",
     "undoCheckbox": "Deshacer cambio de casilla",
@@ -476,7 +480,9 @@
     "deletedMessageNoFallback": "Este espacio de trabajo fue eliminado. No hay otro espacio de trabajo disponible en este momento.",
     "chooseAnother": "Elegir espacio de trabajo",
     "ownedBy": "Propiedad de",
-    "ownedByUnknown": "Propiedad de otro usuario"
+    "ownedByUnknown": "Propiedad de otro usuario",
+    "yourRole": "Tu rol",
+    "memberSince": "Miembro desde"
   },
   "invite": {
     "title": "Compartir espacio de trabajo",

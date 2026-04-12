@@ -42,6 +42,7 @@ import {
 	arraysEqual,
 	flattenColumns,
 	getGridLayoutForViewport,
+	MOBILE_GRID_EDGE_MARGIN_PX,
 	mergeVisibleIdsIntoLayoutOrder,
 	mergeVisibleOrderIntoFullOrder,
 	readCssPxVariable,
@@ -905,8 +906,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Tracks which note's long-press more-menu is currently open (null = closed).
 	const [moreMenuNoteId, setMoreMenuNoteId] = React.useState<string | null>(null);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
+	const [moreMenuOpenedByLongPress, setMoreMenuOpenedByLongPress] = React.useState(false);
 	const isTrashView = Boolean(props.showTrashed);
 	const isGridVisible = props.isVisible !== false;
+
+	React.useEffect(() => {
+		if (moreMenuNoteId !== null) return;
+		setMoreMenuOpenedByLongPress(false);
+	}, [moreMenuNoteId]);
 
 	React.useEffect(() => {
 		docsByIdRef.current = docsById;
@@ -1710,11 +1717,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const disableAttachmentInitialRemoteRefresh = true;
 	const collaboratorOverlayPosition = React.useMemo(() => {
 		if (!openCollaboratorChip || typeof window === 'undefined') return null;
-		const overlayWidth = Math.min(Math.round(openCollaboratorChip.anchorRect.width), window.innerWidth - 24);
+		// Match the masonry grid edge clamp on coarse pointers so left-column cards
+		// open centered chip overlays instead of drifting to the right.
+		const horizontalViewportInset = isCoarsePointer ? MOBILE_GRID_EDGE_MARGIN_PX : 12;
+		const overlayWidth = Math.min(
+			Math.round(openCollaboratorChip.anchorRect.width),
+			window.innerWidth - horizontalViewportInset * 2
+		);
 		const viewportWidth = window.innerWidth;
 		const viewportHeight = window.innerHeight;
 		const centeredLeft = openCollaboratorChip.anchorRect.left + (openCollaboratorChip.anchorRect.width - overlayWidth) / 2;
-		const left = Math.min(Math.max(12, centeredLeft), Math.max(12, viewportWidth - overlayWidth - 12));
+		const left = Math.min(
+			Math.max(horizontalViewportInset, centeredLeft),
+			Math.max(horizontalViewportInset, viewportWidth - overlayWidth - horizontalViewportInset)
+		);
 		const visibleRows = Math.min(MAX_VISIBLE_COLLABORATORS, collaboratorOverlaySummary?.count ?? 1);
 		const estimatedHeight = Math.min(240, Math.max(84, visibleRows * 44 + 16));
 		const preferredTop = openCollaboratorChip.anchorRect.top + openCollaboratorChip.anchorRect.height + 8;
@@ -1722,22 +1738,31 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			? preferredTop
 			: Math.max(12, openCollaboratorChip.anchorRect.top - estimatedHeight - 8);
 		return { top, left, width: overlayWidth };
-	}, [collaboratorOverlaySummary?.count, openCollaboratorChip]);
+	}, [collaboratorOverlaySummary?.count, isCoarsePointer, openCollaboratorChip]);
 	const metadataOverlayPosition = React.useMemo(() => {
 		if (!openMetadataChip || typeof window === 'undefined') return null;
 		// Align metadata overlays to the same card-width anchor as other note chips.
-		const overlayWidth = Math.min(Math.round(openMetadataChip.anchorRect.width), window.innerWidth - 24);
+		// Reuse the mobile grid inset here as well so every chip overlay clamps the
+		// same way on narrow screens.
+		const horizontalViewportInset = isCoarsePointer ? MOBILE_GRID_EDGE_MARGIN_PX : 12;
+		const overlayWidth = Math.min(
+			Math.round(openMetadataChip.anchorRect.width),
+			window.innerWidth - horizontalViewportInset * 2
+		);
 		const viewportWidth = window.innerWidth;
 		const viewportHeight = window.innerHeight;
 		const centeredLeft = openMetadataChip.anchorRect.left + (openMetadataChip.anchorRect.width - overlayWidth) / 2;
-		const left = Math.min(Math.max(12, centeredLeft), Math.max(12, viewportWidth - overlayWidth - 12));
+		const left = Math.min(
+			Math.max(horizontalViewportInset, centeredLeft),
+			Math.max(horizontalViewportInset, viewportWidth - overlayWidth - horizontalViewportInset)
+		);
 		const estimatedHeight = Math.min(260, Math.max(84, openMetadataChip.entries.length * 38 + 18));
 		const preferredTop = openMetadataChip.anchorRect.top + openMetadataChip.anchorRect.height + 8;
 		const top = preferredTop + estimatedHeight <= viewportHeight - 12
 			? preferredTop
 			: Math.max(12, openMetadataChip.anchorRect.top - estimatedHeight - 8);
 		return { top, left, width: overlayWidth };
-	}, [openMetadataChip]);
+	}, [isCoarsePointer, openMetadataChip]);
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
@@ -1842,6 +1867,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				} : undefined}
 				onMoreMenu={(anchorRect) => {
 					const cardEl = gridRef.current?.querySelector(`[data-note-id="${note.id}"]`);
+					setMoreMenuOpenedByLongPress(typeof anchorRect === 'undefined');
 					setMoreMenuAnchorRect(anchorRect ?? (cardEl ? cardEl.getBoundingClientRect().toJSON() : null));
 					setMoreMenuNoteId(note.id);
 				}}
@@ -2087,6 +2113,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										}}
 										onSelectNote={props.onSelectNote}
 										onMoreMenu={(noteId, rect) => {
+											setMoreMenuOpenedByLongPress(false);
 											setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
 											setMoreMenuNoteId(noteId);
 										}}
@@ -2119,6 +2146,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								}}
 								onSelectNote={props.onSelectNote}
 								onMoreMenu={(noteId, rect) => {
+									setMoreMenuOpenedByLongPress(false);
 									setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
 									setMoreMenuNoteId(noteId);
 								}}
@@ -2403,6 +2431,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				: null}
 			{moreMenuNoteId && moreMenuDoc ? (
 				<NoteCardMoreMenu
+					openedByLongPress={moreMenuOpenedByLongPress}
 					noteType={
 						String(moreMenuDoc.getMap('metadata').get('type') ?? '') === 'checklist'
 							? 'checklist'

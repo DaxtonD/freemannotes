@@ -5,6 +5,8 @@ export type GridLayoutConfig = {
 	mobileSectionBleedPx: number;
 };
 
+export const MOBILE_GRID_EDGE_MARGIN_PX = 4;
+
 export function readCssPxVariable(name: string, fallback: number): number {
 	if (typeof window === 'undefined') return fallback;
 	const raw = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -41,7 +43,7 @@ export function getGridLayoutForViewport(
 	if (isMobile) {
 		if (isPortrait) {
 			mobileGapPx = 4;
-			const desiredEdgeMargin = 4;
+			const desiredEdgeMargin = MOBILE_GRID_EDGE_MARGIN_PX;
 			mobileSectionBleedPx = Math.max(0, Math.round(appSidePadding - desiredEdgeMargin));
 		}
 

@@ -48,7 +48,7 @@
     "sidebarClearReminders": "Clear reminders",
     "sidebarClearFilters": "Clear filters",
     "sidebarClearGrouping": "Clear grouping",
-    "sidebarClearSort": "Clear sort",
+    "sidebarClearSort": "Clear sorting",
     "sidebarGrouping": "Grouping",
     "sidebarGroupBy": "Group by",
     "sidebarByWeek": "By week",
@@ -281,6 +281,7 @@
     "bottomDock": "Bottom dock",
     "dockAction": "Dock action",
     "highlight": "Highlight color",
+    "highlightDefault": "Default highlight",
     "highlightYellow": "Yellow highlight",
     "highlightGreen": "Green highlight",
     "highlightBlue": "Blue highlight",
@@ -289,6 +290,9 @@
     "highlightOrange": "Orange highlight",
     "highlightTeal": "Teal highlight",
     "highlightRed": "Red highlight",
+    "highlightLime": "Lime highlight",
+    "highlightCyan": "Cyan highlight",
+    "highlightRose": "Rose highlight",
     "highlightClear": "Remove highlight",
     "emojiPicker": "Insert emoji",
     "undoCheckbox": "Undo checkbox change",
@@ -476,7 +480,9 @@
     "deletedMessageNoFallback": "This workspace was deleted. There is no other workspace available right now.",
     "chooseAnother": "Choose workspace",
     "ownedBy": "Owned by",
-    "ownedByUnknown": "Owned by another user"
+    "ownedByUnknown": "Owned by another user",
+    "yourRole": "Your role",
+    "memberSince": "Member since"
   },
   "invite": {
     "title": "Share workspace",

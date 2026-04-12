@@ -46,6 +46,13 @@ html.ios-standalone-pwa #root {
 	overscroll-behavior: none;
 }
 
+html.android-standalone-pwa,
+body.android-standalone-pwa,
+html.android-standalone-pwa #root {
+	min-height: 100%;
+	background: var(--color-app-bg);
+}
+
 body.ios-standalone-pwa {
 	position: fixed;
 	inset: 0;
@@ -75,6 +82,13 @@ body.ios-standalone-pwa {
 	html.body-scroll-locked .app-main,
 	html.body-scroll-locked .app-sidebar {
 		overflow: hidden !important;
+		overscroll-behavior: none;
+	}
+
+	html.android-standalone-pwa,
+	body.android-standalone-pwa,
+	html.android-standalone-pwa #root {
+		touch-action: pan-x pan-y;
 		overscroll-behavior: none;
 	}
 }

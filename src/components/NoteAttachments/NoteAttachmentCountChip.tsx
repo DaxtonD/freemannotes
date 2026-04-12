@@ -6,6 +6,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faFileLines, faImage, faLink, faPaperclip } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
+import { MOBILE_GRID_EDGE_MARGIN_PX } from '../NoteGrid/layout';
 import { getCachedNoteDocuments, getNoteDocumentsChangedEventName, readQueuedNoteDocuments, readStoredRemoteNoteDocuments, refreshRemoteNoteDocuments } from '../../core/noteDocumentStore';
 import { extractNoteLinksFromDoc } from '../../core/noteLinks';
 import { getCachedRemoteNoteLinks, getNoteLinksChangedEventName, readStoredNoteLinks, refreshRemoteNoteLinks } from '../../core/noteLinkStore';
@@ -370,16 +371,25 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		if (!anchorRect || typeof window === 'undefined') return null;
 		// Match the other note-card chip overlays: card-width and horizontally
 		// centered, but vertically attached to the chip row with above/below flip.
-		const overlayWidth = Math.min(Math.round(anchorRect.width), window.innerWidth - 24);
+		// On mobile this reuses the grid edge margin so attachment menus line up with
+		// collaborator and metadata menus on the same card.
+		const horizontalViewportInset = isCoarsePointer ? MOBILE_GRID_EDGE_MARGIN_PX : 12;
+		const overlayWidth = Math.min(
+			Math.round(anchorRect.width),
+			window.innerWidth - horizontalViewportInset * 2
+		);
 		const centeredLeft = anchorRect.left + (anchorRect.width - overlayWidth) / 2;
-		const left = Math.min(Math.max(12, centeredLeft), Math.max(12, window.innerWidth - overlayWidth - 12));
+		const left = Math.min(
+			Math.max(horizontalViewportInset, centeredLeft),
+			Math.max(horizontalViewportInset, window.innerWidth - overlayWidth - horizontalViewportInset)
+		);
 		const estimatedHeight = 156;
 		const preferredTop = anchorRect.top + anchorRect.height + 8;
 		const top = preferredTop + estimatedHeight <= window.innerHeight - 12
 			? preferredTop
 			: Math.max(12, anchorRect.top - estimatedHeight - 8);
 		return { top, left, width: overlayWidth };
-	}, [anchorRect]);
+	}, [anchorRect, isCoarsePointer]);
 
 	const handleToggle = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
 		event.stopPropagation();

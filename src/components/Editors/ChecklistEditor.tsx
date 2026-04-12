@@ -993,6 +993,13 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		backdropPressStartedRef.current = false;
 		if (shouldClose) props.onCancel();
 	}, [mediaDockOpen, props]);
+	// Mobile checklist undo/redo only appears after an actual checkbox toggle and
+	// stays out of the way while the keyboard or overlay menus are open.
+	const showMobileChecklistUndoFab = isCoarsePointer
+		&& !mobileKeyboardOpen
+		&& !mediaDockOpen
+		&& !isMoreMenuOpen
+		&& (checkboxUndoAvail || checkboxRedoAvail);
 
 	return (
 		<div
@@ -1367,7 +1374,36 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 				    stronger than merely hiding them visually and guarantees they cannot be dragged
 				    or scrolled into view under the keyboard. */}
 				{mobileKeyboardOpen ? null : <div className={styles.editorBottomArea}>
-					<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
+					<div className={styles.mobileChecklistMediaRow}>
+						{showMobileChecklistUndoFab ? (
+							<div
+								className={styles.mobileChecklistUndoFabCluster}
+								onPointerDown={(event) => event.stopPropagation()}
+								onClick={(event) => event.stopPropagation()}
+							>
+								<button
+									type="button"
+									className={styles.mobileChecklistUndoFabButton}
+									onClick={undoCheckboxChange}
+									disabled={!checkboxUndoAvail}
+									aria-label={t('editors.undoCheckbox')}
+									title={t('editors.undoCheckbox')}
+								>
+									<FontAwesomeIcon icon={byPrefixAndName.fas.undo} />
+								</button>
+								<button
+									type="button"
+									className={styles.mobileChecklistUndoFabButton}
+									onClick={redoCheckboxChange}
+									disabled={!checkboxRedoAvail}
+									aria-label={t('editors.redoCheckbox')}
+									title={t('editors.redoCheckbox')}
+								>
+									<FontAwesomeIcon icon={byPrefixAndName.fas.redo} />
+								</button>
+							</div>
+						) : null}
+						<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
 						<button
 							type="button"
 							className={styles.mediaDockHandle}
@@ -1384,7 +1420,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 							<span className={styles.mediaDockPill} aria-hidden="true" />
 							<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
 						</button>
-					</section>
+						</section>
+					</div>
 
 					<nav className={`${styles.bottomDock} ${styles.bottomDockCompact}`} aria-label={t('editors.bottomDock')}>
 						<div className={styles.bottomDockLeft}>
@@ -1426,27 +1463,30 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 							</button>
 						</div>
 						<div className={styles.bottomDockRightActions}>
-							{/* Checkbox undo / redo — lets the user recover from accidental check/uncheck */}
-							<button
-								type="button"
-								className={styles.bottomDockClose}
-								onClick={undoCheckboxChange}
-								disabled={!checkboxUndoAvail}
-								aria-label={t('editors.undoCheckbox')}
-								title={t('editors.undoCheckbox')}
-							>
-								<span aria-hidden="true" className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconUndoCheckbox}`} />
-							</button>
-							<button
-								type="button"
-								className={styles.bottomDockClose}
-								onClick={redoCheckboxChange}
-								disabled={!checkboxRedoAvail}
-								aria-label={t('editors.redoCheckbox')}
-								title={t('editors.redoCheckbox')}
-							>
-								<span aria-hidden="true" className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconRedoCheckbox}`} />
-							</button>
+							{!isCoarsePointer ? (
+								<>
+									<button
+										type="button"
+										className={styles.bottomDockClose}
+										onClick={undoCheckboxChange}
+										disabled={!checkboxUndoAvail}
+										aria-label={t('editors.undoCheckbox')}
+										title={t('editors.undoCheckbox')}
+									>
+										<span aria-hidden="true" className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconUndoCheckbox}`} />
+									</button>
+									<button
+										type="button"
+										className={styles.bottomDockClose}
+										onClick={redoCheckboxChange}
+										disabled={!checkboxRedoAvail}
+										aria-label={t('editors.redoCheckbox')}
+										title={t('editors.redoCheckbox')}
+									>
+										<span aria-hidden="true" className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconRedoCheckbox}`} />
+									</button>
+								</>
+							) : null}
 							<button
 								type="button"
 								className={styles.bottomDockClose}
@@ -1639,7 +1679,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					className={styles.floatingToolbar}
 					style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 				>
-					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={undoCheckboxChange} onRedoCheckbox={redoCheckboxChange} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} />
+					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
 				</div>
 			</>,
 			document.body

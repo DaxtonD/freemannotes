@@ -23,6 +23,8 @@
 	--color-accent: #2f5af4;
 	--color-danger: #d32f2f; /* destructive actions (e.g. trash/delete) */
 	--color-overlay: rgba(15, 23, 42, 0.45);
+	--color-surface-raised: var(--color-surface);
+	--radius-lg: 14px;
 
 	--font-size-xs: 12px;
 	--font-size-sm: 14px;
@@ -49,6 +51,8 @@
 	   note surfaces without requiring per-theme overrides.  Each theme that
 	   has a very light or very dark background can override individual tokens
 	   via its own variable override block if needed. */
+	--hl-default-bg: #f6d452;
+	--hl-default-text: #1f1600;
 	--hl-yellow:  rgba(245, 190,   0, 0.42);
 	--hl-green:   rgba( 40, 200,  80, 0.35);
 	--hl-blue:    rgba( 50, 130, 240, 0.35);
@@ -57,4 +61,7 @@
 	--hl-orange:  rgba(240, 120,  20, 0.40);
 	--hl-teal:    rgba( 20, 175, 165, 0.35);
 	--hl-red:     rgba(220,  50,  50, 0.32);
+	--hl-lime:    rgba(150, 210,  35, 0.34);
+	--hl-cyan:    rgba( 35, 190, 220, 0.33);
+	--hl-rose:    rgba(235,  90, 115, 0.30);
 }

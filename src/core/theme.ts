@@ -1087,6 +1087,47 @@ export function getStoredThemeId(): ThemeId {
 	return (match?.id ?? fallbackThemeId) as ThemeId;
 }
 
+function isAndroidStandalonePwa(): boolean {
+	if (typeof window === 'undefined') return false;
+	const ua = window.navigator.userAgent || '';
+	if (!/Android/i.test(ua)) return false;
+	// Android standalone launches are the only context where the viewport/theme
+	// tweaks below are required; browser tabs should keep the normal chrome rules.
+	return Boolean(
+		window.matchMedia?.('(display-mode: standalone)')?.matches ||
+		window.matchMedia?.('(display-mode: fullscreen)')?.matches ||
+		window.matchMedia?.('(display-mode: minimal-ui)')?.matches ||
+		document.referrer.startsWith('android-app://')
+	);
+}
+
+function toAndroidStandaloneThemeColor(color: string): string {
+	// Android nav bars look closer to the app surface with a slightly translucent
+	// theme-color, but the meta tag still prefers a concrete color value.
+	const hex = color.trim();
+	const shortHexMatch = /^#([\da-fA-F]{3}|[\da-fA-F]{4})$/.exec(hex);
+	if (shortHexMatch) {
+		const expanded = shortHexMatch[1]
+			.split('')
+			.map((part) => part + part)
+			.join('')
+			.slice(0, 6);
+		const red = Number.parseInt(expanded.slice(0, 2), 16);
+		const green = Number.parseInt(expanded.slice(2, 4), 16);
+		const blue = Number.parseInt(expanded.slice(4, 6), 16);
+		return `rgba(${red}, ${green}, ${blue}, 0.96)`;
+	}
+	const longHexMatch = /^#([\da-fA-F]{6}|[\da-fA-F]{8})$/.exec(hex);
+	if (longHexMatch) {
+		const expanded = longHexMatch[1].slice(0, 6);
+		const red = Number.parseInt(expanded.slice(0, 2), 16);
+		const green = Number.parseInt(expanded.slice(2, 4), 16);
+		const blue = Number.parseInt(expanded.slice(4, 6), 16);
+		return `rgba(${red}, ${green}, ${blue}, 0.96)`;
+	}
+	return color;
+}
+
 export function applyTheme(themeId: ThemeId): void {
 	if (typeof document === 'undefined') return;
 	const root = document.documentElement;
@@ -1116,7 +1157,7 @@ export function applyTheme(themeId: ThemeId): void {
 		// Use the app background colour (not surface) because this value also
 		// controls the Android system navigation bar at the bottom — which sits
 		// over the app-bg, not a card surface.
-		themeColorMeta.setAttribute('content', appBackground);
+		themeColorMeta.setAttribute('content', isAndroidStandalonePwa() ? toAndroidStandaloneThemeColor(appBackground) : appBackground);
 	}
 	const appleStatusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
 	if (appleStatusBarMeta) {

@@ -190,10 +190,10 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					if (foreignOwnerIds.length > 0) {
 						const owners = await prisma.user.findMany({
 							where: { id: { in: foreignOwnerIds } },
-							select: { id: true, name: true, profileImage: true },
+							select: { id: true, name: true, email: true, profileImage: true },
 						});
 						for (const owner of owners) {
-							ownerProfileMap.set(owner.id, { name: owner.name, profileImage: owner.profileImage });
+							ownerProfileMap.set(owner.id, { name: owner.name, email: owner.email, profileImage: owner.profileImage });
 						}
 					}
 
@@ -209,6 +209,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								role: normalizeWorkspaceRole(m.role, 'VIEWER'),
 								ownerUserId: m.workspace.ownerUserId,
 								ownerName: ownerProfile ? ownerProfile.name : null,
+								ownerEmail: ownerProfile ? ownerProfile.email : null,
 								ownerProfileImage: ownerProfile ? ownerProfile.profileImage : null,
 								systemKind: m.workspace.systemKind,
 								createdAt: m.workspace.createdAt.toISOString(),

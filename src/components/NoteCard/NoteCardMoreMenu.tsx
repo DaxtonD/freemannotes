@@ -14,6 +14,7 @@ import {
 	faTag,
 	faSquareCheck,
 	faSquare,
+	faXmark,
 } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useI18n } from '../../core/i18n';
@@ -24,6 +25,7 @@ type NoteType = 'text' | 'checklist';
 export type NoteCardMoreMenuProps = {
 	noteType: NoteType;
 	onClose: () => void;
+	openedByLongPress?: boolean;
 	isPinned?: boolean;
 	onTogglePin?: (() => void) | undefined;
 	onTrash?: (() => void) | undefined;
@@ -72,10 +74,13 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	// Desktop branch: render as a compact popover positioned relative to the
 	// trigger element. Mobile branch: ignore anchorRect and use a bottom sheet.
 	const anchor = isDesktop ? props.anchorRect ?? null : null;
+	const useInitialTouchGuard = !isDesktop && props.openedByLongPress === true;
 
 	// Close on overlay click (but NOT clicks inside the sheet/popover body).
-	const handleOverlayPointerDown = React.useCallback(
-		(e: React.PointerEvent) => {
+	// Use click rather than pointerdown so the overlay stays mounted for the
+	// whole tap sequence and the final click cannot fall through to a note row.
+	const handleOverlayClick = React.useCallback(
+		(e: React.MouseEvent) => {
 			if (e.target === overlayRef.current) {
 				e.preventDefault();
 				e.stopPropagation();
@@ -154,22 +159,25 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	// Suppress only the synthetic/carry-over events immediately after a
 	// long-press opens the sheet. Relying on the sheet to observe the
 	// original touch release is unreliable because the menu mounts mid-gesture.
-	const suppressUntilRef = React.useRef(isDesktop ? 0 : Date.now() + 180);
-	const [isTouchInteractionLocked, setIsTouchInteractionLocked] = React.useState(!isDesktop);
+	const suppressUntilRef = React.useRef(useInitialTouchGuard ? Date.now() + 180 : 0);
+	const [isTouchInteractionLocked, setIsTouchInteractionLocked] = React.useState(useInitialTouchGuard);
 	const releaseUnlockTimerRef = React.useRef<number>(0);
-	const requiresFreshTouchRef = React.useRef(!isDesktop);
+	const requiresFreshTouchRef = React.useRef(useInitialTouchGuard);
+	const handleTouchStartRef = React.useRef<{ x: number; y: number; id: number } | null>(null);
 
 	const isInitialTouchGuardActive = React.useCallback((): boolean => {
 		return Date.now() < suppressUntilRef.current;
 	}, []);
 
 	const unlockTouchInteraction = React.useCallback((): void => {
+		if (!useInitialTouchGuard) return;
 		setIsTouchInteractionLocked(false);
 		suppressUntilRef.current = Date.now() + 32;
 		window.getSelection()?.removeAllRanges();
-	}, []);
+	}, [useInitialTouchGuard]);
 
 	const scheduleTouchInteractionUnlock = React.useCallback((): void => {
+		if (!useInitialTouchGuard) return;
 		if (typeof window === 'undefined') {
 			unlockTouchInteraction();
 			return;
@@ -179,7 +187,7 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 			releaseUnlockTimerRef.current = 0;
 			unlockTouchInteraction();
 		}, 0);
-	}, [unlockTouchInteraction]);
+	}, [unlockTouchInteraction, useInitialTouchGuard]);
 
 	const swallowSuppressedInteraction = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!isInitialTouchGuardActive()) return;
@@ -201,7 +209,7 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	}, [swallowSuppressedInteraction]);
 
 	React.useEffect(() => {
-		if (isDesktop || !isTouchInteractionLocked || typeof window === 'undefined') return;
+		if (!useInitialTouchGuard || isDesktop || !isTouchInteractionLocked || typeof window === 'undefined') return;
 
 		const handleRelease = (): void => {
 			scheduleTouchInteractionUnlock();
@@ -223,20 +231,22 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 			window.removeEventListener('blur', handleForceUnlock, true);
 			document.removeEventListener('visibilitychange', handleForceUnlock, true);
 		};
-	}, [isDesktop, isTouchInteractionLocked, scheduleTouchInteractionUnlock]);
+	}, [isDesktop, isTouchInteractionLocked, scheduleTouchInteractionUnlock, useInitialTouchGuard]);
 
 	const handleFreshTouchStart = React.useCallback((): void => {
+		if (!useInitialTouchGuard) return;
 		if (isTouchInteractionLocked) return;
 		if (isInitialTouchGuardActive()) return;
 		requiresFreshTouchRef.current = false;
-	}, [isInitialTouchGuardActive, isTouchInteractionLocked]);
+	}, [isInitialTouchGuardActive, isTouchInteractionLocked, useInitialTouchGuard]);
 
 	const swallowLockedTouchInteraction = React.useCallback((event: React.SyntheticEvent): void => {
+		if (!useInitialTouchGuard) return;
 		if (!isTouchInteractionLocked) return;
 		event.preventDefault();
 		event.stopPropagation();
 		window.getSelection()?.removeAllRanges();
-	}, [isTouchInteractionLocked]);
+	}, [isTouchInteractionLocked, useInitialTouchGuard]);
 
 	React.useEffect(() => {
 		return () => {
@@ -246,6 +256,41 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 			}
 		};
 	}, []);
+
+	const clearHandleGesture = React.useCallback((): void => {
+		handleTouchStartRef.current = null;
+	}, []);
+
+	const handleSheetHandleTouchStart = React.useCallback((event: React.TouchEvent<HTMLButtonElement>): void => {
+		// Track just the handle gesture so the bottom-sheet close swipe does not
+		// compete with list-item taps inside the menu body.
+		if (anchor) return;
+		const touch = event.touches[0];
+		if (!touch) return;
+		event.stopPropagation();
+		handleTouchStartRef.current = { x: touch.clientX, y: touch.clientY, id: touch.identifier };
+	}, [anchor]);
+
+	const handleSheetHandleTouchMove = React.useCallback((event: React.TouchEvent<HTMLButtonElement>): void => {
+		if (!handleTouchStartRef.current) return;
+		event.stopPropagation();
+		if (event.cancelable) event.preventDefault();
+	}, []);
+
+	const handleSheetHandleTouchEnd = React.useCallback((event: React.TouchEvent<HTMLButtonElement>): void => {
+		const start = handleTouchStartRef.current;
+		const touch = Array.from(event.changedTouches).find((item) => item.identifier === start?.id) ?? null;
+		clearHandleGesture();
+		if (!start || !touch) return;
+		event.stopPropagation();
+		if (event.cancelable) event.preventDefault();
+		const dx = touch.clientX - start.x;
+		const dy = touch.clientY - start.y;
+		// Require a mostly-vertical drag so a short tap or sideways adjustment on the
+		// handle never dismisses the menu.
+		if (Math.abs(dy) < 28 || Math.abs(dy) < Math.abs(dx)) return;
+		if (dy > 0) props.onClose();
+	}, [clearHandleGesture, props]);
 
 	React.useEffect(() => {
 		if (typeof document === 'undefined') return;
@@ -453,7 +498,7 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 			data-note-more-menu-overlay="true"
 			role="dialog"
 			aria-modal="true"
-			onPointerDown={handleOverlayPointerDown}
+			onClick={handleOverlayClick}
 			onPointerUpCapture={handlePointerUpCapture}
 			onClickCapture={swallowSuppressedInteraction}
 			onTouchEndCapture={handleTouchEndCapture}
@@ -482,7 +527,38 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				onPointerDown={!anchor ? swallowLockedTouchInteraction : undefined}
 				onPointerUp={!anchor ? swallowLockedTouchInteraction : undefined}
 			>
-				{!anchor && <div className={styles.handle} />}
+				<div className={anchor ? styles.popoverHeader : styles.sheetHeader}>
+					{!anchor ? (
+						<button
+							type="button"
+							className={styles.sheetHandle}
+							onClick={(event) => {
+								event.preventDefault();
+								event.stopPropagation();
+							}}
+							onTouchStart={handleSheetHandleTouchStart}
+							onTouchMove={handleSheetHandleTouchMove}
+							onTouchEnd={handleSheetHandleTouchEnd}
+							onTouchCancel={clearHandleGesture}
+							aria-label={t('common.close')}
+						>
+							<span className={styles.sheetHandlePill} aria-hidden="true" />
+						</button>
+					) : <span className={styles.headerSpacer} aria-hidden="true" />}
+					<button
+						type="button"
+						className={styles.closeButton}
+						onClick={(event) => {
+							event.preventDefault();
+							event.stopPropagation();
+							props.onClose();
+						}}
+						aria-label={t('common.close')}
+						title={t('common.close')}
+					>
+						<FontAwesomeIcon icon={faXmark} aria-hidden="true" />
+					</button>
+				</div>
 				<ul className={styles.menuList} role="menu">
 					{items.map((item) => (
 						<li key={item.key} role="none">

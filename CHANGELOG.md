@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.16 - 2026-04-11
+
+### Added
+- **Shared workspace owner context is easier to inspect.** Foreign workspace avatar chips now open an inline owner card in the sidebar, and the workspace cache/API path carries the owner metadata needed to keep that identity visible across refreshes.
+- **Cross-workspace bubble notes now expose the same note actions when permissions allow.** The standalone bubble note modal can now hand off collaborator, reminder, attachment, collection, and label actions without switching the active workspace, while still respecting read-only roles.
+
+### Changed
+- **Highlighting and mobile checklist editing are more usable.** The rich-text toolbar now includes a default highlight swatch plus lime/cyan/rose options, unstyled highlights render consistently in note previews, and checklist checkbox undo/redo moved from the mobile keyboard toolbar into contextual controls beside the media handle.
+- **Android standalone PWA chrome is more consistent with the active theme.** Installed Android launches now apply the stricter viewport and theme-color handling needed to keep the background and system navigation bar aligned with the app surface.
+
+### Fixed
+- **Mobile chip dropdowns now stay centered on left-column note cards.** Collaborator, metadata, and attachment menus clamp to the same 4px edge margin used by the mobile grid instead of drifting right.
+- **Opening note collaborators no longer scrolls the notes grid to the top.** Root scroll locking now captures and restores the real document scroll position when modals open and close.
+- **Mobile note-card more menus no longer leak taps through or dismiss awkwardly.** The sheet now keeps the opening gesture guarded, adds an explicit close button, and supports a dedicated swipe-down handle without activating the note underneath.
+
 ## 1.2.15 - 2026-04-10
 
 ### Added
