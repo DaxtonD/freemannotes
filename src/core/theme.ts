@@ -1123,8 +1123,9 @@ function isAndroidStandalonePwa(): boolean {
 }
 
 function toAndroidStandaloneThemeColor(color: string): string {
-	// Android nav bars look closer to the app surface with a slightly translucent
-	// theme-color, but the meta tag still prefers a concrete color value.
+	// Installed Android PWAs can ignore translucent theme-color values and fall
+	// back to a black system navigation bar, so collapse known hex inputs down to
+	// an explicit opaque colour before writing the meta tag.
 	const hex = color.trim();
 	const shortHexMatch = /^#([\da-fA-F]{3}|[\da-fA-F]{4})$/.exec(hex);
 	if (shortHexMatch) {
@@ -1133,18 +1134,11 @@ function toAndroidStandaloneThemeColor(color: string): string {
 			.map((part) => part + part)
 			.join('')
 			.slice(0, 6);
-		const red = Number.parseInt(expanded.slice(0, 2), 16);
-		const green = Number.parseInt(expanded.slice(2, 4), 16);
-		const blue = Number.parseInt(expanded.slice(4, 6), 16);
-		return `rgba(${red}, ${green}, ${blue}, 0.96)`;
+		return `#${expanded}`;
 	}
 	const longHexMatch = /^#([\da-fA-F]{6}|[\da-fA-F]{8})$/.exec(hex);
 	if (longHexMatch) {
-		const expanded = longHexMatch[1].slice(0, 6);
-		const red = Number.parseInt(expanded.slice(0, 2), 16);
-		const green = Number.parseInt(expanded.slice(2, 4), 16);
-		const blue = Number.parseInt(expanded.slice(4, 6), 16);
-		return `rgba(${red}, ${green}, ${blue}, 0.96)`;
+		return `#${longHexMatch[1].slice(0, 6)}`;
 	}
 	return color;
 }
