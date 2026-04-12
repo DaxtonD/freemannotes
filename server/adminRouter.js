@@ -14,6 +14,7 @@
 //   - POST   /api/admin/users/:id/reset-password
 //   - DELETE /api/admin/users/:id
 //   - POST   /api/admin/users
+//   - POST   /api/admin/user-invites
 //
 // Key invariants:
 //   - "Server admin" safety: the earliest-created user is treated as the
@@ -31,10 +32,13 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const bcrypt = require('bcryptjs');
-const { enforceSameOrigin } = require('./auth');
+const crypto = require('crypto');
+const { baseUrlFromRequest, enforceSameOrigin } = require('./auth');
+const { sendRegistrationInviteEmail } = require('./mailer');
 const { validatePassword } = require('./passwordPolicy');
 
 const BCRYPT_ROUNDS = Number(process.env.AUTH_BCRYPT_ROUNDS || 12);
+const USER_REGISTRATION_INVITE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 function jsonResponse(res, status, body) {
 	if (res.writableEnded) return;
@@ -78,6 +82,10 @@ function isValidEmail(email) {
 
 function isUuid(input) {
 	return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(input || '').trim());
+}
+
+function sha256(value) {
+	return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
 function usageForWorkspace(prisma, workspaceId) {
@@ -474,6 +482,82 @@ function createAdminRouter({ prisma }) {
 				} catch (err) {
 					console.error('[admin] create user error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		// POST /api/admin/user-invites
+		if (pathname === '/api/admin/user-invites' && method === 'POST') {
+			(async () => {
+				try {
+					const adminUserId = await requireAdmin(req, res);
+					if (!adminUserId) return;
+
+					const body = await readJsonBody(req);
+					if (!body || typeof body !== 'object') {
+						jsonResponse(res, 400, { error: 'Request body must be a JSON object' });
+						return;
+					}
+
+					const email = normalizeEmail(body.email);
+					if (!email || !isValidEmail(email)) {
+						jsonResponse(res, 400, { error: 'Invalid email' });
+						return;
+					}
+
+					const existing = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+					if (existing) {
+						jsonResponse(res, 409, { error: 'Email already registered' });
+						return;
+					}
+
+					const rawToken = crypto.randomBytes(32).toString('base64url');
+					const tokenHash = sha256(rawToken);
+					const now = new Date();
+					const expiresAt = new Date(Date.now() + USER_REGISTRATION_INVITE_WINDOW_MS);
+					const baseUrl = (String(process.env.APP_URL || '').trim() || baseUrlFromRequest(req)).replace(/\/$/, '');
+					const inviteUrl = `${baseUrl}/?registerInvite=${encodeURIComponent(rawToken)}&inviteEmail=${encodeURIComponent(email)}`;
+
+					// Retire any still-active invite for the same email so the most recent send is
+					// always the link the admin expects the user to complete.
+					await prisma.userRegistrationInviteToken.updateMany({
+						where: {
+							email,
+							usedAt: null,
+							expiresAt: { gt: now },
+						},
+						data: { usedAt: now },
+					});
+
+					const invite = await prisma.userRegistrationInviteToken.create({
+						data: {
+							email,
+							createdByUserId: adminUserId,
+							tokenHash,
+							expiresAt,
+						},
+						select: { id: true },
+					});
+
+					try {
+						await sendRegistrationInviteEmail({ to: email, inviteUrl, expiresAt });
+					} catch (err) {
+						// If mail delivery fails, delete the DB row so the admin does not leave
+						// behind a seemingly valid bypass token that nobody actually received.
+						await prisma.userRegistrationInviteToken.delete({ where: { id: invite.id } }).catch(() => {});
+						throw err;
+					}
+
+					jsonResponse(res, 201, {
+						ok: true,
+						email,
+						expiresAt: expiresAt.toISOString(),
+						inviteUrl,
+					});
+				} catch (err) {
+					console.error('[admin] create registration invite error:', err.message);
+					jsonResponse(res, 500, { error: err && err.code === 'SMTP_MISCONFIGURED' ? err.message : 'Internal server error' });
 				}
 			})();
 			return true;

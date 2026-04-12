@@ -29,10 +29,22 @@ const jwt = require('jsonwebtoken');
 const COOKIE_NAME = String(process.env.AUTH_COOKIE_NAME || 'freemannotes_session').trim();
 const JWT_SECRET = String(process.env.AUTH_JWT_SECRET || '').trim();
 
-const SESSION_MAX_AGE_DAYS = Number(process.env.AUTH_SESSION_DAYS || 14);
-const SESSION_MAX_AGE_SEC = Number.isFinite(SESSION_MAX_AGE_DAYS) && SESSION_MAX_AGE_DAYS > 0
-	? Math.floor(SESSION_MAX_AGE_DAYS * 24 * 60 * 60)
-	: 14 * 24 * 60 * 60;
+const PERSISTENT_SESSION_MAX_AGE_SEC = 20 * 365 * 24 * 60 * 60;
+const RAW_SESSION_DAYS = String(process.env.AUTH_SESSION_DAYS || '').trim().toLowerCase();
+const SESSION_IS_NON_EXPIRING =
+	!RAW_SESSION_DAYS
+	|| RAW_SESSION_DAYS === '0'
+	|| RAW_SESSION_DAYS === 'false'
+	|| RAW_SESSION_DAYS === 'never'
+	|| RAW_SESSION_DAYS === 'none';
+const SESSION_MAX_AGE_DAYS = SESSION_IS_NON_EXPIRING
+	? null
+	: Number.isFinite(Number(RAW_SESSION_DAYS)) && Number(RAW_SESSION_DAYS) > 0
+		? Number(RAW_SESSION_DAYS)
+		: 14;
+const SESSION_MAX_AGE_SEC = SESSION_IS_NON_EXPIRING
+	? PERSISTENT_SESSION_MAX_AGE_SEC
+	: Math.floor(SESSION_MAX_AGE_DAYS * 24 * 60 * 60);
 
 function baseUrlFromRequest(req) {
 	// Prefer reverse-proxy headers (x-forwarded-*) when present so that apps
@@ -98,6 +110,8 @@ function makeSessionCookie(sessionJwt, { secure }) {
 	// HttpOnly: not readable from JS (mitigates XSS cookie theft).
 	// SameSite=Lax: permits top-level navigation while blocking most CSRF.
 	// Path=/ : cookie applies to all app routes.
+	// "Never expiring" mode still uses a long-lived Max-Age so browsers persist
+	// the cookie across restarts instead of treating it as a session cookie.
 	const attrs = [
 		`${COOKIE_NAME}=${encodeURIComponent(sessionJwt)}`,
 		`Max-Age=${SESSION_MAX_AGE_SEC}`,
@@ -134,6 +148,9 @@ function requireJwtSecret() {
 function signSession(payload) {
 	// Payload is deliberately small: only identifiers go in the cookie.
 	requireJwtSecret();
+	if (SESSION_IS_NON_EXPIRING) {
+		return jwt.sign(payload, JWT_SECRET);
+	}
 	return jwt.sign(payload, JWT_SECRET, {
 		expiresIn: SESSION_MAX_AGE_SEC,
 	});
@@ -218,6 +235,7 @@ function enforceSameOrigin(req, res) {
 
 module.exports = {
 	COOKIE_NAME,
+	SESSION_IS_NON_EXPIRING,
 	SESSION_MAX_AGE_SEC,
 	baseUrlFromRequest,
 	isSecureRequest,

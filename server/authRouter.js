@@ -14,6 +14,9 @@
 //     a fresh install from getting locked out of admin functionality.
 //   - Single-user installs auto-promote the only user to ADMIN on login/me.
 //     This provides resilience if the DB role is accidentally reset.
+//   - Admin-issued registration invite tokens can authorize a single signup even
+//     when AUTH_ALLOW_REGISTER=false, so operators do not need a server restart
+//     just to onboard one user.
 //   - All endpoints are cookie-authenticated; CSRF mitigation is enforced via
 //     `enforceSameOrigin` for state-changing requests.
 //   - Authentication attempts are rate-limited in-process to reduce brute force.
@@ -37,6 +40,7 @@ const {
 	baseUrlFromRequest,
 	makeClearSessionCookie,
 	makeSessionCookie,
+	SESSION_IS_NON_EXPIRING,
 	signSession,
 	getSessionFromRequest,
 	isSecureRequest,
@@ -104,6 +108,21 @@ function sha256(value) {
 	return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
+async function resolveRegistrationInvite(prisma, rawToken) {
+	const token = String(rawToken || '').trim();
+	if (!token) return null;
+	const tokenHash = sha256(token);
+	return prisma.userRegistrationInviteToken.findUnique({
+		where: { tokenHash },
+		select: {
+			id: true,
+			email: true,
+			expiresAt: true,
+			usedAt: true,
+		},
+	});
+}
+
 function buildPasswordResetUrl(req, token) {
 	const appUrl = String(process.env.APP_URL || '').trim().replace(/\/$/, '');
 	const base = appUrl || baseUrlFromRequest(req);
@@ -167,11 +186,6 @@ function createApiAuthRouter({ prisma }) {
 
 		// ── POST /api/auth/register ──────────────────────────────────────
 		if (pathname === '/api/auth/register' && method === 'POST') {
-			if (!ALLOW_REGISTER) {
-				jsonResponse(res, 403, { error: 'Registration is disabled' });
-				return true;
-			}
-
 			const ip = getClientIp(req);
 			if (!registerLimiter.allow(`${ip}:register`)) {
 				jsonResponse(res, 429, { error: 'Too many requests' });
@@ -189,6 +203,7 @@ function createApiAuthRouter({ prisma }) {
 					const email = normalizeEmail(body.email);
 					const name = String(body.name || '').trim();
 					const password = String(body.password || '');
+					const inviteToken = String(body.inviteToken || '').trim();
 
 					if (!email || !isValidEmail(email)) {
 						jsonResponse(res, 400, { error: 'Invalid email' });
@@ -202,6 +217,27 @@ function createApiAuthRouter({ prisma }) {
 					if (passwordError) {
 						jsonResponse(res, 400, { error: passwordError });
 						return;
+					}
+
+					const registrationInvite = inviteToken
+						? await resolveRegistrationInvite(prisma, inviteToken)
+						: null;
+					// A valid admin-issued invite is the only runtime bypass for disabled public
+					// registration. That keeps signup closed by default without requiring restarts
+					// whenever an admin needs to onboard one specific email address.
+					if (!ALLOW_REGISTER && !registrationInvite) {
+						jsonResponse(res, 403, { error: 'Registration is disabled' });
+						return;
+					}
+					if (inviteToken) {
+						if (!registrationInvite || registrationInvite.usedAt || registrationInvite.expiresAt.getTime() < Date.now()) {
+							jsonResponse(res, 400, { error: 'This registration invite is invalid or has expired' });
+							return;
+						}
+						if (normalizeEmail(registrationInvite.email) !== email) {
+							jsonResponse(res, 403, { error: 'Invite email does not match the requested email' });
+							return;
+						}
 					}
 
 					const existing = await prisma.user.findUnique({ where: { email } });
@@ -240,6 +276,19 @@ function createApiAuthRouter({ prisma }) {
 						await tx.userPreference.create({
 							data: { userId: user.id, deleteAfterDays: 30 },
 						});
+
+						if (registrationInvite) {
+							// Consume the accepted invite and retire any sibling invites for the same
+							// email because the account now exists and no extra bypass is needed.
+							const consumedAt = new Date();
+							await tx.userRegistrationInviteToken.updateMany({
+								where: {
+									email,
+									usedAt: null,
+								},
+								data: { usedAt: consumedAt },
+							});
+						}
 
 						return { user, workspace };
 					});
@@ -597,7 +646,12 @@ function createApiAuthRouter({ prisma }) {
 					const roleChanged =
 						String(session.role || '').toUpperCase() !== String(user.role || '').toUpperCase();
 					const workspaceChanged = String(session.workspaceId || '') !== String(effectiveWorkspaceId || '');
-					if (roleChanged || workspaceChanged) {
+					// Finite sessions are rolling: each successful auth probe extends the
+					// cookie/JWT window so active users do not age out after a fixed number
+					// of days. Non-expiring sessions only need a cookie rewrite when the
+					// role/workspace payload changes.
+					const shouldRefreshSession = roleChanged || workspaceChanged || !SESSION_IS_NON_EXPIRING;
+					if (shouldRefreshSession) {
 						const secure = isSecureRequest(req);
 						const sessionJwt = signSession({
 							userId: user.id,

@@ -27,6 +27,7 @@ import appIconLight from '../lighticon.png';
 import { ChecklistEditor } from './components/Editors/ChecklistEditor';
 import { NoteEditor } from './components/Editors/NoteEditor';
 import { UserManagementModal } from './components/Admin/UserManagementModal';
+import { UserRegistrationInviteModal } from './components/Admin/UserRegistrationInviteModal';
 import { PreferencesModal } from './components/Preferences/PreferencesModal';
 import { AppearanceModal } from './components/Preferences/AppearanceModal';
 import { UserModal } from './components/Preferences/UserModal';
@@ -63,7 +64,7 @@ import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
 import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId, readNoteFromDoc } from './core/noteModel';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
-import { applyTheme, getStoredThemeId, isLightTheme, persistThemeId, THEMES, type ThemeId } from './core/theme';
+import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
 import { activateWorkspace, fetchUserPreferences, flushUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
 import { useConnectionStatus } from './core/useConnectionStatus';
 import { useBodyScrollLock } from './core/useBodyScrollLock';
@@ -137,6 +138,7 @@ import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/Bu
 import { CrossWorkspaceNoteModal } from './components/BubbleView/CrossWorkspaceNoteModal';
 
 type EditorMode = 'none' | 'text' | 'checklist';
+type GlobalUserRole = 'USER' | 'ADMIN';
 
 type CollaboratorModalState = {
 	noteId: string;
@@ -168,6 +170,10 @@ type MoveNoteModalState = {
 	noteId: string;
 	title: string;
 };
+
+type SendInviteContext =
+	| { kind: 'workspace'; workspaceId: string | null; workspaceName: string | null }
+	| { kind: 'registration' };
 
 type ToggleableSortMode = Extract<NoteSortMode, 'date-created' | 'date-updated' | 'alphabetical'>;
 type SidebarFilterReminderMode = Extract<ReminderFilterMode, 'past-due' | 'due-soon'>;
@@ -503,11 +509,27 @@ function detectAndroidStandaloneDisplayMode(): boolean {
 	);
 }
 
+function normalizeGlobalUserRole(value: unknown): GlobalUserRole {
+	return String(value || '').trim().toUpperCase() === 'ADMIN' ? 'ADMIN' : 'USER';
+}
+
+function readRegistrationInviteFromUrl(): { token: string | null; email: string | null } {
+	if (typeof window === 'undefined') return { token: null, email: null };
+	const url = new URL(window.location.href);
+	const token = String(url.searchParams.get('registerInvite') || '').trim();
+	const email = String(url.searchParams.get('inviteEmail') || '').trim();
+	return {
+		token: token || null,
+		email: email || null,
+	};
+}
+
 type AuthCacheV1 = {
 	v: 1;
 	userId: string;
 	workspaceId: string | null;
 	profileImage: string | null;
+	role?: GlobalUserRole | null;
 };
 
 const AUTH_CACHE_KEY = 'freemannotes.auth.cache.v1';
@@ -522,8 +544,9 @@ function readAuthCache(): AuthCacheV1 | null {
 		const userId = typeof parsed.userId === 'string' ? parsed.userId : '';
 		const workspaceId = typeof parsed.workspaceId === 'string' ? parsed.workspaceId : null;
 		const profileImage = typeof parsed.profileImage === 'string' ? parsed.profileImage : null;
+		const role = typeof parsed.role === 'string' ? normalizeGlobalUserRole(parsed.role) : null;
 		if (!userId) return null;
-		return { v: 1, userId, workspaceId, profileImage };
+		return { v: 1, userId, workspaceId, profileImage, role };
 	} catch {
 		return null;
 	}
@@ -609,8 +632,10 @@ export function App(): React.JSX.Element {
 		}
 		prevAuthStatusRef.current = authStatus;
 	}, [authStatus]);
-	const [authMode, setAuthMode] = React.useState<'login' | 'register'>('login');
-	const [authEmail, setAuthEmail] = React.useState('');
+	const initialRegistrationInviteRef = React.useRef(readRegistrationInviteFromUrl());
+	const initialRegistrationInvite = initialRegistrationInviteRef.current;
+	const [authMode, setAuthMode] = React.useState<'login' | 'register'>(initialRegistrationInvite.token ? 'register' : 'login');
+	const [authEmail, setAuthEmail] = React.useState(initialRegistrationInvite.email ?? '');
 	const [authName, setAuthName] = React.useState('');
 	const [authPassword, setAuthPassword] = React.useState('');
 	const [authPasswordConfirm, setAuthPasswordConfirm] = React.useState('');
@@ -631,7 +656,10 @@ export function App(): React.JSX.Element {
 	const [resetPasswordMessage, setResetPasswordMessage] = React.useState<string | null>(null);
 	const [resetPasswordError, setResetPasswordError] = React.useState<string | null>(null);
 	const [authUserId, setAuthUserId] = React.useState<string | null>(() => cachedAuth?.userId ?? null);
+	const [authUserRole, setAuthUserRole] = React.useState<GlobalUserRole | null>(() => cachedAuth?.role ?? null);
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(() => cachedAuth?.profileImage ?? null);
+	const [registrationInviteToken, setRegistrationInviteToken] = React.useState<string | null>(initialRegistrationInvite.token);
+	const [registrationInviteEmail, setRegistrationInviteEmail] = React.useState<string>(initialRegistrationInvite.email ?? '');
 	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(() => {
 		if (cachedAuth && cachedWorkspaceSelection?.userId === cachedAuth.userId) {
 			return cachedWorkspaceSelection.workspaceId;
@@ -740,8 +768,8 @@ export function App(): React.JSX.Element {
 	const [userModalBusy, setUserModalBusy] = React.useState(false);
 	const [userModalError, setUserModalError] = React.useState<string | null>(null);
 	const [isSendInviteOpen, setIsSendInviteOpen] = React.useState(false);
+	const [sendInviteContext, setSendInviteContext] = React.useState<SendInviteContext | null>(null);
 	const [isShareNotificationsOpen, setIsShareNotificationsOpen] = React.useState(false);
-	const [inviteWorkspaceTarget, setInviteWorkspaceTarget] = React.useState<{ id: string; name: string | null } | null>(null);
 	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(false);
 	const [activeWorkspaceName, setActiveWorkspaceName] = React.useState<string | null>(null);
 	const [activeWorkspaceSystemKind, setActiveWorkspaceSystemKind] = React.useState<string | null>(null);
@@ -774,11 +802,12 @@ export function App(): React.JSX.Element {
 	const pendingNewNoteCollectionSeedRef = React.useRef<Map<string, { collectionId: string; label: string }>>(new Map());
 	const previousSelectedNoteIdRef = React.useRef<string | null>(null);
 	const deviceId = React.useMemo(() => getDeviceId(), []);
+	const isGlobalAdmin = authUserRole === 'ADMIN';
 	const cachedDeviceAppearancePrefs = React.useMemo(
 		() => readCachedDeviceAppearancePreferences(deviceId, authUserId),
 		[authUserId, deviceId]
 	);
-	const [themeId, setThemeId] = React.useState<ThemeId>(() => getStoredThemeId());
+	const [themeId, setThemeId] = React.useState<ThemeId>(() => getStoredThemeIdForUser(cachedAuth?.userId ?? null));
 	const [noteCardFontScalePref, setNoteCardFontScalePref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.noteCardFontScale ?? 1
 	);
@@ -808,6 +837,10 @@ export function App(): React.JSX.Element {
 		() => cachedDeviceAppearancePrefs?.noteCardCompletedInteractions ?? cachedDeviceAppearancePrefs?.noteCardClickOpens ?? true
 	);
 	const [prefsHydrationAttempted, setPrefsHydrationAttempted] = React.useState(false);
+	// When auth bootstrap already fetched server preferences to apply theme early,
+	// reuse that payload during normal preference hydration so we do not refetch and
+	// accidentally make the first visible theme correction happen after notes render.
+	const prefetchedAuthPreferencesRef = React.useRef<UserDevicePreferences | null>(null);
 	// Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken }.
 	// Loaded from /api/user/preferences on auth, saved back on each change.
 	const [bubbleWorkspaceColorOverrides, setBubbleWorkspaceColorOverrides] = React.useState<Record<string, string>>({});
@@ -1180,8 +1213,8 @@ export function App(): React.JSX.Element {
 	}, [commitOverlaySnapshot, getOverlaySnapshot]);
 
 	const openSendInviteFromPreferences = React.useCallback(() => {
-		if (activeWorkspaceSystemKind === 'SHARED_WITH_ME' || !canManageActiveWorkspace) return;
-		setInviteWorkspaceTarget(authWorkspaceId ? { id: authWorkspaceId, name: activeWorkspaceName } : null);
+		if (!isGlobalAdmin) return;
+		setSendInviteContext({ kind: 'registration' });
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot(
 			{
@@ -1193,11 +1226,11 @@ export function App(): React.JSX.Element {
 			},
 			'push'
 		);
-	}, [activeWorkspaceName, activeWorkspaceSystemKind, authWorkspaceId, canManageActiveWorkspace, commitOverlaySnapshot, getOverlaySnapshot]);
+	}, [commitOverlaySnapshot, getOverlaySnapshot, isGlobalAdmin]);
 
 	const openSendInviteForWorkspace = React.useCallback(
 		(workspace: SidebarWorkspaceListItem) => {
-			setInviteWorkspaceTarget({ id: workspace.id, name: getWorkspaceDisplayName(workspace, t) });
+			setSendInviteContext({ kind: 'workspace', workspaceId: workspace.id, workspaceName: getWorkspaceDisplayName(workspace, t) });
 			const current = getOverlaySnapshot();
 			commitOverlaySnapshot(
 				{
@@ -1211,8 +1244,13 @@ export function App(): React.JSX.Element {
 				isMobileViewport && isMobileSidebarOpen ? 'replace' : 'push'
 			);
 		},
-			[activeWorkspaceName, activeWorkspaceSystemKind, authWorkspaceId, commitOverlaySnapshot, getOverlaySnapshot, isMobileSidebarOpen, isMobileViewport, t]
+			[commitOverlaySnapshot, getOverlaySnapshot, isMobileSidebarOpen, isMobileViewport, t]
 	);
+
+	React.useEffect(() => {
+		if (isSendInviteOpen) return;
+		setSendInviteContext(null);
+	}, [isSendInviteOpen]);
 
 	const openWorkspaceSwitcher = React.useCallback(
 		(opts?: { replaceTop?: boolean }) => {
@@ -1468,7 +1506,7 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (isSendInviteOpen) return;
-		setInviteWorkspaceTarget(null);
+		setSendInviteContext(null);
 	}, [isSendInviteOpen]);
 
 	const restoreFocusFromHiddenRegion = React.useCallback((container: HTMLElement | null, fallbackTarget: HTMLElement | null) => {
@@ -1700,6 +1738,7 @@ export function App(): React.JSX.Element {
 		const shouldDeferThemeSync = authOfflineMode || browserOffline;
 		applyTheme(themeId);
 		persistThemeId(themeId);
+		persistThemeIdForUser(authUserId, themeId);
 		if (authStatus !== 'authed') return;
 		if (!prefsHydrationAttempted) return;
 		if (shouldDeferThemeSync) {
@@ -1721,6 +1760,55 @@ export function App(): React.JSX.Element {
 			}
 		})();
 	}, [authStatus, authOfflineMode, deviceId, prefsHydrationAttempted, themeId]);
+
+	const primeThemeForAuthenticatedUser = React.useCallback((userId: string | null | undefined): void => {
+		if (!userId) return;
+		// Start from the per-user local cache so auth restore can paint a plausible
+		// theme synchronously before any network preference fetch finishes.
+		const nextThemeId = getStoredThemeIdForUser(userId);
+		applyTheme(nextThemeId);
+		persistThemeId(nextThemeId);
+		persistThemeIdForUser(userId, nextThemeId);
+		setThemeId((current) => (current === nextThemeId ? current : nextThemeId));
+	}, []);
+
+	const primeAuthenticatedThemeBeforeWorkspaceLoad = React.useCallback(async (userId: string | null | undefined): Promise<void> => {
+		if (!userId) return;
+		// Offline theme edits are queued in localStorage. Honor that choice first so a
+		// reconnecting client does not briefly flash the stale server theme during auth.
+		const pendingTheme = (() => {
+			try {
+				return window.localStorage.getItem('freemannotes.pendingThemeSync');
+			} catch {
+				return null;
+			}
+		})();
+		if (pendingTheme && THEMES.some((theme) => theme.id === pendingTheme)) {
+			const nextThemeId = pendingTheme as ThemeId;
+			applyTheme(nextThemeId);
+			persistThemeId(nextThemeId);
+			persistThemeIdForUser(userId, nextThemeId);
+			setThemeId((current) => (current === nextThemeId ? current : nextThemeId));
+			prefetchedAuthPreferencesRef.current = null;
+			return;
+		}
+
+		primeThemeForAuthenticatedUser(userId);
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+		// Fetch server-backed preferences before we mark the app fully authed so the
+		// correct account theme can win before workspace activation starts note loading.
+		const pref = await fetchUserPreferences(deviceId);
+		if (!pref || pref.userId !== userId) return;
+		prefetchedAuthPreferencesRef.current = pref;
+		if (pref.theme && THEMES.some((theme) => theme.id === pref.theme)) {
+			const nextThemeId = pref.theme as ThemeId;
+			applyTheme(nextThemeId);
+			persistThemeId(nextThemeId);
+			persistThemeIdForUser(userId, nextThemeId);
+			setThemeId((current) => (current === nextThemeId ? current : nextThemeId));
+		}
+	}, [deviceId, primeThemeForAuthenticatedUser]);
 
 	React.useEffect(() => {
 		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -2029,8 +2117,10 @@ export function App(): React.JSX.Element {
 		const restoredWorkspaceId = cachedWorkspaceSelection?.userId === cached.userId
 			? cachedWorkspaceSelection.workspaceId
 			: cached.workspaceId;
+		primeThemeForAuthenticatedUser(cached.userId);
 		setAuthStatus('authed');
 		setAuthUserId(cached.userId);
+		setAuthUserRole(cached.role ?? null);
 		setAuthProfileImage(cached.profileImage);
 		setAuthWorkspaceId(restoredWorkspaceId);
 		setAuthOfflineMode(true);
@@ -2038,7 +2128,7 @@ export function App(): React.JSX.Element {
 		manager.setWebsocketEnabled(false);
 		manager.setActiveWorkspaceId(restoredWorkspaceId);
 		return true;
-	}, [manager]);
+	}, [manager, primeThemeForAuthenticatedUser]);
 
 	const probeSession = React.useCallback(
 		async (opts?: { allowOfflineRestore?: boolean }) => {
@@ -2059,6 +2149,7 @@ export function App(): React.JSX.Element {
 					}
 					setAuthStatus('unauth');
 					setAuthUserId(null);
+					setAuthUserRole(null);
 					setAuthProfileImage(null);
 					setAuthWorkspaceId(null);
 					setAuthOfflineMode(false);
@@ -2070,10 +2161,12 @@ export function App(): React.JSX.Element {
 				const body = await res.json().catch(() => null);
 				const userId = body?.user?.id ? String(body.user.id) : '';
 				const profileImage = body?.user?.profileImage ? String(body.user.profileImage) : null;
+				const role = body?.user?.role ? normalizeGlobalUserRole(body.user.role) : null;
 				const workspaceId = body?.workspaceId ? String(body.workspaceId) : null;
 				if (!userId) {
 					setAuthStatus('unauth');
 					setAuthUserId(null);
+					setAuthUserRole(null);
 					setAuthProfileImage(null);
 					setAuthWorkspaceId(null);
 					setAuthOfflineMode(false);
@@ -2089,12 +2182,14 @@ export function App(): React.JSX.Element {
 					existingSelection?.userId === userId && existingSelection?.workspaceId
 						? existingSelection.workspaceId
 						: workspaceId;
+				await primeAuthenticatedThemeBeforeWorkspaceLoad(userId);
 				setAuthStatus('authed');
 				setAuthUserId(userId);
+				setAuthUserRole(role);
 				setAuthProfileImage(profileImage);
 				setAuthWorkspaceId(effectiveWorkspaceId);
 				setAuthOfflineMode(false);
-				writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage });
+				writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage, role });
 				// Keep the local workspace-selection cache warm even when the user never
 				// explicitly switches workspaces on this device. Refresh bootstrap may
 				// otherwise fall back to a transient server-side workspace cookie.
@@ -2191,7 +2286,7 @@ export function App(): React.JSX.Element {
 							// Server rejected target: revert so WS rooms align with existing session.
 							manager.setActiveWorkspaceId(activatedWorkspaceId);
 							setAuthWorkspaceId(activatedWorkspaceId);
-							writeAuthCache({ v: 1, userId, workspaceId: activatedWorkspaceId, profileImage });
+							writeAuthCache({ v: 1, userId, workspaceId: activatedWorkspaceId, profileImage, role });
 							writeWorkspaceSelectionCache({ userId, workspaceId: activatedWorkspaceId });
 							manager.setWebsocketEnabled(Boolean(activatedWorkspaceId));
 						} else {
@@ -2211,6 +2306,7 @@ export function App(): React.JSX.Element {
 
 				setAuthStatus('unauth');
 				setAuthUserId(null);
+				setAuthUserRole(null);
 				setAuthProfileImage(null);
 				setAuthWorkspaceId(null);
 				setAuthOfflineMode(false);
@@ -2218,7 +2314,7 @@ export function App(): React.JSX.Element {
 				manager.setWebsocketEnabled(false);
 			}
 		},
-		[deviceId, manager, restoreCachedAuthSession]
+		[deviceId, manager, primeAuthenticatedThemeBeforeWorkspaceLoad, restoreCachedAuthSession]
 	);
 
 	const refreshAuthenticatedProfile = React.useCallback(async (): Promise<string | null> => {
@@ -2234,6 +2330,7 @@ export function App(): React.JSX.Element {
 			const userId = body?.user?.id ? String(body.user.id) : null;
 			if (!userId) return null;
 			const profileImage = body?.user?.profileImage ? String(body.user.profileImage) : null;
+			const role = body?.user?.role ? normalizeGlobalUserRole(body.user.role) : null;
 			const workspaceId = body?.workspaceId ? String(body.workspaceId) : null;
 
 			const existingSelection = readWorkspaceSelectionCache();
@@ -2242,6 +2339,7 @@ export function App(): React.JSX.Element {
 					? existingSelection.workspaceId
 					: workspaceId;
 			setAuthUserId(userId);
+			setAuthUserRole(role);
 			setAuthProfileImage(profileImage);
 			setAuthWorkspaceId(effectiveWorkspaceId);
 			setAuthStatus('authed');
@@ -2251,7 +2349,7 @@ export function App(): React.JSX.Element {
 			}
 			manager.setActiveWorkspaceId(effectiveWorkspaceId);
 			manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId) && effectiveWorkspaceId === workspaceId);
-			writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage });
+			writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage, role });
 			writeWorkspaceSelectionCache({ userId, workspaceId: effectiveWorkspaceId });
 			return profileImage;
 		} catch {
@@ -2298,7 +2396,11 @@ export function App(): React.JSX.Element {
 		(async () => {
 			const localSnapshot = authUserId ? await readCachedWorkspaceSnapshot(authUserId, deviceId) : null;
 			const localAppearanceSnapshot = readCachedDeviceAppearancePreferences(deviceId, authUserId);
-			const pref = await fetchUserPreferences(deviceId);
+			const prefetched = prefetchedAuthPreferencesRef.current;
+			prefetchedAuthPreferencesRef.current = null;
+			const pref = prefetched && prefetched.userId === authUserId
+				? prefetched
+				: await fetchUserPreferences(deviceId);
 			if (cancelled) return;
 			if (pref) {
 				let syncedWorkspaceId = pref.activeWorkspaceId;
@@ -2438,6 +2540,7 @@ export function App(): React.JSX.Element {
 					userId: authUserId,
 					workspaceId: snapshot.activeWorkspaceId,
 					profileImage: authProfileImage,
+					role: authUserRole,
 				});
 				writeWorkspaceSelectionCache({
 					userId: authUserId,
@@ -2542,6 +2645,7 @@ export function App(): React.JSX.Element {
 		}
 		setAuthStatus('unauth');
 		setAuthUserId(null);
+		setAuthUserRole(null);
 		setAuthProfileImage(null);
 		setAuthWorkspaceId(null);
 		setAuthOfflineMode(false);
@@ -2556,7 +2660,7 @@ export function App(): React.JSX.Element {
 		setIsPreferencesOpen(false);
 		setIsAppearanceOpen(false);
 		setIsSendInviteOpen(false);
-		setInviteWorkspaceTarget(null);
+		setSendInviteContext(null);
 		setIsWorkspaceSwitcherOpen(false);
 		setActiveWorkspaceName(null);
 		setActiveWorkspaceSystemKind(null);
@@ -2599,13 +2703,13 @@ export function App(): React.JSX.Element {
 				});
 				writeWorkspaceSelectionCache({ userId: authUserId, workspaceId: null, activeSharedFolder: null });
 				if (opts?.preserveAuthCache) {
-					writeAuthCache({ v: 1, userId: authUserId, workspaceId: null, profileImage: authProfileImage });
+					writeAuthCache({ v: 1, userId: authUserId, workspaceId: null, profileImage: authProfileImage, role: authUserRole });
 				}
 			} else {
 				clearWorkspaceSelectionCache();
 			}
 		},
-		[authProfileImage, authUserId, deviceId, manager]
+		[authProfileImage, authUserId, authUserRole, deviceId, manager]
 	);
 
 	const handleWorkspaceActivated = React.useCallback(
@@ -2626,8 +2730,9 @@ export function App(): React.JSX.Element {
 			const cachedAuth = readAuthCache();
 			const cacheUserId = authUserId || cachedAuth?.userId || null;
 			const cacheProfileImage = authProfileImage ?? cachedAuth?.profileImage ?? null;
+			const cacheRole = authUserRole ?? cachedAuth?.role ?? null;
 			if (cacheUserId) {
-				writeAuthCache({ v: 1, userId: cacheUserId, workspaceId, profileImage: cacheProfileImage });
+				writeAuthCache({ v: 1, userId: cacheUserId, workspaceId, profileImage: cacheProfileImage, role: cacheRole });
 				writeWorkspaceSelectionCache({ userId: cacheUserId, workspaceId, activeSharedFolder: null });
 			}
 			if (authUserId) {
@@ -4230,6 +4335,20 @@ export function App(): React.JSX.Element {
 		setResetPasswordMessage(null);
 	}, []);
 
+	React.useEffect(() => {
+		const nextInvite = readRegistrationInviteFromUrl();
+		setRegistrationInviteToken(nextInvite.token);
+		setRegistrationInviteEmail(nextInvite.email ?? '');
+		if (!nextInvite.token) return;
+		// Deep-linked admin invites should open directly into register mode with the
+		// invited email already staged for the user.
+		setAuthMode('register');
+		if (nextInvite.email) {
+			setAuthEmail(nextInvite.email);
+		}
+		setAuthError(null);
+	}, []);
+
 	const clearPasswordResetTokenFromUrl = React.useCallback((): void => {
 		if (typeof window === 'undefined') return;
 		const url = new URL(window.location.href);
@@ -4237,6 +4356,17 @@ export function App(): React.JSX.Element {
 		url.searchParams.delete('resetPassword');
 		window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
 		setPasswordResetToken(null);
+	}, []);
+
+	const clearRegistrationInviteFromUrl = React.useCallback((): void => {
+		if (typeof window === 'undefined') return;
+		const url = new URL(window.location.href);
+		if (!url.searchParams.has('registerInvite') && !url.searchParams.has('inviteEmail')) return;
+		url.searchParams.delete('registerInvite');
+		url.searchParams.delete('inviteEmail');
+		window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+		setRegistrationInviteToken(null);
+		setRegistrationInviteEmail('');
 	}, []);
 
 	const submitAuth = React.useCallback(async () => {
@@ -4263,6 +4393,7 @@ export function App(): React.JSX.Element {
 			const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
 			let resolvedWorkspaceId: string | null = null;
 			let resolvedUserId: string | null = null;
+			let resolvedUserRole: GlobalUserRole | null = null;
 			let resolvedProfileImage: string | null = null;
 			let sessionEstablished = false;
 			const payload: any = {
@@ -4270,6 +4401,7 @@ export function App(): React.JSX.Element {
 				password: authPassword,
 			};
 			if (authMode === 'register') payload.name = authName;
+			if (authMode === 'register' && registrationInviteToken) payload.inviteToken = registrationInviteToken;
 
 			const res = await fetch(endpoint, {
 				method: 'POST',
@@ -4299,9 +4431,11 @@ export function App(): React.JSX.Element {
 				: authBody?.workspace?.id
 					? String(authBody.workspace.id)
 					: null;
+			const authUserRoleFromResponse = authBody?.user?.role ? normalizeGlobalUserRole(authBody.user.role) : null;
 			const authProfileImageFromResponse = authBody?.user?.profileImage ? String(authBody.user.profileImage) : null;
 			resolvedUserId = authUserId;
 			resolvedWorkspaceId = authWorkspaceId;
+			resolvedUserRole = authUserRoleFromResponse;
 			resolvedProfileImage = authProfileImageFromResponse;
 
 			// Re-fetch /me so we always sync to the server's truth. This keeps behavior
@@ -4314,11 +4448,13 @@ export function App(): React.JSX.Element {
 				if (meRes.ok && contentType.includes('application/json')) {
 					const meBody = await meRes.json().catch(() => null);
 					const userId = meBody?.user?.id ? String(meBody.user.id) : null;
+					const role = meBody?.user?.role ? normalizeGlobalUserRole(meBody.user.role) : null;
 					const profileImage = meBody?.user?.profileImage ? String(meBody.user.profileImage) : null;
 					const workspaceId = meBody?.workspaceId ? String(meBody.workspaceId) : null;
 					if (userId) {
 						resolvedUserId = userId;
 						resolvedWorkspaceId = workspaceId;
+						resolvedUserRole = role;
 						resolvedProfileImage = profileImage;
 						sessionEstablished = true;
 					}
@@ -4329,6 +4465,7 @@ export function App(): React.JSX.Element {
 
 			if (!sessionEstablished || !resolvedUserId) {
 				setAuthUserId(null);
+				setAuthUserRole(null);
 				setAuthProfileImage(null);
 				setAuthWorkspaceId(null);
 				setAuthOfflineMode(false);
@@ -4363,23 +4500,29 @@ export function App(): React.JSX.Element {
 				}
 			}
 
+			await primeAuthenticatedThemeBeforeWorkspaceLoad(resolvedUserId);
 			setAuthUserId(resolvedUserId);
+			setAuthUserRole(resolvedUserRole);
 			setAuthProfileImage(resolvedProfileImage);
 			setAuthWorkspaceId(resolvedWorkspaceId);
 			setAuthStatus('authed');
 			setAuthOfflineMode(false);
 			manager.setActiveWorkspaceId(resolvedWorkspaceId);
-			writeAuthCache({ v: 1, userId: resolvedUserId, workspaceId: resolvedWorkspaceId, profileImage: resolvedProfileImage });
+			writeAuthCache({ v: 1, userId: resolvedUserId, workspaceId: resolvedWorkspaceId, profileImage: resolvedProfileImage, role: resolvedUserRole });
 			writeWorkspaceSelectionCache({ userId: resolvedUserId, workspaceId: resolvedWorkspaceId });
+			if (authMode === 'register' && registrationInviteToken) {
+				clearRegistrationInviteFromUrl();
+			}
 			manager.setWebsocketEnabled(Boolean(resolvedWorkspaceId));
 		} catch {
 			setAuthError('Authentication failed');
 			setAuthStatus('unauth');
+			setAuthUserRole(null);
 			manager.setWebsocketEnabled(false);
 		} finally {
 			setAuthBusy(false);
 		}
-	}, [authBusy, authEmail, authMode, authName, authPassword, authPasswordConfirm, authPasswordStrengthScore, deviceId, manager, registerAvatarAreaPixels, registerAvatarUrl, showBriefDialog, t]);
+	}, [authBusy, authEmail, authMode, authName, authPassword, authPasswordConfirm, authPasswordStrengthScore, clearRegistrationInviteFromUrl, deviceId, manager, primeAuthenticatedThemeBeforeWorkspaceLoad, registerAvatarAreaPixels, registerAvatarUrl, registrationInviteToken, showBriefDialog, t]);
 
 	const submitForgotPassword = React.useCallback(async () => {
 		if (forgotPasswordBusy) return;
@@ -4482,6 +4625,7 @@ export function App(): React.JSX.Element {
 						userId: authUserId,
 						workspaceId: authWorkspaceId,
 						profileImage: uploadedProfileImage,
+						role: authUserRole,
 					});
 				}
 
@@ -4502,7 +4646,7 @@ export function App(): React.JSX.Element {
 				setUserModalBusy(false);
 			}
 		},
-		[authStatus, authUserId, authWorkspaceId, bumpCollaborationRefreshToken, showBriefDialog, t, userModalBusy]
+		[authStatus, authUserId, authUserRole, authWorkspaceId, bumpCollaborationRefreshToken, showBriefDialog, t, userModalBusy]
 	);
 
 	const authGateSubtitle = externalRoute?.kind === 'invite'
@@ -4520,6 +4664,7 @@ export function App(): React.JSX.Element {
 				{authGateSubtitle ? <div className="auth-subtitle">{authGateSubtitle}</div> : null}
 				{externalRoute?.kind === 'invite' ? <div className="auth-hint">{t('invite.emailMatchNotice')}</div> : null}
 				{externalRoute?.kind === 'share' ? <div className="auth-hint">Share links require an authenticated account before access is applied.</div> : null}
+				{registrationInviteToken ? <div className="auth-hint">{t('adminInvite.authHint')}</div> : null}
 				<form
 					className="auth-form"
 					onSubmit={(e) => {
@@ -4535,9 +4680,11 @@ export function App(): React.JSX.Element {
 							value={authEmail}
 							onChange={(e) => setAuthEmail(e.target.value)}
 							disabled={authBusy || authStatus === 'loading'}
+							readOnly={Boolean(registrationInviteToken && registrationInviteEmail)}
 							required
 						/>
 					</label>
+					{registrationInviteToken && registrationInviteEmail ? <div className="auth-hint">{t('adminInvite.emailLockedNotice')}</div> : null}
 					{authMode === 'register' ? (
 						<label className="auth-label">
 							Name
@@ -7166,8 +7313,9 @@ export function App(): React.JSX.Element {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
 						}}
-						// NoteGrid calls onReady once it has loaded all docs.
-						// Dismiss the splash overlay when this fires.
+						// NoteGrid calls onReady only after the initial docs are loaded and
+						// the first masonry layout has settled, so the splash does not fade
+						// while cards are still reshuffling into measured heights.
 						onReady={() => {
 							setGridReady(true);
 							// Give the CSS fade-out transition 500 ms to complete,
@@ -7478,6 +7626,7 @@ export function App(): React.JSX.Element {
 				connectionState={connection.state}
 				deviceId={deviceId}
 				onUserManagement={openUserManagementFromPreferences}
+				showSendInvite={isGlobalAdmin}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}
 			/>
@@ -7585,18 +7734,26 @@ export function App(): React.JSX.Element {
 				onNoteCardMaxHeightPxCommit={commitNoteCardMaxHeightChange}
 			/>
 
-			<SendInviteModal
-				isOpen={isSendInviteOpen}
+			<UserRegistrationInviteModal
+				isOpen={isSendInviteOpen && sendInviteContext?.kind === 'registration'}
 				onClose={() => {
 					if (goBackIfOverlayHistory()) return;
 					setIsSendInviteOpen(false);
-					setInviteWorkspaceTarget(null);
+				}}
+				t={t}
+			/>
+
+			<SendInviteModal
+				isOpen={isSendInviteOpen && sendInviteContext?.kind === 'workspace'}
+				onClose={() => {
+					if (goBackIfOverlayHistory()) return;
+					setIsSendInviteOpen(false);
 				}}
 				t={t}
 				authUserId={authUserId}
 				authProfileImage={authProfileImage}
-				workspaceId={inviteWorkspaceTarget?.id ?? authWorkspaceId}
-				workspaceName={inviteWorkspaceTarget?.name ?? activeWorkspaceName}
+				workspaceId={sendInviteContext?.kind === 'workspace' ? sendInviteContext.workspaceId : authWorkspaceId}
+				workspaceName={sendInviteContext?.kind === 'workspace' ? sendInviteContext.workspaceName : activeWorkspaceName}
 			/>
 
 			<ShareNotificationsModal

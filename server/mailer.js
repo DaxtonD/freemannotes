@@ -80,6 +80,26 @@ async function sendInviteEmail({ to, workspaceName, inviteUrl }) {
 	});
 }
 
+async function sendRegistrationInviteEmail({ to, inviteUrl, expiresAt }) {
+	const cfg = getSmtpConfig();
+	const transport = getTransport();
+	const expiryLabel = expiresAt instanceof Date ? expiresAt.toUTCString() : String(expiresAt || '');
+
+	await transport.sendMail({
+		from: cfg.from,
+		to,
+		subject: 'You are invited to create a Freeman Notes account',
+		text: [
+			'You have been invited by an administrator to create a Freeman Notes account.',
+			'',
+			`Complete registration: ${inviteUrl}`,
+			expiryLabel ? `This invite expires on ${expiryLabel}.` : '',
+			'',
+			'If you did not expect this email, you can ignore it.',
+		].filter(Boolean).join('\n'),
+	});
+}
+
 async function sendNotificationEmail({ to, subject, text, html }) {
 	const cfg = getSmtpConfig();
 	const transport = getTransport();
@@ -93,4 +113,4 @@ async function sendNotificationEmail({ to, subject, text, html }) {
 	});
 }
 
-module.exports = { isSmtpConfigured, sendInviteEmail, sendNotificationEmail };
+module.exports = { isSmtpConfigured, sendInviteEmail, sendRegistrationInviteEmail, sendNotificationEmail };

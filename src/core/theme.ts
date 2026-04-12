@@ -5,6 +5,7 @@ export type ThemeDefinition = {
 };
 
 const STORAGE_KEY = 'freemannotes.theme';
+const USER_STORAGE_KEY = 'freemannotes.themeByUser.v1';
 
 const baseThemeVariables = {
 	'--color-border': 'rgba(0, 0, 0, 0.12)',
@@ -1079,12 +1080,32 @@ export function getTheme(themeId: ThemeId): ThemeDefinition {
 	return THEMES.find((theme) => theme.id === themeId) ?? THEMES.find((theme) => theme.id === fallbackThemeId)!;
 }
 
+function normalizeStoredThemeId(raw: unknown): ThemeId | null {
+	const match = typeof raw === 'string' ? THEMES.find((theme) => theme.id === raw) : null;
+	return (match?.id ?? null) as ThemeId | null;
+}
+
 export function getStoredThemeId(): ThemeId {
 	if (typeof window === 'undefined') return fallbackThemeId;
 	const raw = window.localStorage.getItem(STORAGE_KEY);
-	if (!raw) return fallbackThemeId;
-	const match = THEMES.find((theme) => theme.id === raw);
-	return (match?.id ?? fallbackThemeId) as ThemeId;
+	return normalizeStoredThemeId(raw) ?? fallbackThemeId;
+}
+
+export function getStoredThemeIdForUser(userId?: string | null): ThemeId {
+	if (typeof window === 'undefined') return fallbackThemeId;
+	const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
+	if (!normalizedUserId) return getStoredThemeId();
+	try {
+		// Keep a separate per-user cache so switching accounts on one device restores
+		// each user's last chosen theme instead of reusing whichever account logged in last.
+		const raw = window.localStorage.getItem(USER_STORAGE_KEY);
+		if (!raw) return getStoredThemeId();
+		const parsed = JSON.parse(raw) as { themes?: Record<string, unknown> } | null;
+		const userTheme = parsed?.themes?.[normalizedUserId];
+		return normalizeStoredThemeId(userTheme) ?? getStoredThemeId();
+	} catch {
+		return getStoredThemeId();
+	}
 }
 
 function isAndroidStandalonePwa(): boolean {
@@ -1168,4 +1189,21 @@ export function applyTheme(themeId: ThemeId): void {
 export function persistThemeId(themeId: ThemeId): void {
 	if (typeof window === 'undefined') return;
 	window.localStorage.setItem(STORAGE_KEY, themeId);
+}
+
+export function persistThemeIdForUser(userId: string | null | undefined, themeId: ThemeId): void {
+	if (typeof window === 'undefined') return;
+	const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
+	if (!normalizedUserId) return;
+	try {
+		// Store user themes in one keyed blob so theme bootstrap can resolve the active
+		// user's cached theme before React mounts, without needing IndexedDB or a fetch.
+		const raw = window.localStorage.getItem(USER_STORAGE_KEY);
+		const parsed = raw ? JSON.parse(raw) as { themes?: Record<string, string> } : null;
+		const themes = { ...(parsed?.themes ?? {}) };
+		themes[normalizedUserId] = themeId;
+		window.localStorage.setItem(USER_STORAGE_KEY, JSON.stringify({ themes }));
+	} catch {
+		// best effort
+	}
 }
