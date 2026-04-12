@@ -4,7 +4,7 @@ import { App } from './App';
 import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
 import { initPwa } from './core/pwa';
-import { applyTheme, getStoredThemeId } from './core/theme';
+import { applyTheme, getStoredThemeIdForUser } from './core/theme';
 import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
 import { readWorkspaceSelectionCache } from './core/workspaceSelectionCache';
@@ -55,6 +55,17 @@ function readCachedWorkspaceId(): string | null {
 	}
 }
 
+function readCachedAuthUserId(): string | null {
+	try {
+		const raw = localStorage.getItem('freemannotes.auth.cache.v1');
+		if (!raw) return null;
+		const parsed = JSON.parse(raw) as { v?: unknown; userId?: unknown } | null;
+		return parsed?.v === 1 && typeof parsed.userId === 'string' && parsed.userId ? parsed.userId : null;
+	} catch {
+		return null;
+	}
+}
+
 // Singleton manager owns Yjs docs + persistence providers for the entire app session.
 // Websocket sync starts disabled because the App now gates sync behind auth.
 // Once authenticated, App calls `manager.setWebsocketEnabled(true)`.
@@ -75,7 +86,7 @@ installTouchDragPolyfill();
 
 // Apply the last-used theme before React mounts so Android standalone chrome
 // sees the current app background immediately instead of the HTML fallback.
-applyTheme(getStoredThemeId());
+applyTheme(getStoredThemeIdForUser(readCachedAuthUserId()));
 
 createRoot(rootEl).render(
 	<React.StrictMode>

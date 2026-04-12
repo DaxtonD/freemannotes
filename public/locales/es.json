@@ -147,6 +147,23 @@
     "updatedNotificationTitle": "Aplicación actualizada",
     "updatedNotificationBody": "FreemanNotes se ha actualizado correctamente y la versión más reciente ya está activa."
   },
+  "adminInvite": {
+    "title": "Enviar invitación",
+    "description": "Envía por correo una invitación de registro de un solo uso para que un usuario pueda crear una cuenta sin volver a habilitar el registro público.",
+    "bypassNotice": "Esta invitación administrativa omite el ajuste normal de registro solo para este destinatario. El enlace es de un solo uso y vence automáticamente.",
+    "emailLabel": "Correo del usuario",
+    "emailPlaceholder": "nombre@ejemplo.com",
+    "sendAction": "Enviar invitación",
+    "sending": "Enviando...",
+    "sent": "Correo de invitación enviado correctamente.",
+    "linkLabel": "Enlace de invitación de respaldo",
+    "copyLink": "Copiar enlace",
+    "copied": "Enlace de invitación copiado.",
+    "copyFailed": "No se pudo copiar el enlace de invitación.",
+    "sendFailed": "No se pudo enviar la invitación.",
+    "authHint": "Este correo fue invitado por un administrador. Completa el registro a continuación para activar la cuenta.",
+    "emailLockedNotice": "Esta invitación está vinculada al correo incluido en el enlace de invitación."
+  },
   "collections": {
     "manageTitle": "Gestionar colecciones",
     "manageDescription": "Crea, anida, renombra y elimina colecciones.",

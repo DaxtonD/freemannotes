@@ -105,6 +105,7 @@ export type NoteGridProps = {
 	showArchived?: boolean;
 	emptyStateLabel?: string;
 	sharedNotes?: readonly SharedNotePlacement[];
+	/** Fires once the initial docs are loaded and the first layout is settled. */
 	onReady?: () => void;
 	/** Enable framer-motion layout animations. Keep false during initially cold loads. */
 	enableLayoutAnimations?: boolean;
@@ -306,6 +307,14 @@ function createFallbackNoteSnapshot(id: string): VisibleNoteSnapshot {
 		trashed: false,
 		archived: false,
 	};
+}
+
+function estimateUnmeasuredNoteHeightPx(noteId: string, maxCardHeightPx: number): number {
+	// Cold-start browsers do not have measured heights yet. Derive a deterministic
+	// per-note estimate so skeleton cards and first-pass masonry packing stay in
+	// sync until real DOM measurements replace the estimate.
+	const idHash = noteId.slice(-8).split('').reduce((acc, character) => (acc * 31 + character.charCodeAt(0)) | 0, 0x9e3779b9);
+	return Math.min(maxCardHeightPx, 160 + (Math.abs(idHash) % 220));
 }
 
 function normalizeId(value: unknown): string {
@@ -781,6 +790,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Suppress framer-motion layout animations until all docs are loaded and two
 	// paint frames have passed (so cards settle before springs can fire).
 	const [layoutReady, setLayoutReady] = React.useState(false);
+	const readyNotifiedRef = React.useRef(false);
 	React.useEffect(() => {
 		if (!props.enableLayoutAnimations) return;
 		if (!allDocsLoaded) return; // wait for shimmer to finish before enabling springs
@@ -797,6 +807,17 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			if (raf2) cancelAnimationFrame(raf2);
 		};
 	}, [props.enableLayoutAnimations, allDocsLoaded, layoutReady]);
+
+	const getEstimatedNoteHeight = React.useCallback(
+		(noteId: string): number => estimateUnmeasuredNoteHeightPx(noteId, props.maxCardHeightPx),
+		[props.maxCardHeightPx]
+	);
+	const packedHeightLookup = React.useMemo<Pick<ReadonlyMap<string, number>, 'get'>>(
+		() => ({
+			get: (noteId: string) => noteHeightByIdRef.current.get(noteId) ?? getEstimatedNoteHeight(noteId),
+		}),
+		[getEstimatedNoteHeight]
+	);
 
 	const pendingSyncNoteIds = React.useMemo(() => new Set(connection.pendingSyncNoteIds), [connection.pendingSyncNoteIds]);
 	// Stable primitive signature for use as effect dep.  The Set object above is a new
@@ -1181,10 +1202,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			if (!noteOrder) return;
 
 			const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
-			const fallbackH = Math.min(props.maxCardHeightPx, 220);
 			const heightOf = (id: string) => {
 				if (id === draggedId && draggedHeight > 0) return draggedHeight;
-				return noteHeightByIdRef.current.get(id) ?? fallbackH;
+				return noteHeightByIdRef.current.get(id) ?? getEstimatedNoteHeight(id);
 			};
 
 			// Row-major flatten of the constrained post-drop columns → canonical order for Yjs.
@@ -1193,7 +1213,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				draggedId,
 				heightOf,
 				gapPx,
-				fallbackHeightPx: fallbackH,
+				fallbackHeightPx: getEstimatedNoteHeight(draggedId),
 				maxMoves: 2,
 			});
 			const columnSlots = committedColumns.map((column) => column.length);
@@ -1235,7 +1255,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				noteOrder.insert(0, next);
 			});
 		},
-		[noteLayout, noteOrder, noteSnapshotById, visibleIds, mobileGridGapPx, props.maxCardHeightPx]
+		[getEstimatedNoteHeight, noteLayout, noteOrder, noteSnapshotById, visibleIds, mobileGridGapPx]
 	);
 
 	React.useEffect(() => {
@@ -1361,9 +1381,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		}
 		if (!allDocsLoaded) {
 			setAllDocsLoaded(true);
-			props.onReady?.();
 		}
-	}, [noteOrder, orderedIds, docsById, allDocsLoaded, props.onReady]);
+	}, [noteOrder, orderedIds, docsById, allDocsLoaded]);
+
+	React.useEffect(() => {
+		if (!allDocsLoaded) {
+			readyNotifiedRef.current = false;
+			return;
+		}
+		if (props.enableLayoutAnimations && !layoutReady) return;
+		if (readyNotifiedRef.current) return;
+		readyNotifiedRef.current = true;
+		props.onReady?.();
+	}, [allDocsLoaded, layoutReady, props.enableLayoutAnimations, props.onReady]);
 
 	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
 	const groupedSections = React.useMemo<NoteGridSection[]>(() => {
@@ -1407,8 +1437,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		void noteHeightsVersion;
 		const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 		const fallbackH = Math.min(props.maxCardHeightPx, 220);
-		return splitIntoColumnsByHeight(renderedIds, columnCount, noteHeightByIdRef.current, gapPx, fallbackH);
-	}, [renderedIds, columnCount, noteHeightsVersion, mobileGridGapPx, props.maxCardHeightPx]);
+		return splitIntoColumnsByHeight(renderedIds, columnCount, packedHeightLookup, gapPx, fallbackH);
+	}, [renderedIds, columnCount, noteHeightsVersion, mobileGridGapPx, packedHeightLookup, props.maxCardHeightPx]);
 	const slottedColumns = React.useMemo(() => {
 		if (!persistedColumnSlots) return null;
 		return splitIntoColumnsBySlotLengths(renderedIds, persistedColumnSlots);
@@ -1770,13 +1800,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!doc) {
 			// Render a skeleton card at the cached height so masonry packing is stable
 			// and no layout repack occurs when the doc loads.
-			//
-			// When the cache is cold (first ever load) derive a pseudo-random height
-			// from the note ID so cards have varied heights instead of all 220 px.
-			// The hash mixes the last 8 char codes so it's cheap and deterministic.
-			const idHash = note.id.slice(-8).split('').reduce((acc, c) => (acc * 31 + c.charCodeAt(0)) | 0, 0x9e3779b9);
-			const fallbackH = Math.min(props.maxCardHeightPx, 160 + (Math.abs(idHash) % 220));
-			const skeletonH = noteHeightByIdRef.current.get(note.id) ?? fallbackH;
+			const skeletonH = noteHeightByIdRef.current.get(note.id) ?? getEstimatedNoteHeight(note.id);
 			return (
 				<div key={note.id} className={styles.item} data-note-id={note.id} style={{ height: skeletonH }}>
 					<div className={styles.skeletonCard} style={{ height: skeletonH }} />
@@ -1880,7 +1904,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, gridRef, isChipInteractionGuardActive, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -2164,7 +2188,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				}}>
 					{isGroupedView
 						? groupedSections.map((section) => {
-							const sectionColumns = splitIntoColumnsByHeight(section.noteIds, columnCount, noteHeightByIdRef.current, groupedGapPx, groupedFallbackHeightPx);
+							const sectionColumns = splitIntoColumnsByHeight(section.noteIds, columnCount, packedHeightLookup, groupedGapPx, groupedFallbackHeightPx);
 							return (
 								<div key={section.key} className={styles.groupSection}>
 									<div className={styles.groupHeader}>

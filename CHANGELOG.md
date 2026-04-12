@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.17 - 2026-04-11
+
+### Added
+- **Admins can now issue direct registration invites from preferences.** Global admins get a dedicated Send Invite flow that emails a one-time registration link for a specific address, even when public registration is disabled.
+
+### Changed
+- **Authenticated startup applies the user theme earlier.** Theme bootstrap now prefers the signed-in user's cached or freshly fetched preference before workspace activation so the first authenticated note load uses the right appearance sooner.
+
+### Fixed
+- **Cold-login note grids no longer reshuffle as card data hydrates.** Placeholder cards, first-pass masonry packing, and ready-state handoff now share the same fallback height model so a clean browser login stays visually stable.
+- **Auth sessions are now more resilient across normal long-term use.** Successful `/api/auth/me` checks now refresh finite session cookies as a rolling window instead of letting them expire on a fixed schedule, and the service worker no longer caches auth probes or any API responses marked `Cache-Control: no-store`, which removes the stale-auth state that previously forced some users to clear browser cache.
+
 ## 1.2.16 - 2026-04-11
 
 ### Added

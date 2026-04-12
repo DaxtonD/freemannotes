@@ -189,8 +189,26 @@ model User {
   pushNotificationLogs PushNotificationLog[]
   noteReminders NoteReminder[]
   passwordResetTokens PasswordResetToken[]
+  createdUserRegistrationInvites UserRegistrationInviteToken[] @relation("CreatedUserRegistrationInvites")
 
   @@map("user")
+}
+
+model UserRegistrationInviteToken {
+  id              String    @id @default(uuid()) @db.Uuid
+  email           String
+  createdByUserId String    @map("created_by_user_id") @db.Uuid
+  tokenHash       String    @unique @map("token_hash")
+  expiresAt       DateTime  @map("expires_at")
+  usedAt          DateTime? @map("used_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  creator User @relation("CreatedUserRegistrationInvites", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@index([email])
+  @@index([expiresAt])
+  @@index([createdByUserId])
+  @@map("user_registration_invite_token")
 }
 
 model PasswordResetToken {

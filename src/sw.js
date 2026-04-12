@@ -20,6 +20,12 @@ function isCacheableResponse(response) {
 	return Boolean(response && (response.ok || response.type === 'opaque'));
 }
 
+function canStoreResponseInCache(response) {
+	if (!isCacheableResponse(response)) return false;
+	const cacheControl = String(response.headers.get('cache-control') || '').toLowerCase();
+	return !cacheControl.includes('no-store');
+}
+
 function shouldHandleNavigation(url) {
 	return url.origin === self.location.origin && !url.pathname.startsWith('/api/');
 }
@@ -31,7 +37,12 @@ function isStaticAssetRequest(request, url) {
 }
 
 function isApiGetRequest(request, url) {
-	return request.method === 'GET' && url.origin === self.location.origin && url.pathname.startsWith('/api/');
+	// Auth/session probes must always hit the network so cookie truth wins over
+	// any stale service-worker cache entry.
+	return request.method === 'GET'
+		&& url.origin === self.location.origin
+		&& url.pathname.startsWith('/api/')
+		&& !url.pathname.startsWith('/api/auth/');
 }
 
 function isImageRequest(request, url) {
@@ -88,8 +99,10 @@ async function staleWhileRevalidate(request, cacheName) {
 	const cached = await cache.match(request);
 	const networkPromise = fetch(request)
 		.then(async (response) => {
-			if (isCacheableResponse(response)) {
+			if (canStoreResponseInCache(response)) {
 				await cache.put(request, response.clone());
+			} else {
+				await cache.delete(request);
 			}
 			return response;
 		})
@@ -105,8 +118,10 @@ async function networkFirst(request, cacheName) {
 	const cache = await caches.open(cacheName);
 	try {
 		const response = await fetch(request);
-		if (isCacheableResponse(response)) {
+		if (canStoreResponseInCache(response)) {
 			await cache.put(request, response.clone());
+		} else {
+			await cache.delete(request);
 		}
 		return response;
 	} catch {
@@ -127,7 +142,11 @@ async function cacheFirstImage(request) {
 	if (request.url.startsWith(self.location.origin) && !isLikelyThumbnail(new URL(request.url)) && Number.isFinite(size) && size > LARGE_IMAGE_LIMIT_BYTES) {
 		return response;
 	}
-	await cache.put(request, response.clone());
+	if (canStoreResponseInCache(response)) {
+		await cache.put(request, response.clone());
+	} else {
+		await cache.delete(request);
+	}
 	return response;
 }
 
