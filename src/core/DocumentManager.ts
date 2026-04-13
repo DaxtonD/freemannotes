@@ -1061,7 +1061,13 @@ export class DocumentManager {
 			return;
 		}
 
-		const anyConnecting = providers.some((provider) => (provider as any).wsconnecting === true);
+		// During y-websocket's exponential backoff, wsconnecting is temporarily
+		// false while shouldConnect remains true (the provider still intends to
+		// reconnect). Without this check, the UI flashes 'offline' red during
+		// every backoff interval even though a reconnect is imminent.
+		const anyConnecting = providers.some(
+			(provider) => (provider as any).wsconnecting === true || (provider as any).shouldConnect === true
+		);
 		this.connectionState = anyConnecting ? 'connecting' : 'offline';
 	}
 

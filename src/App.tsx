@@ -7922,6 +7922,17 @@ export function App(): React.JSX.Element {
 				onBeforeWorkspaceDelete={handleBeforeWorkspaceDelete}
 				onWorkspaceDeleted={(deletedWorkspaceId, nextActiveWorkspaceId) => void handleWorkspaceDeleted(deletedWorkspaceId, nextActiveWorkspaceId)}
 				onActiveWorkspaceRenamed={() => void refreshActiveWorkspace()}
+				onBeforeWorkspaceActivated={() => {
+					// Disable WS before switching room namespaces. The new workspace's
+					// rooms must not connect until the server session cookie is updated.
+					manager.setWebsocketEnabled(false);
+				}}
+				onWorkspaceActivationComplete={(workspaceId) => {
+					// Server confirmed the new session cookie — safe to open WS rooms.
+					if (manager.getActiveWorkspaceId() === workspaceId) {
+						manager.setWebsocketEnabled(true);
+					}
+				}}
 			/>
 
 			<UserManagementModal
