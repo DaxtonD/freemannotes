@@ -589,17 +589,10 @@
 	position: relative;
 }
 
+
+/* Completed rows inherit the shared checklist text box so any future optical
+   alignment nudges stay locked to the same checkbox/text baseline. */
 .checklistTextCompleted {
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	min-width: 0;
-	overflow-wrap: anywhere;
-	font-size: calc(1rem * var(--note-card-font-scale, 1));
-	line-height: 1.35;
-	max-height: calc(1.35em * 3);
-	overflow: hidden;
-	position: relative;
 	text-decoration: line-through;
 }
 
