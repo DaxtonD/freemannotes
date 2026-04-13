@@ -46,6 +46,7 @@ import {
 	syncTextNotePlainText,
 } from '../../core/richText';
 import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
+import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import type { ThemeId } from '../../core/theme';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
@@ -85,6 +86,7 @@ export type NoteEditorProps = {
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
 	allowQuickDelete?: boolean;
+	toolbarMode?: EditorToolbarMode;
 	/** When true, the close button always shows an X (discard) regardless of modification state. */
 	isPendingNew?: boolean;
 };
@@ -110,6 +112,7 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 			if (mark.type === 'bold') element = <strong key={`${key}-bold`}>{element}</strong>;
 			if (mark.type === 'italic') element = <em key={`${key}-italic`}>{element}</em>;
 			if (mark.type === 'underline') element = <u key={`${key}-underline`}>{element}</u>;
+			if (mark.type === 'strike') element = <s key={`${key}-strike`}>{element}</s>;
 			if (mark.type === 'link') {
 				const href = typeof mark.attrs?.href === 'string' ? mark.attrs.href : '';
 				element = href
@@ -2103,6 +2106,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							copyMode={copyMode}
 							onCopyModeChange={setCopyMode}
 							onClipboardStatusChange={setClipboardStatusMessage}
+							toolbarMode={props.toolbarMode}
 							placeholder={t('editors.startTyping')}
 							hideToolbar={isCoarsePointer}
 							suppressMobileTaskCheckboxFocus={isCoarsePointer}
@@ -2127,7 +2131,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 						<div className={styles.checklistToolbarSlot}>
-							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} />
+							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} />
 						</div>
 						{/* Keyboard-open branch:
 						    Checklist mode does not use the generic rich-text viewport above, so we add
@@ -2666,6 +2670,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						editor={type === 'text' ? textEditor : activeChecklistRowEditor}
 						variant={type === 'text' ? 'full' : 'minimal'}
 						compact
+						toolbarMode={props.toolbarMode}
 						onCreateUrlPreview={handleCreateUrlPreview}
 						noteAutoScrollEnabled={noteAutoScrollEnabled}
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}

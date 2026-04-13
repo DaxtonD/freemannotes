@@ -456,6 +456,21 @@ function extractNoteSearchText(noteId: string, doc: Y.Doc | null, fallbackTitle 
 	}
 }
 
+function hasRenderableBubbleNote(doc: Y.Doc, noteId: string): boolean {
+	try {
+		// Bubble cards should only render notes that still have real saved content.
+		// Empty title/body/checklist docs are stale ghost entries from cache/registry drift.
+		const note = readNoteFromDoc(doc, noteId);
+		if (note.title.trim().length > 0) return true;
+		if (note.type === 'checklist') {
+			return Array.isArray(note.items) && note.items.some((item) => String(item.text ?? '').trim().length > 0);
+		}
+		return typeof note.content === 'string' && note.content.trim().length > 0;
+	} catch {
+		return false;
+	}
+}
+
 function matchesBubbleSearch(note: BubbleNote, doc: Y.Doc | null, query: string): boolean {
 	const normalized = query.trim().toLowerCase();
 	if (!normalized) return true;
@@ -559,6 +574,7 @@ async function loadInactiveWorkspaceNote(
 		if (showTrashed ? !isTrashed : isTrashed) return null;
 		const reminderAt = resolveReminderAt(noteReminderByDocId, roomName, entry.noteId);
 		if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+		if (!hasRenderableBubbleNote(doc, entry.noteId)) return null;
 		const resolvedTitle = readNoteFromDoc(doc, entry.noteId).title.trim();
 		const reminderMs = reminderAt ? Date.parse(reminderAt) : Number.NaN;
 		const searchText = extractNoteSearchText(entry.noteId, doc, resolvedTitle || entry.title);
@@ -572,15 +588,7 @@ async function loadInactiveWorkspaceNote(
 			hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
 		};
 	} catch {
-		return {
-			noteId: entry.noteId,
-			title: entry.title,
-			searchText: entry.title,
-			updatedAt: 0,
-			reminderAt: null,
-			isPinned: false,
-			hasReminder: false,
-		};
+		return null;
 	} finally {
 		try { idb.destroy(); } catch { /* ignore */ }
 		try { doc.destroy(); } catch { /* ignore */ }
@@ -613,6 +621,7 @@ async function loadInactiveSharedPlacementNote(
 		if (showTrashed ? !isTrashed : isTrashed) return null;
 		const reminderAt = resolveReminderAt(noteReminderByDocId, placement.roomId, placement.aliasId);
 		if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+		if (!hasRenderableBubbleNote(doc, placement.aliasId)) return null;
 		const resolvedTitle = readNoteFromDoc(doc, placement.aliasId).title.trim();
 		const reminderMs = reminderAt ? Date.parse(reminderAt) : Number.NaN;
 		const title = resolvedTitle || placement.sourceNoteId;
@@ -630,19 +639,7 @@ async function loadInactiveSharedPlacementNote(
 			isActiveWorkspace: false,
 		};
 	} catch {
-		return {
-			noteId: placement.aliasId,
-			workspaceId,
-			workspaceName,
-			title: placement.sourceNoteId,
-			searchText: placement.sourceNoteId,
-			updatedAt: 0,
-			reminderAt: null,
-			isPinned: false,
-			hasReminder: false,
-			hasCollaborators: false,
-			isActiveWorkspace: false,
-		};
+		return null;
 	} finally {
 		try { idb.destroy(); } catch { /* ignore */ }
 		try { doc.destroy(); } catch { /* ignore */ }
@@ -764,6 +761,7 @@ function useBubbleNotes(
 						if (showTrashed ? !isTrashed : isTrashed) return null;
 						const reminderAt = resolveReminderAt(noteReminderByDocId, placement.roomId, placement.aliasId);
 						if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+						if (!hasRenderableBubbleNote(doc, placement.aliasId)) return null;
 						const resolvedTitle = readNoteFromDoc(doc, placement.aliasId).title.trim();
 						const title = resolvedTitle || placement.sourceNoteId;
 						const reminderMs = reminderAt ? Date.parse(String(reminderAt)) : Number.NaN;
@@ -834,6 +832,7 @@ function useBubbleNotes(
 						if (showTrashed ? !isTrashed : isTrashed) return null;
 						const reminderAt = resolveReminderAt(noteReminderByDocId, manager.resolveRoomName(noteId), noteId);
 						if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+						if (!hasRenderableBubbleNote(doc, noteId)) return null;
 						const resolvedTitle = readNoteFromDoc(doc, noteId).title.trim();
 						const isPinned = Boolean(meta.get('isPinned'));
 						const updatedAt = Number(meta.get('updatedAt') ?? 0);

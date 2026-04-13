@@ -243,6 +243,8 @@ model UserDevicePreference {
   noteCardFontScale Float @default(1) @map("note_card_font_scale")
   /// Global text scale multiplier for note editors on this device.
   noteEditorFontScale Float @default(1) @map("note_editor_font_scale")
+  /// Per-device formatting toolbar layout preference for note editors.
+  editorToolbarMode String @default("full") @map("editor_toolbar_mode")
   /// Maximum rendered note-card height on the notes grid for this device.
   noteCardMaxHeightPx Int? @map("note_card_max_height_px")
 

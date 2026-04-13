@@ -46,6 +46,8 @@ const MIN_NOTE_CARD_HEIGHT_PX = 320;
 /** Per-device note card height upper bound in px. */
 const MAX_NOTE_CARD_HEIGHT_PX = 1400;
 
+const VALID_EDITOR_TOOLBAR_MODES = new Set(['full', 'condensed']);
+
 function normalizeFontScale(raw) {
 	const value = Number(raw);
 	if (!Number.isFinite(value)) return 1;
@@ -260,6 +262,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							deviceId,
 							noteCardFontScale: 1,
 							noteEditorFontScale: 1,
+							editorToolbarMode: 'full',
 							checklistShowCompleted: false,
 							quickDeleteChecklist: false,
 							noteCardClickOpens: true,
@@ -289,6 +292,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						language: devicePref.language ?? null,
 						noteCardFontScale: normalizeFontScale(devicePref.noteCardFontScale),
 						noteEditorFontScale: normalizeFontScale(devicePref.noteEditorFontScale),
+						editorToolbarMode: VALID_EDITOR_TOOLBAR_MODES.has(devicePref.editorToolbarMode) ? devicePref.editorToolbarMode : 'full',
 						noteCardMaxHeightPx: Number.isFinite(Number(devicePref.noteCardMaxHeightPx))
 							? Number(devicePref.noteCardMaxHeightPx)
 							: null,
@@ -420,6 +424,14 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						deviceUpdateData.noteEditorFontScale = scale;
 					}
 
+					if ('editorToolbarMode' in body) {
+						if (!VALID_EDITOR_TOOLBAR_MODES.has(body.editorToolbarMode)) {
+							jsonResponse(res, 400, { error: 'editorToolbarMode must be full or condensed' });
+							return;
+						}
+						deviceUpdateData.editorToolbarMode = body.editorToolbarMode;
+					}
+
 					if ('noteCardMaxHeightPx' in body) {
 						if (body.noteCardMaxHeightPx == null || body.noteCardMaxHeightPx === '') {
 							deviceUpdateData.noteCardMaxHeightPx = null;
@@ -513,6 +525,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 								deviceId,
 								noteCardFontScale: 1,
 								noteEditorFontScale: 1,
+								editorToolbarMode: 'full',
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
 								noteCardClickOpens: true,
@@ -541,6 +554,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							language: devicePref.language ?? null,
 							noteCardFontScale: normalizeFontScale(devicePref.noteCardFontScale),
 							noteEditorFontScale: normalizeFontScale(devicePref.noteEditorFontScale),
+							editorToolbarMode: VALID_EDITOR_TOOLBAR_MODES.has(devicePref.editorToolbarMode) ? devicePref.editorToolbarMode : 'full',
 							noteCardMaxHeightPx: Number.isFinite(Number(devicePref.noteCardMaxHeightPx))
 								? Number(devicePref.noteCardMaxHeightPx)
 								: null,
@@ -609,6 +623,10 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 										typeof deviceData.noteCardFontScale === 'number' ? deviceData.noteCardFontScale : 1,
 									noteEditorFontScale:
 										typeof deviceData.noteEditorFontScale === 'number' ? deviceData.noteEditorFontScale : 1,
+									editorToolbarMode:
+										typeof deviceData.editorToolbarMode === 'string' && VALID_EDITOR_TOOLBAR_MODES.has(deviceData.editorToolbarMode)
+											? deviceData.editorToolbarMode
+											: 'full',
 									noteCardMaxHeightPx:
 										typeof deviceData.noteCardMaxHeightPx === 'number' ? deviceData.noteCardMaxHeightPx : null,
 									activeWorkspaceId: null,
@@ -649,6 +667,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 									deviceId,
 									noteCardFontScale: 1,
 									noteEditorFontScale: 1,
+									editorToolbarMode: 'full',
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
 									noteCardClickOpens: true,
@@ -691,6 +710,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						language: pref.devicePref.language ?? null,
 						noteCardFontScale: normalizeFontScale(pref.devicePref.noteCardFontScale),
 						noteEditorFontScale: normalizeFontScale(pref.devicePref.noteEditorFontScale),
+						editorToolbarMode: VALID_EDITOR_TOOLBAR_MODES.has(pref.devicePref.editorToolbarMode) ? pref.devicePref.editorToolbarMode : 'full',
 						noteCardMaxHeightPx: Number.isFinite(Number(pref.devicePref.noteCardMaxHeightPx))
 							? Number(pref.devicePref.noteCardMaxHeightPx)
 							: null,

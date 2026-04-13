@@ -56,9 +56,12 @@
 	flex-direction: column;
 }
 
+.checklistCardCollapsed {
+	min-height: var(--note-card-collapsed-checklist-height, auto);
+}
+
 .checklistCardCompletedExpanded {
-	/* Mobile overrides below allow the full card to grow when the completed
-	   section opens so the page scroll owns the gesture instead of an inner list. */
+	max-height: var(--note-card-expanded-checklist-max-height, var(--note-card-max-height));
 }
 
 .contentRegion {
@@ -255,6 +258,8 @@
 
 .checklistCard .body {
 	padding-bottom: 0;
+	flex: 0 0 auto;
+	overflow: hidden;
 }
 
 .body * {
@@ -269,6 +274,15 @@
 	min-height: 0;
 	overflow: hidden;
 	overflow-wrap: anywhere;
+}
+
+.contentPreviewOverflowing {
+	-webkit-mask-image: linear-gradient(180deg, #000 0%, #000 calc(100% - 28px), transparent 100%);
+	mask-image: linear-gradient(180deg, #000 0%, #000 calc(100% - 28px), transparent 100%);
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+	-webkit-mask-size: 100% 100%;
+	mask-size: 100% 100%;
 }
 
 .richBlock,
@@ -622,18 +636,37 @@
 	font-size: var(--font-size-xs);
 }
 
+.activeChecklistMore {
+	margin-top: 10px;
+	padding-bottom: 12px;
+}
+
+.completedChecklistMore {
+	margin-top: 12px;
+	padding-bottom: 4px;
+}
+
 .completedSection {
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
-	margin: 0;
+	margin: auto 0 0;
 	padding: 0 var(--space-2) var(--space-2);
 	flex: 0 0 auto;
 	font-size: calc(1rem * var(--note-card-font-scale, 1));
+	border-top: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 68%, transparent);
+}
+
+.checklistCardCollapsed .completedSection {
+	gap: 0;
+	justify-content: center;
+	padding-top: 6px;
+	padding-bottom: 6px;
+	min-height: 38px;
 }
 
 .completedToggle {
-	align-self: flex-start;
+	align-self: stretch;
 	border: 0;
 	background: transparent;
 	padding: 0;
@@ -642,61 +675,26 @@
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
+	min-height: 20px;
+	text-align: left;
+}
+
+.completedToggle:disabled {
+	opacity: 0.7;
+	cursor: default;
 }
 
 .completedToggleArrow {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	font-size: 1.8em;
+	font-size: 1.2em;
 	line-height: 1;
 	min-width: 1em;
 }
 
 .completedSection .checklist {
 	margin-top: 8px;
-}
-
-/* When the completed section is expanded, share available vertical space between
-   active items and the completed list instead of letting the completed list push
-   the active items (body) off the top of the card.
-
-   - .body keeps a guaranteed minimum height so at least a couple of active items
-     are always visible when the card is at its max-height.
-   - .completedSection becomes a flex child that can shrink/grow; its inner list
-     scrolls within whatever vertical share it receives. */
-.contentRegionCompletedExpanded .body {
-	min-height: 2.5em;
-}
-
-.contentRegionCompletedExpanded .completedSection {
-	flex: 1 1 auto;
-	min-height: 0;
-	overflow: hidden;
-}
-
-.contentRegionCompletedExpanded .completedSection .checklist {
-	overflow-y: auto;
-	overscroll-behavior: contain;
-	scrollbar-width: thin;
-	scrollbar-color: color-mix(in srgb, var(--note-color-border, var(--color-border)) 60%, transparent) transparent;
-}
-
-.contentRegionCompletedExpanded .completedSection .checklist::-webkit-scrollbar {
-	width: 3px;
-}
-
-.contentRegionCompletedExpanded .completedSection .checklist::-webkit-scrollbar-track {
-	background: transparent;
-}
-
-.contentRegionCompletedExpanded .completedSection .checklist::-webkit-scrollbar-thumb {
-	border-radius: 999px;
-	background: color-mix(in srgb, var(--note-color-border, var(--color-border)) 60%, transparent);
-}
-
-.contentRegionCompletedExpanded .completedSection .checklist::-webkit-scrollbar-thumb:hover {
-	background: color-mix(in srgb, var(--note-color-border, var(--color-border)) 90%, transparent);
 }
 
 .linkPreviewRail {
@@ -718,6 +716,10 @@
 @media (pointer: fine) {
 	.checklistCard {
 		max-height: calc(var(--note-card-max-height) + 18px);
+	}
+
+	.checklistCardCompletedExpanded {
+		max-height: var(--note-card-expanded-checklist-max-height, var(--note-card-max-height));
 	}
 
 	.completedSection {
@@ -814,6 +816,14 @@
 		padding-bottom: 6px;
 	}
 
+	.checklistCardCompletedExpanded .completedSection {
+		padding-bottom: 18px;
+	}
+
+	.checklistCardCompletedExpanded .completedChecklistMore {
+		padding-bottom: 10px;
+	}
+
 }
 
 @media (pointer: coarse) {
@@ -821,24 +831,12 @@
 		padding-bottom: calc(var(--space-2) + 6px);
 	}
 
-	.checklistCardCompletedExpanded {
-		max-height: none;
-		overflow: visible;
-	}
-
-	.checklistCardCompletedExpanded .contentRegion,
-	.checklistCardCompletedExpanded .completedSection,
-	.checklistCardCompletedExpanded .completedSection .checklist {
-		overflow: visible;
-	}
-
 	.checklistCardCompletedExpanded .completedSection {
-		flex: 0 0 auto;
-		min-height: auto;
+		margin-top: 0;
 	}
 
 	.checklistCardCompletedExpanded .completedSection .checklist {
-		overscroll-behavior: auto;
+		overflow: visible;
 	}
 
 	.completedSection .checklist {
@@ -847,6 +845,10 @@
 
 	/* Mobile note-card checklist rows: center checkbox and first text line. */
 	.linkPreviewRail {
+		padding-bottom: 0;
+	}
+
+	.checklistCardCompletedExpanded .linkPreviewRail {
 		padding-bottom: 0;
 	}
 

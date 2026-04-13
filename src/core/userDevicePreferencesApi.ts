@@ -1,4 +1,5 @@
 import type { LocaleCode } from './i18n';
+import { normalizeEditorToolbarMode, type EditorToolbarMode } from './deviceAppearancePreferences';
 
 export type UserDevicePreferences = {
 	userId: string;
@@ -8,6 +9,7 @@ export type UserDevicePreferences = {
 	language: string | null;
 	noteCardFontScale: number;
 	noteEditorFontScale: number;
+	editorToolbarMode: EditorToolbarMode;
 	noteCardMaxHeightPx: number | null;
 	activeWorkspaceId: string | null;
 	activeSharedFolder: string | null;
@@ -82,6 +84,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			language: (body as any).language ? String((body as any).language) : null,
 			noteCardFontScale: normalizeFontScale((body as any).noteCardFontScale),
 			noteEditorFontScale: normalizeFontScale((body as any).noteEditorFontScale),
+			editorToolbarMode: normalizeEditorToolbarMode((body as any).editorToolbarMode),
 			noteCardMaxHeightPx: normalizeNoteCardMaxHeightPx((body as any).noteCardMaxHeightPx),
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
@@ -107,6 +110,7 @@ type PreferencePatch = {
 	language?: LocaleCode | null;
 	noteCardFontScale?: number;
 	noteEditorFontScale?: number;
+	editorToolbarMode?: EditorToolbarMode;
 	noteCardMaxHeightPx?: number | null;
 	activeSharedFolder?: string | null;
 	checklistShowCompleted?: boolean;
@@ -166,6 +170,7 @@ async function _sendPreferences(
 			language: (body as any).language ? String((body as any).language) : null,
 			noteCardFontScale: normalizeFontScale((body as any).noteCardFontScale),
 			noteEditorFontScale: normalizeFontScale((body as any).noteEditorFontScale),
+			editorToolbarMode: normalizeEditorToolbarMode((body as any).editorToolbarMode),
 			noteCardMaxHeightPx: normalizeNoteCardMaxHeightPx((body as any).noteCardMaxHeightPx),
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,

@@ -14,6 +14,7 @@ import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { createRichTextDocFromPlainText } from '../../core/richText';
+import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
@@ -26,6 +27,7 @@ import styles from './Editors.module.css';
 export type TextEditorProps = {
 	onSave: (args: { title: string; body: string; richContent: JSONContent; previewLinks: string[] }) => void | Promise<void>;
 	onCancel: () => void;
+	toolbarMode?: EditorToolbarMode;
 };
 
 const DRAFT_TEXT_AUTOSCROLL_ID = '__draft_text_editor__';
@@ -374,6 +376,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						onClipboardStatusChange={setClipboardStatusMessage}
 						noteAutoScrollEnabled={noteAutoScrollEnabled}
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
+						toolbarMode={props.toolbarMode}
 						// Hide the inline toolbar on coarse pointers because it is re-mounted as a
 						// portal above the keyboard while the keyboard is open.
 						hideToolbar={isCoarsePointer}
@@ -627,7 +630,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 					>
 						{clipboardStatusMessage ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
-						<RichTextToolbar editor={textEditor} variant="full" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} copyMode={copyMode} onCopyModeChange={setCopyMode} />
+						<RichTextToolbar editor={textEditor} variant="full" compact toolbarMode={props.toolbarMode} onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} copyMode={copyMode} onCopyModeChange={setCopyMode} />
 					</div>
 				</>,
 				document.body

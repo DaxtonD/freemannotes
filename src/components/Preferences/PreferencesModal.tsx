@@ -1,4 +1,5 @@
 import React from 'react';
+import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { fetchAboutHudStats, type AboutHudStatsResponse } from '../../core/noteManagementApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { NotificationsSection } from './NotificationsSection';
@@ -41,6 +42,8 @@ export type PreferencesModalProps = {
 	isLightTheme?: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	editorToolbarMode: EditorToolbarMode;
+	onEditorToolbarModeChange: (next: EditorToolbarMode) => void;
 	noteCardCheckboxInteractions: boolean;
 	onNoteCardCheckboxInteractionsChange: (next: boolean) => void;
 	noteCardLinkInteractions: boolean;
@@ -74,6 +77,8 @@ type SectionModalProps = {
 	isLightTheme: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	editorToolbarMode: EditorToolbarMode;
+	onEditorToolbarModeChange: (next: EditorToolbarMode) => void;
 	noteCardCheckboxInteractions: boolean;
 	onNoteCardCheckboxInteractionsChange: (next: boolean) => void;
 	noteCardLinkInteractions: boolean;
@@ -292,6 +297,8 @@ function EditorSectionContent(props: {
 	t: (key: string) => string;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	editorToolbarMode: EditorToolbarMode;
+	onEditorToolbarModeChange: (next: EditorToolbarMode) => void;
 	noteCardCheckboxInteractions: boolean;
 	onNoteCardCheckboxInteractionsChange: (next: boolean) => void;
 	noteCardLinkInteractions: boolean;
@@ -302,6 +309,20 @@ function EditorSectionContent(props: {
 	const bubbleEnabled = useBubbleMenuEnabled();
 	return (
 		<div className={styles.editorSection}>
+			<label className={styles.toggleRow}>
+				<span className={styles.toggleLabel}>
+					<span className={styles.toggleTitle}>{props.t('prefs.editorToolbarMode')}</span>
+					<span className={styles.toggleDescription}>{props.t('prefs.editorToolbarModeDescription')}</span>
+				</span>
+				<select
+					className={styles.selectControl}
+					value={props.editorToolbarMode}
+					onChange={(event) => props.onEditorToolbarModeChange(event.target.value as EditorToolbarMode)}
+				>
+					<option value="full">{props.t('prefs.editorToolbarModeFull')}</option>
+					<option value="condensed">{props.t('prefs.editorToolbarModeCondensed')}</option>
+				</select>
+			</label>
 			<label className={styles.toggleRow}>
 				<span className={styles.toggleLabel}>
 					<span className={styles.toggleTitle}>{props.t('prefs.bubbleMenu')}</span>
@@ -459,6 +480,8 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 						t={props.t}
 						quickDeleteChecklist={props.quickDeleteChecklist}
 						onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+						editorToolbarMode={props.editorToolbarMode}
+						onEditorToolbarModeChange={props.onEditorToolbarModeChange}
 						noteCardCheckboxInteractions={props.noteCardCheckboxInteractions}
 						onNoteCardCheckboxInteractionsChange={props.onNoteCardCheckboxInteractionsChange}
 						noteCardLinkInteractions={props.noteCardLinkInteractions}
@@ -578,6 +601,8 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					isLightTheme={props.isLightTheme !== false}
 					quickDeleteChecklist={props.quickDeleteChecklist}
 					onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+					editorToolbarMode={props.editorToolbarMode}
+					onEditorToolbarModeChange={props.onEditorToolbarModeChange}
 					noteCardCheckboxInteractions={props.noteCardCheckboxInteractions}
 					onNoteCardCheckboxInteractionsChange={props.onNoteCardCheckboxInteractionsChange}
 					noteCardLinkInteractions={props.noteCardLinkInteractions}

@@ -152,6 +152,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								userId: session.userId,
 								deviceId,
 								activeWorkspaceId,
+								editorToolbarMode: 'full',
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
 								noteCardCompletedExpandedByNoteId: {},
