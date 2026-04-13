@@ -26,10 +26,12 @@ import {
 	faQuoteLeft,
 	faRotateLeft,
 	faRotateRight,
+	faStrikethrough,
 	faTable,
 	faUnderline,
 } from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
+import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { createRichTextExtensions, getMarkdownPasteHtml, type RichTextVariant } from '../../core/richText';
 import { prepareConvertedClipboardPayload, type ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { useI18n } from '../../core/i18n';
@@ -45,6 +47,7 @@ type RichTextEditorProps = {
 	serializeChangePayload?: boolean;
 	autoFocus?: boolean;
 	compactToolbar?: boolean;
+	toolbarMode?: EditorToolbarMode;
 	hideToolbar?: boolean;
 	caretVisibilityBottomInset?: number;
 	containerClassName?: string;
@@ -71,6 +74,7 @@ type RichTextToolbarProps = {
 	editor: Editor | null;
 	variant: RichTextVariant;
 	compact?: boolean;
+	toolbarMode?: EditorToolbarMode;
 	onCreateUrlPreview?: () => void;
 	noteAutoScrollEnabled?: boolean;
 	onToggleNoteAutoScroll?: () => void;
@@ -82,6 +86,8 @@ type RichTextToolbarProps = {
 	checkboxUndoAvail?: boolean;
 	checkboxRedoAvail?: boolean;
 };
+
+type CondensedToolbarSection = 'headings' | 'lists' | 'insert' | 'layout' | 'copy' | null;
 
 function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
 	let current = node?.parentElement ?? null;
@@ -417,6 +423,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				isBold: Boolean(editor?.isActive('bold')),
 				isItalic: Boolean(editor?.isActive('italic')),
 				isUnderline: Boolean(editor?.isActive('underline')),
+				isStrike: Boolean(editor?.isActive('strike')),
 				isLink: Boolean(editor?.isActive('link')),
 				isHeading1: Boolean(editor?.isActive('heading', { level: 1 })),
 				isHeading2: Boolean(editor?.isActive('heading', { level: 2 })),
@@ -452,6 +459,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		isBold: false,
 		isItalic: false,
 		isUnderline: false,
+		isStrike: false,
 		isLink: false,
 		isHeading1: false,
 		isHeading2: false,
@@ -491,6 +499,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const emojiMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const emojiMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const [headingMenuOpen, setHeadingMenuOpen] = React.useState(false);
+	const [condensedSection, setCondensedSection] = React.useState<CondensedToolbarSection>(null);
 	const [tableMenuOpen, setTableMenuOpen] = React.useState(false);
 	const [tableMenuPosition, setTableMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
 	const [highlightMenuOpen, setHighlightMenuOpen] = React.useState(false);
@@ -829,6 +838,180 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		|| resolvedToolbarState.isOrderedList
 		|| resolvedToolbarState.isTaskList
 		|| resolvedToolbarState.isBlockquote;
+	const isCondensedToolbar = props.variant === 'full' && props.toolbarMode === 'condensed';
+	const toggleCondensedSection = React.useCallback((section: Exclude<CondensedToolbarSection, null>): void => {
+		setCondensedSection((current) => (current === section ? null : section));
+	}, []);
+	// Condensed mode keeps the primary row short on mobile and exposes one grouped
+	// secondary section at a time so the command set stays identical to full mode.
+	const condensedSectionContent = isCondensedToolbar
+		? (() => {
+			switch (condensedSection) {
+				case 'headings':
+					return (
+						<>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading1 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(1)}>H1</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading2 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(2)}>H2</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading3 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(3)}>H3</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading4 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(4)}>H4</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading5 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(5)}>H5</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading6 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(6)}>H6</button>
+						</>
+					);
+				case 'lists':
+					return (
+						<>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBulletList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBulletList().run()}>
+								<FontAwesomeIcon icon={faListUl} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isOrderedList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.numberedList')} title={t('editors.numberedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleOrderedList().run()}>
+								<FontAwesomeIcon icon={faListOl} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isTaskList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.taskList')} title={t('editors.taskList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleTaskList')}>
+								<FontAwesomeIcon icon={faListCheck} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBlockquote ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.blockquote')} title={t('editors.blockquote')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleBlockquote')}>
+								<FontAwesomeIcon icon={faQuoteLeft} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.nestContent')} title={t('editors.nestContent')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => indentStructuredBlock(props.editor)} disabled={!resolvedToolbarState.canIndentStructuredBlock}>
+								<FontAwesomeIcon icon={faIndent} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.outdentContent')} title={t('editors.outdentContent')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => outdentStructuredBlock(props.editor)} disabled={!resolvedToolbarState.canOutdentStructuredBlock}>
+								<FontAwesomeIcon icon={faOutdent} />
+							</button>
+						</>
+					);
+				case 'insert':
+					return (
+						<>
+							<div className={styles.formatMenuAnchor}>
+								<button
+									ref={highlightMenuButtonRef}
+									type="button"
+									className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHighlight || highlightMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+									aria-label={t('editors.highlight')}
+									title={t('editors.highlight')}
+									aria-expanded={highlightMenuOpen}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={() => {
+										updateHighlightMenuPosition();
+										setHighlightMenuOpen((open) => !open);
+									}}
+								>
+									<FontAwesomeIcon icon={faHighlighter} />
+								</button>
+							</div>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isCodeBlock ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.codeBlock')} title={t('editors.codeBlock')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleCodeBlock')}>
+								<FontAwesomeIcon icon={faCode} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.horizontalRule')} title={t('editors.horizontalRule')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'setHorizontalRule')}>
+								<FontAwesomeIcon icon={faMinus} />
+							</button>
+							<div className={styles.formatMenuAnchor}>
+								<button
+									ref={tableMenuButtonRef}
+									type="button"
+									className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isTable || tableMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+									aria-label={t('editors.tableMenu')}
+									title={t('editors.tableMenu')}
+									aria-expanded={tableMenuOpen}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={() => {
+										updateTableMenuPosition();
+										setTableMenuOpen((open) => !open);
+									}}
+								>
+									<FontAwesomeIcon icon={faTable} />
+								</button>
+							</div>
+							<div className={styles.formatMenuAnchor}>
+								<button
+									ref={emojiMenuButtonRef}
+									type="button"
+									className={`${styles.formatButton}${compactButtonClass}${emojiMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+									aria-label={t('editors.emojiPicker')}
+									title={t('editors.emojiPicker')}
+									aria-expanded={emojiMenuOpen}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={() => {
+										updateEmojiMenuPosition();
+										setEmojiMenuOpen((open) => !open);
+									}}
+								>
+									<FontAwesomeIcon icon={faFaceSmile} />
+								</button>
+							</div>
+							{props.onCreateUrlPreview ? (
+								<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
+									<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
+								</button>
+							) : null}
+						</>
+					);
+				case 'layout':
+					return (
+						<>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignLeft ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('left').run()}>
+								<FontAwesomeIcon icon={faAlignLeft} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignCenter ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignCenter')} title={t('editors.alignCenter')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('center').run()}>
+								<FontAwesomeIcon icon={faAlignCenter} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignRight ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignRight')} title={t('editors.alignRight')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('right').run()}>
+								<FontAwesomeIcon icon={faAlignRight} />
+							</button>
+						</>
+					);
+				case 'copy':
+					return (
+						<div className={styles.copyModeToggleGroup} role="group" aria-label={t('editors.copyMode')}>
+							<button
+								type="button"
+								className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'markdown' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
+								aria-label={t('editors.copyModeMarkdownToast')}
+								aria-pressed={resolvedCopyMode === 'markdown'}
+								title={t('editors.copyModeMarkdownToast')}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => props.onCopyModeChange?.('markdown')}
+							>
+								{t('editors.copyMarkdown')}
+							</button>
+							<button
+								type="button"
+								className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'rich-text' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
+								aria-label={t('editors.copyModeRichTextToast')}
+								aria-pressed={resolvedCopyMode === 'rich-text'}
+								title={t('editors.copyModeRichTextToast')}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => props.onCopyModeChange?.('rich-text')}
+							>
+								{t('editors.copyRichText')}
+							</button>
+						</div>
+					);
+				default:
+					return null;
+			}
+		})()
+		: null;
+	React.useEffect(() => {
+		if (!isCondensedToolbar) {
+			setCondensedSection(null);
+			return;
+		}
+		setHeadingMenuOpen(false);
+	}, [isCondensedToolbar]);
+	React.useEffect(() => {
+		if (!isCondensedToolbar || condensedSection === 'insert') return;
+		setTableMenuOpen(false);
+		setHighlightMenuOpen(false);
+		setEmojiMenuOpen(false);
+	}, [condensedSection, isCondensedToolbar]);
 
 	return (
 		<div className={styles.formatToolbarStack}>
@@ -874,32 +1057,39 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleUnderline().run()}>
 					<FontAwesomeIcon icon={faUnderline} />
 				</button>
+				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isStrike ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.strikethrough')} title={t('editors.strikethrough')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleStrike().run()}>
+					<FontAwesomeIcon icon={faStrikethrough} />
+				</button>
 				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
 					<FontAwesomeIcon icon={faLink} />
 				</button>
-				{/* Emoji quick-insert — available in all toolbar variants */}
-				<div className={styles.formatMenuAnchor}>
-					<button
-						ref={emojiMenuButtonRef}
-						type="button"
-						className={`${styles.formatButton}${compactButtonClass}${emojiMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
-						aria-label={t('editors.emojiPicker')}
-						title={t('editors.emojiPicker')}
-						aria-expanded={emojiMenuOpen}
-						onMouseDown={preventToolbarFocusSteal}
-						onPointerDown={preventToolbarFocusSteal}
-						onClick={() => {
-							updateEmojiMenuPosition();
-							setEmojiMenuOpen((open) => !open);
-						}}
-					>
-						<FontAwesomeIcon icon={faFaceSmile} />
-					</button>
-				</div>
-				{props.onCreateUrlPreview ? (
-					<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
-						<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
-					</button>
+				{!isCondensedToolbar ? (
+					<>
+						{/* Emoji quick-insert — available in all toolbar variants */}
+						<div className={styles.formatMenuAnchor}>
+							<button
+								ref={emojiMenuButtonRef}
+								type="button"
+								className={`${styles.formatButton}${compactButtonClass}${emojiMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+								aria-label={t('editors.emojiPicker')}
+								title={t('editors.emojiPicker')}
+								aria-expanded={emojiMenuOpen}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => {
+									updateEmojiMenuPosition();
+									setEmojiMenuOpen((open) => !open);
+								}}
+							>
+								<FontAwesomeIcon icon={faFaceSmile} />
+							</button>
+						</div>
+						{props.onCreateUrlPreview ? (
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
+								<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
+							</button>
+						) : null}
+					</>
 				) : null}
 				{props.onToggleNoteAutoScroll ? (
 					<button
@@ -972,7 +1162,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						</button>
 					</>
 				) : null}
-				{props.variant === 'full' ? (
+				{props.variant === 'full' && !isCondensedToolbar ? (
 					<>
 						<div className={styles.formatDivider} aria-hidden="true" />
 						{/* Multi-color highlight picker */}
@@ -1109,6 +1299,71 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						</div>
 					</>
 				) : null}
+				{isCondensedToolbar ? (
+					<>
+						<div className={styles.formatDivider} aria-hidden="true" />
+						<button
+							type="button"
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'headings' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							aria-label={t('editors.condensedHeadings')}
+							title={t('editors.condensedHeadings')}
+							aria-pressed={condensedSection === 'headings'}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => toggleCondensedSection('headings')}
+						>
+							{activeHeadingLabel === t('editors.headingMenu') ? t('editors.condensedHeadings') : activeHeadingLabel}
+						</button>
+						<button
+							type="button"
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'lists' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							aria-label={t('editors.condensedLists')}
+							title={t('editors.condensedLists')}
+							aria-pressed={condensedSection === 'lists'}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => toggleCondensedSection('lists')}
+						>
+							{t('editors.condensedLists')}
+						</button>
+						<button
+							type="button"
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'insert' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							aria-label={t('editors.condensedInsert')}
+							title={t('editors.condensedInsert')}
+							aria-pressed={condensedSection === 'insert'}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => toggleCondensedSection('insert')}
+						>
+							{t('editors.condensedInsert')}
+						</button>
+						<button
+							type="button"
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'layout' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							aria-label={t('editors.condensedLayout')}
+							title={t('editors.condensedLayout')}
+							aria-pressed={condensedSection === 'layout'}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => toggleCondensedSection('layout')}
+						>
+							{t('editors.condensedLayout')}
+						</button>
+						<button
+							type="button"
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'copy' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							aria-label={t('editors.condensedCopy')}
+							title={t('editors.condensedCopy')}
+							aria-pressed={condensedSection === 'copy'}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => toggleCondensedSection('copy')}
+						>
+							{t('editors.condensedCopy')}
+						</button>
+					</>
+				) : null}
 				</div>
 				<button
 					type="button"
@@ -1124,6 +1379,18 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				</button>
 			</div>
 			</div>
+			{isCondensedToolbar && condensedSectionContent ? (
+				<div
+					className={`${styles.formatSubToolbar}${props.compact ? ` ${styles.formatSubToolbarCompact}` : ''}`}
+					role="toolbar"
+					aria-label={t('editors.condensedToolbarSections')}
+					onPointerDown={stopToolbarPropagation}
+					onMouseDown={stopToolbarPropagation}
+					onClick={stopToolbarPropagation}
+				>
+					{condensedSectionContent}
+				</div>
+			) : null}
 			{props.variant === 'full' && headingMenuOpen ? (
 				<div
 					ref={headingMenuRef}
@@ -1632,7 +1899,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 
 	return (
 		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`}>
-			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} onCreateUrlPreview={props.onCreateUrlPreview} noteAutoScrollEnabled={props.noteAutoScrollEnabled} onToggleNoteAutoScroll={props.onToggleNoteAutoScroll} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} />}
+			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} toolbarMode={props.toolbarMode} onCreateUrlPreview={props.onCreateUrlPreview} noteAutoScrollEnabled={props.noteAutoScrollEnabled} onToggleNoteAutoScroll={props.onToggleNoteAutoScroll} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} />}
 			{clipboardStatusMessage && !(props.hideToolbar && props.onClipboardStatusChange) ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
 			<EditorContent editor={editor} className={`${styles.richEditorViewport}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}`} />
 			{/*
@@ -1671,6 +1938,13 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 									onClick={() => editor.chain().focus().toggleUnderline().run()}
 								>
 									<FontAwesomeIcon icon={faUnderline} />
+								</button>
+								<button
+									type="button"
+									className={`${styles.bubbleMenuButton}${editor.isActive('strike') ? ` ${styles.bubbleMenuButtonActive}` : ''}`}
+									onClick={() => editor.chain().focus().toggleStrike().run()}
+								>
+									<FontAwesomeIcon icon={faStrikethrough} />
 								</button>
 							</>
 						) : null}

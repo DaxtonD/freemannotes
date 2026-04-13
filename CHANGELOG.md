@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.18 - 2026-04-12
+
+### Added
+- **Editors now support strikethrough and a per-device condensed toolbar mode.** Rich-text note editors expose strikethrough in the full, minimal, and selection bubble toolbars, and Preferences now lets each device choose between the full toolbar and a grouped condensed toolbar.
+
+### Changed
+- **Checklist cards and note previews fit their space more cleanly.** Checklist cards now budget space for active and completed items without inner-scroll traps, recently completed rows stay visible first, and text cards only apply a fade/clamp when the body actually overflows.
+
+### Fixed
+- **Bubble and cross-workspace ghost notes are filtered out before they render.** Bubble loading and cross-workspace hydration now treat empty title/body/checklist docs as stale ghost entries and close missing-note views cleanly instead of showing broken placeholders.
+- **Android/PWA back navigation now restores the notes view from Images and Trash.** Special mobile sidebar views now reuse the sidebar history entry they were opened from, so Back returns directly to the previous notes list instead of reopening the sidebar or exiting the app.
+
 ## 1.2.17 - 2026-04-11
 
 ### Added

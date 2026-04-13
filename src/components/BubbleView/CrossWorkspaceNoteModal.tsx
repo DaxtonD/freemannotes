@@ -24,14 +24,13 @@ import styles from './CrossWorkspaceNoteModal.module.css';
 
 const LOADING_INDICATOR_DELAY_MS = 120;
 const IDB_HYDRATION_FALLBACK_MS = 240;
-const REMOTE_SYNC_FALLBACK_MS = 450;
+const REMOTE_SYNC_FALLBACK_MS = 2000;
 
 function docHasRenderableContent(doc: Y.Doc, noteId: string): boolean {
 	const note = readNoteFromDoc(doc, noteId);
-	if (Number.isFinite(note.createdAt) && note.createdAt > 0) return true;
 	if (note.title.trim().length > 0) return true;
 	if (note.type === 'checklist') {
-		return Array.isArray(note.items) && note.items.length > 0;
+		return Array.isArray(note.items) && note.items.some((item) => String(item.text ?? '').trim().length > 0);
 	}
 	return typeof note.content === 'string' && note.content.trim().length > 0;
 }
@@ -114,6 +113,19 @@ export function CrossWorkspaceNoteModal({
 			setDoc(ydoc);
 		};
 
+		const settleMissing = (): void => {
+			if (settled) return;
+			settled = true;
+			if (loadingTimer != null) window.clearTimeout(loadingTimer);
+			if (idbFallbackTimer != null) window.clearTimeout(idbFallbackTimer);
+			if (remoteFallbackTimer != null) window.clearTimeout(remoteFallbackTimer);
+			detachDocObserver?.();
+			detachWsSyncObserver?.();
+			setShowLoading(false);
+			onShowBriefDialog?.('This note is no longer available.');
+			onClose();
+		};
+
 		const beginHydration = (): void => {
 			if (hydrationStarted || settled) return;
 			hydrationStarted = true;
@@ -138,15 +150,24 @@ export function CrossWorkspaceNoteModal({
 
 			const onSync = (isSynced: boolean): void => {
 				if (!isSynced) return;
-				settle();
+				if (docHasRenderableContent(ydoc, noteId)) {
+					settle();
+				}
 			};
 			ws.on('sync', onSync);
 			detachWsSyncObserver = () => {
 				ws?.off('sync', onSync);
 			};
 
-			// Empty notes are valid; don't block forever waiting for content.
-			remoteFallbackTimer = window.setTimeout(settle, REMOTE_SYNC_FALLBACK_MS);
+			// Notes with no title/body/checklist rows after initial hydration are ghost
+			// entries from stale registry/cache state, not real saved notes.
+			remoteFallbackTimer = window.setTimeout(() => {
+				if (docHasRenderableContent(ydoc, noteId)) {
+					settle();
+					return;
+				}
+				settleMissing();
+			}, REMOTE_SYNC_FALLBACK_MS);
 		};
 
 		loadingTimer = window.setTimeout(() => {
@@ -172,8 +193,7 @@ export function CrossWorkspaceNoteModal({
 			try { ydoc.destroy(); } catch { /* ignore */ }
 			providersRef.current = null;
 		};
-	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [docId, noteId, websocketUrl]);
+	}, [docId, noteId, onClose, onShowBriefDialog, websocketUrl]);
 
 	// Close on Escape key.
 	React.useEffect(() => {

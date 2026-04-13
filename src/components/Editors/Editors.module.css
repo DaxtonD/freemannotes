@@ -556,6 +556,60 @@
 	gap: 8px;
 }
 
+.formatSubToolbar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md);
+	background: color-mix(in srgb, var(--color-surface) 92%, var(--color-surface-2));
+	box-shadow: 0 10px 24px -20px rgba(0, 0, 0, 0.4);
+	flex-wrap: wrap;
+}
+
+.formatSubToolbarCompact {
+	gap: 4px;
+	padding: 4px;
+}
+
+.condensedToolbarToggle {
+	border: 1px solid color-mix(in srgb, var(--color-border) 86%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 84%, var(--color-surface-2));
+	color: var(--color-text-muted);
+	cursor: pointer;
+	flex: 0 0 auto;
+	height: 30px;
+	padding: 0 10px;
+	border-radius: 999px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	white-space: nowrap;
+	transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+	/* Allow toolbar drags that begin on a button to hand off to the horizontal scroller. */
+	touch-action: pan-x;
+}
+
+.condensedToolbarToggleCompact {
+	height: 26px;
+	padding: 0 8px;
+}
+
+.condensedToolbarToggle:hover,
+.condensedToolbarToggle:focus-visible {
+	background: color-mix(in srgb, var(--color-surface-2) 90%, transparent);
+	color: var(--color-text);
+}
+
+.condensedToolbarToggleActive {
+	border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
+	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+	color: var(--color-accent);
+}
+
 .headingMenuButtonLabel {
 	display: inline-flex;
 	align-items: center;

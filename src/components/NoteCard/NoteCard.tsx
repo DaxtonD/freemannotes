@@ -69,7 +69,7 @@ export type NoteCardProps = {
 
 type NoteType = 'text' | 'checklist';
 
-type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null };
+type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null; completedAt: number | null };
 
 // Note cards are opened from pointer-up, so claim the active touch gesture at module
 // scope and suppress competing touches until the first gesture resolves.
@@ -158,6 +158,7 @@ function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCa
 			text: getChecklistItemPlainText(m),
 			richContent: getChecklistItemRichPreviewJson(m),
 			completed: Boolean(m.get('completed')),
+			completedAt: Number.isFinite(Number(m.get('completedAt'))) ? Number(m.get('completedAt')) : null,
 			parentId:
 				typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
 					? String(m.get('parentId')).trim()
@@ -449,7 +450,7 @@ function renderRichPreview(json: JSONContent | null | undefined, allowLinkIntera
 function updateChecklistItemById(
 	yarray: Y.Array<Y.Map<any>>,
 	id: string,
-	patch: Partial<Omit<ChecklistItem, 'id'>>
+	patch: Partial<Omit<ChecklistItem, 'id'>> & { completedAt?: number | null }
 ): void {
 	const normalizedId = String(id ?? '').trim();
 	if (!normalizedId) return;
@@ -470,6 +471,10 @@ function updateChecklistItemById(
 		if (!m) return;
 		if (patch.text !== undefined) m.set('text', String(patch.text));
 		if (patch.completed !== undefined) m.set('completed', Boolean(patch.completed));
+		if (patch.completedAt !== undefined) {
+			if (Number.isFinite(Number(patch.completedAt))) m.set('completedAt', Number(patch.completedAt));
+			else m.delete('completedAt');
+		}
 		if (patch.parentId !== undefined) {
 			const parentId = typeof patch.parentId === 'string' ? patch.parentId.trim() : null;
 			m.set('parentId', parentId && parentId.length > 0 ? parentId : null);
@@ -514,6 +519,10 @@ function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardCheckl
 
 export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const { t } = useI18n();
+	const maxCardHeightPx = Math.max(220, props.maxCardHeightPx ?? 300);
+	const noteCardLinkPreviewMaxItems = maxCardHeightPx >= 420 ? 3 : 2;
+	const collapsedChecklistLineHeightPx = 22;
+	const minimumExpandedCompletedItems = 3;
 	const canEdit = props.canEdit !== false;
 	const allowChecklistItemInteractions = props.allowChecklistItemInteractions !== false;
 	const allowLinkInteractions = props.allowLinkInteractions !== false;
@@ -582,27 +591,42 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const [clampedById, setClampedById] = React.useState<Record<string, boolean>>({});
+	const [textPreviewLayout, setTextPreviewLayout] = React.useState<{ maxHeightPx: number | null; isOverflowing: boolean }>({
+		maxHeightPx: null,
+		isOverflowing: false,
+	});
+	const [checklistLayoutMetrics, setChecklistLayoutMetrics] = React.useState({
+		headerHeightPx: 52,
+		metaHeightPx: 0,
+		linkPreviewHeightPx: 0,
+		completedBaseHeightPx: 36,
+		cardPaddingBottomPx: 0,
+		bodyPaddingVerticalPx: 16,
+		renderedCardScrollHeightPx: 0,
+		contentRegionScrollHeightPx: 0,
+	});
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
 	const cardRef = React.useRef<HTMLElement | null>(null);
+	const headerRef = React.useRef<HTMLDivElement | null>(null);
+	const metaChipRowRef = React.useRef<HTMLDivElement | null>(null);
 	const contentRegionRef = React.useRef<HTMLDivElement | null>(null);
 	const bodyRef = React.useRef<HTMLDivElement | null>(null);
 	const contentPreviewRef = React.useRef<HTMLDivElement | null>(null);
 	const checklistRef = React.useRef<HTMLUListElement | null>(null);
 	const completedSectionRef = React.useRef<HTMLDivElement | null>(null);
+	const completedToggleRef = React.useRef<HTMLButtonElement | HTMLDivElement | null>(null);
 	const linkPreviewRailRef = React.useRef<HTMLDivElement | null>(null);
 	const footerRef = React.useRef<HTMLDivElement | null>(null);
-	const cardStyle = React.useMemo(() => {
-		const nextStyle: React.CSSProperties = {};
-		if (resolvedColor) {
-			nextStyle['--note-color-card-bg'] = resolvedColor.cardBackground;
-			nextStyle['--note-color-header-bg'] = resolvedColor.headerBackground;
-			nextStyle['--note-color-border'] = resolvedColor.borderColor;
-			nextStyle['--note-color-text'] = resolvedColor.textColor;
-			nextStyle['--note-color-muted'] = resolvedColor.mutedTextColor;
-			nextStyle['--note-color-accent'] = resolvedColor.accentColor;
-		}
-		return Object.keys(nextStyle).length > 0 ? nextStyle : undefined;
-	}, [resolvedColor]);
+	const requestChecklistLayoutRefresh = React.useCallback((): void => {
+		if (typeof window === 'undefined') return;
+		window.requestAnimationFrame(() => {
+			window.dispatchEvent(new CustomEvent('freemannotes:note-card-layout-change'));
+		});
+	}, []);
+	const handleHeaderRef = React.useCallback((node: HTMLDivElement | null): void => {
+		headerRef.current = node;
+		props.dragHandleRef?.(node);
+	}, [props.dragHandleRef]);
 	const reminderLabel = React.useMemo(() => {
 		if (!reminderAt) return null;
 		const parsed = new Date(reminderAt);
@@ -652,17 +676,170 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [props.noteId]);
 	const activeChecklistItems = React.useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedChecklistItems = React.useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
-	const completedRows = React.useMemo(() => (type === 'checklist' ? buildChecklistCompletedRows(normalizedItems) : []), [type, normalizedItems]);
+	const checklistItemLineCost = React.useCallback((itemId: string): number => {
+		if (clampedById[itemId]) return 3;
+		if (multilineById[itemId]) return 2;
+		return 1;
+	}, [clampedById, multilineById]);
+	const checklistItemById = React.useMemo(() => new Map(normalizedItems.map((item) => [item.id, item])), [normalizedItems]);
+	const checklistOrderIndexById = React.useMemo(() => new Map(normalizedItems.map((item, index) => [item.id, index])), [normalizedItems]);
+	const recentCompletedItems = React.useMemo(() => {
+		return completedChecklistItems.slice().sort((left, right) => {
+			const leftCompletedAt = Number.isFinite(Number(left.completedAt)) ? Number(left.completedAt) : Number.NEGATIVE_INFINITY;
+			const rightCompletedAt = Number.isFinite(Number(right.completedAt)) ? Number(right.completedAt) : Number.NEGATIVE_INFINITY;
+			if (leftCompletedAt !== rightCompletedAt) return rightCompletedAt - leftCompletedAt;
+			return (checklistOrderIndexById.get(right.id) ?? 0) - (checklistOrderIndexById.get(left.id) ?? 0);
+		});
+	}, [checklistOrderIndexById, completedChecklistItems]);
+	const fitChecklistItemsToLineBudget = React.useCallback((items: readonly NoteCardChecklistItem[], lineBudget: number) => {
+		if (type !== 'checklist' || items.length === 0 || lineBudget <= 0) {
+			return { visible: [] as NoteCardChecklistItem[], hiddenCount: items.length, usedLineCount: items.length > 0 && lineBudget > 0 ? 1 : 0 };
+		}
+		let totalLineCost = 0;
+		for (const item of items) totalLineCost += checklistItemLineCost(item.id);
+		if (totalLineCost <= lineBudget) {
+			return { visible: items.slice(), hiddenCount: 0, usedLineCount: totalLineCost };
+		}
+		const visible: NoteCardChecklistItem[] = [];
+		let remainingBudget = Math.max(0, lineBudget - 1);
+		for (const item of items) {
+			const lineCost = checklistItemLineCost(item.id);
+			if (remainingBudget < lineCost) break;
+			visible.push(item);
+			remainingBudget -= lineCost;
+		}
+		return {
+			visible,
+			hiddenCount: Math.max(0, items.length - visible.length),
+			usedLineCount: visible.reduce((total, item) => total + checklistItemLineCost(item.id), 0) + 1,
+		};
+	}, [checklistItemLineCost, type]);
+	const selectVisibleCompletedRows = React.useCallback((lineBudget: number) => {
+		if (type !== 'checklist' || recentCompletedItems.length === 0) return [] as Array<{ kind: 'item' | 'ghost'; item: NoteCardChecklistItem }>;
+		const visible: Array<{ kind: 'item' | 'ghost'; item: NoteCardChecklistItem }> = [];
+		const insertedGhosts = new Set<string>();
+		let remainingBudget = Math.max(0, lineBudget);
+		let shownCompletedItems = 0;
+		for (const item of recentCompletedItems) {
+			const ghostParent = item.parentId ? checklistItemById.get(item.parentId) ?? null : null;
+			const shouldInsertGhost = Boolean(ghostParent && !ghostParent.completed && !insertedGhosts.has(ghostParent.id));
+			const rowCost = checklistItemLineCost(item.id) + (shouldInsertGhost ? 1 : 0);
+			if (shownCompletedItems >= minimumExpandedCompletedItems && remainingBudget < rowCost) break;
+			if (shouldInsertGhost && ghostParent) {
+				visible.push({ kind: 'ghost', item: ghostParent });
+				insertedGhosts.add(ghostParent.id);
+				remainingBudget = Math.max(0, remainingBudget - 1);
+			}
+			visible.push({ kind: 'item', item });
+			shownCompletedItems += 1;
+			remainingBudget = Math.max(0, remainingBudget - checklistItemLineCost(item.id));
+		}
+		return visible;
+	}, [checklistItemById, checklistItemLineCost, minimumExpandedCompletedItems, recentCompletedItems, type]);
+	const checklistFixedChromePx = React.useMemo(
+		() => checklistLayoutMetrics.headerHeightPx + checklistLayoutMetrics.metaHeightPx + checklistLayoutMetrics.linkPreviewHeightPx + checklistLayoutMetrics.cardPaddingBottomPx + checklistLayoutMetrics.bodyPaddingVerticalPx,
+		[checklistLayoutMetrics]
+	);
+	const collapsedAvailableLineBudget = React.useMemo(
+		() => Math.max(0, Math.floor((maxCardHeightPx - checklistFixedChromePx - checklistLayoutMetrics.completedBaseHeightPx) / collapsedChecklistLineHeightPx)),
+		[collapsedChecklistLineHeightPx, checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, maxCardHeightPx]
+	);
+	const collapsedActiveFit = React.useMemo(
+		() => fitChecklistItemsToLineBudget(activeChecklistItems, collapsedAvailableLineBudget),
+		[activeChecklistItems, collapsedAvailableLineBudget, fitChecklistItemsToLineBudget]
+	);
+	const collapsedChecklistMinHeightPx = React.useMemo(
+		() => Math.min(maxCardHeightPx, checklistFixedChromePx + checklistLayoutMetrics.completedBaseHeightPx + collapsedActiveFit.usedLineCount * collapsedChecklistLineHeightPx),
+		[checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, collapsedActiveFit.usedLineCount, collapsedChecklistLineHeightPx, maxCardHeightPx]
+	);
+	const expandedAvailableLineBudget = React.useMemo(
+		() => Math.max(0, Math.floor((maxCardHeightPx - checklistFixedChromePx - checklistLayoutMetrics.completedBaseHeightPx) / collapsedChecklistLineHeightPx)),
+		[collapsedChecklistLineHeightPx, checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, maxCardHeightPx]
+	);
+	const totalActiveChecklistLineCost = React.useMemo(() => {
+		if (type !== 'checklist') return 0;
+		let total = 0;
+		for (const item of activeChecklistItems) total += checklistItemLineCost(item.id);
+		return total;
+	}, [activeChecklistItems, checklistItemLineCost, type]);
+	const expandedActiveFit = React.useMemo(
+		() => totalActiveChecklistLineCost <= expandedAvailableLineBudget
+			? { visible: activeChecklistItems.slice(), hiddenCount: 0, usedLineCount: totalActiveChecklistLineCost }
+			: fitChecklistItemsToLineBudget(activeChecklistItems, expandedAvailableLineBudget),
+		[activeChecklistItems, expandedAvailableLineBudget, fitChecklistItemsToLineBudget, totalActiveChecklistLineCost]
+	);
+	const activeChecklistItemsToRender = showCompleted ? expandedActiveFit.visible : collapsedActiveFit.visible;
+	const hiddenActiveChecklistCountToRender = showCompleted ? expandedActiveFit.hiddenCount : collapsedActiveFit.hiddenCount;
+	const expandedActiveLineCost = React.useMemo(() => {
+		if (type !== 'checklist') return 0;
+		return expandedActiveFit.usedLineCount;
+	}, [expandedActiveFit.usedLineCount, type]);
+	const visibleCompletedRows = React.useMemo(() => {
+		return selectVisibleCompletedRows(Math.max(0, expandedAvailableLineBudget - expandedActiveLineCost));
+	}, [expandedActiveLineCost, expandedAvailableLineBudget, selectVisibleCompletedRows]);
+	const hiddenCompletedChecklistCount = Math.max(
+		0,
+		completedChecklistItems.length - visibleCompletedRows.filter((row) => row.kind === 'item').length
+	);
+	const expandedChecklistMinHeightPx = React.useMemo(() => {
+		if (type !== 'checklist') return maxCardHeightPx;
+		let completedLineCost = 0;
+		for (const row of visibleCompletedRows) {
+			completedLineCost += row.kind === 'ghost' ? 1 : checklistItemLineCost(row.item.id);
+		}
+		if (hiddenCompletedChecklistCount > 0) completedLineCost += 1;
+		return checklistFixedChromePx + checklistLayoutMetrics.completedBaseHeightPx + (expandedActiveLineCost + completedLineCost) * collapsedChecklistLineHeightPx;
+	}, [checklistFixedChromePx, checklistItemLineCost, checklistLayoutMetrics.completedBaseHeightPx, collapsedChecklistLineHeightPx, expandedActiveLineCost, hiddenCompletedChecklistCount, maxCardHeightPx, type, visibleCompletedRows]);
+	const expandedChecklistRenderedHeightPx = React.useMemo(() => {
+		if (!showCompleted) return 0;
+		return Math.max(
+			checklistLayoutMetrics.renderedCardScrollHeightPx,
+			checklistLayoutMetrics.headerHeightPx + checklistLayoutMetrics.metaHeightPx + checklistLayoutMetrics.contentRegionScrollHeightPx + checklistLayoutMetrics.cardPaddingBottomPx
+		);
+	}, [checklistLayoutMetrics, showCompleted]);
+	const expandedChecklistMaxHeightPx = Math.max(maxCardHeightPx, expandedChecklistMinHeightPx, expandedChecklistRenderedHeightPx);
+	const cardStyle = React.useMemo(() => {
+		const nextStyle: React.CSSProperties = {};
+		if (resolvedColor) {
+			nextStyle['--note-color-card-bg'] = resolvedColor.cardBackground;
+			nextStyle['--note-color-header-bg'] = resolvedColor.headerBackground;
+			nextStyle['--note-color-border'] = resolvedColor.borderColor;
+			nextStyle['--note-color-text'] = resolvedColor.textColor;
+			nextStyle['--note-color-muted'] = resolvedColor.mutedTextColor;
+			nextStyle['--note-color-accent'] = resolvedColor.accentColor;
+		}
+		if (type === 'checklist') {
+			nextStyle['--note-card-collapsed-checklist-height' as any] = `${collapsedChecklistMinHeightPx}px`;
+			nextStyle['--note-card-expanded-checklist-max-height' as any] = `${expandedChecklistMaxHeightPx}px`;
+		}
+		return Object.keys(nextStyle).length > 0 ? nextStyle : undefined;
+	}, [collapsedChecklistMinHeightPx, expandedChecklistMaxHeightPx, resolvedColor, type]);
+	const textPreviewStyle = React.useMemo(() => {
+		if (type !== 'text') return undefined;
+		if (!Number.isFinite(Number(textPreviewLayout.maxHeightPx)) || !textPreviewLayout.maxHeightPx || textPreviewLayout.maxHeightPx <= 0) return undefined;
+		return { maxHeight: `${Math.floor(textPreviewLayout.maxHeightPx)}px` } as React.CSSProperties;
+	}, [textPreviewLayout.maxHeightPx, type]);
+	React.useEffect(() => {
+		if (completedChecklistItems.length > 0 || !showCompleted) return;
+		setShowCompleted(false);
+		setNoteCardCompletedExpanded(props.noteId, false);
+		requestChecklistLayoutRefresh();
+	}, [completedChecklistItems.length, props.noteId, requestChecklistLayoutRefresh, showCompleted]);
 
 	const toggleNoteCardChecklistItem = React.useCallback((id: string, checked: boolean): void => {
 		if (!canEdit) return;
 		// Apply the shared parent/child completion rules, then only write the rows
 		// whose completion state actually changed back into Yjs.
 		const nextItems = toggleChecklistItemCompleted(normalizedItems, id, checked);
+		const completionStampBase = Date.now();
+		let completionStampOffset = 0;
 		for (const item of nextItems) {
 			const previous = normalizedItems.find((entry) => entry.id === item.id);
 			if (!previous || previous.completed === item.completed) continue;
-			updateChecklistItemById(checklistArray, item.id, { completed: item.completed });
+			updateChecklistItemById(checklistArray, item.id, {
+				completed: item.completed,
+				completedAt: item.completed ? completionStampBase + completionStampOffset++ : null,
+			});
 		}
 	}, [canEdit, checklistArray, normalizedItems]);
 
@@ -701,6 +878,153 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		};
 	}, [measureChecklistTextLayout, normalizedItems, showCompleted, type]);
 
+	React.useLayoutEffect(() => {
+		if (type !== 'text') {
+			setTextPreviewLayout((previous) => previous.maxHeightPx === null && !previous.isOverflowing
+				? previous
+				: { maxHeightPx: null, isOverflowing: false });
+			return;
+		}
+		if (typeof ResizeObserver === 'undefined' || typeof window === 'undefined') return;
+
+		let frameId = 0;
+		const measure = (): void => {
+			const body = bodyRef.current;
+			const preview = contentPreviewRef.current;
+			if (!body || !preview) return;
+
+			const availableHeightPx = Math.floor(body.clientHeight);
+			const fullContentHeightPx = Math.ceil(preview.scrollHeight);
+			if (availableHeightPx <= 0 || fullContentHeightPx <= availableHeightPx + 1) {
+				setTextPreviewLayout((previous) => previous.maxHeightPx === null && !previous.isOverflowing
+					? previous
+					: { maxHeightPx: null, isOverflowing: false });
+				return;
+			}
+
+			const bodyStyle = window.getComputedStyle(body);
+			const fontSizePx = Number.parseFloat(bodyStyle.fontSize || '0') || 16;
+			const parsedLineHeightPx = Number.parseFloat(bodyStyle.lineHeight || '0') || 0;
+			const lineHeightPx = parsedLineHeightPx > 0 ? parsedLineHeightPx : fontSizePx * 1.35;
+			const blockElements = Array.from(preview.children).filter((child): child is HTMLElement => child instanceof HTMLElement);
+			let lastFullyVisibleBlockBottomPx = 0;
+			for (const block of blockElements) {
+				const blockBottomPx = Math.ceil(block.offsetTop + block.offsetHeight);
+				if (blockBottomPx <= availableHeightPx + 0.5) {
+					lastFullyVisibleBlockBottomPx = blockBottomPx;
+					continue;
+				}
+				break;
+			}
+
+			const lineAlignedHeightPx = lineHeightPx > 0
+				? Math.floor(availableHeightPx / lineHeightPx) * lineHeightPx
+				: availableHeightPx;
+			const resolvedMaxHeightPx = blockElements.length > 1 && lastFullyVisibleBlockBottomPx > 0
+				? Math.min(availableHeightPx, lastFullyVisibleBlockBottomPx)
+				: Math.max(1, lineAlignedHeightPx > 0 ? Math.min(availableHeightPx, Math.floor(lineAlignedHeightPx)) : availableHeightPx);
+
+			setTextPreviewLayout((previous) => {
+				if (previous.isOverflowing && previous.maxHeightPx !== null && Math.abs(previous.maxHeightPx - resolvedMaxHeightPx) < 0.5) {
+					return previous;
+				}
+				return { maxHeightPx: resolvedMaxHeightPx, isOverflowing: true };
+			});
+		};
+
+		const scheduleMeasure = (): void => {
+			if (frameId) window.cancelAnimationFrame(frameId);
+			frameId = window.requestAnimationFrame(() => {
+				frameId = 0;
+				measure();
+			});
+		};
+
+		scheduleMeasure();
+		const observer = new ResizeObserver(() => scheduleMeasure());
+		if (bodyRef.current) observer.observe(bodyRef.current);
+		if (contentPreviewRef.current) observer.observe(contentPreviewRef.current);
+		window.addEventListener('resize', scheduleMeasure);
+		const viewport = window.visualViewport;
+		viewport?.addEventListener('resize', scheduleMeasure);
+
+		return () => {
+			if (frameId) window.cancelAnimationFrame(frameId);
+			observer.disconnect();
+			window.removeEventListener('resize', scheduleMeasure);
+			viewport?.removeEventListener('resize', scheduleMeasure);
+		};
+	}, [content, richContent, type]);
+
+	React.useLayoutEffect(() => {
+		if (type !== 'checklist') return;
+		if (typeof ResizeObserver === 'undefined' || typeof window === 'undefined') return;
+
+		let frameId = 0;
+		const measure = (): void => {
+			const card = cardRef.current;
+			const contentRegion = contentRegionRef.current;
+			const body = bodyRef.current;
+			const toggle = completedToggleRef.current;
+			const completed = completedSectionRef.current;
+			if (!card || !contentRegion || !body || !toggle || !completed) return;
+			const cardStyle = window.getComputedStyle(card);
+			const bodyStyle = window.getComputedStyle(body);
+			const completedStyle = window.getComputedStyle(completed);
+			const nextMetrics = {
+				headerHeightPx: headerRef.current?.offsetHeight ?? 0,
+				metaHeightPx: metaChipRowRef.current?.offsetHeight ?? 0,
+				linkPreviewHeightPx: linkPreviewRailRef.current && linkPreviewRailRef.current.childElementCount > 0 ? linkPreviewRailRef.current.offsetHeight : 0,
+				completedBaseHeightPx:
+					toggle.offsetHeight +
+						(Number.parseFloat(completedStyle.paddingTop || '0') || 0) +
+						(Number.parseFloat(completedStyle.paddingBottom || '0') || 0) +
+						(Number.parseFloat(completedStyle.borderTopWidth || '0') || 0),
+				cardPaddingBottomPx: Number.parseFloat(cardStyle.paddingBottom || '0') || 0,
+				bodyPaddingVerticalPx:
+					(Number.parseFloat(bodyStyle.paddingTop || '0') || 0) +
+					(Number.parseFloat(bodyStyle.paddingBottom || '0') || 0),
+				renderedCardScrollHeightPx: Math.ceil(card.scrollHeight),
+				contentRegionScrollHeightPx: Math.ceil(contentRegion.scrollHeight),
+			};
+			setChecklistLayoutMetrics((previous) => {
+				const changed = Object.entries(nextMetrics).some(([key, value]) => Math.abs((previous as Record<string, number>)[key] - value) > 0.5);
+				if (!changed) return previous;
+				requestChecklistLayoutRefresh();
+				return nextMetrics;
+			});
+		};
+
+		const scheduleMeasure = (): void => {
+			if (frameId) window.cancelAnimationFrame(frameId);
+			frameId = window.requestAnimationFrame(() => {
+				frameId = 0;
+				measure();
+			});
+		};
+
+		scheduleMeasure();
+		const observer = new ResizeObserver(() => scheduleMeasure());
+		if (cardRef.current) observer.observe(cardRef.current);
+		if (headerRef.current) observer.observe(headerRef.current);
+		if (metaChipRowRef.current) observer.observe(metaChipRowRef.current);
+		if (bodyRef.current) observer.observe(bodyRef.current);
+		if (completedSectionRef.current) observer.observe(completedSectionRef.current);
+		if (completedToggleRef.current) observer.observe(completedToggleRef.current);
+		if (linkPreviewRailRef.current) observer.observe(linkPreviewRailRef.current);
+		if (footerRef.current) observer.observe(footerRef.current);
+		window.addEventListener('resize', scheduleMeasure);
+		const viewport = window.visualViewport;
+		viewport?.addEventListener('resize', scheduleMeasure);
+
+		return () => {
+			if (frameId) window.cancelAnimationFrame(frameId);
+			observer.disconnect();
+			window.removeEventListener('resize', scheduleMeasure);
+			viewport?.removeEventListener('resize', scheduleMeasure);
+		};
+	}, [requestChecklistLayoutRefresh, showCompleted, type]);
+
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);
 	const suppressGestureOpenRef = React.useRef(false);
@@ -728,9 +1052,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			void updateUserPreferences(getDeviceId(), {
 				noteCardCompletedExpandedPatch: { noteId: props.noteId, expanded: next },
 			});
+			requestChecklistLayoutRefresh();
 			return next;
 		});
-	}, [props.noteId]);
+	}, [props.noteId, requestChecklistLayoutRefresh]);
 
 	const handleReminderAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
@@ -792,7 +1117,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}`}
+			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
@@ -962,7 +1287,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		>
 			<div
 				className={styles.header}
-				ref={props.dragHandleRef}
+				ref={handleHeaderRef}
 				data-drag-handle="true"
 				{...props.dragHandleProps}
 				onClick={(e) => {
@@ -991,7 +1316,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			{props.metaChips ? (
 				// Keep a dedicated chip rail on the card so collaborator chips ship now
 				// and future label/image/collection chips can reuse the same slot.
-				<div className={styles.metaChipRow}>{props.metaChips}</div>
+				<div ref={metaChipRowRef} className={styles.metaChipRow}>{props.metaChips}</div>
 			) : null}
 
 			{props.isTrashView && props.onRestoreNote ? (
@@ -1032,13 +1357,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				) : null}
 				{type === 'text' ? (
 					<div ref={bodyRef} className={styles.body}>
-						<div ref={contentPreviewRef} className={styles.contentPreview}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
+						<div ref={contentPreviewRef} className={`${styles.contentPreview}${textPreviewLayout.isOverflowing ? ` ${styles.contentPreviewOverflowing}` : ''}`} style={textPreviewStyle}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
 					</div>
 				) : (
 					<>
 						<div ref={bodyRef} className={styles.body}>
 							<ul ref={checklistRef} className={styles.checklist}>
-								{activeChecklistItems.map((item) => (
+								{activeChecklistItemsToRender.map((item) => (
 									<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
 										<span
 											className={styles.checklistCheckboxHitArea}
@@ -1064,78 +1389,82 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 									</li>
 								))}
 							</ul>
+							{hiddenActiveChecklistCountToRender > 0 ? (
+								<div className={`${styles.checklistMore} ${styles.activeChecklistMore}`}>+{hiddenActiveChecklistCountToRender} more</div>
+							) : null}
 						</div>
 
-						{completedChecklistItems.length > 0 ? (
-							<div ref={completedSectionRef} className={styles.completedSection}>
-								{allowCompletedItemInteractions ? (
-									<button
-										type="button"
-										className={styles.completedToggle}
-										onPointerDown={(e) => e.stopPropagation()}
-										onClick={(e) => {
-											e.stopPropagation();
-											toggleCompletedSection();
-										}}
-									>
-										<span className={styles.completedToggleArrow} aria-hidden="true">{showCompleted ? '▾' : '▸'}</span>
-										<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
-									</button>
-								) : (
-									<div className={styles.completedToggle}>
-										<span className={styles.completedToggleArrow} aria-hidden="true">{showCompleted ? '▾' : '▸'}</span>
-										<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
-									</div>
-								)}
-								{showCompleted ? (
-									<ul className={styles.checklist}>
-										{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
-											// Ghost parent: this item is not completed but some of its children are.
-											// Rendered as a dimmed, non-interactive label so the user can see which
-											// group the completed children belong to.
-											<li key={`ghost-${item.id}`} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''} ${styles.checklistGhostItem}`} aria-hidden="true">
-												<span className={styles.checklistCheckboxHitArea}>
-													<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
-												</span>
-												<div className={styles.checklistText}>
-													{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false) ?? item.text}
-												</div>
-											</li>
-										) : (
-											<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
-												<span
-													className={styles.checklistCheckboxHitArea}
-													onPointerDown={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
-													onPointerUp={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
-													onClick={allowCompletedItemInteractions ? (e) => {
-											e.stopPropagation();
-											toggleNoteCardChecklistItem(item.id, !item.completed);
-										} : undefined}
-													aria-label={item.completed ? 'Completed' : 'Not completed'}
-												>
-													<input
-														type="checkbox"
-														className={styles.checklistCheckbox}
-														checked={item.completed}
-														disabled={!canEdit || !allowCompletedItemInteractions}
-														readOnly
-													/>
-												</span>
-												<div className={`${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
-													{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text}
-												</div>
-											</li>
-										))}
-									</ul>
-								) : null}
-							</div>
-						) : null}
+						<div ref={completedSectionRef} className={styles.completedSection}>
+							{allowCompletedItemInteractions ? (
+								<button
+									ref={completedToggleRef as React.RefObject<HTMLButtonElement>}
+									type="button"
+									className={styles.completedToggle}
+									onPointerDown={(e) => e.stopPropagation()}
+									onClick={(e) => {
+										e.stopPropagation();
+										if (completedChecklistItems.length <= 0) return;
+										toggleCompletedSection();
+									}}
+									disabled={completedChecklistItems.length <= 0}
+								>
+									<span className={styles.completedToggleArrow} aria-hidden="true">{completedChecklistItems.length > 0 ? (showCompleted ? '▾' : '▸') : '·'}</span>
+									<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
+								</button>
+							) : (
+								<div ref={completedToggleRef as React.RefObject<HTMLDivElement>} className={styles.completedToggle}>
+									<span className={styles.completedToggleArrow} aria-hidden="true">{completedChecklistItems.length > 0 ? (showCompleted ? '▾' : '▸') : '·'}</span>
+									<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
+								</div>
+							)}
+							{showCompleted && completedChecklistItems.length > 0 ? (
+								<ul className={styles.checklist}>
+									{visibleCompletedRows.map(({ kind, item }) => kind === 'ghost' ? (
+										<li key={`ghost-${item.id}`} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''} ${styles.checklistGhostItem}`} aria-hidden="true">
+											<span className={styles.checklistCheckboxHitArea}>
+												<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
+											</span>
+											<div className={styles.checklistText}>
+												{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false) ?? item.text}
+											</div>
+										</li>
+									) : (
+										<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
+											<span
+												className={styles.checklistCheckboxHitArea}
+												onPointerDown={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
+												onPointerUp={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
+												onClick={allowCompletedItemInteractions ? (e) => {
+													e.stopPropagation();
+													toggleNoteCardChecklistItem(item.id, !item.completed);
+												} : undefined}
+												aria-label={item.completed ? 'Completed' : 'Not completed'}
+											>
+												<input
+													type="checkbox"
+													className={styles.checklistCheckbox}
+													checked={item.completed}
+													disabled={!canEdit || !allowCompletedItemInteractions}
+													readOnly
+												/>
+											</span>
+											<div className={`${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
+												{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text}
+											</div>
+										</li>
+									))}
+								</ul>
+							) : null}
+							{showCompleted && hiddenCompletedChecklistCount > 0 ? (
+								<div className={`${styles.checklistMore} ${styles.completedChecklistMore}`}>+{hiddenCompletedChecklistCount} completed items</div>
+							) : null}
+						</div>
 					</>
 				)}
 
 				{props.docId ? (
 					<div ref={linkPreviewRailRef} className={styles.linkPreviewRail}>
-						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={3} disableInitialRemoteRefresh disableOpenLinks={!allowLinkInteractions} />
+						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={noteCardLinkPreviewMaxItems} disableInitialRemoteRefresh disableOpenLinks={!allowLinkInteractions} />
 					</div>
 				) : null}
 			</div>

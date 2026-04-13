@@ -910,6 +910,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
 	const noteHeightBumpRafRef = React.useRef<number>(0);
+	const noteCardLayoutRefreshRafRef = React.useRef<number>(0);
 
 	// Seed height cache on first render from localStorage (before first pack)
 	if (!heightCacheLoadedRef.current) {
@@ -935,6 +936,25 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (moreMenuNoteId !== null) return;
 		setMoreMenuOpenedByLongPress(false);
 	}, [moreMenuNoteId]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const handleNoteCardLayoutChange = (): void => {
+			if (noteCardLayoutRefreshRafRef.current) window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
+			noteCardLayoutRefreshRafRef.current = window.requestAnimationFrame(() => {
+				noteCardLayoutRefreshRafRef.current = 0;
+				setNoteHeightsVersion((version) => version + 1);
+			});
+		};
+		window.addEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
+		return () => {
+			window.removeEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
+			if (noteCardLayoutRefreshRafRef.current) {
+				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
+				noteCardLayoutRefreshRafRef.current = 0;
+			}
+		};
+	}, []);
 
 	React.useEffect(() => {
 		docsByIdRef.current = docsById;

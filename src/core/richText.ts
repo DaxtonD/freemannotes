@@ -170,7 +170,6 @@ function buildStarterKit(variant: RichTextVariant) {
 			orderedList: false,
 			blockquote: false,
 			codeBlock: false,
-			strike: false,
 			horizontalRule: false,
 		});
 	}

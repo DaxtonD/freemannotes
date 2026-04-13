@@ -28,6 +28,7 @@ import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeCheckl
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
+import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
@@ -44,6 +45,7 @@ export type ChecklistEditorProps = {
 	onShowBriefDialog?: (message: string) => void;
 	onShowCompletedChange?: (next: boolean) => void;
 	allowQuickDelete?: boolean;
+	toolbarMode?: EditorToolbarMode;
 };
 
 type DraftChecklistItem = ChecklistItem & { richContent: JSONContent };
@@ -85,6 +87,7 @@ function renderRichPreview(json: JSONContent | null | undefined): React.ReactNod
 			if (mark.type === 'bold') element = <strong key={`${key}-bold`}>{element}</strong>;
 			if (mark.type === 'italic') element = <em key={`${key}-italic`}>{element}</em>;
 			if (mark.type === 'underline') element = <u key={`${key}-underline`}>{element}</u>;
+			if (mark.type === 'strike') element = <s key={`${key}-strike`}>{element}</s>;
 			if (mark.type === 'link') {
 				const href = typeof mark.attrs?.href === 'string' ? mark.attrs.href : '';
 				element = href
@@ -1093,7 +1096,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 
 				<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 					<div className={styles.checklistToolbarSlot}>
-						<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
+						<RichTextToolbar editor={activeRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
 					</div>
 					{/* Keyboard-open branch:
 					    Reserve space for the floating toolbar only. This preserves comfortable text
@@ -1679,7 +1682,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					className={styles.floatingToolbar}
 					style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 				>
-					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
+					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} />
 				</div>
 			</>,
 			document.body

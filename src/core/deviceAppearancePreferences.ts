@@ -3,6 +3,8 @@ export const MAX_FONT_SCALE = 1.5;
 export const MIN_NOTE_CARD_HEIGHT_PX = 320;
 export const MAX_NOTE_CARD_HEIGHT_PX = 1400;
 
+export type EditorToolbarMode = 'full' | 'condensed';
+
 const STORAGE_KEY = 'freemannotes.deviceAppearancePreferences.v2';
 const LEGACY_STORAGE_KEY = 'freemannotes.deviceAppearancePreferences.v1';
 
@@ -11,6 +13,7 @@ export type CachedDeviceAppearancePreferences = {
 	deviceId: string;
 	noteCardFontScale: number;
 	noteEditorFontScale: number;
+	editorToolbarMode: EditorToolbarMode;
 	noteCardMaxHeightPx: number;
 	checklistShowCompleted: boolean;
 	quickDeleteChecklist: boolean;
@@ -45,6 +48,10 @@ function normalizeBoolean(value: unknown, fallback: boolean): boolean {
 	return fallback;
 }
 
+export function normalizeEditorToolbarMode(value: unknown): EditorToolbarMode {
+	return value === 'condensed' ? 'condensed' : 'full';
+}
+
 function normalizeSnapshot(value: Partial<CachedDeviceAppearancePreferences> | null | undefined): CachedDeviceAppearancePreferences | null {
 	if (!value || typeof value !== 'object') return null;
 	if (typeof value.deviceId !== 'string' || !value.deviceId) return null;
@@ -53,6 +60,7 @@ function normalizeSnapshot(value: Partial<CachedDeviceAppearancePreferences> | n
 		deviceId: value.deviceId,
 		noteCardFontScale: clampFontScale(Number(value.noteCardFontScale)),
 		noteEditorFontScale: clampFontScale(Number(value.noteEditorFontScale)),
+		editorToolbarMode: normalizeEditorToolbarMode(value.editorToolbarMode),
 		noteCardMaxHeightPx: clampNoteCardMaxHeightPx(Number(value.noteCardMaxHeightPx)),
 		checklistShowCompleted: normalizeBoolean(value.checklistShowCompleted, false),
 		quickDeleteChecklist: normalizeBoolean(value.quickDeleteChecklist, false),
@@ -102,6 +110,7 @@ function readLegacySnapshot(deviceId: string): CachedDeviceAppearancePreferences
 			deviceId,
 			noteCardFontScale: clampFontScale(Number(parsed.noteCardFontScale)),
 			noteEditorFontScale: clampFontScale(Number(parsed.noteEditorFontScale)),
+			editorToolbarMode: 'full',
 			noteCardMaxHeightPx: clampNoteCardMaxHeightPx(Number(parsed.noteCardMaxHeightPx)),
 			checklistShowCompleted: false,
 			quickDeleteChecklist: false,

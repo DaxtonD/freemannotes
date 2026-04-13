@@ -57,7 +57,9 @@ import {
 	clampNoteCardMaxHeightPx,
 	getDefaultNoteCardMaxHeightPx,
 	isLocalAppearancePreferenceNewer,
+	normalizeEditorToolbarMode,
 	readCachedDeviceAppearancePreferences,
+	type EditorToolbarMode,
 	writeCachedDeviceAppearancePreferences,
 } from './core/deviceAppearancePreferences';
 import { useDocumentManager } from './core/DocumentManagerContext';
@@ -317,7 +319,10 @@ type ReminderNoteModalState = {
 	title: string;
 };
 
+type SidebarView = 'notes' | 'images' | 'archive' | 'trash';
+
 type OverlaySnapshot = {
+	sidebarView: SidebarView;
 	editorMode: EditorMode;
 	selectedNoteId: string | null;
 	isMobileSearchOpen: boolean;
@@ -378,6 +383,7 @@ type OverlayHistoryState = {
 };
 
 const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
+	sidebarView: 'notes',
 	editorMode: 'none',
 	selectedNoteId: null,
 	isMobileSearchOpen: false,
@@ -430,7 +436,8 @@ function isNoteEditorMediaDockHistoryState(value: unknown): boolean {
 }
 
 function hasOverlaySnapshotContent(snapshot: OverlaySnapshot): boolean {
-	return snapshot.editorMode !== 'none'
+	return snapshot.sidebarView !== 'notes'
+		|| snapshot.editorMode !== 'none'
 		|| snapshot.selectedNoteId !== null
 		|| snapshot.isMobileSearchOpen
 		|| snapshot.isPreferencesOpen
@@ -757,7 +764,7 @@ export function App(): React.JSX.Element {
 	const sidebarEntryButtonRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>(CLOSED_SIDEBAR_GROUPS);
 	// Which sidebar view is active: regular notes, workspace images, archive, or trash.
-	const [sidebarView, setSidebarView] = React.useState<'notes' | 'images' | 'archive' | 'trash'>('notes');
+	const [sidebarView, setSidebarView] = React.useState<SidebarView>('notes');
 	// UI mode for the "new note" panel.
 	const [editorMode, setEditorMode] = React.useState<EditorMode>('none');
 	// Phase 10 preferences shell entry point opened from top-right avatar.
@@ -813,6 +820,9 @@ export function App(): React.JSX.Element {
 	);
 	const [noteEditorFontScalePref, setNoteEditorFontScalePref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.noteEditorFontScale ?? 1
+	);
+	const [editorToolbarModePref, setEditorToolbarModePref] = React.useState<EditorToolbarMode>(
+		() => normalizeEditorToolbarMode(cachedDeviceAppearancePrefs?.editorToolbarMode)
 	);
 	const [noteCardMaxHeightPref, setNoteCardMaxHeightPref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()
@@ -1033,8 +1043,10 @@ export function App(): React.JSX.Element {
 
 	const getOverlaySnapshot = React.useCallback((): OverlaySnapshot => {
 		return {
+			sidebarView,
 			editorMode,
 			selectedNoteId,
+			crossWorkspaceNote,
 			isMobileSearchOpen,
 			isPreferencesOpen,
 			isAppearanceOpen,
@@ -1048,8 +1060,10 @@ export function App(): React.JSX.Element {
 			isFabOpen,
 		};
 	}, [
+		sidebarView,
 		editorMode,
 		selectedNoteId,
+		crossWorkspaceNote,
 		isMobileSearchOpen,
 		isPreferencesOpen,
 		isAppearanceOpen,
@@ -1068,8 +1082,10 @@ export function App(): React.JSX.Element {
 	}, [getOverlaySnapshot]);
 
 	const applyOverlaySnapshot = React.useCallback((snapshot: OverlaySnapshot) => {
+		setSidebarView(snapshot.sidebarView);
 		setEditorMode(snapshot.editorMode);
 		setSelectedNoteId(snapshot.selectedNoteId);
+		setCrossWorkspaceNote(snapshot.crossWorkspaceNote);
 		setIsMobileSearchOpen(snapshot.isMobileSearchOpen);
 		setIsPreferencesOpen(snapshot.isPreferencesOpen);
 		setIsAppearanceOpen(snapshot.isAppearanceOpen);
@@ -1115,6 +1131,20 @@ export function App(): React.JSX.Element {
 		window.history.back();
 		return true;
 	}, [isMobileViewport]);
+
+	const openMobileSidebarHistoryView = React.useCallback((nextSidebarView: Extract<SidebarView, 'images' | 'trash' | 'archive'>) => {
+		// When a special sidebar view is opened from the mobile drawer, reuse that
+		// top history entry so Back returns directly to the prior notes state.
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				sidebarView: nextSidebarView,
+				isMobileSidebarOpen: false,
+			},
+			isMobileViewport && isMobileSidebarOpen ? 'replace' : 'push',
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot, isMobileSidebarOpen, isMobileViewport]);
 
 	const handleExitExternalRoute = React.useCallback(() => {
 		clearExternalRoute();
@@ -1427,7 +1457,7 @@ export function App(): React.JSX.Element {
 		if (!noteAttachmentBrowserState) return null;
 		return manager.getDoc(noteAttachmentBrowserState.noteId);
 	}, [manager, noteAttachmentBrowserState]);
-	const isEditorOverlayOpen = editorMode !== 'none' || Boolean(selectedNoteId);
+	const isEditorOverlayOpen = editorMode !== 'none' || Boolean(selectedNoteId) || Boolean(crossWorkspaceNote);
 	const isFabBlockedByOverlay =
 		isEditorOverlayOpen ||
 		isMobileSidebarOpen ||
@@ -1836,6 +1866,7 @@ export function App(): React.JSX.Element {
 	const applyDevicePreferenceState = React.useCallback((next: {
 		noteCardFontScale?: number | null;
 		noteEditorFontScale?: number | null;
+		editorToolbarMode?: EditorToolbarMode | null;
 		noteCardMaxHeightPx?: number | null;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
@@ -1847,6 +1878,7 @@ export function App(): React.JSX.Element {
 		const legacyNoteCardInteractions = next.noteCardClickOpens !== false;
 		setNoteCardFontScalePref(clampFontScale(next.noteCardFontScale ?? 1));
 		setNoteEditorFontScalePref(clampFontScale(next.noteEditorFontScale ?? 1));
+		setEditorToolbarModePref(normalizeEditorToolbarMode(next.editorToolbarMode));
 		setNoteCardMaxHeightPref(clampNoteCardMaxHeightPx(next.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()));
 		setChecklistShowCompletedPref(Boolean(next.checklistShowCompleted));
 		setQuickDeleteChecklistPref(Boolean(next.quickDeleteChecklist));
@@ -1859,6 +1891,7 @@ export function App(): React.JSX.Element {
 	const persistDevicePrefsLocally = React.useCallback((next: {
 		noteCardFontScale?: number;
 		noteEditorFontScale?: number;
+		editorToolbarMode?: EditorToolbarMode;
 		noteCardMaxHeightPx?: number;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
@@ -1873,6 +1906,7 @@ export function App(): React.JSX.Element {
 			deviceId,
 			noteCardFontScale: clampFontScale(next.noteCardFontScale ?? noteCardFontScalePref),
 			noteEditorFontScale: clampFontScale(next.noteEditorFontScale ?? noteEditorFontScalePref),
+			editorToolbarMode: normalizeEditorToolbarMode(next.editorToolbarMode ?? editorToolbarModePref),
 			noteCardMaxHeightPx: clampNoteCardMaxHeightPx(next.noteCardMaxHeightPx ?? noteCardMaxHeightPref),
 			checklistShowCompleted: next.checklistShowCompleted ?? checklistShowCompletedPref,
 			quickDeleteChecklist: next.quickDeleteChecklist ?? quickDeleteChecklistPref,
@@ -1882,13 +1916,14 @@ export function App(): React.JSX.Element {
 			noteCardCompletedInteractions: next.noteCardCompletedInteractions ?? noteCardCompletedInteractionsPref,
 			updatedAt: next.updatedAt ?? new Date().toISOString(),
 		});
-	}, [authUserId, checklistShowCompletedPref, deviceId, noteCardCheckboxInteractionsPref, noteCardClickOpensPref, noteCardCompletedInteractionsPref, noteCardFontScalePref, noteCardLinkInteractionsPref, noteCardMaxHeightPref, noteEditorFontScalePref, quickDeleteChecklistPref]);
+	}, [authUserId, checklistShowCompletedPref, deviceId, editorToolbarModePref, noteCardCheckboxInteractionsPref, noteCardClickOpensPref, noteCardCompletedInteractionsPref, noteCardFontScalePref, noteCardLinkInteractionsPref, noteCardMaxHeightPref, noteEditorFontScalePref, quickDeleteChecklistPref]);
 
 	const syncLocalDevicePrefsFromServer = React.useCallback((pref: UserDevicePreferences): void => {
 		applyDevicePreferenceState(pref);
 		persistDevicePrefsLocally({
 			noteCardFontScale: pref.noteCardFontScale,
 			noteEditorFontScale: pref.noteEditorFontScale,
+			editorToolbarMode: pref.editorToolbarMode,
 			noteCardMaxHeightPx: pref.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx(),
 			checklistShowCompleted: pref.checklistShowCompleted,
 			quickDeleteChecklist: pref.quickDeleteChecklist,
@@ -1971,6 +2006,18 @@ export function App(): React.JSX.Element {
 		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
 		void (async () => {
 			const updated = await updateUserPreferences(deviceId, { quickDeleteChecklist: next });
+			if (!updated) return;
+			syncLocalDevicePrefsFromServer(updated);
+		})();
+	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+
+	const commitEditorToolbarModePref = React.useCallback((next: EditorToolbarMode) => {
+		const normalized = normalizeEditorToolbarMode(next);
+		setEditorToolbarModePref(normalized);
+		persistDevicePrefsLocally({ editorToolbarMode: normalized });
+		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
+		void (async () => {
+			const updated = await updateUserPreferences(deviceId, { editorToolbarMode: normalized });
 			if (!updated) return;
 			syncLocalDevicePrefsFromServer(updated);
 		})();
@@ -2486,6 +2533,7 @@ export function App(): React.JSX.Element {
 					const updatedAppearance = await updateUserPreferences(deviceId, {
 						noteCardFontScale: localAppearanceSnapshot.noteCardFontScale,
 						noteEditorFontScale: localAppearanceSnapshot.noteEditorFontScale,
+						editorToolbarMode: localAppearanceSnapshot.editorToolbarMode,
 						noteCardMaxHeightPx: localAppearanceSnapshot.noteCardMaxHeightPx,
 						checklistShowCompleted: localAppearanceSnapshot.checklistShowCompleted,
 						quickDeleteChecklist: localAppearanceSnapshot.quickDeleteChecklist,
@@ -4175,11 +4223,20 @@ export function App(): React.JSX.Element {
 	const handleBubbleNoteSelect = React.useCallback(async (noteId: string, workspaceId: string): Promise<void> => {
 		if (workspaceId !== authWorkspaceId) {
 			// Open a standalone cross-workspace viewer instead of switching the
-			// active workspace — avoids history entries, "back to exit" prompts,
-			// and the async tear-down / reconnect latency.
+			// active workspace. Route it through the shared overlay history stack
+			// so Android Back dismisses the note before it reaches the app-exit guard.
 			const targetWorkspace = sidebarWorkspaces.find((ws) => ws.id === workspaceId) ?? null;
 			const workspaceName = targetWorkspace ? getWorkspaceDisplayName(targetWorkspace, t) : workspaceId;
-			setCrossWorkspaceNote({ noteId, workspaceId, workspaceName });
+			const current = getOverlaySnapshot();
+			commitOverlaySnapshot(
+				{
+					...current,
+					crossWorkspaceNote: { noteId, workspaceId, workspaceName },
+					isMobileSidebarOpen: false,
+					isFabOpen: false,
+				},
+				'push'
+			);
 			return;
 		}
 		// Same workspace — normal editor open flow.
@@ -4193,7 +4250,12 @@ export function App(): React.JSX.Element {
 			// Fall back to the normal loading state if preloading cannot complete yet.
 		}
 		openNoteEditor(noteId, { replaceTop: editorMode !== 'none' });
-	}, [authWorkspaceId, editorMode, manager, openNoteEditor, sidebarWorkspaces, t]);
+	}, [authWorkspaceId, commitOverlaySnapshot, editorMode, getOverlaySnapshot, manager, openNoteEditor, sidebarWorkspaces, t]);
+
+	const closeCrossWorkspaceNote = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
+		setCrossWorkspaceNote(null);
+	}, [goBackIfOverlayHistory]);
 
 	/** Persist a new color token for a workspace's bubble color and sync to server. */
 	const handleBubbleWorkspaceColorChange = React.useCallback((workspaceId: string, token: string) => {
@@ -6585,14 +6647,28 @@ export function App(): React.JSX.Element {
 											}
 											if (entry.id === 'trash') {
 												setActiveSharedFolder(null);
-												setSidebarView('trash');
-												if (isMobileViewport) closeMobileSidebar();
+												if (isMobileViewport) {
+													if (sidebarView !== 'trash') {
+														openMobileSidebarHistoryView('trash');
+													} else {
+														closeMobileSidebar();
+													}
+												} else {
+													setSidebarView('trash');
+												}
 												return;
 											}
 											if (entry.id === 'images') {
 												setActiveSharedFolder(null);
-												setSidebarView('images');
-												if (isMobileViewport) closeMobileSidebar();
+												if (isMobileViewport) {
+													if (sidebarView !== 'images') {
+														openMobileSidebarHistoryView('images');
+													} else {
+														closeMobileSidebar();
+													}
+												} else {
+													setSidebarView('images');
+												}
 												return;
 											}
 											if (entry.id === 'notes') {
@@ -7240,7 +7316,7 @@ export function App(): React.JSX.Element {
 
 					<section className="editor-panel">
 						{/* Branch: text editor open. */}
-						{editorMode === 'text' ? <TextEditor onSave={onSaveText} onCancel={closeCreateEditor} /> : null}
+						{editorMode === 'text' ? <TextEditor onSave={onSaveText} onCancel={closeCreateEditor} toolbarMode={editorToolbarModePref} /> : null}
 						{/* Branch: checklist editor open. */}
 						{editorMode === 'checklist' ? (
 							<ChecklistEditor
@@ -7249,6 +7325,7 @@ export function App(): React.JSX.Element {
 								onShowBriefDialog={showBriefDialog}
 								initialShowCompleted={checklistShowCompletedPref}
 								allowQuickDelete={quickDeleteChecklistPref}
+								toolbarMode={editorToolbarModePref}
 								onShowCompletedChange={(next) => {
 									commitChecklistShowCompletedPref(next);
 								}}
@@ -7392,7 +7469,7 @@ export function App(): React.JSX.Element {
 					onShowBriefDialog={showBriefDialog}
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}
-					onClose={() => setCrossWorkspaceNote(null)}
+					onClose={closeCrossWorkspaceNote}
 				/>
 			) : null}
 			{/* Bubble workspace color picker — rendered as a portal so it escapes
@@ -7570,6 +7647,7 @@ export function App(): React.JSX.Element {
 					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}
+					toolbarMode={editorToolbarModePref}
 					onShowCompletedChange={(next) => {
 						commitChecklistShowCompletedPref(next);
 					}}
@@ -7585,6 +7663,7 @@ export function App(): React.JSX.Element {
 				t={t}
 				isLightTheme={isLightTheme(themeId)}
 				quickDeleteChecklist={quickDeleteChecklistPref}
+				editorToolbarMode={editorToolbarModePref}
 				noteCardCheckboxInteractions={noteCardCheckboxInteractionsPref}
 				noteCardLinkInteractions={noteCardLinkInteractionsPref}
 				noteCardCompletedInteractions={noteCardCompletedInteractionsPref}
@@ -7605,6 +7684,9 @@ export function App(): React.JSX.Element {
 				}}
 				onQuickDeleteChecklistChange={(next) => {
 					commitQuickDeleteChecklistPref(next);
+				}}
+				onEditorToolbarModeChange={(next) => {
+					commitEditorToolbarModePref(next);
 				}}
 				onNoteCardCheckboxInteractionsChange={(next) => {
 					commitNoteCardCheckboxInteractionsPref(next);
