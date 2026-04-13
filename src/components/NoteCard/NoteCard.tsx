@@ -640,6 +640,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		if (!card) return;
 		const next: Record<string, boolean> = {};
 		const nextClamped: Record<string, boolean> = {};
+		const mergeMeasuredState = (previous: Record<string, boolean>, measured: Record<string, boolean>): Record<string, boolean> => {
+			const merged: Record<string, boolean> = {};
+			for (const item of normalizedItems) {
+				// Preserve the last measured wrap state for rows that are temporarily
+				// hidden by the preview line budget. Large completed sections can
+				// otherwise forget those rows are multiline, re-render them, and loop.
+				merged[item.id] = Object.prototype.hasOwnProperty.call(measured, item.id) ? measured[item.id] : (previous[item.id] ?? false);
+			}
+			return merged;
+		};
 		const textNodes = card.querySelectorAll<HTMLElement>('[data-checklist-text-id]');
 		for (const node of textNodes) {
 			const id = String(node.dataset.checklistTextId ?? '').trim();
@@ -654,22 +664,24 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			nextClamped[id] = node.scrollHeight > expectedClampHeight;
 		}
 		setMultilineById((prev) => {
+			const merged = mergeMeasuredState(prev, next);
 			const prevKeys = Object.keys(prev);
-			const nextKeys = Object.keys(next);
-			if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === next[key])) {
+			const nextKeys = Object.keys(merged);
+			if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === merged[key])) {
 				return prev;
 			}
-			return next;
+			return merged;
 		});
 		setClampedById((prev) => {
+			const merged = mergeMeasuredState(prev, nextClamped);
 			const prevKeys = Object.keys(prev);
-			const nextKeys = Object.keys(nextClamped);
-			if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === nextClamped[key])) {
+			const nextKeys = Object.keys(merged);
+			if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === merged[key])) {
 				return prev;
 			}
-			return nextClamped;
+			return merged;
 		});
-	}, [type]);
+	}, [normalizedItems, type]);
 
 	React.useEffect(() => {
 		setShowCompleted(getNoteCardCompletedExpanded(props.noteId));
