@@ -45,6 +45,16 @@ type Props = {
 	onBeforeWorkspaceDelete?: (workspaceId: string) => void;
 	onWorkspaceDeleted?: (deletedWorkspaceId: string, nextActiveWorkspaceId: string | null) => void;
 	onActiveWorkspaceRenamed?: () => void;
+	/**
+	 * Called just before the optimistic workspace switch so the parent can
+	 * disable WebSocket sync while the server session hasn't been updated yet.
+	 */
+	onBeforeWorkspaceActivated?: (workspaceId: string) => void;
+	/**
+	 * Called once the background server-activation POST succeeds, so the parent
+	 * can re-enable WebSocket sync once the session cookie is up-to-date.
+	 */
+	onWorkspaceActivationComplete?: (workspaceId: string) => void;
 };
 
 function mapWorkspaces(value: unknown): WorkspaceListItem[] {
@@ -228,58 +238,62 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 	const activateWorkspace = React.useCallback(
 		async (workspaceId: string) => {
 			if (busy) return;
-			if (props.authUserId && typeof navigator !== 'undefined' && navigator.onLine === false) {
+
+			// ── Offline-first: switch immediately, confirm with server in background ──
+			//
+			// We always switch the UI straight away using the locally-cached workspace
+			// data so the user sees their notes within milliseconds (IDB hydration),
+			// regardless of network quality. The server /activate call is sent in the
+			// background and is only used to update the session cookie so that WebSocket
+			// connections to the new workspace are authorised. WS sync is disabled until
+			// that call succeeds to prevent "forbidden namespace" errors.
+
+			// Step 1: Disable WS before switching room namespaces.
+			props.onBeforeWorkspaceActivated?.(workspaceId);
+
+			// Step 2: Update local cache and switch the view immediately.
+			if (props.authUserId) {
 				await cacheActiveWorkspaceSelection({
 					userId: props.authUserId,
 					deviceId,
 					activeWorkspaceId: workspaceId,
 				});
-				setActiveWorkspaceId(workspaceId);
-				props.onWorkspaceActivated(workspaceId);
-				props.onClose();
-				return;
 			}
-			setBusy(true);
-			setError(null);
-			try {
-				await fetchJson<{ activeWorkspaceId: string }>(
-					`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`,
-					{
-						method: 'POST',
-						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ deviceId }),
-					}
-				);
-				if (props.authUserId) {
-					await cacheActiveWorkspaceSelection({
-						userId: props.authUserId,
-						deviceId,
-						activeWorkspaceId: workspaceId,
-					});
-				}
-				setActiveWorkspaceId(workspaceId);
-				props.onWorkspaceActivated(workspaceId);
-				props.onClose();
-			} catch (err) {
-				if (props.authUserId) {
-					const cached = await readCachedWorkspaceSnapshot(props.authUserId, deviceId);
-					if (cached.workspaces.some((workspace) => workspace.id === workspaceId)) {
-						await cacheActiveWorkspaceSelection({
-							userId: props.authUserId,
-							deviceId,
-							activeWorkspaceId: workspaceId,
-						});
-						setActiveWorkspaceId(workspaceId);
-						props.onWorkspaceActivated(workspaceId);
-						props.onClose();
-						setBusy(false);
+			setActiveWorkspaceId(workspaceId);
+			props.onWorkspaceActivated(workspaceId);
+			props.onClose();
+
+			// Step 3: Offline — no WS needed, nothing else to do.
+			if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+			// Step 4: Background server activation with retries.
+			// The modal is already closed here; callbacks land in App.tsx safely.
+			void (async () => {
+				for (let attempt = 0; attempt < 3; attempt++) {
+					try {
+						await fetchJson<{ activeWorkspaceId: string }>(
+							`/api/workspaces/${encodeURIComponent(workspaceId)}/activate`,
+							{
+								method: 'POST',
+								headers: { 'Content-Type': 'application/json' },
+								body: JSON.stringify({ deviceId }),
+							}
+						);
+						// Session cookie updated — safe to re-enable WS.
+						props.onWorkspaceActivationComplete?.(workspaceId);
 						return;
+					} catch {
+						if (attempt < 2) {
+							// Back off before retrying (2 s, then 4 s).
+							await new Promise<void>((resolve) => {
+								window.setTimeout(resolve, 2000 * (attempt + 1));
+							});
+						}
 					}
 				}
-				setError(err instanceof Error ? err.message : props.t('workspace.activateFailed'));
-			} finally {
-				setBusy(false);
-			}
+				// All retries exhausted — WS unavailable until the app
+				// is reloaded or the user re-switches to this workspace.
+			})();
 		},
 		[busy, deviceId, props]
 	);
