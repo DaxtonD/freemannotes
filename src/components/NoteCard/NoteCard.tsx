@@ -1448,7 +1448,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 													readOnly
 												/>
 											</span>
-											<div className={`${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
+											<div className={`${styles.checklistText} ${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
 												{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text}
 											</div>
 										</li>

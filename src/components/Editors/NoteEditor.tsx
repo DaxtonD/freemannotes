@@ -1762,10 +1762,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<ul className={styles.checklistList}>
 									{activeItems.map((item) => (
 										<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-											<div className={styles.dragHandle} aria-hidden="true">
+											<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
 												<FontAwesomeIcon icon={faGripVertical} />
-											</div>
-											<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly />
+											</button>
+											<label className={styles.checklistCheckboxHitArea} aria-hidden="true">
+												<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly tabIndex={-1} />
+											</label>
 											<div className={styles.checklistRowPreview}>{item.text || '\u00A0'}</div>
 										</li>
 									))}
@@ -1776,10 +1778,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 										<ul className={styles.checklistList}>
 											{completedItems.map((item) => (
 												<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-													<div className={styles.dragHandle} aria-hidden="true">
+													<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
 														<FontAwesomeIcon icon={faGripVertical} />
-													</div>
-													<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly />
+													</button>
+													<label className={styles.checklistCheckboxHitArea} aria-hidden="true">
+														<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly tabIndex={-1} />
+													</label>
 													<div className={styles.checklistRowPreview}>{item.text || '\u00A0'}</div>
 												</li>
 											))}
@@ -2276,7 +2280,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									<ul className={styles.checklistList}>
 											{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
 												<li key={`ghost-${item.id}`} className={`${styles.checklistItem} ${styles.checklistGhostItem}`} aria-hidden="true">
-													<div className={styles.dragHandle} aria-hidden="true" />
+													<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled />
 													<label className={styles.checklistCheckboxHitArea}>
 														<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 													</label>
@@ -2286,9 +2290,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 												</li>
 											) : (
 												<li key={item.id} className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-													<div className={styles.dragHandle} aria-hidden="true">
+													<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
 														<FontAwesomeIcon icon={faGripVertical} />
-													</div>
+													</button>
 													<ChecklistRowContent
 														item={item}
 														itemMap={checklistMapsById.get(item.id) ?? null}

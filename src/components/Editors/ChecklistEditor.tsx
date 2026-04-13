@@ -1297,7 +1297,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 											<li key={`ghost-${item.id}`}
 												className={`${styles.checklistItem} ${styles.checklistGhostItem}`}
 												aria-hidden="true">
-										<div className={styles.dragHandle} aria-hidden="true" />
+											<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled />
 										<label className={styles.checklistCheckboxHitArea}>
 											<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 										</label>
@@ -1307,9 +1307,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 									</li>
 								) : (
 											<li key={item.id} className={`${styles.checklistItem}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-										<div className={styles.dragHandle} aria-hidden="true">
+											<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
 													<FontAwesomeIcon icon={faGripVertical} />
-										</div>
+											</button>
 										<label className={styles.checklistCheckboxHitArea} aria-label={item.completed ? 'Completed' : 'Not completed'}>
 											<input
 												type="checkbox"

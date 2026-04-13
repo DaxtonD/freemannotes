@@ -1875,6 +1875,7 @@ Drag handle:
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	line-height: 1;
 	padding-top: 0;
 	margin-top: var(--checklist-handle-top-offset);
 	align-self: start;
@@ -1888,6 +1889,11 @@ Drag handle:
 	-webkit-touch-callout: none;
 	-webkit-tap-highlight-color: transparent;
 	user-select: none;
+}
+
+.dragHandle:disabled {
+	opacity: 1;
+	cursor: default;
 }
 
 .dragHandle svg {
