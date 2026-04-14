@@ -241,16 +241,44 @@ export class DocumentManager {
 		const next = normalized.length > 0 ? normalized : null;
 		if (this.activeWorkspaceId === next) return;
 
-		// Workspace switching must hard-reset all room-level resources.
-		// IndexedDB room names + WebSocket room names are derived from the active
-		// workspace ID, so reusing providers across workspaces would mix data.
-		this.teardownAllRooms();
+		if (next === null) {
+			// Logout / auth loss: full tear-down to free all resources.
+			this.teardownAllRooms();
+		} else {
+			// Workspace switch: disconnect and discard WebSocket providers only.
+			//
+			// Room names embed the workspace ID (e.g. "wsA:__notes_registry__"),
+			// so Y.Doc instances and IDB providers for the old workspace are entirely
+			// isolated from the new workspace's rooms.  Keeping them alive means that
+			// when the user switches back, getDocReady() finds the doc already in
+			// this.docs with its ready-promise already resolved — instant return,
+			// no IDB wait, no skeleton shimmer on revisit.
+			//
+			// WS providers MUST be discarded: they authenticate against a specific
+			// workspace namespace and must not reconnect to the wrong one.
+			for (const roomName of Array.from(this.websocketProviders.keys())) {
+				this.wsCleanup.get(roomName)?.();
+				this.wsCleanup.delete(roomName);
+				const wsProvider = this.websocketProviders.get(roomName);
+				this.websocketProviders.delete(roomName);
+				this.websocketReadyPromises.delete(roomName);
+				try {
+					wsProvider?.disconnect?.();
+					wsProvider?.destroy?.();
+				} catch {
+					// ignore
+				}
+			}
+			this.pendingSyncRooms.clear();
+			this.updatedAtDocs.clear();
+			this.registryHydrated = false;
+		}
+
 		this.activeWorkspaceId = next;
 		this.registryHydrated = false;
 		this.updateConnectionState();
 		this.emitConnectionStatus();
-		// Null workspace means logout / auth loss. Skip registry re-init so we
-		// don't reconnect the unscoped `__notes_registry__` room and spam WS retries.
+		// Null workspace means logout / auth loss — skip registry re-init.
 		if (next) {
 			this.initializeRegistry();
 		}
