@@ -794,7 +794,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [allDocsLoaded, setAllDocsLoaded] = React.useState(() => props.suppressShimmer === true);
 	// Prevents allDocsLoaded from reverting to false after the initial load
 	// completes (e.g. when creating a new note later shouldn't re-shimmer cards).
-	const initialLoadCompleteRef = React.useRef(false);
+	// When suppressShimmer is true, treat the load as already complete so the
+	// tracking effect never drives allDocsLoaded back to false mid-IDB-hydration.
+	const initialLoadCompleteRef = React.useRef(props.suppressShimmer === true);
 
 	// Suppress framer-motion layout animations until all docs are loaded and two
 	// paint frames have passed (so cards settle before springs can fire).
