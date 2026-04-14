@@ -737,6 +737,10 @@ export function App(): React.JSX.Element {
 	// caches, scroll position, and any in-progress drag state.
 	const stableWorkspaceKeyRef = React.useRef<string>('no-workspace');
 	if (authWorkspaceId) stableWorkspaceKeyRef.current = authWorkspaceId;
+	// Track which workspaces have completed their first full load this session.
+	// Persists across workspace switches (Ref, not state) so NoteGrid can skip
+	// the initial skeleton shimmer when returning to a previously-loaded workspace.
+	const seenWorkspaceIdsRef = React.useRef<Set<string>>(new Set());
 	const [authOfflineMode, setAuthOfflineMode] = React.useState(false);
 	// Ref mirror of authOfflineMode so async callbacks (e.g. backgroundPreloadAllWorkspaces)
 	// can read the latest value without capturing a stale closure.
@@ -7403,6 +7407,10 @@ export function App(): React.JSX.Element {
 						// Layout animations are managed internally by NoteGrid
 						// (held until allDocsLoaded, then enabled after 2 rAFs).
 						enableLayoutAnimations={true}
+						// Skip the skeleton shimmer when switching back to a workspace whose
+						// notes have already been fully loaded this session. Shimmer still
+						// shows on the first cold load of each workspace.
+						suppressShimmer={seenWorkspaceIdsRef.current.has(authWorkspaceId ?? '')}
 						// Device ID scopes the height cache so skeleton cards render
 						// at the correct size for this device/viewport combination.
 						deviceId={deviceId}

@@ -117,6 +117,13 @@ export type NoteGridProps = {
 	isVisible?: boolean;
 	/** Note ID to suppress from the display — used while a new note is being drafted. */
 	hiddenNoteId?: string | null;
+	/**
+	 * When true, allDocsLoaded initialises as true so no skeleton shimmer is shown
+	 * on mount. Use this for workspace switches where data is expected from IDB
+	 * almost immediately and a full shimmer overlay would feel like a regression.
+	 * Safe to pass on every switch after the first full load of a workspace.
+	 */
+	suppressShimmer?: boolean;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -782,7 +789,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	);
 
 	// all docs are loaded → shimmer fades out and layout animations can start.
-	const [allDocsLoaded, setAllDocsLoaded] = React.useState(false);
+	// Initialise as loaded when the caller knows IDB data will arrive quickly
+	// (e.g. workspace switch back to a previously loaded workspace).
+	const [allDocsLoaded, setAllDocsLoaded] = React.useState(() => props.suppressShimmer === true);
 	// Prevents allDocsLoaded from reverting to false after the initial load
 	// completes (e.g. when creating a new note later shouldn't re-shimmer cards).
 	const initialLoadCompleteRef = React.useRef(false);
