@@ -389,6 +389,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		imageUrlPlaceholder: 'https://example.com/image.jpg',
 		addFromUrl: 'Add from URL',
 		adding: 'Adding…',
+		takePhoto: 'Take Photo',
 		chooseFiles: 'Choose file(s)',
 		filesSelected: 'file(s) selected',
 		uploadSelected: 'Upload selected images',

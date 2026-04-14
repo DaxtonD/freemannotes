@@ -1,8 +1,8 @@
-import { deleteNoteImage, listNoteImages, uploadNoteImages, type NoteImageRecord } from './noteMediaApi';
+import { deleteNoteImage, importNoteImageUrl, listNoteImages, uploadNoteImages, type NoteImageRecord } from './noteMediaApi';
 import { requestPwaBackgroundSync } from './pwa';
 
 export type QueuedNoteImageStatus = 'pending' | 'failed';
-export type QueuedNoteImageOperation = 'upload' | 'delete';
+export type QueuedNoteImageOperation = 'upload' | 'delete' | 'import-url';
 
 export type QueuedNoteImageRow = {
 	id: string;
@@ -14,6 +14,8 @@ export type QueuedNoteImageRow = {
 	mimeType: string | null;
 	byteSize: number;
 	blob: Blob | null;
+	/** Source URL for 'import-url' operations (queued when network is unavailable). */
+	sourceUrl: string | null;
 	createdAt: string;
 	updatedAt: string;
 	syncStatus: QueuedNoteImageStatus;
@@ -21,7 +23,7 @@ export type QueuedNoteImageRow = {
 };
 
 const DB_NAME = 'freemannotes.note-media.v1';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const NOTE_MEDIA_QUEUE_STORE = 'note_media_queue';
 const NOTE_MEDIA_PREVIEW_STORE = 'note_media_preview';
 const NOTE_MEDIA_CHANGED_EVENT = 'freemannotes:note-media-changed';
@@ -45,6 +47,15 @@ const flushTimers = new Map<string, number>();
 const remoteCache = new Map<string, readonly NoteImageRecord[]>();
 const pendingRemoteRefreshes = new Map<string, Promise<readonly NoteImageRecord[]>>();
 const remoteRefreshTimestamps = new Map<string, number>();
+const remoteFileNameOverrides = new Map<string, string>();
+
+function applyRemoteFileNameOverrides(images: readonly NoteImageRecord[]): NoteImageRecord[] {
+	return images.map((image) => {
+		if (image.fileName) return image;
+		const override = remoteFileNameOverrides.get(image.id);
+		return override ? { ...image, fileName: override } : image;
+	});
+}
 
 function isOffline(): boolean {
 	return typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -93,6 +104,7 @@ async function openDb(): Promise<IDBDatabase> {
 					if (store && !store.indexNames.contains('userId_docId_operationType')) {
 						store.createIndex('userId_docId_operationType', ['userId', 'docId', 'operationType'], { unique: false });
 					}
+					// v4: sourceUrl field added — no index needed, existing rows get null implicitly.
 				}
 				if (!db.objectStoreNames.contains(NOTE_MEDIA_PREVIEW_STORE)) {
 					const previewStore = db.createObjectStore(NOTE_MEDIA_PREVIEW_STORE, { keyPath: 'id' });
@@ -323,10 +335,10 @@ export async function readStoredNoteImagePreviewRows(docId: string): Promise<Sto
 
 export async function readStoredRemoteNoteImages(docId: string): Promise<NoteImageRecord[]> {
 	const rows = await readPreviewRowsByDoc(docId);
-	return rows
+	return applyRemoteFileNameOverrides(rows
 		.filter((row) => row.kind === 'remote' && row.image)
 		.map((row) => row.image as NoteImageRecord)
-		.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+		.sort((left, right) => left.createdAt.localeCompare(right.createdAt)));
 }
 
 function isUploadRow(row: QueuedNoteImageRow): boolean {
@@ -341,21 +353,23 @@ export async function queueNoteImagesForUpload(args: {
 	userId: string;
 	docId: string;
 	files: readonly File[];
+	fileNames?: readonly string[];
 }): Promise<QueuedNoteImageRow[]> {
 	const userId = String(args.userId || '').trim();
 	const docId = String(args.docId || '').trim();
 	if (!userId || !docId || args.files.length === 0) return [];
 	const createdAt = nowIso();
-	const rows = args.files.map((file) => ({
+	const rows = args.files.map((file, index) => ({
 		id: createId('note-image'),
 		userId,
 		docId,
 		operationType: 'upload' as const,
 		remoteImageId: null,
-		fileName: file.name || 'image',
+		fileName: String(args.fileNames?.[index] || file.name || 'image').trim() || 'image',
 		mimeType: file.type || 'application/octet-stream',
 		byteSize: file.size,
 		blob: file,
+		sourceUrl: null,
 		createdAt,
 		updatedAt: createdAt,
 		syncStatus: 'pending' as const,
@@ -367,6 +381,39 @@ export async function queueNoteImagesForUpload(args: {
 	void requestPwaBackgroundSync();
 	await scheduleQueuedNoteImageFlush(userId);
 	return rows;
+}
+
+export async function queueNoteImageUrlForImport(args: {
+	userId: string;
+	docId: string;
+	imageUrl: string;
+}): Promise<QueuedNoteImageRow | null> {
+	const userId = String(args.userId || '').trim();
+	const docId = String(args.docId || '').trim();
+	const imageUrl = String(args.imageUrl || '').trim();
+	if (!userId || !docId || !imageUrl) return null;
+	const createdAt = nowIso();
+	const row: QueuedNoteImageRow = {
+		id: createId('note-image-url'),
+		userId,
+		docId,
+		operationType: 'import-url',
+		remoteImageId: null,
+		fileName: null,
+		mimeType: null,
+		byteSize: 0,
+		blob: null,
+		sourceUrl: imageUrl,
+		createdAt,
+		updatedAt: createdAt,
+		syncStatus: 'pending',
+		lastError: null,
+	};
+	await upsertQueuedRows([row]);
+	emitNoteMediaChanged(docId);
+	void requestPwaBackgroundSync();
+	await scheduleQueuedNoteImageFlush(userId);
+	return row;
 }
 
 export async function queueRemoteNoteImageDeletion(args: {
@@ -393,6 +440,7 @@ export async function queueRemoteNoteImageDeletion(args: {
 		mimeType: null,
 		byteSize: 0,
 		blob: null,
+		sourceUrl: null,
 		createdAt,
 		updatedAt: createdAt,
 		syncStatus: 'pending',
@@ -528,10 +576,11 @@ export async function refreshRemoteNoteImages(
 	}
 	const work = (async () => {
 		const response = await listNoteImages(docId);
-		remoteCache.set(docId, response.images);
+		const images = applyRemoteFileNameOverrides(response.images);
+		remoteCache.set(docId, images);
 		remoteRefreshTimestamps.set(docId, Date.now());
-		void syncRemotePreviewRows(docId, response.images);
-		return response.images;
+		void syncRemotePreviewRows(docId, images);
+		return images;
 	})();
 	pendingRemoteRefreshes.set(docId, work);
 	try {
@@ -582,12 +631,20 @@ export async function flushQueuedNoteImages(userId: string): Promise<void> {
 						removeRemoteImageFromCache(row.docId, row.remoteImageId);
 						await deletePreviewRows([row.remoteImageId]).catch(() => undefined);
 					}
+				} else if (row.operationType === 'import-url') {
+					if (!row.sourceUrl) throw new Error('Import-URL payload is missing');
+					await importNoteImageUrl(row.docId, row.sourceUrl);
 				} else {
 					if (!row.blob) throw new Error('Upload payload is missing');
 					const file = new File([row.blob], row.fileName || 'image', {
 						type: row.mimeType || row.blob.type || 'application/octet-stream',
 					});
-					await uploadNoteImages(row.docId, [file]);
+					const response = await uploadNoteImages(row.docId, [file]);
+					for (const image of response.images) {
+						if (!image.fileName && row.fileName) {
+							remoteFileNameOverrides.set(image.id, row.fileName);
+						}
+					}
 					await deletePreviewRows([row.id]).catch(() => undefined);
 				}
 				await updateQueuedRow(row.id, () => null);

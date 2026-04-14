@@ -16,6 +16,9 @@ All notable changes to this project are documented in this file.
 - **Bubble and cross-workspace ghost notes are filtered out before they render.** Bubble loading and cross-workspace hydration now treat empty title/body/checklist docs as stale ghost entries and close missing-note views cleanly instead of showing broken placeholders.
 - **Android/PWA back navigation now restores the notes view from Images and Trash.** Special mobile sidebar views now reuse the sidebar history entry they were opened from, so Back returns directly to the previous notes list instead of reopening the sidebar or exiting the app.
 
+### Changed
+- **Photo-upload modal behavior was hardened for Android and mobile testing.** The Add Image flow now includes stricter interaction shielding around Android camera return events, stronger on-submit filename checks across queued and stored note images, keyboard-dismiss timing adjustments when renaming before submit, and a fixed footer action area so the Add Photo button stays visible while the file list scrolls.
+
 ## 1.2.17 - 2026-04-11
 
 ### Added
