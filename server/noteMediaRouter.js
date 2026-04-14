@@ -228,6 +228,7 @@ async function persistImageRecord({ prisma, uploadDir, access, userId, sourceBuf
 			thumbnailWidth: compressed.thumbnailWidth,
 			thumbnailHeight: compressed.thumbnailHeight,
 			sourceUrl,
+			fileName: path.basename(String(fileName || '')) || null,
 		},
 	});
 
@@ -268,6 +269,7 @@ function mapNoteImage(image) {
 		thumbnailWidth: image.thumbnailWidth,
 		thumbnailHeight: image.thumbnailHeight,
 		sourceUrl: image.sourceUrl || null,
+		fileName: image.fileName || null,
 		assetStatus: image.assetStatus,
 		ocrStatus: image.ocrStatus,
 		ocrText: image.ocrText || '',

@@ -506,6 +506,7 @@ model NoteImage {
   thumbnailWidth Int? @map("thumbnail_width")
   thumbnailHeight Int? @map("thumbnail_height")
   sourceUrl String? @map("source_url")
+  fileName  String? @map("file_name")
 
   assetStatus NoteImageAssetStatus @default(READY) @map("asset_status")
   ocrStatus NoteImageOcrStatus @default(PENDING) @map("ocr_status")

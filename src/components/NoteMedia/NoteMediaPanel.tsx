@@ -103,6 +103,12 @@ function formatRelativeDate(value: string, locale: string): string {
 	return rtf.format(dayDelta, 'day');
 }
 
+function getDisplayImageTitle(fileName: string | null | undefined, fallback: string): string {
+	const trimmed = String(fileName || '').trim();
+	if (!trimmed) return fallback;
+	return trimmed.replace(/\.[^.]+$/, '') || fallback;
+}
+
 export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const { t, locale } = useI18n();
 	const [remoteImages, setRemoteImages] = React.useState<readonly NoteImageRecord[]>(() => getCachedRemoteNoteImages(props.docId));
@@ -247,7 +253,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			const message = nextError instanceof Error ? nextError.message : t('media.deleteFailed');
 			if (props.authUserId && /fetch|network|failed/i.test(message)) {
 				await queueRemoteNoteImageDeletion({ userId: props.authUserId, docId: props.docId, imageId: image.id });
-				setViewerState((current) => (current?.src === image.originalUrl ? null : current));
+				setViewerState((current) => (current?.items[current.index]?.src === image.originalUrl ? null : current));
 				await refresh();
 				return;
 			}
@@ -293,7 +299,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			src: image.originalUrl,
 			fallbackThumbnailBlob: storedPreviewByRemoteId.get(image.id)?.thumbnailBlob || null,
 			thumbnailUrl: image.thumbnailUrl,
-			title: `${t('media.imageLabel')} ${index + 1}`,
+			title: image.fileName ? image.fileName.replace(/\.[^.]+$/, '') : `${t('media.imageLabel')} ${index + 1}`,
 			subtitle: image.ocrStatus === 'READY' ? t('media.ocrReady') : `${image.width || '?'} × ${image.height || '?'}`,
 			onDelete: props.canEdit ? () => void handleDeleteRemote(image) : undefined,
 			deleteDisabled: deletingId === image.id,
@@ -302,7 +308,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			src: item.previewUrl,
 			fallbackThumbnailBlob: null,
 			thumbnailUrl: null,
-			title: item.fileName || `${t('media.queuedImageLabel')} ${index + 1}`,
+			title: item.fileName ? item.fileName.replace(/\.[^.]+$/, '') : `${t('media.queuedImageLabel')} ${index + 1}`,
 			subtitle: item.lastError || `${t('media.queuedState')} ${formatRelativeDate(item.createdAt, locale)}`,
 			onDelete: props.canEdit ? () => void handleDeleteQueued(item) : undefined,
 		})),
@@ -380,7 +386,21 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 							</button>
 						) : null}
 						{props.canEdit && props.onAddImage ? (
-							<button type="button" className={styles.addButton} onClick={props.onAddImage}>
+							<button
+								type="button"
+								className={styles.addButton}
+								onPointerDown={(event) => event.stopPropagation()}
+								onTouchStart={(event) => event.stopPropagation()}
+								onTouchEnd={(event) => {
+									event.preventDefault();
+									event.stopPropagation();
+									props.onAddImage?.();
+								}}
+								onClick={(event) => {
+									event.stopPropagation();
+									props.onAddImage?.();
+								}}
+							>
 								<FontAwesomeIcon icon={faPlus} />
 								<span>{t('noteMenu.addImage')}</span>
 							</button>
@@ -424,10 +444,10 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 									onTouchEnd={(event) => handleTileTouchEnd(index, event)}
 								>
 									<div className={styles.thumbWrap}>
-										<RemoteImageThumb image={image} preview={storedPreviewByRemoteId.get(image.id) || null} alt={`${t('media.imageLabel')} ${index + 1}`} />
+										<RemoteImageThumb image={image} preview={storedPreviewByRemoteId.get(image.id) || null} alt={getDisplayImageTitle(image.fileName, `${t('media.imageLabel')} ${index + 1}`)} />
 									</div>
 									<div className={styles.meta}>
-										<span className={styles.title}>{t('media.imageLabel')} {index + 1}</span>
+										<span className={styles.title}>{getDisplayImageTitle(image.fileName, `${t('media.imageLabel')} ${index + 1}`)}</span>
 										<span className={styles.caption}>{formatRelativeDate(image.createdAt, locale)} · {image.width || '?'} × {image.height || '?'}</span>
 									</div>
 								</button>
@@ -462,10 +482,10 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 								>
 									<div className={styles.thumbWrap}>
 										<span className={styles.badge}>{item.syncStatus === 'failed' ? t('media.failedBadge') : t('media.queuedBadge')}</span>
-										<img className={styles.thumb} src={item.previewUrl} alt={item.fileName} />
+										<img className={styles.thumb} src={item.previewUrl} alt={item.fileName ?? ''} />
 									</div>
 									<div className={styles.meta}>
-										<span className={styles.title}>{item.fileName || `${t('media.queuedImageLabel')} ${index + 1}`}</span>
+										<span className={styles.title}>{getDisplayImageTitle(item.fileName, `${t('media.queuedImageLabel')} ${index + 1}`)}</span>
 										<span className={styles.caption}>{formatBytes(item.byteSize)}</span>
 									</div>
 								</button>

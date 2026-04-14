@@ -24,6 +24,7 @@ export type NoteImageRecord = {
 	thumbnailWidth: number | null;
 	thumbnailHeight: number | null;
 	sourceUrl: string | null;
+	fileName: string | null;
 	assetStatus: string;
 	ocrStatus: string;
 	ocrText: string;
