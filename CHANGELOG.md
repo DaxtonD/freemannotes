@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.21 - 2026-04-15
+
+### Fixed
+- **Shared With Me notes no longer appear in every workspace.** Fetching placements from all SHARED_WITH_ME workspaces (needed for bubble-view alias resolution) was inadvertently storing them all in state, causing the NoteGrid to display shared notes regardless of which workspace was active. Extra-workspace placements are now kept in a ref used only for room-alias registration, while `sharedPlacements` state (which drives the NoteGrid) is limited to the active workspace only.
+- **Clearing failed link-preview notifications now persists and updates the badge.** Clicking "Clear notifications" when only URL-preview failures were present would remove the rows on screen but leave the bell badge count unchanged, and the items would re-appear on the next metadata refresh. Dismissed failure IDs are now saved to `localStorage` and filtered out on every subsequent `refreshNoteShareState` call, and the badge count is decremented immediately on dismiss.
+
 ## 1.2.20 - 2026-04-14
 
 ### Changed
