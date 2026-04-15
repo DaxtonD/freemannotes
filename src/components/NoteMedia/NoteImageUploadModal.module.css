@@ -287,6 +287,26 @@
 	background: var(--color-surface);
 }
 
+.toast {
+	margin: 0;
+	text-align: center;
+	font-weight: 600;
+	font-size: 0.9rem;
+	color: var(--color-text);
+	padding: 2px 0;
+}
+
+.actionButtonCompact {
+	flex-direction: row;
+	padding: 8px 12px;
+	gap: 8px;
+	font-size: 0.85rem;
+}
+
+.actionButtonCompact .actionIcon {
+	font-size: 1.1rem;
+}
+
 @media (pointer: coarse) {
 	.backdrop {
 		align-items: flex-end;

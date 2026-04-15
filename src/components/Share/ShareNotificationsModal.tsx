@@ -37,6 +37,7 @@ type Props = {
 	onChanged?: () => void;
 	onAcceptedPlacement?: (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => void;
 	onAcceptedWorkspaceInvite?: (workspaceId: string) => void;
+	onClearFailedLinks?: () => void;
 	onOpenFailedLink?: (failure: FailedNoteLinkRecord) => void;
 };
 
@@ -194,7 +195,9 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const clearableInvitationIds = React.useMemo(() => {
 		return visibleInvitations.filter((invitation) => invitation.status !== 'PENDING').map((invitation) => invitation.id);
 	}, [visibleInvitations]);
-	const canClearNotifications = clearableInvitationIds.length > 0 || firedReminders.length > 0 || hasPendingReminderNotifications;
+	// Failed link-preview notifications are now treated as clearable items so the
+	// "Clear notifications" footer button is enabled when they are the only content.
+	const canClearNotifications = clearableInvitationIds.length > 0 || firedReminders.length > 0 || hasPendingReminderNotifications || hasFailedLinks;
 
 	const getWorkspaceRoleLabel = React.useCallback((role: WorkspacePendingInvite['role']): string => {
 		if (role === 'ADMIN') return t('invite.roleAdmin');
@@ -214,7 +217,12 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 		if (firedReminders.length > 0 || hasPendingReminderNotifications) {
 			props.onClearReminders?.();
 		}
-	}, [clearableInvitationIds, firedReminders.length, hasPendingReminderNotifications, props]);
+		if (hasFailedLinks) {
+			// Notify the parent so it can clear failedLinkNotifications state,
+			// which removes the notification badge and hides the failed items.
+			props.onClearFailedLinks?.();
+		}
+	}, [clearableInvitationIds, firedReminders.length, hasFailedLinks, hasPendingReminderNotifications, props]);
 
 	const queueAction = React.useCallback((action: PendingNoteShareAction) => {
 		enqueuePendingNoteShareAction(action);

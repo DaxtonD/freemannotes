@@ -89,6 +89,8 @@ export type NoteEditorProps = {
 	toolbarMode?: EditorToolbarMode;
 	/** When true, the close button always shows an X (discard) regardless of modification state. */
 	isPendingNew?: boolean;
+	/** When true, suppresses the floating keyboard toolbar (e.g. while the image upload modal is open). */
+	hideFormattingToolbar?: boolean;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -507,7 +509,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const readOnly = props.readOnly === true;
 	const keyboardVisibilityPaddingPx = 88;
 	const [isModified, setIsModified] = React.useState(false);
-	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
+	const [mediaDockOpen, setMediaDockOpen] = React.useState(() => {
+		try { return sessionStorage.getItem('__freemannotes_mediaDockOpen') === '1'; } catch { return false; }
+	});
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(0);
 	// More-menu state (editor 3-dot button):
 	// - Desktop: anchored popover positioned relative to the trigger button rect.
@@ -526,6 +530,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
+
+	React.useEffect(() => {
+		try { sessionStorage.setItem('__freemannotes_mediaDockOpen', mediaDockOpen ? '1' : '0'); } catch { /* */ }
+	}, [mediaDockOpen]);
 	// Keep the dock tabs driven by the live Yjs doc so link chips, link previews,
 	// and browser modals stay in sync without forcing the editor to own extra copy state.
 	const extractedLinks = useSyncExternalStore(
@@ -586,6 +594,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	//   so the editor body ends at the keyboard instead of allowing hidden footer UI to
 	//   remain scrollable beneath the visible editing surface.
 	const mobileKeyboardOpen = isCoarsePointer && keyboard.isOpen;
+	// Ref for the editor overlay DOM node.  Used to check whether the
+	// keyboard-triggering element is inside the editor (vs. a higher-z-index
+	// modal like NoteImageUploadModal).  Camera Activity transitions on Android
+	// cause transient Visual Viewport shrinks that look like a keyboard to
+	// useKeyboardHeight — this ref lets us ignore those false positives.
+	const editorOverlayRefCb = React.useRef<HTMLDivElement | null>(null);
 	const isMobileLandscape = useIsMobileLandscape();
 	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
 	React.useEffect(() => {
@@ -599,6 +613,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		// stayed open while the keyboard was visible, users could still scroll the hidden
 		// footer region into view, which is exactly the bug we are preventing here.
 		if (!mobileKeyboardOpen) return;
+		// Only close the dock when the keyboard was triggered by an element inside
+		// the editor overlay.  A keyboard opened by a higher-z-index modal (e.g.
+		// the image upload rename field) should not affect the dock state, because
+		// doing so fires history.back() during camera Activity transitions.
+		if (!(document.activeElement instanceof HTMLElement) || !editorOverlayRefCb.current?.contains(document.activeElement)) return;
 		setMediaDockOpen(false);
 	}, [mobileKeyboardOpen]);
 	React.useEffect(() => {
@@ -710,6 +729,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (currentState?.__noteEditorMediaDock !== token) {
 			window.history.pushState({ __noteEditorMediaDock: token }, '');
 			didPush = true;
+			(window as any).__debugLog?.('HISTORY', `mediaDock pushState token=${token} histLen=${window.history.length}`);
 		}
 		return () => {
 			active = false;
@@ -1023,8 +1043,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const editorShellStyle = useMemo(() => {
 		const style: React.CSSProperties & Record<string, string> = { ...(editorColorStyle ?? {}) };
 		if (mobileKeyboardOpen) {
-			style.height = `${keyboard.visibleBottom}px`;
-			style.maxHeight = `${keyboard.visibleBottom}px`;
+			// Only clamp the editor height when the keyboard was triggered by an
+			// element inside the editor overlay.  Camera Activity transitions on
+			// Android cause transient Visual Viewport shrinks that useKeyboardHeight
+			// misidentifies as a keyboard — checking activeElement avoids those.
+			const active = document.activeElement;
+			if (active instanceof HTMLElement && editorOverlayRefCb.current?.contains(active)) {
+				style.height = `${keyboard.visibleBottom}px`;
+				style.maxHeight = `${keyboard.visibleBottom}px`;
+			}
 		}
 		return Object.keys(style).length > 0 ? style : undefined;
 	}, [editorColorStyle, keyboard.visibleBottom, mobileKeyboardOpen]);
@@ -1718,6 +1745,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	if (readOnly) {
 		return (
 			<div
+				ref={editorOverlayRefCb}
 				className={styles.fullscreenOverlay}
 				role="presentation"
 				onPointerDownCapture={handleOverlayBackdropPressStart}
@@ -1946,6 +1974,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 
 	return (
 		<div
+			ref={editorOverlayRefCb}
 			className={styles.fullscreenOverlay}
 			role="presentation"
 			onPointerDownCapture={handleOverlayBackdropPressStart}
@@ -2662,7 +2691,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		    The editor shell stops at `keyboard.visibleBottom`, so the remaining layout
 		    viewport below that edge must be explicitly covered while the mobile keyboard
 		    animates in. Otherwise the underlying notes grid can flash through. */}
-		{isCoarsePointer && keyboard.isOpen ? createPortal(
+		{isCoarsePointer && keyboard.isOpen && !props.hideFormattingToolbar ? createPortal(
 			<>
 				<div className={styles.keyboardOcclusion} style={{ top: `${keyboard.visibleBottom}px` }} />
 				<div

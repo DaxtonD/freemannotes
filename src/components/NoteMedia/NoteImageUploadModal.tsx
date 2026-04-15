@@ -4,6 +4,7 @@ import { faCamera, faChevronDown, faChevronUp, faImage, faPen, faXmark } from '@
 import { useI18n } from '../../core/i18n';
 import { queueNoteImageUrlForImport, queueNoteImagesForUpload, readQueuedNoteImages, readStoredRemoteNoteImages } from '../../core/noteMediaStore';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
+import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import styles from './NoteImageUploadModal.module.css';
 
 type SelectedFile = { file: File; name: string; defaultName: string; previewUrl: string };
@@ -53,18 +54,25 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	const openingCameraPickerRef = React.useRef(false);
 	const cameraFallbackTimerRef = React.useRef(0);
 	const cameraCapturedAtRef = React.useRef(0);
+	const justFocusedRef = React.useRef<number>(-1);
 
 	const [selected, setSelected] = React.useState<SelectedFile[]>([]);
 	const [imageUrl, setImageUrl] = React.useState('');
 	const [urlSectionOpen, setUrlSectionOpen] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
+	const keyboard = useKeyboardHeight();
+	const [toastMessage, setToastMessage] = React.useState<string | null>(null);
+	const toastTimerRef = React.useRef<number>(0);
+
+
 
 	const clearCameraShield = React.useCallback((): void => {
 		cameraOpenRef.current = false;
 		cameraCapturedAtRef.current = 0;
 		openingCameraPickerRef.current = false;
 		window.clearTimeout(cameraFallbackTimerRef.current);
+		try { sessionStorage.removeItem('__freemannotes_cameraActive'); } catch { /* */ }
 	}, []);
 
 	React.useEffect(() => {
@@ -76,6 +84,8 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 			setImageUrl('');
 			setUrlSectionOpen(false);
 			setError(null);
+			setToastMessage(null);
+			window.clearTimeout(toastTimerRef.current);
 			photoCounterRef.current = 0;
 			interactionShieldUntilRef.current = 0;
 			interactionShieldBlocksClickRef.current = false;
@@ -126,6 +136,20 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		};
 	}, [clearCameraShield, props.isOpen]);
 
+	// After a page-kill restore, clear the stale camera-active flag.
+	// We can't auto-retrigger the file picker because Chrome Android silently
+	// blocks programmatic input.click() without a user gesture, which leaves
+	// the interaction shield active and the modal unresponsive.
+	React.useEffect(() => {
+		if (!props.isOpen) return;
+		try {
+			if (sessionStorage.getItem('__freemannotes_cameraActive') === '1') {
+				sessionStorage.removeItem('__freemannotes_cameraActive');
+			}
+		} catch { /* */ }
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	if (!props.isOpen || !props.docId) return null;
 
 	const closeAfterKeyboardSettles = (): void => {
@@ -153,6 +177,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		cameraOpenRef.current = true;
 		cameraCapturedAtRef.current = 0;
 		openingCameraPickerRef.current = true;
+		try { sessionStorage.setItem('__freemannotes_cameraActive', '1'); } catch { /* */ }
 		window.clearTimeout(cameraFallbackTimerRef.current);
 		try {
 			if (typeof input.showPicker === 'function') {
@@ -245,7 +270,8 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 				if (normalized) usedNames.add(normalized);
 			}
 
-			for (const item of selected) {
+			const toSubmit = selected.slice();
+			for (const item of toSubmit) {
 				const base = item.name.trim() || item.defaultName;
 				const normalized = normalize(base);
 				if (!normalized) continue;
@@ -256,8 +282,17 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 				usedNames.add(normalized);
 			}
 
+			// Clear the list immediately so the UI empties before the async operation
+			// and keyboard-settle delay complete.
+			setSelected((prev) => { for (const item of prev) URL.revokeObjectURL(item.previewUrl); return []; });
+			setError(null);
+			const toastCount = toSubmit.length;
+			window.clearTimeout(toastTimerRef.current);
+			setToastMessage(toastCount === 1 ? '1 image successfully added' : `${toastCount} images successfully added`);
+			toastTimerRef.current = window.setTimeout(() => setToastMessage(null), 2500);
+
 			armInteractionShield(2600, true);
-			const fileNames = selected.map((item) => {
+			const fileNames = toSubmit.map((item) => {
 				const ext = getExtension(item.file.name);
 				const base = item.name.trim() || item.defaultName;
 				return `${base}${ext}`;
@@ -265,10 +300,10 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 			await queueNoteImagesForUpload({
 				userId: props.authUserId!,
 				docId: props.docId!,
-				files: selected.map((item) => item.file),
+				files: toSubmit.map((item) => item.file),
 				fileNames,
 			});
-			props.onUploaded?.({ queued: true, count: selected.length });
+			props.onUploaded?.({ queued: true, count: toSubmit.length });
 			closeAfterKeyboardSettles();
 		})();
 	};
@@ -304,13 +339,13 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 				<div className={styles.body}>
 					{/* Primary action buttons */}
 					<div className={styles.actionRow}>
-						<button type="button" className={styles.actionButton} onClick={() => fileInputRef.current?.click()}>
+						<button type="button" className={`${styles.actionButton}${keyboard.isOpen ? ` ${styles.actionButtonCompact}` : ''}`} onClick={() => fileInputRef.current?.click()}>
 							<FontAwesomeIcon icon={faImage} className={styles.actionIcon} />
 							<span>{t('media.chooseFiles')}</span>
 						</button>
 						<button
 							type="button"
-							className={styles.actionButton}
+							className={`${styles.actionButton}${keyboard.isOpen ? ` ${styles.actionButtonCompact}` : ''}`}
 							onClick={openCameraPicker}
 						>
 							<FontAwesomeIcon icon={faCamera} className={styles.actionIcon} />
@@ -335,19 +370,18 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 											value={item.name}
 											placeholder={item.defaultName}
 											onChange={(e) => handleRename(index, e.target.value)}
-											onFocus={(event) => selectAllText(event.currentTarget)}
-											onClick={(event) => selectAllText(event.currentTarget)}
-											onMouseUp={(event) => {
+										onFocus={(event) => {
+											justFocusedRef.current = index;
+											selectAllText(event.currentTarget);
+										}}
+										onMouseUp={(event) => {
+											if (justFocusedRef.current === index) {
+												// First tap: prevent browser collapsing the select-all.
 												event.preventDefault();
-												selectAllText(event.currentTarget);
-											}}
-											onTouchEnd={(event) => {
-												event.preventDefault();
-												selectAllText(event.currentTarget);
-											}}
-											onPointerUp={(event) => {
-												event.preventDefault();
-												selectAllText(event.currentTarget);
+												justFocusedRef.current = -1;
+											}
+											// Second tap: do nothing — browser places caret naturally,
+											// which removes the selection highlight as the user expects.
 											}}
 											aria-label={`Name for photo ${index + 1}`}
 										/>
@@ -367,36 +401,44 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 
 					{error ? <p className={styles.error}>{error}</p> : null}
 
-					{/* URL import — collapsed by default */}
-					<div className={styles.divider} />
-					<button type="button" className={styles.urlToggle} onClick={() => setUrlSectionOpen((open) => !open)}>
-						{t('media.addFromUrl')}
-						<FontAwesomeIcon icon={urlSectionOpen ? faChevronUp : faChevronDown} className={styles.urlToggleChevron} />
-					</button>
-					{urlSectionOpen && (
-						<div className={styles.urlSection}>
-							<input
-								id="note-image-url"
-								className={styles.input}
-								value={imageUrl}
-								onChange={(event) => setImageUrl(event.target.value)}
-								placeholder={t('media.imageUrlPlaceholder')}
-								autoFocus
-							/>
-							<button type="button" className={styles.secondaryButton} onClick={handleUrlSubmit} disabled={!imageUrl.trim()}>
+					{count === 0 && (
+						<>
+							{/* URL import — hidden while photos are pending */}
+							<div className={styles.divider} />
+							<button type="button" className={styles.urlToggle} onClick={() => setUrlSectionOpen((open) => !open)}>
 								{t('media.addFromUrl')}
+								<FontAwesomeIcon icon={urlSectionOpen ? faChevronUp : faChevronDown} className={styles.urlToggleChevron} />
 							</button>
-						</div>
+							{urlSectionOpen && (
+								<div className={styles.urlSection}>
+									<input
+										id="note-image-url"
+										className={styles.input}
+										value={imageUrl}
+										onChange={(event) => setImageUrl(event.target.value)}
+										placeholder={t('media.imageUrlPlaceholder')}
+										autoFocus
+									/>
+									<button type="button" className={styles.secondaryButton} onClick={handleUrlSubmit} disabled={!imageUrl.trim()}>
+										{t('media.addFromUrl')}
+									</button>
+								</div>
+							)}
+						</>
 					)}
 				</div>
 
-				{/* Fixed footer — always visible when photos are selected */}
-				{count > 0 && (
-					<div className={styles.footer}>
-						<button type="button" className={styles.primaryButton} onClick={handleFileSubmit}>
-							{addLabel}
-						</button>
-					</div>
+				{/* Footer — always rendered above the keyboard when photos are present */}
+				{(count > 0 || toastMessage) && (
+					<footer className={styles.footer}>
+						{toastMessage ? (
+							<p className={styles.toast} role="status">{toastMessage}</p>
+						) : (
+							<button type="button" className={styles.primaryButton} onClick={handleFileSubmit}>
+								{addLabel}
+							</button>
+						)}
+					</footer>
 				)}
 			</section>
 		</div>

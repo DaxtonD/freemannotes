@@ -149,8 +149,6 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 	conn.binaryType = 'arraybuffer';
 	const doc = getYDoc(docName, gc);
 	doc.conns.set(conn, new Set());
-	// ── DEBUG: log every Yjs WS connection open so rapid reconnect loops are visible ──
-	console.log(`[ws-debug] open  room=${docName} readOnly=${readOnly} totalConns=${doc.conns.size}`);
 
 	conn.on('message', (message) => {
 		try {
@@ -222,8 +220,6 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 	}, PING_TIMEOUT_MS);
 
 	conn.on('close', (code, reason) => {
-		// ── DEBUG: log every close; rapid sequential opens for the same room = reconnect loop ──
-		console.log(`[ws-debug] close room=${docName} readOnly=${readOnly} code=${code} reason=${reason || '(none)'}`);
 		logEvent('WS_EVENT', {
 			...getRoomDebugContext(docName),
 			event: 'socket-close',

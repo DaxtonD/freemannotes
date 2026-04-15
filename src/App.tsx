@@ -420,6 +420,34 @@ function isOverlayHistoryState(value: unknown): value is OverlayHistoryState {
 	return (value as Partial<OverlayHistoryState>)[OVERLAY_HISTORY_KEY] === true;
 }
 
+const SS_OVERLAY_KEY = '__freemannotes_overlay_snapshot';
+
+/**
+ * Restore overlay snapshot on page init.
+ * Android kills the webview while the camera Activity is open; on return the
+ * browser does a full page reload.  The history stack is intact, so we try
+ * history.state first.  If the current entry is a media-dock or image-viewer
+ * entry (pushed on top of the overlay), fall back to sessionStorage.
+ */
+const _restoredOverlay: OverlaySnapshot | null = (() => {
+	try {
+		const s = window.history.state;
+		if (isOverlayHistoryState(s)) {
+			return s.snapshot;
+		}
+		// history.state may be a media-dock or image-viewer entry pushed on top.
+		// Fall back to the sessionStorage snapshot.
+		const raw = sessionStorage.getItem(SS_OVERLAY_KEY);
+		if (raw) {
+			const parsed = JSON.parse(raw) as OverlaySnapshot;
+			if (parsed.editorMode !== 'none' || parsed.selectedNoteId) {
+				return parsed;
+			}
+		}
+	} catch { /* */ }
+	return null;
+})();
+
 function isMoreMenuHistoryState(value: unknown): boolean {
 	if (!value || typeof value !== 'object') return false;
 	return (value as { __moreMenu?: boolean }).__moreMenu === true;
@@ -615,9 +643,12 @@ export function App(): React.JSX.Element {
 	// the server's session response, preventing offline switches from being reverted.
 	const cachedWorkspaceSelectionRef = React.useRef(readWorkspaceSelectionCache());
 	const cachedWorkspaceSelection = cachedWorkspaceSelectionRef.current;
-	const canRestoreCachedAuthImmediately = Boolean(
-		cachedAuth && typeof navigator !== 'undefined' && navigator.onLine === false
-	);
+	// Offline-first: if a cached auth session exists, start as 'authed' immediately
+	// regardless of network state. This lets the UI render IndexedDB data on the very
+	// first frame instead of showing a blank splash while probeSession completes.
+	// probeSession still runs in the background and will transition to 'unauth' if
+	// the server responds with an explicit 401/403 (expired session).
+	const canRestoreCachedAuthImmediately = Boolean(cachedAuth);
 	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
 		canRestoreCachedAuthImmediately ? 'authed' : 'loading'
 	);
@@ -753,7 +784,7 @@ export function App(): React.JSX.Element {
 	const authPasswordStrengthScore = React.useMemo(() => getPasswordStrengthScore(authPassword), [authPassword]);
 	const authPasswordStrengthLabel = React.useMemo(() => getPasswordStrengthLabel(authPassword), [authPassword]);
 	const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
-	const [isMobileSidebarOpen, setIsMobileSidebarOpen] = React.useState(false);
+	const [isMobileSidebarOpen, setIsMobileSidebarOpen] = React.useState(_restoredOverlay?.isMobileSidebarOpen ?? false);
 	const [isMobileViewport, setIsMobileViewport] = React.useState(() => {
 		if (typeof window === 'undefined') return false;
 		return window.matchMedia('(pointer: coarse)').matches;
@@ -768,20 +799,20 @@ export function App(): React.JSX.Element {
 	const sidebarEntryButtonRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
 	const [sidebarGroupsOpen, setSidebarGroupsOpen] = React.useState<Record<string, boolean>>(CLOSED_SIDEBAR_GROUPS);
 	// Which sidebar view is active: regular notes, workspace images, archive, or trash.
-	const [sidebarView, setSidebarView] = React.useState<SidebarView>('notes');
+	const [sidebarView, setSidebarView] = React.useState<SidebarView>(_restoredOverlay?.sidebarView ?? 'notes');
 	// UI mode for the "new note" panel.
-	const [editorMode, setEditorMode] = React.useState<EditorMode>('none');
+	const [editorMode, setEditorMode] = React.useState<EditorMode>(_restoredOverlay?.editorMode ?? 'none');
 	// Phase 10 preferences shell entry point opened from top-right avatar.
-	const [isPreferencesOpen, setIsPreferencesOpen] = React.useState(false);
-	const [isAppearanceOpen, setIsAppearanceOpen] = React.useState(false);
-	const [isUserOpen, setIsUserOpen] = React.useState(false);
-	const [isUserManagementOpen, setIsUserManagementOpen] = React.useState(false);
+	const [isPreferencesOpen, setIsPreferencesOpen] = React.useState(_restoredOverlay?.isPreferencesOpen ?? false);
+	const [isAppearanceOpen, setIsAppearanceOpen] = React.useState(_restoredOverlay?.isAppearanceOpen ?? false);
+	const [isUserOpen, setIsUserOpen] = React.useState(_restoredOverlay?.isUserOpen ?? false);
+	const [isUserManagementOpen, setIsUserManagementOpen] = React.useState(_restoredOverlay?.isUserManagementOpen ?? false);
 	const [userModalBusy, setUserModalBusy] = React.useState(false);
 	const [userModalError, setUserModalError] = React.useState<string | null>(null);
-	const [isSendInviteOpen, setIsSendInviteOpen] = React.useState(false);
+	const [isSendInviteOpen, setIsSendInviteOpen] = React.useState(_restoredOverlay?.isSendInviteOpen ?? false);
 	const [sendInviteContext, setSendInviteContext] = React.useState<SendInviteContext | null>(null);
 	const [isShareNotificationsOpen, setIsShareNotificationsOpen] = React.useState(false);
-	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(false);
+	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(_restoredOverlay?.isWorkspaceSwitcherOpen ?? false);
 	const [activeWorkspaceName, setActiveWorkspaceName] = React.useState<string | null>(null);
 	const [activeWorkspaceSystemKind, setActiveWorkspaceSystemKind] = React.useState<string | null>(null);
 	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>([]);
@@ -796,12 +827,18 @@ export function App(): React.JSX.Element {
 	const [firedReminders, setFiredReminders] = React.useState<FiredReminder[]>([]);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
-	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(null);
-	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(null);
+	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(_restoredOverlay?.collaboratorModalState ?? null);
+	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(() => {
+		try {
+			const raw = sessionStorage.getItem('__freemannotes_imageModal');
+			if (raw && _restoredOverlay) return JSON.parse(raw) as NoteImageModalState;
+		} catch { /* */ }
+		return null;
+	});
 	const [noteDocumentModalState, setNoteDocumentModalState] = React.useState<NoteDocumentModalState | null>(null);
-	const [noteAttachmentBrowserState, setNoteAttachmentBrowserState] = React.useState<NoteAttachmentBrowserState | null>(null);
+	const [noteAttachmentBrowserState, setNoteAttachmentBrowserState] = React.useState<NoteAttachmentBrowserState | null>(_restoredOverlay?.noteAttachmentBrowserState ?? null);
 	// The currently selected note in the grid/editor area.
-	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(null);
+	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(_restoredOverlay?.selectedNoteId ?? null);
 	// Loaded Y.Doc for the selected note.
 	const [openDoc, setOpenDoc] = React.useState<Y.Doc | null>(null);
 	const [openDocId, setOpenDocId] = React.useState<string | null>(null);
@@ -904,7 +941,7 @@ export function App(): React.JSX.Element {
 		};
 	}, [closeOwnerPopup, wsOwnerPopup]);
 	// Cross-workspace note opened from bubble view without switching active workspace.
-	const [crossWorkspaceNote, setCrossWorkspaceNote] = React.useState<{ noteId: string; workspaceId: string; workspaceName: string } | null>(null);
+	const [crossWorkspaceNote, setCrossWorkspaceNote] = React.useState<{ noteId: string; workspaceId: string; workspaceName: string } | null>(_restoredOverlay?.crossWorkspaceNote ?? null);
 	const [searchQuery, setSearchQuery] = React.useState('');
 	const deferredSearchQuery = React.useDeferredValue(searchQuery.trim());
 	const [searchResults, setSearchResults] = React.useState<readonly NoteSearchResult[]>([]);
@@ -935,8 +972,8 @@ export function App(): React.JSX.Element {
 	const [moveNoteBusy, setMoveNoteBusy] = React.useState(false);
 	const [moveNoteError, setMoveNoteError] = React.useState<string | null>(null);
 	const [emptyTrashBusy, setEmptyTrashBusy] = React.useState(false);
-	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(false);
-	const [isFabOpen, setIsFabOpen] = React.useState(false);
+	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(_restoredOverlay?.isMobileSearchOpen ?? false);
+	const [isFabOpen, setIsFabOpen] = React.useState(_restoredOverlay?.isFabOpen ?? false);
 	const [viewMode, setViewMode] = React.useState<ViewMode>(() => loadViewMode());
 	const [bubbleZoom, setBubbleZoom] = React.useState(() => loadBubbleZoom());
 	const viewModeIcon = viewMode === 'list'
@@ -1101,11 +1138,16 @@ export function App(): React.JSX.Element {
 		setNoteAttachmentBrowserState(snapshot.noteAttachmentBrowserState);
 		setIsMobileSidebarOpen(snapshot.isMobileSidebarOpen);
 		setIsFabOpen(snapshot.isFabOpen);
+		// Keep sessionStorage in sync so page-kill restoration stays current.
+		try { sessionStorage.setItem(SS_OVERLAY_KEY, JSON.stringify(snapshot)); } catch { /* quota */ }
 	}, []);
 
 	const commitOverlaySnapshot = React.useCallback(
 		(snapshot: OverlaySnapshot, mode: 'push' | 'replace') => {
 			applyOverlaySnapshot(snapshot);
+			// Persist to sessionStorage so the snapshot survives Android page kills
+			// even when a media-dock/image-viewer entry sits on top in history.
+			try { sessionStorage.setItem(SS_OVERLAY_KEY, JSON.stringify(snapshot)); } catch { /* quota */ }
 			if (!isMobileViewport || typeof window === 'undefined') return;
 			try {
 				const nextState: OverlayHistoryState = {
@@ -1352,11 +1394,14 @@ export function App(): React.JSX.Element {
 	}, [closeCollaboratorModal, showBriefDialog, t]);
 
 	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string) => {
-		setNoteImageModalState({ noteId, docId, title: title || '' });
+		const state = { noteId, docId, title: title || '' };
+		setNoteImageModalState(state);
+		try { sessionStorage.setItem('__freemannotes_imageModal', JSON.stringify(state)); } catch { /* */ }
 	}, []);
 
 	const closeNoteImageModal = React.useCallback(() => {
 		setNoteImageModalState(null);
+		try { sessionStorage.removeItem('__freemannotes_imageModal'); } catch { /* */ }
 	}, []);
 
 	const openNoteDocumentModal = React.useCallback((noteId: string, docId: string, title?: string) => {
@@ -3638,12 +3683,29 @@ export function App(): React.JSX.Element {
 				fetchPendingReminderCount().catch(() => 0),
 				fetchFiredReminders().catch(() => ({ reminders: [] })),
 			]);
+
+			// The primary placement fetch above only queries the active workspace.
+			// When the user is in Bubble View, notes from non-active SHARED_WITH_ME
+			// workspaces can also appear as bubbles.  Without their placements being
+			// loaded here, clicking those bubbles falls back to an incorrect Yjs room
+			// name (workspaceId:noteId instead of the real shared docId), which means
+			// the WebSocket connects to the wrong room and the note never hydrates.
+			// Each SHARED_WITH_ME workspace may have its own set of placements and
+			// sub-folders, so we fetch them all and merge into a single flat list.
+			const sharedWithMeWsIds = sidebarWorkspacesRef.current
+				.filter((ws) => ws.systemKind === 'SHARED_WITH_ME' && ws.id !== authWorkspaceId)
+				.map((ws) => ws.id);
+			const extraPlacementsResults: SharedNotePlacement[] = sharedWithMeWsIds.length > 0
+				? (await Promise.all(sharedWithMeWsIds.map((id) => listSharedNotePlacements(id).catch(() => ({ placements: [] as SharedNotePlacement[] }))))).flatMap((r) => r.placements)
+				: [];
+			const allPlacements: SharedNotePlacement[] = [...placementData.placements, ...extraPlacementsResults];
+
 			setFailedLinkNotifications(failedLinkData.failures);
 			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length + failedLinkData.count);
 			setPendingReminderNotificationCount(pendingReminderCount);
 			setFiredReminders(firedRemindersData.reminders);
-			setSharedPlacements(placementData.placements);
-			manager.setExternalRoomAliases(Object.fromEntries(placementData.placements.map((placement) => [placement.aliasId, placement.roomId])));
+			setSharedPlacements(allPlacements);
+			manager.setExternalRoomAliases(Object.fromEntries(allPlacements.map((placement) => [placement.aliasId, placement.roomId])));
 		} catch {
 			if (!offline) {
 				setSharedPlacements([]);
@@ -4176,13 +4238,22 @@ export function App(): React.JSX.Element {
 			if (authStatus !== 'authed') return;
 			if (workspaceId === authWorkspaceId) return;
 			const nextSharedFolder = options?.activeSharedFolder ?? null;
-			if (authUserId && (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false))) {
-				handleWorkspaceActivated(workspaceId);
-				void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
-				if (isMobileViewport) {
-					closeWorkspaceSidebarGroup();
-				}
-				if (isMobileViewport) closeMobileSidebar();
+
+			// ── Offline-first: always switch locally first ──────────────────────
+			// Disable WS before switching so the manager doesn't open rooms
+			// against the old server session (which still points at the previous
+			// workspace and would reject the new namespace with "forbidden").
+			manager.setWebsocketEnabled(false);
+			handleWorkspaceActivated(workspaceId);
+			void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
+			if (isMobileViewport) {
+				closeWorkspaceSidebarGroup();
+				closeMobileSidebar();
+			}
+
+			// ── Background: activate on server then re-enable WS ───────────────
+			if (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+				// Genuinely offline — nothing more to do; WS stays disabled.
 				return;
 			}
 			try {
@@ -4198,30 +4269,15 @@ export function App(): React.JSX.Element {
 					throw new Error(msg);
 				}
 				await confirmActivatedWorkspaceSession(workspaceId);
-				await loadSidebarWorkspacesRef.current();
-				handleWorkspaceActivated(workspaceId);
-				void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
-				if (isMobileViewport) {
-					closeWorkspaceSidebarGroup();
-				}
-				if (isMobileViewport) closeMobileSidebar();
+				// Re-enable WS now that the server session points at the new workspace.
+				manager.setWebsocketEnabled(true);
+				void loadSidebarWorkspacesRef.current();
 			} catch {
-				if (authUserId) {
-					const cached = await readCachedWorkspaceSnapshot(authUserId, deviceId);
-					if (cached.workspaces.some((workspace) => workspace.id === workspaceId)) {
-						handleWorkspaceActivated(workspaceId);
-						void persistSharedWorkspaceSelection(workspaceId, nextSharedFolder);
-						if (isMobileViewport) {
-							closeWorkspaceSidebarGroup();
-						}
-						if (isMobileViewport) closeMobileSidebar();
-						return;
-					}
-				}
-				// Keep errors out of the sidebar nav — Workspace modal provides richer error UX.
+				// Network failed or server rejected — keep WS disabled (offline-like
+				// for this workspace) so the user can still browse IDB data.
 			}
 		},
-		[authOfflineMode, authStatus, authUserId, authWorkspaceId, closeMobileSidebar, closeWorkspaceSidebarGroup, confirmActivatedWorkspaceSession, deviceId, handleWorkspaceActivated, isMobileViewport, persistSharedWorkspaceSelection]
+		[authOfflineMode, authStatus, authWorkspaceId, closeMobileSidebar, closeWorkspaceSidebarGroup, confirmActivatedWorkspaceSession, deviceId, handleWorkspaceActivated, isMobileViewport, manager, persistSharedWorkspaceSelection]
 	);
 
 	const handleBubbleNoteSelect = React.useCallback(async (noteId: string, workspaceId: string): Promise<void> => {
@@ -7626,7 +7682,13 @@ export function App(): React.JSX.Element {
 			{/* Branch: selection exists but doc not yet loaded.
 			   Mutual exclusion: suppress when a create editor is active to prevent
 			   stacked overlays (both at z-index 220). */}
-			{editorMode === 'none' && selectedNoteId && (!openDoc || openDocId !== selectedNoteId) ? <div>{t('app.loadingEditor')}</div> : null}
+			{editorMode === 'none' && selectedNoteId && (!openDoc || openDocId !== selectedNoteId) ? (
+				<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-overlay)' }}>
+					<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>
+						{t('app.loadingEditor')}
+					</div>
+				</div>
+			) : null}
 			{/* Branch: single active editor for the selected note.
 			   Same mutual exclusion guard as above. */}
 			{editorMode === 'none' && selectedNoteId && openDoc && openDocId === selectedNoteId ? (
@@ -7656,6 +7718,7 @@ export function App(): React.JSX.Element {
 					initialShowCompleted={checklistShowCompletedPref}
 					allowQuickDelete={quickDeleteChecklistPref}
 					toolbarMode={editorToolbarModePref}
+					hideFormattingToolbar={Boolean(noteImageModalState)}
 					onShowCompletedChange={(next) => {
 						commitChecklistShowCompletedPref(next);
 					}}
@@ -7858,6 +7921,9 @@ export function App(): React.JSX.Element {
 					setPendingReminderNotificationCount(0);
 					void acknowledgeReminderNotifications().catch(() => undefined);
 				}}
+				// Clearing failed-link notifications removes them from state,
+				// which re-evaluates the badge count and hides the notification entries.
+				onClearFailedLinks={() => setFailedLinkNotifications([])}
 				onOpenReminder={(reminder) => {
 					setIsShareNotificationsOpen(false);
 					void (async () => {
