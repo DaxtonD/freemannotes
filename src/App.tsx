@@ -818,12 +818,10 @@ export function App(): React.JSX.Element {
 	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>([]);
 	const [sidebarWorkspacesBusy, setSidebarWorkspacesBusy] = React.useState(false);
 	const [sidebarWorkspacesError, setSidebarWorkspacesError] = React.useState<string | null>(null);
+	// sharedPlacements holds ALL placements (active workspace + every other SHARED_WITH_ME
+	// workspace) so that bubble-click lookups and setExternalRoomAliases work across any
+	// workspace. visibleSharedPlacements (below) limits what the NoteGrid receives.
 	const [sharedPlacements, setSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
-	// Holds ALL shared-note placements (active workspace + every other SHARED_WITH_ME
-	// workspace) so that setExternalRoomAliases can map bubbles from any workspace.
-	// Not stored in state to avoid re-renders; consumers that need display should
-	// use sharedPlacements (active-workspace-only) via visibleSharedPlacements.
-	const allKnownPlacementsRef = React.useRef<SharedNotePlacement[]>([]);
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
@@ -2778,7 +2776,6 @@ export function App(): React.JSX.Element {
 		setActiveWorkspaceSystemKind(null);
 		setSidebarWorkspaces([]);
 		setSidebarWorkspacesError(null);
-		allKnownPlacementsRef.current = [];
 		setSharedPlacements([]);
 		setActiveSharedFolder(null);
 		setPendingRestoredSharedFolder(false);
@@ -2802,7 +2799,6 @@ export function App(): React.JSX.Element {
 			setEditorMode('none');
 			setActiveWorkspaceName(null);
 			setActiveWorkspaceSystemKind(null);
-			allKnownPlacementsRef.current = [];
 			setSharedPlacements([]);
 			setActiveSharedFolder(null);
 			setPendingRestoredSharedFolder(false);
@@ -3300,10 +3296,11 @@ export function App(): React.JSX.Element {
 	}, [activeSharedFolder, activeWorkspaceSystemKind, sharedFolderNames]);
 
 	const visibleSharedPlacements = React.useMemo(() => {
-		// Shared With Me root and Shared With Me subfolders are distinct views.
-		// Root shows only placements with no folder assignment; selecting a folder
-		// narrows the grid to placements assigned to that specific folder name.
-		if (activeWorkspaceSystemKind !== 'SHARED_WITH_ME') return sharedPlacements;
+		// Return empty when the active workspace is not a Shared With Me workspace so
+		// that NoteGrid never injects shared-placement alias IDs into its orderedIds
+		// (which would cause Shared With Me notes to appear in every other workspace).
+		// sharedPlacements still holds ALL placements for lookup / alias-registration.
+		if (activeWorkspaceSystemKind !== 'SHARED_WITH_ME') return [];
 		if (!activeSharedFolder) {
 			return sharedPlacements.filter((placement) => !String(placement.folderName || '').trim());
 		}
@@ -3671,7 +3668,6 @@ export function App(): React.JSX.Element {
 		// - refresh the notification badge/modal contents
 		// - refresh alias-mounted shared note placements for the grid/sidebar
 		if (authStatus !== 'authed' || !authUserId) {
-			allKnownPlacementsRef.current = [];
 			setSharedPlacements([]);
 			setFailedLinkNotifications([]);
 			setPendingShareNotificationCount(0);
@@ -3729,16 +3725,13 @@ export function App(): React.JSX.Element {
 			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length + failedLinkData.count - dismissedCount);
 			setPendingReminderNotificationCount(pendingReminderCount);
 			setFiredReminders(firedRemindersData.reminders);
-			// Only store the active-workspace placements in sharedPlacements (used by the
-			// NoteGrid / visibleSharedPlacements). Store ALL placements in a ref so that
-			// setExternalRoomAliases can resolve bubbles from any SHARED_WITH_ME workspace
-			// without leaking non-active placements into the NoteGrid.
-			allKnownPlacementsRef.current = allPlacements;
-			setSharedPlacements(placementData.placements);
+			// Store ALL placements (active workspace + every other SHARED_WITH_ME workspace)
+			// so that lookups and alias registration work for bubbles from any workspace.
+			// visibleSharedPlacements filters what the NoteGrid actually displays.
+			setSharedPlacements(allPlacements);
 			manager.setExternalRoomAliases(Object.fromEntries(allPlacements.map((placement) => [placement.aliasId, placement.roomId])));
 		} catch {
 			if (!offline) {
-				allKnownPlacementsRef.current = [];
 				setSharedPlacements([]);
 				setFailedLinkNotifications([]);
 				setPendingShareNotificationCount(0);
@@ -3919,11 +3912,8 @@ export function App(): React.JSX.Element {
 			manager.setExternalRoomAliases({});
 			return;
 		}
-		// Use allKnownPlacementsRef (all workspaces) so that bubbles from non-active
-		// SHARED_WITH_ME workspaces resolve to the correct Yjs room ID. The ref is
-		// updated synchronously in refreshNoteShareState before sharedPlacements
-		// state is set, so it is always current when this effect runs.
-		const aliases = Object.fromEntries(allKnownPlacementsRef.current.map((placement) => [placement.aliasId, placement.roomId]));
+		// sharedPlacements holds ALL placements so this covers every SHARED_WITH_ME workspace.
+		const aliases = Object.fromEntries(sharedPlacements.map((placement) => [placement.aliasId, placement.roomId]));
 		manager.setExternalRoomAliases(aliases);
 	}, [authStatus, manager, sharedPlacements]);
 
