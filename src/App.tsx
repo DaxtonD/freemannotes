@@ -819,6 +819,11 @@ export function App(): React.JSX.Element {
 	const [sidebarWorkspacesBusy, setSidebarWorkspacesBusy] = React.useState(false);
 	const [sidebarWorkspacesError, setSidebarWorkspacesError] = React.useState<string | null>(null);
 	const [sharedPlacements, setSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
+	// Holds ALL shared-note placements (active workspace + every other SHARED_WITH_ME
+	// workspace) so that setExternalRoomAliases can map bubbles from any workspace.
+	// Not stored in state to avoid re-renders; consumers that need display should
+	// use sharedPlacements (active-workspace-only) via visibleSharedPlacements.
+	const allKnownPlacementsRef = React.useRef<SharedNotePlacement[]>([]);
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
@@ -826,6 +831,16 @@ export function App(): React.JSX.Element {
 	const [pendingReminderNotificationCount, setPendingReminderNotificationCount] = React.useState(0);
 	const [firedReminders, setFiredReminders] = React.useState<FiredReminder[]>([]);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
+	// Tracks failed-link notification IDs the user has explicitly dismissed so
+	// they don't re-appear on the next refreshNoteShareState call. Stored in
+	// localStorage so dismissals persist across page reloads.
+	const dismissedFailedLinkIdsRef = React.useRef<Set<string>>((() => {
+		try {
+			const raw = localStorage.getItem('freemannotes.dismissedFailedLinks.v1');
+			if (raw) return new Set<string>(JSON.parse(raw) as string[]);
+		} catch { /* ignore */ }
+		return new Set<string>();
+	})());
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(_restoredOverlay?.collaboratorModalState ?? null);
 	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(() => {
@@ -2763,6 +2778,7 @@ export function App(): React.JSX.Element {
 		setActiveWorkspaceSystemKind(null);
 		setSidebarWorkspaces([]);
 		setSidebarWorkspacesError(null);
+		allKnownPlacementsRef.current = [];
 		setSharedPlacements([]);
 		setActiveSharedFolder(null);
 		setPendingRestoredSharedFolder(false);
@@ -2786,6 +2802,7 @@ export function App(): React.JSX.Element {
 			setEditorMode('none');
 			setActiveWorkspaceName(null);
 			setActiveWorkspaceSystemKind(null);
+			allKnownPlacementsRef.current = [];
 			setSharedPlacements([]);
 			setActiveSharedFolder(null);
 			setPendingRestoredSharedFolder(false);
@@ -3654,6 +3671,7 @@ export function App(): React.JSX.Element {
 		// - refresh the notification badge/modal contents
 		// - refresh alias-mounted shared note placements for the grid/sidebar
 		if (authStatus !== 'authed' || !authUserId) {
+			allKnownPlacementsRef.current = [];
 			setSharedPlacements([]);
 			setFailedLinkNotifications([]);
 			setPendingShareNotificationCount(0);
@@ -3700,14 +3718,27 @@ export function App(): React.JSX.Element {
 				: [];
 			const allPlacements: SharedNotePlacement[] = [...placementData.placements, ...extraPlacementsResults];
 
-			setFailedLinkNotifications(failedLinkData.failures);
-			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length + failedLinkData.count);
+			// Filter out failures the user has already dismissed so they don't
+			// re-appear on every metadata event refresh.
+			const dismissedIds = dismissedFailedLinkIdsRef.current;
+			const filteredFailures = dismissedIds.size > 0
+				? failedLinkData.failures.filter((f) => !dismissedIds.has(f.id))
+				: failedLinkData.failures;
+			const dismissedCount = failedLinkData.failures.length - filteredFailures.length;
+			setFailedLinkNotifications(filteredFailures);
+			setPendingShareNotificationCount(invitationData.pendingCount + workspaceInviteData.invites.length + failedLinkData.count - dismissedCount);
 			setPendingReminderNotificationCount(pendingReminderCount);
 			setFiredReminders(firedRemindersData.reminders);
-			setSharedPlacements(allPlacements);
+			// Only store the active-workspace placements in sharedPlacements (used by the
+			// NoteGrid / visibleSharedPlacements). Store ALL placements in a ref so that
+			// setExternalRoomAliases can resolve bubbles from any SHARED_WITH_ME workspace
+			// without leaking non-active placements into the NoteGrid.
+			allKnownPlacementsRef.current = allPlacements;
+			setSharedPlacements(placementData.placements);
 			manager.setExternalRoomAliases(Object.fromEntries(allPlacements.map((placement) => [placement.aliasId, placement.roomId])));
 		} catch {
 			if (!offline) {
+				allKnownPlacementsRef.current = [];
 				setSharedPlacements([]);
 				setFailedLinkNotifications([]);
 				setPendingShareNotificationCount(0);
@@ -3888,7 +3919,11 @@ export function App(): React.JSX.Element {
 			manager.setExternalRoomAliases({});
 			return;
 		}
-		const aliases = Object.fromEntries(sharedPlacements.map((placement) => [placement.aliasId, placement.roomId]));
+		// Use allKnownPlacementsRef (all workspaces) so that bubbles from non-active
+		// SHARED_WITH_ME workspaces resolve to the correct Yjs room ID. The ref is
+		// updated synchronously in refreshNoteShareState before sharedPlacements
+		// state is set, so it is always current when this effect runs.
+		const aliases = Object.fromEntries(allKnownPlacementsRef.current.map((placement) => [placement.aliasId, placement.roomId]));
 		manager.setExternalRoomAliases(aliases);
 	}, [authStatus, manager, sharedPlacements]);
 
@@ -7921,9 +7956,21 @@ export function App(): React.JSX.Element {
 					setPendingReminderNotificationCount(0);
 					void acknowledgeReminderNotifications().catch(() => undefined);
 				}}
-				// Clearing failed-link notifications removes them from state,
-				// which re-evaluates the badge count and hides the notification entries.
-				onClearFailedLinks={() => setFailedLinkNotifications([])}
+				// Clearing failed-link notifications: persist the dismissed IDs so the
+				// entries don't re-appear on the next refreshNoteShareState call, and
+				// subtract their count from the badge immediately.
+				onClearFailedLinks={() => {
+					const ids = failedLinkNotifications.map((f) => f.id);
+					if (ids.length > 0) {
+						const next = new Set([...dismissedFailedLinkIdsRef.current, ...ids]);
+						dismissedFailedLinkIdsRef.current = next;
+						try {
+							localStorage.setItem('freemannotes.dismissedFailedLinks.v1', JSON.stringify([...next]));
+						} catch { /* ignore */ }
+					}
+					setPendingShareNotificationCount((prev) => Math.max(0, prev - failedLinkNotifications.length));
+					setFailedLinkNotifications([]);
+				}}
 				onOpenReminder={(reminder) => {
 					setIsShareNotificationsOpen(false);
 					void (async () => {
