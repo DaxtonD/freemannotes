@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.22 - 2026-04-15
+
+### Fixed
+- **Bubble-click on Shared With Me notes now opens the editor correctly.** The v1.2.21 fix for preventing shared notes from appearing in all workspaces used an incorrect approach (splitting state) that broke placement lookups when clicking a bubble. The fix is now applied in `visibleSharedPlacements` instead: it returns an empty array when the active workspace is not Shared With Me, so NoteGrid never injects shared alias IDs into other workspace grids. `sharedPlacements` continues to hold all placements from every SHARED_WITH_ME workspace, keeping bubble-click lookups, cross-workspace modal resolution, and room-alias registration fully intact.
+
 ## 1.2.21 - 2026-04-15
 
 ### Fixed
