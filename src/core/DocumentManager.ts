@@ -86,6 +86,12 @@ export class DocumentManager {
 	// Internal room-level pending tracker. This includes all rooms, then emitConnectionStatus
 	// filters out non-user rooms (such as the notes registry) before exposing snapshot data.
 	private readonly pendingSyncRooms = new Set<string>();
+	// Tracks rooms whose WS provider has completed at least one sync in this session.
+	// A room is only eligible for the "pending sync" badge after its first WS sync,
+	// preventing false positives during the initial boot window (IDB hydrated but WS
+	// not yet connected). Before first sync, the connection header already shows
+	// "connecting" which is sufficient feedback.
+	private readonly wsEverSynced = new Set<string>();
 	private readonly wsCleanup = new Map<string, () => void>();
 	private readonly docCleanup = new Map<string, () => void>();
 	private readonly readyPromises = new Map<string, Promise<void>>();
@@ -227,6 +233,12 @@ export class DocumentManager {
 		// Skip when no workspace is set and sync is disabled (auth-gated flow):
 		// the room would use an un-prefixed name that gets torn down as soon as
 		// setActiveWorkspaceId is called, potentially orphaning in-flight Promises.
+		logClientEvent('APP_BOOTSTRAP', {
+			event: 'document-manager-init',
+			workspaceId: this.activeWorkspaceId,
+			wsEnabled: this.websocketEnabled,
+			browserOnline: this.browserOnline,
+		});
 		if (this.activeWorkspaceId || this.websocketEnabled) {
 			this.initializeRegistry();
 		}
@@ -240,6 +252,14 @@ export class DocumentManager {
 		const normalized = typeof workspaceId === 'string' ? workspaceId.trim() : '';
 		const next = normalized.length > 0 ? normalized : null;
 		if (this.activeWorkspaceId === next) return;
+
+		logClientEvent('WORKSPACE_SWITCH', {
+			event: 'set-active-workspace',
+			from: this.activeWorkspaceId,
+			to: next,
+			wsEnabled: this.websocketEnabled,
+			cachedDocCount: this.docs.size,
+		});
 
 		if (next === null) {
 			// Logout / auth loss: full tear-down to free all resources.
@@ -270,6 +290,7 @@ export class DocumentManager {
 				}
 			}
 			this.pendingSyncRooms.clear();
+			this.wsEverSynced.clear();
 			this.updatedAtDocs.clear();
 			this.registryHydrated = false;
 		}
@@ -694,6 +715,7 @@ export class DocumentManager {
 		this.readyPromises.delete(roomName);
 		this.websocketReadyPromises.delete(roomName);
 		this.pendingSyncRooms.delete(roomName);
+		this.wsEverSynced.delete(roomName);
 		this.updatedAtDocs.delete(roomName);
 
 		this.wsCleanup.get(roomName)?.();
@@ -724,6 +746,7 @@ export class DocumentManager {
 			this.destroyRoom(roomName);
 		}
 		this.pendingSyncRooms.clear();
+		this.wsEverSynced.clear();
 		this.updatedAtDocs.clear();
 		this.registryHydrated = false;
 	}
@@ -957,6 +980,7 @@ export class DocumentManager {
 		const onSync = (isSynced: boolean): void => {
 			logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-sync', isSynced });
 			if (isSynced) {
+				this.wsEverSynced.add(roomName);
 				this.pendingSyncRooms.delete(roomName);
 				this.emitConnectionStatus();
 			}
@@ -975,6 +999,11 @@ export class DocumentManager {
 			// assertions, read-only bindings). Without this guard, editor mount can mark a
 			// room as pending even when no content was modified.
 			if (tx.changed.size === 0) return;
+			// Only flag as pending-sync if this room has completed at least one WS
+			// sync in this session. Before that, we don't know whether IDB state
+			// diverges from the server — the connection header already shows
+			// "connecting" which is sufficient feedback during the startup window.
+			if (!this.wsEverSynced.has(roomName)) return;
 			const connected = (wsProvider as any).wsconnected === true;
 			if (!connected) {
 				this.pendingSyncRooms.add(roomName);
@@ -1072,31 +1101,45 @@ export class DocumentManager {
 	}
 
 	private updateConnectionState(): void {
+		const prev = this.connectionState;
 		if (!this.browserOnline) {
 			this.connectionState = 'offline';
-			return;
-		}
-
-		if (this.websocketProviders.size === 0) {
+		} else if (this.websocketProviders.size === 0) {
 			this.connectionState = 'connecting';
-			return;
+		} else {
+			const providers = Array.from(this.websocketProviders.values());
+			const anyConnected = providers.some((provider) => (provider as any).wsconnected === true);
+			if (anyConnected) {
+				this.connectionState = 'connected';
+			} else {
+				// During y-websocket's exponential backoff, wsconnecting is temporarily
+				// false while shouldConnect remains true (the provider still intends to
+				// reconnect). Without this check, the UI flashes 'offline' red during
+				// every backoff interval even though a reconnect is imminent.
+				const anyConnecting = providers.some(
+					(provider) => (provider as any).wsconnecting === true || (provider as any).shouldConnect === true
+				);
+				if (anyConnecting) {
+					this.connectionState = 'connecting';
+				} else if (!this.websocketEnabled) {
+					// WS is intentionally disabled (e.g. auth gate before session probe
+					// completes). Treat as "connecting" rather than "offline" because the
+					// app is still initializing — not genuinely disconnected.
+					this.connectionState = 'connecting';
+				} else {
+					this.connectionState = 'offline';
+				}
+			}
 		}
-
-		const providers = Array.from(this.websocketProviders.values());
-		const anyConnected = providers.some((provider) => (provider as any).wsconnected === true);
-		if (anyConnected) {
-			this.connectionState = 'connected';
-			return;
+		if (prev !== this.connectionState) {
+			logClientEvent('CONNECTION_STATE', {
+				event: 'state-change',
+				from: prev,
+				to: this.connectionState,
+				wsProviders: this.websocketProviders.size,
+				browserOnline: this.browserOnline,
+			});
 		}
-
-		// During y-websocket's exponential backoff, wsconnecting is temporarily
-		// false while shouldConnect remains true (the provider still intends to
-		// reconnect). Without this check, the UI flashes 'offline' red during
-		// every backoff interval even though a reconnect is imminent.
-		const anyConnecting = providers.some(
-			(provider) => (provider as any).wsconnecting === true || (provider as any).shouldConnect === true
-		);
-		this.connectionState = anyConnecting ? 'connecting' : 'offline';
 	}
 
 	private emitConnectionStatus(): void {
@@ -1539,9 +1582,12 @@ export class DocumentManager {
 	 * components gating on registryReady can render.
 	 */
 	private initializeRegistry(): void {
+		const startTime = Date.now();
+		logClientEvent('IDB_LIFECYCLE', { event: 'registry-hydration-start', workspaceId: this.activeWorkspaceId });
 		this.getNotesRegistryDoc()
 			.then(() => {
 				this.registryHydrated = true;
+				logClientEvent('IDB_LIFECYCLE', { event: 'registry-hydration-end', workspaceId: this.activeWorkspaceId, durationMs: Date.now() - startTime });
 				this.emitConnectionStatus();
 			})
 			.catch((err: unknown) => {

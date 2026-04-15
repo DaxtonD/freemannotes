@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.19 - 2026-04-14
+
+### Fixed
+- **"Clear notifications" button now works when only link-preview failures are present.** The button was permanently disabled in the Notifications modal when the sole items were failed URL metadata fetches. Failed link-preview notifications are now included in `canClearNotifications` and a new `onClearFailedLinks` callback clears them from app state when the user dismisses.
+- **Bubble view now opens notes from non-active "Shared with me" workspaces.** Clicking a bubble belonging to a workspace other than the currently active one failed silently for shared-note placements because their Yjs room IDs were never registered. `refreshNoteShareState` now fetches placements for every SHARED_WITH_ME workspace (not just the active one) and registers them all in `setExternalRoomAliases` so the cross-workspace note modal resolves the correct room and sub-folder notes work too.
+
+### Changed
+- **Debug overlay and debug console removed from production build.** The "DBG" pill, event-log overlay, and per-component mount/unmount tracking that were added during Android camera lifecycle debugging have been stripped from `App.tsx`, `NoteEditor.tsx`, and `NoteImageUploadModal.tsx`. No user-visible or functional behaviour changes.
+- **Verbose WebSocket connection logging removed from server.** The `[ws-debug] open` and `[ws-debug] close` lines that logged every Yjs WebSocket connection to the npm console have been removed from `server.js`.
+
 ## 1.2.18 - 2026-04-12
 
 ### Added
