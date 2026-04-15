@@ -516,6 +516,15 @@
 	font-size: var(--font-size-xs);
 }
 
+/* Condensed-toolbar sub-section buttons are slightly larger than full-mode toolbar
+   buttons to improve tap target size on mobile. */
+.formatButtonCondensed {
+	height: 36px;
+	min-width: 36px;
+	padding: 0 10px;
+	font-size: var(--font-size-md);
+}
+
 .checklistToolbarSlot {
 	flex: 0 0 auto;
 	min-height: 40px;
@@ -579,23 +588,23 @@
 	color: var(--color-text-muted);
 	cursor: pointer;
 	flex: 0 0 auto;
-	height: 30px;
-	padding: 0 10px;
-	border-radius: 999px;
+	height: 34px;
+	min-width: 34px;
+	padding: 0 8px;
+	border-radius: var(--radius-sm);
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	font-size: var(--font-size-xs);
-	font-weight: 700;
-	white-space: nowrap;
+	font-size: var(--font-size-md);
 	transition: background-color var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 	/* Allow toolbar drags that begin on a button to hand off to the horizontal scroller. */
 	touch-action: pan-x;
 }
 
 .condensedToolbarToggleCompact {
-	height: 26px;
-	padding: 0 8px;
+	height: 30px;
+	min-width: 30px;
+	padding: 0 6px;
 }
 
 .condensedToolbarToggle:hover,

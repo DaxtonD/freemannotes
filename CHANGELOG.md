@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.20 - 2026-04-14
+
+### Changed
+- **Condensed toolbar toggle buttons are now icons.** The pill-shaped text labels ("Headings", "Lists", "Insert", "Layout", "Copy") in the condensed toolbar have been replaced with compact icon buttons for a cleaner, more space-efficient layout. A new Formatting group (B icon) exposes Bold, Italic, Underline, Strikethrough, Link, Highlight, and Scroll-to-bottom — all of which were previously always visible in the primary row. Sub-toolbar action buttons are slightly larger in condensed mode than in the full toolbar for better tap targets on mobile.
+
 ## 1.2.19 - 2026-04-14
 
 ### Fixed
