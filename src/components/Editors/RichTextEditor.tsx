@@ -13,7 +13,9 @@ import {
 	faAlignRight,
 	faBold,
 	faCode,
+	faCopy,
 	faFaceSmile,
+	faHeading,
 	faHighlighter,
 	faIndent,
 	faItalic,
@@ -23,6 +25,7 @@ import {
 	faListUl,
 	faMinus,
 	faOutdent,
+	faPlus,
 	faQuoteLeft,
 	faRotateLeft,
 	faRotateRight,
@@ -87,7 +90,7 @@ type RichTextToolbarProps = {
 	checkboxRedoAvail?: boolean;
 };
 
-type CondensedToolbarSection = 'headings' | 'lists' | 'insert' | 'layout' | 'copy' | null;
+type CondensedToolbarSection = 'formatting' | 'headings' | 'lists' | 'insert' | 'layout' | 'copy' | null;
 
 function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
 	let current = node?.parentElement ?? null;
@@ -839,6 +842,9 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		|| resolvedToolbarState.isTaskList
 		|| resolvedToolbarState.isBlockquote;
 	const isCondensedToolbar = props.variant === 'full' && props.toolbarMode === 'condensed';
+	// Sub-toolbar buttons in condensed mode are slightly larger than in full-mode for
+	// better tap target size on mobile.
+	const condensedSubButtonClass = isCondensedToolbar ? ` ${styles.formatButtonCondensed}` : compactButtonClass;
 	const toggleCondensedSection = React.useCallback((section: Exclude<CondensedToolbarSection, null>): void => {
 		setCondensedSection((current) => (current === section ? null : section));
 	}, []);
@@ -847,6 +853,58 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const condensedSectionContent = isCondensedToolbar
 		? (() => {
 			switch (condensedSection) {
+				case 'formatting':
+					return (
+						<>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBold().run()}>
+								<FontAwesomeIcon icon={faBold} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleItalic().run()}>
+								<FontAwesomeIcon icon={faItalic} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleUnderline().run()}>
+								<FontAwesomeIcon icon={faUnderline} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isStrike ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.strikethrough')} title={t('editors.strikethrough')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleStrike().run()}>
+								<FontAwesomeIcon icon={faStrikethrough} />
+							</button>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
+								<FontAwesomeIcon icon={faLink} />
+							</button>
+							<div className={styles.formatMenuAnchor}>
+								<button
+									ref={highlightMenuButtonRef}
+									type="button"
+									className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isHighlight || highlightMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+									aria-label={t('editors.highlight')}
+									title={t('editors.highlight')}
+									aria-expanded={highlightMenuOpen}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={() => {
+										updateHighlightMenuPosition();
+										setHighlightMenuOpen((open) => !open);
+									}}
+								>
+									<FontAwesomeIcon icon={faHighlighter} />
+								</button>
+							</div>
+							{props.onToggleNoteAutoScroll ? (
+								<button
+									type="button"
+									className={`${styles.formatButton}${condensedSubButtonClass}${props.noteAutoScrollEnabled ? ` ${styles.formatButtonActive}` : ''}`}
+									aria-label={noteAutoScrollLabel}
+									aria-pressed={props.noteAutoScrollEnabled}
+									title={noteAutoScrollLabel}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={props.onToggleNoteAutoScroll}
+								>
+									<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
+								</button>
+							) : null}
+						</>
+					);
 				case 'headings':
 					return (
 						<>
@@ -861,22 +919,22 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				case 'lists':
 					return (
 						<>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBulletList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBulletList().run()}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isBulletList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBulletList().run()}>
 								<FontAwesomeIcon icon={faListUl} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isOrderedList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.numberedList')} title={t('editors.numberedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleOrderedList().run()}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isOrderedList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.numberedList')} title={t('editors.numberedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleOrderedList().run()}>
 								<FontAwesomeIcon icon={faListOl} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isTaskList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.taskList')} title={t('editors.taskList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleTaskList')}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isTaskList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.taskList')} title={t('editors.taskList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleTaskList')}>
 								<FontAwesomeIcon icon={faListCheck} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBlockquote ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.blockquote')} title={t('editors.blockquote')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleBlockquote')}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isBlockquote ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.blockquote')} title={t('editors.blockquote')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleBlockquote')}>
 								<FontAwesomeIcon icon={faQuoteLeft} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.nestContent')} title={t('editors.nestContent')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => indentStructuredBlock(props.editor)} disabled={!resolvedToolbarState.canIndentStructuredBlock}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}`} aria-label={t('editors.nestContent')} title={t('editors.nestContent')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => indentStructuredBlock(props.editor)} disabled={!resolvedToolbarState.canIndentStructuredBlock}>
 								<FontAwesomeIcon icon={faIndent} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.outdentContent')} title={t('editors.outdentContent')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => outdentStructuredBlock(props.editor)} disabled={!resolvedToolbarState.canOutdentStructuredBlock}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}`} aria-label={t('editors.outdentContent')} title={t('editors.outdentContent')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => outdentStructuredBlock(props.editor)} disabled={!resolvedToolbarState.canOutdentStructuredBlock}>
 								<FontAwesomeIcon icon={faOutdent} />
 							</button>
 						</>
@@ -884,35 +942,17 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				case 'insert':
 					return (
 						<>
-							<div className={styles.formatMenuAnchor}>
-								<button
-									ref={highlightMenuButtonRef}
-									type="button"
-									className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHighlight || highlightMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
-									aria-label={t('editors.highlight')}
-									title={t('editors.highlight')}
-									aria-expanded={highlightMenuOpen}
-									onMouseDown={preventToolbarFocusSteal}
-									onPointerDown={preventToolbarFocusSteal}
-									onClick={() => {
-										updateHighlightMenuPosition();
-										setHighlightMenuOpen((open) => !open);
-									}}
-								>
-									<FontAwesomeIcon icon={faHighlighter} />
-								</button>
-							</div>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isCodeBlock ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.codeBlock')} title={t('editors.codeBlock')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleCodeBlock')}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isCodeBlock ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.codeBlock')} title={t('editors.codeBlock')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleCodeBlock')}>
 								<FontAwesomeIcon icon={faCode} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.horizontalRule')} title={t('editors.horizontalRule')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'setHorizontalRule')}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}`} aria-label={t('editors.horizontalRule')} title={t('editors.horizontalRule')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'setHorizontalRule')}>
 								<FontAwesomeIcon icon={faMinus} />
 							</button>
 							<div className={styles.formatMenuAnchor}>
 								<button
 									ref={tableMenuButtonRef}
 									type="button"
-									className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isTable || tableMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+									className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isTable || tableMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
 									aria-label={t('editors.tableMenu')}
 									title={t('editors.tableMenu')}
 									aria-expanded={tableMenuOpen}
@@ -930,7 +970,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<button
 									ref={emojiMenuButtonRef}
 									type="button"
-									className={`${styles.formatButton}${compactButtonClass}${emojiMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+									className={`${styles.formatButton}${condensedSubButtonClass}${emojiMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
 									aria-label={t('editors.emojiPicker')}
 									title={t('editors.emojiPicker')}
 									aria-expanded={emojiMenuOpen}
@@ -945,7 +985,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								</button>
 							</div>
 							{props.onCreateUrlPreview ? (
-								<button type="button" className={`${styles.formatButton}${compactButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
+								<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
 									<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
 								</button>
 							) : null}
@@ -954,13 +994,13 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				case 'layout':
 					return (
 						<>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignLeft ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('left').run()}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isAlignLeft ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('left').run()}>
 								<FontAwesomeIcon icon={faAlignLeft} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignCenter ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignCenter')} title={t('editors.alignCenter')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('center').run()}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isAlignCenter ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignCenter')} title={t('editors.alignCenter')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('center').run()}>
 								<FontAwesomeIcon icon={faAlignCenter} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignRight ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignRight')} title={t('editors.alignRight')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('right').run()}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isAlignRight ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignRight')} title={t('editors.alignRight')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('right').run()}>
 								<FontAwesomeIcon icon={faAlignRight} />
 							</button>
 						</>
@@ -1007,10 +1047,14 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		setHeadingMenuOpen(false);
 	}, [isCondensedToolbar]);
 	React.useEffect(() => {
-		if (!isCondensedToolbar || condensedSection === 'insert') return;
-		setTableMenuOpen(false);
-		setHighlightMenuOpen(false);
-		setEmojiMenuOpen(false);
+		if (!isCondensedToolbar) return;
+		if (condensedSection !== 'insert') {
+			setTableMenuOpen(false);
+			setEmojiMenuOpen(false);
+		}
+		if (condensedSection !== 'formatting') {
+			setHighlightMenuOpen(false);
+		}
 	}, [condensedSection, isCondensedToolbar]);
 
 	return (
@@ -1048,23 +1092,23 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					<FontAwesomeIcon icon={faRotateRight} />
 				</button>
 				<div className={styles.formatDivider} aria-hidden="true" />
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBold().run()}>
-					<FontAwesomeIcon icon={faBold} />
-				</button>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleItalic().run()}>
-					<FontAwesomeIcon icon={faItalic} />
-				</button>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleUnderline().run()}>
-					<FontAwesomeIcon icon={faUnderline} />
-				</button>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isStrike ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.strikethrough')} title={t('editors.strikethrough')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleStrike().run()}>
-					<FontAwesomeIcon icon={faStrikethrough} />
-				</button>
-				<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
-					<FontAwesomeIcon icon={faLink} />
-				</button>
 				{!isCondensedToolbar ? (
 					<>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBold().run()}>
+							<FontAwesomeIcon icon={faBold} />
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleItalic().run()}>
+							<FontAwesomeIcon icon={faItalic} />
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleUnderline().run()}>
+							<FontAwesomeIcon icon={faUnderline} />
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isStrike ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.strikethrough')} title={t('editors.strikethrough')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleStrike().run()}>
+							<FontAwesomeIcon icon={faStrikethrough} />
+						</button>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
+							<FontAwesomeIcon icon={faLink} />
+						</button>
 						{/* Emoji quick-insert — available in all toolbar variants */}
 						<div className={styles.formatMenuAnchor}>
 							<button
@@ -1089,21 +1133,21 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
 							</button>
 						) : null}
+						{props.onToggleNoteAutoScroll ? (
+							<button
+								type="button"
+								className={`${styles.formatButton}${compactButtonClass}${props.noteAutoScrollEnabled ? ` ${styles.formatButtonActive}` : ''}`}
+								aria-label={noteAutoScrollLabel}
+								aria-pressed={props.noteAutoScrollEnabled}
+								title={noteAutoScrollLabel}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={props.onToggleNoteAutoScroll}
+							>
+								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
+							</button>
+						) : null}
 					</>
-				) : null}
-				{props.onToggleNoteAutoScroll ? (
-					<button
-						type="button"
-						className={`${styles.formatButton}${compactButtonClass}${props.noteAutoScrollEnabled ? ` ${styles.formatButtonActive}` : ''}`}
-						aria-label={noteAutoScrollLabel}
-						aria-pressed={props.noteAutoScrollEnabled}
-						title={noteAutoScrollLabel}
-						onMouseDown={preventToolbarFocusSteal}
-						onPointerDown={preventToolbarFocusSteal}
-						onClick={props.onToggleNoteAutoScroll}
-					>
-						<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
-					</button>
 				) : null}
 				{props.onUndoCheckbox ? (
 					<>
@@ -1301,7 +1345,18 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				) : null}
 				{isCondensedToolbar ? (
 					<>
-						<div className={styles.formatDivider} aria-hidden="true" />
+						<button
+							type="button"
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'formatting' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							aria-label={t('editors.condensedFormatting')}
+							title={t('editors.condensedFormatting')}
+							aria-pressed={condensedSection === 'formatting'}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={() => toggleCondensedSection('formatting')}
+						>
+							<FontAwesomeIcon icon={faBold} />
+						</button>
 						<button
 							type="button"
 							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'headings' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
@@ -1312,7 +1367,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							onPointerDown={preventToolbarFocusSteal}
 							onClick={() => toggleCondensedSection('headings')}
 						>
-							{activeHeadingLabel === t('editors.headingMenu') ? t('editors.condensedHeadings') : activeHeadingLabel}
+							<FontAwesomeIcon icon={faHeading} />
 						</button>
 						<button
 							type="button"
@@ -1324,7 +1379,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							onPointerDown={preventToolbarFocusSteal}
 							onClick={() => toggleCondensedSection('lists')}
 						>
-							{t('editors.condensedLists')}
+							<FontAwesomeIcon icon={faListUl} />
 						</button>
 						<button
 							type="button"
@@ -1336,7 +1391,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							onPointerDown={preventToolbarFocusSteal}
 							onClick={() => toggleCondensedSection('insert')}
 						>
-							{t('editors.condensedInsert')}
+							<FontAwesomeIcon icon={faPlus} />
 						</button>
 						<button
 							type="button"
@@ -1348,7 +1403,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							onPointerDown={preventToolbarFocusSteal}
 							onClick={() => toggleCondensedSection('layout')}
 						>
-							{t('editors.condensedLayout')}
+							<FontAwesomeIcon icon={faAlignLeft} />
 						</button>
 						<button
 							type="button"
@@ -1360,7 +1415,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							onPointerDown={preventToolbarFocusSteal}
 							onClick={() => toggleCondensedSection('copy')}
 						>
-							{t('editors.condensedCopy')}
+							<FontAwesomeIcon icon={faCopy} />
 						</button>
 					</>
 				) : null}
