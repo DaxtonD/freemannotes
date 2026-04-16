@@ -27,6 +27,7 @@ type CachedInvitation = {
 	sourceNoteId: string;
 	role: CollaboratorRole;
 	status: 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'REVOKED';
+	inviteeId?: string | null;
 	inviteeEmail: string;
 	inviteeName: string | null;
 	inviteeProfileImage?: string | null;
@@ -113,6 +114,7 @@ type InvitationRow = {
 	sourceNoteId: string;
 	role: CollaboratorRole;
 	status: 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'REVOKED';
+	inviteeId: string | null;
 	inviteeEmail: string;
 	inviteeName: string | null;
 	inviteeProfileImage: string | null;
@@ -389,6 +391,7 @@ export async function cacheCollaboratorSnapshot(args: { userId: string; docId: s
 				sourceNoteId: invitation.sourceNoteId,
 				role: asRole(invitation.role),
 				status: invitation.status,
+				inviteeId: invitation.inviteeId ?? null,
 				inviteeEmail: invitation.inviteeEmail,
 				inviteeName: invitation.inviteeName ?? null,
 				inviteeProfileImage: invitation.inviteeProfileImage ?? null,
@@ -506,6 +509,7 @@ export async function readCachedCollaboratorSnapshot(userId: string, docId: stri
 					sourceNoteId: row.sourceNoteId,
 					role: asRole(row.role),
 					status: row.status,
+					inviteeId: row.inviteeId ?? null,
 					inviteeEmail: row.inviteeEmail,
 					inviteeName: row.inviteeName ?? null,
 					inviteeProfileImage: row.inviteeProfileImage ?? null,
