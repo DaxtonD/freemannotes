@@ -185,13 +185,9 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const hasPendingReminderNotifications = (props.pendingReminderCount ?? 0) > 0;
 	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders || hasPendingReminderNotifications;
 	const hasAppNotification = hasAppUpdate || hasAppUpdated;
-	const modalTitle = hasAppNotification ? t('prefs.notifications') : hasWorkspaceInvites ? t('invite.notifications') : t('share.notifications');
-	const modalSubtitle = hasAppNotification
-		? t('prefs.notificationsSubtitle')
-		: hasWorkspaceInvites
-		? (hasNoteInvites ? t('invite.notificationsSubtitleMixed') : t('invite.notificationsSubtitle'))
-		: (hasFailedLinks ? t('links.notificationsSubtitle') : t('share.notificationsSubtitle'));
-	const emptyStateLabel = hasAppNotification ? t('prefs.noNotifications') : hasWorkspaceInvites ? t('invite.noNotifications') : t('share.noNotifications');
+	const modalTitle = t('share.notifications');
+	const modalSubtitle = hasAppNotification ? t('prefs.notificationsSubtitle') : t('share.notificationsSubtitle');
+	const emptyStateLabel = t('share.noNotifications');
 
 	const clearableInvitationIds = React.useMemo(() => {
 		return visibleInvitations.filter((invitation) => invitation.status !== 'PENDING').map((invitation) => invitation.id);
@@ -485,17 +481,17 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 										</div>
 										<div className={styles.notificationCopy}>
 											<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
-												<strong className={styles.notificationSender}>{inviterName}</strong> {t('invite.invitedYouToJoin')} <strong>{invite.workspaceName}</strong>.
+												<strong>{t('invite.joinWorkspaceLabel')}:</strong> {invite.workspaceName}
 											</div>
 											<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
-												{getWorkspaceRoleLabel(invite.role)}
+												{t('share.fromLabel')}: {inviterName} · {getWorkspaceRoleLabel(invite.role)}
 											</div>
 										</div>
 										<div className={styles.notificationStatusWrap}>
 											<span className={`${styles.badge} ${styles.badgePending}`}>{t('invite.statePending')}</span>
 										</div>
 									</div>
-									<div className={styles.rowMeta}>{t('invite.expiresAt')}: {new Date(invite.expiresAt).toLocaleString()}</div>
+									<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>{t('invite.expiresAt')}: {new Date(invite.expiresAt).toLocaleString()}</div>
 									<div className={styles.actionRow}>
 										<button type="button" className={styles.primaryButton} onClick={() => void handleAcceptWorkspaceInvite(invite)} disabled={busyId === `workspace:${invite.id}`}>
 											{t('share.accept')}
@@ -527,14 +523,15 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 										)}
 										<div className={styles.notificationCopy}>
 											<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
-												<strong className={styles.notificationSender}>{inviterName}</strong> {t('share.wantsToShare')} <strong>{noteTitle}</strong> {t('share.withYou')}
+												<strong>{t('share.joinNoteLabel')}:</strong> {noteTitle}
 											</div>
-											<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>{roleLabel}</div>
+											<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>{t('share.fromLabel')}: {inviterName} · {roleLabel}</div>
 										</div>
 										<div className={styles.notificationStatusWrap}>
 											<span className={`${styles.badge} ${statusClassNames[invitation.status]}`}>{statusLabels[invitation.status]}</span>
 										</div>
 									</div>
+									<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>{t('share.sharedAt')}: {new Date(invitation.createdAt).toLocaleString()}</div>
 									{isPending ? (
 										<>
 											{isAccepting ? (

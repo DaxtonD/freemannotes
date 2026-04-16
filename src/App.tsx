@@ -844,15 +844,42 @@ export function App(): React.JSX.Element {
 	const [firedReminders, setFiredReminders] = React.useState<FiredReminder[]>([]);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
 	// Tracks failed-link notification IDs the user has explicitly dismissed so
-	// they don't re-appear on the next refreshNoteShareState call. Stored in
-	// localStorage so dismissals persist across page reloads.
-	const dismissedFailedLinkIdsRef = React.useRef<Set<string>>((() => {
+	// they don't re-appear on the next refreshNoteShareState call. Stored per
+	// user in localStorage as an offline/cache fallback, and mirrored to the
+	// server-backed user preferences row for cross-device persistence.
+	const dismissedFailedLinkIdsRef = React.useRef<Set<string>>(new Set());
+	React.useEffect(() => {
+		if (!authUserId || typeof window === 'undefined') {
+			dismissedFailedLinkIdsRef.current = new Set();
+			return;
+		}
+		const next = new Set<string>();
 		try {
-			const raw = localStorage.getItem('freemannotes.dismissedFailedLinks.v1');
-			if (raw) return new Set<string>(JSON.parse(raw) as string[]);
-		} catch { /* ignore */ }
-		return new Set<string>();
-	})());
+			const scopedRaw = window.localStorage.getItem(`freemannotes.dismissedFailedLinks.v2:${authUserId}`);
+			if (scopedRaw) {
+				const parsed = JSON.parse(scopedRaw) as unknown;
+				if (Array.isArray(parsed)) {
+					for (const value of parsed) {
+						if (typeof value === 'string' && value) next.add(value);
+					}
+				}
+			}
+			const legacyRaw = window.localStorage.getItem('freemannotes.dismissedFailedLinks.v1');
+			if (legacyRaw) {
+				const parsed = JSON.parse(legacyRaw) as unknown;
+				if (Array.isArray(parsed)) {
+					for (const value of parsed) {
+						if (typeof value === 'string' && value) next.add(value);
+					}
+				}
+				window.localStorage.removeItem('freemannotes.dismissedFailedLinks.v1');
+			}
+			window.localStorage.setItem(`freemannotes.dismissedFailedLinks.v2:${authUserId}`, JSON.stringify([...next]));
+		} catch {
+			// Best effort only.
+		}
+		dismissedFailedLinkIdsRef.current = next;
+	}, [authUserId]);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(_restoredOverlay?.collaboratorModalState ?? null);
 	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(() => {
@@ -2202,6 +2229,20 @@ export function App(): React.JSX.Element {
 		refreshActiveWorkspaceRef.current = refreshActiveWorkspace;
 	}, [refreshActiveWorkspace]);
 
+	// Stable refs for callbacks that change identity on every preference change.
+	// Using refs prevents the prefs hydration effect from re-firing every time
+	// the user moves a preference slider (which would race-fetch stale server
+	// values and potentially reset in-flight local changes).
+	const syncLocalDevicePrefsFromServerRef = React.useRef(syncLocalDevicePrefsFromServer);
+	React.useEffect(() => {
+		syncLocalDevicePrefsFromServerRef.current = syncLocalDevicePrefsFromServer;
+	}, [syncLocalDevicePrefsFromServer]);
+
+	const persistDevicePrefsLocallyRef = React.useRef(persistDevicePrefsLocally);
+	React.useEffect(() => {
+		persistDevicePrefsLocallyRef.current = persistDevicePrefsLocally;
+	}, [persistDevicePrefsLocally]);
+
 	const confirmActivatedWorkspaceSession = React.useCallback(async (workspaceId: string): Promise<void> => {
 		// Workspace activation flips the server-side session before the client should
 		// reconnect Yjs rooms against the new workspace namespace.
@@ -2619,7 +2660,7 @@ export function App(): React.JSX.Element {
 						noteCardCompletedInteractions: localAppearanceSnapshot.noteCardCompletedInteractions,
 					});
 					if (!cancelled && updatedAppearance) {
-						syncLocalDevicePrefsFromServer(updatedAppearance);
+						syncLocalDevicePrefsFromServerRef.current(updatedAppearance);
 					}
 				} else if (pref.noteCardMaxHeightPx == null) {
 					// Fresh device: server has no saved card height → apply device-aware
@@ -2630,7 +2671,7 @@ export function App(): React.JSX.Element {
 						noteEditorFontScale: getDefaultNoteEditorFontScale(),
 					};
 					applyDevicePreferenceState({ ...pref, ...freshDefaults });
-					persistDevicePrefsLocally({
+					persistDevicePrefsLocallyRef.current({
 						noteCardFontScale: freshDefaults.noteCardFontScale,
 						noteEditorFontScale: freshDefaults.noteEditorFontScale,
 						editorToolbarMode: pref.editorToolbarMode ?? 'full',
@@ -2647,12 +2688,45 @@ export function App(): React.JSX.Element {
 						void updateUserPreferences(deviceId, freshDefaults);
 					}
 				} else {
-					syncLocalDevicePrefsFromServer(pref);
+					syncLocalDevicePrefsFromServerRef.current(pref);
 				}
 				setTrashDeleteAfterDaysPref(pref.deleteAfterDays ?? null);
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
 				if (pref.bubbleWorkspaceColors && Object.keys(pref.bubbleWorkspaceColors).length > 0) {
 					setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors);
+				}
+				// Merge the server-backed dismissed IDs with the local offline cache so
+				// users keep dismissals made on other devices without losing any that
+				// were created locally while offline or before the server sync landed.
+				const serverDismissedFailedLinkIds = new Set(
+					Object.entries(pref.dismissedFailedLinkIds || {})
+						.filter(([, dismissed]) => dismissed)
+						.map(([id]) => id)
+				);
+				const mergedDismissedFailedLinkIds = new Set([
+					...serverDismissedFailedLinkIds,
+					...dismissedFailedLinkIdsRef.current,
+				]);
+				dismissedFailedLinkIdsRef.current = mergedDismissedFailedLinkIds;
+				if (authUserId && typeof window !== 'undefined') {
+					try {
+						window.localStorage.setItem(
+							`freemannotes.dismissedFailedLinks.v2:${authUserId}`,
+							JSON.stringify([...mergedDismissedFailedLinkIds])
+						);
+					} catch {
+						// Best effort only.
+					}
+				}
+				if (!cancelled && mergedDismissedFailedLinkIds.size !== serverDismissedFailedLinkIds.size) {
+					void updateUserPreferences(deviceId, {
+						dismissedFailedLinkIds: Object.fromEntries(
+							[...mergedDismissedFailedLinkIds].map((id) => [id, true] as const)
+						),
+					});
+				}
+				if (!cancelled && mergedDismissedFailedLinkIds.size > 0) {
+					void refreshNoteShareStateRef.current();
 				}
 			}
 			setPrefsHydrationAttempted(true);
@@ -2660,7 +2734,7 @@ export function App(): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [applyDevicePreferenceState, authOfflineMode, authStatus, authUserId, deviceId, setLocale, syncLocalDevicePrefsFromServer]);
+	}, [applyDevicePreferenceState, authOfflineMode, authStatus, authUserId, deviceId, setLocale]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) return;
@@ -6925,9 +6999,6 @@ export function App(): React.JSX.Element {
 											>
 												{t('workspace.manage')}
 											</button>
-											{sidebarWorkspacesBusy ? (
-													<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 0 }}>{t('common.loading')}</div>
-											) : null}
 											{sidebarWorkspacesError ? (
 													<div className="sidebar-workspace-muted sidebar-submenu-muted" style={{ ['--sidebar-item-index' as const]: 1 }}>{sidebarWorkspacesError}</div>
 											) : null}
@@ -6941,7 +7012,7 @@ export function App(): React.JSX.Element {
 												const sharedFolderGroupId = `workspace-folders:${ws.id}`;
 												const hasSharedFolders = ws.systemKind === 'SHARED_WITH_ME' && sharedFolderNames.length > 0;
 												const showSharedFolders = hasSharedFolders && Boolean(sidebarGroupsOpen[sharedFolderGroupId]);
-												const itemIndex = (sidebarWorkspacesBusy || sidebarWorkspacesError ? 3 : 0) + index;
+												const itemIndex = (sidebarWorkspacesError ? 2 : 0) + index;
 												// Show owner avatar for any workspace the current user does not own
 												// so they can always see whose workspace they are in.
 												const showOwnerAvatar = ws.ownerUserId !== authUserId && ws.ownerUserId != null;
@@ -8045,9 +8116,14 @@ export function App(): React.JSX.Element {
 					if (ids.length > 0) {
 						const next = new Set([...dismissedFailedLinkIdsRef.current, ...ids]);
 						dismissedFailedLinkIdsRef.current = next;
-						try {
-							localStorage.setItem('freemannotes.dismissedFailedLinks.v1', JSON.stringify([...next]));
-						} catch { /* ignore */ }
+						if (authUserId) {
+							try {
+								localStorage.setItem(`freemannotes.dismissedFailedLinks.v2:${authUserId}`, JSON.stringify([...next]));
+							} catch { /* ignore */ }
+							void updateUserPreferences(deviceId, {
+								dismissedFailedLinkIds: Object.fromEntries([...next].map((id) => [id, true] as const)),
+							});
+						}
 					}
 					setPendingShareNotificationCount((prev) => Math.max(0, prev - failedLinkNotifications.length));
 					setFailedLinkNotifications([]);

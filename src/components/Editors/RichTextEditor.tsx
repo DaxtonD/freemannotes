@@ -841,7 +841,30 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		|| resolvedToolbarState.isOrderedList
 		|| resolvedToolbarState.isTaskList
 		|| resolvedToolbarState.isBlockquote;
+	// In condensed mode, the top-level toggles need to reflect both which panel is
+	// open and whether the current selection already uses that formatting family.
+	const hasActiveFormattingSection = resolvedToolbarState.isBold
+		|| resolvedToolbarState.isItalic
+		|| resolvedToolbarState.isUnderline
+		|| resolvedToolbarState.isStrike
+		|| resolvedToolbarState.isLink
+		|| resolvedToolbarState.isHighlight;
+	const hasActiveHeadingSection = resolvedToolbarState.isHeading1
+		|| resolvedToolbarState.isHeading2
+		|| resolvedToolbarState.isHeading3
+		|| resolvedToolbarState.isHeading4
+		|| resolvedToolbarState.isHeading5
+		|| resolvedToolbarState.isHeading6;
+	const hasActiveListSection = resolvedToolbarState.isBulletList
+		|| resolvedToolbarState.isOrderedList
+		|| resolvedToolbarState.isTaskList
+		|| resolvedToolbarState.isBlockquote;
+	const hasActiveInsertSection = resolvedToolbarState.isCodeBlock || resolvedToolbarState.isTable;
+	const hasActiveLayoutSection = resolvedToolbarState.isAlignCenter || resolvedToolbarState.isAlignRight;
 	const isCondensedToolbar = props.variant === 'full' && props.toolbarMode === 'condensed';
+	// Coarse-pointer devices hide the explicit scroll buttons, so expose an edge
+	// hint only when the full toolbar actually overflows horizontally.
+	const showToolbarScrollHint = props.variant === 'full' && !isCondensedToolbar;
 	// Sub-toolbar buttons in condensed mode are slightly larger than in full-mode for
 	// better tap target size on mobile.
 	const condensedSubButtonClass = isCondensedToolbar ? ` ${styles.formatButtonCondensed}` : compactButtonClass;
@@ -1071,7 +1094,15 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				onTouchEndCapture={resetToolbarTouch}
 				onTouchCancelCapture={resetToolbarTouch}
 			>
-				<div className={styles.formatToolbarScroller}>
+				<div
+					className={[
+						styles.formatToolbarScroller,
+						showToolbarScrollHint && canScrollToolbarLeft ? styles.formatToolbarScrollerHintLeft : '',
+						showToolbarScrollHint && canScrollToolbarRight ? styles.formatToolbarScrollerHintRight : '',
+					]
+						.filter(Boolean)
+						.join(' ')}
+				>
 				<button
 					type="button"
 					className={`${styles.formatToolbarScrollButton}${canScrollToolbarLeft ? '' : ` ${styles.formatToolbarScrollButtonHidden}`}`}
@@ -1347,7 +1378,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					<>
 						<button
 							type="button"
-							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'formatting' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'formatting' || hasActiveFormattingSection ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
 							aria-label={t('editors.condensedFormatting')}
 							title={t('editors.condensedFormatting')}
 							aria-pressed={condensedSection === 'formatting'}
@@ -1359,7 +1390,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						</button>
 						<button
 							type="button"
-							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'headings' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'headings' || hasActiveHeadingSection ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
 							aria-label={t('editors.condensedHeadings')}
 							title={t('editors.condensedHeadings')}
 							aria-pressed={condensedSection === 'headings'}
@@ -1371,7 +1402,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						</button>
 						<button
 							type="button"
-							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'lists' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'lists' || hasActiveListSection ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
 							aria-label={t('editors.condensedLists')}
 							title={t('editors.condensedLists')}
 							aria-pressed={condensedSection === 'lists'}
@@ -1383,7 +1414,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						</button>
 						<button
 							type="button"
-							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'insert' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'insert' || hasActiveInsertSection ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
 							aria-label={t('editors.condensedInsert')}
 							title={t('editors.condensedInsert')}
 							aria-pressed={condensedSection === 'insert'}
@@ -1395,7 +1426,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						</button>
 						<button
 							type="button"
-							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'layout' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'layout' || hasActiveLayoutSection ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
 							aria-label={t('editors.condensedLayout')}
 							title={t('editors.condensedLayout')}
 							aria-pressed={condensedSection === 'layout'}

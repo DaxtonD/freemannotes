@@ -4,7 +4,6 @@
 	padding: 0;
 	background-color: var(--note-color-card-bg, var(--color-surface));
 	color: var(--note-color-text, var(--color-text));
-	min-height: var(--note-card-max-height);
 	max-height: var(--note-card-max-height);
 	overflow: hidden;
 	position: relative;

@@ -1591,6 +1591,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, [dragManager.isTouchDragging]);
 
+	// When the max-card-height preference changes, all previously measured heights
+	// are stale (the CSS cap has moved). Clear the in-memory cache so the next
+	// layout pass re-measures at the new cap instead of using the old values.
+	// Skip the initial mount so we don't wipe heights seeded from localStorage.
+	const maxCardHeightPxInitializedRef = React.useRef(false);
+	React.useEffect(() => {
+		if (!maxCardHeightPxInitializedRef.current) {
+			maxCardHeightPxInitializedRef.current = true;
+			return;
+		}
+		noteHeightByIdRef.current.clear();
+		setNoteHeightsVersion((v) => v + 1);
+	}, [props.maxCardHeightPx]);
+
 	// Measure card heights for masonry packing (runs after render)
 	React.useLayoutEffect(() => {
 		if (!isGridVisible) return;

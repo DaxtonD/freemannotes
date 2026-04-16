@@ -1484,6 +1484,7 @@
 	align-items: center;
 	justify-content: center;
 	flex-shrink: 0;
+	-webkit-tap-highlight-color: transparent;
 }
 
 .sidebar-workspace-owner-avatar:hover,
@@ -1506,6 +1507,33 @@
 	color: var(--color-text-muted);
 	pointer-events: none;
 	user-select: none;
+}
+
+@media (pointer: coarse) {
+	.sidebar-workspace-row.has-owner-avatar .sidebar-workspace-item {
+		padding-right: 46px;
+	}
+
+	.sidebar-workspace-owner-avatar {
+		right: 3px;
+		width: 32px;
+		height: 32px;
+		border-color: transparent;
+		background: transparent;
+	}
+
+	.sidebar-workspace-owner-avatar:hover,
+	.sidebar-workspace-owner-avatar:focus-visible,
+	.sidebar-workspace-owner-avatar:active {
+		border-color: transparent;
+		background: transparent;
+		outline: none;
+	}
+
+	.sidebar-workspace-owner-img,
+	.sidebar-workspace-owner-initials {
+		pointer-events: none;
+	}
 }
 
 /* ── Inline owner overlay (click/tap on workspace avatar chip) ───────── */

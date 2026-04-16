@@ -187,6 +187,16 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 		return out;
 	}
 
+	/** Safely parses a JSONB value as a flat Record<string, boolean>. */
+	function safeJsonBooleanRecord(value) {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+		const out = {};
+		for (const [k, v] of Object.entries(value)) {
+			if (typeof k === 'string' && k && Boolean(v)) out[k] = true;
+		}
+		return out;
+	}
+
 	// Keep server-side validation aligned with the frontend semantic palette. Raw
 	// hex colors are intentionally rejected so theme adaptation stays consistent.
 	const BUBBLE_COLOR_VISIBLE_BASES = [
@@ -306,6 +316,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteCardCompletedInteractions: devicePref.noteCardCompletedInteractions !== false,
 						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 						bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
+						dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
 						createdAt: fmt(devicePref.createdAt),
 						updatedAt: fmt(devicePref.updatedAt),
 						timezone: timezone || 'UTC',
@@ -375,6 +386,29 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							}
 						} else {
 							jsonResponse(res, 400, { error: 'bubbleWorkspaceColors must be an object or null' });
+							return;
+						}
+					}
+
+					if ('dismissedFailedLinkIds' in body) {
+						const dismissedIds = body.dismissedFailedLinkIds;
+						if (dismissedIds == null || dismissedIds === '') {
+							userUpdateData.dismissedFailedLinkIds = {};
+						} else if (dismissedIds && typeof dismissedIds === 'object' && !Array.isArray(dismissedIds)) {
+							const normalized = {};
+							for (const [k, v] of Object.entries(dismissedIds)) {
+								if (typeof k === 'string' && k.length > 0 && k.length <= 120 && Boolean(v)) {
+									normalized[k] = true;
+								}
+							}
+							if (Object.keys(normalized).length <= 1000) {
+								userUpdateData.dismissedFailedLinkIds = normalized;
+							} else {
+								jsonResponse(res, 400, { error: 'dismissedFailedLinkIds exceeds 1000 entries' });
+								return;
+							}
+						} else {
+							jsonResponse(res, 400, { error: 'dismissedFailedLinkIds must be an object or null' });
 							return;
 						}
 					}
@@ -568,6 +602,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							noteCardCompletedInteractions: devicePref.noteCardCompletedInteractions !== false,
 							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 							bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
+							dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
 							createdAt: fmt(devicePref.createdAt),
 							updatedAt: fmt(devicePref.updatedAt),
 							timezone: timezone || 'UTC',
@@ -724,6 +759,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteCardCompletedInteractions: pref.devicePref.noteCardCompletedInteractions !== false,
 						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
 						bubbleWorkspaceColors: safeJsonRecord(pref.userPref.bubbleWorkspaceColors),
+						dismissedFailedLinkIds: safeJsonBooleanRecord(pref.userPref.dismissedFailedLinkIds),
 						createdAt: fmt(pref.devicePref.createdAt),
 						updatedAt: fmt(pref.devicePref.updatedAt),
 						timezone: timezone || 'UTC',

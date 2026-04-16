@@ -665,6 +665,10 @@ model UserPreference {
   /// Applied in bubble view only; not shared with collaborators.
   bubbleWorkspaceColors Json @default("{}") @map("bubble_workspace_colors") @db.JsonB
 
+  /// Per-user dismissed failed-link notification IDs.
+  /// Shape: { [failedLinkId: string]: true }
+  dismissedFailedLinkIds Json @default("{}") @map("dismissed_failed_link_ids") @db.JsonB
+
   /// Timestamps for auditing.
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
