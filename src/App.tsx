@@ -771,7 +771,16 @@ export function App(): React.JSX.Element {
 	// Track which workspaces have completed their first full load this session.
 	// Persists across workspace switches (Ref, not state) so NoteGrid can skip
 	// the initial skeleton shimmer when returning to a previously-loaded workspace.
-	const seenWorkspaceIdsRef = React.useRef<Set<string>>(new Set());
+	// Also persisted to sessionStorage so PWA background→foreground re-opens
+	// skip the shimmer for workspaces that were fully loaded before the app was
+	// suspended (the IDB data is still warm, no need to show skeletons again).
+	const seenWorkspaceIdsRef = React.useRef<Set<string>>((() => {
+		try {
+			const raw = sessionStorage.getItem('freemannotes.seenWorkspaceIds.v1');
+			if (raw) return new Set<string>(JSON.parse(raw) as string[]);
+		} catch { /* ignore */ }
+		return new Set<string>();
+	})());
 	const [authOfflineMode, setAuthOfflineMode] = React.useState(false);
 	// Ref mirror of authOfflineMode so async callbacks (e.g. backgroundPreloadAllWorkspaces)
 	// can read the latest value without capturing a stale closure.
@@ -822,6 +831,9 @@ export function App(): React.JSX.Element {
 	// workspace) so that bubble-click lookups and setExternalRoomAliases work across any
 	// workspace. visibleSharedPlacements (below) limits what the NoteGrid receives.
 	const [sharedPlacements, setSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
+	// activeWorkspaceSharedPlacements holds ONLY the placements for the currently active
+	// workspace. Used by visibleSharedPlacements so personal-workspace shared notes appear.
+	const [activeWorkspaceSharedPlacements, setActiveWorkspaceSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
@@ -2777,6 +2789,7 @@ export function App(): React.JSX.Element {
 		setSidebarWorkspaces([]);
 		setSidebarWorkspacesError(null);
 		setSharedPlacements([]);
+		setActiveWorkspaceSharedPlacements([]);
 		setActiveSharedFolder(null);
 		setPendingRestoredSharedFolder(false);
 		setPendingSharedFolderReveal(null);
@@ -2800,6 +2813,7 @@ export function App(): React.JSX.Element {
 			setActiveWorkspaceName(null);
 			setActiveWorkspaceSystemKind(null);
 			setSharedPlacements([]);
+			setActiveWorkspaceSharedPlacements([]);
 			setActiveSharedFolder(null);
 			setPendingRestoredSharedFolder(false);
 			setPendingSharedFolderReveal(null);
@@ -3296,16 +3310,15 @@ export function App(): React.JSX.Element {
 	}, [activeSharedFolder, activeWorkspaceSystemKind, sharedFolderNames]);
 
 	const visibleSharedPlacements = React.useMemo(() => {
-		// Return empty when the active workspace is not a Shared With Me workspace so
-		// that NoteGrid never injects shared-placement alias IDs into its orderedIds
-		// (which would cause Shared With Me notes to appear in every other workspace).
-		// sharedPlacements still holds ALL placements for lookup / alias-registration.
-		if (activeWorkspaceSystemKind !== 'SHARED_WITH_ME') return [];
+		// For non-SHARED_WITH_ME workspaces, use only the active workspace's placements
+		// so personal-workspace shared notes appear without injecting other workspace notes.
+		// For SHARED_WITH_ME, filter by the selected folder.
+		if (activeWorkspaceSystemKind !== 'SHARED_WITH_ME') return activeWorkspaceSharedPlacements;
 		if (!activeSharedFolder) {
 			return sharedPlacements.filter((placement) => !String(placement.folderName || '').trim());
 		}
 		return sharedPlacements.filter((placement) => String(placement.folderName || '').trim() === activeSharedFolder);
-	}, [activeSharedFolder, activeWorkspaceSystemKind, sharedPlacements]);
+	}, [activeSharedFolder, activeWorkspaceSystemKind, activeWorkspaceSharedPlacements, sharedPlacements]);
 
 	const activeWorkspaceSidebarPath = React.useMemo(() => {
 		const workspaceLabel = activeWorkspaceName || t('workspace.unnamed');
@@ -3669,6 +3682,7 @@ export function App(): React.JSX.Element {
 		// - refresh alias-mounted shared note placements for the grid/sidebar
 		if (authStatus !== 'authed' || !authUserId) {
 			setSharedPlacements([]);
+			setActiveWorkspaceSharedPlacements([]);
 			setFailedLinkNotifications([]);
 			setPendingShareNotificationCount(0);
 			setPendingReminderNotificationCount(0);
@@ -3729,10 +3743,12 @@ export function App(): React.JSX.Element {
 			// so that lookups and alias registration work for bubbles from any workspace.
 			// visibleSharedPlacements filters what the NoteGrid actually displays.
 			setSharedPlacements(allPlacements);
+			setActiveWorkspaceSharedPlacements(placementData.placements);
 			manager.setExternalRoomAliases(Object.fromEntries(allPlacements.map((placement) => [placement.aliasId, placement.roomId])));
 		} catch {
 			if (!offline) {
 				setSharedPlacements([]);
+				setActiveWorkspaceSharedPlacements([]);
 				setFailedLinkNotifications([]);
 				setPendingShareNotificationCount(0);
 				setPendingReminderNotificationCount(0);
@@ -4423,13 +4439,23 @@ export function App(): React.JSX.Element {
 		// reveal. We stage the reveal first, then let the activation path complete and
 		// the follow-up effect expands the correct folder once placements are loaded.
 		setIsShareNotificationsOpen(false);
-		if (args.target !== 'shared' || !args.targetWorkspaceId) return;
-		setPendingSharedFolderReveal({
-			workspaceId: args.targetWorkspaceId,
-			folderName: args.folderName,
-		});
-		if (args.targetWorkspaceId !== authWorkspaceId) {
-			await activateWorkspaceFromSidebar(args.targetWorkspaceId, { activeSharedFolder: args.folderName });
+		if (args.target === 'shared') {
+			if (!args.targetWorkspaceId) return;
+			setPendingSharedFolderReveal({
+				workspaceId: args.targetWorkspaceId,
+				folderName: args.folderName,
+			});
+			if (args.targetWorkspaceId !== authWorkspaceId) {
+				await activateWorkspaceFromSidebar(args.targetWorkspaceId, { activeSharedFolder: args.folderName });
+			}
+		} else {
+			// Personal workspace acceptance: switch workspace if needed, then refresh
+			// placements so the newly accepted note appears in the grid.
+			if (args.targetWorkspaceId && args.targetWorkspaceId !== authWorkspaceId) {
+				await activateWorkspaceFromSidebar(args.targetWorkspaceId, { activeSharedFolder: null });
+			} else {
+				await refreshNoteShareStateRef.current();
+			}
 		}
 	}, [activateWorkspaceFromSidebar, authWorkspaceId]);
 
@@ -7480,6 +7506,14 @@ export function App(): React.JSX.Element {
 						// while cards are still reshuffling into measured heights.
 						onReady={() => {
 							setGridReady(true);
+							// Mark this workspace as fully loaded. Subsequent mounts
+							// (workspace switch back, PWA resume) will skip the shimmer.
+							if (authWorkspaceId) {
+								seenWorkspaceIdsRef.current.add(authWorkspaceId);
+								try {
+									sessionStorage.setItem('freemannotes.seenWorkspaceIds.v1', JSON.stringify([...seenWorkspaceIdsRef.current]));
+								} catch { /* ignore */ }
+							}
 							// Give the CSS fade-out transition 500 ms to complete,
 							// then unmount the overlay node entirely.
 							clearTimeout(splashTimerRef.current);

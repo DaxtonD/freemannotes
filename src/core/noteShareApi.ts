@@ -9,6 +9,7 @@ import {
 	type PendingCollaboratorAction,
 } from './noteShareCollaboratorStore';
 import { requestPwaBackgroundSync } from './pwa';
+import { updateAvatarCache } from './userAvatarCache';
 
 export type NoteShareRole = 'VIEWER' | 'EDITOR';
 export type NoteShareStatus = 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'REVOKED';
@@ -172,6 +173,12 @@ async function requestUpdateNoteShareCollaboratorRole(collaboratorId: string, ro
 }
 
 function toCachedCollaboratorSnapshot(snapshot: NoteShareCollaboratorSnapshot): CachedCollaboratorSnapshot {
+	updateAvatarCache([
+		snapshot.currentUser,
+		snapshot.sharedBy,
+		...snapshot.collaborators.map((c) => c.user),
+		...snapshot.pendingInvitations.map((inv) => inv.inviter),
+	].filter(Boolean) as Array<{ id: string; profileImage?: string | null }>);
 	return {
 		roomId: snapshot.roomId,
 		sourceWorkspaceId: snapshot.sourceWorkspaceId,
@@ -298,7 +305,11 @@ export async function flushPendingNoteShareActions(userId: string): Promise<void
 }
 
 export async function listNoteShareInvitations(): Promise<{ invitations: NoteShareInvitation[]; pendingCount: number }> {
-	return fetchJson('/api/note-shares/invitations');
+	const result = await fetchJson<{ invitations: NoteShareInvitation[]; pendingCount: number }>('/api/note-shares/invitations');
+	if (Array.isArray(result?.invitations)) {
+		updateAvatarCache(result.invitations.map((inv) => inv.inviter).filter(Boolean) as Array<{ id: string; profileImage?: string | null }>);
+	}
+	return result;
 }
 
 export async function listSharedNotePlacements(workspaceId?: string | null): Promise<{ placements: SharedNotePlacement[] }> {
