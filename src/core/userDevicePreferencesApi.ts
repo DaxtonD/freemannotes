@@ -22,6 +22,8 @@ export type UserDevicePreferences = {
 	noteCardCompletedExpandedByNoteId: Record<string, boolean>;
 	/** Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken } */
 	bubbleWorkspaceColors: Record<string, string>;
+	/** Per-user dismissed failed-link notification IDs: { [failedLinkId]: true } */
+	dismissedFailedLinkIds: Record<string, boolean>;
 	createdAt: string | null;
 	updatedAt: string | null;
 };
@@ -96,6 +98,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			noteCardCompletedInteractions: (body as any).noteCardCompletedInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
+			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};
@@ -121,6 +124,7 @@ type PreferencePatch = {
 	noteCardCompletedInteractions?: boolean;
 	noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
 	bubbleWorkspaceColors?: Record<string, string>;
+	dismissedFailedLinkIds?: Record<string, boolean>;
 };
 
 const PREF_DEBOUNCE_MS = 1000;
@@ -182,6 +186,7 @@ async function _sendPreferences(
 			noteCardCompletedInteractions: (body as any).noteCardCompletedInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
+			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};

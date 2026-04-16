@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.27 - 2026-04-15
+
+### Fixed
+- **Note cards are now dynamic-height again (content-based, capped at the configured maximum).** The v1.2.26 `min-height` rule forced every card to fill the full configured height regardless of content length, making short notes appear with a large empty area and preventing cards from being shorter than the configured cap. The `min-height` has been removed; cards once again resize freely to their content with `max-height` as the upper bound only.
+- **Changing the Note Card Height preference now correctly applies to all workspaces.** Whenever any preference slider was moved, `persistDevicePrefsLocally`'s `useCallback` captured all current pref-state values in its dep array. This propagated to `syncLocalDevicePrefsFromServer` getting a new function identity on every slider tick. Because `syncLocalDevicePrefsFromServer` was listed in the prefs-hydration `useEffect`'s dependencies, the entire effect re-fired on every slider movement — triggering a fresh `fetchUserPreferences` network call that returned the stale server value and raced to overwrite the in-flight local change. The stable-ref pattern (already used by `refreshActiveWorkspaceRef`) is now applied to both `syncLocalDevicePrefsFromServer` and `persistDevicePrefsLocally` in the prefs-hydration effect; the effect's dep array is reduced to true auth-state deps only (`authStatus`, `authUserId`, `deviceId`, `authOfflineMode`, `setLocale`), preventing spurious re-fires.
+- **Changing the Note Card Height preference now correctly rebalances masonry columns.** When the max-card-height cap changed (e.g. the user moved the height slider in Preferences), previously-measured card heights cached in memory remained at the old cap value. The masonry column-distribution algorithm kept using those stale heights, so columns were unbalanced and did not reflect the new cap until a workspace switch or full page reload. NoteGrid now clears its in-memory height cache and triggers a fresh measurement pass whenever `maxCardHeightPx` changes, ensuring the masonry immediately rebalances at the correct heights.
+
 ## 1.2.26 - 2026-04-15
 
 ### Fixed

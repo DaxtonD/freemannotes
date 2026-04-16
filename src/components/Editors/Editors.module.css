@@ -408,6 +408,37 @@
 	min-width: 0;
 }
 
+/* Mobile hint overlays: when the full toolbar overflows and scroll buttons are
+   hidden, fade the clipped edge and draw subtle chevrons to indicate sideways
+   movement without blocking touch input. */
+.formatToolbarScrollerHintLeft,
+.formatToolbarScrollerHintRight {
+	position: relative;
+}
+
+.formatToolbarScrollerHintLeft::before,
+.formatToolbarScrollerHintRight::after {
+	content: '';
+	position: absolute;
+	top: 2px;
+	bottom: 2px;
+	width: 32px;
+	pointer-events: none;
+	opacity: 0;
+	transition: opacity var(--transition-fast);
+	z-index: 2;
+}
+
+.formatToolbarScrollerHintLeft::before {
+	left: 0;
+	background: linear-gradient(90deg, color-mix(in srgb, var(--color-surface-2) 96%, transparent) 0%, transparent 100%);
+}
+
+.formatToolbarScrollerHintRight::after {
+	right: 0;
+	background: linear-gradient(270deg, color-mix(in srgb, var(--color-surface-2) 96%, transparent) 0%, transparent 100%);
+}
+
 .formatToolbarDisabled {
 	opacity: 0.45;
 	pointer-events: none;
@@ -487,6 +518,37 @@
 @media (pointer: coarse) {
 	.formatToolbarScrollButton {
 		display: none;
+	}
+
+	.formatToolbarScrollerHintLeft::before,
+	.formatToolbarScrollerHintRight::after {
+		opacity: 1;
+	}
+
+	.formatToolbarScrollerHintLeft::before {
+		background:
+			linear-gradient(90deg, color-mix(in srgb, var(--color-surface-2) 96%, transparent) 0%, transparent 100%),
+			linear-gradient(135deg, transparent 44%, color-mix(in srgb, var(--color-text-muted) 85%, transparent) 45%, color-mix(in srgb, var(--color-text-muted) 85%, transparent) 55%, transparent 56%) 10px 50% / 10px 10px no-repeat,
+			linear-gradient(135deg, transparent 44%, color-mix(in srgb, var(--color-text-muted) 60%, transparent) 45%, color-mix(in srgb, var(--color-text-muted) 60%, transparent) 55%, transparent 56%) 4px 50% / 10px 10px no-repeat;
+		transform: scaleX(-1);
+	}
+
+	.formatToolbarScrollerHintRight::after {
+		background:
+			linear-gradient(270deg, color-mix(in srgb, var(--color-surface-2) 96%, transparent) 0%, transparent 100%),
+			linear-gradient(135deg, transparent 44%, color-mix(in srgb, var(--color-text-muted) 85%, transparent) 45%, color-mix(in srgb, var(--color-text-muted) 85%, transparent) 55%, transparent 56%) calc(100% - 10px) 50% / 10px 10px no-repeat,
+			linear-gradient(135deg, transparent 44%, color-mix(in srgb, var(--color-text-muted) 60%, transparent) 45%, color-mix(in srgb, var(--color-text-muted) 60%, transparent) 55%, transparent 56%) calc(100% - 16px) 50% / 10px 10px no-repeat;
+		animation: toolbar-scroll-hint-nudge 1.4s ease-in-out infinite;
+	}
+}
+
+@keyframes toolbar-scroll-hint-nudge {
+	0%,
+	100% {
+		transform: translateX(0);
+	}
+	50% {
+		transform: translateX(3px);
 	}
 }
 
@@ -1519,7 +1581,9 @@
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
-	overflow-x: hidden;
+	overflow-x: auto;
+	overscroll-behavior-x: contain;
+	-webkit-overflow-scrolling: touch;
 }
 
 .editorViewportKeyboardOpen {
@@ -1587,6 +1651,14 @@
 .richEditorContent:global(.ProseMirror) ul,
 .richEditorContent:global(.ProseMirror) ol {
 	padding-inline-start: 1.5em;
+}
+
+.richEditorContent:global(.ProseMirror) ul ul,
+.richEditorContent:global(.ProseMirror) ul ol,
+.richEditorContent:global(.ProseMirror) ol ul,
+.richEditorContent:global(.ProseMirror) ol ol {
+	width: max-content;
+	min-width: 100%;
 }
 
 /* Highlight marks: use the inline style background set by TipTap, with a
@@ -1720,7 +1792,7 @@
 
 .richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > div {
 	flex: 1 1 auto;
-	min-width: 0;
+	min-width: max-content;
 }
 
 .richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > div > p {
