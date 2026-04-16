@@ -87,7 +87,7 @@ export type AppearanceModalProps = {
 	onNoteCardMaxHeightPxCommit: (nextHeightPx: number) => void;
 };
 
-const FONT_SCALE_MIN = 0.75;
+const FONT_SCALE_MIN = 0.60;
 const FONT_SCALE_MAX = 1.5;
 const FONT_SCALE_STEP = 0.05;
 const NOTE_CARD_HEIGHT_MIN = 320;

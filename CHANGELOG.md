@@ -4,7 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 1.2.25 - 2026-04-15
+## 1.2.26 - 2026-04-15
+
+### Fixed
+- **Note cards now appear at a consistent height in the grid.** Cards previously rendered at their natural content height (often very small for short notes) with no lower bound. A `min-height: var(--note-card-max-height)` rule was added to the card element so every card fills the configured height regardless of content length. This makes the Note Card Height setting visually effective for all workspaces and all note lengths.
+- **Default card height and font scale are now device-aware for new devices.** On first login from a fresh device (detected by the absence of a saved card height in the server record), mobile devices (coarse-pointer) now default to 480 px card height, 75 % note-card font scale, and 80 % editor font scale; desktop devices default to 920 px and 100 % scales. The defaults are pushed to the server immediately so they persist across subsequent logins.
+- **Minimum font scale lowered from 75 % to 60 %.** The Display Size slider in Settings now allows scaling down to 60 % to accommodate more display environments.
+- **Collaborator modal avatars fall back to initials when the image fails to load.** All four avatar rows (invitee, current user, note owner, collaborators) now use a `MemberAvatar` component that tracks image-load errors and renders the letter-initial fallback when the image is unavailable (e.g. offline SW cache miss), replacing the broken-image browser icon.
 
 ### Fixed
 - **Fresh-login skeleton cards no longer jump when WS content arrives.** On a first visit (empty IndexedDB) the docs-loaded check completed almost instantly because IDB sync resolves immediately for empty stores. The shimmer disappeared while the WS server was still delivering note content, causing card heights to shift as real data populated. `DocumentManager` now tracks a `registryWsSynced` flag that becomes `true` only after the notes-registry WebSocket room fires its first full sync. `NoteGrid` holds `allDocsLoaded = false` (keeping the shimmer up) until this flag is set, ensuring the grid measures real content heights before revealing cards.
