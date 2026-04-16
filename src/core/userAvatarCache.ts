@@ -64,4 +64,17 @@ export function updateAvatarCache(users: ReadonlyArray<{ id?: string | null; use
 		}
 	}
 	save(cache);
+
+	// Pre-warm the service worker image cache while online so avatar images are
+	// available offline. Fire-and-forget: if the fetch fails (e.g. already offline),
+	// the SW will cache the image on the next successful request.
+	if (typeof fetch === 'function' && typeof navigator !== 'undefined' && navigator.onLine !== false) {
+		for (const user of users) {
+			const url = user.profileImage;
+			if (!url || typeof url !== 'string') continue;
+			// Only pre-fetch same-origin avatar uploads (not arbitrary URLs).
+			if (!url.startsWith('/')) continue;
+			fetch(url, { method: 'GET', credentials: 'same-origin' }).catch(() => { /* ignore */ });
+		}
+	}
 }

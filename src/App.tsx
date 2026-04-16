@@ -776,7 +776,7 @@ export function App(): React.JSX.Element {
 	// suspended (the IDB data is still warm, no need to show skeletons again).
 	const seenWorkspaceIdsRef = React.useRef<Set<string>>((() => {
 		try {
-			const raw = sessionStorage.getItem('freemannotes.seenWorkspaceIds.v1');
+			const raw = localStorage.getItem('freemannotes.seenWorkspaceIds.v1');
 			if (raw) return new Set<string>(JSON.parse(raw) as string[]);
 		} catch { /* ignore */ }
 		return new Set<string>();
@@ -4456,6 +4456,14 @@ export function App(): React.JSX.Element {
 			} else {
 				await refreshNoteShareStateRef.current();
 			}
+			// The server may not have committed the collaborator permission in its
+			// WS session store by the time the new room's provider first connects.
+			// A brief delay reconnect gives the server time to propagate the
+			// acceptance, reducing the note content delay from ~30 s (resync timer)
+			// to ~1.5 s.
+			window.setTimeout(() => {
+				manager.reconnectAllProviders('post-acceptance');
+			}, 1500);
 		}
 	}, [activateWorkspaceFromSidebar, authWorkspaceId]);
 
@@ -5258,7 +5266,29 @@ export function App(): React.JSX.Element {
 		return isLightTheme(themeId) ? appIconLight : appIconDark;
 	}, [themeId]);
 
-	const headerConnectionState = connection.state;
+	// Debounce the header "connecting" state so brief workspace-switch
+	// reconnects (WS providers torn down and rebuilt) don't flash a loading
+	// indicator for the ~100-300 ms it takes to set up the new providers.
+	// Only "offline" and "connected" transitions are applied immediately.
+	const [headerConnectionState, setHeaderConnectionState] = React.useState<typeof connection.state>(connection.state);
+	const headerConnectingTimerRef = React.useRef<number | null>(null);
+	React.useEffect(() => {
+		if (connection.state !== 'connecting') {
+			if (headerConnectingTimerRef.current !== null) {
+				clearTimeout(headerConnectingTimerRef.current);
+				headerConnectingTimerRef.current = null;
+			}
+			setHeaderConnectionState(connection.state);
+			return;
+		}
+		// Defer displaying "connecting" by 600 ms — fast workspace switches complete
+		// before the timer fires so the header never flickers to loading.
+		if (headerConnectingTimerRef.current !== null) return;
+		headerConnectingTimerRef.current = window.setTimeout(() => {
+			headerConnectingTimerRef.current = null;
+			setHeaderConnectionState('connecting');
+		}, 600);
+	}, [connection.state]);
 
 	type SidebarEntry = {
 		id: string;
@@ -7511,7 +7541,7 @@ export function App(): React.JSX.Element {
 							if (authWorkspaceId) {
 								seenWorkspaceIdsRef.current.add(authWorkspaceId);
 								try {
-									sessionStorage.setItem('freemannotes.seenWorkspaceIds.v1', JSON.stringify([...seenWorkspaceIdsRef.current]));
+									localStorage.setItem('freemannotes.seenWorkspaceIds.v1', JSON.stringify([...seenWorkspaceIdsRef.current]));
 								} catch { /* ignore */ }
 							}
 							// Give the CSS fade-out transition 500 ms to complete,
