@@ -1,4 +1,4 @@
-export const MIN_FONT_SCALE = 0.75;
+export const MIN_FONT_SCALE = 0.60;
 export const MAX_FONT_SCALE = 1.5;
 export const MIN_NOTE_CARD_HEIGHT_PX = 320;
 export const MAX_NOTE_CARD_HEIGHT_PX = 1400;
@@ -35,7 +35,19 @@ export function clampFontScale(value: number): number {
 
 export function getDefaultNoteCardMaxHeightPx(): number {
 	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 920;
-	return window.matchMedia('(pointer: coarse)').matches ? 720 : 920;
+	return window.matchMedia('(pointer: coarse)').matches ? 480 : 920;
+}
+
+/** Returns the default note-card font scale for this device type. */
+export function getDefaultNoteCardFontScale(): number {
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 1;
+	return window.matchMedia('(pointer: coarse)').matches ? 0.75 : 1;
+}
+
+/** Returns the default note-editor font scale for this device type. */
+export function getDefaultNoteEditorFontScale(): number {
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 1;
+	return window.matchMedia('(pointer: coarse)').matches ? 0.80 : 1;
 }
 
 export function clampNoteCardMaxHeightPx(value: number): number {

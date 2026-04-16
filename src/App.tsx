@@ -55,7 +55,9 @@ import { getDeviceId } from './core/deviceId';
 import {
 	clampFontScale,
 	clampNoteCardMaxHeightPx,
+	getDefaultNoteCardFontScale,
 	getDefaultNoteCardMaxHeightPx,
+	getDefaultNoteEditorFontScale,
 	isLocalAppearancePreferenceNewer,
 	normalizeEditorToolbarMode,
 	readCachedDeviceAppearancePreferences,
@@ -882,10 +884,10 @@ export function App(): React.JSX.Element {
 	);
 	const [themeId, setThemeId] = React.useState<ThemeId>(() => getStoredThemeIdForUser(cachedAuth?.userId ?? null));
 	const [noteCardFontScalePref, setNoteCardFontScalePref] = React.useState(
-		() => cachedDeviceAppearancePrefs?.noteCardFontScale ?? 1
+		() => cachedDeviceAppearancePrefs?.noteCardFontScale ?? getDefaultNoteCardFontScale()
 	);
 	const [noteEditorFontScalePref, setNoteEditorFontScalePref] = React.useState(
-		() => cachedDeviceAppearancePrefs?.noteEditorFontScale ?? 1
+		() => cachedDeviceAppearancePrefs?.noteEditorFontScale ?? getDefaultNoteEditorFontScale()
 	);
 	const [editorToolbarModePref, setEditorToolbarModePref] = React.useState<EditorToolbarMode>(
 		() => normalizeEditorToolbarMode(cachedDeviceAppearancePrefs?.editorToolbarMode)
@@ -1950,8 +1952,8 @@ export function App(): React.JSX.Element {
 		noteCardCompletedInteractions?: boolean;
 	}) => {
 		const legacyNoteCardInteractions = next.noteCardClickOpens !== false;
-		setNoteCardFontScalePref(clampFontScale(next.noteCardFontScale ?? 1));
-		setNoteEditorFontScalePref(clampFontScale(next.noteEditorFontScale ?? 1));
+		setNoteCardFontScalePref(clampFontScale(next.noteCardFontScale ?? getDefaultNoteCardFontScale()));
+		setNoteEditorFontScalePref(clampFontScale(next.noteEditorFontScale ?? getDefaultNoteEditorFontScale()));
 		setEditorToolbarModePref(normalizeEditorToolbarMode(next.editorToolbarMode));
 		setNoteCardMaxHeightPref(clampNoteCardMaxHeightPx(next.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()));
 		setChecklistShowCompletedPref(Boolean(next.checklistShowCompleted));
@@ -2618,6 +2620,31 @@ export function App(): React.JSX.Element {
 					});
 					if (!cancelled && updatedAppearance) {
 						syncLocalDevicePrefsFromServer(updatedAppearance);
+					}
+				} else if (pref.noteCardMaxHeightPx == null) {
+					// Fresh device: server has no saved card height → apply device-aware
+					// defaults and persist them so subsequent logins use the real values.
+					const freshDefaults = {
+						noteCardMaxHeightPx: getDefaultNoteCardMaxHeightPx(),
+						noteCardFontScale: getDefaultNoteCardFontScale(),
+						noteEditorFontScale: getDefaultNoteEditorFontScale(),
+					};
+					applyDevicePreferenceState({ ...pref, ...freshDefaults });
+					persistDevicePrefsLocally({
+						noteCardFontScale: freshDefaults.noteCardFontScale,
+						noteEditorFontScale: freshDefaults.noteEditorFontScale,
+						editorToolbarMode: pref.editorToolbarMode ?? 'full',
+						noteCardMaxHeightPx: freshDefaults.noteCardMaxHeightPx,
+						checklistShowCompleted: pref.checklistShowCompleted ?? false,
+						quickDeleteChecklist: pref.quickDeleteChecklist ?? false,
+						noteCardClickOpens: pref.noteCardClickOpens ?? true,
+						noteCardCheckboxInteractions: pref.noteCardCheckboxInteractions ?? true,
+						noteCardLinkInteractions: pref.noteCardLinkInteractions ?? true,
+						noteCardCompletedInteractions: pref.noteCardCompletedInteractions ?? true,
+						updatedAt: new Date().toISOString(),
+					});
+					if (!cancelled) {
+						void updateUserPreferences(deviceId, freshDefaults);
 					}
 				} else {
 					syncLocalDevicePrefsFromServer(pref);

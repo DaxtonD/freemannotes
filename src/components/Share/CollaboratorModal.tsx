@@ -100,6 +100,16 @@ function getDisplayLabel(user: { name?: string | null; email?: string | null; id
 	return user.name || user.email || user.id || '';
 }
 
+/** Avatar image with automatic fallback to initial letter when the image fails to load (e.g. offline SW cache miss). */
+function MemberAvatar({ src, initial, className, fallbackClassName }: { src: string | null | undefined; initial: string; className: string; fallbackClassName: string }): React.JSX.Element {
+	const [broken, setBroken] = React.useState(false);
+	React.useEffect(() => { setBroken(false); }, [src]);
+	if (!src || broken) {
+		return <div className={fallbackClassName} aria-hidden="true">{initial}</div>;
+	}
+	return <img className={className} src={src} alt="" onError={() => setBroken(true)} />;
+}
+
 export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const { t } = useI18n();
 	const [busy, setBusy] = React.useState(false);
@@ -649,13 +659,12 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 													<div key={invitation.id} className={`${styles.listRow} ${styles.pendingInviteRow}`}>
 														<div className={styles.memberIdentity}>
 															<div className={styles.memberAvatarStack}>
-																{(invitation.inviteeProfileImage ?? getCachedAvatarUrl(invitation.inviteeId ?? null)) ? (
-																	<img className={styles.memberAvatar} src={(invitation.inviteeProfileImage ?? getCachedAvatarUrl(invitation.inviteeId ?? null)) ?? undefined} alt="" />
-																) : (
-																	<div className={styles.memberAvatarFallback} aria-hidden="true">
-																		{(invitation.inviteeName || invitation.inviteeEmail).slice(0, 1).toUpperCase()}
-																	</div>
-																)}
+																<MemberAvatar
+																	src={invitation.inviteeProfileImage ?? getCachedAvatarUrl(invitation.inviteeId ?? null)}
+																	initial={(invitation.inviteeName || invitation.inviteeEmail).slice(0, 1).toUpperCase()}
+																	className={styles.memberAvatar}
+																	fallbackClassName={styles.memberAvatarFallback}
+																/>
 															</div>
 															<div className={styles.rowCopy}>
 																<div className={styles.rowPrimary}>{invitation.inviteeName || invitation.inviteeEmail}</div>
@@ -699,13 +708,12 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 											<div className={`${styles.listRow} ${styles.memberRow}`}>
 												<div className={styles.memberIdentity}>
 													<div className={styles.memberAvatarStack}>
-														{currentUserCollaborator.profileImage ? (
-															<img className={styles.memberAvatar} src={currentUserCollaborator.profileImage} alt="" />
-														) : (
-															<div className={styles.memberAvatarFallback} aria-hidden="true">
-																{getDisplayLabel(currentUserCollaborator).slice(0, 1).toUpperCase()}
-															</div>
-														)}
+														<MemberAvatar
+															src={currentUserCollaborator.profileImage}
+															initial={getDisplayLabel(currentUserCollaborator).slice(0, 1).toUpperCase()}
+															className={styles.memberAvatar}
+															fallbackClassName={styles.memberAvatarFallback}
+														/>
 														<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('share.statusAccepted')}</span>
 													</div>
 													<div className={styles.rowCopy}>
@@ -727,13 +735,12 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 											<div className={styles.listRow}>
 												<div className={styles.memberIdentity}>
 													<div className={styles.memberAvatarStack}>
-														{snapshot.sharedBy.profileImage ? (
-															<img className={styles.memberAvatar} src={snapshot.sharedBy.profileImage} alt="" />
-														) : (
-															<div className={styles.memberAvatarFallback} aria-hidden="true">
-																{getDisplayLabel(snapshot.sharedBy).slice(0, 1).toUpperCase()}
-															</div>
-														)}
+														<MemberAvatar
+															src={snapshot.sharedBy.profileImage}
+															initial={getDisplayLabel(snapshot.sharedBy).slice(0, 1).toUpperCase()}
+															className={styles.memberAvatar}
+															fallbackClassName={styles.memberAvatarFallback}
+														/>
 														<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('invite.roleOwner')}</span>
 													</div>
 													<div className={styles.rowCopy}>
@@ -747,13 +754,12 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 											<div key={collaborator.id} className={`${styles.listRow} ${styles.memberRow}`}>
 												<div className={styles.memberIdentity}>
 													<div className={styles.memberAvatarStack}>
-														{collaborator.user?.profileImage ? (
-															<img className={styles.memberAvatar} src={collaborator.user.profileImage} alt="" />
-														) : (
-															<div className={styles.memberAvatarFallback} aria-hidden="true">
-																{getDisplayLabel(collaborator.user || { id: collaborator.userId }).slice(0, 1).toUpperCase()}
-															</div>
-														)}
+														<MemberAvatar
+															src={collaborator.user?.profileImage}
+															initial={getDisplayLabel(collaborator.user || { id: collaborator.userId }).slice(0, 1).toUpperCase()}
+															className={styles.memberAvatar}
+															fallbackClassName={styles.memberAvatarFallback}
+														/>
 														<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('share.statusAccepted')}</span>
 													</div>
 													<div className={styles.rowCopy}>
