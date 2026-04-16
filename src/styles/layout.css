@@ -108,6 +108,7 @@
 	display: block;
 }
 
+
 .app-header-connection-line {
 	--connection-line-color: var(--color-accent);
 	position: relative;
@@ -173,12 +174,13 @@
 	opacity: 0;
 }
 
+
 @keyframes app-header-connection-scan {
 	0% {
 		transform: translateX(0);
 	}
 	100% {
-		transform: translateX(240%);
+		transform: translateX(340%);
 	}
 }
 

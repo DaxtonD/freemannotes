@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.28 - 2026-04-16
+
+### Fixed
+- **Bubble view: score-driven size changes and repacking now animate slowly and naturally.** When a note's importance score increased (e.g. it was just edited, pinned, or given a reminder), the bubble previously snapped to its new size and position almost instantly (240 ms). The CSS transitions on `.cloudItem` have been lengthened to 640 ms (smooth ease-in-out) for size and 820 ms (gentle spring overshoot) for position — giving bubbles a physics-like quality where they gently inflate/deflate and drift to their new place rather than jumping.
+- **Bubble view: bubbles now shrink smoothly instead of snapping.** The bubble's inner circle is sized via `width: min(100%, var(--bv-bubble-diameter))`. When the diameter CSS variable decreased, the `min()` resolved instantly (the px value became smaller than `100%`) while the container was still transitioning — producing an immediate visual shrink before the container caught up. A matching `width 640ms` transition has been added to `.bubble` so the inner circle tracks the container on both grow and shrink.
+- **Bubble view: repacking after zoom-slider changes now feels fluid.** Because each new slider position starts a fresh 820 ms transition from the current interpolated position (rather than the old settled position), bubbles appear to drift through the cloud like they are suspended in liquid, rather than snapping to each new packing solution.
+- **Bubble view: active workspace bubbles now appear instantly when switching to Bubble view.** Previously the component performed all workspace IDB loads (one 4-second timeout per inactive workspace) before calling `setNotes` once — meaning the cloud was blank until every workspace finished. Active workspace notes are now emitted immediately (they are already in memory), and each inactive workspace's notes are streamed into state as soon as that workspace's IDB load completes.
+- **Bubble view: bubbles now enter with a natural staggered drift.** Entrance animations have been slowed (spring stiffness 180 / damping 18 vs. 260 / 22) and staggered by 28 ms per bubble in score-sorted order, so the most important bubbles appear first and smaller ones drift in behind them.
+- **Concurrent offline edits to checklist items no longer concatenate.** When two users each deleted and retyped the full content of the same checklist item while offline, Yjs CRDT merged their character-level edits into one concatenated item (e.g. "breadCream"). The fix adds a ProseMirror `appendTransaction` plugin to `MobileSafeTaskItem` that detects "full-content replacement" transactions — any `ReplaceStep` whose range spans the entire text of an item's own paragraph — and converts the operation from a text-level edit into a node-level replacement: the original `Y.XmlElement` is tombstoned and a fresh element with a new UUID is inserted. On CRDT merge, both users' old element is tombstoned (agreement) and each new element has a distinct Yjs clock identity, so they coexist as two separate list items instead of being merged. This covers select-all-then-type, paste-over-selection, and the final backspace that empties the item.
+- **Header connection scan line now reaches the full width before restarting.** The traveling highlight on the restored thin-line connection indicator now completes its sweep across the full line instead of cycling early.
+
 ## 1.2.27 - 2026-04-15
 
 ### Fixed

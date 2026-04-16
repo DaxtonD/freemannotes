@@ -12,6 +12,8 @@ import StarterKit from '@tiptap/starter-kit';
 import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
+import { Plugin } from '@tiptap/pm/state';
+import { ReplaceStep } from '@tiptap/pm/transform';
 import { prosemirrorJSONToYXmlFragment, yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import * as Y from 'yjs';
 
@@ -37,7 +39,122 @@ const MARKDOWN_INLINE_PATTERN = /(\*\*[^*\n][\s\S]*?\*\*|__[^_\n][\s\S]*?__|~~[^
 const CLIPBOARD_BLOCK_SELECTOR = 'p,div,section,article,header,footer,aside,blockquote,pre,ul,ol,li,table,thead,tbody,tfoot,tr,hr,h1,h2,h3,h4,h5,h6';
 const CLIPBOARD_CELL_SELECTOR = 'th,td';
 
+// Meta key used to mark internally-generated regeneration transactions so the
+// plugin does not re-process its own output and loop indefinitely.
+const TASK_ITEM_REGEN_META = 'taskItemCrdt';
+
 const MobileSafeTaskItem = TaskItem.extend({
+	addAttributes() {
+		return {
+			...this.parent?.(),
+			// Stable per-item UUID written as data-unique-id on the <li>.
+			// Each new node created by the CRDT regeneration plugin below gets
+			// a fresh UUID, which gives it a distinct Yjs element identity.
+			uniqueId: {
+				default: null as string | null,
+				parseHTML: (el: Element) => el.getAttribute('data-unique-id') || null,
+				renderHTML: (attrs: Record<string, unknown>) =>
+					attrs.uniqueId ? { 'data-unique-id': attrs.uniqueId } : {},
+			},
+		};
+	},
+
+	addProseMirrorPlugins() {
+		return [
+			...(this.parent?.() ?? []),
+			new Plugin({
+				/**
+				 * CRDT text-concatenation guard for concurrent checklist item replacement.
+				 *
+				 * Problem: when two users are both offline and each deletes + retypes the
+				 * entire content of the same task item, Yjs CRDT merges their edits at
+				 * the character level inside the shared Y.Text node, producing a
+				 * concatenated result (e.g. "breadCream").
+				 *
+				 * Fix: convert a "full-content replacement" into a node-level replacement.
+				 * The old Y.XmlElement is tombstoned and a fresh Y.XmlElement is
+				 * inserted.  On CRDT merge, each user's new element has a distinct Yjs
+				 * identity (different clock) so they coexist as two separate items
+				 * instead of one concatenated item.
+				 *
+				 * Detection: any ProseMirror ReplaceStep whose range covers the full text
+				 * span of a task item's own paragraph (direct text only, not nested
+				 * sub-items) is treated as a full-content replacement and triggers node
+				 * regeneration.  This covers select-all-then-type, paste-over-selection,
+				 * and the final backspace that empties the item.
+				 */
+				appendTransaction(transactions, _oldState, newState) {
+					// Collect items to regenerate; apply last→first to keep positions valid.
+					const toRegenerate: Array<{ pos: number; node: ProseMirrorNode }> = [];
+
+					for (const tr of transactions) {
+						if (!tr.docChanged || tr.getMeta(TASK_ITEM_REGEN_META)) continue;
+
+						tr.before.descendants((node, pos) => {
+							if (node.type.name !== 'taskItem') return false;
+
+							// Only examine the item's own paragraph (first child), not any
+							// nested task list children.
+							const para = node.firstChild;
+							if (!para || para.type.name !== 'paragraph') return false;
+							const oldText = para.textContent;
+							if (!oldText) return false; // already empty — nothing to protect
+
+							// Absolute text span in the pre-transaction document:
+							//   taskItem node opens at `pos` (cursor position before node)
+							//   paragraph opens at pos+1 (first token inside taskItem)
+							//   text starts at pos+2 (first token inside paragraph)
+							const textStart = pos + 2;
+							const textEnd = textStart + oldText.length;
+
+							// A step that covers the entire text span is a full replacement.
+							let isFullReplacement = false;
+							for (const step of tr.steps) {
+								if (
+									step instanceof ReplaceStep &&
+									(step as ReplaceStep).from <= textStart &&
+									(step as ReplaceStep).to >= textEnd
+								) {
+									isFullReplacement = true;
+									break;
+								}
+							}
+							if (!isFullReplacement) return false;
+
+							// Map the item position into the post-transaction document.
+							const mapped = tr.mapping.mapResult(pos);
+							if (mapped.deleted) return false;
+							const newItem = newState.doc.nodeAt(mapped.pos);
+							if (!newItem || newItem.type.name !== 'taskItem') return false;
+
+							toRegenerate.push({ pos: mapped.pos, node: newItem });
+							return false; // don't descend into this item's children
+						});
+					}
+
+					if (toRegenerate.length === 0) return null;
+
+					// Sort descending so each replaceWith doesn't shift subsequent positions.
+					toRegenerate.sort((a, b) => b.pos - a.pos);
+					const regenTr = newState.tr.setMeta(TASK_ITEM_REGEN_META, true);
+					for (const { pos, node } of toRegenerate) {
+						// Create a structurally identical node with a fresh UUID.
+						// At the Yjs layer this becomes: delete old Y.XmlElement (tombstone)
+						// + insert new Y.XmlElement (distinct clock). Concurrent replacements
+						// by other users produce nodes with different clocks and therefore
+						// coexist as separate items after CRDT merge.
+						const freshNode = node.type.create(
+							{ ...node.attrs, uniqueId: crypto.randomUUID() },
+							node.content,
+						);
+						regenTr.replaceWith(pos, pos + node.nodeSize, freshNode);
+					}
+					return regenTr;
+				},
+			}),
+		];
+	},
+
 	addNodeView() {
 		return ({ node, HTMLAttributes, getPos, editor }) => {
 			const listItem = document.createElement('li');

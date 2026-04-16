@@ -867,11 +867,22 @@ function useBubbleNotes(
 				} catch { /* active workspace load failed – skip */ }
 			}
 
-			// ── Non-active workspaces ────────────────────────────────────────────────
+			// Emit active-workspace notes immediately so the cloud renders before
+			// any inactive-workspace IDB loads start.  Active notes are already in
+			// memory (DocumentManager), so this is effectively synchronous.
+			if (!cancelled) {
+				setNotes([...nextNotes]);
+			}
+
+			// ── Non-active workspaces (streamed in per-workspace as IDB loads) ────────
+			// Each workspace is loaded concurrently; as soon as one finishes its notes
+			// are merged into React state so bubbles for that workspace appear without
+			// waiting for slower workspaces.
 			const otherWorkspaces = workspaces.filter((w) => w.id !== activeWorkspaceId);
 			await Promise.all(
 				otherWorkspaces.map(async (workspace) => {
 					if (cancelled) return;
+					const wsNotes: BubbleNote[] = [];
 					if (workspace.systemKind === 'SHARED_WITH_ME') {
 						try {
 							const placementData = await listSharedNotePlacements(workspace.id);
@@ -883,38 +894,43 @@ function useBubbleNotes(
 							);
 							for (const visiblePlacement of visiblePlacements) {
 								if (!visiblePlacement) continue;
-								nextNotes.push(visiblePlacement);
+								wsNotes.push(visiblePlacement);
 							}
 						} catch { /* skip shared placements if unavailable */ }
-						return;
+					} else {
+						try {
+							const entries = await loadWorkspaceRegistry(workspace.id);
+							if (cancelled) return;
+							const visibleEntries = await Promise.all(entries.map((entry) => loadInactiveWorkspaceNote(workspace.id, entry, showTrashed, reminderFilter, noteReminderByDocId, nowMs)));
+							for (const visibleEntry of visibleEntries) {
+								if (!visibleEntry) continue;
+								wsNotes.push({
+									noteId: visibleEntry.noteId,
+									workspaceId: workspace.id,
+									workspaceName: workspace.name,
+									title: visibleEntry.title,
+									searchText: visibleEntry.searchText,
+									updatedAt: visibleEntry.updatedAt,
+									reminderAt: visibleEntry.reminderAt,
+									isPinned: visibleEntry.isPinned,
+									hasReminder: visibleEntry.hasReminder,
+									hasCollaborators: false,
+									isActiveWorkspace: false,
+								});
+							}
+						} catch { /* skip workspace if IDB not available */ }
 					}
-					try {
-						const entries = await loadWorkspaceRegistry(workspace.id);
-						if (cancelled) return;
-						const visibleEntries = await Promise.all(entries.map((entry) => loadInactiveWorkspaceNote(workspace.id, entry, showTrashed, reminderFilter, noteReminderByDocId, nowMs)));
-						for (const visibleEntry of visibleEntries) {
-							if (!visibleEntry) continue;
-							nextNotes.push({
-								noteId: visibleEntry.noteId,
-								workspaceId: workspace.id,
-								workspaceName: workspace.name,
-								title: visibleEntry.title,
-								searchText: visibleEntry.searchText,
-								updatedAt: visibleEntry.updatedAt,
-								reminderAt: visibleEntry.reminderAt,
-								isPinned: visibleEntry.isPinned,
-								hasReminder: visibleEntry.hasReminder,
-								hasCollaborators: false,
-								isActiveWorkspace: false,
-							});
-						}
-					} catch { /* skip workspace if IDB not available */ }
+					// Merge notes for this workspace into state as soon as they load.
+					// Using a functional update ensures concurrent workspace loads don't
+					// overwrite each other.
+					if (!cancelled && wsNotes.length > 0) {
+						setNotes((prev) => {
+							const without = prev.filter((n) => n.workspaceId !== workspace.id);
+							return [...without, ...wsNotes];
+						});
+					}
 				})
 			);
-
-			if (!cancelled) {
-				setNotes(nextNotes);
-			}
 		};
 
 		void refresh();
@@ -1018,6 +1034,13 @@ type BubbleProps = {
 	floatDuration: number;
 	/** Float animation delay in seconds (0–6, seeded per note). */
 	floatDelay: number;
+	/**
+	 * Zero-based position of this bubble in the sorted layout (highest score = 0).
+	 * Used to stagger the entrance animation so the most important bubbles appear
+	 * first and smaller bubbles drift in behind them, like bubbles rising at
+	 * different speeds.
+	 */
+	entryIndex?: number;
 	onSelect: () => void | Promise<void>;
 };
 
@@ -1117,7 +1140,7 @@ function getBubbleDetailLevel(zoom: number, sizeClass: BubbleSizeClass): BubbleD
 	return sizeRank <= 2 ? 'meta' : 'full';
 }
 
-const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, onSelect }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, entryIndex = 0, onSelect }: BubbleProps) {
 	const displayTitle = resolveBubbleTitle(note.noteId, note.title);
 	const preview = getBubblePreview(note.noteId, doc, sizeClass);
 	const titleLayout = resolveBubbleTitleLayout(displayTitle || '(untitled)', bubbleDiameter);
@@ -1169,10 +1192,18 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 		<motion.div
 			layoutId={`bubble-${note.workspaceId}-${note.noteId}`}
 			className={styles.bubbleShell}
-			initial={{ opacity: 0, scale: 0.4 }}
+			initial={{ opacity: 0, scale: 0.35 }}
 			animate={{ opacity: 1, scale: 1 }}
 			exit={{ opacity: 0, scale: 0.3 }}
-			transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+			/* Gentler spring than the default so bubbles drift in naturally rather
+			   than snapping into place.  Staggered delay mirrors the score-sorted
+			   order: important bubbles appear first, smaller ones drift in behind. */
+			transition={{
+				type: 'spring',
+				stiffness: 180,
+				damping: 18,
+				delay: Math.min(entryIndex * 0.028, 1.0),
+			}}
 		>
 			<button
 				type="button"
@@ -1544,7 +1575,7 @@ export function BubbleView({
 					height: `${packedLayout.totalHeight + 48}px`,
 				} as React.CSSProperties}
 			>
-				{packedLayout.items.map((item) => (
+				{packedLayout.items.map((item, entryIndex) => (
 					<div
 						key={`${item.note.workspaceId}:${item.note.noteId}`}
 						className={styles.cloudItem}
@@ -1565,6 +1596,7 @@ export function BubbleView({
 							rotateDeg={item.rotateDeg}
 							floatDuration={item.floatDuration}
 							floatDelay={item.floatDelay}
+							entryIndex={entryIndex}
 							onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
 						/>
 					</div>
