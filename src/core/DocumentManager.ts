@@ -286,6 +286,12 @@ export class DocumentManager {
 			for (const roomName of Array.from(this.websocketProviders.keys())) {
 				this.wsCleanup.get(roomName)?.();
 				this.wsCleanup.delete(roomName);
+				// Also remove the doc-level onAfterTransaction handler so stale closures
+				// that reference the now-destroyed WS provider can't fire later and
+				// incorrectly mark the room as pending-sync (the destroyed provider has
+				// wsconnected = undefined which is falsy).
+				this.docCleanup.get(roomName)?.();
+				this.docCleanup.delete(roomName);
 				const wsProvider = this.websocketProviders.get(roomName);
 				this.websocketProviders.delete(roomName);
 				this.websocketReadyPromises.delete(roomName);
@@ -1106,7 +1112,7 @@ export class DocumentManager {
 	 */
 	private lastReconnectAt = 0;
 
-	private reconnectAllProviders(reason: string): void {
+	public reconnectAllProviders(reason: string): void {
 		if (!this.websocketEnabled) return;
 
 		// Throttle: collapse rapid-fire events into a single reconnect pass.

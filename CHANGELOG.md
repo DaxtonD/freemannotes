@@ -4,7 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 1.2.23 - 2026-04-16
+## 1.2.24 - 2026-04-15
+
+### Fixed
+- **Note card shimmer now suppresses correctly across PWA re-opens.** The seen-workspace registry was previously stored in `sessionStorage`, which iOS/Android clears when the app is terminated. It is now stored in `localStorage` so the "skip shimmer on warm IDB" logic works after every app relaunch, not just in-session page refreshes.
+- **Pending sync icon no longer appears when editing online.** On every workspace switch DocumentManager discards WS providers but kept the per-doc `onAfterTransaction` listeners alive. Those stale closures held a reference to the destroyed WS provider whose `wsconnected` is `undefined` (falsy), so any subsequent edit triggered the 3-second debounce and showed a false pending-sync badge. `docCleanup` is now called alongside `wsCleanup` during workspace transitions so handlers are correctly removed and re-attached when the workspace is revisited.
+- **Connection indicator no longer flashes "connecting" on every workspace switch.** The header icon transitions to the connecting state are debounced by 600 ms. Workspace switches that complete their WS reconnect faster than that (typical case) are invisible to the user.
+- **Accepted personal-workspace shared notes appear in under 2 seconds instead of ~30.** After accepting a share into a personal workspace the WS provider for the new room connects immediately, but the server may not have committed collaborator permissions to its WS session store yet. A 1.5-second delayed `reconnectAllProviders` call now bridges that window, avoiding the full 30-second `resyncInterval` wait.
+- **Collaborator avatar images are now cached by the service worker when first seen.** `updateAvatarCache` now fires a fire-and-forget `fetch` for each new same-origin avatar URL while online. The service worker intercepts the request and stores the image in `freemannotes-images-v2` so it is served from cache on the next offline session.
 
 ### Fixed
 - **PWA re-open no longer re-shows shimmer/skeleton on warm cache.** `seenWorkspaceIdsRef` was never populated after the grid was ready, so `suppressShimmer` was always `false`. The ref is now initialised from `sessionStorage` on mount and written to `sessionStorage` in the `onReady` callback, so workspaces already loaded this session skip the skeleton animation entirely.
