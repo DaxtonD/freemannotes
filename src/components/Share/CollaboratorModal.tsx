@@ -28,6 +28,7 @@ import {
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { getWorkspaceMetadataChangedEventName } from '../../core/workspaceMetadataStore';
+import { getCachedAvatarUrl } from '../../core/userAvatarCache';
 import styles from './CollaboratorModal.module.css';
 
 type Props = {
@@ -648,8 +649,8 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 													<div key={invitation.id} className={`${styles.listRow} ${styles.pendingInviteRow}`}>
 														<div className={styles.memberIdentity}>
 															<div className={styles.memberAvatarStack}>
-																{invitation.inviteeProfileImage ? (
-																	<img className={styles.memberAvatar} src={invitation.inviteeProfileImage} alt="" />
+																{(invitation.inviteeProfileImage ?? getCachedAvatarUrl(invitation.inviteeId ?? null)) ? (
+																	<img className={styles.memberAvatar} src={(invitation.inviteeProfileImage ?? getCachedAvatarUrl(invitation.inviteeId ?? null)) ?? undefined} alt="" />
 																) : (
 																	<div className={styles.memberAvatarFallback} aria-hidden="true">
 																		{(invitation.inviteeName || invitation.inviteeEmail).slice(0, 1).toUpperCase()}

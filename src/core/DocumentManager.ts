@@ -45,6 +45,11 @@ export type ConnectionSnapshot = {
 	// UI can gate grid rendering on this flag to avoid flash-of-empty-content
 	// and ensure noteOrder is available before the first paint.
 	registryReady: boolean;
+	// True once the registry room has completed at least one WebSocket sync in
+	// this session. On a fresh login (empty IDB) docs are ready immediately but
+	// content arrives over WS. NoteGrid uses this to keep the shimmer up until
+	// the first server sync completes, preventing height-jump layout shifts.
+	registryWsSynced: boolean;
 };
 
 export type DocumentManagerOptions = {
@@ -134,11 +139,15 @@ export class DocumentManager {
 	// Becomes true once the notes registry doc has been fully hydrated from
 	// IndexedDB plus websocket provider wiring has been established.
 	private registryHydrated = false;
+	// Becomes true once the registry room fires onSync(true) for the first time.
+	// Cleared on workspace switch so fresh logins to new workspaces also wait.
+	private registryWsSynced = false;
 	private connectionSnapshot: ConnectionSnapshot = {
 		state: 'connecting',
 		hasPendingSync: false,
 		pendingSyncNoteIds: [],
 		registryReady: false,
+		registryWsSynced: false,
 	};
 	// Cleanup function for the global visibility lifecycle listeners that
 	// trigger reconnect-on-foreground behavior. Stored so the manager can be
@@ -309,6 +318,7 @@ export class DocumentManager {
 			this.wsEverSynced.clear();
 			this.updatedAtDocs.clear();
 			this.registryHydrated = false;
+			this.registryWsSynced = false;
 		}
 
 		this.activeWorkspaceId = next;
@@ -774,6 +784,7 @@ export class DocumentManager {
 		this.wsEverSynced.clear();
 		this.updatedAtDocs.clear();
 		this.registryHydrated = false;
+		this.registryWsSynced = false;
 	}
 
 	private ensureRegistryStructure(doc: Y.Doc): void {
@@ -1006,6 +1017,12 @@ export class DocumentManager {
 			logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-sync', isSynced });
 			if (isSynced) {
 				this.wsEverSynced.add(roomName);
+				// Mark the registry as WS-synced for the first time. NoteGrid uses this
+				// to hold the shimmer up until server content is available, preventing
+				// layout shifts on fresh login when IDB is empty.
+				if (this.isNotesRegistryRoom(roomName) && !this.registryWsSynced) {
+					this.registryWsSynced = true;
+				}
 				// Clear any queued promotion — sync beat the debounce, no icon needed.
 				const timer = this.pendingSyncTimers.get(roomName);
 				if (timer !== undefined) {
@@ -1207,6 +1224,7 @@ export class DocumentManager {
 			this.connectionSnapshot.state === this.connectionState &&
 			this.connectionSnapshot.hasPendingSync === nextHasPendingSync &&
 			this.connectionSnapshot.registryReady === this.registryHydrated &&
+			this.connectionSnapshot.registryWsSynced === this.registryWsSynced &&
 			pendingUnchanged
 		) {
 			return;
@@ -1217,6 +1235,7 @@ export class DocumentManager {
 			hasPendingSync: nextHasPendingSync,
 			pendingSyncNoteIds: nextPendingSyncNoteIds,
 			registryReady: this.registryHydrated,
+			registryWsSynced: this.registryWsSynced,
 		};
 
 		for (const listener of this.connectionSubscribers) {

@@ -216,6 +216,7 @@ function mapInvitation(invitation) {
 		sourceNoteId: invitation.sourceNoteId,
 		role: invitation.role,
 		status: invitation.status,
+		inviteeId: invitation.invitee ? invitation.invitee.id : null,
 		inviteeEmail: invitation.inviteeEmail,
 		inviteeName: invitation.inviteeName,
 		inviteeProfileImage: invitation.invitee ? invitation.invitee.profileImage || null : null,

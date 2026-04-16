@@ -797,6 +797,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// When suppressShimmer is true, treat the load as already complete so the
 	// tracking effect never drives allDocsLoaded back to false mid-IDB-hydration.
 	const initialLoadCompleteRef = React.useRef(props.suppressShimmer === true);
+	// On fresh login, IDB docs hydrate almost instantly (empty IDB), but content
+	// arrives later over WebSocket. Keep the shimmer up until the registry room
+	// has completed its first WS sync so cards render with real content heights.
+	// Once true it stays true for the session (cleared on workspace switch via
+	// suppressShimmer / initialLoadCompleteRef reset).
 
 	// Suppress framer-motion layout animations until all docs are loaded and two
 	// paint frames have passed (so cards settle before springs can fire).
@@ -1406,6 +1411,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			return;
 		}
 		// All present notes have loaded docs (or the workspace is genuinely empty).
+		// On fresh login (suppressShimmer=false, empty IDB), also wait for the
+		// registry WS sync so cards have real content before the shimmer lifts.
+		// Without this, cards inflate from near-empty to full height after shimmer
+		// clears, causing layout shifts.
+		if (!initialLoadCompleteRef.current && !props.suppressShimmer && !connection.registryWsSynced) {
+			// Registry WS sync hasn't completed yet — hold the shimmer.
+			if (orderedIds.length > 0) setAllDocsLoaded(false);
+			return;
+		}
+		// All present notes have loaded docs (or the workspace is genuinely empty).
 		if (orderedIds.length > 0) {
 			// Freeze: from now on don't allow going back to false.
 			initialLoadCompleteRef.current = true;
@@ -1413,7 +1428,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!allDocsLoaded) {
 			setAllDocsLoaded(true);
 		}
-	}, [noteOrder, orderedIds, docsById, allDocsLoaded]);
+	}, [noteOrder, orderedIds, docsById, allDocsLoaded, connection.registryWsSynced, props.suppressShimmer]);
 
 	React.useEffect(() => {
 		if (!allDocsLoaded) {

@@ -4,7 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 1.2.24 - 2026-04-15
+## 1.2.25 - 2026-04-15
+
+### Fixed
+- **Fresh-login skeleton cards no longer jump when WS content arrives.** On a first visit (empty IndexedDB) the docs-loaded check completed almost instantly because IDB sync resolves immediately for empty stores. The shimmer disappeared while the WS server was still delivering note content, causing card heights to shift as real data populated. `DocumentManager` now tracks a `registryWsSynced` flag that becomes `true` only after the notes-registry WebSocket room fires its first full sync. `NoteGrid` holds `allDocsLoaded = false` (keeping the shimmer up) until this flag is set, ensuring the grid measures real content heights before revealing cards.
+- **Pending-invitation rows in the Collaborators modal now show the invitee's avatar.** The server `mapInvitation` function included the invitee's Prisma record in its DB select but did not expose the `id` field in the API response. Without `inviteeId` the client could not look up the cached avatar URL. `inviteeId` is now included in the server response, stored in the collaborator IDB cache, and used as a fallback in `CollaboratorModal` via `getCachedAvatarUrl` so avatars are shown even when the invitee profile image is not directly embedded in the snapshot.
 
 ### Fixed
 - **Note card shimmer now suppresses correctly across PWA re-opens.** The seen-workspace registry was previously stored in `sessionStorage`, which iOS/Android clears when the app is terminated. It is now stored in `localStorage` so the "skip shimmer on warm IDB" logic works after every app relaunch, not just in-session page refreshes.

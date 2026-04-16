@@ -29,6 +29,7 @@ export type NoteShareInvitation = {
 	sourceNoteId: string;
 	role: NoteShareRole;
 	status: NoteShareStatus;
+	inviteeId?: string | null;
 	inviteeEmail: string;
 	inviteeName: string | null;
 	inviteeProfileImage?: string | null;
@@ -178,6 +179,11 @@ function toCachedCollaboratorSnapshot(snapshot: NoteShareCollaboratorSnapshot): 
 		snapshot.sharedBy,
 		...snapshot.collaborators.map((c) => c.user),
 		...snapshot.pendingInvitations.map((inv) => inv.inviter),
+		// Cache invitee avatars using their userId so the collaborator modal can
+		// display them offline even when inviteeProfileImage is not cached locally.
+		...snapshot.pendingInvitations
+			.filter((inv) => inv.inviteeId && inv.inviteeProfileImage)
+			.map((inv) => ({ id: inv.inviteeId!, profileImage: inv.inviteeProfileImage })),
 	].filter(Boolean) as Array<{ id: string; profileImage?: string | null }>);
 	return {
 		roomId: snapshot.roomId,
