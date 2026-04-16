@@ -4,7 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 1.2.22 - 2026-04-15
+## 1.2.23 - 2026-04-16
+
+### Fixed
+- **PWA re-open no longer re-shows shimmer/skeleton on warm cache.** `seenWorkspaceIdsRef` was never populated after the grid was ready, so `suppressShimmer` was always `false`. The ref is now initialised from `sessionStorage` on mount and written to `sessionStorage` in the `onReady` callback, so workspaces already loaded this session skip the skeleton animation entirely.
+- **Sync-pending icon no longer flashes during brief reconnects.** When the app returns to the foreground it force-reconnects WebSocket providers; any in-flight edits briefly set a pending-sync badge even when connectivity was never actually lost. A 3-second debounce in `DocumentManager` now delays the badge until the reconnect window has passed, eliminating the false flash on fast reconnects.
+- **Accepting a note share into a personal workspace now works.** `handleAcceptedSharedPlacement` previously returned early for `target === 'personal'` acceptances, silently dropping them. It now switches to the target workspace (if needed) and refreshes placements so accepted notes appear in the grid. `visibleSharedPlacements` also now returns active-workspace placements for non-Shared-With-Me workspaces instead of always returning an empty array.
+- **Inviter avatars survive offline sessions.** User profile-image URLs returned by the note-share API are now stored in a lightweight `localStorage` cache (`freemannotes.userAvatarCache.v1`). The Notifications modal falls back to the cached URL when the live URL is unavailable, keeping inviter chips from going blank after connectivity is lost.
 
 ### Fixed
 - **Bubble-click on Shared With Me notes now opens the editor correctly.** The v1.2.21 fix for preventing shared notes from appearing in all workspaces used an incorrect approach (splitting state) that broke placement lookups when clicking a bubble. The fix is now applied in `visibleSharedPlacements` instead: it returns an empty array when the active workspace is not Shared With Me, so NoteGrid never injects shared alias IDs into other workspace grids. `sharedPlacements` continues to hold all placements from every SHARED_WITH_ME workspace, keeping bubble-click lookups, cross-workspace modal resolution, and room-alias registration fully intact.

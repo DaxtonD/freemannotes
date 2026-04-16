@@ -86,6 +86,13 @@ export class DocumentManager {
 	// Internal room-level pending tracker. This includes all rooms, then emitConnectionStatus
 	// filters out non-user rooms (such as the notes registry) before exposing snapshot data.
 	private readonly pendingSyncRooms = new Set<string>();
+	// Debounce map: when a room is detected as disconnected during an edit, we wait
+	// PENDING_DISPLAY_DEBOUNCE_MS before promoting it into pendingSyncRooms. This
+	// prevents brief reconnect windows (e.g. force-reconnect on foreground-resume)
+	// from flashing the pending-sync badge for edits that will sync within seconds.
+	private static readonly PENDING_DISPLAY_DEBOUNCE_MS = 3_000;
+	private readonly pendingSyncQueuedAt = new Map<string, number>();
+	private readonly pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Tracks rooms whose WS provider has completed at least one sync in this session.
 	// A room is only eligible for the "pending sync" badge after its first WS sync,
 	// preventing false positives during the initial boot window (IDB hydrated but WS
@@ -290,6 +297,9 @@ export class DocumentManager {
 				}
 			}
 			this.pendingSyncRooms.clear();
+			for (const timer of this.pendingSyncTimers.values()) clearTimeout(timer);
+			this.pendingSyncTimers.clear();
+			this.pendingSyncQueuedAt.clear();
 			this.wsEverSynced.clear();
 			this.updatedAtDocs.clear();
 			this.registryHydrated = false;
@@ -715,6 +725,12 @@ export class DocumentManager {
 		this.readyPromises.delete(roomName);
 		this.websocketReadyPromises.delete(roomName);
 		this.pendingSyncRooms.delete(roomName);
+		{
+			const timer = this.pendingSyncTimers.get(roomName);
+			if (timer !== undefined) clearTimeout(timer);
+			this.pendingSyncTimers.delete(roomName);
+		}
+		this.pendingSyncQueuedAt.delete(roomName);
 		this.wsEverSynced.delete(roomName);
 		this.updatedAtDocs.delete(roomName);
 
@@ -746,6 +762,9 @@ export class DocumentManager {
 			this.destroyRoom(roomName);
 		}
 		this.pendingSyncRooms.clear();
+		for (const timer of this.pendingSyncTimers.values()) clearTimeout(timer);
+		this.pendingSyncTimers.clear();
+		this.pendingSyncQueuedAt.clear();
 		this.wsEverSynced.clear();
 		this.updatedAtDocs.clear();
 		this.registryHydrated = false;
@@ -981,6 +1000,13 @@ export class DocumentManager {
 			logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-sync', isSynced });
 			if (isSynced) {
 				this.wsEverSynced.add(roomName);
+				// Clear any queued promotion — sync beat the debounce, no icon needed.
+				const timer = this.pendingSyncTimers.get(roomName);
+				if (timer !== undefined) {
+					clearTimeout(timer);
+					this.pendingSyncTimers.delete(roomName);
+				}
+				this.pendingSyncQueuedAt.delete(roomName);
 				this.pendingSyncRooms.delete(roomName);
 				this.emitConnectionStatus();
 			}
@@ -1005,9 +1031,26 @@ export class DocumentManager {
 			// "connecting" which is sufficient feedback during the startup window.
 			if (!this.wsEverSynced.has(roomName)) return;
 			const connected = (wsProvider as any).wsconnected === true;
-			if (!connected) {
-				this.pendingSyncRooms.add(roomName);
-				this.emitConnectionStatus();
+			if (!connected && !this.pendingSyncQueuedAt.has(roomName)) {
+				// Debounce: queue the room and promote to displayed-pending only if it
+				// remains disconnected after PENDING_DISPLAY_DEBOUNCE_MS. This prevents
+				// brief reconnect windows (e.g. force-reconnect on foreground-resume)
+				// from flashing the sync-pending badge for edits that will sync within
+				// seconds without any user action required.
+				this.pendingSyncQueuedAt.set(roomName, Date.now());
+				const timer = setTimeout(() => {
+					this.pendingSyncTimers.delete(roomName);
+					if (!this.pendingSyncQueuedAt.has(roomName)) return; // cleared by sync
+					const stillConnected = (wsProvider as any).wsconnected === true;
+					if (!stillConnected) {
+						this.pendingSyncRooms.add(roomName);
+						this.emitConnectionStatus();
+					} else {
+						// Reconnected before debounce fired — discard the queue entry.
+						this.pendingSyncQueuedAt.delete(roomName);
+					}
+				}, DocumentManager.PENDING_DISPLAY_DEBOUNCE_MS);
+				this.pendingSyncTimers.set(roomName, timer);
 			}
 		};
 

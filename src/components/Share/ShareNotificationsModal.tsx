@@ -14,6 +14,7 @@ import {
 	type WorkspacePendingInvite,
 } from '../../core/workspaceInviteApi';
 import { getWorkspaceMetadataChangedEventName } from '../../core/workspaceMetadataStore';
+import { getCachedAvatarUrl } from '../../core/userAvatarCache';
 import type { FailedNoteLinkRecord } from '../../core/noteLinkApi';
 import type { FiredReminder } from '../../core/pushApi';
 import { useI18n } from '../../core/i18n';
@@ -517,8 +518,8 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 							return (
 								<div key={invitation.id} className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
 									<div className={styles.notificationHeader}>
-										{invitation.inviter?.profileImage ? (
-											<img className={`${styles.notificationAvatar} ${styles.notificationAvatarCompact}`} src={invitation.inviter.profileImage} alt="" />
+							{(invitation.inviter?.profileImage ?? getCachedAvatarUrl(invitation.inviter?.id)) ? (
+								<img className={`${styles.notificationAvatar} ${styles.notificationAvatarCompact}`} src={invitation.inviter?.profileImage ?? getCachedAvatarUrl(invitation.inviter?.id) ?? undefined} alt="" />
 										) : (
 											<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
 												{inviterName.slice(0, 1).toUpperCase()}
