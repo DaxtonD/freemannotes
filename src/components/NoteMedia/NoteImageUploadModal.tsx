@@ -65,8 +65,6 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	const [toastMessage, setToastMessage] = React.useState<string | null>(null);
 	const toastTimerRef = React.useRef<number>(0);
 
-
-
 	const clearCameraShield = React.useCallback((): void => {
 		cameraOpenRef.current = false;
 		cameraCapturedAtRef.current = 0;
@@ -370,7 +368,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 											value={item.name}
 											placeholder={item.defaultName}
 											onChange={(e) => handleRename(index, e.target.value)}
-										onFocus={(event) => {
+											onFocus={(event) => {
 											justFocusedRef.current = index;
 											selectAllText(event.currentTarget);
 										}}

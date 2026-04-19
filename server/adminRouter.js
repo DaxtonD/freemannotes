@@ -33,12 +33,15 @@
 
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const Y = require('yjs');
 const { baseUrlFromRequest, enforceSameOrigin } = require('./auth');
 const { sendRegistrationInviteEmail } = require('./mailer');
+const { decodeDocumentState } = require('./noteSnapshot');
 const { validatePassword } = require('./passwordPolicy');
 
 const BCRYPT_ROUNDS = Number(process.env.AUTH_BCRYPT_ROUNDS || 12);
 const USER_REGISTRATION_INVITE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const SHARED_WITH_ME_KIND = 'SHARED_WITH_ME';
 
 function jsonResponse(res, status, body) {
 	if (res.writableEnded) return;
@@ -88,18 +91,72 @@ function sha256(value) {
 	return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
-function usageForWorkspace(prisma, workspaceId) {
-	const registryA = `${workspaceId}:__notes_registry__`;
-	const registryB = '__notes_registry__';
-	return prisma.$queryRaw`
-		SELECT
-			COUNT(*)::int as note_count,
-			COALESCE(SUM(octet_length(state)), 0)::bigint as bytes
-		FROM document
-		WHERE workspace_id = ${workspaceId}::uuid
-			AND doc_id <> ${registryA}
-			AND doc_id <> ${registryB}
-	`;
+
+function isRegistryDocId(workspaceId, docId) {
+	const normalized = String(docId || '').trim();
+	if (!normalized) return false;
+	return (
+		normalized === '__notes_registry__' ||
+		normalized === `${workspaceId}:__notes_registry__` ||
+		normalized === '__collections_registry__' ||
+		normalized === `${workspaceId}:__collections_registry__` ||
+		normalized === '__labels_registry__' ||
+		normalized === `${workspaceId}:__labels_registry__`
+	);
+}
+
+function readRegistryNoteIds(state) {
+	if (!state) return [];
+	const tempDoc = new Y.Doc();
+	try {
+		Y.applyUpdate(tempDoc, new Uint8Array(state));
+		const noteOrder = tempDoc.getArray('noteOrder').toArray();
+		const notesList = tempDoc.getArray('notesList').toArray();
+		const ids = [
+			...noteOrder.map((value) => String(value || '').trim()),
+			...notesList.map((item) => String(item && typeof item.get === 'function' ? item.get('id') : '').trim()),
+		].filter(Boolean);
+		return Array.from(new Set(ids));
+	} finally {
+		tempDoc.destroy();
+	}
+}
+
+async function usageForWorkspace(prisma, workspaceId) {
+	const docs = await prisma.document.findMany({
+		where: { workspaceId },
+		select: { docId: true, state: true },
+	});
+	let bytes = 0;
+	let registryState = null;
+	const docStateById = new Map();
+	for (const row of docs) {
+		const docId = String(row.docId || '').trim();
+		if (!docId) continue;
+		if (docId === '__notes_registry__' || docId === `${workspaceId}:__notes_registry__`) {
+			registryState = row.state;
+		}
+		if (isRegistryDocId(workspaceId, docId)) {
+			continue;
+		}
+		const state = row.state || null;
+		if (state) {
+			bytes += Number(state.length || state.byteLength || 0);
+			docStateById.set(docId, state);
+		}
+	}
+
+	let noteCount = 0;
+	for (const noteId of readRegistryNoteIds(registryState)) {
+		const state = docStateById.get(`${workspaceId}:${noteId}`) || docStateById.get(noteId) || null;
+		if (!state) continue;
+		const snapshot = decodeDocumentState(state);
+		if (!snapshot.trashed && !snapshot.archived) {
+			noteCount += 1;
+		}
+	}
+
+	return { noteCount, bytes };
 }
 
 async function usageForWorkspaces(prisma, workspaceIds) {
@@ -116,9 +173,8 @@ async function usageForWorkspaces(prisma, workspaceIds) {
 	let noteCount = 0;
 	let bytes = 0;
 	for (const result of rows) {
-		const first = Array.isArray(result) ? result[0] : result;
-		noteCount += Number(first?.note_count || 0);
-		bytes += Number(first?.bytes || 0);
+		noteCount += Number(result?.noteCount || 0);
+		bytes += Number(result?.bytes || 0);
 	}
 	return { noteCount, bytes };
 }
@@ -223,42 +279,51 @@ function createAdminRouter({ prisma }) {
 
 					const users = await Promise.all(
 					rows.map(async (u) => {
-						// Pull every live workspace owned by the user so usage totals do not
-						// silently drop content that lives outside the earliest workspace.
-						const workspaces = await prisma.workspace.findMany({
+						// Count notes and storage from all workspaces the user owns, excluding
+						// the built-in Shared With Me system workspace. This includes both the
+						// built-in Personal workspace (`systemKind: PERSONAL`) and any custom
+						// owner-created workspaces (`systemKind: null`). Note counts come from
+						// registry note IDs so untouched notes are still counted, while trashed
+						// and archived notes are excluded to match the main grid.
+						const ownedWorkspaces = await prisma.workspace.findMany({
 							where: {
 								ownerUserId: u.id,
 								deletedAt: null,
+								OR: [
+									{ systemKind: 'PERSONAL' },
+									{ systemKind: null },
+								],
 							},
 							select: { id: true },
 						});
-						const workspaceIds = workspaces.map((workspace) => workspace.id);
+						const workspaceIds = ownedWorkspaces.map((ws) => ws.id);
 
-							let notes = 0;
-							let dbBytes = 0;
-							let imageBytes = 0;
-							let documentBytes = 0;
-							let images = 0;
-							if (workspaceIds.length > 0) {
-								const [workspaceUsage, noteImageAgg, noteDocumentAgg] = await Promise.all([
-									usageForWorkspaces(prisma, workspaceIds),
-									prisma.noteImage.aggregate({
-										where: { sourceWorkspaceId: { in: workspaceIds }, deletedAt: null },
-										_count: { _all: true },
-										_sum: { byteSize: true },
-									}),
-									prisma.noteDocument.aggregate({
-										where: { sourceWorkspaceId: { in: workspaceIds }, deletedAt: null },
-										_count: { _all: true },
-										_sum: { byteSize: true },
-									}),
-								]);
-								notes = Number(workspaceUsage.noteCount || 0);
-								dbBytes = Number(workspaceUsage.bytes || 0);
-								imageBytes = Number(noteImageAgg?._sum?.byteSize || 0);
-								documentBytes = Number(noteDocumentAgg?._sum?.byteSize || 0);
-								images = Number(noteImageAgg?._count?._all || 0);
-							}
+						let notes = 0;
+						let dbBytes = 0;
+						let imageBytes = 0;
+						let documentBytes = 0;
+						let images = 0;
+						if (workspaceIds.length > 0) {
+							const [workspaceUsage, noteImageAgg, noteDocumentAgg] = await Promise.all([
+								usageForWorkspaces(prisma, workspaceIds),
+								prisma.noteImage.aggregate({
+									where: { sourceWorkspaceId: { in: workspaceIds }, deletedAt: null },
+									_count: { _all: true },
+									_sum: { byteSize: true },
+								}),
+								prisma.noteDocument.aggregate({
+									where: { sourceWorkspaceId: { in: workspaceIds }, deletedAt: null },
+									_count: { _all: true },
+									_sum: { byteSize: true },
+								}),
+							]);
+							notes = Number(workspaceUsage.noteCount || 0);
+							dbBytes = Number(workspaceUsage.bytes || 0);
+							imageBytes = Number(noteImageAgg?._sum?.byteSize || 0);
+							documentBytes = Number(noteDocumentAgg?._sum?.byteSize || 0);
+							images = Number(noteImageAgg?._count?._all || 0);
+						}
+
 						// Show usage for what exists in the user's workspace, not only the
 						// subset they personally uploaded.
 						const filesBytes = documentBytes;

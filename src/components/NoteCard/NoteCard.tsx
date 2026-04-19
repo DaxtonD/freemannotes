@@ -954,6 +954,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 		scheduleMeasure();
 		const observer = new ResizeObserver(() => scheduleMeasure());
+		if (cardRef.current) observer.observe(cardRef.current);
+		if (contentRegionRef.current) observer.observe(contentRegionRef.current);
 		if (bodyRef.current) observer.observe(bodyRef.current);
 		if (contentPreviewRef.current) observer.observe(contentPreviewRef.current);
 		window.addEventListener('resize', scheduleMeasure);
@@ -966,7 +968,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			window.removeEventListener('resize', scheduleMeasure);
 			viewport?.removeEventListener('resize', scheduleMeasure);
 		};
-	}, [content, richContent, type]);
+	}, [content, maxCardHeightPx, richContent, type]);
 
 	React.useLayoutEffect(() => {
 		if (type !== 'checklist') return;

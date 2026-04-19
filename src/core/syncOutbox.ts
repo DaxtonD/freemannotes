@@ -716,6 +716,8 @@ export async function recordWorkspaceInviteSuccess(args: {
 	workspaceId: string;
 	identifier?: string;
 	email: string;
+	inviteeName?: string | null;
+	inviteeProfileImage?: string | null;
 	role: WorkspaceInviteRole;
 	inviteId: string;
 	inviteUrl: string;
@@ -734,7 +736,8 @@ export async function recordWorkspaceInviteSuccess(args: {
 		source: 'server',
 		kind: 'invite',
 		email,
-		name: identifier && normalizeEmail(identifier) !== email ? identifier : null,
+		name: args.inviteeName ?? (identifier && normalizeEmail(identifier) !== email ? identifier : null),
+		profileImage: args.inviteeProfileImage ?? null,
 		role: args.role,
 		userId: null,
 		inviteId: args.inviteId,

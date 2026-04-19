@@ -310,6 +310,8 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 					workspaceId: props.workspaceId,
 					identifier,
 					email: next.email,
+					inviteeName: next.inviteeName ?? null,
+					inviteeProfileImage: next.inviteeProfileImage ?? null,
 					role: inviteRole,
 					inviteId: next.inviteId,
 					inviteUrl: next.inviteUrl,

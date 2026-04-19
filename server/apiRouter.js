@@ -325,7 +325,18 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 					] = await Promise.all([
 						prisma.user.count(),
 						prisma.workspace.count({ where: { deletedAt: null } }),
-						prisma.document.count(),
+						// Count only note documents — exclude the notes-registry doc for every
+						// workspace (docIds ending in ":__notes_registry__") and the legacy
+						// unnamespaced "__notes_registry__" sentinel.  This gives a 1:1 count
+						// of unique Yjs note rooms, not total persisted document rows.
+						prisma.document.count({
+							where: {
+								AND: [
+									{ docId: { not: { endsWith: ':__notes_registry__' } } },
+									{ docId: { not: '__notes_registry__' } },
+								],
+							},
+						}),
 						prisma.$queryRaw`
 							SELECT COALESCE(SUM(octet_length(state)), 0)::bigint as bytes
 							FROM document

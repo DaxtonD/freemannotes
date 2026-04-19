@@ -855,6 +855,67 @@ function useBubbleNotes(
 					}));
 					nextNotes.push(...activeEntries.filter((entry): entry is BubbleNote => entry !== null));
 
+					// ── Shared notes placed into this personal workspace ─────────────────
+					// When another user shares a note into the currently-active personal
+					// workspace (not into Shared-With-Me), those placements appear in the
+					// sharedPlacements prop (pre-filtered to the active workspace by the
+					// caller via visibleSharedPlacements).  The Yjs registry only lists
+					// notes owned by this workspace, so we must handle them separately here.
+					if (sharedPlacements.length > 0) {
+						const activeSharedEntries = await Promise.all(
+							sharedPlacements.slice(0, MAX_NOTES_PER_INACTIVE_WORKSPACE).map(async (placement) => {
+								try {
+									const doc = await manager.getDocReady(placement.aliasId);
+									const meta = doc.getMap<any>('metadata');
+									const titleText = doc.getText('title');
+									const contentText = doc.getText('content');
+									const checklist = doc.getArray<Y.Map<any>>('checklist');
+									const onMetadataChange = (event: Y.YMapEvent<any>): void => {
+										if (event.keysChanged.size === 1 && event.keysChanged.has('lastAccessedAt')) return;
+										scheduleRefresh();
+									};
+									const onTitleChange = (): void => scheduleRefresh();
+									const onContentChange = (): void => scheduleRefresh();
+									const onChecklistChange = (): void => scheduleRefresh();
+									meta.observe(onMetadataChange);
+									titleText.observe(onTitleChange);
+									contentText.observe(onContentChange);
+									checklist.observeDeep(onChecklistChange);
+									cleanups.push(() => {
+										try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
+										try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
+										try { contentText.unobserve(onContentChange); } catch { /* ignore */ }
+										try { checklist.unobserveDeep(onChecklistChange); } catch { /* ignore */ }
+									});
+									const isTrashed = Boolean(meta.get('trashed'));
+									if (showTrashed ? !isTrashed : isTrashed) return null;
+									const reminderAt = resolveReminderAt(noteReminderByDocId, placement.roomId, placement.aliasId);
+									if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
+									if (!hasRenderableBubbleNote(doc, placement.aliasId)) return null;
+									const resolvedTitle = readNoteFromDoc(doc, placement.aliasId).title.trim();
+									const title = resolvedTitle || placement.sourceNoteId;
+									const reminderMs = reminderAt ? Date.parse(String(reminderAt)) : Number.NaN;
+									return {
+										noteId: placement.aliasId,
+										workspaceId: activeWorkspaceId,
+										workspaceName: activeWorkspaceName,
+										title,
+										searchText: extractNoteSearchText(placement.aliasId, doc, title),
+										updatedAt: Number(meta.get('updatedAt') ?? 0),
+										reminderAt,
+										isPinned: Boolean(meta.get('isPinned')),
+										hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
+										hasCollaborators: false,
+										isActiveWorkspace: true,
+									} satisfies BubbleNote;
+								} catch {
+									return null;
+								}
+							})
+						);
+						nextNotes.push(...activeSharedEntries.filter((entry): entry is BubbleNote => entry !== null));
+					}
+
 					const onRegistryChange = (): void => { scheduleRefresh(); };
 					registryDoc.getArray(NOTES_LIST_KEY).observe(onRegistryChange);
 					registryDoc.getArray(NOTE_ORDER_KEY).observe(onRegistryChange);

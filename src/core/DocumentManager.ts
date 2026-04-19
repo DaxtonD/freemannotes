@@ -175,6 +175,15 @@ export class DocumentManager {
 					this.onlineReconnectTimer = null;
 				}
 			};
+			const disconnectProvidersForOffline = (): void => {
+				for (const provider of this.websocketProviders.values()) {
+					try {
+						provider.disconnect();
+					} catch {
+						// Best effort: browser offline transitions can race with provider teardown.
+					}
+				}
+			};
 			const onOnline = (): void => {
 				this.browserOnline = true;
 				this.updateConnectionState();
@@ -194,6 +203,7 @@ export class DocumentManager {
 			const onOffline = (): void => {
 				clearOnlineReconnectTimer();
 				this.browserOnline = false;
+				disconnectProvidersForOffline();
 				this.updateConnectionState();
 				this.emitConnectionStatus();
 			};
@@ -1009,7 +1019,11 @@ export class DocumentManager {
 		};
 		const onConnectionError = (err: unknown): void => {
 			const msg = err instanceof Error ? err.message : String(err);
-			console.warn(`[yjs-ws] room=${roomName} connection-error=${msg} url=${this.websocketUrl}`);
+			if (this.browserOnline) {
+				console.warn(`[yjs-ws] room=${roomName} connection-error=${msg} url=${this.websocketUrl}`);
+			} else if (this.wsDebug) {
+				console.info(`[yjs-ws] room=${roomName} connection-error=${msg} url=${this.websocketUrl} offline=true`);
+			}
 			this.updateConnectionState();
 			this.emitConnectionStatus();
 		};
@@ -1131,6 +1145,7 @@ export class DocumentManager {
 
 	public reconnectAllProviders(reason: string): void {
 		if (!this.websocketEnabled) return;
+		if (!this.browserOnline) return;
 
 		// Throttle: collapse rapid-fire events into a single reconnect pass.
 		const now = Date.now();

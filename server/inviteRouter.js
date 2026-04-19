@@ -68,7 +68,7 @@ async function resolveInvitee(prisma, identifier) {
 	if (isValidEmail(email)) {
 		const user = await prisma.user.findFirst({
 			where: { email: { equals: email, mode: 'insensitive' } },
-			select: { id: true, email: true, name: true, disabled: true },
+			select: { id: true, email: true, name: true, disabled: true, profileImage: true },
 		});
 		return {
 			identifier: normalized,
@@ -85,7 +85,7 @@ async function resolveInvitee(prisma, identifier) {
 			},
 			disabled: false,
 		},
-		select: { id: true, email: true, name: true, disabled: true },
+		select: { id: true, email: true, name: true, disabled: true, profileImage: true },
 	});
 	if (!user || !user.email) return null;
 	return {
@@ -374,6 +374,8 @@ function createInviteRouter({ prisma, onWorkspaceMetadataChanged }) {
 						inviteUrl,
 						expiresAt: expiresAt.toISOString(),
 						email,
+						inviteeName: existingUser?.name || null,
+						inviteeProfileImage: existingUser?.profileImage || null,
 						role,
 						sentEmail,
 						deliveredInApp: Boolean(existingUser),
