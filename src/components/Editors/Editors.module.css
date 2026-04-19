@@ -218,6 +218,9 @@
 	justify-items: center;
 	align-items: stretch;
 	overflow: hidden;
+	/* Prevent mobile browsers from restoring latent overlay scroll offsets. */
+	overflow: clip;
+	overscroll-behavior: none;
 }
 
 .fullscreenEditor {

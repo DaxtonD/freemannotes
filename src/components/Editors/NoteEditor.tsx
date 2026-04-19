@@ -51,6 +51,7 @@ import type { ThemeId } from '../../core/theme';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
+import { useVisualViewportHeight } from '../../core/useVisualViewportHeight';
 import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
@@ -585,6 +586,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		};
 	}, [props.authUserId, props.doc, props.docId]);
 	const keyboard = useKeyboardHeight();
+	const visualViewport = useVisualViewportHeight();
 	// Mobile-only keyboard branch:
 	// - `useKeyboardHeight()` is driven by the Visual Viewport API, so `keyboard.isOpen`
 	//   reflects whether the on-screen keyboard has reduced the visible viewport.
@@ -936,6 +938,48 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		&& !mediaDockOpen
 		&& !isMoreMenuOpen
 		&& (checkboxUndoAvail || checkboxRedoAvail);
+	// Android standalone PWAs can leave the fullscreen overlay scrolled after
+	// nested modal flows (for example Add Image -> close -> reopen editor). Keep
+	// the overlay pinned to the origin so the editor shell always reopens flush
+	// to the top of the visible viewport.
+	const resetEditorOverlayScroll = React.useCallback((): void => {
+		const overlay = editorOverlayRefCb.current;
+		if (!overlay) return;
+		if (overlay.scrollTop === 0 && overlay.scrollLeft === 0) return;
+		overlay.scrollTop = 0;
+		overlay.scrollLeft = 0;
+	}, []);
+	React.useLayoutEffect(() => {
+		if (!isCoarsePointer || typeof window === 'undefined') return;
+		const overlay = editorOverlayRefCb.current;
+		if (!overlay) return;
+		const rafIds: number[] = [];
+		// Re-assert the zero scroll position across the first few layout frames
+		// because Android may restore the old offset after mount/viewport changes.
+		const timeoutId = window.setTimeout(() => {
+			resetEditorOverlayScroll();
+		}, 120);
+		const scheduleFrameReset = (): void => {
+			rafIds.push(window.requestAnimationFrame(() => {
+				resetEditorOverlayScroll();
+			}));
+		};
+		const handleScroll = (): void => {
+			scheduleFrameReset();
+		};
+		overlay.addEventListener('scroll', handleScroll, { passive: true });
+		resetEditorOverlayScroll();
+		scheduleFrameReset();
+		scheduleFrameReset();
+		return () => {
+			overlay.removeEventListener('scroll', handleScroll);
+			window.clearTimeout(timeoutId);
+			for (const rafId of rafIds) {
+				window.cancelAnimationFrame(rafId);
+			}
+		};
+	}, [isCoarsePointer, props.hideFormattingToolbar, props.noteId, resetEditorOverlayScroll]);
+
 	const isPinned = useSyncExternalStore(
 		(onStoreChange) => {
 			const observer = (): void => onStoreChange();
@@ -1042,19 +1086,35 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	}, [resolvedColor]);
 	const editorShellStyle = useMemo(() => {
 		const style: React.CSSProperties & Record<string, string> = { ...(editorColorStyle ?? {}) };
+		if (isCoarsePointer) {
+			// Use the live Visual Viewport height on mobile so the fullscreen shell
+			// tracks the actual visible window even when CSS dvh lags behind Android
+			// standalone/PWA keyboard transitions.
+			const visibleBottom = Math.max(
+				0,
+				Math.round((visualViewport?.height ?? window.innerHeight) + (visualViewport?.offsetTop ?? 0))
+			);
+			// Android standalone PWAs can leave CSS `100dvh` stuck at a keyboard-sized
+			// value after nested modal flows. Drive the editor shell from the live
+			// Visual Viewport instead so reopen and keyboard-dismiss both use the real
+			// visible viewport height.
+			if (visibleBottom > 0) {
+				const visibleHeight = `calc(${visibleBottom}px - env(safe-area-inset-top, 0px))`;
+				style.height = visibleHeight;
+				style.maxHeight = visibleHeight;
+			}
+		}
 		if (mobileKeyboardOpen) {
-			// Only clamp the editor height when the keyboard was triggered by an
-			// element inside the editor overlay.  Camera Activity transitions on
-			// Android cause transient Visual Viewport shrinks that useKeyboardHeight
-			// misidentifies as a keyboard — checking activeElement avoids those.
+			// Only treat the editor as keyboard-driven when the focused element lives
+			// inside the editor overlay. Higher-z-index modals like Add Image should not
+			// toggle the editor into its keyboard-open branch.
 			const active = document.activeElement;
-			if (active instanceof HTMLElement && editorOverlayRefCb.current?.contains(active)) {
-				style.height = `${keyboard.visibleBottom}px`;
-				style.maxHeight = `${keyboard.visibleBottom}px`;
+			if (!(active instanceof HTMLElement) || !editorOverlayRefCb.current?.contains(active)) {
+				return Object.keys(style).length > 0 ? style : undefined;
 			}
 		}
 		return Object.keys(style).length > 0 ? style : undefined;
-	}, [editorColorStyle, keyboard.visibleBottom, mobileKeyboardOpen]);
+	}, [editorColorStyle, isCoarsePointer, mobileKeyboardOpen, visualViewport]);
 	const handleOpenColorPicker = React.useCallback((): void => {
 		if (readOnly) return;
 		setIsColorPickerOpen(true);

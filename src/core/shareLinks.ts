@@ -30,6 +30,8 @@ export type WorkspaceInviteLink = {
 	expiresAt: string;
 	identifier?: string;
 	email: string;
+	inviteeName?: string | null;
+	inviteeProfileImage?: string | null;
 	role: WorkspaceInviteRole;
 	sentEmail: boolean;
 	deliveredInApp?: boolean;
@@ -510,6 +512,8 @@ async function requestWorkspaceInviteLink(args: {
 		inviteUrl?: string;
 		expiresAt?: string;
 		email?: string;
+		inviteeName?: string | null;
+		inviteeProfileImage?: string | null;
 		identifier?: string;
 		role?: WorkspaceInviteRole;
 		sentEmail?: boolean;
@@ -526,6 +530,8 @@ async function requestWorkspaceInviteLink(args: {
 		expiresAt: typeof body.expiresAt === 'string' ? body.expiresAt : '',
 		identifier,
 		email: normalizeEmail(body.email || identifier),
+		inviteeName: typeof body.inviteeName === 'string' ? body.inviteeName : null,
+		inviteeProfileImage: typeof body.inviteeProfileImage === 'string' ? body.inviteeProfileImage : null,
 		role,
 		sentEmail: Boolean(body.sentEmail),
 		deliveredInApp: Boolean(body.deliveredInApp),

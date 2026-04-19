@@ -305,6 +305,9 @@ let pushRouter = null;
 /** @type {ReturnType<import('./server/trashCleanup').createTrashCleanup> | null} */
 let trashCleanup = null;
 
+/** @type {ReturnType<import('./server/workspaceCleanup').createWorkspaceCleanup> | null} */
+let workspaceCleanup = null;
+
 if (DATABASE_URL.length > 0) {
 	// ── PostgreSQL via Prisma ─────────────────────────────────────────────
 	try {
@@ -1280,6 +1283,14 @@ async function gracefulShutdown(signal) {
 		}
 	}
 
+	if (workspaceCleanup) {
+		try {
+			workspaceCleanup.stop();
+		} catch (err) {
+			console.error('[server] Error stopping workspace cleanup:', err.message);
+		}
+	}
+
 	// 2. Flush all active docs to PostgreSQL.
 	if (persistAdapter) {
 		try {
@@ -1423,6 +1434,23 @@ process.on('unhandledRejection', (reason) => {
 			console.info('[server] Trash cleanup scheduler initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize trash cleanup:', err.message);
+		}
+	}
+
+	// ── Step 4: Start the workspace cleanup scheduler ──────────────────
+	// Soft-deleted workspaces are hard-deleted only after a grace period so
+	// active websocket/Yjs sessions have time to disconnect naturally.
+	if (prisma) {
+		try {
+			const { createWorkspaceCleanup } = require('./server/workspaceCleanup');
+			workspaceCleanup = createWorkspaceCleanup({
+				prisma,
+				intervalMs: Number(process.env.WORKSPACE_CLEANUP_INTERVAL_MS) || 60 * 60 * 1000,
+				gracePeriodMs: Number(process.env.WORKSPACE_CLEANUP_GRACE_MS) || 24 * 60 * 60 * 1000,
+			});
+			console.info('[server] Workspace cleanup scheduler initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize workspace cleanup:', err.message);
 		}
 	}
 

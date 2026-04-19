@@ -321,6 +321,15 @@ type ReminderNoteModalState = {
 	title: string;
 };
 
+type PendingReminderSync = {
+	docId: string;
+	noteId: string;
+	workspaceId: string;
+	reminderAt: string | null;
+	noteTitle?: string;
+	updatedAt: string;
+};
+
 type SidebarView = 'notes' | 'images' | 'archive' | 'trash';
 
 type OverlaySnapshot = {
@@ -1022,6 +1031,74 @@ export function App(): React.JSX.Element {
 	const [labelManagementModalState, setLabelManagementModalState] = React.useState<LabelManagementModalState | null>(null);
 	const [noteReminderModalState, setNoteReminderModalState] = React.useState<ReminderNoteModalState | null>(null);
 	const [noteReminderByDocId, setNoteReminderByDocId] = React.useState<Record<string, string | null>>({});
+	const pendingReminderStorageKey = React.useMemo(
+		() => `freemannotes.pendingReminderSync.v1:${authUserId ?? ''}:${deviceId}`,
+		[authUserId, deviceId]
+	);
+	const readPendingReminderMutations = React.useCallback((): PendingReminderSync[] => {
+		if (typeof window === 'undefined') return [];
+		try {
+			const raw = window.localStorage.getItem(pendingReminderStorageKey);
+			if (!raw) return [];
+			const parsed = JSON.parse(raw) as PendingReminderSync[] | null;
+			if (!Array.isArray(parsed)) return [];
+			return parsed.filter((entry): entry is PendingReminderSync => Boolean(entry && typeof entry === 'object' && typeof entry.docId === 'string' && typeof entry.noteId === 'string'));
+		} catch {
+			return [];
+		}
+	}, [pendingReminderStorageKey]);
+	const writePendingReminderMutations = React.useCallback((entries: readonly PendingReminderSync[]): void => {
+		if (typeof window === 'undefined') return;
+		try {
+			if (entries.length === 0) {
+				window.localStorage.removeItem(pendingReminderStorageKey);
+				return;
+			}
+			window.localStorage.setItem(pendingReminderStorageKey, JSON.stringify(entries));
+		} catch {
+			// best effort
+		}
+	}, [pendingReminderStorageKey]);
+	const queuePendingReminderMutation = React.useCallback((entry: PendingReminderSync): void => {
+		const existing = readPendingReminderMutations().filter((candidate) => !(candidate.docId === entry.docId && candidate.noteId === entry.noteId));
+		existing.push(entry);
+		writePendingReminderMutations(existing);
+	}, [readPendingReminderMutations, writePendingReminderMutations]);
+	const applyPendingReminderMutations = React.useCallback((base: Record<string, string | null>): Record<string, string | null> => {
+		let next = base;
+		for (const entry of readPendingReminderMutations()) {
+			next = updateReminderLookup(next, entry.docId, entry.noteId, entry.reminderAt);
+		}
+		return next;
+	}, [readPendingReminderMutations]);
+	const flushPendingReminderMutations = React.useCallback(async (): Promise<void> => {
+		if (authStatus !== 'authed' || authOfflineMode) return;
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+		const pending = readPendingReminderMutations();
+		if (pending.length === 0) return;
+		const remaining: PendingReminderSync[] = [];
+		for (let index = 0; index < pending.length; index += 1) {
+			const entry = pending[index];
+			try {
+				await syncNoteReminder({
+					deviceId,
+					docId: entry.docId,
+					noteId: entry.noteId,
+					workspaceId: entry.workspaceId,
+					reminderAt: entry.reminderAt,
+					noteTitle: entry.noteTitle,
+				});
+			} catch {
+				remaining.push(...pending.slice(index));
+				break;
+			}
+		}
+		writePendingReminderMutations(remaining);
+		const data = await fetchNoteReminderStates().catch(() => null);
+		if (data) {
+			setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
+		}
+	}, [applyPendingReminderMutations, authOfflineMode, authStatus, deviceId, readPendingReminderMutations, writePendingReminderMutations]);
 	const [moveNoteModalState, setMoveNoteModalState] = React.useState<MoveNoteModalState | null>(null);
 	const [moveNoteBusy, setMoveNoteBusy] = React.useState(false);
 	const [moveNoteError, setMoveNoteError] = React.useState<string | null>(null);
@@ -2038,6 +2115,94 @@ export function App(): React.JSX.Element {
 		});
 	}, [applyDevicePreferenceState, persistDevicePrefsLocally]);
 
+	const pendingAppearanceSyncStorageKey = React.useMemo(
+		() => `freemannotes.pendingAppearanceSync.v1:${authUserId ?? ''}:${deviceId}`,
+		[authUserId, deviceId]
+	);
+
+	const hasPendingAppearanceSync = React.useCallback((): boolean => {
+		if (typeof window === 'undefined') return false;
+		try {
+			return window.localStorage.getItem(pendingAppearanceSyncStorageKey) === '1';
+		} catch {
+			return false;
+		}
+	}, [pendingAppearanceSyncStorageKey]);
+
+	const markPendingAppearanceSync = React.useCallback((): void => {
+		if (typeof window === 'undefined') return;
+		try {
+			window.localStorage.setItem(pendingAppearanceSyncStorageKey, '1');
+		} catch {
+			// best effort
+		}
+	}, [pendingAppearanceSyncStorageKey]);
+
+	const clearPendingAppearanceSync = React.useCallback((): void => {
+		if (typeof window === 'undefined') return;
+		try {
+			window.localStorage.removeItem(pendingAppearanceSyncStorageKey);
+		} catch {
+			// best effort
+		}
+	}, [pendingAppearanceSyncStorageKey]);
+
+	const syncPendingAppearancePreferences = React.useCallback(async (): Promise<void> => {
+		if (authStatus !== 'authed' || !prefsHydrationAttempted) return;
+		if (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) return;
+		if (!hasPendingAppearanceSync()) return;
+		const localAppearanceSnapshot = readCachedDeviceAppearancePreferences(deviceId, authUserId);
+		if (!localAppearanceSnapshot) {
+			clearPendingAppearanceSync();
+			return;
+		}
+		const updatedAppearance = await updateUserPreferences(deviceId, {
+			noteCardFontScale: localAppearanceSnapshot.noteCardFontScale,
+			noteEditorFontScale: localAppearanceSnapshot.noteEditorFontScale,
+			editorToolbarMode: localAppearanceSnapshot.editorToolbarMode,
+			noteCardMaxHeightPx: localAppearanceSnapshot.noteCardMaxHeightPx,
+			checklistShowCompleted: localAppearanceSnapshot.checklistShowCompleted,
+			quickDeleteChecklist: localAppearanceSnapshot.quickDeleteChecklist,
+			noteCardClickOpens: localAppearanceSnapshot.noteCardClickOpens,
+			noteCardCheckboxInteractions: localAppearanceSnapshot.noteCardCheckboxInteractions,
+			noteCardLinkInteractions: localAppearanceSnapshot.noteCardLinkInteractions,
+			noteCardCompletedInteractions: localAppearanceSnapshot.noteCardCompletedInteractions,
+		});
+		if (!updatedAppearance) return;
+		clearPendingAppearanceSync();
+		syncLocalDevicePrefsFromServer(updatedAppearance);
+	}, [authOfflineMode, authStatus, authUserId, clearPendingAppearanceSync, deviceId, hasPendingAppearanceSync, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+
+	const commitAppearancePreferencePatch = React.useCallback((patch: {
+		noteCardFontScale?: number;
+		noteEditorFontScale?: number;
+		editorToolbarMode?: EditorToolbarMode;
+		noteCardMaxHeightPx?: number;
+		checklistShowCompleted?: boolean;
+		quickDeleteChecklist?: boolean;
+		noteCardClickOpens?: boolean;
+		noteCardCheckboxInteractions?: boolean;
+		noteCardLinkInteractions?: boolean;
+		noteCardCompletedInteractions?: boolean;
+	}): void => {
+		persistDevicePrefsLocally(patch);
+		if (authStatus !== 'authed' || !prefsHydrationAttempted) return;
+		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+		if (authOfflineMode || browserOffline) {
+			markPendingAppearanceSync();
+			return;
+		}
+		void (async () => {
+			const updated = await updateUserPreferences(deviceId, patch);
+			if (!updated) {
+				markPendingAppearanceSync();
+				return;
+			}
+			clearPendingAppearanceSync();
+			syncLocalDevicePrefsFromServer(updated);
+		})();
+	}, [authOfflineMode, authStatus, clearPendingAppearanceSync, deviceId, markPendingAppearanceSync, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+
 	const handleNoteCardFontScaleChange = React.useCallback((nextScale: number) => {
 		const normalized = clampFontScale(nextScale);
 		setNoteCardFontScalePref(normalized);
@@ -2047,14 +2212,8 @@ export function App(): React.JSX.Element {
 	const commitNoteCardFontScaleChange = React.useCallback((nextScale: number) => {
 		const normalized = clampFontScale(nextScale);
 		setNoteCardFontScalePref(normalized);
-		persistDevicePrefsLocally({ noteCardFontScale: normalized });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { noteCardFontScale: normalized });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ noteCardFontScale: normalized });
+	}, [commitAppearancePreferencePatch]);
 
 	const handleNoteEditorFontScaleChange = React.useCallback((nextScale: number) => {
 		const normalized = clampFontScale(nextScale);
@@ -2065,14 +2224,8 @@ export function App(): React.JSX.Element {
 	const commitNoteEditorFontScaleChange = React.useCallback((nextScale: number) => {
 		const normalized = clampFontScale(nextScale);
 		setNoteEditorFontScalePref(normalized);
-		persistDevicePrefsLocally({ noteEditorFontScale: normalized });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { noteEditorFontScale: normalized });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ noteEditorFontScale: normalized });
+	}, [commitAppearancePreferencePatch]);
 
 	const handleNoteCardMaxHeightChange = React.useCallback((nextHeight: number) => {
 		const normalized = clampNoteCardMaxHeightPx(nextHeight);
@@ -2083,92 +2236,44 @@ export function App(): React.JSX.Element {
 	const commitNoteCardMaxHeightChange = React.useCallback((nextHeight: number) => {
 		const normalized = clampNoteCardMaxHeightPx(nextHeight);
 		setNoteCardMaxHeightPref(normalized);
-		persistDevicePrefsLocally({ noteCardMaxHeightPx: normalized });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { noteCardMaxHeightPx: normalized });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ noteCardMaxHeightPx: normalized });
+	}, [commitAppearancePreferencePatch]);
 
 	const commitChecklistShowCompletedPref = React.useCallback((next: boolean) => {
 		setChecklistShowCompletedPref(next);
-		persistDevicePrefsLocally({ checklistShowCompleted: next });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { checklistShowCompleted: next });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ checklistShowCompleted: next });
+	}, [commitAppearancePreferencePatch]);
 
 	const commitQuickDeleteChecklistPref = React.useCallback((next: boolean) => {
 		setQuickDeleteChecklistPref(next);
-		persistDevicePrefsLocally({ quickDeleteChecklist: next });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { quickDeleteChecklist: next });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ quickDeleteChecklist: next });
+	}, [commitAppearancePreferencePatch]);
 
 	const commitEditorToolbarModePref = React.useCallback((next: EditorToolbarMode) => {
 		const normalized = normalizeEditorToolbarMode(next);
 		setEditorToolbarModePref(normalized);
-		persistDevicePrefsLocally({ editorToolbarMode: normalized });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { editorToolbarMode: normalized });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ editorToolbarMode: normalized });
+	}, [commitAppearancePreferencePatch]);
 
 	const commitNoteCardClickOpensPref = React.useCallback((next: boolean) => {
 		setNoteCardClickOpensPref(next);
-		persistDevicePrefsLocally({ noteCardClickOpens: next });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { noteCardClickOpens: next });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ noteCardClickOpens: next });
+	}, [commitAppearancePreferencePatch]);
 
 	const commitNoteCardCheckboxInteractionsPref = React.useCallback((next: boolean) => {
 		setNoteCardCheckboxInteractionsPref(next);
-		persistDevicePrefsLocally({ noteCardCheckboxInteractions: next });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { noteCardCheckboxInteractions: next });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ noteCardCheckboxInteractions: next });
+	}, [commitAppearancePreferencePatch]);
 
 	const commitNoteCardLinkInteractionsPref = React.useCallback((next: boolean) => {
 		setNoteCardLinkInteractionsPref(next);
-		persistDevicePrefsLocally({ noteCardLinkInteractions: next });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { noteCardLinkInteractions: next });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ noteCardLinkInteractions: next });
+	}, [commitAppearancePreferencePatch]);
 
 	const commitNoteCardCompletedInteractionsPref = React.useCallback((next: boolean) => {
 		setNoteCardCompletedInteractionsPref(next);
-		persistDevicePrefsLocally({ noteCardCompletedInteractions: next });
-		if (authStatus !== 'authed' || authOfflineMode || !prefsHydrationAttempted) return;
-		void (async () => {
-			const updated = await updateUserPreferences(deviceId, { noteCardCompletedInteractions: next });
-			if (!updated) return;
-			syncLocalDevicePrefsFromServer(updated);
-		})();
-	}, [authOfflineMode, authStatus, deviceId, persistDevicePrefsLocally, prefsHydrationAttempted, syncLocalDevicePrefsFromServer]);
+		commitAppearancePreferencePatch({ noteCardCompletedInteractions: next });
+	}, [commitAppearancePreferencePatch]);
 
 	const sidebarWorkspacesRef = React.useRef<readonly SidebarWorkspaceListItem[]>([]);
 	const handleWorkspaceActivatedRef = React.useRef<(workspaceId: string) => void>(() => undefined);
@@ -2242,6 +2347,11 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		persistDevicePrefsLocallyRef.current = persistDevicePrefsLocally;
 	}, [persistDevicePrefsLocally]);
+
+	const syncPendingAppearancePreferencesRef = React.useRef(syncPendingAppearancePreferences);
+	React.useEffect(() => {
+		syncPendingAppearancePreferencesRef.current = syncPendingAppearancePreferences;
+	}, [syncPendingAppearancePreferences]);
 
 	const confirmActivatedWorkspaceSession = React.useCallback(async (workspaceId: string): Promise<void> => {
 		// Workspace activation flips the server-side session before the client should
@@ -2645,7 +2755,8 @@ export function App(): React.JSX.Element {
 				const localAppearanceNewer = Boolean(
 					localAppearanceSnapshot && isLocalAppearancePreferenceNewer(localAppearanceSnapshot.updatedAt, pref.updatedAt)
 				);
-				if (localAppearanceSnapshot && localAppearanceNewer) {
+				const pendingAppearanceSync = hasPendingAppearanceSync();
+				if (localAppearanceSnapshot && (localAppearanceNewer || pendingAppearanceSync)) {
 					applyDevicePreferenceState(localAppearanceSnapshot);
 					const updatedAppearance = await updateUserPreferences(deviceId, {
 						noteCardFontScale: localAppearanceSnapshot.noteCardFontScale,
@@ -2660,6 +2771,7 @@ export function App(): React.JSX.Element {
 						noteCardCompletedInteractions: localAppearanceSnapshot.noteCardCompletedInteractions,
 					});
 					if (!cancelled && updatedAppearance) {
+						clearPendingAppearanceSync();
 						syncLocalDevicePrefsFromServerRef.current(updatedAppearance);
 					}
 				} else if (pref.noteCardMaxHeightPx == null) {
@@ -2688,6 +2800,7 @@ export function App(): React.JSX.Element {
 						void updateUserPreferences(deviceId, freshDefaults);
 					}
 				} else {
+					clearPendingAppearanceSync();
 					syncLocalDevicePrefsFromServerRef.current(pref);
 				}
 				setTrashDeleteAfterDaysPref(pref.deleteAfterDays ?? null);
@@ -2795,6 +2908,8 @@ export function App(): React.JSX.Element {
 					// is true (started offline) or false (was online, went offline, switched workspace).
 					// probeSession only enables WebSocket AFTER activation completes.
 					await probeSession({ allowOfflineRestore: true });
+					await syncPendingAppearancePreferencesRef.current();
+					await flushPendingReminderMutations();
 					// After the session is fully established, kick off a background preload
 					// so any workspaces the user has not visited on this device are pulled
 					// into IndexedDB and available offline. Fire-and-forget — errors are
@@ -3640,7 +3755,20 @@ export function App(): React.JSX.Element {
 		setNoteReminderByDocId((current) => updateReminderLookup(current, docId, noteId, reminderAt));
 		setNoteReminderModalState(null);
 		// Sync reminder to server so the push scheduler can fire the notification.
-		if (authStatus === 'authed' && !authOfflineMode) {
+		if (authStatus === 'authed') {
+			const pendingEntry: PendingReminderSync = {
+				docId,
+				noteId,
+				workspaceId: authWorkspaceId ?? '',
+				reminderAt,
+				noteTitle: title || undefined,
+				updatedAt: new Date().toISOString(),
+			};
+			const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+			if (authOfflineMode || browserOffline) {
+				queuePendingReminderMutation(pendingEntry);
+				return;
+			}
 			void syncNoteReminder({
 				deviceId,
 				docId,
@@ -3649,12 +3777,13 @@ export function App(): React.JSX.Element {
 				reminderAt,
 				noteTitle: title || undefined,
 			}).catch(() => {
+				queuePendingReminderMutation(pendingEntry);
 				void fetchNoteReminderStates()
-					.then((data) => setNoteReminderByDocId(buildReminderLookup(data.reminders)))
+					.then((data) => setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders))))
 					.catch(() => undefined);
 			});
 		}
-	}, [authStatus, authOfflineMode, noteReminderModalState, deviceId, authWorkspaceId]);
+	}, [applyPendingReminderMutations, authStatus, authOfflineMode, noteReminderModalState, deviceId, authWorkspaceId, queuePendingReminderMutation]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) {
@@ -3668,13 +3797,19 @@ export function App(): React.JSX.Element {
 		void fetchNoteReminderStates()
 			.then((data) => {
 				if (cancelled) return;
-				setNoteReminderByDocId(buildReminderLookup(data.reminders));
+				setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
 			})
 			.catch(() => undefined);
 		return () => {
 			cancelled = true;
 		};
-	}, [authOfflineMode, authStatus, authUserId]);
+	}, [applyPendingReminderMutations, authOfflineMode, authStatus, authUserId]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || authOfflineMode) return;
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+		void flushPendingReminderMutations();
+	}, [authOfflineMode, authStatus, authUserId, flushPendingReminderMutations]);
 
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
@@ -5151,6 +5286,7 @@ export function App(): React.JSX.Element {
 				{passwordResetToken ? (
 					<div className="auth-modal-backdrop" role="presentation" onClick={() => clearPasswordResetTokenFromUrl()}>
 						<div className="auth-modal" role="dialog" aria-modal="true" aria-label="Choose a new password" onClick={(event) => event.stopPropagation()}>
+							<form onSubmit={(e) => e.preventDefault()}>
 							<div className="auth-modal-title">Choose a new password</div>
 							<div className="auth-modal-copy">This secure link lets you set a new password for your FreemanNotes account.</div>
 							<label className="auth-label">
@@ -5189,6 +5325,7 @@ export function App(): React.JSX.Element {
 									{resetPasswordBusy ? 'Updating…' : 'Update password'}
 								</button>
 							</div>
+							</form>
 						</div>
 					</div>
 				) : null}
@@ -7686,7 +7823,7 @@ export function App(): React.JSX.Element {
 							workspaces={sidebarWorkspaces as BubbleWorkspaceInfo[]}
 							activeWorkspaceId={authWorkspaceId}
 							authUserId={authUserId}
-							sharedPlacements={sharedPlacements}
+							sharedPlacements={visibleSharedPlacements}
 							themeId={themeId}
 							zoom={bubbleZoom}
 							showTrashed={sidebarView === 'trash'}

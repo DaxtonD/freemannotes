@@ -44,6 +44,29 @@ export type AdminUserRow = {
 	};
 };
 
+const ADMIN_USER_CACHE_KEY = 'freemannotes.adminUserCache.v1';
+
+function readCachedAdminUsers(): AdminUserRow[] {
+	if (typeof window === 'undefined') return [];
+	try {
+		const raw = window.localStorage.getItem(ADMIN_USER_CACHE_KEY);
+		if (!raw) return [];
+		const parsed = JSON.parse(raw) as AdminUserRow[] | null;
+		return Array.isArray(parsed) ? parsed : [];
+	} catch {
+		return [];
+	}
+}
+
+function writeCachedAdminUsers(users: readonly AdminUserRow[]): void {
+	if (typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(ADMIN_USER_CACHE_KEY, JSON.stringify(users));
+	} catch {
+		// best effort
+	}
+}
+
 type Props = {
 	isOpen: boolean;
 	onClose: () => void;
@@ -112,17 +135,33 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 
 	const loadUsers = React.useCallback(async () => {
 		// Loads the full user list from the server.
+		const cachedUsers = readCachedAdminUsers();
+		if (cachedUsers.length > 0) {
+			setUsers(cachedUsers);
+		}
 		setBusy(true);
 		setError(null);
 		try {
 			const data = await fetchJson<{ users: AdminUserRow[] }>('/api/admin/users');
-			setUsers(Array.isArray(data.users) ? data.users : []);
+			const nextUsers = Array.isArray(data.users) ? data.users : [];
+			setUsers(nextUsers);
+			writeCachedAdminUsers(nextUsers);
 		} catch (err) {
+			if (cachedUsers.length > 0) {
+				setUsers(cachedUsers);
+				setError(null);
+				return;
+			}
 			setError(err instanceof Error ? err.message : 'Failed to load users');
 		} finally {
 			setBusy(false);
 		}
 	}, []);
+
+	React.useEffect(() => {
+		if (users.length === 0) return;
+		writeCachedAdminUsers(users);
+	}, [users]);
 
 	React.useEffect(() => {
 		// When the modal opens, fetch the latest list.
@@ -394,8 +433,9 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 					</button>
 					<div className={`${styles.sectionPanel} ${openPanel === 'create' ? styles.sectionPanelExpanded : ''}`} aria-hidden={openPanel !== 'create'}>
 						<div className={styles.sectionPanelInner}>
-							<div className={styles.sectionCard}>
-								<div className={styles.createRow}>
+						<div className={styles.sectionCard}>
+							<form onSubmit={(e) => e.preventDefault()}>
+							<div className={styles.createRow}>
 						<input
 							className={styles.input}
 							placeholder="Email"
@@ -427,6 +467,7 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 							Create
 						</button>
 								</div>
+							</form>
 							</div>
 						</div>
 					</div>
@@ -452,10 +493,11 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 								<FontAwesomeIcon icon={faXmark} />
 							</button>
 						</header>
+						<form onSubmit={(e) => e.preventDefault()}>
 						<div className={styles.resetPasswordBody}>
 							<label className={styles.fieldLabel}>
 								<span>New password</span>
-								<input className={styles.input} type="password" value={resetPasswordValue} onChange={(e) => setResetPasswordValue(e.target.value)} disabled={busy} />
+								<input className={styles.input} type="password" autoComplete="new-password" value={resetPasswordValue} onChange={(e) => setResetPasswordValue(e.target.value)} disabled={busy} />
 							</label>
 							<div className={styles.passwordStrength} aria-live="polite">
 								<div className={styles.passwordStrengthBar} aria-hidden="true">
@@ -465,7 +507,7 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 							</div>
 							<label className={styles.fieldLabel}>
 								<span>Confirm password</span>
-								<input className={styles.input} type="password" value={resetPasswordConfirm} onChange={(e) => setResetPasswordConfirm(e.target.value)} disabled={busy} />
+								<input className={styles.input} type="password" autoComplete="new-password" value={resetPasswordConfirm} onChange={(e) => setResetPasswordConfirm(e.target.value)} disabled={busy} />
 							</label>
 							{resetPasswordConfirm && resetPasswordValue !== resetPasswordConfirm ? <div className={styles.error}>Passwords do not match</div> : null}
 						</div>
@@ -473,6 +515,7 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 							<button type="button" className={styles.closeButton} onClick={() => setResetPasswordTarget(null)} disabled={busy}>Cancel</button>
 							<button type="button" className={styles.refreshButton} onClick={() => void submitResetPassword()} disabled={busy}>Save password</button>
 						</footer>
+						</form>
 					</section>
 				</div>
 			) : null}

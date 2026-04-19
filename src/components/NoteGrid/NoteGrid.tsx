@@ -1414,8 +1414,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// On fresh login (suppressShimmer=false, empty IDB), also wait for the
 		// registry WS sync so cards have real content before the shimmer lifts.
 		// Without this, cards inflate from near-empty to full height after shimmer
-		// clears, causing layout shifts.
-		if (!initialLoadCompleteRef.current && !props.suppressShimmer && !connection.registryWsSynced) {
+		// clears, causing layout shifts. When the app is offline, no registry WS
+		// sync will ever arrive, so locally-created workspaces/notes must be allowed
+		// to finish hydrating from their in-memory docs alone.
+		if (
+			!initialLoadCompleteRef.current &&
+			!props.suppressShimmer &&
+			connection.state !== 'offline' &&
+			!connection.registryWsSynced
+		) {
 			// Registry WS sync hasn't completed yet — hold the shimmer.
 			if (orderedIds.length > 0) setAllDocsLoaded(false);
 			return;
@@ -1428,7 +1435,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!allDocsLoaded) {
 			setAllDocsLoaded(true);
 		}
-	}, [noteOrder, orderedIds, docsById, allDocsLoaded, connection.registryWsSynced, props.suppressShimmer]);
+	}, [noteOrder, orderedIds, docsById, allDocsLoaded, connection.registryWsSynced, connection.state, props.suppressShimmer]);
 
 	React.useEffect(() => {
 		if (!allDocsLoaded) {
@@ -1804,7 +1811,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, [closeChipOverlays]);
 	const suspendAttachmentRemoteRefresh = Boolean(dragManager.activeDragId);
-	const disableAttachmentInitialRemoteRefresh = true;
+	// Allow attachment chips to refresh once the grid has finished hydrating so
+	// cold loads show correct counts without firing per-note requests during the
+	// skeleton/loading phase.
+	const disableAttachmentInitialRemoteRefresh = !allDocsLoaded;
 	const collaboratorOverlayPosition = React.useMemo(() => {
 		if (!openCollaboratorChip || typeof window === 'undefined') return null;
 		// Match the masonry grid edge clamp on coarse pointers so left-column cards
@@ -1896,7 +1906,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					authUserId: props.authUserId,
 					canEditNote,
 					suspendAttachmentRemoteRefresh,
-					disableAttachmentInitialRemoteRefresh,
+					disableAttachmentInitialRemoteRefresh: disableAttachmentInitialRemoteRefresh && !note.isShared,
 					forceCloseAttachmentChip: Boolean(openCollaboratorChip || openMetadataChip || (openAttachmentChipNoteId !== null && openAttachmentChipNoteId !== note.id)),
 					collaboratorSummary,
 					onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,

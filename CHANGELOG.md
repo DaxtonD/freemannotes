@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.30 - 2026-04-19
+
+### Fixed
+- **Android standalone/offline note editor now reopens at the correct height after Add Image flows.** The fullscreen editor overlay could retain a latent scroll offset after nested modal transitions, which left the editor effectively shifted off-screen on the next open. The mobile editor shell now derives its height from the live Visual Viewport, and the fullscreen overlay aggressively resets its own scroll position during mount so reopen/dismiss cycles use the real visible viewport.
+
+### Changed
+- **Temporary Android editor tracing was removed after the fix was verified.** The one-off modal/scroll diagnostics added during investigation have been stripped back out so the production bundle only keeps the underlying viewport and overlay fix.
+
 ## 1.2.28 - 2026-04-16
 
 ### Fixed
