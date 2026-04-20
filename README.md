@@ -31,7 +31,7 @@ And built what I actually wanted.
 Two reasons:
 
 * **Free** — notes should be simple, fast, and yours
-* **Freeman** — because sometimes the right answer is:
+* **Freeman** — My love for Half-Life and because sometimes the right answer is:
   *"fine… I’ll solve it myself."*
 
 ---
