@@ -1411,6 +1411,7 @@ export function App(): React.JSX.Element {
 			{
 				...current,
 				isMobileSearchOpen: false,
+				isMobileSidebarOpen: false,
 				isPreferencesOpen: true,
 				isAppearanceOpen: false,
 				isUserOpen: false,
@@ -1419,9 +1420,9 @@ export function App(): React.JSX.Element {
 				isWorkspaceSwitcherOpen: false,
 				isFabOpen: false,
 			},
-			'push'
+			isMobileViewport && isMobileSidebarOpen ? 'replace' : 'push'
 		);
-	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+	}, [commitOverlaySnapshot, getOverlaySnapshot, isMobileSidebarOpen, isMobileViewport]);
 
 	const openAppearanceFromPreferences = React.useCallback(() => {
 		const current = getOverlaySnapshot();
@@ -1666,6 +1667,7 @@ export function App(): React.JSX.Element {
 	const openMobileSidebar = React.useCallback(() => {
 		setIsMobileSidebarDragging(false);
 		setMobileSidebarProgress(1);
+		isMobileSidebarOpenRef.current = true;
 		const current = getOverlaySnapshot();
 		const nextSnapshot: OverlaySnapshot = {
 			...current,
@@ -1809,8 +1811,11 @@ export function App(): React.JSX.Element {
 	const closeMobileSidebar = React.useCallback(() => {
 		setIsMobileSidebarDragging(false);
 		setMobileSidebarProgress(0);
-		if (goBackIfOverlayHistory()) return;
 		restoreFocusFromHiddenRegion(mobileSidebarRef.current, sidebarToggleButtonRef.current);
+		// Rearm the edge-swipe guard immediately, but let history apply the actual
+		// overlay snapshot so the drawer classes and FAB state do not desync.
+		isMobileSidebarOpenRef.current = false;
+		if (goBackIfOverlayHistory()) return;
 		setIsMobileSidebarOpen(false);
 	}, [goBackIfOverlayHistory, restoreFocusFromHiddenRegion]);
 
@@ -6112,9 +6117,16 @@ export function App(): React.JSX.Element {
 			setMobileSidebarProgress(0);
 		};
 
+		const cancelGesture = (): void => {
+			tracking = false;
+			horizontalLocked = false;
+			currentProgress = 0;
+			setIsMobileSidebarDragging(false);
+		};
+
 		const onTouchStart = (event: TouchEvent) => {
 			if (!canTrackOpenGesture()) {
-				resetGesture();
+				cancelGesture();
 				return;
 			}
 			if (event.touches.length !== 1) return;
