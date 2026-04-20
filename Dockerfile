@@ -3,6 +3,9 @@ WORKDIR /app
 
 COPY package*.json ./
 COPY prisma ./prisma/
+# `npm ci` runs postinstall, which now calls scripts/prisma-generate-if-needed.cjs.
+# Copy that helper before install so Docker builds do not fail on a missing file.
+COPY scripts/prisma-generate-if-needed.cjs ./scripts/prisma-generate-if-needed.cjs
 RUN npm ci
 # Generate Prisma client after npm ci (reads prisma/schema.prisma).
 RUN npx prisma generate
