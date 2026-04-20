@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.32 - 2026-04-20
+
+### Fixed
+- **Docker image builds no longer fail during `npm ci` postinstall.** The build stage now copies `scripts/prisma-generate-if-needed.cjs` before `npm ci`, so the install-time Prisma generate hook exists when npm runs `postinstall` inside the container.
+
+### Changed
+- **Debug build artifact folders are no longer shipped in git.** The tracked `dist-notegrid-debug`, `dist-notegrid-quiescence`, `dist-runtime-debug`, and `dist-sidebar-swipe-fix` directories were removed from the repository so release commits only carry source and intentional assets.
+- **Ignore and Docker context rules now exclude local debug build output.** `.gitignore` now ignores `dist-*`, and `.dockerignore` excludes `dist-*` and `.venv` so local troubleshooting outputs do not leak into future commits or Docker build contexts.
+
 ## 1.2.31 - 2026-04-20
 
 ### Fixed
