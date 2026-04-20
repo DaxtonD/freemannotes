@@ -1436,7 +1436,7 @@
 @media (pointer: coarse) {
 	.editorBottomArea {
 		gap: 6px;
-		padding-bottom: env(safe-area-inset-bottom, 0px);
+		padding-bottom: var(--app-safe-bottom-visual, env(safe-area-inset-bottom, 0px));
 	}
 
 	.mobileChecklistMediaRow {
@@ -1672,6 +1672,23 @@
 }
 
 .richEditorContent:global(.ProseMirror) mark:not([style]) {
+	background: var(--hl-default-bg);
+	color: var(--hl-default-text);
+	-webkit-text-fill-color: var(--hl-default-text);
+}
+
+.richPreviewHighlight,
+.checklistRowPreview mark,
+.dragPreviewText mark {
+	border-radius: 2px;
+	padding: 0.05em 0.15em;
+	color: inherit;
+	-webkit-text-fill-color: currentColor;
+}
+
+.richPreviewHighlight:not([style]),
+.checklistRowPreview mark:not([style]),
+.dragPreviewText mark:not([style]) {
 	background: var(--hl-default-bg);
 	color: var(--hl-default-text);
 	-webkit-text-fill-color: var(--hl-default-text);
@@ -2003,6 +2020,16 @@ Drag handle:
 	cursor: pointer;
 }
 
+.checklistComposerRow .checklistCheckbox {
+	opacity: 0.48;
+	transition: opacity var(--transition-fast);
+}
+
+.checklistComposerRow:hover .checklistCheckbox,
+.checklistComposerRow:focus-within .checklistCheckbox {
+	opacity: 0.82;
+}
+
 .checklistCheckboxHitArea {
 	position: relative;
 	display: inline-flex;
@@ -2134,15 +2161,18 @@ Drag handle:
 	border: 0;
 	background: transparent;
 	color: var(--color-text-muted);
+	opacity: 0.48;
 	text-align: left;
 	font: inherit;
 	line-height: var(--checklist-text-line-height);
 	cursor: pointer;
+	transition: opacity var(--transition-fast), color var(--transition-fast);
 }
 
 .checklistAddItemButton:hover,
 .checklistAddItemButton:focus-visible {
 	color: var(--color-text);
+	opacity: 0.92;
 	text-decoration: underline;
 	outline: none;
 }

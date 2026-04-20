@@ -138,6 +138,12 @@
 	color: var(--color-text);
 }
 
+.footerButton:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+	filter: saturate(0.72);
+}
+
 .subOverlay {
 	position: fixed;
 	inset: 0;

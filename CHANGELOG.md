@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.31 - 2026-04-20
+
+### Fixed
+- **Default production builds now publish to `dist` safely again.** `npm run build` now compiles into a temporary output directory, verifies the result contains a complete app shell, and only then swaps it into `dist`. This prevents partially written frontend assets from breaking `/` while the Node server and health checks still appear healthy.
+- **Windows build publishing now survives file-lock rename failures.** The release build wrapper retries transient filesystem errors and falls back to copy-and-delete when Windows refuses a directory rename with `EPERM`/`EBUSY`, so the verified build still lands in `dist`.
+- **Mobile sidebar edge-swipe open works immediately after a fresh login.** The open-gesture listener now stays mounted for the full mobile session and reads auth, grid, editor, selection, and sidebar state through live refs instead of stale closure state captured during initial app bootstrap.
+
+### Changed
+- **Deployment and install templates now match the current runtime configuration.** Docker Compose, `.env.example`, `.env.docker.example`, `DEPLOYMENT.md`, the README install sections, and the Unraid template were refreshed to document the current auth, notification, cleanup, Redis, and OCR variables, including the workspace-cleanup controls and release image tag references.
+
 ## 1.2.30 - 2026-04-19
 
 ### Fixed

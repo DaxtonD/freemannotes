@@ -1,4 +1,5 @@
 import { requestPwaBackgroundSync } from './pwa';
+import { resolveKnownUser, resolveKnownUserProfileImage } from './userIdentityCache';
 
 type CollaboratorRole = 'VIEWER' | 'EDITOR';
 
@@ -150,6 +151,10 @@ function asRole(value: unknown): CollaboratorRole {
 	return value === 'VIEWER' ? 'VIEWER' : 'EDITOR';
 }
 
+function normalizeIdentity(value: unknown): string {
+	return String(value ?? '').trim().toLowerCase();
+}
+
 function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
 	return new Promise((resolve, reject) => {
 		request.onsuccess = () => resolve(request.result);
@@ -263,7 +268,15 @@ function applyPendingActions(snapshot: CachedCollaboratorSnapshot, rows: readonl
 	for (const action of sortActions(rows)) {
 		if (action.kind === 'invite' && action.identifier) {
 			const queuedId = `queued:${action.id}`;
-			next.pendingInvitations = next.pendingInvitations.filter((invitation) => invitation.id !== queuedId && invitation.inviteeEmail !== action.identifier);
+			const knownUser = resolveKnownUser(action.identifier);
+			const inviteeProfileImage = resolveKnownUserProfileImage(action.identifier);
+			const normalizedIdentifier = normalizeIdentity(action.identifier);
+			next.pendingInvitations = next.pendingInvitations.filter((invitation) => {
+				if (invitation.id === queuedId) return false;
+				if (knownUser?.userId && invitation.inviteeId === knownUser.userId) return false;
+				return normalizeIdentity(invitation.inviteeEmail) !== normalizedIdentifier
+					&& normalizeIdentity(invitation.inviteeName) !== normalizedIdentifier;
+			});
 			next.pendingInvitations.unshift({
 				id: queuedId,
 				docId: next.roomId,
@@ -271,9 +284,10 @@ function applyPendingActions(snapshot: CachedCollaboratorSnapshot, rows: readonl
 				sourceNoteId: next.sourceNoteId,
 				role: action.role || 'EDITOR',
 				status: 'PENDING',
-				inviteeEmail: action.identifier,
-				inviteeName: action.identifier,
-				inviteeProfileImage: null,
+				inviteeId: knownUser?.userId ?? null,
+				inviteeEmail: knownUser?.email || action.identifier,
+				inviteeName: knownUser?.name || action.identifier,
+				inviteeProfileImage: inviteeProfileImage,
 				createdAt: action.createdAt,
 				updatedAt: action.updatedAt,
 				respondedAt: null,

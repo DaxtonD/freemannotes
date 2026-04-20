@@ -71,7 +71,6 @@ import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedE
 import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
 import { activateWorkspace, fetchUserPreferences, flushUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
 import { useConnectionStatus } from './core/useConnectionStatus';
-import { useBodyScrollLock } from './core/useBodyScrollLock';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
@@ -206,6 +205,53 @@ function truncateUiName(value: string, maxLength = 48): string {
 	const normalized = String(value ?? '').trim();
 	if (normalized.length <= maxLength) return normalized;
 	return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}...`;
+}
+
+function isCoarsePointerDevice(): boolean {
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+	return window.matchMedia('(pointer: coarse)').matches;
+}
+
+function suppressNextDocumentCompatibilityMouseEvents(): void {
+	if (typeof window === 'undefined') return;
+	let timeoutId = 0;
+	const handler = (event: MouseEvent): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+	};
+	const cleanup = (): void => {
+		window.removeEventListener('mousedown', handler, true);
+		window.removeEventListener('mouseup', handler, true);
+		window.removeEventListener('click', handler, true);
+		if (timeoutId) window.clearTimeout(timeoutId);
+	};
+	window.addEventListener('mousedown', handler, true);
+	window.addEventListener('mouseup', handler, true);
+	window.addEventListener('click', handler, true);
+	timeoutId = window.setTimeout(() => cleanup(), 500);
+}
+
+function closeBackdropFromPointerEvent(
+	event: React.PointerEvent<HTMLButtonElement>,
+	onClose: () => void
+): void {
+	if (event.pointerType !== 'touch' && !isCoarsePointerDevice()) return;
+	if (event.cancelable) event.preventDefault();
+	event.stopPropagation();
+	suppressNextDocumentCompatibilityMouseEvents();
+	onClose();
+}
+
+function clampMobileSidebarProgress(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.max(0, Math.min(1, value));
+}
+
+function getMobileSidebarWidth(drawer: HTMLElement): number {
+	const rect = drawer.getBoundingClientRect();
+	if (rect.width > 0) return rect.width;
+	if (typeof window !== 'undefined') return Math.min(window.innerWidth * 0.86, 320);
+	return 320;
 }
 
 const EMPTY_NOTE_METADATA_STATE = { collectionId: null, labelIds: [], reminderAt: null, isPinned: false, lastAccessedAt: '' };
@@ -740,7 +786,7 @@ export function App(): React.JSX.Element {
 		briefDialogTimeoutRef.current = window.setTimeout(() => {
 			briefDialogTimeoutRef.current = null;
 			setBriefDialogMessage(null);
-		}, 1500);
+		}, 2600);
 	}, []);
 	React.useEffect(() => {
 		logClientEvent('APP_INIT', {
@@ -805,6 +851,10 @@ export function App(): React.JSX.Element {
 	const authPasswordStrengthLabel = React.useMemo(() => getPasswordStrengthLabel(authPassword), [authPassword]);
 	const [isSidebarCollapsed, setIsSidebarCollapsed] = React.useState(false);
 	const [isMobileSidebarOpen, setIsMobileSidebarOpen] = React.useState(_restoredOverlay?.isMobileSidebarOpen ?? false);
+	const isMobileSidebarOpenRef = React.useRef(isMobileSidebarOpen);
+	isMobileSidebarOpenRef.current = isMobileSidebarOpen;
+	const [mobileSidebarProgress, setMobileSidebarProgress] = React.useState(_restoredOverlay?.isMobileSidebarOpen ? 1 : 0);
+	const [isMobileSidebarDragging, setIsMobileSidebarDragging] = React.useState(false);
 	const [isMobileViewport, setIsMobileViewport] = React.useState(() => {
 		if (typeof window === 'undefined') return false;
 		return window.matchMedia('(pointer: coarse)').matches;
@@ -813,7 +863,6 @@ export function App(): React.JSX.Element {
 	const sidebarToggleButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const mobileSearchInputRef = React.useRef<HTMLInputElement | null>(null);
 	const topControlsRef = React.useRef<HTMLDivElement | null>(null);
-	const mobileSwipeZoneRef = React.useRef<HTMLDivElement | null>(null);
 	const mobileSidebarRef = React.useRef<HTMLElement | null>(null);
 	const workspaceMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const sidebarEntryButtonRefs = React.useRef<Record<string, HTMLButtonElement | null>>({});
@@ -822,6 +871,8 @@ export function App(): React.JSX.Element {
 	const [sidebarView, setSidebarView] = React.useState<SidebarView>(_restoredOverlay?.sidebarView ?? 'notes');
 	// UI mode for the "new note" panel.
 	const [editorMode, setEditorMode] = React.useState<EditorMode>(_restoredOverlay?.editorMode ?? 'none');
+	const editorModeRef = React.useRef(editorMode);
+	editorModeRef.current = editorMode;
 	// Phase 10 preferences shell entry point opened from top-right avatar.
 	const [isPreferencesOpen, setIsPreferencesOpen] = React.useState(_restoredOverlay?.isPreferencesOpen ?? false);
 	const [isAppearanceOpen, setIsAppearanceOpen] = React.useState(_restoredOverlay?.isAppearanceOpen ?? false);
@@ -902,6 +953,8 @@ export function App(): React.JSX.Element {
 	const [noteAttachmentBrowserState, setNoteAttachmentBrowserState] = React.useState<NoteAttachmentBrowserState | null>(_restoredOverlay?.noteAttachmentBrowserState ?? null);
 	// The currently selected note in the grid/editor area.
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(_restoredOverlay?.selectedNoteId ?? null);
+	const selectedNoteIdRef = React.useRef(selectedNoteId);
+	selectedNoteIdRef.current = selectedNoteId;
 	// Loaded Y.Doc for the selected note.
 	const [openDoc, setOpenDoc] = React.useState<Y.Doc | null>(null);
 	const [openDocId, setOpenDocId] = React.useState<string | null>(null);
@@ -913,7 +966,12 @@ export function App(): React.JSX.Element {
 	const pendingNewNoteCollectionSeedRef = React.useRef<Map<string, { collectionId: string; label: string }>>(new Map());
 	const previousSelectedNoteIdRef = React.useRef<string | null>(null);
 	const deviceId = React.useMemo(() => getDeviceId(), []);
+	const authStatusRef = React.useRef(authStatus);
+	authStatusRef.current = authStatus;
+	const gridReadyRef = React.useRef(gridReady);
+	gridReadyRef.current = gridReady;
 	const isGlobalAdmin = authUserRole === 'ADMIN';
+	const isUserManagementOffline = authOfflineMode || connection.state === 'offline' || (typeof navigator !== 'undefined' && navigator.onLine === false);
 	const cachedDeviceAppearancePrefs = React.useMemo(
 		() => readCachedDeviceAppearancePreferences(deviceId, authUserId),
 		[authUserId, deviceId]
@@ -1268,6 +1326,8 @@ export function App(): React.JSX.Element {
 		setCollaboratorModalState(snapshot.collaboratorModalState);
 		setNoteAttachmentBrowserState(snapshot.noteAttachmentBrowserState);
 		setIsMobileSidebarOpen(snapshot.isMobileSidebarOpen);
+		setMobileSidebarProgress(snapshot.isMobileSidebarOpen ? 1 : 0);
+		setIsMobileSidebarDragging(false);
 		setIsFabOpen(snapshot.isFabOpen);
 		// Keep sessionStorage in sync so page-kill restoration stays current.
 		try { sessionStorage.setItem(SS_OVERLAY_KEY, JSON.stringify(snapshot)); } catch { /* quota */ }
@@ -1297,6 +1357,14 @@ export function App(): React.JSX.Element {
 		},
 		[applyOverlaySnapshot, isMobileViewport]
 	);
+
+	const replaceActiveOverlaySnapshot = React.useCallback((snapshot: OverlaySnapshot) => {
+		if (isMobileViewport && typeof window !== 'undefined' && isOverlayHistoryState(window.history.state)) {
+			commitOverlaySnapshot(snapshot, 'replace');
+			return;
+		}
+		applyOverlaySnapshot(snapshot);
+	}, [applyOverlaySnapshot, commitOverlaySnapshot, isMobileViewport]);
 
 	const goBackIfOverlayHistory = React.useCallback((): boolean => {
 		if (!isMobileViewport || typeof window === 'undefined') return false;
@@ -1406,6 +1474,7 @@ export function App(): React.JSX.Element {
 	}, [goBackIfOverlayHistory]);
 
 	const openUserManagementFromPreferences = React.useCallback(() => {
+		if (!isGlobalAdmin || isUserManagementOffline) return;
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot(
 			{
@@ -1417,7 +1486,7 @@ export function App(): React.JSX.Element {
 			},
 			'push'
 		);
-	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+	}, [commitOverlaySnapshot, getOverlaySnapshot, isGlobalAdmin, isUserManagementOffline]);
 
 	const openSendInviteFromPreferences = React.useCallback(() => {
 		if (!isGlobalAdmin) return;
@@ -1595,17 +1664,21 @@ export function App(): React.JSX.Element {
 	}, [goBackIfOverlayHistory]);
 
 	const openMobileSidebar = React.useCallback(() => {
+		setIsMobileSidebarDragging(false);
+		setMobileSidebarProgress(1);
 		const current = getOverlaySnapshot();
-		commitOverlaySnapshot(
-			{
-				...current,
-				isMobileSearchOpen: false,
-				isMobileSidebarOpen: true,
-				isFabOpen: false,
-			},
-			'push'
-		);
-	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+		const nextSnapshot: OverlaySnapshot = {
+			...current,
+			isMobileSearchOpen: false,
+			isMobileSidebarOpen: true,
+			isFabOpen: false,
+		};
+		if (sidebarView !== 'notes' && isMobileViewport && typeof window !== 'undefined' && isOverlayHistoryState(window.history.state)) {
+			commitOverlaySnapshot(nextSnapshot, 'replace');
+			return;
+		}
+		commitOverlaySnapshot(nextSnapshot, 'push');
+	}, [commitOverlaySnapshot, getOverlaySnapshot, isMobileViewport, sidebarView]);
 
 	const openMobileSearch = React.useCallback(() => {
 		const current = getOverlaySnapshot();
@@ -1655,6 +1728,7 @@ export function App(): React.JSX.Element {
 		Boolean(noteDocumentModalState) ||
 		Boolean(noteCollectionModalState) ||
 		Boolean(noteLabelsModalState) ||
+		Boolean(labelManagementModalState) ||
 		Boolean(noteReminderModalState) ||
 		Boolean(moveNoteModalState) ||
 		isCollectionManagementOpen ||
@@ -1733,6 +1807,8 @@ export function App(): React.JSX.Element {
 	}, []);
 
 	const closeMobileSidebar = React.useCallback(() => {
+		setIsMobileSidebarDragging(false);
+		setMobileSidebarProgress(0);
 		if (goBackIfOverlayHistory()) return;
 		restoreFocusFromHiddenRegion(mobileSidebarRef.current, sidebarToggleButtonRef.current);
 		setIsMobileSidebarOpen(false);
@@ -1940,8 +2016,6 @@ export function App(): React.JSX.Element {
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot({ ...current, isFabOpen: false }, 'replace');
 	}, [commitOverlaySnapshot, getOverlaySnapshot, isEditorOverlayOpen, isFabOpen]);
-
-	useBodyScrollLock(isFabOpen && showMobileFab && !isEditorOverlayOpen);
 
 	React.useEffect(() => {
 		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -3675,6 +3749,16 @@ export function App(): React.JSX.Element {
 		}
 		return `All notes / ${activeWorkspaceSidebarPath}`;
 	}, [activeWorkspaceSidebarPath, sidebarView, t, viewMode]);
+
+	const exitSpecialSidebarView = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		replaceActiveOverlaySnapshot({
+			...current,
+			sidebarView: 'notes',
+			isMobileSidebarOpen: false,
+			isFabOpen: false,
+		});
+	}, [getOverlaySnapshot, replaceActiveOverlaySnapshot]);
 
 	const moveNoteWorkspaceOptions = React.useMemo(() => {
 		return sidebarWorkspaces.filter((workspace) => workspace.id !== authWorkspaceId && workspace.systemKind !== 'SHARED_WITH_ME' && canEditWorkspaceContent(workspace.role));
@@ -5489,7 +5573,11 @@ export function App(): React.JSX.Element {
 					<button
 						type="button"
 						className="mobile-fab-backdrop"
-						onClick={toggleFab}
+						onPointerUp={(event) => closeBackdropFromPointerEvent(event, toggleFab)}
+						onClick={(event) => {
+							if (event.defaultPrevented) return;
+							toggleFab();
+						}}
 						aria-label={t('app.closeQuickCreate')}
 					/>
 				) : null}
@@ -5991,56 +6079,100 @@ export function App(): React.JSX.Element {
 	}, [isMobileViewport]);
 
 	React.useEffect(() => {
-		// Best-effort edge-swipe gesture:
-		// - Swipe right from the left edge opens the sidebar.
-		// Listen on the document rather than a dedicated swipe-zone element so the
-		// gesture still works even when stacking/z-index changes put transient UI in
-		// front of the edge strip.
-		// Suppressed while the note editor is open so that the editor's own swipe
-		// gestures (e.g. media panel tab switching) don't accidentally open the sidebar.
 		if (!isMobileViewport || typeof window === 'undefined') return;
-		if (editorMode !== 'none' || selectedNoteId !== null) return;
+		// Keep the edge-swipe listener mounted for the whole mobile session and consult
+		// live refs inside the handlers. Fresh login performs several post-auth state
+		// transitions (workspace, splash, editor restore), and a listener that only
+		// attaches for one render can miss the first stable shell until another UI
+		// change like a workspace switch or manual toggle retriggers the effect.
 
 		let tracking = false;
-		let didOpen = false;
+		let horizontalLocked = false;
 		let startX = 0;
 		let startY = 0;
-		const TRIGGER_DX = 42;
-		const MAX_DY = 18;
-		const MAX_START_X = 28;
+		let currentProgress = 0;
+		let drawerWidth = 0;
+		const MAX_DY = 28;
+		const MIN_LOCK_DX = 6;
+		const MAX_START_X = 36;
+
+		const canTrackOpenGesture = (): boolean => {
+			if (authStatusRef.current !== 'authed') return false;
+			if (!gridReadyRef.current) return false;
+			if (editorModeRef.current !== 'none' || selectedNoteIdRef.current !== null) return false;
+			if (isMobileSidebarOpenRef.current) return false;
+			return true;
+		};
+
+		const resetGesture = (): void => {
+			tracking = false;
+			horizontalLocked = false;
+			currentProgress = 0;
+			setIsMobileSidebarDragging(false);
+			setMobileSidebarProgress(0);
+		};
 
 		const onTouchStart = (event: TouchEvent) => {
-			if (isMobileSidebarOpen) return;
+			if (!canTrackOpenGesture()) {
+				resetGesture();
+				return;
+			}
 			if (event.touches.length !== 1) return;
 			const touch = event.touches[0];
 			if (touch.clientX > MAX_START_X) return;
+			const drawer = mobileSidebarRef.current;
 			startX = touch.clientX;
 			startY = touch.clientY;
+			drawerWidth = drawer ? getMobileSidebarWidth(drawer) : Math.min(window.innerWidth * 0.86, 320);
+			currentProgress = 0;
 			tracking = true;
-			didOpen = false;
+			horizontalLocked = false;
 		};
 
 		const onTouchMove = (event: TouchEvent) => {
 			if (!tracking || event.touches.length !== 1) return;
+			if (!canTrackOpenGesture()) {
+				resetGesture();
+				return;
+			}
 			const touch = event.touches[0];
 			const dx = touch.clientX - startX;
 			const dy = touch.clientY - startY;
-			if (Math.abs(dy) > MAX_DY) {
-				tracking = false;
-				return;
+
+			if (!horizontalLocked) {
+				if (Math.abs(dy) > MAX_DY && Math.abs(dy) > Math.abs(dx)) {
+					resetGesture();
+					return;
+				}
+				if (dx <= 0) return;
+				if (dx > MIN_LOCK_DX && Math.abs(dx) > Math.abs(dy) * 0.75) {
+					horizontalLocked = true;
+				} else {
+					return;
+				}
 			}
-			// Always preventDefault while tracking a horizontal open-gesture: prevents
-			// iOS from rubber-banding the page rightward when the finger continues moving
-			// after the sidebar has opened mid-swipe.
+
 			if (event.cancelable) event.preventDefault();
-			if (!didOpen && dx > TRIGGER_DX) {
-				didOpen = true;
-				openMobileSidebar();
-			}
+			currentProgress = clampMobileSidebarProgress(dx / drawerWidth);
+			setIsMobileSidebarDragging(true);
+			setMobileSidebarProgress(currentProgress);
 		};
 
 		const onTouchEnd = () => {
+			if (!tracking) return;
+			if (!canTrackOpenGesture()) {
+				resetGesture();
+				return;
+			}
+			const shouldOpen = horizontalLocked && currentProgress >= 0.3;
 			tracking = false;
+			horizontalLocked = false;
+			setIsMobileSidebarDragging(false);
+			if (shouldOpen) {
+				openMobileSidebar();
+				return;
+			}
+			setMobileSidebarProgress(0);
 		};
 
 		document.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -6053,7 +6185,7 @@ export function App(): React.JSX.Element {
 			document.removeEventListener('touchend', onTouchEnd);
 			document.removeEventListener('touchcancel', onTouchEnd);
 		};
-	}, [editorMode, isMobileViewport, isMobileSidebarOpen, openMobileSidebar, selectedNoteId]);
+	}, [isMobileViewport, openMobileSidebar]);
 
 	React.useEffect(() => {
 		if (!isMobileViewport || !isMobileSidebarOpen || typeof window === 'undefined') return;
@@ -6061,62 +6193,69 @@ export function App(): React.JSX.Element {
 		if (!drawer) return;
 
 		let tracking = false;
-		// Once the gesture is identified as horizontal we keep preventing default even
-		// if MAX_DY is later exceeded mid-gesture, preventing iOS from rubber-banding
-		// the page to the right after the user initially moved horizontally.
 		let horizontalLocked = false;
 		let startX = 0;
 		let startY = 0;
-		const TRIGGER_DX = 54;
-		const MAX_DY = 28;
+		let drawerWidth = 0;
+		let currentProgress = 1;
+		const MAX_DY = 32;
+		const MIN_LOCK_DX = 6;
+
+		const resetGesture = (): void => {
+			tracking = false;
+			horizontalLocked = false;
+			currentProgress = 1;
+			setIsMobileSidebarDragging(false);
+			setMobileSidebarProgress(1);
+		};
 
 		const onTouchStart = (event: TouchEvent) => {
 			if (event.touches.length !== 1) return;
 			const touch = event.touches[0];
 			startX = touch.clientX;
 			startY = touch.clientY;
+			drawerWidth = getMobileSidebarWidth(drawer);
+			currentProgress = 1;
 			tracking = true;
 			horizontalLocked = false;
 		};
 
 		const onTouchMove = (event: TouchEvent) => {
-			if (event.touches.length !== 1) return;
+			if (!tracking || event.touches.length !== 1) return;
 			const touch = event.touches[0];
 			const dx = touch.clientX - startX;
 			const dy = touch.clientY - startY;
 
-			// If we already locked into a horizontal gesture, keep preventing the
-			// browser default so iOS can't rubber-band the sidebar off screen.
-			if (horizontalLocked) {
-				if (event.cancelable) event.preventDefault();
-				// Close trigger still honoured even after horizontalLocked
-				if (tracking && dx < -TRIGGER_DX) {
-					tracking = false;
-					horizontalLocked = false;
-					closeMobileSidebar();
+			if (!horizontalLocked) {
+				if (Math.abs(dy) > MAX_DY && Math.abs(dy) > Math.abs(dx)) {
+					resetGesture();
+					return;
 				}
-				return;
+				if (dx >= 0) return;
+				if (Math.abs(dx) > MIN_LOCK_DX && Math.abs(dx) > Math.abs(dy) * 0.75) {
+					horizontalLocked = true;
+				} else {
+					return;
+				}
 			}
 
-			if (!tracking) return;
-
-			if (Math.abs(dy) > MAX_DY) {
-				tracking = false;
-				return;
-			}
-			if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) {
-				horizontalLocked = true;
-				if (event.cancelable) event.preventDefault();
-			}
-			if (dx < -TRIGGER_DX) {
-				tracking = false;
-				horizontalLocked = false;
-				closeMobileSidebar();
-			}
+			if (event.cancelable) event.preventDefault();
+			currentProgress = clampMobileSidebarProgress(1 + (dx / drawerWidth));
+			setIsMobileSidebarDragging(true);
+			setMobileSidebarProgress(currentProgress);
 		};
 
 		const onTouchEnd = () => {
+			if (!tracking) return;
+			const shouldClose = horizontalLocked && currentProgress <= 0.72;
 			tracking = false;
+			horizontalLocked = false;
+			setIsMobileSidebarDragging(false);
+			if (shouldClose) {
+				closeMobileSidebar();
+				return;
+			}
+			setMobileSidebarProgress(1);
 		};
 
 		drawer.addEventListener('touchstart', onTouchStart, { passive: true });
@@ -6757,6 +6896,18 @@ export function App(): React.JSX.Element {
 			},
 		}
 		: undefined;
+	const mobileSidebarVisualProgress = clampMobileSidebarProgress(mobileSidebarProgress);
+	const isMobileSidebarActive = mobileSidebarVisualProgress > 0.001;
+	const mobileShellStyle = {
+		['--mobile-sidebar-open-progress' as const]: mobileSidebarVisualProgress.toFixed(4),
+	} as React.CSSProperties;
+	const blurPx = (mobileSidebarVisualProgress * 4).toFixed(2);
+	const mobileSidebarBackdropStyle = {
+		opacity: mobileSidebarVisualProgress,
+		backdropFilter: `blur(${blurPx}px)`,
+		WebkitBackdropFilter: `blur(${blurPx}px)`,
+		pointerEvents: isMobileSidebarOpen && !isMobileSidebarDragging ? 'auto' : 'none',
+	} as React.CSSProperties;
 
 	return (
 		<>
@@ -6772,15 +6923,15 @@ export function App(): React.JSX.Element {
 			</div>
 		)}
 		<div
+			style={mobileShellStyle}
 			className={`test-harness-root${themeId.startsWith('catppuccin-') ? ' theme-catppuccin' : ''}${
 				isFabOpen ? ' fab-open' : ''
-			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${isEditorOverlayOpen ? ' editor-open' : ''}${isIosStandalonePwa ? ' ios-standalone-pwa' : ''}${isAndroidStandalonePwa ? ' android-standalone-pwa' : ''}${
+			}${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}${isMobileSidebarOpen ? ' mobile-sidebar-open' : ''}${isMobileSidebarActive ? ' mobile-sidebar-active' : ''}${isEditorOverlayOpen ? ' editor-open' : ''}${isIosStandalonePwa ? ' ios-standalone-pwa' : ''}${isAndroidStandalonePwa ? ' android-standalone-pwa' : ''}${
 				// Landscape branch: expose a root class so CSS can hard-disable the
 				// portrait header morph transitions during rotation.
 				isMobileLandscape ? ' mobile-landscape' : ''
 			}`}
 		>
-			{isMobileViewport && !isMobileSidebarOpen ? <div ref={mobileSwipeZoneRef} className="mobile-swipe-zone" aria-hidden="true" /> : null}
 			<header ref={headerRef} className="app-header">
 				{isMobileViewport ? (
 					<>
@@ -6956,11 +7107,16 @@ export function App(): React.JSX.Element {
 				)}
 			</header>
 
-			{isMobileViewport && isMobileSidebarOpen ? (
+			{isMobileViewport && isMobileSidebarActive ? (
 				<button
 					type="button"
 					className="mobile-sidebar-backdrop"
-					onClick={closeMobileSidebar}
+					style={mobileSidebarBackdropStyle}
+					onPointerUp={(event) => closeBackdropFromPointerEvent(event, closeMobileSidebar)}
+					onClick={(event) => {
+						if (event.defaultPrevented) return;
+						closeMobileSidebar();
+					}}
 					aria-label={t('common.close')}
 				/>
 			) : null}
@@ -6968,7 +7124,7 @@ export function App(): React.JSX.Element {
 			<div className={`app-shell${sidebarIsCollapsed ? ' sidebar-collapsed' : ''}`}>
 				<aside
 					ref={mobileSidebarRef}
-					className={`app-sidebar${sidebarIsCollapsed ? ' is-collapsed' : ''}${isMobileSidebarOpen ? ' is-mobile-open' : ''}`}
+					className={`app-sidebar${sidebarIsCollapsed ? ' is-collapsed' : ''}${isMobileSidebarOpen ? ' is-mobile-open' : ''}${isMobileSidebarDragging ? ' is-mobile-dragging' : ''}`}
 				>
 					<nav className="app-sidebar-nav" aria-label={t('grid.notes')}>
 						{sidebarEntries.map((entry) => {
@@ -7639,9 +7795,23 @@ export function App(): React.JSX.Element {
 										/>
 									</div>
 								) : activeFilterChips.length === 0 ? (
-									<div className="note-grid-scope-chip">
-										<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
-									</div>
+									(sidebarView === 'trash' || sidebarView === 'archive' || sidebarView === 'images') ? (
+										<div className="note-grid-scope-chip is-clearable">
+											<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
+											<button
+												type="button"
+												className="note-grid-scope-clear"
+												onClick={exitSpecialSidebarView}
+												aria-label={t('common.close')}
+											>
+												<FontAwesomeIcon icon={faXmark} />
+											</button>
+										</div>
+									) : (
+										<div className="note-grid-scope-chip">
+											<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
+										</div>
+									)
 								) : null}
 								{viewMode !== 'bubble' || sidebarView === 'images' ? activeFilterChips.map((chip) => (
 									<div
@@ -8103,6 +8273,8 @@ export function App(): React.JSX.Element {
 				connectionState={connection.state}
 				deviceId={deviceId}
 				onUserManagement={openUserManagementFromPreferences}
+				showUserManagement={isGlobalAdmin}
+				userManagementDisabled={isGlobalAdmin && isUserManagementOffline}
 				showSendInvite={isGlobalAdmin}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}

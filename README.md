@@ -136,6 +136,7 @@ Edit `.env.docker` and set at least:
 * `AUTH_JWT_SECRET`
 * `POSTGRES_PASSWORD`
 * `APP_URL`
+* `AUTH_COOKIE_SECURE=true` when you are serving the app through HTTPS
 
 Optional (recommended for notifications):
 
@@ -160,12 +161,25 @@ What you get:
 * Auto database migrations
 * OCR support built-in
 
+Before first boot you can validate the rendered stack config with:
+
+```bash
+docker compose --env-file .env.docker config
+```
+
 Health checks:
 
 ```
 http://localhost:27015/healthz
 http://localhost:27015/readyz
 ```
+
+Deployment note:
+
+* The web UI is served from `dist/index.html` plus `dist/assets/*`.
+* If a frontend build is interrupted and leaves a partial `dist/`, the proxied root path can fail even though the Node server and health checks still return success.
+* When that happens, rebuild to a fresh output directory and only then replace the live `dist/` contents.
+* `/yjs` must allow WebSocket upgrades when you are behind a reverse proxy.
 
 ---
 
@@ -183,8 +197,9 @@ docker run -d \
   -e PORT=27015 \
   -e APP_URL=http://your-server:27015 \
   -e AUTH_JWT_SECRET=replace-this \
+  -e AUTH_COOKIE_SECURE=true \
   -e DATABASE_URL=postgresql://user:password@host:5432/freemannotes?schema=public \
-  ghcr.io/daxtond/freemannotes:latest
+  ghcr.io/daxtond/freemannotes:1.2.31
 ```
 
 Optional:
@@ -199,7 +214,7 @@ Optional:
 
 Works as a standard custom container:
 
-* Repository: `ghcr.io/daxtond/freemannotes:latest`
+* Repository: `ghcr.io/daxtond/freemannotes:1.2.31` or `ghcr.io/daxtond/freemannotes:latest`
 * Port: `27015`
 * AppData: `/app/uploads`
 * Set:
@@ -207,6 +222,16 @@ Works as a standard custom container:
   * `DATABASE_URL`
   * `AUTH_JWT_SECRET`
   * `APP_URL`
+  * `AUTH_COOKIE_SECURE=true` if the public URL is HTTPS
+
+Optional but recommended:
+
+  * `REDIS_URL`
+  * `SMTP_*`
+  * `WEB_NOTIFICATION_MODE` / `ANDROID_NOTIFICATION_MODE` / `IOS_NOTIFICATION_MODE`
+  * `VAPID_*` and `FCM_*` when push notifications are enabled
+
+The included Unraid template lives at `third-party/freemannotes.xml`.
 
 If you use a reverse proxy:
 

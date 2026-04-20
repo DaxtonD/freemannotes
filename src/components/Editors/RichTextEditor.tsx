@@ -78,6 +78,8 @@ type RichTextToolbarProps = {
 	variant: RichTextVariant;
 	compact?: boolean;
 	toolbarMode?: EditorToolbarMode;
+	hideStrikeButton?: boolean;
+	applyInlineFormattingToWholeEditor?: boolean;
 	onCreateUrlPreview?: () => void;
 	noteAutoScrollEnabled?: boolean;
 	onToggleNoteAutoScroll?: () => void;
@@ -242,6 +244,50 @@ function runRichTextCommand(editor: Editor | null | undefined, commandName: stri
 	} catch {
 		// Editor was destroyed or the command is unavailable.
 	}
+}
+
+function withWholeEditorSelection(editor: Editor | null | undefined, callback: (editor: Editor) => void): void {
+	if (!editor) return;
+	const originalFrom = editor.state.selection.from;
+	const originalTo = editor.state.selection.to;
+	try {
+		const chain = editor.chain().focus() as unknown as { selectAll?: () => { run: () => boolean } };
+		if (typeof chain.selectAll === 'function') {
+			chain.selectAll().run();
+		}
+		callback(editor);
+	} finally {
+		try {
+			const docEnd = Math.max(1, editor.state.doc.content.size - 1);
+			const restoreFrom = Math.min(Math.max(1, originalFrom), docEnd);
+			const restoreTo = Math.min(Math.max(1, originalTo), docEnd);
+			const chain = editor.chain().focus() as unknown as {
+				setTextSelection?: (position: number | { from: number; to: number }) => { run: () => boolean };
+			};
+			if (typeof chain.setTextSelection === 'function') {
+				chain.setTextSelection(
+					restoreFrom === restoreTo
+						? restoreFrom
+						: { from: restoreFrom, to: restoreTo },
+				).run();
+			}
+		} catch {
+			// Editor was destroyed while the toolbar action was running.
+		}
+	}
+}
+
+function applyWholeRowInlineCommand(
+	editor: Editor | null | undefined,
+	applyToWholeEditor: boolean,
+	callback: (editor: Editor) => void,
+): void {
+	if (!editor) return;
+	if (!applyToWholeEditor) {
+		callback(editor);
+		return;
+	}
+	withWholeEditorSelection(editor, callback);
 }
 
 function shouldExitEmptyListItem(editor: Editor | null | undefined): boolean {
@@ -484,12 +530,8 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	};
 
 	const preventToolbarFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
-		const nativeEvent = event.nativeEvent as { pointerType?: string } | undefined;
-		// Touch/pen gestures need to keep their native default so horizontal pans can
-		// start immediately on toolbar buttons instead of requiring a second swipe.
-		if (nativeEvent?.pointerType && nativeEvent.pointerType !== 'mouse') {
-			return;
-		}
+		// Keep focus on the active editor so checklist toolbar taps don't blur the
+		// row editor before the command executes.
 		event.preventDefault();
 	}, []);
 	const toolbarRowRef = React.useRef<HTMLDivElement | null>(null);
@@ -582,17 +624,55 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		event.stopPropagation();
 	}, []);
 
+	const runInlineMarkCommand = React.useCallback((commandName: string): void => {
+		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
+			const chain = editor.chain().focus() as unknown as Record<string, (() => { run: () => boolean }) | undefined>;
+			const command = chain[commandName];
+			if (typeof command === 'function') {
+				command().run();
+			}
+		});
+	}, [props.applyInlineFormattingToWholeEditor, props.editor]);
+
 	const setLink = React.useCallback(() => {
 		if (!props.editor) return;
-		if (props.editor.isActive('link')) {
-			props.editor.chain().focus().unsetLink().run();
-			return;
-		}
-		const current = props.editor.getAttributes('link').href as string | undefined;
-		const next = window.prompt(t('editors.linkPrompt'), current ?? 'https://');
-		if (!next) return;
-		props.editor.chain().focus().extendMarkRange('link').setLink({ href: next }).run();
-	}, [props.editor, t]);
+		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
+			if (editor.isActive('link')) {
+				editor.chain().focus().unsetLink().run();
+				return;
+			}
+			const current = editor.getAttributes('link').href as string | undefined;
+			const next = window.prompt(t('editors.linkPrompt'), current ?? 'https://');
+			if (!next) return;
+			editor.chain().focus().extendMarkRange('link').setLink({ href: next }).run();
+		});
+	}, [props.applyInlineFormattingToWholeEditor, props.editor, t]);
+
+	const applyHighlightColor = React.useCallback((cssVar: string | null): void => {
+		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
+			const isActive = cssVar === null
+				? Boolean(editor.isActive('highlight')) && !editor.getAttributes('highlight').color
+				: editor.isActive('highlight', { color: cssVar });
+			if (isActive) {
+				editor.chain().focus().unsetHighlight().run();
+				return;
+			}
+			const chain = editor.chain().focus() as unknown as { setHighlight?: (opts?: { color?: string }) => { run: () => boolean } };
+			if (typeof chain.setHighlight === 'function') {
+				if (cssVar === null) {
+					chain.setHighlight({}).run();
+				} else {
+					chain.setHighlight({ color: cssVar }).run();
+				}
+			}
+		});
+	}, [props.applyInlineFormattingToWholeEditor, props.editor]);
+
+	const clearHighlight = React.useCallback((): void => {
+		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
+			editor.chain().focus().unsetHighlight().run();
+		});
+	}, [props.applyInlineFormattingToWholeEditor, props.editor]);
 	const handleToolbarWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>): void => {
 		const node = toolbarRowRef.current;
 		if (!node) return;
@@ -865,6 +945,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	// Coarse-pointer devices hide the explicit scroll buttons, so expose an edge
 	// hint only when the full toolbar actually overflows horizontally.
 	const showToolbarScrollHint = props.variant === 'full' && !isCondensedToolbar;
+	const showStrikeButton = props.variant === 'full' && props.hideStrikeButton !== true;
 	// Sub-toolbar buttons in condensed mode are slightly larger than in full-mode for
 	// better tap target size on mobile.
 	const condensedSubButtonClass = isCondensedToolbar ? ` ${styles.formatButtonCondensed}` : compactButtonClass;
@@ -879,18 +960,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				case 'formatting':
 					return (
 						<>
-							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBold().run()}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleBold')}>
 								<FontAwesomeIcon icon={faBold} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleItalic().run()}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleItalic')}>
 								<FontAwesomeIcon icon={faItalic} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleUnderline().run()}>
+							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleUnderline')}>
 								<FontAwesomeIcon icon={faUnderline} />
 							</button>
-							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isStrike ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.strikethrough')} title={t('editors.strikethrough')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleStrike().run()}>
-								<FontAwesomeIcon icon={faStrikethrough} />
-							</button>
+							{showStrikeButton ? (
+								<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isStrike ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.strikethrough')} title={t('editors.strikethrough')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleStrike')}>
+									<FontAwesomeIcon icon={faStrikethrough} />
+								</button>
+							) : null}
 							<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}${resolvedToolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
 								<FontAwesomeIcon icon={faLink} />
 							</button>
@@ -1125,21 +1208,43 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				<div className={styles.formatDivider} aria-hidden="true" />
 				{!isCondensedToolbar ? (
 					<>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBold().run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleBold')}>
 							<FontAwesomeIcon icon={faBold} />
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleItalic().run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isItalic ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.italic')} title={t('editors.italic')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleItalic')}>
 							<FontAwesomeIcon icon={faItalic} />
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleUnderline().run()}>
+						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isUnderline ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.underline')} title={t('editors.underline')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleUnderline')}>
 							<FontAwesomeIcon icon={faUnderline} />
 						</button>
-						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isStrike ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.strikethrough')} title={t('editors.strikethrough')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleStrike().run()}>
-							<FontAwesomeIcon icon={faStrikethrough} />
-						</button>
+						{showStrikeButton ? (
+							<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isStrike ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.strikethrough')} title={t('editors.strikethrough')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleStrike')}>
+								<FontAwesomeIcon icon={faStrikethrough} />
+							</button>
+						) : null}
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isLink ? ` ${styles.formatButtonActive}` : ''}`} aria-label={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} title={resolvedToolbarState.isLink ? t('editors.removeLink') : t('editors.link')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={setLink}>
 							<FontAwesomeIcon icon={faLink} />
 						</button>
+						{props.variant !== 'full' ? (
+							<div className={styles.formatMenuAnchor}>
+								<button
+									ref={highlightMenuButtonRef}
+									type="button"
+									className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isHighlight || highlightMenuOpen ? ` ${styles.formatButtonActive}` : ''}`}
+									aria-label={t('editors.highlight')}
+									title={t('editors.highlight')}
+									aria-expanded={highlightMenuOpen}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={() => {
+										updateHighlightMenuPosition();
+										setHighlightMenuOpen((open) => !open);
+									}}
+								>
+									<FontAwesomeIcon icon={faHighlighter} />
+								</button>
+							</div>
+						) : null}
 						{/* Emoji quick-insert — available in all toolbar variants */}
 						<div className={styles.formatMenuAnchor}>
 							<button
@@ -1553,22 +1658,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								onMouseDown={preventToolbarFocusSteal}
 								onPointerDown={preventToolbarFocusSteal}
 								onClick={() => {
-									// Toggle: if already active with this color, remove highlight.
-									const isActive = color.cssVar === null
-										? Boolean(props.editor?.isActive('highlight')) && resolvedToolbarState.activeHighlightColor === null
-										: props.editor?.isActive('highlight', { color: color.cssVar });
-									if (isActive) {
-										props.editor?.chain().focus().unsetHighlight().run();
-									} else {
-										const chain = props.editor?.chain().focus() as unknown as { setHighlight: (opts?: { color?: string }) => { run: () => boolean } } | undefined;
-										if (chain && typeof chain.setHighlight === 'function') {
-											if (color.cssVar === null) {
-												chain.setHighlight({}).run();
-											} else {
-												chain.setHighlight({ color: color.cssVar }).run();
-											}
-										}
-									}
+									applyHighlightColor(color.cssVar);
 									setHighlightMenuOpen(false);
 								}}
 							/>
@@ -1581,7 +1671,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							onMouseDown={preventToolbarFocusSteal}
 							onPointerDown={preventToolbarFocusSteal}
 							onClick={() => {
-								props.editor?.chain().focus().unsetHighlight().run();
+								clearHighlight();
 								setHighlightMenuOpen(false);
 							}}
 						>
@@ -1809,13 +1899,14 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				},
 				handlePaste: (_view, event) => {
 					const ed = editorRef.current;
-					if (!ed || variant !== 'full') return false;
+					if (!ed) return false;
 					const clipboardData = event.clipboardData;
 					if (!clipboardData) return false;
 					const hasFiles = Array.from(clipboardData.items ?? []).some((item) => item.kind === 'file');
 					if (hasFiles) return false;
 					// Prefer markdown expansion only when the clipboard does not already contain
-					// meaningful rich HTML. That preserves rich copy/paste while upgrading plain markdown.
+					// meaningful rich HTML. This also covers minimal editors so checklist rows
+					// can accept inline markdown like ==highlight==.
 					const markdownHtml = getMarkdownPasteHtml({
 						text: clipboardData.getData('text/plain'),
 						html: clipboardData.getData('text/html'),

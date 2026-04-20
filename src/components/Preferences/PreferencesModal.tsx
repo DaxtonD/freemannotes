@@ -65,6 +65,8 @@ export type PreferencesModalProps = {
 	// These are injected by the App so Preferences can stay a mostly-presentational
 	// component and not depend directly on auth/admin service logic.
 	onUserManagement?: () => void;
+	showUserManagement?: boolean;
+	userManagementDisabled?: boolean;
 	showSendInvite?: boolean;
 	onSendInvite?: () => void;
 	onSignOut?: () => void;
@@ -579,9 +581,16 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					<button type="button" className={styles.footerButton} onClick={props.onClose}>
 						{props.t('common.close')}
 					</button>
-					<button type="button" className={styles.footerButton} onClick={props.onUserManagement}>
-						{props.t('prefs.userManagement')}
-					</button>
+					{props.showUserManagement ? (
+						<button
+							type="button"
+							className={styles.footerButton}
+							onClick={props.onUserManagement}
+							disabled={props.userManagementDisabled}
+						>
+							{props.t('prefs.userManagement')}
+						</button>
+					) : null}
 					{props.showSendInvite ? (
 						<button type="button" className={styles.footerButton} onClick={props.onSendInvite}>
 							{props.t('prefs.sendInvite')}

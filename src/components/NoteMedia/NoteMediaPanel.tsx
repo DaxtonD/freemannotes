@@ -30,6 +30,7 @@ type NoteMediaPanelProps = {
 	onAddImage?: (() => void) | undefined;
 	/** When true, skip server-side API calls — the note hasn't been persisted yet. */
 	isPendingNew?: boolean;
+	showEyebrow?: boolean;
 };
 
 type LocalPreviewItem = QueuedNoteImageRow & {
@@ -111,6 +112,7 @@ function getDisplayImageTitle(fileName: string | null | undefined, fallback: str
 
 export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const { t, locale } = useI18n();
+	const showEyebrow = props.showEyebrow !== false;
 	const [remoteImages, setRemoteImages] = React.useState<readonly NoteImageRecord[]>(() => getCachedRemoteNoteImages(props.docId));
 	const [queuedImages, setQueuedImages] = React.useState<readonly QueuedNoteImageRow[]>([]);
 	const [queuedDeletions, setQueuedDeletions] = React.useState<readonly QueuedNoteImageRow[]>([]);
@@ -124,6 +126,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const previousQueuedCountRef = React.useRef(0);
 	const tileTouchStartRef = React.useRef<{ index: number; x: number; y: number } | null>(null);
 	const lastTouchOpenRef = React.useRef<{ index: number; at: number } | null>(null);
+	const deleteTouchHandledRef = React.useRef<{ id: string; at: number } | null>(null);
 
 	const refresh = React.useCallback(async () => {
 		setLoading(true);
@@ -279,6 +282,24 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		await refresh();
 	}, [props.canEdit, refresh, t]);
 
+	const handleDeleteButtonTouch = React.useCallback((id: string, event: React.TouchEvent<HTMLButtonElement>, remove: () => void): void => {
+		event.preventDefault();
+		event.stopPropagation();
+		deleteTouchHandledRef.current = { id, at: Date.now() };
+		remove();
+	}, []);
+
+	const handleDeleteButtonClick = React.useCallback((id: string, event: React.MouseEvent<HTMLButtonElement>, remove: () => void): void => {
+		const lastTouch = deleteTouchHandledRef.current;
+		if (lastTouch && lastTouch.id === id && Date.now() - lastTouch.at < 800) {
+			event.preventDefault();
+			event.stopPropagation();
+			return;
+		}
+		event.stopPropagation();
+		remove();
+	}, []);
+
 	const handleRetry = React.useCallback(async () => {
 		if (!props.authUserId) return;
 		setError(null);
@@ -374,8 +395,8 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			<div className={styles.panel}>
 				<div className={styles.header}>
 					<div>
-						<p className={styles.eyebrow}>{t('app.sidebarImages')}</p>
-						<p className={styles.summary}>
+						{showEyebrow ? <p className={styles.eyebrow}>{t('app.sidebarImages')}</p> : null}
+						<p className={`${styles.summary}${showEyebrow ? '' : ` ${styles.summaryWithoutEyebrow}`}`}>
 							{totalCount === 0 ? t('media.summaryEmpty') : totalCountLabel}
 						</p>
 					</div>
@@ -426,10 +447,10 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 									<button
 										type="button"
 										className={styles.deleteButton}
-										onClick={(event) => {
-											event.stopPropagation();
-											void handleDeleteRemote(image);
-										}}
+										onPointerDown={(event) => event.stopPropagation()}
+										onTouchStart={(event) => event.stopPropagation()}
+										onTouchEnd={(event) => handleDeleteButtonTouch(image.id, event, () => void handleDeleteRemote(image))}
+										onClick={(event) => handleDeleteButtonClick(image.id, event, () => void handleDeleteRemote(image))}
 										disabled={deletingId === image.id}
 										aria-label={t('editors.delete')}
 									>
@@ -464,10 +485,10 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 									<button
 										type="button"
 										className={styles.deleteButton}
-										onClick={(event) => {
-											event.stopPropagation();
-											void handleDeleteQueued(item);
-										}}
+										onPointerDown={(event) => event.stopPropagation()}
+										onTouchStart={(event) => event.stopPropagation()}
+										onTouchEnd={(event) => handleDeleteButtonTouch(item.id, event, () => void handleDeleteQueued(item))}
+										onClick={(event) => handleDeleteButtonClick(item.id, event, () => void handleDeleteQueued(item))}
 										aria-label={t('editors.delete')}
 									>
 										<FontAwesomeIcon icon={faTrash} />

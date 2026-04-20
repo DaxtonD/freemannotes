@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+		<meta name="theme-color" content="#0b0f16" />
+		<script>
+			(function () {
+				var ua = window.navigator.userAgent || '';
+				var isAndroid = /Android/i.test(ua);
+				var isStandalone = Boolean(
+					window.matchMedia &&
+						(window.matchMedia('(display-mode: standalone)').matches ||
+							window.matchMedia('(display-mode: fullscreen)').matches ||
+							window.matchMedia('(display-mode: minimal-ui)').matches)
+				);
+				var isAndroidStandalonePwa = isAndroid && (isStandalone || document.referrer.indexOf('android-app://') === 0);
+				if (!isAndroidStandalonePwa) return;
+
+				document.documentElement.classList.add('android-standalone-pwa');
+				var viewportMeta = document.querySelector('meta[name="viewport"]');
+				if (viewportMeta) {
+					viewportMeta.setAttribute(
+						'content',
+						'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover'
+					);
+				}
+			})();
+		</script>
+		<meta name="mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-capable" content="yes" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+		<meta name="apple-mobile-web-app-title" content="Freeman Notes" />
+		<!-- apple-touch-icon must be opaque — iOS adds a white background behind
+		     transparent PNGs, making a light logo invisible. Use the maskable
+		     variant (dark background, logo in safe zone) for all Apple contexts. -->
+		<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+		<link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
+		<title>Freeman Notes</title>
+		<script type="module" crossorigin src="/assets/index-B7s3xuev.js"></script>
+		<link rel="stylesheet" crossorigin href="/assets/index-CCut49H3.css">
+	<link rel="manifest" href="/manifest.webmanifest"></head>
+	<body style="background:#0b0f16;">
+		<div id="root"></div>
+	</body>
+</html>
+
