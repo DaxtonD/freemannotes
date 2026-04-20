@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.2.33 - 2026-04-20
+
+### Fixed
+- **Mobile sidebar close interactions are smooth again.** Closing the drawer from a drag no longer causes the panel to jump left and snap back under the finger before finishing the gesture.
+- **Mobile sidebar reopen behavior is restored after tap-away close.** Dismissing the drawer by tapping outside it no longer leaves the FAB and sidebar state out of sync, and the sidebar button and edge-swipe opener work again on the next interaction.
+
 ## 1.2.32 - 2026-04-20
 
 ### Fixed
