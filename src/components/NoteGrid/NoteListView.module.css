@@ -31,6 +31,7 @@
 	box-shadow:
 		inset 3px 0 0 var(--list-row-accent, transparent),
 		0 1px 0 color-mix(in srgb, var(--color-border) 50%, transparent);
+	overflow: hidden;
 }
 
 .rowPlaceholder {
@@ -54,6 +55,27 @@
 
 .rowMenuOpen {
 	border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+}
+
+.rowTrash {
+	background: color-mix(in srgb, var(--list-row-bg, var(--color-surface-2)) 78%, var(--color-app-bg) 22%);
+	border-color: color-mix(in srgb, var(--color-border) 72%, var(--color-text) 28%);
+}
+
+.rowTrash::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: color-mix(in srgb, var(--color-surface) 42%, transparent);
+	pointer-events: none;
+	z-index: 1;
+}
+
+.rowTrash > :not(.trashRestoreRow) {
+	position: relative;
+	z-index: 2;
+	filter: blur(1px);
+	opacity: 0.72;
 }
 
 .rowStrip {
@@ -120,6 +142,63 @@
 	text-overflow: ellipsis;
 	padding-right: 32px;
 	line-height: 1.45;
+}
+
+.trashRestoreRow {
+	position: absolute;
+	inset: 0;
+	z-index: 3;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 8px 12px;
+	pointer-events: none;
+}
+
+.trashRestoreButton {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	max-width: 100%;
+	padding: 8px 14px;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 36%, var(--list-row-border, var(--color-border)));
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--list-row-bg, var(--color-surface)) 88%, var(--color-accent) 12%);
+	color: var(--list-row-text, var(--color-text));
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	line-height: 1;
+	white-space: nowrap;
+	box-shadow: 0 10px 24px rgba(0, 0, 0, 0.14);
+	cursor: pointer;
+	pointer-events: auto;
+	transition: transform 140ms ease, filter 140ms ease, background-color 140ms ease;
+}
+
+.trashRestoreButton:hover,
+.trashRestoreButton:focus-visible {
+	filter: brightness(1.04);
+	transform: translateY(-1px);
+	outline: none;
+}
+
+.trashRestoreButton:active {
+	transform: scale(0.98);
+}
+
+.trashRestoreIcon {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 36%, var(--list-row-border, var(--color-border)));
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--list-row-bg, var(--color-surface)));
+	font-size: 11px;
+	line-height: 1;
+	flex-shrink: 0;
 }
 
 /* ── Badge icons ──────────────────────────────────────────────────────── */

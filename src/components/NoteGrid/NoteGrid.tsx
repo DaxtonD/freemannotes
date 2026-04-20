@@ -52,6 +52,7 @@ import {
 import { useNoteGridDragManager } from './useNoteGridDragManager';
 import { loadNoteHeightCache, saveNoteHeightCache } from '../../core/noteHeightCache';
 import { ElectricFenceShimmer } from './ElectricFenceShimmer';
+import { isDebugLoggingEnabled, logClientEvent } from '../../core/debugLogger';
 import styles from './NoteGrid.module.css';
 
 type Note = {
@@ -161,6 +162,7 @@ type NoteGridSection = {
 
 const MAX_VISIBLE_COLLABORATORS = 6;
 const MAX_VISIBLE_METADATA_ENTRIES = 6;
+const INITIAL_DATA_SETTLE_MS = 450;
 
 function ChipOverlayDismissSurface(props: { children: React.ReactNode }): React.JSX.Element {
 	return (
@@ -769,6 +771,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
+	const isDevBuild =
+		(typeof (import.meta as any).env !== 'undefined' && (import.meta as any).env.DEV) ||
+		(typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production');
+	const startupDebugEnabled = isDevBuild || isDebugLoggingEnabled();
 	const resolveMediaDocId = React.useCallback((noteId: string): string => {
 		try {
 			// Shared aliases need to resolve back to their source room so media and
@@ -806,7 +812,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Suppress framer-motion layout animations until all docs are loaded and two
 	// paint frames have passed (so cards settle before springs can fire).
 	const [layoutReady, setLayoutReady] = React.useState(false);
+	const [initialDataSettled, setInitialDataSettled] = React.useState(() => props.suppressShimmer === true);
+	const [initialLayoutSettled, setInitialLayoutSettled] = React.useState(() => props.suppressShimmer === true);
 	const readyNotifiedRef = React.useRef(false);
+	const startupDebugSnapshotRef = React.useRef<string>('');
 	React.useEffect(() => {
 		if (!props.enableLayoutAnimations) return;
 		if (!allDocsLoaded) return; // wait for shimmer to finish before enabling springs
@@ -914,6 +923,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return getGridLayoutForViewport(window.innerWidth, window.innerWidth, window.innerHeight).mobileSectionBleedPx;
 	});
 	const [noteHeightsVersion, setNoteHeightsVersion] = React.useState(0);
+	const latestNoteHeightsVersionRef = React.useRef(0);
 	// ── Sticky columns ───────────────────────────────────────────────────
 	// After a drag-and-drop commit, the balanced column layout is saved here
 	// so it persists across re-renders without being re-packed by height.
@@ -975,6 +985,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useEffect(() => {
 		docsByIdRef.current = docsById;
 	}, [docsById]);
+
+	React.useEffect(() => {
+		latestNoteHeightsVersionRef.current = noteHeightsVersion;
+	}, [noteHeightsVersion]);
 
 	const recalculateColumnCount = React.useCallback((): void => {
 		if (typeof window === 'undefined') return;
@@ -1079,7 +1093,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	const noteSnapshots = React.useMemo<VisibleNoteSnapshot[]>(() => {
 		return orderedIds.map((id) => {
-			const doc = docsById[id];
+			const doc = docsById[id] ?? manager.peekDoc(id) ?? null;
 			if (!doc) return createFallbackNoteSnapshot(id);
 			const note = readNoteFromDoc(doc, id);
 			const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === id);
@@ -1098,7 +1112,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				archived: note.archived,
 			};
 		});
-	}, [docsById, metadataVersion, orderedIds, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId]);
+	}, [docsById, manager, metadataVersion, orderedIds, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 
 	const baseVisibleIds = React.useMemo<string[]>(() => {
@@ -1119,11 +1133,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				&& props.sortMode === 'manual'
 				&& props.sortGrouping === 'none',
 		}).map((note) => note.id);
-		if (props.hiddenNoteId) return ids.filter((id) => id !== props.hiddenNoteId);
+		const unresolvedIds = !allDocsLoaded
+			? orderedIds.filter((id) => !(docsById[id] ?? manager.peekDoc(id)))
+			: [];
+		const mergedIds = unresolvedIds.length > 0 ? uniqueIds([...ids, ...unresolvedIds]) : ids;
+		if (props.hiddenNoteId) return mergedIds.filter((id) => id !== props.hiddenNoteId);
 		// ^ Suppress the draft note ID from the visible list so it never renders as
 		//   an empty card while the user is composing it in the editor overlay.
-		return ids;
-	}, [noteSnapshots, props.activeCollectionId, props.activeCollaboratorFilter, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortGrouping, props.sortMode]);
+		return mergedIds;
+	}, [allDocsLoaded, docsById, manager, noteSnapshots, orderedIds, props.activeCollectionId, props.activeCollaboratorFilter, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortGrouping, props.sortMode]);
 
 	const visibleNoteEntries = React.useMemo(() => {
 		const sharedPlacementByAlias = new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement]));
@@ -1227,6 +1245,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!props.activeCollaboratorFilter) return baseVisibleIds;
 		return baseVisibleIds.filter((noteId) => collaboratorMatchesFilter(collaboratorSummariesByNoteId[noteId], props.activeCollaboratorFilter));
 	}, [baseVisibleIds, collaboratorSummariesByNoteId, props.activeCollaboratorFilter]);
+	const initialDataSettleSignature = React.useMemo(
+		() => `${orderedIds.join('\u001f')}\u001e${visibleIds.join('\u001f')}`,
+		[orderedIds, visibleIds]
+	);
 
 	// ── Commit drag result to Yjs ─────────────────────────────────────────
 	// Called by the drag manager's onDrop handler with the raw column layout
@@ -1414,17 +1436,23 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// On fresh login (suppressShimmer=false, empty IDB), also wait for the
 		// registry WS sync so cards have real content before the shimmer lifts.
 		// Without this, cards inflate from near-empty to full height after shimmer
-		// clears, causing layout shifts. When the app is offline, no registry WS
-		// sync will ever arrive, so locally-created workspaces/notes must be allowed
-		// to finish hydrating from their in-memory docs alone.
+		// clears, causing layout shifts. This must also hold when `orderedIds` is
+		// still empty on a cold boot: an empty pre-sync registry snapshot is not yet
+		// evidence that the workspace is genuinely empty, and lifting the splash at
+		// that point exposes the note grid while cards stream in and repack. When the
+		// app is offline, no registry WS sync will ever arrive, so locally-created
+		// workspaces/notes must be allowed to finish hydrating from their in-memory
+		// docs alone.
 		if (
 			!initialLoadCompleteRef.current &&
 			!props.suppressShimmer &&
 			connection.state !== 'offline' &&
 			!connection.registryWsSynced
 		) {
-			// Registry WS sync hasn't completed yet — hold the shimmer.
-			if (orderedIds.length > 0) setAllDocsLoaded(false);
+			// Registry WS sync hasn't completed yet — hold the shimmer even if the
+			// current Yjs order is empty, because fresh installs start with an empty
+			// IDB snapshot before the server sends the real registry contents.
+			setAllDocsLoaded(false);
 			return;
 		}
 		// All present notes have loaded docs (or the workspace is genuinely empty).
@@ -1438,17 +1466,166 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [noteOrder, orderedIds, docsById, allDocsLoaded, connection.registryWsSynced, connection.state, props.suppressShimmer]);
 
 	React.useEffect(() => {
+		if (props.suppressShimmer) {
+			setInitialDataSettled(true);
+			return;
+		}
+		if (!allDocsLoaded) {
+			setInitialDataSettled(false);
+			return;
+		}
+		setInitialDataSettled(false);
+		const timeoutId = setTimeout(() => {
+			setInitialDataSettled(true);
+		}, INITIAL_DATA_SETTLE_MS);
+		return () => {
+			clearTimeout(timeoutId);
+		};
+	}, [allDocsLoaded, initialDataSettleSignature, props.suppressShimmer]);
+
+	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
+	const measuredRenderedCardCount = React.useMemo(
+		() => renderedIds.reduce((count, id) => count + (noteHeightByIdRef.current.has(id) ? 1 : 0), 0),
+		[noteHeightsVersion, renderedIds]
+	);
+	React.useEffect(() => {
+		if (!startupDebugEnabled) return;
+		const unresolvedOrderedIds = orderedIds.filter((id) => !(docsById[id] ?? manager.peekDoc(id)));
+		const blocker = !noteOrder
+			? 'waiting-note-order'
+			: !allDocsLoaded
+				? orderedIds.length > 0 && unresolvedOrderedIds.length > 0
+					? 'waiting-note-docs'
+					: !props.suppressShimmer && connection.state !== 'offline' && !connection.registryWsSynced
+						? 'waiting-registry-ws-sync'
+						: 'waiting-doc-load-gate'
+				: !initialDataSettled
+					? 'waiting-data-quiescence'
+				: props.enableLayoutAnimations && !layoutReady
+					? 'waiting-layout-ready'
+					: !initialLayoutSettled
+						? renderedIds.length === 0 || !isGridVisible || props.viewMode !== 'card'
+							? 'waiting-initial-layout-bypass'
+							: measuredRenderedCardCount < renderedIds.length
+								? 'waiting-card-measurements'
+								: 'waiting-layout-quiescence'
+						: 'ready';
+		const snapshot = JSON.stringify({
+			workspaceId: props.activeWorkspaceId ?? null,
+			blocker,
+			noteOrderReady: Boolean(noteOrder),
+			orderedCount: orderedIds.length,
+			visibleCount: visibleIds.length,
+			renderedCount: renderedIds.length,
+			unresolvedOrderedCount: unresolvedOrderedIds.length,
+			docCount: Object.keys(docsById).length,
+			allDocsLoaded,
+			initialDataSettled,
+			layoutReady,
+			initialLayoutSettled,
+			registryWsSynced: connection.registryWsSynced,
+			connectionState: connection.state,
+			measuredRenderedCardCount,
+			noteHeightsVersion,
+			suppressShimmer: Boolean(props.suppressShimmer),
+			viewMode: props.viewMode,
+			isGridVisible,
+		});
+		if (startupDebugSnapshotRef.current === snapshot) return;
+		startupDebugSnapshotRef.current = snapshot;
+		const parsedSnapshot = JSON.parse(snapshot);
+		console.log('[note-grid-startup]', parsedSnapshot);
+		void logClientEvent('NOTE_GRID_STARTUP', parsedSnapshot);
+	}, [allDocsLoaded, connection.registryWsSynced, connection.state, docsById, initialDataSettled, initialLayoutSettled, isGridVisible, layoutReady, manager, measuredRenderedCardCount, noteHeightsVersion, noteOrder, orderedIds, props.activeWorkspaceId, props.enableLayoutAnimations, props.suppressShimmer, props.viewMode, renderedIds, startupDebugEnabled, visibleIds]);
+	React.useEffect(() => {
+		if (props.suppressShimmer) {
+			setInitialLayoutSettled(true);
+			return;
+		}
+		if (!allDocsLoaded) {
+			setInitialLayoutSettled(false);
+			return;
+		}
+		if (!initialDataSettled) {
+			setInitialLayoutSettled(false);
+			return;
+		}
+		if (props.enableLayoutAnimations && !layoutReady) {
+			setInitialLayoutSettled(false);
+			return;
+		}
+		if (!isGridVisible || props.viewMode !== 'card' || renderedIds.length === 0) {
+			setInitialLayoutSettled(true);
+			return;
+		}
+		const allRenderedCardsMeasured = renderedIds.every((id) => noteHeightByIdRef.current.has(id));
+		if (!allRenderedCardsMeasured) {
+			setInitialLayoutSettled(false);
+			return;
+		}
+
+		let cancelled = false;
+		const rafIds: number[] = [];
+		const baselineHeightVersion = latestNoteHeightsVersionRef.current;
+		const waitForStableFrames = (remainingFrames: number): void => {
+			const rafId = requestAnimationFrame(() => {
+				if (cancelled) return;
+				if (latestNoteHeightsVersionRef.current !== baselineHeightVersion) {
+					setInitialLayoutSettled(false);
+					return;
+				}
+				if (remainingFrames <= 1) {
+					setInitialLayoutSettled(true);
+					return;
+				}
+				waitForStableFrames(remainingFrames - 1);
+			});
+			rafIds.push(rafId);
+		};
+
+		setInitialLayoutSettled(false);
+		// Quiescence gate: after the docs load, wait until every visible card has
+		// been measured and no card-height changes occur for a few paint frames.
+		// This ties splash dismissal to actual grid stability rather than elapsed time.
+		waitForStableFrames(4);
+		return () => {
+			cancelled = true;
+			for (const rafId of rafIds) {
+				cancelAnimationFrame(rafId);
+			}
+		};
+	}, [allDocsLoaded, initialDataSettled, isGridVisible, layoutReady, noteHeightsVersion, props.enableLayoutAnimations, props.suppressShimmer, props.viewMode, renderedIds]);
+
+	React.useEffect(() => {
 		if (!allDocsLoaded) {
 			readyNotifiedRef.current = false;
 			return;
 		}
-		if (props.enableLayoutAnimations && !layoutReady) return;
+		if (!initialDataSettled) return;
+		if (!initialLayoutSettled) return;
 		if (readyNotifiedRef.current) return;
+		if (startupDebugEnabled) {
+			const readySnapshot = {
+				workspaceId: props.activeWorkspaceId ?? null,
+				orderedCount: orderedIds.length,
+				visibleCount: visibleIds.length,
+				renderedCount: renderedIds.length,
+				measuredRenderedCardCount,
+				noteHeightsVersion,
+				registryWsSynced: connection.registryWsSynced,
+				connectionState: connection.state,
+				allDocsLoaded,
+				initialDataSettled,
+				layoutReady,
+				initialLayoutSettled,
+			};
+			console.log('[note-grid-startup] onReady', readySnapshot);
+			void logClientEvent('NOTE_GRID_STARTUP_READY', readySnapshot);
+		}
 		readyNotifiedRef.current = true;
 		props.onReady?.();
-	}, [allDocsLoaded, layoutReady, props.enableLayoutAnimations, props.onReady]);
+	}, [allDocsLoaded, connection.registryWsSynced, connection.state, initialDataSettled, initialLayoutSettled, layoutReady, measuredRenderedCardCount, noteHeightsVersion, orderedIds.length, props.activeWorkspaceId, props.onReady, renderedIds.length, startupDebugEnabled, visibleIds.length]);
 
-	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
 	const groupedSections = React.useMemo<NoteGridSection[]>(() => {
 		return buildNoteGroupSections({
 			renderedIds,
@@ -1866,7 +2043,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
-		const doc = docsById[note.id];
+		const doc = docsById[note.id] ?? manager.peekDoc(note.id) ?? null;
 		if (!doc) {
 			// Render a skeleton card at the cached height so masonry packing is stable
 			// and no layout repack occurs when the doc loads.
@@ -2200,6 +2377,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										setHandleElement={dragManager.setHandleElement}
 										shouldSuppressOpen={() => dragManager.shouldSuppressOpen() || moreMenuNoteId !== null}
 										canOpenNotes={!isTrashView}
+										isTrashView={isTrashView}
+										restoreLabel={t('noteMenu.restoreNote')}
 										canDrag={(noteId) => {
 											const note = noteById.get(noteId);
 											if (!note) return false;
@@ -2211,6 +2390,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 											setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
 											setMoreMenuNoteId(noteId);
 										}}
+										onRestoreNote={isTrashView ? (noteId) => {
+											void manager.restoreNote(noteId);
+										} : undefined}
 									/>
 								</div>
 							</div>
@@ -2233,6 +2415,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								setHandleElement={dragManager.setHandleElement}
 								shouldSuppressOpen={() => dragManager.shouldSuppressOpen() || moreMenuNoteId !== null}
 								canOpenNotes={!isTrashView}
+								isTrashView={isTrashView}
+								restoreLabel={t('noteMenu.restoreNote')}
 								canDrag={(noteId) => {
 									const note = noteById.get(noteId);
 									if (!note) return false;
@@ -2244,6 +2428,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
 									setMoreMenuNoteId(noteId);
 								}}
+								onRestoreNote={isTrashView ? (noteId) => {
+									void manager.restoreNote(noteId);
+								} : undefined}
 							/>
 						</div>
 					)}

@@ -35,9 +35,10 @@ const markdownParser = new MarkdownIt({
 
 const MEANINGFUL_CLIPBOARD_HTML_PATTERN = /<(p|div|ul|ol|li|strong|b|em|i|a|h1|h2|h3|blockquote|pre|code|table|thead|tbody|tr|th|td|hr)\b/i;
 const MARKDOWN_BLOCK_PATTERN = /(^|\n)(#{1,6}\s|>\s|[-+*]\s|\d+\.\s|```|~~~|\|.+\||\s*[-+*]\s\[[ xX]\]\s)|(^|\n)\s*([-*_])(?:\s*\3){2,}\s*($|\n)/m;
-const MARKDOWN_INLINE_PATTERN = /(\*\*[^*\n][\s\S]*?\*\*|__[^_\n][\s\S]*?__|~~[^~\n][\s\S]*?~~|`[^`\n]+`|\[[^\]]+\]\([^\)]+\)|!\[[^\]]*\]\([^\)]+\))/;
+const MARKDOWN_INLINE_PATTERN = /(\*\*[^*\n][\s\S]*?\*\*|__[^_\n][\s\S]*?__|~~[^~\n][\s\S]*?~~|==[^=\n][\s\S]*?==|`[^`\n]+`|\[[^\]]+\]\([^\)]+\)|!\[[^\]]*\]\([^\)]+\))/;
 const CLIPBOARD_BLOCK_SELECTOR = 'p,div,section,article,header,footer,aside,blockquote,pre,ul,ol,li,table,thead,tbody,tfoot,tr,hr,h1,h2,h3,h4,h5,h6';
 const CLIPBOARD_CELL_SELECTOR = 'th,td';
+const MARKDOWN_MARK_PATTERN = /==(?=\S)([\s\S]*?\S)==/g;
 
 // Meta key used to mark internally-generated regeneration transactions so the
 // plugin does not re-process its own output and loop indefinitely.
@@ -307,6 +308,7 @@ export function createRichTextExtensions(args: {
 	const extensions: Extensions = [
 		buildStarterKit(args.variant),
 		Underline,
+		Highlight.configure({ multicolor: true }),
 		Link.configure({
 			autolink: true,
 			openOnClick: true,
@@ -316,7 +318,6 @@ export function createRichTextExtensions(args: {
 
 	if (args.variant === 'full') {
 		extensions.push(
-			Highlight.configure({ multicolor: true }),
 			TaskList,
 			MobileSafeTaskItem.configure({ nested: true }),
 			Table.configure({ resizable: false }),
@@ -631,6 +632,46 @@ function normalizeMarkdownTaskListHtml(html: string): string {
 	return doc.body.innerHTML;
 }
 
+function applyMarkdownMarkSyntax(html: string): string {
+	if (typeof DOMParser === 'undefined' || typeof NodeFilter === 'undefined') {
+		return html.replace(MARKDOWN_MARK_PATTERN, '<mark>$1</mark>');
+	}
+	const doc = new DOMParser().parseFromString(html, 'text/html');
+	const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
+	const textNodes: Text[] = [];
+	let currentNode = walker.nextNode();
+	while (currentNode) {
+		if (currentNode instanceof Text) {
+			textNodes.push(currentNode);
+		}
+		currentNode = walker.nextNode();
+	}
+	for (const textNode of textNodes) {
+		if (textNode.parentElement?.closest('code, pre')) continue;
+		const value = textNode.data;
+		MARKDOWN_MARK_PATTERN.lastIndex = 0;
+		let match = MARKDOWN_MARK_PATTERN.exec(value);
+		if (!match) continue;
+		const fragment = doc.createDocumentFragment();
+		let lastIndex = 0;
+		do {
+			if (match.index > lastIndex) {
+				fragment.append(doc.createTextNode(value.slice(lastIndex, match.index)));
+			}
+			const mark = doc.createElement('mark');
+			mark.textContent = match[1];
+			fragment.append(mark);
+			lastIndex = match.index + match[0].length;
+			match = MARKDOWN_MARK_PATTERN.exec(value);
+		} while (match);
+		if (lastIndex < value.length) {
+			fragment.append(doc.createTextNode(value.slice(lastIndex)));
+		}
+		textNode.replaceWith(fragment);
+	}
+	return doc.body.innerHTML;
+}
+
 export function getVisibleClipboardTextFromHtml(html: string): string {
 	if (typeof DOMParser === 'undefined') return '';
 	const doc = new DOMParser().parseFromString(html, 'text/html');
@@ -677,7 +718,7 @@ export function renderMarkdownToRichHtml(text: string): string | null {
 	if (!looksLikeMarkdown(normalized)) return null;
 	const rendered = markdownParser.render(normalized).trim();
 	if (rendered.length === 0) return null;
-	return normalizeMarkdownTaskListHtml(rendered);
+	return applyMarkdownMarkSyntax(normalizeMarkdownTaskListHtml(rendered));
 }
 
 export function wrapClipboardHtmlDocument(html: string): string {
@@ -691,7 +732,6 @@ export function getMarkdownPasteHtml(args: {
 	html?: string | null;
 	variant: RichTextVariant;
 }): string | null {
-	if (args.variant !== 'full') return null;
 	const text = String(args.text ?? '').replace(/\r\n?/g, '\n');
 	if (!looksLikeMarkdown(text)) return null;
 	const clipboardHtml = String(args.html ?? '').trim();

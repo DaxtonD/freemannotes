@@ -51,6 +51,10 @@
 	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
 }
 
+.headerNoDivider {
+	border-bottom: 0;
+}
+
 .headerCopy {
 	min-width: 0;
 }
@@ -81,6 +85,10 @@
 	min-height: 0;
 	overflow: auto;
 	padding: 18px 20px 20px;
+}
+
+.bodyFlushTop {
+	padding-top: 0;
 }
 
 @media (pointer: coarse) {

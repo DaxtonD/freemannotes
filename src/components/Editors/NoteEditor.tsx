@@ -116,6 +116,10 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 			if (mark.type === 'italic') element = <em key={`${key}-italic`}>{element}</em>;
 			if (mark.type === 'underline') element = <u key={`${key}-underline`}>{element}</u>;
 			if (mark.type === 'strike') element = <s key={`${key}-strike`}>{element}</s>;
+			if (mark.type === 'highlight') {
+				const color = typeof mark.attrs?.color === 'string' ? mark.attrs.color : undefined;
+				element = <mark key={`${key}-highlight`} className={styles.richPreviewHighlight} style={color ? { backgroundColor: color } : undefined}>{element}</mark>;
+			}
 			if (mark.type === 'link') {
 				const href = typeof mark.attrs?.href === 'string' ? mark.attrs.href : '';
 				element = href
@@ -307,12 +311,24 @@ function findScrollableAncestor(node: HTMLElement | null): HTMLElement | null {
 	return null;
 }
 
-function animateFastScrollToBottom(container: HTMLElement): () => void {
+function getChecklistAutoScrollTarget(container: HTMLElement, completedSection: HTMLElement | null): number {
 	const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+	if (!completedSection) return maxScrollTop;
+	const containerRect = container.getBoundingClientRect();
+	const completedRect = completedSection.getBoundingClientRect();
+	const completedTop = container.scrollTop + (completedRect.top - containerRect.top);
+	return Math.max(0, Math.min(maxScrollTop, completedTop - container.clientHeight + 12));
+}
+
+function animateFastScrollToBottom(container: HTMLElement, targetScrollTop?: number): () => void {
+	const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+	const boundedTarget = typeof targetScrollTop === 'number'
+		? Math.max(0, Math.min(maxScrollTop, targetScrollTop))
+		: maxScrollTop;
 	const startTop = container.scrollTop;
-	const distance = maxScrollTop - startTop;
+	const distance = boundedTarget - startTop;
 	if (Math.abs(distance) <= 1 || typeof window === 'undefined') {
-		container.scrollTop = maxScrollTop;
+		container.scrollTop = boundedTarget;
 		return () => undefined;
 	}
 	const durationMs = 180;
@@ -836,6 +852,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		};
 	}, [props.doc, props.noteId]);
 	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
+	const completedSectionRef = React.useRef<HTMLElement | null>(null);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowEditor, setActiveChecklistRowEditor] = React.useState<Editor | null>(null);
@@ -1011,11 +1028,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			? checklistScrollRef.current
 			: findScrollableAncestor(textBodyFieldRef.current?.querySelector('[contenteditable="true"]') as HTMLElement | null);
 		if (!container) return false;
+		const targetScrollTop = type === 'checklist'
+			? getChecklistAutoScrollTarget(container, completedSectionRef.current)
+			: undefined;
 		stopActiveScrollAnimation();
 		if (animated) {
-			activeScrollCancelRef.current = animateFastScrollToBottom(container);
+			activeScrollCancelRef.current = animateFastScrollToBottom(container, targetScrollTop);
 		} else {
-			container.scrollTop = container.scrollHeight;
+			container.scrollTop = typeof targetScrollTop === 'number' ? targetScrollTop : container.scrollHeight;
 		}
 		return true;
 	}, [stopActiveScrollAnimation, type]);
@@ -1196,6 +1216,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		[activeItems, completedRows, showCompleted]
 	);
 	const firstActiveItemId = activeItems[0]?.id ?? null;
+	const checklistAddItemLabel = t('editors.addItem');
 	const checklistItemPlaceholder = t('editors.checklistItemPlaceholder');
 	const checklistRemoveLabel = t('editors.remove');
 
@@ -1861,7 +1882,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									))}
 								</ul>
 								{completedItems.length > 0 ? (
-									<section className={styles.completedSection}>
+									<section ref={completedSectionRef} className={styles.completedSection}>
 										<div className={styles.completedToggle}>{completedItems.length} {t('editors.completedItems')}</div>
 										<ul className={styles.checklistList}>
 											{completedItems.map((item) => (
@@ -2224,7 +2245,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 						<div className={styles.checklistToolbarSlot}>
-							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} />
+							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} />
 						</div>
 						{/* Keyboard-open branch:
 						    Checklist mode does not use the generic rich-text viewport above, so we add
@@ -2284,9 +2305,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 															type="button"
 															className={styles.checklistAddItemButton}
 															onClick={() => addChecklistItem()}
-															aria-label={t('editors.addItem')}
+															aria-label={checklistAddItemLabel}
 														>
-															{t('editors.addItem')}
+															{checklistAddItemLabel}
 														</button>
 													</li>
 												) : null}
@@ -2348,10 +2369,26 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									)}
 								</Droppable>
 							</DragDropContext>
+							{activeItems.length > 0 ? (
+								<ul className={styles.checklistComposer}>
+									<li className={styles.checklistComposerRow}>
+										<div className={styles.dragHandle} aria-hidden="true" />
+										<input type="checkbox" className={styles.checklistCheckbox} checked={false} readOnly tabIndex={-1} aria-hidden="true" />
+										<button
+											type="button"
+											className={styles.checklistAddItemButton}
+											onClick={() => addChecklistItem()}
+											aria-label={checklistAddItemLabel}
+										>
+											{checklistAddItemLabel}
+										</button>
+									</li>
+								</ul>
+							) : null}
 							
 
 						{completedItems.length > 0 ? (
-							<section className={styles.completedSection}>
+							<section ref={completedSectionRef} className={styles.completedSection}>
 								<button
 									type="button"
 									className={styles.completedToggle}
@@ -2764,6 +2801,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						variant={type === 'text' ? 'full' : 'minimal'}
 						compact
 						toolbarMode={props.toolbarMode}
+						hideStrikeButton={type === 'checklist'}
+						applyInlineFormattingToWholeEditor={type === 'checklist'}
 						onCreateUrlPreview={handleCreateUrlPreview}
 						noteAutoScrollEnabled={noteAutoScrollEnabled}
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}

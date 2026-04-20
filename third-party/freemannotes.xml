@@ -197,6 +197,14 @@
     Description="How often (in milliseconds) the server scans for trashed notes past their auto-delete threshold. Default is 3600000 (1 hour)."
     Type="Variable" Display="advanced" Required="false" Mask="false">3600000</Config>
 
+  <Config Name="WORKSPACE_CLEANUP_INTERVAL_MS" Target="WORKSPACE_CLEANUP_INTERVAL_MS" Default="3600000" Mode=""
+    Description="How often (in milliseconds) the server scans soft-deleted workspaces that are eligible for permanent deletion. Default is 3600000 (1 hour)."
+    Type="Variable" Display="advanced" Required="false" Mask="false">3600000</Config>
+
+  <Config Name="WORKSPACE_CLEANUP_GRACE_MS" Target="WORKSPACE_CLEANUP_GRACE_MS" Default="86400000" Mode=""
+    Description="Grace period (in milliseconds) before a soft-deleted workspace is permanently removed. Default is 86400000 (24 hours)."
+    Type="Variable" Display="advanced" Required="false" Mask="false">86400000</Config>
+
   <Config Name="YPERSISTENCE" Target="YPERSISTENCE" Default="" Mode=""
     Description="Optional path inside the container for LevelDB-backed Yjs document persistence. Example: /data/yjs. Leave blank to keep Yjs state in memory and PostgreSQL only."
     Type="Variable" Display="advanced" Required="false" Mask="false"></Config>

@@ -1,5 +1,7 @@
 import { normalizeWorkspaceInviteRole, readCachedWorkspaceInviteLink, sendWorkspaceInviteEmail, type WorkspaceInviteLink, type WorkspaceInviteRole } from './shareLinks';
 import { requestPwaBackgroundSync } from './pwa';
+import { resolveKnownUser, resolveKnownUserProfileImage, updateKnownUserCache } from './userIdentityCache';
+import { getCachedAvatarUrl } from './userAvatarCache';
 
 export type SyncOperationType = 'create' | 'update' | 'delete' | 'invite';
 export type SyncEntityType = 'workspace' | 'note' | 'collaborator' | 'workspace_invite';
@@ -274,6 +276,13 @@ async function readWorkspaceInviteRows(workspaceId: string): Promise<WorkspaceIn
 function mergeWorkspaceInviteRows(rows: readonly WorkspaceInviteCacheRow[]): WorkspaceInviteState {
 	const membersByEmail = new Map<string, WorkspaceInviteMember>();
 	const invitesByEmail = new Map<string, WorkspaceInviteCacheRow>();
+	const resolveRowProfileImage = (row: WorkspaceInviteCacheRow): string | null => {
+		const knownUser = resolveKnownUser(row.email || row.name);
+		return row.profileImage
+			?? (row.userId ? getCachedAvatarUrl(row.userId) : null)
+			?? knownUser?.profileImage
+			?? resolveKnownUserProfileImage(row.email || row.name);
+	};
 
 	for (const row of rows) {
 		const email = normalizeEmail(row.email);
@@ -288,7 +297,7 @@ function mergeWorkspaceInviteRows(rows: readonly WorkspaceInviteCacheRow[]): Wor
 				userId: row.userId,
 				email,
 				name: row.name,
-				profileImage: row.profileImage ?? null,
+				profileImage: resolveRowProfileImage(row),
 				role: row.role,
 				status: 'member',
 			});
@@ -315,7 +324,7 @@ function mergeWorkspaceInviteRows(rows: readonly WorkspaceInviteCacheRow[]): Wor
 			id: row.inviteId || row.id,
 			email: normalizeEmail(row.email),
 			name: row.name,
-			profileImage: row.profileImage ?? null,
+			profileImage: resolveRowProfileImage(row),
 			role: row.role === 'ADMIN' ? 'ADMIN' : row.role === 'EDITOR' ? 'EDITOR' : 'VIEWER',
 			inviteUrl: row.inviteUrl,
 			expiresAt: row.expiresAt,
@@ -339,6 +348,19 @@ function mergeWorkspaceInviteRows(rows: readonly WorkspaceInviteCacheRow[]): Wor
 async function replaceServerWorkspaceInviteSnapshot(workspaceId: string, state: WorkspaceInviteServerResponse): Promise<void> {
 	if (!workspaceId) return;
 	try {
+		updateKnownUserCache([
+			...(state.members || []).map((member) => ({
+				id: member.userId ?? null,
+				email: member.email,
+				name: member.name,
+				profileImage: member.profileImage ?? null,
+			})),
+			...(state.invites || []).map((invite) => ({
+				email: invite.email,
+				name: invite.name ?? null,
+				profileImage: invite.profileImage ?? null,
+			})),
+		]);
 		const db = await openDb();
 		const tx = db.transaction([WORKSPACE_INVITE_STATE_STORE], 'readwrite');
 		const store = tx.objectStore(WORKSPACE_INVITE_STATE_STORE);
@@ -727,6 +749,11 @@ export async function recordWorkspaceInviteSuccess(args: {
 	const email = normalizeEmail(args.email);
 	const identifier = normalizeIdentifier(args.identifier || args.email);
 	if (!workspaceId || !email || !args.inviteId) return;
+	updateKnownUserCache([{
+		email,
+		name: args.inviteeName ?? null,
+		profileImage: args.inviteeProfileImage ?? null,
+	}]);
 	// Swap the optimistic identifier-keyed placeholder with the authoritative
 	// server invite row once the create call succeeds.
 	await deleteWorkspaceInviteCacheRow(toInviteCacheId(workspaceId, identifier.toLowerCase()), workspaceId);

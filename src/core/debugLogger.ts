@@ -2,9 +2,47 @@ const DEBUG_ENDPOINT = '/api/debug-log';
 const DEBUG_FLUSH_INTERVAL_MS = 400;
 const DEBUG_MAX_BATCH_SIZE = 100;
 const DEBUG_MAX_BUFFERED_EVENTS = 2000;
+const DEBUG_LOGGING_STORAGE_KEY = 'freemannotes.debugLogging';
+
+function parseDebugToggle(value: unknown): boolean | null {
+	const normalized = String(value ?? '').trim().toLowerCase();
+	if (!normalized) return null;
+	if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+	if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+	return null;
+}
+
+function readRuntimeDebugLoggingFlag(): boolean {
+	if (typeof window === 'undefined') return false;
+	try {
+		const url = new URL(window.location.href);
+		const queryValue = parseDebugToggle(
+			url.searchParams.get('debugLogging')
+			?? url.searchParams.get('debug')
+			?? url.searchParams.get('logDebug')
+		);
+		if (queryValue !== null) {
+			try {
+				window.localStorage.setItem(DEBUG_LOGGING_STORAGE_KEY, queryValue ? '1' : '0');
+			} catch {
+				// Best effort only.
+			}
+			return queryValue;
+		}
+	} catch {
+		// ignore malformed location state
+	}
+	try {
+		return parseDebugToggle(window.localStorage.getItem(DEBUG_LOGGING_STORAGE_KEY)) === true;
+	} catch {
+		return false;
+	}
+}
+
 const DEBUG_LOGGING_ENABLED = (() => {
-	const value = String(import.meta.env.VITE_DEBUG_LOGGING || '').trim().toLowerCase();
-	return value === '1' || value === 'true' || value === 'yes' || value === 'on';
+	const envValue = parseDebugToggle(import.meta.env.VITE_DEBUG_LOGGING);
+	if (envValue !== null) return envValue;
+	return readRuntimeDebugLoggingFlag();
 })();
 
 const appSessionId = (() => {

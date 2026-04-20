@@ -12,6 +12,8 @@ type AttachmentBrowserModalFrameProps = {
 	onClose: () => void;
 	children: React.ReactNode;
 	closeLabel: string;
+	bodyClassName?: string;
+	headerClassName?: string;
 };
 
 export function AttachmentBrowserModalFrame(props: AttachmentBrowserModalFrameProps): React.JSX.Element | null {
@@ -119,7 +121,7 @@ export function AttachmentBrowserModalFrame(props: AttachmentBrowserModalFramePr
 						<span className={styles.sheetHandlePill} aria-hidden="true" />
 					</button>
 				) : null}
-				<header className={styles.header}>
+				<header className={props.headerClassName ? `${styles.header} ${props.headerClassName}` : styles.header}>
 					<div className={styles.headerCopy}>
 						<h2 className={styles.title}>{props.noteTitle || props.subtitle}</h2>
 						<p className={styles.subtitle}>{props.subtitle}</p>
@@ -128,7 +130,7 @@ export function AttachmentBrowserModalFrame(props: AttachmentBrowserModalFramePr
 						<FontAwesomeIcon icon={faXmark} />
 					</button>
 				</header>
-				<div className={styles.body}>{props.children}</div>
+				<div className={props.bodyClassName ? `${styles.body} ${props.bodyClassName}` : styles.body}>{props.children}</div>
 			</section>
 		</div>
 	);

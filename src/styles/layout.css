@@ -4,6 +4,7 @@
 	--app-safe-right: env(safe-area-inset-right, 0px);
 	--app-safe-bottom: env(safe-area-inset-bottom, 0px);
 	--app-safe-left: env(safe-area-inset-left, 0px);
+	--app-safe-bottom-visual: var(--app-safe-bottom);
 	/* iOS PWAs can report larger bottom/right safe-area insets on some newer
 	   devices or viewport states than we actually want for floating overlays.
 	   Clamp the FAB offsets so it stays visually anchored to the same corner
@@ -30,6 +31,7 @@
 .test-harness-root.ios-standalone-pwa {
 	--app-fab-viewport-right: 0px;
 	--app-fab-viewport-bottom: 0px;
+	--app-safe-bottom-visual: clamp(0px, var(--app-safe-bottom), 20px);
 	--app-fab-safe-bottom: clamp(0px, var(--app-safe-bottom), 20px);
 }
 
@@ -54,7 +56,7 @@
 	bottom: 0;
 	left: 0;
 	right: 0;
-	height: var(--app-safe-bottom);
+	height: var(--app-safe-bottom-visual);
 	background: var(--color-app-bg);
 	pointer-events: none;
 	z-index: 121;
@@ -344,17 +346,21 @@
 .brief-dialog {
 	position: fixed;
 	left: 50%;
-	top: 50%;
-	transform: translate(-50%, -50%);
-	z-index: 10000;
-	padding: 10px 14px;
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-md);
-	background: var(--color-surface);
+	bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+	transform: translateX(-50%);
+	z-index: 20000;
+	padding: 12px 16px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-surface) 86%, rgba(8, 12, 16, 0.88));
 	color: var(--color-text);
 	font-size: var(--font-size-sm);
 	max-width: min(560px, calc(100vw - 2 * var(--space-4)));
 	text-align: center;
+	box-shadow: 0 20px 44px rgba(0, 0, 0, 0.28);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+	pointer-events: none;
 }
 
 .pwa-update-banner {
@@ -2369,8 +2375,13 @@
 	background: color-mix(in srgb, var(--color-app-bg) 48%, transparent);
 	backdrop-filter: blur(4px);
 	-webkit-backdrop-filter: blur(4px);
+	-webkit-tap-highlight-color: transparent;
+	-webkit-appearance: none;
+	appearance: none;
 	touch-action: none;
 	overscroll-behavior: none;
+	opacity: 0;
+	transition: opacity 180ms ease, backdrop-filter 180ms ease, -webkit-backdrop-filter 180ms ease;
 	z-index: 129;
 }
 
@@ -2379,10 +2390,11 @@
 	left: 0;
 	top: var(--app-mobile-header-offset, var(--app-header-total-height));
 	bottom: 0;
-	width: 18px;
+	width: 28px;
 	z-index: 100;
 	background: transparent;
-	touch-action: pan-y;
+	touch-action: none;
+	overscroll-behavior: none;
 	-webkit-user-select: none;
 	user-select: none;
 }
@@ -2396,6 +2408,9 @@
 	background: color-mix(in srgb, var(--color-app-bg) 38%, transparent);
 	backdrop-filter: blur(4px);
 	-webkit-backdrop-filter: blur(4px);
+	-webkit-tap-highlight-color: transparent;
+	-webkit-appearance: none;
+	appearance: none;
 	/* Keep the FAB veil above the header/sidebar so opening quick-create blurs
 	   the full app viewport rather than only the notes pane underneath it. */
 	z-index: 980;
@@ -2731,8 +2746,10 @@
 		overflow-x: hidden;
 		overscroll-behavior: contain;
 		touch-action: pan-y;
-		transform: translateX(-105%);
+		transform: translateX(calc((-105%) * (1 - var(--mobile-sidebar-open-progress, 0))));
 		transition: transform 220ms ease;
+		transform-origin: left center;
+		will-change: transform;
 		z-index: 130;
 		box-shadow: none;
 		border-right: 0;
@@ -2854,25 +2871,25 @@
 		line-height: 1.3;
 	}
 
-	.app-sidebar.is-mobile-open {
-		transform: translateX(0);
+	.app-sidebar.is-mobile-dragging {
+		transition: none;
 	}
 
-	.test-harness-root.mobile-sidebar-open .app-main {
+	.test-harness-root.mobile-sidebar-active .app-main {
 		pointer-events: none;
 	}
 
 	/* The shared body scroll lock intentionally freezes background panes, but the
 	   mobile drawer itself still needs its own scroll container to remain live. */
-	.test-harness-root.mobile-sidebar-open .app-sidebar {
+	.test-harness-root.mobile-sidebar-active .app-sidebar {
 		overflow-y: auto !important;
 		overflow-x: hidden !important;
 		overscroll-behavior: contain;
 		-webkit-overflow-scrolling: touch;
 	}
 
-	.test-harness-root.mobile-sidebar-open .app-sidebar,
-	.test-harness-root.mobile-sidebar-open .mobile-sidebar-backdrop {
+	.test-harness-root.mobile-sidebar-active .app-sidebar,
+	.test-harness-root.mobile-sidebar-active .mobile-sidebar-backdrop {
 		pointer-events: auto;
 	}
 

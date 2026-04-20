@@ -2,6 +2,7 @@ import React from 'react';
 import { useI18n } from '../../core/i18n';
 import { AttachmentBrowserModalFrame } from '../NoteAttachments/AttachmentBrowserModalFrame';
 import { NoteMediaPanel } from './NoteMediaPanel';
+import styles from './NoteMediaBrowserModal.module.css';
 
 type NoteMediaBrowserModalProps = {
 	isOpen: boolean;
@@ -25,12 +26,15 @@ export function NoteMediaBrowserModal(props: NoteMediaBrowserModalProps): React.
 			subtitle={t('app.sidebarImages')}
 			onClose={props.onClose}
 			closeLabel={t('common.close')}
+			headerClassName={styles.headerNoDivider}
+			bodyClassName={styles.bodyFlushTop}
 		>
 			<NoteMediaPanel
 				docId={props.docId}
 				authUserId={props.authUserId}
 				canEdit={props.canEdit}
 				onAddImage={props.onAddImage}
+				showEyebrow={false}
 			/>
 		</AttachmentBrowserModalFrame>
 	);

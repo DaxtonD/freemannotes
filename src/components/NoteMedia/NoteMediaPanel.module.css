@@ -33,6 +33,10 @@
 	color: var(--color-text-muted);
 }
 
+.summaryWithoutEyebrow {
+	margin-top: 0;
+}
+
 .toolbar {
 	display: inline-flex;
 	align-items: center;

@@ -15,6 +15,7 @@ import {
 	faFileLines,
 	faFolder,
 	faListCheck,
+	faRotateLeft,
 	faTag,
 	faThumbtack,
 	faUsers,
@@ -46,9 +47,12 @@ export type NoteListViewProps = {
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	shouldSuppressOpen: () => boolean;
 	canOpenNotes: boolean;
+	isTrashView?: boolean;
+	restoreLabel?: string;
 	canDrag: (noteId: string) => boolean;
 	onSelectNote: (noteId: string) => void;
 	onMoreMenu: (noteId: string, anchorRect: DOMRect | null) => void;
+	onRestoreNote?: (noteId: string) => void;
 };
 
 function getColorVars(noteId: string, doc: Y.Doc, themeId: ThemeId): React.CSSProperties | undefined {
@@ -96,10 +100,14 @@ type NoteRowProps = {
 	themeId: ThemeId;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
+	shouldSuppressOpen: () => boolean;
 	canDrag: boolean;
 	canOpenNotes: boolean;
+	isTrashView: boolean;
+	restoreLabel: string;
 	onSelectNote: (noteId: string) => void;
 	onMoreMenu: (noteId: string, anchorRect: DOMRect | null) => void;
+	onRestoreNote?: (noteId: string) => void;
 };
 
 const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Element {
@@ -111,6 +119,7 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 	const noteType = String(doc.getMap<any>('metadata').get('type') ?? '') === 'checklist' ? 'checklist' : 'text';
 	const colorVars = getColorVars(noteId, doc, props.themeId);
 	const preview = showPreview ? getContentPreview(doc, noteId) : null;
+	const showRestoreAction = props.isTrashView && typeof props.onRestoreNote === 'function';
 
 	const handleItemRef = React.useCallback(
 		(node: HTMLDivElement | null) => {
@@ -155,11 +164,20 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 		[noteId, props.onMoreMenu]
 	);
 
+	const handleRestoreClick = React.useCallback(
+		(event: React.MouseEvent<HTMLButtonElement>) => {
+			event.stopPropagation();
+			props.onRestoreNote?.(noteId);
+		},
+		[noteId, props.onRestoreNote]
+	);
+
 	return (
 		<div
 			ref={handleItemRef}
 			className={[
 				styles.row,
+				showRestoreAction ? styles.rowTrash : '',
 				props.isSelected ? styles.rowSelected : '',
 				props.isMoreMenuOpen ? styles.rowMenuOpen : '',
 				props.isPlaceholder ? styles.rowPlaceholder : '',
@@ -176,6 +194,22 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 			onClick={handleClick}
 			onKeyDown={handleKeyDown}
 		>
+			{showRestoreAction ? (
+				<div className={styles.trashRestoreRow}>
+					<button
+						type="button"
+						className={styles.trashRestoreButton}
+						onClick={handleRestoreClick}
+						aria-label={props.restoreLabel}
+					>
+						<span className={styles.trashRestoreIcon} aria-hidden="true">
+							<FontAwesomeIcon icon={faRotateLeft} />
+						</span>
+						<span>{props.restoreLabel}</span>
+					</button>
+				</div>
+			) : null}
+
 			<div className={styles.rowMain}>
 				<span
 					className={styles.rowTypeIcon}
@@ -290,9 +324,12 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 						setHandleElement={props.setHandleElement}
 						shouldSuppressOpen={props.shouldSuppressOpen}
 						canOpenNotes={props.canOpenNotes}
+						isTrashView={Boolean(props.isTrashView)}
+						restoreLabel={props.restoreLabel ?? 'Restore note'}
 						canDrag={props.canDrag(noteId)}
 						onSelectNote={props.onSelectNote}
 						onMoreMenu={props.onMoreMenu}
+						onRestoreNote={props.onRestoreNote}
 					/>
 				);
 			})}

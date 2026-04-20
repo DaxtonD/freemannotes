@@ -9,6 +9,7 @@ import {
 	type PendingCollaboratorAction,
 } from './noteShareCollaboratorStore';
 import { requestPwaBackgroundSync } from './pwa';
+import { updateKnownUserCache } from './userIdentityCache';
 import { updateAvatarCache } from './userAvatarCache';
 
 export type NoteShareRole = 'VIEWER' | 'EDITOR';
@@ -174,6 +175,18 @@ async function requestUpdateNoteShareCollaboratorRole(collaboratorId: string, ro
 }
 
 function toCachedCollaboratorSnapshot(snapshot: NoteShareCollaboratorSnapshot): CachedCollaboratorSnapshot {
+	updateKnownUserCache([
+		snapshot.currentUser,
+		snapshot.sharedBy,
+		...snapshot.collaborators.map((c) => c.user),
+		...snapshot.pendingInvitations.map((inv) => ({
+			id: inv.inviteeId ?? null,
+			email: inv.inviteeEmail,
+			name: inv.inviteeName,
+			profileImage: inv.inviteeProfileImage ?? null,
+		})),
+		...snapshot.pendingInvitations.map((inv) => inv.inviter),
+	].filter(Boolean) as Array<{ id?: string | null; email?: string | null; name?: string | null; profileImage?: string | null }>);
 	updateAvatarCache([
 		snapshot.currentUser,
 		snapshot.sharedBy,
@@ -313,6 +326,19 @@ export async function flushPendingNoteShareActions(userId: string): Promise<void
 export async function listNoteShareInvitations(): Promise<{ invitations: NoteShareInvitation[]; pendingCount: number }> {
 	const result = await fetchJson<{ invitations: NoteShareInvitation[]; pendingCount: number }>('/api/note-shares/invitations');
 	if (Array.isArray(result?.invitations)) {
+		updateKnownUserCache(result.invitations.flatMap((inv) => {
+			const users: Array<{ id?: string | null; email?: string | null; name?: string | null; profileImage?: string | null }> = [];
+			if (inv.inviter) {
+				users.push(inv.inviter);
+			}
+			users.push({
+				id: inv.inviteeId ?? null,
+				email: inv.inviteeEmail,
+				name: inv.inviteeName,
+				profileImage: inv.inviteeProfileImage ?? null,
+			});
+			return users;
+		}));
 		updateAvatarCache(result.invitations.map((inv) => inv.inviter).filter(Boolean) as Array<{ id: string; profileImage?: string | null }>);
 	}
 	return result;

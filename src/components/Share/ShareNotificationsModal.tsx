@@ -46,6 +46,11 @@ type PlacementChoice = 'personal' | 'shared-root' | 'shared-folder';
 
 const HIDDEN_NOTIFICATIONS_KEY_PREFIX = 'freemannotes.shareNotifications.hidden.v1:';
 
+function isTransportLikeError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error ?? '');
+	return /failed to fetch|networkerror|load failed/i.test(message);
+}
+
 function hiddenNotificationsKey(userId: string): string {
 	return `${HIDDEN_NOTIFICATIONS_KEY_PREFIX}${userId}`;
 }
@@ -119,6 +124,12 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 
 	const load = React.useCallback(async () => {
 		setError(null);
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			setInvitations([]);
+			setWorkspaceInvites([]);
+			setError(t('share.notificationsDisabledOffline'));
+			return;
+		}
 		try {
 			const [noteData, workspaceData] = await Promise.all([
 				listNoteShareInvitations(),
@@ -131,6 +142,12 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 			);
 			setWorkspaceInvites(workspaceData.invites);
 		} catch (err) {
+			if (isTransportLikeError(err)) {
+				setInvitations([]);
+				setWorkspaceInvites([]);
+				setError(t('share.notificationsDisabledOffline'));
+				return;
+			}
 			setError(err instanceof Error ? err.message : t('share.loadFailed'));
 		}
 	}, [t]);

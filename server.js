@@ -833,6 +833,17 @@ const server = http.createServer((req, res) => {
 		}
 
 		// ── Static file serving from dist ────────────────────────────────
+		// IMPORTANT:
+		// This server assumes Vite has produced a complete dist/ directory
+		// containing index.html plus the hashed assets/ bundle. If a build is
+		// interrupted, or Vite clears dist/ and then fails before rewriting the
+		// shell, the reverse-proxied site can appear "down" at / even though the
+		// Node process and /healthz still respond normally.
+		//
+		// In practice that means operators should avoid swapping in a partially
+		// written dist/, and should prefer building to a fresh outDir before
+		// replacing the live dist/ contents when diagnosing Windows file-lock or
+		// deployment issues.
 		if (url.pathname.startsWith('/uploads/')) {
 			// Serve uploaded profile images from UPLOAD_DIR.
 			const resolved = path.resolve(UPLOAD_DIR, '.' + decodeURIComponent(url.pathname.slice('/uploads'.length)));
@@ -882,6 +893,8 @@ const server = http.createServer((req, res) => {
 		}
 
 		// SPA fallback: if file doesn't exist and it isn't an asset, serve index.html.
+		// If dist/index.html itself is missing because of an incomplete frontend
+		// build, root requests will fail here even though the API server is up.
 		const looksLikeFile = path.extname(filePath).length > 0;
 		if (!fs.existsSync(filePath)) {
 			if (!looksLikeFile) {
