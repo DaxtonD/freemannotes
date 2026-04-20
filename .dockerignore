@@ -8,7 +8,10 @@ npm-debug.log
 .vscode
 
 dist
+dist-*
 build
+
+.venv
 
 *.log
 *.local
