@@ -1,4 +1,5 @@
 import { deleteNoteImage, importNoteImageUrl, listNoteImages, uploadNoteImages, type NoteImageRecord } from './noteMediaApi';
+import { shouldTreatConnectionAsOffline } from './networkQuality';
 import { requestPwaBackgroundSync } from './pwa';
 
 export type QueuedNoteImageStatus = 'pending' | 'failed';
@@ -58,7 +59,7 @@ function applyRemoteFileNameOverrides(images: readonly NoteImageRecord[]): NoteI
 }
 
 function isOffline(): boolean {
-	return typeof navigator !== 'undefined' && navigator.onLine === false;
+	return shouldTreatConnectionAsOffline();
 }
 
 function createId(prefix: string): string {
@@ -286,7 +287,7 @@ async function syncRemotePreviewRows(docId: string, images: readonly NoteImageRe
 	let storedThumbnail = false;
 	const resolvedRows: StoredNoteImagePreviewRecord[] = [];
 	for (const image of pendingThumbnailImages) {
-		const sourceBlob = (await fetchBlob(image.originalUrl)) || (await fetchBlob(image.thumbnailUrl));
+		const sourceBlob = (await fetchBlob(image.thumbnailUrl)) || (await fetchBlob(image.originalUrl));
 		if (!sourceBlob) continue;
 		const thumbnailBlob = await createProgressiveNoteImageThumbnail(sourceBlob);
 		if (!thumbnailBlob) continue;
@@ -309,6 +310,31 @@ async function syncRemotePreviewRows(docId: string, images: readonly NoteImageRe
 	}
 	if (storedThumbnail) {
 		emitNoteMediaChanged(docId);
+	}
+}
+
+async function promoteQueuedPreviewRow(docId: string, queuedRowId: string, image: NoteImageRecord): Promise<void> {
+	if (!docId || !queuedRowId || !image.id) return;
+	try {
+		const existingRows = await readPreviewRowsByDoc(docId);
+		const queuedPreview = existingRows.find((row) => row.id === queuedRowId && row.kind === 'queued');
+		if (!queuedPreview?.thumbnailBlob) return;
+		await upsertPreviewRows([
+			{
+				id: image.id,
+				kind: 'remote',
+				docId,
+				remoteImageId: image.id,
+				image,
+				thumbnailBlob: queuedPreview.thumbnailBlob,
+				previewVersion: NOTE_MEDIA_PREVIEW_VERSION,
+				createdAt: queuedPreview.createdAt || image.createdAt,
+				updatedAt: image.updatedAt,
+			},
+		]);
+		await deletePreviewRows([queuedRowId]).catch(() => undefined);
+	} catch {
+		// Best effort only.
 	}
 }
 
@@ -594,6 +620,27 @@ export function getCachedRemoteNoteImages(docId: string): readonly NoteImageReco
 	return remoteCache.get(docId) || [];
 }
 
+export async function warmWorkspaceImageMetadata(
+	docIds: readonly string[],
+	options: { onlineRefreshLimit?: number; minIntervalMs?: number } = {}
+): Promise<void> {
+	const uniqueDocIds = [...new Set(docIds.map((docId) => String(docId || '').trim()).filter(Boolean))];
+	if (uniqueDocIds.length === 0) return;
+	await Promise.all(uniqueDocIds.map(async (docId) => {
+		const stored = await readStoredRemoteNoteImages(docId);
+		if (stored.length > 0) {
+			remoteCache.set(docId, stored);
+		}
+	}));
+	if (isOffline()) return;
+	const refreshLimit = Math.max(0, Math.min(uniqueDocIds.length, options.onlineRefreshLimit ?? 24));
+	const minIntervalMs = Math.max(0, Number(options.minIntervalMs ?? 1500) || 0);
+	for (let start = 0; start < refreshLimit; start += 4) {
+		const batch = uniqueDocIds.slice(start, start + 4);
+		await Promise.all(batch.map((docId) => refreshRemoteNoteImages(docId, { minIntervalMs }).catch(() => [])));
+	}
+}
+
 export async function scheduleQueuedNoteImageFlush(userId: string): Promise<void> {
 	if (!userId) return;
 	if (pendingFlushes.has(userId)) {
@@ -644,8 +691,8 @@ export async function flushQueuedNoteImages(userId: string): Promise<void> {
 						if (!image.fileName && row.fileName) {
 							remoteFileNameOverrides.set(image.id, row.fileName);
 						}
+						await promoteQueuedPreviewRow(row.docId, row.id, image);
 					}
-					await deletePreviewRows([row.id]).catch(() => undefined);
 				}
 				await updateQueuedRow(row.id, () => null);
 				await refreshRemoteNoteImages(row.docId).catch(() => undefined);

@@ -19,6 +19,9 @@ export type WorkspaceListItem = {
 	name: string;
 	role: WorkspaceRole;
 	ownerUserId?: string | null;
+	ownerName?: string | null;
+	ownerEmail?: string | null;
+	ownerProfileImage?: string | null;
 	systemKind?: string | null;
 	createdAt: string;
 	updatedAt?: string;
@@ -70,6 +73,9 @@ function mapWorkspaces(value: unknown): WorkspaceListItem[] {
 				name: typeof workspace.name === 'string' ? workspace.name : '',
 				role: normalizeWorkspaceRole(workspace.role),
 				ownerUserId: typeof workspace.ownerUserId === 'string' ? workspace.ownerUserId : null,
+				ownerName: typeof workspace.ownerName === 'string' ? workspace.ownerName : null,
+				ownerEmail: typeof workspace.ownerEmail === 'string' ? workspace.ownerEmail : null,
+				ownerProfileImage: typeof workspace.ownerProfileImage === 'string' ? workspace.ownerProfileImage : null,
 				systemKind: typeof workspace.systemKind === 'string' ? workspace.systemKind.toUpperCase() : null,
 				createdAt: typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
 				updatedAt: typeof workspace.updatedAt === 'string' ? workspace.updatedAt : typeof workspace.createdAt === 'string' ? workspace.createdAt : new Date(0).toISOString(),
@@ -85,6 +91,15 @@ function getWorkspaceRole(workspaces: readonly WorkspaceListItem[], workspaceId:
 
 function getWorkspaceRoleLabel(role: WorkspaceListItem['role'], t: Props['t']): string {
 	return t(getWorkspaceRoleLabelKey(role));
+}
+
+function getWorkspaceOwnerDisplayName(workspace: WorkspaceListItem, authUserId: string | null, t: Props['t']): string | null {
+	if (!workspace.ownerUserId || workspace.ownerUserId === authUserId || workspace.systemKind === 'SHARED_WITH_ME') return null;
+	const ownerName = typeof workspace.ownerName === 'string' ? workspace.ownerName.trim() : '';
+	if (ownerName) return ownerName;
+	const ownerEmail = typeof workspace.ownerEmail === 'string' ? workspace.ownerEmail.trim() : '';
+	if (ownerEmail) return ownerEmail;
+	return t('workspace.ownedByUnknown');
 }
 
 function isProtectedWorkspace(workspace: WorkspaceListItem, t: Props['t']): boolean {
@@ -201,6 +216,9 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 						name: workspace.name,
 						role: workspace.role,
 						ownerUserId: workspace.ownerUserId ?? null,
+						ownerName: workspace.ownerName ?? null,
+						ownerEmail: workspace.ownerEmail ?? null,
+						ownerProfileImage: workspace.ownerProfileImage ?? null,
 						systemKind: workspace.systemKind ?? null,
 						createdAt: workspace.createdAt,
 						updatedAt: workspace.updatedAt ?? workspace.createdAt,
@@ -596,11 +614,19 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 							const canRename = canManageWorkspace(ws.role);
 							const canDelete = ws.role === 'OWNER' && !isProtectedWorkspace(ws, props.t);
 							const isRenaming = renameId === ws.id;
+								const ownerDisplayName = getWorkspaceOwnerDisplayName(ws, props.authUserId, props.t);
 							return (
 								<div key={ws.id} className={styles.row}>
 									<div className={styles.meta}>
-										<div className={`${styles.name}${isActive ? ` ${styles.activeName}` : ''}`} title={getWorkspaceDisplayName(ws, props.t)}>
-											{getWorkspaceDisplayName(ws, props.t)}
+											<div className={styles.nameRow}>
+												<div className={`${styles.name}${isActive ? ` ${styles.activeName}` : ''}`} title={getWorkspaceDisplayName(ws, props.t)}>
+													{getWorkspaceDisplayName(ws, props.t)}
+												</div>
+												{ownerDisplayName ? (
+													<span className={styles.ownerName} title={`${props.t('workspace.ownedBy')} ${ownerDisplayName}`}>
+														{ownerDisplayName}
+													</span>
+												) : null}
 										</div>
 										<div className={styles.sub}>
 											{props.t('workspace.role')}: {getWorkspaceRoleLabel(ws.role, props.t)}{ws.pendingSync ? ` • ${props.t('workspace.pendingSync')}` : ''}

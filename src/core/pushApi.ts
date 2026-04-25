@@ -4,6 +4,8 @@
  * All functions throw on network error; callers should handle rejection.
  */
 
+import { fetchWithTimeout } from './network';
+
 export type PushPlatform = 'WEB' | 'IOS' | 'ANDROID';
 
 export type NotificationConfiguredMode = 'auto' | 'push' | 'email' | 'off';
@@ -60,16 +62,21 @@ async function checkResponse(res: Response): Promise<void> {
 
 /** Fetch the VAPID public key from the server. No auth required. */
 export async function fetchVapidPublicKey(): Promise<VapidPublicKeyResponse> {
-	const res = await fetch('/api/push/vapid-public-key', { cache: 'no-store' });
+	const res = await fetchWithTimeout('/api/push/vapid-public-key', {
+		cache: 'no-store',
+		credentials: 'include',
+		requestName: 'push-vapid-public-key',
+		timeoutMs: 2000,
+	});
 	await checkResponse(res);
 	return res.json();
 }
 
 /** Fetch subscription status and recent delivery logs for the current user/device. */
 export async function fetchPushStatus(deviceId: string, platform: PushPlatform): Promise<PushSubscriptionStatus> {
-	const res = await fetch(
+	const res = await fetchWithTimeout(
 		`/api/push/status?deviceId=${encodeURIComponent(deviceId)}&platform=${encodeURIComponent(platform)}`,
-		{ cache: 'no-store' }
+		{ cache: 'no-store', credentials: 'include', requestName: 'push-status', timeoutMs: 2000 }
 	);
 	await checkResponse(res);
 	return res.json();
@@ -89,8 +96,11 @@ export async function savePushSubscription(
 		body.p256dh = subscription.p256dh;
 		body.auth = subscription.auth;
 	}
-	const res = await fetch('/api/push/subscribe', {
+	const res = await fetchWithTimeout('/api/push/subscribe', {
 		method: 'POST',
+		credentials: 'include',
+		requestName: 'push-subscribe-save',
+		timeoutMs: 2000,
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(body),
 	});
@@ -100,8 +110,11 @@ export async function savePushSubscription(
 
 /** Remove a push subscription from the server. */
 export async function deletePushSubscription(deviceId: string): Promise<void> {
-	const res = await fetch('/api/push/subscribe', {
+	const res = await fetchWithTimeout('/api/push/subscribe', {
 		method: 'DELETE',
+		credentials: 'include',
+		requestName: 'push-subscribe-delete',
+		timeoutMs: 2000,
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ deviceId }),
 	});
@@ -113,8 +126,11 @@ export async function sendTestPushNotification(
 	platform: PushPlatform,
 	deviceId: string
 ): Promise<{ sent: number; failed: number; emailSent: boolean; emailError?: string | null }> {
-	const res = await fetch('/api/push/test', {
+	const res = await fetchWithTimeout('/api/push/test', {
 		method: 'POST',
+		credentials: 'include',
+		requestName: 'push-test',
+		timeoutMs: 2000,
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ platform, deviceId }),
 	});
@@ -134,8 +150,11 @@ export async function syncNoteReminder(opts: {
 	reminderAt: string | null;
 	noteTitle?: string;
 }): Promise<void> {
-	const res = await fetch('/api/push/reminder', {
+	const res = await fetchWithTimeout('/api/push/reminder', {
 		method: 'PUT',
+		credentials: 'include',
+		requestName: 'push-reminder-sync',
+		timeoutMs: 2000,
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(opts),
 	});
@@ -147,7 +166,12 @@ export async function syncNoteReminder(opts: {
  * Used to drive the notification bell badge.
  */
 export async function fetchPendingReminderCount(): Promise<number> {
-	const res = await fetch('/api/push/reminders/pending', { cache: 'no-store' });
+	const res = await fetchWithTimeout('/api/push/reminders/pending', {
+		cache: 'no-store',
+		credentials: 'include',
+		requestName: 'push-reminders-pending',
+		timeoutMs: 2000,
+	});
 	await checkResponse(res);
 	const data: { count: number } = await res.json();
 	return typeof data.count === 'number' ? data.count : 0;
@@ -173,7 +197,12 @@ export type NoteReminderState = {
 };
 
 export async function fetchNoteReminderStates(): Promise<{ reminders: NoteReminderState[] }> {
-	const res = await fetch('/api/push/reminders', { cache: 'no-store' });
+	const res = await fetchWithTimeout('/api/push/reminders', {
+		cache: 'no-store',
+		credentials: 'include',
+		requestName: 'push-reminders',
+		timeoutMs: 2000,
+	});
 	await checkResponse(res);
 	return res.json();
 }
@@ -183,7 +212,12 @@ export async function fetchNoteReminderStates(): Promise<{ reminders: NoteRemind
  * Used to populate the notifications panel with reminder entries.
  */
 export async function fetchFiredReminders(): Promise<{ reminders: FiredReminder[] }> {
-	const res = await fetch('/api/push/reminders/fired', { cache: 'no-store' });
+	const res = await fetchWithTimeout('/api/push/reminders/fired', {
+		cache: 'no-store',
+		credentials: 'include',
+		requestName: 'push-reminders-fired',
+		timeoutMs: 2000,
+	});
 	await checkResponse(res);
 	return res.json();
 }
@@ -193,8 +227,11 @@ export async function fetchFiredReminders(): Promise<{ reminders: FiredReminder[
  * badge clears. Call this when the user opens the notifications panel.
  */
 export async function acknowledgeReminderNotifications(): Promise<void> {
-	const res = await fetch('/api/push/reminders/acknowledge', {
+	const res = await fetchWithTimeout('/api/push/reminders/acknowledge', {
 		method: 'POST',
+		credentials: 'include',
+		requestName: 'push-reminders-acknowledge',
+		timeoutMs: 2000,
 		headers: { 'Content-Type': 'application/json' },
 		body: '{}',
 	});

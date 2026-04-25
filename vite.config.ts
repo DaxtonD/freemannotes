@@ -232,5 +232,12 @@ export default defineConfig(({ mode }) => {
 			port: Number(env.VITE_PREVIEW_PORT || 4173),
 			strictPort: true,
 		},
+		build: {
+			// The verified publish flow already deletes dist-build-temp before invoking
+			// Vite. Keep nested builds (notably vite-plugin-pwa injectManifest's custom
+			// service worker build) from emptying the shared outDir and deleting the
+			// client build artifacts before Workbox scans them.
+			emptyOutDir: false,
+		},
 	};
 });

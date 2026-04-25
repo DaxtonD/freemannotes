@@ -32,7 +32,7 @@ const PWA_VERSION_STORAGE_KEY = 'freemannotes.pwa.current-version.v1';
 const PWA_UPDATED_NOTICE_KEY = 'freemannotes.pwa.updated-notice.v1';
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 const DEFAULT_VIEWPORT_CONTENT = 'width=device-width, initial-scale=1, viewport-fit=cover';
-const IOS_STANDALONE_VIEWPORT_CONTENT = `${DEFAULT_VIEWPORT_CONTENT}, maximum-scale=1, user-scalable=no`;
+const IOS_VIEWPORT_LOCKED_CONTENT = `${DEFAULT_VIEWPORT_CONTENT}, minimum-scale=1, maximum-scale=1, user-scalable=no`;
 
 let initialized = false;
 let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
@@ -95,12 +95,12 @@ function applyViewportConfiguration(): void {
 	if (typeof document === 'undefined') return;
 	const viewportMeta = getViewportMeta();
 	if (!viewportMeta) return;
-	const iosStandalone = isIosSafari() && isStandalone();
-	const nextContent = iosStandalone ? IOS_STANDALONE_VIEWPORT_CONTENT : DEFAULT_VIEWPORT_CONTENT;
+	const iosViewportLocked = isIosSafari();
+	const nextContent = iosViewportLocked ? IOS_VIEWPORT_LOCKED_CONTENT : DEFAULT_VIEWPORT_CONTENT;
 	if (viewportMeta.getAttribute('content') !== nextContent) {
 		viewportMeta.setAttribute('content', nextContent);
 	}
-	document.documentElement.classList.toggle('ios-standalone', iosStandalone);
+	document.documentElement.classList.toggle('ios-standalone', iosViewportLocked && isStandalone());
 }
 
 function applyStandaloneZoomLock(): void {

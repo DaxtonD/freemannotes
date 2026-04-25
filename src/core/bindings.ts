@@ -1,5 +1,6 @@
 import * as Y from 'yjs';
 import { getChecklistItemPlainText } from './richText';
+import { normalizeChecklistCountValue } from './checklistCounts';
 
 export type TextChangeSource = 'editor' | 'yjs';
 
@@ -162,6 +163,7 @@ export type ChecklistItem = {
 	text: string;
 	completed: boolean;
 	parentId: string | null;
+	countValue?: number | null;
 };
 
 export class ChecklistModel {
@@ -189,6 +191,7 @@ export class ChecklistModel {
 					typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
 						? String(m.get('parentId')).trim()
 						: null,
+				countValue: normalizeChecklistCountValue(m.get('countValue')),
 			}))
 			.filter((item) => item.id.length > 0);
 	}
@@ -200,6 +203,7 @@ export class ChecklistModel {
 			m.set('text', item.text);
 			m.set('completed', item.completed);
 			m.set('parentId', item.parentId);
+			m.set('countValue', normalizeChecklistCountValue(item.countValue));
 			this.yarray.push([m]);
 		});
 	}
@@ -219,6 +223,7 @@ export class ChecklistModel {
 			if (patch.text !== undefined) m.set('text', patch.text);
 			if (patch.completed !== undefined) m.set('completed', patch.completed);
 			if (patch.parentId !== undefined) m.set('parentId', patch.parentId);
+			if (patch.countValue !== undefined) m.set('countValue', normalizeChecklistCountValue(patch.countValue));
 		});
 	}
 
@@ -302,7 +307,7 @@ export class ChecklistBinding {
 		return this.itemsCache;
 	}
 
-	public add(item: { id: string; text: string; completed: boolean; parentId?: string | null }): void {
+	public add(item: { id: string; text: string; completed: boolean; parentId?: string | null; countValue?: number | null }): void {
 		if (this.destroyed) return;
 		const id = typeof item.id === 'string' ? item.id.trim() : '';
 		if (id.length === 0) {
@@ -314,6 +319,7 @@ export class ChecklistBinding {
 			m.set('text', String(item.text ?? ''));
 			m.set('completed', Boolean(item.completed));
 			m.set('parentId', typeof item.parentId === 'string' && item.parentId.trim().length > 0 ? item.parentId.trim() : null);
+			m.set('countValue', normalizeChecklistCountValue(item.countValue));
 			this.yarray.push([m]);
 		});
 		// Ensure immediate notification (without relying on observeDeep timing).
@@ -335,7 +341,7 @@ export class ChecklistBinding {
 
 	public update(
 		index: number,
-		partial: Partial<{ id: string; text: string; completed: boolean; parentId: string | null }>
+		partial: Partial<{ id: string; text: string; completed: boolean; parentId: string | null; countValue: number | null }>
 	): void {
 		if (this.destroyed) return;
 		const idx = this.normalizeIndex(index);
@@ -365,7 +371,7 @@ export class ChecklistBinding {
 
 	public updateById(
 		id: string,
-		partial: Partial<{ id: string; text: string; completed: boolean; parentId: string | null }>
+		partial: Partial<{ id: string; text: string; completed: boolean; parentId: string | null; countValue: number | null }>
 	): void {
 		if (this.destroyed) return;
 		const normalizedId = String(id ?? '').trim();
@@ -394,6 +400,9 @@ export class ChecklistBinding {
 			if (partial.parentId !== undefined) {
 				const parentId = typeof partial.parentId === 'string' ? partial.parentId.trim() : null;
 				m.set('parentId', parentId && parentId.length > 0 ? parentId : null);
+			}
+			if (partial.countValue !== undefined) {
+				m.set('countValue', normalizeChecklistCountValue(partial.countValue));
 			}
 		});
 		this.itemsCache = this.model.toArray();

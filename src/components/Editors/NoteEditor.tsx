@@ -21,6 +21,7 @@ import {
 import * as Y from 'yjs';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
+import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
@@ -158,6 +159,13 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 	return hasContent ? elements : null;
 }
 
+function renderChecklistPreviewContent(item: ChecklistItem, content: React.ReactNode): React.ReactNode {
+	const countPrefix = getChecklistCountPrefix(item);
+	return countPrefix
+		? <><span className={styles.checklistCountPrefix} aria-hidden="true">{countPrefix}</span>{content}</>
+		: content;
+}
+
 function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
 	return yarray
 		.toArray()
@@ -169,6 +177,7 @@ function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly Checkl
 				typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
 					? String(m.get('parentId')).trim()
 					: null,
+			countValue: normalizeChecklistCountValue(m.get('countValue')),
 		}))
 		.filter((item) => item.id.length > 0);
 }
@@ -200,6 +209,9 @@ function updateChecklistItemById(
 		if (patch.parentId !== undefined) {
 			const parentId = typeof patch.parentId === 'string' ? patch.parentId.trim() : null;
 			m.set('parentId', parentId && parentId.length > 0 ? parentId : null);
+		}
+		if (patch.countValue !== undefined) {
+			m.set('countValue', normalizeChecklistCountValue(patch.countValue));
 		}
 	};
 	if (doc) doc.transact(apply);
@@ -418,7 +430,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 					/>
 				</label>
 				<div ref={contentRef} className={styles.checklistRowPreview} onClick={handleActivate}>
-					{richPreview || item.text || '\u00A0'}
+					{renderChecklistPreviewContent(item, richPreview || item.text || '\u00A0')}
 				</div>
 				<button
 					type="button"
@@ -448,6 +460,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 			</label>
 			{liveItemMap && fragment ? (
 				<div ref={contentRef} className={styles.checklistRowRichShell}>
+					{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}
 					<RichTextEditor
 						variant="minimal"
 						fragment={fragment}
@@ -484,7 +497,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 				</div>
 			) : (
 				<div ref={contentRef} className={styles.checklistRowPreview} onClick={handleActivate}>
-					{item.text || '\u00A0'}
+					{renderChecklistPreviewContent(item, item.text || '\u00A0')}
 				</div>
 			)}
 			<button
@@ -1219,6 +1232,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const checklistAddItemLabel = t('editors.addItem');
 	const checklistItemPlaceholder = t('editors.checklistItemPlaceholder');
 	const checklistRemoveLabel = t('editors.remove');
+	const activeChecklistRowItem = useMemo(
+		() => normalizedItems.find((item) => item.id === activeChecklistRowId) ?? null,
+		[activeChecklistRowId, normalizedItems]
+	);
+	const activeChecklistCountItem = useMemo(
+		() => activeChecklistRowItem && isChecklistCountItem(activeChecklistRowItem) ? activeChecklistRowItem : null,
+		[activeChecklistRowItem]
+	);
 
 	// FLIP animation helper for checklist indent/un-indent (horizontal snap):
 	// When we indent/unindent we mutate the *flat* list (parentId changes + regrouping),
@@ -1275,7 +1296,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	}, [type]);
 
 	const addChecklistItem = React.useCallback(
-		(index?: number, seed?: { text?: string; parentId?: string | null; richContent?: ReturnType<typeof createRichTextDocFromPlainText> }): void => {
+		(index?: number, seed?: { text?: string; parentId?: string | null; countValue?: number | null; richContent?: ReturnType<typeof createRichTextDocFromPlainText> }): void => {
 			if (type !== 'checklist') return;
 			suppressAutoActivateAfterDeleteRef.current = false;
 			prepareChecklistRowFocusHandoff();
@@ -1292,6 +1313,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				map.set('text', seed?.text ?? '');
 				map.set('completed', false);
 				map.set('parentId', seed?.parentId ?? null);
+				map.set('countValue', normalizeChecklistCountValue(seed?.countValue));
 				checklistArray.insert(insertIndex, [map]);
 				if (seed?.richContent) {
 					const fragment = ensureChecklistItemRichContent(map);
@@ -1331,12 +1353,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						const currentId = String(map.get('id') ?? '');
 						const currentText = String(map.get('text') ?? '');
 						const currentCompleted = Boolean(map.get('completed'));
+						const currentCountValue = normalizeChecklistCountValue(map.get('countValue'));
+						const nextCountValue = normalizeChecklistCountValue(entry.countValue);
 
 						if (
 							currentId === entry.id &&
 							currentText === entry.text &&
 							currentCompleted === entry.completed &&
-							currentParentId === nextParentId
+							currentParentId === nextParentId &&
+							currentCountValue === nextCountValue
 						) {
 							continue;
 						}
@@ -1345,6 +1370,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						map.set('text', entry.text);
 						map.set('completed', entry.completed);
 						map.set('parentId', nextParentId);
+						map.set('countValue', nextCountValue);
 
 						const fragment = ensureChecklistItemRichContent(map);
 						replaceRichFragmentFromJson(
@@ -1364,6 +1390,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					map.set('text', entry.text);
 					map.set('completed', entry.completed);
 					map.set('parentId', entry.parentId);
+					map.set('countValue', normalizeChecklistCountValue(entry.countValue));
 					return map;
 				});
 				checklistArray.insert(0, maps);
@@ -1631,6 +1658,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				addChecklistItem(currentIndex === -1 ? undefined : currentIndex, {
 					text: split.afterText,
 					parentId: currentItem?.parentId ?? null,
+					countValue: currentItem?.countValue != null ? 1 : null,
 					richContent: split.after,
 				});
 				return;
@@ -1640,6 +1668,27 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		},
 		[addChecklistItem, checklistArray, items]
 	);
+
+	const incrementActiveChecklistCount = React.useCallback((): void => {
+		if (type !== 'checklist' || !activeChecklistCountItem || !isChecklistCountItem(activeChecklistCountItem)) return;
+		updateChecklistItemById(checklistArray, activeChecklistCountItem.id, { countValue: (getChecklistCountValue(activeChecklistCountItem) ?? 1) + 1 });
+	}, [activeChecklistCountItem, checklistArray, type]);
+
+	const makeActiveChecklistCount = React.useCallback((): void => {
+		if (type !== 'checklist' || !activeChecklistRowItem || isChecklistCountItem(activeChecklistRowItem)) return;
+		updateChecklistItemById(checklistArray, activeChecklistRowItem.id, { countValue: 1 });
+	}, [activeChecklistRowItem, checklistArray, type]);
+
+	const decrementActiveChecklistCount = React.useCallback((): void => {
+		if (type !== 'checklist' || !activeChecklistCountItem || !isChecklistCountItem(activeChecklistCountItem)) return;
+		const currentCountValue = getChecklistCountValue(activeChecklistCountItem) ?? 1;
+		updateChecklistItemById(checklistArray, activeChecklistCountItem.id, { countValue: currentCountValue > 1 ? currentCountValue - 1 : null });
+	}, [activeChecklistCountItem, checklistArray, type]);
+
+	const removeActiveChecklistCount = React.useCallback((): void => {
+		if (type !== 'checklist' || !activeChecklistCountItem) return;
+		updateChecklistItemById(checklistArray, activeChecklistCountItem.id, { countValue: null });
+	}, [activeChecklistCountItem, checklistArray, type]);
 
 	const activateChecklistRow = React.useCallback(
 		(id: string): void => {
@@ -1801,6 +1850,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					<input type="checkbox" className={styles.checklistCheckbox} checked={Boolean(dragged?.completed)} readOnly />
 					{isActiveClone ? (
 						<div className={styles.checklistRowRichShell}>
+							{dragged ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(dragged)}</span> : null}
 							<div className={styles.checklistRowRichStack} style={{ width: textWidth ?? undefined, flex: '0 0 auto' }}>
 								<div className={styles.checklistRowRichViewport}>
 									<div className={`${styles.checklistRowRichEditor} ${styles.dragPreviewText}`} style={{ height: textHeight ?? undefined }}>
@@ -1811,7 +1861,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							</div>
 					) : (
 						<div className={styles.checklistRowPreview} style={{ height: textHeight ?? undefined, width: textWidth ?? undefined, flex: '0 0 auto' }}>
-							{previewContent}
+							{dragged ? renderChecklistPreviewContent(dragged, previewContent) : previewContent}
 						</div>
 					)}
 					<button type="button" className={styles.rowRemoveButton} aria-hidden="true" tabIndex={-1} disabled>
@@ -1877,7 +1927,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 											<label className={styles.checklistCheckboxHitArea} aria-hidden="true">
 												<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly tabIndex={-1} />
 											</label>
-											<div className={styles.checklistRowPreview}>{item.text || '\u00A0'}</div>
+											<div className={styles.checklistRowPreview}>{renderChecklistPreviewContent(item, item.text || '\u00A0')}</div>
 										</li>
 									))}
 								</ul>
@@ -1893,7 +1943,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 													<label className={styles.checklistCheckboxHitArea} aria-hidden="true">
 														<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly tabIndex={-1} />
 													</label>
-													<div className={styles.checklistRowPreview}>{item.text || '\u00A0'}</div>
+													<div className={styles.checklistRowPreview}>{renderChecklistPreviewContent(item, item.text || '\u00A0')}</div>
 												</li>
 											))}
 										</ul>
@@ -2245,7 +2295,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 						<div className={styles.checklistToolbarSlot}>
-							<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} />
+												<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} onMakeChecklistCount={!readOnly && activeChecklistRowItem && !isChecklistCountItem(activeChecklistRowItem) ? makeActiveChecklistCount : undefined} onIncrementChecklistCount={!readOnly && activeChecklistCountItem ? incrementActiveChecklistCount : undefined} onDecrementChecklistCount={!readOnly && activeChecklistCountItem ? decrementActiveChecklistCount : undefined} onRemoveChecklistCount={!readOnly && activeChecklistCountItem ? removeActiveChecklistCount : undefined} />
 						</div>
 						{/* Keyboard-open branch:
 						    Checklist mode does not use the generic rich-text viewport above, so we add
@@ -2300,15 +2350,19 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 													// add a new row without forcing the user to uncheck an item first.
 													<li className={styles.checklistComposerRow}>
 														<div className={styles.dragHandle} aria-hidden="true" />
-														<input type="checkbox" className={styles.checklistCheckbox} checked={false} readOnly tabIndex={-1} aria-hidden="true" />
-														<button
-															type="button"
-															className={styles.checklistAddItemButton}
-															onClick={() => addChecklistItem()}
-															aria-label={checklistAddItemLabel}
-														>
-															{checklistAddItemLabel}
-														</button>
+														<div className={styles.checklistComposerActions}>
+															<div className={styles.checklistComposerAction}>
+																<input type="checkbox" className={styles.checklistCheckbox} checked={false} readOnly tabIndex={-1} aria-hidden="true" />
+																<button
+																	type="button"
+																	className={styles.checklistAddItemButton}
+																	onClick={() => addChecklistItem()}
+																	aria-label={checklistAddItemLabel}
+																>
+																	{checklistAddItemLabel}
+																</button>
+															</div>
+														</div>
 													</li>
 												) : null}
 											{activeItems.map((item, index) => (
@@ -2373,15 +2427,19 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<ul className={styles.checklistComposer}>
 									<li className={styles.checklistComposerRow}>
 										<div className={styles.dragHandle} aria-hidden="true" />
-										<input type="checkbox" className={styles.checklistCheckbox} checked={false} readOnly tabIndex={-1} aria-hidden="true" />
-										<button
-											type="button"
-											className={styles.checklistAddItemButton}
-											onClick={() => addChecklistItem()}
-											aria-label={checklistAddItemLabel}
-										>
-											{checklistAddItemLabel}
-										</button>
+										<div className={styles.checklistComposerActions}>
+											<div className={styles.checklistComposerAction}>
+												<input type="checkbox" className={styles.checklistCheckbox} checked={false} readOnly tabIndex={-1} aria-hidden="true" />
+												<button
+													type="button"
+													className={styles.checklistAddItemButton}
+													onClick={() => addChecklistItem()}
+													aria-label={checklistAddItemLabel}
+												>
+													{checklistAddItemLabel}
+												</button>
+											</div>
+										</div>
 									</li>
 								</ul>
 							) : null}
@@ -2411,7 +2469,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 														<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 													</label>
 													<div className={styles.checklistRowPreview}>
-														{renderRichPreview(getChecklistItemRichPreviewJson(checklistMapsById.get(item.id) ?? null)) || item.text || '\u00A0'}
+														{renderChecklistPreviewContent(item, renderRichPreview(getChecklistItemRichPreviewJson(checklistMapsById.get(item.id) ?? null)) || item.text || '\u00A0')}
 													</div>
 												</li>
 											) : (
@@ -2806,6 +2864,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						onCreateUrlPreview={handleCreateUrlPreview}
 						noteAutoScrollEnabled={noteAutoScrollEnabled}
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
+						onMakeChecklistCount={type === 'checklist' && activeChecklistRowItem && !isChecklistCountItem(activeChecklistRowItem) ? makeActiveChecklistCount : undefined}
+						onIncrementChecklistCount={type === 'checklist' && activeChecklistCountItem ? incrementActiveChecklistCount : undefined}
+						onDecrementChecklistCount={type === 'checklist' && activeChecklistCountItem ? decrementActiveChecklistCount : undefined}
+						onRemoveChecklistCount={type === 'checklist' && activeChecklistCountItem ? removeActiveChecklistCount : undefined}
 						copyMode={type === 'text' ? copyMode : undefined}
 						onCopyModeChange={type === 'text' ? setCopyMode : undefined}
 					/>

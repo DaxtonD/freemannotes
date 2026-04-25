@@ -8,6 +8,14 @@
 			(function () {
 				var ua = window.navigator.userAgent || '';
 				var isAndroid = /Android/i.test(ua);
+				// Lock the viewport before React boots so iOS Safari and installed PWAs
+				// never inherit a stale zoomed/text-autosized launch state.
+				var isIOS = /iPad|iPhone|iPod/.test(ua) || (window.navigator.platform === 'MacIntel' && window.navigator.maxTouchPoints > 1);
+				var isWebkit = /WebKit/i.test(ua);
+				var isCriOS = /CriOS/i.test(ua);
+				var isFxiOS = /FxiOS/i.test(ua);
+				var isEdgiOS = /EdgiOS/i.test(ua);
+				var isIosSafari = isIOS && isWebkit && !isCriOS && !isFxiOS && !isEdgiOS;
 				var isStandalone = Boolean(
 					window.matchMedia &&
 						(window.matchMedia('(display-mode: standalone)').matches ||
@@ -15,9 +23,11 @@
 							window.matchMedia('(display-mode: minimal-ui)').matches)
 				);
 				var isAndroidStandalonePwa = isAndroid && (isStandalone || document.referrer.indexOf('android-app://') === 0);
-				if (!isAndroidStandalonePwa) return;
+				if (!isAndroidStandalonePwa && !isIosSafari) return;
 
-				document.documentElement.classList.add('android-standalone-pwa');
+				if (isAndroidStandalonePwa) {
+					document.documentElement.classList.add('android-standalone-pwa');
+				}
 				var viewportMeta = document.querySelector('meta[name="viewport"]');
 				if (viewportMeta) {
 					viewportMeta.setAttribute(

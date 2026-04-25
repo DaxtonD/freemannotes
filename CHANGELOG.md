@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.3.0 - 2026-04-24
+
+### Added
+- **Checklist rows can now become count items across editors, cards, and shared views.** Checklist items support an optional numeric prefix, with toolbar actions to create, increment, decrement, and remove count rows, and the new count state now flows through note editors, note cards, public shares, workspace image search text, and checklist data bindings.
+
+### Changed
+- **Startup hydration now seeds the app shell from local cache before React finishes booting.** Device appearance, workspace list, note order, labels, collections, and reminder state are hydrated up front so workspace switches and app relaunches feel immediate instead of waiting on IndexedDB and network round-trips.
+- **Masonry layout now reuses viewport-aware local layout snapshots.** NoteGrid persists per-device column slots, rects, and note-order hints so the first visible cards can render in stable positions sooner on warm launches.
+- **Network-sensitive image loading now prefers lightweight previews on poor connections.** Image viewers, note media panels, and workspace galleries favor cached thumbnails and progressive previews sooner, while remote media requests and push endpoints now use explicit request timeouts.
+- **Workspace pickers and sidebar rows now surface owner context more clearly.** Shared workspace rows display owner identity more consistently in the sidebar and switcher UI, while collaborator invites reject duplicate identifiers before making a server request.
+- **Verified Vite builds now preserve nested build artifacts.** The shared Vite config keeps nested inject-manifest builds from emptying the outDir mid-build, matching the verified `dist-build-temp` publish flow.
+
+### Fixed
+- **Fresh and warm launches no longer hold the splash screen until every note finishes loading.** The grid now dismisses startup loading as soon as the viewport-visible cards are loaded, measured, and stable, while still guarding against empty-card flashes during the first WebSocket sync.
+- **Server dev shutdowns no longer randomly exit with code 1 during reconnect-heavy sessions.** Graceful shutdown now terminates active WebSocket clients, closes lingering HTTP keep-alive connections, and logs uncaught synchronous exceptions instead of crashing silently.
+- **Pasted rich text no longer squashes note-card previews.** Multi-block clipboard HTML now falls back to the normal line-aligned preview clamp when block-boundary clamping would collapse the card to a single short paragraph.
+- **iOS Safari and iOS installed PWA launches no longer appear globally zoomed and cropped.** The app now applies locked viewport settings earlier for iOS Safari and stabilizes text autosizing so the shell opens at the correct scale.
+- **Queued note-image previews survive the handoff to the real uploaded image more smoothly.** Successful uploads now promote the queued preview into the remote preview cache instead of dropping to a blank placeholder while metadata refresh catches up.
+- **Image URL imports fail fast on invalid input instead of queueing unusable jobs.** The Add Image flow now validates `http://` and `https://` URLs before enqueueing them.
+
 ## 1.2.33 - 2026-04-20
 
 ### Fixed
