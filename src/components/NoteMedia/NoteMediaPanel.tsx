@@ -2,6 +2,7 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faImage, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
+import { getConnectionQuality, subscribeConnectionQualityChange } from '../../core/networkQuality';
 import { deleteNoteImage, type NoteImageRecord } from '../../core/noteMediaApi';
 import {
 	deleteQueuedNoteImage,
@@ -34,7 +35,7 @@ type NoteMediaPanelProps = {
 };
 
 type LocalPreviewItem = QueuedNoteImageRow & {
-	previewUrl: string;
+	previewUrl: string | null;
 };
 
 type ViewerState = {
@@ -163,14 +164,22 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	}, [refresh]);
 
 	React.useEffect(() => {
-		const nextItems = queuedImages.map((row) => ({
-			...row,
-			previewUrl: URL.createObjectURL(row.blob as Blob),
-		}));
+		const objectUrls: string[] = [];
+		const nextItems = queuedImages.map((row) => {
+			if (row.blob instanceof Blob) {
+				const previewUrl = URL.createObjectURL(row.blob);
+				objectUrls.push(previewUrl);
+				return { ...row, previewUrl };
+			}
+			return {
+				...row,
+				previewUrl: typeof row.sourceUrl === 'string' && row.sourceUrl.trim().length > 0 ? row.sourceUrl.trim() : null,
+			};
+		});
 		setLocalPreviewItems(nextItems);
 		return () => {
-			for (const item of nextItems) {
-				URL.revokeObjectURL(item.previewUrl);
+			for (const previewUrl of objectUrls) {
+				URL.revokeObjectURL(previewUrl);
 			}
 		};
 	}, [queuedImages]);
@@ -198,9 +207,16 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		};
 		window.addEventListener(eventName, onChanged as EventListener);
 		window.addEventListener('online', onOnline);
+		const unsubscribeConnection = subscribeConnectionQualityChange(() => {
+			if (getConnectionQuality() === 'good' && props.authUserId) {
+				void flushQueuedNoteImages(props.authUserId);
+			}
+			void refresh();
+		});
 		return () => {
 			window.removeEventListener(eventName, onChanged as EventListener);
 			window.removeEventListener('online', onOnline);
+			unsubscribeConnection();
 		};
 	}, [props.authUserId, props.docId, refresh]);
 
@@ -326,10 +342,14 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			deleteDisabled: deletingId === image.id,
 		})),
 		...localPreviewItems.map((item, index) => ({
-			src: item.previewUrl,
+			src: item.previewUrl || item.sourceUrl || '',
 			fallbackThumbnailBlob: null,
 			thumbnailUrl: null,
-			title: item.fileName ? item.fileName.replace(/\.[^.]+$/, '') : `${t('media.queuedImageLabel')} ${index + 1}`,
+			title: item.fileName
+				? item.fileName.replace(/\.[^.]+$/, '')
+				: item.sourceUrl
+					? item.sourceUrl.replace(/^https?:\/\//i, '')
+					: `${t('media.queuedImageLabel')} ${index + 1}`,
 			subtitle: item.lastError || `${t('media.queuedState')} ${formatRelativeDate(item.createdAt, locale)}`,
 			onDelete: props.canEdit ? () => void handleDeleteQueued(item) : undefined,
 		})),
@@ -503,10 +523,16 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 								>
 									<div className={styles.thumbWrap}>
 										<span className={styles.badge}>{item.syncStatus === 'failed' ? t('media.failedBadge') : t('media.queuedBadge')}</span>
-										<img className={styles.thumb} src={item.previewUrl} alt={item.fileName ?? ''} />
+										{item.previewUrl ? (
+											<img className={styles.thumb} src={item.previewUrl} alt={item.fileName ?? item.sourceUrl ?? ''} />
+										) : (
+											<div className={`${styles.thumb} ${styles.thumbPlaceholder}`} aria-hidden="true">
+												<FontAwesomeIcon icon={faImage} />
+											</div>
+										)}
 									</div>
 									<div className={styles.meta}>
-										<span className={styles.title}>{getDisplayImageTitle(item.fileName, `${t('media.queuedImageLabel')} ${index + 1}`)}</span>
+										<span className={styles.title}>{item.fileName ? getDisplayImageTitle(item.fileName, `${t('media.queuedImageLabel')} ${index + 1}`) : (item.sourceUrl ? item.sourceUrl.replace(/^https?:\/\//i, '') : `${t('media.queuedImageLabel')} ${index + 1}`)}</span>
 										<span className={styles.caption}>{formatBytes(item.byteSize)}</span>
 									</div>
 								</button>
@@ -519,6 +545,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			{viewerState ? (
 				<NoteImageViewer
 					src={viewerState.items[viewerState.index]?.src || ''}
+					thumbnailUrl={viewerState.items[viewerState.index]?.thumbnailUrl || null}
 					fallbackThumbnailBlob={viewerState.items[viewerState.index]?.fallbackThumbnailBlob}
 					title={viewerState.items[viewerState.index]?.title || ''}
 					subtitle={viewerState.items[viewerState.index]?.subtitle}

@@ -100,6 +100,33 @@ function getDisplayLabel(user: { name?: string | null; email?: string | null; id
 	return user.name || user.email || user.id || '';
 }
 
+function normalizeCollaboratorIdentifier(value: unknown): string {
+	return String(value ?? '').trim().toLowerCase();
+}
+
+function isDuplicateCollaboratorIdentifier(snapshot: NoteShareCollaboratorSnapshot, rawIdentifier: string): boolean {
+	const normalizedIdentifier = normalizeCollaboratorIdentifier(rawIdentifier);
+	if (!normalizedIdentifier) return false;
+	const matches = (...values: Array<unknown>): boolean => values.some((value) => normalizeCollaboratorIdentifier(value) === normalizedIdentifier);
+	if (matches(snapshot.currentUser?.id, snapshot.currentUser?.email, snapshot.currentUser?.name, snapshot.currentUserId)) {
+		return true;
+	}
+	if (matches(snapshot.sharedBy?.id, snapshot.sharedBy?.email, snapshot.sharedBy?.name)) {
+		return true;
+	}
+	for (const collaborator of snapshot.collaborators) {
+		if (matches(collaborator.id, collaborator.userId, collaborator.user?.id, collaborator.user?.email, collaborator.user?.name)) {
+			return true;
+		}
+	}
+	for (const invitation of snapshot.pendingInvitations) {
+		if (matches(invitation.inviteeId, invitation.inviteeEmail, invitation.inviteeName)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /** Avatar image with automatic fallback to initial letter when the image fails to load (e.g. offline SW cache miss). */
 function MemberAvatar({ src, initial, className, fallbackClassName }: { src: string | null | undefined; initial: string; className: string; fallbackClassName: string }): React.JSX.Element {
 	const [broken, setBroken] = React.useState(false);
@@ -316,6 +343,10 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		setSuccess(null);
 		try {
 			const normalizedIdentifier = identifier.trim();
+			if (isDuplicateCollaboratorIdentifier(snapshot, normalizedIdentifier)) {
+				setError(t('share.duplicateCollaborator'));
+				return;
+			}
 			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
 				await queueNoteShareCollaboratorInviteAction({ userId: props.authUserId, docId: props.docId, identifier: normalizedIdentifier, role });
 				setIdentifier('');
@@ -344,7 +375,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		} finally {
 			setBusy(false);
 		}
-	}, [identifier, load, loadCachedState, props, role, t]);
+	}, [identifier, load, loadCachedState, props, role, snapshot, t]);
 
 	const handleGenerateShareLink = React.useCallback(async (forceRefresh: boolean) => {
 		if (!props.docId) return;

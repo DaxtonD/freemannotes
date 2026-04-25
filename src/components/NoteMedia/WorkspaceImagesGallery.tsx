@@ -3,7 +3,9 @@ import type * as Y from 'yjs';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faImage, faMagnifyingGlass, faTag, faUsers } from '@fortawesome/free-solid-svg-icons';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
+import { getChecklistTextWithCountPrefix } from '../../core/checklistCounts';
 import { useI18n } from '../../core/i18n';
+import { getConnectionQuality, subscribeConnectionQualityChange } from '../../core/networkQuality';
 import { readNoteFromDoc } from '../../core/noteModel';
 import {
 	readCachedNoteShareCollaborators,
@@ -198,7 +200,7 @@ function collaboratorMatchesFilter(summary: NoteCardCollaboratorSummary | null |
 function buildSearchableNoteBody(doc: Y.Doc | null, noteId: string): { title: string; bodyText: string } {
 	if (!doc) return { title: '', bodyText: '' };
 	const note = readNoteFromDoc(doc, noteId);
-	const checklistText = Array.isArray(note.items) ? note.items.map((item) => item.text).join(' ') : '';
+	const checklistText = Array.isArray(note.items) ? note.items.map((item) => getChecklistTextWithCountPrefix(item)).join(' ') : '';
 	return {
 		title: String(note.title || '').trim(),
 		bodyText: [String(note.content || '').trim(), checklistText].filter(Boolean).join(' '),
@@ -529,9 +531,16 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 		};
 		window.addEventListener(eventName, onChanged as EventListener);
 		window.addEventListener('online', onOnline);
+		const unsubscribeConnection = subscribeConnectionQualityChange(() => {
+			if (getConnectionQuality() !== 'good') return;
+			for (const docId of filteredVisibleDocIds) {
+				void loadMediaForDoc(docId, true);
+			}
+		});
 		return () => {
 			window.removeEventListener(eventName, onChanged as EventListener);
 			window.removeEventListener('online', onOnline);
+			unsubscribeConnection();
 		};
 	}, [filteredVisibleDocIdSet, filteredVisibleDocIds, loadMediaForDoc]);
 
@@ -631,6 +640,7 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 
 	const viewerItems = React.useMemo(() => galleryItems.map((item, index) => ({
 		src: item.originalUrl,
+		thumbnailUrl: item.thumbnailUrl,
 		fallbackThumbnailBlob: item.previewBlob,
 		title: item.noteTitle || `${t('media.imageLabel')} ${index + 1}`,
 		subtitle: [item.collectionPath ? `Collection: ${item.collectionPath}` : null, item.labelNames.length > 0 ? `Labels: ${item.labelNames.join(', ')}` : null].filter(Boolean).join(' · ') || null,
@@ -739,6 +749,7 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 			{viewerState ? (
 				<NoteImageViewer
 					src={viewerState.items[viewerState.index]?.src || ''}
+					thumbnailUrl={viewerState.items[viewerState.index]?.thumbnailUrl || null}
 					fallbackThumbnailBlob={viewerState.items[viewerState.index]?.fallbackThumbnailBlob || null}
 					title={viewerState.items[viewerState.index]?.title || t('media.imageLabel')}
 					subtitle={viewerState.items[viewerState.index]?.subtitle || null}

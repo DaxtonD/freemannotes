@@ -28,6 +28,7 @@ import {
 	replaceRichFragmentFromJson,
 	syncChecklistItemPlainText,
 } from './richText';
+import { normalizeChecklistCountValue } from './checklistCounts';
 import { setNotePreviewLinksOnDoc } from './noteLinks';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -47,6 +48,8 @@ export interface ChecklistItemData {
 	completed: boolean;
 	/** Optional parent row id for one-level nesting. */
 	parentId: string | null;
+	/** Optional count prefix for rows such as "1 - item". */
+	countValue?: number | null;
 }
 
 /**
@@ -275,6 +278,7 @@ export function initChecklistNoteDoc(
 			m.set('text', plainText);
 			m.set('completed', item.completed);
 			m.set('parentId', typeof item.parentId === 'string' && item.parentId.trim().length > 0 ? item.parentId : null);
+			m.set('countValue', normalizeChecklistCountValue(item.countValue));
 			yChecklist.push([m]);
 
 			// Populate nested rich content only after the map is attached to the checklist
@@ -376,6 +380,7 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 					typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
 						? String(m.get('parentId')).trim()
 						: null,
+				countValue: normalizeChecklistCountValue(m.get('countValue')),
 			}))
 			.filter((item) => item.id.length > 0);
 	}

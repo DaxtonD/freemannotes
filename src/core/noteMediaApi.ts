@@ -1,15 +1,16 @@
-async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const response = await fetch(input, {
+import { fetchJsonWithTimeout } from './network';
+
+async function fetchJson<T>(
+	input: RequestInfo | URL,
+	init: RequestInit = {},
+	options: { requestName?: string; timeoutMs?: number } = {}
+): Promise<T> {
+	return fetchJsonWithTimeout<T>(input, {
 		credentials: 'include',
+		requestName: options.requestName || 'note-media',
+		timeoutMs: options.timeoutMs ?? 4000,
 		...init,
 	});
-	const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-	const body = contentType.includes('application/json') ? await response.json().catch(() => null) : null;
-	if (!response.ok) {
-		const message = body && typeof body.error === 'string' ? body.error : `Request failed (${response.status})`;
-		throw new Error(message);
-	}
-	return body as T;
 }
 
 export type NoteImageRecord = {
@@ -74,7 +75,10 @@ export type NoteSearchResponse = {
 };
 
 export async function listNoteImages(docId: string): Promise<NoteImageListResponse> {
-	return fetchJson(`/api/note-media?docId=${encodeURIComponent(docId)}`);
+	return fetchJson(`/api/note-media?docId=${encodeURIComponent(docId)}`, {}, {
+		requestName: 'note-media-list',
+		timeoutMs: 4000,
+	});
 }
 
 export async function uploadNoteImages(docId: string, files: readonly File[]): Promise<NoteImageListResponse> {
@@ -86,6 +90,9 @@ export async function uploadNoteImages(docId: string, files: readonly File[]): P
 	return fetchJson('/api/note-media', {
 		method: 'POST',
 		body: formData,
+	}, {
+		requestName: 'note-media-upload',
+		timeoutMs: 90000,
 	});
 }
 
@@ -94,12 +101,18 @@ export async function importNoteImageUrl(docId: string, imageUrl: string): Promi
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ docId, imageUrl }),
+	}, {
+		requestName: 'note-media-import-url',
+		timeoutMs: 45000,
 	});
 }
 
 export async function deleteNoteImage(imageId: string): Promise<{ ok: true; imageId: string }> {
 	return fetchJson(`/api/note-media/${encodeURIComponent(imageId)}`, {
 		method: 'DELETE',
+	}, {
+		requestName: 'note-media-delete',
+		timeoutMs: 10000,
 	});
 }
 

@@ -199,7 +199,7 @@ docker run -d \
   -e AUTH_JWT_SECRET=replace-this \
   -e AUTH_COOKIE_SECURE=true \
   -e DATABASE_URL=postgresql://user:password@host:5432/freemannotes?schema=public \
-  ghcr.io/daxtond/freemannotes:1.2.31
+  ghcr.io/daxtond/freemannotes:1.3.0
 ```
 
 Optional:
@@ -214,7 +214,7 @@ Optional:
 
 Works as a standard custom container:
 
-* Repository: `ghcr.io/daxtond/freemannotes:1.2.31` or `ghcr.io/daxtond/freemannotes:latest`
+* Repository: `ghcr.io/daxtond/freemannotes:1.3.0` or `ghcr.io/daxtond/freemannotes:latest`
 * Port: `27015`
 * AppData: `/app/uploads`
 * Set:

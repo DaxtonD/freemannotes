@@ -1,10 +1,12 @@
 import React from 'react';
+import { getChecklistTextWithCountPrefix } from '../../core/checklistCounts';
 import styles from './PublicSharePage.module.css';
 
 type SharedChecklistItem = {
 	id?: string;
 	text?: string;
 	completed?: boolean;
+	countValue?: number | null;
 };
 
 type SharedSnapshot = {
@@ -89,7 +91,7 @@ export function PublicSharePage(props: Props): React.JSX.Element {
 				{!busy && !error && checklist.length > 0 ? (
 					<ul className={styles.checklist}>
 						{checklist.map((item, index) => {
-							const text = typeof item?.text === 'string' ? item.text : '';
+							const text = getChecklistTextWithCountPrefix(item);
 							const completed = Boolean(item?.completed);
 							return (
 								<li key={item?.id || `${index}`} className={`${styles.checklistItem}${completed ? ` ${styles.checklistItemCompleted}` : ''}`}>

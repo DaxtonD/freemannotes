@@ -24,6 +24,10 @@ html {
 	   disappearing during drag-and-drop doesn't shift the grid layout and
 	   trigger ResizeObserver-based column recalculation. */
 	scrollbar-gutter: stable;
+	/* Prevent iOS Safari text autosizing from inflating the mobile layout and
+	   making the whole app appear zoomed/cropped after launch or rotation. */
+	-webkit-text-size-adjust: 100%;
+	text-size-adjust: 100%;
 }
 
 html.body-scroll-locked,

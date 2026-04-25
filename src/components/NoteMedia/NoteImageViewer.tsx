@@ -9,6 +9,7 @@ import styles from './NoteImageViewer.module.css';
 
 type NoteImageViewerProps = {
 	src: string;
+	thumbnailUrl?: string | null;
 	fallbackThumbnailBlob?: Blob | null;
 	title: string;
 	subtitle?: string | null;
@@ -35,6 +36,7 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 	const { t } = useI18n();
 	const resolvedImage = useResolvedNoteImageSource({
 		fullUrl: props.src,
+		thumbnailUrl: props.thumbnailUrl || null,
 		offlineThumbnailBlob: props.fallbackThumbnailBlob || null,
 		mode: 'viewer',
 	});

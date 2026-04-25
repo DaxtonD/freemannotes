@@ -12,6 +12,7 @@ import {
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import type { ChecklistItem } from '../../core/bindings';
+import { getChecklistCountPrefix, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getDeviceId } from '../../core/deviceId';
 import { useI18n } from '../../core/i18n';
@@ -70,6 +71,31 @@ export type NoteCardProps = {
 type NoteType = 'text' | 'checklist';
 
 type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null; completedAt: number | null };
+
+function renderChecklistCardContent(item: ChecklistItem, content: React.ReactNode): React.ReactNode {
+	const prefix = getChecklistCountPrefix(item);
+	if (!prefix) return content;
+	const prefixNode = <span className={styles.checklistCountPrefix}>{prefix}</span>;
+	if (Array.isArray(content) && content.length > 0) {
+		const [firstNode, ...rest] = content;
+		if (React.isValidElement(firstNode)) {
+			const firstElement = firstNode as React.ReactElement<{ children?: React.ReactNode }>;
+			return [
+				React.cloneElement(firstElement, {
+					children: <>{prefixNode}{firstElement.props.children}</>,
+				}),
+				...rest,
+			];
+		}
+	}
+	if (React.isValidElement(content)) {
+		const element = content as React.ReactElement<{ children?: React.ReactNode }>;
+		return React.cloneElement(element, {
+			children: <>{prefixNode}{element.props.children}</>,
+		});
+	}
+	return <>{prefixNode}{content}</>;
+}
 
 // Note cards are opened from pointer-up, so claim the active touch gesture at module
 // scope and suppress competing touches until the first gesture resolves.
@@ -163,6 +189,7 @@ function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCa
 				typeof m.get('parentId') === 'string' && String(m.get('parentId')).trim().length > 0
 					? String(m.get('parentId')).trim()
 					: null,
+			countValue: normalizeChecklistCountValue(m.get('countValue')),
 		}))
 		.filter((item) => item.id.length > 0);
 }
@@ -901,12 +928,37 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 		let frameId = 0;
 		const measure = (): void => {
+			const card = cardRef.current;
 			const body = bodyRef.current;
 			const preview = contentPreviewRef.current;
-			if (!body || !preview) return;
+			if (!card || !body || !preview) return;
 
-			const availableHeightPx = Math.floor(body.clientHeight);
+			// Measure with the preview's current clamp temporarily removed so content
+			// height is always based on the natural rich-text flow.
+			const previousInlineMaxHeight = preview.style.maxHeight;
+			if (previousInlineMaxHeight) {
+				preview.style.maxHeight = '';
+			}
 			const fullContentHeightPx = Math.ceil(preview.scrollHeight);
+			if (previousInlineMaxHeight) {
+				preview.style.maxHeight = previousInlineMaxHeight;
+			}
+
+			const cardStyle = window.getComputedStyle(card);
+			const bodyStyle = window.getComputedStyle(body);
+			const headerHeightPx = headerRef.current?.offsetHeight ?? 0;
+			const metaHeightPx = metaChipRowRef.current?.offsetHeight ?? 0;
+			const linkPreviewHeightPx = linkPreviewRailRef.current && linkPreviewRailRef.current.childElementCount > 0
+				? linkPreviewRailRef.current.offsetHeight
+				: 0;
+			const cardPaddingBottomPx = Number.parseFloat(cardStyle.paddingBottom || '0') || 0;
+			const bodyPaddingVerticalPx =
+				(Number.parseFloat(bodyStyle.paddingTop || '0') || 0) +
+				(Number.parseFloat(bodyStyle.paddingBottom || '0') || 0);
+			const availableHeightPx = Math.floor(
+				maxCardHeightPx - headerHeightPx - metaHeightPx - linkPreviewHeightPx - cardPaddingBottomPx - bodyPaddingVerticalPx
+			);
+
 			if (availableHeightPx <= 0 || fullContentHeightPx <= availableHeightPx + 1) {
 				setTextPreviewLayout((previous) => previous.maxHeightPx === null && !previous.isOverflowing
 					? previous
@@ -914,7 +966,6 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				return;
 			}
 
-			const bodyStyle = window.getComputedStyle(body);
 			const fontSizePx = Number.parseFloat(bodyStyle.fontSize || '0') || 16;
 			const parsedLineHeightPx = Number.parseFloat(bodyStyle.lineHeight || '0') || 0;
 			const lineHeightPx = parsedLineHeightPx > 0 ? parsedLineHeightPx : fontSizePx * 1.35;
@@ -932,9 +983,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			const lineAlignedHeightPx = lineHeightPx > 0
 				? Math.floor(availableHeightPx / lineHeightPx) * lineHeightPx
 				: availableHeightPx;
+			const fallbackHeightPx = Math.max(
+				1,
+				lineAlignedHeightPx > 0 ? Math.min(availableHeightPx, Math.floor(lineAlignedHeightPx)) : availableHeightPx
+			);
 			const resolvedMaxHeightPx = blockElements.length > 1 && lastFullyVisibleBlockBottomPx > 0
-				? Math.min(availableHeightPx, lastFullyVisibleBlockBottomPx)
-				: Math.max(1, lineAlignedHeightPx > 0 ? Math.min(availableHeightPx, Math.floor(lineAlignedHeightPx)) : availableHeightPx);
+				// Rich clipboard HTML often becomes multiple top-level blocks. If the
+				// next block is tall, clamping to the previous block boundary alone can
+				// squash the card down to a single short paragraph. Keep the safer
+				// line-aligned fallback whenever it uses more of the available height.
+				? Math.min(availableHeightPx, Math.max(lastFullyVisibleBlockBottomPx, fallbackHeightPx))
+				: fallbackHeightPx;
 
 			setTextPreviewLayout((previous) => {
 				if (previous.isOverflowing && previous.maxHeightPx !== null && Math.abs(previous.maxHeightPx - resolvedMaxHeightPx) < 0.5) {
@@ -1398,7 +1457,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 											/>
 										</span>
 										<div className={`${styles.checklistText}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
-											{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text}
+											{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text)}
 										</div>
 									</li>
 								))}
@@ -1439,7 +1498,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 												<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 											</span>
 											<div className={styles.checklistText}>
-												{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false) ?? item.text}
+												{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false) ?? item.text)}
 											</div>
 										</li>
 									) : (
@@ -1463,7 +1522,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 												/>
 											</span>
 											<div className={`${styles.checklistText} ${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
-												{renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text}
+												{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text)}
 											</div>
 										</li>
 									))}

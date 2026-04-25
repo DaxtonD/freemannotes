@@ -1355,8 +1355,23 @@
 	padding-left: 2px;
 }
 
+.sidebar-workspace-row-summary {
+	position: absolute;
+	right: 7px;
+	top: 50%;
+	transform: translateY(-50%);
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	z-index: 1;
+}
+
 .sidebar-workspace-row.has-share-action .sidebar-workspace-item {
 	padding-right: 40px;
+}
+
+.sidebar-workspace-row.has-share-action.has-owner-avatar .sidebar-workspace-item {
+	padding-right: 68px;
 }
 
 .sidebar-workspace-row::before {
@@ -1411,10 +1426,10 @@
 }
 
 .sidebar-workspace-share {
-	position: absolute;
-	right: 9px;
-	top: 50%;
-	transform: translateY(-50%) translateX(4px);
+	position: relative;
+	right: auto;
+	top: auto;
+	transform: translateX(4px);
 	border: 0;
 	background: transparent;
 	color: color-mix(in srgb, var(--color-text) 70%, var(--color-text-muted));
@@ -1446,7 +1461,7 @@
 	.sidebar-submenu-shell.is-open .sidebar-workspace-row:focus-within .sidebar-workspace-share {
 	opacity: 1;
 	pointer-events: auto;
-	transform: translateY(-50%) translateX(0);
+	transform: translateX(0);
 }
 
 .sidebar-workspace-share:hover,
@@ -1476,10 +1491,10 @@
 }
 
 .sidebar-workspace-owner-avatar {
-	position: absolute;
-	right: 7px;
-	top: 50%;
-	transform: translateY(-50%);
+	position: relative;
+	right: auto;
+	top: auto;
+	transform: none;
 	width: 22px;
 	height: 22px;
 	padding: 0;
@@ -1522,8 +1537,16 @@
 		padding-right: 46px;
 	}
 
-	.sidebar-workspace-owner-avatar {
+	.sidebar-workspace-row.has-share-action.has-owner-avatar .sidebar-workspace-item {
+		padding-right: 80px;
+	}
+
+	.sidebar-workspace-row-summary {
 		right: 3px;
+		gap: 6px;
+	}
+
+	.sidebar-workspace-owner-avatar {
 		width: 32px;
 		height: 32px;
 		border-color: transparent;
@@ -1550,7 +1573,7 @@
 .sidebar-workspace-row.is-owner-overlay-open .sidebar-workspace-share {
 	opacity: 0;
 	pointer-events: none;
-	transform: translateY(-50%) scale(0.82);
+	transform: scale(0.82);
 }
 
 .sidebar-workspace-owner-inline-overlay {
@@ -2850,13 +2873,16 @@
 		padding-right: 42px;
 	}
 
+	.sidebar-workspace-row.has-share-action.has-owner-avatar .sidebar-workspace-item {
+		padding-right: 80px;
+	}
+
 	.sidebar-workspace-share {
-		right: 8px;
 		width: 28px;
 		height: 28px;
 		opacity: 1;
 		pointer-events: auto;
-		transform: translateY(-50%) translateX(0);
+		transform: translateX(0);
 		background: transparent;
 		color: color-mix(in srgb, var(--color-text) 68%, var(--color-text-muted));
 	}

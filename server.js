@@ -1341,8 +1341,20 @@ async function gracefulShutdown(signal) {
 
 	// 4. Close the HTTP + WebSocket server.
 	try {
+		// Terminate all active WebSocket connections so server.close() doesn't
+		// hang waiting for long-lived WS connections to drain naturally.
+		for (const client of wss.clients) {
+			client.terminate();
+		}
+		for (const client of metadataWss.clients) {
+			client.terminate();
+		}
 		wss.close();
 		metadataWss.close();
+		// Force-close any remaining HTTP keep-alive connections (Node 18.2+).
+		if (typeof server.closeAllConnections === 'function') {
+			server.closeAllConnections();
+		}
 		server.close(() => {
 			console.info('[server] HTTP server closed');
 			process.exit(0);
@@ -1367,6 +1379,13 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // is a non-critical cache layer, these should never bring down the server.
 process.on('unhandledRejection', (reason) => {
 	console.error('[server] Unhandled promise rejection (server continues):', reason);
+});
+
+// ── Safety net: prevent uncaught synchronous exceptions from crashing ────
+// Any throw that escapes all try/catch guards would otherwise terminate the
+// process with exit code 1. Log it and keep running.
+process.on('uncaughtException', (err) => {
+	console.error('[server] Uncaught exception (server continues):', err);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

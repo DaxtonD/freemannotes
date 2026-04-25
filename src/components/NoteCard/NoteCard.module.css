@@ -590,6 +590,11 @@
 	position: relative;
 }
 
+.checklistCountPrefix {
+	color: inherit;
+	white-space: pre;
+}
+
 
 /* Completed rows inherit the shared checklist text box so any future optical
    alignment nudges stay locked to the same checkbox/text baseline. */

@@ -662,7 +662,20 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 			setError(t('media.offlineRequiresAuth'));
 			return;
 		}
-		void queueNoteImageUrlForImport({ userId: props.authUserId, docId: props.docId!, imageUrl: imageUrl.trim() });
+		let normalizedUrl = '';
+		try {
+			const parsed = new URL(imageUrl.trim());
+			if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+				setError('Enter a valid http:// or https:// image URL.');
+				return;
+			}
+			normalizedUrl = parsed.toString();
+		} catch {
+			setError('Enter a valid image URL.');
+			return;
+		}
+		setError(null);
+		void queueNoteImageUrlForImport({ userId: props.authUserId, docId: props.docId!, imageUrl: normalizedUrl });
 		closeAfterKeyboardSettles(() => {
 			props.onUploaded?.({ queued: true, count: 1 });
 		});

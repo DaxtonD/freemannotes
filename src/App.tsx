@@ -51,7 +51,6 @@ import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid/NoteGrid';
 import type { NoteAttachmentBrowserKind } from './components/NoteAttachments/NoteAttachmentCountChip';
 import { type ChecklistItem } from './core/bindings';
-import { getDeviceId } from './core/deviceId';
 import {
 	clampFontScale,
 	clampNoteCardMaxHeightPx,
@@ -103,6 +102,7 @@ import {
 	readQueuedNoteImages,
 	readStoredRemoteNoteImages,
 	scheduleQueuedNoteImageFlush,
+	warmWorkspaceImageMetadata,
 } from './core/noteMediaStore';
 import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
 import {
@@ -116,6 +116,8 @@ import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
+import { clearCachedReminderStates, readCachedReminderStates, writeCachedReminderStates } from './core/reminderCache';
+import { useStartupHydration } from './core/StartupHydrationContext';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
 import { canEditWorkspaceContent, canManageWorkspace, getWorkspaceRoleLabelKey, normalizeWorkspaceRole, type WorkspaceRole } from './core/workspaceRoles';
@@ -133,6 +135,7 @@ import {
 
 const DOCUMENT_VIEWER_STATE_EVENT = 'freemannotes:document-viewer-state';
 import { getWorkspaceDisplayName, isPersonalWorkspace } from './core/workspaceDisplay';
+import { readWorkspaceListLocalCache, writeWorkspaceListLocalCache, clearWorkspaceListLocalCache } from './core/workspaceListLocalCache';
 import { clearWorkspaceSelectionCache, readWorkspaceSelectionCache, writeWorkspaceSelectionCache } from './core/workspaceSelectionCache';
 import { type ViewMode, cycleViewMode, loadViewMode, saveViewMode } from './core/viewMode';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from './core/bubbleZoom';
@@ -390,6 +393,7 @@ type OverlaySnapshot = {
 	isSendInviteOpen: boolean;
 	isWorkspaceSwitcherOpen: boolean;
 	collaboratorModalState: CollaboratorModalState | null;
+	noteImageModalState: NoteImageModalState | null;
 	noteAttachmentBrowserState: NoteAttachmentBrowserState | null;
 	/** Cross-workspace note viewer opened from bubble view. */
 	crossWorkspaceNote: { noteId: string; workspaceId: string; workspaceName: string } | null;
@@ -451,6 +455,7 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	isSendInviteOpen: false,
 	isWorkspaceSwitcherOpen: false,
 	collaboratorModalState: null,
+	noteImageModalState: null,
 	noteAttachmentBrowserState: null,
 	crossWorkspaceNote: null,
 	isMobileSidebarOpen: false,
@@ -497,7 +502,7 @@ const _restoredOverlay: OverlaySnapshot | null = (() => {
 		const raw = sessionStorage.getItem(SS_OVERLAY_KEY);
 		if (raw) {
 			const parsed = JSON.parse(raw) as OverlaySnapshot;
-			if (parsed.editorMode !== 'none' || parsed.selectedNoteId) {
+			if (hasOverlaySnapshotContent(parsed)) {
 				return parsed;
 			}
 		}
@@ -532,6 +537,7 @@ function hasOverlaySnapshotContent(snapshot: OverlaySnapshot): boolean {
 		|| snapshot.isSendInviteOpen
 		|| snapshot.isWorkspaceSwitcherOpen
 		|| snapshot.collaboratorModalState !== null
+		|| snapshot.noteImageModalState !== null
 		|| snapshot.noteAttachmentBrowserState !== null
 		|| snapshot.crossWorkspaceNote !== null
 		|| snapshot.isMobileSidebarOpen
@@ -583,10 +589,19 @@ function detectStandaloneDisplayMode(): boolean {
 
 function detectIosStandaloneDisplayMode(): boolean {
 	if (typeof window === 'undefined') return false;
+	return detectIosSafariBrowser() && detectStandaloneDisplayMode();
+}
+
+function detectIosSafariBrowser(): boolean {
+	if (typeof window === 'undefined') return false;
 	const navigatorValue = window.navigator;
 	const ua = navigatorValue.userAgent || '';
 	const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigatorValue.platform === 'MacIntel' && navigatorValue.maxTouchPoints > 1);
-	return isIOS && detectStandaloneDisplayMode();
+	const isWebkit = /WebKit/i.test(ua);
+	const isCriOS = /CriOS/i.test(ua);
+	const isFxiOS = /FxiOS/i.test(ua);
+	const isEdgiOS = /EdgiOS/i.test(ua);
+	return isIOS && isWebkit && !isCriOS && !isFxiOS && !isEdgiOS;
 }
 
 function detectAndroidStandaloneDisplayMode(): boolean {
@@ -665,6 +680,7 @@ function clearAuthCache(): void {
 export function App(): React.JSX.Element {
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
+	const startupHydration = useStartupHydration();
 	const { t, locale, locales, setLocale } = useI18n();
 	const [externalRoute, setExternalRoute] = React.useState<ExternalRoute | null>(() => readExternalRoute());
 	const [inviteRouteState, setInviteRouteState] = React.useState<{ status: 'idle' | 'accepting' | 'error'; message: string | null }>({
@@ -706,27 +722,31 @@ export function App(): React.JSX.Element {
 	// probeSession still runs in the background and will transition to 'unauth' if
 	// the server responds with an explicit 401/403 (expired session).
 	const canRestoreCachedAuthImmediately = Boolean(cachedAuth);
+	const hasWarmStartupCache = startupHydration.hasWarmCache;
 	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
 		canRestoreCachedAuthImmediately ? 'authed' : 'loading'
 	);
-	// Splash overlay: shown only after an explicit login (unauth → authed).
-	// On a normal page refresh the data comes from IndexedDB quickly, so we
-	// skip the splash and rely on the card shimmer instead.
+	// Splash overlay is startup-only and only shown when no local cache exists.
 	// gridReady → starts fade-out; splashGone → removes the DOM node entirely.
-	const [gridReady, setGridReady] = React.useState(false);
-	const [splashGone, setSplashGone] = React.useState(true); // hidden by default
+	const [gridReady, setGridReady] = React.useState(hasWarmStartupCache);
+	const [splashGone, setSplashGone] = React.useState(hasWarmStartupCache);
 	const splashTimerRef = React.useRef<number>(0);
 	const prevAuthStatusRef = React.useRef(authStatus);
 	// Detect unauth → authed transition (user just logged in from scratch).
 	// Using an effect so we get the previous value cleanly without render-side setState.
 	React.useEffect(() => {
-		if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed') {
+		if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed' && !hasWarmStartupCache) {
 			clearTimeout(splashTimerRef.current);
 			setGridReady(false);
 			setSplashGone(false); // show splash
 		}
 		prevAuthStatusRef.current = authStatus;
-	}, [authStatus]);
+	}, [authStatus, hasWarmStartupCache]);
+	React.useEffect(() => {
+		return () => {
+			clearTimeout(splashTimerRef.current);
+		};
+	}, []);
 	const initialRegistrationInviteRef = React.useRef(readRegistrationInviteFromUrl());
 	const initialRegistrationInvite = initialRegistrationInviteRef.current;
 	const [authMode, setAuthMode] = React.useState<'login' | 'register'>(initialRegistrationInvite.token ? 'register' : 'login');
@@ -809,12 +829,6 @@ export function App(): React.JSX.Element {
 			setPwaUpdateDismissed(false);
 		}
 	}, [pwaState.updateAvailable]);
-	const offlineReadyNoticeRef = React.useRef(false);
-	React.useEffect(() => {
-		if (!pwaState.offlineReady || offlineReadyNoticeRef.current) return;
-		offlineReadyNoticeRef.current = true;
-		showBriefDialog(t('prefs.offlineReadyToast'));
-	}, [pwaState.offlineReady, showBriefDialog, t]);
 	// When the user is not yet authenticated and no cached auth exists, show a
 	// minimal blank shell while the auth check completes (typically <200 ms).
 	// No spinner or icon — the grid skeleton makes the startup feel instant.
@@ -838,6 +852,15 @@ export function App(): React.JSX.Element {
 		} catch { /* ignore */ }
 		return new Set<string>();
 	})());
+	// Workspace switches should render from cache immediately; splash is startup-only.
+	const prevAuthWorkspaceIdForSplashRef = React.useRef<string | null>(authWorkspaceId);
+	React.useEffect(() => {
+		const prev = prevAuthWorkspaceIdForSplashRef.current;
+		prevAuthWorkspaceIdForSplashRef.current = authWorkspaceId;
+		if (prev !== null && authWorkspaceId !== null && prev !== authWorkspaceId) {
+			void logClientEvent('VIEW_SWITCH', { kind: 'workspace', from: prev, to: authWorkspaceId });
+		}
+	}, [authWorkspaceId]);
 	const [authOfflineMode, setAuthOfflineMode] = React.useState(false);
 	// Ref mirror of authOfflineMode so async callbacks (e.g. backgroundPreloadAllWorkspaces)
 	// can read the latest value without capturing a stale closure.
@@ -886,7 +909,12 @@ export function App(): React.JSX.Element {
 	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(_restoredOverlay?.isWorkspaceSwitcherOpen ?? false);
 	const [activeWorkspaceName, setActiveWorkspaceName] = React.useState<string | null>(null);
 	const [activeWorkspaceSystemKind, setActiveWorkspaceSystemKind] = React.useState<string | null>(null);
-	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>([]);
+	// Seed from localStorage so the sidebar workspace list is populated on the
+	// very first render, before the async IDB snapshot resolves. The IDB/network
+	// fetch will overwrite this with authoritative data shortly after mount.
+	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>(
+		() => startupHydration.workspaceList.length > 0 ? startupHydration.workspaceList : readWorkspaceListLocalCache(cachedAuth?.userId ?? ''),
+	);
 	const [sidebarWorkspacesBusy, setSidebarWorkspacesBusy] = React.useState(false);
 	const [sidebarWorkspacesError, setSidebarWorkspacesError] = React.useState<string | null>(null);
 	// sharedPlacements holds ALL placements (active workspace + every other SHARED_WITH_ME
@@ -943,12 +971,24 @@ export function App(): React.JSX.Element {
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(_restoredOverlay?.collaboratorModalState ?? null);
 	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(() => {
+		if (_restoredOverlay?.noteImageModalState) return _restoredOverlay.noteImageModalState;
 		try {
 			const raw = sessionStorage.getItem('__freemannotes_imageModal');
-			if (raw && _restoredOverlay) return JSON.parse(raw) as NoteImageModalState;
+			if (raw) return JSON.parse(raw) as NoteImageModalState;
 		} catch { /* */ }
 		return null;
 	});
+	React.useEffect(() => {
+		try {
+			if (noteImageModalState) {
+				sessionStorage.setItem('__freemannotes_imageModal', JSON.stringify(noteImageModalState));
+				return;
+			}
+			sessionStorage.removeItem('__freemannotes_imageModal');
+		} catch {
+			// Best effort only.
+		}
+	}, [noteImageModalState]);
 	const [noteDocumentModalState, setNoteDocumentModalState] = React.useState<NoteDocumentModalState | null>(null);
 	const [noteAttachmentBrowserState, setNoteAttachmentBrowserState] = React.useState<NoteAttachmentBrowserState | null>(_restoredOverlay?.noteAttachmentBrowserState ?? null);
 	// The currently selected note in the grid/editor area.
@@ -965,16 +1005,23 @@ export function App(): React.JSX.Element {
 	const [draftNoteId, setDraftNoteId] = React.useState<string | null>(null);
 	const pendingNewNoteCollectionSeedRef = React.useRef<Map<string, { collectionId: string; label: string }>>(new Map());
 	const previousSelectedNoteIdRef = React.useRef<string | null>(null);
-	const deviceId = React.useMemo(() => getDeviceId(), []);
+	const deviceId = startupHydration.deviceId;
 	const authStatusRef = React.useRef(authStatus);
 	authStatusRef.current = authStatus;
 	const gridReadyRef = React.useRef(gridReady);
 	gridReadyRef.current = gridReady;
+	const splashGoneRef = React.useRef(splashGone);
+	splashGoneRef.current = splashGone;
 	const isGlobalAdmin = authUserRole === 'ADMIN';
 	const isUserManagementOffline = authOfflineMode || connection.state === 'offline' || (typeof navigator !== 'undefined' && navigator.onLine === false);
 	const cachedDeviceAppearancePrefs = React.useMemo(
-		() => readCachedDeviceAppearancePreferences(deviceId, authUserId),
-		[authUserId, deviceId]
+		() => {
+			if (startupHydration.deviceAppearance && startupHydration.userId === authUserId) {
+				return startupHydration.deviceAppearance;
+			}
+			return readCachedDeviceAppearancePreferences(deviceId, authUserId);
+		},
+		[authUserId, deviceId, startupHydration.deviceAppearance, startupHydration.userId]
 	);
 	const [themeId, setThemeId] = React.useState<ThemeId>(() => getStoredThemeIdForUser(cachedAuth?.userId ?? null));
 	const [noteCardFontScalePref, setNoteCardFontScalePref] = React.useState(
@@ -1070,9 +1117,9 @@ export function App(): React.JSX.Element {
 	const [searchResultsError, setSearchResultsError] = React.useState<string | null>(null);
 	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
 	const [collectionsDoc, setCollectionsDoc] = React.useState<Y.Doc | null>(null);
-	const [collections, setCollections] = React.useState<CollectionRecord[]>([]);
+	const [collections, setCollections] = React.useState<CollectionRecord[]>(() => [...startupHydration.collections]);
 	const [labelsDoc, setLabelsDoc] = React.useState<Y.Doc | null>(null);
-	const [labels, setLabels] = React.useState<LabelRecord[]>([]);
+	const [labels, setLabels] = React.useState<LabelRecord[]>(() => [...startupHydration.labels]);
 	const [activeCollectionId, setActiveCollectionId] = React.useState<string | null>(null);
 	const [activeLabelIds, setActiveLabelIds] = React.useState<string[]>([]);
 	const [activeReminderFilter, setActiveReminderFilter] = React.useState<ReminderFilterMode>('all');
@@ -1088,7 +1135,9 @@ export function App(): React.JSX.Element {
 	const [noteLabelsModalState, setNoteLabelsModalState] = React.useState<MetadataNoteModalState | null>(null);
 	const [labelManagementModalState, setLabelManagementModalState] = React.useState<LabelManagementModalState | null>(null);
 	const [noteReminderModalState, setNoteReminderModalState] = React.useState<ReminderNoteModalState | null>(null);
-	const [noteReminderByDocId, setNoteReminderByDocId] = React.useState<Record<string, string | null>>({});
+	const [noteReminderByDocId, setNoteReminderByDocId] = React.useState<Record<string, string | null>>(
+		() => buildReminderLookup(startupHydration.reminderStates)
+	);
 	const pendingReminderStorageKey = React.useMemo(
 		() => `freemannotes.pendingReminderSync.v1:${authUserId ?? ''}:${deviceId}`,
 		[authUserId, deviceId]
@@ -1154,9 +1203,10 @@ export function App(): React.JSX.Element {
 		writePendingReminderMutations(remaining);
 		const data = await fetchNoteReminderStates().catch(() => null);
 		if (data) {
+			writeCachedReminderStates(authUserId ?? '', data.reminders);
 			setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
 		}
-	}, [applyPendingReminderMutations, authOfflineMode, authStatus, deviceId, readPendingReminderMutations, writePendingReminderMutations]);
+	}, [applyPendingReminderMutations, authOfflineMode, authStatus, authUserId, deviceId, readPendingReminderMutations, writePendingReminderMutations]);
 	const [moveNoteModalState, setMoveNoteModalState] = React.useState<MoveNoteModalState | null>(null);
 	const [moveNoteBusy, setMoveNoteBusy] = React.useState(false);
 	const [moveNoteError, setMoveNoteError] = React.useState<string | null>(null);
@@ -1180,9 +1230,25 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		saveBubbleZoom(bubbleZoom);
 	}, [bubbleZoom]);
+	// View switches should be cache-backed and never blocked on splash.
+	const prevViewModeForSplashRef = React.useRef(viewMode);
+	React.useEffect(() => {
+		if (prevViewModeForSplashRef.current === viewMode) return;
+		void logClientEvent('VIEW_SWITCH', { kind: 'view-mode', from: prevViewModeForSplashRef.current, to: viewMode });
+		prevViewModeForSplashRef.current = viewMode;
+	}, [viewMode]);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
 	const maxCardHeightPx = noteCardMaxHeightPref;
+	const noteGridLayoutDensityKey = React.useMemo(
+		() => [
+			`card-${maxCardHeightPx}`,
+			`cardfs-${Math.round(noteCardFontScalePref * 100)}`,
+			`editorfs-${Math.round(noteEditorFontScalePref * 100)}`,
+			`check-${checklistShowCompletedPref ? 1 : 0}`,
+		].join(':'),
+		[checklistShowCompletedPref, maxCardHeightPx, noteCardFontScalePref, noteEditorFontScalePref]
+	);
 	const activeWorkspaceRole = React.useMemo<WorkspaceRole | null>(() => {
 		if (!authWorkspaceId) return null;
 		const match = sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId);
@@ -1285,6 +1351,7 @@ export function App(): React.JSX.Element {
 			isSendInviteOpen,
 			isWorkspaceSwitcherOpen,
 			collaboratorModalState,
+			noteImageModalState,
 			noteAttachmentBrowserState,
 			isMobileSidebarOpen,
 			isFabOpen,
@@ -1302,6 +1369,7 @@ export function App(): React.JSX.Element {
 		isSendInviteOpen,
 		isWorkspaceSwitcherOpen,
 		collaboratorModalState,
+		noteImageModalState,
 		noteAttachmentBrowserState,
 		isMobileSidebarOpen,
 		isFabOpen,
@@ -1324,6 +1392,7 @@ export function App(): React.JSX.Element {
 		setIsSendInviteOpen(snapshot.isSendInviteOpen);
 		setIsWorkspaceSwitcherOpen(snapshot.isWorkspaceSwitcherOpen);
 		setCollaboratorModalState(snapshot.collaboratorModalState);
+		setNoteImageModalState(snapshot.noteImageModalState);
 		setNoteAttachmentBrowserState(snapshot.noteAttachmentBrowserState);
 		setIsMobileSidebarOpen(snapshot.isMobileSidebarOpen);
 		setMobileSidebarProgress(snapshot.isMobileSidebarOpen ? 1 : 0);
@@ -1596,14 +1665,22 @@ export function App(): React.JSX.Element {
 
 	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string) => {
 		const state = { noteId, docId, title: title || '' };
-		setNoteImageModalState(state);
-		try { sessionStorage.setItem('__freemannotes_imageModal', JSON.stringify(state)); } catch { /* */ }
-	}, []);
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				noteImageModalState: state,
+				isMobileSidebarOpen: false,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
 
 	const closeNoteImageModal = React.useCallback(() => {
+		if (goBackIfOverlayHistory()) return;
 		setNoteImageModalState(null);
-		try { sessionStorage.removeItem('__freemannotes_imageModal'); } catch { /* */ }
-	}, []);
+	}, [goBackIfOverlayHistory]);
 
 	const openNoteDocumentModal = React.useCallback((noteId: string, docId: string, title?: string) => {
 		setNoteDocumentModalState({ noteId, docId, title: title || '' });
@@ -2937,6 +3014,7 @@ export function App(): React.JSX.Element {
 			if (snapshot.workspaces.length > 0) {
 				setSidebarWorkspaces(snapshot.workspaces);
 				setSidebarWorkspacesError(null);
+				writeWorkspaceListLocalCache(authUserId, snapshot.workspaces);
 			}
 			// The workspace selection cache (localStorage) is written on every switch and is
 			// authoritative at startup. Only fall back to the IndexedDB snapshot if no
@@ -3083,6 +3161,10 @@ export function App(): React.JSX.Element {
 		setActiveWorkspaceSystemKind(null);
 		setSidebarWorkspaces([]);
 		setSidebarWorkspacesError(null);
+		// Clear the localStorage workspace-list cache so a different user logging in
+		// on this device starts with a clean sidebar (no stale entries from previous session).
+		clearWorkspaceListLocalCache(authUserId ?? '');
+		clearCachedReminderStates(authUserId ?? '');
 		setSharedPlacements([]);
 		setActiveWorkspaceSharedPlacements([]);
 		setActiveSharedFolder(null);
@@ -3615,13 +3697,27 @@ export function App(): React.JSX.Element {
 		return sharedPlacements.filter((placement) => String(placement.folderName || '').trim() === activeSharedFolder);
 	}, [activeSharedFolder, activeWorkspaceSystemKind, activeWorkspaceSharedPlacements, sharedPlacements]);
 
+	const resolvedActiveWorkspace = React.useMemo(() => {
+		if (!authWorkspaceId) return null;
+		return sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId) ?? null;
+	}, [authWorkspaceId, sidebarWorkspaces]);
+
+	const resolvedActiveWorkspaceName = React.useMemo(() => {
+		if (resolvedActiveWorkspace) {
+			return getWorkspaceDisplayName(resolvedActiveWorkspace, t);
+		}
+		return activeWorkspaceName;
+	}, [activeWorkspaceName, resolvedActiveWorkspace, t]);
+
+	const resolvedActiveWorkspaceSystemKind = resolvedActiveWorkspace?.systemKind ?? activeWorkspaceSystemKind;
+
 	const activeWorkspaceSidebarPath = React.useMemo(() => {
-		const workspaceLabel = activeWorkspaceName || t('workspace.unnamed');
-		if (activeWorkspaceSystemKind === 'SHARED_WITH_ME' && activeSharedFolder) {
+		const workspaceLabel = resolvedActiveWorkspaceName || t('workspace.unnamed');
+		if (resolvedActiveWorkspaceSystemKind === 'SHARED_WITH_ME' && activeSharedFolder) {
 			return `${workspaceLabel} / ${activeSharedFolder}`;
 		}
 		return workspaceLabel;
-	}, [activeSharedFolder, activeWorkspaceName, activeWorkspaceSystemKind, t]);
+	}, [activeSharedFolder, resolvedActiveWorkspaceName, resolvedActiveWorkspaceSystemKind, t]);
 
 	React.useEffect(() => {
 		setNoteGridCollaboratorFilter(null);
@@ -3868,16 +3964,23 @@ export function App(): React.JSX.Element {
 			}).catch(() => {
 				queuePendingReminderMutation(pendingEntry);
 				void fetchNoteReminderStates()
-					.then((data) => setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders))))
+					.then((data) => {
+						writeCachedReminderStates(authUserId ?? '', data.reminders);
+						setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
+					})
 					.catch(() => undefined);
 			});
 		}
-	}, [applyPendingReminderMutations, authStatus, authOfflineMode, noteReminderModalState, deviceId, authWorkspaceId, queuePendingReminderMutation]);
+	}, [applyPendingReminderMutations, authStatus, authOfflineMode, noteReminderModalState, deviceId, authUserId, authWorkspaceId, queuePendingReminderMutation]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) {
 			setNoteReminderByDocId({});
 			return;
+		}
+		const cachedLookup = applyPendingReminderMutations(buildReminderLookup(readCachedReminderStates(authUserId)));
+		if (Object.keys(cachedLookup).length > 0) {
+			setNoteReminderByDocId(cachedLookup);
 		}
 		if (authOfflineMode) return;
 		let cancelled = false;
@@ -3886,6 +3989,7 @@ export function App(): React.JSX.Element {
 		void fetchNoteReminderStates()
 			.then((data) => {
 				if (cancelled) return;
+				writeCachedReminderStates(authUserId, data.reminders);
 				setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
 			})
 			.catch(() => undefined);
@@ -3900,10 +4004,65 @@ export function App(): React.JSX.Element {
 		void flushPendingReminderMutations();
 	}, [authOfflineMode, authStatus, authUserId, flushPendingReminderMutations]);
 
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authWorkspaceId) return;
+		let cancelled = false;
+		void (async () => {
+			const noteOrder = await manager.getNoteOrder().catch(() => null);
+			if (cancelled) return;
+			const localDocIds = noteOrder && noteOrder.length > 0
+				? noteOrder.toArray().map((noteId) => manager.resolveRoomName(noteId)).filter(Boolean)
+				: startupHydration.noteOrderIds.map((noteId) => manager.resolveRoomName(noteId)).filter(Boolean);
+			const sharedDocIds = visibleSharedPlacements.map((placement) => String(placement.roomId || '').trim()).filter(Boolean);
+			const docIds = [...new Set([...localDocIds, ...sharedDocIds])];
+			if (docIds.length === 0) return;
+			await warmWorkspaceImageMetadata(docIds, { onlineRefreshLimit: 24, minIntervalMs: 1500 });
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [authStatus, authWorkspaceId, manager, startupHydration.noteOrderIds, visibleSharedPlacements]);
+
 	const sharedWithMeWorkspaceId = React.useMemo(() => {
 		const sharedWorkspace = sidebarWorkspaces.find((workspace) => workspace.systemKind === 'SHARED_WITH_ME');
 		return sharedWorkspace?.id ?? null;
 	}, [sidebarWorkspaces]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		if (authStatus !== 'authed' || splashGone || gridReady) return;
+		if (!authWorkspaceId && sidebarWorkspacesBusy) return;
+		const fallbackDelayMs = hasWarmStartupCache ? 2200 : 4200;
+		const timerId = window.setTimeout(() => {
+			void logClientEvent('APP_SPLASH_FALLBACK_DISMISS', {
+				hasWarmStartupCache,
+				authWorkspaceId,
+				sidebarWorkspacesCount: sidebarWorkspaces.length,
+				sidebarWorkspacesBusy,
+				sharedWithMeWorkspaceId,
+				activeWorkspaceSystemKind,
+				isMobileViewport,
+			});
+			setGridReady(true);
+			if (splashGoneRef.current) return;
+			clearTimeout(splashTimerRef.current);
+			splashTimerRef.current = window.setTimeout(() => setSplashGone(true), 500);
+		}, fallbackDelayMs);
+		return () => {
+			window.clearTimeout(timerId);
+		};
+	}, [
+		activeWorkspaceSystemKind,
+		authStatus,
+		authWorkspaceId,
+		gridReady,
+		hasWarmStartupCache,
+		isMobileViewport,
+		sharedWithMeWorkspaceId,
+		sidebarWorkspaces.length,
+		sidebarWorkspacesBusy,
+		splashGone,
+	]);
 
 	const loadSidebarWorkspaces = React.useCallback(async (): Promise<void> => {
 		if (sidebarWorkspacesBusy) return;
@@ -3955,8 +4114,10 @@ export function App(): React.JSX.Element {
 				resolvedWorkspaces = merged.workspaces;
 				resolvedActiveWorkspaceId = merged.activeWorkspaceId;
 				setSidebarWorkspaces(merged.workspaces);
+				writeWorkspaceListLocalCache(authUserId, merged.workspaces);
 			} else {
 				setSidebarWorkspaces(next);
+				writeWorkspaceListLocalCache(authUserId ?? '', next);
 			}
 			const activeWorkspaceMissing = Boolean(
 				authWorkspaceId && !resolvedWorkspaces.some((workspace) => workspace.id === authWorkspaceId)
@@ -6001,9 +6162,11 @@ export function App(): React.JSX.Element {
 		const viewportMeta = document.querySelector('meta[name="viewport"]');
 		if (!(viewportMeta instanceof HTMLMetaElement)) return;
 		const defaultContent = 'width=device-width, initial-scale=1, viewport-fit=cover';
-		// Installed Android PWAs need the stricter viewport content immediately when
-		// React hydrates or the system chrome can reserve stale zoom insets.
-		const nextContent = isAndroidStandalonePwa
+		// iOS Safari can preserve an accidental page zoom / text autosize state across
+		// navigations, and Android installed PWAs need the stricter viewport content
+		// immediately when React hydrates or the system chrome can reserve stale zoom
+		// insets. Apply the locked viewport to both cases.
+		const nextContent = (isAndroidStandalonePwa || detectIosSafariBrowser())
 			? 'width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover'
 			: defaultContent;
 		viewportMeta.setAttribute('content', nextContent);
@@ -6103,7 +6266,7 @@ export function App(): React.JSX.Element {
 
 		const canTrackOpenGesture = (): boolean => {
 			if (authStatusRef.current !== 'authed') return false;
-			if (!gridReadyRef.current) return false;
+			if (!gridReadyRef.current && !splashGoneRef.current) return false;
 			if (editorModeRef.current !== 'none' || selectedNoteIdRef.current !== null) return false;
 			if (isMobileSidebarOpenRef.current) return false;
 			return true;
@@ -7320,14 +7483,15 @@ export function App(): React.JSX.Element {
 												const itemIndex = (sidebarWorkspacesError ? 2 : 0) + index;
 												// Show owner avatar for any workspace the current user does not own
 												// so they can always see whose workspace they are in.
-												const showOwnerAvatar = ws.ownerUserId !== authUserId && ws.ownerUserId != null;
+												const showOwnerAvatar = ws.systemKind !== 'SHARED_WITH_ME' && ws.ownerUserId !== authUserId && ws.ownerUserId != null;
+												const ownerDisplayName = ws.ownerName?.trim() || ws.ownerEmail?.trim() || null;
 												const isOwnerOverlayOpen = wsOwnerPopup?.workspaceId === ws.id;
 												const ownerInitials = ws.ownerName
 													? ws.ownerName.trim().split(/\s+/).map((n) => n[0]).join('').toUpperCase().slice(0, 2)
 													: (ws.ownerUserId ? '?' : '');
 												return (
 													<div key={ws.id} className="sidebar-workspace-group">
-														<div className={`sidebar-workspace-row${canShareWorkspace ? ' has-share-action' : ''}${showOwnerAvatar ? ' has-owner-avatar' : ''}${isOwnerOverlayOpen ? ' is-owner-overlay-open' : ''}`}>
+														<div className={`sidebar-workspace-row${canShareWorkspace ? ' has-share-action' : ''}${showOwnerAvatar ? ' has-owner-avatar' : ''}${(canShareWorkspace || showOwnerAvatar) ? ' has-inline-summary' : ''}${isOwnerOverlayOpen ? ' is-owner-overlay-open' : ''}`}>
 															{hasSharedFolders ? (
 																<button
 																	type="button"
@@ -7376,29 +7540,8 @@ export function App(): React.JSX.Element {
 															>
 																<span className="sidebar-submenu-item-label">{truncateUiName(workspaceDisplayName, 44)}</span>
 															</button>
-															{showOwnerAvatar ? (
-																<button
-																	type="button"
-																	className="sidebar-workspace-owner-avatar"
-																	title={ws.ownerName ?? undefined}
-																	aria-label={ws.ownerName ? `${t('workspace.ownedBy')} ${ws.ownerName}` : t('workspace.ownedByUnknown')}
-																	onClick={(e) => {
-																		e.stopPropagation();
-																		setWsOwnerPopupClosing(false);
-																		setWsOwnerPopup({ workspaceId: ws.id });
-																	}}
-																>
-																	{ws.ownerProfileImage ? (
-																		<img
-																			src={ws.ownerProfileImage}
-																			alt=""
-																			className="sidebar-workspace-owner-img"
-																		/>
-																	) : (
-																		<span className="sidebar-workspace-owner-initials" aria-hidden="true">{ownerInitials}</span>
-																	)}
-																</button>
-															) : null}
+															{canShareWorkspace || showOwnerAvatar ? (
+																<div className="sidebar-workspace-row-summary">
 																	{canShareWorkspace ? (
 																		<button
 																			type="button"
@@ -7414,6 +7557,31 @@ export function App(): React.JSX.Element {
 																			<FontAwesomeIcon icon={faShareNodes} aria-hidden="true" />
 																		</button>
 																	) : null}
+																	{showOwnerAvatar ? (
+																		<button
+																			type="button"
+																			className="sidebar-workspace-owner-avatar"
+																			title={ownerDisplayName ?? undefined}
+																			aria-label={ownerDisplayName ? `${t('workspace.ownedBy')} ${ownerDisplayName}` : t('workspace.ownedByUnknown')}
+																			onClick={(e) => {
+																				e.stopPropagation();
+																				setWsOwnerPopupClosing(false);
+																				setWsOwnerPopup({ workspaceId: ws.id });
+																			}}
+																		>
+																			{ws.ownerProfileImage ? (
+																				<img
+																					src={ws.ownerProfileImage}
+																					alt=""
+																					className="sidebar-workspace-owner-img"
+																				/>
+																			) : (
+																				<span className="sidebar-workspace-owner-initials" aria-hidden="true">{ownerInitials}</span>
+																			)}
+																		</button>
+																	) : null}
+																</div>
+															) : null}
 																	{showOwnerAvatar && isOwnerOverlayOpen ? (
 																		<div
 																			className={`sidebar-workspace-owner-inline-overlay${wsOwnerPopupClosing ? ' is-closing' : ''}`}
@@ -7427,7 +7595,7 @@ export function App(): React.JSX.Element {
 																				)}
 																			</div>
 																			<div className="sidebar-workspace-owner-inline-copy">
-																				<span className="sidebar-workspace-owner-inline-name">{ws.ownerName ?? t('workspace.ownedByUnknown')}</span>
+																				<span className="sidebar-workspace-owner-inline-name">{ownerDisplayName ?? t('workspace.ownedByUnknown')}</span>
 																				<span className="sidebar-workspace-owner-inline-role">({t(getWorkspaceRoleLabelKey('OWNER'))})</span>
 																			</div>
 																			<button
@@ -7948,23 +8116,35 @@ export function App(): React.JSX.Element {
 							// Branch: selecting a note should close the create editor.
 							openNoteEditor(id, { replaceTop: editorMode !== 'none' });
 						}}
-						// NoteGrid calls onReady only after the initial docs are loaded and
-						// the first masonry layout has settled, so the splash does not fade
-						// while cards are still reshuffling into measured heights.
-						onReady={() => {
+						// onViewportReady fires as soon as the viewport-visible cards are
+						// measured and stable — much sooner than onReady on large workspaces.
+						// This drives splash dismissal so the overlay never waits for all notes.
+						onViewportReady={() => {
 							setGridReady(true);
-							// Mark this workspace as fully loaded. Subsequent mounts
-							// (workspace switch back, PWA resume) will skip the shimmer.
+							if (splashGone) return;
+							// Give the CSS fade-out transition 500 ms to complete,
+							// then unmount the overlay node entirely.
+							clearTimeout(splashTimerRef.current);
+							splashTimerRef.current = window.setTimeout(() => setSplashGone(true), 500);
+						}}
+						// onReady fires after ALL docs are loaded and the full layout has
+						// settled. Use it only for seenWorkspace tracking (suppressShimmer
+						// optimization) — splash is already dismissed by onViewportReady.
+						onReady={() => {
+							// Mark this workspace as fully loaded. Subsequent switches back
+							// will pass suppressShimmer=true so the viewport-ready check is
+							// near-instant (heights already cached).
+							setGridReady(true);
+							if (!splashGoneRef.current) {
+								clearTimeout(splashTimerRef.current);
+								splashTimerRef.current = window.setTimeout(() => setSplashGone(true), 500);
+							}
 							if (authWorkspaceId) {
 								seenWorkspaceIdsRef.current.add(authWorkspaceId);
 								try {
 									localStorage.setItem('freemannotes.seenWorkspaceIds.v1', JSON.stringify([...seenWorkspaceIdsRef.current]));
 								} catch { /* ignore */ }
 							}
-							// Give the CSS fade-out transition 500 ms to complete,
-							// then unmount the overlay node entirely.
-							clearTimeout(splashTimerRef.current);
-							splashTimerRef.current = window.setTimeout(() => setSplashGone(true), 500);
 						}}
 						// Layout animations are managed internally by NoteGrid
 						// (held until allDocsLoaded, then enabled after 2 rAFs).
@@ -7976,6 +8156,7 @@ export function App(): React.JSX.Element {
 						// Device ID scopes the height cache so skeleton cards render
 						// at the correct size for this device/viewport combination.
 						deviceId={deviceId}
+						layoutDensityKey={noteGridLayoutDensityKey}
 						viewMode={viewMode === 'bubble' ? 'card' : viewMode}
 						isVisible={viewMode !== 'bubble' && sidebarView !== 'images'}
 						hiddenNoteId={draftNoteId}

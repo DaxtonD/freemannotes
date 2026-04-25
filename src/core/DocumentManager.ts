@@ -50,6 +50,11 @@ export type ConnectionSnapshot = {
 	// content arrives over WS. NoteGrid uses this to keep the shimmer up until
 	// the first server sync completes, preventing height-jump layout shifts.
 	registryWsSynced: boolean;
+	// Number of note rooms that had no IndexedDB content when first loaded.
+	// On a fresh install every note doc is an empty Y.Doc stub; the WS sync
+	// for each room is what delivers real content. NoteGrid gates the shimmer
+	// on this reaching zero so it never shows empty Untitled cards.
+	pendingNoteWsSync: number;
 };
 
 export type DocumentManagerOptions = {
@@ -104,6 +109,12 @@ export class DocumentManager {
 	// not yet connected). Before first sync, the connection header already shows
 	// "connecting" which is sufficient feedback.
 	private readonly wsEverSynced = new Set<string>();
+	// Tracks note rooms (not registry) whose Y.Doc had no content in IndexedDB at
+	// load time. On a fresh install these are stub docs that will receive real
+	// content on their first WS sync. Decrements as each room syncs. NoteGrid
+	// reads pendingNoteWsSync (= this.noIdbContentRooms.size) to hold the shimmer
+	// until all note content has arrived, preventing empty-card flashes.
+	private readonly noIdbContentRooms = new Set<string>();
 	private readonly wsCleanup = new Map<string, () => void>();
 	private readonly docCleanup = new Map<string, () => void>();
 	private readonly readyPromises = new Map<string, Promise<void>>();
@@ -148,6 +159,7 @@ export class DocumentManager {
 		pendingSyncNoteIds: [],
 		registryReady: false,
 		registryWsSynced: false,
+		pendingNoteWsSync: 0,
 	};
 	// Cleanup function for the global visibility lifecycle listeners that
 	// trigger reconnect-on-foreground behavior. Stored so the manager can be
@@ -326,6 +338,7 @@ export class DocumentManager {
 			this.pendingSyncTimers.clear();
 			this.pendingSyncQueuedAt.clear();
 			this.wsEverSynced.clear();
+			this.noIdbContentRooms.clear();
 			this.updatedAtDocs.clear();
 			this.registryHydrated = false;
 			this.registryWsSynced = false;
@@ -509,7 +522,18 @@ export class DocumentManager {
 	public async getDocWithSync(noteId: string): Promise<Y.Doc> {
 		const raw = this.normalizeNoteId(noteId);
 		const doc = await this.getDocReady(raw);
-		this.ensureWebsocketProvider(this.roomNameFor(raw), doc);
+		const roomName = this.roomNameFor(raw);
+		// Track note rooms with no IDB content (empty Y.Doc stubs on fresh install).
+		// These rooms need their first WS sync before they have real content; NoteGrid
+		// holds the shimmer until pendingNoteWsSync reaches zero.
+		if (!this.isNotesRegistryRoom(roomName) && !this.noIdbContentRooms.has(roomName) && !this.wsEverSynced.has(roomName)) {
+			const hasIdbContent = (doc.store as { clients?: Map<unknown, unknown[]> }).clients?.size ?? 0 > 0;
+			if (!hasIdbContent) {
+				this.noIdbContentRooms.add(roomName);
+				this.emitConnectionStatus();
+			}
+		}
+		this.ensureWebsocketProvider(roomName, doc);
 		// Offline-first behavior: return once the document is hydrated from IndexedDB
 		// and websocket wiring exists. Connection establishment can happen asynchronously.
 		return doc;
@@ -792,6 +816,7 @@ export class DocumentManager {
 		this.pendingSyncTimers.clear();
 		this.pendingSyncQueuedAt.clear();
 		this.wsEverSynced.clear();
+		this.noIdbContentRooms.clear();
 		this.updatedAtDocs.clear();
 		this.registryHydrated = false;
 		this.registryWsSynced = false;
@@ -1037,6 +1062,9 @@ export class DocumentManager {
 				if (this.isNotesRegistryRoom(roomName) && !this.registryWsSynced) {
 					this.registryWsSynced = true;
 				}
+				// If this room had no IDB content at load time, it now has content from
+				// the server — remove it from the pending set so NoteGrid can lift the shimmer.
+				this.noIdbContentRooms.delete(roomName);
 				// Clear any queued promotion — sync beat the debounce, no icon needed.
 				const timer = this.pendingSyncTimers.get(roomName);
 				if (timer !== undefined) {
@@ -1232,6 +1260,7 @@ export class DocumentManager {
 			.map((roomId) => this.rawNoteIdFromRoomName(roomId))
 			.sort();
 		const nextHasPendingSync = nextPendingSyncNoteIds.length > 0;
+		const nextPendingNoteWsSync = this.noIdbContentRooms.size;
 		const pendingUnchanged =
 			this.connectionSnapshot.pendingSyncNoteIds.length === nextPendingSyncNoteIds.length &&
 			this.connectionSnapshot.pendingSyncNoteIds.every((id, index) => id === nextPendingSyncNoteIds[index]);
@@ -1240,6 +1269,7 @@ export class DocumentManager {
 			this.connectionSnapshot.hasPendingSync === nextHasPendingSync &&
 			this.connectionSnapshot.registryReady === this.registryHydrated &&
 			this.connectionSnapshot.registryWsSynced === this.registryWsSynced &&
+			this.connectionSnapshot.pendingNoteWsSync === nextPendingNoteWsSync &&
 			pendingUnchanged
 		) {
 			return;
@@ -1251,6 +1281,7 @@ export class DocumentManager {
 			pendingSyncNoteIds: nextPendingSyncNoteIds,
 			registryReady: this.registryHydrated,
 			registryWsSynced: this.registryWsSynced,
+			pendingNoteWsSync: nextPendingNoteWsSync,
 		};
 
 		for (const listener of this.connectionSubscribers) {
