@@ -776,7 +776,10 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 									<span className={styles.cameraFabLabel}>{t('media.cancelCamera')}</span>
 								</button>
 								<button type="button" className={`${styles.cameraFab} ${styles.cameraFabCapture}`} onClick={handleCapturePhoto} disabled={!isCameraReady || isCapturingPhoto || isProcessingSelection} aria-label={t('media.capturePhoto')}>
-									<img className={styles.cameraCaptureIcon} src="/icons/Capture.png" alt="" aria-hidden="true" />
+									{/* Keep these controls network-independent so camera actions remain visible offline. */}
+									<span className={styles.cameraCaptureIcon} aria-hidden="true">
+										<span className={styles.cameraCaptureIconInner} />
+									</span>
 									<span className={styles.cameraFabLabel}>{t('media.capturePhoto')}</span>
 								</button>
 								<button
@@ -786,7 +789,9 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 									disabled={!isTorchSupported || isTorchBusy || isCapturingPhoto || isStartingCamera}
 									aria-label={t('media.cameraFlash')}
 								>
-									<img className={styles.cameraSideIcon} src="/icons/Flash.png" alt="" aria-hidden="true" />
+									<svg className={styles.cameraSideIcon} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+										<path d="M13.5 2L6 13h4.5l-1 9L18 11h-4.5L13.5 2z" fill="currentColor" />
+									</svg>
 									<span className={styles.cameraFabLabel}>{t('media.cameraFlash')}</span>
 								</button>
 							</div>
