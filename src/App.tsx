@@ -75,13 +75,14 @@ import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
 import { createCollection, deleteCollection, getCollectionsRegistryDoc, readCollectionsFromDoc, subscribeCollections, updateCollection, type CollectionRecord, type CollectionTreeNode, buildCollectionTree, buildCollectionPathMap } from './services/collectionService';
 import { createLabel, deleteLabel, getLabelsRegistryDoc, readLabelsFromDoc, subscribeLabels, updateLabel, type LabelRecord } from './services/labelService';
-import { assignNoteLabels, assignNotePinned, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
+import { assignNoteLabels, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
 import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode, SortDirection } from './utilities/getVisibleNotes';
 import {
 	flushPendingCollaboratorActions,
 	flushPendingNoteShareActions,
 	listNoteShareInvitations,
 	listSharedNotePlacements,
+	moveCachedNoteShareCollaborators,
 	readCachedNoteShareCollaborators,
 	readPendingCollaboratorActions,
 	syncNoteShareCollaborators,
@@ -98,16 +99,18 @@ import {
 	emitNoteMediaChanged,
 	filterRemoteNoteImagesByPendingDeletes,
 	getCachedRemoteNoteImages,
+	moveLocalNoteMedia,
 	readQueuedNoteImageDeletions,
 	readQueuedNoteImages,
 	readStoredRemoteNoteImages,
 	scheduleQueuedNoteImageFlush,
 	warmWorkspaceImageMetadata,
 } from './core/noteMediaStore';
-import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
+import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, moveLocalNoteLinks, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
 import {
 	emitNoteDocumentsChanged,
 	getCachedNoteDocuments,
+	moveLocalNoteDocuments,
 	readQueuedNoteDocuments,
 	readStoredRemoteNoteDocuments,
 	scheduleQueuedNoteDocumentFlush,
@@ -117,6 +120,8 @@ import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
 import { clearCachedReminderStates, readCachedReminderStates, writeCachedReminderStates } from './core/reminderCache';
+import { moveUserNotePinPreference, resolveUserNotePinned, setUserNotePinnedOnDoc } from './core/notePinPreferences';
+import { clearNoteOrderSnapshot, readNoteOrderSnapshot, writeNoteOrderSnapshot } from './core/noteOrderSnapshot';
 import { useStartupHydration } from './core/StartupHydrationContext';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
@@ -175,6 +180,10 @@ type NoteAttachmentBrowserState = {
 type MoveNoteModalState = {
 	noteId: string;
 	title: string;
+	collectionAssigned: boolean;
+	collectionName: string | null;
+	labelCount: number;
+	labelNames: string[];
 };
 
 type SendInviteContext =
@@ -353,6 +362,30 @@ function readReminderLookupValue(
 	return null;
 }
 
+function makeWorkspaceNoteDocId(workspaceId: string, noteId: string): string {
+	return `${String(workspaceId || '').trim()}:${String(noteId || '').trim()}`;
+}
+
+function dedupeReminderStates(reminders: readonly NoteReminderState[]): NoteReminderState[] {
+	const byKey = new Map<string, NoteReminderState>();
+	for (const reminder of reminders) {
+		const key = `${String(reminder.noteId || '').trim()}:${String(reminder.docId || '').trim()}`;
+		if (!key || key === ':') continue;
+		byKey.set(key, reminder);
+	}
+	return Array.from(byKey.values());
+}
+
+function dedupePendingReminderSyncEntries(entries: readonly PendingReminderSync[]): PendingReminderSync[] {
+	const byKey = new Map<string, PendingReminderSync>();
+	for (const entry of entries) {
+		const key = `${String(entry.noteId || '').trim()}:${String(entry.docId || '').trim()}`;
+		if (!key || key === ':') continue;
+		byKey.set(key, entry);
+	}
+	return Array.from(byKey.values());
+}
+
 type MetadataNoteModalState = {
 	noteId: string;
 	docId?: string;
@@ -480,6 +513,10 @@ type ExternalRoute = {
 function isOverlayHistoryState(value: unknown): value is OverlayHistoryState {
 	if (!value || typeof value !== 'object') return false;
 	return (value as Partial<OverlayHistoryState>)[OVERLAY_HISTORY_KEY] === true;
+}
+
+function overlaySnapshotsEqual(left: OverlaySnapshot | null | undefined, right: OverlaySnapshot | null | undefined): boolean {
+	return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
 }
 
 const SS_OVERLAY_KEY = '__freemannotes_overlay_snapshot';
@@ -726,10 +763,12 @@ export function App(): React.JSX.Element {
 	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
 		canRestoreCachedAuthImmediately ? 'authed' : 'loading'
 	);
-	// Splash overlay is startup-only and only shown when no local cache exists.
+	// Splash overlay shows on every launch (cold or warm reopen). On warm starts
+	// onViewportReady fires quickly (heights are cached), so the overlay dismisses
+	// in < 1 second. On cold starts the fallback timer handles dismissal.
 	// gridReady → starts fade-out; splashGone → removes the DOM node entirely.
-	const [gridReady, setGridReady] = React.useState(hasWarmStartupCache);
-	const [splashGone, setSplashGone] = React.useState(hasWarmStartupCache);
+	const [gridReady, setGridReady] = React.useState(false);
+	const [splashGone, setSplashGone] = React.useState(false);
 	const splashTimerRef = React.useRef<number>(0);
 	const prevAuthStatusRef = React.useRef(authStatus);
 	// Detect unauth → authed transition (user just logged in from scratch).
@@ -1178,6 +1217,80 @@ export function App(): React.JSX.Element {
 		}
 		return next;
 	}, [readPendingReminderMutations]);
+	const migrateMovedNoteLocalState = React.useCallback(async (noteId: string, sourceWorkspaceId: string, targetWorkspaceId: string): Promise<void> => {
+		const normalizedNoteId = String(noteId || '').trim();
+		const normalizedSourceWorkspaceId = String(sourceWorkspaceId || '').trim();
+		const normalizedTargetWorkspaceId = String(targetWorkspaceId || '').trim();
+		if (!normalizedNoteId || !normalizedSourceWorkspaceId || !normalizedTargetWorkspaceId || normalizedSourceWorkspaceId === normalizedTargetWorkspaceId) {
+			return;
+		}
+
+		const sourceDocId = makeWorkspaceNoteDocId(normalizedSourceWorkspaceId, normalizedNoteId);
+		const targetDocId = makeWorkspaceNoteDocId(normalizedTargetWorkspaceId, normalizedNoteId);
+
+		// Preserve the user's local ordering snapshots around the move so the note
+		// disappears from the old workspace immediately and surfaces at the top of
+		// the destination before server-backed order state catches up.
+		const nextSourceSnapshotIds = readNoteOrderSnapshot(normalizedSourceWorkspaceId)
+			.filter((id) => String(id || '').trim() !== normalizedNoteId);
+		if (nextSourceSnapshotIds.length > 0) {
+			writeNoteOrderSnapshot(normalizedSourceWorkspaceId, nextSourceSnapshotIds);
+		} else {
+			clearNoteOrderSnapshot(normalizedSourceWorkspaceId);
+		}
+		writeNoteOrderSnapshot(
+			normalizedTargetWorkspaceId,
+			[
+				normalizedNoteId,
+				...readNoteOrderSnapshot(normalizedTargetWorkspaceId)
+					.filter((id) => String(id || '').trim() !== normalizedNoteId),
+			]
+		);
+
+		await Promise.all([
+			moveLocalNoteMedia(sourceDocId, targetDocId, authUserId),
+			moveLocalNoteLinks(sourceDocId, targetDocId, authUserId),
+			moveLocalNoteDocuments(sourceDocId, targetDocId, authUserId),
+			authUserId ? moveCachedNoteShareCollaborators(authUserId, sourceDocId, targetDocId) : Promise.resolve(),
+		]);
+		// Pin state is scoped per doc/user, so it has to follow the move separately
+		// from the note's content and media caches.
+		moveUserNotePinPreference(sourceDocId, targetDocId, authUserId);
+
+		setNoteReminderByDocId((current) => {
+			const existingReminderAt = readReminderLookupValue(current, sourceDocId, normalizedNoteId);
+			if (!existingReminderAt && !(sourceDocId in current)) return current;
+			const next = { ...current };
+			delete next[sourceDocId];
+			if (existingReminderAt) {
+				next[targetDocId] = existingReminderAt;
+				next[normalizedNoteId] = existingReminderAt;
+			}
+			return next;
+		});
+
+		if (authUserId) {
+			const nextReminderStates = dedupeReminderStates(readCachedReminderStates(authUserId).map((entry) => {
+				if (entry.noteId !== normalizedNoteId || entry.docId !== sourceDocId) return entry;
+				return {
+					...entry,
+					docId: targetDocId,
+					workspaceId: normalizedTargetWorkspaceId,
+				};
+			}));
+			writeCachedReminderStates(authUserId, nextReminderStates);
+		}
+
+		const nextPendingReminderMutations = dedupePendingReminderSyncEntries(readPendingReminderMutations().map((entry) => {
+			if (entry.noteId !== normalizedNoteId || entry.docId !== sourceDocId) return entry;
+			return {
+				...entry,
+				docId: targetDocId,
+				workspaceId: normalizedTargetWorkspaceId,
+			};
+		}));
+		writePendingReminderMutations(nextPendingReminderMutations);
+	}, [authUserId, readPendingReminderMutations, writePendingReminderMutations]);
 	const flushPendingReminderMutations = React.useCallback(async (): Promise<void> => {
 		if (authStatus !== 'authed' || authOfflineMode) return;
 		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
@@ -1415,6 +1528,10 @@ export function App(): React.JSX.Element {
 					snapshot,
 					kind: 'overlay',
 				};
+				if (isOverlayHistoryState(window.history.state) && overlaySnapshotsEqual(window.history.state.snapshot, snapshot)) {
+					window.history.replaceState(nextState, '');
+					return;
+				}
 				if (mode === 'replace' && isOverlayHistoryState(window.history.state)) {
 					window.history.replaceState(nextState, '');
 					return;
@@ -1678,8 +1795,8 @@ export function App(): React.JSX.Element {
 	}, [commitOverlaySnapshot, getOverlaySnapshot]);
 
 	const closeNoteImageModal = React.useCallback(() => {
-		if (goBackIfOverlayHistory()) return;
 		setNoteImageModalState(null);
+		if (goBackIfOverlayHistory()) return;
 	}, [goBackIfOverlayHistory]);
 
 	const openNoteDocumentModal = React.useCallback((noteId: string, docId: string, title?: string) => {
@@ -3223,6 +3340,11 @@ export function App(): React.JSX.Element {
 			setOpenDoc(null);
 			setOpenDocId(null);
 			setEditorMode('none');
+			setIsMobileSidebarDragging(false);
+			setMobileSidebarProgress(0);
+			isMobileSidebarOpenRef.current = false;
+			setIsMobileSidebarOpen(false);
+			setIsFabOpen(false);
 			setActiveSharedFolder(null);
 			// Cancel any in-progress background preload so it cannot re-activate a
 			// previous workspace and clobber the user's intentional switch.
@@ -4032,11 +4154,17 @@ export function App(): React.JSX.Element {
 		if (typeof window === 'undefined') return;
 		if (authStatus !== 'authed' || splashGone || gridReady) return;
 		if (!authWorkspaceId && sidebarWorkspacesBusy) return;
+		if (!hasWarmStartupCache && connection.state !== 'offline' && (!connection.registryWsSynced || connection.pendingNoteWsSync > 0)) {
+			return;
+		}
 		const fallbackDelayMs = hasWarmStartupCache ? 2200 : 4200;
 		const timerId = window.setTimeout(() => {
 			void logClientEvent('APP_SPLASH_FALLBACK_DISMISS', {
 				hasWarmStartupCache,
 				authWorkspaceId,
+				registryWsSynced: connection.registryWsSynced,
+				pendingNoteWsSync: connection.pendingNoteWsSync,
+				connectionState: connection.state,
 				sidebarWorkspacesCount: sidebarWorkspaces.length,
 				sidebarWorkspacesBusy,
 				sharedWithMeWorkspaceId,
@@ -4055,6 +4183,9 @@ export function App(): React.JSX.Element {
 		activeWorkspaceSystemKind,
 		authStatus,
 		authWorkspaceId,
+		connection.pendingNoteWsSync,
+		connection.registryWsSynced,
+		connection.state,
 		gridReady,
 		hasWarmStartupCache,
 		isMobileViewport,
@@ -6653,9 +6784,23 @@ export function App(): React.JSX.Element {
 		if (authStatus !== 'authed' || !authWorkspaceId) {
 			return;
 		}
+		const doc = manager.getDoc(noteId);
+		const metadata = doc ? readNoteMetadataState(doc) : null;
+		const resolvedCollectionName = metadata?.collectionId ? collectionPathById.get(metadata.collectionId) ?? null : null;
+		const resolvedLabelNames = (metadata?.labelIds ?? [])
+			.map((labelId) => labels.find((label) => label.id === labelId)?.name ?? '')
+			.map((name) => String(name || '').trim())
+			.filter(Boolean);
 		setMoveNoteError(null);
-		setMoveNoteModalState({ noteId, title: String(title || '').trim() });
-	}, [authStatus, authWorkspaceId]);
+		setMoveNoteModalState({
+			noteId,
+			title: String(title || '').trim(),
+			collectionAssigned: Boolean(metadata?.collectionId),
+			collectionName: resolvedCollectionName,
+			labelCount: metadata?.labelIds.length ?? 0,
+			labelNames: resolvedLabelNames,
+		});
+	}, [authStatus, authWorkspaceId, collectionPathById, labels, manager]);
 
 	const handleMoveNoteToWorkspace = React.useCallback(async (targetWorkspaceId: string) => {
 		if (!moveNoteModalState || !authWorkspaceId) return;
@@ -6664,6 +6809,7 @@ export function App(): React.JSX.Element {
 		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
 		const shouldQueueImmediately = authOfflineMode || browserOffline;
 		let shouldShowQueuedMessage = shouldQueueImmediately;
+		let shouldRefreshCollaborators = false;
 		setMoveNoteBusy(true);
 		setMoveNoteError(null);
 		try {
@@ -6671,6 +6817,7 @@ export function App(): React.JSX.Element {
 				sourceWorkspaceId: authWorkspaceId,
 				title: noteTitle,
 			});
+			await migrateMovedNoteLocalState(noteId, authWorkspaceId, targetWorkspaceId);
 			setSelectedNoteId((current) => current === noteId ? null : current);
 			setOpenDocId((current) => {
 				if (current !== noteId) return current;
@@ -6693,6 +6840,7 @@ export function App(): React.JSX.Element {
 						removePendingNoteMove(authUserId, noteId);
 					}
 					shouldShowQueuedMessage = false;
+					shouldRefreshCollaborators = true;
 				} catch (error) {
 					const message = error instanceof Error ? error.message : '';
 					const status = typeof (error as { status?: unknown } | null | undefined)?.status === 'number'
@@ -6704,6 +6852,7 @@ export function App(): React.JSX.Element {
 							removePendingNoteMove(authUserId, noteId);
 						}
 						shouldShowQueuedMessage = false;
+						shouldRefreshCollaborators = true;
 					} else if (isNetworkFailure || status == null || status >= 500) {
 						// Keep the local move and persisted queue when the server response is
 						// ambiguous. The move may have already committed remotely.
@@ -6713,12 +6862,17 @@ export function App(): React.JSX.Element {
 							sourceWorkspaceId: targetWorkspaceId,
 							title: noteTitle,
 						});
+						await migrateMovedNoteLocalState(noteId, targetWorkspaceId, authWorkspaceId);
 						if (authUserId) {
 							removePendingNoteMove(authUserId, noteId);
 						}
 						throw error;
 					}
 				}
+			}
+			if (shouldRefreshCollaborators) {
+				await refreshNoteShareStateRef.current();
+				bumpCollaborationRefreshToken();
 			}
 			setMoveNoteModalState(null);
 			showBriefDialog(t(shouldShowQueuedMessage ? 'workspace.moveNoteQueued' : 'workspace.moveNoteSuccess'));
@@ -6727,7 +6881,7 @@ export function App(): React.JSX.Element {
 		} finally {
 			setMoveNoteBusy(false);
 		}
-	}, [authOfflineMode, authUserId, authWorkspaceId, manager, moveNoteModalState, showBriefDialog, t]);
+	}, [authOfflineMode, authUserId, authWorkspaceId, bumpCollaborationRefreshToken, manager, migrateMovedNoteLocalState, moveNoteModalState, showBriefDialog, t]);
 
 	const handleEmptyTrashNow = React.useCallback(async () => {
 		if (authStatus !== 'authed' || authOfflineMode || typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -8399,7 +8553,22 @@ export function App(): React.JSX.Element {
 					onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
 					onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 					onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
-					onTogglePin={selectedNoteReadOnly ? undefined : () => assignNotePinned(openDoc, !readNoteMetadataState(openDoc).isPinned)}
+					onTogglePin={selectedNoteReadOnly ? undefined : () => {
+						if (!selectedNoteDocId || !selectedNoteId) return;
+						const nextPinned = !resolveUserNotePinned({
+							docId: selectedNoteDocId,
+							noteId: selectedNoteId,
+							userId: authUserId,
+							legacyPinned: readNoteMetadataState(openDoc).isPinned,
+						});
+						setUserNotePinnedOnDoc({
+							doc: openDoc,
+							docId: selectedNoteDocId,
+							noteId: selectedNoteId,
+							userId: authUserId,
+							pinned: nextPinned,
+						});
+					}}
 					onShowBriefDialog={showBriefDialog}
 					readOnly={selectedNoteReadOnly}
 					initialShowCompleted={checklistShowCompletedPref}
@@ -8532,6 +8701,12 @@ export function App(): React.JSX.Element {
 				workspaces={moveNoteWorkspaceOptions}
 				currentWorkspaceId={authWorkspaceId}
 				noteTitle={moveNoteModalState?.title ?? ''}
+				moveWarning={moveNoteModalState ? {
+					collectionAssigned: moveNoteModalState.collectionAssigned,
+					collectionName: moveNoteModalState.collectionName,
+					labelCount: moveNoteModalState.labelCount,
+					labelNames: moveNoteModalState.labelNames,
+				} : null}
 				busy={moveNoteBusy}
 				error={moveNoteError}
 			/>

@@ -32,6 +32,51 @@ export type StartupHydrationSnapshot = {
 	hydratedAt: number;
 };
 
+function buildStartupHydrationBase(): Omit<StartupHydrationSnapshot, 'workspaceSnapshot' | 'collections' | 'labels' | 'hydratedAt'> {
+	const deviceId = getDeviceId();
+	const cachedAuth = readCachedAuth();
+	const cachedWorkspaceSelection = readWorkspaceSelectionCache();
+	const userId = cachedAuth.userId;
+	// Prefer the last workspace explicitly selected for this user, but fall back
+	// to the auth cache so cold boots still open a plausible workspace quickly.
+	const workspaceId =
+		cachedWorkspaceSelection?.workspaceId && cachedWorkspaceSelection.userId === cachedAuth.userId
+			? cachedWorkspaceSelection.workspaceId
+			: cachedAuth.workspaceId;
+	const workspaceList = readWorkspaceListLocalCache(userId || '');
+	const deviceAppearance = readCachedDeviceAppearancePreferences(deviceId, userId);
+	const reminderStates = readCachedReminderStates(userId || '');
+	const noteOrderIds = workspaceId ? readNoteOrderSnapshot(workspaceId) : [];
+	const hasWarmCache = Boolean(
+		workspaceList.length > 0 ||
+		reminderStates.length > 0 ||
+		noteOrderIds.length > 0
+	);
+
+	return {
+		deviceId,
+		userId,
+		workspaceId,
+		hasWarmCache,
+		workspaceList,
+		deviceAppearance,
+		reminderStates,
+		noteOrderIds,
+	};
+}
+
+export function readSynchronousStartupHydrationSnapshot(): StartupHydrationSnapshot {
+	const hydratedAt = Date.now();
+	const base = buildStartupHydrationBase();
+	return {
+		...base,
+		workspaceSnapshot: null,
+		collections: [],
+		labels: [],
+		hydratedAt,
+	};
+	}
+
 function readCachedAuth(): { userId: string | null; workspaceId: string | null } {
 	if (typeof window === 'undefined') return { userId: null, workspaceId: null };
 	try {
@@ -67,25 +112,21 @@ async function safeIdbLoad<T>(label: string, loader: () => Promise<T>, fallback:
 
 export async function hydrateStartupSnapshot(manager: DocumentManager): Promise<StartupHydrationSnapshot> {
 	const hydratedAt = Date.now();
-	const deviceId = getDeviceId();
-	const cachedAuth = readCachedAuth();
-	const cachedWorkspaceSelection = readWorkspaceSelectionCache();
-	const userId = cachedAuth.userId;
-	const workspaceId =
-		cachedWorkspaceSelection?.workspaceId && cachedWorkspaceSelection.userId === cachedAuth.userId
-			? cachedWorkspaceSelection.workspaceId
-			: cachedAuth.workspaceId;
+	const base = buildStartupHydrationBase();
+	const { deviceId, userId, workspaceId } = base;
 	void logClientEvent('HYDRATION_START', { deviceId, userId, workspaceId });
 
+	// Start from synchronous cache reads, then opportunistically deepen the
+	// snapshot from IndexedDB-backed registries without blocking first paint.
 	const workspaceSnapshot = userId
 		? await safeIdbLoad('workspaceSnapshot', () => readCachedWorkspaceSnapshot(userId, deviceId), null)
 		: null;
 	const workspaceList = workspaceSnapshot?.workspaces?.length
 		? workspaceSnapshot.workspaces
-		: readWorkspaceListLocalCache(userId || '');
-	const deviceAppearance = readCachedDeviceAppearancePreferences(deviceId, userId);
-	const reminderStates = readCachedReminderStates(userId || '');
-	const noteOrderIds = workspaceId ? readNoteOrderSnapshot(workspaceId) : [];
+		: base.workspaceList;
+	const deviceAppearance = base.deviceAppearance;
+	const reminderStates = base.reminderStates;
+	const noteOrderIds = [...base.noteOrderIds];
 
 	let collections: CollectionRecord[] = [];
 	let labels: LabelRecord[] = [];

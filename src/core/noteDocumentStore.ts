@@ -55,6 +55,36 @@ const pendingFlushes = new Map<string, Promise<void>>();
 const flushTimers = new Map<string, number>();
 const objectUrlCache = new Map<string, string>();
 
+function parseDocId(docId: string): { workspaceId: string; noteId: string } {
+	const normalizedDocId = String(docId || '').trim();
+	const separatorIndex = normalizedDocId.indexOf(':');
+	if (separatorIndex <= 0) {
+		return { workspaceId: '', noteId: normalizedDocId };
+	}
+	return {
+		workspaceId: normalizedDocId.slice(0, separatorIndex),
+		noteId: normalizedDocId.slice(separatorIndex + 1),
+	};
+}
+
+function rewriteNoteDocumentDocId(document: NoteDocumentRecord, targetDocId: string): NoteDocumentRecord {
+	const target = parseDocId(targetDocId);
+	return {
+		...document,
+		docId: targetDocId,
+		sourceWorkspaceId: target.workspaceId,
+		sourceNoteId: target.noteId,
+	};
+}
+
+function mergeNoteDocumentCache(entries: readonly NoteDocumentRecord[]): readonly NoteDocumentRecord[] {
+	const byId = new Map<string, NoteDocumentRecord>();
+	for (const entry of entries) {
+		byId.set(entry.id, entry);
+	}
+	return Array.from(byId.values()).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
 let dbPromise: Promise<IDBDatabase> | null = null;
 
 function isOffline(): boolean {
@@ -293,6 +323,21 @@ async function readAnnotationRow(documentId: string): Promise<StoredNoteDocument
 	}
 }
 
+async function readAnnotationRowsByDoc(docId: string): Promise<StoredNoteDocumentAnnotationRow[]> {
+	if (!docId) return [];
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_DOCUMENT_ANNOTATION_STORE], 'readonly');
+		const rows = (await requestToPromise(
+			tx.objectStore(NOTE_DOCUMENT_ANNOTATION_STORE).index('docId').getAll(docId)
+		)) as StoredNoteDocumentAnnotationRow[];
+		await transactionToPromise(tx);
+		return Array.isArray(rows) ? rows : [];
+	} catch {
+		return [];
+	}
+}
+
 async function writeAnnotationRow(row: StoredNoteDocumentAnnotationRow): Promise<void> {
 	const db = await openDb();
 	const tx = db.transaction([NOTE_DOCUMENT_ANNOTATION_STORE], 'readwrite');
@@ -488,6 +533,77 @@ export async function readQueuedNoteDocuments(userId: string, docId: string): Pr
 	}
 }
 
+export async function moveLocalNoteDocuments(sourceDocId: string, targetDocId: string, userId?: string | null): Promise<void> {
+	const source = String(sourceDocId || '').trim();
+	const target = String(targetDocId || '').trim();
+	const normalizedUserId = String(userId || '').trim();
+	if (!source || !target || source === target) return;
+
+	try {
+		// Move remote metadata, cached binary asset rows, and annotations together
+		// so document previews and inline marks survive a workspace move offline.
+		const [sourceRemoteDocuments, sourceRemoteAssetRows, sourceAnnotationRows] = await Promise.all([
+			readStoredRemoteNoteDocuments(source),
+			readRemoteAssetRowsByDoc(source),
+			readAnnotationRowsByDoc(source),
+		]);
+		if (sourceRemoteDocuments.length > 0) {
+			await writeStoredRemoteDocuments(
+				target,
+				mergeNoteDocumentCache([
+					...(await readStoredRemoteNoteDocuments(target)),
+					...sourceRemoteDocuments.map((document) => rewriteNoteDocumentDocId(document, target)),
+				]),
+				{ emitChange: false }
+			);
+		}
+		await writeStoredRemoteDocuments(source, [], { emitChange: false });
+		if (sourceRemoteAssetRows.length > 0) {
+			await upsertRemoteAssetRows(sourceRemoteAssetRows.map((row) => ({
+				...row,
+				docId: target,
+				document: row.document ? rewriteNoteDocumentDocId(row.document, target) : null,
+			})));
+		}
+		if (sourceAnnotationRows.length > 0) {
+			for (const row of sourceAnnotationRows) {
+				await writeAnnotationRow({ ...row, docId: target });
+			}
+		}
+
+		if (normalizedUserId) {
+			const queuedRows = await readAllQueuedRows(normalizedUserId);
+			const sourceQueuedRows = queuedRows.filter((row) => row.docId === source);
+			if (sourceQueuedRows.length > 0) {
+				await writeQueuedRows(sourceQueuedRows.map((row) => ({
+					...row,
+					docId: target,
+					updatedAt: nowIso(),
+				})));
+			}
+		}
+	} catch {
+		// Best effort only; later remote refresh can repopulate document caches.
+	}
+
+	// Update the live caches after the IndexedDB move so open viewers do not keep
+	// pointing at the source doc after the workspace switch completes.
+	const movedRemoteCache = (remoteCache.get(source) || []).map((document) => rewriteNoteDocumentDocId(document, target));
+	const movedQueuedCache = (queuedCache.get(source) || []).map((document) => rewriteNoteDocumentDocId(document, target));
+	const targetRemoteCache = remoteCache.get(target) || [];
+	const targetQueuedCache = queuedCache.get(target) || [];
+	if (movedRemoteCache.length > 0 || targetRemoteCache.length > 0) {
+		remoteCache.set(target, mergeNoteDocumentCache([...targetRemoteCache, ...movedRemoteCache]));
+	}
+	if (movedQueuedCache.length > 0 || targetQueuedCache.length > 0) {
+		queuedCache.set(target, mergeNoteDocumentCache([...targetQueuedCache, ...movedQueuedCache]));
+	}
+	remoteCache.delete(source);
+	queuedCache.delete(source);
+	emitNoteDocumentsChanged(source);
+	emitNoteDocumentsChanged(target);
+}
+
 export async function readQueuedNoteDocumentBlob(documentId: string): Promise<Blob | null> {
 	if (!documentId) return null;
 	try {
@@ -606,6 +722,14 @@ export async function refreshRemoteNoteDocuments(
 	const request = (async () => {
 		try {
 			const response = await listNoteDocuments(docId);
+			const existingRemoteDocuments = remoteCache.get(docId) || await readStoredRemoteNoteDocuments(docId);
+			if (!options.force && response.documents.length === 0 && existingRemoteDocuments.length > 0) {
+				remoteCache.set(docId, existingRemoteDocuments);
+				if (options.userId) {
+					await readQueuedNoteDocuments(String(options.userId || ''), docId);
+				}
+				return mergeDocuments(docId);
+			}
 			await writeStoredRemoteDocuments(docId, response.documents, { emitChange: false });
 			void syncRemoteNoteDocumentAssetRows(docId, response.documents, { emitChange: false });
 			if (options.userId) {

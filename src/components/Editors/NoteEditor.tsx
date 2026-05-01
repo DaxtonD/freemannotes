@@ -31,6 +31,7 @@ import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNo
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken, setUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
@@ -102,6 +103,25 @@ const EMPTY_ITEMS: readonly ChecklistItem[] = [];
 function isMediaDockHistoryEntry(value: unknown): boolean {
 	if (!value || typeof value !== 'object') return false;
 	return typeof (value as { __noteEditorMediaDock?: unknown }).__noteEditorMediaDock === 'string';
+}
+
+function suppressNextDocumentCompatibilityMouseEvents(): void {
+	if (typeof window === 'undefined') return;
+	let timeoutId = 0;
+	const handler = (event: MouseEvent): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+	};
+	const cleanup = (): void => {
+		window.removeEventListener('mousedown', handler, true);
+		window.removeEventListener('mouseup', handler, true);
+		window.removeEventListener('click', handler, true);
+		if (timeoutId) window.clearTimeout(timeoutId);
+	};
+	window.addEventListener('mousedown', handler, true);
+	window.addEventListener('mouseup', handler, true);
+	window.addEventListener('click', handler, true);
+	timeoutId = window.setTimeout(() => cleanup(), 500);
 }
 
 /**
@@ -783,12 +803,18 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		}
 	}, []);
 	const closeMediaDock = React.useCallback((): void => {
-		if (isCoarsePointer && typeof window !== 'undefined' && isMediaDockHistoryEntry(window.history.state)) {
-			window.history.back();
-			return;
-		}
 		setMediaDockOpen(false);
-	}, [isCoarsePointer]);
+	}, []);
+	const closeMediaDockFromPointerEvent = React.useCallback((event: React.PointerEvent<HTMLButtonElement>): void => {
+		if (event.pointerType !== 'touch' && !isCoarsePointer) return;
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+		suppressNextDocumentCompatibilityMouseEvents();
+		closeMediaDock();
+	}, [closeMediaDock, isCoarsePointer]);
+	const handleOpenImageFromMediaDock = React.useCallback((): void => {
+		props.onAddImage?.();
+	}, [props]);
 	const handleMediaSheetTouchStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
 		if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageViewerOpen === 'true') {
 			mediaSheetSwipeStartRef.current = null;
@@ -828,7 +854,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					docId={props.docId}
 					authUserId={props.authUserId}
 					canEdit={!readOnly}
-					onAddImage={props.onAddImage}
+					onAddImage={props.onAddImage ? handleOpenImageFromMediaDock : undefined}
 					isPendingNew={props.isPendingNew}
 				/>
 			);
@@ -837,7 +863,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			return <NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={!readOnly} onDeleteLink={handleDeleteUrlPreview} onAddUrlPreview={handleCreateUrlPreview} />;
 		}
 		return <DocumentsPanel docId={props.docId} authUserId={props.authUserId} canEdit={!readOnly} onAddDocument={props.onAddDocument} showComingSoonPlaceholder />;
-	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, mediaDockTab, props.authUserId, props.docId, props.onAddDocument, props.onAddImage, readOnly]);
+	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, handleOpenImageFromMediaDock, mediaDockTab, props.authUserId, props.docId, props.onAddDocument, props.onAddImage, props.isPendingNew, readOnly]);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	React.useEffect(() => {
 		setShowCompleted(Boolean(props.initialShowCompleted));
@@ -1011,13 +1037,19 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	}, [isCoarsePointer, props.hideFormattingToolbar, props.noteId, resetEditorOverlayScroll]);
 
 	const isPinned = useSyncExternalStore(
-		(onStoreChange) => {
-			const observer = (): void => onStoreChange();
-			metadata.observe(observer);
-			return () => metadata.unobserve(observer);
-		},
-		() => Boolean(metadata.get('isPinned')),
-		() => Boolean(metadata.get('isPinned'))
+		(onStoreChange) => subscribeNotePinPrefs(onStoreChange),
+		() => resolveUserNotePinned({
+			docId: props.docId,
+			noteId: props.noteId,
+			userId: props.authUserId,
+			legacyPinned: Boolean(metadata.get('isPinned')),
+		}),
+		() => resolveUserNotePinned({
+			docId: props.docId,
+			noteId: props.noteId,
+			userId: props.authUserId,
+			legacyPinned: Boolean(metadata.get('isPinned')),
+		})
 	);
 	const noteAutoScrollEnabled = useSyncExternalStore(
 		(onStoreChange) => subscribeNoteAutoScrollPrefs(onStoreChange),
@@ -1842,7 +1874,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					ref={dragProvided.innerRef}
 					{...dragProvided.draggableProps}
 					className={`${styles.checklistItem} ${styles.rowDragging} ${styles.dragGhost}${isActiveClone ? ` ${styles.checklistItemActive}` : ''}${dragged?.parentId ? ` ${styles.childRow}` : ''}`}
-					style={{ ...(editorColorStyle ?? {}), ...dragStyle, ...(snapshot.isDropAnimating ? { transitionDuration: isCoarsePointer ? '1ms' : '60ms' } : null), width: rowWidth ?? undefined, minHeight: rowHeight ?? undefined, boxSizing: 'border-box' }}
+					style={{
+						...(editorColorStyle ?? {}),
+						...dragStyle,
+						...(snapshot.isDropAnimating ? {
+							transitionDuration: '180ms',
+							transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+						} : null),
+						width: rowWidth ?? undefined,
+						minHeight: rowHeight ?? undefined,
+						boxSizing: 'border-box',
+					}}
 				>
 					<button type="button" className={styles.dragHandle} aria-label={t('editors.dragHandle')} {...dragProvided.dragHandleProps}>
 						<FontAwesomeIcon icon={faGripVertical} />
@@ -2042,7 +2084,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								{t('editors.mediaTabDocuments')}
 							</button>
 						</div>
-						<button type="button" className={styles.mediaSheetClose} onClick={closeMediaDock} aria-label={t('common.close')}>
+							<button
+								type="button"
+								className={styles.mediaSheetClose}
+								onPointerUp={closeMediaDockFromPointerEvent}
+								onClick={closeMediaDock}
+								aria-label={t('common.close')}
+							>
 							✕
 						</button>
 					</header>
@@ -2089,7 +2137,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								{t('editors.mediaTabDocuments')}
 							</button>
 						</div>
-						<button type="button" className={styles.mediaFlyoutClose} onClick={closeMediaDock} aria-label={t('common.close')}>
+							<button
+								type="button"
+								className={styles.mediaFlyoutClose}
+								onPointerUp={closeMediaDockFromPointerEvent}
+								onClick={closeMediaDock}
+								aria-label={t('common.close')}
+							>
 							✕
 						</button>
 					</header>
@@ -2380,7 +2434,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 															aria-label={t('editors.dragHandle')}
 															style={{
 															...dragStyle,
-															...(snapshot.isDropAnimating ? { transitionDuration: isCoarsePointer ? '1ms' : '60ms' } : null),
+															...(snapshot.isDropAnimating ? {
+																transitionDuration: '180ms',
+																transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+															} : null),
 															}}
 														>
 															<button
@@ -2595,7 +2652,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('noteMenu.addCollaborator')} onClick={() => props.onAddCollaborator?.()} disabled={!props.onAddCollaborator}>
 								<FontAwesomeIcon icon={faUserPlus} />
 							</button>
-							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('noteMenu.addImage')} onClick={() => props.onAddImage?.()} disabled={!props.onAddImage}>
+							<button type="button" className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`} aria-label={t('noteMenu.addImage')} onClick={handleOpenImageFromMediaDock} disabled={!props.onAddImage}>
 								<FontAwesomeIcon icon={faImage} />
 							</button>
 							<button
@@ -2707,7 +2764,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							{t('editors.mediaTabDocuments')}
 						</button>
 					</div>
-					<button type="button" className={styles.mediaSheetClose} onClick={closeMediaDock} aria-label={t('common.close')}>
+					<button
+						type="button"
+						className={styles.mediaSheetClose}
+						onPointerUp={closeMediaDockFromPointerEvent}
+						onClick={closeMediaDock}
+						aria-label={t('common.close')}
+					>
 						✕
 					</button>
 				</header>
@@ -2754,7 +2817,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								{t('editors.mediaTabDocuments')}
 							</button>
 						</div>
-						<button type="button" className={styles.mediaFlyoutClose} onClick={closeMediaDock} aria-label={t('common.close')}>
+						<button
+							type="button"
+							className={styles.mediaFlyoutClose}
+							onPointerUp={closeMediaDockFromPointerEvent}
+							onClick={closeMediaDock}
+							aria-label={t('common.close')}
+						>
 							✕
 						</button>
 					</header>

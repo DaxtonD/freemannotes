@@ -264,7 +264,21 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 		if (!props.disableInitialRemoteRefresh) return;
 		if ((props.fallbackLinks?.length || 0) === 0) return;
 		if (isOffline()) return;
-		void refresh({ force: true, retryIfIncomplete: true });
+		void readStoredNoteLinks(props.docId)
+			.then((next) => {
+				const cached = next.length > 0 ? next : getCachedRemoteNoteLinks(props.docId);
+				setLinks(cached);
+				if (cached.length === 0 || needsRemoteHydration(cached)) {
+					void refresh({ force: true, retryIfIncomplete: true });
+				}
+			})
+			.catch(() => {
+				const cached = getCachedRemoteNoteLinks(props.docId);
+				setLinks(cached);
+				if (cached.length === 0 || needsRemoteHydration(cached)) {
+					void refresh({ force: true, retryIfIncomplete: true });
+				}
+			});
 	}, [fallbackSignature, props.disableInitialRemoteRefresh, props.docId, props.fallbackLinks, refresh]);
 
 	React.useEffect(() => {

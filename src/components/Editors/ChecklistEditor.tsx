@@ -1005,7 +1005,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					className={`${styles.checklistItem} ${styles.rowDragging} ${styles.dragGhost}${isActiveClone ? ` ${styles.checklistItemActive}` : ''}${dragged?.parentId ? ` ${styles.childRow}` : ''}`}
 					style={{
 						...dragStyle,
-						...(snapshot.isDropAnimating ? { transitionDuration: isCoarsePointer ? '1ms' : '60ms' } : null),
+						...(snapshot.isDropAnimating ? {
+							transitionDuration: '180ms',
+							transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+						} : null),
 						width: rowWidth ?? undefined,
 						minHeight: rowHeight ?? undefined,
 						boxSizing: 'border-box',
@@ -1250,7 +1253,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 													aria-label={t('editors.dragHandle')}
 													style={{
 														...dragStyle,
-														...(snapshot.isDropAnimating ? { transitionDuration: isCoarsePointer ? '1ms' : '60ms' } : null),
+														...(snapshot.isDropAnimating ? {
+															transitionDuration: '180ms',
+															transitionTimingFunction: 'cubic-bezier(0.22, 1, 0.36, 1)',
+														} : null),
 													}}
 												>
 													<button

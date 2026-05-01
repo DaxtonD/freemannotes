@@ -1,9 +1,13 @@
 .card {
 	border: 1px solid var(--note-color-border, var(--color-border));
 	border-radius: var(--radius-sm);
+	box-sizing: border-box;
 	padding: 0;
 	background-color: var(--note-color-card-bg, var(--color-surface));
 	color: var(--note-color-text, var(--color-text));
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
 	max-height: var(--note-card-max-height);
 	overflow: hidden;
 	position: relative;
@@ -54,6 +58,7 @@
 .checklistCard {
 	display: flex;
 	flex-direction: column;
+	transition: min-height 300ms cubic-bezier(0.22, 1, 0.36, 1), max-height 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .checklistCardCollapsed {
@@ -164,9 +169,16 @@
 	flex-wrap: wrap;
 	gap: 8px;
 	padding: 10px 10px 0;
+	min-height: 42px;
 	position: relative;
 	z-index: 2;
 	flex: 0 0 auto;
+}
+
+.metaChipRow:empty {
+	display: none;
+	padding: 0;
+	min-height: 0;
 }
 
 .trashCard .metaChipRow {
@@ -239,6 +251,7 @@
 		grid-template-columns: repeat(4, minmax(0, 1fr));
 		gap: 6px;
 		padding: 8px 8px 8px;
+		min-height: 40px;
 	}
 
 	.metaChipRow > * {
@@ -649,16 +662,21 @@
 	display: flex;
 	flex-direction: column;
 	gap: 4px;
-	margin: auto 0 0;
-	padding: 0 var(--space-2) var(--space-2);
+	margin: 0;
+	padding: 6px var(--space-2) var(--space-2);
 	flex: 0 0 auto;
 	font-size: calc(1rem * var(--note-card-font-scale, 1));
 	border-top: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 68%, transparent);
 }
 
+.checklistCardCollapsed .body {
+	flex: 1 1 auto;
+}
+
 .checklistCardCollapsed .completedSection {
 	gap: 0;
-	justify-content: center;
+	margin-top: 0;
+	justify-content: flex-start;
 	padding-top: 6px;
 	padding-bottom: 6px;
 	min-height: 38px;
@@ -676,6 +694,14 @@
 	gap: 4px;
 	min-height: 20px;
 	text-align: left;
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.completedToggle:active,
+.completedToggle:hover,
+.completedToggle:focus-visible {
+	background: transparent;
 }
 
 .completedToggle:disabled {
@@ -687,13 +713,42 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	font-size: 1.2em;
-	line-height: 1;
-	min-width: 1em;
+	width: 15px;
+	height: 15px;
+	min-width: 15px;
+	flex: 0 0 15px;
+}
+
+.completedToggleArrowIcon {
+	display: inline-flex;
+	width: 12px;
+	height: 12px;
+	opacity: 0.8;
+	background-color: currentColor;
+	-webkit-mask-image: url('/icons/Arrow.png');
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	-webkit-mask-size: 100% 100%;
+	mask-image: url('/icons/Arrow.png');
+	mask-repeat: no-repeat;
+	mask-position: center;
+	mask-size: 100% 100%;
+	transition: transform 160ms ease;
+}
+
+.completedToggleArrowIconOpen {
+	transform: rotate(90deg);
 }
 
 .completedSection .checklist {
 	margin-top: 8px;
+	-webkit-tap-highlight-color: transparent;
+	animation: slideInCompleted 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes slideInCompleted {
+	from { opacity: 0; transform: translateX(18px); }
+	to   { opacity: 1; transform: translateX(0); }
 }
 
 .linkPreviewRail {

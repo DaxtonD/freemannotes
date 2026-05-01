@@ -80,6 +80,25 @@ function getPrimaryVideoTrack(stream: MediaStream | null): TorchTrack | null {
 	return track as TorchTrack | null;
 }
 
+function suppressNextDocumentCompatibilityMouseEvents(): void {
+	if (typeof window === 'undefined') return;
+	let timeoutId = 0;
+	const handler = (event: MouseEvent): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+	};
+	const cleanup = (): void => {
+		window.removeEventListener('mousedown', handler, true);
+		window.removeEventListener('mouseup', handler, true);
+		window.removeEventListener('click', handler, true);
+		if (timeoutId) window.clearTimeout(timeoutId);
+	};
+	window.addEventListener('mousedown', handler, true);
+	window.addEventListener('mouseup', handler, true);
+	window.addEventListener('click', handler, true);
+	timeoutId = window.setTimeout(() => cleanup(), 500);
+}
+
 async function setTorchEnabled(stream: MediaStream | null, enabled: boolean): Promise<void> {
 	const track = getPrimaryVideoTrack(stream);
 	if (!track?.applyConstraints) {
@@ -489,6 +508,15 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		afterClose?.();
 	};
 
+	const closeFromPointerEvent = (event: React.PointerEvent<HTMLButtonElement>): void => {
+		if (event.pointerType !== 'touch') return;
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+		stopCameraStream();
+		suppressNextDocumentCompatibilityMouseEvents();
+		closeAfterKeyboardSettles();
+	};
+
 	const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
 		const newFiles = Array.from(event.target.files || []);
 		event.target.value = '';
@@ -693,7 +721,16 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 							<h2 className={styles.title}>{t('noteMenu.addImage')}</h2>
 							<p className={styles.subtitle}>{props.noteTitle ? `${t('media.forPrefix')} ${props.noteTitle}` : t('media.attachToNote')}</p>
 						</div>
-						<button type="button" className={styles.close} onClick={() => { stopCameraStream(); props.onClose(); }} aria-label={t('common.close')}>
+						<button
+							type="button"
+							className={styles.close}
+							onPointerUp={closeFromPointerEvent}
+							onClick={() => {
+								stopCameraStream();
+								closeAfterKeyboardSettles();
+							}}
+							aria-label={t('common.close')}
+						>
 							<FontAwesomeIcon icon={faXmark} />
 						</button>
 					</header>
