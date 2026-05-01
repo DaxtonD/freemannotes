@@ -6,7 +6,7 @@ import { DocumentManagerProvider } from './core/DocumentManagerContext';
 import { initPwa } from './core/pwa';
 import { logClientEvent } from './core/debugLogger';
 import { StartupHydrationProvider } from './core/StartupHydrationContext';
-import { hydrateStartupSnapshot } from './core/startupHydration';
+import { hydrateStartupSnapshot, readSynchronousStartupHydrationSnapshot, type StartupHydrationSnapshot } from './core/startupHydration';
 import { applyTheme, getStoredThemeIdForUser } from './core/theme';
 import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
@@ -91,24 +91,27 @@ installTouchDragPolyfill();
 // sees the current app background immediately instead of the HTML fallback.
 applyTheme(getStoredThemeIdForUser(readCachedAuthUserId()));
 
-async function boot(): Promise<void> {
-	void logClientEvent('APP_INIT', {
-		cachedWorkspaceId: readCachedWorkspaceId(),
-		cachedAuthUserId: readCachedAuthUserId(),
-	});
-	const startupHydration = await hydrateStartupSnapshot(manager);
-	createRoot(rootEl).render(
-		<React.StrictMode>
-			<StartupHydrationProvider value={startupHydration}>
-				<I18nProvider>
-					<DocumentManagerProvider manager={manager}>
-						<App />
-					</DocumentManagerProvider>
-				</I18nProvider>
-			</StartupHydrationProvider>
-		</React.StrictMode>
-	);
-	if (typeof window !== 'undefined') {
+function BootRoot(): React.JSX.Element {
+	const [startupHydration, setStartupHydration] = React.useState<StartupHydrationSnapshot>(() => readSynchronousStartupHydrationSnapshot());
+	const firstRenderLoggedRef = React.useRef(false);
+
+	React.useEffect(() => {
+		let cancelled = false;
+		void hydrateStartupSnapshot(manager).then((nextSnapshot) => {
+			if (cancelled) return;
+			setStartupHydration((current) => {
+				if (current.hydratedAt >= nextSnapshot.hydratedAt) return current;
+				return nextSnapshot;
+			});
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined' || firstRenderLoggedRef.current) return;
+		firstRenderLoggedRef.current = true;
 		window.requestAnimationFrame(() => {
 			void logClientEvent('UI_FIRST_RENDER', {
 				hydratedAt: startupHydration.hydratedAt,
@@ -117,9 +120,28 @@ async function boot(): Promise<void> {
 				workspaceCount: startupHydration.workspaceList.length,
 			});
 		});
-	}
+	}, [startupHydration]);
+
+	return (
+		<StartupHydrationProvider value={startupHydration}>
+			<I18nProvider>
+				<DocumentManagerProvider manager={manager}>
+					<App />
+				</DocumentManagerProvider>
+			</I18nProvider>
+		</StartupHydrationProvider>
+	);
 }
 
-void boot();
+void logClientEvent('APP_INIT', {
+	cachedWorkspaceId: readCachedWorkspaceId(),
+	cachedAuthUserId: readCachedAuthUserId(),
+});
+
+createRoot(rootEl).render(
+	<React.StrictMode>
+		<BootRoot />
+	</React.StrictMode>
+);
 
 initPwa();

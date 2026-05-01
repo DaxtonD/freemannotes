@@ -247,6 +247,18 @@ function createEmptySnapshot(userId: string, docId: string): CachedCollaboratorS
 	};
 }
 
+function parseDocId(docId: string): { workspaceId: string; noteId: string } {
+	const normalizedDocId = String(docId || '').trim();
+	const separatorIndex = normalizedDocId.indexOf(':');
+	if (separatorIndex <= 0) {
+		return { workspaceId: '', noteId: normalizedDocId };
+	}
+	return {
+		workspaceId: normalizedDocId.slice(0, separatorIndex),
+		noteId: normalizedDocId.slice(separatorIndex + 1),
+	};
+}
+
 function applyPendingActions(snapshot: CachedCollaboratorSnapshot, rows: readonly PendingCollaboratorAction[]): CachedCollaboratorSnapshot {
 	// Rebuild the visible snapshot by layering queued offline mutations over the
 	// last server-backed cache. This keeps the modal responsive offline without
@@ -543,6 +555,54 @@ export async function readCachedCollaboratorSnapshot(userId: string, docId: stri
 		return applyPendingActions(base, pendingActions);
 	} catch {
 		return null;
+	}
+}
+
+export async function moveCachedCollaboratorData(userId: string, sourceDocId: string, targetDocId: string): Promise<void> {
+	if (!userId || !sourceDocId || !targetDocId || sourceDocId === targetDocId) return;
+	const target = parseDocId(targetDocId);
+	try {
+		const [snapshot, sourceActions, targetActions] = await Promise.all([
+			readCachedCollaboratorSnapshot(userId, sourceDocId),
+			readPendingCollaboratorActions(userId, sourceDocId),
+			readPendingCollaboratorActions(userId, targetDocId),
+		]);
+
+		if (snapshot) {
+			await cacheCollaboratorSnapshot({
+				userId,
+				docId: targetDocId,
+				snapshot: {
+					...snapshot,
+					roomId: targetDocId,
+					sourceWorkspaceId: target.workspaceId,
+					sourceNoteId: target.noteId,
+					pendingInvitations: snapshot.pendingInvitations.map((invitation) => ({
+						...invitation,
+						docId: targetDocId,
+						sourceWorkspaceId: target.workspaceId,
+						sourceNoteId: target.noteId,
+					})),
+				},
+			});
+		}
+
+		const mergedActions = new Map<string, PendingCollaboratorAction>();
+		for (const action of targetActions) {
+			mergedActions.set(action.id, action);
+		}
+		for (const action of sourceActions) {
+			mergedActions.set(action.id, {
+				...action,
+				docId: targetDocId,
+				updatedAt: getNowIso(),
+			});
+		}
+		await replaceDocActions(userId, targetDocId, sortActions(Array.from(mergedActions.values())));
+		await clearCollaboratorSnapshot(userId, sourceDocId);
+		await replaceDocActions(userId, sourceDocId, []);
+	} catch {
+		// Best effort only; server-backed collaborator refresh can repair later.
 	}
 }
 

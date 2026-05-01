@@ -19,6 +19,12 @@ type MoveNoteModalProps = {
 	workspaces: readonly WorkspaceOption[];
 	currentWorkspaceId: string | null;
 	noteTitle?: string;
+	moveWarning?: {
+		collectionName?: string | null;
+		collectionAssigned?: boolean;
+		labelNames?: readonly string[];
+		labelCount?: number;
+	} | null;
 	busy?: boolean;
 	error?: string | null;
 };
@@ -52,6 +58,27 @@ export function MoveNoteModal(props: MoveNoteModalProps): React.JSX.Element | nu
 				</header>
 
 				{props.error ? <div className={styles.error}>{props.error}</div> : null}
+
+				{props.moveWarning && (props.moveWarning.collectionAssigned || (props.moveWarning.labelCount ?? 0) > 0) ? (
+					<div className={styles.warning}>
+						<div className={styles.warningTitle}>{props.t('workspace.moveNoteWarningTitle')}</div>
+						<div className={styles.warningBody}>{props.t('workspace.moveNoteWarningDescription')}</div>
+						{props.moveWarning.collectionAssigned ? (
+							<div className={styles.warningItem}>
+								{props.moveWarning.collectionName?.trim()
+									? props.t('workspace.moveNoteWarningCollectionNamed').replace('{name}', props.moveWarning.collectionName.trim())
+									: props.t('workspace.moveNoteWarningCollection')}
+							</div>
+						) : null}
+						{(props.moveWarning.labelCount ?? 0) > 0 ? (
+							<div className={styles.warningItem}>
+								{props.moveWarning.labelNames && props.moveWarning.labelNames.length > 0
+									? props.t('workspace.moveNoteWarningLabelsNamed').replace('{names}', props.moveWarning.labelNames.join(', '))
+									: props.t('workspace.moveNoteWarningLabelsCount').replace('{count}', String(props.moveWarning.labelCount ?? 0))}
+							</div>
+						) : null}
+					</div>
+				) : null}
 
 				{availableWorkspaces.length === 0 ? (
 					<div className={styles.status}>{props.t('workspace.moveNoteEmpty')}</div>

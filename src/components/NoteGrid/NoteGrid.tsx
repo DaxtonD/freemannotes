@@ -7,9 +7,13 @@ import { faBell, faFileLines, faFolder, faListCheck, faTag, faThumbtack, faUsers
 import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
+import { getChecklistCountPrefix, normalizeChecklistCountValue } from '../../core/checklistCounts';
+import { buildChecklistCompletedRows, normalizeChecklistHierarchy } from '../../core/checklistHierarchy';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc } from '../../core/noteLinks';
+import { getNoteCardCompletedExpanded } from '../../core/noteCardCompletedExpansion';
 import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken } from '../../core/noteColorPreferences';
+import { getNotePinPrefsSnapshot, resolveUserNotePinned, setUserNotePinnedOnDoc, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
@@ -24,7 +28,7 @@ import {
 	type NoteShareCollaboratorSnapshot,
 	type SharedNotePlacement,
 } from '../../core/noteShareApi';
-import { readNoteFromDoc, setNotePinned } from '../../core/noteModel';
+import { readNoteFromDoc } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
@@ -37,11 +41,12 @@ import {
 	type VisibleNoteSnapshot,
 } from '../../utilities/getVisibleNotes';
 import { buildNoteGroupSections } from '../../utilities/noteGrouping';
-import { measureDocumentRects } from './flip';
 import {
 	arraysEqual,
+	buildMasonryLayoutFromColumns,
 	flattenColumns,
 	getGridLayoutForViewport,
+	getVirtualizedMasonryItems,
 	MOBILE_GRID_EDGE_MARGIN_PX,
 	mergeVisibleIdsIntoLayoutOrder,
 	mergeVisibleOrderIntoFullOrder,
@@ -332,12 +337,159 @@ function createFallbackNoteSnapshot(id: string): VisibleNoteSnapshot {
 	};
 }
 
-function estimateUnmeasuredNoteHeightPx(noteId: string, maxCardHeightPx: number): number {
-	// Cold-start browsers do not have measured heights yet. Derive a deterministic
-	// per-note estimate so skeleton cards and first-pass masonry packing stay in
-	// sync until real DOM measurements replace the estimate.
-	const idHash = noteId.slice(-8).split('').reduce((acc, character) => (acc * 31 + character.charCodeAt(0)) | 0, 0x9e3779b9);
-	return Math.min(maxCardHeightPx, 160 + (Math.abs(idHash) % 220));
+function countWrappedLines(text: string, charactersPerLine: number): number {
+	const normalized = text.replace(/\s+/g, ' ').trim();
+	if (!normalized) return 0;
+	return normalized
+		.split('\n')
+		.reduce((total, line) => total + Math.max(1, Math.ceil(Math.max(1, line.trim().length) / Math.max(12, charactersPerLine))), 0);
+}
+
+type EstimatedChecklistItem = {
+	id: string;
+	text: string;
+	completed: boolean;
+	completedAt: number | null;
+	parentId: string | null;
+	countValue: number | null;
+};
+
+function estimateChecklistRowLineCost(item: EstimatedChecklistItem, charactersPerLine: number): number {
+	const widthBudget = Math.max(12, charactersPerLine - (item.parentId ? 4 : 0));
+	const text = String(item.text ?? '').trim();
+	const prefix = getChecklistCountPrefix({
+		id: item.id,
+		text: item.text,
+		completed: item.completed,
+		parentId: item.parentId,
+		countValue: item.countValue,
+	});
+	const effectiveLength = Math.max(1, text.length + (prefix ? prefix.length : 0));
+	return Math.max(1, Math.min(3, Math.ceil(effectiveLength / widthBudget)));
+}
+
+function fitChecklistItemsToLineBudget(
+	items: readonly EstimatedChecklistItem[],
+	lineBudget: number,
+	getLineCost: (item: EstimatedChecklistItem) => number,
+): { visible: EstimatedChecklistItem[]; hiddenCount: number; usedLineCount: number } {
+	if (items.length === 0 || lineBudget <= 0) {
+		return { visible: [], hiddenCount: items.length, usedLineCount: items.length > 0 && lineBudget > 0 ? 1 : 0 };
+	}
+	const totalLineCost = items.reduce((total, item) => total + getLineCost(item), 0);
+	if (totalLineCost <= lineBudget) {
+		return { visible: items.slice(), hiddenCount: 0, usedLineCount: totalLineCost };
+	}
+	const visible: EstimatedChecklistItem[] = [];
+	let remainingBudget = Math.max(0, lineBudget - 1);
+	for (const item of items) {
+		const lineCost = getLineCost(item);
+		if (remainingBudget < lineCost) break;
+		visible.push(item);
+		remainingBudget -= lineCost;
+	}
+	return {
+		visible,
+		hiddenCount: Math.max(0, items.length - visible.length),
+		usedLineCount: visible.reduce((total, item) => total + getLineCost(item), 0) + 1,
+	};
+}
+
+function materializeEstimatedChecklistItems(checklistArray: Y.Array<Y.Map<any>>): EstimatedChecklistItem[] {
+	return normalizeChecklistHierarchy(
+		checklistArray
+			.toArray()
+			.map((row) => ({
+				id: String(row.get('id') ?? '').trim(),
+				text: String(row.get('text') ?? ''),
+				completed: Boolean(row.get('completed')),
+				completedAt: Number.isFinite(Number(row.get('completedAt'))) ? Number(row.get('completedAt')) : null,
+				parentId: typeof row.get('parentId') === 'string' && String(row.get('parentId')).trim().length > 0
+					? String(row.get('parentId')).trim()
+					: null,
+				countValue: normalizeChecklistCountValue(row.get('countValue')),
+			}))
+			.filter((item) => item.id.length > 0)
+	) as EstimatedChecklistItem[];
+}
+
+function estimateUnmeasuredNoteHeightPx(args: {
+	noteId: string;
+	maxCardHeightPx: number;
+	noteSnapshot?: VisibleNoteSnapshot | null;
+	doc?: Y.Doc | null;
+	cardWidthPx: number;
+}): number {
+	const maxCardHeightPx = Math.max(220, args.maxCardHeightPx);
+	const cardWidthPx = Math.max(180, args.cardWidthPx);
+	const lineHeightPx = 22;
+	const charsPerLine = Math.max(18, Math.floor((cardWidthPx - 34) / 8.2));
+	const titleLength = args.noteSnapshot?.title?.trim().length ?? 0;
+	const noteHasCollectionChip = Boolean(args.noteSnapshot?.collectionId);
+	const noteHasLabelChips = (args.noteSnapshot?.labelIds?.length ?? 0) > 0;
+	let linkPreviewLines = 0;
+	if (args.doc) {
+		linkPreviewLines = Math.min(2, extractNoteLinksFromDoc(args.doc).length);
+	}
+	const hasPotentialMetaChips = noteHasCollectionChip || noteHasLabelChips || linkPreviewLines > 0;
+	const fixedChromePx = hasPotentialMetaChips ? 164 : 124;
+	const maxVisibleContentLines = Math.max(1, Math.floor(Math.max(0, maxCardHeightPx - fixedChromePx - linkPreviewLines * 74) / lineHeightPx));
+	let contentLines = Math.max(1, Math.ceil(titleLength / Math.max(18, charsPerLine)));
+
+	if (args.doc) {
+		const metadata = args.doc.getMap<any>('metadata');
+		const noteType = String(metadata.get('type') ?? 'text');
+		if (noteType === 'checklist') {
+			const checklistArray = args.doc.getArray<Y.Map<any>>('checklist');
+			const checklistItems = materializeEstimatedChecklistItems(checklistArray);
+			const activeChecklistItems = checklistItems.filter((item) => !item.completed);
+			const completedChecklistItems = checklistItems.filter((item) => item.completed);
+			const showCompleted = completedChecklistItems.length > 0 && getNoteCardCompletedExpanded(args.noteId);
+			const checklistChromePx = hasPotentialMetaChips ? 132 : 92;
+			const completedBaseHeightPx = 32;
+			const checklistAvailableLineBudget = Math.max(
+				0,
+				Math.floor(Math.max(0, maxCardHeightPx - checklistChromePx - completedBaseHeightPx - linkPreviewLines * 74) / lineHeightPx)
+			);
+			const getChecklistLineCost = (item: EstimatedChecklistItem): number => estimateChecklistRowLineCost(item, charsPerLine);
+			const collapsedActiveFit = fitChecklistItemsToLineBudget(activeChecklistItems, checklistAvailableLineBudget, getChecklistLineCost);
+
+			if (!showCompleted) {
+				const collapsedContentLines = Math.max(1, collapsedActiveFit.usedLineCount);
+				const estimatedHeightPx = checklistChromePx + completedBaseHeightPx + collapsedContentLines * lineHeightPx + linkPreviewLines * 74;
+				return Math.min(maxCardHeightPx, Math.max(188, estimatedHeightPx));
+			}
+
+			const totalActiveChecklistLineCost = activeChecklistItems.reduce((total, item) => total + getChecklistLineCost(item), 0);
+			const expandedActiveFit = totalActiveChecklistLineCost <= checklistAvailableLineBudget
+				? { visible: activeChecklistItems.slice(), hiddenCount: 0, usedLineCount: totalActiveChecklistLineCost }
+				: fitChecklistItemsToLineBudget(activeChecklistItems, checklistAvailableLineBudget, getChecklistLineCost);
+			const completedRows = buildChecklistCompletedRows(checklistItems);
+			let remainingCompletedBudget = Math.max(0, checklistAvailableLineBudget - expandedActiveFit.usedLineCount);
+			let completedLineCost = 0;
+			let shownCompletedItems = 0;
+			for (const row of completedRows) {
+				const rowCost = row.kind === 'ghost' ? 1 : getChecklistLineCost(row.item as EstimatedChecklistItem);
+				if (shownCompletedItems >= 3 && remainingCompletedBudget < rowCost) break;
+				completedLineCost += rowCost;
+				remainingCompletedBudget = Math.max(0, remainingCompletedBudget - rowCost);
+				if (row.kind === 'item') shownCompletedItems += 1;
+			}
+			if (completedChecklistItems.length > shownCompletedItems) completedLineCost += 1;
+			const expandedContentLines = Math.max(1, expandedActiveFit.usedLineCount + completedLineCost);
+			const estimatedHeightPx = checklistChromePx + completedBaseHeightPx + expandedContentLines * lineHeightPx + linkPreviewLines * 74;
+			return Math.min(maxCardHeightPx, Math.max(188, estimatedHeightPx));
+		} else {
+			const content = args.doc.getText('content').toString();
+			contentLines = Math.max(contentLines, Math.min(maxVisibleContentLines, countWrappedLines(content, charsPerLine)));
+		}
+	} else {
+		const idHash = args.noteId.slice(-8).split('').reduce((acc, character) => (acc * 31 + character.charCodeAt(0)) | 0, 0x9e3779b9);
+		contentLines = Math.max(contentLines, Math.min(maxVisibleContentLines, 2 + (Math.abs(idHash) % 4)));
+	}
+
+	const estimatedHeightPx = fixedChromePx + contentLines * lineHeightPx + linkPreviewLines * 74;
+	return Math.min(maxCardHeightPx, Math.max(188, estimatedHeightPx));
 }
 
 function normalizeId(value: unknown): string {
@@ -433,6 +585,10 @@ type GridNoteCardProps = {
 	isPlaceholder: boolean;
 	isOverlayActiveCard?: boolean;
 	layoutReady: boolean;
+	isDropSettling?: boolean;
+	useLayoutMotion?: boolean;
+	fixedHeightPx: number;
+	shellStyle?: React.CSSProperties;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 };
@@ -644,11 +800,11 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 	return (
 		<motion.div
 			ref={handleItemRef}
-			layout="position"
+			layout={props.useLayoutMotion ? 'position' : undefined}
 			layoutId={props.note.id}
 			initial={false}
 			transition={
-				props.layoutReady
+				props.useLayoutMotion && props.layoutReady
 					? { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 }
 					: { layout: { duration: 0 } }
 			}
@@ -660,11 +816,13 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 				.filter(Boolean)
 				.join(' ')}
 			data-note-id={props.note.id}
+			style={props.shellStyle}
 		>
 			<div
 				data-note-content="true"
 				className={[
 					props.selected ? styles.itemSelected : '',
+					props.isDropSettling ? styles.itemDropSettling : '',
 				]
 					.filter(Boolean)
 					.join(' ')}
@@ -887,17 +1045,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, [props.enableLayoutAnimations, allDocsLoaded, layoutReady]);
 
-	const getEstimatedNoteHeight = React.useCallback(
-		(noteId: string): number => estimateUnmeasuredNoteHeightPx(noteId, props.maxCardHeightPx),
-		[props.maxCardHeightPx]
-	);
-	const packedHeightLookup = React.useMemo<Pick<ReadonlyMap<string, number>, 'get'>>(
-		() => ({
-			get: (noteId: string) => noteHeightByIdRef.current.get(noteId) ?? getEstimatedNoteHeight(noteId),
-		}),
-		[getEstimatedNoteHeight]
-	);
-
 	const pendingSyncNoteIds = React.useMemo(() => new Set(connection.pendingSyncNoteIds), [connection.pendingSyncNoteIds]);
 	// Stable primitive signature for use as effect dep.  The Set object above is a new
 	// reference whenever `connectionSnapshot` is emitted (even if content is identical),
@@ -976,6 +1123,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (typeof window === 'undefined') return 0;
 		return getGridLayoutForViewport(window.innerWidth, window.innerWidth, window.innerHeight).mobileSectionBleedPx;
 	});
+	const [viewportSnapshot, setViewportSnapshot] = React.useState(() => ({
+		scrollY: typeof window === 'undefined' ? 0 : window.scrollY,
+		viewportHeight: typeof window === 'undefined' ? 0 : window.innerHeight,
+	}));
 	const [noteHeightsVersion, setNoteHeightsVersion] = React.useState(0);
 	const latestNoteHeightsVersionRef = React.useRef(0);
 	// ── Sticky columns ───────────────────────────────────────────────────
@@ -990,8 +1141,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const sectionRef = React.useRef<HTMLElement | null>(null);
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
-	const noteHeightBumpRafRef = React.useRef<number>(0);
-	const noteCardLayoutRefreshRafRef = React.useRef<number>(0);
 
 	// Seed height cache on first render from localStorage (before first pack)
 	if (!heightCacheLoadedRef.current) {
@@ -1001,6 +1150,21 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			for (const [k, v] of cached) noteHeightByIdRef.current.set(k, v);
 		}
 	}
+	const getEstimatedNoteHeight = React.useCallback(
+		(noteId: string): number => estimateUnmeasuredNoteHeightPx({
+			noteId,
+			maxCardHeightPx: props.maxCardHeightPx,
+			doc: docsById[noteId] ?? manager.peekDoc(noteId) ?? null,
+			cardWidthPx: mobileCardWidthPx ?? readCssPxVariable('--note-card-width', 280),
+		}),
+		[docsById, manager, mobileCardWidthPx, props.maxCardHeightPx]
+	);
+	const packedHeightLookup = React.useMemo<Pick<ReadonlyMap<string, number>, 'get'>>(
+		() => ({
+			get: (noteId: string) => noteHeightByIdRef.current.get(noteId) ?? getEstimatedNoteHeight(noteId),
+		}),
+		[getEstimatedNoteHeight]
+	);
 	const layoutViewportBucket = React.useMemo(
 		() => typeof window !== 'undefined' ? getLayoutViewportBucket(window.innerWidth, window.innerHeight) : '0x0',
 		[]
@@ -1009,6 +1173,34 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		() => typeof window !== 'undefined' ? getLayoutDeviceType(window.innerWidth) : 'desktop',
 		[]
 	);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		let frameId = 0;
+		const commit = (): void => {
+			frameId = 0;
+			setViewportSnapshot((previous) => {
+				// Clamp scrollY to ≥ 0 so Android/iOS overscroll spring-bounce (which
+				// temporarily drives scrollY negative or beyond the document end) does
+				// not flip the virtualized card set mid-bounce and cause gap jitter.
+				const next = { scrollY: Math.max(0, window.scrollY), viewportHeight: window.innerHeight };
+				return previous.scrollY === next.scrollY && previous.viewportHeight === next.viewportHeight ? previous : next;
+			});
+		};
+		const schedule = (): void => {
+			if (frameId) return;
+			frameId = window.requestAnimationFrame(commit);
+		};
+		window.addEventListener('scroll', schedule, { passive: true });
+		window.addEventListener('resize', schedule);
+		window.visualViewport?.addEventListener('resize', schedule);
+		return () => {
+			window.removeEventListener('scroll', schedule);
+			window.removeEventListener('resize', schedule);
+			window.visualViewport?.removeEventListener('resize', schedule);
+			if (frameId) window.cancelAnimationFrame(frameId);
+		};
+	}, []);
 	const layoutDensityKey = props.layoutDensityKey || 'default';
 	const cachedLayoutSnapshot = React.useMemo(() => {
 		if (!props.activeWorkspaceId) return null;
@@ -1080,25 +1272,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (moreMenuNoteId !== null) return;
 		setMoreMenuOpenedByLongPress(false);
 	}, [moreMenuNoteId]);
-
-	React.useEffect(() => {
-		if (typeof window === 'undefined') return;
-		const handleNoteCardLayoutChange = (): void => {
-			if (noteCardLayoutRefreshRafRef.current) window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
-			noteCardLayoutRefreshRafRef.current = window.requestAnimationFrame(() => {
-				noteCardLayoutRefreshRafRef.current = 0;
-				setNoteHeightsVersion((version) => version + 1);
-			});
-		};
-		window.addEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
-		return () => {
-			window.removeEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
-			if (noteCardLayoutRefreshRafRef.current) {
-				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
-				noteCardLayoutRefreshRafRef.current = 0;
-			}
-		};
-	}, []);
 
 	React.useEffect(() => {
 		docsByIdRef.current = docsById;
@@ -1215,8 +1388,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// they render in the grid without mutating the source workspace's note order.
 		return uniqueIds([...readOrderIds(noteOrder), ...sharedNoteIds]);
 	}, [noteOrder, sharedNoteIds, storeVersion, props.activeWorkspaceId]);
+	const pinPrefsSnapshot = React.useSyncExternalStore(subscribeNotePinPrefs, getNotePinPrefsSnapshot, getNotePinPrefsSnapshot);
 
 	const noteSnapshots = React.useMemo<VisibleNoteSnapshot[]>(() => {
+		void pinPrefsSnapshot;
 		return orderedIds.map((id) => {
 			const doc = docsById[id] ?? manager.peekDoc(id) ?? null;
 			if (!doc) return createFallbackNoteSnapshot(id);
@@ -1231,13 +1406,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				collectionId: note.collectionId,
 				labelIds: note.labelIds,
 				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
-				isPinned: note.isPinned,
+				isPinned: resolveUserNotePinned({
+					docId: docId || id,
+					noteId: id,
+					userId: props.authUserId,
+					legacyPinned: note.isPinned,
+				}),
 				lastAccessedAt: note.lastAccessedAt,
 				trashed: note.trashed,
 				archived: note.archived,
 			};
 		});
-	}, [docsById, manager, metadataVersion, orderedIds, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId]);
+	}, [docsById, manager, metadataVersion, orderedIds, pinPrefsSnapshot, props.authUserId, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 
 	const baseVisibleIds = React.useMemo<string[]>(() => {
@@ -1967,9 +2147,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [stickyColumns, packedColumns, renderedIds, columnCount]);
 	const resolvedBaseColumns = React.useMemo(() => {
 		if (stickyColumns && baseColumns === stickyColumns) return baseColumns;
-		if (slottedColumns && slottedColumns.length === columnCount) return slottedColumns;
+		// Slot-based columns are useful as a startup seed, but after the initial
+		// layout settles the device should return to live height-based packing so
+		// card resizes (for example checklist expand/collapse) can rebalance
+		// columns instead of staying locked to stale slot lengths.
+		if (!initialLayoutSettled && slottedColumns && slottedColumns.length === columnCount) return slottedColumns;
 		return baseColumns;
-	}, [stickyColumns, baseColumns, slottedColumns, columnCount]);
+	}, [stickyColumns, baseColumns, initialLayoutSettled, slottedColumns, columnCount]);
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
 	const dragColumns = React.useMemo(() => (isListLikeView ? [visibleIds] : resolvedBaseColumns), [isListLikeView, resolvedBaseColumns, visibleIds]);
 
@@ -2023,6 +2207,172 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// automatically animates position changes when columns swap.
 	const columns = dragManager.previewColumns ?? dragColumns;
 	const listOrderedIds = React.useMemo(() => flattenColumns(columns), [columns]);
+	const cardColumnWidthPx = mobileCardWidthPx ?? readCssPxVariable('--note-card-width', 280);
+	const cardGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
+
+	const scheduleNoteHeightCacheSave = React.useCallback((): void => {
+		if (!props.deviceId || renderedIds.length === 0 || typeof window === 'undefined') return;
+		if (heightSaveTimerRef.current) window.clearTimeout(heightSaveTimerRef.current);
+		heightSaveTimerRef.current = window.setTimeout(() => {
+			heightSaveTimerRef.current = 0;
+			saveNoteHeightCache(props.deviceId!, noteHeightByIdRef.current);
+		}, 180);
+	}, [props.deviceId, renderedIds.length]);
+
+	const readRenderedNoteHeight = React.useCallback((noteId: string): number => {
+		const itemElement = dragManager.getItemElement(noteId);
+		const cardElement = itemElement?.querySelector<HTMLElement>('[data-note-card="true"]') ?? null;
+		const measuredHeight = cardElement ? Math.round(cardElement.getBoundingClientRect().height) : 0;
+		if (measuredHeight > 0) return measuredHeight;
+		// Prefer last-measured cached height over a raw estimate.
+		// In React StrictMode the element may be temporarily unregistered;
+		// the cache prevents a spurious layout recompute with wrong heights.
+		return noteHeightByIdRef.current.get(noteId) ?? getEstimatedNoteHeight(noteId);
+	}, [dragManager.getItemElement, getEstimatedNoteHeight]);
+
+	const syncRenderedNoteHeights = React.useCallback((): void => {
+		let heightsChanged = false;
+		for (const noteId of renderedIds) {
+			const nextHeight = readRenderedNoteHeight(noteId);
+			const prevHeight = noteHeightByIdRef.current.get(noteId);
+			// Always update the stored height so the cache stays accurate.
+			noteHeightByIdRef.current.set(noteId, nextHeight);
+			// Only trigger a layout recompute for changes that are large enough
+			// to be visually meaningful. Sub-pixel rounding differences (≤ 2px)
+			// are not worth a full masonry repack.
+			if (prevHeight === undefined || Math.abs(nextHeight - prevHeight) > 2) {
+				heightsChanged = true;
+			}
+		}
+		if (heightsChanged) {
+			setNoteHeightsVersion((version) => version + 1);
+		}
+		scheduleNoteHeightCacheSave();
+	}, [readRenderedNoteHeight, renderedIds, scheduleNoteHeightCacheSave]);
+
+	// Stable ref so layout effects always call the latest version without
+	// needing to depend on the function identity (which changes every render
+	// because dragManager is a new object every render).
+	const syncRenderedNoteHeightsRef = React.useRef(syncRenderedNoteHeights);
+	syncRenderedNoteHeightsRef.current = syncRenderedNoteHeights;
+
+	// Re-measure heights when the rendered card set changes OR when cards
+	// first register their DOM elements (registrationVersion increments).
+	// Intentionally NOT depending on syncRenderedNoteHeights itself — that
+	// function is recreated every render (dragManager object is new each
+	// render), so depending on it would make this effect fire every render,
+	// causing an infinite setNoteHeightsVersion → re-render loop.
+	React.useLayoutEffect(() => {
+		syncRenderedNoteHeightsRef.current();
+		return () => {
+			if (heightSaveTimerRef.current) {
+				window.clearTimeout(heightSaveTimerRef.current);
+				heightSaveTimerRef.current = 0;
+			}
+		};
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [renderedIds, dragManager.registrationVersion]);
+
+	// Re-measure when already-mounted cards change height after first render.
+	// This is the missing path for:
+	// - initial doc hydration replacing skeleton/estimated content
+	// - text notes shrinking/growing while editing
+	// - checklist cards changing height when completed rows expand/collapse
+	React.useLayoutEffect(() => {
+		if (typeof ResizeObserver === 'undefined' || typeof window === 'undefined') return;
+		let frameId = 0;
+		const scheduleSync = (): void => {
+			// Batch multiple ResizeObserver callbacks into one animation frame so a
+			// burst of content changes only triggers a single masonry repack.
+			if (frameId) window.cancelAnimationFrame(frameId);
+			frameId = window.requestAnimationFrame(() => {
+				frameId = 0;
+				syncRenderedNoteHeightsRef.current();
+			});
+		};
+		const observer = new ResizeObserver(() => scheduleSync());
+		for (const noteId of renderedIds) {
+			const itemElement = dragManager.getItemElement(noteId);
+			const cardElement = itemElement?.querySelector<HTMLElement>('[data-note-card="true"]') ?? null;
+			if (cardElement) observer.observe(cardElement);
+		}
+		return () => {
+			if (frameId) window.cancelAnimationFrame(frameId);
+			observer.disconnect();
+		};
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [renderedIds, dragManager.registrationVersion]);
+
+	// Register the layout-change event listener once. Uses the ref so it
+	// always calls the latest syncRenderedNoteHeights without re-registering.
+	React.useLayoutEffect(() => {
+		if (typeof window === 'undefined') return;
+		const handleLayoutChange = (): void => {
+			syncRenderedNoteHeightsRef.current();
+		};
+		window.addEventListener('freemannotes:note-card-layout-change', handleLayoutChange);
+		return () => {
+			window.removeEventListener('freemannotes:note-card-layout-change', handleLayoutChange);
+		};
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
+	const cardGridLayout = React.useMemo(() => {
+		if (isListLikeView || groupedSections.length > 0) return null;
+		return buildMasonryLayoutFromColumns({
+			columns,
+			columnWidth: cardColumnWidthPx,
+			gapPx: cardGapPx,
+			heightById: packedHeightLookup,
+			fallbackHeightPx: Math.min(props.maxCardHeightPx, 220),
+		});
+	}, [cardColumnWidthPx, cardGapPx, columns, groupedSections.length, isListLikeView, noteHeightsVersion, packedHeightLookup, props.maxCardHeightPx]);
+	const cardGridHorizontalOffsetPx = React.useMemo(() => {
+		if (!cardGridLayout) return 0;
+		const containerWidth = gridRef.current?.clientWidth ?? sectionRef.current?.clientWidth ?? cardGridLayout.totalWidth;
+		return Math.max(0, Math.round((containerWidth - cardGridLayout.totalWidth) / 2));
+	}, [cardGridLayout, columnCount, mobileCardWidthPx, mobileGridGapPx]);
+	const shouldVirtualizeCardGrid = !isListLikeView && groupedSections.length === 0 && !dragManager.activeDragId;
+
+	const virtualizedCardIds = React.useMemo(() => {
+		if (!cardGridLayout) return new Set<string>();
+		if (!shouldVirtualizeCardGrid) return new Set(renderedIds);
+		const sectionTop = sectionRef.current?.getBoundingClientRect().top ?? 0;
+		const viewportTop = Math.max(0, -sectionTop);
+		return getVirtualizedMasonryItems({
+			layout: cardGridLayout,
+			viewportTop,
+			viewportHeight: viewportSnapshot.viewportHeight,
+			overscanPx: Math.max(960, viewportSnapshot.viewportHeight * 2),
+		});
+	}, [cardGridLayout, renderedIds, shouldVirtualizeCardGrid, viewportSnapshot]);
+
+	React.useEffect(() => {
+		if (!cardGridLayout || dragManager.activeDragId || !props.activeWorkspaceId || renderedIds.length === 0) return;
+		// Persist the latest measured layout so warm reopens can seed virtualization
+		// with stable card positions before the live DOM finishes measuring again.
+		writeNoteGridLayoutSnapshot(
+			{
+				workspaceId: props.activeWorkspaceId,
+				viewMode: props.viewMode ?? 'card',
+				deviceType: layoutDeviceType,
+				density: layoutDensityKey,
+				viewportBucket: layoutViewportBucket,
+			},
+			{
+				orderedIds: renderedIds.slice(),
+				columnCount,
+				columnSlots: columns.map((column) => column.length),
+				rects: cardGridLayout.items.map((item) => ({
+					id: item.id,
+					x: item.x + cardGridHorizontalOffsetPx,
+					y: item.y,
+					width: item.width,
+					height: item.height,
+				})),
+			}
+		);
+	}, [cardGridHorizontalOffsetPx, cardGridLayout, columnCount, columns, dragManager.activeDragId, layoutDensityKey, layoutDeviceType, layoutViewportBucket, props.activeWorkspaceId, props.viewMode, renderedIds]);
 
 	// Freeze touch actions during touch drag to prevent browser scroll interference
 	React.useEffect(() => {
@@ -2062,85 +2412,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		setNoteHeightsVersion((v) => v + 1);
 	}, [props.maxCardHeightPx]);
 
-	// Measure card heights for masonry packing (runs after render)
-	React.useLayoutEffect(() => {
-		if (!isGridVisible) return;
-		if (isListLikeView) return;
-		// Only card view contributes masonry heights. List/strip rows have a
-		// different layout model and would poison the cached packing heights.
-		const grid = gridRef.current;
-		if (!grid) return;
-		const documentRects = measureDocumentRects(grid);
-		if (documentRects.size === 0) return;
-		let heightsChanged = false;
-		for (const [id, rect] of documentRects) {
-			const nextHeight = Math.max(0, Math.round(rect.height));
-			if (nextHeight <= 0) continue;
-			const previousHeight = noteHeightByIdRef.current.get(id);
-			if (previousHeight !== nextHeight) {
-				noteHeightByIdRef.current.set(id, nextHeight);
-				heightsChanged = true;
-			}
-		}
-		for (const id of Array.from(noteHeightByIdRef.current.keys())) {
-			if (!documentRects.has(id)) {
-				noteHeightByIdRef.current.delete(id);
-				heightsChanged = true;
-			}
-		}
-		if (!dragManager.activeDragId && props.activeWorkspaceId && renderedIds.length > 0) {
-			const gridRect = grid.getBoundingClientRect();
-			writeNoteGridLayoutSnapshot(
-				{
-					workspaceId: props.activeWorkspaceId,
-					viewMode: props.viewMode ?? 'card',
-					deviceType: layoutDeviceType,
-					density: layoutDensityKey,
-					viewportBucket: layoutViewportBucket,
-				},
-				{
-					orderedIds: renderedIds.slice(),
-					columnCount,
-					columnSlots: columns.map((column) => column.length),
-					rects: renderedIds.flatMap((id) => {
-						const rect = documentRects.get(id);
-						if (!rect) return [];
-						return [{
-							id,
-							x: Math.round(rect.left - gridRect.left),
-							y: Math.round(rect.top - gridRect.top),
-							width: Math.round(rect.width),
-							height: Math.round(rect.height),
-						}];
-					}),
-				}
-			);
-		}
-		if (!dragManager.activeDragId && heightsChanged && typeof window !== 'undefined') {
-			if (noteHeightBumpRafRef.current) window.cancelAnimationFrame(noteHeightBumpRafRef.current);
-			noteHeightBumpRafRef.current = window.requestAnimationFrame(() => {
-				noteHeightBumpRafRef.current = 0;
-				setNoteHeightsVersion((version) => version + 1);
-			});
-			// Debounced persist: write heights 2 s after the last measurement change
-			if (props.deviceId) {
-				if (heightSaveTimerRef.current) window.clearTimeout(heightSaveTimerRef.current);
-				heightSaveTimerRef.current = window.setTimeout(() => {
-					heightSaveTimerRef.current = 0;
-					saveNoteHeightCache(props.deviceId!, noteHeightByIdRef.current);
-				}, 2000);
-			}
-		}
-		return () => {
-			if (noteHeightBumpRafRef.current && typeof window !== 'undefined') {
-				window.cancelAnimationFrame(noteHeightBumpRafRef.current);
-				noteHeightBumpRafRef.current = 0;
-			}
-		};
-	}, [columnCount, columns, docsById, dragManager.activeDragId, isGridVisible, isListLikeView, layoutDensityKey, layoutDeviceType, layoutViewportBucket, props.activeWorkspaceId, props.viewMode, renderedIds]);
-
-	const activeDoc = dragManager.activeDragId ? docsById[dragManager.activeDragId] : undefined;
-	const activeNote = dragManager.activeDragId ? noteById.get(dragManager.activeDragId) : undefined;
+	const overlayNoteId = dragManager.activeDragId ?? dragManager.dropOverlay?.id ?? null;
+	const activeDoc = overlayNoteId ? (docsById[overlayNoteId] ?? manager.peekDoc(overlayNoteId) ?? undefined) : undefined;
+	const activeNote = overlayNoteId ? noteById.get(overlayNoteId) : undefined;
+	const overlayState = dragManager.dragOverlay ?? dragManager.dropOverlay;
+	const isDropPreviewAnimating = !dragManager.dragOverlay && Boolean(dragManager.dropOverlay);
 	const activeHasPendingSync = activeNote ? pendingSyncNoteIds.has(activeNote.id) : false;
 	const activePlacement = activeNote ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === activeNote.id) : undefined;
 	const activeDocId = activeNote ? activePlacement?.roomId || resolveMediaDocId(activeNote.id) : undefined;
@@ -2169,6 +2445,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			return '';
 		}
 	}, [activeDoc, activeNote, props.viewMode]);
+	const activeCollaboratorSummary = activeNote ? collaboratorSummariesByNoteId[activeNote.id] ?? null : null;
 	const [dragPreviewMarkup, setDragPreviewMarkup] = React.useState('');
 	React.useLayoutEffect(() => {
 		if (!dragManager.activeDragId || isListLikeView) {
@@ -2179,7 +2456,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const contentElement = itemElement?.querySelector<HTMLElement>('[data-note-content="true"]') ?? null;
 		setDragPreviewMarkup(contentElement?.innerHTML ?? '');
 	}, [dragManager, dragManager.activeDragId, isListLikeView]);
-	const activeCollaboratorSummary = activeNote ? collaboratorSummariesByNoteId[activeNote.id] ?? null : null;
 	const moreMenuDoc = moreMenuNoteId ? docsById[moreMenuNoteId] : undefined;
 	const moreMenuPlacement = moreMenuNoteId ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === moreMenuNoteId) : undefined;
 	const moreMenuDocId = moreMenuNoteId ? moreMenuPlacement?.roomId || resolveMediaDocId(moreMenuNoteId) : undefined;
@@ -2341,17 +2617,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			: Math.max(12, openMetadataChip.anchorRect.top - estimatedHeight - 8);
 		return { top, left, width: overlayWidth };
 	}, [isCoarsePointer, openMetadataChip]);
-	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
+	const renderGridCard = React.useCallback((
+		noteId: string,
+		options?: {
+			fixedHeightPx?: number;
+			shellStyle?: React.CSSProperties;
+			useLayoutMotion?: boolean;
+		}
+	): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
+		const fixedHeightPx = Math.max(1, Math.round(options?.fixedHeightPx ?? noteHeightByIdRef.current.get(note.id) ?? getEstimatedNoteHeight(note.id)));
 		const doc = docsById[note.id] ?? manager.peekDoc(note.id) ?? null;
 		if (!doc) {
-			// Render a skeleton card at the cached height so masonry packing is stable
-			// and no layout repack occurs when the doc loads.
-			const skeletonH = noteHeightByIdRef.current.get(note.id) ?? getEstimatedNoteHeight(note.id);
 			return (
-				<div key={note.id} className={styles.item} data-note-id={note.id} style={{ height: skeletonH }}>
-					<div className={styles.skeletonCard} style={{ height: skeletonH }} />
+				<div key={note.id} className={styles.item} data-note-id={note.id} style={{ ...options?.shellStyle, height: fixedHeightPx }}>
+					<div className={styles.skeletonCard} style={{ height: fixedHeightPx }} />
 				</div>
 			);
 		}
@@ -2415,7 +2696,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				selected={props.selectedNoteId === note.id}
 				isMoreMenuOpen={moreMenuNoteId === note.id}
 				isTrashView={isTrashView}
-				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => {
 					if (moreMenuNoteId) return;
 					if (dragManager.shouldSuppressOpen()) return;
@@ -2445,6 +2725,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				isPlaceholder={isPlaceholder}
 				isOverlayActiveCard={overlayActiveNoteId === note.id}
 				layoutReady={layoutReady}
+				isDropSettling={note.id === dragManager.dropOverlay?.id}
+				useLayoutMotion={options?.useLayoutMotion ?? true}
+				shellStyle={options?.shellStyle}
 				setItemElement={dragManager.setItemElement}
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
@@ -2604,11 +2887,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			ref={sectionRef}
 			aria-label={t('grid.notes')}
 			className={styles.section}
-			style={
-				mobileSectionBleedPx > 0
-					? { ['--mobile-section-bleed' as any]: `${mobileSectionBleedPx}px` }
-					: undefined
-			}
+			style={{ ['--mobile-section-bleed' as any]: `${mobileSectionBleedPx}px` }}
 			onTouchStartCapture={(event) => {
 				const target = event.target as HTMLElement | null;
 				if (!target?.closest('[data-note-card="true"], [data-note-list-row="true"]')) return;
@@ -2736,10 +3015,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			) : null}
 			{props.viewMode !== 'list' && props.viewMode !== 'strip' ? (
 			<LayoutGroup>
-				<div ref={gridRef} className={isGroupedView ? styles.groupedSections : styles.grid} aria-label={t('grid.notesGrid')} style={{
+				<div ref={gridRef} className={isGroupedView ? styles.groupedSections : styles.virtualGrid} aria-label={t('grid.notesGrid')} style={{
 					['--grid-columns' as any]: String(columnCount),
 					...(mobileCardWidthPx !== null ? { ['--note-card-width' as any]: `${mobileCardWidthPx}px` } : {}),
 					...(mobileGridGapPx !== null ? { ['--grid-gap' as any]: `${mobileGridGapPx}px` } : {}),
+					...(!isGroupedView && cardGridLayout ? { height: `${Math.max(1, cardGridLayout.totalHeight)}px` } : {}),
 				}}>
 					{isGroupedView
 						? groupedSections.map((section) => {
@@ -2760,25 +3040,39 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								</div>
 							);
 						})
-						: columns.map((columnIds, columnIndex) => (
-							<div key={`col-${columnIndex}`} className={styles.column}>
-								{columnIds.map((noteId) => renderGridCard(noteId))}
-							</div>
-						))}
+						: cardGridLayout
+							? cardGridLayout.items
+								.filter((item) => !shouldVirtualizeCardGrid || virtualizedCardIds.has(item.id))
+								.map((item) => renderGridCard(item.id, {
+									fixedHeightPx: item.height,
+									useLayoutMotion: !shouldVirtualizeCardGrid,
+									shellStyle: {
+										position: 'absolute',
+										top: item.columnTop,
+										left: item.x + cardGridHorizontalOffsetPx,
+										width: item.width,
+										minWidth: item.width,
+										maxWidth: item.width,
+										transition: layoutReady ? 'top 260ms cubic-bezier(0.22, 1, 0.36, 1), left 260ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
+										willChange: layoutReady ? 'top, left' : undefined,
+									},
+								}))
+							: null}
 				</div>
 			</LayoutGroup>
 			) : null}
-			{dragManager.dragOverlay && activeNote && activeDoc ? (
+			{overlayState && activeNote && activeDoc ? (
 				<div
-					className={`${styles.item} ${styles.dragPreview}`}
+					className={`${styles.item} ${styles.dragPreview}${isDropPreviewAnimating ? ` ${styles.dragPreviewDrop}` : ''}`}
 					style={{
-						left: dragManager.dragOverlay.left,
-						top: dragManager.dragOverlay.top,
-						width: dragManager.dragOverlay.width,
-						minWidth: dragManager.dragOverlay.width,
-						maxWidth: dragManager.dragOverlay.width,
-						height: dragManager.dragOverlay.height,
+						left: overlayState.left,
+						top: overlayState.top,
+						width: overlayState.width,
+						minWidth: overlayState.width,
+						maxWidth: overlayState.width,
+						height: overlayState.height,
 					}}
+					onAnimationEnd={isDropPreviewAnimating ? dragManager.clearDropOverlay : undefined}
 				>
 					{props.viewMode === 'list' || props.viewMode === 'strip' ? (
 						<div className={styles.listDragGhost} style={getNoteColorVars(activeNote.id, activeDoc, props.themeId)}>
@@ -2843,6 +3137,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								canEdit={activeCanEdit}
 								hasPendingSync={activeHasPendingSync}
 								maxCardHeightPx={props.maxCardHeightPx}
+								forcedHeightPx={overlayState.height}
 							/>
 						)
 					)}
@@ -3022,7 +3317,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					onClose={() => { setMoreMenuNoteId(null); setMoreMenuAnchorRect(null); }}
 					onTogglePin={(moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;
-						setNotePinned(moreMenuDoc, !(noteSnapshotById.get(moreMenuNoteId)?.isPinned === true));
+						if (!moreMenuDocId) return;
+						setUserNotePinnedOnDoc({
+							doc: moreMenuDoc,
+							docId: moreMenuDocId,
+							noteId: moreMenuNoteId,
+							userId: props.authUserId,
+							pinned: !(noteSnapshotById.get(moreMenuNoteId)?.isPinned === true),
+						});
 					} : undefined}
 					onCheckAll={(moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;

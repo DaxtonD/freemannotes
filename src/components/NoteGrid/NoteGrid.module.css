@@ -17,6 +17,13 @@
 	grid-template-columns: repeat(var(--grid-columns, 2), var(--note-card-width));
 }
 
+.virtualGrid {
+	position: relative;
+	width: 100%;
+	min-width: 0;
+	min-height: 1px;
+}
+
 .groupedSections {
 	display: flex;
 	flex-direction: column;
@@ -65,6 +72,12 @@
 	min-width: 0;
 }
 
+.virtualColumn {
+	position: absolute;
+	top: 0;
+	min-width: 0;
+}
+
 .listGrid {
 	width: 100%;
 	min-width: 0;
@@ -100,7 +113,7 @@
 
 @media (pointer: coarse) {
 	.section {
-		margin-inline: calc(var(--space-1) * -1);
+		margin-inline: calc(var(--mobile-section-bleed, 0px) * -1);
 	}
 
 	.grid {
@@ -151,6 +164,45 @@
 	opacity: 0.92;
 	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
 	border-radius: var(--radius-sm);
+}
+
+@keyframes dragPreviewDrop {
+	0% {
+		opacity: 0.92;
+		transform: translateY(0) scale(1);
+	}
+	100% {
+		opacity: 0;
+		transform: translateY(10px) scale(0.985);
+	}
+}
+
+.dragPreviewDrop {
+	animation: dragPreviewDrop 180ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@keyframes noteCardDropSettle {
+	0% {
+		opacity: 0.96;
+		transform: translateY(-10px) scale(0.985);
+		box-shadow: 0 10px 24px rgba(0, 0, 0, 0.12);
+	}
+	55% {
+		opacity: 1;
+		transform: translateY(2px) scale(1.008);
+		box-shadow: 0 6px 14px rgba(0, 0, 0, 0.08);
+	}
+	100% {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+		box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+	}
+}
+
+.itemDropSettling {
+	transform-origin: center top;
+	will-change: transform, opacity;
+	animation: noteCardDropSettle 260ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .dragPreviewMarkup {

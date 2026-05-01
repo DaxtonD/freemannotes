@@ -7,6 +7,7 @@ import { getChecklistTextWithCountPrefix } from '../../core/checklistCounts';
 import { useI18n } from '../../core/i18n';
 import { getConnectionQuality, subscribeConnectionQualityChange } from '../../core/networkQuality';
 import { readNoteFromDoc } from '../../core/noteModel';
+import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import {
 	readCachedNoteShareCollaborators,
 	syncNoteShareCollaborators,
@@ -345,8 +346,10 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 				});
 		}
 	}, [manager, noteOrder, orderedIds, sharedPlacementByAlias]);
+	const pinPrefsSnapshot = React.useSyncExternalStore(subscribeNotePinPrefs, getNotePinPrefsSnapshot, getNotePinPrefsSnapshot);
 
 	const noteSnapshots = React.useMemo<VisibleNoteSnapshot[]>(() => {
+		void pinPrefsSnapshot;
 		return orderedIds.map((id) => {
 			const doc = docsById[id];
 			if (!doc) return createFallbackNoteSnapshot(id);
@@ -361,13 +364,18 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 				collectionId: note.collectionId,
 				labelIds: note.labelIds,
 				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
-				isPinned: note.isPinned,
+				isPinned: resolveUserNotePinned({
+					docId: docId || id,
+					noteId: id,
+					userId: props.authUserId,
+					legacyPinned: note.isPinned,
+				}),
 				lastAccessedAt: note.lastAccessedAt,
 				trashed: note.trashed,
 				archived: note.archived,
 			};
 		});
-	}, [docsById, metadataVersion, orderedIds, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias]);
+	}, [docsById, metadataVersion, orderedIds, pinPrefsSnapshot, props.authUserId, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias]);
 
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 	const baseVisibleIds = React.useMemo(() => {

@@ -126,7 +126,16 @@ export function AttachmentBrowserModalFrame(props: AttachmentBrowserModalFramePr
 						<h2 className={styles.title}>{props.noteTitle || props.subtitle}</h2>
 						<p className={styles.subtitle}>{props.subtitle}</p>
 					</div>
-					<button type="button" className={styles.closeButton} onClick={props.onClose} aria-label={props.closeLabel}>
+					<button
+						type="button"
+						className={styles.closeButton}
+						onPointerDown={(event) => {
+							event.preventDefault();
+							event.stopPropagation();
+						}}
+						onClick={props.onClose}
+						aria-label={props.closeLabel}
+					>
 						<FontAwesomeIcon icon={faXmark} />
 					</button>
 				</header>

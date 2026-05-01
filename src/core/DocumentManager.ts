@@ -527,7 +527,7 @@ export class DocumentManager {
 		// These rooms need their first WS sync before they have real content; NoteGrid
 		// holds the shimmer until pendingNoteWsSync reaches zero.
 		if (!this.isNotesRegistryRoom(roomName) && !this.noIdbContentRooms.has(roomName) && !this.wsEverSynced.has(roomName)) {
-			const hasIdbContent = (doc.store as { clients?: Map<unknown, unknown[]> }).clients?.size ?? 0 > 0;
+			const hasIdbContent = this.hasPersistedNoteContent(doc);
 			if (!hasIdbContent) {
 				this.noIdbContentRooms.add(roomName);
 				this.emitConnectionStatus();
@@ -735,12 +735,26 @@ export class DocumentManager {
 		const noteState = Y.encodeStateAsUpdate(sourceDoc);
 		const targetNoteRoomName = `${normalizedTargetWorkspaceId}:${key}`;
 		const targetRegistryRoomName = `${normalizedTargetWorkspaceId}:${NOTES_REGISTRY_ID}`;
+		// Move via isolated rooms so the destination note and registry can be fully
+		// persisted before we tear down the source room and delete its IndexedDB.
 		const targetNoteRoom = await this.openIsolatedRoom(targetNoteRoomName, { initializeRegistry: false });
-		const targetRegistryRoom = await this.openIsolatedRoom(targetRegistryRoomName, { initializeRegistry: true });
+		const cachedTargetRegistryDoc = this.docs.get(targetRegistryRoomName) ?? null;
+		const targetRegistryRoom = cachedTargetRegistryDoc
+			? null
+			: await this.openIsolatedRoom(targetRegistryRoomName, { initializeRegistry: true });
+		const targetRegistryDoc = cachedTargetRegistryDoc ?? targetRegistryRoom.doc;
 
 		try {
 			Y.applyUpdate(targetNoteRoom.doc, noteState);
-			this.upsertRegistryNoteEntry(targetRegistryRoom.doc, key, noteTitle);
+			targetNoteRoom.doc.transact(() => {
+				const metadata = targetNoteRoom.doc.getMap<any>('metadata');
+				metadata.set('collectionId', null);
+				metadata.set('labelIds', []);
+				metadata.set('updatedAt', Date.now());
+			}, this.internalOrigin);
+			this.upsertRegistryNoteEntry(targetRegistryDoc, key, noteTitle);
+			await this.waitForIsolatedRoomPersistence(targetNoteRoomName, targetNoteRoom.doc, { initializeRegistry: false });
+			await this.waitForIsolatedRoomPersistence(targetRegistryRoomName, targetRegistryDoc, { initializeRegistry: true });
 			const sourceRegistryDoc = await this.getNotesRegistryDoc();
 			this.removeRegistryNoteEntry(sourceRegistryDoc, key);
 			await this.waitForPersistenceTurn();
@@ -748,7 +762,7 @@ export class DocumentManager {
 			await this.deleteIndexedDbDatabase(`${sourceWorkspaceId}:${key}`);
 		} finally {
 			targetNoteRoom.destroy();
-			targetRegistryRoom.destroy();
+			targetRegistryRoom?.destroy();
 		}
 	}
 
@@ -889,6 +903,18 @@ export class DocumentManager {
 		}, this.internalOrigin);
 	}
 
+	private hasPersistedNoteContent(doc: Y.Doc): boolean {
+		const metadata = doc.getMap<any>('metadata');
+		if (metadata.size > 0) return true;
+
+		if (doc.getText('title').length > 0) return true;
+		if (doc.getText('content').length > 0) return true;
+		if (doc.getXmlFragment('contentRich').length > 0) return true;
+		if (doc.getArray<Y.Map<any>>('checklist').length > 0) return true;
+
+		return false;
+	}
+
 	private async openIsolatedRoom(roomName: string, opts?: { initializeRegistry?: boolean }): Promise<{ doc: Y.Doc; destroy: () => void }> {
 		if (typeof (globalThis as any).indexedDB === 'undefined') {
 			throw new Error('IndexedDB is not available in this runtime');
@@ -942,13 +968,44 @@ export class DocumentManager {
 		});
 	}
 
-	private waitForPersistenceTurn(): Promise<void> {
+	private async waitForIsolatedRoomPersistence(roomName: string, expectedDoc: Y.Doc, opts?: { initializeRegistry?: boolean; timeoutMs?: number }): Promise<void> {
+		const expectedStateVector = Y.encodeStateVector(expectedDoc);
+		const timeoutAt = Date.now() + (opts?.timeoutMs ?? 4_000);
+		while (true) {
+			// Re-open the room through IndexedDB and compare state vectors instead of
+			// trusting a single persistence callback; this catches slow write flushes
+			// before the source workspace data is removed.
+			const verifyRoom = await this.openIsolatedRoom(roomName, { initializeRegistry: opts?.initializeRegistry });
+			try {
+				const actualStateVector = Y.encodeStateVector(verifyRoom.doc);
+				if (this.uint8ArraysEqual(actualStateVector, expectedStateVector)) {
+					return;
+				}
+			} finally {
+				verifyRoom.destroy();
+			}
+			if (Date.now() >= timeoutAt) {
+				throw new Error(`Timed out waiting for IndexedDB persistence for ${roomName}`);
+			}
+			await this.waitForPersistenceTurn(40);
+		}
+	}
+
+	private uint8ArraysEqual(left: Uint8Array, right: Uint8Array): boolean {
+		if (left.length !== right.length) return false;
+		for (let index = 0; index < left.length; index += 1) {
+			if (left[index] !== right[index]) return false;
+		}
+		return true;
+	}
+
+	private waitForPersistenceTurn(delayMs = 0): Promise<void> {
 		return new Promise((resolve) => {
 			if (typeof window !== 'undefined' && typeof window.setTimeout === 'function') {
-				window.setTimeout(resolve, 0);
+				window.setTimeout(resolve, delayMs);
 				return;
 			}
-			setTimeout(resolve, 0);
+			setTimeout(resolve, delayMs);
 		});
 	}
 

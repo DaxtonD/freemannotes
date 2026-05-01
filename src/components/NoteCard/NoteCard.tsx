@@ -13,7 +13,7 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, normalizeChecklistCountValue } from '../../core/checklistCounts';
-import { buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
+import { normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getDeviceId } from '../../core/deviceId';
 import { useI18n } from '../../core/i18n';
 import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
@@ -62,6 +62,7 @@ export type NoteCardProps = {
 	dragHandleRef?: (node: HTMLDivElement | null) => void;
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 	maxCardHeightPx?: number;
+	forcedHeightPx?: number;
 	allowChecklistItemInteractions?: boolean;
 	allowLinkInteractions?: boolean;
 	allowCompletedItemInteractions?: boolean;
@@ -71,6 +72,17 @@ export type NoteCardProps = {
 type NoteType = 'text' | 'checklist';
 
 type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null; completedAt: number | null };
+
+type NoteCardStyle = React.CSSProperties & {
+	'--note-color-card-bg'?: string;
+	'--note-color-header-bg'?: string;
+	'--note-color-border'?: string;
+	'--note-color-text'?: string;
+	'--note-color-muted'?: string;
+	'--note-color-accent'?: string;
+	'--note-card-collapsed-checklist-height'?: string;
+	'--note-card-expanded-checklist-max-height'?: string;
+};
 
 function renderChecklistCardContent(item: ChecklistItem, content: React.ReactNode): React.ReactNode {
 	const prefix = getChecklistCountPrefix(item);
@@ -238,7 +250,7 @@ function getSafeHref(value: unknown): string | undefined {
 
 function getTextAlignStyle(node: JSONContent): React.CSSProperties | undefined {
 	const textAlign = typeof (node.attrs as { textAlign?: unknown } | undefined)?.textAlign === 'string'
-		? String((node.attrs as { textAlign?: string }).textAlign)
+		? (String((node.attrs as { textAlign?: string }).textAlign) as React.CSSProperties['textAlign'])
 		: undefined;
 	return textAlign ? { textAlign } : undefined;
 }
@@ -514,7 +526,7 @@ function updateChecklistItemById(
 function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardChecklistItem[] {
 	const cacheRef = React.useRef<{
 		yarray: Y.Array<Y.Map<any>>;
-		items: readonly ChecklistItem[];
+		items: readonly NoteCardChecklistItem[];
 	} | null>(null);
 
 	return React.useSyncExternalStore(
@@ -601,7 +613,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		props.doc.transact(() => { replaceRichFragmentFromJson(fragment, updated, 'full'); });
 	}, [canEdit, props.doc, richContent]);
 	const checklistItems = useChecklistItems(checklistArray);
-	const normalizedItems = React.useMemo(() => normalizeChecklistHierarchy(checklistItems), [checklistItems]);
+	const normalizedItems = React.useMemo<NoteCardChecklistItem[]>(
+		() => normalizeChecklistHierarchy(checklistItems) as NoteCardChecklistItem[],
+		[checklistItems]
+	);
 	const extractedLinks = React.useSyncExternalStore(
 		(onStoreChange) => {
 			const observer = (): void => onStoreChange();
@@ -623,12 +638,14 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		isOverflowing: false,
 	});
 	const [checklistLayoutMetrics, setChecklistLayoutMetrics] = React.useState({
-		headerHeightPx: 52,
+		// Conservative initial estimates: keep these close to real measured values
+		// so the first render has minimal gap before the layout effect measures.
+		headerHeightPx: 39,
 		metaHeightPx: 0,
 		linkPreviewHeightPx: 0,
-		completedBaseHeightPx: 36,
+		completedBaseHeightPx: 33,
 		cardPaddingBottomPx: 0,
-		bodyPaddingVerticalPx: 16,
+		bodyPaddingVerticalPx: 8,
 		renderedCardScrollHeightPx: 0,
 		contentRegionScrollHeightPx: 0,
 	});
@@ -646,9 +663,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const footerRef = React.useRef<HTMLDivElement | null>(null);
 	const requestChecklistLayoutRefresh = React.useCallback((): void => {
 		if (typeof window === 'undefined') return;
-		window.requestAnimationFrame(() => {
-			window.dispatchEvent(new CustomEvent('freemannotes:note-card-layout-change'));
-		});
+		window.dispatchEvent(new CustomEvent('freemannotes:note-card-layout-change'));
 	}, []);
 	const handleHeaderRef = React.useCallback((node: HTMLDivElement | null): void => {
 		headerRef.current = node;
@@ -820,6 +835,20 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		0,
 		completedChecklistItems.length - visibleCompletedRows.filter((row) => row.kind === 'item').length
 	);
+	const checklistLayoutSignature = React.useMemo(() => {
+		if (type !== 'checklist') return '';
+		const itemsSignature = normalizedItems
+			.map((item) => `${item.id}:${item.completed ? 1 : 0}:${item.parentId ?? ''}:${item.text.length}:${item.countValue ?? ''}`)
+			.join('|');
+		const completedSignature = visibleCompletedRows.map((row) => `${row.kind}:${row.item.id}`).join('|');
+		return [
+			itemsSignature,
+			showCompleted ? '1' : '0',
+			hiddenActiveChecklistCountToRender,
+			hiddenCompletedChecklistCount,
+			completedSignature,
+		].join('::');
+	}, [hiddenActiveChecklistCountToRender, hiddenCompletedChecklistCount, normalizedItems, showCompleted, type, visibleCompletedRows]);
 	const expandedChecklistMinHeightPx = React.useMemo(() => {
 		if (type !== 'checklist') return maxCardHeightPx;
 		let completedLineCost = 0;
@@ -836,9 +865,23 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			checklistLayoutMetrics.headerHeightPx + checklistLayoutMetrics.metaHeightPx + checklistLayoutMetrics.contentRegionScrollHeightPx + checklistLayoutMetrics.cardPaddingBottomPx
 		);
 	}, [checklistLayoutMetrics, showCompleted]);
+	React.useEffect(() => {
+		if (type !== 'checklist') return;
+		requestChecklistLayoutRefresh();
+	}, [checklistLayoutSignature, requestChecklistLayoutRefresh, type]);
 	const expandedChecklistMaxHeightPx = Math.max(maxCardHeightPx, expandedChecklistMinHeightPx, expandedChecklistRenderedHeightPx);
+	// When the CSS max-height variable changes (driven by expandedChecklistMaxHeightPx),
+	// the card's rendered height changes — but the ResizeObserver in the metrics effect
+	// won't detect this because card.scrollHeight (natural content height) doesn't change.
+	// Fire requestChecklistLayoutRefresh in a useLayoutEffect so NoteGrid re-measures
+	// AFTER the new CSS var is committed to the DOM, not before (which is what the setter
+	// inside setChecklistLayoutMetrics does, causing it to measure the stale capped height).
+	React.useLayoutEffect(() => {
+		if (type !== 'checklist') return;
+		requestChecklistLayoutRefresh();
+	}, [expandedChecklistMaxHeightPx, requestChecklistLayoutRefresh, type]);
 	const cardStyle = React.useMemo(() => {
-		const nextStyle: React.CSSProperties = {};
+		const nextStyle: NoteCardStyle = {};
 		if (resolvedColor) {
 			nextStyle['--note-color-card-bg'] = resolvedColor.cardBackground;
 			nextStyle['--note-color-header-bg'] = resolvedColor.headerBackground;
@@ -848,11 +891,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			nextStyle['--note-color-accent'] = resolvedColor.accentColor;
 		}
 		if (type === 'checklist') {
-			nextStyle['--note-card-collapsed-checklist-height' as any] = `${collapsedChecklistMinHeightPx}px`;
-			nextStyle['--note-card-expanded-checklist-max-height' as any] = `${expandedChecklistMaxHeightPx}px`;
+			nextStyle['--note-card-collapsed-checklist-height'] = `${collapsedChecklistMinHeightPx}px`;
+			nextStyle['--note-card-expanded-checklist-max-height'] = `${expandedChecklistMaxHeightPx}px`;
+		}
+		if (Number.isFinite(Number(props.forcedHeightPx)) && Number(props.forcedHeightPx) > 0) {
+			const forcedHeightPx = `${Math.round(Number(props.forcedHeightPx))}px`;
+			nextStyle.height = forcedHeightPx;
+			nextStyle.maxHeight = forcedHeightPx;
+			nextStyle.minHeight = forcedHeightPx;
 		}
 		return Object.keys(nextStyle).length > 0 ? nextStyle : undefined;
-	}, [collapsedChecklistMinHeightPx, expandedChecklistMaxHeightPx, resolvedColor, type]);
+	}, [collapsedChecklistMinHeightPx, expandedChecklistMaxHeightPx, props.forcedHeightPx, resolvedColor, type]);
 	const textPreviewStyle = React.useMemo(() => {
 		if (type !== 'text') return undefined;
 		if (!Number.isFinite(Number(textPreviewLayout.maxHeightPx)) || !textPreviewLayout.maxHeightPx || textPreviewLayout.maxHeightPx <= 0) return undefined;
@@ -1076,7 +1125,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			});
 		};
 
-		scheduleMeasure();
+		// Run synchronously on first commit so CSS vars are set before the browser
+		// paints — avoids a visible gap when the initial estimate is slightly off.
+		measure();
 		const observer = new ResizeObserver(() => scheduleMeasure());
 		if (cardRef.current) observer.observe(cardRef.current);
 		if (headerRef.current) observer.observe(headerRef.current);
@@ -1221,7 +1272,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				// Touch/coarse branch: capture the pointer so this interaction stays
 				// bound to the card element even if the editor overlay mounts before
 				// compatibility events are delivered.
-				if (!isDragHandle && (e.pointerType === 'touch' || isCoarsePointerDevice()) && e.currentTarget.hasPointerCapture && e.currentTarget.setPointerCapture) {
+				if (!isDragHandle && (e.pointerType === 'touch' || isCoarsePointerDevice()) && typeof e.currentTarget.setPointerCapture === 'function') {
 					try {
 						e.currentTarget.setPointerCapture(e.pointerId);
 					} catch {
@@ -1283,7 +1334,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				if (activeTouchOpenGesturePointerId === e.pointerId) {
 					activeTouchOpenGesturePointerId = null;
 				}
-				if (e.currentTarget.hasPointerCapture && e.currentTarget.releasePointerCapture) {
+				if (typeof e.currentTarget.releasePointerCapture === 'function' && e.currentTarget.hasPointerCapture(e.pointerId)) {
 					try {
 						e.currentTarget.releasePointerCapture(e.pointerId);
 					} catch {
@@ -1318,7 +1369,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				if (activeTouchOpenGesturePointerId === e.pointerId) {
 					activeTouchOpenGesturePointerId = null;
 				}
-				if (e.currentTarget.hasPointerCapture && e.currentTarget.releasePointerCapture) {
+				if (typeof e.currentTarget.releasePointerCapture === 'function' && e.currentTarget.hasPointerCapture(e.pointerId)) {
 					try {
 						e.currentTarget.releasePointerCapture(e.pointerId);
 					} catch {
@@ -1387,9 +1438,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			</div>
 
 			{props.metaChips ? (
-				// Keep a dedicated chip rail on the card so collaborator chips ship now
-				// and future label/image/collection chips can reuse the same slot.
-				<div ref={metaChipRowRef} className={styles.metaChipRow}>{props.metaChips}</div>
+				<div
+					ref={metaChipRowRef}
+					className={styles.metaChipRow}
+				>
+					{props.metaChips}
+				</div>
 			) : null}
 
 			{props.isTrashView && props.onRestoreNote ? (
@@ -1481,12 +1535,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 									}}
 									disabled={completedChecklistItems.length <= 0}
 								>
-									<span className={styles.completedToggleArrow} aria-hidden="true">{completedChecklistItems.length > 0 ? (showCompleted ? '▾' : '▸') : '·'}</span>
+										<span className={styles.completedToggleArrow} aria-hidden="true">
+											<span className={`${styles.completedToggleArrowIcon}${showCompleted ? ` ${styles.completedToggleArrowIconOpen}` : ''}`} />
+										</span>
 									<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
 								</button>
 							) : (
 								<div ref={completedToggleRef as React.RefObject<HTMLDivElement>} className={styles.completedToggle}>
-									<span className={styles.completedToggleArrow} aria-hidden="true">{completedChecklistItems.length > 0 ? (showCompleted ? '▾' : '▸') : '·'}</span>
+										<span className={styles.completedToggleArrow} aria-hidden="true">
+											<span className={`${styles.completedToggleArrowIcon}${showCompleted ? ` ${styles.completedToggleArrowIconOpen}` : ''}`} />
+										</span>
 									<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
 								</div>
 							)}

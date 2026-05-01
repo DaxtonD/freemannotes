@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.3.1 - 2026-05-01
+
+### Changed
+- **Moved-note local state now follows workspace transfers more completely.** Local note order snapshots, per-user pin overrides, cached share collaborators, and offline note media/link/document caches now migrate with the note so moved notes feel consistent before remote sync finishes.
+- **Startup hydration continues leaning on warm local cache before deeper storage reads finish.** The app seeds device appearance, workspace selection, reminders, and note ordering synchronously, then layers in IndexedDB-backed workspace metadata and registries without blocking first paint.
+
+### Fixed
+- **Warm reopens no longer skip the splash screen while the first note grid is still settling.** Startup grid readiness now waits for the visible grid slice to load and stabilize instead of racing ahead on cached state alone.
+- **Virtualized note cards now repack reliably after real height changes.** Initial hydration, text edits, and checklist completed-item expand/collapse all trigger measured masonry reflows again, including cross-column rebalancing when card heights change materially.
+- **Scrolling the note grid no longer causes visible card jumps near the viewport edge.** Viewport tracking now clamps overscroll-driven measurements and uses ahead-of-viewport mounting plus cached heights to avoid transient layout snaps while cards enter view.
+- **Checklist and drag/drop-driven card shifts animate more smoothly.** Same-column and cross-column masonry moves now keep cards in a single absolute layer for `top` and `left` transitions, and dropped cards get a short settle animation instead of snapping into place.
+
 ## 1.3.0 - 2026-04-24
 
 ### Added
