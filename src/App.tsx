@@ -723,13 +723,17 @@ export function App(): React.JSX.Element {
 	// the server responds with an explicit 401/403 (expired session).
 	const canRestoreCachedAuthImmediately = Boolean(cachedAuth);
 	const hasWarmStartupCache = startupHydration.hasWarmCache;
+	type SplashDismissMode = 'viewport' | 'full';
 	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
 		canRestoreCachedAuthImmediately ? 'authed' : 'loading'
 	);
-	// Splash overlay is startup-only and only shown when no local cache exists.
+	// Splash overlay is startup-only. Even with warm cache we keep it mounted
+	// until NoteGrid reports the viewport-stable first paint, so cached docs never
+	// visibly hydrate in front of the user on PWA relaunch.
 	// gridReady → starts fade-out; splashGone → removes the DOM node entirely.
-	const [gridReady, setGridReady] = React.useState(hasWarmStartupCache);
-	const [splashGone, setSplashGone] = React.useState(hasWarmStartupCache);
+	const [gridReady, setGridReady] = React.useState(false);
+	const [splashGone, setSplashGone] = React.useState(false);
+	const [splashDismissMode, setSplashDismissMode] = React.useState<SplashDismissMode>(() => hasWarmStartupCache ? 'full' : 'viewport');
 	const splashTimerRef = React.useRef<number>(0);
 	const prevAuthStatusRef = React.useRef(authStatus);
 	// Detect unauth → authed transition (user just logged in from scratch).
@@ -737,6 +741,7 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed' && !hasWarmStartupCache) {
 			clearTimeout(splashTimerRef.current);
+			setSplashDismissMode('viewport');
 			setGridReady(false);
 			setSplashGone(false); // show splash
 		}
@@ -839,25 +844,17 @@ export function App(): React.JSX.Element {
 	// caches, scroll position, and any in-progress drag state.
 	const stableWorkspaceKeyRef = React.useRef<string>('no-workspace');
 	if (authWorkspaceId) stableWorkspaceKeyRef.current = authWorkspaceId;
-	// Track which workspaces have completed their first full load this session.
-	// Persists across workspace switches (Ref, not state) so NoteGrid can skip
-	// the initial skeleton shimmer when returning to a previously-loaded workspace.
-	// Also persisted to sessionStorage so PWA background→foreground re-opens
-	// skip the shimmer for workspaces that were fully loaded before the app was
-	// suspended (the IDB data is still warm, no need to show skeletons again).
-	const seenWorkspaceIdsRef = React.useRef<Set<string>>((() => {
-		try {
-			const raw = localStorage.getItem('freemannotes.seenWorkspaceIds.v1');
-			if (raw) return new Set<string>(JSON.parse(raw) as string[]);
-		} catch { /* ignore */ }
-		return new Set<string>();
-	})());
-	// Workspace switches should render from cache immediately; splash is startup-only.
+	// Workspace switches should rearm the splash, but use the fast viewport-ready
+	// dismissal path so cached workspaces do not wait on the multi-second fallback.
 	const prevAuthWorkspaceIdForSplashRef = React.useRef<string | null>(authWorkspaceId);
 	React.useEffect(() => {
 		const prev = prevAuthWorkspaceIdForSplashRef.current;
 		prevAuthWorkspaceIdForSplashRef.current = authWorkspaceId;
 		if (prev !== null && authWorkspaceId !== null && prev !== authWorkspaceId) {
+			clearTimeout(splashTimerRef.current);
+			setSplashDismissMode('viewport');
+			setGridReady(false);
+			setSplashGone(false);
 			void logClientEvent('VIEW_SWITCH', { kind: 'workspace', from: prev, to: authWorkspaceId });
 		}
 	}, [authWorkspaceId]);
@@ -8118,8 +8115,11 @@ export function App(): React.JSX.Element {
 						}}
 						// onViewportReady fires as soon as the viewport-visible cards are
 						// measured and stable — much sooner than onReady on large workspaces.
-						// This drives splash dismissal so the overlay never waits for all notes.
+						// Use it only for true cold starts. Warm starts and workspace switches
+						// wait for onReady so cached hydration/repack tail and late chip rows
+						// remain hidden behind the splash.
 						onViewportReady={() => {
+							if (splashDismissMode !== 'viewport') return;
 							setGridReady(true);
 							if (splashGone) return;
 							// Give the CSS fade-out transition 500 ms to complete,
@@ -8128,31 +8128,18 @@ export function App(): React.JSX.Element {
 							splashTimerRef.current = window.setTimeout(() => setSplashGone(true), 500);
 						}}
 						// onReady fires after ALL docs are loaded and the full layout has
-						// settled. Use it only for seenWorkspace tracking (suppressShimmer
-						// optimization) — splash is already dismissed by onViewportReady.
+						// settled. Warm starts and workspace switches dismiss here; cold
+						// starts have usually already faded out via onViewportReady.
 						onReady={() => {
-							// Mark this workspace as fully loaded. Subsequent switches back
-							// will pass suppressShimmer=true so the viewport-ready check is
-							// near-instant (heights already cached).
 							setGridReady(true);
 							if (!splashGoneRef.current) {
 								clearTimeout(splashTimerRef.current);
 								splashTimerRef.current = window.setTimeout(() => setSplashGone(true), 500);
 							}
-							if (authWorkspaceId) {
-								seenWorkspaceIdsRef.current.add(authWorkspaceId);
-								try {
-									localStorage.setItem('freemannotes.seenWorkspaceIds.v1', JSON.stringify([...seenWorkspaceIdsRef.current]));
-								} catch { /* ignore */ }
-							}
 						}}
 						// Layout animations are managed internally by NoteGrid
 						// (held until allDocsLoaded, then enabled after 2 rAFs).
 						enableLayoutAnimations={true}
-						// Skip the skeleton shimmer when switching back to a workspace whose
-						// notes have already been fully loaded this session. Shimmer still
-						// shows on the first cold load of each workspace.
-						suppressShimmer={seenWorkspaceIdsRef.current.has(authWorkspaceId ?? '')}
 						// Device ID scopes the height cache so skeleton cards render
 						// at the correct size for this device/viewport combination.
 						deviceId={deviceId}

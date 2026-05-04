@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.3.2 - 2026-05-03
+
+### Changed
+- **NoteGrid now virtualizes masonry columns independently instead of flattening the entire grid.** Each column keeps the DOM as the layout authority, card heights are refreshed from `ResizeObserver` updates, and drag sessions temporarily render full columns so drop previews stay accurate.
+- **Docker publishing now follows semantic GHCR release rules automatically.** The GitHub Actions workflow publishes immutable `major.minor.patch`, `major.minor`, and `major` image tags from release tags, updates `latest` only from the highest release tag or `main`, and uses the repository `GITHUB_TOKEN` instead of a personal access token.
+
+### Fixed
+- **Warm relaunches and workspace switches no longer show note hydration behind the splash.** Startup and workspace readiness gates now rearm whenever the active workspace or view changes, and the splash only dismisses after the first stable viewport paint for the next grid.
+- **Warm masonry restores no longer leave a small repack tail as note heights settle.** Visible card measurements now refresh incrementally from observed DOM height changes, which keeps cached layouts and collaborator chip placement steadier during startup.
+
 ## 1.3.0 - 2026-04-24
 
 ### Added
