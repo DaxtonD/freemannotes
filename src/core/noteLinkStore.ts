@@ -37,6 +37,52 @@ type RefreshRemoteNoteLinksOptions = {
 	intentUrls?: ReadonlySet<string> | null;
 };
 
+function parseDocId(docId: string): { workspaceId: string; noteId: string } {
+	const normalized = String(docId || '').trim();
+	const separatorIndex = normalized.indexOf(':');
+	if (separatorIndex <= 0 || separatorIndex >= normalized.length - 1) {
+		return { workspaceId: '', noteId: normalized };
+	}
+	return {
+		workspaceId: normalized.slice(0, separatorIndex),
+		noteId: normalized.slice(separatorIndex + 1),
+	};
+}
+
+function rewriteNoteLinkDocId(link: NoteLinkRecord, targetDocId: string): NoteLinkRecord {
+	const target = parseDocId(targetDocId);
+	return {
+		...link,
+		docId: targetDocId,
+		sourceWorkspaceId: target.workspaceId,
+		sourceNoteId: target.noteId,
+	};
+}
+
+function mergeNoteLinkCache(links: readonly NoteLinkRecord[]): NoteLinkRecord[] {
+	const byUrl = new Map<string, NoteLinkRecord>();
+	for (const link of links) {
+		if (!link || !link.normalizedUrl) continue;
+		const existing = byUrl.get(link.normalizedUrl);
+		if (!existing) {
+			byUrl.set(link.normalizedUrl, link);
+			continue;
+		}
+		if (existing.status === 'PENDING' && link.status !== 'PENDING') {
+			byUrl.set(link.normalizedUrl, link);
+			continue;
+		}
+		if (existing.status === link.status && Number(link.sortOrder || 0) < Number(existing.sortOrder || 0)) {
+			byUrl.set(link.normalizedUrl, link);
+		}
+	}
+	return Array.from(byUrl.values()).sort((left, right) => {
+		const sortDiff = Number(left.sortOrder || 0) - Number(right.sortOrder || 0);
+		if (sortDiff !== 0) return sortDiff;
+		return String(left.createdAt || '').localeCompare(String(right.createdAt || ''));
+	});
+}
+
 function isOffline(): boolean {
 	return typeof navigator !== 'undefined' && navigator.onLine === false;
 }
@@ -174,6 +220,79 @@ export async function readStoredNoteLinks(docId: string): Promise<readonly NoteL
 	}
 }
 
+export async function moveLocalNoteLinks(sourceDocId: string, targetDocId: string, userId?: string | null): Promise<void> {
+	const source = String(sourceDocId || '').trim();
+	const target = String(targetDocId || '').trim();
+	const normalizedUserId = String(userId || '').trim();
+	if (!source || !target || source === target) return;
+
+	try {
+		// Merge the destination first so a move never drops preview metadata when
+		// both notes already have locally cached extracted links.
+		const [sourceCachedLinks, targetCachedLinks] = await Promise.all([
+			readStoredNoteLinks(source),
+			readStoredNoteLinks(target),
+		]);
+		if (sourceCachedLinks.length > 0 || targetCachedLinks.length > 0) {
+			await writeCachedLinks(
+				target,
+				mergeNoteLinkCache([
+					...targetCachedLinks,
+					...sourceCachedLinks.map((link) => rewriteNoteLinkDocId(link, target)),
+				]),
+				{ emit: false }
+			);
+		}
+		await writeCachedLinks(source, [], { emit: false });
+
+		if (normalizedUserId) {
+			const [sourceSnapshot, targetSnapshot] = await Promise.all([
+				readQueuedSnapshot(normalizedUserId, source),
+				readQueuedSnapshot(normalizedUserId, target),
+			]);
+			if (sourceSnapshot) {
+				const mergedLinks = targetSnapshot
+					? mergeExtractedLinks([...targetSnapshot.links, ...sourceSnapshot.links])
+					: sourceSnapshot.links.map((link) => ({ ...link }));
+				await writeQueuedSnapshot({
+					id: `${normalizedUserId}:${target}`,
+					userId: normalizedUserId,
+					docId: target,
+					links: mergedLinks,
+					updatedAt: nowIso(),
+					lastError: null,
+				});
+				await deleteQueuedSnapshot(sourceSnapshot.id);
+			}
+		}
+	} catch {
+		// Best effort only; server refresh can still rebuild preview metadata.
+	}
+
+	// Keep the in-memory remote cache aligned with the persisted move so cards,
+	// panels, and previews refresh synchronously after the workspace change.
+	const movedSourceCache = (remoteCache.get(source) || []).map((link) => rewriteNoteLinkDocId(link, target));
+	const existingTargetCache = remoteCache.get(target) || [];
+	if (movedSourceCache.length > 0 || existingTargetCache.length > 0) {
+		remoteCache.set(target, mergeNoteLinkCache([...existingTargetCache, ...movedSourceCache]));
+	}
+	remoteCache.delete(source);
+	emitNoteLinksChanged(source, 'cache');
+	emitNoteLinksChanged(target, 'cache');
+}
+
+function mergeExtractedLinks(links: readonly ExtractedNoteLink[]): ExtractedNoteLink[] {
+	const byUrl = new Map<string, ExtractedNoteLink>();
+	for (const link of links) {
+		if (!link || !link.normalizedUrl) continue;
+		const existing = byUrl.get(link.normalizedUrl);
+		if (!existing || Number(link.sortOrder || 0) < Number(existing.sortOrder || 0)) {
+			byUrl.set(link.normalizedUrl, { ...link });
+		}
+	}
+	return Array.from(byUrl.values()).sort((left, right) => Number(left.sortOrder || 0) - Number(right.sortOrder || 0));
+}
+
 function buildQueuedRecords(docId: string, links: readonly ExtractedNoteLink[]): NoteLinkRecord[] {
 	const timestamp = nowIso();
 	return links.map((link) => ({
@@ -286,6 +405,9 @@ export async function refreshRemoteNoteLinks(
 		try {
 			const response = await listNoteLinks(docId);
 			const cached = remoteCache.get(docId) || await readStoredNoteLinks(docId);
+			if (!options.force && response.links.length === 0 && cached.length > 0) {
+				return cached;
+			}
 			const merged = mergeFetchedLinksWithCachedPlaceholders(response.links, cached, options.intentUrls ?? null);
 			// Emit here as well as during local queue writes so note-card rails on other
 			// clients react when fresh preview metadata arrives from the server.

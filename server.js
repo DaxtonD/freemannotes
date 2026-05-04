@@ -406,7 +406,23 @@ if (DATABASE_URL.length > 0) {
 		if (persistAdapter) {
 			try {
 				const { createApiRouter } = require('./server/apiRouter');
-				apiRouter = createApiRouter({ prisma, adapter: persistAdapter, timezone: PGTIMEZONE || null });
+				apiRouter = createApiRouter({
+					prisma,
+					adapter: persistAdapter,
+					timezone: PGTIMEZONE || null,
+					onWorkspaceMetadataChanged: async (event) => {
+						const normalized = normalizeWorkspaceMetadataEvent({
+							...event,
+							type: 'workspace-metadata-changed',
+							origin: SERVER_INSTANCE_ID,
+						});
+						if (!normalized) return;
+						broadcastWorkspaceMetadataChanged(normalized);
+						if (redis) {
+							await publishWorkspaceMetadataEvent(redis, normalized);
+						}
+					},
+				});
 				console.info('[server] REST API router initialized');
 			} catch (err) {
 				console.error('[server] Failed to initialize REST API router:', err.message);

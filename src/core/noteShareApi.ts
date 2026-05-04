@@ -2,6 +2,7 @@ import {
 	cacheCollaboratorSnapshot,
 	clearCollaboratorSnapshot,
 	enqueuePendingCollaboratorAction,
+	moveCachedCollaboratorData,
 	readCachedCollaboratorSnapshot,
 	readPendingCollaboratorActions as readPendingCollaboratorQueue,
 	removePendingCollaboratorAction,
@@ -404,6 +405,10 @@ export async function readPendingCollaboratorActions(userId: string, docId?: str
 	return readPendingCollaboratorQueue(userId, docId);
 }
 
+export async function moveCachedNoteShareCollaborators(userId: string, sourceDocId: string, targetDocId: string): Promise<void> {
+	await moveCachedCollaboratorData(userId, sourceDocId, targetDocId);
+}
+
 export async function syncNoteShareCollaborators(userId: string, docId: string, opts?: { suppressError?: boolean }): Promise<NoteShareCollaboratorSnapshot | null> {
 	if (!userId || !docId) return null;
 	try {
@@ -412,6 +417,9 @@ export async function syncNoteShareCollaborators(userId: string, docId: string, 
 		return (await readCachedCollaboratorSnapshot(userId, docId)) as NoteShareCollaboratorSnapshot | null;
 	} catch (error) {
 		if (isMissingAccessError(error)) {
+			if (opts?.suppressError) {
+				return (await readCachedCollaboratorSnapshot(userId, docId)) as NoteShareCollaboratorSnapshot | null;
+			}
 			await clearCollaboratorSnapshot(userId, docId);
 			return null;
 		}

@@ -5,6 +5,27 @@ export type GridLayoutConfig = {
 	mobileSectionBleedPx: number;
 };
 
+export type MasonryItemLayout = {
+	id: string;
+	columnIndex: number;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	columnTop: number;
+};
+
+export type MasonryLayout = {
+	columnWidth: number;
+	gapPx: number;
+	columnHeights: number[];
+	columnOffsets: number[];
+	items: readonly MasonryItemLayout[];
+	itemById: ReadonlyMap<string, MasonryItemLayout>;
+	totalHeight: number;
+	totalWidth: number;
+};
+
 export const MOBILE_GRID_EDGE_MARGIN_PX = 4;
 
 export function readCssPxVariable(name: string, fallback: number): number {
@@ -43,16 +64,18 @@ export function getGridLayoutForViewport(
 	if (isMobile) {
 		if (isPortrait) {
 			mobileGapPx = 4;
-			const desiredEdgeMargin = MOBILE_GRID_EDGE_MARGIN_PX;
-			mobileSectionBleedPx = Math.max(0, Math.round(appSidePadding - desiredEdgeMargin));
+			mobileSectionBleedPx = 0;
 		}
 
 		const stableShortSide =
 			typeof window !== 'undefined' && typeof window.screen !== 'undefined'
 				? Math.min(window.screen.width, window.screen.height)
 				: Math.min(viewportWidth, viewportHeight);
-		const effectiveContainerWidth = containerWidth + mobileSectionBleedPx * 2;
-		const twoColumnBasis = Math.min(effectiveContainerWidth, stableShortSide);
+		const desiredEdgeMargin = isPortrait ? MOBILE_GRID_EDGE_MARGIN_PX : 0;
+		const twoColumnBasis = Math.max(
+			0,
+			Math.min(containerWidth, stableShortSide) - desiredEdgeMargin * 2
+		);
 		mobileCardWidthPx = Math.max(140, Math.floor((twoColumnBasis - (mobileGapPx ?? gap)) / 2));
 	}
 
@@ -109,6 +132,76 @@ export function splitIntoColumnsByHeight(
 	}
 
 	return columns;
+}
+
+export function buildMasonryLayoutFromColumns(args: {
+	columns: readonly string[][];
+	columnWidth: number;
+	gapPx: number;
+	heightById: ReadonlyMap<string, number>;
+	fallbackHeightPx: number;
+}): MasonryLayout {
+	const normalizedColumnWidth = Math.max(1, Math.round(args.columnWidth));
+	const normalizedGapPx = Math.max(0, Math.round(args.gapPx));
+	const columnOffsets = args.columns.map((_, index) => index * (normalizedColumnWidth + normalizedGapPx));
+	const columnHeights = new Array<number>(args.columns.length).fill(0);
+	const items: MasonryItemLayout[] = [];
+	const itemById = new Map<string, MasonryItemLayout>();
+
+	for (let columnIndex = 0; columnIndex < args.columns.length; columnIndex++) {
+		const columnIds = args.columns[columnIndex] ?? [];
+		let y = 0;
+		for (const id of columnIds) {
+			const height = Math.max(1, Math.round(args.heightById.get(id) ?? args.fallbackHeightPx));
+			const nextItem: MasonryItemLayout = {
+				id,
+				columnIndex,
+				x: columnOffsets[columnIndex] ?? 0,
+				y,
+				width: normalizedColumnWidth,
+				height,
+				columnTop: y,
+			};
+			items.push(nextItem);
+			itemById.set(id, nextItem);
+			y += height + normalizedGapPx;
+		}
+		columnHeights[columnIndex] = Math.max(0, y - (columnIds.length > 0 ? normalizedGapPx : 0));
+	}
+
+	const totalHeight = columnHeights.length > 0 ? Math.max(...columnHeights) : 0;
+	const totalWidth = args.columns.length > 0
+		? args.columns.length * normalizedColumnWidth + Math.max(0, args.columns.length - 1) * normalizedGapPx
+		: normalizedColumnWidth;
+
+	return {
+		columnWidth: normalizedColumnWidth,
+		gapPx: normalizedGapPx,
+		columnHeights,
+		columnOffsets,
+		items,
+		itemById,
+		totalHeight,
+		totalWidth,
+	};
+}
+
+export function getVirtualizedMasonryItems(args: {
+	layout: MasonryLayout;
+	viewportTop: number;
+	viewportHeight: number;
+	overscanPx: number;
+}): Set<string> {
+	const visibleIds = new Set<string>();
+	const minY = Math.max(0, args.viewportTop - Math.max(0, args.overscanPx));
+	const maxY = args.viewportTop + Math.max(0, args.viewportHeight) + Math.max(0, args.overscanPx);
+	for (const item of args.layout.items) {
+		const itemBottom = item.y + item.height;
+		if (itemBottom < minY) continue;
+		if (item.y > maxY) continue;
+		visibleIds.add(item.id);
+	}
+	return visibleIds;
 }
 
 /**

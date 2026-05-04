@@ -80,6 +80,25 @@ function getPrimaryVideoTrack(stream: MediaStream | null): TorchTrack | null {
 	return track as TorchTrack | null;
 }
 
+function suppressNextDocumentCompatibilityMouseEvents(): void {
+	if (typeof window === 'undefined') return;
+	let timeoutId = 0;
+	const handler = (event: MouseEvent): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+	};
+	const cleanup = (): void => {
+		window.removeEventListener('mousedown', handler, true);
+		window.removeEventListener('mouseup', handler, true);
+		window.removeEventListener('click', handler, true);
+		if (timeoutId) window.clearTimeout(timeoutId);
+	};
+	window.addEventListener('mousedown', handler, true);
+	window.addEventListener('mouseup', handler, true);
+	window.addEventListener('click', handler, true);
+	timeoutId = window.setTimeout(() => cleanup(), 500);
+}
+
 async function setTorchEnabled(stream: MediaStream | null, enabled: boolean): Promise<void> {
 	const track = getPrimaryVideoTrack(stream);
 	if (!track?.applyConstraints) {
@@ -489,6 +508,15 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		afterClose?.();
 	};
 
+	const closeFromPointerEvent = (event: React.PointerEvent<HTMLButtonElement>): void => {
+		if (event.pointerType !== 'touch') return;
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+		stopCameraStream();
+		suppressNextDocumentCompatibilityMouseEvents();
+		closeAfterKeyboardSettles();
+	};
+
 	const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
 		const newFiles = Array.from(event.target.files || []);
 		event.target.value = '';
@@ -693,7 +721,16 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 							<h2 className={styles.title}>{t('noteMenu.addImage')}</h2>
 							<p className={styles.subtitle}>{props.noteTitle ? `${t('media.forPrefix')} ${props.noteTitle}` : t('media.attachToNote')}</p>
 						</div>
-						<button type="button" className={styles.close} onClick={() => { stopCameraStream(); props.onClose(); }} aria-label={t('common.close')}>
+						<button
+							type="button"
+							className={styles.close}
+							onPointerUp={closeFromPointerEvent}
+							onClick={() => {
+								stopCameraStream();
+								closeAfterKeyboardSettles();
+							}}
+							aria-label={t('common.close')}
+						>
 							<FontAwesomeIcon icon={faXmark} />
 						</button>
 					</header>
@@ -739,7 +776,10 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 									<span className={styles.cameraFabLabel}>{t('media.cancelCamera')}</span>
 								</button>
 								<button type="button" className={`${styles.cameraFab} ${styles.cameraFabCapture}`} onClick={handleCapturePhoto} disabled={!isCameraReady || isCapturingPhoto || isProcessingSelection} aria-label={t('media.capturePhoto')}>
-									<img className={styles.cameraCaptureIcon} src="/icons/Capture.png" alt="" aria-hidden="true" />
+									{/* Keep these controls network-independent so camera actions remain visible offline. */}
+									<span className={styles.cameraCaptureIcon} aria-hidden="true">
+										<span className={styles.cameraCaptureIconInner} />
+									</span>
 									<span className={styles.cameraFabLabel}>{t('media.capturePhoto')}</span>
 								</button>
 								<button
@@ -749,7 +789,9 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 									disabled={!isTorchSupported || isTorchBusy || isCapturingPhoto || isStartingCamera}
 									aria-label={t('media.cameraFlash')}
 								>
-									<img className={styles.cameraSideIcon} src="/icons/Flash.png" alt="" aria-hidden="true" />
+									<svg className={styles.cameraSideIcon} viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+										<path d="M13.5 2L6 13h4.5l-1 9L18 11h-4.5L13.5 2z" fill="currentColor" />
+									</svg>
 									<span className={styles.cameraFabLabel}>{t('media.cameraFlash')}</span>
 								</button>
 							</div>

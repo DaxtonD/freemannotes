@@ -50,6 +50,36 @@ const pendingRemoteRefreshes = new Map<string, Promise<readonly NoteImageRecord[
 const remoteRefreshTimestamps = new Map<string, number>();
 const remoteFileNameOverrides = new Map<string, string>();
 
+function parseDocId(docId: string): { workspaceId: string; noteId: string } {
+	const normalizedDocId = String(docId || '').trim();
+	const separatorIndex = normalizedDocId.indexOf(':');
+	if (separatorIndex <= 0) {
+		return { workspaceId: '', noteId: normalizedDocId };
+	}
+	return {
+		workspaceId: normalizedDocId.slice(0, separatorIndex),
+		noteId: normalizedDocId.slice(separatorIndex + 1),
+	};
+}
+
+function rewriteNoteImageDocId(image: NoteImageRecord, targetDocId: string): NoteImageRecord {
+	const target = parseDocId(targetDocId);
+	return {
+		...image,
+		docId: targetDocId,
+		sourceWorkspaceId: target.workspaceId,
+		sourceNoteId: target.noteId,
+	};
+}
+
+function mergeRemoteImageCache(entries: readonly NoteImageRecord[]): readonly NoteImageRecord[] {
+	const byId = new Map<string, NoteImageRecord>();
+	for (const entry of entries) {
+		byId.set(entry.id, entry);
+	}
+	return Array.from(byId.values()).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
 function applyRemoteFileNameOverrides(images: readonly NoteImageRecord[]): NoteImageRecord[] {
 	return images.map((image) => {
 		if (image.fileName) return image;
@@ -515,6 +545,57 @@ export async function readQueuedNoteImageDeletions(userId: string, docId: string
 	}
 }
 
+export async function moveLocalNoteMedia(sourceDocId: string, targetDocId: string, userId?: string | null): Promise<void> {
+	const source = String(sourceDocId || '').trim();
+	const target = String(targetDocId || '').trim();
+	const normalizedUserId = String(userId || '').trim();
+	if (!source || !target || source === target) return;
+
+	try {
+		// Migrate both preview rows and queued uploads so the destination note can
+		// keep rendering local image state even while offline or mid-sync.
+		const previewRows = await readPreviewRowsByDoc(source);
+		if (previewRows.length > 0) {
+			await upsertPreviewRows(previewRows.map((row) => ({
+				...row,
+				docId: target,
+				image: row.image ? rewriteNoteImageDocId(row.image, target) : null,
+			})));
+		}
+
+		if (normalizedUserId) {
+			const queuedRows = await readAllQueuedNoteImages(normalizedUserId);
+			const sourceQueuedRows = queuedRows.filter((row) => row.docId === source);
+			if (sourceQueuedRows.length > 0) {
+				await upsertQueuedRows(sourceQueuedRows.map((row) => ({
+					...row,
+					docId: target,
+					updatedAt: nowIso(),
+				})));
+			}
+		}
+	} catch {
+		// Best effort only; server-backed refresh can still repair caches later.
+	}
+
+	// Mirror the IndexedDB move in the in-memory caches so subscribed UIs update
+	// immediately without waiting for a reload.
+	const sourceRefreshAt = remoteRefreshTimestamps.get(source);
+	const migratedSourceCache = (remoteCache.get(source) || []).map((image) => rewriteNoteImageDocId(image, target));
+	const existingTargetCache = remoteCache.get(target) || [];
+	if (migratedSourceCache.length > 0 || existingTargetCache.length > 0) {
+		remoteCache.set(target, mergeRemoteImageCache([...existingTargetCache, ...migratedSourceCache]));
+	}
+	remoteCache.delete(source);
+	remoteRefreshTimestamps.delete(source);
+	const targetRefreshAt = remoteRefreshTimestamps.get(target);
+	if (typeof sourceRefreshAt === 'number') {
+		remoteRefreshTimestamps.set(target, Math.max(targetRefreshAt || 0, sourceRefreshAt));
+	}
+	emitNoteMediaChanged(source);
+	emitNoteMediaChanged(target);
+}
+
 async function readAllQueuedNoteImages(userId: string): Promise<QueuedNoteImageRow[]> {
 	if (!userId) return [];
 	try {
@@ -602,6 +683,11 @@ export async function refreshRemoteNoteImages(
 	}
 	const work = (async () => {
 		const response = await listNoteImages(docId);
+		const existingImages = remoteCache.get(docId) || await readStoredRemoteNoteImages(docId);
+		if (!options.force && response.images.length === 0 && existingImages.length > 0) {
+			remoteCache.set(docId, existingImages);
+			return existingImages;
+		}
 		const images = applyRemoteFileNameOverrides(response.images);
 		remoteCache.set(docId, images);
 		remoteRefreshTimestamps.set(docId, Date.now());

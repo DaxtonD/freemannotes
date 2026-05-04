@@ -150,17 +150,26 @@ async function cacheFirstImage(request) {
 	return response;
 }
 
-async function handleNavigation(request) {
+async function refreshNavigationShell(request) {
 	try {
 		const response = await fetch(new Request(request.url, { cache: 'no-store' }));
-		if (!response || !response.ok) throw new Error('navigation failed');
+		if (!response || !response.ok) return null;
 		const cache = await caches.open(APP_SHELL_CACHE);
 		await cache.put(OFFLINE_FALLBACK_URL, response.clone());
 		return response;
 	} catch {
-		const cache = await caches.open(APP_SHELL_CACHE);
-		return (await cache.match(OFFLINE_FALLBACK_URL)) || Response.error();
+		return null;
 	}
+}
+
+async function handleNavigation(request) {
+	const cache = await caches.open(APP_SHELL_CACHE);
+	const cachedShell = await cache.match(OFFLINE_FALLBACK_URL);
+	if (cachedShell) {
+		void refreshNavigationShell(request);
+		return cachedShell;
+	}
+	return (await refreshNavigationShell(request)) || Response.error();
 }
 
 async function postMessageToClients(message) {
