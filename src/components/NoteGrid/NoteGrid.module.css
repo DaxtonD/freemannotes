@@ -65,6 +65,25 @@
 	min-width: 0;
 }
 
+.virtualColumn {
+	width: 100%;
+	min-width: 0;
+}
+
+.virtualColumnInner {
+	display: flex;
+	flex-direction: column;
+	gap: var(--grid-gap);
+	min-width: 0;
+	box-sizing: border-box;
+	width: 100%;
+}
+
+.virtualItemShell {
+	width: 100%;
+	min-width: 0;
+}
+
 .listGrid {
 	width: 100%;
 	min-width: 0;

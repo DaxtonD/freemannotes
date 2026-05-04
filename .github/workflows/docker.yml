@@ -1,13 +1,19 @@
-name: Docker Build
+name: Docker Publish
 
 on:
   push:
     branches:
       - main
+    tags:
+      - '*.*.*'
 
 permissions:
   contents: read
   packages: write
+
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   docker:
@@ -16,16 +22,91 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          # Full history is required so the workflow can inspect existing Git tags
+          # and decide whether the current release tag is the highest semver tag.
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to GHCR
+      - name: Determine publish context and image tags
+        id: prepare
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image="ghcr.io/daxtond/freemannotes"
+          ref_type="${GITHUB_REF_TYPE}"
+          ref_name="${GITHUB_REF_NAME}"
+
+          declare -a tags
+          version="${ref_name}"
+          publish_latest="false"
+          release_version="false"
+
+          if [[ "${ref_type}" == "tag" ]]; then
+            # Only semantic version tags in the form MAJOR.MINOR.PATCH are allowed
+            # to publish release image tags.
+            if [[ ! "${ref_name}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "::error::Tag '${ref_name}' is not a supported semantic version (expected MAJOR.MINOR.PATCH)."
+              exit 1
+            fi
+
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+            patch="${BASH_REMATCH[3]}"
+
+            release_version="true"
+            tags+=(
+              "${image}:${major}.${minor}.${patch}"
+              "${image}:${major}.${minor}"
+              "${image}:${major}"
+            )
+
+            # latest is only published from a tag when that tag is the highest
+            # semantic version in the repository. This keeps release tags immutable
+            # and prevents an older release rebuild from overwriting latest.
+            mapfile -t semver_tags < <(git tag --list | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V)
+            if (( ${#semver_tags[@]} == 0 )); then
+              echo "::error::No semantic version tags were found after checkout."
+              exit 1
+            fi
+
+            highest_index=$(( ${#semver_tags[@]} - 1 ))
+            highest_tag="${semver_tags[${highest_index}]}"
+            if [[ "${ref_name}" == "${highest_tag}" ]]; then
+              publish_latest="true"
+              tags+=("${image}:latest")
+            fi
+          elif [[ "${ref_type}" == "branch" && "${ref_name}" == "main" ]]; then
+            # Branch builds keep the mutable deployment channel updated.
+            version="main"
+            publish_latest="true"
+            tags+=("${image}:latest")
+          else
+            echo "::error::Unsupported ref '${GITHUB_REF}'."
+            exit 1
+          fi
+
+          {
+            echo "image=${image}"
+            echo "version=${version}"
+            echo "publish_latest=${publish_latest}"
+            echo "release_version=${release_version}"
+            echo 'tags<<EOF'
+            printf '%s\n' "${tags[@]}"
+            echo 'EOF'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GHCR_PAT }}
+          # Use the workflow-scoped token instead of a PAT. packages:write
+          # permission above is sufficient for publishing to GHCR for this repo.
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -33,9 +114,19 @@ jobs:
           context: ${{ github.workspace }}
           file: ${{ github.workspace }}/Dockerfile
           push: true
-          tags: ghcr.io/daxtond/freemannotes:latest
+          tags: ${{ steps.prepare.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=freemannotes
+            org.opencontainers.image.description=Freeman Notes container image
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.prepare.outputs.version }}
           # Keep the pullable runtime image and the BuildKit cache in separate refs.
           # Reusing :latest for cache export can publish cache metadata that older
           # runtimes reject with "unsupported media type application/vnd.buildkit.cacheconfig.v0".
           cache-from: type=registry,ref=ghcr.io/daxtond/freemannotes:buildcache
           cache-to: type=registry,ref=ghcr.io/daxtond/freemannotes:buildcache,mode=max
+          # Publish a plain runtime image manifest for maximum compatibility with
+          # conservative Docker environments such as Unraid deployments.
+          provenance: false
+          sbom: false
