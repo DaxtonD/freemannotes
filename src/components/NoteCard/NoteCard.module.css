@@ -556,12 +556,46 @@
 	width: 18px;
 	height: 18px;
 	min-width: 18px;
-	accent-color: var(--note-color-accent, var(--color-accent));
+	appearance: none;
+	-webkit-appearance: none;
+	border: 1.5px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 84%, var(--note-color-text, var(--color-text)) 16%);
+	border-radius: 5px;
+	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 92%, white 8%);
+	box-shadow: inset 0 1px 0 color-mix(in srgb, white 42%, transparent);
+	display: inline-grid;
+	place-content: center;
+	flex: 0 0 18px;
 	/* Align checkbox centre with first text line centre at any font scale:
 	   offset = (line-height − checkbox-height) / 2
 	           = (scale × 1rem × 1.35 − 18px) / 2
 	           = scale × 0.675rem − 9px */
 	margin-top: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
+}
+
+.checklistCheckbox::after {
+	content: '';
+	width: 9px;
+	height: 6px;
+	border-left: 2px solid var(--note-color-card-bg, var(--color-surface));
+	border-bottom: 2px solid var(--note-color-card-bg, var(--color-surface));
+	transform: rotate(-45deg) scale(0);
+	transform-origin: center;
+	transition: transform 120ms ease;
+}
+
+.checklistCheckbox:checked {
+	background: var(--note-color-accent, var(--color-accent));
+	border-color: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 74%, var(--note-color-border, var(--color-border)) 26%);
+	box-shadow: inset 0 1px 0 color-mix(in srgb, white 22%, transparent);
+}
+
+.checklistCheckbox:checked::after {
+	transform: rotate(-45deg) scale(1);
+}
+
+.checklistCheckbox:disabled {
+	opacity: 1;
+	cursor: default;
 }
 
 .checklistCheckboxHitArea {
@@ -743,7 +777,15 @@
 .completedSection .checklist {
 	margin-top: 8px;
 	-webkit-tap-highlight-color: transparent;
-	animation: slideInCompleted 240ms cubic-bezier(0.22, 1, 0.36, 1) both;
+	animation: none;
+}
+
+/* Keep completed rows in normal flow so expanded desktop cards still reserve
+   space for link previews and footer controls instead of clipping them. */
+.completedDropdown {
+	display: flex;
+	flex-direction: column;
+	gap: 0;
 }
 
 @keyframes slideInCompleted {
@@ -776,12 +818,53 @@
 		max-height: var(--note-card-expanded-checklist-max-height, var(--note-card-max-height));
 	}
 
+	/* Desktop cards keep native checkbox rendering so checklist cards match the
+	   editor affordance on mouse and trackpad devices. */
+	.checklistCheckbox,
+	.richTaskCheckbox input {
+		appearance: auto;
+		-webkit-appearance: checkbox;
+		width: 20px;
+		height: 20px;
+		min-width: 20px;
+		border: 0;
+		border-radius: 0;
+		background: transparent;
+		box-shadow: none;
+		accent-color: var(--note-color-accent, var(--color-accent));
+	}
+
+	.checklistCheckbox {
+		flex: 0 0 20px;
+		margin-top: max(0px, calc((1.35em - 20px) / 2));
+	}
+
+	.checklistCheckbox::after {
+		content: none;
+	}
+
+	.checklistCheckboxHitArea {
+		width: 20px;
+		height: 20px;
+		min-width: 20px;
+		margin-top: max(0px, calc((1.35em - 20px) / 2));
+		flex: 0 0 20px;
+	}
+
+	.richTaskCheckbox {
+		padding-top: 0;
+	}
+
 	.completedSection {
 		padding-top: 10px;
 	}
 
 	.completedSection .checklist {
 		margin-top: 10px;
+	}
+
+	.checklistCardCompletedExpanded .completedChecklistMore {
+		padding-bottom: 0;
 	}
 
 	.moreMenuOpen {

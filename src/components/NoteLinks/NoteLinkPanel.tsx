@@ -20,6 +20,7 @@ type NoteLinkPanelProps = {
 	variant?: 'panel' | 'rail';
 	maxItems?: number;
 	fallbackLinks?: readonly ExtractedNoteLink[];
+	initialLinks?: readonly NoteLinkRecord[];
 	canEdit?: boolean;
 	disableOpenLinks?: boolean;
 	onDeleteLink?: (normalizedUrl: string) => void;
@@ -146,7 +147,10 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 	const { t } = useI18n();
 	const variant = props.variant || 'panel';
 	const maxItems = Number.isFinite(props.maxItems) ? Math.max(1, Number(props.maxItems)) : (variant === 'rail' ? 3 : 100);
-	const [links, setLinks] = React.useState<readonly NoteLinkRecord[]>(() => getCachedRemoteNoteLinks(props.docId));
+	const [links, setLinks] = React.useState<readonly NoteLinkRecord[]>(() => {
+		const cached = getCachedRemoteNoteLinks(props.docId);
+		return cached.length > 0 ? cached : (props.initialLinks ?? []);
+	});
 	const [loading, setLoading] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	const retryTimerRef = React.useRef<number | null>(null);
@@ -154,6 +158,10 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 	const fallbackSignature = React.useMemo(
 		() => (props.fallbackLinks || []).map((link) => `${link.normalizedUrl}:${link.sortOrder}`).join('|'),
 		[props.fallbackLinks]
+	);
+	const initialLinksSignature = React.useMemo(
+		() => (props.initialLinks || []).map((link) => `${link.normalizedUrl}:${link.imageUrl || ''}:${link.sortOrder}`).join('|'),
+		[props.initialLinks]
 	);
 	const summaryLabel = links.length === 1 ? `1 ${t('links.linkSingular')}` : `${links.length} ${t('links.linkPlural')}`;
 	const fallbackCount = props.fallbackLinks?.length || 0;
@@ -237,6 +245,11 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 	const refresh = React.useCallback(async (options: { force?: boolean; retryIfIncomplete?: boolean; showLoading?: boolean } = {}) => {
 		await flushAndRefresh({ ...options, retryAttempt: 0 });
 	}, [flushAndRefresh]);
+
+	React.useEffect(() => {
+		if ((props.initialLinks?.length || 0) === 0) return;
+		setLinks((current) => current.length > 0 ? current : (props.initialLinks || []));
+	}, [initialLinksSignature, props.initialLinks]);
 
 	React.useEffect(() => {
 		if (props.disableInitialRemoteRefresh) {

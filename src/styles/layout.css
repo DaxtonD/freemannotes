@@ -200,6 +200,35 @@
 	transition: transform 180ms ease;
 }
 
+/* Anchor the chooser directly under the header buttons so mobile and installed
+   PWA layouts can reuse the header's safe-area positioning without a second
+   floating panel system. */
+.app-header-viewrow {
+	position: absolute;
+	right: calc(var(--space-3) + var(--app-safe-right));
+	top: calc(var(--app-safe-top) + var(--app-header-height) + 6px);
+	display: flex;
+	justify-content: flex-end;
+	opacity: 0;
+	pointer-events: none;
+	transform: translateY(-4px);
+	transition: opacity 180ms ease, transform 180ms ease;
+	z-index: 4;
+}
+
+.app-header-viewrow.is-open {
+	opacity: 1;
+	pointer-events: auto;
+	transform: translateY(0);
+
+}
+
+.app-header-view-actions {
+	display: inline-grid;
+	grid-template-columns: repeat(4, 40px);
+	gap: var(--space-2);
+}
+
 .app-header-search-input {
 	width: min(560px, 100%);
 	height: 40px;
@@ -247,8 +276,33 @@
 	color: var(--color-text);
 }
 
+.app-icon-button.is-active {
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-2));
+	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+	color: var(--color-accent);
+}
+
 .app-notification-button {
 	flex-shrink: 0;
+}
+
+.app-view-mode-option {
+	background: var(--color-surface-2);
+	transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.app-view-mode-option:hover,
+.app-view-mode-option:focus-visible {
+	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-2));
+	border-color: color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
+	color: var(--color-accent);
+	transform: translateY(-1px);
+}
+
+.app-view-mode-option.is-selected {
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-2));
+	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+	color: var(--color-accent);
 }
 
 .app-notification-badge {
@@ -2001,6 +2055,9 @@
 .top-actions {
 	display: flex;
 	gap: var(--space-3);
+	flex-wrap: wrap;
+	align-items: flex-start;
+	min-height: 42px;
 }
 
 .note-grid-scope {
@@ -2329,7 +2386,8 @@
 }
 
 .top-action-card {
-	flex: 1;
+	flex: 0 0 auto;
+	width: fit-content;
 	min-height: 42px;
 	border: 1px solid var(--color-border);
 	border-radius: var(--radius-md);
@@ -2337,7 +2395,15 @@
 	color: var(--color-text);
 	font-weight: 600;
 	text-align: left;
-	padding: 0 12px;
+	padding: 0 14px;
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	white-space: nowrap;
+}
+
+.top-action-card:disabled {
+	opacity: 0.56;
 }
 
 .editor-panel {
@@ -2495,10 +2561,19 @@
 	color: var(--color-text);
 	font-size: var(--font-size-md);
 	font-weight: 600;
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-start;
+	gap: 10px;
 	white-space: nowrap;
 	opacity: 0;
 	transform: translateY(10px);
 	transition: transform 210ms ease, opacity 210ms ease;
+}
+
+.mobile-fab-action:disabled {
+	opacity: 0.52;
+	color: var(--color-text-muted);
 }
 
 .mobile-fab-stack.is-open .mobile-fab-action {
@@ -2512,6 +2587,10 @@
 
 .mobile-fab-stack.is-open .mobile-fab-action:nth-child(2) {
 	transition-delay: 90ms;
+}
+
+.mobile-fab-stack.is-open .mobile-fab-action:nth-child(3) {
+	transition-delay: 140ms;
 }
 
 .mobile-fab {
@@ -2712,6 +2791,15 @@
 		gap: var(--space-2);
 		padding: 0;
 		background: var(--color-app-bg);
+	}
+
+	.app-header-viewrow {
+		right: calc(var(--space-2) + var(--app-safe-right));
+		top: calc(var(--app-safe-top) + var(--app-header-height) + 6px);
+	}
+
+	.app-header-view-actions {
+		gap: var(--space-2);
 	}
 
 	.mobile-search-close {

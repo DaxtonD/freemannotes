@@ -1,13 +1,11 @@
 import type * as Y from 'yjs';
 import { getTheme, isLightTheme, type ThemeId } from './theme';
 
-// Offline-first model:
-// - Per-note color choice is stored as a semantic token in the note's Yjs metadata.
-// - The token is replicated locally in IndexedDB immediately and syncs through the
-//   existing Yjs pipeline when connectivity returns.
+// Color model:
+// - Per-user note colors are stored in the authenticated user's preferences.
+// - Legacy shared-doc `metadata.colorToken` values remain readable as a fallback
+//   until each user sets or clears their own override.
 // - No raw colors are persisted in the database; only stable token IDs are stored.
-// - Conflict handling follows Y.Map scalar semantics: concurrent writes to the same
-//   metadata key resolve last-writer-wins at the CRDT field level.
 
 export type NoteColorToken =
 	| 'yellow'
@@ -195,6 +193,18 @@ export function readNoteColorToken(metadata: Y.Map<any>): NoteColorToken | null 
 	if (typeof raw !== 'string') return null;
 	if (NOTE_COLOR_TOKEN_IDS.has(raw as NoteColorToken)) return raw as NoteColorToken;
 	return LEGACY_NOTE_COLOR_TOKENS[raw] ?? null;
+}
+
+// User-scoped note colors override the legacy shared-doc token completely.
+// When the user has never set or cleared a color, fall back to the old doc token
+// so pre-existing colors remain visible until migrated.
+export function readEffectiveNoteColorToken(
+	metadata: Y.Map<any>,
+	localPreference: NoteColorToken | null,
+	hasLocalPreference: boolean
+): NoteColorToken | null {
+	if (hasLocalPreference) return localPreference;
+	return readNoteColorToken(metadata);
 }
 
 export function setNoteColorToken(doc: Y.Doc, token: NoteColorToken | null, origin?: symbol): void {

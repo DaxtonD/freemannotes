@@ -8,12 +8,14 @@ import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc } from '../../core/noteLinks';
-import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
-import { getUserNoteColorToken } from '../../core/noteColorPreferences';
+import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import { getUserNoteColorPrefsSnapshot, getUserNoteColorToken, hasUserNoteColorPref, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
-import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
+import { getCachedRemoteNoteLinks, syncNoteLinksForDoc } from '../../core/noteLinkStore';
+import { getCachedRemoteNoteImages } from '../../core/noteMediaStore';
+import { getCachedNoteDocuments } from '../../core/noteDocumentStore';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
 import type { ViewMode } from '../../core/viewMode';
@@ -60,6 +62,14 @@ import {
 	writeNoteGridLayoutSnapshot,
 } from '../../core/noteGridLayoutCache';
 import { readNoteOrderSnapshot, writeNoteOrderSnapshot } from '../../core/noteOrderSnapshot';
+import {
+	buildWorkspaceRenderSnapshotNote,
+	createSnapshotDocFromWorkspaceRenderSnapshot,
+	readWorkspaceRenderSnapshot,
+	toWorkspaceRenderSnapshotPreviewCards,
+	type WorkspaceRenderSnapshotNote,
+	writeWorkspaceRenderSnapshot,
+} from '../../core/workspaceRenderSnapshot';
 import styles from './NoteGrid.module.css';
 
 type Note = {
@@ -171,6 +181,16 @@ type NoteGridSection = {
 const MAX_VISIBLE_COLLABORATORS = 6;
 const MAX_VISIBLE_METADATA_ENTRIES = 6;
 const INITIAL_DATA_SETTLE_MS = 450;
+
+function hasRenderableNoteContent(doc: Y.Doc): boolean {
+	const metadata = doc.getMap<unknown>('metadata');
+	if (metadata.size > 0) return true;
+	if (doc.getText('title').length > 0) return true;
+	if (doc.getText('content').length > 0) return true;
+	if (doc.getXmlFragment('contentRich').length > 0) return true;
+	if (doc.getArray<Y.Map<unknown>>('checklist').length > 0) return true;
+	return false;
+}
 
 function ChipOverlayDismissSurface(props: { children: React.ReactNode }): React.JSX.Element {
 	return (
@@ -335,6 +355,22 @@ function createFallbackNoteSnapshot(id: string): VisibleNoteSnapshot {
 	};
 }
 
+function createVisibleNoteSnapshotFromRenderSnapshot(note: WorkspaceRenderSnapshotNote): VisibleNoteSnapshot {
+	return {
+		id: note.id,
+		title: note.title,
+		createdAt: note.createdAt,
+		updatedAt: note.updatedAt,
+		collectionId: note.collectionId,
+		labelIds: [...note.labelIds],
+		reminderAt: note.reminderAt,
+		isPinned: note.isPinned,
+		lastAccessedAt: note.lastAccessedAt,
+		trashed: note.trashed,
+		archived: note.archived,
+	};
+}
+
 function estimateUnmeasuredNoteHeightPx(noteId: string, maxCardHeightPx: number): number {
 	// Cold-start browsers do not have measured heights yet. Derive a deterministic
 	// per-note estimate so skeleton cards and first-pass masonry packing stay in
@@ -417,6 +453,7 @@ type GridNoteCardProps = {
 	themeId: ThemeId;
 	doc: Y.Doc;
 	metaChips?: React.ReactNode;
+	forcedHeightPx?: number;
 	hasPendingSync: boolean;
 	selected: boolean;
 	isMoreMenuOpen: boolean;
@@ -434,6 +471,8 @@ type GridNoteCardProps = {
 	isTrashView?: boolean;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
+	initialLinkRecords?: React.ComponentProps<typeof NoteCard>['initialLinkRecords'];
+	preserveControlShell?: boolean;
 	isOverlayActiveCard?: boolean;
 	layoutReady: boolean;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
@@ -447,12 +486,15 @@ const DragPreviewMarkup = React.memo(function DragPreviewMarkup(props: { markup:
 /**
  * Resolves CSS custom-property overrides for a note's color scheme.
  *
- * Priority: per-user localStorage preference → legacy Yjs metadata token.
- * Using the local preference first ensures color choices are private to each
- * user and never broadcast to collaborators sharing the same note doc.
+ * Priority: user-scoped preference override → legacy shared-doc fallback.
+ * Explicit per-user clears also suppress the old shared-doc token.
  */
 function getNoteColorVars(noteId: string, doc: Y.Doc, themeId: ThemeId): React.CSSProperties | undefined {
-	const token = getUserNoteColorToken(noteId) ?? readNoteColorToken(doc.getMap<any>('metadata'));
+	const token = readEffectiveNoteColorToken(
+		doc.getMap<any>('metadata'),
+		getUserNoteColorToken(noteId),
+		hasUserNoteColorPref(noteId)
+	);
 	if (!token) return undefined;
 	const resolved = resolveThemeNoteColorModel(themeId).tokens[token];
 	return {
@@ -477,6 +519,26 @@ function readChipOverlayAnchorRect(element: HTMLElement | null): { top: number; 
 	return { top: triggerRect.top, left: cardRect.left, width: cardRect.width, height: triggerRect.height };
 }
 
+function renderMetaChipShell(
+	icon: typeof faFolder | typeof faTag | typeof faUsers,
+	count: number,
+	label: string,
+	colorStyle: React.CSSProperties
+): React.ReactNode {
+	return (
+		<span
+			className={styles.noteChipButton}
+			style={colorStyle}
+			aria-label={label}
+			onPointerDown={(event) => event.stopPropagation()}
+			onClick={(event) => event.stopPropagation()}
+		>
+			<FontAwesomeIcon icon={icon} />
+			<span>{count}</span>
+		</span>
+	);
+}
+
 function renderNoteMetaChips(args: {
 	noteId: string;
 	docId: string | null;
@@ -492,6 +554,7 @@ function renderNoteMetaChips(args: {
 	disableAttachmentInitialRemoteRefresh?: boolean;
 	forceCloseAttachmentChip?: boolean;
 	collaboratorSummary?: NoteCardCollaboratorSummary | null;
+	snapshotShell?: WorkspaceRenderSnapshotNote | null;
 	onOpenAttachmentBrowser?: (
 		kind: NoteAttachmentBrowserKind,
 		noteId: string,
@@ -515,11 +578,18 @@ function renderNoteMetaChips(args: {
 	const labelItems = note.labelIds
 		.map((labelId) => args.labelById.get(labelId) ?? null)
 		.filter((label): label is LabelRecord => Boolean(label));
-	if ((!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && !args.docId && !collectionPath && labelItems.length === 0) {
+	const fallbackCollaboratorCount = Math.max(0, args.snapshotShell?.collaboratorCount ?? 0);
+	const collaboratorCount = args.collaboratorSummary?.count ?? fallbackCollaboratorCount;
+	const attachmentShellCounts = args.snapshotShell?.attachmentCounts;
+	const attachmentShellTotal = (attachmentShellCounts?.images ?? 0) + (attachmentShellCounts?.links ?? 0) + (attachmentShellCounts?.documents ?? 0);
+	const showCollectionShell = Boolean(note.collectionId && !collectionPath);
+	const showLabelShell = note.labelIds.length > 0 && labelItems.length === 0;
+	const showCollaboratorShell = (!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && collaboratorCount > 0;
+	if (!collectionPath && !showCollectionShell && labelItems.length === 0 && !showLabelShell && collaboratorCount <= 0 && (!args.docId || attachmentShellTotal <= 0)) {
 		return undefined;
 	}
 	const chipColorStyle = getNoteColorVars(args.noteId, args.doc, args.themeId);
-	const collectionChipCount = collectionPath ? '1' : null;
+	const collectionChipCount = note.collectionId ? '1' : null;
 	const labelChipCount = `${labelItems.length}`;
 
 	return (
@@ -555,6 +625,8 @@ function renderNoteMetaChips(args: {
 					<FontAwesomeIcon icon={faFolder} />
 					<span>{collectionChipCount}</span>
 				</button>
+			) : showCollectionShell && collectionChipCount ? (
+				renderMetaChipShell(faFolder, 1, args.t('note.collection'), chipColorStyle)
 			) : null}
 			{labelItems.length > 0 ? (
 				<button
@@ -586,6 +658,8 @@ function renderNoteMetaChips(args: {
 					<FontAwesomeIcon icon={faTag} />
 					<span>{labelChipCount}</span>
 				</button>
+			) : showLabelShell ? (
+				renderMetaChipShell(faTag, note.labelIds.length, args.t('note.labels'), chipColorStyle)
 			) : null}
 			{args.collaboratorSummary && args.collaboratorSummary.count > 0 ? (
 				<button
@@ -610,6 +684,8 @@ function renderNoteMetaChips(args: {
 					<FontAwesomeIcon icon={faUsers} />
 					<span>{args.collaboratorSummary.count}</span>
 				</button>
+			) : showCollaboratorShell ? (
+				renderMetaChipShell(faUsers, collaboratorCount, args.t('share.activeCollaborators'), chipColorStyle)
 			) : null}
 			{args.docId ? (
 				<NoteAttachmentCountChip
@@ -618,6 +694,7 @@ function renderNoteMetaChips(args: {
 					authUserId={args.authUserId}
 					className={styles.noteChipButton}
 					colorStyle={chipColorStyle}
+					initialCounts={attachmentShellCounts}
 					forceClosed={args.forceCloseAttachmentChip}
 					suspendRemoteRefresh={args.suspendAttachmentRemoteRefresh}
 					disableInitialRemoteRefresh={args.disableAttachmentInitialRemoteRefresh}
@@ -682,6 +759,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					canEdit={props.canEdit}
 					isPinned={props.note.isPinned}
 					reminderAt={props.reminderAt}
+					forcedHeightPx={props.forcedHeightPx}
 					hasPendingSync={props.hasPendingSync}
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
@@ -695,6 +773,8 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					allowLinkInteractions={props.allowLinkInteractions}
 					allowCompletedItemInteractions={props.allowCompletedItemInteractions}
 					isTrashView={props.isTrashView}
+					initialLinkRecords={props.initialLinkRecords}
+					preserveControlShell={props.preserveControlShell}
 					dragHandleRef={handleDragHandleRef}
 				/>
 			</div>
@@ -782,6 +862,7 @@ function setChecklistCompletedState(doc: Y.Doc, completed: boolean): void {
 
 export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
+	React.useSyncExternalStore(subscribeNoteColorPrefs, getUserNoteColorPrefsSnapshot, getUserNoteColorPrefsSnapshot);
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
 	const isDevBuild =
@@ -1019,6 +1100,30 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			viewportBucket: layoutViewportBucket,
 		});
 	}, [layoutDensityKey, layoutDeviceType, layoutViewportBucket, props.activeWorkspaceId, props.viewMode]);
+	const workspaceRenderSnapshot = React.useMemo(
+		() => readWorkspaceRenderSnapshot(props.activeWorkspaceId),
+		[props.activeWorkspaceId]
+	);
+	const workspaceRenderSnapshotNoteById = React.useMemo(
+		() => new Map((workspaceRenderSnapshot?.notes ?? []).map((note) => [note.id, note] as const)),
+		[workspaceRenderSnapshot]
+	);
+	const snapshotDocCacheRef = React.useRef<Map<string, { signature: string; doc: Y.Doc }>>(new Map());
+	const snapshotDocById = React.useMemo(() => {
+		const nextCache = new Map<string, { signature: string; doc: Y.Doc }>();
+		const nextDocs = new Map<string, Y.Doc>();
+		for (const note of workspaceRenderSnapshot?.notes ?? []) {
+			const signature = JSON.stringify(note);
+			const cached = snapshotDocCacheRef.current.get(note.id);
+			const doc = cached && cached.signature === signature
+				? cached.doc
+				: createSnapshotDocFromWorkspaceRenderSnapshot(note);
+			nextCache.set(note.id, { signature, doc });
+			nextDocs.set(note.id, doc);
+		}
+		snapshotDocCacheRef.current = nextCache;
+		return nextDocs;
+	}, [workspaceRenderSnapshot]);
 	React.useEffect(() => {
 		if (!props.activeWorkspaceId) return;
 		void logClientEvent(cachedLayoutSnapshot ? 'LAYOUT_CACHE_HIT' : 'LAYOUT_CACHE_MISS', {
@@ -1265,17 +1370,21 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			// Once the real Yjs data arrives (noteOrder becomes non-null) this branch
 			// is never entered again and the actual registry order takes over.
 			const snapshotIds = readNoteOrderSnapshot(props.activeWorkspaceId ?? '');
-			return uniqueIds([...snapshotIds, ...sharedNoteIds]);
+			return uniqueIds([...snapshotIds, ...(workspaceRenderSnapshot?.orderedIds ?? []), ...sharedNoteIds]);
 		}
 		// Local workspace order still comes from Yjs. Shared aliases are appended so
 		// they render in the grid without mutating the source workspace's note order.
 		return uniqueIds([...readOrderIds(noteOrder), ...sharedNoteIds]);
-	}, [noteOrder, sharedNoteIds, storeVersion, props.activeWorkspaceId]);
+	}, [noteOrder, sharedNoteIds, storeVersion, props.activeWorkspaceId, workspaceRenderSnapshot]);
 
 	const noteSnapshots = React.useMemo<VisibleNoteSnapshot[]>(() => {
 		return orderedIds.map((id) => {
-			const doc = docsById[id] ?? manager.peekDoc(id) ?? null;
-			if (!doc) return createFallbackNoteSnapshot(id);
+			const liveDoc = docsById[id] ?? manager.peekDoc(id) ?? null;
+			const doc = liveDoc && hasRenderableNoteContent(liveDoc) ? liveDoc : null;
+			if (!doc) {
+				const snapshotNote = workspaceRenderSnapshotNoteById.get(id);
+				return snapshotNote ? createVisibleNoteSnapshotFromRenderSnapshot(snapshotNote) : createFallbackNoteSnapshot(id);
+			}
 			const note = readNoteFromDoc(doc, id);
 			const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === id);
 			const docId = placement?.roomId || resolveMediaDocId(id);
@@ -1293,7 +1402,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				archived: note.archived,
 			};
 		});
-	}, [docsById, manager, metadataVersion, orderedIds, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId]);
+	}, [docsById, manager, metadataVersion, orderedIds, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId, workspaceRenderSnapshotNoteById]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 
 	const baseVisibleIds = React.useMemo<string[]>(() => {
@@ -1576,6 +1685,61 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (ids.length === 0) return;
 		writeNoteOrderSnapshot(props.activeWorkspaceId, ids);
 	}, [noteOrder, storeVersion, props.activeWorkspaceId]);
+	const workspaceRenderSnapshotWriteTimerRef = React.useRef<number>(0);
+	const snapshotNotesForPersistence = React.useMemo(() => {
+		return orderedIds
+			.map((id) => {
+				const liveDoc = docsById[id] ?? manager.peekDoc(id) ?? null;
+				if (liveDoc && hasRenderableNoteContent(liveDoc)) {
+					const previousSnapshot = workspaceRenderSnapshotNoteById.get(id) ?? null;
+					const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === id);
+					const docId = placement?.roomId || resolveMediaDocId(id);
+					const reminderAt = (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null;
+					const previewLinks = extractNoteLinksFromDoc(liveDoc);
+					const cachedPreviewCards = toWorkspaceRenderSnapshotPreviewCards(getCachedRemoteNoteLinks(docId));
+					return buildWorkspaceRenderSnapshotNote({
+						noteId: id,
+						doc: liveDoc,
+						reminderAt,
+						collaboratorCount: Math.max(collaboratorSummariesByNoteId[id]?.count ?? 0, previousSnapshot?.collaboratorCount ?? 0),
+						attachmentCounts: {
+							images: Math.max(getCachedRemoteNoteImages(docId).length, previousSnapshot?.attachmentCounts.images ?? 0),
+							links: Math.max(getCachedRemoteNoteLinks(docId).length, previewLinks.length, previousSnapshot?.attachmentCounts.links ?? 0),
+							documents: Math.max(getCachedNoteDocuments(docId).length, previousSnapshot?.attachmentCounts.documents ?? 0),
+						},
+						previewCards: cachedPreviewCards.length > 0 ? cachedPreviewCards : (previousSnapshot?.previewCards ?? []),
+					});
+				}
+				return workspaceRenderSnapshotNoteById.get(id) ?? null;
+			})
+			.filter((note): note is WorkspaceRenderSnapshotNote => Boolean(note));
+	}, [collaboratorSummariesByNoteId, docsById, manager, orderedIds, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId, workspaceRenderSnapshotNoteById]);
+	React.useEffect(() => {
+		return () => {
+			if (typeof window !== 'undefined' && workspaceRenderSnapshotWriteTimerRef.current) {
+				window.clearTimeout(workspaceRenderSnapshotWriteTimerRef.current);
+				workspaceRenderSnapshotWriteTimerRef.current = 0;
+			}
+		};
+	}, []);
+	React.useEffect(() => {
+		if (typeof window === 'undefined' || !props.activeWorkspaceId) return;
+		window.clearTimeout(workspaceRenderSnapshotWriteTimerRef.current);
+		workspaceRenderSnapshotWriteTimerRef.current = window.setTimeout(() => {
+			workspaceRenderSnapshotWriteTimerRef.current = 0;
+			writeWorkspaceRenderSnapshot({
+				workspaceId: props.activeWorkspaceId || '',
+				orderedIds,
+				notes: snapshotNotesForPersistence,
+			});
+		}, 180);
+		return () => {
+			if (workspaceRenderSnapshotWriteTimerRef.current) {
+				window.clearTimeout(workspaceRenderSnapshotWriteTimerRef.current);
+				workspaceRenderSnapshotWriteTimerRef.current = 0;
+			}
+		};
+	}, [orderedIds, props.activeWorkspaceId, snapshotNotesForPersistence]);
 
 	React.useEffect(() => {
 		if (!notesList || !noteOrder) return;
@@ -2068,6 +2232,27 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		});
 	}, [columnCount, dragManager.activeDragId, isGridVisible, isListLikeView, resolvedBaseColumns]);
 
+	React.useEffect(() => {
+		if (!isGridVisible) return;
+		if (isListLikeView) return;
+		if (dragManager.activeDragId) return;
+		if (!initialLayoutSettled) return;
+		if (resolvedBaseColumns.length !== columnCount) return;
+		// Once the visible masonry grid has settled, preserve the current column
+		// assignment so explicit card height changes (like completed-section expand/
+		// collapse) only move cards lower in those columns instead of re-running a
+		// full shortest-column pack that jumps visible cards across the screen.
+		const frozenColumns = resolvedBaseColumns.map((column) => column.slice());
+		setStickyColumns((previous) => {
+			if (previous && previous.length === frozenColumns.length) {
+				const previousFlat = flattenColumns(previous);
+				const nextFlat = flattenColumns(frozenColumns);
+				if (arraysEqual(previousFlat, nextFlat)) return previous;
+			}
+			return frozenColumns;
+		});
+	}, [columnCount, dragManager.activeDragId, initialLayoutSettled, isGridVisible, isListLikeView, resolvedBaseColumns]);
+
 	// ── Active columns for rendering ──────────────────────────────────────
 	// During drag, use previewColumns (with the card at the insertion point
 	// and the placeholder holding the original space); otherwise use the
@@ -2359,7 +2544,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
-		const doc = docsById[note.id] ?? manager.peekDoc(note.id) ?? null;
+		const liveDoc = docsById[note.id] ?? manager.peekDoc(note.id) ?? null;
+		const hasRenderableLiveDoc = Boolean(liveDoc && hasRenderableNoteContent(liveDoc));
+		const snapshotDoc = !hasRenderableLiveDoc ? (snapshotDocById.get(note.id) ?? null) : null;
+		const doc = hasRenderableLiveDoc ? liveDoc : snapshotDoc;
 		if (!doc) {
 			// Render a skeleton card at the cached height so masonry packing is stable
 			// and no layout repack occurs when the doc loads.
@@ -2370,13 +2558,40 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				</div>
 			);
 		}
+		const isSnapshotCard = !hasRenderableLiveDoc && Boolean(snapshotDoc);
 		const isPlaceholder = dragManager.activeDragId === note.id;
+		const cachedMeasuredHeightPx = noteHeightByIdRef.current.get(note.id) ?? null;
 		const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
+		const snapshotShell = workspaceRenderSnapshotNoteById.get(note.id) ?? null;
 		const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
 		const docId = placement?.roomId || resolveMediaDocId(note.id);
-		const reminderAt = (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[note.id] ?? null;
-		const canEditNote = !isTrashView && (note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false);
+		const reminderAt = (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[note.id] ?? snapshotShell?.reminderAt ?? null;
+		const canEditNote = !isSnapshotCard && !isTrashView && (note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false);
 		const title = doc.getText('title').toString();
+		const initialLinkRecords = docId && snapshotShell?.previewCards?.length
+			? snapshotShell.previewCards.map((card, index) => ({
+				id: `snapshot:${note.id}:${card.normalizedUrl || index}`,
+				docId,
+				sourceWorkspaceId: '',
+				sourceNoteId: note.id,
+				normalizedUrl: card.normalizedUrl,
+				originalUrl: card.originalUrl,
+				hostname: card.hostname,
+				rootDomain: card.rootDomain,
+				siteName: card.siteName,
+				title: card.title,
+				description: card.description,
+				mainContent: card.mainContent,
+				imageUrl: card.imageUrl,
+				metadataJson: null,
+				imageUrls: card.imageUrls,
+				sortOrder: card.sortOrder,
+				status: card.status,
+				errorMessage: null,
+				createdAt: '',
+				updatedAt: '',
+			}))
+			: undefined;
 		return (
 			<GridNoteCard
 				key={note.id}
@@ -2400,6 +2615,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					disableAttachmentInitialRemoteRefresh: disableAttachmentInitialRemoteRefresh && !note.isShared,
 					forceCloseAttachmentChip: Boolean(openCollaboratorChip || openMetadataChip || (openAttachmentChipNoteId !== null && openAttachmentChipNoteId !== note.id)),
 					collaboratorSummary,
+					snapshotShell,
 					onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 					onToggleCollaboratorChip: (chipNoteId, anchorRect) => {
 						setOpenAttachmentChipNoteId(null);
@@ -2425,11 +2641,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					themeId: props.themeId,
 					title,
 				})}
+				forcedHeightPx={isSnapshotCard && cachedMeasuredHeightPx && cachedMeasuredHeightPx > 0 ? cachedMeasuredHeightPx : undefined}
 				canEdit={canEditNote}
 				hasPendingSync={pendingSyncNoteIds.has(note.id)}
 				selected={props.selectedNoteId === note.id}
 				isMoreMenuOpen={moreMenuNoteId === note.id}
 				isTrashView={isTrashView}
+				initialLinkRecords={initialLinkRecords}
+				preserveControlShell={isSnapshotCard}
 				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => {
 					if (moreMenuNoteId) return;
@@ -2441,12 +2660,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				} : undefined}
 				allowChecklistItemInteractions={props.noteCardCheckboxInteractions !== false}
 				allowLinkInteractions={props.noteCardLinkInteractions !== false}
-				allowCompletedItemInteractions={props.noteCardCompletedInteractions !== false}
+				allowCompletedItemInteractions={!isSnapshotCard && props.noteCardCompletedInteractions !== false}
 				suppressContentInteractions={isChipInteractionGuardActive}
-				onAddReminder={props.onAddReminder && canEditNote ? () => props.onAddReminder?.(note.id, docId, doc.getText('title').toString()) : undefined}
+				onAddReminder={props.onAddReminder ? () => props.onAddReminder?.(note.id, docId, doc.getText('title').toString()) : undefined}
 				onRestoreNote={isTrashView ? () => { void manager.restoreNote(note.id); } : undefined}
-				onAddCollaborator={props.onAddCollaborator && canEditNote ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
-				onAddImage={props.onAddImage && canEditNote ? () => {
+				onAddCollaborator={props.onAddCollaborator ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
+				onAddImage={props.onAddImage ? () => {
 					if (!docId) return;
 					props.onAddImage?.(note.id, docId, doc.getText('title').toString());
 				} : undefined}
@@ -2464,7 +2683,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -2860,6 +3079,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									suspendAttachmentRemoteRefresh,
 									disableAttachmentInitialRemoteRefresh,
 									collaboratorSummary: activeCollaboratorSummary,
+									snapshotShell: workspaceRenderSnapshotNoteById.get(activeNote.id) ?? null,
 									onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 									onOpenMetadataChip: ({ noteId, kind, anchorRect, entries }) => {
 										setOpenCollaboratorChip(null);

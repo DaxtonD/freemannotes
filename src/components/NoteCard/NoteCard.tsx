@@ -29,8 +29,9 @@ import {
 	getNoteCardCompletedExpanded,
 	setNoteCardCompletedExpanded,
 } from '../../core/noteCardCompletedExpansion';
-import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
-import { getUserNoteColorToken, setUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import type { NoteLinkRecord } from '../../core/noteLinkApi';
+import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import type { ThemeId } from '../../core/theme';
 import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
@@ -67,6 +68,8 @@ export type NoteCardProps = {
 	allowLinkInteractions?: boolean;
 	allowCompletedItemInteractions?: boolean;
 	suppressContentInteractions?: boolean;
+	initialLinkRecords?: readonly NoteLinkRecord[];
+	preserveControlShell?: boolean;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -83,6 +86,12 @@ type NoteCardStyle = React.CSSProperties & {
 	'--note-card-collapsed-checklist-height'?: string;
 	'--note-card-expanded-checklist-max-height'?: string;
 };
+
+function estimateInitialChecklistRailHeight(linkCount: number): number {
+	if (linkCount <= 0) return 0;
+	const visibleCount = Math.max(1, Math.min(3, Math.floor(linkCount)));
+	return visibleCount * 56;
+}
 
 function renderChecklistCardContent(item: ChecklistItem, content: React.ReactNode): React.ReactNode {
 	const prefix = getChecklistCountPrefix(item);
@@ -563,6 +572,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const collapsedChecklistLineHeightPx = 22;
 	const minimumExpandedCompletedItems = 3;
 	const canEdit = props.canEdit !== false;
+	const preserveControlShell = props.preserveControlShell === true;
 	const allowChecklistItemInteractions = props.allowChecklistItemInteractions !== false;
 	const allowLinkInteractions = props.allowLinkInteractions !== false;
 	const allowCompletedItemInteractions = props.allowCompletedItemInteractions !== false;
@@ -571,15 +581,15 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const metadata = React.useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const colorToken = React.useSyncExternalStore(
 		(onStoreChange) => {
-			// Subscribe to both the local preferences store and the Yjs metadata
-			// (Yjs is kept as a migration fallback for legacy colors already in the doc).
+			// Subscribe to both stores while older local-only color selections are still
+			// being migrated onto the canonical note metadata path.
 			const unsubLocal = subscribeNoteColorPrefs(onStoreChange);
 			const observer = (): void => onStoreChange();
 			metadata.observe(observer);
 			return () => { unsubLocal(); metadata.unobserve(observer); };
 		},
-		() => getUserNoteColorToken(props.noteId) ?? readNoteColorToken(metadata),
-		() => getUserNoteColorToken(props.noteId) ?? readNoteColorToken(metadata)
+		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId)),
+		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId))
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
@@ -637,17 +647,29 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		maxHeightPx: null,
 		isOverflowing: false,
 	});
-	const [checklistLayoutMetrics, setChecklistLayoutMetrics] = React.useState({
+	const [checklistLayoutMetrics, setChecklistLayoutMetrics] = React.useState(() => {
+		const initialPreviewLinkCount = Math.max(
+			0,
+			Math.min(
+				noteCardLinkPreviewMaxItems,
+				Math.max(props.initialLinkRecords?.length ?? 0, extractNoteLinksFromDoc(props.doc).length)
+			)
+		);
 		// Conservative initial estimates: keep these close to real measured values
 		// so the first render has minimal gap before the layout effect measures.
+		// Checklist cards that already have a chip row or preview rail on the warm
+		// snapshot need those shells budgeted immediately; otherwise the preview rail
+		// is briefly clipped and cards below shift down after the first measurement.
+		return {
 		headerHeightPx: 39,
-		metaHeightPx: 0,
-		linkPreviewHeightPx: 0,
+		metaHeightPx: props.metaChips ? 40 : 0,
+		linkPreviewHeightPx: estimateInitialChecklistRailHeight(initialPreviewLinkCount),
 		completedBaseHeightPx: 33,
 		cardPaddingBottomPx: 0,
 		bodyPaddingVerticalPx: 8,
 		renderedCardScrollHeightPx: 0,
 		contentRegionScrollHeightPx: 0,
+		};
 	});
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
 	const cardRef = React.useRef<HTMLElement | null>(null);
@@ -1060,7 +1082,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			});
 		};
 
-		scheduleMeasure();
+		// Run the first overflow measurement before paint so the bottom fade does
+		// not visibly appear a frame after a warm snapshot card mounts.
+		measure();
 		const observer = new ResizeObserver(() => scheduleMeasure());
 		if (cardRef.current) observer.observe(cardRef.current);
 		if (contentRegionRef.current) observer.observe(contentRegionRef.current);
@@ -1183,8 +1207,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 	const handleReminderAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
+		if (!canEdit) return;
 		props.onAddReminder?.();
-	}, [props]);
+	}, [canEdit, props]);
 
 	const handleDockAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		// Placeholder — stops propagation so the card doesn't open underneath.
@@ -1197,22 +1222,22 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		setIsColorPickerOpen(true);
 	}, [canEdit]);
 
-	// Write the color choice to the per-user local store only — never to the
-	// shared Yjs doc — so collaborators keep independent color preferences.
-	const handleColorSelect = React.useCallback((token: Parameters<typeof setUserNoteColorToken>[1]): void => {
-		setUserNoteColorToken(props.noteId, token);
+	const handleColorSelect = React.useCallback((token: Parameters<typeof saveUserNoteColorToken>[2]): void => {
+		saveUserNoteColorToken(getDeviceId(), props.noteId, token);
 		setIsColorPickerOpen(false);
 	}, [props.noteId]);
 
 	const handleAddCollaborator = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
+		if (!canEdit) return;
 		props.onAddCollaborator?.();
-	}, [props]);
+	}, [canEdit, props]);
 
 	const handleAddImage = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
+		if (!canEdit) return;
 		props.onAddImage?.();
-	}, [props]);
+	}, [canEdit, props]);
 
 	const handleMoreMenuAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
 		event.stopPropagation();
@@ -1237,6 +1262,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		event.stopPropagation();
 		props.onRestoreNote?.();
 	}, [props]);
+	const renderInteractiveShell = preserveControlShell && !canEdit;
+	const disablePaletteAction = !renderInteractiveShell && !canEdit;
+	const disableReminderAction = !props.onAddReminder || (!renderInteractiveShell && !canEdit);
+	const disableCollaboratorAction = !props.onAddCollaborator || (!renderInteractiveShell && !canEdit);
+	const disableImageAction = !props.onAddImage || (!renderInteractiveShell && !canEdit);
+	const disableChecklistCheckbox = !allowChecklistItemInteractions;
+	const disableCompletedChecklistCheckbox = !allowCompletedItemInteractions;
 
 	return (
 		<article
@@ -1506,7 +1538,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 												type="checkbox"
 												className={styles.checklistCheckbox}
 												checked={item.completed}
-												disabled={!canEdit || !allowChecklistItemInteractions}
+												disabled={disableChecklistCheckbox}
 												readOnly
 											/>
 										</span>
@@ -1549,45 +1581,47 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 								</div>
 							)}
 							{showCompleted && completedChecklistItems.length > 0 ? (
-								<ul className={styles.checklist}>
-									{visibleCompletedRows.map(({ kind, item }) => kind === 'ghost' ? (
-										<li key={`ghost-${item.id}`} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''} ${styles.checklistGhostItem}`} aria-hidden="true">
-											<span className={styles.checklistCheckboxHitArea}>
-												<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
-											</span>
-											<div className={styles.checklistText}>
-												{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false) ?? item.text)}
-											</div>
-										</li>
-									) : (
-										<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
-											<span
-												className={styles.checklistCheckboxHitArea}
-												onPointerDown={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
-												onPointerUp={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
-												onClick={allowCompletedItemInteractions ? (e) => {
-													e.stopPropagation();
-													toggleNoteCardChecklistItem(item.id, !item.completed);
-												} : undefined}
-												aria-label={item.completed ? 'Completed' : 'Not completed'}
-											>
-												<input
-													type="checkbox"
-													className={styles.checklistCheckbox}
-													checked={item.completed}
-													disabled={!canEdit || !allowCompletedItemInteractions}
-													readOnly
-												/>
-											</span>
-											<div className={`${styles.checklistText} ${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
-												{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text)}
-											</div>
-										</li>
-									))}
-								</ul>
-							) : null}
-							{showCompleted && hiddenCompletedChecklistCount > 0 ? (
-								<div className={`${styles.checklistMore} ${styles.completedChecklistMore}`}>+{hiddenCompletedChecklistCount} completed items</div>
+								<div className={styles.completedDropdown}>
+									<ul className={styles.checklist}>
+										{visibleCompletedRows.map(({ kind, item }) => kind === 'ghost' ? (
+											<li key={`ghost-${item.id}`} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''} ${styles.checklistGhostItem}`} aria-hidden="true">
+												<span className={styles.checklistCheckboxHitArea}>
+													<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
+												</span>
+												<div className={styles.checklistText}>
+													{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false) ?? item.text)}
+												</div>
+											</li>
+										) : (
+											<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
+												<span
+													className={styles.checklistCheckboxHitArea}
+													onPointerDown={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
+													onPointerUp={allowCompletedItemInteractions ? (e) => e.stopPropagation() : undefined}
+													onClick={allowCompletedItemInteractions ? (e) => {
+														e.stopPropagation();
+														toggleNoteCardChecklistItem(item.id, !item.completed);
+													} : undefined}
+													aria-label={item.completed ? 'Completed' : 'Not completed'}
+												>
+													<input
+														type="checkbox"
+														className={styles.checklistCheckbox}
+														checked={item.completed}
+														disabled={disableCompletedChecklistCheckbox}
+														readOnly
+													/>
+												</span>
+												<div className={`${styles.checklistText} ${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
+													{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions) ?? item.text)}
+												</div>
+											</li>
+										))}
+									</ul>
+									{hiddenCompletedChecklistCount > 0 ? (
+										<div className={`${styles.checklistMore} ${styles.completedChecklistMore}`}>+{hiddenCompletedChecklistCount} completed items</div>
+									) : null}
+								</div>
 							) : null}
 						</div>
 					</>
@@ -1595,7 +1629,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 				{props.docId ? (
 					<div ref={linkPreviewRailRef} className={styles.linkPreviewRail}>
-						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={noteCardLinkPreviewMaxItems} disableInitialRemoteRefresh disableOpenLinks={!allowLinkInteractions} />
+						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} initialLinks={props.initialLinkRecords} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={noteCardLinkPreviewMaxItems} disableInitialRemoteRefresh disableOpenLinks={!allowLinkInteractions} />
 					</div>
 				) : null}
 			</div>
@@ -1619,7 +1653,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={handlePaletteAction}
 							aria-label={t('noteColors.dialogTitle')}
-							disabled={!canEdit}
+							aria-disabled={!canEdit || undefined}
+							disabled={disablePaletteAction}
 						>
 							<FontAwesomeIcon icon={faPalette} />
 						</button>
@@ -1629,7 +1664,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={handleReminderAction}
 							aria-label={t('note.addReminder')}
-							disabled={!canEdit || !props.onAddReminder}
+							aria-disabled={!canEdit || undefined}
+							disabled={disableReminderAction}
 						>
 							<FontAwesomeIcon icon={faBell} />
 						</button>
@@ -1639,7 +1675,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={handleAddCollaborator}
 							aria-label={t('editors.dockAction')}
-							disabled={!canEdit || !props.onAddCollaborator}
+							aria-disabled={!canEdit || undefined}
+							disabled={disableCollaboratorAction}
 						>
 							<FontAwesomeIcon icon={faUserPlus} />
 						</button>
@@ -1649,7 +1686,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							onPointerDown={(e) => e.stopPropagation()}
 							onClick={props.onAddImage ? handleAddImage : handleDockAction}
 							aria-label={t('editors.dockAction')}
-							disabled={!canEdit || !props.onAddImage}
+							aria-disabled={!canEdit || undefined}
+							disabled={disableImageAction}
 						>
 							<FontAwesomeIcon icon={faImage} />
 						</button>

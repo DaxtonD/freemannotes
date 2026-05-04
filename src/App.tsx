@@ -14,7 +14,9 @@ import {
 	faGrip,
 	faImage,
 	faList,
+	faListCheck,
 	faMagnifyingGlass,
+	faPenNib,
 	faShareNodes,
 	faTag,
 	faTrash,
@@ -117,6 +119,7 @@ import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
 import { clearCachedReminderStates, readCachedReminderStates, writeCachedReminderStates } from './core/reminderCache';
+import { getUserNoteColorPrefsSnapshot, replaceUserNoteColorPrefs, setUserNoteColorPreferenceScope } from './core/noteColorPreferences';
 import { useStartupHydration } from './core/StartupHydrationContext';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
@@ -132,12 +135,17 @@ import {
 	removeCachedWorkspace,
 	readCachedWorkspaceSnapshot,
 } from './core/workspaceMetadataStore';
+import {
+	hasWorkspaceRenderSnapshot,
+	readWorkspaceRenderSnapshotScroll,
+	writeWorkspaceRenderSnapshotScroll,
+} from './core/workspaceRenderSnapshot';
 
 const DOCUMENT_VIEWER_STATE_EVENT = 'freemannotes:document-viewer-state';
 import { getWorkspaceDisplayName, isPersonalWorkspace } from './core/workspaceDisplay';
 import { readWorkspaceListLocalCache, writeWorkspaceListLocalCache, clearWorkspaceListLocalCache } from './core/workspaceListLocalCache';
 import { clearWorkspaceSelectionCache, readWorkspaceSelectionCache, writeWorkspaceSelectionCache } from './core/workspaceSelectionCache';
-import { type ViewMode, cycleViewMode, loadViewMode, saveViewMode } from './core/viewMode';
+import { type ViewMode, loadViewMode, saveViewMode } from './core/viewMode';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from './core/bubbleZoom';
 import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle, WORKSPACE_COLOR_TOKENS } from './core/bubbleWorkspaceColors';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
@@ -328,11 +336,11 @@ function updateReminderLookup(
 	const next = { ...lookup };
 	if (docId) {
 		if (reminderAt) next[docId] = reminderAt;
-		else delete next[docId];
+		else next[docId] = null;
 	}
 	if (noteId) {
 		if (reminderAt) next[noteId] = reminderAt;
-		else delete next[noteId];
+		else next[noteId] = null;
 	}
 	return next;
 }
@@ -493,9 +501,12 @@ const SS_OVERLAY_KEY = '__freemannotes_overlay_snapshot';
  */
 const _restoredOverlay: OverlaySnapshot | null = (() => {
 	try {
+		const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
 		const s = window.history.state;
 		if (isOverlayHistoryState(s)) {
-			return s.snapshot;
+			return isCoarsePointer
+				? s.snapshot
+				: { ...s.snapshot, selectedNoteId: null, editorMode: 'none', crossWorkspaceNote: null };
 		}
 		// history.state may be a media-dock or image-viewer entry pushed on top.
 		// Fall back to the sessionStorage snapshot.
@@ -503,7 +514,9 @@ const _restoredOverlay: OverlaySnapshot | null = (() => {
 		if (raw) {
 			const parsed = JSON.parse(raw) as OverlaySnapshot;
 			if (hasOverlaySnapshotContent(parsed)) {
-				return parsed;
+				return isCoarsePointer
+					? parsed
+					: { ...parsed, selectedNoteId: null, editorMode: 'none', crossWorkspaceNote: null };
 			}
 		}
 	} catch { /* */ }
@@ -722,7 +735,10 @@ export function App(): React.JSX.Element {
 	// probeSession still runs in the background and will transition to 'unauth' if
 	// the server responds with an explicit 401/403 (expired session).
 	const canRestoreCachedAuthImmediately = Boolean(cachedAuth);
-	const hasWarmStartupCache = startupHydration.hasWarmCache;
+	const initialWorkspaceRenderSnapshotAvailable = hasWorkspaceRenderSnapshot(
+		startupHydration.workspaceId ?? cachedWorkspaceSelection?.workspaceId ?? cachedAuth?.workspaceId ?? null
+	);
+	const hasWarmStartupCache = startupHydration.hasWarmCache || initialWorkspaceRenderSnapshotAvailable;
 	type SplashDismissMode = 'viewport' | 'full';
 	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
 		canRestoreCachedAuthImmediately ? 'authed' : 'loading'
@@ -731,22 +747,11 @@ export function App(): React.JSX.Element {
 	// until NoteGrid reports the viewport-stable first paint, so cached docs never
 	// visibly hydrate in front of the user on PWA relaunch.
 	// gridReady → starts fade-out; splashGone → removes the DOM node entirely.
-	const [gridReady, setGridReady] = React.useState(false);
-	const [splashGone, setSplashGone] = React.useState(false);
+	const [gridReady, setGridReady] = React.useState(initialWorkspaceRenderSnapshotAvailable);
+	const [splashGone, setSplashGone] = React.useState(initialWorkspaceRenderSnapshotAvailable);
 	const [splashDismissMode, setSplashDismissMode] = React.useState<SplashDismissMode>(() => hasWarmStartupCache ? 'full' : 'viewport');
 	const splashTimerRef = React.useRef<number>(0);
 	const prevAuthStatusRef = React.useRef(authStatus);
-	// Detect unauth → authed transition (user just logged in from scratch).
-	// Using an effect so we get the previous value cleanly without render-side setState.
-	React.useEffect(() => {
-		if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed' && !hasWarmStartupCache) {
-			clearTimeout(splashTimerRef.current);
-			setSplashDismissMode('viewport');
-			setGridReady(false);
-			setSplashGone(false); // show splash
-		}
-		prevAuthStatusRef.current = authStatus;
-	}, [authStatus, hasWarmStartupCache]);
 	React.useEffect(() => {
 		return () => {
 			clearTimeout(splashTimerRef.current);
@@ -786,6 +791,24 @@ export function App(): React.JSX.Element {
 		}
 		return cachedAuth?.workspaceId ?? null;
 	});
+	// Detect unauth -> authed transition (user just logged in from scratch).
+	// Run this after authWorkspaceId is initialized so the dependency list does not
+	// touch the workspace state while it is still in the temporal dead zone.
+	React.useEffect(() => {
+		const restoredWorkspaceId = authWorkspaceId ?? cachedWorkspaceSelection?.workspaceId ?? cachedAuth?.workspaceId ?? null;
+		const canSkipSplash = hasWorkspaceRenderSnapshot(restoredWorkspaceId);
+		if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed' && !canSkipSplash) {
+			clearTimeout(splashTimerRef.current);
+			setSplashDismissMode('viewport');
+			setGridReady(false);
+			setSplashGone(false);
+		} else if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed' && canSkipSplash) {
+			clearTimeout(splashTimerRef.current);
+			setGridReady(true);
+			setSplashGone(true);
+		}
+		prevAuthStatusRef.current = authStatus;
+	}, [authStatus, authWorkspaceId, cachedWorkspaceSelection, cachedAuth]);
 	const [bubbleWorkspaceSelectionId, setBubbleWorkspaceSelectionId] = React.useState<string | null>(() => {
 		if (cachedAuth && cachedWorkspaceSelection?.userId === cachedAuth.userId) {
 			return cachedWorkspaceSelection.workspaceId;
@@ -852,9 +875,14 @@ export function App(): React.JSX.Element {
 		prevAuthWorkspaceIdForSplashRef.current = authWorkspaceId;
 		if (prev !== null && authWorkspaceId !== null && prev !== authWorkspaceId) {
 			clearTimeout(splashTimerRef.current);
-			setSplashDismissMode('viewport');
-			setGridReady(false);
-			setSplashGone(false);
+			if (hasWorkspaceRenderSnapshot(authWorkspaceId)) {
+				setGridReady(true);
+				setSplashGone(true);
+			} else {
+				setSplashDismissMode('viewport');
+				setGridReady(false);
+				setSplashGone(false);
+			}
 			void logClientEvent('VIEW_SWITCH', { kind: 'workspace', from: prev, to: authWorkspaceId });
 		}
 	}, [authWorkspaceId]);
@@ -882,6 +910,8 @@ export function App(): React.JSX.Element {
 	const headerRef = React.useRef<HTMLElement | null>(null);
 	const sidebarToggleButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const mobileSearchInputRef = React.useRef<HTMLInputElement | null>(null);
+	const viewModeToggleButtonRef = React.useRef<HTMLButtonElement | null>(null);
+	const viewModePickerRef = React.useRef<HTMLDivElement | null>(null);
 	const topControlsRef = React.useRef<HTMLDivElement | null>(null);
 	const mobileSidebarRef = React.useRef<HTMLElement | null>(null);
 	const workspaceMenuRef = React.useRef<HTMLDivElement | null>(null);
@@ -1135,6 +1165,7 @@ export function App(): React.JSX.Element {
 	const [noteReminderByDocId, setNoteReminderByDocId] = React.useState<Record<string, string | null>>(
 		() => buildReminderLookup(startupHydration.reminderStates)
 	);
+	const [pendingReminderMutationVersion, bumpPendingReminderMutationVersion] = React.useReducer((value: number) => value + 1, 0);
 	const pendingReminderStorageKey = React.useMemo(
 		() => `freemannotes.pendingReminderSync.v1:${authUserId ?? ''}:${deviceId}`,
 		[authUserId, deviceId]
@@ -1156,9 +1187,11 @@ export function App(): React.JSX.Element {
 		try {
 			if (entries.length === 0) {
 				window.localStorage.removeItem(pendingReminderStorageKey);
+				bumpPendingReminderMutationVersion();
 				return;
 			}
 			window.localStorage.setItem(pendingReminderStorageKey, JSON.stringify(entries));
+			bumpPendingReminderMutationVersion();
 		} catch {
 			// best effort
 		}
@@ -1211,19 +1244,29 @@ export function App(): React.JSX.Element {
 	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(_restoredOverlay?.isMobileSearchOpen ?? false);
 	const [isFabOpen, setIsFabOpen] = React.useState(_restoredOverlay?.isFabOpen ?? false);
 	const [viewMode, setViewMode] = React.useState<ViewMode>(() => loadViewMode());
+	const [isViewModePickerOpen, setIsViewModePickerOpen] = React.useState(false);
 	const [bubbleZoom, setBubbleZoom] = React.useState(() => loadBubbleZoom());
-	const viewModeIcon = viewMode === 'list'
-		? faList
-		: viewMode === 'strip'
-			? faBarsStaggered
-			: viewMode === 'bubble'
-				? faCircleDot
-				: faGrip;
-	const cycleGridViewMode = React.useCallback(() => {
-		const next = cycleViewMode(viewMode);
-		setViewMode(next);
-		saveViewMode(next);
-	}, [viewMode]);
+	const viewModeOptions = React.useMemo(
+		() => [
+			{ mode: 'card' as ViewMode, icon: faGrip, label: t('app.viewCard') },
+			{ mode: 'list' as ViewMode, icon: faList, label: t('app.viewList') },
+			{ mode: 'strip' as ViewMode, icon: faBarsStaggered, label: t('app.viewDetailedList') },
+			{ mode: 'bubble' as ViewMode, icon: faCircleDot, label: t('app.viewBubble') },
+		],
+		[t]
+	);
+	const selectedViewModeOption = React.useMemo(() => {
+		for (const option of viewModeOptions) {
+			if (option.mode === viewMode) return option;
+		}
+		return { mode: 'card' as ViewMode, icon: faGrip, label: t('app.viewCard') };
+	}, [t, viewMode, viewModeOptions]);
+	const viewModeIcon = selectedViewModeOption.icon;
+	const selectViewMode = React.useCallback((nextMode: ViewMode) => {
+		setViewMode(nextMode);
+		saveViewMode(nextMode);
+		setIsViewModePickerOpen(false);
+	}, []);
 	React.useEffect(() => {
 		saveBubbleZoom(bubbleZoom);
 	}, [bubbleZoom]);
@@ -1234,6 +1277,53 @@ export function App(): React.JSX.Element {
 		void logClientEvent('VIEW_SWITCH', { kind: 'view-mode', from: prevViewModeForSplashRef.current, to: viewMode });
 		prevViewModeForSplashRef.current = viewMode;
 	}, [viewMode]);
+	const activeGridViewMode = (viewMode === 'bubble' ? 'card' : viewMode);
+	const scrollPersistTimerRef = React.useRef<number>(0);
+	const previousWorkspaceScrollScopeRef = React.useRef<{ workspaceId: string | null; viewMode: typeof activeGridViewMode }>({
+		workspaceId: authWorkspaceId,
+		viewMode: activeGridViewMode,
+	});
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const persistScroll = (): void => {
+			const scope = previousWorkspaceScrollScopeRef.current;
+			if (!scope.workspaceId) return;
+			writeWorkspaceRenderSnapshotScroll(scope.workspaceId, scope.viewMode, window.scrollY || 0);
+		};
+		const onScroll = (): void => {
+			if (scrollPersistTimerRef.current) {
+				window.clearTimeout(scrollPersistTimerRef.current);
+			}
+			scrollPersistTimerRef.current = window.setTimeout(() => {
+				scrollPersistTimerRef.current = 0;
+				persistScroll();
+			}, 160);
+		};
+		window.addEventListener('scroll', onScroll, { passive: true });
+		return () => {
+			window.removeEventListener('scroll', onScroll);
+			if (scrollPersistTimerRef.current) {
+				window.clearTimeout(scrollPersistTimerRef.current);
+				scrollPersistTimerRef.current = 0;
+			}
+			persistScroll();
+		};
+	}, []);
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const previous = previousWorkspaceScrollScopeRef.current;
+		if (previous.workspaceId === authWorkspaceId && previous.viewMode === activeGridViewMode) return;
+		if (previous.workspaceId) {
+			writeWorkspaceRenderSnapshotScroll(previous.workspaceId, previous.viewMode, window.scrollY || 0);
+		}
+		previousWorkspaceScrollScopeRef.current = { workspaceId: authWorkspaceId, viewMode: activeGridViewMode };
+		const restoredScrollY = authWorkspaceId ? readWorkspaceRenderSnapshotScroll(authWorkspaceId, activeGridViewMode) : null;
+		window.requestAnimationFrame(() => {
+			window.requestAnimationFrame(() => {
+				window.scrollTo({ left: 0, top: restoredScrollY ?? 0, behavior: 'auto' });
+			});
+		});
+	}, [activeGridViewMode, authWorkspaceId]);
 	const isCoarsePointer = useIsCoarsePointer();
 	const isMobileLandscape = useIsMobileLandscape();
 	const maxCardHeightPx = noteCardMaxHeightPref;
@@ -1774,6 +1864,49 @@ export function App(): React.JSX.Element {
 		setIsMobileSearchOpen(false);
 	}, [goBackIfOverlayHistory]);
 
+	const toggleViewModePicker = React.useCallback(() => {
+		if (isViewModePickerOpen) {
+			setIsViewModePickerOpen(false);
+			return;
+		}
+		// The mobile search field and view picker share the same header lane, so
+		// opening the picker first collapses search in-place instead of stacking UI.
+		if (isMobileSearchOpen) {
+			replaceActiveOverlaySnapshot({
+				...getOverlaySnapshot(),
+				isMobileSearchOpen: false,
+			});
+		}
+		setIsViewModePickerOpen(true);
+	}, [getOverlaySnapshot, isMobileSearchOpen, isViewModePickerOpen, replaceActiveOverlaySnapshot]);
+
+	React.useEffect(() => {
+		if (!isViewModePickerOpen) return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target as Node | null;
+			if (!target) return;
+			if (viewModePickerRef.current?.contains(target)) return;
+			if (viewModeToggleButtonRef.current?.contains(target)) return;
+			setIsViewModePickerOpen(false);
+		};
+		const handleKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === 'Escape') setIsViewModePickerOpen(false);
+		};
+		window.addEventListener('pointerdown', handlePointerDown);
+		window.addEventListener('keydown', handleKeyDown);
+		return () => {
+			window.removeEventListener('pointerdown', handlePointerDown);
+			window.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [isViewModePickerOpen]);
+
+	React.useEffect(() => {
+		if (!isViewModePickerOpen) return;
+		const overlayOpen = editorMode !== 'none' || Boolean(selectedNoteId) || Boolean(crossWorkspaceNote);
+		if (!overlayOpen) return;
+		setIsViewModePickerOpen(false);
+	}, [crossWorkspaceNote, editorMode, isViewModePickerOpen, selectedNoteId]);
+
 	React.useEffect(() => {
 		const onPopState = () => {
 			setExternalRoute(readExternalRoute());
@@ -2268,6 +2401,10 @@ export function App(): React.JSX.Element {
 		});
 	}, [applyDevicePreferenceState, persistDevicePrefsLocally]);
 
+	React.useEffect(() => {
+		setUserNoteColorPreferenceScope(authUserId ?? null);
+	}, [authUserId]);
+
 	const pendingAppearanceSyncStorageKey = React.useMemo(
 		() => `freemannotes.pendingAppearanceSync.v1:${authUserId ?? ''}:${deviceId}`,
 		[authUserId, deviceId]
@@ -2505,6 +2642,11 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		syncPendingAppearancePreferencesRef.current = syncPendingAppearancePreferences;
 	}, [syncPendingAppearancePreferences]);
+
+	const flushPendingReminderMutationsRef = React.useRef(flushPendingReminderMutations);
+	React.useEffect(() => {
+		flushPendingReminderMutationsRef.current = flushPendingReminderMutations;
+	}, [flushPendingReminderMutations]);
 
 	const confirmActivatedWorkspaceSession = React.useCallback(async (workspaceId: string): Promise<void> => {
 		// Workspace activation flips the server-side session before the client should
@@ -2825,11 +2967,24 @@ export function App(): React.JSX.Element {
 			const localAppearanceSnapshot = readCachedDeviceAppearancePreferences(deviceId, authUserId);
 			const prefetched = prefetchedAuthPreferencesRef.current;
 			prefetchedAuthPreferencesRef.current = null;
-			const pref = prefetched && prefetched.userId === authUserId
+			let pref = prefetched && prefetched.userId === authUserId
 				? prefetched
 				: await fetchUserPreferences(deviceId);
 			if (cancelled) return;
 			if (pref) {
+				const localNoteColorPrefs = getUserNoteColorPrefsSnapshot();
+				if (
+					Object.keys(localNoteColorPrefs).length > 0
+					&& Object.keys(pref.noteColorsByNoteId || {}).length === 0
+				) {
+					const updatedNoteColorPrefs = await updateUserPreferences(deviceId, {
+						noteColorsByNoteId: localNoteColorPrefs,
+					});
+					if (cancelled) return;
+					if (updatedNoteColorPrefs) {
+						pref = updatedNoteColorPrefs;
+					}
+				}
 				let syncedWorkspaceId = pref.activeWorkspaceId;
 				let syncedActiveSharedFolder = pref.activeSharedFolder;
 				const localSelectionNewer = Boolean(
@@ -2958,9 +3113,8 @@ export function App(): React.JSX.Element {
 				}
 				setTrashDeleteAfterDaysPref(pref.deleteAfterDays ?? null);
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
-				if (pref.bubbleWorkspaceColors && Object.keys(pref.bubbleWorkspaceColors).length > 0) {
-					setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors);
-				}
+				replaceUserNoteColorPrefs(pref.noteColorsByNoteId || {});
+				setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors || {});
 				// Merge the server-backed dismissed IDs with the local offline cache so
 				// users keep dismissals made on other devices without losing any that
 				// were created locally while offline or before the server sync landed.
@@ -3063,7 +3217,7 @@ export function App(): React.JSX.Element {
 					// probeSession only enables WebSocket AFTER activation completes.
 					await probeSession({ allowOfflineRestore: true });
 					await syncPendingAppearancePreferencesRef.current();
-					await flushPendingReminderMutations();
+					await flushPendingReminderMutationsRef.current();
 					// After the session is fully established, kick off a background preload
 					// so any workspaces the user has not visited on this device are pulled
 					// into IndexedDB and available offline. Fire-and-forget — errors are
@@ -3082,6 +3236,48 @@ export function App(): React.JSX.Element {
 			window.removeEventListener('online', onOnline);
 		};
 	}, [authStatus, authUserId, deviceId, manager, probeSession]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId || !authOfflineMode || typeof window === 'undefined') return;
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+		let cancelled = false;
+		let running = false;
+		let timer: ReturnType<typeof window.setTimeout> | null = null;
+
+		const schedule = (delayMs: number): void => {
+			if (cancelled) return;
+			if (timer !== null) window.clearTimeout(timer);
+			timer = window.setTimeout(() => {
+				timer = null;
+				void attemptRecovery();
+			}, delayMs);
+		};
+
+		const attemptRecovery = async (): Promise<void> => {
+			if (cancelled || running) return;
+			if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+			running = true;
+			try {
+				await probeSession({ allowOfflineRestore: true });
+			} finally {
+				running = false;
+				if (!cancelled && authOfflineModeRef.current) {
+					// Server restarts do not fire the browser `online` event because the
+					// device never lost network connectivity. Keep probing while the app
+					// is in offline-restored mode so Chrome/PWA sessions recover on their
+					// own as soon as the backend is reachable again.
+					schedule(5_000);
+				}
+			}
+		};
+
+		schedule(2_000);
+		return () => {
+			cancelled = true;
+			if (timer !== null) window.clearTimeout(timer);
+		};
+	}, [authOfflineMode, authStatus, authUserId, probeSession]);
 
 	// Trigger an initial background preload when the user is online and authenticated
 	// with a workspace list. This covers the case where the user logs in while already
@@ -4002,6 +4198,33 @@ export function App(): React.JSX.Element {
 	}, [authOfflineMode, authStatus, authUserId, flushPendingReminderMutations]);
 
 	React.useEffect(() => {
+		if (authStatus !== 'authed' || authOfflineMode || typeof window === 'undefined') return;
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+		if (readPendingReminderMutations().length === 0) return;
+
+		let cancelled = false;
+		let timer: ReturnType<typeof window.setTimeout> | null = null;
+
+		const attemptFlush = async (): Promise<void> => {
+			if (cancelled) return;
+			await flushPendingReminderMutationsRef.current().catch(() => undefined);
+			if (cancelled) return;
+			if (readPendingReminderMutations().length > 0) {
+				timer = window.setTimeout(() => {
+					timer = null;
+					void attemptFlush();
+				}, 5_000);
+			}
+		};
+
+		void attemptFlush();
+		return () => {
+			cancelled = true;
+			if (timer !== null) window.clearTimeout(timer);
+		};
+	}, [authOfflineMode, authStatus, authUserId, pendingReminderMutationVersion, readPendingReminderMutations]);
+
+	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authWorkspaceId) return;
 		let cancelled = false;
 		void (async () => {
@@ -4649,6 +4872,16 @@ export function App(): React.JSX.Element {
 							void refreshNoteShareStateRef.current();
 							return;
 						}
+						if (payload.type === 'workspace-metadata-changed' && payload.reason === 'reminder-state-changed') {
+							if (!authUserId || authOfflineMode) return;
+							void fetchNoteReminderStates()
+								.then((data) => {
+									writeCachedReminderStates(authUserId, data.reminders);
+									setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
+								})
+								.catch(() => undefined);
+							return;
+						}
 						if (isUserProfileMetadataEvent) {
 							void refreshAuthenticatedProfileRef.current();
 							void loadSidebarWorkspacesRef.current();
@@ -4658,10 +4891,11 @@ export function App(): React.JSX.Element {
 							return;
 						}
 						if (payload.type === 'workspace-metadata-changed' && payload.reason === 'user-preferences-changed') {
-							// Another session changed a user-scoped preference (e.g. bubble colors).
+							// Another session changed a user-scoped preference (e.g. bubble colors or note colors).
 							void fetchUserPreferences(deviceId).then((pref) => {
-								if (pref && Object.keys(pref.bubbleWorkspaceColors).length > 0) {
-									setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors);
+								if (pref) {
+									replaceUserNoteColorPrefs(pref.noteColorsByNoteId || {});
+									setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors || {});
 								}
 							});
 							return;
@@ -5717,6 +5951,7 @@ export function App(): React.JSX.Element {
 						void openCreateEditorForCurrentContext('text', { replaceTop: true });
 					}}
 				>
+					<FontAwesomeIcon icon={faFileLines} />
 					{t('app.createNote')}
 				</button>
 				<button
@@ -5726,7 +5961,17 @@ export function App(): React.JSX.Element {
 						void openCreateEditorForCurrentContext('checklist', { replaceTop: true });
 					}}
 				>
+					<FontAwesomeIcon icon={faListCheck} />
 					{t('app.createChecklist')}
+				</button>
+				<button
+					type="button"
+					className="mobile-fab-action"
+					disabled
+					title={t('app.createDrawingComingSoon')}
+				>
+					<FontAwesomeIcon icon={faPenNib} />
+					{t('app.createDrawing')}
 				</button>
 			</div>
 		);
@@ -7153,11 +7398,13 @@ export function App(): React.JSX.Element {
 								) : null}
 							</button>
 							<button
+								ref={viewModeToggleButtonRef}
 								type="button"
-								className="app-icon-button mobile-appgrid-btn"
-								onClick={cycleGridViewMode}
-								aria-label="Cycle note view"
-								title="Cycle note view"
+								className={`app-icon-button mobile-appgrid-btn${isViewModePickerOpen ? ' is-active' : ''}`}
+								onClick={toggleViewModePicker}
+								aria-label={t('app.chooseView')}
+								aria-pressed={isViewModePickerOpen}
+								title={selectedViewModeOption.label}
 							>
 								<FontAwesomeIcon icon={viewModeIcon} />
 							</button>
@@ -7257,11 +7504,13 @@ export function App(): React.JSX.Element {
 								) : null}
 							</button>
 							<button
+								ref={viewModeToggleButtonRef}
 								type="button"
-								className="app-icon-button"
-								onClick={cycleGridViewMode}
-								aria-label="Cycle note view"
-								title="Cycle note view"
+								className={`app-icon-button${isViewModePickerOpen ? ' is-active' : ''}`}
+								onClick={toggleViewModePicker}
+								aria-label={t('app.chooseView')}
+								aria-pressed={isViewModePickerOpen}
+								title={selectedViewModeOption.label}
 							>
 								<FontAwesomeIcon icon={viewModeIcon} />
 							</button>
@@ -7277,6 +7526,24 @@ export function App(): React.JSX.Element {
 						</div>
 					</>
 				)}
+				{/* Keep the chooser anchored under the header controls so desktop and
+				    installed-PWA layouts reuse the same safe-area geometry. */}
+				<div ref={viewModePickerRef} className={`app-header-viewrow${isViewModePickerOpen ? ' is-open' : ''}`}>
+					<div className="app-header-view-actions" role="group" aria-label={t('app.chooseView')}>
+						{viewModeOptions.map((option) => (
+							<button
+								key={option.mode}
+								type="button"
+								className={`app-icon-button app-view-mode-option${viewMode === option.mode ? ' is-selected' : ''}`}
+								onClick={() => selectViewMode(option.mode)}
+								aria-label={option.label}
+								title={option.label}
+							>
+								<FontAwesomeIcon icon={option.icon} />
+							</button>
+						))}
+					</div>
+				</div>
 			</header>
 
 			{isMobileViewport && isMobileSidebarActive ? (
@@ -7930,6 +8197,7 @@ export function App(): React.JSX.Element {
 								disabled={!canCreateNotesInCurrentContext}
 								onClick={() => void openCreateEditorForCurrentContext('text')}
 							>
+								<FontAwesomeIcon icon={faFileLines} />
 								{t('app.createNewNote')}
 							</button>
 							<button
@@ -7938,8 +8206,18 @@ export function App(): React.JSX.Element {
 								disabled={!canCreateNotesInCurrentContext}
 								onClick={() => void openCreateEditorForCurrentContext('checklist')}
 							>
+								<FontAwesomeIcon icon={faListCheck} />
 										{t('app.createNewChecklist')}
 									</button>
+							<button
+								type="button"
+								className="top-action-card"
+								disabled
+								title={t('app.createDrawingComingSoon')}
+							>
+								<FontAwesomeIcon icon={faPenNib} />
+								{t('app.addNewDrawing')}
+							</button>
 								</div>
 							) : null}
 

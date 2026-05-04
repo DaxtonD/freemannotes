@@ -20,8 +20,8 @@ import {
 	faThumbtack,
 	faUsers,
 } from '@fortawesome/free-solid-svg-icons';
-import { getUserNoteColorToken } from '../../core/noteColorPreferences';
-import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import { getUserNoteColorPrefsSnapshot, getUserNoteColorToken, hasUserNoteColorPref, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { readNoteFromDoc } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import type { VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
@@ -56,7 +56,11 @@ export type NoteListViewProps = {
 };
 
 function getColorVars(noteId: string, doc: Y.Doc, themeId: ThemeId): React.CSSProperties | undefined {
-	const token = getUserNoteColorToken(noteId) ?? readNoteColorToken(doc.getMap<any>('metadata'));
+	const token = readEffectiveNoteColorToken(
+		doc.getMap<any>('metadata'),
+		getUserNoteColorToken(noteId),
+		hasUserNoteColorPref(noteId)
+	);
 	if (!token) return undefined;
 	const resolved = resolveThemeNoteColorModel(themeId).tokens[token];
 	return {
@@ -270,6 +274,7 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 });
 
 export function NoteListView(props: NoteListViewProps): React.JSX.Element {
+	React.useSyncExternalStore(subscribeNoteColorPrefs, getUserNoteColorPrefsSnapshot, getUserNoteColorPrefsSnapshot);
 	const showPreview = props.variant === 'strip';
 	const containerRef = React.useRef<HTMLDivElement | null>(null);
 	const previousRectsRef = React.useRef<DocumentRectMap>(new Map());
