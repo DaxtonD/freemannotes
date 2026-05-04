@@ -669,6 +669,11 @@ model UserPreference {
   /// Shape: { [failedLinkId: string]: true }
   dismissedFailedLinkIds Json @default("{}") @map("dismissed_failed_link_ids") @db.JsonB
 
+  /// Per-user note color overrides.
+  /// Shape: { [noteId: string]: NoteColorToken | null }
+  /// Null is an explicit per-user clear that hides any legacy shared-doc color.
+  noteColorsByNoteId Json @default("{}") @map("note_colors_by_note_id") @db.JsonB
+
   /// Timestamps for auditing.
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")

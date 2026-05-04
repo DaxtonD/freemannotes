@@ -602,7 +602,7 @@ if (DATABASE_URL.length > 0) {
 
 		try {
 			const { createPushRouter } = require('./server/pushRouter');
-			pushRouter = createPushRouter({ prisma });
+			pushRouter = createPushRouter({ prisma, redis });
 			console.info('[server] Push notification router initialized');
 		} catch (err) {
 			console.error('[server] Failed to initialize Push notification router:', err.message);

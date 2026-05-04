@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: freemannotes:1.3.0
+    image: freemannotes:1.3.3
     container_name: freemannotes
     init: true
     restart: unless-stopped

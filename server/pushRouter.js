@@ -20,6 +20,7 @@
 
 const { enforceSameOrigin } = require('./auth');
 const { createRateLimiter, getClientIp } = require('./rateLimit');
+const { normalizeWorkspaceMetadataEvent, publishWorkspaceMetadataEvent } = require('./workspaceMetadataEvents');
 const {
 	createTestNotificationPayload,
 	sendExternalNotificationToUser,
@@ -101,10 +102,10 @@ function isValidEndpoint(endpoint) {
 // ── Router factory ────────────────────────────────────────────────────────────
 
 /**
- * @param {{ prisma: import('@prisma/client').PrismaClient }} deps
+ * @param {{ prisma: import('@prisma/client').PrismaClient, redis?: any }} deps
  * @returns {(req: import('http').IncomingMessage, res: import('http').ServerResponse) => boolean | Promise<boolean>}
  */
-function createPushRouter({ prisma }) {
+function createPushRouter({ prisma, redis = null }) {
 	/**
 	 * Main handler — returns true if the request was handled, false to pass through.
 	 * Synchronous outer shell (matches all other routers); async work runs inside an IIFE.
@@ -401,6 +402,8 @@ function createPushRouter({ prisma }) {
 				}
 
 				const docId = String(body.docId).trim().slice(0, 100);
+				const noteId = String(body.noteId ?? '').trim().slice(0, 100);
+				const workspaceId = String(body.workspaceId ?? '').trim().slice(0, 50);
 				const reminderAt = body.reminderAt ? new Date(body.reminderAt) : null;
 
 				if (reminderAt && isNaN(reminderAt.getTime())) {
@@ -411,13 +414,21 @@ function createPushRouter({ prisma }) {
 				if (!reminderAt) {
 					// Clear reminder — delete the row
 					await prisma.noteReminder.deleteMany({ where: { userId, docId } });
+					if (redis && workspaceId) {
+						const event = normalizeWorkspaceMetadataEvent({
+							workspaceId,
+							reason: 'reminder-state-changed',
+							userIds: [userId],
+							docIds: docId ? [docId] : undefined,
+							noteIds: noteId ? [noteId] : undefined,
+						});
+						await publishWorkspaceMetadataEvent(redis, event);
+					}
 					jsonResponse(res, 200, { ok: true, cleared: true });
 					return true;
 				}
 
 				const deviceId = normalizeDeviceId(body.deviceId ?? '');
-				const noteId = String(body.noteId ?? '').trim().slice(0, 100);
-				const workspaceId = String(body.workspaceId ?? '').trim().slice(0, 50);
 				const noteTitle = body.noteTitle ? String(body.noteTitle).slice(0, 200) : null;
 
 				await prisma.noteReminder.upsert({
@@ -429,6 +440,16 @@ function createPushRouter({ prisma }) {
 					// a bell badge again when re-scheduled on the same note.
 					update: { deviceId, noteId, workspaceId, reminderAt, noteTitle, fired: false, firedAt: null, notificationAcknowledgedAt: null },
 				});
+				if (redis && workspaceId) {
+					const event = normalizeWorkspaceMetadataEvent({
+						workspaceId,
+						reason: 'reminder-state-changed',
+						userIds: [userId],
+						docIds: [docId],
+						noteIds: noteId ? [noteId] : undefined,
+					});
+					await publishWorkspaceMetadataEvent(redis, event);
+				}
 
 				jsonResponse(res, 200, { ok: true });
 			} catch (err) {

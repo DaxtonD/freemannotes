@@ -27,6 +27,7 @@ type NoteAttachmentCountChipProps = {
 	authUserId?: string | null;
 	className: string;
 	colorStyle?: React.CSSProperties;
+	initialCounts?: Partial<AttachmentCounts>;
 	forceClosed?: boolean;
 	onOpenBrowser: (kind: NoteAttachmentBrowserKind) => void;
 	onOpenStateChange?: (isOpen: boolean) => void;
@@ -75,9 +76,9 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	const overlayPanelRef = React.useRef<HTMLDivElement | null>(null);
 	const backStatePushedRef = React.useRef(false);
 	const [counts, setCounts] = React.useState<AttachmentCounts>(() => ({
-		images: getCachedRemoteNoteImages(props.docId).length,
-		links: Math.max(getCachedRemoteNoteLinks(props.docId).length, extractNoteLinksFromDoc(props.doc).length),
-		documents: getCachedNoteDocuments(props.docId).length,
+		images: Math.max(getCachedRemoteNoteImages(props.docId).length, Math.max(0, Number(props.initialCounts?.images ?? 0) || 0)),
+		links: Math.max(getCachedRemoteNoteLinks(props.docId).length, extractNoteLinksFromDoc(props.doc).length, Math.max(0, Number(props.initialCounts?.links ?? 0) || 0)),
+		documents: Math.max(getCachedNoteDocuments(props.docId).length, Math.max(0, Number(props.initialCounts?.documents ?? 0) || 0)),
 	}));
 	const countsRef = React.useRef(counts);
 	const [isOpen, setIsOpen] = React.useState(false);
@@ -102,6 +103,14 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	React.useEffect(() => {
 		countsRef.current = counts;
 	}, [counts]);
+
+	React.useEffect(() => {
+		setCounts((current) => ({
+			images: Math.max(current.images, Math.max(0, Number(props.initialCounts?.images ?? 0) || 0)),
+			links: Math.max(current.links, Math.max(0, Number(props.initialCounts?.links ?? 0) || 0)),
+			documents: Math.max(current.documents, Math.max(0, Number(props.initialCounts?.documents ?? 0) || 0)),
+		}));
+	}, [props.initialCounts?.documents, props.initialCounts?.images, props.initialCounts?.links]);
 
 	const refresh = React.useCallback(async (options?: {
 		scope?: 'all' | 'media' | 'documents' | 'links';

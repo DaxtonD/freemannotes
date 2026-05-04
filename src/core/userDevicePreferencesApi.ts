@@ -22,6 +22,8 @@ export type UserDevicePreferences = {
 	noteCardCompletedExpandedByNoteId: Record<string, boolean>;
 	/** Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken } */
 	bubbleWorkspaceColors: Record<string, string>;
+	/** Per-user note color overrides: { [noteId]: NoteColorToken | null } */
+	noteColorsByNoteId: Record<string, string | null>;
 	/** Per-user dismissed failed-link notification IDs: { [failedLinkId]: true } */
 	dismissedFailedLinkIds: Record<string, boolean>;
 	createdAt: string | null;
@@ -44,6 +46,20 @@ function safeJsonStringRecord(value: any): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const [k, v] of Object.entries(value)) {
 		if (typeof k !== 'string' || !k) continue;
+		if (typeof v === 'string' && v) out[k] = v;
+	}
+	return out;
+}
+
+function safeJsonNullableStringRecord(value: any): Record<string, string | null> {
+	if (!value || typeof value !== 'object') return {};
+	const out: Record<string, string | null> = {};
+	for (const [k, v] of Object.entries(value)) {
+		if (typeof k !== 'string' || !k) continue;
+		if (v == null || v === '') {
+			out[k] = null;
+			continue;
+		}
 		if (typeof v === 'string' && v) out[k] = v;
 	}
 	return out;
@@ -98,6 +114,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			noteCardCompletedInteractions: (body as any).noteCardCompletedInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
+			noteColorsByNoteId: safeJsonNullableStringRecord((body as any).noteColorsByNoteId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
@@ -124,6 +141,7 @@ type PreferencePatch = {
 	noteCardCompletedInteractions?: boolean;
 	noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
 	bubbleWorkspaceColors?: Record<string, string>;
+	noteColorsByNoteId?: Record<string, string | null>;
 	dismissedFailedLinkIds?: Record<string, boolean>;
 };
 
@@ -186,6 +204,7 @@ async function _sendPreferences(
 			noteCardCompletedInteractions: (body as any).noteCardCompletedInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
+			noteColorsByNoteId: safeJsonNullableStringRecord((body as any).noteColorsByNoteId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,

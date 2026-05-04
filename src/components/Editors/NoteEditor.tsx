@@ -24,13 +24,14 @@ import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
+import { getDeviceId } from '../../core/deviceId';
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
-import { readNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
-import { getUserNoteColorToken, setUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import {
 	createRichTextDocFromPlainText,
@@ -973,15 +974,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const metadata = useMemo(() => props.doc.getMap<any>('metadata'), [props.doc]);
 	const colorToken = useSyncExternalStore(
 		(onStoreChange) => {
-			// Subscribe to both the local preferences store and the Yjs metadata
-			// (Yjs is kept as a migration fallback for legacy colors already in the doc).
+			// Subscribe to both stores while older local-only color selections are still
+			// being migrated onto the canonical note metadata path.
 			const unsubLocal = subscribeNoteColorPrefs(onStoreChange);
 			const observer = (): void => onStoreChange();
 			metadata.observe(observer);
 			return () => { unsubLocal(); metadata.unobserve(observer); };
 		},
-		() => getUserNoteColorToken(props.noteId) ?? readNoteColorToken(metadata),
-		() => getUserNoteColorToken(props.noteId) ?? readNoteColorToken(metadata)
+		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId)),
+		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId))
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
@@ -1184,10 +1185,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (readOnly) return;
 		setIsColorPickerOpen(true);
 	}, [readOnly]);
-	// Write the color choice to the per-user local store only — never to the
-	// shared Yjs doc — so collaborators keep independent color preferences.
-	const handleSelectNoteColor = React.useCallback((token: Parameters<typeof setUserNoteColorToken>[1]): void => {
-		setUserNoteColorToken(props.noteId, token);
+	const handleSelectNoteColor = React.useCallback((token: Parameters<typeof saveUserNoteColorToken>[2]): void => {
+		saveUserNoteColorToken(getDeviceId(), props.noteId, token);
 		setIsColorPickerOpen(false);
 	}, [props.noteId]);
 

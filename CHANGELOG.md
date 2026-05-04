@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.3.3 - 2026-05-04
+
+### Added
+- **Workspace render snapshots now seed the PWA shell before live docs hydrate.** Warm relaunches can restore note shells, preview rails, metadata chips, and per-view scroll positions from local snapshot state so desktop and installed-PWA sessions reopen with visible structure immediately.
+
+### Changed
+- **Note colors are now fully user-scoped preferences instead of collaborator-visible doc state.** Personal note color choices sync across a user's devices through the preferences API while legacy shared color metadata remains read-only fallback during migration.
+- **The header view switcher now opens an explicit anchored icon row.** Desktop, mobile, and installed-PWA layouts now expose direct card, list, detailed list, and bubble view selection without cycling through modes.
+- **Quick-create actions now show drawing placeholders alongside iconized note and checklist actions.** Desktop top actions and mobile FAB menus are aligned for the upcoming drawing flow without exposing an unfinished editor.
+
+### Fixed
+- **Reminder clears and updates now propagate across the same user's active clients more reliably.** Offline reminder mutations are retried until they flush, explicit clears stay represented as `null`, and workspace metadata events refresh reminder badges after cross-client changes.
+- **Desktop refreshes no longer reopen the last edited note, and warm relaunches recover cleanly after backend restarts.** Overlay restore logic now avoids reopening editor overlays on fine-pointer devices, and offline-restored sessions keep probing until the server is reachable again.
+- **Checklist cards stay visually stable when completed rows expand on desktop.** Masonry columns freeze after the first settle, completed rows remain in normal card flow, and desktop checkboxes match the editor's native control styling so cards no longer jump or clip their footer/link rails.
+
 ## 1.3.2 - 2026-05-03
 
 ### Changed

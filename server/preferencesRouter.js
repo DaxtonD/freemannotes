@@ -187,6 +187,21 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 		return out;
 	}
 
+	/** Safely parses a JSONB value as a flat Record<string, string | null>. */
+	function safeJsonNullableStringRecord(value) {
+		if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+		const out = {};
+		for (const [k, v] of Object.entries(value)) {
+			if (typeof k !== 'string' || !k) continue;
+			if (v == null || v === '') {
+				out[k] = null;
+				continue;
+			}
+			if (typeof v === 'string' && v) out[k] = v;
+		}
+		return out;
+	}
+
 	/** Safely parses a JSONB value as a flat Record<string, boolean>. */
 	function safeJsonBooleanRecord(value) {
 		if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -212,6 +227,13 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 	const VALID_BUBBLE_COLOR_TOKENS = new Set([
 		...BUBBLE_COLOR_VISIBLE_BASES.flatMap((base) => [`${base}-light`, base, `${base}-dark`]),
 		...BUBBLE_COLOR_LEGACY_MEDIUM_BASES,
+	]);
+
+	const VALID_NOTE_COLOR_TOKENS = new Set([
+		'yellow', 'amber', 'orange', 'coral', 'red', 'rose', 'pink', 'magenta',
+		'purple', 'violet', 'indigo', 'blue', 'sky', 'cyan', 'teal', 'mint',
+		'green', 'lime', 'olive', 'brown', 'copper', 'slate', 'gray', 'graphite',
+		'sand', 'peach', 'cream', 'lavender',
 	]);
 
 	/**
@@ -316,6 +338,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteCardCompletedInteractions: devicePref.noteCardCompletedInteractions !== false,
 						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 						bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
+						noteColorsByNoteId: safeJsonNullableStringRecord(userPref.noteColorsByNoteId),
 						dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
 						createdAt: fmt(devicePref.createdAt),
 						updatedAt: fmt(devicePref.updatedAt),
@@ -409,6 +432,34 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							}
 						} else {
 							jsonResponse(res, 400, { error: 'dismissedFailedLinkIds must be an object or null' });
+							return;
+						}
+					}
+
+					if ('noteColorsByNoteId' in body) {
+						const colors = body.noteColorsByNoteId;
+						if (colors == null || colors === '') {
+							userUpdateData.noteColorsByNoteId = {};
+						} else if (colors && typeof colors === 'object' && !Array.isArray(colors)) {
+							const normalized = {};
+							for (const [k, v] of Object.entries(colors)) {
+								if (typeof k !== 'string' || k.length === 0 || k.length > 120) continue;
+								if (v == null || v === '') {
+									normalized[k] = null;
+									continue;
+								}
+								if (typeof v === 'string' && VALID_NOTE_COLOR_TOKENS.has(v)) {
+									normalized[k] = v;
+								}
+							}
+							if (Object.keys(normalized).length <= 1000) {
+								userUpdateData.noteColorsByNoteId = normalized;
+							} else {
+								jsonResponse(res, 400, { error: 'noteColorsByNoteId exceeds 1000 entries' });
+								return;
+							}
+						} else {
+							jsonResponse(res, 400, { error: 'noteColorsByNoteId must be an object or null' });
 							return;
 						}
 					}
@@ -602,6 +653,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							noteCardCompletedInteractions: devicePref.noteCardCompletedInteractions !== false,
 							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 							bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
+							noteColorsByNoteId: safeJsonNullableStringRecord(userPref.noteColorsByNoteId),
 							dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
 							createdAt: fmt(devicePref.createdAt),
 							updatedAt: fmt(devicePref.updatedAt),
@@ -759,6 +811,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteCardCompletedInteractions: pref.devicePref.noteCardCompletedInteractions !== false,
 						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
 						bubbleWorkspaceColors: safeJsonRecord(pref.userPref.bubbleWorkspaceColors),
+						noteColorsByNoteId: safeJsonNullableStringRecord(pref.userPref.noteColorsByNoteId),
 						dismissedFailedLinkIds: safeJsonBooleanRecord(pref.userPref.dismissedFailedLinkIds),
 						createdAt: fmt(pref.devicePref.createdAt),
 						updatedAt: fmt(pref.devicePref.updatedAt),
