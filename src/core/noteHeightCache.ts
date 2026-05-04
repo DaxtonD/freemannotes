@@ -7,18 +7,18 @@
  * any layout repack during hydration.
  *
  * Storage key: `freemannotes.noteHeights.<deviceId>`
- * Format v1:   { v: 1, heights: Record<noteId, heightPx> }
+ * Format v3:   { v: 3, heights: Record<noteId, heightPx> }
  *
  * The cache is written once per session (debounced) after real heights are
  * measured from the DOM. On the next page load / workspace switch, heights
  * are seeded from the cache so skeleton cards render at the correct size.
  */
 
-const VERSION = 1;
+const VERSION = 3;
 const PREFIX = 'freemannotes.noteHeights';
 
 type HeightCacheV1 = {
-	v: 1;
+	v: 3;
 	heights: Record<string, number>;
 };
 

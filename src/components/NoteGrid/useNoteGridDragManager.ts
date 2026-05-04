@@ -84,12 +84,16 @@ export type DragManagerResult = {
 	activeDragId: string | null;
 	isTouchDragging: boolean;
 	dragOverlay: DragOverlayState | null;
+	dropOverlay: DragOverlayState | null;
 	/** Columns with the dragged card relocated to the insertion point. null when not dragging. */
 	previewColumns: string[][] | null;
+	/** Increments each time a card item or handle element is registered or unregistered. */
+	registrationVersion: number;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	getItemElement: (id: string) => HTMLDivElement | null;
 	shouldSuppressOpen: () => boolean;
+	clearDropOverlay: () => void;
 	cancelDrag: () => void;
 };
 
@@ -128,9 +132,12 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const [registrationVersion, setRegistrationVersion] = React.useState(0);
 	const [activeDragId, setActiveDragId] = React.useState<string | null>(null);
 	const [dragOverlay, setDragOverlay] = React.useState<DragOverlayState | null>(null);
+	const [dropOverlay, setDropOverlay] = React.useState<DragOverlayState | null>(null);
 	const [insertionPoint, setInsertionPoint] = React.useState<InsertionPoint | null>(null);
 	const [isTouchDragging, setIsTouchDragging] = React.useState(false);
 	const activeDragIdRef = React.useRef<string | null>(null);
+	const dragOverlayRef = React.useRef<DragOverlayState | null>(null);
+	const dropOverlayTimerRef = React.useRef<number>(0);
 	const visibleIdsRef = React.useRef<string[]>(args.visibleIds);
 	const columnsRef = React.useRef<string[][]>(args.columns);
 	const canStartDragRef = React.useRef(args.canStartDrag);
@@ -234,8 +241,17 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		lastPointerRef.current = null;
 		setActiveDragId(null);
 		setDragOverlay(null);
+		dragOverlayRef.current = null;
 		setInsertionPoint(null);
 		setIsTouchDragging(false);
+	}, []);
+
+	const clearDropOverlay = React.useCallback((): void => {
+		if (dropOverlayTimerRef.current && typeof window !== 'undefined') {
+			window.clearTimeout(dropOverlayTimerRef.current);
+			dropOverlayTimerRef.current = 0;
+		}
+		setDropOverlay(null);
 	}, []);
 
 	const shouldSuppressOpen = React.useCallback((): boolean => {
@@ -253,6 +269,8 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		if (previous === node) return;
 		if (node) itemElementsRef.current.set(id, node);
 		else itemElementsRef.current.delete(id);
+		// Registration version lets the grid re-bind drag handles and re-measure
+		// cards when virtualization mounts or unmounts DOM nodes.
 		setRegistrationVersion((version) => version + 1);
 	}, []);
 
@@ -340,6 +358,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		const cleanup = monitorForElements({
 			canMonitor: ({ source }) => isPragmaticDragData(source.data),
 			onDragStart: (event: any) => {
+				clearDropOverlay();
 				const data = isPragmaticDragData(event.source.data) ? event.source.data : null;
 				if (!data) return;
 				const activeId = normalizeId(data.noteId);
@@ -367,6 +386,13 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
 				});
+				dragOverlayRef.current = {
+					id: activeId,
+					left: overlayLeft,
+					top: overlayTop,
+					width: previewSizeRef.current.width,
+					height: previewSizeRef.current.height,
+				};
 				if (usePointerEdgeAutoScrollRef.current) {
 					edgeAutoScroller.start();
 				}
@@ -386,6 +412,13 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
 				});
+				dragOverlayRef.current = {
+					id: activeId,
+					left: overlayLeft,
+					top: overlayTop,
+					width: previewSizeRef.current.width,
+					height: previewSizeRef.current.height,
+				};
 				updateInsertionPoint(pointer);
 			},
 			onDrop: () => {
@@ -422,6 +455,19 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					0,
 					Math.round(draggedElement?.getBoundingClientRect().height ?? previewSizeRef.current.height)
 				);
+				const settledOverlay = dragOverlayRef.current;
+				if (settledOverlay) {
+					// Keep a short-lived overlay alive after drop so the released card can
+					// settle visually while the committed layout re-renders underneath it.
+					setDropOverlay(settledOverlay);
+					if (typeof window !== 'undefined') {
+						if (dropOverlayTimerRef.current) window.clearTimeout(dropOverlayTimerRef.current);
+						dropOverlayTimerRef.current = window.setTimeout(() => {
+							dropOverlayTimerRef.current = 0;
+							setDropOverlay(null);
+						}, 220);
+					}
+				}
 				onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
 				finalizeTouchDrop();
 				// Clear drag state after scheduling the committed layout so React can
@@ -435,7 +481,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			cleanup();
 			clearDragState();
 		};
-	}, [clearDragState, computeOverlayLeft, computeOverlayTop, finalizeTouchDrop, updateInsertionPoint]);
+	}, [clearDragState, clearDropOverlay, computeOverlayLeft, computeOverlayTop, finalizeTouchDrop, updateInsertionPoint]);
 
 	// Cancel drag if the active card disappears from the list
 	React.useEffect(() => {
@@ -446,8 +492,11 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 
 	// Cleanup on unmount
 	React.useEffect(() => {
-		return () => { clearDragState(); };
-	}, [clearDragState]);
+		return () => {
+			clearDropOverlay();
+			clearDragState();
+		};
+	}, [clearDragState, clearDropOverlay]);
 
 	// Compute preview columns: the current column layout with the dragged card
 	// relocated to the live insertion point.  NoteGrid renders these columns
@@ -463,11 +512,14 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		activeDragId,
 		isTouchDragging,
 		dragOverlay,
+		dropOverlay,
 		previewColumns,
+		registrationVersion,
 		setItemElement,
 		setHandleElement,
 		getItemElement,
 		shouldSuppressOpen,
+		clearDropOverlay,
 		cancelDrag: clearDragState,
 	};
 }

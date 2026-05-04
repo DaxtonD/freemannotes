@@ -45,7 +45,7 @@ const NOTES_REGISTRY_ID = '__notes_registry__';
  * @returns {(req: import('http').IncomingMessage, res: import('http').ServerResponse) => boolean}
  *   Returns true if the request was handled, false if it should fall through.
  */
-function createApiRouter({ prisma, adapter, timezone = null }) {
+function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadataChanged = null }) {
 	// ── Timezone-aware formatter ─────────────────────────────────────────
 	// All timestamps in API responses go through this formatter so that
 	// Prisma Date objects (from timestamptz columns) and Yjs epoch-ms
@@ -630,12 +630,20 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 					const noteState = liveSourceDoc
 						? Buffer.from(Y.encodeStateAsUpdate(liveSourceDoc))
 						: sourceRow.state;
-					const noteStateVector = liveSourceDoc
-						? Buffer.from(Y.encodeStateVector(liveSourceDoc))
-						: sourceRow.stateVector;
 					const noteTitle = liveSourceDoc
 						? readTitleFromDoc(liveSourceDoc)
 						: readTitleFromState(sourceRow.state, noteId);
+					const sanitizedMoveDoc = new Y.Doc();
+					Y.applyUpdate(sanitizedMoveDoc, new Uint8Array(noteState));
+					sanitizedMoveDoc.transact(() => {
+						const metadata = sanitizedMoveDoc.getMap('metadata');
+						metadata.set('collectionId', null);
+						metadata.set('labelIds', []);
+						metadata.set('updatedAt', Date.now());
+					});
+					const noteStateBuffer = Buffer.from(Y.encodeStateAsUpdate(sanitizedMoveDoc));
+					const noteStateVector = Buffer.from(Y.encodeStateVector(sanitizedMoveDoc));
+					sanitizedMoveDoc.destroy();
 
 					const targetDocExists = await prisma.document.findUnique({
 						where: { docId: targetDocId },
@@ -645,6 +653,23 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 						jsonResponse(res, 409, { error: 'A note with this id already exists in the target workspace' });
 						return;
 					}
+
+					const [shareCollaborators, shareInvitations] = await Promise.all([
+						prisma.noteCollaborator.findMany({
+							where: { docId: sourceDocId, revokedAt: null },
+							select: { userId: true },
+						}),
+						prisma.noteShareInvitation.findMany({
+							where: { docId: sourceDocId, revokedAt: null },
+							select: { inviteeUserId: true, inviterUserId: true },
+						}),
+					]);
+					const affectedShareUserIds = Array.from(new Set([
+						req.auth && req.auth.userId ? String(req.auth.userId) : '',
+						...shareCollaborators.map((row) => String(row.userId || '')),
+						...shareInvitations.map((row) => String(row.inviteeUserId || '')),
+						...shareInvitations.map((row) => String(row.inviterUserId || '')),
+					].filter(Boolean)));
 
 					await prisma.$transaction(async (tx) => {
 						const sourceRegistry = await loadRegistryRow(tx, sourceWorkspaceId);
@@ -708,7 +733,7 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 							data: {
 								workspaceId: targetWorkspaceId,
 								docId: targetDocId,
-								state: noteState,
+								state: noteStateBuffer,
 								stateVector: noteStateVector,
 							},
 						});
@@ -727,6 +752,19 @@ function createApiRouter({ prisma, adapter, timezone = null }) {
 						targetWorkspaceId,
 						docId: targetDocId,
 					});
+
+					if (typeof onWorkspaceMetadataChanged === 'function' && affectedShareUserIds.length > 0) {
+						try {
+							await onWorkspaceMetadataChanged({
+								reason: 'note-share-moved',
+								workspaceId: targetWorkspaceId,
+								docId: targetDocId,
+								userIds: affectedShareUserIds,
+							});
+						} catch (publishErr) {
+							console.warn('[api] note move metadata publish failed:', publishErr.message);
+						}
+					}
 				} catch (err) {
 					console.error('[api] POST /api/notes/:noteId/move error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });

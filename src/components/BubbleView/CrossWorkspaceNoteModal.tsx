@@ -18,7 +18,8 @@ import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
 import { NoteEditor } from '../Editors/NoteEditor';
 import { readNoteFromDoc, setNoteTrashed } from '../../core/noteModel';
-import { assignNotePinned, readNoteMetadataState } from '../../services/noteService';
+import { readNoteMetadataState } from '../../services/noteService';
+import { resolveUserNotePinned, setUserNotePinnedOnDoc } from '../../core/notePinPreferences';
 import type { ThemeId } from '../../core/theme';
 import styles from './CrossWorkspaceNoteModal.module.css';
 
@@ -244,8 +245,13 @@ export function CrossWorkspaceNoteModal({
 				onClose();
 			}}
 			onTogglePin={readOnly ? undefined : () => {
-				const isPinned = readNoteMetadataState(doc).isPinned;
-				assignNotePinned(doc, !isPinned);
+				const isPinned = resolveUserNotePinned({
+					docId,
+					noteId,
+					userId: authUserId,
+					legacyPinned: readNoteMetadataState(doc).isPinned,
+				});
+				setUserNotePinnedOnDoc({ doc, docId, noteId, userId: authUserId, pinned: !isPinned });
 			}}
 		/>
 	);

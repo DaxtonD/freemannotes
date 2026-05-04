@@ -28,6 +28,7 @@ import type { ThemeId } from '../../core/theme';
 import { readNoteFromDoc } from '../../core/noteModel';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN } from '../../core/bubbleZoom';
 import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle } from '../../core/bubbleWorkspaceColors';
+import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import {
 	listSharedNotePlacements,
 	readCachedNoteShareCollaborators,
@@ -554,7 +555,8 @@ async function loadInactiveWorkspaceNote(
 	showTrashed: boolean,
 	reminderFilter: ReminderFilterMode,
 	noteReminderByDocId: Record<string, string | null>,
-	nowMs: number
+	nowMs: number,
+	authUserId?: string | null
 ): Promise<LoadedInactiveNote | null> {
 	const roomName = `${workspaceId}:${entry.noteId}`;
 	const doc = new Y.Doc();
@@ -584,7 +586,12 @@ async function loadInactiveWorkspaceNote(
 			searchText,
 			updatedAt: Number(metadata.get('updatedAt') ?? 0),
 			reminderAt,
-			isPinned: Boolean(metadata.get('isPinned')),
+			isPinned: resolveUserNotePinned({
+				docId: roomName,
+				noteId: entry.noteId,
+				userId: authUserId,
+				legacyPinned: Boolean(metadata.get('isPinned')),
+			}),
 			hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
 		};
 	} catch {
@@ -602,7 +609,8 @@ async function loadInactiveSharedPlacementNote(
 	showTrashed: boolean,
 	reminderFilter: ReminderFilterMode,
 	noteReminderByDocId: Record<string, string | null>,
-	nowMs: number
+	nowMs: number,
+	authUserId?: string | null
 ): Promise<BubbleNote | null> {
 	const doc = new Y.Doc();
 	const idb = new IndexeddbPersistence(placement.roomId, doc);
@@ -633,7 +641,12 @@ async function loadInactiveSharedPlacementNote(
 			searchText: extractNoteSearchText(placement.aliasId, doc, title),
 			updatedAt: Number(metadata.get('updatedAt') ?? 0),
 			reminderAt,
-			isPinned: Boolean(metadata.get('isPinned')),
+			isPinned: resolveUserNotePinned({
+				docId: placement.roomId,
+				noteId: placement.aliasId,
+				userId: authUserId,
+				legacyPinned: Boolean(metadata.get('isPinned')),
+			}),
 			hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
 			hasCollaborators: false,
 			isActiveWorkspace: false,
@@ -688,7 +701,9 @@ function useBubbleNotes(
 	sharedPlacements: readonly SharedNotePlacement[],
 	showTrashed: boolean,
 	reminderFilter: ReminderFilterMode,
-	noteReminderByDocId: Record<string, string | null>
+	noteReminderByDocId: Record<string, string | null>,
+	authUserId: string | null | undefined,
+	pinPrefsSnapshot: Record<string, boolean>
 ): BubbleNote[] {
 	const manager = useDocumentManager();
 	const [notes, setNotes] = React.useState<BubbleNote[]>([]);
@@ -717,6 +732,7 @@ function useBubbleNotes(
 
 		const refresh = async (): Promise<void> => {
 			if (cancelled) return;
+			void pinPrefsSnapshot;
 			disposeRefreshSubscriptions();
 			const nextNotes: BubbleNote[] = [];
 			const nowMs = Date.now();
@@ -773,7 +789,12 @@ function useBubbleNotes(
 							searchText: extractNoteSearchText(placement.aliasId, doc, title),
 							updatedAt: Number(meta.get('updatedAt') ?? 0),
 							reminderAt,
-							isPinned: Boolean(meta.get('isPinned')),
+							isPinned: resolveUserNotePinned({
+								docId: placement.roomId,
+								noteId: placement.aliasId,
+								userId: authUserId,
+								legacyPinned: Boolean(meta.get('isPinned')),
+							}),
 							hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
 							hasCollaborators: false,
 							isActiveWorkspace: true,
@@ -834,7 +855,12 @@ function useBubbleNotes(
 						if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
 						if (!hasRenderableBubbleNote(doc, noteId)) return null;
 						const resolvedTitle = readNoteFromDoc(doc, noteId).title.trim();
-						const isPinned = Boolean(meta.get('isPinned'));
+						const isPinned = resolveUserNotePinned({
+							docId: manager.resolveRoomName(noteId),
+							noteId,
+							userId: authUserId,
+							legacyPinned: Boolean(meta.get('isPinned')),
+						});
 						const updatedAt = Number(meta.get('updatedAt') ?? 0);
 						const reminderMs = reminderAt ? Date.parse(String(reminderAt)) : Number.NaN;
 						const hasReminder = Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS;
@@ -903,7 +929,12 @@ function useBubbleNotes(
 										searchText: extractNoteSearchText(placement.aliasId, doc, title),
 										updatedAt: Number(meta.get('updatedAt') ?? 0),
 										reminderAt,
-										isPinned: Boolean(meta.get('isPinned')),
+										isPinned: resolveUserNotePinned({
+											docId: placement.roomId,
+											noteId: placement.aliasId,
+											userId: authUserId,
+											legacyPinned: Boolean(meta.get('isPinned')),
+										}),
 										hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
 										hasCollaborators: false,
 										isActiveWorkspace: true,
@@ -951,7 +982,7 @@ function useBubbleNotes(
 							const visiblePlacements = await Promise.all(
 								placementData.placements
 									.slice(0, MAX_NOTES_PER_INACTIVE_WORKSPACE)
-									.map((placement) => loadInactiveSharedPlacementNote(workspace.id, workspace.name, placement, showTrashed, reminderFilter, noteReminderByDocId, nowMs))
+									.map((placement) => loadInactiveSharedPlacementNote(workspace.id, workspace.name, placement, showTrashed, reminderFilter, noteReminderByDocId, nowMs, authUserId))
 							);
 							for (const visiblePlacement of visiblePlacements) {
 								if (!visiblePlacement) continue;
@@ -962,7 +993,7 @@ function useBubbleNotes(
 						try {
 							const entries = await loadWorkspaceRegistry(workspace.id);
 							if (cancelled) return;
-							const visibleEntries = await Promise.all(entries.map((entry) => loadInactiveWorkspaceNote(workspace.id, entry, showTrashed, reminderFilter, noteReminderByDocId, nowMs)));
+							const visibleEntries = await Promise.all(entries.map((entry) => loadInactiveWorkspaceNote(workspace.id, entry, showTrashed, reminderFilter, noteReminderByDocId, nowMs, authUserId)));
 							for (const visibleEntry of visibleEntries) {
 								if (!visibleEntry) continue;
 								wsNotes.push({
@@ -1001,7 +1032,7 @@ function useBubbleNotes(
 			if (refreshTimer) window.clearTimeout(refreshTimer);
 			disposeRefreshSubscriptions();
 		};
-	}, [activeWorkspaceId, manager, noteReminderByDocId, reminderFilter, sharedPlacements, showTrashed, workspaces]);
+	}, [activeWorkspaceId, authUserId, manager, noteReminderByDocId, pinPrefsSnapshot, reminderFilter, sharedPlacements, showTrashed, workspaces]);
 
 	return notes;
 }
@@ -1348,7 +1379,8 @@ export function BubbleView({
 	onSelectNote,
 }: BubbleViewProps): React.JSX.Element {
 	const manager = useDocumentManager();
-	const notes = useBubbleNotes(workspaces, activeWorkspaceId, sharedPlacements, showTrashed, reminderFilter, noteReminderByDocId);
+	const pinPrefsSnapshot = React.useSyncExternalStore(subscribeNotePinPrefs, getNotePinPrefsSnapshot, getNotePinPrefsSnapshot);
+	const notes = useBubbleNotes(workspaces, activeWorkspaceId, sharedPlacements, showTrashed, reminderFilter, noteReminderByDocId, authUserId, pinPrefsSnapshot);
 	// Exclude the draft note from collaborator syncing — it hasn't been persisted
 	// to the server yet so the API would return 403 for it.
 	const notesForCollaborators = React.useMemo(
