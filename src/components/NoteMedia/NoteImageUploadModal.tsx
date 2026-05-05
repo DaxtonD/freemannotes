@@ -1,6 +1,6 @@
 import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCamera, faChevronDown, faChevronUp, faImage, faPen, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faCamera, faChevronDown, faChevronUp, faImage, faMinus, faPen, faPlus, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
 import { queueNoteImageUrlForImport, queueNoteImagesForUpload, readQueuedNoteImages, readStoredRemoteNoteImages } from '../../core/noteMediaStore';
 import { applyTheme, getStoredThemeId } from '../../core/theme';
@@ -12,9 +12,37 @@ const CAPTURE_MAX_DIMENSION_PX = 1920;
 const CAPTURE_JPEG_QUALITY = 0.7;
 const CAMERA_ASPECT_RATIO = 4 / 3;
 
-type TorchTrack = MediaStreamTrack & {
-	getCapabilities?: () => MediaTrackCapabilities & { torch?: boolean };
+type CameraZoomCapability = {
+	min?: number;
+	max?: number;
+	step?: number;
+};
+
+type AppliedCameraTrackState = {
+	zoomRange: CameraZoomRange | null;
+	zoomValue: number | null;
+	torchSupported: boolean;
+	torchEnabled: boolean;
+	deviceId: string | null;
+};
+
+type RearCameraOption = {
+	deviceId: string;
+	label: string;
+	shortLabel: string;
+};
+
+type CameraTrack = MediaStreamTrack & {
+	getCapabilities?: () => MediaTrackCapabilities & { torch?: boolean; zoom?: CameraZoomCapability; focusMode?: string[] };
+	getSettings?: () => MediaTrackSettings & { zoom?: number; torch?: boolean; deviceId?: string; focusMode?: string };
 	applyConstraints?: (constraints: MediaTrackConstraints) => Promise<void>;
+};
+
+type CameraZoomRange = {
+	min: number;
+	max: number;
+	step: number;
+	defaultValue: number;
 };
 
 type SelectedFile = {
@@ -75,9 +103,120 @@ function getNextImageDefaultName(usedNames: Set<string>): string {
 	return nextName;
 }
 
-function getPrimaryVideoTrack(stream: MediaStream | null): TorchTrack | null {
+function clampNumber(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, value));
+}
+
+function roundToStep(value: number, min: number, max: number, step: number): number {
+	const normalizedStep = step > 0 ? step : 1;
+	const next = min + Math.round((value - min) / normalizedStep) * normalizedStep;
+	return clampNumber(next, min, max);
+}
+
+function getZoomPrecision(step: number): number {
+	if (step >= 1) return 0;
+	if (step >= 0.1) return 1;
+	return 2;
+}
+
+function getPrimaryVideoTrack(stream: MediaStream | null): CameraTrack | null {
 	const track = stream?.getVideoTracks?.()[0] ?? null;
-	return track as TorchTrack | null;
+	return track as CameraTrack | null;
+}
+
+function getCameraZoomRange(track: CameraTrack | null): CameraZoomRange | null {
+	const capability = track?.getCapabilities?.().zoom;
+	const min = capability?.min;
+	const max = capability?.max;
+	if (typeof min !== 'number' || typeof max !== 'number' || !Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
+		return null;
+	}
+	const step = typeof capability.step === 'number' && Number.isFinite(capability.step) && capability.step > 0
+		? capability.step
+		: Math.max((max - min) / 20, 0.1);
+	const currentZoom = track?.getSettings?.().zoom;
+	const defaultValue = roundToStep(typeof currentZoom === 'number' && Number.isFinite(currentZoom) ? currentZoom : min, min, max, step);
+	return {
+		min,
+		max,
+		step,
+		defaultValue,
+	};
+}
+
+function readCameraTrackState(track: CameraTrack | null): AppliedCameraTrackState {
+	const zoomRange = getCameraZoomRange(track);
+	const settings = track?.getSettings?.();
+	const zoomValue = zoomRange && typeof settings?.zoom === 'number' && Number.isFinite(settings.zoom)
+		? clampNumber(settings.zoom, zoomRange.min, zoomRange.max)
+		: zoomRange?.defaultValue ?? null;
+	return {
+		zoomRange,
+		zoomValue,
+		torchSupported: Boolean(track?.getCapabilities?.().torch),
+		torchEnabled: Boolean(settings?.torch),
+		deviceId: settings?.deviceId ?? null,
+	};
+}
+
+function getContinuousFocusMode(track: CameraTrack | null): string | null {
+	const focusModes = track?.getCapabilities?.().focusMode;
+	if (!Array.isArray(focusModes)) return null;
+	for (const focusMode of focusModes) {
+		if (typeof focusMode === 'string' && focusMode.toLowerCase() === 'continuous') {
+			return focusMode;
+		}
+	}
+	return null;
+}
+
+function isLikelyFrontCameraLabel(label: string): boolean {
+	return /\b(front|user|selfie|facetime)\b/i.test(label);
+}
+
+function isLikelyRearCameraLabel(label: string): boolean {
+	return /\b(back|rear|environment|world|ultra|tele|periscope|macro)\b/i.test(label);
+}
+
+function getRearCameraShortLabel(label: string, index: number): string {
+	const numericMatch = label.match(/(\d+(?:\.\d+)?)\s*x\b/i);
+	if (numericMatch?.[1]) {
+		return `${numericMatch[1]}x`;
+	}
+	const lower = label.toLowerCase();
+	if (lower.includes('ultra')) return '0.6x';
+	if (lower.includes('tele') || lower.includes('periscope')) return 'Tele';
+	if (lower.includes('macro')) return 'Macro';
+	if (lower.includes('wide')) return 'Wide';
+	return index === 0 ? '1x' : `Lens ${index + 1}`;
+}
+
+function getRearCameraOptions(devices: MediaDeviceInfo[], activeDeviceId: string | null, activeLabel: string): RearCameraOption[] {
+	// Many Android devices expose ultrawide and telephoto lenses as separate rear
+	// cameras rather than as one camera with a larger zoom range.
+	const videoInputs = devices.filter((device) => device.kind === 'videoinput');
+	const explicitRear = videoInputs.filter((device) => isLikelyRearCameraLabel(device.label));
+	const rearCandidates = (explicitRear.length > 0 ? explicitRear : videoInputs.filter((device) => !isLikelyFrontCameraLabel(device.label))).slice();
+	if (activeDeviceId && !rearCandidates.some((device) => device.deviceId === activeDeviceId)) {
+		rearCandidates.unshift({
+			deviceId: activeDeviceId,
+			groupId: '',
+			kind: 'videoinput',
+			label: activeLabel || 'Rear camera',
+			toJSON: () => ({}),
+		});
+	}
+	const seen = new Set<string>();
+	const uniqueCandidates = rearCandidates.filter((device) => {
+		if (!device.deviceId || seen.has(device.deviceId)) return false;
+		seen.add(device.deviceId);
+		return true;
+	});
+	return uniqueCandidates.map((device, index) => ({
+		deviceId: device.deviceId,
+		label: device.label || (device.deviceId === activeDeviceId && activeLabel ? activeLabel : `Rear camera ${index + 1}`),
+		shortLabel: getRearCameraShortLabel(device.label || activeLabel || '', index),
+	}));
 }
 
 function suppressNextDocumentCompatibilityMouseEvents(): void {
@@ -99,14 +238,48 @@ function suppressNextDocumentCompatibilityMouseEvents(): void {
 	timeoutId = window.setTimeout(() => cleanup(), 500);
 }
 
-async function setTorchEnabled(stream: MediaStream | null, enabled: boolean): Promise<void> {
+async function applyCameraTrackSettings(stream: MediaStream | null, options: { zoom?: number; torch?: boolean }): Promise<AppliedCameraTrackState> {
 	const track = getPrimaryVideoTrack(stream);
-	if (!track?.applyConstraints) {
-		throw new Error('torch-unavailable');
+	if (!track) {
+		throw new Error('camera-unavailable');
 	}
-	await track.applyConstraints({
-		advanced: [{ torch: enabled } as MediaTrackConstraintSet],
-	} as MediaTrackConstraints);
+	// applyConstraints() replaces the current custom constraint set, so merge zoom,
+	// torch, and continuous focus into one update to preserve autofocus.
+	const zoomRange = getCameraZoomRange(track);
+	const settings = track.getSettings?.();
+	const advanced: Record<string, unknown> = {};
+	if (zoomRange) {
+		const baseZoom = typeof options.zoom === 'number'
+			? options.zoom
+			: (typeof settings?.zoom === 'number' && Number.isFinite(settings.zoom) ? settings.zoom : zoomRange.defaultValue);
+		advanced.zoom = roundToStep(baseZoom, zoomRange.min, zoomRange.max, zoomRange.step);
+	}
+	if (track.getCapabilities?.().torch) {
+		advanced.torch = typeof options.torch === 'boolean'
+			? options.torch
+			: (typeof settings?.torch === 'boolean' ? settings.torch : false);
+	}
+	const continuousFocusMode = getContinuousFocusMode(track);
+	if (continuousFocusMode) {
+		advanced.focusMode = continuousFocusMode;
+	}
+	if (track.applyConstraints && Object.keys(advanced).length > 0) {
+		await track.applyConstraints({
+			advanced: [advanced as MediaTrackConstraintSet],
+		} as MediaTrackConstraints);
+	}
+	return readCameraTrackState(track);
+}
+
+async function setCameraZoom(stream: MediaStream | null, requestedValue: number): Promise<number> {
+	const track = getPrimaryVideoTrack(stream);
+	const zoomRange = getCameraZoomRange(track);
+	if (!track || !zoomRange) {
+		throw new Error('zoom-unavailable');
+	}
+	const nextValue = roundToStep(requestedValue, zoomRange.min, zoomRange.max, zoomRange.step);
+	const nextState = await applyCameraTrackSettings(stream, { zoom: nextValue });
+	return nextState.zoomValue ?? nextValue;
 }
 
 function selectAllText(input: HTMLInputElement): void {
@@ -245,12 +418,39 @@ async function createCapturedPhotoFile(video: HTMLVideoElement, photoIndex: numb
 	}
 }
 
-async function requestCameraStream(): Promise<MediaStream> {
+async function requestCameraStream(preferredDeviceId?: string | null): Promise<MediaStream> {
 	if (!navigator.mediaDevices?.getUserMedia) {
 		throw new Error('unavailable');
 	}
 
-	const attempts: MediaStreamConstraints[] = [
+	const preferredDeviceAttempts: MediaStreamConstraints[] = preferredDeviceId ? [
+		{
+			audio: false,
+			video: {
+				deviceId: { exact: preferredDeviceId },
+				width: { ideal: 2560 },
+				height: { ideal: 1920 },
+				aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
+			},
+		},
+		{
+			audio: false,
+			video: {
+				deviceId: { exact: preferredDeviceId },
+				width: { ideal: 1920 },
+				height: { ideal: 1440 },
+				aspectRatio: { ideal: CAMERA_ASPECT_RATIO },
+			},
+		},
+		{
+			audio: false,
+			video: {
+				deviceId: { exact: preferredDeviceId },
+			},
+		},
+	] : [];
+
+	const defaultAttempts: MediaStreamConstraints[] = [
 		{
 			audio: false,
 			video: {
@@ -271,6 +471,7 @@ async function requestCameraStream(): Promise<MediaStream> {
 		},
 		{ audio: false, video: true },
 	];
+	const attempts = [...preferredDeviceAttempts, ...defaultAttempts];
 
 	let lastError: unknown = null;
 	for (const constraints of attempts) {
@@ -302,6 +503,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	const selectionSessionRef = React.useRef(0);
 	const cameraStreamRef = React.useRef<MediaStream | null>(null);
 	const cameraRequestIdRef = React.useRef(0);
+	const cameraZoomRequestIdRef = React.useRef(0);
 
 	const [selected, setSelected] = React.useState<SelectedFile[]>([]);
 	const [imageUrl, setImageUrl] = React.useState('');
@@ -315,6 +517,11 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	const [isTorchSupported, setIsTorchSupported] = React.useState(false);
 	const [isTorchEnabled, setIsTorchEnabled] = React.useState(false);
 	const [isTorchBusy, setIsTorchBusy] = React.useState(false);
+	const [cameraZoomRange, setCameraZoomRange] = React.useState<CameraZoomRange | null>(null);
+	const [cameraZoomValue, setCameraZoomValue] = React.useState<number | null>(null);
+	const [rearCameraOptions, setRearCameraOptions] = React.useState<RearCameraOption[]>([]);
+	const [selectedCameraDeviceId, setSelectedCameraDeviceId] = React.useState<string | null>(null);
+	const [isZoomBusy, setIsZoomBusy] = React.useState(false);
 	const busy = isProcessingSelection || isStartingCamera || isCapturingPhoto;
 	const isCameraVisible = isCameraOpen || isStartingCamera;
 	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
@@ -322,6 +529,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 
 	const detachCameraStream = React.useCallback((): void => {
 		const stream = cameraStreamRef.current;
+		cameraZoomRequestIdRef.current += 1;
 		cameraStreamRef.current = null;
 		if (stream) {
 			for (const track of stream.getTracks()) {
@@ -336,6 +544,9 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		setIsTorchSupported(false);
 		setIsTorchEnabled(false);
 		setIsTorchBusy(false);
+		setCameraZoomRange(null);
+		setCameraZoomValue(null);
+		setIsZoomBusy(false);
 	}, []);
 
 	const stopCameraStream = React.useCallback((): void => {
@@ -375,6 +586,30 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		}
 		return usedNames;
 	}, [props.authUserId, props.docId, selected]);
+
+	const syncRearCameraOptions = async (track: CameraTrack | null): Promise<void> => {
+		const activeDeviceId = track?.getSettings?.().deviceId ?? null;
+		const activeLabel = track?.label ?? '';
+		if (!navigator.mediaDevices?.enumerateDevices) {
+			if (activeDeviceId) {
+				setRearCameraOptions([{ deviceId: activeDeviceId, label: activeLabel || 'Rear camera', shortLabel: '1x' }]);
+				setSelectedCameraDeviceId(activeDeviceId);
+			}
+			return;
+		}
+		try {
+			const options = getRearCameraOptions(await navigator.mediaDevices.enumerateDevices(), activeDeviceId, activeLabel);
+			setRearCameraOptions(options);
+			if (activeDeviceId) {
+				setSelectedCameraDeviceId(activeDeviceId);
+			}
+		} catch {
+			if (activeDeviceId) {
+				setRearCameraOptions([{ deviceId: activeDeviceId, label: activeLabel || 'Rear camera', shortLabel: '1x' }]);
+				setSelectedCameraDeviceId(activeDeviceId);
+			}
+		}
+	};
 
 	const processIncomingFiles = React.useCallback(async (files: readonly File[]): Promise<void> => {
 		if (files.length === 0) return;
@@ -525,9 +760,10 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		}
 	};
 
-	const handleStartCamera = (): void => {
+	const handleStartCamera = (preferredDeviceId?: string | null): void => {
 		if (isStartingCamera || isCapturingPhoto) return;
 		void (async () => {
+			const requestedDeviceId = preferredDeviceId ?? selectedCameraDeviceId;
 			const requestId = cameraRequestIdRef.current + 1;
 			cameraRequestIdRef.current = requestId;
 			setError(null);
@@ -537,7 +773,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 			setIsCapturingPhoto(false);
 			try {
 				detachCameraStream();
-				const stream = await requestCameraStream();
+				const stream = await requestCameraStream(requestedDeviceId);
 				if (cameraRequestIdRef.current !== requestId) {
 					for (const track of stream.getTracks()) {
 						track.stop();
@@ -545,9 +781,19 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 					return;
 				}
 				cameraStreamRef.current = stream;
-				const capabilities = getPrimaryVideoTrack(stream)?.getCapabilities?.();
-				setIsTorchSupported(Boolean(capabilities?.torch));
-				setIsTorchEnabled(false);
+				const track = getPrimaryVideoTrack(stream);
+				let nextState = readCameraTrackState(track);
+				try {
+					nextState = await applyCameraTrackSettings(stream, {});
+				} catch {
+					// Keep the live stream even if optional focus normalization fails.
+				}
+				setIsTorchSupported(nextState.torchSupported);
+				setIsTorchEnabled(nextState.torchEnabled);
+				setCameraZoomRange(nextState.zoomRange);
+				setCameraZoomValue(nextState.zoomValue);
+				setSelectedCameraDeviceId(nextState.deviceId ?? requestedDeviceId ?? null);
+				await syncRearCameraOptions(track);
 				setIsCameraOpen(true);
 			} catch (cameraError) {
 				if (cameraRequestIdRef.current !== requestId) return;
@@ -567,15 +813,60 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 			setIsTorchBusy(true);
 			setError(null);
 			try {
-				const nextEnabled = !isTorchEnabled;
-				await setTorchEnabled(cameraStreamRef.current, nextEnabled);
-				setIsTorchEnabled(nextEnabled);
+				const nextState = await applyCameraTrackSettings(cameraStreamRef.current, { torch: !isTorchEnabled });
+				setIsTorchEnabled(nextState.torchEnabled);
+				setCameraZoomRange(nextState.zoomRange);
+				setCameraZoomValue(nextState.zoomValue);
 			} catch {
 				setError(t('media.cameraFlashUnavailable'));
 			} finally {
 				setIsTorchBusy(false);
 			}
 		})();
+	};
+
+	const handleSetZoom = (requestedValue: number): void => {
+		if (!cameraStreamRef.current || !cameraZoomRange) return;
+		const nextRequestId = cameraZoomRequestIdRef.current + 1;
+		cameraZoomRequestIdRef.current = nextRequestId;
+		const nextValue = roundToStep(requestedValue, cameraZoomRange.min, cameraZoomRange.max, cameraZoomRange.step);
+		setCameraZoomValue(nextValue);
+		setError(null);
+		setIsZoomBusy(true);
+		void (async () => {
+			try {
+				const appliedValue = await setCameraZoom(cameraStreamRef.current, nextValue);
+				if (cameraZoomRequestIdRef.current !== nextRequestId) return;
+				setCameraZoomValue(appliedValue);
+				setIsTorchEnabled(Boolean(getPrimaryVideoTrack(cameraStreamRef.current)?.getSettings?.().torch));
+			} catch {
+				if (cameraZoomRequestIdRef.current !== nextRequestId) return;
+				setCameraZoomRange(null);
+				setCameraZoomValue(null);
+				setError(t('media.cameraZoomUnavailable'));
+			} finally {
+				if (cameraZoomRequestIdRef.current === nextRequestId) {
+					setIsZoomBusy(false);
+				}
+			}
+		})();
+	};
+
+	const handleZoomStep = (direction: -1 | 1): void => {
+		if (!cameraZoomRange) return;
+		handleSetZoom((cameraZoomValue ?? cameraZoomRange.defaultValue) + direction * cameraZoomRange.step);
+	};
+
+	const handleResetZoom = (): void => {
+		if (!cameraZoomRange) return;
+		handleSetZoom(cameraZoomRange.defaultValue);
+	};
+
+	const handleSelectRearCamera = (deviceId: string): void => {
+		if (busy) return;
+		if (isCameraOpen && selectedCameraDeviceId === deviceId) return;
+		setSelectedCameraDeviceId(deviceId);
+		handleStartCamera(deviceId);
 	};
 
 	const handleCapturePhoto = (): void => {
@@ -711,6 +1002,14 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 
 	const count = selected.length;
 	const addLabel = count === 1 ? 'Add 1 photo' : `Add ${count} photos`;
+	const zoomValueLabel = cameraZoomRange && cameraZoomValue !== null
+		? `${cameraZoomValue.toFixed(getZoomPrecision(cameraZoomRange.step))}x`
+		: null;
+	const isZoomActive = cameraZoomRange !== null
+		&& cameraZoomValue !== null
+		&& Math.abs(cameraZoomValue - cameraZoomRange.defaultValue) > Math.max(cameraZoomRange.step / 2, 0.01);
+	const showRearCameraOptions = rearCameraOptions.length > 1;
+	const showCameraTopControls = showRearCameraOptions || Boolean(cameraZoomRange && zoomValueLabel);
 
 	return (
 		<div className={`${styles.backdrop}${isCameraVisible ? ` ${styles.backdropCamera}` : ''}`} role="presentation">
@@ -759,6 +1058,69 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 								/>
 								{!isCameraReady && <div className={styles.cameraPlaceholder}>{t('media.cameraStarting')}</div>}
 							</div>
+							{showCameraTopControls ? (
+								<div className={styles.cameraTopControls}>
+									{showRearCameraOptions ? (
+										<div className={styles.cameraLensStrip} role="group" aria-label={t('media.cameraLenses')}>
+											{rearCameraOptions.map((option) => (
+												<button
+													key={option.deviceId}
+													type="button"
+													className={`${styles.cameraLensButton}${selectedCameraDeviceId === option.deviceId ? ` ${styles.cameraLensButtonActive}` : ''}`}
+													onClick={() => handleSelectRearCamera(option.deviceId)}
+													disabled={busy}
+													aria-pressed={selectedCameraDeviceId === option.deviceId}
+													title={option.label}
+												>
+													{option.shortLabel}
+												</button>
+											))}
+										</div>
+									) : null}
+									{cameraZoomRange && zoomValueLabel ? (
+										<div className={styles.cameraZoomControls} role="group" aria-label={t('media.cameraZoom')}>
+											<button
+												type="button"
+												className={styles.cameraZoomButton}
+												onClick={() => handleZoomStep(-1)}
+												disabled={!isCameraReady || isCapturingPhoto || isStartingCamera || isZoomBusy || cameraZoomValue === null || cameraZoomValue <= cameraZoomRange.min}
+												aria-label={t('media.zoomOut')}
+											>
+												<FontAwesomeIcon icon={faMinus} />
+											</button>
+											<input
+												type="range"
+												className={styles.cameraZoomSlider}
+												min={cameraZoomRange.min}
+												max={cameraZoomRange.max}
+												step={cameraZoomRange.step}
+												value={cameraZoomValue ?? cameraZoomRange.defaultValue}
+												onChange={(event) => handleSetZoom(Number(event.currentTarget.value))}
+												disabled={!isCameraReady || isCapturingPhoto || isStartingCamera}
+												aria-label={t('media.cameraZoom')}
+											/>
+											<button
+												type="button"
+												className={styles.cameraZoomValue}
+												onClick={handleResetZoom}
+												disabled={!isCameraReady || isCapturingPhoto || isStartingCamera || isZoomBusy || !isZoomActive}
+												aria-label={t('media.resetZoom')}
+											>
+												{zoomValueLabel}
+											</button>
+											<button
+												type="button"
+												className={styles.cameraZoomButton}
+												onClick={() => handleZoomStep(1)}
+												disabled={!isCameraReady || isCapturingPhoto || isStartingCamera || isZoomBusy || cameraZoomValue === null || cameraZoomValue >= cameraZoomRange.max}
+												aria-label={t('media.zoomIn')}
+											>
+												<FontAwesomeIcon icon={faPlus} />
+											</button>
+										</div>
+									) : null}
+								</div>
+							) : null}
 							{(isCapturingPhoto || isStartingCamera || !isCameraReady) ? (
 								<p className={styles.cameraStatus} role="status">
 									{isCapturingPhoto ? t('media.capturingPhoto') : t('media.cameraStarting')}

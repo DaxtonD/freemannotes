@@ -2054,8 +2054,32 @@ Drag handle:
 	min-width: var(--checklist-checkbox-size);
 	margin-top: var(--checklist-control-top-offset);
 	align-self: start;
-	accent-color: var(--note-editor-accent, var(--color-accent));
+	appearance: none;
+	-webkit-appearance: none;
+	border: 1.5px solid color-mix(in srgb, var(--color-border) 82%, var(--color-text) 18%);
+	border-radius: 5px;
+	background: transparent;
+	box-shadow: none;
+	outline: none;
 	cursor: pointer;
+	transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease, opacity var(--transition-fast);
+}
+
+.checklistCheckbox:checked {
+	background: var(--note-editor-accent, var(--color-accent));
+	border-color: color-mix(in srgb, var(--note-editor-accent, var(--color-accent)) 76%, var(--color-border) 24%);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.8 6.1 4.7 9 10.2 3.3' fill='none' stroke='white' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: center;
+	background-size: 12px 12px;
+}
+
+.checklistCheckbox:focus-visible {
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--note-editor-accent, var(--color-accent)) 26%, transparent);
+}
+
+.checklistCheckbox:disabled {
+	cursor: default;
 }
 
 .checklistComposerRow .checklistCheckbox {
@@ -2317,6 +2341,14 @@ Drag ghost:
 	opacity: 0.45;
 	pointer-events: none;
 	cursor: default;
+}
+
+.checklistItemCompleted .checklistRowPreview,
+.checklistItemCompleted .checklistRowRichShell,
+.checklistItemCompleted .checklistRowRichEditor,
+.checklistItemCompleted .checklistRowRichEditor:global(.ProseMirror) {
+	text-decoration: line-through;
+	text-decoration-thickness: 0.06em;
 }
 
 .childDraggingWithParent {

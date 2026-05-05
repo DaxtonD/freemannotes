@@ -46,6 +46,7 @@ const NOTES_LIST_KEY = 'notesList';
 const NOTE_ORDER_KEY = 'noteOrder';
 const IDB_LOAD_TIMEOUT_MS = 4_000;
 const MAX_NOTES_PER_INACTIVE_WORKSPACE = 80;
+const BUBBLE_VIEW_OVERSCAN_PX = 480;
 
 const ZOOM_MIN = BUBBLE_ZOOM_MIN;
 const ZOOM_MAX = BUBBLE_ZOOM_MAX;
@@ -1401,6 +1402,11 @@ export function BubbleView({
 		const w = window.innerWidth;
 		return Math.max(300, w <= 768 ? w - 16 : w - 336);
 	});
+	const [cloudDocumentTop, setCloudDocumentTop] = React.useState(0);
+	const [viewportMetrics, setViewportMetrics] = React.useState(() => ({
+		scrollY: typeof window === 'undefined' ? 0 : window.scrollY,
+		height: typeof window === 'undefined' ? 900 : window.innerHeight,
+	}));
 	// Callback ref: fires every time the cloud div mounts/unmounts so the
 	// ResizeObserver is always attached to the live element, even when the
 	// component transitions through the empty-notes early-return path.
@@ -1411,8 +1417,10 @@ export function BubbleView({
 		}
 		if (!el) return;
 		const measure = (): void => {
-			const w = el.getBoundingClientRect().width;
+			const rect = el.getBoundingClientRect();
+			const w = rect.width;
 			if (w > 0) setContainerWidth(Math.floor(w));
+			setCloudDocumentTop(Math.max(0, Math.round(rect.top + window.scrollY)));
 		};
 		const observer = new ResizeObserver(measure);
 		observer.observe(el);
@@ -1441,6 +1449,28 @@ export function BubbleView({
 		onResize();
 		window.addEventListener('resize', onResize);
 		return () => window.removeEventListener('resize', onResize);
+	}, []);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const updateViewportMetrics = (): void => {
+			setViewportMetrics((current) => {
+				const next = {
+					scrollY: window.scrollY,
+					height: window.innerHeight,
+				};
+				return current.scrollY === next.scrollY && current.height === next.height ? current : next;
+			});
+		};
+		updateViewportMetrics();
+		window.addEventListener('scroll', updateViewportMetrics, { passive: true });
+		window.addEventListener('resize', updateViewportMetrics);
+		window.addEventListener('orientationchange', updateViewportMetrics);
+		return () => {
+			window.removeEventListener('scroll', updateViewportMetrics);
+			window.removeEventListener('resize', updateViewportMetrics);
+			window.removeEventListener('orientationchange', updateViewportMetrics);
+		};
 	}, []);
 
 	const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
@@ -1553,6 +1583,11 @@ export function BubbleView({
 		return { items, totalHeight };
 	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [activeWorkspaceId, containerWidth, effectiveZoom, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
+	const visiblePackedItems = React.useMemo(() => {
+		const viewportTopWithinCloud = Math.max(0, viewportMetrics.scrollY - cloudDocumentTop - BUBBLE_VIEW_OVERSCAN_PX);
+		const viewportBottomWithinCloud = viewportMetrics.scrollY - cloudDocumentTop + viewportMetrics.height + BUBBLE_VIEW_OVERSCAN_PX;
+		return packedLayout.items.filter((item) => item.top + item.layoutDiameter >= viewportTopWithinCloud && item.top <= viewportBottomWithinCloud);
+	}, [cloudDocumentTop, packedLayout.items, viewportMetrics]);
 
 	// const debugSummary = React.useMemo(() => {
 	// 	const rightmostEdge = packedLayout.items.reduce((max, item) => Math.max(max, item.left + item.layoutDiameter), 0);
@@ -1668,7 +1703,9 @@ export function BubbleView({
 					height: `${packedLayout.totalHeight + 48}px`,
 				} as React.CSSProperties}
 			>
-				{packedLayout.items.map((item, entryIndex) => (
+				{/* Keep the full cloud height in flow, but only mount bubbles near the
+				    viewport so large cross-workspace note sets do not render at once. */}
+				{visiblePackedItems.map((item, entryIndex) => (
 					<div
 						key={`${item.note.workspaceId}:${item.note.noteId}`}
 						className={styles.cloudItem}

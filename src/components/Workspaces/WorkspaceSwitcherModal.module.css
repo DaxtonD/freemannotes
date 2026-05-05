@@ -56,7 +56,8 @@
 }
 
 .list {
-	overflow: auto;
+	overflow-y: auto;
+	overflow-x: hidden;
 	border: 1px solid var(--color-border);
 	border-radius: 12px;
 	background: var(--color-surface);
@@ -79,13 +80,16 @@
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
+	flex: 1 1 auto;
 	min-width: 0;
 }
 
 .nameRow {
 	display: flex;
-	align-items: baseline;
+	align-items: flex-start;
+	flex-wrap: wrap;
 	gap: 8px;
+	row-gap: 2px;
 	min-width: 0;
 }
 
@@ -93,9 +97,8 @@
 	flex: 1 1 auto;
 	min-width: 0;
 	font-weight: 600;
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
+	white-space: normal;
+	overflow-wrap: anywhere;
 }
 
 .ownerName {
@@ -104,9 +107,8 @@
 	font-size: var(--font-size-xs);
 	font-weight: 500;
 	color: var(--color-text-muted);
-	white-space: nowrap;
-	overflow: hidden;
-	text-overflow: ellipsis;
+	white-space: normal;
+	overflow-wrap: anywhere;
 }
 
 .ownerName::before {
