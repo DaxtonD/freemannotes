@@ -451,10 +451,27 @@
 
 .richTaskCheckbox input {
 	margin: 0;
-	width: 0.95rem;
-	height: 0.95rem;
-	accent-color: var(--note-color-accent, var(--color-accent));
+	width: 18px;
+	height: 18px;
+	min-width: 18px;
+	appearance: none;
+	-webkit-appearance: none;
+	border: 1.5px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 84%, var(--note-color-text, var(--color-text)) 16%);
+	border-radius: 5px;
+	background: transparent;
+	box-shadow: none;
+	outline: none;
+	transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 	pointer-events: none;
+}
+
+.richTaskCheckbox input:checked {
+	background: var(--note-color-accent, var(--color-accent));
+	border-color: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 74%, var(--note-color-border, var(--color-border)) 26%);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.8 6.1 4.7 9 10.2 3.3' fill='none' stroke='white' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: center;
+	background-size: 12px 12px;
 }
 
 .richTaskContent {
@@ -560,11 +577,12 @@
 	-webkit-appearance: none;
 	border: 1.5px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 84%, var(--note-color-text, var(--color-text)) 16%);
 	border-radius: 5px;
-	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 92%, white 8%);
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 42%, transparent);
-	display: inline-grid;
-	place-content: center;
+	background: transparent;
+	box-shadow: none;
+	outline: none;
+	display: inline-block;
 	flex: 0 0 18px;
+	transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
 	/* Align checkbox centre with first text line centre at any font scale:
 	   offset = (line-height − checkbox-height) / 2
 	           = (scale × 1rem × 1.35 − 18px) / 2
@@ -572,25 +590,18 @@
 	margin-top: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
 }
 
-.checklistCheckbox::after {
-	content: '';
-	width: 9px;
-	height: 6px;
-	border-left: 2px solid var(--note-color-card-bg, var(--color-surface));
-	border-bottom: 2px solid var(--note-color-card-bg, var(--color-surface));
-	transform: rotate(-45deg) scale(0);
-	transform-origin: center;
-	transition: transform 120ms ease;
-}
-
 .checklistCheckbox:checked {
 	background: var(--note-color-accent, var(--color-accent));
 	border-color: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 74%, var(--note-color-border, var(--color-border)) 26%);
-	box-shadow: inset 0 1px 0 color-mix(in srgb, white 22%, transparent);
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.8 6.1 4.7 9 10.2 3.3' fill='none' stroke='white' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: center;
+	background-size: 12px 12px;
 }
 
-.checklistCheckbox:checked::after {
-	transform: rotate(-45deg) scale(1);
+.checklistCheckbox:focus-visible,
+.richTaskCheckbox input:focus-visible {
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 28%, transparent);
 }
 
 .checklistCheckbox:disabled {
@@ -647,6 +658,7 @@
    alignment nudges stay locked to the same checkbox/text baseline. */
 .checklistTextCompleted {
 	text-decoration: line-through;
+	text-decoration-thickness: 0.06em;
 }
 
 /* Ghost parent: not yet completed itself, but one or more of its children are.
@@ -818,29 +830,16 @@
 		max-height: var(--note-card-expanded-checklist-max-height, var(--note-card-max-height));
 	}
 
-	/* Desktop cards keep native checkbox rendering so checklist cards match the
-	   editor affordance on mouse and trackpad devices. */
 	.checklistCheckbox,
 	.richTaskCheckbox input {
-		appearance: auto;
-		-webkit-appearance: checkbox;
 		width: 20px;
 		height: 20px;
 		min-width: 20px;
-		border: 0;
-		border-radius: 0;
-		background: transparent;
-		box-shadow: none;
-		accent-color: var(--note-color-accent, var(--color-accent));
 	}
 
 	.checklistCheckbox {
 		flex: 0 0 20px;
 		margin-top: max(0px, calc((1.35em - 20px) / 2));
-	}
-
-	.checklistCheckbox::after {
-		content: none;
 	}
 
 	.checklistCheckboxHitArea {

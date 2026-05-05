@@ -1249,7 +1249,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	rowContainersRef.current.set(item.id, node);
 																}}
 													{...dragProvided.draggableProps}
-														className={`${styles.checklistItem}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
+														className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
 													aria-label={t('editors.dragHandle')}
 													style={{
 														...dragStyle,
@@ -1394,7 +1394,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 										</div>
 									</li>
 								) : (
-											<li key={item.id} className={`${styles.checklistItem}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+											<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
 											<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
 													<FontAwesomeIcon icon={faGripVertical} />
 											</button>

@@ -195,6 +195,7 @@ type SidebarFilterSortMode = Extract<NoteSortMode, 'least-accessed' | 'most-edit
 
 const SIDEBAR_FILTER_REMINDER_MODES: readonly SidebarFilterReminderMode[] = ['past-due', 'due-soon'];
 const SIDEBAR_FILTER_SORT_MODES: readonly SidebarFilterSortMode[] = ['least-accessed', 'most-edited'];
+const SIDEBAR_COLLECTION_INDENT_CAP = 3;
 
 function isToggleableSortMode(value: string): value is ToggleableSortMode {
 	return value === 'date-created' || value === 'date-updated' || value === 'alphabetical';
@@ -216,6 +217,162 @@ function truncateUiName(value: string, maxLength = 48): string {
 	const normalized = String(value ?? '').trim();
 	if (normalized.length <= maxLength) return normalized;
 	return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}...`;
+}
+
+function getCompressedSidebarCollectionPrefix(path: string, depth: number): string | null {
+	if (depth <= SIDEBAR_COLLECTION_INDENT_CAP) return null;
+	const segments = String(path ?? '')
+		.split(' / ')
+		.map((segment) => segment.trim())
+		.filter(Boolean);
+	const ancestorSegments = segments.slice(0, -1);
+	if (ancestorSegments.length === 0) return null;
+	return `${ancestorSegments[ancestorSegments.length - 1]} / `;
+}
+
+function scrollExpandedCollectionNodeIntoView(toggleButton: HTMLButtonElement): void {
+	if (typeof window === 'undefined') return;
+	const collectionNode = toggleButton.closest('.sidebar-collection-node');
+	const scrollContainer = toggleButton.closest('.sidebar-collections-menu');
+	const nestedShell = collectionNode?.querySelector(':scope > .sidebar-nested-submenu-shell');
+	if (!(collectionNode instanceof HTMLElement) || !(scrollContainer instanceof HTMLElement)) return;
+
+	const alignExpandedNode = (): void => {
+		const nodeRect = collectionNode.getBoundingClientRect();
+		const containerRect = scrollContainer.getBoundingClientRect();
+		if (nodeRect.bottom > containerRect.bottom) {
+			scrollContainer.scrollTop += nodeRect.bottom - containerRect.bottom + 10;
+		}
+		if (nodeRect.top < containerRect.top) {
+			scrollContainer.scrollTop -= containerRect.top - nodeRect.top + 10;
+		}
+	};
+
+	let rafId = 0;
+	const deadline = window.performance.now() + 360;
+
+	const tick = (): void => {
+		alignExpandedNode();
+		if (window.performance.now() < deadline) {
+			rafId = window.requestAnimationFrame(tick);
+		}
+	};
+
+	const handleTransitionEnd = (): void => {
+		alignExpandedNode();
+		if (rafId) window.cancelAnimationFrame(rafId);
+		if (nestedShell instanceof HTMLElement) nestedShell.removeEventListener('transitionend', handleTransitionEnd);
+	};
+
+	if (nestedShell instanceof HTMLElement) {
+		nestedShell.addEventListener('transitionend', handleTransitionEnd);
+	}
+
+	rafId = window.requestAnimationFrame(tick);
+}
+
+function OverflowMarqueeText(props: {
+	value: string;
+	title?: string;
+	titleClassName?: string;
+	viewportClassName: string;
+	trackClassName: string;
+}): React.JSX.Element {
+	const viewportRef = React.useRef<HTMLSpanElement | null>(null);
+	const trackRef = React.useRef<HTMLSpanElement | null>(null);
+	const [marqueeState, setMarqueeState] = React.useState<{ distancePx: number; durationSec: number } | null>(null);
+	const [isVisible, setIsVisible] = React.useState(false);
+
+	React.useLayoutEffect(() => {
+		if (typeof window === 'undefined') return;
+		const viewport = viewportRef.current;
+		const track = trackRef.current;
+		if (!viewport || !track) return;
+
+		const evaluateVisibility = (): boolean => {
+			const rect = viewport.getBoundingClientRect();
+			if (rect.width <= 1 || rect.height <= 1) return false;
+			if (viewport.closest('[aria-hidden="true"]')) return false;
+			const computedStyle = window.getComputedStyle(viewport);
+			if (computedStyle.display === 'none' || computedStyle.visibility === 'hidden') return false;
+			return true;
+		};
+
+		const measure = (): void => {
+			setIsVisible(evaluateVisibility());
+			const viewportWidth = Math.round(viewport.clientWidth);
+			const trackWidth = Math.round(track.scrollWidth);
+			const overflowPx = Math.max(0, trackWidth - viewportWidth);
+			if (overflowPx <= 4) {
+				setMarqueeState((previous) => (previous === null ? previous : null));
+				return;
+			}
+			const durationSec = Math.max(3.8, Math.min(14, overflowPx / 32 + 4.6));
+			setMarqueeState((previous) => {
+				if (previous && previous.distancePx === overflowPx && previous.durationSec === durationSec) return previous;
+				return { distancePx: overflowPx, durationSec };
+			});
+		};
+
+		measure();
+		const rafId = window.requestAnimationFrame(measure);
+		const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => measure()) : null;
+		observer?.observe(viewport);
+		observer?.observe(track);
+		const intersectionObserver = typeof IntersectionObserver !== 'undefined'
+			? new IntersectionObserver((entries) => {
+				const nextEntry = entries[0];
+				setIsVisible(Boolean(nextEntry?.isIntersecting) && evaluateVisibility());
+			}, { threshold: 0.2 })
+			: null;
+		intersectionObserver?.observe(viewport);
+		window.addEventListener('resize', measure);
+		window.addEventListener('orientationchange', measure);
+		return () => {
+			window.cancelAnimationFrame(rafId);
+			observer?.disconnect();
+			intersectionObserver?.disconnect();
+			window.removeEventListener('resize', measure);
+			window.removeEventListener('orientationchange', measure);
+		};
+	}, [props.value, props.title]);
+
+	const shouldAnimate = marqueeState !== null && isVisible;
+
+	return (
+		<>
+			{props.title ? <span className={props.titleClassName}>{props.title}</span> : null}
+			<span
+				ref={viewportRef}
+				className={`${props.viewportClassName}${shouldAnimate ? ' is-overflowing' : ''}`}
+			>
+				<span
+					ref={trackRef}
+					className={`${props.trackClassName}${shouldAnimate ? ' is-overflowing' : ''}`}
+					style={marqueeState
+						? {
+							['--chip-marquee-distance' as any]: `${marqueeState.distancePx}px`,
+							['--chip-marquee-duration' as any]: `${marqueeState.durationSec}s`,
+						}
+						: undefined}
+				>
+					{props.value}
+				</span>
+			</span>
+		</>
+	);
+}
+
+function ScrollingScopeChipLabel(props: { title?: string; value: string }): React.JSX.Element {
+	return (
+		<OverflowMarqueeText
+			value={props.value}
+			title={props.title}
+			titleClassName="note-grid-scope-label-static"
+			viewportClassName="note-grid-scope-label-viewport"
+			trackClassName="note-grid-scope-label"
+		/>
+	);
 }
 
 function isCoarsePointerDevice(): boolean {
@@ -1279,6 +1436,7 @@ export function App(): React.JSX.Element {
 	}, [viewMode]);
 	const activeGridViewMode = (viewMode === 'bubble' ? 'card' : viewMode);
 	const scrollPersistTimerRef = React.useRef<number>(0);
+	const suppressWorkspaceScrollPersistUntilRef = React.useRef(0);
 	const previousWorkspaceScrollScopeRef = React.useRef<{ workspaceId: string | null; viewMode: typeof activeGridViewMode }>({
 		workspaceId: authWorkspaceId,
 		viewMode: activeGridViewMode,
@@ -1286,6 +1444,7 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
 		const persistScroll = (): void => {
+			if (Date.now() < suppressWorkspaceScrollPersistUntilRef.current) return;
 			const scope = previousWorkspaceScrollScopeRef.current;
 			if (!scope.workspaceId) return;
 			writeWorkspaceRenderSnapshotScroll(scope.workspaceId, scope.viewMode, window.scrollY || 0);
@@ -1318,9 +1477,11 @@ export function App(): React.JSX.Element {
 		}
 		previousWorkspaceScrollScopeRef.current = { workspaceId: authWorkspaceId, viewMode: activeGridViewMode };
 		const restoredScrollY = authWorkspaceId ? readWorkspaceRenderSnapshotScroll(authWorkspaceId, activeGridViewMode) : null;
+		suppressWorkspaceScrollPersistUntilRef.current = Date.now() + 400;
 		window.requestAnimationFrame(() => {
 			window.requestAnimationFrame(() => {
 				window.scrollTo({ left: 0, top: restoredScrollY ?? 0, behavior: 'auto' });
+				suppressWorkspaceScrollPersistUntilRef.current = Date.now() + 180;
 			});
 		});
 	}, [activeGridViewMode, authWorkspaceId]);
@@ -3937,11 +4098,13 @@ export function App(): React.JSX.Element {
 		return sortDirectionByMode[activeSortMode];
 	}, [activeSortMode, sortDirectionByMode]);
 	const activeFilterChips = React.useMemo(() => {
-		const chips: Array<{ key: string; label: string; onClear: () => void; onPrimaryAction?: () => void; primaryAriaLabel?: string }> = [];
+		const chips: Array<{ key: string; title?: string; value: string; label: string; onClear: () => void; onPrimaryAction?: () => void; primaryAriaLabel?: string }> = [];
 		if (noteGridCollaboratorFilter) {
 			chips.push({
 				key: `collaborator:${noteGridCollaboratorFilter.key}`,
 				label: `${t('app.withFilterPrefix')}: ${noteGridCollaboratorFilter.label}`,
+				title: `${t('app.withFilterPrefix')}:`,
+				value: noteGridCollaboratorFilter.label,
 				onClear: () => setNoteGridCollaboratorFilter(null),
 			});
 		}
@@ -3949,14 +4112,18 @@ export function App(): React.JSX.Element {
 			const collectionLabel = collectionPathById.get(activeCollection.id) ?? activeCollection.name;
 			chips.push({
 				key: `collection:${activeCollection.id}`,
-				label: `Collection: ${truncateUiName(collectionLabel, 52)}`,
+				label: `Collection: ${collectionLabel}`,
+				title: 'Collection:',
+				value: collectionLabel,
 				onClear: () => setActiveCollectionId(null),
 			});
 		}
 		for (const label of activeLabels) {
 			chips.push({
 				key: `label:${label.id}`,
-				label: `Label: ${truncateUiName(label.name, 44)}`,
+				label: `Label: ${label.name}`,
+				title: 'Label:',
+				value: label.name,
 				onClear: () => setActiveLabelIds((current) => current.filter((entry) => entry !== label.id)),
 			});
 		}
@@ -3972,6 +4139,8 @@ export function App(): React.JSX.Element {
 			chips.push({
 				key: `reminder:${activeReminderFilter}`,
 				label: `${t('app.sidebarReminders')}: ${reminderLabels[activeReminderFilter]}`,
+				title: `${t('app.sidebarReminders')}:`,
+				value: reminderLabels[activeReminderFilter],
 				onClear: () => setActiveReminderFilter('all'),
 			});
 		}
@@ -3990,6 +4159,8 @@ export function App(): React.JSX.Element {
 			chips.push({
 				key: `sort:${activeSortMode}`,
 				label: `${t('app.sidebarSorting')}: ${sortLabels[activeSortMode]}${sortDirectionSuffix}`,
+				title: `${t('app.sidebarSorting')}:`,
+				value: `${sortLabels[activeSortMode]}${sortDirectionSuffix}`,
 				onClear: () => setActiveSortMode('manual'),
 				// Sort chips can toggle direction in-place to avoid reopening sidebar menus.
 				onPrimaryAction: isToggleableSortMode(activeSortMode)
@@ -6183,14 +6354,26 @@ export function App(): React.JSX.Element {
 			const toggleId = `collection-node:${collection.id}`;
 			const hasChildren = collection.children.length > 0;
 			const isExpanded = hasChildren && Boolean(sidebarGroupsOpen[toggleId]);
+			const collectionPath = collectionPathById.get(collection.id) ?? collection.name;
+			const cappedDepth = Math.min(depth, SIDEBAR_COLLECTION_INDENT_CAP);
+			const ancestryPrefix = getCompressedSidebarCollectionPrefix(collectionPath, depth);
+			const nestedBranchStyle = {
+				['--sidebar-collection-branch-margin-left' as const]: depth + 1 <= SIDEBAR_COLLECTION_INDENT_CAP ? '10px' : '0px',
+				['--sidebar-collection-branch-padding-left' as const]: depth + 1 <= SIDEBAR_COLLECTION_INDENT_CAP ? '6px' : '0px',
+				['--sidebar-collection-branch-border-width' as const]: depth + 1 <= SIDEBAR_COLLECTION_INDENT_CAP ? '1px' : '0px',
+			} as React.CSSProperties;
 			return (
 				<div key={collection.id} className="sidebar-collection-node">
-					<div className="sidebar-collection-row" style={{ ['--sidebar-collection-depth' as const]: depth } as React.CSSProperties}>
+					<div className="sidebar-collection-row" style={{ ['--sidebar-collection-depth' as const]: cappedDepth } as React.CSSProperties}>
 						{hasChildren ? (
 							<button
 								type="button"
 								className={`sidebar-collection-disclosure${isExpanded ? ' is-open' : ''}`}
-								onClick={() => setSidebarGroupsOpen((prev) => ({ ...prev, [toggleId]: !Boolean(prev[toggleId]) }))}
+								onClick={(event) => {
+									const nextIsExpanded = !Boolean(sidebarGroupsOpen[toggleId]);
+									setSidebarGroupsOpen((prev) => ({ ...prev, [toggleId]: nextIsExpanded }));
+									if (nextIsExpanded) scrollExpandedCollectionNodeIntoView(event.currentTarget);
+								}}
 								aria-label={isExpanded ? 'Collapse collection' : 'Expand collection'}
 							>
 								<span className="sidebar-collection-disclosure-icon" aria-hidden="true" />
@@ -6198,20 +6381,33 @@ export function App(): React.JSX.Element {
 						) : <span className="sidebar-collection-disclosure-spacer" aria-hidden="true" />}
 						<button
 							type="button"
-							className={`sidebar-submenu-item sidebar-collection-item${activeCollectionId === collection.id ? ' is-active' : ''}`}
+							className={`sidebar-submenu-item sidebar-collection-item${activeCollectionId === collection.id ? ' is-active' : ''}${ancestryPrefix ? ' has-ancestry' : ''}`}
 							onClick={() => {
 								setSidebarView(filterSidebarView);
 								setActiveCollectionId((current) => current === collection.id ? null : collection.id);
 								if (isMobileViewport) closeMobileSidebar();
 							}}
-							title={collectionPathById.get(collection.id) ?? collection.name}
+							title={collectionPath}
 						>
-							<span className="sidebar-collection-item-label">{truncateUiName(collection.name, 44)}</span>
+							<span className={`sidebar-collection-item-copy${ancestryPrefix ? ' has-ancestry' : ''}`}>
+								{ancestryPrefix ? (
+									<OverflowMarqueeText
+										value={ancestryPrefix}
+										viewportClassName="sidebar-overflow-label-viewport sidebar-collection-line-viewport"
+										trackClassName="sidebar-collection-item-prefix sidebar-overflow-label"
+									/>
+								) : null}
+								<OverflowMarqueeText
+									value={collection.name}
+									viewportClassName="sidebar-overflow-label-viewport sidebar-collection-line-viewport"
+									trackClassName="sidebar-collection-item-label sidebar-overflow-label"
+								/>
+							</span>
 						</button>
 					</div>
 					{hasChildren ? (
 						<div className={`sidebar-nested-submenu-shell${isExpanded ? ' is-open' : ''}`}>
-							<div className="sidebar-nested-submenu sidebar-collection-children">
+							<div className="sidebar-nested-submenu sidebar-collection-children" style={nestedBranchStyle}>
 								{renderCollectionSidebarNodes(collection.children, depth + 1)}
 							</div>
 						</div>
@@ -7714,7 +7910,11 @@ export function App(): React.JSX.Element {
 																	}
 																}}
 															/>
-															<span className="sidebar-workspace-legend-label">{truncateUiName(workspace.name, 44)}</span>
+															<OverflowMarqueeText
+																value={workspace.name}
+																viewportClassName="sidebar-overflow-label-viewport"
+																trackClassName="sidebar-workspace-legend-label sidebar-overflow-label"
+															/>
 															</div>
 													))}
 												</>
@@ -7802,7 +8002,11 @@ export function App(): React.JSX.Element {
 																title={workspaceDisplayName}
 																style={{ ['--sidebar-item-index' as const]: itemIndex }}
 															>
-																<span className="sidebar-submenu-item-label">{truncateUiName(workspaceDisplayName, 44)}</span>
+																<OverflowMarqueeText
+																	value={workspaceDisplayName}
+																	viewportClassName="sidebar-overflow-label-viewport"
+																	trackClassName="sidebar-submenu-item-label sidebar-overflow-label"
+																/>
 															</button>
 															{canShareWorkspace || showOwnerAvatar ? (
 																<div className="sidebar-workspace-row-summary">
@@ -8003,7 +8207,15 @@ export function App(): React.JSX.Element {
 															>
 																<span className="sidebar-submenu-item-copy">
 																	{entry.id === 'labels' && item.kind === 'item' && item.color ? <span className="sidebar-submenu-color-pill" style={{ backgroundColor: item.color }} aria-hidden="true" /> : null}
-																	<span className="sidebar-submenu-item-label" title={item.label}>{truncateUiName(item.label, 44)}</span>
+																	{entry.id === 'labels' && item.kind === 'item' ? (
+																		<OverflowMarqueeText
+																			value={item.label}
+																			viewportClassName="sidebar-overflow-label-viewport"
+																			trackClassName="sidebar-submenu-item-label sidebar-overflow-label"
+																		/>
+																	) : (
+																		<span className="sidebar-submenu-item-label" title={item.label}>{truncateUiName(item.label, 44)}</span>
+																	)}
 																</span>
 															</button>
 														);
@@ -8224,7 +8436,7 @@ export function App(): React.JSX.Element {
 							<div className="note-grid-scope" aria-live="polite">
 								{viewMode === 'bubble' && sidebarView !== 'images' ? (
 									<div className="note-grid-scope-chip">
-										<span className="note-grid-scope-label">All Workspaces</span>
+										<ScrollingScopeChipLabel value="All Workspaces" />
 										<input
 											type="range"
 											className="note-grid-scope-slider"
@@ -8252,7 +8464,7 @@ export function App(): React.JSX.Element {
 								) : activeFilterChips.length === 0 ? (
 									(sidebarView === 'trash' || sidebarView === 'archive' || sidebarView === 'images') ? (
 										<div className="note-grid-scope-chip is-clearable">
-											<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
+											<ScrollingScopeChipLabel value={noteGridScopeLabel} />
 											<button
 												type="button"
 												className="note-grid-scope-clear"
@@ -8264,7 +8476,7 @@ export function App(): React.JSX.Element {
 										</div>
 									) : (
 										<div className="note-grid-scope-chip">
-											<span className="note-grid-scope-label">{noteGridScopeLabel}</span>
+											<ScrollingScopeChipLabel value={noteGridScopeLabel} />
 										</div>
 									)
 								) : null}
@@ -8283,7 +8495,7 @@ export function App(): React.JSX.Element {
 										tabIndex={chip.onPrimaryAction ? 0 : undefined}
 										aria-label={chip.onPrimaryAction ? chip.primaryAriaLabel : undefined}
 									>
-										<span className="note-grid-scope-label">{chip.label}</span>
+										<ScrollingScopeChipLabel title={chip.title} value={chip.value} />
 										<button
 											type="button"
 											className="note-grid-scope-clear"

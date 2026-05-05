@@ -172,6 +172,13 @@ type NoteMetaOverlayEntry = {
 	color: string | null;
 };
 
+function splitCollectionOverlayPath(path: string): string[] {
+	return path
+		.split(' / ')
+		.map((segment) => segment.trim())
+		.filter(Boolean);
+}
+
 type NoteGridSection = {
 	key: string;
 	label: string;
@@ -2498,8 +2505,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// Match the masonry grid edge clamp on coarse pointers so left-column cards
 		// open centered chip overlays instead of drifting to the right.
 		const horizontalViewportInset = isCoarsePointer ? MOBILE_GRID_EDGE_MARGIN_PX : 12;
+		const minimumOverlayWidth = isCoarsePointer ? 196 : 176;
 		const overlayWidth = Math.min(
-			Math.round(openCollaboratorChip.anchorRect.width),
+			Math.max(minimumOverlayWidth, Math.round(openCollaboratorChip.anchorRect.width)),
 			window.innerWidth - horizontalViewportInset * 2
 		);
 		const viewportWidth = window.innerWidth;
@@ -2992,6 +3000,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										{sectionColumns.map((columnIds, columnIndex) => (
 											<div key={`${section.key}:col-${columnIndex}`} className={styles.column}>
 												<VirtualizedNoteColumn
+													key={`${props.activeWorkspaceId ?? 'workspace'}:${props.viewMode}:${section.key}:col-${columnIndex}`}
 													noteIds={columnIds}
 													estimateSize={getEstimatedNoteHeight}
 													renderItem={renderGridCard}
@@ -3009,6 +3018,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						: columns.map((columnIds, columnIndex) => (
 							<div key={`col-${columnIndex}`} className={styles.column}>
 								<VirtualizedNoteColumn
+									key={`${props.activeWorkspaceId ?? 'workspace'}:${props.viewMode}:col-${columnIndex}`}
 									noteIds={columnIds}
 									estimateSize={getEstimatedNoteHeight}
 									renderItem={renderGridCard}
@@ -3225,7 +3235,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 												<motion.button
 													key={entry.key}
 													type="button"
-													className={`${styles.collaboratorOverlayItem}${entry.active ? ` ${styles.collaboratorOverlayItemActive}` : ''}`}
 													title={entry.fullLabel ?? entry.label}
 													aria-label={entry.fullLabel ?? entry.label}
 													initial={{ opacity: 0, y: -10 }}
@@ -3246,10 +3255,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 														}
 														setOpenMetadataChip(null);
 															}}
+															className={`${styles.collaboratorOverlayItem}${entry.active ? ` ${styles.collaboratorOverlayItemActive}` : ''}${entry.kind === 'collection' ? ` ${styles.metadataOverlayCollectionItem}` : ''}`}
 												>
 														{entry.kind === 'collection' ? <FontAwesomeIcon icon={faFolder} className={styles.metadataOverlayKindIcon} /> : null}
 													{entry.color ? <span className={styles.metadataOverlaySwatch} style={{ backgroundColor: entry.color }} aria-hidden="true" /> : null}
-													<span className={styles.collaboratorOverlayName}>{entry.label}</span>
+															{entry.kind === 'collection' && entry.fullLabel ? (
+																<span className={styles.metadataOverlayPath}>
+																	{splitCollectionOverlayPath(entry.fullLabel).map((segment, segmentIndex, segments) => (
+																		<span key={`${entry.key}:segment:${segmentIndex}`} className={styles.metadataOverlayPathSegment}>
+																			<span className={styles.metadataOverlayPathSegmentText}>{segment}</span>
+																			{segmentIndex < segments.length - 1 ? <span className={styles.metadataOverlayPathSegmentSlash}>/</span> : null}
+																		</span>
+																	))}
+																</span>
+															) : (
+																<span className={styles.collaboratorOverlayName}>{entry.label}</span>
+															)}
 												</motion.button>
 											))}
 										</div>

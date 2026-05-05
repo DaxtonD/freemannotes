@@ -1961,7 +1961,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							<div ref={checklistScrollRef} className={styles.checklistScrollArea}>
 								<ul className={styles.checklistList}>
 									{activeItems.map((item) => (
-										<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+										<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
 											<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
 												<FontAwesomeIcon icon={faGripVertical} />
 											</button>
@@ -1977,7 +1977,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 										<div className={styles.completedToggle}>{completedItems.length} {t('editors.completedItems')}</div>
 										<ul className={styles.checklistList}>
 											{completedItems.map((item) => (
-												<li key={item.id} className={`${styles.checklistItem}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+												<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
 													<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
 														<FontAwesomeIcon icon={faGripVertical} />
 													</button>
@@ -2429,7 +2429,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																rowContainersRef.current.set(item.id, node);
 															}}
 															{...dragProvided.draggableProps}
-														className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
+														className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
 															aria-label={t('editors.dragHandle')}
 															style={{
 															...dragStyle,
@@ -2529,7 +2529,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 													</div>
 												</li>
 											) : (
-												<li key={item.id} className={`${styles.checklistItem}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+												<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
 													<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
 														<FontAwesomeIcon icon={faGripVertical} />
 													</button>

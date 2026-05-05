@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.3.31 - 2026-05-04
+
+### Added
+- **The Add Image camera modal now surfaces device zoom and rear-lens controls when the browser exposes them.** Camera capture can show offline-safe zoom controls and dedicated rear-lens chips, including ultrawide lenses when Android/WebView reports them as separate rear cameras.
+
+### Changed
+- **Filter chips and sidebar rows now preserve full names without forcing horizontal overflow.** Active scope chips use bounded marquee labels, sidebar collections compress deep ancestry into a readable second line, and workspace switcher rows wrap long workspace and owner names instead of clipping.
+- **Checklist completion visuals are now consistent across cards and editors.** The shared rounded-square checkbox shell, larger checkmark glyph, and lighter strikethrough treatment now match between note cards and checklist editors.
+
+### Fixed
+- **List, detailed-list, and bubble views now avoid rendering the full note set at once.** Window virtualization and viewport culling reduce DOM work in list, strip, and bubble views, and workspace switches reset restored scroll state so virtualized layouts reopen from the correct viewport position.
+- **Collection chips and deep collection trees stay readable on mobile and in dense sidebars.** Collection metadata overlays now wrap path segments cleanly, expanded branches auto-scroll into view, and deep indentation no longer pushes nested collection names off-screen.
+- **Camera zoom changes no longer knock the live preview out of autofocus.** Zoom and torch updates now reapply focus-capable constraints together instead of overwriting the active camera track state during capture.
+
 ## 1.3.3 - 2026-05-04
 
 ### Added

@@ -7,6 +7,7 @@
  */
 
 import React from 'react';
+import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import * as Y from 'yjs';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
@@ -28,6 +29,11 @@ import type { VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
 import type { LabelRecord } from '../../services/labelService';
 import { applyDocumentFlipAnimations, measureDocumentRects, type DocumentRectMap } from './flip';
 import styles from './NoteListView.module.css';
+
+const LIST_ROW_GAP_PX = 2;
+const LIST_ROW_ESTIMATE_PX = 56;
+const STRIP_ROW_ESTIMATE_PX = 78;
+const MIN_ROWS_BEFORE_VIRTUALIZING = 30;
 
 export type NoteListViewProps = {
 	variant: 'list' | 'strip';
@@ -279,10 +285,79 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 	const containerRef = React.useRef<HTMLDivElement | null>(null);
 	const previousRectsRef = React.useRef<DocumentRectMap>(new Map());
 	const hasMeasuredRef = React.useRef(false);
+	const [scrollMargin, setScrollMargin] = React.useState(0);
+	const shouldVirtualize = !props.activeDragId && props.orderedIds.length >= MIN_ROWS_BEFORE_VIRTUALIZING;
+	const estimatedRowHeight = showPreview ? STRIP_ROW_ESTIMATE_PX : LIST_ROW_ESTIMATE_PX;
+
+	React.useLayoutEffect(() => {
+		if (typeof window === 'undefined') return;
+		const node = containerRef.current;
+		if (!node) return;
+
+		// Window virtualization needs the list's document offset so restored scroll
+		// positions line up with the first mounted rows.
+		const updateScrollMargin = (): void => {
+			const rect = node.getBoundingClientRect();
+			const nextMargin = Math.max(0, Math.round(rect.top + window.scrollY));
+			setScrollMargin((previous) => (previous === nextMargin ? previous : nextMargin));
+		};
+
+		updateScrollMargin();
+		const rafId = window.requestAnimationFrame(updateScrollMargin);
+		const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => updateScrollMargin()) : null;
+		observer?.observe(node);
+		window.addEventListener('resize', updateScrollMargin);
+		window.addEventListener('orientationchange', updateScrollMargin);
+
+		return () => {
+			window.cancelAnimationFrame(rafId);
+			observer?.disconnect();
+			window.removeEventListener('resize', updateScrollMargin);
+			window.removeEventListener('orientationchange', updateScrollMargin);
+		};
+	}, [props.variant, props.orderedIds.length]);
+
+	const virtualizer = useWindowVirtualizer<HTMLDivElement>({
+		count: props.orderedIds.length,
+		estimateSize: () => estimatedRowHeight,
+		overscan: 10,
+		gap: LIST_ROW_GAP_PX,
+		scrollMargin,
+		getItemKey: (index) => props.orderedIds[index] ?? index,
+		enabled: shouldVirtualize,
+		useFlushSync: false,
+		measureElement: (element, entry) => Math.max(1, Math.round(entry?.contentRect.height ?? element.getBoundingClientRect().height)),
+		shouldAdjustScrollPositionOnItemSizeChange: (item, _delta, instance) => item.start < instance.scrollOffset,
+	});
+
+	React.useEffect(() => {
+		if (!shouldVirtualize) return;
+		virtualizer.measure();
+	}, [scrollMargin, shouldVirtualize, virtualizer]);
+
+	const virtualItems = shouldVirtualize ? virtualizer.getVirtualItems() : [];
+	const leadingPaddingPx = shouldVirtualize && virtualItems.length > 0
+		? Math.max(0, Math.round(virtualItems[0].start - scrollMargin))
+		: 0;
+	const trailingPaddingPx = shouldVirtualize && virtualItems.length > 0
+		? Math.max(0, Math.round(virtualizer.getTotalSize() - virtualItems[virtualItems.length - 1].end))
+		: 0;
+	const renderedItems = shouldVirtualize
+		? virtualItems.map((item) => ({ key: item.key, noteId: props.orderedIds[item.index] ?? '' }))
+		: props.orderedIds.map((noteId) => ({ key: noteId, noteId }));
+	const renderedIdsSignature = React.useMemo(
+		() => renderedItems.map((item) => item.noteId).join('|'),
+		[renderedItems]
+	);
 
 	React.useLayoutEffect(() => {
 		const container = containerRef.current;
 		if (!container) return;
+		if (shouldVirtualize) {
+			previousRectsRef.current = measureDocumentRects(container);
+			hasMeasuredRef.current = true;
+			return;
+		}
 		if (!hasMeasuredRef.current) {
 			previousRectsRef.current = measureDocumentRects(container);
 			hasMeasuredRef.current = true;
@@ -296,11 +371,15 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 			skipForScroll: false,
 			suppressUniformGlobalShift: true,
 		});
-	}, [props.activeDragId, props.orderedIds, showPreview]);
+	}, [props.activeDragId, renderedIdsSignature, shouldVirtualize, showPreview]);
 
 	return (
-		<div ref={containerRef} className={showPreview ? styles.containerStrip : styles.containerList}>
-			{props.orderedIds.map((noteId) => {
+		<div
+			ref={containerRef}
+			className={showPreview ? styles.containerStrip : styles.containerList}
+			style={shouldVirtualize ? { paddingTop: `${leadingPaddingPx}px`, paddingBottom: `${trailingPaddingPx}px` } : undefined}
+		>
+			{renderedItems.map(({ key, noteId }) => {
 				const doc = props.docsById[noteId];
 				if (!doc) return null;
 				const snapshot = props.noteSnapshotById.get(noteId);
@@ -313,7 +392,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 
 				return (
 					<NoteRow
-						key={noteId}
+						key={key}
 						noteId={noteId}
 						doc={doc}
 						snapshot={snapshot}

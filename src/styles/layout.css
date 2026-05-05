@@ -1048,6 +1048,31 @@
 	white-space: nowrap;
 }
 
+.sidebar-overflow-label-viewport {
+	min-width: 0;
+	max-width: 100%;
+	flex: 1 1 auto;
+	overflow: hidden;
+	display: inline-flex;
+	align-items: center;
+}
+
+.sidebar-overflow-label {
+	display: inline-block;
+	min-width: 0;
+	max-width: max-content;
+	overflow: visible;
+	text-overflow: clip;
+	padding-inline: 4px;
+	white-space: nowrap;
+	will-change: transform;
+}
+
+.sidebar-overflow-label.is-overflowing {
+	padding-right: 12px;
+	animation: note-grid-scope-marquee var(--chip-marquee-duration, 4.1s) ease-in-out 90ms infinite;
+}
+
 .sidebar-submenu-item-copy {
 	min-width: 0;
 	display: inline-flex;
@@ -1269,6 +1294,52 @@
 	line-height: inherit;
 }
 
+.sidebar-collection-item.has-ancestry {
+	align-items: flex-start;
+	padding-top: 5px;
+	padding-bottom: 5px;
+}
+
+.sidebar-collection-item-copy {
+	min-width: 0;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex: 1 1 auto;
+	justify-content: flex-start;
+}
+
+.sidebar-collection-item-copy.has-ancestry {
+	width: 100%;
+	flex-direction: column;
+	align-items: flex-start;
+	gap: 2px;
+}
+
+.sidebar-collection-line-viewport {
+	width: 100%;
+	max-width: 100%;
+	flex: 0 1 auto;
+	align-self: stretch;
+}
+
+.sidebar-collection-item-prefix {
+	min-width: 0;
+	max-width: 100%;
+	flex: 0 1 auto;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--color-text-muted);
+	font-size: calc(var(--sidebar-submenu-font-size) - 1px);
+	line-height: 1.1;
+}
+
+.sidebar-collection-item-prefix.sidebar-overflow-label {
+	overflow: visible;
+	text-overflow: clip;
+}
+
 .sidebar-collection-item-label {
 	display: block;
 	min-width: 0;
@@ -1279,8 +1350,16 @@
 	line-height: inherit;
 }
 
+.sidebar-collection-item-label.sidebar-overflow-label {
+	overflow: visible;
+	text-overflow: clip;
+	font-weight: 600;
+}
+
 .sidebar-collection-children {
-	margin-left: 10px;
+	margin-left: var(--sidebar-collection-branch-margin-left, 10px);
+	padding-left: var(--sidebar-collection-branch-padding-left, 6px);
+	border-left-width: var(--sidebar-collection-branch-border-width, 1px);
 }
 
 @media (pointer: fine) {
@@ -2065,8 +2144,11 @@
 	margin: 0;
 	padding: 6px 0;
 	display: flex;
-	align-items: center;
-	gap: 10px;
+	align-items: flex-start;
+	align-content: flex-start;
+	justify-content: flex-start;
+	column-gap: 6px;
+	row-gap: 6px;
 	flex-wrap: wrap;
 	width: 100%;
 	box-sizing: border-box;
@@ -2080,12 +2162,14 @@
 }
 
 .note-grid-scope-chip {
-	max-width: min(100%, 34rem);
+	max-width: min(100%, 75vw);
 	min-height: 30px;
 	padding: 0 12px;
 	display: inline-flex;
 	align-items: center;
-	gap: 8px;
+	flex: 0 1 auto;
+	gap: 6px;
+	min-width: 0;
 	border: 1px solid color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
 	border-radius: 999px;
 	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
@@ -2093,7 +2177,7 @@
 
 .note-grid-scope-chip.is-clearable {
 	padding-right: 4px;
-	gap: 6px;
+	gap: 4px;
 }
 
 .note-grid-scope-chip.is-interactive {
@@ -2107,17 +2191,57 @@
 	border-color: color-mix(in srgb, var(--color-accent) 36%, var(--color-border));
 }
 
-.note-grid-scope-label {
-	display: inline-block;
-	min-width: 0;
-	max-width: 100%;
-	overflow: hidden;
-	text-overflow: ellipsis;
+.note-grid-scope-label-static {
+	flex: 0 0 auto;
 	white-space: nowrap;
 	font-size: var(--font-size-xs);
 	font-weight: 700;
 	letter-spacing: 0.01em;
 	color: var(--color-accent);
+}
+
+.note-grid-scope-label {
+	display: inline-block;
+	min-width: 0;
+	max-width: max-content;
+	padding-inline: 4px;
+	white-space: nowrap;
+	font-size: var(--font-size-xs);
+	font-weight: 700;
+	letter-spacing: 0.01em;
+	color: var(--color-accent);
+	will-change: transform;
+}
+
+.note-grid-scope-label-viewport {
+	min-width: 0;
+	max-width: 100%;
+	flex: 1 1 auto;
+	overflow: hidden;
+	display: inline-flex;
+	align-items: center;
+}
+
+.note-grid-scope-label.is-overflowing {
+	padding-right: 12px;
+	animation: note-grid-scope-marquee var(--chip-marquee-duration, 4.1s) ease-in-out 90ms infinite;
+}
+
+@keyframes note-grid-scope-marquee {
+	0%,
+	8% {
+		transform: translateX(0);
+	}
+
+	42%,
+	54% {
+		transform: translateX(calc(var(--chip-marquee-distance, 0px) * -1));
+	}
+
+	88%,
+	100% {
+		transform: translateX(0);
+	}
 }
 
 .note-grid-scope-slider {
