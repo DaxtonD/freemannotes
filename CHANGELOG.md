@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 1.3.31 - 2026-05-04
+## 1.3.4 - 2026-05-04
 
 ### Added
 - **The Add Image camera modal now surfaces device zoom and rear-lens controls when the browser exposes them.** Camera capture can show offline-safe zoom controls and dedicated rear-lens chips, including ultrawide lenses when Android/WebView reports them as separate rear cameras.
