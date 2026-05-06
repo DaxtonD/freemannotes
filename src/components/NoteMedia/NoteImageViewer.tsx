@@ -56,6 +56,8 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 	const transitionResetTimerRef = React.useRef<number | null>(null);
 	const activePointersRef = React.useRef(new Map<number, { x: number; y: number }>());
 	const pinchStateRef = React.useRef<{ distance: number; scale: number } | null>(null);
+	const stageRef = React.useRef<HTMLDivElement | null>(null);
+	const imageRef = React.useRef<HTMLImageElement | null>(null);
 	const onCloseRef = React.useRef(props.onClose);
 	const onPreviousRef = React.useRef(props.onPrevious);
 	const onNextRef = React.useRef(props.onNext);
@@ -69,16 +71,38 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 	}, [props.onClose, props.onNext, props.onPrevious]);
 
 	const clampScale = React.useCallback((next: number): number => Math.min(MAX_SCALE, Math.max(MIN_SCALE, next)), []);
+	// Clamp panning against the scaled image bounds so zoomed drags can hand off
+	// to previous/next navigation once the user has actually reached an edge.
+	const getPanBounds = React.useCallback((nextScale: number): { maxX: number; maxY: number } => {
+		const stage = stageRef.current;
+		const image = imageRef.current;
+		if (!stage || !image) return { maxX: 0, maxY: 0 };
+		const scaledWidth = image.offsetWidth * nextScale;
+		const scaledHeight = image.offsetHeight * nextScale;
+		return {
+			maxX: Math.max(0, (scaledWidth - stage.clientWidth) / 2),
+			maxY: Math.max(0, (scaledHeight - stage.clientHeight) / 2),
+		};
+	}, []);
+	const clampOffsetToBounds = React.useCallback((nextOffset: { x: number; y: number }, nextScale: number): { x: number; y: number } => {
+		const bounds = getPanBounds(nextScale);
+		return {
+			x: Math.max(-bounds.maxX, Math.min(bounds.maxX, nextOffset.x)),
+			y: Math.max(-bounds.maxY, Math.min(bounds.maxY, nextOffset.y)),
+		};
+	}, [getPanBounds]);
 
 	const updateScale = React.useCallback((next: number) => {
 		setScale((current) => {
 			const resolved = clampScale(typeof next === 'number' ? next : current);
 			if (resolved === MIN_SCALE) {
 				setOffset({ x: 0, y: 0 });
+			} else {
+				setOffset((previous) => clampOffsetToBounds(previous, resolved));
 			}
 			return resolved;
 		});
-	}, [clampScale]);
+	}, [clampOffsetToBounds, clampScale]);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -227,8 +251,8 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 		if (!dragStartRef.current || scale <= 1) return;
 		const nextX = dragStartRef.current.originX + (event.clientX - dragStartRef.current.x);
 		const nextY = dragStartRef.current.originY + (event.clientY - dragStartRef.current.y);
-		setOffset({ x: nextX, y: nextY });
-	}, [scale, syncPinchState]);
+		setOffset(clampOffsetToBounds({ x: nextX, y: nextY }, scale));
+	}, [clampOffsetToBounds, scale, syncPinchState]);
 
 	const handlePrevious = React.useCallback(() => {
 		pendingTransitionDirectionRef.current = 'previous';
@@ -269,14 +293,29 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 		if (activePointersRef.current.size < 2) {
 			pinchStateRef.current = null;
 		}
-		if (event && start && endPoint && scale <= 1 && activePointersRef.current.size === 0) {
+		if (event && start && endPoint && activePointersRef.current.size === 0) {
 			const dx = endPoint.x - start.x;
 			const dy = endPoint.y - start.y;
-			// Only treat the gesture as navigation/close when the image is zoomed out;
-			// once zoomed in, pointer travel should remain dedicated to panning.
-			if (Math.abs(dx) > 72 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+			const horizontalSwipe = Math.abs(dx) > 72 && Math.abs(dx) > Math.abs(dy) * 1.2;
+			if (horizontalSwipe && scale <= 1) {
 				if (dx < 0) handleNext();
 				if (dx > 0) handlePrevious();
+			}
+			if (horizontalSwipe && scale > 1) {
+				const nextOffset = dragStartRef.current
+					? clampOffsetToBounds({
+						x: dragStartRef.current.originX + dx,
+						y: dragStartRef.current.originY + dy,
+					}, scale)
+					: clampOffsetToBounds(offset, scale);
+				const bounds = getPanBounds(scale);
+				const edgeTolerancePx = 16;
+				// Treat a continued swipe at the horizontal boundary as carousel
+				// navigation instead of letting the image pan forever in place.
+				const atRightEdge = bounds.maxX <= edgeTolerancePx || nextOffset.x >= bounds.maxX - edgeTolerancePx;
+				const atLeftEdge = bounds.maxX <= edgeTolerancePx || nextOffset.x <= -bounds.maxX + edgeTolerancePx;
+				if (dx < 0 && atLeftEdge) handleNext();
+				if (dx > 0 && atRightEdge) handlePrevious();
 			}
 			if (dy > 96 && Math.abs(dy) > Math.abs(dx) * 1.2) {
 				requestClose();
@@ -285,7 +324,7 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 		swipeStartRef.current = null;
 		dragStartRef.current = null;
 		setDragging(false);
-	}, [handleNext, handlePrevious, requestClose, scale]);
+	}, [clampOffsetToBounds, getPanBounds, handleNext, handlePrevious, offset, requestClose, scale]);
 
 	const handleWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>) => {
 		const direction = event.deltaY < 0 ? 0.12 : -0.12;
@@ -322,6 +361,7 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 				</header>
 
 				<div
+					ref={stageRef}
 					className={`${styles.stage}${dragging ? ` ${styles.stageDragging}` : ''}`}
 					onPointerDown={handlePointerDown}
 					onPointerMove={handlePointerMove}
@@ -335,6 +375,7 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 					>
 						{resolvedImage.src ? (
 							<img
+								ref={imageRef}
 								src={resolvedImage.src}
 								alt={props.title}
 								className={styles.image}

@@ -58,7 +58,6 @@
 .checklistCard {
 	display: flex;
 	flex-direction: column;
-	transition: min-height 300ms cubic-bezier(0.22, 1, 0.36, 1), max-height 300ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .checklistCardCollapsed {
@@ -271,8 +270,8 @@
 }
 
 .checklistCard .body {
-	padding-bottom: 0;
-	flex: 0 0 auto;
+	padding-bottom: var(--space-2);
+	flex: 1 1 auto;
 	overflow: hidden;
 }
 
@@ -696,7 +695,7 @@
 
 .activeChecklistMore {
 	margin-top: 10px;
-	padding-bottom: 12px;
+	padding-bottom: 0;
 }
 
 .completedChecklistMore {
@@ -707,25 +706,14 @@
 .completedSection {
 	display: flex;
 	flex-direction: column;
-	gap: 4px;
+	gap: 0;
 	margin: 0;
-	padding: 6px var(--space-2) var(--space-2);
+	padding: 6px var(--space-2);
+	min-height: 38px;
+	justify-content: flex-start;
 	flex: 0 0 auto;
 	font-size: calc(1rem * var(--note-card-font-scale, 1));
 	border-top: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 68%, transparent);
-}
-
-.checklistCardCollapsed .body {
-	flex: 1 1 auto;
-}
-
-.checklistCardCollapsed .completedSection {
-	gap: 0;
-	margin-top: 0;
-	justify-content: flex-start;
-	padding-top: 6px;
-	padding-bottom: 6px;
-	min-height: 38px;
 }
 
 .completedToggle {
@@ -827,7 +815,7 @@
 	}
 
 	.checklistCardCompletedExpanded {
-		max-height: var(--note-card-expanded-checklist-max-height, var(--note-card-max-height));
+		max-height: none;
 	}
 
 	.checklistCheckbox,
@@ -856,6 +844,7 @@
 
 	.completedSection {
 		padding-top: 10px;
+		padding-bottom: 6px;
 	}
 
 	.completedSection .checklist {
@@ -950,10 +939,6 @@
 
 	.checklistCard .completedSection {
 		padding-bottom: 6px;
-	}
-
-	.checklistCardCompletedExpanded .completedSection {
-		padding-bottom: 18px;
 	}
 
 	.checklistCardCompletedExpanded .completedChecklistMore {

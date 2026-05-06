@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.3.5 - 2026-05-05
+
+### Changed
+- **Shared-note workspace metadata now stays collaborator-scoped.** Shared placements now carry per-collaborator collection and label state through the API and client overlays, so each collaborator can organize a shared note without mutating the owner's canonical metadata.
+- **Workspace note moves now preserve local note context across the optimistic move.** Local media, link, document, and collaborator caches now follow the moved doc id immediately, and moved notes remap collections and labels into the destination workspace instead of dropping that metadata.
+
+### Fixed
+- **Refreshing the app no longer reopens whichever modal or editor was last visible.** Overlay restore now strips transient UI state and returns to the current workspace view after a hard refresh.
+- **Shared-note collaboration keeps working after the owner moves a note to another workspace.** Shared-note aliases now reopen against the remapped room id, and move flows update the destination registries and collaborator metadata consistently.
+- **Checklist cards stay stable as collapsed and completed rows rebalance.** Checklist preview budgeting, completed-section sizing, and grid position layout now avoid the clipping and jumpiness seen in recent checklist cards.
+- **Mobile and PWA image viewing is smoother.** The image viewer now clamps zoomed panning to image bounds, hands edge swipes off to previous or next navigation, and resolves the next image source immediately so first-pass swipes stop flashing the previous image.
+
 ## 1.3.4 - 2026-05-04
 
 ### Added

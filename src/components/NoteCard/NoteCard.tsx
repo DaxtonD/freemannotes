@@ -569,7 +569,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const { t } = useI18n();
 	const maxCardHeightPx = Math.max(220, props.maxCardHeightPx ?? 300);
 	const noteCardLinkPreviewMaxItems = maxCardHeightPx >= 420 ? 3 : 2;
-	const collapsedChecklistLineHeightPx = 22;
+	// Budget checklist preview rows using the rendered row pitch, not just the
+	// text line box, so hidden counts stay accurate as card heights change.
+	const collapsedChecklistLineHeightPx = 26;
 	const minimumExpandedCompletedItems = 3;
 	const canEdit = props.canEdit !== false;
 	const preserveControlShell = props.preserveControlShell === true;
@@ -768,8 +770,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		});
 	}, [checklistOrderIndexById, completedChecklistItems]);
 	const fitChecklistItemsToLineBudget = React.useCallback((items: readonly NoteCardChecklistItem[], lineBudget: number) => {
-		if (type !== 'checklist' || items.length === 0 || lineBudget <= 0) {
-			return { visible: [] as NoteCardChecklistItem[], hiddenCount: items.length, usedLineCount: items.length > 0 && lineBudget > 0 ? 1 : 0 };
+		if (type !== 'checklist' || items.length === 0) {
+			return { visible: [] as NoteCardChecklistItem[], hiddenCount: items.length, usedLineCount: 0 };
+		}
+		if (lineBudget <= 0) {
+			return { visible: [] as NoteCardChecklistItem[], hiddenCount: items.length, usedLineCount: 1 };
 		}
 		let totalLineCost = 0;
 		for (const item of items) totalLineCost += checklistItemLineCost(item.id);

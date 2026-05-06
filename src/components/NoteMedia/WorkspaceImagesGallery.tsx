@@ -361,8 +361,8 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 				title: note.title,
 				createdAt: note.createdAt,
 				updatedAt: note.updatedAt,
-				collectionId: note.collectionId,
-				labelIds: note.labelIds,
+				collectionId: placement ? placement.collectionId : note.collectionId,
+				labelIds: placement ? placement.labelIds : note.labelIds,
 				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
 				isPinned: resolveUserNotePinned({
 					docId: docId || id,
