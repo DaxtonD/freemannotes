@@ -416,6 +416,8 @@ model NoteSharePlacement {
   collaboratorId    String    @unique @map("collaborator_id") @db.Uuid
   targetWorkspaceId String    @map("target_workspace_id") @db.Uuid
   folderName        String?   @map("folder_name")
+  collectionId      String?   @map("collection_id")
+  labelIds          Json      @default("[]") @map("label_ids") @db.JsonB
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
   deletedAt         DateTime? @map("deleted_at")

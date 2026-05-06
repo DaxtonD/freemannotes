@@ -482,6 +482,7 @@ type GridNoteCardProps = {
 	preserveControlShell?: boolean;
 	isOverlayActiveCard?: boolean;
 	layoutReady: boolean;
+	disablePositionLayout?: boolean;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 };
@@ -550,6 +551,7 @@ function renderNoteMetaChips(args: {
 	noteId: string;
 	docId: string | null;
 	doc: Y.Doc;
+	sharedPlacement?: SharedNotePlacement | null;
 	themeId: ThemeId;
 	collectionPathById: Map<string, string>;
 	labelById: Map<string, LabelRecord>;
@@ -581,27 +583,29 @@ function renderNoteMetaChips(args: {
 	title?: string;
 }): React.ReactNode | undefined {
 	const note = readNoteFromDoc(args.doc, args.noteId);
-	const collectionPath = note.collectionId ? args.collectionPathById.get(note.collectionId) ?? null : null;
-	const labelItems = note.labelIds
+	const collectionId = args.sharedPlacement ? args.sharedPlacement.collectionId : note.collectionId;
+	const labelIds = args.sharedPlacement ? args.sharedPlacement.labelIds : note.labelIds;
+	const collectionPath = collectionId ? args.collectionPathById.get(collectionId) ?? null : null;
+	const labelItems = labelIds
 		.map((labelId) => args.labelById.get(labelId) ?? null)
 		.filter((label): label is LabelRecord => Boolean(label));
 	const fallbackCollaboratorCount = Math.max(0, args.snapshotShell?.collaboratorCount ?? 0);
 	const collaboratorCount = args.collaboratorSummary?.count ?? fallbackCollaboratorCount;
 	const attachmentShellCounts = args.snapshotShell?.attachmentCounts;
 	const attachmentShellTotal = (attachmentShellCounts?.images ?? 0) + (attachmentShellCounts?.links ?? 0) + (attachmentShellCounts?.documents ?? 0);
-	const showCollectionShell = Boolean(note.collectionId && !collectionPath);
-	const showLabelShell = note.labelIds.length > 0 && labelItems.length === 0;
+	const showCollectionShell = Boolean(collectionId && !collectionPath);
+	const showLabelShell = labelIds.length > 0 && labelItems.length === 0;
 	const showCollaboratorShell = (!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && collaboratorCount > 0;
 	if (!collectionPath && !showCollectionShell && labelItems.length === 0 && !showLabelShell && collaboratorCount <= 0 && (!args.docId || attachmentShellTotal <= 0)) {
 		return undefined;
 	}
 	const chipColorStyle = getNoteColorVars(args.noteId, args.doc, args.themeId);
-	const collectionChipCount = note.collectionId ? '1' : null;
+	const collectionChipCount = collectionId ? '1' : null;
 	const labelChipCount = `${labelItems.length}`;
 
 	return (
 		<>
-			{collectionPath && note.collectionId ? (
+			{collectionPath && collectionId ? (
 				<button
 					type="button"
 					className={styles.noteChipButton}
@@ -617,12 +621,12 @@ function renderNoteMetaChips(args: {
 							kind: 'collection',
 							anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
 							entries: [{
-								key: `collection:${note.collectionId}`,
-								id: note.collectionId,
+								key: `collection:${collectionId}`,
+								id: collectionId,
 								label: formatCompactCollectionPath(collectionPath),
 								fullLabel: collectionPath,
 								kind: 'collection',
-								active: args.activeCollectionId === note.collectionId,
+								active: args.activeCollectionId === collectionId,
 								color: null,
 							}],
 						});
@@ -666,7 +670,7 @@ function renderNoteMetaChips(args: {
 					<span>{labelChipCount}</span>
 				</button>
 			) : showLabelShell ? (
-				renderMetaChipShell(faTag, note.labelIds.length, args.t('note.labels'), chipColorStyle)
+				renderMetaChipShell(faTag, labelIds.length, args.t('note.labels'), chipColorStyle)
 			) : null}
 			{args.collaboratorSummary && args.collaboratorSummary.count > 0 ? (
 				<button
@@ -731,7 +735,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 	return (
 		<motion.div
 			ref={handleItemRef}
-			layout="position"
+			layout={props.disablePositionLayout ? false : 'position'}
 			layoutId={props.note.id}
 			initial={false}
 			transition={
@@ -1383,6 +1387,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// they render in the grid without mutating the source workspace's note order.
 		return uniqueIds([...readOrderIds(noteOrder), ...sharedNoteIds]);
 	}, [noteOrder, sharedNoteIds, storeVersion, props.activeWorkspaceId, workspaceRenderSnapshot]);
+	const sharedPlacementByAlias = React.useMemo(
+		() => new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement] as const)),
+		[props.sharedNotes]
+	);
 
 	const noteSnapshots = React.useMemo<VisibleNoteSnapshot[]>(() => {
 		return orderedIds.map((id) => {
@@ -1393,15 +1401,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				return snapshotNote ? createVisibleNoteSnapshotFromRenderSnapshot(snapshotNote) : createFallbackNoteSnapshot(id);
 			}
 			const note = readNoteFromDoc(doc, id);
-			const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === id);
+			const placement = sharedPlacementByAlias.get(id) ?? null;
 			const docId = placement?.roomId || resolveMediaDocId(id);
 			return {
 				id,
 				title: note.title,
 				createdAt: note.createdAt,
 				updatedAt: note.updatedAt,
-				collectionId: note.collectionId,
-				labelIds: note.labelIds,
+				collectionId: placement ? placement.collectionId : note.collectionId,
+				labelIds: placement ? placement.labelIds : note.labelIds,
 				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
 				isPinned: note.isPinned,
 				lastAccessedAt: note.lastAccessedAt,
@@ -1409,7 +1417,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				archived: note.archived,
 			};
 		});
-	}, [docsById, manager, metadataVersion, orderedIds, props.noteReminderByDocId, props.sharedNotes, resolveMediaDocId, workspaceRenderSnapshotNoteById]);
+	}, [docsById, manager, metadataVersion, orderedIds, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias, workspaceRenderSnapshotNoteById]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 
 	const baseVisibleIds = React.useMemo<string[]>(() => {
@@ -1441,7 +1449,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [allDocsLoaded, docsById, manager, noteSnapshots, orderedIds, props.activeCollectionId, props.activeCollaboratorFilter, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortGrouping, props.sortMode]);
 
 	const visibleNoteEntries = React.useMemo(() => {
-		const sharedPlacementByAlias = new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement]));
 		return baseVisibleIds
 			.map((noteId) => {
 				const placement = sharedPlacementByAlias.get(noteId) ?? null;
@@ -1449,7 +1456,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				return docId ? { noteId, docId, isSharedAlias: Boolean(placement) } : null;
 			})
 			.filter((entry): entry is { noteId: string; docId: string; isSharedAlias: boolean } => Boolean(entry));
-	}, [baseVisibleIds, props.sharedNotes, resolveMediaDocId]);
+	}, [baseVisibleIds, resolveMediaDocId, sharedPlacementByAlias]);
 	const visibleNoteEntriesForCollaboratorSync = React.useMemo(
 		() => [...visibleNoteEntries].sort((left, right) => left.noteId.localeCompare(right.noteId)),
 		[visibleNoteEntries]
@@ -2571,6 +2578,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const cachedMeasuredHeightPx = noteHeightByIdRef.current.get(note.id) ?? null;
 		const collaboratorSummary = collaboratorSummariesByNoteId[note.id];
 		const snapshotShell = workspaceRenderSnapshotNoteById.get(note.id) ?? null;
+		const noteType = String(doc.getMap('metadata').get('type') ?? 'text') === 'checklist' ? 'checklist' : 'text';
 		const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
 		const docId = placement?.roomId || resolveMediaDocId(note.id);
 		const reminderAt = (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[note.id] ?? snapshotShell?.reminderAt ?? null;
@@ -2613,6 +2621,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					noteId: note.id,
 					docId,
 					doc,
+					sharedPlacement: sharedPlacementByAlias.get(note.id) ?? null,
 					collectionPathById,
 					labelById,
 					activeCollectionId: props.activeCollectionId,
@@ -2657,6 +2666,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				isTrashView={isTrashView}
 				initialLinkRecords={initialLinkRecords}
 				preserveControlShell={isSnapshotCard}
+				disablePositionLayout={noteType === 'checklist'}
 				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => {
 					if (moreMenuNoteId) return;
@@ -3080,6 +3090,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									noteId: activeNote.id,
 									docId: activeDocId ?? null,
 									doc: activeDoc,
+									sharedPlacement: sharedPlacementByAlias.get(activeNote.id) ?? null,
 									collectionPathById,
 									labelById,
 									activeCollectionId: props.activeCollectionId,

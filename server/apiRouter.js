@@ -27,12 +27,15 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 const Y = require('yjs');
+const { randomUUID } = require('crypto');
 const { docs: liveDocs } = require('y-websocket/bin/utils');
 const { createTimestampFormatter } = require('./timezone');
 const { findLiveWorkspace, findLiveWorkspaceMembership } = require('./workspaceAccess');
 const { normalizeWorkspaceRole, canEditWorkspaceContent } = require('./workspaceRoles');
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
+const COLLECTIONS_REGISTRY_ID = '__collections_registry__';
+const LABELS_REGISTRY_ID = '__labels_registry__';
 
 /**
  * Creates an API router function that handles REST endpoints.
@@ -84,9 +87,56 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		});
 	}
 
+	function nowIso() {
+		return new Date().toISOString();
+	}
+
+	function normalizeId(value) {
+		return typeof value === 'string' ? value.trim() : String(value ?? '').trim();
+	}
+
+	function normalizeOptionalId(value) {
+		const normalized = normalizeId(value);
+		return normalized.length > 0 ? normalized : null;
+	}
+
+	function normalizeName(value) {
+		return typeof value === 'string' ? value.trim() : String(value ?? '').trim();
+	}
+
+	function normalizeComparableName(value) {
+		return normalizeName(value).toLocaleLowerCase();
+	}
+
+	function normalizeLabelIds(value) {
+		if (!Array.isArray(value)) return [];
+		const seen = new Set();
+		const output = [];
+		for (const entry of value) {
+			const normalized = normalizeId(entry);
+			if (!normalized || seen.has(normalized)) continue;
+			seen.add(normalized);
+			output.push(normalized);
+		}
+		return output;
+	}
+
+	function makeGeneratedId(prefix) {
+		if (typeof randomUUID === 'function') return randomUUID();
+		return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+	}
+
 	function ensureRegistryStructure(doc) {
 		doc.getArray('notesList');
 		doc.getArray('noteOrder');
+	}
+
+	function ensureCollectionRegistryStructure(doc) {
+		doc.getArray('collections');
+	}
+
+	function ensureLabelRegistryStructure(doc) {
+		doc.getArray('labels');
 	}
 
 	function readTitleFromDoc(doc) {
@@ -161,20 +211,41 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 	}
 
 	async function loadRegistryRow(tx, workspaceId) {
-		const docId = makeRoomDocId(workspaceId, NOTES_REGISTRY_ID);
+		return loadWorkspaceDocRow(tx, workspaceId, NOTES_REGISTRY_ID, ensureRegistryStructure);
+	}
+
+	async function loadCollectionRegistryRow(tx, workspaceId) {
+		return loadWorkspaceDocRow(tx, workspaceId, COLLECTIONS_REGISTRY_ID, ensureCollectionRegistryStructure);
+	}
+
+	async function loadLabelRegistryRow(tx, workspaceId) {
+		return loadWorkspaceDocRow(tx, workspaceId, LABELS_REGISTRY_ID, ensureLabelRegistryStructure);
+	}
+
+	async function loadWorkspaceDocRow(tx, workspaceId, rawDocId, initializeDoc) {
+		const docId = makeRoomDocId(workspaceId, rawDocId);
 		const row = await tx.document.findUnique({
 			where: { docId },
 			select: { id: true, state: true },
 		});
 		const doc = new Y.Doc();
-		ensureRegistryStructure(doc);
-		if (row?.state && row.state.length > 0) {
+		initializeDoc(doc);
+		const liveDoc = liveDocs.get(docId) || null;
+		if (liveDoc) {
+			// Moves need the freshest registry state so label/collection ids can be
+			// remapped against rows created moments earlier in the live Yjs session.
+			Y.applyUpdate(doc, Y.encodeStateAsUpdate(liveDoc));
+		} else if (row?.state && row.state.length > 0) {
 			Y.applyUpdate(doc, new Uint8Array(row.state));
 		}
 		return { docId, row, doc };
 	}
 
 	async function saveRegistryRow(tx, workspaceId, registry) {
+		return saveWorkspaceDocRow(tx, workspaceId, registry);
+	}
+
+	async function saveWorkspaceDocRow(tx, workspaceId, registry) {
 		const state = Buffer.from(Y.encodeStateAsUpdate(registry.doc));
 		const stateVector = Buffer.from(Y.encodeStateVector(registry.doc));
 		if (registry.row?.id) {
@@ -220,6 +291,199 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		} catch {
 			// ignore
 		}
+	}
+
+	function readMoveMetadata(doc) {
+		const metadata = doc.getMap('metadata');
+		return {
+			collectionId: normalizeOptionalId(metadata.get('collectionId')),
+			labelIds: normalizeLabelIds(metadata.get('labelIds')),
+		};
+	}
+
+	function readCollectionsFromRegistryDoc(doc) {
+		return doc.getArray('collections').toArray().map((row) => {
+			const id = normalizeId(row.get('id'));
+			const name = normalizeName(row.get('name'));
+			if (!id || !name) return null;
+			return {
+				id,
+				name,
+				parentId: normalizeOptionalId(row.get('parentId')),
+			};
+		}).filter(Boolean);
+	}
+
+	function readLabelsFromRegistryDoc(doc) {
+		return doc.getArray('labels').toArray().map((row) => {
+			const id = normalizeId(row.get('id'));
+			const name = normalizeName(row.get('name'));
+			if (!id || !name) return null;
+			return {
+				id,
+				name,
+				color: typeof row.get('color') === 'string' ? String(row.get('color')).trim() || null : null,
+			};
+		}).filter(Boolean);
+	}
+
+	function createCollectionInRegistryDoc(doc, { name, parentId = null }) {
+		const normalizedName = normalizeName(name);
+		if (!normalizedName) return null;
+		const normalizedParentId = normalizeOptionalId(parentId);
+		const existing = readCollectionsFromRegistryDoc(doc).find((collection) => (
+			collection.parentId === normalizedParentId && normalizeComparableName(collection.name) === normalizeComparableName(normalizedName)
+		)) || null;
+		if (existing) return existing;
+		const createdAt = nowIso();
+		const row = new Y.Map();
+		const collection = {
+			id: makeGeneratedId('collection'),
+			name: normalizedName,
+			parentId: normalizedParentId,
+		};
+		row.set('id', collection.id);
+		row.set('name', collection.name);
+		row.set('parentId', collection.parentId);
+		row.set('createdAt', createdAt);
+		row.set('updatedAt', createdAt);
+		doc.transact(() => {
+			doc.getArray('collections').push([row]);
+		});
+		return collection;
+	}
+
+	function createLabelInRegistryDoc(doc, { name, color = null }) {
+		const normalizedName = normalizeName(name);
+		if (!normalizedName) return null;
+		const existing = readLabelsFromRegistryDoc(doc).find((label) => normalizeComparableName(label.name) === normalizeComparableName(normalizedName)) || null;
+		if (existing) return existing;
+		const row = new Y.Map();
+		const label = {
+			id: makeGeneratedId('label'),
+			name: normalizedName,
+			color: typeof color === 'string' && color.trim() ? color.trim() : null,
+		};
+		row.set('id', label.id);
+		row.set('name', label.name);
+		row.set('color', label.color);
+		row.set('createdAt', nowIso());
+		doc.transact(() => {
+			doc.getArray('labels').push([row]);
+		});
+		return label;
+	}
+
+	function ensureTargetCollectionIdForMove(sourceCollectionId, sourceCollectionsDoc, targetCollectionsDoc) {
+		const normalizedSourceId = normalizeOptionalId(sourceCollectionId);
+		if (!normalizedSourceId) return null;
+		const sourceCollections = readCollectionsFromRegistryDoc(sourceCollectionsDoc);
+		const sourceById = new Map(sourceCollections.map((collection) => [collection.id, collection]));
+		const sourceChain = [];
+		const seen = new Set();
+		let cursor = sourceById.get(normalizedSourceId) || null;
+		while (cursor && !seen.has(cursor.id)) {
+			seen.add(cursor.id);
+			sourceChain.unshift(cursor);
+			cursor = cursor.parentId ? sourceById.get(cursor.parentId) || null : null;
+		}
+		if (sourceChain.length === 0) return null;
+		let targetParentId = null;
+		for (const sourceCollection of sourceChain) {
+			let targetCollection = readCollectionsFromRegistryDoc(targetCollectionsDoc).find((collection) => (
+				collection.parentId === targetParentId && normalizeComparableName(collection.name) === normalizeComparableName(sourceCollection.name)
+			)) || null;
+			if (!targetCollection) {
+				targetCollection = createCollectionInRegistryDoc(targetCollectionsDoc, {
+					name: sourceCollection.name,
+					parentId: targetParentId,
+				});
+			}
+			if (!targetCollection) return targetParentId;
+			targetParentId = targetCollection.id;
+		}
+		return targetParentId;
+	}
+
+	function ensureTargetLabelIdsForMove(sourceLabelIds, sourceLabelsDoc, targetLabelsDoc) {
+		const sourceIds = normalizeLabelIds(sourceLabelIds);
+		if (sourceIds.length === 0) return [];
+		const sourceById = new Map(readLabelsFromRegistryDoc(sourceLabelsDoc).map((label) => [label.id, label]));
+		const targetByName = new Map(readLabelsFromRegistryDoc(targetLabelsDoc).map((label) => [normalizeComparableName(label.name), label]));
+		const nextLabelIds = [];
+		for (const sourceLabelId of sourceIds) {
+			const sourceLabel = sourceById.get(sourceLabelId) || null;
+			if (!sourceLabel) continue;
+			const comparableName = normalizeComparableName(sourceLabel.name);
+			let targetLabel = targetByName.get(comparableName) || null;
+			if (!targetLabel) {
+				targetLabel = createLabelInRegistryDoc(targetLabelsDoc, {
+					name: sourceLabel.name,
+					color: sourceLabel.color,
+				});
+				if (targetLabel) {
+					targetByName.set(comparableName, targetLabel);
+				}
+			}
+			if (targetLabel && !nextLabelIds.includes(targetLabel.id)) {
+				nextLabelIds.push(targetLabel.id);
+			}
+		}
+		return nextLabelIds;
+	}
+
+	async function remapMoveNoteStateForWorkspaceMove(tx, sourceWorkspaceId, targetWorkspaceId, noteState) {
+		const moveDoc = new Y.Doc();
+		Y.applyUpdate(moveDoc, new Uint8Array(noteState));
+		const sourceMetadata = readMoveMetadata(moveDoc);
+		let targetCollectionRegistry = null;
+		let targetLabelRegistry = null;
+		let mappedCollectionId = null;
+		let mappedLabelIds = [];
+
+		if (sourceMetadata.collectionId) {
+			const [sourceCollectionRegistry, nextTargetCollectionRegistry] = await Promise.all([
+				loadCollectionRegistryRow(tx, sourceWorkspaceId),
+				loadCollectionRegistryRow(tx, targetWorkspaceId),
+			]);
+			targetCollectionRegistry = nextTargetCollectionRegistry;
+			mappedCollectionId = ensureTargetCollectionIdForMove(
+				sourceMetadata.collectionId,
+				sourceCollectionRegistry.doc,
+				targetCollectionRegistry.doc,
+			);
+		}
+
+		if (sourceMetadata.labelIds.length > 0) {
+			const [sourceLabelRegistry, nextTargetLabelRegistry] = await Promise.all([
+				loadLabelRegistryRow(tx, sourceWorkspaceId),
+				loadLabelRegistryRow(tx, targetWorkspaceId),
+			]);
+			targetLabelRegistry = nextTargetLabelRegistry;
+			mappedLabelIds = ensureTargetLabelIdsForMove(
+				sourceMetadata.labelIds,
+				sourceLabelRegistry.doc,
+				targetLabelRegistry.doc,
+			);
+		}
+
+		moveDoc.transact(() => {
+			const metadata = moveDoc.getMap('metadata');
+			metadata.set('collectionId', mappedCollectionId);
+			metadata.set('labelIds', mappedLabelIds);
+			metadata.set('updatedAt', Date.now());
+		});
+
+		const result = {
+			noteStateBuffer: Buffer.from(Y.encodeStateAsUpdate(moveDoc)),
+			noteStateVector: Buffer.from(Y.encodeStateVector(moveDoc)),
+			targetCollectionRegistry,
+			targetLabelRegistry,
+			targetCollectionRegistryState: targetCollectionRegistry ? Buffer.from(Y.encodeStateAsUpdate(targetCollectionRegistry.doc)) : null,
+			targetLabelRegistryState: targetLabelRegistry ? Buffer.from(Y.encodeStateAsUpdate(targetLabelRegistry.doc)) : null,
+		};
+		moveDoc.destroy();
+		return result;
 	}
 
 	/**
@@ -633,17 +897,6 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 					const noteTitle = liveSourceDoc
 						? readTitleFromDoc(liveSourceDoc)
 						: readTitleFromState(sourceRow.state, noteId);
-					const sanitizedMoveDoc = new Y.Doc();
-					Y.applyUpdate(sanitizedMoveDoc, new Uint8Array(noteState));
-					sanitizedMoveDoc.transact(() => {
-						const metadata = sanitizedMoveDoc.getMap('metadata');
-						metadata.set('collectionId', null);
-						metadata.set('labelIds', []);
-						metadata.set('updatedAt', Date.now());
-					});
-					const noteStateBuffer = Buffer.from(Y.encodeStateAsUpdate(sanitizedMoveDoc));
-					const noteStateVector = Buffer.from(Y.encodeStateVector(sanitizedMoveDoc));
-					sanitizedMoveDoc.destroy();
 
 					const targetDocExists = await prisma.document.findUnique({
 						where: { docId: targetDocId },
@@ -670,13 +923,18 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						...shareInvitations.map((row) => String(row.inviteeUserId || '')),
 						...shareInvitations.map((row) => String(row.inviterUserId || '')),
 					].filter(Boolean)));
+					let targetCollectionRegistryState = null;
+					let targetLabelRegistryState = null;
 
 					await prisma.$transaction(async (tx) => {
+						const remappedMoveState = await remapMoveNoteStateForWorkspaceMove(tx, sourceWorkspaceId, targetWorkspaceId, noteState);
 						const sourceRegistry = await loadRegistryRow(tx, sourceWorkspaceId);
 						const targetRegistry = await loadRegistryRow(tx, targetWorkspaceId);
 
 						removeNoteFromRegistryDoc(sourceRegistry.doc, noteId);
 						addNoteToRegistryDoc(targetRegistry.doc, noteId, noteTitle);
+						targetCollectionRegistryState = remappedMoveState.targetCollectionRegistryState;
+						targetLabelRegistryState = remappedMoveState.targetLabelRegistryState;
 
 						await tx.shareAccessToken.updateMany({
 							where: {
@@ -733,17 +991,33 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 							data: {
 								workspaceId: targetWorkspaceId,
 								docId: targetDocId,
-								state: noteStateBuffer,
-								stateVector: noteStateVector,
+								state: remappedMoveState.noteStateBuffer,
+								stateVector: remappedMoveState.noteStateVector,
 							},
 						});
 
 						await saveRegistryRow(tx, sourceWorkspaceId, sourceRegistry);
 						await saveRegistryRow(tx, targetWorkspaceId, targetRegistry);
+						if (remappedMoveState.targetCollectionRegistry) {
+							await saveWorkspaceDocRow(tx, targetWorkspaceId, remappedMoveState.targetCollectionRegistry);
+						}
+						if (remappedMoveState.targetLabelRegistry) {
+							await saveWorkspaceDocRow(tx, targetWorkspaceId, remappedMoveState.targetLabelRegistry);
+						}
 					});
 
 					updateLiveRegistryDoc(makeRoomDocId(sourceWorkspaceId, NOTES_REGISTRY_ID), (doc) => removeNoteFromRegistryDoc(doc, noteId));
 					updateLiveRegistryDoc(makeRoomDocId(targetWorkspaceId, NOTES_REGISTRY_ID), (doc) => addNoteToRegistryDoc(doc, noteId, noteTitle));
+					if (targetCollectionRegistryState) {
+						updateLiveRegistryDoc(makeRoomDocId(targetWorkspaceId, COLLECTIONS_REGISTRY_ID), (doc) => {
+							Y.applyUpdate(doc, new Uint8Array(targetCollectionRegistryState));
+						});
+					}
+					if (targetLabelRegistryState) {
+						updateLiveRegistryDoc(makeRoomDocId(targetWorkspaceId, LABELS_REGISTRY_ID), (doc) => {
+							Y.applyUpdate(doc, new Uint8Array(targetLabelRegistryState));
+						});
+					}
 					closeLiveRoom(sourceDocId);
 
 					jsonResponse(res, 200, {

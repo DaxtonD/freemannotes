@@ -50,6 +50,24 @@ function normalizePlacementTarget(input) {
 	return String(input || '').trim().toLowerCase() === 'shared' ? 'shared' : 'personal';
 }
 
+function normalizeOptionalId(input) {
+	const normalized = String(input || '').trim();
+	return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeLabelIds(input) {
+	if (!Array.isArray(input)) return [];
+	const seen = new Set();
+	const output = [];
+	for (const entry of input) {
+		const normalized = String(entry || '').trim();
+		if (!normalized || seen.has(normalized)) continue;
+		seen.add(normalized);
+		output.push(normalized);
+	}
+	return output;
+}
+
 function splitDocRoomId(roomId) {
 	const normalized = String(roomId || '').trim();
 	const separator = normalized.indexOf(':');
@@ -241,6 +259,29 @@ function mapInvitation(invitation) {
 				deletedAt: invitation.placement.deletedAt ? invitation.placement.deletedAt.toISOString() : null,
 			}
 			: null,
+	};
+}
+
+function mapPlacement(placement) {
+	return {
+		id: placement.id,
+		aliasId: `shared-placement:${placement.id}`,
+		roomId: placement.collaborator.docId,
+		sourceWorkspaceId: placement.collaborator.sourceWorkspaceId,
+		sourceNoteId: placement.collaborator.sourceNoteId,
+		role: placement.collaborator.role,
+		folderName: placement.folderName,
+		collectionId: normalizeOptionalId(placement.collectionId),
+		labelIds: normalizeLabelIds(placement.labelIds),
+		inviter: placement.invitation && placement.invitation.inviter
+			? {
+				id: placement.invitation.inviter.id,
+				name: placement.invitation.inviter.name,
+				email: placement.invitation.inviter.email,
+			}
+			: null,
+		createdAt: placement.createdAt.toISOString(),
+		updatedAt: placement.updatedAt.toISOString(),
 	};
 }
 
@@ -441,27 +482,66 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					});
 
 					jsonResponse(res, 200, {
-						placements: placements.map((placement) => ({
-							id: placement.id,
-							aliasId: `shared-placement:${placement.id}`,
-							roomId: placement.collaborator.docId,
-							sourceWorkspaceId: placement.collaborator.sourceWorkspaceId,
-							sourceNoteId: placement.collaborator.sourceNoteId,
-							role: placement.collaborator.role,
-							folderName: placement.folderName,
-							inviter: placement.invitation && placement.invitation.inviter
-								? {
-									id: placement.invitation.inviter.id,
-									name: placement.invitation.inviter.name,
-									email: placement.invitation.inviter.email,
-								}
-								: null,
-							createdAt: placement.createdAt.toISOString(),
-							updatedAt: placement.updatedAt.toISOString(),
-						})),
+						placements: placements.map((placement) => mapPlacement(placement)),
 					});
 				} catch (err) {
 					console.error('[note-share] list placements error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		const placementMatch = pathname.match(/^\/api\/note-shares\/placements\/([^/]+)$/);
+		if (placementMatch && method === 'PUT') {
+			const placementId = decodeURIComponent(placementMatch[1]);
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const body = await readJsonBody(req);
+					const placement = await prisma.noteSharePlacement.findUnique({
+						where: { id: placementId },
+						include: {
+							collaborator: true,
+							invitation: {
+								include: {
+									inviter: { select: { id: true, name: true, email: true } },
+								},
+							},
+						},
+					});
+					if (!placement || placement.deletedAt || placement.userId !== session.userId || placement.collaborator.revokedAt) {
+						jsonResponse(res, 404, { error: 'Placement not found' });
+						return;
+					}
+					const targetMembership = await findLiveWorkspaceMembership(prisma, session.userId, placement.targetWorkspaceId, { role: true });
+					if (!targetMembership) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+					const updated = await prisma.noteSharePlacement.update({
+						where: { id: placement.id },
+						data: {
+							collectionId: body && typeof body === 'object' && 'collectionId' in body
+								? normalizeOptionalId(body.collectionId)
+								: placement.collectionId,
+							labelIds: body && typeof body === 'object' && 'labelIds' in body
+								? normalizeLabelIds(body.labelIds)
+								: normalizeLabelIds(placement.labelIds),
+						},
+						include: {
+							collaborator: true,
+							invitation: {
+								include: {
+									inviter: { select: { id: true, name: true, email: true } },
+								},
+							},
+						},
+					});
+					jsonResponse(res, 200, { placement: mapPlacement(updated) });
+				} catch (err) {
+					console.error('[note-share] update placement error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
 				}
 			})();
@@ -880,6 +960,8 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								invitationId: invitation.id,
 								targetWorkspaceId,
 								folderName: folderName || null,
+								collectionId: null,
+								labelIds: [],
 								deletedAt: null,
 							},
 							create: {
@@ -888,6 +970,8 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								collaboratorId: collaborator.id,
 								targetWorkspaceId,
 								folderName: folderName || null,
+								collectionId: null,
+								labelIds: [],
 							},
 						});
 
@@ -915,6 +999,8 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							aliasId: `shared-placement:${accepted.placement.id}`,
 							targetWorkspaceId: accepted.placement.targetWorkspaceId,
 							folderName: accepted.placement.folderName,
+							collectionId: normalizeOptionalId(accepted.placement.collectionId),
+							labelIds: normalizeLabelIds(accepted.placement.labelIds),
 						},
 					});
 

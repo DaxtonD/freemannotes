@@ -68,6 +68,8 @@ export type SharedNotePlacement = {
 	sourceNoteId: string;
 	role: NoteShareRole;
 	folderName: string | null;
+	collectionId: string | null;
+	labelIds: string[];
 	inviter: NoteShareInviter | null;
 	createdAt: string;
 	updatedAt: string;
@@ -365,6 +367,18 @@ export async function acceptNoteShareInvitation(invitationId: string, args: { ta
 	return fetchJson(`/api/note-shares/invitations/${encodeURIComponent(invitationId)}/accept`, {
 		method: 'POST',
 		body: JSON.stringify(args),
+	});
+}
+
+export async function updateSharedNotePlacementMetadata(args: { placementId: string; collectionId?: string | null; labelIds?: readonly string[] }): Promise<{ placement: SharedNotePlacement }> {
+	const placementId = String(args.placementId || '').trim();
+	if (!placementId) throw new Error('Placement id is required');
+	return fetchJson(`/api/note-shares/placements/${encodeURIComponent(placementId)}`, {
+		method: 'PUT',
+		body: JSON.stringify({
+			collectionId: args.collectionId,
+			labelIds: args.labelIds,
+		}),
 	});
 }
 

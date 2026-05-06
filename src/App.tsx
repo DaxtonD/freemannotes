@@ -84,9 +84,11 @@ import {
 	flushPendingNoteShareActions,
 	listNoteShareInvitations,
 	listSharedNotePlacements,
+	moveCachedNoteShareCollaborators,
 	readCachedNoteShareCollaborators,
 	readPendingCollaboratorActions,
 	syncNoteShareCollaborators,
+	updateSharedNotePlacementMetadata,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, getNotePreviewLinksFromDoc, removeNotePreviewLinkFromDoc } from './core/noteLinks';
@@ -100,16 +102,18 @@ import {
 	emitNoteMediaChanged,
 	filterRemoteNoteImagesByPendingDeletes,
 	getCachedRemoteNoteImages,
+	moveLocalNoteMedia,
 	readQueuedNoteImageDeletions,
 	readQueuedNoteImages,
 	readStoredRemoteNoteImages,
 	scheduleQueuedNoteImageFlush,
 	warmWorkspaceImageMetadata,
 } from './core/noteMediaStore';
-import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
+import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, moveLocalNoteLinks, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
 import {
 	emitNoteDocumentsChanged,
 	getCachedNoteDocuments,
+	moveLocalNoteDocuments,
 	readQueuedNoteDocuments,
 	readStoredRemoteNoteDocuments,
 	scheduleQueuedNoteDocumentFlush,
@@ -422,11 +426,19 @@ function getMobileSidebarWidth(drawer: HTMLElement): number {
 	return 320;
 }
 
-const EMPTY_NOTE_METADATA_STATE = { collectionId: null, labelIds: [], reminderAt: null, isPinned: false, lastAccessedAt: '' };
+type NoteMetadataSnapshot = {
+	collectionId: string | null;
+	labelIds: string[];
+	reminderAt: string | null;
+	isPinned: boolean;
+	lastAccessedAt: string;
+};
+
+const EMPTY_NOTE_METADATA_STATE: NoteMetadataSnapshot = { collectionId: null, labelIds: [], reminderAt: null, isPinned: false, lastAccessedAt: '' };
 
 function metadataSnapshotsEqual(
-	left: { collectionId: string | null; labelIds: string[]; reminderAt: string | null; isPinned: boolean; lastAccessedAt: string },
-	right: { collectionId: string | null; labelIds: string[]; reminderAt: string | null; isPinned: boolean; lastAccessedAt: string }
+	left: NoteMetadataSnapshot,
+	right: NoteMetadataSnapshot
 ): boolean {
 	if (left.collectionId !== right.collectionId) return false;
 	if (left.reminderAt !== right.reminderAt) return false;
@@ -439,7 +451,7 @@ function metadataSnapshotsEqual(
 	return true;
 }
 
-function useNoteMetadataSnapshot(doc: Y.Doc | null): { collectionId: string | null; labelIds: string[]; reminderAt: string | null; isPinned: boolean; lastAccessedAt: string } {
+function useNoteMetadataSnapshot(doc: Y.Doc | null): NoteMetadataSnapshot {
 	const snapshotRef = React.useRef(EMPTY_NOTE_METADATA_STATE);
 	const subscribe = React.useCallback((onStoreChange: () => void) => {
 		if (!doc) return () => undefined;
@@ -463,6 +475,22 @@ function useNoteMetadataSnapshot(doc: Y.Doc | null): { collectionId: string | nu
 		return next;
 	}, [doc]);
 	return React.useSyncExternalStore(subscribe, getSnapshot, () => EMPTY_NOTE_METADATA_STATE);
+}
+
+function useEffectiveNoteMetadataSnapshot(doc: Y.Doc | null, sharedPlacement: SharedNotePlacement | null): NoteMetadataSnapshot {
+	const baseSnapshot = useNoteMetadataSnapshot(doc);
+	const placementLabelIdsKey = React.useMemo(
+		() => sharedPlacement ? sharedPlacement.labelIds.join('\u0000') : '',
+		[sharedPlacement]
+	);
+	return React.useMemo(() => {
+		if (!sharedPlacement) return baseSnapshot;
+		return {
+			...baseSnapshot,
+			collectionId: sharedPlacement.collectionId,
+			labelIds: [...sharedPlacement.labelIds],
+		};
+	}, [baseSnapshot, placementLabelIdsKey, sharedPlacement]);
 }
 
 function buildReminderLookup(reminders: readonly NoteReminderState[]): Record<string, string | null> {
@@ -627,6 +655,15 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	isFabOpen: false,
 };
 
+function stripRestoredOverlayToCurrentView(snapshot: OverlaySnapshot): OverlaySnapshot {
+	// A hard refresh should reopen the underlying workspace view, not whichever
+	// transient modal/editor happened to be open when the page was reloaded.
+	return {
+		...EMPTY_OVERLAY_SNAPSHOT,
+		sidebarView: snapshot.sidebarView,
+	};
+}
+
 const CLOSED_SIDEBAR_GROUPS: Record<string, boolean> = {
 	workspaces: false,
 	reminders: false,
@@ -658,12 +695,9 @@ const SS_OVERLAY_KEY = '__freemannotes_overlay_snapshot';
  */
 const _restoredOverlay: OverlaySnapshot | null = (() => {
 	try {
-		const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
 		const s = window.history.state;
 		if (isOverlayHistoryState(s)) {
-			return isCoarsePointer
-				? s.snapshot
-				: { ...s.snapshot, selectedNoteId: null, editorMode: 'none', crossWorkspaceNote: null };
+			return stripRestoredOverlayToCurrentView(s.snapshot);
 		}
 		// history.state may be a media-dock or image-viewer entry pushed on top.
 		// Fall back to the sessionStorage snapshot.
@@ -671,9 +705,7 @@ const _restoredOverlay: OverlaySnapshot | null = (() => {
 		if (raw) {
 			const parsed = JSON.parse(raw) as OverlaySnapshot;
 			if (hasOverlaySnapshotContent(parsed)) {
-				return isCoarsePointer
-					? parsed
-					: { ...parsed, selectedNoteId: null, editorMode: 'none', crossWorkspaceNote: null };
+				return stripRestoredOverlayToCurrentView(parsed);
 			}
 		}
 	} catch { /* */ }
@@ -4228,18 +4260,74 @@ export function App(): React.JSX.Element {
 	const moveNoteWorkspaceOptions = React.useMemo(() => {
 		return sidebarWorkspaces.filter((workspace) => workspace.id !== authWorkspaceId && workspace.systemKind !== 'SHARED_WITH_ME' && canEditWorkspaceContent(workspace.role));
 	}, [authWorkspaceId, sidebarWorkspaces]);
+	const selectedEditorSharedPlacement = React.useMemo(
+		() => selectedNoteId ? sharedPlacements.find((placement) => placement.aliasId === selectedNoteId) ?? null : null,
+		[selectedNoteId, sharedPlacements]
+	);
+
+	const applySharedPlacementMetadataLocally = React.useCallback((placementId: string, patch: { collectionId?: string | null; labelIds?: readonly string[]; updatedAt?: string }) => {
+		const applyPatch = (placements: readonly SharedNotePlacement[]): readonly SharedNotePlacement[] => placements.map((placement) => {
+			if (placement.id !== placementId) return placement;
+			return {
+				...placement,
+				collectionId: patch.collectionId !== undefined ? patch.collectionId : placement.collectionId,
+				labelIds: patch.labelIds !== undefined ? [...patch.labelIds] : placement.labelIds,
+				updatedAt: patch.updatedAt ?? new Date().toISOString(),
+			};
+		});
+		setSharedPlacements((current) => applyPatch(current));
+		setActiveWorkspaceSharedPlacements((current) => applyPatch(current));
+	}, []);
+
+	const saveSharedPlacementMetadata = React.useCallback(async (placement: SharedNotePlacement, patch: { collectionId?: string | null; labelIds?: readonly string[] }): Promise<void> => {
+		const previousCollectionId = placement.collectionId;
+		const previousLabelIds = [...placement.labelIds];
+		const optimisticUpdatedAt = new Date().toISOString();
+		applySharedPlacementMetadataLocally(placement.id, {
+			collectionId: patch.collectionId !== undefined ? patch.collectionId : placement.collectionId,
+			labelIds: patch.labelIds !== undefined ? patch.labelIds : placement.labelIds,
+			updatedAt: optimisticUpdatedAt,
+		});
+		try {
+			const result = await updateSharedNotePlacementMetadata({
+				placementId: placement.id,
+				collectionId: patch.collectionId,
+				labelIds: patch.labelIds,
+			});
+			applySharedPlacementMetadataLocally(result.placement.id, {
+				collectionId: result.placement.collectionId,
+				labelIds: result.placement.labelIds,
+				updatedAt: result.placement.updatedAt,
+			});
+		} catch (error) {
+			applySharedPlacementMetadataLocally(placement.id, {
+				collectionId: previousCollectionId,
+				labelIds: previousLabelIds,
+				updatedAt: placement.updatedAt,
+			});
+			showBriefDialog(error instanceof Error ? error.message : 'Unable to update shared note metadata.');
+		}
+	}, [applySharedPlacementMetadataLocally, showBriefDialog]);
 
 	const noteCollectionDoc = React.useMemo(
 		() => noteCollectionModalState ? (noteCollectionModalState.doc ?? manager.getDoc(noteCollectionModalState.docId || noteCollectionModalState.noteId)) : null,
 		[manager, noteCollectionModalState]
 	);
+	const noteCollectionPlacement = React.useMemo(
+		() => noteCollectionModalState ? sharedPlacements.find((placement) => placement.aliasId === noteCollectionModalState.noteId) ?? null : null,
+		[noteCollectionModalState, sharedPlacements]
+	);
 	const noteLabelsDoc = React.useMemo(
 		() => noteLabelsModalState ? (noteLabelsModalState.doc ?? manager.getDoc(noteLabelsModalState.docId || noteLabelsModalState.noteId)) : null,
 		[manager, noteLabelsModalState]
 	);
-	const noteCollectionMetadata = useNoteMetadataSnapshot(noteCollectionDoc);
-	const noteLabelsMetadata = useNoteMetadataSnapshot(noteLabelsDoc);
-	const selectedNoteMetadata = useNoteMetadataSnapshot(editorMode === 'none' && selectedNoteId ? openDoc : null);
+	const noteLabelsPlacement = React.useMemo(
+		() => noteLabelsModalState ? sharedPlacements.find((placement) => placement.aliasId === noteLabelsModalState.noteId) ?? null : null,
+		[noteLabelsModalState, sharedPlacements]
+	);
+	const noteCollectionMetadata = useEffectiveNoteMetadataSnapshot(noteCollectionDoc, noteCollectionPlacement);
+	const noteLabelsMetadata = useEffectiveNoteMetadataSnapshot(noteLabelsDoc, noteLabelsPlacement);
+	const selectedNoteMetadata = useEffectiveNoteMetadataSnapshot(editorMode === 'none' && selectedNoteId ? openDoc : null, selectedEditorSharedPlacement);
 
 	React.useEffect(() => {
 		if (!activeCollectionId) return;
@@ -4262,11 +4350,13 @@ export function App(): React.JSX.Element {
 	const handleDeleteCollection = React.useCallback((collectionId: string) => {
 		if (!collectionsDoc) return;
 		deleteCollection(collectionsDoc, collectionId);
-		if (noteCollectionDoc && readNoteMetadataState(noteCollectionDoc).collectionId === collectionId) {
+		if (noteCollectionPlacement && noteCollectionMetadata.collectionId === collectionId) {
+			void saveSharedPlacementMetadata(noteCollectionPlacement, { collectionId: null });
+		} else if (noteCollectionDoc && readNoteMetadataState(noteCollectionDoc).collectionId === collectionId) {
 			assignNoteToCollection(noteCollectionDoc, null);
 		}
 		setActiveCollectionId((current) => current === collectionId ? null : current);
-	}, [collectionsDoc, noteCollectionDoc]);
+	}, [collectionsDoc, noteCollectionDoc, noteCollectionMetadata.collectionId, noteCollectionPlacement, saveSharedPlacementMetadata]);
 	const handleCreateLabel = React.useCallback((args: { name: string; color?: string | null }): string | null => {
 		if (!labelsDoc) return null;
 		return createLabel(labelsDoc, args)?.id ?? null;
@@ -4278,26 +4368,38 @@ export function App(): React.JSX.Element {
 	const handleDeleteLabel = React.useCallback((labelId: string) => {
 		if (!labelsDoc) return;
 		deleteLabel(labelsDoc, labelId);
-		if (noteLabelsDoc) {
+		if (noteLabelsPlacement && noteLabelsMetadata.labelIds.includes(labelId)) {
+			void saveSharedPlacementMetadata(noteLabelsPlacement, {
+				labelIds: noteLabelsMetadata.labelIds.filter((entry) => entry !== labelId),
+			});
+		} else if (noteLabelsDoc) {
 			const current = readNoteMetadataState(noteLabelsDoc).labelIds;
 			if (current.includes(labelId)) {
 				assignNoteLabels(noteLabelsDoc, current.filter((entry) => entry !== labelId));
 			}
 		}
 		setActiveLabelIds((current) => current.filter((entry) => entry !== labelId));
-	}, [labelsDoc, noteLabelsDoc]);
+	}, [labelsDoc, noteLabelsDoc, noteLabelsMetadata.labelIds, noteLabelsPlacement, saveSharedPlacementMetadata]);
 	const handleSelectNoteCollection = React.useCallback((collectionId: string | null) => {
+		if (noteCollectionPlacement) {
+			void saveSharedPlacementMetadata(noteCollectionPlacement, { collectionId });
+			return;
+		}
 		if (!noteCollectionDoc) return;
 		assignNoteToCollection(noteCollectionDoc, collectionId);
-	}, [noteCollectionDoc]);
+	}, [noteCollectionDoc, noteCollectionPlacement, saveSharedPlacementMetadata]);
 	const handleToggleNoteLabel = React.useCallback((labelId: string) => {
+		const current = noteLabelsMetadata.labelIds;
+		const nextLabelIds = current.includes(labelId)
+			? current.filter((entry) => entry !== labelId)
+			: [...current, labelId];
+		if (noteLabelsPlacement) {
+			void saveSharedPlacementMetadata(noteLabelsPlacement, { labelIds: nextLabelIds });
+			return;
+		}
 		if (!noteLabelsDoc) return;
-		const current = readNoteMetadataState(noteLabelsDoc).labelIds;
-		assignNoteLabels(
-			noteLabelsDoc,
-			current.includes(labelId) ? current.filter((entry) => entry !== labelId) : [...current, labelId]
-		);
-	}, [noteLabelsDoc]);
+		assignNoteLabels(noteLabelsDoc, nextLabelIds);
+	}, [noteLabelsDoc, noteLabelsMetadata.labelIds, noteLabelsPlacement, saveSharedPlacementMetadata]);
 	const handleSaveNoteReminder = React.useCallback((reminderAt: string | null) => {
 		if (!noteReminderModalState) return;
 		const { docId, noteId, title } = noteReminderModalState;
@@ -7099,6 +7201,8 @@ export function App(): React.JSX.Element {
 		if (!moveNoteModalState || !authWorkspaceId) return;
 		const noteId = moveNoteModalState.noteId;
 		const noteTitle = moveNoteModalState.title;
+		const sourceDocId = `${authWorkspaceId}:${noteId}`;
+		const targetDocId = `${targetWorkspaceId}:${noteId}`;
 		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
 		const shouldQueueImmediately = authOfflineMode || browserOffline;
 		let shouldShowQueuedMessage = shouldQueueImmediately;
@@ -7109,6 +7213,14 @@ export function App(): React.JSX.Element {
 				sourceWorkspaceId: authWorkspaceId,
 				title: noteTitle,
 			});
+			// Keep docId-keyed local caches aligned with the optimistic move so chips,
+			// previews, and attachment panels stay populated before the server round-trip.
+			await Promise.allSettled([
+				moveLocalNoteMedia(sourceDocId, targetDocId, authUserId),
+				moveLocalNoteLinks(sourceDocId, targetDocId, authUserId),
+				moveLocalNoteDocuments(sourceDocId, targetDocId, authUserId),
+				authUserId ? moveCachedNoteShareCollaborators(authUserId, sourceDocId, targetDocId) : Promise.resolve(),
+			]);
 			setSelectedNoteId((current) => current === noteId ? null : current);
 			setOpenDocId((current) => {
 				if (current !== noteId) return current;
@@ -7151,6 +7263,12 @@ export function App(): React.JSX.Element {
 							sourceWorkspaceId: targetWorkspaceId,
 							title: noteTitle,
 						});
+						await Promise.allSettled([
+							moveLocalNoteMedia(targetDocId, sourceDocId, authUserId),
+							moveLocalNoteLinks(targetDocId, sourceDocId, authUserId),
+							moveLocalNoteDocuments(targetDocId, sourceDocId, authUserId),
+							authUserId ? moveCachedNoteShareCollaborators(authUserId, targetDocId, sourceDocId) : Promise.resolve(),
+						]);
 						if (authUserId) {
 							removePendingNoteMove(authUserId, noteId);
 						}
@@ -7197,6 +7315,12 @@ export function App(): React.JSX.Element {
 		}
 	}, [authOfflineMode, authStatus, manager, showBriefDialog, t]);
 
+	const selectedNoteRoomId = React.useMemo(() => {
+		if (!selectedNoteId) return '';
+		const placement = sharedPlacements.find((item) => item.aliasId === selectedNoteId) ?? null;
+		return placement?.roomId || (authWorkspaceId ? `${authWorkspaceId}:${selectedNoteId}` : selectedNoteId);
+	}, [authWorkspaceId, selectedNoteId, sharedPlacements]);
+
 	React.useEffect(() => {
 		let cancelled = false;
 		// Branch: nothing selected.
@@ -7205,6 +7329,10 @@ export function App(): React.JSX.Element {
 			setOpenDocId(null);
 			return;
 		}
+		// Re-open the editor whenever a shared-note alias is remapped to a different
+		// underlying room (for example after the owner moves the shared note).
+		setOpenDoc(null);
+		setOpenDocId(null);
 
 		(async () => {
 			// Offline-first open: return as soon as IndexedDB-hydrated doc is ready.
@@ -7220,7 +7348,7 @@ export function App(): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [manager, selectedNoteId]);
+	}, [manager, selectedNoteId, selectedNoteRoomId]);
 
 	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
 	React.useEffect(() => {

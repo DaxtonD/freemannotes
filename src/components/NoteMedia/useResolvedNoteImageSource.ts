@@ -28,13 +28,54 @@ async function hasCachedImage(url: string): Promise<boolean> {
 	}
 }
 
+function resolveImmediateSource(args: {
+	fullUrl?: string | null;
+	thumbnailUrl?: string | null;
+	objectUrl?: string | null;
+	mode: 'thumbnail' | 'viewer';
+	connectionQuality: 'offline' | 'poor' | 'good';
+}): { src: string | null; isOfflinePreview: boolean } {
+	const { fullUrl, thumbnailUrl, objectUrl, mode, connectionQuality } = args;
+	const offline = connectionQuality === 'offline';
+	const poorConnection = connectionQuality === 'poor';
+	// Pick the source directly from the current inputs so viewer navigation never
+	// has to wait for an effect before switching away from the previous image.
+	if (mode === 'viewer') {
+		if (objectUrl && (offline || poorConnection)) {
+			return { src: objectUrl, isOfflinePreview: true };
+		}
+		if (thumbnailUrl && (offline || poorConnection)) {
+			return { src: thumbnailUrl, isOfflinePreview: false };
+		}
+		if (!offline && fullUrl) {
+			return { src: fullUrl, isOfflinePreview: false };
+		}
+		if (objectUrl) {
+			return { src: objectUrl, isOfflinePreview: true };
+		}
+		return { src: null, isOfflinePreview: false };
+	}
+	if (objectUrl && (offline || poorConnection)) {
+		return { src: objectUrl, isOfflinePreview: true };
+	}
+	if (thumbnailUrl) {
+		return { src: thumbnailUrl, isOfflinePreview: false };
+	}
+	if (!offline && fullUrl) {
+		return { src: fullUrl, isOfflinePreview: false };
+	}
+	if (objectUrl) {
+		return { src: objectUrl, isOfflinePreview: true };
+	}
+	return { src: null, isOfflinePreview: false };
+}
+
 export function useResolvedNoteImageSource(options: ResolvedNoteImageSourceOptions): ResolvedNoteImageSourceState {
 	const { fullUrl, thumbnailUrl, offlineThumbnailBlob, mode } = options;
 	const [connectionQuality, setConnectionQuality] = React.useState(() => getConnectionQuality());
 	const [objectUrl, setObjectUrl] = React.useState<string | null>(null);
-	const [src, setSrc] = React.useState<string | null>(null);
-	const [isOfflinePreview, setIsOfflinePreview] = React.useState(false);
 	const [isUsingCachedFullImage, setIsUsingCachedFullImage] = React.useState(false);
+	const [preferOfflinePreview, setPreferOfflinePreview] = React.useState(false);
 
 	React.useEffect(() => subscribeConnectionQualityChange(() => setConnectionQuality(getConnectionQuality())), []);
 
@@ -49,86 +90,55 @@ export function useResolvedNoteImageSource(options: ResolvedNoteImageSourceOptio
 	}, [offlineThumbnailBlob]);
 
 	React.useEffect(() => {
+		// Reset error-driven preview fallback whenever the requested image changes.
+		setPreferOfflinePreview(false);
+	}, [fullUrl, objectUrl]);
+
+	// Derive the visible source during render so the first frame after a swipe is
+	// already pointed at the next image instead of replaying stale state.
+	const immediate = React.useMemo(() => resolveImmediateSource({
+		fullUrl,
+		thumbnailUrl,
+		objectUrl,
+		mode,
+		connectionQuality,
+	}), [connectionQuality, fullUrl, mode, objectUrl, thumbnailUrl]);
+
+	React.useEffect(() => {
 		let cancelled = false;
-		const offline = connectionQuality === 'offline';
-		const poorConnection = connectionQuality === 'poor';
+		setIsUsingCachedFullImage(false);
 		(async () => {
 			// Prefer a full image already stored by the service worker so viewer opens
 			// at full fidelity offline without duplicating large blobs into IndexedDB.
 			const cachedFull = fullUrl ? await hasCachedImage(fullUrl) : false;
 			if (cancelled) return;
 			if (cachedFull && fullUrl) {
-				setSrc(fullUrl);
-				setIsOfflinePreview(false);
 				setIsUsingCachedFullImage(true);
 				return;
 			}
 			setIsUsingCachedFullImage(false);
-			if (mode === 'viewer') {
-				// On poor links, prefer the low-quality local/server preview immediately
-				// instead of blocking the viewer on the full-size original asset.
-				if (objectUrl && (offline || poorConnection)) {
-					setSrc(objectUrl);
-					setIsOfflinePreview(true);
-					return;
-				}
-				if (thumbnailUrl && (offline || poorConnection)) {
-					setSrc(thumbnailUrl);
-					setIsOfflinePreview(false);
-					return;
-				}
-				if (!offline && fullUrl) {
-					setSrc(fullUrl);
-					setIsOfflinePreview(false);
-					return;
-				}
-				if (objectUrl) {
-					setSrc(objectUrl);
-					setIsOfflinePreview(true);
-					return;
-				}
-				setSrc(null);
-				setIsOfflinePreview(false);
-				return;
-			}
-			// Grid thumbnails use a preview-first policy: local preview on poor links,
-			// then the cheap server thumbnail, then the original only on good links.
-			if (objectUrl && (offline || poorConnection)) {
-				setSrc(objectUrl);
-				setIsOfflinePreview(true);
-				return;
-			}
-			if (thumbnailUrl) {
-				setSrc(thumbnailUrl);
-				setIsOfflinePreview(false);
-				return;
-			}
-			if (!offline && fullUrl) {
-				setSrc(fullUrl);
-				setIsOfflinePreview(false);
-				return;
-			}
-			if (objectUrl) {
-				setSrc(objectUrl);
-				setIsOfflinePreview(true);
-				return;
-			}
-			setSrc(null);
-			setIsOfflinePreview(false);
 		})();
 		return () => {
 			cancelled = true;
 		};
-	}, [connectionQuality, fullUrl, mode, objectUrl, thumbnailUrl]);
+	}, [fullUrl]);
+
+	const fallbackPreviewSrc = objectUrl || null;
+	// Once the service worker confirms a cached full asset exists, upgrade from
+	// the immediate thumbnail/preview choice without reopening the stale frame.
+	const src = preferOfflinePreview
+		? fallbackPreviewSrc
+		: isUsingCachedFullImage && fullUrl
+			? fullUrl
+			: immediate.src;
+	const isOfflinePreview = preferOfflinePreview
+		? Boolean(fallbackPreviewSrc)
+		: isUsingCachedFullImage
+			? false
+			: immediate.isOfflinePreview;
 
 	const fallbackToOfflinePreview = React.useCallback(() => {
-		if (!objectUrl) {
-			setSrc(null);
-			setIsOfflinePreview(false);
-			return;
-		}
-		setSrc(objectUrl);
-		setIsOfflinePreview(true);
+		setPreferOfflinePreview(true);
 		setIsUsingCachedFullImage(false);
 	}, [objectUrl]);
 
