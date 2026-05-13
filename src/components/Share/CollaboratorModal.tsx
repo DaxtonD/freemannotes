@@ -26,9 +26,11 @@ import {
 	type ShareExpiryDays,
 } from '../../core/shareLinks';
 import { useI18n } from '../../core/i18n';
+import { listPriorCollaborators, type PriorCollaboratorUser } from '../../core/priorCollaboratorsApi';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { getWorkspaceMetadataChangedEventName } from '../../core/workspaceMetadataStore';
 import { getCachedAvatarUrl } from '../../core/userAvatarCache';
+import { PriorCollaboratorSuggestions } from './PriorCollaboratorSuggestions';
 import styles from './CollaboratorModal.module.css';
 
 type Props = {
@@ -160,6 +162,10 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const [pendingActionCount, setPendingActionCount] = React.useState(0);
 	const [isOffline, setIsOffline] = React.useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
 	const [snapshot, setSnapshot] = React.useState<NoteShareCollaboratorSnapshot>(EMPTY_SNAPSHOT);
+	const [priorCollaborators, setPriorCollaborators] = React.useState<PriorCollaboratorUser[]>([]);
+	const [loadingPriorCollaborators, setLoadingPriorCollaborators] = React.useState(false);
+	const [identifierFocused, setIdentifierFocused] = React.useState(false);
+	const [dismissSuggestions, setDismissSuggestions] = React.useState(false);
 	const loadRequestIdRef = React.useRef(0);
 	const statusMessage = error ?? success;
 	const statusClassName = error ? styles.error : styles.success;
@@ -283,6 +289,25 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	}, [props.authUserId, props.docId, props.isOpen]);
 
 	React.useEffect(() => {
+		if (!props.isOpen || !props.authUserId) return;
+		let cancelled = false;
+		setLoadingPriorCollaborators(true);
+		listPriorCollaborators()
+			.then((users) => {
+				if (!cancelled) setPriorCollaborators(users);
+			})
+			.catch(() => {
+				if (!cancelled) setPriorCollaborators([]);
+			})
+			.finally(() => {
+				if (!cancelled) setLoadingPriorCollaborators(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [props.authUserId, props.isOpen]);
+
+	React.useEffect(() => {
 		if (!props.isOpen) return;
 		if (typeof window === 'undefined') return;
 		const eventName = getShareLinkReadyEventName();
@@ -316,6 +341,8 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		loadRequestIdRef.current += 1;
 		setAccessResolved(false);
 		setIdentifier('');
+		setIdentifierFocused(false);
+		setDismissSuggestions(false);
 		setRole('EDITOR');
 		setShareRole('');
 		setExpiryDays(7);
@@ -335,6 +362,27 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			setOpenPanel('collaborators');
 		}
 	}, [accessResolved, openPanel, props.isOpen, snapshot.canManage]);
+
+	const filteredPriorCollaborators = React.useMemo(() => {
+		const query = identifier.trim().toLowerCase();
+		if (!query) return [];
+		return priorCollaborators.filter((user) => {
+			if (!user.email) return false;
+			if (isDuplicateCollaboratorIdentifier(snapshot, user.email)) return false;
+			const name = (user.name || '').toLowerCase();
+			const email = user.email.toLowerCase();
+			return name.includes(query) || email.includes(query);
+		});
+	}, [identifier, priorCollaborators, snapshot]);
+
+	const showPriorCollaboratorSuggestions = identifierFocused && !dismissSuggestions && identifier.trim().length > 0 && !busy;
+
+	const handleSelectPriorCollaborator = React.useCallback((user: PriorCollaboratorUser) => {
+		if (!user.email) return;
+		setIdentifier(user.email);
+		setDismissSuggestions(true);
+		setError(null);
+	}, []);
 
 	const handleInvite = React.useCallback(async () => {
 		if (!props.docId || !props.authUserId || !identifier.trim()) return;
@@ -599,7 +647,18 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 											<div className={`${styles.sectionCard} ${styles.inviteSectionCard}`}>
 												<label className={styles.field}>
 													<span>{t('share.identifierPlaceholder')}</span>
-													<input id="collaborator-identifier" name="collaborator-identifier" type="text" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} data-bwignore="true" className={styles.input} value={identifier} onChange={(event) => setIdentifier(event.target.value)} placeholder={t('share.identifierPlaceholder')} disabled={busy} />
+													<div className={styles.inputWithSuggestions}>
+														<input id="collaborator-identifier" name="collaborator-identifier" type="text" autoComplete="off" autoCapitalize="none" autoCorrect="off" spellCheck={false} data-bwignore="true" className={styles.input} value={identifier} onChange={(event) => { setIdentifier(event.target.value); setDismissSuggestions(false); }} onFocus={() => { setIdentifierFocused(true); setDismissSuggestions(false); }} onBlur={() => setIdentifierFocused(false)} placeholder={t('share.identifierPlaceholder')} disabled={busy} />
+														{showPriorCollaboratorSuggestions ? (
+															<PriorCollaboratorSuggestions
+																items={filteredPriorCollaborators}
+																loading={loadingPriorCollaborators}
+																emptyLabel={t('share.collaboratorSuggestionsEmpty')}
+																loadingLabel={t('share.collaboratorSuggestionsLoading')}
+																onSelect={handleSelectPriorCollaborator}
+															/>
+														) : null}
+													</div>
 												</label>
 												<label className={styles.field}>
 													<span>{t('share.requiredRole')}</span>

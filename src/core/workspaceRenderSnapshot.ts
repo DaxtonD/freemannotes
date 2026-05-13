@@ -26,7 +26,7 @@ export type WorkspaceRenderSnapshotChecklistItem = {
 export type WorkspaceRenderSnapshotAttachmentCounts = {
 	images: number;
 	links: number;
-	documents: number;
+	drawings: number;
 };
 
 export type WorkspaceRenderSnapshotPreviewCard = {
@@ -46,7 +46,7 @@ export type WorkspaceRenderSnapshotPreviewCard = {
 
 export type WorkspaceRenderSnapshotNote = {
 	id: string;
-	type: 'text' | 'checklist';
+	type: 'text' | 'checklist' | 'drawing';
 	title: string;
 	content: string;
 	richContent: JSONContent | null;
@@ -58,6 +58,7 @@ export type WorkspaceRenderSnapshotNote = {
 	reminderAt: string | null;
 	isPinned: boolean;
 	lastAccessedAt: string;
+	drawingIds: string[];
 	trashed: boolean;
 	archived: boolean;
 	colorToken: string | null;
@@ -166,7 +167,11 @@ function sanitizeNotes(value: unknown): WorkspaceRenderSnapshotNote[] {
 	return value
 		.map((note) => ({
 			id: asString((note as { id?: unknown }).id),
-			type: (note as { type?: unknown }).type === 'checklist' ? 'checklist' : 'text',
+			type: (note as { type?: unknown }).type === 'checklist'
+				? 'checklist'
+				: (note as { type?: unknown }).type === 'drawing'
+					? 'drawing'
+					: 'text',
 			title: asString((note as { title?: unknown }).title),
 			content: asString((note as { content?: unknown }).content),
 			richContent: sanitizeJsonContent((note as { richContent?: unknown }).richContent),
@@ -180,6 +185,9 @@ function sanitizeNotes(value: unknown): WorkspaceRenderSnapshotNote[] {
 			reminderAt: asStringOrNull((note as { reminderAt?: unknown }).reminderAt),
 			isPinned: Boolean((note as { isPinned?: unknown }).isPinned),
 			lastAccessedAt: asString((note as { lastAccessedAt?: unknown }).lastAccessedAt, new Date(0).toISOString()),
+			drawingIds: Array.isArray((note as { drawingIds?: unknown }).drawingIds)
+				? ((note as { drawingIds?: unknown[] }).drawingIds ?? []).map((drawingId) => asString(drawingId)).filter(Boolean)
+				: [],
 			trashed: Boolean((note as { trashed?: unknown }).trashed),
 			archived: Boolean((note as { archived?: unknown }).archived),
 			colorToken: asStringOrNull((note as { colorToken?: unknown }).colorToken),
@@ -187,7 +195,7 @@ function sanitizeNotes(value: unknown): WorkspaceRenderSnapshotNote[] {
 			attachmentCounts: {
 				images: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { images?: unknown } }).attachmentCounts?.images))),
 				links: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { links?: unknown } }).attachmentCounts?.links))),
-				documents: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { documents?: unknown } }).attachmentCounts?.documents))),
+				drawings: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { drawings?: unknown } }).attachmentCounts?.drawings))),
 			},
 			previewLinks: Array.isArray((note as { previewLinks?: unknown }).previewLinks)
 				? ((note as { previewLinks?: unknown[] }).previewLinks ?? [])
@@ -340,6 +348,7 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 		reminderAt: args.reminderAt,
 		isPinned: note.isPinned,
 		lastAccessedAt: note.lastAccessedAt,
+		drawingIds: [...note.drawingIds],
 		trashed: note.trashed,
 		archived: note.archived,
 		colorToken,
@@ -347,7 +356,7 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 		attachmentCounts: {
 			images: Math.max(0, Math.floor(Number(args.attachmentCounts?.images ?? 0) || 0)),
 			links: Math.max(0, Math.floor(Number(args.attachmentCounts?.links ?? previewLinks.length) || 0)),
-			documents: Math.max(0, Math.floor(Number(args.attachmentCounts?.documents ?? 0) || 0)),
+			drawings: Math.max(0, Math.floor(Number(args.attachmentCounts?.drawings ?? 0) || 0)),
 		},
 		previewLinks,
 		previewCards: sanitizePreviewCards(args.previewCards ?? []),

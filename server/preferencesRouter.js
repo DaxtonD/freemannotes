@@ -233,7 +233,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 		'yellow', 'amber', 'orange', 'coral', 'red', 'rose', 'pink', 'magenta',
 		'purple', 'violet', 'indigo', 'blue', 'sky', 'cyan', 'teal', 'mint',
 		'green', 'lime', 'olive', 'brown', 'copper', 'slate', 'gray', 'graphite',
-		'sand', 'peach', 'cream', 'lavender',
+		'sand', 'peach', 'cream', 'lavender', 'white',
 	]);
 
 	/**

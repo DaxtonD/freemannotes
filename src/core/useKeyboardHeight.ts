@@ -38,9 +38,12 @@ export function useKeyboardHeight(): KeyboardState {
 		if (!vv) return;
 
 		const update = (): void => {
-			const kbHeight = Math.round(window.innerHeight - vv.height);
-			const isOpen = kbHeight > KEYBOARD_THRESHOLD;
 			const visibleBottom = Math.round(vv.offsetTop + vv.height);
+			// Use actual bottom occlusion instead of raw viewport shrink: mobile browsers
+			// can pan the visual viewport during selection drags or browser-chrome motion
+			// without the software keyboard actually dismissing.
+			const kbHeight = Math.max(0, Math.round(window.innerHeight - visibleBottom));
+			const isOpen = kbHeight > KEYBOARD_THRESHOLD;
 			const next: KeyboardState = isOpen
 				? { isOpen: true, visibleBottom }
 				: CLOSED;

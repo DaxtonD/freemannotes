@@ -18,6 +18,7 @@
 import * as Y from 'yjs';
 import type { JSONContent } from '@tiptap/core';
 import type { NoteColorToken } from './noteColors';
+import { DEFAULT_DRAWING_BACKGROUND, readDrawingBackgroundColorFromMetadata } from './drawingBackground';
 import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
@@ -35,8 +36,8 @@ import { setNotePreviewLinksOnDoc } from './noteLinks';
 // Types
 // ────────────────────────────────────────────────────────────────────────────
 
-/** The two note content modes the application supports. */
-export type NoteType = 'text' | 'checklist';
+/** The note content modes the application supports. */
+export type NoteType = 'text' | 'checklist' | 'drawing';
 
 /** Plain-data representation of a single checklist row. */
 export interface ChecklistItemData {
@@ -103,6 +104,10 @@ export interface Note {
 	isPinned: boolean;
 	/** Most recent time the note was opened/viewed by the user. */
 	lastAccessedAt: string;
+	/** Linked standalone drawing note ids attached to this note. */
+	drawingIds: string[];
+	/** Canvas background color persisted with drawing notes. */
+	drawingBackgroundColor?: string | null;
 	/** Plain-text body. Present only when type === 'text'. */
 	content?: string;
 	/** Checklist rows. Present only when type === 'checklist'. */
@@ -123,6 +128,20 @@ function normalizeIsoString(value: unknown): string | null {
 }
 
 function normalizeLabelIds(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const seen = new Set<string>();
+	const output: string[] = [];
+	for (const entry of value) {
+		if (typeof entry !== 'string') continue;
+		const normalized = entry.trim();
+		if (!normalized || seen.has(normalized)) continue;
+		seen.add(normalized);
+		output.push(normalized);
+	}
+	return output;
+}
+
+function normalizeDrawingIds(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	const seen = new Set<string>();
 	const output: string[] = [];
@@ -179,6 +198,7 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 	const now = Date.now();
 	const nowIso = new Date(now).toISOString();
 	doc.transact(() => {
+		doc.getArray<string>('drawingIds');
 		/* Title – replace any pre-existing text with the supplied value. */
 		const yTitle = doc.getText('title');
 		yTitle.delete(0, yTitle.length);
@@ -204,6 +224,7 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
 		metadata.set('colorToken', null);
+		metadata.set('drawingBackgroundColor', DEFAULT_DRAWING_BACKGROUND);
 		metadata.set('collectionId', null);
 		metadata.set('labelIds', []);
 		metadata.set('reminderAt', null);
@@ -240,6 +261,7 @@ export function initChecklistNoteDoc(
 	const yChecklist = doc.getArray<Y.Map<any>>('checklist');
 
 	doc.transact(() => {
+		doc.getArray<string>('drawingIds');
 		/* Title – clear and write. */
 		const yTitle = doc.getText('title');
 		yTitle.delete(0, yTitle.length);
@@ -255,6 +277,7 @@ export function initChecklistNoteDoc(
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
 		metadata.set('colorToken', null);
+		metadata.set('drawingBackgroundColor', DEFAULT_DRAWING_BACKGROUND);
 		metadata.set('collectionId', null);
 		metadata.set('labelIds', []);
 		metadata.set('reminderAt', null);
@@ -294,6 +317,51 @@ export function initChecklistNoteDoc(
 	});
 }
 
+/**
+ * Initialize a Y.Doc as a **drawing note** backed by Excalidraw/Yjs.
+ *
+ * Canonical drawing docs use the same title/metadata fields as other notes, plus:
+ *   - `elements`   (Y.Array<Y.Map<any>>) – collaborative Excalidraw scene elements
+ *   - `assets`     (Y.Map<any>)          – collaborative Excalidraw file/assets map
+ *   - `drawingIds` (Y.Array<string>)     – linked drawing note ids for attachments
+ *
+ * `elements` and `assets` match the shape expected by `y-excalidraw`, so the
+ * editor can attach directly to the live note doc without an extra scene layer.
+ */
+export function initDrawingNoteDoc(doc: Y.Doc, title: string): void {
+	const now = Date.now();
+	const nowIso = new Date(now).toISOString();
+	doc.transact(() => {
+		const yTitle = doc.getText('title');
+		yTitle.delete(0, yTitle.length);
+		yTitle.insert(0, title);
+
+		doc.getArray<Y.Map<any>>('elements');
+		doc.getMap<any>('assets');
+		const drawingIds = doc.getArray<string>('drawingIds');
+		if (drawingIds.length > 0) {
+			drawingIds.delete(0, drawingIds.length);
+		}
+
+		const metadata = doc.getMap<any>('metadata');
+		metadata.set('type', 'drawing');
+		metadata.set('createdAt', now);
+		metadata.set('updatedAt', now);
+		metadata.set('trashed', false);
+		metadata.set('trashedAt', null);
+		metadata.set('archived', false);
+		metadata.set('archivedAt', null);
+		metadata.set('colorToken', null);
+		metadata.set('drawingBackgroundColor', DEFAULT_DRAWING_BACKGROUND);
+		metadata.set('collectionId', null);
+		metadata.set('labelIds', []);
+		metadata.set('reminderAt', null);
+		metadata.set('isPinned', false);
+		metadata.set('lastAccessedAt', nowIso);
+		setNotePreviewLinksOnDoc(doc, []);
+	});
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Snapshot reader  (Y.Doc → plain Note)
 // ────────────────────────────────────────────────────────────────────────────
@@ -311,7 +379,11 @@ export function initChecklistNoteDoc(
 export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	const metadata = doc.getMap<any>('metadata');
 	const rawType = String(metadata.get('type') ?? 'text');
-	const type: NoteType = rawType === 'checklist' ? 'checklist' : 'text';
+	const type: NoteType = rawType === 'checklist'
+		? 'checklist'
+		: rawType === 'drawing'
+			? 'drawing'
+			: 'text';
 
 	const title = doc.getText('title').toString();
 	const createdAt = Number(metadata.get('createdAt') ?? 0);
@@ -327,8 +399,10 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	const archivedAt = typeof rawArchivedAt === 'string' ? rawArchivedAt : null;
 	const rawColorToken = metadata.get('colorToken');
 	const colorToken = typeof rawColorToken === 'string' ? (rawColorToken as NoteColorToken) : null;
+	const drawingBackgroundColor = readDrawingBackgroundColorFromMetadata(metadata);
 	const collectionId = normalizeOptionalId(metadata.get('collectionId'));
 	const labelIds = normalizeLabelIds(metadata.get('labelIds'));
+	const drawingIds = normalizeDrawingIds(doc.getArray<string>('drawingIds').toArray());
 	const reminderAt = normalizeIsoString(metadata.get('reminderAt'));
 	const isPinned = Boolean(metadata.get('isPinned'));
 	const fallbackAccessedAt = Number.isFinite(createdAt) && createdAt > 0 ? new Date(createdAt).toISOString() : new Date(updatedAt || Date.now()).toISOString();
@@ -345,8 +419,10 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 		archivedAt,
 		trashedAt,
 		colorToken,
+		drawingBackgroundColor,
 		collectionId,
 		labelIds,
+		drawingIds,
 		reminderAt,
 		isPinned,
 		lastAccessedAt,
@@ -360,7 +436,7 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 			: richPreview
 				? getPlainTextFromRichJson(richPreview, 'full')
 				: '';
-	} else {
+	} else if (type === 'checklist') {
 		const yChecklist = doc.getArray<Y.Map<any>>('checklist');
 		base.items = yChecklist
 			.toArray()
@@ -515,6 +591,62 @@ export function setNoteCollection(doc: Y.Doc, collectionId: string | null, origi
 export function readLabelState(doc: Y.Doc): { labelIds: string[] } {
 	const metadata = doc.getMap<any>('metadata');
 	return { labelIds: normalizeLabelIds(metadata.get('labelIds')) };
+}
+
+export function readDrawingLinkState(doc: Y.Doc): { drawingIds: string[] } {
+	return { drawingIds: normalizeDrawingIds(doc.getArray<string>('drawingIds').toArray()) };
+}
+
+export function readDrawingBackgroundState(doc: Y.Doc): { drawingBackgroundColor: string } {
+	const metadata = doc.getMap<any>('metadata');
+	return { drawingBackgroundColor: readDrawingBackgroundColorFromMetadata(metadata) };
+}
+
+export function setNoteDrawingIds(doc: Y.Doc, drawingIds: readonly string[], origin?: symbol): void {
+	const normalizedDrawingIds = normalizeDrawingIds(drawingIds);
+	const drawingIdArray = doc.getArray<string>('drawingIds');
+	const run = (): void => {
+		if (drawingIdArray.length > 0) {
+			drawingIdArray.delete(0, drawingIdArray.length);
+		}
+		if (normalizedDrawingIds.length > 0) {
+			drawingIdArray.insert(0, normalizedDrawingIds.slice());
+		}
+		doc.getMap<any>('metadata').set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
+}
+
+export function addNoteDrawingId(doc: Y.Doc, drawingId: string, origin?: symbol): void {
+	const current = readDrawingLinkState(doc).drawingIds;
+	setNoteDrawingIds(doc, [...current, drawingId], origin);
+}
+
+export function removeNoteDrawingId(doc: Y.Doc, drawingId: string, origin?: symbol): void {
+	const normalizedDrawingId = normalizeOptionalId(drawingId);
+	if (!normalizedDrawingId) return;
+	const current = readDrawingLinkState(doc).drawingIds;
+	setNoteDrawingIds(doc, current.filter((entry) => entry !== normalizedDrawingId), origin);
+}
+
+export function setDrawingBackgroundColor(doc: Y.Doc, color: string, origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const normalizedColor = readDrawingBackgroundColorFromMetadata({
+		get: () => color,
+	});
+	const run = (): void => {
+		metadata.set('drawingBackgroundColor', normalizedColor);
+		metadata.set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
 }
 
 export function setNoteLabelIds(doc: Y.Doc, labelIds: readonly string[], origin?: symbol): void {

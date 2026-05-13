@@ -22,6 +22,7 @@ import {
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem } from '../../core/checklistCounts';
+import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { createRichTextDocFromPlainText, splitMinimalRichTextAtSelection } from '../../core/richText';
@@ -112,8 +113,8 @@ function renderRichPreview(json: JSONContent | null | undefined): React.ReactNod
 						<a
 							key={`${key}-link`}
 							href={href}
-							target="_blank"
-							rel="noreferrer noopener"
+							target={getExternalLinkTarget()}
+							rel={getExternalLinkRel()}
 							onClick={(event) => event.stopPropagation()}
 						>
 							{element}
@@ -219,6 +220,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState(false);
+	const mediaFlyoutRef = React.useRef<HTMLElement | null>(null);
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
 	const keyboard = useKeyboardHeight();
@@ -252,6 +254,18 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			// Hide the active caret immediately once the sheet overlays editor content.
 			active.blur();
 		}
+	}, [isCoarsePointer, mediaDockOpen]);
+	React.useEffect(() => {
+		if (!mediaDockOpen || isCoarsePointer || typeof document === 'undefined') return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target;
+			if (!(target instanceof Element)) return;
+			if (mediaFlyoutRef.current?.contains(target)) return;
+			if (target.closest('[data-checklist-editor-media-dock-trigger="true"]')) return;
+			setMediaDockOpen(false);
+		};
+		document.addEventListener('pointerdown', handlePointerDown, true);
+		return () => document.removeEventListener('pointerdown', handlePointerDown, true);
 	}, [isCoarsePointer, mediaDockOpen]);
 	// ── Keyboard-drag focusout guard ─────────────────────────────────────────────
 	// Mounted once on component init.  Listens in the *capture* phase so it fires
@@ -686,21 +700,24 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 
 	const CHECKBOX_UNDO_LIMIT = 40;
 
+	const pushChecklistUndoSnapshot = React.useCallback((snapshot: DraftChecklistItem[]): void => {
+		checkboxUndoStack.current = [
+			...checkboxUndoStack.current.slice(-(CHECKBOX_UNDO_LIMIT - 1)),
+			snapshot,
+		];
+		checkboxRedoStack.current = [];
+		setCheckboxUndoAvail(true);
+		setCheckboxRedoAvail(false);
+	}, []);
+
 	const toggleCompleted = React.useCallback((id: string, checked: boolean): void => {
 		setItems((prev) => {
 			const next = reconcileDraftItems(toggleChecklistItemCompleted(prev, id, checked), prev);
 			if (next === prev) return prev;
-			// Push snapshot to undo stack before applying the change.
-			checkboxUndoStack.current = [
-				...checkboxUndoStack.current.slice(-(CHECKBOX_UNDO_LIMIT - 1)),
-				prev,
-			];
-			checkboxRedoStack.current = [];
-			setCheckboxUndoAvail(true);
-			setCheckboxRedoAvail(false);
+			pushChecklistUndoSnapshot(prev);
 			return next;
 		});
-	}, []);
+	}, [pushChecklistUndoSnapshot]);
 
 	const undoCheckboxChange = React.useCallback((): void => {
 		const snapshot = checkboxUndoStack.current[checkboxUndoStack.current.length - 1];
@@ -755,9 +772,12 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			if (normalized.length <= 1) return prev;
 			const firstActiveId = normalized.find((row) => !row.completed)?.id ?? normalized[0]?.id ?? null;
 			if (firstActiveId && id === firstActiveId) return prev;
-			return reconcileDraftItems(removeChecklistItemWithChildren(prev, id), prev);
+			const next = reconcileDraftItems(removeChecklistItemWithChildren(prev, id), prev);
+			if (next === prev) return prev;
+			pushChecklistUndoSnapshot(prev);
+			return next;
 		});
-	}, [prepareRowFocusHandoff]);
+	}, [prepareRowFocusHandoff, pushChecklistUndoSnapshot]);
 
 	const onDragEnd = React.useCallback((event: DropResult): void => {
 		const destination = event.destination;
@@ -1545,6 +1565,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 							<button
 								type="button"
 								className={styles.mediaDockText}
+								data-checklist-editor-media-dock-trigger="true"
 								onClick={() => {
 									if (isMobileLandscapeRef.current) return;
 									setMediaDockOpen((prev) => !prev);
@@ -1617,6 +1638,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			</form>
 
 			<aside
+				ref={mediaFlyoutRef}
 				className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
 				onClick={(e) => e.stopPropagation()}
 				aria-hidden={!mediaDockOpen}

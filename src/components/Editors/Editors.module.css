@@ -152,6 +152,10 @@
 
 	.checklistItemActive {
 		background: transparent;
+		/* While editing on mobile, selection handles must be able to travel through
+		   the row gutter without crossing into a non-selectable parent box. */
+		user-select: text;
+		-webkit-user-select: text;
 	}
 
 	.checklistItemActive::before {
@@ -264,6 +268,7 @@
 	}
 
 	.fullscreenEditor {
+		width: 100%;
 		/*
 			Use dynamic viewport units so the editor never runs past the visible
 			viewport on desktop-as-narrow-window and mobile browsers with dynamic
@@ -362,8 +367,9 @@
 	background: transparent;
 	border: 0;
 	border-radius: 0;
-	padding: 4px 84px 4px 0;
+	padding: 4px 0;
 	width: 100%;
+	box-sizing: border-box;
 	min-height: 36px;
 	height: auto;
 	max-height: 30vh;
@@ -383,6 +389,441 @@
 
 .editorTitleInput:focus-visible {
 	outline: none;
+}
+
+.drawingCanvasHost {
+	position: relative;
+	min-height: 0;
+}
+
+@media (pointer: fine) {
+	.drawingCanvasHost {
+		overflow-x: auto;
+		overflow-y: hidden;
+	}
+
+	.drawingCanvasHost :global(.excalidraw) {
+		min-width: 730px;
+		min-height: 100%;
+	}
+
+	.drawingCanvasHost :global(.excalidraw .App) {
+		min-width: 730px;
+	}
+}
+
+
+.drawingCanvasHost,
+.drawingCanvasHostTouch,
+.drawingCanvasHostCompactDesktop {
+	--editor-container-padding: 0px;
+}
+
+.drawingCanvasHost :global(.excalidraw.theme--dark canvas),
+.drawingCanvasHostTouch :global(.excalidraw.theme--dark canvas),
+.drawingCanvasHostCompactDesktop :global(.excalidraw.theme--dark canvas) {
+	filter: none;
+}
+
+.drawingCanvasHost :global(.FixedSideContainer_side_top),
+.drawingCanvasHostTouch :global(.FixedSideContainer_side_top) {
+	left: 0;
+	right: 0;
+	top: 0;
+	bottom: 0;
+}
+
+.drawingCanvasHost :global(.App-top-bar) {
+	align-items: center;
+}
+
+.drawingCanvasHostTouch :global(.App-top-bar) {
+	align-items: stretch;
+}
+
+.drawingCanvasHostCompactDesktop :global(.App-top-bar) {
+	align-items: stretch;
+}
+
+.drawingCanvasHostTouch :global(.App-top-bar > section),
+.drawingCanvasHostTouch :global(.App-top-bar .Stack.Stack_vertical),
+.drawingCanvasHostTouch :global(.App-toolbar-container),
+.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile) {
+	width: 100%;
+	max-width: 100%;
+	margin: 0;
+}
+
+.drawingCanvasHostTouch :global(.App-toolbar-container) {
+	display: block;
+}
+
+.drawingCanvasHost :global(.App-bottom-bar > .Island),
+.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile),
+.drawingCanvasHostTouch :global(.App-bottom-bar > .Island) {
+	border-radius: 0;
+	box-shadow: none;
+	margin: 0;
+}
+
+.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile) {
+	--padding: 0;
+	width: 100% !important;
+	max-width: none;
+	min-width: 100%;
+	flex: 1 1 100%;
+}
+
+.drawingCanvasHost :global(.App-bottom-bar > .Island),
+.drawingCanvasHostTouch :global(.App-toolbar-container),
+.drawingCanvasHostTouch :global(.App-bottom-bar > .Island) {
+	padding: 0;
+}
+
+.drawingCanvasHost :global(.App-bottom-bar > .Island),
+.drawingCanvasHostTouch :global(.App-toolbar-container),
+.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile),
+.drawingCanvasHostTouch :global(.App-bottom-bar > .Island) {
+	min-width: 100%;
+}
+
+.drawingCanvasHost :global(.App-bottom-bar),
+.drawingCanvasHostTouch :global(.App-bottom-bar) {
+	top: auto;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	width: 100% !important;
+	max-width: 100% !important;
+	min-width: 100% !important;
+	margin-left: 0 !important;
+	margin-right: 0 !important;
+	margin-bottom: 0 !important;
+	padding-top: 0;
+	padding-right: 0;
+	padding-left: 0;
+	padding-bottom: var(--sab, 0);
+}
+
+.drawingCanvasHost :global(.App-bottom-bar > .Island),
+.drawingCanvasHostTouch :global(.App-bottom-bar > .Island) {
+	width: 100% !important;
+	max-width: 100% !important;
+	min-width: 100% !important;
+}
+
+.drawingCanvasHost :global(.App-toolbar-content),
+.drawingCanvasHostTouch :global(.App-toolbar-content) {
+	padding: 8px max(var(--sal, 0), 8px) calc(var(--sab, 0) + 8px) max(var(--sar, 0), 8px);
+}
+
+.drawingCanvasHost :global(.App-top-bar .App-toolbar-content),
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-content) {
+	padding-top: 0;
+	padding-bottom: 0;
+}
+
+.drawingCanvasHost :global(.App-top-bar .App-toolbar.App-toolbar--mobile),
+.drawingCanvasHost :global(.App-top-bar .App-toolbar-content) {
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
+}
+
+.drawingCanvasHost :global(.App-top-bar .App-toolbar.App-toolbar--mobile::-webkit-scrollbar),
+.drawingCanvasHost :global(.App-top-bar .App-toolbar-content::-webkit-scrollbar) {
+	display: none;
+}
+
+.drawingCanvasHost :global(.App-top-bar .App-toolbar.App-toolbar--mobile .Stack.Stack_horizontal),
+.drawingCanvasHost :global(.App-top-bar .App-toolbar-content > .Stack.Stack_horizontal) {
+	width: max-content;
+	min-width: max-content;
+	flex-wrap: nowrap;
+}
+
+@media (pointer: fine) {
+	.drawingCanvasHost :global(.FixedSideContainer_side_top) {
+		z-index: 4;
+	}
+
+	.drawingCanvasHost :global(.App-top-bar) {
+		width: 100%;
+		box-sizing: border-box;
+		padding-right: clamp(8.5rem, 15vw, 10.5rem);
+		background: var(--note-editor-header, var(--color-surface-2));
+	}
+
+	.drawingCanvasHost :global(.App-top-bar > section) {
+		width: 100%;
+		max-width: 100%;
+		margin: 0;
+	}
+
+	.drawingCanvasHost :global(.App-top-bar .Stack.Stack_vertical),
+	.drawingCanvasHost :global(.App-top-bar .App-toolbar-container),
+	.drawingCanvasHost :global(.App-top-bar .App-toolbar.App-toolbar--mobile) {
+		min-width: 0;
+	}
+
+	.drawingCanvasHost :global(.layer-ui__wrapper__top-right) {
+		padding-right: max(var(--sar, 0), 8px);
+		box-sizing: border-box;
+	}
+
+	.drawingCanvasHost :global(.layer-ui__wrapper__top-right > *) {
+		flex: 0 0 auto;
+	}
+}
+
+@media (pointer: fine) and (max-width: 1360px) {
+	.drawingCanvasHost :global(.default-sidebar-trigger .sidebar-trigger__label) {
+		display: none;
+	}
+
+	.drawingCanvasHost :global(.App-top-bar) {
+		padding-right: clamp(3.75rem, 6vw, 4.75rem);
+	}
+}
+
+@media (pointer: fine) and (max-width: 1100px) {
+	.drawingCanvasHost :global(.App-top-bar) {
+		padding-right: clamp(5rem, 8vw, 6rem);
+	}
+}
+
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-container),
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar.App-toolbar--mobile) {
+	min-width: 0;
+}
+
+.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar-container),
+.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar.App-toolbar--mobile) {
+	min-width: 0;
+}
+
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar.App-toolbar--mobile),
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-content) {
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
+}
+
+.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar.App-toolbar--mobile),
+.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar-content) {
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
+}
+
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar.App-toolbar--mobile::-webkit-scrollbar),
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-content::-webkit-scrollbar) {
+	display: none;
+}
+
+.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar.App-toolbar--mobile::-webkit-scrollbar),
+.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar-content::-webkit-scrollbar) {
+	display: none;
+}
+
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar.App-toolbar--mobile .Stack.Stack_horizontal),
+.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-content > .Stack.Stack_horizontal) {
+	width: max-content;
+	min-width: max-content;
+	flex-wrap: nowrap;
+}
+
+.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar.App-toolbar--mobile .Stack.Stack_horizontal),
+.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar-content > .Stack.Stack_horizontal) {
+	width: max-content;
+	min-width: max-content;
+	flex-wrap: nowrap;
+}
+
+.drawingCanvasHostTouch :global(.HintViewer) {
+	display: none !important;
+}
+
+.drawingCanvasHostCompactDesktop :global(.HintViewer) {
+	display: none !important;
+}
+
+.drawingCanvasHostTouch :global(.mobile-misc-tools-container) {
+	position: static !important;
+	inset: auto !important;
+	display: inline-flex !important;
+	align-items: center !important;
+	align-self: stretch !important;
+	margin-left: auto !important;
+	border: 0 !important;
+	background: transparent !important;
+	overflow: visible !important;
+}
+
+.drawingCanvasHostCompactDesktop :global(.mobile-misc-tools-container) {
+	position: static !important;
+	inset: auto !important;
+	display: inline-flex !important;
+	align-items: center !important;
+	align-self: stretch !important;
+	margin-left: auto !important;
+	border: 0 !important;
+	background: transparent !important;
+	overflow: visible !important;
+}
+
+.drawingCanvasHostTouch :global(.mobile-misc-tools-container > :first-child) {
+	display: inline-flex !important;
+}
+
+.drawingCanvasHostCompactDesktop :global(.mobile-misc-tools-container > :first-child) {
+	display: inline-flex !important;
+}
+
+.drawingCanvasHost :global(.ToolIcon.ToolIcon__lock) {
+	display: none !important;
+}
+
+.drawingCanvasHost :global(.App-mobile-menu [data-testid="collab-button"]),
+.drawingCanvasHost :global(.App-menu__left [data-testid="collab-button"]),
+.drawingCanvasHost :global(.UserList-Wrapper legend) {
+	display: none !important;
+}
+
+.drawingMainMenuSection {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+	padding: 0.25rem 0;
+	width: min(24rem, calc(100vw - 1rem));
+	box-sizing: border-box;
+}
+
+.drawingMainMenuSectionTitle {
+	padding: 0 0.625rem;
+	font-size: 0.75rem;
+	font-weight: 600;
+	color: var(--text-primary-color, currentColor);
+}
+
+.drawingMainMenuColorGrid {
+	display: grid;
+	grid-template-columns: repeat(5, minmax(3.25rem, 1fr));
+	gap: 0.35rem;
+	padding: 0 0.625rem 0.125rem;
+}
+
+@media (pointer: coarse) {
+	.drawingMainMenuSection {
+		width: min(calc(100vw - 0.75rem), 28rem);
+	}
+
+	.drawingMainMenuColorGrid {
+		grid-template-columns: repeat(7, minmax(2.75rem, 1fr));
+		gap: 0.25rem;
+	}
+}
+
+.drawingMainMenuColorButton {
+	display: inline-flex;
+	align-items: stretch;
+	justify-content: stretch;
+	width: 100%;
+	aspect-ratio: 1;
+	padding: 0.125rem;
+	border: 1px solid var(--default-border-color, color-mix(in srgb, currentColor 16%, transparent));
+	border-radius: 0.2rem;
+	background: var(--button-bg, var(--island-bg-color, transparent));
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+	overflow: hidden;
+}
+
+.drawingMainMenuColorButton:hover {
+	border-color: color-mix(in srgb, var(--text-primary-color, currentColor) 26%, transparent);
+	transform: translateY(-1px);
+}
+
+.drawingMainMenuColorButton:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 2px var(--focus-highlight-color, currentColor);
+}
+
+.drawingMainMenuColorButtonActive {
+	border-color: var(--color-primary, var(--focus-highlight-color, currentColor));
+	box-shadow: 0 0 0 1px var(--color-primary, var(--focus-highlight-color, currentColor));
+}
+
+.drawingMainMenuColorSwatch {
+	width: 100%;
+	height: 100%;
+	border-radius: 0;
+	border: 1px solid color-mix(in srgb, var(--text-primary-color, currentColor) 18%, transparent);
+}
+
+.drawingBottomDockInline {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	margin-left: 8px;
+	pointer-events: auto;
+	flex: 0 0 auto;
+}
+
+.drawingDesktopDock {
+	display: flex;
+	align-items: center;
+	justify-content: flex-start;
+	padding: 10px 16px 16px;
+	border-top: 1px solid color-mix(in srgb, var(--color-border, #444) 72%, transparent);
+	background: color-mix(in srgb, var(--color-surface, #111) 92%, transparent);
+	flex: 0 0 auto;
+}
+
+.drawingBottomDockActionButton {
+	width: var(--default-button-size, 2.5rem);
+	height: var(--default-button-size, 2.5rem);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	padding: 0;
+	margin: 0;
+	border: none;
+	border-radius: var(--border-radius-lg, 0.75rem);
+	background: transparent;
+	color: var(--icon-fill-color, currentColor);
+	-webkit-tap-highlight-color: transparent;
+}
+
+.drawingBottomDockActionButton svg {
+	width: var(--default-icon-size, 1rem);
+	height: var(--default-icon-size, 1rem);
+	color: currentColor;
+}
+
+.drawingBottomDockActionButton:hover {
+	background: var(--button-hover-bg, transparent);
+}
+
+.drawingBottomDockActionButton:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 2px var(--focus-highlight-color, currentColor);
+}
+
+.drawingBottomDockActionButton:disabled {
+	color: var(--color-disabled, color-mix(in srgb, currentColor 45%, transparent));
+}
+
+.drawingBottomDockColorSwatch {
+	width: var(--default-icon-size, 1rem);
+	height: var(--default-icon-size, 1rem);
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--icon-fill-color, currentColor) 26%, transparent);
+	background: linear-gradient(180deg, #ffffff, #f1f5f9);
+	box-sizing: border-box;
 }
 
 .formatToolbar {
@@ -1821,10 +2262,32 @@
 }
 
 .richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > label {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
 	flex: 0 0 auto;
-	margin-top: 0.1em;
+	/* Center the checkbox against the first text line of the rich editor body.
+	   offset = (line-height - checkbox-height) / 2
+	          = ((scale * 1rem * 1.55) - 18px) / 2
+	          = (scale * 0.775rem) - 9px */
+	margin-top: calc(var(--note-editor-font-scale, 1) * 0.775rem - 9px);
 	user-select: none;
 	-webkit-user-select: none;
+}
+
+.richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > label > input[type='checkbox'] {
+	margin: 0;
+	width: 18px;
+	height: 18px;
+	min-width: 18px;
+	accent-color: var(--note-editor-accent, var(--color-accent));
+	cursor: pointer;
+}
+
+.richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > label > input[type='checkbox']:focus-visible {
+	outline-color: color-mix(in srgb, var(--note-editor-accent, var(--color-accent)) 32%, transparent);
 }
 
 .richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > div {

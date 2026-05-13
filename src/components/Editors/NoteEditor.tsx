@@ -25,6 +25,7 @@ import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem, 
 import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { getDeviceId } from '../../core/deviceId';
+import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
@@ -60,7 +61,7 @@ import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
-import { DocumentsPanel } from './DocumentsPanel';
+import { DrawingsPanel } from './DrawingsPanel';
 import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible, focusRichTextEditable } from './RichTextEditor';
 import styles from './Editors.module.css';
 
@@ -82,6 +83,9 @@ export type NoteEditorProps = {
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
 	onAddDocument?: () => void;
+	onOpenDrawing?: (drawingId: string) => void;
+	onDeleteDrawing?: (drawingId: string) => Promise<void> | void;
+	loadDrawingDoc?: (drawingId: string) => Promise<Y.Doc | null>;
 	onAddReminder?: () => void;
 	onAddToCollection?: () => void;
 	onAddLabels?: () => void;
@@ -100,6 +104,18 @@ export type NoteEditorProps = {
 type NoteType = 'text' | 'checklist';
 
 const EMPTY_ITEMS: readonly ChecklistItem[] = [];
+
+function sanitizeMediaDockTab(value: unknown): 0 | 1 | 2 {
+	return value === '1' || value === 1 ? 1 : value === '2' || value === 2 ? 2 : 0;
+}
+
+function readStoredMediaDockTab(noteId: string): 0 | 1 | 2 {
+	try {
+		return sanitizeMediaDockTab(sessionStorage.getItem(`__freemannotes_mediaDockTab:${noteId}`));
+	} catch {
+		return 0;
+	}
+}
 
 function isMediaDockHistoryEntry(value: unknown): boolean {
 	if (!value || typeof value !== 'object') return false;
@@ -149,8 +165,8 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 						<a
 							key={`${key}-link`}
 							href={href}
-							target="_blank"
-							rel="noreferrer noopener"
+							target={getExternalLinkTarget()}
+							rel={getExternalLinkRel()}
 							onClick={(event) => event.stopPropagation()}
 						>
 							{element}
@@ -563,13 +579,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(() => {
 		try { return sessionStorage.getItem('__freemannotes_mediaDockOpen') === '1'; } catch { return false; }
 	});
-	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(0);
+	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(() => readStoredMediaDockTab(props.noteId));
 	// More-menu state (editor 3-dot button):
 	// - Desktop: anchored popover positioned relative to the trigger button rect.
 	// - Mobile: bottom sheet menu (anchor rect is ignored).
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
+	const mediaFlyoutRef = React.useRef<HTMLElement | null>(null);
 	const titleFieldRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const textBodyFieldRef = React.useRef<HTMLDivElement | null>(null);
 	const resizeTitleField = React.useCallback((): void => {
@@ -585,6 +602,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	React.useEffect(() => {
 		try { sessionStorage.setItem('__freemannotes_mediaDockOpen', mediaDockOpen ? '1' : '0'); } catch { /* */ }
 	}, [mediaDockOpen]);
+	React.useEffect(() => {
+		setMediaDockTab(readStoredMediaDockTab(props.noteId));
+	}, [props.noteId]);
+	React.useEffect(() => {
+		try {
+			sessionStorage.setItem(`__freemannotes_mediaDockTab:${props.noteId}`, String(mediaDockTab));
+		} catch {
+			/* */
+		}
+	}, [mediaDockTab, props.noteId]);
 	// Keep the dock tabs driven by the live Yjs doc so link chips, link previews,
 	// and browser modals stay in sync without forcing the editor to own extra copy state.
 	const extractedLinks = useSyncExternalStore(
@@ -607,7 +634,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const handleDeleteUrlPreview = React.useCallback((normalizedUrl: string): void => {
 		if (readOnly) return;
 		removeNotePreviewLinkFromDoc(props.doc, normalizedUrl);
-	}, [props.doc, readOnly]);
+		void syncNoteLinksForDoc({
+			userId: props.authUserId,
+			docId: props.docId,
+			links: extractNoteLinksFromDoc(props.doc),
+		});
+	}, [props.authUserId, props.doc, props.docId, readOnly]);
 
 	React.useEffect(() => {
 		let timerId = 0;
@@ -679,6 +711,18 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			// Hide the active caret immediately once the sheet overlays editor content.
 			active.blur();
 		}
+	}, [isCoarsePointer, mediaDockOpen]);
+	React.useEffect(() => {
+		if (!mediaDockOpen || isCoarsePointer || typeof document === 'undefined') return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target;
+			if (!(target instanceof Element)) return;
+			if (mediaFlyoutRef.current?.contains(target)) return;
+			if (target.closest('[data-note-editor-media-dock-trigger="true"]')) return;
+			setMediaDockOpen(false);
+		};
+		document.addEventListener('pointerdown', handlePointerDown, true);
+		return () => document.removeEventListener('pointerdown', handlePointerDown, true);
 	}, [isCoarsePointer, mediaDockOpen]);
 	// ── Keyboard-drag focusout guard ─────────────────────────────────────────────
 	// Mounted once on component init.  Listens in the *capture* phase so it fires
@@ -771,6 +815,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		const token = mediaDockHistoryTokenRef.current;
 		const onPopState = (event: PopStateEvent): void => {
 			if (!active) return;
+			if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageUploadOpen === 'true') return;
 			if (isMediaDockHistoryEntry(event.state)) return;
 			setMediaDockOpen(false);
 		};
@@ -813,6 +858,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		suppressNextDocumentCompatibilityMouseEvents();
 		closeMediaDock();
 	}, [closeMediaDock, isCoarsePointer]);
+	const handleSelectMediaDockTabFromTouch = React.useCallback((tab: 0 | 1 | 2, event: React.TouchEvent<HTMLButtonElement>): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+		dockTouchStartRef.current = null;
+		setMediaDockTab(tab);
+	}, []);
 	const handleOpenImageFromMediaDock = React.useCallback((): void => {
 		props.onAddImage?.();
 	}, [props]);
@@ -863,8 +914,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (mediaDockTab === 1) {
 			return <NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={!readOnly} onDeleteLink={handleDeleteUrlPreview} onAddUrlPreview={handleCreateUrlPreview} />;
 		}
-		return <DocumentsPanel docId={props.docId} authUserId={props.authUserId} canEdit={!readOnly} onAddDocument={props.onAddDocument} showComingSoonPlaceholder />;
-	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, handleOpenImageFromMediaDock, mediaDockTab, props.authUserId, props.docId, props.onAddDocument, props.onAddImage, props.isPendingNew, readOnly]);
+		return (
+			<DrawingsPanel
+				doc={props.doc}
+				canEdit={!readOnly}
+				onAddDrawing={props.onAddDocument}
+				onOpenDrawing={props.onOpenDrawing}
+				onDeleteDrawing={props.onDeleteDrawing}
+				loadDrawingDoc={props.loadDrawingDoc}
+			/>
+		);
+	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, handleOpenImageFromMediaDock, mediaDockTab, props.doc, props.loadDrawingDoc, props.onAddDocument, props.onAddImage, props.onDeleteDrawing, props.onOpenDrawing, props.isPendingNew, readOnly]);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	React.useEffect(() => {
 		setShowCompleted(Boolean(props.initialShowCompleted));
@@ -1445,17 +1505,21 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// Now that replaceChecklistItems is defined, keep the ref current.
 	replaceChecklistItemsRef.current = replaceChecklistItems;
 
+	const pushChecklistUndoSnapshot = React.useCallback((snapshot: readonly ChecklistItem[]): void => {
+		checkboxUndoStack.current = [...checkboxUndoStack.current.slice(-39), snapshot];
+		checkboxRedoStack.current = [];
+		setCheckboxUndoAvail(true);
+		setCheckboxRedoAvail(false);
+	}, []);
+
 	const toggleChecklistCompleted = React.useCallback(
 		(id: string, checked: boolean): void => {
 			if (type !== 'checklist') return;
 			const snapshot = normalizedItems;
-			checkboxUndoStack.current = [...checkboxUndoStack.current.slice(-39), snapshot];
-			checkboxRedoStack.current = [];
-			setCheckboxUndoAvail(true);
-			setCheckboxRedoAvail(false);
+			pushChecklistUndoSnapshot(snapshot);
 			replaceChecklistItems(toggleChecklistItemCompleted(normalizedItems, id, checked));
 		},
-		[normalizedItems, replaceChecklistItems, type]
+		[normalizedItems, pushChecklistUndoSnapshot, replaceChecklistItems, type]
 	);
 
 	const undoCheckboxChange = React.useCallback((): void => {
@@ -1527,6 +1591,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		(id: string, options?: { clearSelection?: boolean }): void => {
 			if (type !== 'checklist') return;
 			const index = normalizedItems.findIndex((row) => row.id === id);
+			if (index < 0) return;
 			const previousId = index > 0 ? normalizedItems[index - 1]?.id ?? null : null;
 			const nextId = normalizedItems[index + 1]?.id ?? null;
 			// `clearSelection=true` is used by quick delete to close editing entirely.
@@ -1534,6 +1599,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			if (options?.clearSelection !== true) {
 				prepareChecklistRowFocusHandoff();
 			}
+			pushChecklistUndoSnapshot(normalizedItems);
 
 			// Surgical delete: remove only the target item and its children
 			// from the Y.Array, preserving all other items' Y.Map (and their
@@ -1566,7 +1632,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			setActiveChecklistRowId(previousId ?? nextId);
 			setFocusRowId(previousId ?? nextId);
 		},
-		[checklistArray, clearChecklistSelection, normalizedItems, prepareChecklistRowFocusHandoff, quickDeleteVisible, type]
+		[checklistArray, clearChecklistSelection, normalizedItems, prepareChecklistRowFocusHandoff, pushChecklistUndoSnapshot, quickDeleteVisible, type]
 	);
 
 	const onChecklistDragEnd = React.useCallback(
@@ -2060,6 +2126,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								role="tab"
 								aria-selected={mediaDockTab === 0}
 								className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(0, event)}
 								onClick={() => setMediaDockTab(0)}
 							>
 								{t('editors.mediaTabMedia')}
@@ -2069,6 +2136,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								role="tab"
 								aria-selected={mediaDockTab === 1}
 								className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(1, event)}
 								onClick={() => setMediaDockTab(1)}
 							>
 								{t('editors.mediaTabLinks')}
@@ -2078,6 +2146,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								role="tab"
 								aria-selected={mediaDockTab === 2}
 								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
 								onClick={() => setMediaDockTab(2)}
 							>
 								{t('editors.mediaTabDocuments')}
@@ -2113,6 +2182,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								role="tab"
 								aria-selected={mediaDockTab === 0}
 								className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(0, event)}
 								onClick={() => setMediaDockTab(0)}
 							>
 								{t('editors.mediaTabMedia')}
@@ -2122,6 +2192,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								role="tab"
 								aria-selected={mediaDockTab === 1}
 								className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(1, event)}
 								onClick={() => setMediaDockTab(1)}
 							>
 								{t('editors.mediaTabLinks')}
@@ -2131,6 +2202,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								role="tab"
 								aria-selected={mediaDockTab === 2}
 								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
 								onClick={() => setMediaDockTab(2)}
 							>
 								{t('editors.mediaTabDocuments')}
@@ -2657,6 +2729,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							<button
 								type="button"
 								className={styles.mediaDockText}
+								data-note-editor-media-dock-trigger="true"
 								onClick={() => {
 									if (isMobileLandscapeRef.current) return;
 									setMediaDockOpen((prev) => !prev);
@@ -2740,6 +2813,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							role="tab"
 							aria-selected={mediaDockTab === 0}
 							className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+							onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(0, event)}
 							onClick={() => setMediaDockTab(0)}
 						>
 							{t('editors.mediaTabMedia')}
@@ -2749,6 +2823,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							role="tab"
 							aria-selected={mediaDockTab === 1}
 							className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+							onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(1, event)}
 							onClick={() => setMediaDockTab(1)}
 						>
 							{t('editors.mediaTabLinks')}
@@ -2758,6 +2833,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							role="tab"
 							aria-selected={mediaDockTab === 2}
 							className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+							onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
 							onClick={() => setMediaDockTab(2)}
 						>
 							{t('editors.mediaTabDocuments')}
@@ -2782,6 +2858,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			</section> : null}
 
 			{!isCoarsePointer ? <aside
+				ref={mediaFlyoutRef}
 				className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
 				onClick={(e) => e.stopPropagation()}
 				aria-hidden={!mediaDockOpen}
@@ -2799,6 +2876,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							</button>
 							<button
 								type="button"
+								data-note-editor-media-dock-trigger="true"
 								role="tab"
 								aria-selected={mediaDockTab === 1}
 								className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}

@@ -232,11 +232,19 @@ export default defineConfig(({ mode }) => {
 			port: Number(env.VITE_PREVIEW_PORT || 4173),
 			strictPort: true,
 		},
+		optimizeDeps: {
+			esbuildOptions: {
+				// Excalidraw's ESM locale bundle requires the ES2022 parser target.
+				target: 'es2022',
+				treeShaking: true,
+			},
+		},
 		build: {
 			// The verified publish flow already deletes dist-build-temp before invoking
 			// Vite. Keep nested builds (notably vite-plugin-pwa injectManifest's custom
 			// service worker build) from emptying the shared outDir and deleting the
 			// client build artifacts before Workbox scans them.
+			target: 'es2022',
 			emptyOutDir: false,
 		},
 	};

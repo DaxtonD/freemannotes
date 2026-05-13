@@ -8,6 +8,7 @@ import { getTheme, isLightTheme, type ThemeId } from './theme';
 // - No raw colors are persisted in the database; only stable token IDs are stored.
 
 export type NoteColorToken =
+	| 'white'
 	| 'yellow'
 	| 'amber'
 	| 'orange'
@@ -74,6 +75,7 @@ const LEGACY_NOTE_COLOR_TOKENS: Record<string, NoteColorToken> = {
 };
 
 export const NOTE_COLOR_TOKENS: readonly NoteColorTokenDefinition[] = [
+	{ id: 'white', labelKey: 'noteColors.white', group: 'neutral', seedColor: '#ffffff' },
 	{ id: 'yellow', labelKey: 'noteColors.yellow', group: 'warm', seedColor: '#f0c74d' },
 	{ id: 'amber', labelKey: 'noteColors.amber', group: 'warm', seedColor: '#d59c41' },
 	{ id: 'orange', labelKey: 'noteColors.orange', group: 'warm', seedColor: '#ef7a43' },
@@ -170,6 +172,22 @@ export function resolveThemeNoteColorModel(themeId: ThemeId): ThemeNoteColorMode
 	const light = isLightTheme(themeId);
 	const tokens = Object.fromEntries(
 		NOTE_COLOR_TOKENS.map((token) => {
+			if (token.id === 'white') {
+				const cardBackground = '#ffffff';
+				const headerBackground = light ? '#f5f5f5' : '#f2f2f2';
+				const borderColor = light ? '#d6d6d6' : '#cfcfcf';
+				const textColor = resolveReadableTextColor(cardBackground, themeText);
+				return [token.id, {
+					token: token.id,
+					cardBackground,
+					headerBackground,
+					borderColor,
+					textColor,
+					mutedTextColor: resolveMutedTextColor(textColor, cardBackground),
+					accentColor: borderColor,
+				} satisfies ResolvedNoteColorScheme];
+			}
+
 			const cardBackground = mixHex(surface, token.seedColor, light ? 0.24 : 0.34);
 			const headerBackground = mixHex(cardBackground, light ? '#111111' : '#ffffff', light ? 0.08 : 0.07);
 			const borderColor = mixHex(cardBackground, token.seedColor, light ? 0.42 : 0.52);

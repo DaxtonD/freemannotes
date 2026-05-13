@@ -74,6 +74,19 @@ And a lot of persistence.
 
 ---
 
+## Custom Drawing Libraries
+
+Freeman Notes can auto-load custom Excalidraw libraries from the project itself.
+
+- Drop `.excalidrawlib` files into `third-party/excalidraw-libraries/`
+- No app restart is required just because a new file is added there
+- The drawing editor picks them up through the existing library API and merges them into the Excalidraw library automatically
+- The expected format is an Excalidraw library file, not a raw image
+
+For the exact workflow and optional metadata sidecar format, see `third-party/excalidraw-libraries/README.md`.
+
+---
+
 ## Why I’m Sharing This
 
 This started as a personal project.

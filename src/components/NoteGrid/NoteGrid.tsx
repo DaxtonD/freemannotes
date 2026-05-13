@@ -15,7 +15,6 @@ import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
 import { getCachedRemoteNoteLinks, syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { getCachedRemoteNoteImages } from '../../core/noteMediaStore';
-import { getCachedNoteDocuments } from '../../core/noteDocumentStore';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
 import type { ViewMode } from '../../core/viewMode';
@@ -26,7 +25,7 @@ import {
 	type NoteShareCollaboratorSnapshot,
 	type SharedNotePlacement,
 } from '../../core/noteShareApi';
-import { readNoteFromDoc, setNotePinned } from '../../core/noteModel';
+import { readDrawingLinkState, readNoteFromDoc, setNotePinned } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
@@ -591,8 +590,12 @@ function renderNoteMetaChips(args: {
 		.filter((label): label is LabelRecord => Boolean(label));
 	const fallbackCollaboratorCount = Math.max(0, args.snapshotShell?.collaboratorCount ?? 0);
 	const collaboratorCount = args.collaboratorSummary?.count ?? fallbackCollaboratorCount;
+	const noteType = String(args.doc.getMap('metadata').get('type') ?? '');
+	const attachmentAllowedKinds: readonly NoteAttachmentBrowserKind[] | undefined = noteType === 'drawing'
+		? ['links']
+		: undefined;
 	const attachmentShellCounts = args.snapshotShell?.attachmentCounts;
-	const attachmentShellTotal = (attachmentShellCounts?.images ?? 0) + (attachmentShellCounts?.links ?? 0) + (attachmentShellCounts?.documents ?? 0);
+	const attachmentShellTotal = (attachmentShellCounts?.images ?? 0) + (attachmentShellCounts?.links ?? 0) + (attachmentShellCounts?.drawings ?? 0);
 	const showCollectionShell = Boolean(collectionId && !collectionPath);
 	const showLabelShell = labelIds.length > 0 && labelItems.length === 0;
 	const showCollaboratorShell = (!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && collaboratorCount > 0;
@@ -705,6 +708,7 @@ function renderNoteMetaChips(args: {
 					authUserId={args.authUserId}
 					className={styles.noteChipButton}
 					colorStyle={chipColorStyle}
+					allowedKinds={attachmentAllowedKinds}
 					initialCounts={attachmentShellCounts}
 					forceClosed={args.forceCloseAttachmentChip}
 					suspendRemoteRefresh={args.suspendAttachmentRemoteRefresh}
@@ -1719,7 +1723,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						attachmentCounts: {
 							images: Math.max(getCachedRemoteNoteImages(docId).length, previousSnapshot?.attachmentCounts.images ?? 0),
 							links: Math.max(getCachedRemoteNoteLinks(docId).length, previewLinks.length, previousSnapshot?.attachmentCounts.links ?? 0),
-							documents: Math.max(getCachedNoteDocuments(docId).length, previousSnapshot?.attachmentCounts.documents ?? 0),
+							drawings: Math.max(readDrawingLinkState(liveDoc).drawingIds.length, previousSnapshot?.attachmentCounts.drawings ?? 0),
 						},
 						previewCards: cachedPreviewCards.length > 0 ? cachedPreviewCards : (previousSnapshot?.previewCards ?? []),
 					});
@@ -3303,6 +3307,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							? 'checklist'
 							: 'text'
 					}
+					showAddImage={String(moreMenuDoc.getMap('metadata').get('type') ?? '') !== 'drawing'}
+					showAddDocument={String(moreMenuDoc.getMap('metadata').get('type') ?? '') !== 'drawing'}
 					isPinned={noteSnapshotById.get(moreMenuNoteId)?.isPinned === true}
 					anchorRect={moreMenuAnchorRect}
 					isTrashView={isTrashView}

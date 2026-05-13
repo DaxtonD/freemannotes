@@ -130,6 +130,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const itemElementsRef = React.useRef<Map<string, HTMLDivElement>>(new Map());
 	const handleElementsRef = React.useRef<Map<string, HTMLDivElement>>(new Map());
 	const [registrationVersion, setRegistrationVersion] = React.useState(0);
+	const registrationVersionRafRef = React.useRef<number>(0);
 	const [activeDragId, setActiveDragId] = React.useState<string | null>(null);
 	const [dragOverlay, setDragOverlay] = React.useState<DragOverlayState | null>(null);
 	const [dropOverlay, setDropOverlay] = React.useState<DragOverlayState | null>(null);
@@ -161,6 +162,18 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const touchDragSessionRef = React.useRef(false);
 	const suppressOpenUntilRef = React.useRef(0);
 	const lastPointerRef = React.useRef<PointerInput | null>(null);
+
+	const scheduleRegistrationRefresh = React.useCallback((): void => {
+		if (typeof window === 'undefined') {
+			setRegistrationVersion((version) => version + 1);
+			return;
+		}
+		if (registrationVersionRafRef.current !== 0) return;
+		registrationVersionRafRef.current = window.requestAnimationFrame(() => {
+			registrationVersionRafRef.current = 0;
+			setRegistrationVersion((version) => version + 1);
+		});
+	}, []);
 
 	visibleIdsRef.current = args.visibleIds;
 	columnsRef.current = args.columns;
@@ -271,16 +284,16 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		else itemElementsRef.current.delete(id);
 		// Registration version lets the grid re-bind drag handles and re-measure
 		// cards when virtualization mounts or unmounts DOM nodes.
-		setRegistrationVersion((version) => version + 1);
-	}, []);
+		scheduleRegistrationRefresh();
+	}, [scheduleRegistrationRefresh]);
 
 	const setHandleElement = React.useCallback((id: string, node: HTMLDivElement | null): void => {
 		const previous = handleElementsRef.current.get(id) ?? null;
 		if (previous === node) return;
 		if (node) handleElementsRef.current.set(id, node);
 		else handleElementsRef.current.delete(id);
-		setRegistrationVersion((version) => version + 1);
-	}, []);
+		scheduleRegistrationRefresh();
+	}, [scheduleRegistrationRefresh]);
 
 	const getItemElement = React.useCallback((id: string): HTMLDivElement | null => {
 		return itemElementsRef.current.get(id) ?? null;
@@ -493,6 +506,10 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	// Cleanup on unmount
 	React.useEffect(() => {
 		return () => {
+			if (typeof window !== 'undefined' && registrationVersionRafRef.current !== 0) {
+				window.cancelAnimationFrame(registrationVersionRafRef.current);
+				registrationVersionRafRef.current = 0;
+			}
 			clearDropOverlay();
 			clearDragState();
 		};

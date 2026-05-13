@@ -89,6 +89,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState(false);
+	const mediaFlyoutRef = React.useRef<HTMLElement | null>(null);
 	const isCoarsePointer = useIsCoarsePointer();
 	const keyboard = useKeyboardHeight();
 	// Coarse-pointer branch: treat the software keyboard as part of layout and swap to
@@ -123,6 +124,18 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 			// Hide the active caret immediately once the sheet overlays editor content.
 			active.blur();
 		}
+	}, [isCoarsePointer, mediaDockOpen]);
+	React.useEffect(() => {
+		if (!mediaDockOpen || isCoarsePointer || typeof document === 'undefined') return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target;
+			if (!(target instanceof Element)) return;
+			if (mediaFlyoutRef.current?.contains(target)) return;
+			if (target.closest('[data-text-editor-media-dock-trigger="true"]')) return;
+			setMediaDockOpen(false);
+		};
+		document.addEventListener('pointerdown', handlePointerDown, true);
+		return () => document.removeEventListener('pointerdown', handlePointerDown, true);
 	}, [isCoarsePointer, mediaDockOpen]);
 	React.useEffect(() => {
 		// Coarse-pointer branch: briefly enable an interaction shield after mount
@@ -441,6 +454,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 							<button
 								type="button"
 								className={styles.mediaDockText}
+								data-text-editor-media-dock-trigger="true"
 								onClick={() => {
 									if (isMobileLandscapeRef.current) return;
 									setMediaDockOpen((prev) => !prev);
@@ -558,6 +572,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 			</section>}
 
 			<aside
+				ref={mediaFlyoutRef}
 				className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
 				onClick={(e) => e.stopPropagation()}
 				aria-hidden={!mediaDockOpen}

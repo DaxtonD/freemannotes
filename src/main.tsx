@@ -1,5 +1,6 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+import '@excalidraw/excalidraw/index.css';
 import { App } from './App';
 import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
@@ -86,6 +87,10 @@ if (!rootEl) {
 // Install a polyfill that bridges touch events → DragEvents so
 // @atlaskit/pragmatic-drag-and-drop works on Firefox Android.
 installTouchDragPolyfill();
+
+// Excalidraw 0.18+ loads fonts from a configurable asset base path. Point it at
+// the app origin so exported PWA builds can self-host those files offline.
+(window as any).EXCALIDRAW_ASSET_PATH = '/';
 
 // Apply the last-used theme before React mounts so Android standalone chrome
 // sees the current app background immediately instead of the HTML fallback.

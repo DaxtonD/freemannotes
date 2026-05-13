@@ -1,10 +1,12 @@
 import * as Y from 'yjs';
 import {
+	readDrawingBackgroundState,
 	readCollectionState,
 	readLabelState,
 	readLastAccessedAt,
 	readPinState,
 	readReminderState,
+	setDrawingBackgroundColor,
 	setNoteCollection,
 	setNoteLabelIds,
 	setNotePinned,
@@ -30,6 +32,10 @@ export function assignNotePinned(doc: Y.Doc, isPinned: boolean): void {
 	setNotePinned(doc, isPinned);
 }
 
+export function assignDrawingBackgroundColor(doc: Y.Doc, color: string): void {
+	setDrawingBackgroundColor(doc, color);
+}
+
 export function markNoteAccessed(doc: Y.Doc, origin?: symbol): void {
 	touchLastAccessedAt(doc, origin);
 }
@@ -40,6 +46,7 @@ export function readNoteMetadataState(doc: Y.Doc): {
 	reminderAt: string | null;
 	isPinned: boolean;
 	lastAccessedAt: string;
+	drawingBackgroundColor: string;
 } {
 	return {
 		collectionId: readCollectionState(doc).collectionId,
@@ -47,5 +54,6 @@ export function readNoteMetadataState(doc: Y.Doc): {
 		reminderAt: readReminderState(doc).reminderAt,
 		isPinned: readPinState(doc).isPinned,
 		lastAccessedAt: readLastAccessedAt(doc),
+		drawingBackgroundColor: readDrawingBackgroundState(doc).drawingBackgroundColor,
 	};
 }
