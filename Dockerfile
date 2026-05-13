@@ -6,7 +6,10 @@ COPY prisma ./prisma/
 # `npm ci` runs postinstall, which now calls scripts/prisma-generate-if-needed.cjs.
 # Copy that helper before install so Docker builds do not fail on a missing file.
 COPY scripts/prisma-generate-if-needed.cjs ./scripts/prisma-generate-if-needed.cjs
-RUN npm ci
+# The current lockfile contains a known peer-dependency mismatch in the
+# Excalidraw adapter stack, so Docker must install from lock without trying to
+# re-resolve peers under npm 10.
+RUN npm ci --legacy-peer-deps
 # Generate Prisma client after npm ci (reads prisma/schema.prisma).
 RUN npx prisma generate
 
