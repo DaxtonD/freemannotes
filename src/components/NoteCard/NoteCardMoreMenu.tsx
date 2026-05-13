@@ -4,7 +4,7 @@ import {
 	faThumbtack,
 	faUserPlus,
 	faImage,
-	faFileLines,
+	faPenNib,
 	faFolderOpen,
 	faLink,
 	faBell,
@@ -40,6 +40,8 @@ export type NoteCardMoreMenuProps = {
 	onCheckAll?: (() => void) | undefined;
 	onUncheckAll?: (() => void) | undefined;
 	isTrashView?: boolean;
+	showAddImage?: boolean;
+	showAddDocument?: boolean;
 	/** Bounding rect of the anchor element (e.g. note card). On desktop the
 	 *  menu renders as a popover positioned relative to this rect. */
 	anchorRect?: { top: number; left: number; width: number; height: number } | null;
@@ -75,6 +77,8 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	// trigger element. Mobile branch: ignore anchorRect and use a bottom sheet.
 	const anchor = isDesktop ? props.anchorRect ?? null : null;
 	const useInitialTouchGuard = !isDesktop && props.openedByLongPress === true;
+	const showAddImage = props.showAddImage !== false;
+	const showAddDocument = props.showAddDocument !== false;
 
 	// Close on overlay click (but NOT clicks inside the sheet/popover body).
 	// Use click rather than pointerdown so the overlay stays mounted for the
@@ -339,25 +343,34 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				},
 			}]
 			: []),
-		...(props.onAddImage
-			? [{
-				key: 'image',
-				labelKey: 'noteMenu.addImage',
-				icon: faImage,
-				disabled: isTrashView,
-				action: () => {
-					props.onClose();
-					props.onAddImage?.();
-				},
-			}]
-			: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, disabled: isTrashView, action: noop }]),
-		{
-			key: 'document',
-			labelKey: 'noteMenu.addDocument',
-			icon: faFileLines,
-			disabled: true,
-			action: noop,
-		},
+		...(showAddImage
+			? (props.onAddImage
+				? [{
+					key: 'image',
+					labelKey: 'noteMenu.addImage',
+					icon: faImage,
+					disabled: isTrashView,
+					action: () => {
+						props.onClose();
+						props.onAddImage?.();
+					},
+				}]
+				: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, disabled: isTrashView, action: noop }])
+			: []),
+		...(showAddDocument
+			? (props.onAddDocument
+				? [{
+					key: 'document',
+					labelKey: 'noteMenu.addDocument',
+					icon: faPenNib,
+					disabled: isTrashView,
+					action: () => {
+						props.onClose();
+						props.onAddDocument?.();
+					},
+				}]
+				: [{ key: 'document', labelKey: 'noteMenu.addDocument', icon: faPenNib, disabled: isTrashView, action: noop }])
+			: []),
 		...(props.onAddUrlPreview
 			? [{
 				key: 'url-preview',

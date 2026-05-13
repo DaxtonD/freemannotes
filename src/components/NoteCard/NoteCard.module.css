@@ -269,6 +269,39 @@
 	flex-direction: column;
 }
 
+.drawingBody {
+	padding: 10px;
+	align-items: stretch;
+	justify-content: center;
+	flex: 1 1 auto;
+	min-height: 150px;
+}
+
+.drawingThumbnail {
+	width: 100%;
+	height: 100%;
+	max-height: 100%;
+	min-height: 0;
+	border-radius: 14px;
+	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 72%, transparent);
+	background: color-mix(in srgb, var(--note-color-header-bg, var(--color-surface-2)) 78%, transparent);
+	/* Preserve the whole drawing inside the measured card height instead of cropping it. */
+	object-fit: contain;
+	object-position: center;
+	display: block;
+}
+
+.drawingThumbnailSkeleton {
+	width: 100%;
+	height: 100%;
+	min-height: 150px;
+	max-height: 100%;
+	border-radius: 14px;
+	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 72%, transparent);
+	background: linear-gradient(135deg, color-mix(in srgb, var(--note-color-header-bg, var(--color-surface-2)) 86%, transparent), color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 94%, transparent));
+	display: block;
+}
+
 .checklistCard .body {
 	padding-bottom: var(--space-2);
 	flex: 1 1 auto;
@@ -424,6 +457,8 @@
 }
 
 .richTaskList {
+	--note-card-checkbox-size: 18px;
+	--note-card-checkbox-top-offset: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
 	list-style: none;
 	margin: 0;
 	padding: 0;
@@ -445,14 +480,17 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	padding-top: 0.12rem;
+	width: var(--note-card-checkbox-size);
+	height: var(--note-card-checkbox-size);
+	min-width: var(--note-card-checkbox-size);
+	margin-top: var(--note-card-checkbox-top-offset);
 }
 
 .richTaskCheckbox input {
 	margin: 0;
-	width: 18px;
-	height: 18px;
-	min-width: 18px;
+	width: var(--note-card-checkbox-size);
+	height: var(--note-card-checkbox-size);
+	min-width: var(--note-card-checkbox-size);
 	appearance: none;
 	-webkit-appearance: none;
 	border: 1.5px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 84%, var(--note-color-text, var(--color-text)) 16%);
@@ -546,6 +584,8 @@
 }
 
 .checklist {
+	--note-card-checkbox-size: 18px;
+	--note-card-checkbox-top-offset: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
 	list-style: none;
 	padding: 0;
 	margin: 0;
@@ -569,9 +609,9 @@
 }
 
 .checklistCheckbox {
-	width: 18px;
-	height: 18px;
-	min-width: 18px;
+	width: var(--note-card-checkbox-size);
+	height: var(--note-card-checkbox-size);
+	min-width: var(--note-card-checkbox-size);
 	appearance: none;
 	-webkit-appearance: none;
 	border: 1.5px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 84%, var(--note-color-text, var(--color-text)) 16%);
@@ -580,13 +620,9 @@
 	box-shadow: none;
 	outline: none;
 	display: inline-block;
-	flex: 0 0 18px;
+	flex: 0 0 var(--note-card-checkbox-size);
 	transition: background-color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
-	/* Align checkbox centre with first text line centre at any font scale:
-	   offset = (line-height − checkbox-height) / 2
-	           = (scale × 1rem × 1.35 − 18px) / 2
-	           = scale × 0.675rem − 9px */
-	margin-top: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
+	margin-top: var(--note-card-checkbox-top-offset);
 }
 
 .checklistCheckbox:checked {
@@ -613,11 +649,11 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 18px;
-	height: 18px;
-	min-width: 18px;
-	margin-top: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
-	flex: 0 0 18px;
+	width: var(--note-card-checkbox-size);
+	height: var(--note-card-checkbox-size);
+	min-width: var(--note-card-checkbox-size);
+	margin-top: var(--note-card-checkbox-top-offset);
+	flex: 0 0 var(--note-card-checkbox-size);
 	cursor: pointer;
 	touch-action: manipulation;
 	-webkit-tap-highlight-color: transparent;
@@ -810,6 +846,12 @@
 }
 
 @media (pointer: fine) {
+	.checklist,
+	.richTaskList {
+		--note-card-checkbox-size: 20px;
+		--note-card-checkbox-top-offset: max(0px, calc((1.35em - 20px) / 2));
+	}
+
 	.checklistCard {
 		max-height: calc(var(--note-card-max-height) + 18px);
 	}
@@ -819,27 +861,9 @@
 	}
 
 	.checklistCheckbox,
-	.richTaskCheckbox input {
-		width: 20px;
-		height: 20px;
-		min-width: 20px;
-	}
-
-	.checklistCheckbox {
-		flex: 0 0 20px;
-		margin-top: max(0px, calc((1.35em - 20px) / 2));
-	}
-
-	.checklistCheckboxHitArea {
-		width: 20px;
-		height: 20px;
-		min-width: 20px;
-		margin-top: max(0px, calc((1.35em - 20px) / 2));
-		flex: 0 0 20px;
-	}
-
+	.checklistCheckboxHitArea,
 	.richTaskCheckbox {
-		padding-top: 0;
+		flex: 0 0 var(--note-card-checkbox-size);
 	}
 
 	.completedSection {

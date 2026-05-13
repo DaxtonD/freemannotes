@@ -5,12 +5,14 @@ import { useI18n } from '../../core/i18n';
 import { queueNoteImageUrlForImport, queueNoteImagesForUpload, readQueuedNoteImages, readStoredRemoteNoteImages } from '../../core/noteMediaStore';
 import { applyTheme, getStoredThemeId } from '../../core/theme';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
+import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import styles from './NoteImageUploadModal.module.css';
 
 const CAPTURE_MAX_DIMENSION_PX = 1920;
 const CAPTURE_JPEG_QUALITY = 0.7;
 const CAMERA_ASPECT_RATIO = 4 / 3;
+const IMAGE_UPLOAD_BODY_FLAG = 'freemannotesNoteImageUploadOpen';
 
 type CameraZoomCapability = {
 	min?: number;
@@ -504,6 +506,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	const cameraStreamRef = React.useRef<MediaStream | null>(null);
 	const cameraRequestIdRef = React.useRef(0);
 	const cameraZoomRequestIdRef = React.useRef(0);
+	const historyTokenRef = React.useRef(`note-image-upload:${Math.random().toString(36).slice(2, 10)}`);
 
 	const [selected, setSelected] = React.useState<SelectedFile[]>([]);
 	const [imageUrl, setImageUrl] = React.useState('');
@@ -524,6 +527,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	const [isZoomBusy, setIsZoomBusy] = React.useState(false);
 	const busy = isProcessingSelection || isStartingCamera || isCapturingPhoto;
 	const isCameraVisible = isCameraOpen || isStartingCamera;
+	const isCoarsePointer = useIsCoarsePointer();
 	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
 	const keyboard = useKeyboardHeight();
 
@@ -683,6 +687,35 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	}, [stopCameraStream]);
 
 	React.useEffect(() => {
+		if (!props.isOpen || !isCoarsePointer || typeof window === 'undefined') return;
+		let active = true;
+		let didPush = false;
+		const token = historyTokenRef.current;
+		const onPopState = (): void => {
+			if (!active) return;
+			stopCameraStream();
+			props.onClose();
+		};
+		window.addEventListener('popstate', onPopState);
+		const currentState = window.history.state as { __noteImageUpload?: string } | null;
+		if (currentState?.__noteImageUpload !== token) {
+			window.history.pushState({ __noteImageUpload: token }, '');
+			didPush = true;
+		}
+		return () => {
+			active = false;
+			window.removeEventListener('popstate', onPopState);
+			if (!didPush) return;
+			window.setTimeout(() => {
+				const state = window.history.state as { __noteImageUpload?: string } | null;
+				if (state?.__noteImageUpload === token) {
+					window.history.back();
+				}
+			}, 0);
+		};
+	}, [isCoarsePointer, props.isOpen, props.onClose, stopCameraStream]);
+
+	React.useEffect(() => {
 		const stream = cameraStreamRef.current;
 		const video = videoRef.current;
 		if (!stream || !video || !isCameraOpen) return;
@@ -727,6 +760,14 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		};
 	}, [isCameraVisible]);
 
+	React.useEffect(() => {
+		if (!props.isOpen || typeof document === 'undefined') return;
+		document.body.dataset[IMAGE_UPLOAD_BODY_FLAG] = 'true';
+		return () => {
+			delete document.body.dataset[IMAGE_UPLOAD_BODY_FLAG];
+		};
+	}, [props.isOpen]);
+
 	if (!props.isOpen || !props.docId) return null;
 
 	const closeAfterKeyboardSettles = (afterClose?: () => void): void => {
@@ -743,13 +784,36 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		afterClose?.();
 	};
 
+	const requestClose = (afterClose?: () => void): void => {
+		stopCameraStream();
+		closeAfterKeyboardSettles(() => {
+			if (
+				isCoarsePointer
+				&& typeof window !== 'undefined'
+				&& (window.history.state as { __noteImageUpload?: string } | null)?.__noteImageUpload === historyTokenRef.current
+			) {
+				window.history.back();
+				afterClose?.();
+				return;
+			}
+			props.onClose();
+			afterClose?.();
+		});
+	};
+
 	const closeFromPointerEvent = (event: React.PointerEvent<HTMLButtonElement>): void => {
 		if (event.pointerType !== 'touch') return;
 		if (event.cancelable) event.preventDefault();
 		event.stopPropagation();
-		stopCameraStream();
 		suppressNextDocumentCompatibilityMouseEvents();
-		closeAfterKeyboardSettles();
+		requestClose();
+	};
+
+	const closeFromTouchEvent = (event: React.TouchEvent<HTMLButtonElement>): void => {
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+		suppressNextDocumentCompatibilityMouseEvents();
+		requestClose();
 	};
 
 	const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>): void => {
@@ -1024,9 +1088,9 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 							type="button"
 							className={styles.close}
 							onPointerUp={closeFromPointerEvent}
+							onTouchEnd={closeFromTouchEvent}
 							onClick={() => {
-								stopCameraStream();
-								closeAfterKeyboardSettles();
+								requestClose();
 							}}
 							aria-label={t('common.close')}
 						>

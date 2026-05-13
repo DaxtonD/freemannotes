@@ -26,6 +26,8 @@
 //   - yjs (for decoding stored state into readable snapshots)
 // ─────────────────────────────────────────────────────────────────────────────
 
+const fs = require('fs');
+const path = require('path');
 const Y = require('yjs');
 const { randomUUID } = require('crypto');
 const { docs: liveDocs } = require('y-websocket/bin/utils');
@@ -36,6 +38,137 @@ const { normalizeWorkspaceRole, canEditWorkspaceContent } = require('./workspace
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const COLLECTIONS_REGISTRY_ID = '__collections_registry__';
 const LABELS_REGISTRY_ID = '__labels_registry__';
+const CUSTOM_EXCALIDRAW_LIBRARY_DIR = path.resolve(__dirname, '..', 'third-party', 'excalidraw-libraries');
+const EXCALIDRAW_BUNDLED_LIBRARY_DEFINITIONS = Object.freeze([
+	{
+		id: 'electrical-engineering',
+		name: 'Electrical Engineering',
+		author: '@Ris Jain',
+		description: 'Electrical and circuit symbols for diagrams and system sketches.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/risjain/electrical-engineering.excalidrawlib',
+	},
+	{
+		id: 'schematic-symbols',
+		name: 'Schematic Symbols',
+		author: '@rkjc',
+		description: 'Common schematic symbols for quick technical drawings.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/rkjc/schematic-symbols.excalidrawlib',
+	},
+	{
+		id: 'architecture-diagram-components',
+		name: 'Architecture Diagram Components',
+		author: '@Anna Pastushko',
+		description: 'Architecture diagram parts for software and infrastructure mapping.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/anna-pastushko/architecture-diagram-components.excalidrawlib',
+	},
+	{
+		id: 'stick-figures',
+		name: 'Stick Figures',
+		author: '@Youri Tjang',
+		description: 'Expressive stick figures for flows, scenes, and storyboards.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/youritjang/stick-figures.excalidrawlib',
+	},
+	{
+		id: 'forms',
+		name: 'Forms',
+		author: '@NicolasGoudry @G.Script',
+		description: 'Form controls and interface inputs for wireframes and UI flows.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/g-script/forms.excalidrawlib',
+	},
+	{
+		id: 'decision-flow-control',
+		name: 'Decision Flow Control',
+		author: '@James Wiens',
+		description: 'Decision-flow shapes for process diagrams and branching logic.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/aretecode/decision-flow-control.excalidrawlib',
+	},
+	{
+		id: 'network-topology-icons',
+		name: 'Network Topology Icons',
+		author: '@dwelle',
+		description: 'Network equipment and topology icons for infrastructure maps.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/dwelle/network-topology-icons.excalidrawlib',
+	},
+	{
+		id: 'basic-shapes',
+		name: 'Basic Shapes',
+		author: '@Pablo Gil Fernández',
+		description: 'Reusable geometric shapes beyond the default toolset.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/pgilfernandez/basic-shapes.excalidrawlib',
+	},
+	{
+		id: 'architecture-floor-plan-symbols',
+		name: 'Architecture Floor Plan Symbols',
+		author: '@Arqtangeles',
+		description: 'Floor plan symbols for architectural layouts and room planning.',
+		downloadUrl: 'https://excalidrawlibs.leantime.io/libraries/Arqtangeles/architecture.excalidrawlib',
+	},
+]);
+
+function slugifyLibraryId(value) {
+	const normalized = String(value ?? '')
+		.trim()
+		.toLowerCase()
+		.replace(/[^a-z0-9]+/g, '-')
+		.replace(/^-+|-+$/g, '');
+	return normalized || 'library';
+}
+
+function titleCaseLibraryName(value) {
+	return String(value ?? '')
+		.trim()
+		.split(/[-_\s]+/)
+		.filter(Boolean)
+		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+		.join(' ');
+}
+
+function readCustomExcalidrawLibraryMetadata(metadataPath) {
+	try {
+		if (!fs.existsSync(metadataPath)) {
+			return null;
+		}
+		const parsed = JSON.parse(fs.readFileSync(metadataPath, 'utf8'));
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+			return null;
+		}
+		return parsed;
+	} catch (error) {
+		console.warn('[api] Invalid custom Excalidraw library metadata:', metadataPath, error.message);
+		return null;
+	}
+}
+
+function readCustomExcalidrawLibraryDefinitions() {
+	if (!fs.existsSync(CUSTOM_EXCALIDRAW_LIBRARY_DIR)) {
+		return [];
+	}
+
+	return fs.readdirSync(CUSTOM_EXCALIDRAW_LIBRARY_DIR, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith('.excalidrawlib'))
+		.map((entry) => {
+			const baseName = entry.name.slice(0, -'.excalidrawlib'.length);
+			const metadataPath = path.join(CUSTOM_EXCALIDRAW_LIBRARY_DIR, `${baseName}.json`);
+			const metadata = readCustomExcalidrawLibraryMetadata(metadataPath);
+			return {
+				id: `custom-${slugifyLibraryId(baseName)}`,
+				name: typeof metadata?.name === 'string' && metadata.name.trim() ? metadata.name.trim() : titleCaseLibraryName(baseName),
+				author: typeof metadata?.author === 'string' && metadata.author.trim() ? metadata.author.trim() : 'Local library',
+				description: typeof metadata?.description === 'string' && metadata.description.trim()
+					? metadata.description.trim()
+					: 'Custom Excalidraw library loaded from third-party/excalidraw-libraries.',
+				filePath: path.join(CUSTOM_EXCALIDRAW_LIBRARY_DIR, entry.name),
+				source: 'custom',
+			};
+		});
+}
+
+function getExcalidrawLibraryDefinitions() {
+	return [
+		...EXCALIDRAW_BUNDLED_LIBRARY_DEFINITIONS,
+		...readCustomExcalidrawLibraryDefinitions(),
+	];
+}
 
 /**
  * Creates an API router function that handles REST endpoints.
@@ -517,6 +650,25 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return workspaceId;
 		}
 
+		async function requireWorkspaceMember() {
+			const workspaceId = requireAuthWorkspace();
+			if (!workspaceId) return null;
+			const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { role: true });
+			if (!member) {
+				jsonResponse(res, 403, { error: 'Forbidden' });
+				return null;
+			}
+			return { workspaceId, member };
+		}
+
+		function requireAuthUserId() {
+			if (!req.auth || !req.auth.userId) {
+				jsonResponse(res, 401, { error: 'Not authenticated' });
+				return null;
+			}
+			return String(req.auth.userId);
+		}
+
 		function namespacedDocId(workspaceId, rawDocId) {
 			return `${workspaceId}:${rawDocId}`;
 		}
@@ -550,6 +702,141 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return true;
 		}
 
+		if (pathname === '/api/collaborators/history' && method === 'GET') {
+			(async () => {
+				try {
+					const userId = requireAuthUserId();
+					if (!userId) return;
+					const currentUser = await prisma.user.findUnique({
+						where: { id: userId },
+						select: { email: true },
+					});
+
+					const [workspaceMembers, noteCollaborators, acceptedInvitations, sentAcceptedWorkspaceInvites, receivedAcceptedWorkspaceInvites] = await Promise.all([
+						prisma.workspaceMember.findMany({
+							where: {
+								userId: { not: userId },
+								workspace: {
+									is: {
+										deletedAt: null,
+										members: { some: { userId } },
+									},
+								},
+								user: { disabled: false },
+							},
+							include: {
+								user: { select: { id: true, email: true, name: true, profileImage: true, disabled: true } },
+							},
+						}),
+						prisma.noteCollaborator.findMany({
+							where: {
+								userId: { not: userId },
+								sourceWorkspace: {
+									is: {
+										deletedAt: null,
+										members: { some: { userId } },
+									},
+								},
+								user: { disabled: false },
+							},
+							include: {
+								user: { select: { id: true, email: true, name: true, profileImage: true, disabled: true } },
+							},
+						}),
+						prisma.noteShareInvitation.findMany({
+							where: {
+								status: 'ACCEPTED',
+								OR: [
+									{ inviterUserId: userId },
+									{ inviteeUserId: userId },
+								],
+							},
+							include: {
+								inviter: { select: { id: true, email: true, name: true, profileImage: true, disabled: true } },
+								invitee: { select: { id: true, email: true, name: true, profileImage: true, disabled: true } },
+							},
+						}),
+						prisma.inviteToken.findMany({
+							where: {
+								createdByUserId: userId,
+								used: true,
+							},
+							select: { email: true },
+						}),
+						currentUser?.email
+							? prisma.inviteToken.findMany({
+								where: {
+									email: currentUser.email,
+									used: true,
+									creator: { isNot: null },
+								},
+								include: {
+									creator: { select: { id: true, email: true, name: true, profileImage: true, disabled: true } },
+								},
+							})
+							: Promise.resolve([]),
+					]);
+
+					const sentAcceptedInviteEmails = Array.from(new Set(
+						sentAcceptedWorkspaceInvites
+							.map((invite) => normalizeOptionalId(invite.email)?.toLowerCase() ?? null)
+							.filter(Boolean)
+					));
+					const sentAcceptedWorkspaceUsers = sentAcceptedInviteEmails.length > 0
+						? await prisma.user.findMany({
+							where: {
+								email: { in: sentAcceptedInviteEmails },
+								disabled: false,
+							},
+							select: { id: true, email: true, name: true, profileImage: true, disabled: true },
+						})
+						: [];
+
+					const usersByKey = new Map();
+					const pushUser = (user) => {
+						if (!user || user.disabled) return;
+						const id = normalizeOptionalId(user.id);
+						const email = normalizeOptionalId(user.email)?.toLowerCase() ?? null;
+						const name = normalizeOptionalId(user.name);
+						const profileImage = normalizeOptionalId(user.profileImage);
+						if (id === userId) return;
+						const key = id || email;
+						if (!key) return;
+						const previous = usersByKey.get(key);
+						usersByKey.set(key, {
+							id: id ?? previous?.id ?? null,
+							email: email ?? previous?.email ?? null,
+							name: name ?? previous?.name ?? null,
+							profileImage: profileImage ?? previous?.profileImage ?? null,
+						});
+					};
+
+					for (const row of workspaceMembers) pushUser(row.user);
+					for (const row of noteCollaborators) pushUser(row.user);
+					for (const invitation of acceptedInvitations) {
+						pushUser(String(invitation.inviterUserId || '') === userId ? invitation.invitee : invitation.inviter);
+					}
+					for (const user of sentAcceptedWorkspaceUsers) pushUser(user);
+					for (const invite of receivedAcceptedWorkspaceInvites) pushUser(invite.creator);
+
+					const users = Array.from(usersByKey.values())
+						.filter((user) => Boolean(user.id || user.email || user.name))
+						.sort((left, right) => {
+							const leftLabel = normalizeComparableName(left.name || left.email || left.id || '');
+							const rightLabel = normalizeComparableName(right.name || right.email || right.id || '');
+							if (leftLabel !== rightLabel) return leftLabel.localeCompare(rightLabel);
+							return normalizeComparableName(left.email || '').localeCompare(normalizeComparableName(right.email || ''));
+						});
+
+					jsonResponse(res, 200, { users });
+				} catch (err) {
+					console.error('[api] collaborator history error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		// ── Timezone info ────────────────────────────────────────────────
 		// GET /api/timezone — returns the configured PGTIMEZONE and current
 		// server time formatted in that timezone. Useful for clients to
@@ -561,6 +848,60 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 				serverTimeUtc: now.toISOString(),
 				serverTimeLocal: fmt(now),
 			});
+			return true;
+		}
+
+		if (pathname === '/api/excalidraw-libraries' && method === 'GET') {
+			(async () => {
+				try {
+					const access = await requireWorkspaceMember();
+					if (!access) return;
+					const libraries = getExcalidrawLibraryDefinitions();
+					jsonResponse(res, 200, {
+						libraries: libraries.map(({ downloadUrl, filePath, source, ...library }) => library),
+					});
+				} catch (err) {
+					console.error('[api] GET /api/excalidraw-libraries error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		const excalidrawLibraryMatch = pathname.match(/^\/api\/excalidraw-libraries\/([^/]+)$/);
+		if (excalidrawLibraryMatch && method === 'GET') {
+			const libraryId = decodeURIComponent(excalidrawLibraryMatch[1]);
+			(async () => {
+				try {
+					const access = await requireWorkspaceMember();
+					if (!access) return;
+					const library = getExcalidrawLibraryDefinitions().find((entry) => entry.id === libraryId);
+					if (!library) {
+						jsonResponse(res, 404, { error: 'Drawing library not found' });
+						return;
+					}
+					let payload;
+					if (library.filePath) {
+						payload = fs.readFileSync(library.filePath);
+					} else {
+						const response = await fetch(library.downloadUrl, { redirect: 'follow' });
+						if (!response.ok) {
+							jsonResponse(res, 502, { error: 'Failed to download drawing library' });
+							return;
+						}
+						payload = Buffer.from(await response.arrayBuffer());
+					}
+					res.writeHead(200, {
+						'Content-Type': 'application/vnd.excalidrawlib+json',
+						'Cache-Control': 'no-store',
+						'Content-Disposition': `inline; filename="${library.id}.excalidrawlib"`,
+					});
+					res.end(payload);
+				} catch (err) {
+					console.error('[api] GET /api/excalidraw-libraries/:id error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
 			return true;
 		}
 

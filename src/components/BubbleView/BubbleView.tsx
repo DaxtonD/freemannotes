@@ -47,6 +47,8 @@ const NOTE_ORDER_KEY = 'noteOrder';
 const IDB_LOAD_TIMEOUT_MS = 4_000;
 const MAX_NOTES_PER_INACTIVE_WORKSPACE = 80;
 const BUBBLE_VIEW_OVERSCAN_PX = 480;
+const SEEN_BUBBLE_LAYOUT_STORAGE_KEY = 'freemannotes.bubble-layouts.v1';
+const MAX_SEEN_BUBBLE_LAYOUTS = 12;
 
 const ZOOM_MIN = BUBBLE_ZOOM_MIN;
 const ZOOM_MAX = BUBBLE_ZOOM_MAX;
@@ -336,6 +338,51 @@ function hashCode(str: string): number {
 function seededRandom(seed: string): number {
 	const h = Math.abs(hashCode(seed));
 	return (h % 1000) / 1000;
+}
+
+let seenBubbleLayouts: Set<string> | null = null;
+
+function getSeenBubbleLayouts(): Set<string> {
+	if (seenBubbleLayouts) return seenBubbleLayouts;
+	const next = new Set<string>();
+	if (typeof window !== 'undefined') {
+		try {
+			const raw = window.localStorage.getItem(SEEN_BUBBLE_LAYOUT_STORAGE_KEY);
+			if (raw) {
+				const parsed = JSON.parse(raw) as unknown;
+				if (Array.isArray(parsed)) {
+					for (const entry of parsed) {
+						const key = String(entry || '').trim();
+						if (key) next.add(key);
+					}
+				}
+			}
+		} catch {
+			// Best-effort cache only.
+		}
+	}
+	seenBubbleLayouts = next;
+	return next;
+}
+
+function hasSeenBubbleLayout(signature: string): boolean {
+	if (!signature) return false;
+	return getSeenBubbleLayouts().has(signature);
+}
+
+function markSeenBubbleLayout(signature: string): void {
+	if (!signature) return;
+	const store = getSeenBubbleLayouts();
+	if (store.has(signature)) return;
+	store.add(signature);
+	const entries = Array.from(store).slice(-MAX_SEEN_BUBBLE_LAYOUTS);
+	seenBubbleLayouts = new Set(entries);
+	if (typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(SEEN_BUBBLE_LAYOUT_STORAGE_KEY, JSON.stringify(entries));
+	} catch {
+		// Ignore persistence errors.
+	}
 }
 
 // function isBubbleDebugEnabled(): boolean {
@@ -1134,6 +1181,7 @@ type BubbleProps = {
 	 * different speeds.
 	 */
 	entryIndex?: number;
+	suppressInitialAnimation?: boolean;
 	onSelect: () => void | Promise<void>;
 };
 
@@ -1233,7 +1281,7 @@ function getBubbleDetailLevel(zoom: number, sizeClass: BubbleSizeClass): BubbleD
 	return sizeRank <= 2 ? 'meta' : 'full';
 }
 
-const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, entryIndex = 0, onSelect }: BubbleProps) {
+const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, bubbleDiameter, workspaceColorStyle, rotateDeg, floatDuration, floatDelay, entryIndex = 0, suppressInitialAnimation = false, onSelect }: BubbleProps) {
 	const displayTitle = resolveBubbleTitle(note.noteId, note.title);
 	const preview = getBubblePreview(note.noteId, doc, sizeClass);
 	const titleLayout = resolveBubbleTitleLayout(displayTitle || '(untitled)', bubbleDiameter);
@@ -1285,7 +1333,7 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 		<motion.div
 			layoutId={`bubble-${note.workspaceId}-${note.noteId}`}
 			className={styles.bubbleShell}
-			initial={{ opacity: 0, scale: 0.35 }}
+			initial={suppressInitialAnimation ? false : { opacity: 0, scale: 0.35 }}
 			animate={{ opacity: 1, scale: 1 }}
 			exit={{ opacity: 0, scale: 0.3 }}
 			/* Gentler spring than the default so bubbles drift in naturally rather
@@ -1588,6 +1636,19 @@ export function BubbleView({
 		const viewportBottomWithinCloud = viewportMetrics.scrollY - cloudDocumentTop + viewportMetrics.height + BUBBLE_VIEW_OVERSCAN_PX;
 		return packedLayout.items.filter((item) => item.top + item.layoutDiameter >= viewportTopWithinCloud && item.top <= viewportBottomWithinCloud);
 	}, [cloudDocumentTop, packedLayout.items, viewportMetrics]);
+	const packedLayoutSignature = React.useMemo(
+		() => packedLayout.items.map((item) => `${item.note.workspaceId}:${item.note.noteId}:${Math.round(item.left)}:${Math.round(item.top)}:${Math.round(item.layoutDiameter)}`).join('|'),
+		[packedLayout.items]
+	);
+	const [suppressInitialBubbleAnimation, setSuppressInitialBubbleAnimation] = React.useState(() => hasSeenBubbleLayout(packedLayoutSignature));
+
+	React.useEffect(() => {
+		const alreadySeen = hasSeenBubbleLayout(packedLayoutSignature);
+		setSuppressInitialBubbleAnimation(alreadySeen);
+		if (alreadySeen) return;
+		markSeenBubbleLayout(packedLayoutSignature);
+		setSuppressInitialBubbleAnimation(true);
+	}, [packedLayoutSignature]);
 
 	// const debugSummary = React.useMemo(() => {
 	// 	const rightmostEdge = packedLayout.items.reduce((max, item) => Math.max(max, item.left + item.layoutDiameter), 0);
@@ -1727,6 +1788,7 @@ export function BubbleView({
 							floatDuration={item.floatDuration}
 							floatDelay={item.floatDelay}
 							entryIndex={entryIndex}
+							suppressInitialAnimation={suppressInitialBubbleAnimation}
 							onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
 						/>
 					</div>

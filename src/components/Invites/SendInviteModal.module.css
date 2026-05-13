@@ -218,6 +218,11 @@
 	font-size: 12px;
 }
 
+.inputWithSuggestions {
+	position: relative;
+	width: 100%;
+}
+
 .fieldGrid {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));

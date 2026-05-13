@@ -2308,6 +2308,14 @@
 	box-shadow: 0 16px 40px rgba(0, 0, 0, 0.08);
 }
 
+.global-search-results--sticky,
+.global-search-results--mobile {
+	max-height: min(52dvh, 560px);
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	scrollbar-gutter: stable;
+}
+
 .global-search-results-header {
 	display: flex;
 	justify-content: space-between;
@@ -2897,7 +2905,7 @@
 		align-items: center;
 		opacity: 0;
 		pointer-events: none;
-		transform: translateY(-4px);
+		transform: translateY(calc(-4px + var(--app-mobile-search-viewport-offset, 0px)));
 		transition: opacity 180ms ease, transform 180ms ease;
 		z-index: 1;
 	}
@@ -2905,7 +2913,7 @@
 	.app-header-searchrow.mobile-searchrow.is-open {
 		opacity: 1;
 		pointer-events: auto;
-		transform: translateY(0);
+		transform: translateY(var(--app-mobile-search-viewport-offset, 0px));
 	}
 
 	.mobile-search-overlay {
@@ -2915,6 +2923,19 @@
 		gap: var(--space-2);
 		padding: 0;
 		background: var(--color-app-bg);
+	}
+
+	.mobile-search-results-surface {
+		position: fixed;
+		left: calc(var(--space-2) + var(--app-safe-left));
+		right: calc(var(--space-2) + var(--app-safe-right));
+		top: calc(var(--app-header-total-height) + var(--space-2) + var(--app-mobile-search-viewport-offset, 0px));
+		z-index: 119;
+		pointer-events: auto;
+	}
+
+	.global-search-results--mobile {
+		max-height: calc(100dvh - var(--app-header-total-height) - 72px - var(--space-4) - var(--app-safe-bottom-visual));
 	}
 
 	.app-header-viewrow {

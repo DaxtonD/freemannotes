@@ -3,22 +3,22 @@ import type * as Y from 'yjs';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faFileLines, faImage, faLink, faPaperclip } from '@fortawesome/free-solid-svg-icons';
+import { faImage, faLink, faPaperclip, faPenNib } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { MOBILE_GRID_EDGE_MARGIN_PX } from '../NoteGrid/layout';
-import { getCachedNoteDocuments, getNoteDocumentsChangedEventName, readQueuedNoteDocuments, readStoredRemoteNoteDocuments, refreshRemoteNoteDocuments } from '../../core/noteDocumentStore';
+import { readDrawingLinkState } from '../../core/noteModel';
 import { extractNoteLinksFromDoc } from '../../core/noteLinks';
 import { getCachedRemoteNoteLinks, getNoteLinksChangedEventName, readStoredNoteLinks, refreshRemoteNoteLinks } from '../../core/noteLinkStore';
 import { filterRemoteNoteImagesByPendingDeletes, getCachedRemoteNoteImages, getNoteMediaChangedEventName, readQueuedNoteImageDeletions, readQueuedNoteImages, readStoredRemoteNoteImages, refreshRemoteNoteImages } from '../../core/noteMediaStore';
 import styles from './NoteAttachmentCountChip.module.css';
 
-export type NoteAttachmentBrowserKind = 'images' | 'links' | 'documents';
+export type NoteAttachmentBrowserKind = 'images' | 'links' | 'drawings';
 
 type AttachmentCounts = {
 	images: number;
 	links: number;
-	documents: number;
+	drawings: number;
 };
 
 type NoteAttachmentCountChipProps = {
@@ -28,6 +28,7 @@ type NoteAttachmentCountChipProps = {
 	className: string;
 	colorStyle?: React.CSSProperties;
 	initialCounts?: Partial<AttachmentCounts>;
+	allowedKinds?: readonly NoteAttachmentBrowserKind[];
 	forceClosed?: boolean;
 	onOpenBrowser: (kind: NoteAttachmentBrowserKind) => void;
 	onOpenStateChange?: (isOpen: boolean) => void;
@@ -72,13 +73,21 @@ function stopAttachmentOverlayPressBubble(event: React.SyntheticEvent): void {
 export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): React.JSX.Element | null {
 	const { t } = useI18n();
 	const isCoarsePointer = useIsCoarsePointer();
+	const allowedKinds = React.useMemo<readonly NoteAttachmentBrowserKind[]>(() => (
+		props.allowedKinds && props.allowedKinds.length > 0
+			? props.allowedKinds
+			: ['images', 'links', 'drawings']
+	), [props.allowedKinds]);
+	const allowsImages = allowedKinds.includes('images');
+	const allowsLinks = allowedKinds.includes('links');
+	const allowsDrawings = allowedKinds.includes('drawings');
 	const buttonRef = React.useRef<HTMLButtonElement | null>(null);
 	const overlayPanelRef = React.useRef<HTMLDivElement | null>(null);
 	const backStatePushedRef = React.useRef(false);
 	const [counts, setCounts] = React.useState<AttachmentCounts>(() => ({
 		images: Math.max(getCachedRemoteNoteImages(props.docId).length, Math.max(0, Number(props.initialCounts?.images ?? 0) || 0)),
 		links: Math.max(getCachedRemoteNoteLinks(props.docId).length, extractNoteLinksFromDoc(props.doc).length, Math.max(0, Number(props.initialCounts?.links ?? 0) || 0)),
-		documents: Math.max(getCachedNoteDocuments(props.docId).length, Math.max(0, Number(props.initialCounts?.documents ?? 0) || 0)),
+		drawings: Math.max(readDrawingLinkState(props.doc).drawingIds.length, Math.max(0, Number(props.initialCounts?.drawings ?? 0) || 0)),
 	}));
 	const countsRef = React.useRef(counts);
 	const [isOpen, setIsOpen] = React.useState(false);
@@ -108,30 +117,29 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		setCounts((current) => ({
 			images: Math.max(current.images, Math.max(0, Number(props.initialCounts?.images ?? 0) || 0)),
 			links: Math.max(current.links, Math.max(0, Number(props.initialCounts?.links ?? 0) || 0)),
-			documents: Math.max(current.documents, Math.max(0, Number(props.initialCounts?.documents ?? 0) || 0)),
+			drawings: Math.max(current.drawings, Math.max(0, Number(props.initialCounts?.drawings ?? 0) || 0)),
 		}));
-	}, [props.initialCounts?.documents, props.initialCounts?.images, props.initialCounts?.links]);
+	}, [props.initialCounts?.drawings, props.initialCounts?.images, props.initialCounts?.links]);
 
 	const refresh = React.useCallback(async (options?: {
-		scope?: 'all' | 'media' | 'documents' | 'links';
+		scope?: 'all' | 'media' | 'drawings' | 'links';
 		syncRemote?: boolean;
 		forceRemote?: boolean;
 	}): Promise<AttachmentCounts> => {
 		const scope = options?.scope ?? 'all';
 		const includeMedia = scope === 'all' || scope === 'media';
-		const includeDocuments = scope === 'all' || scope === 'documents';
+		const includeDrawings = scope === 'all' || scope === 'drawings';
 		const includeLinks = scope === 'all' || scope === 'links';
 		// Combine queued + cached + remote counts so the chip reflects the user's intent
 		// immediately, even while uploads/deletes are still in flight or offline.
-		const [queuedImages, queuedDeletes, storedRemoteImages, queuedDocuments, storedRemoteDocuments, storedRemoteLinks] = await Promise.all([
+		const [queuedImages, queuedDeletes, storedRemoteImages, storedRemoteLinks] = await Promise.all([
 			props.authUserId ? readQueuedNoteImages(props.authUserId, props.docId) : Promise.resolve([]),
 			props.authUserId ? readQueuedNoteImageDeletions(props.authUserId, props.docId) : Promise.resolve([]),
 			includeMedia ? readStoredRemoteNoteImages(props.docId) : Promise.resolve([]),
-			props.authUserId ? readQueuedNoteDocuments(props.authUserId, props.docId) : Promise.resolve([]),
-			includeDocuments ? readStoredRemoteNoteDocuments(props.docId) : Promise.resolve([]),
 			includeLinks ? readStoredNoteLinks(props.docId) : Promise.resolve([]),
 		]);
 		const extractedLinkCount = extractNoteLinksFromDoc(props.doc).length;
+		const drawingCount = readDrawingLinkState(props.doc).drawingIds.length;
 		const localCounts: AttachmentCounts = {
 			images: includeMedia
 				? filterRemoteNoteImagesByPendingDeletes(
@@ -140,32 +148,24 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 				).length + queuedImages.length
 				: countsRef.current.images,
 			links: includeLinks ? Math.max(storedRemoteLinks.length, extractedLinkCount) : countsRef.current.links,
-			documents: includeDocuments
-				? Math.max(storedRemoteDocuments.length + queuedDocuments.length, getCachedNoteDocuments(props.docId).length)
-				: countsRef.current.documents,
+			drawings: includeDrawings ? drawingCount : countsRef.current.drawings,
 		};
 		setCounts((current) => ({
 			images: includeMedia ? localCounts.images : current.images,
 			links: includeLinks ? localCounts.links : current.links,
-			documents: includeDocuments ? localCounts.documents : current.documents,
+			drawings: includeDrawings ? localCounts.drawings : current.drawings,
 		}));
 
 		if (!options?.syncRemote) return localCounts;
 
 		try {
-			const [remoteImages, mergedDocuments, remoteLinks] = await Promise.all([
+			const [remoteImages, remoteLinks] = await Promise.all([
 				includeMedia
 					? refreshRemoteNoteImages(props.docId, {
 						force: options.forceRemote,
 						minIntervalMs: options.forceRemote ? 0 : 15_000,
 					})
 					: Promise.resolve<readonly ReturnType<typeof getCachedRemoteNoteImages>[number][]>([]),
-				includeDocuments
-					? refreshRemoteNoteDocuments(props.docId, {
-						userId: props.authUserId,
-						force: options.forceRemote,
-					})
-					: Promise.resolve<readonly ReturnType<typeof getCachedNoteDocuments>[number][]>([]),
 				includeLinks
 					? refreshRemoteNoteLinks(props.docId, {
 						force: options.forceRemote,
@@ -177,12 +177,12 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 					? filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes).length + queuedImages.length
 					: localCounts.images,
 				links: includeLinks ? Math.max(remoteLinks.length, extractedLinkCount) : localCounts.links,
-				documents: includeDocuments ? mergedDocuments.length : localCounts.documents,
+				drawings: includeDrawings ? drawingCount : localCounts.drawings,
 			};
 			setCounts((current) => ({
 				images: includeMedia ? remoteCounts.images : current.images,
 				links: includeLinks ? remoteCounts.links : current.links,
-				documents: includeDocuments ? remoteCounts.documents : current.documents,
+				drawings: includeDrawings ? remoteCounts.drawings : current.drawings,
 			}));
 			return remoteCounts;
 		} catch {
@@ -207,7 +207,11 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		const onDocUpdate = (): void => {
 			const extracted = extractNoteLinksFromDoc(props.doc).length;
 			const cachedRemote = getCachedRemoteNoteLinks(props.docId).length;
-			setCounts((current) => ({ ...current, links: Math.max(extracted, cachedRemote) }));
+			setCounts((current) => ({
+				...current,
+				links: Math.max(extracted, cachedRemote),
+				drawings: readDrawingLinkState(props.doc).drawingIds.length,
+			}));
 		};
 		props.doc.on('update', onDocUpdate);
 		return () => {
@@ -218,18 +222,11 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	React.useEffect(() => {
 		if (props.suspendRemoteRefresh) return () => {};
 		const mediaEventName = getNoteMediaChangedEventName();
-		const documentEventName = getNoteDocumentsChangedEventName();
 		const linksEventName = getNoteLinksChangedEventName();
 		const onMediaChanged = (event: Event): void => {
 			const detail = (event as CustomEvent<{ docId?: string }>).detail;
 			if (!detail?.docId || detail.docId === props.docId) {
 				void refresh({ scope: 'media', syncRemote: true, forceRemote: true });
-			}
-		};
-		const onDocumentChanged = (event: Event): void => {
-			const detail = (event as CustomEvent<{ docId?: string }>).detail;
-			if (!detail?.docId || detail.docId === props.docId) {
-				void refresh({ scope: 'documents', syncRemote: true, forceRemote: true });
 			}
 		};
 		const onLinksChanged = (event: Event): void => {
@@ -248,12 +245,10 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 			void refresh({ scope: 'all', syncRemote: true, forceRemote: true });
 		};
 		window.addEventListener(mediaEventName, onMediaChanged as EventListener);
-		window.addEventListener(documentEventName, onDocumentChanged as EventListener);
 		window.addEventListener(linksEventName, onLinksChanged as EventListener);
 		window.addEventListener('online', onOnline);
 		return () => {
 			window.removeEventListener(mediaEventName, onMediaChanged as EventListener);
-			window.removeEventListener(documentEventName, onDocumentChanged as EventListener);
 			window.removeEventListener(linksEventName, onLinksChanged as EventListener);
 			window.removeEventListener('online', onOnline);
 		};
@@ -375,7 +370,12 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		};
 	}, [isOpen]);
 
-	const totalCount = counts.images + counts.links + counts.documents;
+	const visibleItems = React.useMemo(() => ([
+		allowsImages ? { kind: 'images', icon: faImage, label: t('app.sidebarImages'), count: counts.images } : null,
+		allowsLinks ? { kind: 'links', icon: faLink, label: t('editors.mediaTabLinks'), count: counts.links } : null,
+		allowsDrawings ? { kind: 'drawings', icon: faPenNib, label: t('editors.mediaTabDocuments'), count: counts.drawings } : null,
+	].filter((item): item is { kind: NoteAttachmentBrowserKind; icon: typeof faImage; label: string; count: number } => Boolean(item))), [allowsDrawings, allowsImages, allowsLinks, counts.drawings, counts.images, counts.links, t]);
+	const totalCount = visibleItems.reduce((sum, item) => sum + item.count, 0);
 	const overlayPosition = React.useMemo(() => {
 		if (!anchorRect || typeof window === 'undefined') return null;
 		// Match the other note-card chip overlays: card-width and horizontally
@@ -407,7 +407,6 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	}, []);
 
 	const handleOpenBrowser = React.useCallback((kind: NoteAttachmentBrowserKind) => {
-		if (kind === 'documents') return;
 		const activeElement = typeof document !== 'undefined' ? document.activeElement : null;
 		if (activeElement instanceof HTMLElement) activeElement.blur();
 		setIsOpen(false);
@@ -467,11 +466,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
 								>
 									<div className={styles.overlayList}>
-										{([
-											{ kind: 'images', icon: faImage, label: t('app.sidebarImages'), count: counts.images },
-											{ kind: 'links', icon: faLink, label: t('editors.mediaTabLinks'), count: counts.links },
-											{ kind: 'documents', icon: faFileLines, label: t('editors.mediaTabDocuments'), count: counts.documents },
-										] as const).map((item, index) => {
+										{visibleItems.map((item, index) => {
 											const rowDelay = 0.016 + index * 0.024;
 											return (
 												<div
@@ -481,9 +476,6 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 													<motion.button
 														type="button"
 														className={styles.overlayItem}
-														disabled={item.kind === 'documents'}
-														aria-disabled={item.kind === 'documents' ? 'true' : undefined}
-														data-disabled={item.kind === 'documents' ? 'true' : undefined}
 														initial={{ opacity: 0, y: -10 }}
 														animate={{ opacity: 1, y: 0 }}
 														exit={{ opacity: 0, y: -6 }}

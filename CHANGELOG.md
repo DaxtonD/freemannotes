@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.4.0 - 2026-05-12
+
+### Added
+- **Drawing workflows are now first-class across the app.** Freeman Notes now ships a dedicated Excalidraw-based drawing editor with canvas background presets, warm-start thumbnail caching, and support for bundled or drop-in custom drawing libraries.
+- **Share and invite flows now remember who you work with.** Collaborator and invite dialogs can suggest prior collaborators, including cached identity and avatar details for faster repeat sharing.
+
+### Changed
+- **Mobile and installed-PWA behavior now stays aligned with desktop more consistently.** External navigation, editor layout, docked actions, and attachment flows now follow the same interaction model across desktop, mobile browsers, and installed app sessions.
+- **Drawing cards and drawing browsers now reopen faster and stay visually steadier.** Cached thumbnails, viewport-aware preview sizing, and drawing-specific rendering paths reduce first-frame placeholder flashes and keep drawing-heavy workspaces more stable.
+
+### Fixed
+- **Bubble and drawing-heavy note views no longer try to render the entire workspace at once.** View virtualization and viewport-scoped rendering reduce DOM churn, improve workspace switches, and keep bubble layouts steadier while notes stream in.
+- **New drawings now use explicit Save and Cancel actions, while existing drawings keep Done.** This prevents accidental dismissals during first-save flows without changing the faster existing-note edit path.
+- **Drawing ink contrast now updates immediately against the selected canvas background.** Auto-contrast defaults, live text editing, and selective recoloring of auto-ink elements now stay in sync before the user commits the element.
+- **Drawing note-card previews now keep the full drawing visible across devices.** Warm relaunches recover cached previews sooner, and desktop/mobile cards no longer clip or mis-scale the rendered drawing thumbnail.
+
 ## 1.3.5 - 2026-05-05
 
 ### Changed

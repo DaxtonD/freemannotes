@@ -327,7 +327,11 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 		enabled: shouldVirtualize,
 		useFlushSync: false,
 		measureElement: (element, entry) => Math.max(1, Math.round(entry?.contentRect.height ?? element.getBoundingClientRect().height)),
-		shouldAdjustScrollPositionOnItemSizeChange: (item, _delta, instance) => item.start < instance.scrollOffset,
+		// List rows continue to measure after they mount, especially once the user has
+		// scrolled far enough for virtualization to recycle rows. Preserving scroll by
+		// compensating for every size change above the viewport makes the window
+		// virtualizer fight native scrolling and produces visible jitter in list views.
+		shouldAdjustScrollPositionOnItemSizeChange: () => false,
 	});
 
 	React.useEffect(() => {

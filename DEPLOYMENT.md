@@ -145,6 +145,7 @@ If you deploy behind Nginx, Caddy, Traefik, OpenResty, or another reverse proxy,
 
 ## Operational Notes
 
+- Custom Excalidraw libraries can be dropped into `third-party/excalidraw-libraries/` as `.excalidrawlib` files while the server is running. See `third-party/excalidraw-libraries/README.md` for the exact format and optional sidecar metadata.
 - The bundled PostgreSQL service is not exposed on a host port by default.
 - `AUTH_JWT_SECRET` should be changed before any public beta.
 - For invite emails or email-mode reminders, configure `APP_URL` and the `SMTP_*` variables together.

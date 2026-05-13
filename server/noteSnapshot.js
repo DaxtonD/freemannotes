@@ -26,8 +26,12 @@ function decodeDocumentState(state) {
 	const title = tempDoc.getText('title').toString();
 	const content = tempDoc.getText('content').toString();
 	const checklist = materializeChecklist(tempDoc);
-	const type = metadata && metadata.type === 'checklist' ? 'checklist' : 'text';
-	const plainText = normalizeText(`${title} ${type === 'checklist' ? joinChecklistText(checklist) : content}`);
+	const type = metadata && metadata.type === 'checklist'
+		? 'checklist'
+		: metadata && metadata.type === 'drawing'
+			? 'drawing'
+			: 'text';
+	const plainText = normalizeText(`${title} ${type === 'checklist' ? joinChecklistText(checklist) : type === 'drawing' ? '' : content}`);
 	tempDoc.destroy();
 	return {
 		title,

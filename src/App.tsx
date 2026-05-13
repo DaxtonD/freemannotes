@@ -28,6 +28,10 @@ import appIconDark from '../darkicon.png';
 import appIconLight from '../lighticon.png';
 import { ChecklistEditor } from './components/Editors/ChecklistEditor';
 import { NoteEditor } from './components/Editors/NoteEditor';
+const DrawingEditor = React.lazy(async () => {
+	const module = await import('./components/Editors/DrawingEditor');
+	return { default: module.DrawingEditor };
+});
 import { UserManagementModal } from './components/Admin/UserManagementModal';
 import { UserRegistrationInviteModal } from './components/Admin/UserRegistrationInviteModal';
 import { PreferencesModal } from './components/Preferences/PreferencesModal';
@@ -37,12 +41,11 @@ import { type CropAreaPixels, getAvatarUploadBlob } from './core/avatarProfileIm
 import { SendInviteModal } from './components/Invites/SendInviteModal';
 import { CollaboratorModal } from './components/Share/CollaboratorModal';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
-import { NoteDocumentBrowserModal } from './components/NoteAttachments/NoteDocumentBrowserModal';
+import { NoteDrawingBrowserModal } from './components/NoteAttachments/NoteDrawingBrowserModal';
 import { NoteLinkBrowserModal } from './components/NoteAttachments/NoteLinkBrowserModal';
 import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModal';
 import { NoteMediaBrowserModal } from './components/NoteMedia/NoteMediaBrowserModal';
 import { WorkspaceImagesGallery } from './components/NoteMedia/WorkspaceImagesGallery';
-import { NoteDocumentUploadModal } from './components/NoteDocuments/NoteDocumentUploadModal';
 import { MoveNoteModal } from './components/Workspaces/MoveNoteModal';
 import { CollectionManagementModal } from './components/Workspaces/CollectionManagementModal';
 import { NoteCollectionModal } from './components/Workspaces/NoteCollectionModal';
@@ -67,7 +70,7 @@ import {
 } from './core/deviceAppearancePreferences';
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
-import { initChecklistNoteDoc, initTextNoteDoc, makeNoteId, readNoteFromDoc } from './core/noteModel';
+import { addNoteDrawingId, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readNoteFromDoc, removeNoteDrawingId } from './core/noteModel';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
 import { activateWorkspace, fetchUserPreferences, flushUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
@@ -165,12 +168,6 @@ type CollaboratorModalState = {
 };
 
 type NoteImageModalState = {
-	noteId: string;
-	docId: string;
-	title: string;
-};
-
-type NoteDocumentModalState = {
 	noteId: string;
 	docId: string;
 	title: string;
@@ -586,7 +583,6 @@ type OverlaySnapshot = {
 	isSendInviteOpen: boolean;
 	isWorkspaceSwitcherOpen: boolean;
 	collaboratorModalState: CollaboratorModalState | null;
-	noteImageModalState: NoteImageModalState | null;
 	noteAttachmentBrowserState: NoteAttachmentBrowserState | null;
 	/** Cross-workspace note viewer opened from bubble view. */
 	crossWorkspaceNote: { noteId: string; workspaceId: string; workspaceName: string } | null;
@@ -648,7 +644,6 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	isSendInviteOpen: false,
 	isWorkspaceSwitcherOpen: false,
 	collaboratorModalState: null,
-	noteImageModalState: null,
 	noteAttachmentBrowserState: null,
 	crossWorkspaceNote: null,
 	isMobileSidebarOpen: false,
@@ -739,7 +734,6 @@ function hasOverlaySnapshotContent(snapshot: OverlaySnapshot): boolean {
 		|| snapshot.isSendInviteOpen
 		|| snapshot.isWorkspaceSwitcherOpen
 		|| snapshot.collaboratorModalState !== null
-		|| snapshot.noteImageModalState !== null
 		|| snapshot.noteAttachmentBrowserState !== null
 		|| snapshot.crossWorkspaceNote !== null
 		|| snapshot.isMobileSidebarOpen
@@ -1096,6 +1090,7 @@ export function App(): React.JSX.Element {
 		if (typeof window === 'undefined') return false;
 		return window.matchMedia('(pointer: coarse)').matches;
 	});
+	const [mobileSearchViewportOffsetTop, setMobileSearchViewportOffsetTop] = React.useState(0);
 	const headerRef = React.useRef<HTMLElement | null>(null);
 	const sidebarToggleButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const mobileSearchInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -1187,7 +1182,6 @@ export function App(): React.JSX.Element {
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(_restoredOverlay?.collaboratorModalState ?? null);
 	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(() => {
-		if (_restoredOverlay?.noteImageModalState) return _restoredOverlay.noteImageModalState;
 		try {
 			const raw = sessionStorage.getItem('__freemannotes_imageModal');
 			if (raw) return JSON.parse(raw) as NoteImageModalState;
@@ -1205,7 +1199,6 @@ export function App(): React.JSX.Element {
 			// Best effort only.
 		}
 	}, [noteImageModalState]);
-	const [noteDocumentModalState, setNoteDocumentModalState] = React.useState<NoteDocumentModalState | null>(null);
 	const [noteAttachmentBrowserState, setNoteAttachmentBrowserState] = React.useState<NoteAttachmentBrowserState | null>(_restoredOverlay?.noteAttachmentBrowserState ?? null);
 	// The currently selected note in the grid/editor area.
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(_restoredOverlay?.selectedNoteId ?? null);
@@ -1631,7 +1624,6 @@ export function App(): React.JSX.Element {
 			isSendInviteOpen,
 			isWorkspaceSwitcherOpen,
 			collaboratorModalState,
-			noteImageModalState,
 			noteAttachmentBrowserState,
 			isMobileSidebarOpen,
 			isFabOpen,
@@ -1649,7 +1641,6 @@ export function App(): React.JSX.Element {
 		isSendInviteOpen,
 		isWorkspaceSwitcherOpen,
 		collaboratorModalState,
-		noteImageModalState,
 		noteAttachmentBrowserState,
 		isMobileSidebarOpen,
 		isFabOpen,
@@ -1672,7 +1663,6 @@ export function App(): React.JSX.Element {
 		setIsSendInviteOpen(snapshot.isSendInviteOpen);
 		setIsWorkspaceSwitcherOpen(snapshot.isWorkspaceSwitcherOpen);
 		setCollaboratorModalState(snapshot.collaboratorModalState);
-		setNoteImageModalState(snapshot.noteImageModalState);
 		setNoteAttachmentBrowserState(snapshot.noteAttachmentBrowserState);
 		setIsMobileSidebarOpen(snapshot.isMobileSidebarOpen);
 		setMobileSidebarProgress(snapshot.isMobileSidebarOpen ? 1 : 0);
@@ -1695,7 +1685,10 @@ export function App(): React.JSX.Element {
 					snapshot,
 					kind: 'overlay',
 				};
-				if (mode === 'replace' && isOverlayHistoryState(window.history.state)) {
+				// Replace whichever in-app history layer is currently on top. Media-dock
+				// and image-viewer entries are not overlay snapshots, but callers rely on
+				// replace semantics when transitioning from those layers into an editor.
+				if (mode === 'replace') {
 					window.history.replaceState(nextState, '');
 					return;
 				}
@@ -1944,32 +1937,12 @@ export function App(): React.JSX.Element {
 	}, [closeCollaboratorModal, showBriefDialog, t]);
 
 	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string) => {
-		const state = { noteId, docId, title: title || '' };
-		const current = getOverlaySnapshot();
-		commitOverlaySnapshot(
-			{
-				...current,
-				noteImageModalState: state,
-				isMobileSidebarOpen: false,
-				isFabOpen: false,
-			},
-			'push'
-		);
-	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+		setNoteImageModalState({ noteId, docId, title: title || '' });
+	}, []);
 
 	const closeNoteImageModal = React.useCallback(() => {
-		if (goBackIfOverlayHistory()) return;
 		setNoteImageModalState(null);
-	}, [goBackIfOverlayHistory]);
-
-	const openNoteDocumentModal = React.useCallback((noteId: string, docId: string, title?: string) => {
-		setNoteDocumentModalState({ noteId, docId, title: title || '' });
 	}, []);
-
-	const closeNoteDocumentModal = React.useCallback(() => {
-		setNoteDocumentModalState(null);
-	}, []);
-
 	const openCollectionManagementModal = React.useCallback(() => {
 		setIsCollectionManagementOpen(true);
 	}, []);
@@ -2020,6 +1993,22 @@ export function App(): React.JSX.Element {
 		if (goBackIfOverlayHistory()) return;
 		setNoteAttachmentBrowserState(null);
 	}, [goBackIfOverlayHistory]);
+
+	const loadDrawingDoc = React.useCallback(async (drawingId: string): Promise<Y.Doc | null> => {
+		const normalizedDrawingId = String(drawingId || '').trim();
+		if (!normalizedDrawingId) return null;
+		return manager.getDocWithSync(normalizedDrawingId);
+	}, [manager]);
+
+	const deleteAttachedDrawing = React.useCallback(async (noteId: string, drawingId: string) => {
+		const normalizedNoteId = String(noteId || '').trim();
+		const normalizedDrawingId = String(drawingId || '').trim();
+		if (!normalizedNoteId || !normalizedDrawingId) return;
+		const parentDoc = manager.getDoc(normalizedNoteId);
+		if (!parentDoc) return;
+		removeNoteDrawingId(parentDoc, normalizedDrawingId);
+		await manager.deleteNote(normalizedDrawingId, true);
+	}, [manager]);
 
 	const openMobileSidebar = React.useCallback(() => {
 		setIsMobileSidebarDragging(false);
@@ -2127,7 +2116,6 @@ export function App(): React.JSX.Element {
 		Boolean(collaboratorModalState) ||
 		Boolean(noteAttachmentBrowserState) ||
 		Boolean(noteImageModalState) ||
-		Boolean(noteDocumentModalState) ||
 		Boolean(noteCollectionModalState) ||
 		Boolean(noteLabelsModalState) ||
 		Boolean(labelManagementModalState) ||
@@ -2152,7 +2140,6 @@ export function App(): React.JSX.Element {
 		isWorkspaceSwitcherOpen ||
 		Boolean(collaboratorModalState) ||
 		Boolean(noteImageModalState) ||
-		Boolean(noteDocumentModalState) ||
 		Boolean(noteAttachmentBrowserState) ||
 		userModalBusy;
 	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0);
@@ -2282,8 +2269,29 @@ export function App(): React.JSX.Element {
 		[commitOverlaySnapshot, getOverlaySnapshot, manager]
 	);
 
+	const openAttachedDrawing = React.useCallback((drawingId: string) => {
+		const normalizedDrawingId = String(drawingId || '').trim();
+		if (!normalizedDrawingId) return;
+		openNoteEditor(normalizedDrawingId);
+	}, [openNoteEditor]);
+
+	const createAttachedDrawing = React.useCallback(async (noteId: string) => {
+		const normalizedNoteId = String(noteId || '').trim();
+		if (!normalizedNoteId) return;
+		const parentDoc = manager.getDoc(normalizedNoteId);
+		if (!parentDoc) return;
+
+		// Attached drawings stay hidden from the note grid by skipping createNote()
+		// and linking a standalone drawing doc directly from the parent note.
+		const drawingId = makeNoteId('drawing-note');
+		const drawingDoc = await manager.getDocWithSync(drawingId);
+		initDrawingNoteDoc(drawingDoc, '');
+		addNoteDrawingId(parentDoc, drawingId);
+		openNoteEditor(drawingId);
+	}, [manager, openNoteEditor]);
+
 	const getPendingNewNoteDisposition = React.useCallback(
-		async (noteId: string): Promise<{ keep: boolean; type: 'text' | 'checklist' }> => {
+		async (noteId: string): Promise<{ keep: boolean; type: 'text' | 'checklist' | 'drawing' }> => {
 			const doc = manager.getDoc(noteId);
 			if (!doc) return { keep: true, type: 'text' };
 			const reminderDocId = manager.resolveRoomName(noteId);
@@ -2299,6 +2307,9 @@ export function App(): React.JSX.Element {
 				return { keep: true, type: snapshot.type };
 			}
 			if (snapshot.type === 'checklist' && (snapshot.items ?? []).some((item) => String(item.text ?? '').trim().length > 0)) {
+				return { keep: true, type: snapshot.type };
+			}
+			if (snapshot.type === 'drawing' && doc.getArray<Y.Map<any>>('elements').length > 0) {
 				return { keep: true, type: snapshot.type };
 			}
 			if (snapshot.collectionId || readReminderLookupValue(noteReminderByDocId, reminderDocId, noteId) || snapshot.labelIds.length > 0) {
@@ -2339,9 +2350,12 @@ export function App(): React.JSX.Element {
 			if (!pendingNewNoteIdsRef.current.has(noteId) || pendingNewNoteCleanupIdsRef.current.has(noteId)) return;
 			pendingNewNoteCleanupIdsRef.current.add(noteId);
 			try {
-				const noteType = String(manager.getDoc(noteId)?.getMap('metadata')?.get('type') ?? 'text') === 'checklist'
+				const rawNoteType = String(manager.getDoc(noteId)?.getMap('metadata')?.get('type') ?? 'text');
+				const noteType = rawNoteType === 'checklist'
 					? 'checklist' as const
-					: 'text' as const;
+					: rawNoteType === 'drawing'
+						? 'drawing' as const
+						: 'text' as const;
 				const disposition = mode === 'save'
 					? await getPendingNewNoteDisposition(noteId)
 					: { keep: false, type: noteType };
@@ -2356,7 +2370,13 @@ export function App(): React.JSX.Element {
 				if (disposition.keep) return;
 				await manager.permanentlyDeleteNote(noteId).catch(() => undefined);
 				if (mode === 'save') {
-					showBriefDialog(disposition.type === 'checklist' ? 'empty checklist discarded' : 'empty note discarded');
+					showBriefDialog(
+						disposition.type === 'checklist'
+							? 'empty checklist discarded'
+							: disposition.type === 'drawing'
+								? 'empty drawing discarded'
+								: 'empty note discarded'
+					);
 				}
 			} finally {
 				pendingNewNoteCleanupIdsRef.current.delete(noteId);
@@ -5379,7 +5399,7 @@ export function App(): React.JSX.Element {
 	}, [bubbleColorPickerWorkspaceId]);
 
 	const openCreateEditorForCurrentContext = React.useCallback(
-		async (mode: 'text' | 'checklist', opts?: { replaceTop?: boolean }) => {
+		async (mode: 'text' | 'checklist' | 'drawing', opts?: { replaceTop?: boolean }) => {
 			if (viewMode === 'bubble') {
 				const targetWorkspaceId = bubbleSelectedWorkspace?.id || authWorkspaceId;
 				if (!targetWorkspaceId) return;
@@ -5395,7 +5415,13 @@ export function App(): React.JSX.Element {
 			// Create the real note up front so the compose session has the same feature
 			// surface as editing an existing note, including media, collaborators, and
 			// metadata assignment while the note is still effectively a draft.
-			const noteId = makeNoteId(mode === 'checklist' ? 'checklist-note' : 'text-note');
+			const noteId = makeNoteId(
+				mode === 'checklist'
+					? 'checklist-note'
+					: mode === 'drawing'
+						? 'drawing-note'
+						: 'text-note'
+			);
 			// Mark as draft BEFORE any async IDB/network operations so NoteGrid/BubbleView
 			// never render the note during the creation window (avoids a brief flash and
 			// the 403 API calls that follow from attachment chips being mounted).
@@ -5404,6 +5430,8 @@ export function App(): React.JSX.Element {
 			const doc = await manager.getDocWithSync(noteId);
 			if (mode === 'checklist') {
 				initChecklistNoteDoc(doc, '', [], []);
+			} else if (mode === 'drawing') {
+				initDrawingNoteDoc(doc, '');
 			} else {
 				initTextNoteDoc(doc, '', '', undefined, []);
 			}
@@ -6240,8 +6268,9 @@ export function App(): React.JSX.Element {
 				<button
 					type="button"
 					className="mobile-fab-action"
-					disabled
-					title={t('app.createDrawingComingSoon')}
+					onClick={() => {
+						void openCreateEditorForCurrentContext('drawing', { replaceTop: true });
+					}}
 				>
 					<FontAwesomeIcon icon={faPenNib} />
 					{t('app.createDrawing')}
@@ -6570,6 +6599,37 @@ export function App(): React.JSX.Element {
 		});
 		return () => cancelAnimationFrame(raf);
 	}, [isMobileSearchOpen, isMobileSidebarOpen, isMobileViewport]);
+
+	React.useEffect(() => {
+		if (!isMobileViewport || !isMobileSearchOpen || typeof window === 'undefined' || !window.visualViewport) {
+			setMobileSearchViewportOffsetTop(0);
+			return;
+		}
+
+		const viewport = window.visualViewport;
+		let raf = 0;
+
+		const syncViewportOffset = () => {
+			cancelAnimationFrame(raf);
+			raf = requestAnimationFrame(() => {
+				const nextOffsetTop = Math.max(0, Math.round(Math.max(viewport.offsetTop, viewport.pageTop - window.scrollY)));
+				setMobileSearchViewportOffsetTop((previous) => (Math.abs(previous - nextOffsetTop) <= 1 ? previous : nextOffsetTop));
+			});
+		};
+
+		syncViewportOffset();
+		viewport.addEventListener('resize', syncViewportOffset);
+		viewport.addEventListener('scroll', syncViewportOffset);
+		window.addEventListener('scroll', syncViewportOffset, { passive: true });
+
+		return () => {
+			cancelAnimationFrame(raf);
+			viewport.removeEventListener('resize', syncViewportOffset);
+			viewport.removeEventListener('scroll', syncViewportOffset);
+			window.removeEventListener('scroll', syncViewportOffset);
+			setMobileSearchViewportOffsetTop(0);
+		};
+	}, [isMobileSearchOpen, isMobileViewport]);
 
 	React.useEffect(() => {
 		// Desktop editor overlay offset:
@@ -7557,11 +7617,79 @@ export function App(): React.JSX.Element {
 		if (kind === 'label') return 'Label';
 		return t('search.matchNote');
 	}, [t]);
+	const canShowGlobalSearchResults = viewMode !== 'bubble' && sidebarView !== 'images';
+	const hasGlobalSearchResults = canShowGlobalSearchResults && Boolean(deferredSearchQuery);
+	function renderGlobalSearchResults(variantClassName: string): React.ReactNode {
+		return (
+		<section className={`global-search-results ${variantClassName}`} aria-live="polite">
+			<div className="global-search-results-header">
+				<div>
+					<p className="global-search-results-eyebrow">{t('search.title')}</p>
+					<h2 className="global-search-results-title">{deferredSearchQuery}</h2>
+				</div>
+				<div className="global-search-results-meta">
+					{searchResultsBusy ? t('common.loading') : `${searchResults.length} ${searchResults.length === 1 ? t('search.resultSingular') : t('search.resultPlural')}`}
+				</div>
+			</div>
+			{searchResultsError ? <p className="global-search-results-error">{searchResultsError}</p> : null}
+			{!searchResultsBusy && !searchResultsError && groupedSearchResults.length === 0 ? (
+				<p className="global-search-results-empty">{t('search.noResults')}</p>
+			) : null}
+			<div className="global-search-results-groups">
+				{groupedSearchResults.map((group) => (
+					<section key={group.label} className="global-search-results-group">
+						<header className="global-search-results-group-header">{formatSearchGroupLabel(group.items[0].group)}</header>
+						<div className="global-search-results-list">
+							{group.items.map((result) => (
+								<button
+									key={`${result.docId}:${result.openNoteId || result.noteId}`}
+									type="button"
+									className="global-search-result-card"
+									onClick={() => void handleSearchResultSelect(result)}
+								>
+									{result.thumbnailUrl ? <img className="global-search-result-thumb" src={result.thumbnailUrl} alt="" /> : (
+										<div className="global-search-result-thumb global-search-result-thumb-placeholder" aria-hidden="true">
+											<span className="global-search-result-thumb-title">{result.title}</span>
+											<span className="global-search-result-thumb-snippet">{result.snippet || t('note.untitled')}</span>
+											<span className="global-search-result-thumb-line global-search-result-thumb-line-short" />
+										</div>
+									)}
+									<div className="global-search-result-copy">
+										<div className="global-search-result-topline">
+											<span className="global-search-result-title">{result.title}</span>
+											{result.matchKinds.map((kind) => <span key={`${result.docId}:${kind}`} className="global-search-result-badge">{formatSearchMatchLabel(kind)}</span>)}
+											{result.archived ? <span className="global-search-result-badge">{t('search.archivedBadge')}</span> : null}
+										</div>
+										<p className="global-search-result-snippet">{result.snippet}</p>
+										{result.collaboratorMatches.length > 0 || result.collectionMatches.length > 0 || result.labelMatches.length > 0 ? (
+											<div className="global-search-result-contexts">
+												{result.collaboratorMatches.map((label) => <span key={`${result.docId}:${label}`} className="global-search-result-context">{t('search.collaboratorPrefix')} {label}</span>)}
+												{result.collectionMatches.map((label) => <span key={`${result.docId}:collection:${label}`} className="global-search-result-context">Collection: {label}</span>)}
+												{result.labelMatches.map((label) => <span key={`${result.docId}:label:${label}`} className="global-search-result-context">Label: {label}</span>)}
+											</div>
+										) : null}
+										<div className="global-search-result-meta">{result.imageCount > 0 ? `${result.imageCount} ${result.imageCount === 1 ? t('media.imageSingular') : t('media.imagePlural')} · ` : ''}{new Date(result.updatedAt).toLocaleString(locale)}</div>
+									</div>
+								</button>
+							))}
+						</div>
+					</section>
+				))}
+			</div>
+		</section>
+		);
+	}
 	const handleSearchResultSelect = React.useCallback(async (result: NoteSearchResult) => {
 		setSearchQuery('');
 		setSearchResults([]);
 		setSearchResultsError(null);
 		setNoteGridCollaboratorFilter(null);
+		if (isMobileViewport) {
+			replaceActiveOverlaySnapshot({
+				...getOverlaySnapshot(),
+				isMobileSearchOpen: false,
+			});
+		}
 		if (result.openWorkspaceId && result.openWorkspaceId !== authWorkspaceId) {
 			await activateWorkspaceFromSidebar(result.openWorkspaceId, {
 				activeSharedFolder: result.group.kind === 'shared' ? result.folderName ?? null : null,
@@ -7573,7 +7701,7 @@ export function App(): React.JSX.Element {
 		if (result.openNoteId) {
 			openNoteEditor(result.openNoteId, { replaceTop: true });
 		}
-	}, [activateWorkspaceFromSidebar, authWorkspaceId, openNoteEditor]);
+	}, [activateWorkspaceFromSidebar, authWorkspaceId, getOverlaySnapshot, isMobileViewport, openNoteEditor, replaceActiveOverlaySnapshot]);
 
 	const toggleSidebar = () => {
 		if (isMobileViewport) {
@@ -7641,6 +7769,7 @@ export function App(): React.JSX.Element {
 	const isMobileSidebarActive = mobileSidebarVisualProgress > 0.001;
 	const mobileShellStyle = {
 		['--mobile-sidebar-open-progress' as const]: mobileSidebarVisualProgress.toFixed(4),
+		['--app-mobile-search-viewport-offset' as const]: `${mobileSearchViewportOffsetTop}px`,
 	} as React.CSSProperties;
 	const blurPx = (mobileSidebarVisualProgress * 4).toFixed(2);
 	const mobileSidebarBackdropStyle = {
@@ -7869,6 +7998,10 @@ export function App(): React.JSX.Element {
 					</div>
 				</div>
 			</header>
+
+			{hasGlobalSearchResults && isMobileViewport ? (
+				<div className="mobile-search-results-surface">{renderGlobalSearchResults('global-search-results--mobile')}</div>
+			) : null}
 
 			{isMobileViewport && isMobileSidebarActive ? (
 				<button
@@ -8465,65 +8598,6 @@ export function App(): React.JSX.Element {
 				</aside>
 
 				<main className="app-main">
-					{deferredSearchQuery && viewMode !== 'bubble' && sidebarView !== 'images' ? (
-						<section className="global-search-results" aria-live="polite">
-							<div className="global-search-results-header">
-								<div>
-									<p className="global-search-results-eyebrow">{t('search.title')}</p>
-									<h2 className="global-search-results-title">{deferredSearchQuery}</h2>
-								</div>
-								<div className="global-search-results-meta">
-									{searchResultsBusy ? t('common.loading') : `${searchResults.length} ${searchResults.length === 1 ? t('search.resultSingular') : t('search.resultPlural')}`}
-								</div>
-							</div>
-							{searchResultsError ? <p className="global-search-results-error">{searchResultsError}</p> : null}
-							{!searchResultsBusy && !searchResultsError && groupedSearchResults.length === 0 ? (
-								<p className="global-search-results-empty">{t('search.noResults')}</p>
-							) : null}
-							<div className="global-search-results-groups">
-								{groupedSearchResults.map((group) => (
-									<section key={group.label} className="global-search-results-group">
-										<header className="global-search-results-group-header">{formatSearchGroupLabel(group.items[0].group)}</header>
-										<div className="global-search-results-list">
-											{group.items.map((result) => (
-												<button
-													key={`${result.docId}:${result.openNoteId || result.noteId}`}
-													type="button"
-													className="global-search-result-card"
-													onClick={() => void handleSearchResultSelect(result)}
-												>
-													{result.thumbnailUrl ? <img className="global-search-result-thumb" src={result.thumbnailUrl} alt="" /> : (
-														<div className="global-search-result-thumb global-search-result-thumb-placeholder" aria-hidden="true">
-															<span className="global-search-result-thumb-title">{result.title}</span>
-															<span className="global-search-result-thumb-snippet">{result.snippet || t('note.untitled')}</span>
-															<span className="global-search-result-thumb-line global-search-result-thumb-line-short" />
-														</div>
-													)}
-													<div className="global-search-result-copy">
-														<div className="global-search-result-topline">
-															<span className="global-search-result-title">{result.title}</span>
-															{result.matchKinds.map((kind) => <span key={`${result.docId}:${kind}`} className="global-search-result-badge">{formatSearchMatchLabel(kind)}</span>)}
-															{result.archived ? <span className="global-search-result-badge">{t('search.archivedBadge')}</span> : null}
-														</div>
-														<p className="global-search-result-snippet">{result.snippet}</p>
-															{result.collaboratorMatches.length > 0 || result.collectionMatches.length > 0 || result.labelMatches.length > 0 ? (
-															<div className="global-search-result-contexts">
-																{result.collaboratorMatches.map((label) => <span key={`${result.docId}:${label}`} className="global-search-result-context">{t('search.collaboratorPrefix')} {label}</span>)}
-																	{result.collectionMatches.map((label) => <span key={`${result.docId}:collection:${label}`} className="global-search-result-context">Collection: {label}</span>)}
-																	{result.labelMatches.map((label) => <span key={`${result.docId}:label:${label}`} className="global-search-result-context">Label: {label}</span>)}
-															</div>
-														) : null}
-														<div className="global-search-result-meta">{result.imageCount > 0 ? `${result.imageCount} ${result.imageCount === 1 ? t('media.imageSingular') : t('media.imagePlural')} · ` : ''}{new Date(result.updatedAt).toLocaleString(locale)}</div>
-													</div>
-												</button>
-											))}
-										</div>
-									</section>
-								))}
-							</div>
-						</section>
-					) : null}
-
 					{/* Bubble view is read-only; quick-create stays in the grid/list views only. */}
 					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') ? (
 						<div ref={topControlsRef} className="app-main-sticky">
@@ -8552,8 +8626,8 @@ export function App(): React.JSX.Element {
 							<button
 								type="button"
 								className="top-action-card"
-								disabled
-								title={t('app.createDrawingComingSoon')}
+								disabled={!canCreateNotesInCurrentContext}
+								onClick={() => void openCreateEditorForCurrentContext('drawing')}
 							>
 								<FontAwesomeIcon icon={faPenNib} />
 								{t('app.addNewDrawing')}
@@ -8652,6 +8726,7 @@ export function App(): React.JSX.Element {
 								) : null}
 
 							</div>
+								{hasGlobalSearchResults && !isMobileViewport ? renderGlobalSearchResults('global-search-results--sticky') : null}
 						</div>
 					) : null}
 
@@ -8705,7 +8780,9 @@ export function App(): React.JSX.Element {
 						showArchived={sidebarView === 'archive'}
 						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
 						onAddImage={openNoteImageModal}
-						onAddDocument={undefined}
+						onAddDocument={(noteId) => {
+							void createAttachedDrawing(noteId);
+						}}
 						onAddReminder={openNoteReminderModal}
 						onAddToCollection={openNoteCollectionModal}
 						onAddLabels={openNoteLabelsModal}
@@ -8818,7 +8895,7 @@ export function App(): React.JSX.Element {
 					readOnly={crossWorkspaceReadOnly}
 					onAddCollaborator={canManageCrossWorkspaceCollaborators ? ({ noteId, docId, title }) => openCollaboratorModalForNote(noteId, title, { docId, canManage: true }) : undefined}
 					onAddImage={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteImageModal(noteId, docId, title)}
-					onAddDocument={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteDocumentModal(noteId, docId, title)}
+					onAddDocument={undefined}
 					onAddReminder={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteReminderModal(noteId, docId, title)}
 					onAddToCollection={crossWorkspaceReadOnly ? undefined : ({ noteId, doc, docId, title }) => openNoteCollectionModal(noteId, title, { docId, doc })}
 					onAddLabels={crossWorkspaceReadOnly ? undefined : ({ noteId, doc, docId, title }) => openNoteLabelsModal(noteId, title, { docId, doc })}
@@ -8898,14 +8975,21 @@ export function App(): React.JSX.Element {
 				onDeleteLink={noteAttachmentBrowserState?.kind === 'links' && noteAttachmentBrowserState.canEdit ? handleDeleteUrlPreviewFromBrowser : undefined}
 				onAddUrlPreview={noteAttachmentBrowserState?.kind === 'links' && noteAttachmentBrowserState.canEdit ? handleAddUrlPreviewFromBrowser : undefined}
 			/>
-			<NoteDocumentBrowserModal
-				isOpen={noteAttachmentBrowserState?.kind === 'documents'}
-				docId={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.docId : null}
-				authUserId={authUserId}
-				canEdit={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.canEdit : false}
-				noteTitle={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.title : null}
+			<NoteDrawingBrowserModal
+				isOpen={noteAttachmentBrowserState?.kind === 'drawings'}
+				doc={noteAttachmentBrowserState?.kind === 'drawings' ? activeAttachmentBrowserDoc : null}
+				canEdit={noteAttachmentBrowserState?.kind === 'drawings' ? noteAttachmentBrowserState.canEdit : false}
+				noteTitle={noteAttachmentBrowserState?.kind === 'drawings' ? noteAttachmentBrowserState.title : null}
 				onClose={closeNoteAttachmentBrowser}
-				onAddDocument={undefined}
+				onAddDrawing={noteAttachmentBrowserState?.kind === 'drawings' && noteAttachmentBrowserState.canEdit ? () => {
+					void createAttachedDrawing(noteAttachmentBrowserState.noteId);
+				} : undefined}
+				onOpenDrawing={(drawingId) => {
+					closeNoteAttachmentBrowser();
+					openAttachedDrawing(drawingId);
+				}}
+				onDeleteDrawing={noteAttachmentBrowserState?.kind === 'drawings' && noteAttachmentBrowserState.canEdit ? (drawingId) => deleteAttachedDrawing(noteAttachmentBrowserState.noteId, drawingId) : undefined}
+				loadDrawingDoc={loadDrawingDoc}
 			/>
 			<NoteImageUploadModal
 				isOpen={Boolean(noteImageModalState)}
@@ -8918,19 +9002,6 @@ export function App(): React.JSX.Element {
 					result.queued
 						? `${result.count} ${result.count === 1 ? t('media.queuedUploadToastSingular') : t('media.queuedUploadToastPlural')}`
 						: (result.count === 1 ? t('media.addedToastSingular') : `${result.count} ${t('media.addedToastPlural')}`)
-				)}
-			/>
-			<NoteDocumentUploadModal
-				isOpen={Boolean(noteDocumentModalState)}
-				docId={noteDocumentModalState?.docId ?? null}
-				authUserId={authUserId}
-				offlineMode={authOfflineMode}
-				noteTitle={noteDocumentModalState?.title ?? null}
-				onClose={closeNoteDocumentModal}
-				onUploaded={(result) => showBriefDialog(
-					result.queued
-						? (result.count === 1 ? t('documents.queuedUploadToastSingular') : `${result.count} ${t('documents.queuedUploadToastPlural')}`)
-						: (result.count === 1 ? t('documents.uploadToastSingular') : `${result.count} ${t('documents.uploadToastPlural')}`)
 				)}
 			/>
 			{briefDialogMessage ? (
@@ -8984,37 +9055,79 @@ export function App(): React.JSX.Element {
 			{/* Branch: single active editor for the selected note.
 			   Same mutual exclusion guard as above. */}
 			{editorMode === 'none' && selectedNoteId && openDoc && openDocId === selectedNoteId ? (
-				<NoteEditor
-					noteId={selectedNoteId}
-					docId={selectedNoteDocId}
-					authUserId={authUserId}
-					themeId={themeId}
-					doc={openDoc}
-					quickCreateCollectionOption={selectedQuickCreateCollectionOption}
-					onClose={closeNoteEditor}
-					onSavePendingNew={draftNoteId === selectedNoteId ? savePendingNewNoteAndClose : undefined}
-					onDelete={onDeleteSelectedNote}
-					isPendingNew={draftNoteId === selectedNoteId}
-					onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
-					onAddImage={selectedNoteReadOnly ? undefined : () => {
-						if (!selectedNoteDocId) return;
-						openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
-					}}
-					onAddDocument={undefined}
-					onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
-					onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
-					onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
-					onTogglePin={selectedNoteReadOnly ? undefined : () => assignNotePinned(openDoc, !readNoteMetadataState(openDoc).isPinned)}
-					onShowBriefDialog={showBriefDialog}
-					readOnly={selectedNoteReadOnly}
-					initialShowCompleted={checklistShowCompletedPref}
-					allowQuickDelete={quickDeleteChecklistPref}
-					toolbarMode={editorToolbarModePref}
-					hideFormattingToolbar={Boolean(noteImageModalState)}
-					onShowCompletedChange={(next) => {
-						commitChecklistShowCompletedPref(next);
-					}}
-				/>
+				String(openDoc.getMap<any>('metadata').get('type') ?? 'text') === 'drawing' ? (
+					<React.Suspense
+						fallback={
+							<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-overlay)' }}>
+								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>
+									{t('app.loadingEditor')}
+								</div>
+							</div>
+						}
+					>
+						<DrawingEditor
+							noteId={selectedNoteId}
+							docId={selectedNoteDocId}
+							themeId={themeId}
+							doc={openDoc}
+							awareness={manager.getAwareness(selectedNoteId)}
+							onClose={closeNoteEditor}
+							onSave={draftNoteId === selectedNoteId ? savePendingNewNoteAndClose : closeNoteEditor}
+							onDelete={onDeleteSelectedNote}
+							onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
+							onAddImage={selectedNoteReadOnly ? undefined : () => {
+								if (!selectedNoteDocId) return;
+								openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
+							}}
+							onAddReminder={selectedNoteReadOnly ? undefined : () => {
+								if (!selectedNoteDocId) return;
+								openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
+							}}
+							onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
+							onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
+							onTogglePin={selectedNoteReadOnly ? undefined : () => assignNotePinned(openDoc, !readNoteMetadataState(openDoc).isPinned)}
+							isPendingNew={draftNoteId === selectedNoteId}
+							readOnly={selectedNoteReadOnly}
+						/>
+					</React.Suspense>
+				) : (
+					<NoteEditor
+						noteId={selectedNoteId}
+						docId={selectedNoteDocId}
+						authUserId={authUserId}
+						themeId={themeId}
+						doc={openDoc}
+						quickCreateCollectionOption={selectedQuickCreateCollectionOption}
+						onClose={closeNoteEditor}
+						onSavePendingNew={draftNoteId === selectedNoteId ? savePendingNewNoteAndClose : undefined}
+						onDelete={onDeleteSelectedNote}
+						isPendingNew={draftNoteId === selectedNoteId}
+						onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
+						onAddImage={selectedNoteReadOnly ? undefined : () => {
+							if (!selectedNoteDocId) return;
+							openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
+						}}
+						onAddDocument={selectedNoteReadOnly ? undefined : () => {
+							void createAttachedDrawing(selectedNoteId);
+						}}
+						onOpenDrawing={openAttachedDrawing}
+						onDeleteDrawing={selectedNoteReadOnly ? undefined : (drawingId) => deleteAttachedDrawing(selectedNoteId, drawingId)}
+						loadDrawingDoc={loadDrawingDoc}
+						onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
+						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
+						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
+						onTogglePin={selectedNoteReadOnly ? undefined : () => assignNotePinned(openDoc, !readNoteMetadataState(openDoc).isPinned)}
+						onShowBriefDialog={showBriefDialog}
+						readOnly={selectedNoteReadOnly}
+						initialShowCompleted={checklistShowCompletedPref}
+						allowQuickDelete={quickDeleteChecklistPref}
+						toolbarMode={editorToolbarModePref}
+						hideFormattingToolbar={Boolean(noteImageModalState)}
+						onShowCompletedChange={(next) => {
+							commitChecklistShowCompletedPref(next);
+						}}
+					/>
+				)
 			) : null}
 
 			<PreferencesModal

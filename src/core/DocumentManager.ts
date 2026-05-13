@@ -448,6 +448,16 @@ export class DocumentManager {
 		return this.roomNameFor(raw);
 	}
 
+	/**
+	 * Returns the live Yjs awareness channel for a note room when its websocket
+	 * provider has already been attached.
+	 */
+	public getAwareness(noteId: string): WebsocketProvider['awareness'] | null {
+		const raw = this.normalizeNoteId(noteId);
+		const provider = this.websocketProviders.get(this.roomNameFor(raw));
+		return provider?.awareness ?? null;
+	}
+
 	/** Returns the Yjs WebSocket server URL used by this manager. */
 	public getWebsocketUrl(): string {
 		return this.websocketUrl;

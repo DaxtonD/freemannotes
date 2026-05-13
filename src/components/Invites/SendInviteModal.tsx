@@ -30,9 +30,11 @@ import {
 	updateWorkspaceMemberAccess,
 	type WorkspaceInviteState,
 } from '../../core/syncOutbox';
+import { listPriorCollaborators, type PriorCollaboratorUser } from '../../core/priorCollaboratorsApi';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { getWorkspaceMetadataChangedEventName } from '../../core/workspaceMetadataStore';
 import { getWorkspaceRoleLabelKey } from '../../core/workspaceRoles';
+import { PriorCollaboratorSuggestions } from '../Share/PriorCollaboratorSuggestions';
 
 type Props = {
 	isOpen: boolean;
@@ -80,6 +82,10 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 	// visible without a server round-trip.
 	const [cachedShareLinks, setCachedShareLinks] = React.useState<CachedWorkspaceShareLink[]>([]);
 	const [inviteState, setInviteState] = React.useState<WorkspaceInviteState>({ members: [], invites: [] });
+	const [priorCollaborators, setPriorCollaborators] = React.useState<PriorCollaboratorUser[]>([]);
+	const [loadingPriorCollaborators, setLoadingPriorCollaborators] = React.useState(false);
+	const [identifierFocused, setIdentifierFocused] = React.useState(false);
+	const [dismissSuggestions, setDismissSuggestions] = React.useState(false);
 
 	useBodyScrollLock(props.isOpen);
 
@@ -101,7 +107,28 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 		setShareQrDataUrl(null);
 		setInviteState({ members: [], invites: [] });
 		setCachedShareLinks([]);
+		setIdentifierFocused(false);
+		setDismissSuggestions(false);
 	}, [props.isOpen]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || !props.authUserId) return;
+		let cancelled = false;
+		setLoadingPriorCollaborators(true);
+		listPriorCollaborators()
+			.then((users) => {
+				if (!cancelled) setPriorCollaborators(users);
+			})
+			.catch(() => {
+				if (!cancelled) setPriorCollaborators([]);
+			})
+			.finally(() => {
+				if (!cancelled) setLoadingPriorCollaborators(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [props.authUserId, props.isOpen]);
 
 	// Reload cached workspace share links whenever the modal opens so previously
 	// generated tokens are visible without generating a new one.
@@ -220,6 +247,29 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 	const canGenerateShareLink = Boolean(props.workspaceId && linkRole);
 	const statusMessage = error ?? success;
 	const statusClassName = error ? styles.error : styles.success;
+
+	const filteredPriorCollaborators = React.useMemo(() => {
+		const query = identifier.trim().toLowerCase();
+		if (!query) return [];
+		const memberEmails = new Set(inviteState.members.map((member) => String(member.email || '').trim().toLowerCase()).filter(Boolean));
+		const inviteEmails = new Set(inviteState.invites.map((invite) => String(invite.email || '').trim().toLowerCase()).filter(Boolean));
+		return priorCollaborators.filter((user) => {
+			const email = String(user.email || '').trim().toLowerCase();
+			const name = String(user.name || '').trim().toLowerCase();
+			if (!email) return false;
+			if (memberEmails.has(email) || inviteEmails.has(email)) return false;
+			return email.includes(query) || name.includes(query);
+		});
+	}, [identifier, inviteState.invites, inviteState.members, priorCollaborators]);
+
+	const showPriorCollaboratorSuggestions = identifierFocused && !dismissSuggestions && identifier.trim().length > 0 && !busy && !actionBusyKey;
+
+	const handleSelectPriorCollaborator = React.useCallback((user: PriorCollaboratorUser) => {
+		if (!user.email) return;
+		setIdentifier(user.email);
+		setDismissSuggestions(true);
+		setError(null);
+	}, []);
 
 	const generateInviteLink = React.useCallback(async (forceRefresh: boolean) => {
 		if (busy) return;
@@ -458,7 +508,18 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 								<div className={`${styles.sectionCard} ${styles.inviteSectionCard}`}>
 									<label className={styles.field}>
 										<span>{props.t('invite.identifier')}</span>
-										<input className={styles.input} type="text" value={identifier} onChange={(e) => setIdentifier(e.target.value)} placeholder={props.t('share.identifierPlaceholder')} disabled={busy || Boolean(actionBusyKey)} />
+										<div className={styles.inputWithSuggestions}>
+											<input className={styles.input} type="text" value={identifier} onChange={(e) => { setIdentifier(e.target.value); setDismissSuggestions(false); }} onFocus={() => { setIdentifierFocused(true); setDismissSuggestions(false); }} onBlur={() => setIdentifierFocused(false)} placeholder={props.t('share.identifierPlaceholder')} disabled={busy || Boolean(actionBusyKey)} />
+											{showPriorCollaboratorSuggestions ? (
+												<PriorCollaboratorSuggestions
+													items={filteredPriorCollaborators}
+													loading={loadingPriorCollaborators}
+													emptyLabel={props.t('share.collaboratorSuggestionsEmpty')}
+													loadingLabel={props.t('share.collaboratorSuggestionsLoading')}
+													onSelect={handleSelectPriorCollaborator}
+												/>
+											) : null}
+										</div>
 									</label>
 									<label className={styles.field}>
 										<span>{props.t('invite.role')}</span>

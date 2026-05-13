@@ -15,6 +15,17 @@ import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getDeviceId } from '../../core/deviceId';
+import {
+	getDrawingThumbnailCacheKey,
+	getDrawingThumbnailVersion,
+	peekLatestDrawingThumbnail,
+	peekDrawingThumbnail,
+	readCachedDrawingThumbnail,
+	readLatestCachedDrawingThumbnail,
+	renderDrawingThumbnail,
+	type DrawingPlaceholderOptions,
+} from '../../core/drawingThumbnails';
+import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { useI18n } from '../../core/i18n';
 import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import {
@@ -32,6 +43,7 @@ import {
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import type { NoteLinkRecord } from '../../core/noteLinkApi';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import type { NoteType } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
@@ -71,8 +83,6 @@ export type NoteCardProps = {
 	initialLinkRecords?: readonly NoteLinkRecord[];
 	preserveControlShell?: boolean;
 };
-
-type NoteType = 'text' | 'checklist';
 
 type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null; completedAt: number | null };
 
@@ -308,7 +318,7 @@ function applyMarks(node: JSONContent, content: React.ReactNode, key: string, al
 		if (mark.type === 'link') {
 			const href = getSafeHref((mark.attrs as { href?: unknown } | undefined)?.href);
 			result = href && allowLinkInteraction ? (
-				<a key={`${key}:link:${index}`} className={styles.richLink} href={href} target="_blank" rel="noreferrer noopener">
+				<a key={`${key}:link:${index}`} className={styles.richLink} href={href} target={getExternalLinkTarget()} rel={getExternalLinkRel()}>
 					{result}
 				</a>
 			) : <span key={`${key}:link:${index}`} className={styles.richLink}>{result}</span>;
@@ -565,6 +575,81 @@ function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardCheckl
 	);
 }
 
+function useDrawingThumbnail(
+	doc: Y.Doc,
+	noteId: string,
+	noteType: NoteType,
+	title: string,
+	placeholderOptions?: DrawingPlaceholderOptions
+): string | null {
+	const snapshotKey = React.useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			doc.on('afterTransaction', observer);
+			return () => doc.off('afterTransaction', observer);
+		},
+		() => noteType === 'drawing' ? getDrawingThumbnailVersion(doc) : '',
+		() => noteType === 'drawing' ? getDrawingThumbnailVersion(doc) : ''
+	);
+	const placeholderThemeKey = React.useMemo(
+		() => placeholderOptions?.colors
+			? `${placeholderOptions.colors.background || ''}|${placeholderOptions.colors.surface || ''}|${placeholderOptions.colors.border || ''}|${placeholderOptions.colors.text || ''}|${placeholderOptions.colors.muted || ''}|${placeholderOptions.colors.accent || ''}`
+			: '',
+		[placeholderOptions]
+	);
+	const thumbnailCacheKey = React.useMemo(
+		() => noteType === 'drawing' ? getDrawingThumbnailCacheKey(noteId, snapshotKey, placeholderOptions) : '',
+		[noteId, noteType, placeholderOptions, snapshotKey]
+	);
+	const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(() => (
+		noteType === 'drawing'
+			? (thumbnailCacheKey ? peekDrawingThumbnail(thumbnailCacheKey) : null) || peekLatestDrawingThumbnail(noteId)
+			: null
+	));
+
+	React.useEffect(() => {
+		let cancelled = false;
+		if (noteType !== 'drawing') {
+			setThumbnailUrl(null);
+			return () => {
+				cancelled = true;
+			};
+		}
+		const cached = thumbnailCacheKey ? peekDrawingThumbnail(thumbnailCacheKey) : null;
+		if (cached) {
+			setThumbnailUrl((current) => (current === cached ? current : cached));
+		} else {
+			const latestCached = peekLatestDrawingThumbnail(noteId);
+			if (latestCached) {
+				setThumbnailUrl((current) => (current === latestCached ? current : latestCached));
+			}
+		}
+		void (async () => {
+			const persisted = thumbnailCacheKey
+				? await readCachedDrawingThumbnail(thumbnailCacheKey, noteId, snapshotKey)
+				: null;
+			if (cancelled) return;
+			if (persisted) {
+				setThumbnailUrl((current) => (current === persisted ? current : persisted));
+				return;
+			}
+			const latestPersisted = await readLatestCachedDrawingThumbnail(noteId);
+			if (cancelled) return;
+			if (latestPersisted) {
+				setThumbnailUrl((current) => (current === latestPersisted ? current : latestPersisted));
+			}
+			const nextUrl = await renderDrawingThumbnail(noteId, doc, title || 'Drawing', snapshotKey, placeholderOptions);
+			if (cancelled) return;
+			setThumbnailUrl(nextUrl);
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [doc, noteId, noteType, placeholderOptions, placeholderThemeKey, snapshotKey, thumbnailCacheKey, title]);
+
+	return thumbnailUrl;
+}
+
 export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const { t } = useI18n();
 	const maxCardHeightPx = Math.max(220, props.maxCardHeightPx ?? 300);
@@ -572,6 +657,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	// Budget checklist preview rows using the rendered row pitch, not just the
 	// text line box, so hidden counts stay accurate as card heights change.
 	const collapsedChecklistLineHeightPx = 26;
+	const keepCompletedToggleStable = isCoarsePointerDevice();
 	const minimumExpandedCompletedItems = 3;
 	const canEdit = props.canEdit !== false;
 	const preserveControlShell = props.preserveControlShell === true;
@@ -594,16 +680,31 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId))
 	);
 	const typeValue = useMetadataString(metadata, 'type');
-	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
+	const type: NoteType = typeValue === 'checklist' ? 'checklist' : typeValue === 'drawing' ? 'drawing' : 'text';
 	const resolvedColor = React.useMemo(
 		() => (colorToken ? resolveThemeNoteColorModel(props.themeId).tokens[colorToken] : null),
 		[colorToken, props.themeId]
 	);
+	const drawingPlaceholderOptions = React.useMemo<DrawingPlaceholderOptions | undefined>(() => {
+		if (!resolvedColor) return undefined;
+		return {
+			seed: props.noteId,
+			colors: {
+				background: resolvedColor.cardBackground,
+				surface: resolvedColor.headerBackground,
+				border: resolvedColor.borderColor,
+				text: resolvedColor.textColor,
+				muted: resolvedColor.mutedTextColor,
+				accent: resolvedColor.accentColor,
+			},
+		};
+	}, [props.noteId, resolvedColor]);
 
 	const title = useOptionalYTextValue(React.useCallback(() => props.doc.getText('title'), [props.doc]));
 	const content = useOptionalYTextValue(
 		React.useCallback(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type])
 	);
+	const drawingThumbnailUrl = useDrawingThumbnail(props.doc, props.noteId, type, title, drawingPlaceholderOptions);
 	const reminderAt = props.reminderAt ?? '';
 	const richContent = useTextNoteRichPreview(props.doc, content);
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
@@ -669,6 +770,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		completedBaseHeightPx: 33,
 		cardPaddingBottomPx: 0,
 		bodyPaddingVerticalPx: 8,
+		bodyScrollHeightPx: 0,
 		renderedCardScrollHeightPx: 0,
 		contentRegionScrollHeightPx: 0,
 		};
@@ -829,9 +931,26 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		() => fitChecklistItemsToLineBudget(activeChecklistItems, collapsedAvailableLineBudget),
 		[activeChecklistItems, collapsedAvailableLineBudget, fitChecklistItemsToLineBudget]
 	);
+	const collapsedActiveBodyContentHeightPx = React.useMemo(() => {
+		if (!keepCompletedToggleStable) {
+			return collapsedActiveFit.usedLineCount * collapsedChecklistLineHeightPx;
+		}
+		const measuredBodyContentHeightPx = Math.max(
+			0,
+			checklistLayoutMetrics.bodyScrollHeightPx - checklistLayoutMetrics.bodyPaddingVerticalPx
+		);
+		if (measuredBodyContentHeightPx > 0) return measuredBodyContentHeightPx;
+		return collapsedActiveFit.usedLineCount * collapsedChecklistLineHeightPx;
+	}, [
+		checklistLayoutMetrics.bodyPaddingVerticalPx,
+		checklistLayoutMetrics.bodyScrollHeightPx,
+		collapsedActiveFit.usedLineCount,
+		collapsedChecklistLineHeightPx,
+		keepCompletedToggleStable,
+	]);
 	const collapsedChecklistMinHeightPx = React.useMemo(
-		() => Math.min(maxCardHeightPx, checklistFixedChromePx + checklistLayoutMetrics.completedBaseHeightPx + collapsedActiveFit.usedLineCount * collapsedChecklistLineHeightPx),
-		[checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, collapsedActiveFit.usedLineCount, collapsedChecklistLineHeightPx, maxCardHeightPx]
+		() => Math.min(maxCardHeightPx, checklistFixedChromePx + checklistLayoutMetrics.completedBaseHeightPx + collapsedActiveBodyContentHeightPx),
+		[checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, collapsedActiveBodyContentHeightPx, maxCardHeightPx]
 	);
 	const expandedAvailableLineBudget = React.useMemo(
 		() => Math.max(0, Math.floor((maxCardHeightPx - checklistFixedChromePx - checklistLayoutMetrics.completedBaseHeightPx) / collapsedChecklistLineHeightPx)),
@@ -849,12 +968,25 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			: fitChecklistItemsToLineBudget(activeChecklistItems, expandedAvailableLineBudget),
 		[activeChecklistItems, expandedAvailableLineBudget, fitChecklistItemsToLineBudget, totalActiveChecklistLineCost]
 	);
-	const activeChecklistItemsToRender = showCompleted ? expandedActiveFit.visible : collapsedActiveFit.visible;
-	const hiddenActiveChecklistCountToRender = showCompleted ? expandedActiveFit.hiddenCount : collapsedActiveFit.hiddenCount;
+	const expandedActiveContentFit = React.useMemo(
+		() => keepCompletedToggleStable ? collapsedActiveFit : expandedActiveFit,
+		[collapsedActiveFit, expandedActiveFit, keepCompletedToggleStable]
+	);
+	const activeChecklistItemsToRender = showCompleted ? expandedActiveContentFit.visible : collapsedActiveFit.visible;
+	const hiddenActiveChecklistCountToRender = showCompleted ? expandedActiveContentFit.hiddenCount : collapsedActiveFit.hiddenCount;
 	const expandedActiveLineCost = React.useMemo(() => {
 		if (type !== 'checklist') return 0;
-		return expandedActiveFit.usedLineCount;
-	}, [expandedActiveFit.usedLineCount, type]);
+		return expandedActiveContentFit.usedLineCount;
+	}, [expandedActiveContentFit.usedLineCount, type]);
+	const expandedActiveBodyContentHeightPx = React.useMemo(() => {
+		if (keepCompletedToggleStable) return collapsedActiveBodyContentHeightPx;
+		return expandedActiveLineCost * collapsedChecklistLineHeightPx;
+	}, [
+		collapsedActiveBodyContentHeightPx,
+		collapsedChecklistLineHeightPx,
+		expandedActiveLineCost,
+		keepCompletedToggleStable,
+	]);
 	const visibleCompletedRows = React.useMemo(() => {
 		return selectVisibleCompletedRows(Math.max(0, expandedAvailableLineBudget - expandedActiveLineCost));
 	}, [expandedActiveLineCost, expandedAvailableLineBudget, selectVisibleCompletedRows]);
@@ -883,8 +1015,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			completedLineCost += row.kind === 'ghost' ? 1 : checklistItemLineCost(row.item.id);
 		}
 		if (hiddenCompletedChecklistCount > 0) completedLineCost += 1;
-		return checklistFixedChromePx + checklistLayoutMetrics.completedBaseHeightPx + (expandedActiveLineCost + completedLineCost) * collapsedChecklistLineHeightPx;
-	}, [checklistFixedChromePx, checklistItemLineCost, checklistLayoutMetrics.completedBaseHeightPx, collapsedChecklistLineHeightPx, expandedActiveLineCost, hiddenCompletedChecklistCount, maxCardHeightPx, type, visibleCompletedRows]);
+		return checklistFixedChromePx + checklistLayoutMetrics.completedBaseHeightPx + expandedActiveBodyContentHeightPx + completedLineCost * collapsedChecklistLineHeightPx;
+	}, [checklistFixedChromePx, checklistItemLineCost, checklistLayoutMetrics.completedBaseHeightPx, collapsedChecklistLineHeightPx, expandedActiveBodyContentHeightPx, hiddenCompletedChecklistCount, maxCardHeightPx, type, visibleCompletedRows]);
 	const expandedChecklistRenderedHeightPx = React.useMemo(() => {
 		if (!showCompleted) return 0;
 		return Math.max(
@@ -898,7 +1030,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [checklistLayoutSignature, requestChecklistLayoutRefresh, type]);
 	const expandedChecklistMaxHeightPx = Math.max(maxCardHeightPx, expandedChecklistMinHeightPx, expandedChecklistRenderedHeightPx);
 	// When the CSS max-height variable changes (driven by expandedChecklistMaxHeightPx),
-	// the card's rendered height changes — but the ResizeObserver in the metrics effect
+	// the card's rendered height changes - but the ResizeObserver in the metrics effect
 	// won't detect this because card.scrollHeight (natural content height) doesn't change.
 	// Fire requestChecklistLayoutRefresh in a useLayoutEffect so NoteGrid re-measures
 	// AFTER the new CSS var is committed to the DOM, not before (which is what the setter
@@ -1135,6 +1267,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				bodyPaddingVerticalPx:
 					(Number.parseFloat(bodyStyle.paddingTop || '0') || 0) +
 					(Number.parseFloat(bodyStyle.paddingBottom || '0') || 0),
+				bodyScrollHeightPx: Math.ceil(body.scrollHeight),
 				renderedCardScrollHeightPx: Math.ceil(card.scrollHeight),
 				contentRegionScrollHeightPx: Math.ceil(contentRegion.scrollHeight),
 			};
@@ -1155,7 +1288,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		};
 
 		// Run synchronously on first commit so CSS vars are set before the browser
-		// paints — avoids a visible gap when the initial estimate is slightly off.
+		// paints - avoids a visible gap when the initial estimate is slightly off.
 		measure();
 		const observer = new ResizeObserver(() => scheduleMeasure());
 		if (cardRef.current) observer.observe(cardRef.current);
@@ -1519,7 +1652,15 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 						}}
 					/>
 				) : null}
-				{type === 'text' ? (
+				{type === 'drawing' ? (
+					<div ref={bodyRef} className={`${styles.body} ${styles.drawingBody}`}>
+						{drawingThumbnailUrl ? (
+							<img className={styles.drawingThumbnail} src={drawingThumbnailUrl} alt="" />
+						) : (
+							<div className={styles.drawingThumbnailSkeleton} aria-hidden="true" />
+						)}
+					</div>
+				) : type === 'text' ? (
 					<div ref={bodyRef} className={styles.body}>
 						<div ref={contentPreviewRef} className={`${styles.contentPreview}${textPreviewLayout.isOverflowing ? ` ${styles.contentPreviewOverflowing}` : ''}`} style={textPreviewStyle}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
 					</div>

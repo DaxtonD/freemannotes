@@ -533,6 +533,22 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		isHighlight: false,
 		activeHighlightColor: null,
 	};
+	const canRunPrimaryUndo = Boolean(props.checkboxUndoAvail) || resolvedToolbarState.canUndo;
+	const canRunPrimaryRedo = Boolean(props.checkboxRedoAvail) || resolvedToolbarState.canRedo;
+	const handlePrimaryUndo = React.useCallback((): void => {
+		if (props.checkboxUndoAvail && props.onUndoCheckbox) {
+			props.onUndoCheckbox();
+			return;
+		}
+		runUndo(props.editor);
+	}, [props.checkboxUndoAvail, props.editor, props.onUndoCheckbox]);
+	const handlePrimaryRedo = React.useCallback((): void => {
+		if (props.checkboxRedoAvail && props.onRedoCheckbox) {
+			props.onRedoCheckbox();
+			return;
+		}
+		runRedo(props.editor);
+	}, [props.checkboxRedoAvail, props.editor, props.onRedoCheckbox]);
 
 	const preventToolbarFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
 		// Keep focus on the active editor so checklist toolbar taps don't blur the
@@ -1205,10 +1221,10 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					<FontAwesomeIcon icon={faChevronLeft} />
 				</button>
 				<div ref={toolbarRowRef} className={styles.formatToolbarRow} onWheel={handleToolbarWheel}>
-				<button type="button" className={`${styles.formatButton}${primaryToolbarButtonClass}`} aria-label={t('editors.undo')} title={t('editors.undo')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runUndo(props.editor)} disabled={!resolvedToolbarState.canUndo}>
+				<button type="button" className={`${styles.formatButton}${primaryToolbarButtonClass}`} aria-label={t('editors.undo')} title={t('editors.undo')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={handlePrimaryUndo} disabled={!canRunPrimaryUndo}>
 					<FontAwesomeIcon icon={faRotateLeft} />
 				</button>
-				<button type="button" className={`${styles.formatButton}${primaryToolbarButtonClass}`} aria-label={t('editors.redo')} title={t('editors.redo')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRedo(props.editor)} disabled={!resolvedToolbarState.canRedo}>
+				<button type="button" className={`${styles.formatButton}${primaryToolbarButtonClass}`} aria-label={t('editors.redo')} title={t('editors.redo')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={handlePrimaryRedo} disabled={!canRunPrimaryRedo}>
 					<FontAwesomeIcon icon={faRotateRight} />
 				</button>
 				<div className={styles.formatDivider} aria-hidden="true" />
@@ -1309,35 +1325,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
 							</button>
 						) : null}
-					</>
-				) : null}
-				{props.onUndoCheckbox ? (
-					<>
-						<div className={styles.formatDivider} aria-hidden="true" />
-						<button
-							type="button"
-							className={`${styles.formatButton}${primaryToolbarButtonClass}`}
-							aria-label={t('editors.undoCheckbox')}
-							title={t('editors.undoCheckbox')}
-							onMouseDown={preventToolbarFocusSteal}
-							onPointerDown={preventToolbarFocusSteal}
-							onClick={props.onUndoCheckbox}
-							disabled={!props.checkboxUndoAvail}
-						>
-							<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconUndoCheckbox}`} aria-hidden="true" />
-						</button>
-						<button
-							type="button"
-							className={`${styles.formatButton}${primaryToolbarButtonClass}`}
-							aria-label={t('editors.redoCheckbox')}
-							title={t('editors.redoCheckbox')}
-							onMouseDown={preventToolbarFocusSteal}
-							onPointerDown={preventToolbarFocusSteal}
-							onClick={props.onRedoCheckbox}
-							disabled={!props.checkboxRedoAvail}
-						>
-							<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconRedoCheckbox}`} aria-hidden="true" />
-						</button>
 					</>
 				) : null}
 				{props.variant !== 'full' && showStructuredNestingButtons ? (
