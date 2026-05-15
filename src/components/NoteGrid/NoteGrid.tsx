@@ -546,6 +546,29 @@ function renderMetaChipShell(
 	);
 }
 
+function renderCollaboratorAvatarMedia(
+	collaborator: NoteCardCollaborator,
+	imageClassName: string,
+	fallbackClassName: string
+): React.ReactNode {
+	return collaborator.avatar ? (
+		<img className={imageClassName} src={collaborator.avatar} alt="" />
+	) : (
+		<span className={fallbackClassName} aria-hidden="true">
+			{collaboratorAvatarFallback(collaborator.name)}
+		</span>
+	);
+}
+
+function rotateCollaborators(
+	collaborators: readonly NoteCardCollaborator[],
+	cycleTick: number
+): readonly NoteCardCollaborator[] {
+	if (collaborators.length <= 1) return collaborators;
+	const offset = Math.abs(cycleTick) % collaborators.length;
+	return collaborators.map((_, index) => collaborators[(index + offset) % collaborators.length]);
+}
+
 function renderNoteMetaChips(args: {
 	noteId: string;
 	docId: string | null;
@@ -570,6 +593,9 @@ function renderNoteMetaChips(args: {
 		title: string | undefined,
 		canEdit: boolean
 	) => void;
+	onSelectCollaboratorFilter?: (filter: NoteGridCollaboratorFilter) => void;
+	activeCollaboratorFilter?: NoteGridCollaboratorFilter | null;
+	collaboratorAvatarCycleTick?: number;
 	onToggleCollaboratorChip?: (noteId: string, anchorRect: { top: number; left: number; width: number; height: number }) => void;
 	onOpenMetadataChip?: (args: {
 		noteId: string;
@@ -605,9 +631,119 @@ function renderNoteMetaChips(args: {
 	const chipColorStyle = getNoteColorVars(args.noteId, args.doc, args.themeId);
 	const collectionChipCount = collectionId ? '1' : null;
 	const labelChipCount = `${labelItems.length}`;
+	const collaboratorSummary = args.collaboratorSummary;
+	const collaboratorCountForChip = collaboratorSummary?.count ?? 0;
+	const primaryCollaborator = collaboratorSummary?.collaborators[0] ?? null;
+	const rotatedCollaborators = collaboratorSummary && collaboratorCountForChip >= 2 && collaboratorCountForChip <= 3
+		? rotateCollaborators(collaboratorSummary.collaborators.slice(0, 3), args.collaboratorAvatarCycleTick ?? 0)
+		: null;
+	const collaboratorChipActive = collaboratorSummary?.collaborators.some((collaborator) => collaborator.key === args.activeCollaboratorFilter?.key) ?? false;
+	const collaboratorAvatarStackSlotClasses = [
+		styles.noteCollaboratorAvatarStackItem0,
+		styles.noteCollaboratorAvatarStackItem1,
+		styles.noteCollaboratorAvatarStackItem2,
+	];
 
 	return (
 		<>
+			{/* Keep collaborators first so avatar presence anchors the row before collection, label, and attachment count chips. */}
+			{collaboratorSummary && collaboratorCountForChip === 1 && primaryCollaborator ? (
+				args.onSelectCollaboratorFilter ? (
+					<button
+						type="button"
+						className={`${styles.noteCollaboratorAvatarButton}${collaboratorChipActive ? ` ${styles.noteCollaboratorAvatarButtonActive}` : ''}`}
+						style={chipColorStyle}
+						onPointerDown={(event) => event.stopPropagation()}
+						onClick={(event) => {
+							event.stopPropagation();
+							args.onSelectCollaboratorFilter?.({
+								key: primaryCollaborator.key,
+								userId: primaryCollaborator.userId,
+								label: primaryCollaborator.name,
+								email: primaryCollaborator.email,
+								avatar: primaryCollaborator.avatar,
+							});
+						}}
+						aria-label={`${args.t('app.withFilterPrefix')}: ${primaryCollaborator.name}`}
+						aria-pressed={collaboratorChipActive}
+					>
+						<span className={styles.noteCollaboratorAvatarSurface}>
+							{renderCollaboratorAvatarMedia(primaryCollaborator, styles.noteCollaboratorAvatarImage, styles.noteCollaboratorAvatarFallback)}
+						</span>
+					</button>
+				) : (
+					<span className={styles.noteCollaboratorAvatarButton} style={chipColorStyle} aria-label={primaryCollaborator.name}>
+						<span className={styles.noteCollaboratorAvatarSurface}>
+							{renderCollaboratorAvatarMedia(primaryCollaborator, styles.noteCollaboratorAvatarImage, styles.noteCollaboratorAvatarFallback)}
+						</span>
+					</span>
+				)
+			) : collaboratorSummary && rotatedCollaborators && collaboratorCountForChip >= 2 && collaboratorCountForChip <= 3 ? (
+				args.onToggleCollaboratorChip ? (
+					<button
+						type="button"
+						className={styles.noteCollaboratorAvatarButton}
+						data-note-chip-trigger="true"
+						style={chipColorStyle}
+						onPointerDown={(event) => event.stopPropagation()}
+						onClick={(event) => {
+							event.stopPropagation();
+							const rect = readChipOverlayAnchorRect(event.currentTarget);
+							if (!rect) return;
+							args.onToggleCollaboratorChip?.(args.noteId, {
+								top: rect.top,
+								left: rect.left,
+								width: rect.width,
+								height: rect.height,
+							});
+						}}
+						aria-label={`${args.t('share.activeCollaborators')}: ${collaboratorCountForChip}`}
+					>
+						<span className={`${styles.noteCollaboratorAvatarStack}${rotatedCollaborators.length === 2 ? ` ${styles.noteCollaboratorAvatarStackTwo}` : ''}`}>
+							{rotatedCollaborators.map((collaborator, index) => (
+								<span key={collaborator.key} className={`${styles.noteCollaboratorAvatarStackItem} ${collaboratorAvatarStackSlotClasses[index] ?? ''}`}>
+									{renderCollaboratorAvatarMedia(collaborator, styles.noteCollaboratorAvatarImage, styles.noteCollaboratorAvatarFallback)}
+								</span>
+							))}
+						</span>
+					</button>
+				) : (
+					<span className={styles.noteCollaboratorAvatarButton} style={chipColorStyle} aria-label={`${args.t('share.activeCollaborators')}: ${collaboratorCountForChip}`}>
+						<span className={`${styles.noteCollaboratorAvatarStack}${rotatedCollaborators.length === 2 ? ` ${styles.noteCollaboratorAvatarStackTwo}` : ''}`}>
+							{rotatedCollaborators.map((collaborator, index) => (
+								<span key={collaborator.key} className={`${styles.noteCollaboratorAvatarStackItem} ${collaboratorAvatarStackSlotClasses[index] ?? ''}`}>
+									{renderCollaboratorAvatarMedia(collaborator, styles.noteCollaboratorAvatarImage, styles.noteCollaboratorAvatarFallback)}
+								</span>
+							))}
+						</span>
+					</span>
+				)
+			) : collaboratorSummary && collaboratorCountForChip > 0 ? (
+				<button
+					type="button"
+					className={styles.noteChipButton}
+					data-note-chip-trigger="true"
+					style={chipColorStyle}
+					onPointerDown={(event) => event.stopPropagation()}
+					onClick={(event) => {
+						event.stopPropagation();
+						const rect = readChipOverlayAnchorRect(event.currentTarget);
+						if (!rect) return;
+						args.onToggleCollaboratorChip?.(args.noteId, {
+							top: rect.top,
+							left: rect.left,
+							width: rect.width,
+							height: rect.height,
+						});
+					}}
+					aria-label={`${args.t('share.activeCollaborators')}: ${collaboratorCountForChip}`}
+				>
+					<FontAwesomeIcon icon={faUsers} />
+					<span>{collaboratorCountForChip}</span>
+				</button>
+			) : showCollaboratorShell ? (
+				renderMetaChipShell(faUsers, collaboratorCount, args.t('share.activeCollaborators'), chipColorStyle)
+			) : null}
 			{collectionPath && collectionId ? (
 				<button
 					type="button"
@@ -675,32 +811,6 @@ function renderNoteMetaChips(args: {
 			) : showLabelShell ? (
 				renderMetaChipShell(faTag, labelIds.length, args.t('note.labels'), chipColorStyle)
 			) : null}
-			{args.collaboratorSummary && args.collaboratorSummary.count > 0 ? (
-				<button
-					type="button"
-					className={styles.noteChipButton}
-					data-note-chip-trigger="true"
-					style={chipColorStyle}
-					onPointerDown={(event) => event.stopPropagation()}
-					onClick={(event) => {
-						event.stopPropagation();
-						const rect = readChipOverlayAnchorRect(event.currentTarget);
-						if (!rect) return;
-						args.onToggleCollaboratorChip?.(args.noteId, {
-							top: rect.top,
-							left: rect.left,
-							width: rect.width,
-							height: rect.height,
-						});
-					}}
-					aria-label={`${args.t('share.activeCollaborators')}: ${args.collaboratorSummary.count}`}
-				>
-					<FontAwesomeIcon icon={faUsers} />
-					<span>{args.collaboratorSummary.count}</span>
-				</button>
-			) : showCollaboratorShell ? (
-				renderMetaChipShell(faUsers, collaboratorCount, args.t('share.activeCollaborators'), chipColorStyle)
-			) : null}
 			{args.docId ? (
 				<NoteAttachmentCountChip
 					docId={args.docId}
@@ -740,10 +850,10 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 		<motion.div
 			ref={handleItemRef}
 			layout={props.disablePositionLayout ? false : 'position'}
-			layoutId={props.note.id}
+			layoutId={props.disablePositionLayout ? undefined : props.note.id}
 			initial={false}
 			transition={
-				props.layoutReady
+				props.layoutReady && !props.disablePositionLayout
 					? { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 }
 					: { layout: { duration: 0 } }
 			}
@@ -880,6 +990,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useSyncExternalStore(subscribeNoteColorPrefs, getUserNoteColorPrefsSnapshot, getUserNoteColorPrefsSnapshot);
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
+	const [collaboratorAvatarCycleTick, setCollaboratorAvatarCycleTick] = React.useState(0);
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return undefined;
+		const intervalId = window.setInterval(() => {
+			setCollaboratorAvatarCycleTick((previous) => previous + 1);
+		}, 5200);
+		return () => window.clearInterval(intervalId);
+	}, []);
 	const isDevBuild =
 		(typeof (import.meta as any).env !== 'undefined' && (import.meta as any).env.DEV) ||
 		(typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production');
@@ -919,6 +1037,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [layoutReady, setLayoutReady] = React.useState(false);
 	const [initialDataSettled, setInitialDataSettled] = React.useState(false);
 	const [initialLayoutSettled, setInitialLayoutSettled] = React.useState(false);
+	const [startupLayoutAnimationsReady, setStartupLayoutAnimationsReady] = React.useState(false);
 	const readyNotifiedRef = React.useRef(false);
 	/** True once the first viewportCapacity-worth of cards are measured and stable. Drives onViewportReady. */
 	// Never initialise to true: an immediately-true state causes onViewportReady to
@@ -1087,6 +1206,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
 	const noteHeightBumpRafRef = React.useRef<number>(0);
 	const noteCardLayoutRefreshRafRef = React.useRef<number>(0);
+	const layoutSnapshotHeightSeedKeyRef = React.useRef<string | null>(null);
 
 	// Seed height cache on first render from localStorage (before first pack)
 	if (!heightCacheLoadedRef.current) {
@@ -1115,6 +1235,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			viewportBucket: layoutViewportBucket,
 		});
 	}, [layoutDensityKey, layoutDeviceType, layoutViewportBucket, props.activeWorkspaceId, props.viewMode]);
+	const cachedLayoutSnapshotSeedKey = cachedLayoutSnapshot
+		? `${props.activeWorkspaceId}:${props.viewMode ?? 'card'}:${layoutDeviceType}:${layoutDensityKey}:${layoutViewportBucket}:${cachedLayoutSnapshot.savedAt}`
+		: null;
+
+	// Seed warm-load masonry with the last settled per-note rect heights from the
+	// layout snapshot. Order/column slots alone are not enough; without the cached
+	// heights, the first pack falls back to generic estimates and notes visibly
+	// shuffle once live measurements arrive.
+	if (cachedLayoutSnapshotSeedKey && layoutSnapshotHeightSeedKeyRef.current !== cachedLayoutSnapshotSeedKey) {
+		layoutSnapshotHeightSeedKeyRef.current = cachedLayoutSnapshotSeedKey;
+		for (const rect of cachedLayoutSnapshot.rects) {
+			if (rect.height > 0) {
+				noteHeightByIdRef.current.set(rect.noteId, Math.round(rect.height));
+			}
+		}
+	}
 	const workspaceRenderSnapshot = React.useMemo(
 		() => readWorkspaceRenderSnapshot(props.activeWorkspaceId),
 		[props.activeWorkspaceId]
@@ -1186,11 +1322,17 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			setAllDocsLoaded(false);
 			setInitialDataSettled(false);
 			setInitialLayoutSettled(false);
+			setStartupLayoutAnimationsReady(false);
 			setViewportLayoutSettled(false);
 			setLayoutReady(false);
 			setShimmerStalled(false);
 		}
 	}, [props.activeWorkspaceId, props.viewMode]);
+
+	React.useEffect(() => {
+		if (!initialLayoutSettled) return;
+		setStartupLayoutAnimationsReady(true);
+	}, [initialLayoutSettled]);
 
 	const touchStartPointRef = React.useRef<{ x: number; y: number } | null>(null);
 	const pendingTouchIntentRef = React.useRef(false);
@@ -1248,16 +1390,27 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			noteHeightBumpRafRef.current = 0;
 			setNoteHeightsVersion((version) => version + 1);
 		});
-		if (props.deviceId) {
+	}, []);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		if (!props.deviceId) return;
+		if (!initialLayoutSettled) return;
+		if (noteHeightByIdRef.current.size === 0) return;
+		if (heightSaveTimerRef.current) {
+			window.clearTimeout(heightSaveTimerRef.current);
+		}
+		heightSaveTimerRef.current = window.setTimeout(() => {
+			heightSaveTimerRef.current = 0;
+			saveNoteHeightCache(props.deviceId!, noteHeightByIdRef.current);
+		}, 250);
+		return () => {
 			if (heightSaveTimerRef.current) {
 				window.clearTimeout(heightSaveTimerRef.current);
-			}
-			heightSaveTimerRef.current = window.setTimeout(() => {
 				heightSaveTimerRef.current = 0;
-				saveNoteHeightCache(props.deviceId!, noteHeightByIdRef.current);
-			}, 2000);
-		}
-	}, [props.deviceId]);
+			}
+		};
+	}, [initialLayoutSettled, noteHeightsVersion, props.deviceId]);
 
 	const handleMeasuredCardHeight = React.useCallback((noteId: string, height: number): void => {
 		const normalizedHeight = Math.max(0, Math.round(height));
@@ -1624,7 +1777,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		[getEstimatedNoteHeight, noteLayout, noteOrder, noteSnapshotById, visibleIds, mobileGridGapPx]
 	);
 
-	React.useEffect(() => {
+	React.useLayoutEffect(() => {
 		setLayoutOrderIds((previous) => {
 			const pendingCommitted = pendingCommittedVisibleOrderRef.current;
 			if (pendingCommitted) {
@@ -1639,7 +1792,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		});
 	}, [visibleIds]);
 
-	React.useEffect(() => {
+	// Apply the warm-start layout snapshot before paint so the reopened PWA does
+	// not first render in fallback order and then visibly jump once effects run.
+	React.useLayoutEffect(() => {
 		if (!cachedLayoutSnapshot || !props.activeWorkspaceId) return;
 		const cacheKey = `${props.activeWorkspaceId}:${props.viewMode ?? 'card'}:${layoutDeviceType}:${layoutDensityKey}:${layoutViewportBucket}`;
 		if (appliedLayoutCacheKeyRef.current === cacheKey) return;
@@ -2323,6 +2478,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useLayoutEffect(() => {
 		if (!isGridVisible) return;
 		if (isListLikeView) return;
+		if (!initialLayoutSettled) return;
 		const grid = gridRef.current;
 		if (!grid) return;
 		const documentRects = measureDocumentRects(grid);
@@ -2355,7 +2511,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				}
 			);
 		}
-	}, [columnCount, columns, dragManager.activeDragId, isGridVisible, isListLikeView, layoutDensityKey, layoutDeviceType, layoutViewportBucket, noteHeightsVersion, props.activeWorkspaceId, props.viewMode, renderedIds]);
+	}, [columnCount, columns, dragManager.activeDragId, initialLayoutSettled, isGridVisible, isListLikeView, layoutDensityKey, layoutDeviceType, layoutViewportBucket, noteHeightsVersion, props.activeWorkspaceId, props.viewMode, renderedIds]);
 
 	const activeDoc = dragManager.activeDragId ? docsById[dragManager.activeDragId] : undefined;
 	const activeNote = dragManager.activeDragId ? noteById.get(dragManager.activeDragId) : undefined;
@@ -2516,9 +2672,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// Match the masonry grid edge clamp on coarse pointers so left-column cards
 		// open centered chip overlays instead of drifting to the right.
 		const horizontalViewportInset = isCoarsePointer ? MOBILE_GRID_EDGE_MARGIN_PX : 12;
-		const minimumOverlayWidth = isCoarsePointer ? 196 : 176;
 		const overlayWidth = Math.min(
-			Math.max(minimumOverlayWidth, Math.round(openCollaboratorChip.anchorRect.width)),
+			Math.round(openCollaboratorChip.anchorRect.width),
 			window.innerWidth - horizontalViewportInset * 2
 		);
 		const viewportWidth = window.innerWidth;
@@ -2560,6 +2715,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			: Math.max(12, openMetadataChip.anchorRect.top - estimatedHeight - 8);
 		return { top, left, width: overlayWidth };
 	}, [isCoarsePointer, openMetadataChip]);
+	const cardPositionAnimationsReady = layoutReady && startupLayoutAnimationsReady;
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
@@ -2636,6 +2792,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					disableAttachmentInitialRemoteRefresh: disableAttachmentInitialRemoteRefresh && !note.isShared,
 					forceCloseAttachmentChip: Boolean(openCollaboratorChip || openMetadataChip || (openAttachmentChipNoteId !== null && openAttachmentChipNoteId !== note.id)),
 					collaboratorSummary,
+					onSelectCollaboratorFilter: props.onSelectCollaboratorFilter,
+					activeCollaboratorFilter: props.activeCollaboratorFilter,
+					collaboratorAvatarCycleTick,
 					snapshotShell,
 					onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 					onToggleCollaboratorChip: (chipNoteId, anchorRect) => {
@@ -2700,12 +2859,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				maxCardHeightPx={props.maxCardHeightPx}
 				isPlaceholder={isPlaceholder}
 				isOverlayActiveCard={overlayActiveNoteId === note.id}
-				layoutReady={layoutReady}
+				layoutReady={cardPositionAnimationsReady}
 				setItemElement={dragManager.setItemElement}
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [allDocsLoaded, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isTrashView, labelById, layoutReady, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -3104,6 +3263,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									suspendAttachmentRemoteRefresh,
 									disableAttachmentInitialRemoteRefresh,
 									collaboratorSummary: activeCollaboratorSummary,
+									onSelectCollaboratorFilter: props.onSelectCollaboratorFilter,
+									activeCollaboratorFilter: props.activeCollaboratorFilter,
+									collaboratorAvatarCycleTick,
 									snapshotShell: workspaceRenderSnapshotNoteById.get(activeNote.id) ?? null,
 									onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 									onOpenMetadataChip: ({ noteId, kind, anchorRect, entries }) => {

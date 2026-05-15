@@ -711,17 +711,19 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	}, []);
 
 	const toggleCompleted = React.useCallback((id: string, checked: boolean): void => {
+		prepareRowFocusHandoff();
 		setItems((prev) => {
 			const next = reconcileDraftItems(toggleChecklistItemCompleted(prev, id, checked), prev);
 			if (next === prev) return prev;
 			pushChecklistUndoSnapshot(prev);
 			return next;
 		});
-	}, [pushChecklistUndoSnapshot]);
+	}, [prepareRowFocusHandoff, pushChecklistUndoSnapshot]);
 
 	const undoCheckboxChange = React.useCallback((): void => {
 		const snapshot = checkboxUndoStack.current[checkboxUndoStack.current.length - 1];
 		if (!snapshot) return;
+		prepareRowFocusHandoff();
 		checkboxUndoStack.current = checkboxUndoStack.current.slice(0, -1);
 		setItems((prev) => {
 			checkboxRedoStack.current = [...checkboxRedoStack.current, prev];
@@ -729,11 +731,12 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		});
 		setCheckboxUndoAvail(checkboxUndoStack.current.length > 0);
 		setCheckboxRedoAvail(true);
-	}, []);
+	}, [prepareRowFocusHandoff]);
 
 	const redoCheckboxChange = React.useCallback((): void => {
 		const snapshot = checkboxRedoStack.current[checkboxRedoStack.current.length - 1];
 		if (!snapshot) return;
+		prepareRowFocusHandoff();
 		checkboxRedoStack.current = checkboxRedoStack.current.slice(0, -1);
 		setItems((prev) => {
 			checkboxUndoStack.current = [...checkboxUndoStack.current, prev];
@@ -741,7 +744,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		});
 		setCheckboxUndoAvail(true);
 		setCheckboxRedoAvail(checkboxRedoStack.current.length > 0);
-	}, []);
+	}, [prepareRowFocusHandoff]);
 
 	// Keyboard shortcut: Ctrl/Cmd+Z undoes last checkbox change; Ctrl/Cmd+Shift+Z
 	// or Ctrl+Y redoes it. Only intercepts when focus is inside the checklist form.
@@ -993,16 +996,13 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 
 	const removeItemByButton = React.useCallback(
 		(id: string): void => {
-			if (!quickDeleteVisible) {
-				// Standard delete keeps editing flow moving by focusing an adjacent row.
+			if (activeRowId === id) {
 				removeItemAndFocus(id);
 				return;
 			}
-			// Quick-delete branch favors keyboard dismissal over focus continuity.
-			clearRowSelection();
-			removeItem(id, { preserveKeyboard: false });
+			removeItem(id);
 		},
-		[clearRowSelection, quickDeleteVisible, removeItem, removeItemAndFocus]
+		[activeRowId, removeItem, removeItemAndFocus]
 	);
 
 	const renderChecklistClone = React.useCallback(
@@ -1176,7 +1176,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 
 				<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 					<div className={styles.checklistToolbarSlot}>
-						<RichTextToolbar editor={activeRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onMakeChecklistCount={activeRowItem && !isChecklistCountItem(activeRowItem) ? makeActiveCountItem : undefined} onIncrementChecklistCount={activeCountItem ? incrementActiveCountItem : undefined} onDecrementChecklistCount={activeCountItem ? decrementActiveCountItem : undefined} onRemoveChecklistCount={activeCountItem ? removeActiveCountItem : undefined} />
+						<RichTextToolbar editor={activeRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={undoCheckboxChange} onRedoCheckbox={redoCheckboxChange} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} onMakeChecklistCount={activeRowItem && !isChecklistCountItem(activeRowItem) ? makeActiveCountItem : undefined} onIncrementChecklistCount={activeCountItem ? incrementActiveCountItem : undefined} onDecrementChecklistCount={activeCountItem ? decrementActiveCountItem : undefined} onRemoveChecklistCount={activeCountItem ? removeActiveCountItem : undefined} />
 					</div>
 					{/* Keyboard-open branch:
 					    Reserve space for the floating toolbar only. This preserves comfortable text
@@ -1295,6 +1295,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 															type="checkbox"
 															className={styles.checklistCheckbox}
 															checked={item.completed}
+															onMouseDown={preventHandleFocusSteal}
+															onPointerDown={preventHandleFocusSteal}
 															onChange={(event) => toggleCompleted(item.id, event.target.checked)}
 														/>
 													</label>
@@ -1340,6 +1342,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 													<button
 														type="button"
 														className={styles.rowRemoveButton}
+														onMouseDown={preventHandleFocusSteal}
+														onPointerDown={preventHandleFocusSteal}
 														onClick={() => {
 															if (quickDeleteVisible) {
 																removeItemByButton(item.id);
@@ -1354,6 +1358,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 													</button>
 												</li>
 												);
+														onMouseDown={preventHandleFocusSteal}
+														onPointerDown={preventHandleFocusSteal}
 											}}
 										</Draggable>
 									))}
@@ -1423,6 +1429,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 												type="checkbox"
 												className={styles.checklistCheckbox}
 												checked={item.completed}
+												onMouseDown={preventHandleFocusSteal}
+												onPointerDown={preventHandleFocusSteal}
 												onChange={(event) => toggleCompleted(item.id, event.target.checked)}
 											/>
 										</label>
@@ -1793,7 +1801,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					className={styles.floatingToolbar}
 					style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 				>
-					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onMakeChecklistCount={activeRowItem && !isChecklistCountItem(activeRowItem) ? makeActiveCountItem : undefined} onIncrementChecklistCount={activeCountItem ? incrementActiveCountItem : undefined} onDecrementChecklistCount={activeCountItem ? decrementActiveCountItem : undefined} onRemoveChecklistCount={activeCountItem ? removeActiveCountItem : undefined} />
+					<RichTextToolbar editor={activeRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={undoCheckboxChange} onRedoCheckbox={redoCheckboxChange} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} onMakeChecklistCount={activeRowItem && !isChecklistCountItem(activeRowItem) ? makeActiveCountItem : undefined} onIncrementChecklistCount={activeCountItem ? incrementActiveCountItem : undefined} onDecrementChecklistCount={activeCountItem ? decrementActiveCountItem : undefined} onRemoveChecklistCount={activeCountItem ? removeActiveCountItem : undefined} />
 				</div>
 			</>,
 			document.body

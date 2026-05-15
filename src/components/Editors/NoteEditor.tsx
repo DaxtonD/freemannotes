@@ -443,9 +443,12 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	const handleToggleCompleted = React.useCallback((event: React.ChangeEvent<HTMLInputElement>): void => {
 		toggleCompleted(item.id, event.target.checked);
 	}, [item.id, toggleCompleted]);
+	const preventCheckboxFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
+		event.preventDefault();
+	}, []);
 
 	const handleRemove = React.useCallback((): void => {
-		remove(item.id, { clearSelection: true });
+		remove(item.id);
 	}, [item.id, remove]);
 
 	const handleInsertAfter = React.useCallback((editor: Editor): void => {
@@ -472,6 +475,8 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 				<button
 					type="button"
 					className={styles.rowRemoveButton}
+					onMouseDown={preventCheckboxFocusSteal}
+					onPointerDown={preventCheckboxFocusSteal}
 					onClick={handleRemove}
 					aria-label={removeLabel}
 					title={removeLabel}
@@ -492,6 +497,8 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 					type="checkbox"
 					className={styles.checklistCheckbox}
 					checked={item.completed}
+					onMouseDown={preventCheckboxFocusSteal}
+					onPointerDown={preventCheckboxFocusSteal}
 					onChange={handleToggleCompleted}
 				/>
 			</label>
@@ -540,6 +547,8 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 			<button
 				type="button"
 				className={styles.rowRemoveButton}
+				onMouseDown={preventCheckboxFocusSteal}
+				onPointerDown={preventCheckboxFocusSteal}
 				onClick={handleRemove}
 				aria-label={removeLabel}
 				title={removeLabel}
@@ -1515,32 +1524,35 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const toggleChecklistCompleted = React.useCallback(
 		(id: string, checked: boolean): void => {
 			if (type !== 'checklist') return;
+			prepareChecklistRowFocusHandoff();
 			const snapshot = normalizedItems;
 			pushChecklistUndoSnapshot(snapshot);
 			replaceChecklistItems(toggleChecklistItemCompleted(normalizedItems, id, checked));
 		},
-		[normalizedItems, pushChecklistUndoSnapshot, replaceChecklistItems, type]
+		[normalizedItems, prepareChecklistRowFocusHandoff, pushChecklistUndoSnapshot, replaceChecklistItems, type]
 	);
 
 	const undoCheckboxChange = React.useCallback((): void => {
 		if (checkboxUndoStack.current.length === 0) return;
+		prepareChecklistRowFocusHandoff();
 		const snapshot = checkboxUndoStack.current[checkboxUndoStack.current.length - 1];
 		checkboxUndoStack.current = checkboxUndoStack.current.slice(0, -1);
 		checkboxRedoStack.current = [...checkboxRedoStack.current, normalizedItems];
 		setCheckboxUndoAvail(checkboxUndoStack.current.length > 0);
 		setCheckboxRedoAvail(true);
 		replaceChecklistItems(snapshot);
-	}, [normalizedItems, replaceChecklistItems]);
+	}, [normalizedItems, prepareChecklistRowFocusHandoff, replaceChecklistItems]);
 
 	const redoCheckboxChange = React.useCallback((): void => {
 		if (checkboxRedoStack.current.length === 0) return;
+		prepareChecklistRowFocusHandoff();
 		const snapshot = checkboxRedoStack.current[checkboxRedoStack.current.length - 1];
 		checkboxRedoStack.current = checkboxRedoStack.current.slice(0, -1);
 		checkboxUndoStack.current = [...checkboxUndoStack.current, normalizedItems];
 		setCheckboxUndoAvail(true);
 		setCheckboxRedoAvail(checkboxRedoStack.current.length > 0);
 		replaceChecklistItems(snapshot);
-	}, [normalizedItems, replaceChecklistItems]);
+	}, [normalizedItems, prepareChecklistRowFocusHandoff, replaceChecklistItems]);
 
 	const checkAllChecklistItems = React.useCallback((): void => {
 		if (type !== 'checklist' || readOnly || normalizedItems.length === 0) return;
@@ -1592,11 +1604,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			if (type !== 'checklist') return;
 			const index = normalizedItems.findIndex((row) => row.id === id);
 			if (index < 0) return;
+			const wasActive = activeChecklistRowId === id;
 			const previousId = index > 0 ? normalizedItems[index - 1]?.id ?? null : null;
 			const nextId = normalizedItems[index + 1]?.id ?? null;
 			// `clearSelection=true` is used by quick delete to close editing entirely.
 			// Normal delete keeps the keyboard alive and hands focus to a neighbor.
-			if (options?.clearSelection !== true) {
+			if (options?.clearSelection !== true && wasActive) {
 				prepareChecklistRowFocusHandoff();
 			}
 			pushChecklistUndoSnapshot(normalizedItems);
@@ -1628,11 +1641,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				return;
 			}
 
+			if (!wasActive) {
+				return;
+			}
+
 			suppressAutoActivateAfterDeleteRef.current = false;
 			setActiveChecklistRowId(previousId ?? nextId);
 			setFocusRowId(previousId ?? nextId);
 		},
-		[checklistArray, clearChecklistSelection, normalizedItems, prepareChecklistRowFocusHandoff, pushChecklistUndoSnapshot, quickDeleteVisible, type]
+		[activeChecklistRowId, checklistArray, clearChecklistSelection, normalizedItems, prepareChecklistRowFocusHandoff, pushChecklistUndoSnapshot, quickDeleteVisible, type]
 	);
 
 	const onChecklistDragEnd = React.useCallback(
@@ -3010,6 +3027,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						onCreateUrlPreview={handleCreateUrlPreview}
 						noteAutoScrollEnabled={noteAutoScrollEnabled}
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
+						onUndoCheckbox={type === 'checklist' && !readOnly ? undoCheckboxChange : undefined}
+						onRedoCheckbox={type === 'checklist' && !readOnly ? redoCheckboxChange : undefined}
+						checkboxUndoAvail={type === 'checklist' ? checkboxUndoAvail : undefined}
+						checkboxRedoAvail={type === 'checklist' ? checkboxRedoAvail : undefined}
 						onMakeChecklistCount={type === 'checklist' && activeChecklistRowItem && !isChecklistCountItem(activeChecklistRowItem) ? makeActiveChecklistCount : undefined}
 						onIncrementChecklistCount={type === 'checklist' && activeChecklistCountItem ? incrementActiveChecklistCount : undefined}
 						onDecrementChecklistCount={type === 'checklist' && activeChecklistCountItem ? decrementActiveChecklistCount : undefined}
