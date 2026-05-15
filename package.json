@@ -1,6 +1,6 @@
 {
   "name": "freemannotes",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "main": "index.js",
   "scripts": {
     "dev": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",
@@ -47,6 +47,7 @@
     "@hello-pangea/dnd": "^18.0.1",
     "@iamjariwala/react-doc-viewer": "^1.8.0",
     "@prisma/client": "^5.22.0",
+    "prisma": "^5.22.0",
     "@tanstack/react-virtual": "^3.13.24",
     "@tiptap/extension-bubble-menu": "^3.20.1",
     "@tiptap/extension-character-count": "^3.20.1",
@@ -101,7 +102,6 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.4",
     "concurrently": "^9.2.1",
-    "prisma": "^5.22.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "vite": "^7.3.1",

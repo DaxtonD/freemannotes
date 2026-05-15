@@ -39,7 +39,7 @@
 
 const path = require('path');
 const fs = require('fs');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 const KNOWN_BROKEN_MIGRATION = '20260311000100_owner_editor_viewer_roles';
 const KNOWN_BROKEN_MIGRATION_HINT = 'relation "share_access_token" does not exist';
@@ -48,8 +48,12 @@ function getRepoRoot() {
 	return path.resolve(__dirname, '..');
 }
 
-function runPrismaCommand(command, databaseUrl) {
-	return execSync(command, {
+function getPrismaCliScript() {
+	return path.join(getRepoRoot(), 'node_modules', 'prisma', 'build', 'index.js');
+}
+
+function runPrismaCommand(args, databaseUrl) {
+	return execFileSync(process.execPath, [getPrismaCliScript(), ...args], {
 		cwd: getRepoRoot(),
 		stdio: 'pipe',
 		timeout: 300000,
@@ -69,7 +73,7 @@ function shouldRecoverKnownBrokenMigration(message) {
 
 function recoverKnownBrokenMigration(databaseUrl) {
 	console.warn(`[dbInit] Attempting automatic recovery for failed migration ${KNOWN_BROKEN_MIGRATION}`);
-	runPrismaCommand(`npx prisma migrate resolve --rolled-back ${KNOWN_BROKEN_MIGRATION}`, databaseUrl);
+	runPrismaCommand(['migrate', 'resolve', '--rolled-back', KNOWN_BROKEN_MIGRATION], databaseUrl);
 	console.warn(`[dbInit] Marked ${KNOWN_BROKEN_MIGRATION} as rolled back; retrying migrate deploy`);
 }
 
@@ -130,11 +134,11 @@ function baselineExistingSchema(databaseUrl) {
 
 	console.warn('[dbInit] DB_BASELINE_ON_NON_EMPTY is enabled; attempting one-time baseline for the existing database schema');
 	console.warn('[dbInit] Step 1/2: syncing the current Prisma schema with `prisma db push --skip-generate`');
-	runPrismaCommand('npx prisma db push --skip-generate', databaseUrl);
+	runPrismaCommand(['db', 'push', '--skip-generate'], databaseUrl);
 
 	console.warn('[dbInit] Step 2/2: marking committed migrations as already applied');
 	for (const migrationName of migrationNames) {
-		runPrismaCommand(`npx prisma migrate resolve --applied ${migrationName}`, databaseUrl);
+		runPrismaCommand(['migrate', 'resolve', '--applied', migrationName], databaseUrl);
 	}
 
 	console.warn('[dbInit] Baseline complete; retrying `prisma migrate deploy`');
@@ -235,8 +239,8 @@ function syncSchema(databaseUrl) {
 
 	const isDeploy = mode === 'deploy';
 	const command = isDeploy
-		? 'npx prisma migrate deploy'
-		: 'npx prisma db push --skip-generate';
+		? ['migrate', 'deploy']
+		: ['db', 'push', '--skip-generate'];
 	const label = isDeploy ? 'prisma migrate deploy' : 'prisma db push';
 
 	console.info(`[dbInit] Syncing schema with database (${label})...`);
