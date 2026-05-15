@@ -14,9 +14,7 @@ RUN npm ci --legacy-peer-deps
 RUN npx prisma generate
 
 COPY . .
-RUN npm run build && npm prune --omit=dev --legacy-peer-deps --ignore-scripts
-# Re-generate Prisma client after prune (prune may remove it).
-RUN npx prisma generate
+RUN npm run build && npx prisma generate && npm prune --omit=dev --legacy-peer-deps --ignore-scripts
 
 FROM node:20-bookworm-slim AS runtime
 WORKDIR /app
