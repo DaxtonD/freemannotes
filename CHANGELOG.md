@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.4.5 - 2026-05-15
+
+### Fixed
+- **Production startup now uses the pinned Prisma 5 CLI instead of falling back to `npx` at runtime.** Database initialization invokes the local Prisma package directly, and the `prisma` package now stays in production dependencies so `migrate deploy` still works after `npm prune --omit=dev`.
+
 ## 1.4.4 - 2026-05-15
 
 ### Fixed
