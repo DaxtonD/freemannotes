@@ -125,7 +125,7 @@ jobs:
           # Reusing :latest for cache export can publish cache metadata that older
           # runtimes reject with "unsupported media type application/vnd.buildkit.cacheconfig.v0".
           cache-from: type=registry,ref=ghcr.io/daxtond/freemannotes:buildcache
-          cache-to: type=registry,ref=ghcr.io/daxtond/freemannotes:buildcache,mode=max
+          cache-to: type=registry,ref=ghcr.io/daxtond/freemannotes:buildcache,mode=min
           # Publish a plain runtime image manifest for maximum compatibility with
           # conservative Docker environments such as Unraid deployments.
           provenance: false
