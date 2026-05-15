@@ -4,7 +4,7 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
-## 1.4.1 - 2026-05-14
+## 1.4.2 - 2026-05-15
 
 ### Changed
 - **Collaborator chips now lead each note card's metadata row and keep avatar spacing visually even.** Single collaborators render as centered filter avatars, small groups use a centered rotating avatar stack, and larger groups keep the existing count chip behavior.

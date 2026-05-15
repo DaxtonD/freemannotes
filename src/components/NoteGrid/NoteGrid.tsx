@@ -546,29 +546,6 @@ function renderMetaChipShell(
 	);
 }
 
-function renderCollaboratorAvatarMedia(
-	collaborator: NoteCardCollaborator,
-	imageClassName: string,
-	fallbackClassName: string
-): React.ReactNode {
-	return collaborator.avatar ? (
-		<img className={imageClassName} src={collaborator.avatar} alt="" />
-	) : (
-		<span className={fallbackClassName} aria-hidden="true">
-			{collaboratorAvatarFallback(collaborator.name)}
-		</span>
-	);
-}
-
-function rotateCollaborators(
-	collaborators: readonly NoteCardCollaborator[],
-	cycleTick: number
-): readonly NoteCardCollaborator[] {
-	if (collaborators.length <= 1) return collaborators;
-	const offset = Math.abs(cycleTick) % collaborators.length;
-	return collaborators.map((_, index) => collaborators[(index + offset) % collaborators.length]);
-}
-
 function renderNoteMetaChips(args: {
 	noteId: string;
 	docId: string | null;
@@ -593,9 +570,6 @@ function renderNoteMetaChips(args: {
 		title: string | undefined,
 		canEdit: boolean
 	) => void;
-	onSelectCollaboratorFilter?: (filter: NoteGridCollaboratorFilter) => void;
-	activeCollaboratorFilter?: NoteGridCollaboratorFilter | null;
-	collaboratorAvatarCycleTick?: number;
 	onToggleCollaboratorChip?: (noteId: string, anchorRect: { top: number; left: number; width: number; height: number }) => void;
 	onOpenMetadataChip?: (args: {
 		noteId: string;
@@ -631,119 +605,9 @@ function renderNoteMetaChips(args: {
 	const chipColorStyle = getNoteColorVars(args.noteId, args.doc, args.themeId);
 	const collectionChipCount = collectionId ? '1' : null;
 	const labelChipCount = `${labelItems.length}`;
-	const collaboratorSummary = args.collaboratorSummary;
-	const collaboratorCountForChip = collaboratorSummary?.count ?? 0;
-	const primaryCollaborator = collaboratorSummary?.collaborators[0] ?? null;
-	const rotatedCollaborators = collaboratorSummary && collaboratorCountForChip >= 2 && collaboratorCountForChip <= 3
-		? rotateCollaborators(collaboratorSummary.collaborators.slice(0, 3), args.collaboratorAvatarCycleTick ?? 0)
-		: null;
-	const collaboratorChipActive = collaboratorSummary?.collaborators.some((collaborator) => collaborator.key === args.activeCollaboratorFilter?.key) ?? false;
-	const collaboratorAvatarStackSlotClasses = [
-		styles.noteCollaboratorAvatarStackItem0,
-		styles.noteCollaboratorAvatarStackItem1,
-		styles.noteCollaboratorAvatarStackItem2,
-	];
 
 	return (
 		<>
-			{/* Keep collaborators first so avatar presence anchors the row before collection, label, and attachment count chips. */}
-			{collaboratorSummary && collaboratorCountForChip === 1 && primaryCollaborator ? (
-				args.onSelectCollaboratorFilter ? (
-					<button
-						type="button"
-						className={`${styles.noteCollaboratorAvatarButton}${collaboratorChipActive ? ` ${styles.noteCollaboratorAvatarButtonActive}` : ''}`}
-						style={chipColorStyle}
-						onPointerDown={(event) => event.stopPropagation()}
-						onClick={(event) => {
-							event.stopPropagation();
-							args.onSelectCollaboratorFilter?.({
-								key: primaryCollaborator.key,
-								userId: primaryCollaborator.userId,
-								label: primaryCollaborator.name,
-								email: primaryCollaborator.email,
-								avatar: primaryCollaborator.avatar,
-							});
-						}}
-						aria-label={`${args.t('app.withFilterPrefix')}: ${primaryCollaborator.name}`}
-						aria-pressed={collaboratorChipActive}
-					>
-						<span className={styles.noteCollaboratorAvatarSurface}>
-							{renderCollaboratorAvatarMedia(primaryCollaborator, styles.noteCollaboratorAvatarImage, styles.noteCollaboratorAvatarFallback)}
-						</span>
-					</button>
-				) : (
-					<span className={styles.noteCollaboratorAvatarButton} style={chipColorStyle} aria-label={primaryCollaborator.name}>
-						<span className={styles.noteCollaboratorAvatarSurface}>
-							{renderCollaboratorAvatarMedia(primaryCollaborator, styles.noteCollaboratorAvatarImage, styles.noteCollaboratorAvatarFallback)}
-						</span>
-					</span>
-				)
-			) : collaboratorSummary && rotatedCollaborators && collaboratorCountForChip >= 2 && collaboratorCountForChip <= 3 ? (
-				args.onToggleCollaboratorChip ? (
-					<button
-						type="button"
-						className={styles.noteCollaboratorAvatarButton}
-						data-note-chip-trigger="true"
-						style={chipColorStyle}
-						onPointerDown={(event) => event.stopPropagation()}
-						onClick={(event) => {
-							event.stopPropagation();
-							const rect = readChipOverlayAnchorRect(event.currentTarget);
-							if (!rect) return;
-							args.onToggleCollaboratorChip?.(args.noteId, {
-								top: rect.top,
-								left: rect.left,
-								width: rect.width,
-								height: rect.height,
-							});
-						}}
-						aria-label={`${args.t('share.activeCollaborators')}: ${collaboratorCountForChip}`}
-					>
-						<span className={`${styles.noteCollaboratorAvatarStack}${rotatedCollaborators.length === 2 ? ` ${styles.noteCollaboratorAvatarStackTwo}` : ''}`}>
-							{rotatedCollaborators.map((collaborator, index) => (
-								<span key={collaborator.key} className={`${styles.noteCollaboratorAvatarStackItem} ${collaboratorAvatarStackSlotClasses[index] ?? ''}`}>
-									{renderCollaboratorAvatarMedia(collaborator, styles.noteCollaboratorAvatarImage, styles.noteCollaboratorAvatarFallback)}
-								</span>
-							))}
-						</span>
-					</button>
-				) : (
-					<span className={styles.noteCollaboratorAvatarButton} style={chipColorStyle} aria-label={`${args.t('share.activeCollaborators')}: ${collaboratorCountForChip}`}>
-						<span className={`${styles.noteCollaboratorAvatarStack}${rotatedCollaborators.length === 2 ? ` ${styles.noteCollaboratorAvatarStackTwo}` : ''}`}>
-							{rotatedCollaborators.map((collaborator, index) => (
-								<span key={collaborator.key} className={`${styles.noteCollaboratorAvatarStackItem} ${collaboratorAvatarStackSlotClasses[index] ?? ''}`}>
-									{renderCollaboratorAvatarMedia(collaborator, styles.noteCollaboratorAvatarImage, styles.noteCollaboratorAvatarFallback)}
-								</span>
-							))}
-						</span>
-					</span>
-				)
-			) : collaboratorSummary && collaboratorCountForChip > 0 ? (
-				<button
-					type="button"
-					className={styles.noteChipButton}
-					data-note-chip-trigger="true"
-					style={chipColorStyle}
-					onPointerDown={(event) => event.stopPropagation()}
-					onClick={(event) => {
-						event.stopPropagation();
-						const rect = readChipOverlayAnchorRect(event.currentTarget);
-						if (!rect) return;
-						args.onToggleCollaboratorChip?.(args.noteId, {
-							top: rect.top,
-							left: rect.left,
-							width: rect.width,
-							height: rect.height,
-						});
-					}}
-					aria-label={`${args.t('share.activeCollaborators')}: ${collaboratorCountForChip}`}
-				>
-					<FontAwesomeIcon icon={faUsers} />
-					<span>{collaboratorCountForChip}</span>
-				</button>
-			) : showCollaboratorShell ? (
-				renderMetaChipShell(faUsers, collaboratorCount, args.t('share.activeCollaborators'), chipColorStyle)
-			) : null}
 			{collectionPath && collectionId ? (
 				<button
 					type="button"
@@ -810,6 +674,32 @@ function renderNoteMetaChips(args: {
 				</button>
 			) : showLabelShell ? (
 				renderMetaChipShell(faTag, labelIds.length, args.t('note.labels'), chipColorStyle)
+			) : null}
+			{args.collaboratorSummary && args.collaboratorSummary.count > 0 ? (
+				<button
+					type="button"
+					className={styles.noteChipButton}
+					data-note-chip-trigger="true"
+					style={chipColorStyle}
+					onPointerDown={(event) => event.stopPropagation()}
+					onClick={(event) => {
+						event.stopPropagation();
+						const rect = readChipOverlayAnchorRect(event.currentTarget);
+						if (!rect) return;
+						args.onToggleCollaboratorChip?.(args.noteId, {
+							top: rect.top,
+							left: rect.left,
+							width: rect.width,
+							height: rect.height,
+						});
+					}}
+					aria-label={`${args.t('share.activeCollaborators')}: ${args.collaboratorSummary.count}`}
+				>
+					<FontAwesomeIcon icon={faUsers} />
+					<span>{args.collaboratorSummary.count}</span>
+				</button>
+			) : showCollaboratorShell ? (
+				renderMetaChipShell(faUsers, collaboratorCount, args.t('share.activeCollaborators'), chipColorStyle)
 			) : null}
 			{args.docId ? (
 				<NoteAttachmentCountChip
@@ -990,14 +880,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useSyncExternalStore(subscribeNoteColorPrefs, getUserNoteColorPrefsSnapshot, getUserNoteColorPrefsSnapshot);
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
-	const [collaboratorAvatarCycleTick, setCollaboratorAvatarCycleTick] = React.useState(0);
-	React.useEffect(() => {
-		if (typeof window === 'undefined') return undefined;
-		const intervalId = window.setInterval(() => {
-			setCollaboratorAvatarCycleTick((previous) => previous + 1);
-		}, 5200);
-		return () => window.clearInterval(intervalId);
-	}, []);
 	const isDevBuild =
 		(typeof (import.meta as any).env !== 'undefined' && (import.meta as any).env.DEV) ||
 		(typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production');
@@ -2672,8 +2554,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// Match the masonry grid edge clamp on coarse pointers so left-column cards
 		// open centered chip overlays instead of drifting to the right.
 		const horizontalViewportInset = isCoarsePointer ? MOBILE_GRID_EDGE_MARGIN_PX : 12;
+		const minimumOverlayWidth = isCoarsePointer ? 196 : 176;
 		const overlayWidth = Math.min(
-			Math.round(openCollaboratorChip.anchorRect.width),
+			Math.max(minimumOverlayWidth, Math.round(openCollaboratorChip.anchorRect.width)),
 			window.innerWidth - horizontalViewportInset * 2
 		);
 		const viewportWidth = window.innerWidth;
@@ -2792,9 +2675,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					disableAttachmentInitialRemoteRefresh: disableAttachmentInitialRemoteRefresh && !note.isShared,
 					forceCloseAttachmentChip: Boolean(openCollaboratorChip || openMetadataChip || (openAttachmentChipNoteId !== null && openAttachmentChipNoteId !== note.id)),
 					collaboratorSummary,
-					onSelectCollaboratorFilter: props.onSelectCollaboratorFilter,
-					activeCollaboratorFilter: props.activeCollaboratorFilter,
-					collaboratorAvatarCycleTick,
 					snapshotShell,
 					onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 					onToggleCollaboratorChip: (chipNoteId, anchorRect) => {
@@ -3263,9 +3143,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									suspendAttachmentRemoteRefresh,
 									disableAttachmentInitialRemoteRefresh,
 									collaboratorSummary: activeCollaboratorSummary,
-									onSelectCollaboratorFilter: props.onSelectCollaboratorFilter,
-									activeCollaboratorFilter: props.activeCollaboratorFilter,
-									collaboratorAvatarCycleTick,
 									snapshotShell: workspaceRenderSnapshotNoteById.get(activeNote.id) ?? null,
 									onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
 									onOpenMetadataChip: ({ noteId, kind, anchorRect, entries }) => {
