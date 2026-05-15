@@ -11,10 +11,10 @@ COPY scripts/prisma-generate-if-needed.cjs ./scripts/prisma-generate-if-needed.c
 # re-resolve peers under npm 10.
 RUN npm ci --legacy-peer-deps
 # Generate Prisma client after npm ci (reads prisma/schema.prisma).
-RUN npx prisma generate
+RUN ./node_modules/.bin/prisma generate
 
 COPY . .
-RUN npm run build && npx prisma generate && npm prune --omit=dev --legacy-peer-deps --ignore-scripts
+RUN npm run build && ./node_modules/.bin/prisma generate && npm prune --omit=dev --legacy-peer-deps --ignore-scripts
 
 FROM node:20-bookworm-slim AS runtime
 WORKDIR /app

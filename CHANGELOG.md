@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.4.4 - 2026-05-15
+
+### Fixed
+- **Docker image builds no longer use a stale build cache to run a removed `npx prisma generate` step.** The Prisma CLI is now invoked directly from `node_modules/.bin` instead of via `npx`, preventing npm from downloading an incompatible newer version when the cache is warm. Build cache export is now `mode=min` to avoid caching intermediate layers that can replay outdated commands.
+
 ## 1.4.3 - 2026-05-15
 
 ### Fixed
