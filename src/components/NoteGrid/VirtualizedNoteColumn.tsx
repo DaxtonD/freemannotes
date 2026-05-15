@@ -125,7 +125,7 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 		enabled: shouldVirtualize,
 		useFlushSync: false,
 		measureElement: (element, entry) => Math.max(1, Math.round(entry?.contentRect.height ?? element.getBoundingClientRect().height)),
-		shouldAdjustScrollPositionOnItemSizeChange: (item, _delta, instance) => item.start < instance.scrollOffset,
+		shouldAdjustScrollPositionOnItemSizeChange: () => false,
 	});
 
 	React.useEffect(() => {

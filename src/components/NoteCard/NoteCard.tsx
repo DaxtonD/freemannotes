@@ -657,7 +657,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	// Budget checklist preview rows using the rendered row pitch, not just the
 	// text line box, so hidden counts stay accurate as card heights change.
 	const collapsedChecklistLineHeightPx = 26;
-	const keepCompletedToggleStable = isCoarsePointerDevice();
+	// Let the completed summary move with the visible active rows. The coarse-
+	// pointer path previously reused a stale measured body height, which created
+	// a collapsing gap on mobile as checklist items crossed the preview threshold.
+	const keepCompletedToggleStable = false;
 	const minimumExpandedCompletedItems = 3;
 	const canEdit = props.canEdit !== false;
 	const preserveControlShell = props.preserveControlShell === true;
@@ -788,8 +791,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const linkPreviewRailRef = React.useRef<HTMLDivElement | null>(null);
 	const footerRef = React.useRef<HTMLDivElement | null>(null);
 	const requestChecklistLayoutRefresh = React.useCallback((): void => {
-		if (typeof window === 'undefined') return;
-		window.dispatchEvent(new CustomEvent('freemannotes:note-card-layout-change'));
+		// Checklist card height changes are already observed by the outer
+		// virtualized note-column shell. Dispatching extra grid refresh events from
+		// inside the card creates duplicate repack passes around one logical toggle.
 	}, []);
 	const handleHeaderRef = React.useCallback((node: HTMLDivElement | null): void => {
 		headerRef.current = node;
@@ -932,15 +936,22 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		[activeChecklistItems, collapsedAvailableLineBudget, fitChecklistItemsToLineBudget]
 	);
 	const collapsedActiveBodyContentHeightPx = React.useMemo(() => {
-		if (!keepCompletedToggleStable) {
-			return collapsedActiveFit.usedLineCount * collapsedChecklistLineHeightPx;
-		}
+		const estimatedBodyContentHeightPx = collapsedActiveFit.usedLineCount * collapsedChecklistLineHeightPx;
 		const measuredBodyContentHeightPx = Math.max(
 			0,
 			checklistLayoutMetrics.bodyScrollHeightPx - checklistLayoutMetrics.bodyPaddingVerticalPx
 		);
+		if (!keepCompletedToggleStable) {
+			// Prefer the live rendered body height when it is smaller than the coarse
+			// line-cost estimate. Multiline rows can otherwise reserve extra card
+			// height that shows up as empty space beneath the completed-items rail.
+			if (measuredBodyContentHeightPx > 0) {
+				return Math.min(estimatedBodyContentHeightPx, measuredBodyContentHeightPx);
+			}
+			return estimatedBodyContentHeightPx;
+		}
 		if (measuredBodyContentHeightPx > 0) return measuredBodyContentHeightPx;
-		return collapsedActiveFit.usedLineCount * collapsedChecklistLineHeightPx;
+		return estimatedBodyContentHeightPx;
 	}, [
 		checklistLayoutMetrics.bodyPaddingVerticalPx,
 		checklistLayoutMetrics.bodyScrollHeightPx,
@@ -1029,16 +1040,14 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		requestChecklistLayoutRefresh();
 	}, [checklistLayoutSignature, requestChecklistLayoutRefresh, type]);
 	const expandedChecklistMaxHeightPx = Math.max(maxCardHeightPx, expandedChecklistMinHeightPx, expandedChecklistRenderedHeightPx);
-	// When the CSS max-height variable changes (driven by expandedChecklistMaxHeightPx),
-	// the card's rendered height changes - but the ResizeObserver in the metrics effect
-	// won't detect this because card.scrollHeight (natural content height) doesn't change.
-	// Fire requestChecklistLayoutRefresh in a useLayoutEffect so NoteGrid re-measures
-	// AFTER the new CSS var is committed to the DOM, not before (which is what the setter
-	// inside setChecklistLayoutMetrics does, causing it to measure the stale capped height).
+	// When either checklist CSS height variable changes, the card's rendered height
+	// changes without necessarily changing card.scrollHeight. Fire the grid refresh in
+	// a layout effect so NoteGrid re-measures after the new CSS vars are committed,
+	// not against the stale pre-commit height.
 	React.useLayoutEffect(() => {
 		if (type !== 'checklist') return;
 		requestChecklistLayoutRefresh();
-	}, [expandedChecklistMaxHeightPx, requestChecklistLayoutRefresh, type]);
+	}, [collapsedChecklistMinHeightPx, expandedChecklistMaxHeightPx, requestChecklistLayoutRefresh, type]);
 	const cardStyle = React.useMemo(() => {
 		const nextStyle: NoteCardStyle = {};
 		if (resolvedColor) {

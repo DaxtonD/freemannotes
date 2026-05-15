@@ -31,8 +31,8 @@ import { applyDocumentFlipAnimations, measureDocumentRects, type DocumentRectMap
 import styles from './NoteListView.module.css';
 
 const LIST_ROW_GAP_PX = 2;
-const LIST_ROW_ESTIMATE_PX = 56;
-const STRIP_ROW_ESTIMATE_PX = 78;
+const LIST_ROW_HEIGHT_PX = 44;
+const STRIP_ROW_HEIGHT_PX = 64;
 const MIN_ROWS_BEFORE_VIRTUALIZING = 30;
 
 export type NoteListViewProps = {
@@ -287,7 +287,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 	const hasMeasuredRef = React.useRef(false);
 	const [scrollMargin, setScrollMargin] = React.useState(0);
 	const shouldVirtualize = !props.activeDragId && props.orderedIds.length >= MIN_ROWS_BEFORE_VIRTUALIZING;
-	const estimatedRowHeight = showPreview ? STRIP_ROW_ESTIMATE_PX : LIST_ROW_ESTIMATE_PX;
+	const estimatedRowHeight = showPreview ? STRIP_ROW_HEIGHT_PX : LIST_ROW_HEIGHT_PX;
 
 	React.useLayoutEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -326,11 +326,9 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 		getItemKey: (index) => props.orderedIds[index] ?? index,
 		enabled: shouldVirtualize,
 		useFlushSync: false,
-		measureElement: (element, entry) => Math.max(1, Math.round(entry?.contentRect.height ?? element.getBoundingClientRect().height)),
-		// List rows continue to measure after they mount, especially once the user has
-		// scrolled far enough for virtualization to recycle rows. Preserving scroll by
-		// compensating for every size change above the viewport makes the window
-		// virtualizer fight native scrolling and produces visible jitter in list views.
+		// List/strip rows are intentionally fixed-height. Letting recycled rows re-measure
+		// after mount makes the window virtualizer keep correcting offsets mid-scroll,
+		// which shows up as jitter once virtualization starts recycling beyond page one.
 		shouldAdjustScrollPositionOnItemSizeChange: () => false,
 	});
 

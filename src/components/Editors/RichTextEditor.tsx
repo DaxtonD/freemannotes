@@ -448,6 +448,12 @@ const QUICK_EMOJIS: readonly string[] = [
 	'🔴', '🟡', '🟢', '🔵', 'ℹ️', '❓', '💰', '🌟',
 ];
 
+function renderToolbarImageIcon(iconFileName: string): React.JSX.Element {
+	const basePath = import.meta.env.BASE_URL || '/';
+	const normalizedBasePath = basePath.endsWith('/') ? basePath : `${basePath}/`;
+	return <img src={`${normalizedBasePath}icons/${iconFileName}`} alt="" aria-hidden="true" className={styles.formatButtonImageIcon} draggable={false} />;
+}
+
 export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element {
 	const { t } = useI18n();
 	const resolvedCopyMode = props.copyMode ?? 'rich-text';
@@ -1114,7 +1120,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							</div>
 							{props.onCreateUrlPreview ? (
 								<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
-									<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
+									{renderToolbarImageIcon('URL-Preview.png')}
 								</button>
 							) : null}
 						</>
@@ -1237,7 +1243,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						) : null}
 						{props.onMakeChecklistCount ? (
 							<button type="button" className={`${styles.formatButton}${primaryToolbarButtonClass}`} aria-label={t('editors.makeCountItem')} title={t('editors.makeCountItem')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onMakeChecklistCount}>
-								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconCheckCount}`} aria-hidden="true" />
+								{renderToolbarImageIcon('CheckCount.png')}
 							</button>
 						) : null}
 						{props.onIncrementChecklistCount ? (
@@ -1308,7 +1314,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						</div>
 						{props.onCreateUrlPreview ? (
 							<button type="button" className={`${styles.formatButton}${primaryToolbarButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
-								<span className={styles.formatButtonMaskIcon} aria-hidden="true" />
+								{renderToolbarImageIcon('URL-Preview.png')}
 							</button>
 						) : null}
 						{props.onToggleNoteAutoScroll ? (
@@ -1322,7 +1328,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								onPointerDown={preventToolbarFocusSteal}
 								onClick={props.onToggleNoteAutoScroll}
 							>
-								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
+								{renderToolbarImageIcon('autoscroll.png')}
 							</button>
 						) : null}
 					</>
