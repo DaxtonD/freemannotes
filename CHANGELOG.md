@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.4.3 - 2026-05-15
+
+### Fixed
+- **Docker image builds now complete reliably regardless of cached layer state.** The Prisma client is generated before `npm prune` runs, so the local `prisma@5` CLI is always used instead of `npx` downloading the incompatible v7 release.
+
 ## 1.4.2 - 2026-05-15
 
 ### Changed
