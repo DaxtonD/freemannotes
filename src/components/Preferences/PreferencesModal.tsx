@@ -7,6 +7,8 @@ import { NotificationsSection } from './NotificationsSection';
 import styles from './PreferencesModal.module.css';
 import aboutIconLightAsset from '../../../lighticon.png';
 import aboutIconDarkAsset from '../../../darkicon.png';
+import versionIconLightAsset from '../../../version-light.png';
+import versionIconDarkAsset from '../../../version.png';
 
 type ConnectionState = 'connected' | 'connecting' | 'offline';
 
@@ -101,8 +103,8 @@ type SectionModalProps = {
 const ABOUT_ICON_LIGHT = aboutIconLightAsset;
 const ABOUT_ICON_DARK = aboutIconDarkAsset;
 const ABOUT_WORDMARK = '/icons/freemannotes.png';
-const VERSION_ICON_LIGHT = '/icons/version-light.png';
-const VERSION_ICON_DARK = '/icons/version.png';
+const VERSION_ICON_LIGHT = versionIconLightAsset;
+const VERSION_ICON_DARK = versionIconDarkAsset;
 
 function formatBytes(bytes: number): string {
 	const value = Number(bytes || 0);
