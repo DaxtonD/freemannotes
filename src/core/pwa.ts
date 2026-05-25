@@ -367,9 +367,22 @@ export function initPwa(): void {
 
 	if ('serviceWorker' in navigator) {
 		navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+		// Capture whether there was already an active controller when the app
+		// started.  On a cold start (cleared cache), the controller is null here;
+		// the first controllerchange that fires is the SW claiming the fresh page
+		// via clients.claim() in its activate handler.  That claim does NOT need a
+		// reload — the page already loaded with the right assets.  We only need to
+		// reload when a *new* SW replaces an *old* one (skipWaiting path).
+		let hadControllerOnInit = Boolean(navigator.serviceWorker.controller);
 		navigator.serviceWorker.addEventListener('controllerchange', () => {
 			swAutoApplying = false;
 			swPendingApply = false;
+			if (!hadControllerOnInit) {
+				// First-install claim on a cold start: arm for future real updates
+				// and skip the reload that causes the double-load the user sees.
+				hadControllerOnInit = true;
+				return;
+			}
 			if (typeof window !== 'undefined') {
 				// Use replace() rather than reload() — more reliable on iOS standalone
 				// PWA where location.reload() can fail after a controller change.

@@ -80,3 +80,12 @@ export async function syncNoteLinks(docId: string, links: readonly ExtractedNote
 export async function listFailedNoteLinks(): Promise<FailedNoteLinkResponse> {
 	return fetchJson('/api/note-links/failures');
 }
+
+export type FlushOrphanedNoteLinkPreviewsResponse = {
+	removed: number;
+	checked: number;
+};
+
+export async function flushOrphanedNoteLinkPreviews(): Promise<FlushOrphanedNoteLinkPreviewsResponse> {
+	return fetchJson('/api/note-links/flush-orphaned', { method: 'POST' });
+}

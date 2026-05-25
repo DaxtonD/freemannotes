@@ -63,6 +63,7 @@
 	flex-direction: column;
 	gap: var(--grid-gap);
 	min-width: 0;
+	overflow-anchor: none;
 }
 
 .virtualColumn {
@@ -95,6 +96,7 @@
 	gap: 0;
 	width: 100%;
 	min-width: 0;
+	overflow-anchor: none;
 }
 
 .item {
@@ -102,10 +104,17 @@
 	min-width: var(--note-card-width);
 	max-width: var(--note-card-width);
 	position: relative;
+	overflow-anchor: none;
 }
 
 .itemOverlayActive {
 	z-index: 241;
+}
+
+.itemDropSettlingHidden {
+	opacity: 0;
+	visibility: hidden;
+	pointer-events: none;
 }
 
 /* ── Placeholder: the card stays in the grid to hold its space but is invisible.

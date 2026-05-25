@@ -28,6 +28,7 @@ import {
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { useI18n } from '../../core/i18n';
 import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
+import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import {
 	createRichTextDocFromPlainText,
 	getChecklistItemPlainText,
@@ -745,7 +746,14 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const handleDeletePreview = React.useCallback((normalizedUrl: string): void => {
 		if (!canEdit) return;
 		removeNotePreviewLinkFromDoc(props.doc, normalizedUrl);
-	}, [canEdit, props.doc]);
+		// Sync the deletion to the server so the DB record is soft-deleted and
+		// future loads don't resurrect the orphaned preview from the server cache.
+		void syncNoteLinksForDoc({
+			userId: props.authUserId,
+			docId: props.docId ?? '',
+			links: extractNoteLinksFromDoc(props.doc),
+		});
+	}, [canEdit, props.authUserId, props.doc, props.docId]);
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const [clampedById, setClampedById] = React.useState<Record<string, boolean>>({});
@@ -1318,7 +1326,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			window.removeEventListener('resize', scheduleMeasure);
 			viewport?.removeEventListener('resize', scheduleMeasure);
 		};
-	}, [requestChecklistLayoutRefresh, showCompleted, type]);
+	}, [requestChecklistLayoutRefresh, showCompleted, type, !!props.metaChips]);
 
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);
@@ -1347,6 +1355,14 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			void updateUserPreferences(getDeviceId(), {
 				noteCardCompletedExpandedPatch: { noteId: props.noteId, expanded: next },
 			});
+			if (typeof window !== 'undefined') {
+				window.dispatchEvent(new CustomEvent('freemannotes:checklist-toggle', {
+					detail: {
+						noteId: props.noteId,
+						expanded: next,
+					},
+				}));
+			}
 			requestChecklistLayoutRefresh();
 			return next;
 		});

@@ -41,14 +41,16 @@ import { buildNoteGroupSections } from '../../utilities/noteGrouping';
 import { measureDocumentRects } from './flip';
 import {
 	arraysEqual,
+	buildMasonryLayoutFromColumns,
 	flattenColumns,
 	getGridLayoutForViewport,
 	MOBILE_GRID_EDGE_MARGIN_PX,
 	mergeVisibleIdsIntoLayoutOrder,
 	mergeVisibleOrderIntoFullOrder,
 	readCssPxVariable,
-	splitIntoColumnsBySlotLengths,
+	type StableMasonryPlacementDecision,
 	splitIntoColumnsByHeight,
+	splitIntoColumnsByHeightAnchored,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
 import { VirtualizedNoteColumn } from './VirtualizedNoteColumn';
@@ -70,6 +72,34 @@ import {
 	writeWorkspaceRenderSnapshot,
 } from '../../core/workspaceRenderSnapshot';
 import styles from './NoteGrid.module.css';
+import {
+	debugColumnHeightsBefore,
+	debugChecklistToggle,
+	debugColumnAssignmentChanged,
+	debugColumnSwap,
+	debugDragCommit,
+	debugGridRender,
+	debugNotePlacementDecision,
+	debugLayoutInvalidation,
+	debugNoteHeightInvalidated,
+	debugNoteMeasure,
+	debugNotePositionAssigned,
+	debugNoteRender,
+	debugRebalanceDebounced,
+	debugRebalanceSkipped,
+	debugRebalanceSuppressed,
+	debugRepackEnd,
+	debugRepackReason,
+	debugRepackStart,
+	debugSiblingOrderChanged,
+	debugStableOrderOverride,
+	debugViewportStabilityOverride,
+	debugWorkspaceSwitch,
+	debugViewSwitch,
+	debugHeightVersionBump,
+	debugUpdateLiveState,
+} from './gridDebug';
+import { NoteGridDebugOverlay } from './NoteGridDebugOverlay';
 
 type Note = {
 	id: string;
@@ -239,6 +269,88 @@ function arraysEqualNumbers(a: readonly number[], b: readonly number[]): boolean
 	return true;
 }
 
+function collectViewportAnchorColumns(args: {
+	columns: readonly string[][];
+	grid: HTMLDivElement | null;
+	overscanPx: number;
+}): Map<string, number> {
+	const next = new Map<string, number>();
+	if (!args.grid || typeof window === 'undefined') return next;
+	const columnById = new Map<string, number>();
+	for (let columnIndex = 0; columnIndex < args.columns.length; columnIndex++) {
+		for (const noteId of args.columns[columnIndex] ?? []) {
+			columnById.set(noteId, columnIndex);
+		}
+	}
+	const viewportTop = -Math.max(0, args.overscanPx);
+	const viewportBottom = window.innerHeight + Math.max(0, args.overscanPx);
+	const mountedNodes = args.grid.querySelectorAll<HTMLElement>('[data-note-id]');
+	for (const node of mountedNodes) {
+		const noteId = node.dataset.noteId;
+		if (!noteId) continue;
+		const columnIndex = columnById.get(noteId);
+		if (columnIndex === undefined) continue;
+		const rect = node.getBoundingClientRect();
+		if (rect.bottom < viewportTop || rect.top > viewportBottom) continue;
+		next.set(noteId, columnIndex);
+	}
+	return next;
+}
+
+// Layout-calculation-based alternative to collectViewportAnchorColumns.
+// Uses a single getBoundingClientRect() on the grid container (which never
+// animates) plus computed note heights to determine visibility.  This is
+// accurate even when individual note DOM nodes are mid-animation — e.g. during
+// the settle phase after a drag-drop or checklist expand/collapse — where
+// querying each card's bounding rect would return transitioning values.
+function collectViewportAnchorColumnsFromLayout(args: {
+	columns: readonly string[][];
+	heightById: ReadonlyMap<string, number>;
+	fallbackHeightPx: number;
+	gapPx: number;
+	grid: HTMLDivElement | null;
+	overscanPx: number;
+}): Map<string, number> {
+	const next = new Map<string, number>();
+	if (!args.grid || typeof window === 'undefined') return next;
+	const gridTop = args.grid.getBoundingClientRect().top;
+	const viewportTop = -Math.max(0, args.overscanPx);
+	const viewportBottom = window.innerHeight + Math.max(0, args.overscanPx);
+	for (let columnIndex = 0; columnIndex < args.columns.length; columnIndex++) {
+		let y = 0;
+		for (const noteId of args.columns[columnIndex] ?? []) {
+			const height = args.heightById.get(noteId) ?? args.fallbackHeightPx;
+			const noteTop = gridTop + y;
+			const noteBottom = noteTop + height;
+			if (noteBottom >= viewportTop && noteTop <= viewportBottom) {
+				next.set(noteId, columnIndex);
+			}
+			y += height + args.gapPx;
+		}
+	}
+	return next;
+}
+
+function buildColumnById(columns: readonly string[][]): Map<string, number> {
+	const next = new Map<string, number>();
+	for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+		for (const noteId of columns[columnIndex] ?? []) {
+			next.set(noteId, columnIndex);
+		}
+	}
+	return next;
+}
+
+function buildSiblingIndexById(columns: readonly string[][]): Map<string, number> {
+	const next = new Map<string, number>();
+	for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+		for (let siblingIndex = 0; siblingIndex < (columns[columnIndex] ?? []).length; siblingIndex++) {
+			next.set(columns[columnIndex][siblingIndex], siblingIndex);
+		}
+	}
+	return next;
+}
+
 function getColumnVirtualOverscan(columnCount: number, isCoarsePointer: boolean): number {
 	if (isCoarsePointer) {
 		return columnCount <= 2 ? 6 : 5;
@@ -263,78 +375,131 @@ function readColumnSlots(layoutMap: Y.Map<unknown> | null, columnCount: number, 
 	return slots;
 }
 
-function rebalanceColumnsConstrained(args: {
+/**
+ * Simple, safe column rebalancer: on each pass, move only the bottom-most
+ * unlocked note of the tallest column to the shortest column.  Never touches
+ * mid-column notes, so mid-grid cards never jump unexpectedly.
+ *
+ * Used after drag-drop (unlocked tail notes migrate) and after checklist
+ * expand/collapse (only the last note of the expanded column may move).
+ * Transient height oscillations (framer-motion) bypass this entirely.
+ */
+function rebalanceBottomNote(args: {
 	columns: readonly string[][];
-	draggedId: string;
 	heightOf: (id: string) => number;
 	gapPx: number;
 	fallbackHeightPx: number;
+	lockedPrefixCounts?: readonly number[];
+	minSpreadPx?: number;
 	maxMoves?: number;
 }): string[][] {
-	const maxMoves = Math.max(0, args.maxMoves ?? 2);
-	const minSpreadPx = Math.max(48, Math.round(args.fallbackHeightPx * 0.45));
+	const maxMoves = Math.max(0, args.maxMoves ?? 3);
+	const minSpreadPx = Math.max(0, Math.round(args.minSpreadPx ?? Math.max(48, args.fallbackHeightPx * 0.45)));
+	const lockedPrefixCounts = (args.lockedPrefixCounts ?? []).map((count) => Math.max(0, Math.floor(count)));
 	let current = args.columns.map((col) => col.slice());
 
 	for (let moveCount = 0; moveCount < maxMoves; moveCount++) {
-		// Only consider adjacent-column moves. That trims obvious whitespace gaps after
-		// a drop without reintroducing the broad reshuffles the user wanted removed.
 		const currentHeights = computeColumnHeights(current, args.heightOf, args.gapPx);
 		const currentSpread = getHeightSpread(currentHeights);
 		if (currentSpread <= minSpreadPx) break;
 
-		let bestCandidate: {
-			columns: string[][];
-			spread: number;
-			pairImprovement: number;
-		} | null = null;
-
-		for (let columnIndex = 0; columnIndex < current.length - 1; columnIndex++) {
-			const leftHeight = currentHeights[columnIndex] ?? 0;
-			const rightHeight = currentHeights[columnIndex + 1] ?? 0;
-			const pairGap = Math.abs(leftHeight - rightHeight);
-			if (pairGap <= minSpreadPx) continue;
-
-			const fromIndex = leftHeight > rightHeight ? columnIndex : columnIndex + 1;
-			const toIndex = fromIndex === columnIndex ? columnIndex + 1 : columnIndex;
-			const sourceColumn = current[fromIndex] ?? [];
-			if (sourceColumn.length <= 1) continue;
-
-			let moveIndex = sourceColumn.length - 1;
-			while (moveIndex >= 0 && sourceColumn[moveIndex] === args.draggedId) {
-				moveIndex--;
-			}
-			if (moveIndex < 0) continue;
-
-			const nextColumns = current.map((col) => col.slice());
-			const [movedId] = nextColumns[fromIndex].splice(moveIndex, 1);
-			nextColumns[toIndex].push(movedId);
-
-			const nextHeights = computeColumnHeights(nextColumns, args.heightOf, args.gapPx);
-			const nextSpread = getHeightSpread(nextHeights);
-			const nextPairGap = Math.abs((nextHeights[columnIndex] ?? 0) - (nextHeights[columnIndex + 1] ?? 0));
-			const pairImprovement = pairGap - nextPairGap;
-
-			if (pairImprovement <= 0) continue;
-			if (nextSpread >= currentSpread) continue;
-
-			if (
-				!bestCandidate ||
-				nextSpread < bestCandidate.spread ||
-				(nextSpread === bestCandidate.spread && pairImprovement > bestCandidate.pairImprovement)
-			) {
-				bestCandidate = {
-					columns: nextColumns,
-					spread: nextSpread,
-					pairImprovement,
-				};
-			}
+		// Identify the single tallest and single shortest column.
+		let tallestIdx = 0;
+		let shortestIdx = 0;
+		for (let i = 1; i < current.length; i++) {
+			if ((currentHeights[i] ?? 0) > (currentHeights[tallestIdx] ?? 0)) tallestIdx = i;
+			if ((currentHeights[i] ?? 0) < (currentHeights[shortestIdx] ?? 0)) shortestIdx = i;
 		}
+		if (tallestIdx === shortestIdx) break;
 
-		if (!bestCandidate) break;
-		current = bestCandidate.columns;
+		// Only the absolute bottom-most unlocked note may migrate.
+		const tallestColumn = current[tallestIdx] ?? [];
+		const lockedCount = lockedPrefixCounts[tallestIdx] ?? 0;
+		const bottomIdx = tallestColumn.length - 1;
+		if (bottomIdx < lockedCount) break;
+
+		const nextColumns = current.map((col) => col.slice());
+		const [movedId] = nextColumns[tallestIdx].splice(bottomIdx, 1);
+		nextColumns[shortestIdx].push(movedId);
+
+		const nextHeights = computeColumnHeights(nextColumns, args.heightOf, args.gapPx);
+		const nextSpread = getHeightSpread(nextHeights);
+		// Only accept moves that strictly reduce the overall spread.
+		if (nextSpread >= currentSpread) break;
+
+		current = nextColumns;
 	}
 
 	return current;
+}
+
+function findNotePosition(columns: readonly string[][], noteId: string): { columnIndex: number; itemIndex: number } | null {
+	for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+		const itemIndex = (columns[columnIndex] ?? []).indexOf(noteId);
+		if (itemIndex >= 0) return { columnIndex, itemIndex };
+	}
+	return null;
+}
+
+function measureTailCutIndices(args: {
+	columns: readonly string[][];
+	changedNoteId: string;
+	getItemRect: (id: string) => DOMRect | null;
+	overscanPx: number;
+}): number[] {
+	const changedPosition = findNotePosition(args.columns, args.changedNoteId);
+	if (!changedPosition) return args.columns.map(() => 0);
+	const changedRect = args.getItemRect(args.changedNoteId);
+	const cutoffY = changedRect ? changedRect.bottom + Math.max(0, args.overscanPx) : null;
+	const fallbackCut = changedPosition.itemIndex + 1;
+
+	return args.columns.map((column) => {
+		let cut = Math.min(column.length, fallbackCut);
+		if (cutoffY === null) return cut;
+		for (let index = 0; index < column.length; index++) {
+			const rect = args.getItemRect(column[index]);
+			if (!rect) continue;
+			if (rect.top <= cutoffY) {
+				cut = Math.max(cut, index + 1);
+				continue;
+			}
+			break;
+		}
+		return Math.min(column.length, cut);
+	});
+}
+
+function packColumnsByHeightSeeded(args: {
+	ids: readonly string[];
+	columnCount: number;
+	initialHeights: readonly number[];
+	initialItemCounts: readonly number[];
+	heightOf: (id: string) => number;
+	gapPx: number;
+}): string[][] {
+	const cols = Math.max(1, args.columnCount);
+	const columns: string[][] = Array.from({ length: cols }, () => []);
+	const heights = Array.from({ length: cols }, (_, index) => args.initialHeights[index] ?? 0);
+	const seedCounts = Array.from({ length: cols }, (_, index) => args.initialItemCounts[index] ?? 0);
+
+	for (const id of args.ids) {
+		let bestColumn = 0;
+		let bestHeight = heights[0] ?? 0;
+		for (let index = 1; index < cols; index++) {
+			const nextHeight = heights[index] ?? 0;
+			if (nextHeight < bestHeight) {
+				bestHeight = nextHeight;
+				bestColumn = index;
+			}
+		}
+
+		columns[bestColumn].push(id);
+		const cardHeight = args.heightOf(id);
+		const hasExistingStack = seedCounts[bestColumn] > 0 || columns[bestColumn].length > 1;
+		heights[bestColumn] = bestHeight + cardHeight + (hasExistingStack ? args.gapPx : 0);
+	}
+
+	return columns;
 }
 
 export type NoteGridCollaboratorFilter = {
@@ -481,10 +646,15 @@ type GridNoteCardProps = {
 	preserveControlShell?: boolean;
 	isOverlayActiveCard?: boolean;
 	layoutReady: boolean;
+	dropSettling?: boolean;
+	hideDuringDropSettle?: boolean;
 	disablePositionLayout?: boolean;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 };
+
+const GRID_LAYOUT_TRANSITION = { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 } as const;
+const GRID_DROP_SETTLE_TRANSITION = { type: 'spring', stiffness: 430, damping: 36, mass: 1 } as const;
 
 const DragPreviewMarkup = React.memo(function DragPreviewMarkup(props: { markup: string }): React.JSX.Element {
 	return <div className={styles.dragPreviewMarkup} aria-hidden="true" dangerouslySetInnerHTML={{ __html: props.markup }} />;
@@ -722,6 +892,15 @@ function renderNoteMetaChips(args: {
 }
 
 const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps): React.JSX.Element {
+	React.useEffect(() => {
+		debugNoteRender(props.note.id, {
+			selected: props.selected,
+			layoutReady: props.layoutReady,
+			dropSettling: Boolean(props.dropSettling),
+			isPlaceholder: props.isPlaceholder,
+		});
+	});
+
 	const handleItemRef = React.useCallback(
 		(node: HTMLDivElement | null) => {
 			props.setItemElement(props.note.id, node);
@@ -744,12 +923,15 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 			initial={false}
 			transition={
 				props.layoutReady && !props.disablePositionLayout
-					? { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 }
+					? {
+						layout: props.dropSettling ? GRID_DROP_SETTLE_TRANSITION : GRID_LAYOUT_TRANSITION,
+					}
 					: { layout: { duration: 0 } }
 			}
 			className={[
 				styles.item,
 				props.isOverlayActiveCard ? styles.itemOverlayActive : '',
+				props.hideDuringDropSettle ? styles.itemDropSettlingHidden : '',
 				props.isPlaceholder ? styles.itemPlaceholder : '',
 			]
 				.filter(Boolean)
@@ -1074,21 +1256,28 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	});
 	const [noteHeightsVersion, setNoteHeightsVersion] = React.useState(0);
 	const latestNoteHeightsVersionRef = React.useRef(0);
-	// ── Sticky columns ───────────────────────────────────────────────────
-	// After a drag-and-drop commit, the balanced column layout is saved here
-	// so it persists across re-renders without being re-packed by height.
-	// Cleared when column count changes, card IDs change, or it falls back
-	// to packedColumns.  This prevents the "all cards shuffle" problem where
-	// greedy repacking rearranges cards that the user didn't move.
-	const [stickyColumns, setStickyColumns] = React.useState<string[][] | null>(null);
 	const pendingCommittedVisibleOrderRef = React.useRef<string[] | null>(null);
 	const appliedLayoutCacheKeyRef = React.useRef<string | null>(null);
 	const sectionRef = React.useRef<HTMLElement | null>(null);
+	// Tracks which checklist cards currently have their completed section open.
+	// Used to apply padding-bottom to the section only while any card is expanded.
+	const expandedChecklistNoteIdsRef = React.useRef<Set<string>>(new Set());
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
+	const viewportAnchorColumnsRef = React.useRef<Map<string, number>>(new Map());
+	const viewportAnchorSourceColumnsRef = React.useRef<string[][]>([]);
+	const settledColumnByIdRef = React.useRef<Map<string, number>>(new Map());
+	const settledSiblingIndexByIdRef = React.useRef<Map<string, number>>(new Map());
+	const settledColumnsRef = React.useRef<string[][]>([]);
+	const invalidatedNoteReasonsRef = React.useRef<Map<string, string>>(new Map());
+	const recentlyMovedNoteIdsRef = React.useRef<Set<string>>(new Set());
+	const expansionAffectedNoteIdsRef = React.useRef<Set<string>>(new Set());
+	const lastRebalanceSuppressionReasonRef = React.useRef<string | null>(null);
+	const repackReasonRef = React.useRef('initial-mount');
 	const noteHeightBumpRafRef = React.useRef<number>(0);
 	const noteCardLayoutRefreshRafRef = React.useRef<number>(0);
 	const layoutSnapshotHeightSeedKeyRef = React.useRef<string | null>(null);
+
 
 	// Seed height cache on first render from localStorage (before first pack)
 	if (!heightCacheLoadedRef.current) {
@@ -1208,6 +1397,21 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			setViewportLayoutSettled(false);
 			setLayoutReady(false);
 			setShimmerStalled(false);
+			// Clear stale column state from the previous workspace/view so
+			// renderedIds starts empty rather than briefly showing old note IDs.
+			setLayoutOrderIds([]);
+			viewportAnchorColumnsRef.current = new Map();
+			viewportAnchorSourceColumnsRef.current = [];
+			settledColumnByIdRef.current = new Map();
+			settledSiblingIndexByIdRef.current = new Map();
+			settledColumnsRef.current = [];
+			invalidatedNoteReasonsRef.current.clear();
+			recentlyMovedNoteIdsRef.current.clear();
+			expansionAffectedNoteIdsRef.current.clear();
+			lastRebalanceSuppressionReasonRef.current = null;
+			repackReasonRef.current = wsChanged ? 'workspace-change' : 'view-mode-change';
+			if (wsChanged) debugWorkspaceSwitch(prevVpWorkspaceRef.current, props.activeWorkspaceId);
+			if (vmChanged) debugViewSwitch(String(prevVpViewModeRef.current), String(props.viewMode));
 		}
 	}, [props.activeWorkspaceId, props.viewMode]);
 
@@ -1236,15 +1440,45 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
 		const handleNoteCardLayoutChange = (): void => {
-			if (noteCardLayoutRefreshRafRef.current) window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
+			if (!repackReasonRef.current.startsWith('checklist-')) {
+				repackReasonRef.current = 'note-card-layout-change';
+			}
+			if (noteCardLayoutRefreshRafRef.current) {
+				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
+				debugRebalanceDebounced('note-card-layout-refresh-already-scheduled', {
+					reason: repackReasonRef.current,
+				});
+			}
 			noteCardLayoutRefreshRafRef.current = window.requestAnimationFrame(() => {
 				noteCardLayoutRefreshRafRef.current = 0;
 				setNoteHeightsVersion((version) => version + 1);
 			});
 		};
+		const handleChecklistToggle = (event: Event): void => {
+			const detail = (event as CustomEvent<{ noteId?: string; expanded?: boolean }>).detail;
+			if (!detail?.noteId) return;
+			repackReasonRef.current = detail.expanded ? 'checklist-expand' : 'checklist-collapse';
+			expansionAffectedNoteIdsRef.current.add(detail.noteId);
+			invalidatedNoteReasonsRef.current.set(detail.noteId, repackReasonRef.current);
+			debugChecklistToggle(detail.noteId, Boolean(detail.expanded));
+			// Apply bottom padding while any checklist has its completed section
+			// open so expanding cards at the bottom of a column have room to grow
+			// downward without jumping the viewport.
+			if (detail.expanded) {
+				expandedChecklistNoteIdsRef.current.add(detail.noteId);
+			} else {
+				expandedChecklistNoteIdsRef.current.delete(detail.noteId);
+			}
+			const section = sectionRef.current;
+			if (section) {
+				section.style.paddingBottom = expandedChecklistNoteIdsRef.current.size > 0 ? '50vh' : '';
+			}
+		};
 		window.addEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
+		window.addEventListener('freemannotes:checklist-toggle', handleChecklistToggle as EventListener);
 		return () => {
 			window.removeEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
+			window.removeEventListener('freemannotes:checklist-toggle', handleChecklistToggle as EventListener);
 			if (noteCardLayoutRefreshRafRef.current) {
 				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
 				noteCardLayoutRefreshRafRef.current = 0;
@@ -1257,6 +1491,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [docsById]);
 
 	React.useEffect(() => {
+		if (latestNoteHeightsVersionRef.current !== noteHeightsVersion) {
+			debugHeightVersionBump(repackReasonRef.current, { noteHeightsVersion });
+		}
 		latestNoteHeightsVersionRef.current = noteHeightsVersion;
 	}, [noteHeightsVersion]);
 
@@ -1266,6 +1503,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			return;
 		}
 		if (noteHeightBumpRafRef.current) {
+			debugRebalanceDebounced('height-refresh-raf-already-scheduled', {
+				reason: repackReasonRef.current,
+			});
 			window.cancelAnimationFrame(noteHeightBumpRafRef.current);
 		}
 		noteHeightBumpRafRef.current = window.requestAnimationFrame(() => {
@@ -1297,7 +1537,27 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const handleMeasuredCardHeight = React.useCallback((noteId: string, height: number): void => {
 		const normalizedHeight = Math.max(0, Math.round(height));
 		if (!noteId || normalizedHeight <= 0) return;
-		if (noteHeightByIdRef.current.get(noteId) === normalizedHeight) return;
+		const previousMeasuredHeight = noteHeightByIdRef.current.get(noteId);
+		if (previousMeasuredHeight === normalizedHeight) return;
+		// Preserve higher-priority reasons set before the ResizeObserver fires.
+		// A checklist toggle or a max-card-height preference change sets the reason
+		// first; the ResizeObserver measurement arrives a tick later and must not
+		// downgrade the reason to 'measured-card-height' (which suppresses rebalancing).
+		const currentReason = repackReasonRef.current;
+		const isHighPriorityReason =
+			currentReason.startsWith('checklist-') ||
+			currentReason === 'max-card-height-change';
+		if (!isHighPriorityReason) {
+			repackReasonRef.current = previousMeasuredHeight === undefined ? 'initial-measurement' : 'measured-card-height';
+		}
+		invalidatedNoteReasonsRef.current.set(noteId, repackReasonRef.current);
+		debugNoteMeasure(noteId, normalizedHeight, previousMeasuredHeight);
+		debugNoteHeightInvalidated(
+			noteId,
+			normalizedHeight,
+			previousMeasuredHeight,
+			previousMeasuredHeight === undefined ? 'initial-measurement' : 'measured-card-height'
+		);
 		// ResizeObserver callbacks can land in bursts while images/fonts settle.
 		// Coalesce those updates so masonry only repacks once per animation frame.
 		noteHeightByIdRef.current.set(noteId, normalizedHeight);
@@ -1325,11 +1585,23 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const containerWidth = sectionRef.current?.clientWidth ?? window.innerWidth;
 		if (containerWidth <= 0) return;
 		const next = getGridLayoutForViewport(containerWidth, window.innerWidth, window.innerHeight);
+		if (
+			columnCount !== next.columnCount ||
+			mobileCardWidthPx !== next.mobileCardWidthPx ||
+			mobileGridGapPx !== next.mobileGapPx ||
+			mobileSectionBleedPx !== next.mobileSectionBleedPx
+		) {
+			repackReasonRef.current = 'viewport-width-change';
+			debugLayoutInvalidation('VIEWPORT_WIDTH_CHANGE', {
+				previousColumnCount: columnCount,
+				nextColumnCount: next.columnCount,
+			});
+		}
 		setColumnCount((previous) => (previous === next.columnCount ? previous : next.columnCount));
 		setMobileCardWidthPx((previous) => (previous === next.mobileCardWidthPx ? previous : next.mobileCardWidthPx));
 		setMobileGridGapPx((previous) => (previous === next.mobileGapPx ? previous : next.mobileGapPx));
 		setMobileSectionBleedPx((previous) => (previous === next.mobileSectionBleedPx ? previous : next.mobileSectionBleedPx));
-	}, [isGridVisible]);
+	}, [columnCount, isGridVisible, mobileCardWidthPx, mobileGridGapPx, mobileSectionBleedPx]);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -1601,24 +1873,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const commitVisibleOrder = React.useCallback(
 		(finalColumns: string[][], draggedId: string, draggedHeight: number) => {
 			if (!noteOrder) return;
-
-			const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
-			const heightOf = (id: string) => {
-				if (id === draggedId && draggedHeight > 0) return draggedHeight;
-				return noteHeightByIdRef.current.get(id) ?? getEstimatedNoteHeight(id);
-			};
-
-			// Row-major flatten of the constrained post-drop columns → canonical order for Yjs.
-			const committedColumns = rebalanceColumnsConstrained({
-				columns: finalColumns,
-				draggedId,
-				heightOf,
-				gapPx,
-				fallbackHeightPx: getEstimatedNoteHeight(draggedId),
-				maxMoves: 2,
-			});
-			const columnSlots = committedColumns.map((column) => column.length);
-			const readingOrder = flattenColumns(committedColumns);
+			const readingOrder = flattenColumns(finalColumns);
 			const pinnedVisibleIds = new Set(
 				visibleIds.filter((id) => noteSnapshotById.get(id)?.isPinned === true)
 			);
@@ -1628,24 +1883,47 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			];
 			pendingCommittedVisibleOrderRef.current = constrainedReadingOrder.slice();
 			setLayoutOrderIds((previous) => (arraysEqual(previous, constrainedReadingOrder) ? previous : constrainedReadingOrder));
-			// Preserve the committed drag result as stickyColumns so the local
-			// device sees the exact column layout from the drag.  Other
-			// devices re-pack from the Yjs canonical order with their own
-			// card heights.  When a remote update arrives, the flat-order
-			// comparison in baseColumns invalidates stale stickyColumns.
-			setStickyColumns(committedColumns);
-
-			if (noteLayout) {
-				const currentSlots = readColumnSlots(noteLayout, columnSlots.length, readingOrder.length) ?? [];
-				if (!arraysEqualNumbers(currentSlots, columnSlots)) {
-					const layoutDoc = (noteLayout as Y.Map<unknown> & { doc?: Y.Doc | null }).doc ?? null;
-					const applyLayout = (): void => {
-						noteLayout.set('columnSlots', columnSlots.slice());
-					};
-					if (layoutDoc) layoutDoc.transact(applyLayout);
-					else applyLayout();
+			repackReasonRef.current = 'drag-drop';
+			recentlyMovedNoteIdsRef.current = new Set([draggedId]);
+			invalidatedNoteReasonsRef.current.set(draggedId, 'drag-drop');
+			viewportAnchorSourceColumnsRef.current = finalColumns.map((column) => [...column]);
+			// Use layout-calculated positions rather than per-node getBoundingClientRect.
+			// At commit time the drag animation is still in flight; querying DOM nodes
+			// returns transitioning values that misidentify which notes are in the
+			// viewport, causing the post-drop repack to use wrong column anchors.
+			const commitOverscanPx = Math.max(24, Math.round(Math.max(draggedHeight, getEstimatedNoteHeight(draggedId)) * 0.2));
+			const committedViewportAnchors = collectViewportAnchorColumnsFromLayout({
+				columns: finalColumns,
+				heightById: noteHeightByIdRef.current,
+				fallbackHeightPx: 220,
+				gapPx: readCssPxVariable('--grid-gap', 16),
+				grid: gridRef.current,
+				overscanPx: commitOverscanPx,
+			});
+			const draggedPrevColumn = settledColumnByIdRef.current.get(draggedId) ?? null;
+			const draggedNewColumn = finalColumns.findIndex((col) => col.includes(draggedId));
+			const isSameColumnSwap = draggedPrevColumn !== null && draggedPrevColumn === draggedNewColumn;
+			// Lock ALL notes to their committed columns to prevent framer-motion's
+			// transient height oscillations during the drop animation from triggering
+			// greedy shortest-column moves.  finalColumns only covers the ~10 visible
+			// notes; seed from settledColumnByIdRef to also cover offscreen notes.
+			{
+				const fullAnchorMap = new Map<string, number>(settledColumnByIdRef.current);
+				for (let colIdx = 0; colIdx < finalColumns.length; colIdx++) {
+					for (const noteId of finalColumns[colIdx]) {
+						fullAnchorMap.set(noteId, colIdx);
+					}
 				}
+				viewportAnchorColumnsRef.current = fullAnchorMap;
 			}
+			debugDragCommit(draggedId, finalColumns.length, Math.max(0, draggedNewColumn));
+			debugLayoutInvalidation('DRAG_COMMIT_RESULT', {
+				draggedId,
+				isSameColumnSwap,
+				draggedPrevColumn,
+				draggedNewColumn: draggedNewColumn < 0 ? null : draggedNewColumn,
+				committedAnchorCount: viewportAnchorColumnsRef.current.size,
+			});
 
 			const current = readOrderIds(noteOrder);
 			const next = mergeVisibleOrderIntoFullOrder(current, visibleIds, constrainedReadingOrder);
@@ -1656,7 +1934,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				noteOrder.insert(0, next);
 			});
 		},
-		[getEstimatedNoteHeight, noteLayout, noteOrder, noteSnapshotById, visibleIds, mobileGridGapPx]
+		[getEstimatedNoteHeight, noteOrder, noteSnapshotById, visibleIds]
 	);
 
 	React.useLayoutEffect(() => {
@@ -1942,6 +2220,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [allDocsLoaded, initialDataSettleSignature]);
 
 	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
+	const renderedIdsSignature = React.useMemo(() => renderedIds.join('\u001f'), [renderedIds]);
 	const layoutMeasurementTargetIds = React.useMemo(
 		() => (isGridVisible && props.viewMode === 'card' ? renderedIds.slice(0, viewportCapacity) : renderedIds),
 		[isGridVisible, props.viewMode, renderedIds, viewportCapacity]
@@ -2004,7 +2283,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (startupDebugSnapshotRef.current === snapshot) return;
 		startupDebugSnapshotRef.current = snapshot;
 		const parsedSnapshot = JSON.parse(snapshot);
-		console.log('[note-grid-startup]', parsedSnapshot);
 		void logClientEvent('NOTE_GRID_STARTUP', parsedSnapshot);
 	}, [allDocsLoaded, connection.pendingNoteWsSync, connection.registryWsSynced, connection.state, docsById, initialDataSettled, initialLayoutSettled, isGridVisible, layoutMeasurementTargetIds.length, layoutReady, manager, measuredLayoutTargetCount, measuredRenderedCardCount, noteHeightsVersion, noteOrder, orderedIds, props.activeWorkspaceId, props.enableLayoutAnimations, props.viewMode, renderedIds, shimmerStalled, startupDebugEnabled, visibleIds, wsSyncJustFired]);
 	React.useEffect(() => {
@@ -2031,6 +2309,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		}
 
 		let cancelled = false;
+		// Do NOT clear viewportAnchorColumnsRef here. This effect re-fires on every
+		// noteHeightsVersion bump (e.g. after every drag-drop card remeasure), and
+		// clearing the anchor map at that point destroys the anchors set by
+		// commitVisibleOrder, leaving the post-drag repack with viewportAnchorCount=0
+		// and causing unrelated notes to change columns.  Anchors are cleared on
+		// workspace/view-mode change (line ~1419) which is the correct reset point.
 		const rafIds: number[] = [];
 		const baselineHeightVersion = latestNoteHeightsVersionRef.current;
 		const waitForStableFrames = (remainingFrames: number): void => {
@@ -2144,8 +2428,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				layoutReady,
 				initialLayoutSettled,
 			};
-			console.log('[note-grid-startup] onReady', readySnapshot);
-			void logClientEvent('NOTE_GRID_STARTUP_READY', readySnapshot);
+				void logClientEvent('NOTE_GRID_STARTUP_READY', readySnapshot);
 		}
 		readyNotifiedRef.current = true;
 		props.onReady?.();
@@ -2169,18 +2452,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			sortMode: props.sortMode,
 		});
 	}, [noteSnapshotById, props.sortGrouping, props.sortMode, renderedIds]);
-	const persistedColumnSlots = React.useMemo(
-		() => readColumnSlots(noteLayout, columnCount, renderedIds.length),
-		[noteLayout, columnCount, renderedIds.length, storeVersion]
-	);
-	const cachedColumnSlots = React.useMemo(() => {
-		if (!cachedLayoutSnapshot) return null;
-		if (cachedLayoutSnapshot.columnCount !== columnCount) return null;
-		if (cachedLayoutSnapshot.columnSlots.length !== columnCount) return null;
-		const cachedCount = cachedLayoutSnapshot.columnSlots.reduce((sum, count) => sum + count, 0);
-		if (cachedCount !== renderedIds.length) return null;
-		return cachedLayoutSnapshot.columnSlots;
-	}, [cachedLayoutSnapshot, columnCount, renderedIds.length]);
 	const noteById = React.useMemo(() => {
 		const map = new Map<string, Note>();
 		// Persist whether a card is a shared alias so downstream menu and drag logic
@@ -2203,53 +2474,145 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// count.  Different devices may compute different column assignments
 	// (because card heights vary across viewports), but the canonical order
 	// in Yjs is deterministic — each device simply packs from it locally.
-	// After a drag, the balanced result is preserved as stickyColumns so
-	// the dragging device sees an instant result; other devices re-pack
-	// from the updated Yjs order using their own heights.
-	const packedColumns = React.useMemo(() => {
+	const packedLayout = React.useMemo(() => {
 		void noteHeightsVersion;
 		const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 		const fallbackH = Math.min(props.maxCardHeightPx, 220);
-		return splitIntoColumnsByHeight(renderedIds, columnCount, packedHeightLookup, gapPx, fallbackH);
-	}, [renderedIds, columnCount, noteHeightsVersion, mobileGridGapPx, packedHeightLookup, props.maxCardHeightPx]);
-	const slottedColumns = React.useMemo(() => {
-		const effectiveColumnSlots = persistedColumnSlots ?? cachedColumnSlots;
-		if (!effectiveColumnSlots) return null;
-		return splitIntoColumnsBySlotLengths(renderedIds, effectiveColumnSlots);
-	}, [cachedColumnSlots, persistedColumnSlots, renderedIds]);
 
-	// ── Reconcile stickyColumns with current card IDs ─────────────────────
-	// stickyColumns preserves the column layout from the last drag so cards
-	// don't shuffle on re-render.  Cleared when column count changes, IDs
-	// change, or ORDER changes (remote Yjs update), falling back to
-	// height-based packing unless persisted slot lengths are available.
-	const baseColumns = React.useMemo(() => {
-		if (!stickyColumns || stickyColumns.length !== columnCount) return packedColumns;
-
-		// Verify stickyColumns still match current renderedIds AND order.
-		// flattenColumns is the inverse of dealIntoColumns, so if a remote
-		// update changed the order, the flat forms will diverge.
-		const stickyFlat = flattenColumns(stickyColumns);
-		if (!arraysEqual(stickyFlat, renderedIds)) {
-			return packedColumns;
+		// ── Anchor strategy ─────────────────────────────────────────────────
+		// STABLE repacks (height changes, expansion, framer-motion oscillations,
+		// same-width resize) must NEVER move notes between columns.  We lock
+		// every note to its last-settled column by using settledColumnByIdRef as
+		// the anchor map.  This covers ALL notes — not just the viewport-visible
+		// subset — eliminating the entire class of bugs where:
+		//   • framer-motion height oscillations cause greedy shortest-column jumps
+		//   • checklist expand/collapse reshuffles adjacent column notes
+		//   • swapping bottom notes forces top notes to repack (viewport scroll-down
+		//     left top notes unanchored so the rebalancer had a free prefix of zero)
+		//
+		// DYNAMIC repacks (explicit drag-drop, workspace/view-mode change,
+		// column-count change) use viewportAnchorColumnsRef as before so that
+		// drag commits apply their full-anchor map and structural resets pack freely.
+		const repackReason = repackReasonRef.current;
+		const isColumnCountChanged =
+			settledColumnsRef.current.length > 0 &&
+			settledColumnsRef.current.length !== columnCount;
+		const useSettledAnchors =
+			repackReason !== 'drag-drop' &&
+			repackReason !== 'workspace-change' &&
+			repackReason !== 'view-mode-change' &&
+			!isColumnCountChanged &&
+			settledColumnByIdRef.current.size > 0;
+		let anchoredColumnById: ReadonlyMap<string, number>;
+		if (useSettledAnchors) {
+			anchoredColumnById = settledColumnByIdRef.current;
+		} else {
+			anchoredColumnById = viewportAnchorColumnsRef.current;
+			// Recovery fallback: if viewport anchors were cleared (e.g. on first
+			// render before captureAnchors fires) reconstruct them from layout.
+			if (
+				props.viewMode === 'card' &&
+				anchoredColumnById.size === 0 &&
+				repackReason === 'measured-card-height' &&
+				gridRef.current
+			) {
+				const anchorSourceColumns = viewportAnchorSourceColumnsRef.current.length > 0
+					? viewportAnchorSourceColumnsRef.current
+					: settledColumnsRef.current;
+				if (anchorSourceColumns.length > 0) {
+					const recoveredAnchors = collectViewportAnchorColumns({
+						columns: anchorSourceColumns,
+						grid: gridRef.current,
+						overscanPx: Math.max(24, Math.round(fallbackH * 0.2)),
+					});
+					if (recoveredAnchors.size > 0) {
+						anchoredColumnById = recoveredAnchors;
+						viewportAnchorColumnsRef.current = recoveredAnchors;
+						debugLayoutInvalidation('VIEWPORT_ANCHOR_RECOVERY', {
+							reason: repackReason,
+							anchorCount: recoveredAnchors.size,
+						});
+					}
+				}
+			}
 		}
-
-		return stickyColumns;
-	}, [stickyColumns, packedColumns, renderedIds, columnCount]);
-	const resolvedBaseColumns = React.useMemo(() => {
-		if (stickyColumns && baseColumns === stickyColumns) return baseColumns;
-		if (slottedColumns && slottedColumns.length === columnCount) return slottedColumns;
-		return baseColumns;
-	}, [stickyColumns, baseColumns, slottedColumns, columnCount]);
+		const placementDecisions = new Map<string, StableMasonryPlacementDecision>();
+		const columns = splitIntoColumnsByHeightAnchored({
+			ids: renderedIds,
+			columnCount,
+			heightById: packedHeightLookup,
+			gapPx,
+			fallbackHeightPx: fallbackH,
+			anchoredColumnById,
+			preferredColumnById: settledColumnByIdRef.current,
+			preferredSiblingIndexById: settledSiblingIndexByIdRef.current,
+			onAssign: (decision) => {
+				placementDecisions.set(decision.noteId, decision);
+			},
+		});
+		// Bottom-note rebalancing: only the absolute bottom-most note of the
+		// tallest column may migrate to the shortest column, one move at a time.
+		// Mid-grid notes are never touched, preventing the "notes flying"
+		// symptom.  Transient height oscillations (framer-motion, image loads)
+		// are suppressed entirely to keep the grid visually stable.
+		if (columnCount > 1) {
+			const isChecklist = repackReason === 'checklist-expand' || repackReason === 'checklist-collapse';
+			const isPreferenceChange = repackReason === 'max-card-height-change';
+			// Suppress rebalancing for pure height fluctuations (framer-motion
+			// spring oscillations, measured-card-height events, content loads).
+			// useSettledAnchors is true for all such events; checklist events and
+			// max-card-height preference changes also set useSettledAnchors but
+			// intentionally deserve a bottom-note balancing pass.
+			const suppressRebalance = useSettledAnchors && !isChecklist && !isPreferenceChange;
+			if (!suppressRebalance) {
+				let lockedPrefixCounts: number[];
+				if (isChecklist || isPreferenceChange) {
+					// The packing step already locked every note via settledColumnByIdRef.
+					// Allow only the bottom-most note of each column to migrate so a
+					// checklist expand/collapse can trim trailing height imbalances
+					// without disturbing any mid-grid card positions.
+					lockedPrefixCounts = columns.map((col) => Math.max(0, col.length - 1));
+				} else {
+					// For drag-drop and structural repacks, lock the anchored prefix;
+					// only unlocked tail notes (off-screen or newly added) may move.
+					// Always cap at col.length-1 so the bottom-most note is never
+					// fully locked — even when all notes are in the anchor map (as
+					// drag-drop builds a full-coverage anchor map to suppress
+					// framer-motion oscillations during the drop animation).
+					// Without this cap the rebalancer bails immediately when every
+					// note is anchored (locked count === column length), producing
+					// the "600 px spread after drop, no balancing" bug.
+					lockedPrefixCounts = columns.map((col) => {
+						let count = 0;
+						while (count < col.length && anchoredColumnById.has(col[count])) {
+							count++;
+						}
+						return Math.min(count, Math.max(0, col.length - 1));
+					});
+				}
+				const rebalanced = rebalanceBottomNote({
+					columns,
+					heightOf: (id) => packedHeightLookup.get(id) ?? fallbackH,
+					gapPx,
+					fallbackHeightPx: fallbackH,
+					lockedPrefixCounts,
+					maxMoves: 3,
+				});
+				return {
+					columns: rebalanced,
+					placementDecisions,
+				};
+			}
+		}
+		return {
+			columns,
+			placementDecisions,
+		};
+	}, [renderedIds, columnCount, noteHeightsVersion, mobileGridGapPx, packedHeightLookup, props.maxCardHeightPx, props.viewMode]);
+	const packedColumns = packedLayout.columns;
+	const resolvedBaseColumns = packedColumns;
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
 	const dragColumns = React.useMemo(() => (isListLikeView ? [visibleIds] : resolvedBaseColumns), [isListLikeView, resolvedBaseColumns, visibleIds]);
-
-	// Clear stickyColumns when a full repack wins (e.g. height imbalance or column count change)
-	React.useEffect(() => {
-		if (stickyColumns && baseColumns === packedColumns) {
-			setStickyColumns(null);
-		}
-	}, [stickyColumns, baseColumns, packedColumns]);
 
 	// ── Wire up the drag manager ──────────────────────────────────────────
 	// Passes baseColumns as the starting column layout.  During drag, the
@@ -2269,44 +2632,224 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	});
 
 	React.useEffect(() => {
-		if (isGridVisible) return;
+		if (typeof window === 'undefined') return;
 		if (isListLikeView) return;
-		if (dragManager.activeDragId) return;
-		if (resolvedBaseColumns.length !== columnCount) return;
-		// When the card grid is hidden behind bubble/images views, keep the last
-		// resolved masonry columns sticky so hidden measurement passes cannot
-		// reshuffle the visible packing order.
-		const frozenColumns = resolvedBaseColumns.map((column) => column.slice());
-		setStickyColumns((previous) => {
-			if (previous && previous.length === frozenColumns.length) {
-				const previousFlat = flattenColumns(previous);
-				const nextFlat = flattenColumns(frozenColumns);
-				if (arraysEqual(previousFlat, nextFlat)) return previous;
-			}
-			return frozenColumns;
-		});
-	}, [columnCount, dragManager.activeDragId, isGridVisible, isListLikeView, resolvedBaseColumns]);
+		let rafId = 0;
+		const captureAnchors = (): void => {
+			if (dragManager.activeDragId) return;
+			// Don't overwrite anchors established at drag-commit (or by a prior scroll
+			// capture) while a repack triggered by that change is still settling.
+			// A RAF can fire between the drag-commit state update and the rebalance
+			// effect settling, and if the user has scrolled past all notes by then,
+			// the anchor map gets cleared — causing notes near the viewport to
+			// unexpectedly swap columns during the still-pending repack.
+			if (repackReasonRef.current !== 'settled') return;
+			viewportAnchorSourceColumnsRef.current = resolvedBaseColumns.map((column) => [...column]);
+			// Use the layout-calculated approach so the anchor map reflects computed
+			// final positions rather than DOM positions that may still be animating
+			// on the first RAF after a settle.
+			const fallbackH = Math.min(props.maxCardHeightPx, 220);
+			viewportAnchorColumnsRef.current = collectViewportAnchorColumnsFromLayout({
+				columns: resolvedBaseColumns,
+				heightById: noteHeightByIdRef.current,
+				fallbackHeightPx: fallbackH,
+				gapPx: readCssPxVariable('--grid-gap', 16),
+				grid: gridRef.current,
+				overscanPx: Math.max(24, Math.round(fallbackH * 0.2)),
+			});
+		};
+		const scheduleCapture = (): void => {
+			if (rafId) return;
+			rafId = window.requestAnimationFrame(() => {
+				rafId = 0;
+				captureAnchors();
+			});
+		};
+		scheduleCapture();
+		window.addEventListener('scroll', scheduleCapture, { passive: true });
+		window.addEventListener('resize', scheduleCapture);
+		return () => {
+			if (rafId) window.cancelAnimationFrame(rafId);
+			window.removeEventListener('scroll', scheduleCapture);
+			window.removeEventListener('resize', scheduleCapture);
+		};
+	}, [dragManager.activeDragId, isListLikeView, props.maxCardHeightPx, resolvedBaseColumns]);
 
 	React.useEffect(() => {
-		if (!isGridVisible) return;
-		if (isListLikeView) return;
-		if (dragManager.activeDragId) return;
-		if (!initialLayoutSettled) return;
-		if (resolvedBaseColumns.length !== columnCount) return;
-		// Once the visible masonry grid has settled, preserve the current column
-		// assignment so explicit card height changes (like completed-section expand/
-		// collapse) only move cards lower in those columns instead of re-running a
-		// full shortest-column pack that jumps visible cards across the screen.
-		const frozenColumns = resolvedBaseColumns.map((column) => column.slice());
-		setStickyColumns((previous) => {
-			if (previous && previous.length === frozenColumns.length) {
-				const previousFlat = flattenColumns(previous);
-				const nextFlat = flattenColumns(frozenColumns);
-				if (arraysEqual(previousFlat, nextFlat)) return previous;
+		if (isListLikeView) {
+			if (lastRebalanceSuppressionReasonRef.current !== 'list-like-view') {
+				lastRebalanceSuppressionReasonRef.current = 'list-like-view';
+				debugRebalanceSuppressed('list-like-view', { viewMode: props.viewMode });
 			}
-			return frozenColumns;
+			return;
+		}
+		if (dragManager.activeDragId) {
+			if (lastRebalanceSuppressionReasonRef.current !== 'active-drag') {
+				lastRebalanceSuppressionReasonRef.current = 'active-drag';
+				debugRebalanceSuppressed('active-drag', { draggedId: dragManager.activeDragId });
+			}
+			return;
+		}
+		lastRebalanceSuppressionReasonRef.current = null;
+		const reason = repackReasonRef.current;
+		const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
+		const fallbackH = Math.min(props.maxCardHeightPx, 220);
+		const columnWidth = mobileCardWidthPx ?? readCssPxVariable('--note-card-width', 280);
+		const previousColumns = settledColumnsRef.current;
+		const previousLayout = previousColumns.length > 0
+			? buildMasonryLayoutFromColumns({
+				columns: previousColumns,
+				columnWidth,
+				gapPx,
+				heightById: noteHeightByIdRef.current,
+				fallbackHeightPx: fallbackH,
+			})
+			: null;
+		const previousColumnSignature = previousColumns.map((column) => column.join('|')).join('||');
+		const nextColumnSignature = resolvedBaseColumns.map((column) => column.join('|')).join('||');
+		debugRepackReason(reason, {
+			viewportAnchorCount: viewportAnchorColumnsRef.current.size,
+			invalidatedCount: invalidatedNoteReasonsRef.current.size,
+			recentlyMovedCount: recentlyMovedNoteIdsRef.current.size,
 		});
-	}, [columnCount, dragManager.activeDragId, initialLayoutSettled, isGridVisible, isListLikeView, resolvedBaseColumns]);
+		debugColumnHeightsBefore(previousLayout?.columnHeights ?? [], { reason });
+		debugRepackStart(renderedIds.length, columnCount, reason);
+		const masonryLayout = buildMasonryLayoutFromColumns({
+			columns: resolvedBaseColumns,
+			columnWidth,
+			gapPx,
+			heightById: noteHeightByIdRef.current,
+			fallbackHeightPx: fallbackH,
+		});
+		if (previousColumnSignature === nextColumnSignature) {
+			debugRebalanceSkipped('layout-unchanged', {
+				reason,
+				columnCount,
+				viewportAnchorCount: viewportAnchorColumnsRef.current.size,
+			});
+		}
+		debugRepackEnd({
+			renderedCount: renderedIds.length,
+			columnCount,
+			columns: resolvedBaseColumns,
+			columnHeights: masonryLayout.columnHeights,
+			reason,
+			notePositions: masonryLayout.items.map((item) => ({
+				noteId: item.id,
+				measuredHeight: noteHeightByIdRef.current.get(item.id) ?? fallbackH,
+				assignedColumn: item.columnIndex,
+				assignedYPosition: item.y,
+			})),
+		});
+		const previousItemById = new Map((previousLayout?.items ?? []).map((item) => [item.id, item]));
+		const nextItemById = new Map(masonryLayout.items.map((item) => [item.id, item]));
+		const nextColumnById = buildColumnById(resolvedBaseColumns);
+		const nextSiblingIndexById = buildSiblingIndexById(resolvedBaseColumns);
+		const visibleIdSet = new Set(visibleIds);
+		for (const [noteId, decision] of packedLayout.placementDecisions) {
+			const previousColumn = settledColumnByIdRef.current.get(noteId) ?? null;
+			const previousSiblingIndex = settledSiblingIndexByIdRef.current.get(noteId) ?? null;
+			const newColumn = nextColumnById.get(noteId) ?? decision.assignedColumn;
+			const newSiblingIndex = nextSiblingIndexById.get(noteId) ?? decision.assignedSiblingIndex;
+			const previousItem = previousItemById.get(noteId) ?? null;
+			const nextItem = nextItemById.get(noteId) ?? null;
+			const lastInvalidationReason = invalidatedNoteReasonsRef.current.get(noteId) ?? null;
+			const isViewportAnchor = viewportAnchorColumnsRef.current.has(noteId);
+			const isRecentlyMoved = recentlyMovedNoteIdsRef.current.has(noteId);
+			const isAffectedByExpansion = expansionAffectedNoteIdsRef.current.has(noteId);
+			const isHeightChanged = lastInvalidationReason !== null && lastInvalidationReason !== 'drag-drop';
+			const isAllowedToReposition = !isViewportAnchor || isRecentlyMoved || isAffectedByExpansion || isHeightChanged;
+			const stabilityPriority = isViewportAnchor && !isAllowedToReposition
+				? 'anchor-locked'
+				: isRecentlyMoved
+					? 'dragged-note'
+					: isAffectedByExpansion
+						? 'expansion-affected'
+						: isHeightChanged
+							? 'height-affected'
+							: isViewportAnchor
+								? 'viewport-anchor'
+								: 'offscreen-free';
+			const placementPayload = {
+				noteId,
+				previousColumn,
+				newColumn,
+				previousSiblingIndex,
+				newSiblingIndex,
+				previousY: previousItem?.y ?? null,
+				nextY: nextItem?.y ?? null,
+				isVisible: visibleIdSet.has(noteId),
+				isViewportAnchor,
+				isRecentlyMoved,
+				isHeightChanged,
+				isAffectedByExpansion,
+				isAllowedToReposition,
+				stabilityPriority,
+				lastInvalidationReason,
+				columnHeightsAtDecision: [...decision.columnHeightsAtDecision],
+				assignedColumn: decision.assignedColumn,
+				assignedSiblingIndex: decision.assignedSiblingIndex,
+				previousColumnPreference: decision.preferredColumn,
+				previousSiblingPreference: decision.previousSiblingIndex,
+				anchoredColumn: decision.anchoredColumn,
+				shortestColumn: decision.shortestColumn,
+				shortestColumnHeight: decision.shortestColumnHeight,
+				preferredColumn: decision.preferredColumn,
+				preferredColumnHeight: decision.preferredColumnHeight,
+				stabilitySlackPx: decision.stabilitySlackPx,
+				measuredHeight: decision.measuredHeight,
+				reason: decision.reason,
+				viewportStabilityOverridden: decision.viewportStabilityOverridden,
+				stableOrderOverridden: decision.stableOrderOverridden,
+				tieBreakerOccurred: decision.tieBreakerOccurred,
+			};
+			debugNotePlacementDecision(placementPayload);
+			if (nextItem) {
+				debugNotePositionAssigned({
+					noteId,
+					columnIndex: newColumn,
+					siblingIndex: newSiblingIndex,
+					y: nextItem.y,
+					height: decision.measuredHeight,
+					previousY: previousItem?.y ?? null,
+					previousColumn,
+					previousSiblingIndex,
+				});
+			}
+			if (decision.viewportStabilityOverridden) {
+				debugViewportStabilityOverride(placementPayload);
+			}
+			if (decision.stableOrderOverridden) {
+				debugStableOrderOverride(placementPayload);
+			}
+			const logPayload = {
+				noteId,
+				previousColumn,
+				newColumn,
+				previousSiblingIndex,
+				newSiblingIndex,
+				measuredHeight: decision.measuredHeight,
+				reason: decision.reason,
+				preferredColumnHeight: decision.preferredColumnHeight,
+				shortestColumnHeight: decision.shortestColumnHeight,
+				stabilitySlackPx: decision.stabilitySlackPx,
+			};
+			if (previousColumn !== null && previousColumn !== newColumn) {
+				debugColumnAssignmentChanged(logPayload);
+				debugColumnSwap(placementPayload);
+			}
+			if (previousSiblingIndex !== null && previousSiblingIndex !== newSiblingIndex) {
+				debugSiblingOrderChanged(logPayload);
+			}
+		}
+		settledColumnsRef.current = resolvedBaseColumns.map((column) => [...column]);
+		settledColumnByIdRef.current = nextColumnById;
+		settledSiblingIndexByIdRef.current = nextSiblingIndexById;
+		invalidatedNoteReasonsRef.current.clear();
+		expansionAffectedNoteIdsRef.current.clear();
+		recentlyMovedNoteIdsRef.current.clear();
+		repackReasonRef.current = 'settled';
+	}, [columnCount, dragManager.activeDragId, isListLikeView, mobileCardWidthPx, mobileGridGapPx, packedLayout.placementDecisions, props.maxCardHeightPx, props.viewMode, renderedIds.length, resolvedBaseColumns, visibleIds]);
 
 	// ── Active columns for rendering ──────────────────────────────────────
 	// During drag, use previewColumns (with the card at the insertion point
@@ -2350,12 +2893,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			maxCardHeightPxInitializedRef.current = true;
 			return;
 		}
-		noteHeightByIdRef.current.clear();
+		// Keep the measured cache, but clamp it to the new cap. Clearing every
+		// height forces an immediate fallback-estimate pack that can re-freeze the
+		// old layout before live ResizeObserver measurements arrive.
+		for (const [noteId, measuredHeight] of noteHeightByIdRef.current) {
+			noteHeightByIdRef.current.set(noteId, Math.min(measuredHeight, props.maxCardHeightPx));
+		}
+		repackReasonRef.current = 'max-card-height-change';
 		setNoteHeightsVersion((v) => v + 1);
 	}, [props.maxCardHeightPx]);
 
 	// Persist a DOM snapshot of currently mounted cards for warm starts and
-	// cross-device column slot replay. Height updates themselves now come from
+	// local rect/height hydration. Height updates themselves now come from
 	// per-card ResizeObservers so virtualized columns can keep offscreen estimates.
 	React.useLayoutEffect(() => {
 		if (!isGridVisible) return;
@@ -2378,7 +2927,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				{
 					orderedIds: renderedIds.slice(),
 					columnCount,
-					columnSlots: columns.map((column) => column.length),
+					columnSlots: null,
 					rects: renderedIds.flatMap((id) => {
 						const rect = documentRects.get(id);
 						if (!rect) return [];
@@ -2395,8 +2944,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		}
 	}, [columnCount, columns, dragManager.activeDragId, initialLayoutSettled, isGridVisible, isListLikeView, layoutDensityKey, layoutDeviceType, layoutViewportBucket, noteHeightsVersion, props.activeWorkspaceId, props.viewMode, renderedIds]);
 
-	const activeDoc = dragManager.activeDragId ? docsById[dragManager.activeDragId] : undefined;
-	const activeNote = dragManager.activeDragId ? noteById.get(dragManager.activeDragId) : undefined;
+	const activeOverlayId = dragManager.activeDragId ?? dragManager.dropOverlay?.id ?? null;
+	const activeDoc = activeOverlayId ? docsById[activeOverlayId] : undefined;
+	const activeNote = activeOverlayId ? noteById.get(activeOverlayId) : undefined;
 	const activeHasPendingSync = activeNote ? pendingSyncNoteIds.has(activeNote.id) : false;
 	const activePlacement = activeNote ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === activeNote.id) : undefined;
 	const activeDocId = activeNote ? activePlacement?.roomId || resolveMediaDocId(activeNote.id) : undefined;
@@ -2427,14 +2977,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [activeDoc, activeNote, props.viewMode]);
 	const [dragPreviewMarkup, setDragPreviewMarkup] = React.useState('');
 	React.useLayoutEffect(() => {
-		if (!dragManager.activeDragId || isListLikeView) {
+		const previewNoteId = dragManager.activeDragId ?? dragManager.dropOverlay?.id ?? null;
+		if (!previewNoteId || isListLikeView) {
 			setDragPreviewMarkup('');
 			return;
 		}
-		const itemElement = dragManager.getItemElement(dragManager.activeDragId);
+		const itemElement = dragManager.getItemElement(previewNoteId);
 		const contentElement = itemElement?.querySelector<HTMLElement>('[data-note-content="true"]') ?? null;
 		setDragPreviewMarkup(contentElement?.innerHTML ?? '');
-	}, [dragManager, dragManager.activeDragId, isListLikeView]);
+	}, [dragManager, dragManager.activeDragId, dragManager.dropOverlay?.id, isListLikeView]);
 	const activeCollaboratorSummary = activeNote ? collaboratorSummariesByNoteId[activeNote.id] ?? null : null;
 	const moreMenuDoc = moreMenuNoteId ? docsById[moreMenuNoteId] : undefined;
 	const moreMenuPlacement = moreMenuNoteId ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === moreMenuNoteId) : undefined;
@@ -2599,6 +3150,54 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return { top, left, width: overlayWidth };
 	}, [isCoarsePointer, openMetadataChip]);
 	const cardPositionAnimationsReady = layoutReady && startupLayoutAnimationsReady;
+	const isDropSettling = Boolean(dragManager.dropOverlay) && !dragManager.activeDragId;
+	const dropSettlingOverlayTarget = isDropSettling ? dragManager.dropOverlay?.settleTo ?? null : null;
+	const dropSettlingNoteId = isDropSettling ? dragManager.dropOverlay?.id ?? null : null;
+	const debugCurrentColumnHeights = React.useMemo(() => {
+		const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
+		const fallbackH = Math.min(props.maxCardHeightPx, 220);
+		return resolvedBaseColumns.map((column) => column.reduce((total, id, index) => (
+			total + (noteHeightByIdRef.current.get(id) ?? fallbackH) + (index > 0 ? gapPx : 0)
+		), 0));
+	}, [mobileGridGapPx, props.maxCardHeightPx, resolvedBaseColumns, noteHeightsVersion]);
+
+	React.useEffect(() => {
+		debugGridRender({
+			renderedCount: renderedIds.length,
+			columnCount,
+			activeDragId: dragManager.activeDragId,
+			isDropSettling,
+		});
+		debugUpdateLiveState({
+			scrollY: typeof window !== 'undefined' ? window.scrollY : 0,
+			activeDragId: dragManager.activeDragId,
+			stickyColumnSizes: null,
+			resolvedBaseColumnSizes: resolvedBaseColumns.map((column) => column.length),
+			columnHeights: debugCurrentColumnHeights,
+			renderedCount: renderedIds.length,
+			columnCount,
+			initialLayoutSettled,
+			noteHeightsVersion,
+			isGridVisible,
+			workspaceId: props.activeWorkspaceId ?? null,
+			isDropSettling,
+			dropSettlingNoteId,
+			cardPositionAnimationsReady,
+			activeViewportAnchorIds: Array.from(viewportAnchorColumnsRef.current.keys()),
+			activeInvalidations: Array.from(invalidatedNoteReasonsRef.current.entries()).map(([noteId, reason]) => ({
+				noteId,
+				reason,
+				updatedAt: Date.now(),
+				height: noteHeightByIdRef.current.get(noteId) ?? null,
+			})),
+			activeAnimations: [
+				cardPositionAnimationsReady ? 'card-position' : '',
+				isDropSettling ? 'drop-settle' : '',
+				dragManager.activeDragId ? 'drag-active' : '',
+			].filter(Boolean),
+			lastRepackReason: repackReasonRef.current,
+		});
+	});
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
@@ -2709,7 +3308,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				isTrashView={isTrashView}
 				initialLinkRecords={initialLinkRecords}
 				preserveControlShell={isSnapshotCard}
-				disablePositionLayout={noteType === 'checklist'}
+				dropSettling={isDropSettling}
 				// In trash view, opening is suppressed and restore is wired instead.
 				onOpen={!isTrashView ? () => {
 					if (moreMenuNoteId) return;
@@ -2740,11 +3339,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				isPlaceholder={isPlaceholder}
 				isOverlayActiveCard={overlayActiveNoteId === note.id}
 				layoutReady={cardPositionAnimationsReady}
+				hideDuringDropSettle={dropSettlingNoteId === note.id}
 				setItemElement={dragManager.setItemElement}
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.setHandleElement, dragManager.setItemElement, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -3060,7 +3660,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 													onItemHeightChange={handleMeasuredCardHeight}
 													gapPx={groupedGapPx}
 													overscan={columnVirtualOverscan}
-													enabled={!dragManager.activeDragId}
+													enabled={true}
 												/>
 											</div>
 										))}
@@ -3078,24 +3678,55 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									onItemHeightChange={handleMeasuredCardHeight}
 									gapPx={groupedGapPx}
 									overscan={columnVirtualOverscan}
-									enabled={!dragManager.activeDragId}
+									enabled={true}
 								/>
 							</div>
 						))}
 				</div>
 			</LayoutGroup>
 			) : null}
-			{dragManager.dragOverlay && activeNote && activeDoc ? (
-				<div
+			{(dragManager.dragOverlay || dragManager.dropOverlay) && activeNote && activeDoc ? (
+				(() => {
+					const overlayRect = dragManager.dragOverlay ?? dragManager.dropOverlay;
+					if (!overlayRect) return null;
+					const dragPreviewAnimate = { opacity: 0.92, scale: 1.012, y: -2 } as const;
+					const dropOverlayAnimate = isDropSettling
+						? (dropSettlingOverlayTarget
+							? {
+								left: dropSettlingOverlayTarget.left,
+								top: dropSettlingOverlayTarget.top,
+								width: dropSettlingOverlayTarget.width,
+								height: dropSettlingOverlayTarget.height,
+								opacity: 1,
+								scale: 1,
+								y: 0,
+							}
+							: { opacity: 0, scale: 1, y: 0 })
+						: dragPreviewAnimate;
+					const dropOverlayTransition = isDropSettling
+						? (dropSettlingOverlayTarget
+							? {
+								type: 'spring',
+								stiffness: 430,
+								damping: 36,
+								mass: 1,
+							}
+							: { duration: 0.28, ease: [0.22, 1, 0.36, 1] })
+						: undefined;
+					return (
+				<motion.div
 					className={`${styles.item} ${styles.dragPreview}`}
 					style={{
-						left: dragManager.dragOverlay.left,
-						top: dragManager.dragOverlay.top,
-						width: dragManager.dragOverlay.width,
-						minWidth: dragManager.dragOverlay.width,
-						maxWidth: dragManager.dragOverlay.width,
-						height: dragManager.dragOverlay.height,
+						left: overlayRect.left,
+						top: overlayRect.top,
+						width: overlayRect.width,
+						minWidth: overlayRect.width,
+						maxWidth: overlayRect.width,
+						height: overlayRect.height,
 					}}
+					initial={false}
+					animate={dropOverlayAnimate}
+					transition={dropOverlayTransition}
 				>
 					{props.viewMode === 'list' || props.viewMode === 'strip' ? (
 						<div className={styles.listDragGhost} style={getNoteColorVars(activeNote.id, activeDoc, props.themeId)}>
@@ -3165,7 +3796,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							/>
 						)
 					)}
-				</div>
+				</motion.div>
+					);
+				})()
 			) : null}
 			{typeof document !== 'undefined'
 				? createPortal(
@@ -3450,6 +4083,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						void manager.trashNote(noteId);
 					}}
 				/>
+			) : null}
+			{process.env.NODE_ENV !== 'production' ? (
+				<NoteGridDebugOverlay columns={columns} noteHeightByIdRef={noteHeightByIdRef} />
 			) : null}
 		</section>
 	);

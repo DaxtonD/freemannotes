@@ -6,6 +6,7 @@ import { autoScrollForElements, autoScrollWindowForElements } from '@atlaskit/pr
 import { createPointerEdgeAutoScroller, getClosestVerticalScrollContainer } from './autoScroll';
 import { isTouchDragPolyfillActive } from '../../core/touchDragPolyfill';
 import { arraysEqual, findInsertionPoint, insertIntoColumns } from './layout';
+import { debugDragEnd, debugDragStart } from './gridDebug';
 
 type DragOverlayState = {
 	id: string;
@@ -13,6 +14,12 @@ type DragOverlayState = {
 	top: number;
 	width: number;
 	height: number;
+	settleTo?: {
+		left: number;
+		top: number;
+		width: number;
+		height: number;
+	} | null;
 };
 
 type InsertionPoint = { column: number; index: number };
@@ -188,6 +195,16 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		return itemElementsRef.current.get(id)?.getBoundingClientRect() ?? null;
 	}, []);
 
+	/**
+	 * Returns the live DOMRect for a column container element.
+	 * The grid element holds one direct child per column; we index into
+	 * grid.children to get the column element and read its bounding rect.
+	 *
+	 * This is passed into findInsertionPoint as getColumnRect and is used
+	 * for both column-selection (horizontal) and viewport-bias (cross-column
+	 * vertical) calculations. Reads happen during the pointer-move handler so
+	 * rect values are always current (not cached).
+	 */
 	const getColumnRect = React.useCallback((columnIndex: number): DOMRect | null => {
 		const grid = args.gridRef.current;
 		if (!grid) return null;
@@ -195,40 +212,90 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		return colEl?.getBoundingClientRect() ?? null;
 	}, [args.gridRef]);
 
+	/**
+	 * Returns the top and bottom of the grid scroll container (sectionRef).
+	 * Used by findInsertionPoint to compute the visibility-biased midpoint for
+	 * destination cards that are partially clipped near the grid's edges.
+	 *
+	 * Only called during cross-column drags; returns null if the section
+	 * element is unavailable (treated as "no bias" by getVisibilityBiasedMidY).
+	 */
+	const getViewportRect = React.useCallback((): Pick<DOMRect, 'top' | 'bottom'> | null => {
+		return args.sectionRef.current?.getBoundingClientRect() ?? null;
+	}, [args.sectionRef]);
+
+	/**
+	 * Core hit-test function called on every pointer-move during a drag.
+	 *
+	 * WHAT IT COMPUTES:
+	 *   ghostTopY / ghostBottomY  — the vertical extent of the visual ghost
+	 *     overlay.  Derived from the live pointer minus the initial grab offset
+	 *     (pointerOffsetRef), so the ghost always tracks where the user's
+	 *     finger grabbed the card header.
+	 *
+	 *   dragAnchorX / dragAnchorY — the raw pointer position (pointer.clientX,
+	 *     pointer.clientY). Passed directly as the drag anchor for cross-column
+	 *     targeting.  NOT adjusted by pointerOffset.
+	 *
+	 * WHY THE SPLIT:
+	 *   Same-column ordering uses ghostTopY / ghostBottomY so it keeps the
+	 *   proven "leading-edge crosses neighbour midpoint" feel.
+	 *
+	 *   Cross-column ordering uses the raw anchor point so the destination
+	 *   column behaves like a simple vertical list driven by the finger position
+	 *   and is completely independent of the dragged card's height. See the
+	 *   design notes in findInsertionPoint (layout.ts) for the full rationale.
+	 *
+	 * COOLDOWN:
+	 *   insertionCooldownRef guards against running a new hit-test within
+	 *   insertionSettleMsRef.current ms of the last insertion-point change.
+	 *   framer-motion's spring animation transiently displaces card rects during
+	 *   those ~280 ms; re-running the test against mid-animation positions
+	 *   causes the insertion point to flicker back to its previous value
+	 *   ("oscillation"). The cooldown prevents that without any extra geometric
+	 *   logic inside findInsertionPoint itself.
+	 */
 	const updateInsertionPoint = React.useCallback(
 		(pointer: PointerInput): void => {
 			const activeId = activeDragIdRef.current;
 			if (!activeId) return;
-			// After an insertion change, skip recalculation so framer-motion's
-			// spring animation settles before rect reads are trusted again.
+			// Cooldown: skip while framer-motion is still animating card positions
+			// after the last insertion-point change (prevents rect-read oscillation).
 			if (Date.now() < insertionCooldownRef.current) return;
-			// Use the ghost center for horizontal column detection so crossing
-			// columns follows the same visual rule as vertical insertion: the
-			// dragged card itself, not the original grab point, determines when
-			// neighboring cards shift.
+
+			// Ghost overlay bounds — used only by the same-column leading-edge test.
 			const ghostTopY = pointer.clientY - pointerOffsetRef.current.y;
 			const ghostBottomY = ghostTopY + previewSizeRef.current.height;
-			const ghostCenterX = pointer.clientX - pointerOffsetRef.current.x + previewSizeRef.current.width / 2;
+
+			// dragAnchorX / dragAnchorY are the raw pointer coords passed straight
+			// through to findInsertionPoint for cross-column column detection and
+			// cross-column row insertion. They are NOT offset-adjusted because the
+			// anchor represents "where the user's finger is", not "where the card
+			// top-left is".
 			const ip = findInsertionPoint(
 				columnsRef.current,
 				activeId,
 				ghostTopY,
 				ghostBottomY,
-				ghostCenterX,
+				pointer.clientX,    // drag anchor X: raw pointer, not ghost left edge
+				pointer.clientY,    // drag anchor Y: raw pointer, not ghost top edge
 				getRectForId,
-				getColumnRect
+				getColumnRect,
+				getViewportRect
 			);
 			if (!ip) return;
 			const prev = insertionPointRef.current;
+			// No-op if the resolved insertion point hasn't changed.
 			if (prev && prev.column === ip.column && prev.index === ip.index) return;
 			insertionPointRef.current = ip;
-			// Keep a short settle window after each insertion-point change so
-			// intermediate layout reads do not bounce the preview backward.
-			// List/strip rows can use a much shorter window than masonry cards.
+			// Arm the cooldown before triggering the React state update so the
+			// next pointer-move event that arrives during framer-motion's spring
+			// is skipped. insertionSettleMs defaults to 280 ms (masonry spring
+			// duration); list views can pass a shorter value.
 			insertionCooldownRef.current = Date.now() + Math.max(0, insertionSettleMsRef.current);
 			setInsertionPoint({ column: ip.column, index: ip.index });
 		},
-		[getRectForId, getColumnRect]
+		[getRectForId, getColumnRect, getViewportRect]
 	);
 
 	const computeOverlayTop = React.useCallback((pointer: PointerInput): number => {
@@ -398,6 +465,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					top: overlayTop,
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
+					settleTo: null,
 				});
 				dragOverlayRef.current = {
 					id: activeId,
@@ -405,7 +473,9 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					top: overlayTop,
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
+					settleTo: null,
 				};
+				debugDragStart(activeId);
 				if (usePointerEdgeAutoScrollRef.current) {
 					edgeAutoScroller.start();
 				}
@@ -424,6 +494,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					top: overlayTop,
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
+					settleTo: null,
 				});
 				dragOverlayRef.current = {
 					id: activeId,
@@ -431,6 +502,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					top: overlayTop,
 					width: previewSizeRef.current.width,
 					height: previewSizeRef.current.height,
+					settleTo: null,
 				};
 				updateInsertionPoint(pointer);
 			},
@@ -438,6 +510,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				edgeAutoScroller.stop();
 				const activeId = activeDragIdRef.current;
 				const ip = insertionPointRef.current;
+				if (activeId) debugDragEnd(activeId);
 
 				if (!activeId || !ip) {
 					finalizeTouchDrop();
@@ -464,21 +537,35 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				}
 
 				const draggedElement = itemElementsRef.current.get(activeId);
+				const dropTargetRect = draggedElement?.getBoundingClientRect() ?? null;
 				const draggedHeight = Math.max(
 					0,
 					Math.round(draggedElement?.getBoundingClientRect().height ?? previewSizeRef.current.height)
 				);
-				const settledOverlay = dragOverlayRef.current;
+				const settledOverlay = dragOverlayRef.current
+					? {
+						...dragOverlayRef.current,
+						settleTo: dropTargetRect && dropTargetRect.width > 0 && dropTargetRect.height > 0
+							? {
+								left: dropTargetRect.left,
+								top: dropTargetRect.top,
+								width: dropTargetRect.width,
+								height: dropTargetRect.height,
+							}
+							: null,
+					}
+					: null;
 				if (settledOverlay) {
 					// Keep a short-lived overlay alive after drop so the released card can
-					// settle visually while the committed layout re-renders underneath it.
+					// animate directly into the already-shifted placeholder slot instead of
+					// vanishing while the committed layout re-renders underneath it.
 					setDropOverlay(settledOverlay);
 					if (typeof window !== 'undefined') {
 						if (dropOverlayTimerRef.current) window.clearTimeout(dropOverlayTimerRef.current);
 						dropOverlayTimerRef.current = window.setTimeout(() => {
 							dropOverlayTimerRef.current = 0;
 							setDropOverlay(null);
-						}, 220);
+						}, 280);
 					}
 				}
 				onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
