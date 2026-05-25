@@ -111,6 +111,12 @@ import {
 	updateSharedNotePlacementMetadata,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
+import {
+	cacheSharedNotePlacements,
+	patchCachedSharedNotePlacement,
+	readCachedSharedNotePlacements,
+	readCachedSharedNotePlacementsForWorkspace,
+} from './core/noteSharePlacementStore';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, getNotePreviewLinksFromDoc, removeNotePreviewLinkFromDoc } from './core/noteLinks';
 import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
 import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkApi';
@@ -1152,6 +1158,10 @@ export function App(): React.JSX.Element {
 	// activeWorkspaceSharedPlacements holds ONLY the placements for the currently active
 	// workspace. Used by visibleSharedPlacements so personal-workspace shared notes appear.
 	const [activeWorkspaceSharedPlacements, setActiveWorkspaceSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
+	const sharedPlacementsRef = React.useRef<readonly SharedNotePlacement[]>(sharedPlacements);
+	sharedPlacementsRef.current = sharedPlacements;
+	const activeWorkspaceSharedPlacementsRef = React.useRef<readonly SharedNotePlacement[]>(activeWorkspaceSharedPlacements);
+	activeWorkspaceSharedPlacementsRef.current = activeWorkspaceSharedPlacements;
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
@@ -4321,7 +4331,10 @@ export function App(): React.JSX.Element {
 		});
 		setSharedPlacements((current) => applyPatch(current));
 		setActiveWorkspaceSharedPlacements((current) => applyPatch(current));
-	}, []);
+		if (authUserId) {
+			void patchCachedSharedNotePlacement(authUserId, placementId, patch).catch(() => undefined);
+		}
+	}, [authUserId]);
 
 	const saveSharedPlacementMetadata = React.useCallback(async (placement: SharedNotePlacement, patch: { collectionId?: string | null; labelIds?: readonly string[] }): Promise<void> => {
 		const previousCollectionId = placement.collectionId;
@@ -4713,6 +4726,21 @@ export function App(): React.JSX.Element {
 			return;
 		}
 		const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+		if (authUserId) {
+			// Seed from IndexedDB first so Shared With Me behaves like the rest of the
+			// offline-first workspace shell, then let the network refresh replace it.
+			const [cachedAllPlacements, cachedActivePlacements] = await Promise.all([
+				readCachedSharedNotePlacements(authUserId).catch(() => [] as SharedNotePlacement[]),
+				authWorkspaceId
+					? readCachedSharedNotePlacementsForWorkspace(authUserId, authWorkspaceId).catch(() => [] as SharedNotePlacement[])
+					: Promise.resolve([] as SharedNotePlacement[]),
+			]);
+			setSharedPlacements(cachedAllPlacements);
+			setActiveWorkspaceSharedPlacements(cachedActivePlacements);
+			manager.setExternalRoomAliases(Object.fromEntries(cachedAllPlacements.map((placement) => [placement.aliasId, placement.roomId])));
+		}
+		const lastKnownSharedPlacements = sharedPlacementsRef.current;
+		const lastKnownActiveWorkspacePlacements = activeWorkspaceSharedPlacementsRef.current;
 		if (!offline) {
 			try {
 				await flushPendingCollaboratorActions(authUserId);
@@ -4756,10 +4784,20 @@ export function App(): React.JSX.Element {
 					.filter((ws) => ws.systemKind === 'SHARED_WITH_ME' && ws.id !== authWorkspaceId)
 					.map((ws) => ws.id);
 			}
-			const extraPlacementsResults: SharedNotePlacement[] = sharedWithMeWsIds.length > 0
-				? (await Promise.all(sharedWithMeWsIds.map((id) => listSharedNotePlacements(id).catch(() => ({ placements: [] as SharedNotePlacement[] }))))).flatMap((r) => r.placements)
+			const extraPlacementEntries = sharedWithMeWsIds.length > 0
+				? await Promise.all(sharedWithMeWsIds.map(async (id) => ({
+					workspaceId: id,
+					placements: (await listSharedNotePlacements(id).catch(() => ({ placements: [] as SharedNotePlacement[] }))).placements,
+				})))
 				: [];
-			const allPlacements: SharedNotePlacement[] = [...placementData.placements, ...extraPlacementsResults];
+			const extraPlacementsResults: SharedNotePlacement[] = extraPlacementEntries.flatMap((entry) => entry.placements);
+			const fetchedAllPlacements: SharedNotePlacement[] = [...placementData.placements, ...extraPlacementsResults];
+			const resolvedAllPlacements = offline && fetchedAllPlacements.length === 0 && lastKnownSharedPlacements.length > 0
+				? lastKnownSharedPlacements
+				: fetchedAllPlacements;
+			const resolvedActiveWorkspacePlacements = offline && placementData.placements.length === 0 && lastKnownActiveWorkspacePlacements.length > 0
+				? lastKnownActiveWorkspacePlacements
+				: placementData.placements;
 
 			// Filter out failures the user has already dismissed so they don't
 			// re-appear on every metadata event refresh.
@@ -4775,9 +4813,19 @@ export function App(): React.JSX.Element {
 			// Store ALL placements (active workspace + every other SHARED_WITH_ME workspace)
 			// so that lookups and alias registration work for bubbles from any workspace.
 			// visibleSharedPlacements filters what the NoteGrid actually displays.
-			setSharedPlacements(allPlacements);
-			setActiveWorkspaceSharedPlacements(placementData.placements);
-			manager.setExternalRoomAliases(Object.fromEntries(allPlacements.map((placement) => [placement.aliasId, placement.roomId])));
+			setSharedPlacements(resolvedAllPlacements);
+			setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
+			manager.setExternalRoomAliases(Object.fromEntries(resolvedAllPlacements.map((placement) => [placement.aliasId, placement.roomId])));
+			if (authUserId) {
+				const workspacePlacementWrites: Promise<void>[] = [];
+				if (authWorkspaceId) {
+					workspacePlacementWrites.push(cacheSharedNotePlacements(authUserId, authWorkspaceId, placementData.placements));
+				}
+				for (const entry of extraPlacementEntries) {
+					workspacePlacementWrites.push(cacheSharedNotePlacements(authUserId, entry.workspaceId, entry.placements));
+				}
+				await Promise.all(workspacePlacementWrites).catch(() => undefined);
+			}
 		} catch {
 			if (!offline) {
 				setSharedPlacements([]);
