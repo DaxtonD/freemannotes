@@ -36,6 +36,7 @@ import {
 	type SharedNotePlacement,
 	type WorkspaceSystemKind,
 } from '../../core/noteShareApi';
+import { readCachedSharedNotePlacementsForWorkspace } from '../../core/noteSharePlacementStore';
 import type { ReminderFilterMode } from '../../utilities/getVisibleNotes';
 import styles from './BubbleView.module.css';
 
@@ -1025,7 +1026,12 @@ function useBubbleNotes(
 					const wsNotes: BubbleNote[] = [];
 					if (workspace.systemKind === 'SHARED_WITH_ME') {
 						try {
-							const placementData = await listSharedNotePlacements(workspace.id);
+							const cachedPlacements = authUserId
+								? await readCachedSharedNotePlacementsForWorkspace(authUserId, workspace.id).catch(() => [] as SharedNotePlacement[])
+								: [];
+							const placementData = cachedPlacements.length > 0
+								? { placements: cachedPlacements }
+								: await listSharedNotePlacements(workspace.id);
 							if (cancelled) return;
 							const visiblePlacements = await Promise.all(
 								placementData.placements

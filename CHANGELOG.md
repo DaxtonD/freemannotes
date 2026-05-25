@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.4.9 - 2026-05-25
+
+### Changed
+- **Shared With Me placements are now persisted in IndexedDB like the rest of the workspace shell.** The app now keeps shared note placements per user and workspace in a dedicated local store, hydrates them before network refresh, and reuses that cache in Bubble View so Shared With Me and its subfolders stay on the same offline-first footing as other workspaces.
+
+### Fixed
+- **Shared With Me notes no longer disappear when the app goes offline or reopens from local cache.** Placement refreshes now read through IndexedDB instead of falling back to an empty network result, so the Shared With Me workspace and its folders keep their visible notes while offline.
+- **The About version badge now renders offline in installed builds.** The version icon is bundled like the other About artwork, so the About screen no longer falls back to a broken image placeholder when the app is offline.
+
 ## 1.4.8 - 2026-05-24
 
 ### Changed
