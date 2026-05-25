@@ -334,8 +334,18 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 
 	const resolvedLinks = React.useMemo(() => {
 		const fallbackRecords = toFallbackRecords(props.docId, props.fallbackLinks || []);
+		// In the rail variant, the Yjs doc is the authoritative source for which
+		// links exist. Filter the server-cached `links` to only include URLs that
+		// are present in fallbackLinks (from Yjs). This ensures that a URL removed
+		// from the Yjs doc is immediately hidden on the card even before the server
+		// sync completes, preventing "ghost" previews from the stale server cache.
+		if (variant === 'rail' && props.fallbackLinks !== undefined) {
+			const allowedUrls = new Set(fallbackRecords.map((r) => r.normalizedUrl));
+			const filteredLinks = links.filter((l) => allowedUrls.has(l.normalizedUrl));
+			return mergeResolvedLinks(filteredLinks, fallbackRecords);
+		}
 		return mergeResolvedLinks(links, fallbackRecords);
-	}, [links, props.docId, props.fallbackLinks]);
+	}, [links, props.docId, props.fallbackLinks, variant]);
 	const visibleLinks = React.useMemo(() => resolvedLinks.slice(0, maxItems), [resolvedLinks, maxItems]);
 
 	if (variant === 'rail' && visibleLinks.length === 0) {

@@ -827,6 +827,92 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 			return true;
 		}
 
+		if (pathname === '/api/note-links/flush-orphaned' && method === 'POST') {
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const { userId } = session;
+
+					// Find all active (non-deleted) NoteLink rows the user created.
+					const activeLinks = await prisma.noteLink.findMany({
+						where: { createdByUserId: userId, deletedAt: null },
+						select: { id: true, docId: true, normalizedUrl: true },
+					});
+
+					if (activeLinks.length === 0) {
+						jsonResponse(res, 200, { removed: 0 });
+						return;
+					}
+
+					// Group by docId so we read each Yjs doc at most once.
+					const byDocId = new Map();
+					for (const link of activeLinks) {
+						if (!byDocId.has(link.docId)) byDocId.set(link.docId, []);
+						byDocId.get(link.docId).push(link);
+					}
+
+					const orphanIds = [];
+
+					for (const [docId, links] of byDocId) {
+						let yjsUrls = null;
+						try {
+							const row = await prisma.document.findUnique({
+								where: { docId },
+								select: { state: true },
+							});
+							if (row && row.state) {
+								const decoded = decodeDocumentState(row.state);
+								const raw = decoded.metadata && Array.isArray(decoded.metadata.urlPreviewLinks)
+									? decoded.metadata.urlPreviewLinks
+									: [];
+								// Normalize the Yjs URL list the same way the client does.
+								yjsUrls = new Set(
+									raw
+										.map((v) => {
+											if (typeof v !== 'string') return null;
+											const trimmed = v.trim();
+											if (!trimmed) return null;
+											try { return new URL(/^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`).toString().replace(/#.*$/, ''); }
+											catch { return null; }
+										})
+										.filter(Boolean)
+								);
+							}
+						} catch {
+							// If the doc can't be decoded, skip it rather than deleting everything.
+							continue;
+						}
+
+						// If the Yjs doc has no urlPreviewLinks at all (empty array or
+						// missing field), every NoteLink row for this doc is orphaned.
+						// If the doc couldn't be read (yjsUrls still null), skip.
+						if (yjsUrls === null) continue;
+
+						for (const link of links) {
+							if (!yjsUrls.has(link.normalizedUrl)) {
+								orphanIds.push(link.id);
+							}
+						}
+					}
+
+					if (orphanIds.length > 0) {
+						await prisma.noteLink.updateMany({
+							where: { id: { in: orphanIds } },
+							data: { deletedAt: new Date() },
+						});
+					}
+
+					console.log(`[note-links] flush-orphaned: removed ${orphanIds.length} of ${activeLinks.length} links for userId=${userId}`);
+					jsonResponse(res, 200, { removed: orphanIds.length, checked: activeLinks.length });
+				} catch (err) {
+					console.error('[note-links] flush-orphaned error:', err.message);
+					jsonResponse(res, 500, { error: 'Flush failed' });
+				}
+			})();
+			return true;
+		}
+
 		if (pathname === '/api/note-media/import-url' && method === 'POST') {
 			(async () => {
 				try {

@@ -80,14 +80,22 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 
 		// Measure each column's absolute top in the document so the virtualizer can
 		// preserve browser-driven masonry positioning as responsive layout shifts.
+		// Debounce via rAF: during framer-motion layout animations the column's
+		// rect.top oscillates through intermediate values every frame.  Without
+		// debouncing, each intermediate value triggers a setScrollMargin → virtualizer
+		// remeasure → item position recalculation, which produces visible jitter.
+		let rafId = 0;
 		const updateScrollMargin = () => {
-			const rect = node.getBoundingClientRect();
-			const nextMargin = Math.max(0, Math.round(rect.top + window.scrollY));
-			setScrollMargin((previous) => (previous === nextMargin ? previous : nextMargin));
+			if (rafId) return; // already scheduled
+			rafId = window.requestAnimationFrame(() => {
+				rafId = 0;
+				const rect = node.getBoundingClientRect();
+				const nextMargin = Math.max(0, Math.round(rect.top + window.scrollY));
+				setScrollMargin((previous) => (previous === nextMargin ? previous : nextMargin));
+			});
 		};
 
 		updateScrollMargin();
-		const rafId = window.requestAnimationFrame(updateScrollMargin);
 		const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => updateScrollMargin()) : null;
 		observer?.observe(node);
 		if (node.parentElement) observer?.observe(node.parentElement);
@@ -95,7 +103,7 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 		window.addEventListener('orientationchange', updateScrollMargin);
 
 		return () => {
-			window.cancelAnimationFrame(rafId);
+			if (rafId) window.cancelAnimationFrame(rafId);
 			observer?.disconnect();
 			window.removeEventListener('resize', updateScrollMargin);
 			window.removeEventListener('orientationchange', updateScrollMargin);

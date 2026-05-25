@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.4.6 - 2026-05-24
+
+### Fixed
+- **Cross-column drag-and-drop now feels identical to same-column reordering.** Destination columns respond to the live drag anchor (finger/pointer position) instead of the dragged card's rectangle, so notes with very different heights — such as expanded checklist cards — no longer cause missed or skipped insertion points during a cross-column drag.
+- **Column entry is now driven by where the pointer actually is.** The dragged card stays in its source column until the pointer physically leaves it, then snaps to the destination column the moment the pointer enters it, with edge-proximity fallback when the pointer is in a gap. No more dead zones from center-distance column selection.
+- **A small viewport-edge visibility bias prevents mostly-offscreen destination cards from stealing the insertion slot** near the top or bottom of the scroll container.
+
 ## 1.4.5 - 2026-05-15
 
 ### Fixed

@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const logFile = path.join(process.cwd(), 'freeman-debug.log');
+const masonryLogFile = path.join(process.cwd(), 'masonry-debug.log');
 const roomSessions = new Map();
 const DEBUG_LOGGING_ENABLED = (() => {
 	const value = String(process.env.VITE_DEBUG_LOGGING || process.env.DEBUG_LOGGING || '').trim().toLowerCase();
@@ -13,18 +14,25 @@ const DEBUG_LOGGING_ENABLED = (() => {
 const PRISMA_READ_ACTIONS = new Set(['findunique', 'finduniquethrow', 'findfirst', 'findfirstthrow', 'findmany', 'aggregate', 'count', 'groupby']);
 const PRISMA_WRITE_ACTIONS = new Set(['create', 'createmany', 'update', 'updatemany', 'upsert', 'delete', 'deletemany']);
 
-function appendLine(entry) {
-	fs.appendFileSync(logFile, `${JSON.stringify(entry)}\n`, 'utf8');
+function appendLine(targetFile, entry) {
+	fs.appendFileSync(targetFile, `${JSON.stringify(entry)}\n`, 'utf8');
 }
 
 function logEvent(type, data = {}) {
-	if (!DEBUG_LOGGING_ENABLED) return;
+	const isMasonry = data && data.channel === 'masonry';
+	if (!DEBUG_LOGGING_ENABLED && !isMasonry) return;
 	try {
-		appendLine({
+		const entry = {
 			type,
 			time: new Date().toISOString(),
 			...data,
-		});
+		};
+		if (DEBUG_LOGGING_ENABLED) {
+			appendLine(logFile, entry);
+		}
+		if (isMasonry) {
+			appendLine(masonryLogFile, entry);
+		}
 	} catch (err) {
 		console.error('[debug-log] write failed:', err && err.message ? err.message : err);
 	}

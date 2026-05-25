@@ -1,6 +1,7 @@
 import React from 'react';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { fetchAboutHudStats, type AboutHudStatsResponse } from '../../core/noteManagementApi';
+import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { NotificationsSection } from './NotificationsSection';
 import styles from './PreferencesModal.module.css';
@@ -146,6 +147,43 @@ function AboutSectionContent(props: {
 	const [hudError, setHudError] = React.useState<string | null>(null);
 	const [iconLoadFailed, setIconLoadFailed] = React.useState(false);
 	const [iconRetryToken, setIconRetryToken] = React.useState(0);
+	// Hidden developer tools: unlocked after 10 quick taps on the app icon.
+	const [iconTapCount, setIconTapCount] = React.useState(0);
+	const [devToolsUnlocked, setDevToolsUnlocked] = React.useState(false);
+	const [devToolsRunning, setDevToolsRunning] = React.useState(false);
+	const [devToolsResult, setDevToolsResult] = React.useState<string | null>(null);
+	const iconTapTimerRef = React.useRef<number>(0);
+
+	const handleIconTap = React.useCallback(() => {
+		if (devToolsUnlocked) return;
+		// Reset tap count if tapping slowly (> 1 second between taps).
+		if (iconTapTimerRef.current) window.clearTimeout(iconTapTimerRef.current);
+		iconTapTimerRef.current = window.setTimeout(() => {
+			setIconTapCount(0);
+		}, 1000);
+		setIconTapCount((count) => {
+			const next = count + 1;
+			if (next >= 10) {
+				window.clearTimeout(iconTapTimerRef.current);
+				setDevToolsUnlocked(true);
+			}
+			return next;
+		});
+	}, [devToolsUnlocked]);
+
+	const handleFlushOrphanedPreviews = React.useCallback(async () => {
+		if (devToolsRunning) return;
+		setDevToolsRunning(true);
+		setDevToolsResult(null);
+		try {
+			const result = await flushOrphanedNoteLinkPreviews();
+			setDevToolsResult(`Done — removed ${result.removed} of ${result.checked} link previews.`);
+		} catch (err) {
+			setDevToolsResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			setDevToolsRunning(false);
+		}
+	}, [devToolsRunning]);
 
 	const fetchHud = React.useCallback(async () => {
 		setHudLoading(true);
@@ -220,7 +258,12 @@ function AboutSectionContent(props: {
 		<div className={styles.aboutSection}>
 			<h4 className={styles.aboutTitle}>{props.t('prefs.aboutTitle')}</h4>
 			<div className={styles.aboutHeroGroup}>
-				<div className={styles.aboutHero} aria-label={props.t('prefs.aboutBrandingAria')}>
+				<div
+					className={styles.aboutHero}
+					aria-label={props.t('prefs.aboutBrandingAria')}
+					style={{ cursor: devToolsUnlocked ? 'default' : 'pointer' }}
+					onClick={handleIconTap}
+				>
 					<img
 						key={`about-icon-${props.isLightTheme ? 'light' : 'dark'}-${iconRetryToken}`}
 						src={iconLoadFailed ? (props.isLightTheme ? ABOUT_ICON_DARK : ABOUT_ICON_LIGHT) : (props.isLightTheme ? ABOUT_ICON_LIGHT : ABOUT_ICON_DARK)}
@@ -287,6 +330,20 @@ function AboutSectionContent(props: {
 					</div>
 				</div>
 			</div>
+			{devToolsUnlocked ? (
+				<div style={{ marginTop: '20px', padding: '12px 14px', border: '1px solid rgba(128,128,128,0.25)', borderRadius: '8px', background: 'rgba(0,0,0,0.03)' }}>
+					<p style={{ margin: '0 0 10px', fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.5 }}>Developer Tools</p>
+					<button
+						type="button"
+						className={styles.footerButton}
+						disabled={devToolsRunning || props.connectionState !== 'connected'}
+						onClick={() => { void handleFlushOrphanedPreviews(); }}
+					>
+						{devToolsRunning ? 'Running…' : 'Clear orphaned URL previews'}
+					</button>
+					{devToolsResult ? <p style={{ margin: '8px 0 0', fontSize: '13px', opacity: 0.75 }}>{devToolsResult}</p> : null}
+				</div>
+			) : null}
 		</div>
 	);
 }
