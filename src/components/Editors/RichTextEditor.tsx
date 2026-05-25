@@ -449,6 +449,17 @@ const QUICK_EMOJIS: readonly string[] = [
 ];
 
 function renderToolbarImageIcon(iconFileName: string): React.JSX.Element {
+	if (iconFileName === 'CheckCount.png') {
+		return <span className={styles.formatButtonLabel} aria-hidden="true">+1</span>;
+	}
+	const variantClassName = iconFileName === 'URL-Preview.png'
+		? styles.formatButtonMaskIcon
+		: iconFileName === 'autoscroll.png'
+			? styles.formatButtonMaskIconAutoScroll
+			: '';
+	if (variantClassName) {
+		return <span className={variantClassName} aria-hidden="true" />;
+	}
 	const basePath = import.meta.env.BASE_URL || '/';
 	const normalizedBasePath = basePath.endsWith('/') ? basePath : `${basePath}/`;
 	return <img src={`${normalizedBasePath}icons/${iconFileName}`} alt="" aria-hidden="true" className={styles.formatButtonImageIcon} draggable={false} />;
@@ -1023,20 +1034,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 									<FontAwesomeIcon icon={faHighlighter} />
 								</button>
 							</div>
-							{props.onToggleNoteAutoScroll ? (
-								<button
-									type="button"
-									className={`${styles.formatButton}${condensedSubButtonClass}${props.noteAutoScrollEnabled ? ` ${styles.formatButtonActive}` : ''}`}
-									aria-label={noteAutoScrollLabel}
-									aria-pressed={props.noteAutoScrollEnabled}
-									title={noteAutoScrollLabel}
-									onMouseDown={preventToolbarFocusSteal}
-									onPointerDown={preventToolbarFocusSteal}
-									onClick={props.onToggleNoteAutoScroll}
-								>
-									<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
-								</button>
-							) : null}
 						</>
 					);
 				case 'headings':
@@ -1572,6 +1569,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						>
 							<FontAwesomeIcon icon={faCopy} />
 						</button>
+						{props.onToggleNoteAutoScroll ? (
+							<button
+								type="button"
+								className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${props.noteAutoScrollEnabled ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+								aria-label={noteAutoScrollLabel}
+								aria-pressed={props.noteAutoScrollEnabled}
+								title={noteAutoScrollLabel}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={props.onToggleNoteAutoScroll}
+							>
+								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
+							</button>
+						) : null}
 					</>
 				) : null}
 				</div>

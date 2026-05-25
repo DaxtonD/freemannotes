@@ -764,12 +764,26 @@ function renderNoteMetaChips(args: {
 	const attachmentAllowedKinds: readonly NoteAttachmentBrowserKind[] | undefined = noteType === 'drawing'
 		? ['links']
 		: undefined;
+	const allowsImages = !attachmentAllowedKinds || attachmentAllowedKinds.includes('images');
+	const allowsLinks = !attachmentAllowedKinds || attachmentAllowedKinds.includes('links');
+	const allowsDrawings = !attachmentAllowedKinds || attachmentAllowedKinds.includes('drawings');
 	const attachmentShellCounts = args.snapshotShell?.attachmentCounts;
-	const attachmentShellTotal = (attachmentShellCounts?.images ?? 0) + (attachmentShellCounts?.links ?? 0) + (attachmentShellCounts?.drawings ?? 0);
+	const attachmentShellTotal =
+		(allowsImages ? (attachmentShellCounts?.images ?? 0) : 0) +
+		(allowsLinks ? (attachmentShellCounts?.links ?? 0) : 0) +
+		(allowsDrawings ? (attachmentShellCounts?.drawings ?? 0) : 0);
+	const liveAttachmentTotal = args.docId
+		? Math.max(
+			attachmentShellTotal,
+			(allowsImages ? getCachedRemoteNoteImages(args.docId).length : 0) +
+			(allowsLinks ? Math.max(getCachedRemoteNoteLinks(args.docId).length, extractNoteLinksFromDoc(args.doc).length) : 0) +
+			(allowsDrawings ? readDrawingLinkState(args.doc).drawingIds.length : 0)
+		)
+		: 0;
 	const showCollectionShell = Boolean(collectionId && !collectionPath);
 	const showLabelShell = labelIds.length > 0 && labelItems.length === 0;
 	const showCollaboratorShell = (!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && collaboratorCount > 0;
-	if (!collectionPath && !showCollectionShell && labelItems.length === 0 && !showLabelShell && collaboratorCount <= 0 && (!args.docId || attachmentShellTotal <= 0)) {
+	if (!collectionPath && !showCollectionShell && labelItems.length === 0 && !showLabelShell && collaboratorCount <= 0 && (!args.docId || liveAttachmentTotal <= 0)) {
 		return undefined;
 	}
 	const chipColorStyle = getNoteColorVars(args.noteId, args.doc, args.themeId);

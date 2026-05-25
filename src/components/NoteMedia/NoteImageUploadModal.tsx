@@ -126,15 +126,22 @@ function getPrimaryVideoTrack(stream: MediaStream | null): CameraTrack | null {
 	return track as CameraTrack | null;
 }
 
+function getCameraCapabilities(track: CameraTrack | null): ReturnType<NonNullable<CameraTrack['getCapabilities']>> | null {
+	// Optional chaining on the DOM type narrows back to MediaTrackCapabilities, so
+	// keep the custom torch/zoom/focus fields behind one typed helper.
+	return track?.getCapabilities?.() ?? null;
+}
+
 function getCameraZoomRange(track: CameraTrack | null): CameraZoomRange | null {
-	const capability = track?.getCapabilities?.().zoom;
+	const capability = getCameraCapabilities(track)?.zoom;
 	const min = capability?.min;
 	const max = capability?.max;
 	if (typeof min !== 'number' || typeof max !== 'number' || !Number.isFinite(min) || !Number.isFinite(max) || max <= min) {
 		return null;
 	}
-	const step = typeof capability.step === 'number' && Number.isFinite(capability.step) && capability.step > 0
-		? capability.step
+	const capabilityStep = capability?.step;
+	const step = typeof capabilityStep === 'number' && Number.isFinite(capabilityStep) && capabilityStep > 0
+		? capabilityStep
 		: Math.max((max - min) / 20, 0.1);
 	const currentZoom = track?.getSettings?.().zoom;
 	const defaultValue = roundToStep(typeof currentZoom === 'number' && Number.isFinite(currentZoom) ? currentZoom : min, min, max, step);
@@ -149,20 +156,21 @@ function getCameraZoomRange(track: CameraTrack | null): CameraZoomRange | null {
 function readCameraTrackState(track: CameraTrack | null): AppliedCameraTrackState {
 	const zoomRange = getCameraZoomRange(track);
 	const settings = track?.getSettings?.();
+	const capabilities = getCameraCapabilities(track);
 	const zoomValue = zoomRange && typeof settings?.zoom === 'number' && Number.isFinite(settings.zoom)
 		? clampNumber(settings.zoom, zoomRange.min, zoomRange.max)
 		: zoomRange?.defaultValue ?? null;
 	return {
 		zoomRange,
 		zoomValue,
-		torchSupported: Boolean(track?.getCapabilities?.().torch),
+		torchSupported: Boolean(capabilities?.torch),
 		torchEnabled: Boolean(settings?.torch),
 		deviceId: settings?.deviceId ?? null,
 	};
 }
 
 function getContinuousFocusMode(track: CameraTrack | null): string | null {
-	const focusModes = track?.getCapabilities?.().focusMode;
+	const focusModes = getCameraCapabilities(track)?.focusMode;
 	if (!Array.isArray(focusModes)) return null;
 	for (const focusMode of focusModes) {
 		if (typeof focusMode === 'string' && focusMode.toLowerCase() === 'continuous') {
@@ -256,7 +264,7 @@ async function applyCameraTrackSettings(stream: MediaStream | null, options: { z
 			: (typeof settings?.zoom === 'number' && Number.isFinite(settings.zoom) ? settings.zoom : zoomRange.defaultValue);
 		advanced.zoom = roundToStep(baseZoom, zoomRange.min, zoomRange.max, zoomRange.step);
 	}
-	if (track.getCapabilities?.().torch) {
+	if (getCameraCapabilities(track)?.torch) {
 		advanced.torch = typeof options.torch === 'boolean'
 			? options.torch
 			: (typeof settings?.torch === 'boolean' ? settings.torch : false);
@@ -1234,7 +1242,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 								<button
 									type="button"
 									className={`${styles.actionButton}${keyboard.isOpen ? ` ${styles.actionButtonCompact}` : ''}`}
-									onClick={handleStartCamera}
+									onClick={() => handleStartCamera()}
 									disabled={busy || isCameraOpen}
 								>
 									<FontAwesomeIcon icon={faCamera} className={styles.actionIcon} />

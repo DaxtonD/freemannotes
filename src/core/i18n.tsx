@@ -376,6 +376,8 @@ const FALLBACK_MESSAGES: Dictionary = {
 	drawings: {
 		elementSingular: 'element',
 		elementPlural: 'elements',
+		canvasBackground: 'Canvas background',
+		canvasBackgroundColors: 'Canvas background colors',
 		emptyPreview: 'Start drawing to generate a preview.',
 	},
 	media: {

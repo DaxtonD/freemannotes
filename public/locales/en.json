@@ -25,6 +25,7 @@
     "closeQuickCreate": "Close quick create",
     "createNote": "Create note",
     "createChecklist": "Create checklist",
+    "createDrawing": "Create drawing",
     "withFilterPrefix": "With",
     "sidebarNotes": "All Notes",
     "sidebarAll": "All",
@@ -373,6 +374,8 @@
   "drawings": {
     "elementSingular": "element",
     "elementPlural": "elements",
+    "canvasBackground": "Canvas background",
+    "canvasBackgroundColors": "Canvas background colors",
     "emptyPreview": "Start drawing to generate a preview."
   },
   "media": {

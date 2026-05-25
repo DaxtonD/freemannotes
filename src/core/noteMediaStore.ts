@@ -683,11 +683,10 @@ export async function refreshRemoteNoteImages(
 	}
 	const work = (async () => {
 		const response = await listNoteImages(docId);
-		const existingImages = remoteCache.get(docId) || await readStoredRemoteNoteImages(docId);
-		if (!options.force && response.images.length === 0 && existingImages.length > 0) {
-			remoteCache.set(docId, existingImages);
-			return existingImages;
-		}
+		// A successful empty response is authoritative: the note really has no
+		// remaining remote images. Reusing the old cache here makes deleted images
+		// reappear in the media panel until the user tries (and fails) to delete
+		// them again.
 		const images = applyRemoteFileNameOverrides(response.images);
 		remoteCache.set(docId, images);
 		remoteRefreshTimestamps.set(docId, Date.now());

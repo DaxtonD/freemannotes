@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-*/
+.tmp-notegrid-build/
 
 # Runtime env (local / docker-compose env_file)
 .env

@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.4.7 - 2026-05-24
+
+### Fixed
+- **Attachment chips and media panels now stay in sync with live note state.** Note cards now surface attachment chips from current attachment totals instead of stale snapshot counts, and deleting an image from the media panel no longer leaves a ghost entry behind after a successful empty refresh.
+- **Attachment drawing flows now reopen reliably from note cards and browsers.** Attached drawings use the overlay replacement path instead of a history race, and markdown task-item text on note cards once again opens the editor instead of being swallowed by the checkbox row.
+- **Toolbar and media flows now behave consistently offline and on desktop.** Custom editor icons render without network dependence, the condensed toolbar keeps the scroll-to-bottom control, themed URL preview actions match the rest of the toolbar, and the desktop media sidebar stays open while the add-image modal is active.
+- **Localization now reaches the remaining drawing and search surfaces.** The mobile create-drawing FAB, note-grid scope label, and Excalidraw chrome now respect the active app locale, including Spanish, without the localized undo/redo integration crash.
+- **Mobile search dismissal is now history-safe on Android.** The mobile search overlay closes through the shared overlay-history path so the Android back button dismisses search without desynchronizing the header state.
+- **The image upload modal's camera capability typing now compiles cleanly under TypeScript.** Zoom, torch, and focus-mode capability reads keep their extended camera-track typing, and the camera launch button uses the correct click handler signature.
+
 ## 1.4.6 - 2026-05-24
 
 ### Fixed
