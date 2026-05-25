@@ -32,6 +32,23 @@ const DrawingEditor = React.lazy(async () => {
 	const module = await import('./components/Editors/DrawingEditor');
 	return { default: module.DrawingEditor };
 });
+
+class DrawingEditorErrorBoundary extends React.Component<
+	{ children: React.ReactNode; fallback: React.ReactNode },
+	{ hasError: boolean }
+> {
+	constructor(props: { children: React.ReactNode; fallback: React.ReactNode }) {
+		super(props);
+		this.state = { hasError: false };
+	}
+	static getDerivedStateFromError(): { hasError: boolean } {
+		return { hasError: true };
+	}
+	override render(): React.ReactNode {
+		if (this.state.hasError) return this.props.fallback;
+		return this.props.children;
+	}
+}
 import { UserManagementModal } from './components/Admin/UserManagementModal';
 import { UserRegistrationInviteModal } from './components/Admin/UserRegistrationInviteModal';
 import { PreferencesModal } from './components/Preferences/PreferencesModal';
@@ -4710,9 +4727,9 @@ export function App(): React.JSX.Element {
 		}
 		try {
 			const [invitationData, placementData, workspaceInviteData, failedLinkData, pendingReminderCount, firedRemindersData] = await Promise.all([
-				listNoteShareInvitations(),
-				authWorkspaceId ? listSharedNotePlacements(authWorkspaceId) : Promise.resolve({ placements: [] }),
-				listWorkspacePendingInvites(),
+				listNoteShareInvitations().catch(() => ({ invitations: [], pendingCount: 0 })),
+				authWorkspaceId ? listSharedNotePlacements(authWorkspaceId).catch(() => ({ placements: [] })) : Promise.resolve({ placements: [] }),
+				listWorkspacePendingInvites().catch(() => ({ invites: [] })),
 				listFailedNoteLinks().catch(() => ({ failures: [], count: 0 })),
 				fetchPendingReminderCount().catch(() => 0),
 				fetchFiredReminders().catch(() => ({ reminders: [] })),
@@ -4726,9 +4743,19 @@ export function App(): React.JSX.Element {
 			// the WebSocket connects to the wrong room and the note never hydrates.
 			// Each SHARED_WITH_ME workspace may have its own set of placements and
 			// sub-folders, so we fetch them all and merge into a single flat list.
-			const sharedWithMeWsIds = sidebarWorkspacesRef.current
+			// sidebarWorkspacesRef may still be empty when this runs for the first time on
+			// an offline load — the loadSidebarWorkspaces effect runs concurrently and may
+			// not have updated the ref yet.  Fall back to the persisted IDB workspace
+			// cache so the SHARED_WITH_ME placements are still fetched.
+			let sharedWithMeWsIds = sidebarWorkspacesRef.current
 				.filter((ws) => ws.systemKind === 'SHARED_WITH_ME' && ws.id !== authWorkspaceId)
 				.map((ws) => ws.id);
+			if (sharedWithMeWsIds.length === 0 && authUserId) {
+				const cachedSnapshot = await readCachedWorkspaceSnapshot(authUserId, deviceId);
+				sharedWithMeWsIds = cachedSnapshot.workspaces
+					.filter((ws) => ws.systemKind === 'SHARED_WITH_ME' && ws.id !== authWorkspaceId)
+					.map((ws) => ws.id);
+			}
 			const extraPlacementsResults: SharedNotePlacement[] = sharedWithMeWsIds.length > 0
 				? (await Promise.all(sharedWithMeWsIds.map((id) => listSharedNotePlacements(id).catch(() => ({ placements: [] as SharedNotePlacement[] }))))).flatMap((r) => r.placements)
 				: [];
@@ -9075,6 +9102,15 @@ export function App(): React.JSX.Element {
 			   Same mutual exclusion guard as above. */}
 			{editorMode === 'none' && selectedNoteId && openDoc && openDocId === selectedNoteId ? (
 				String(openDoc.getMap<any>('metadata').get('type') ?? 'text') === 'drawing' ? (
+					<DrawingEditorErrorBoundary
+						fallback={
+							<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-overlay)' }}>
+								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>
+									{t('app.loadingEditor')}
+								</div>
+							</div>
+						}
+					>
 					<React.Suspense
 						fallback={
 							<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-overlay)' }}>
@@ -9109,6 +9145,7 @@ export function App(): React.JSX.Element {
 							readOnly={selectedNoteReadOnly}
 						/>
 					</React.Suspense>
+					</DrawingEditorErrorBoundary>
 				) : (
 					<NoteEditor
 						noteId={selectedNoteId}

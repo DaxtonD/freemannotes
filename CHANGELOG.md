@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.4.8 - 2026-05-24
+
+### Changed
+- **Desktop list and detailed-list views now use responsive multi-column layouts with matching drag previews.** Non-grouped list-like views split into contiguous desktop columns, preserve cross-column neighbor shifting during drag, and the drag ghost now mirrors the real row badges, trailing ellipsis action, and strip preview truncation.
+- **Chip overlays now open with cleaner production-safe motion and sizing.** Attachment and collaborator overlays clip their row reveals inside the card width, use a smoother wipe-in animation, and no longer force a wider shell than the originating chip row.
+
+### Fixed
+- **Returning from a list reorder to grid view now repacks masonry columns normally.** List/strip drag commits keep the new note order without leaking list-column anchor state into the masonry repacker, so grid mode no longer inherits long-short column imbalances after a reorder.
+- **Mobile and installed-PWA text editing no longer drifts the viewport upward while deleting content.** Rich-text updates stop forcing selection visibility on every keystroke, which prevents repeated backspace from ratcheting the editor shell while the keyboard is open.
+- **Offline and lazy-loaded production flows are more resilient.** Shared-with-me workspace placements can recover from cached sidebar state during startup, the drawing editor can fall back cleanly if its lazy chunk is unavailable on first open, and the service worker now falls back to precached app-shell assets and cached API/image responses more reliably when the network is unavailable.
+
 ## 1.4.7 - 2026-05-24
 
 ### Fixed

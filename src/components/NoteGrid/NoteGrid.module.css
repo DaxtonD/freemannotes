@@ -86,8 +86,12 @@
 }
 
 .listGrid {
+	display: grid;
+	grid-template-columns: repeat(var(--list-columns, 1), 1fr);
+	gap: 8px;
 	width: 100%;
 	min-width: 0;
+	align-items: start;
 }
 
 .listColumn {
@@ -249,6 +253,26 @@
 	opacity: 0.72;
 	color: var(--note-color-muted, var(--color-text-muted));
 	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+}
+
+.listDragGhostBadgeCount {
+	font-size: 10px;
+	font-weight: 700;
+	line-height: 1;
+}
+
+.listDragGhostMore {
+	font-size: 12px;
+	opacity: 0.56;
+	color: var(--note-color-muted, var(--color-text-muted));
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	margin-left: 4px;
 }
 
 .listDragGhostPreview {
@@ -420,7 +444,7 @@
 .collaboratorOverlayItemShell {
 	width: 100%;
 	position: relative;
-	overflow: visible;
+	overflow: hidden;
 }
 
 .collaboratorOverlayItem {

@@ -111,14 +111,25 @@ async function staleWhileRevalidate(request, cacheName) {
 		void networkPromise;
 		return cached;
 	}
-	return (await networkPromise) || Response.error();
+	const networkResponse = await networkPromise;
+	if (networkResponse) return networkResponse;
+	// Fall back to the precache (APP_SHELL_CACHE) for assets that were stored
+	// during SW install but haven't been fetched online yet in this session
+	// (e.g. lazy-loaded chunks like the drawing editor that are only requested
+	// the first time a user opens a drawing note).
+	const shellCache = await caches.open(APP_SHELL_CACHE);
+	return (await shellCache.match(request)) || Response.error();
 }
 
 async function networkFirst(request, cacheName) {
 	const cache = await caches.open(cacheName);
 	try {
 		const response = await fetch(request);
-		if (canStoreResponseInCache(response)) {
+		// Use isCacheableResponse (not canStoreResponseInCache) so that API responses
+		// with Cache-Control: no-store are still stored here.  That header targets
+		// browser and CDN proxy caches; a same-origin service worker acting as a
+		// local offline fallback is not a shared proxy, so the directive does not apply.
+		if (isCacheableResponse(response)) {
 			await cache.put(request, response.clone());
 		} else {
 			await cache.delete(request);
@@ -133,21 +144,27 @@ async function cacheFirstImage(request) {
 	const cache = await caches.open(IMAGE_CACHE);
 	const cached = await cache.match(request);
 	if (cached) return cached;
-	const response = await fetch(request);
-	if (!isCacheableResponse(response)) return response;
-	const size = Number(response.headers.get('content-length') || '0');
-	// Full-size note images can be much larger than the thumbnails that make card
-	// rails feel instant offline. Skip caching oversized local originals so the PWA
-	// keeps space for the assets users actually revisit most often.
-	if (request.url.startsWith(self.location.origin) && !isLikelyThumbnail(new URL(request.url)) && Number.isFinite(size) && size > LARGE_IMAGE_LIMIT_BYTES) {
+	try {
+		const response = await fetch(request);
+		if (!isCacheableResponse(response)) return response;
+		const size = Number(response.headers.get('content-length') || '0');
+		// Full-size note images can be much larger than the thumbnails that make card
+		// rails feel instant offline. Skip caching oversized local originals so the PWA
+		// keeps space for the assets users actually revisit most often.
+		if (request.url.startsWith(self.location.origin) && !isLikelyThumbnail(new URL(request.url)) && Number.isFinite(size) && size > LARGE_IMAGE_LIMIT_BYTES) {
+			return response;
+		}
+		if (canStoreResponseInCache(response)) {
+			await cache.put(request, response.clone());
+		} else {
+			await cache.delete(request);
+		}
 		return response;
+	} catch {
+		// Offline and not cached — return a graceful error response instead of
+		// letting the unhandled rejection surface as a broken image placeholder.
+		return Response.error();
 	}
-	if (canStoreResponseInCache(response)) {
-		await cache.put(request, response.clone());
-	} else {
-		await cache.delete(request);
-	}
-	return response;
 }
 
 async function refreshNavigationShell(request) {
