@@ -460,10 +460,10 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 										...(props.colorStyle ?? {}),
 										...overlayPosition,
 									}}
-									initial={{ opacity: 0, y: -6 }}
-									animate={{ opacity: 1, y: 0 }}
-									exit={{ opacity: 0, y: -6 }}
-									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+									initial={{ opacity: 0 }}
+									animate={{ opacity: 1 }}
+									exit={{ opacity: 0 }}
+									transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
 								>
 									<div className={styles.overlayList}>
 										{visibleItems.map((item, index) => {
@@ -476,11 +476,11 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 													<motion.button
 														type="button"
 														className={styles.overlayItem}
-														initial={{ opacity: 0, y: -10 }}
-														animate={{ opacity: 1, y: 0 }}
-														exit={{ opacity: 0, y: -6 }}
+														initial={{ opacity: 0, y: '-100%' }}
+														animate={{ opacity: 1, y: '0%' }}
+														exit={{ opacity: 0, transition: { duration: 0.08, delay: 0 } }}
 														transition={{
-															duration: 0.15,
+															duration: 0.12,
 															ease: [0.22, 1, 0.36, 1],
 															delay: rowDelay,
 														}}

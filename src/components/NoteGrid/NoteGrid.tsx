@@ -3,7 +3,7 @@ import type * as Y from 'yjs';
 import { createPortal } from 'react-dom';
 import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faBell, faFileLines, faFolder, faListCheck, faTag, faThumbtack, faUsers } from '@fortawesome/free-solid-svg-icons';
+import { faBell, faEllipsisVertical, faFileLines, faFolder, faListCheck, faTag, faThumbtack, faUsers } from '@fortawesome/free-solid-svg-icons';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
@@ -682,6 +682,17 @@ function getNoteColorVars(noteId: string, doc: Y.Doc, themeId: ThemeId): React.C
 		'--note-color-muted': resolved.mutedTextColor,
 		'--note-color-accent': resolved.accentColor,
 	} as React.CSSProperties;
+}
+
+
+function splitIntoListColumns<T>(ids: readonly T[], cols: number): T[][] {
+	if (cols <= 1) return [ids as T[]];
+	const chunkSize = Math.ceil(ids.length / cols);
+	return Array.from({ length: cols }, (_, i) => ids.slice(i * chunkSize, (i + 1) * chunkSize));
+}
+
+function flattenListColumns<T>(columns: readonly (readonly T[])[]): T[] {
+	return columns.flatMap((column) => column);
 }
 
 function readChipOverlayAnchorRect(element: HTMLElement | null): { top: number; left: number; width: number; height: number } | null {
@@ -1887,7 +1898,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const commitVisibleOrder = React.useCallback(
 		(finalColumns: string[][], draggedId: string, draggedHeight: number) => {
 			if (!noteOrder) return;
-			const readingOrder = flattenColumns(finalColumns);
+			const isListLikeCommit = props.viewMode === 'list' || props.viewMode === 'strip';
+			const readingOrder = props.viewMode === 'list' || props.viewMode === 'strip'
+				? flattenListColumns(finalColumns)
+				: flattenColumns(finalColumns);
 			const pinnedVisibleIds = new Set(
 				visibleIds.filter((id) => noteSnapshotById.get(id)?.isPinned === true)
 			);
@@ -1900,20 +1914,25 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			repackReasonRef.current = 'drag-drop';
 			recentlyMovedNoteIdsRef.current = new Set([draggedId]);
 			invalidatedNoteReasonsRef.current.set(draggedId, 'drag-drop');
-			viewportAnchorSourceColumnsRef.current = finalColumns.map((column) => [...column]);
+			// List/strip columns are a reading-order convenience, not a stable masonry
+			// placement hint. Carrying them into the anchor maps prevents grid mode
+			// from repacking naturally after the user switches views.
+			viewportAnchorSourceColumnsRef.current = isListLikeCommit ? [] : finalColumns.map((column) => [...column]);
 			// Use layout-calculated positions rather than per-node getBoundingClientRect.
 			// At commit time the drag animation is still in flight; querying DOM nodes
 			// returns transitioning values that misidentify which notes are in the
 			// viewport, causing the post-drop repack to use wrong column anchors.
 			const commitOverscanPx = Math.max(24, Math.round(Math.max(draggedHeight, getEstimatedNoteHeight(draggedId)) * 0.2));
-			const committedViewportAnchors = collectViewportAnchorColumnsFromLayout({
-				columns: finalColumns,
-				heightById: noteHeightByIdRef.current,
-				fallbackHeightPx: 220,
-				gapPx: readCssPxVariable('--grid-gap', 16),
-				grid: gridRef.current,
-				overscanPx: commitOverscanPx,
-			});
+			const committedViewportAnchors = isListLikeCommit
+				? new Map<string, number>()
+				: collectViewportAnchorColumnsFromLayout({
+					columns: finalColumns,
+					heightById: noteHeightByIdRef.current,
+					fallbackHeightPx: 220,
+					gapPx: readCssPxVariable('--grid-gap', 16),
+					grid: gridRef.current,
+					overscanPx: commitOverscanPx,
+				});
 			const draggedPrevColumn = settledColumnByIdRef.current.get(draggedId) ?? null;
 			const draggedNewColumn = finalColumns.findIndex((col) => col.includes(draggedId));
 			const isSameColumnSwap = draggedPrevColumn !== null && draggedPrevColumn === draggedNewColumn;
@@ -1921,7 +1940,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			// transient height oscillations during the drop animation from triggering
 			// greedy shortest-column moves.  finalColumns only covers the ~10 visible
 			// notes; seed from settledColumnByIdRef to also cover offscreen notes.
-			{
+			if (isListLikeCommit) {
+				viewportAnchorColumnsRef.current = new Map();
+			} else {
 				const fullAnchorMap = new Map<string, number>(settledColumnByIdRef.current);
 				for (let colIdx = 0; colIdx < finalColumns.length; colIdx++) {
 					for (const noteId of finalColumns[colIdx]) {
@@ -1948,7 +1969,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				noteOrder.insert(0, next);
 			});
 		},
-		[getEstimatedNoteHeight, noteOrder, noteSnapshotById, visibleIds]
+		[getEstimatedNoteHeight, noteOrder, noteSnapshotById, props.viewMode, visibleIds]
 	);
 
 	React.useLayoutEffect(() => {
@@ -2626,7 +2647,17 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const packedColumns = packedLayout.columns;
 	const resolvedBaseColumns = packedColumns;
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
-	const dragColumns = React.useMemo(() => (isListLikeView ? [visibleIds] : resolvedBaseColumns), [isListLikeView, resolvedBaseColumns, visibleIds]);
+	const listColumnCount = React.useMemo(() => {
+		if (isCoarsePointer) return 1;
+		if (columnCount >= 5) return 3;
+		if (columnCount >= 3) return 2;
+		return 1;
+	}, [columnCount, isCoarsePointer]);
+	const dragColumns = React.useMemo(() => {
+		if (!isListLikeView) return resolvedBaseColumns;
+		if (groupedSections.length > 0) return [visibleIds];
+		return splitIntoListColumns(visibleIds, listColumnCount);
+	}, [groupedSections.length, isListLikeView, listColumnCount, resolvedBaseColumns, visibleIds]);
 
 	// ── Wire up the drag manager ──────────────────────────────────────────
 	// Passes baseColumns as the starting column layout.  During drag, the
@@ -2871,7 +2902,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// stable baseColumns.  framer-motion's `layout` prop on each card
 	// automatically animates position changes when columns swap.
 	const columns = dragManager.previewColumns ?? dragColumns;
-	const listOrderedIds = React.useMemo(() => flattenColumns(columns), [columns]);
+	const listRenderColumns = React.useMemo(() => (isListLikeView ? columns : []), [columns, isListLikeView]);
 
 	// Freeze touch actions during touch drag to prevent browser scroll interference
 	React.useEffect(() => {
@@ -2978,13 +3009,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			const note = readNoteFromDoc(activeDoc, activeNote.id);
 			if (note.type === 'checklist') {
 				const items = note.items ?? [];
-				if (items.length === 0) return '';
+				const total = items.length;
+				if (total === 0) return '';
 				const done = items.filter((entry) => entry.completed).length;
-				return `${done} / ${items.length}`;
+				return `${done} / ${total}`;
 			}
-			const content = (note.content ?? '').replace(/\s+/g, ' ').trim();
+			const content = (note.content ?? '').trim();
 			if (!content) return '';
-			return content.length > 110 ? `${content.slice(0, 109)}...` : content;
+			return content.length > 100 ? `${content.slice(0, 99)}…` : content;
 		} catch {
 			return '';
 		}
@@ -3119,9 +3151,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// Match the masonry grid edge clamp on coarse pointers so left-column cards
 		// open centered chip overlays instead of drifting to the right.
 		const horizontalViewportInset = isCoarsePointer ? MOBILE_GRID_EDGE_MARGIN_PX : 12;
-		const minimumOverlayWidth = isCoarsePointer ? 196 : 176;
 		const overlayWidth = Math.min(
-			Math.max(minimumOverlayWidth, Math.round(openCollaboratorChip.anchorRect.width)),
+			Math.round(openCollaboratorChip.anchorRect.width),
 			window.innerWidth - horizontalViewportInset * 2
 		);
 		const viewportWidth = window.innerWidth;
@@ -3563,18 +3594,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				</div>
 			) : null}
 			{(props.viewMode === 'list' || props.viewMode === 'strip') && visibleIds.length > 0 ? (
-				<div ref={gridRef} className={isGroupedView ? styles.groupedSections : styles.listGrid} aria-label={t('grid.notesGrid')}>
+			<div ref={gridRef} className={isGroupedView ? styles.groupedSections : styles.listGrid} aria-label={t('grid.notesGrid')} style={!isGroupedView ? { ['--list-columns' as string]: String(listColumnCount) } as React.CSSProperties : undefined}>
 					{isGroupedView ? groupedSections.map((section) => (
 						<div key={section.key} className={styles.groupSection}>
 							<div className={styles.groupHeader}>
 								<h3 className={styles.groupTitle}>{section.label}</h3>
 								<span className={styles.groupHeaderRule} aria-hidden="true" />
 							</div>
-							<div className={styles.listGrid}>
-								<div className={styles.listColumn}>
+							<div className={styles.listGrid} style={{ ['--list-columns' as string]: String(listColumnCount) } as React.CSSProperties}>
+								{splitIntoListColumns(section.noteIds, listColumnCount).map((colIds, colIdx) => (
+								<div key={colIdx} className={styles.listColumn}>
 									<NoteListView
 										variant={props.viewMode}
-										orderedIds={section.noteIds}
+										orderedIds={colIds}
 										docsById={docsById}
 										noteSnapshotById={noteSnapshotById}
 										collectionPathById={collectionPathById}
@@ -3606,13 +3638,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										} : undefined}
 									/>
 								</div>
+								))}
 							</div>
 						</div>
 					)) : (
-						<div className={styles.listColumn}>
+						<>
+						{listRenderColumns.map((colIds, colIdx) => (
+						<div key={colIdx} className={styles.listColumn}>
 							<NoteListView
 								variant={props.viewMode}
-								orderedIds={listOrderedIds}
+								orderedIds={colIds}
 								docsById={docsById}
 								noteSnapshotById={noteSnapshotById}
 								collectionPathById={collectionPathById}
@@ -3644,6 +3679,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								} : undefined}
 							/>
 						</div>
+						))}
+						</>
 					)}
 				</div>
 			) : null}
@@ -3759,6 +3796,30 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										<FontAwesomeIcon icon={faBell} />
 									</span>
 								) : null}
+								{activeSnapshot?.collectionId && collectionPathById.get(activeSnapshot.collectionId) ? (
+									<span className={styles.listDragGhostBadge} title={collectionPathById.get(activeSnapshot.collectionId) ?? undefined}>
+										<FontAwesomeIcon icon={faFolder} />
+									</span>
+								) : null}
+								{(activeSnapshot?.labelIds?.length ?? 0) > 0 ? (
+									<span className={styles.listDragGhostBadge}>
+										<FontAwesomeIcon icon={faTag} />
+										{(activeSnapshot?.labelIds?.length ?? 0) > 1 ? (
+											<span className={styles.listDragGhostBadgeCount}>{activeSnapshot!.labelIds!.length}</span>
+										) : null}
+									</span>
+								) : null}
+								{(collaboratorCountByNoteId[activeNote.id] ?? 0) > 0 ? (
+									<span className={styles.listDragGhostBadge}>
+										<FontAwesomeIcon icon={faUsers} />
+										{(collaboratorCountByNoteId[activeNote.id] ?? 0) > 1 ? (
+											<span className={styles.listDragGhostBadgeCount}>{collaboratorCountByNoteId[activeNote.id]}</span>
+										) : null}
+									</span>
+								) : null}
+								<span className={styles.listDragGhostMore} aria-hidden="true">
+									<FontAwesomeIcon icon={faEllipsisVertical} />
+								</span>
 							</div>
 							{props.viewMode === 'strip' && activeStripPreview ? (
 								<div className={styles.listDragGhostPreview}>{activeStripPreview}</div>
@@ -3845,10 +3906,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										const touch = event.touches[0];
 										collaboratorTouchYRef.current = touch ? touch.clientY : null;
 									}}
-									initial={{ opacity: 0, y: -6 }}
-									animate={{ opacity: 1, y: 0 }}
-									exit={{ opacity: 0, y: -6 }}
-									transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+									initial={{ opacity: 0 }}
+									animate={{ opacity: 1 }}
+									exit={{ opacity: 0 }}
+									transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
 								>
 									<div
 										ref={collaboratorOverlayListRef}
@@ -3865,11 +3926,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 													<motion.button
 														type="button"
 														className={`${styles.collaboratorOverlayItem}${isActive ? ` ${styles.collaboratorOverlayItemActive}` : ''}`}
-															initial={{ opacity: 0, y: -10 }}
-															animate={{ opacity: 1, y: 0 }}
-															exit={{ opacity: 0, y: -6 }}
+															initial={{ opacity: 0, y: '-100%' }}
+															animate={{ opacity: 1, y: '0%' }}
+															exit={{ opacity: 0, transition: { duration: 0.08, delay: 0 } }}
 														transition={{
-																duration: 0.15,
+																duration: 0.12,
 																ease: [0.22, 1, 0.36, 1],
 																delay: rowDelay,
 														}}
@@ -3926,23 +3987,23 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										style={{ ...(metadataOverlayColorStyle ?? {}), ...metadataOverlayPosition }}
 										onPointerDown={(event) => event.stopPropagation()}
 										onClick={(event) => event.stopPropagation()}
-										initial={{ opacity: 0, y: -6 }}
-										animate={{ opacity: 1, y: 0 }}
-										exit={{ opacity: 0, y: -6 }}
-										transition={{ duration: 0.16, ease: [0.22, 1, 0.36, 1] }}
+										initial={{ opacity: 0 }}
+										animate={{ opacity: 1 }}
+										exit={{ opacity: 0 }}
+										transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
 									>
 										<div className={`${styles.collaboratorOverlayList} ${styles.metadataOverlayList}${shouldCapMetadataList ? ` ${styles.metadataOverlayListScrollable}` : ''}`}>
 											{openMetadataChip.entries.map((entry, index) => (
+												<div key={entry.key} className={styles.collaboratorOverlayItemShell}>
 												<motion.button
-													key={entry.key}
 													type="button"
 													title={entry.fullLabel ?? entry.label}
 													aria-label={entry.fullLabel ?? entry.label}
-													initial={{ opacity: 0, y: -10 }}
-													animate={{ opacity: 1, y: 0 }}
-													exit={{ opacity: 0, y: -6 }}
+													initial={{ opacity: 0, y: '-100%' }}
+													animate={{ opacity: 1, y: '0%' }}
+													exit={{ opacity: 0, transition: { duration: 0.08, delay: 0 } }}
 													transition={{
-														duration: 0.15,
+														duration: 0.12,
 														ease: [0.22, 1, 0.36, 1],
 														delay: 0.016 + index * 0.024,
 													}}
@@ -3973,6 +4034,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 																<span className={styles.collaboratorOverlayName}>{entry.label}</span>
 															)}
 												</motion.button>
+												</div>
 											))}
 										</div>
 									</motion.div>

@@ -2046,7 +2046,9 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				latestHandlersRef.current.onChange?.();
 			},
 			onUpdate: ({ editor: currentEditor }) => {
-				ensureSelectionVisible();
+				// Avoid forcing caret visibility on every content mutation. On mobile,
+				// shrink-only edits like repeated backspace can otherwise ratchet the
+				// viewport upward while the keyboard is open.
 				// Update-time branch mirrors onCreate:
 				// - `true`: caller wants structured payload for non-collab/draft editors.
 				// - `false`: caller wants a cheap signal-only callback to reduce CPU cost.

@@ -56,7 +56,7 @@
 .overlayItemShell {
 	width: 100%;
 	position: relative;
-	overflow: visible;
+	overflow: hidden;
 }
 
 .overlayItem {
