@@ -146,6 +146,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const activeDragIdRef = React.useRef<string | null>(null);
 	const dragOverlayRef = React.useRef<DragOverlayState | null>(null);
 	const dropOverlayTimerRef = React.useRef<number>(0);
+	const dropOverlayTrackingRafRef = React.useRef<number>(0);
 	const visibleIdsRef = React.useRef<string[]>(args.visibleIds);
 	const columnsRef = React.useRef<string[][]>(args.columns);
 	const canStartDragRef = React.useRef(args.canStartDrag);
@@ -327,12 +328,58 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	}, []);
 
 	const clearDropOverlay = React.useCallback((): void => {
+		if (dropOverlayTrackingRafRef.current && typeof window !== 'undefined') {
+			window.cancelAnimationFrame(dropOverlayTrackingRafRef.current);
+			dropOverlayTrackingRafRef.current = 0;
+		}
 		if (dropOverlayTimerRef.current && typeof window !== 'undefined') {
 			window.clearTimeout(dropOverlayTimerRef.current);
 			dropOverlayTimerRef.current = 0;
 		}
 		setDropOverlay(null);
 	}, []);
+
+	const startDropOverlaySettle = React.useCallback((activeId: string, overlay: DragOverlayState | null): void => {
+		if (!overlay) return;
+		clearDropOverlay();
+		const baseTarget = {
+			left: overlay.left,
+			top: overlay.top,
+			width: overlay.width,
+			height: overlay.height,
+		};
+		setDropOverlay({
+			...overlay,
+			settleTo: baseTarget,
+		});
+		if (typeof window === 'undefined') return;
+		// Follow the committed card's live rect for a short settle window so drops
+		// that land during neighbour motion animate with the card instead of aiming
+		// at a stale pre-commit measurement.
+		const trackTarget = (): void => {
+			const rect = itemElementsRef.current.get(activeId)?.getBoundingClientRect() ?? null;
+			if (rect && rect.width > 0 && rect.height > 0) {
+				setDropOverlay((current) => {
+					if (!current || current.id !== activeId) return current;
+					return {
+						...current,
+						settleTo: {
+							left: rect.left,
+							top: rect.top,
+							width: rect.width,
+							height: rect.height,
+						},
+					};
+				});
+			}
+			dropOverlayTrackingRafRef.current = window.requestAnimationFrame(trackTarget);
+		};
+		dropOverlayTrackingRafRef.current = window.requestAnimationFrame(trackTarget);
+		dropOverlayTimerRef.current = window.setTimeout(() => {
+			dropOverlayTimerRef.current = 0;
+			clearDropOverlay();
+		}, 320);
+	}, [clearDropOverlay]);
 
 	const shouldSuppressOpen = React.useCallback((): boolean => {
 		return Date.now() < suppressOpenUntilRef.current;
@@ -531,43 +578,17 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 					finalColumns.length !== originalColumns.length ||
 					finalColumns.some((col, i) => !arraysEqual(col, originalColumns[i]));
 				if (!columnsChanged) {
+					startDropOverlaySettle(activeId, dragOverlayRef.current ? { ...dragOverlayRef.current } : null);
 					finalizeTouchDrop();
 					clearDragState();
 					return;
 				}
 
-				const draggedElement = itemElementsRef.current.get(activeId);
-				const dropTargetRect = draggedElement?.getBoundingClientRect() ?? null;
 				const draggedHeight = Math.max(
 					0,
-					Math.round(draggedElement?.getBoundingClientRect().height ?? previewSizeRef.current.height)
+					Math.round(itemElementsRef.current.get(activeId)?.getBoundingClientRect().height ?? previewSizeRef.current.height)
 				);
-				const settledOverlay = dragOverlayRef.current
-					? {
-						...dragOverlayRef.current,
-						settleTo: dropTargetRect && dropTargetRect.width > 0 && dropTargetRect.height > 0
-							? {
-								left: dropTargetRect.left,
-								top: dropTargetRect.top,
-								width: dropTargetRect.width,
-								height: dropTargetRect.height,
-							}
-							: null,
-					}
-					: null;
-				if (settledOverlay) {
-					// Keep a short-lived overlay alive after drop so the released card can
-					// animate directly into the already-shifted placeholder slot instead of
-					// vanishing while the committed layout re-renders underneath it.
-					setDropOverlay(settledOverlay);
-					if (typeof window !== 'undefined') {
-						if (dropOverlayTimerRef.current) window.clearTimeout(dropOverlayTimerRef.current);
-						dropOverlayTimerRef.current = window.setTimeout(() => {
-							dropOverlayTimerRef.current = 0;
-							setDropOverlay(null);
-						}, 280);
-					}
-				}
+				startDropOverlaySettle(activeId, dragOverlayRef.current ? { ...dragOverlayRef.current } : null);
 				onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
 				finalizeTouchDrop();
 				// Clear drag state after scheduling the committed layout so React can
