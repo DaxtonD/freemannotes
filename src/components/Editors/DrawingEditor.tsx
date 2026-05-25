@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { CaptureUpdateAction, Excalidraw, MainMenu, loadLibraryFromBlob } from '@excalidraw/excalidraw';
+import { CaptureUpdateAction, Excalidraw, MainMenu, defaultLang, languages, loadLibraryFromBlob } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBell, faEllipsisVertical, faUserPlus } from '@fortawesome/free-solid-svg-icons';
@@ -99,6 +99,18 @@ function persistDrawingLibrary(libraryItems: LibraryItems): void {
 	} catch {
 		// Ignore storage failures. Excalidraw can still function in-memory.
 	}
+}
+
+function resolveExcalidrawLangCode(locale: string): string {
+	const normalized = String(locale || '').trim().toLowerCase().replace(/_/g, '-');
+	if (!normalized) return defaultLang.code;
+	const exactMatch = languages.find((language) => language.code.toLowerCase() === normalized);
+	if (exactMatch) return exactMatch.code;
+	const baseLanguage = normalized.split('-')[0] || normalized;
+	const baseMatch = languages.find((language) => language.code.toLowerCase() === baseLanguage);
+	if (baseMatch) return baseMatch.code;
+	const prefixedMatch = languages.find((language) => language.code.toLowerCase().startsWith(`${baseLanguage}-`));
+	return prefixedMatch?.code ?? defaultLang.code;
 }
 
 async function fetchBundledDrawingLibraryDefinitions(): Promise<DrawingLibraryDefinition[]> {
@@ -229,7 +241,7 @@ function syncActiveWysiwygInk(host: HTMLDivElement | null, strokeColor: string):
 }
 
 export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
-	const { t } = useI18n();
+	const { locale, t } = useI18n();
 	const isCoarsePointer = useIsCoarsePointer();
 	const readOnly = props.readOnly === true;
 	const titleYText = useMemo(() => props.doc.getText('title'), [props.doc]);
@@ -284,6 +296,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 
 	const usesMobileEditorLayout = isCoarsePointer;
 	const primaryHeaderActionLabel = props.isPendingNew ? t('common.save') : t('common.done');
+	const excalidrawLangCode = React.useMemo(() => resolveExcalidrawLangCode(locale), [locale]);
 
 	useBodyScrollLock(true, { disableTouchAction: false });
 
@@ -476,13 +489,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 			yElements,
 			yAssets,
 			api,
-			props.awareness ?? undefined,
-			hostRef.current
-				? {
-					excalidrawDom: hostRef.current,
-					undoManager: new Y.UndoManager(yElements),
-				}
-				: undefined
+			props.awareness ?? undefined
 		);
 		bindingRef.current = binding;
 		const bindingWithSnapshot = binding as ExcalidrawBinding & Partial<BindingSnapshot>;
@@ -493,6 +500,84 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 			binding.destroy();
 		};
 	}, [api, props.awareness, yAssets, yElements]);
+
+	React.useEffect(() => {
+		const binding = bindingRef.current;
+		const host = hostRef.current;
+		if (!binding || !host) return;
+
+		const undoManager = new Y.UndoManager(yElements);
+		undoManager.addTrackedOrigin(binding);
+
+		const isUndoShortcut = (event: KeyboardEvent): boolean => {
+			const usesModifier = event.ctrlKey || event.metaKey;
+			return usesModifier && !event.shiftKey && event.key?.toLowerCase() === 'z';
+		};
+		const isRedoShortcut = (event: KeyboardEvent): boolean => {
+			const usesModifier = event.ctrlKey || event.metaKey;
+			const key = event.key?.toLowerCase();
+			return (usesModifier && event.shiftKey && key === 'z') || (event.ctrlKey && !event.shiftKey && key === 'y');
+		};
+
+		const handleKeyDown = (event: KeyboardEvent): void => {
+			if (isRedoShortcut(event)) {
+				event.stopPropagation();
+				undoManager.redo();
+				return;
+			}
+			if (isUndoShortcut(event)) {
+				event.stopPropagation();
+				undoManager.undo();
+			}
+		};
+
+		let undoButton: HTMLButtonElement | null = null;
+		let redoButton: HTMLButtonElement | null = null;
+
+		const handleUndoClick = (event: Event): void => {
+			event.stopImmediatePropagation();
+			undoManager.undo();
+		};
+		const handleRedoClick = (event: Event): void => {
+			event.stopImmediatePropagation();
+			undoManager.redo();
+		};
+
+		const syncUndoRedoButtons = (): void => {
+			const nextUndoButton = host.querySelector<HTMLButtonElement>('[data-testid="button-undo"]');
+			if (nextUndoButton !== undoButton) {
+				undoButton?.removeEventListener('click', handleUndoClick, true);
+				undoButton = nextUndoButton;
+				undoButton?.addEventListener('click', handleUndoClick, true);
+			}
+
+			const nextRedoButton = host.querySelector<HTMLButtonElement>('[data-testid="button-redo"]');
+			if (nextRedoButton !== redoButton) {
+				redoButton?.removeEventListener('click', handleRedoClick, true);
+				redoButton = nextRedoButton;
+				redoButton?.addEventListener('click', handleRedoClick, true);
+			}
+		};
+
+		host.addEventListener('keydown', handleKeyDown, { capture: true });
+		const mutationObserver = new MutationObserver(() => {
+			syncUndoRedoButtons();
+		});
+		mutationObserver.observe(host, {
+			childList: true,
+			subtree: true,
+		});
+		syncUndoRedoButtons();
+
+		return () => {
+			host.removeEventListener('keydown', handleKeyDown, { capture: true });
+			undoButton?.removeEventListener('click', handleUndoClick, true);
+			redoButton?.removeEventListener('click', handleRedoClick, true);
+			mutationObserver.disconnect();
+			undoManager.removeTrackedOrigin(binding);
+			undoManager.destroy();
+		};
+	}, [api, yElements]);
 
 
 	React.useEffect(() => {
@@ -925,6 +1010,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 						initialData={initialData}
 						getInitialLibraryItems={readPersistedDrawingLibrary}
 						excalidrawAPI={setApi}
+						langCode={excalidrawLangCode}
 						onChange={handleDrawingSceneChange}
 						onLibraryChange={handleLibraryChange}
 						onPointerUpdate={(payload) => bindingRef.current?.onPointerUpdate(payload)}
@@ -954,8 +1040,8 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 							<MainMenu.Separator />
 							<MainMenu.ItemCustom>
 								<div className={styles.drawingMainMenuSection}>
-									<div className={styles.drawingMainMenuSectionTitle}>Canvas background</div>
-									<div className={styles.drawingMainMenuColorGrid} role="list" aria-label="Canvas background colors">
+									<div className={styles.drawingMainMenuSectionTitle}>{t('drawings.canvasBackground')}</div>
+									<div className={styles.drawingMainMenuColorGrid} role="list" aria-label={t('drawings.canvasBackgroundColors')}>
 										{DRAWING_BACKGROUND_PRESETS.map((preset) => {
 											const isActive = drawingBackgroundColor.toLowerCase() === preset.color.toLowerCase();
 											return (
@@ -965,7 +1051,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 													role="listitem"
 													className={`${styles.drawingMainMenuColorButton}${isActive ? ` ${styles.drawingMainMenuColorButtonActive}` : ''}`}
 													onClick={() => handleSelectCanvasBackground(preset.color)}
-													aria-label={`Set canvas background to ${preset.label}`}
+													aria-label={preset.label}
 													title={preset.label}
 												>
 													<span

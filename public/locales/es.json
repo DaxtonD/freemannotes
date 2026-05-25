@@ -25,6 +25,7 @@
     "closeQuickCreate": "Cerrar creación rápida",
     "createNote": "Crear nota",
     "createChecklist": "Crear lista",
+    "createDrawing": "Crear dibujo",
     "withFilterPrefix": "Con",
     "sidebarNotes": "Todas las notas",
     "sidebarAll": "Todas",
@@ -373,6 +374,8 @@
   "drawings": {
     "elementSingular": "elemento",
     "elementPlural": "elementos",
+    "canvasBackground": "Fondo del lienzo",
+    "canvasBackgroundColors": "Colores de fondo del lienzo",
     "emptyPreview": "Empieza a dibujar para generar una vista previa."
   },
   "media": {

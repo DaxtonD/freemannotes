@@ -2907,7 +2907,7 @@
 		pointer-events: none;
 		transform: translateY(calc(-4px + var(--app-mobile-search-viewport-offset, 0px)));
 		transition: opacity 180ms ease, transform 180ms ease;
-		z-index: 1;
+		z-index: 120;
 	}
 
 	.app-header-searchrow.mobile-searchrow.is-open {
@@ -2930,7 +2930,7 @@
 		left: calc(var(--space-2) + var(--app-safe-left));
 		right: calc(var(--space-2) + var(--app-safe-right));
 		top: calc(var(--app-header-total-height) + var(--space-2) + var(--app-mobile-search-viewport-offset, 0px));
-		z-index: 119;
+		z-index: 121;
 		pointer-events: auto;
 	}
 

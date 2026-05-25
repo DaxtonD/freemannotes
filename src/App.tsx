@@ -2043,8 +2043,11 @@ export function App(): React.JSX.Element {
 
 	const closeMobileSearch = React.useCallback(() => {
 		if (goBackIfOverlayHistory()) return;
-		setIsMobileSearchOpen(false);
-	}, [goBackIfOverlayHistory]);
+		replaceActiveOverlaySnapshot({
+			...getOverlaySnapshot(),
+			isMobileSearchOpen: false,
+		});
+	}, [getOverlaySnapshot, goBackIfOverlayHistory, replaceActiveOverlaySnapshot]);
 
 	const toggleViewModePicker = React.useCallback(() => {
 		if (isViewModePickerOpen) {
@@ -2242,7 +2245,10 @@ export function App(): React.JSX.Element {
 		setSelectedNoteId(null);
 	}, [goBackIfOverlayHistory]);
 
-	type NoteEditorOpenOptions = { replaceTop?: boolean };
+	type NoteEditorOpenOptions = {
+		replaceTop?: boolean;
+		closeAttachmentBrowser?: boolean;
+	};
 	const openNoteEditor = React.useCallback(
 		(noteId: string, opts?: NoteEditorOpenOptions) => {
 			markNoteAccessed(manager.getDoc(noteId), manager.getAccessOrigin());
@@ -2260,6 +2266,7 @@ export function App(): React.JSX.Element {
 					isMobileSearchOpen: false,
 					editorMode: 'none',
 					selectedNoteId: noteId,
+					noteAttachmentBrowserState: opts?.closeAttachmentBrowser ? null : current.noteAttachmentBrowserState,
 					isMobileSidebarOpen: false,
 					isFabOpen: false,
 				},
@@ -2272,7 +2279,7 @@ export function App(): React.JSX.Element {
 	const openAttachedDrawing = React.useCallback((drawingId: string) => {
 		const normalizedDrawingId = String(drawingId || '').trim();
 		if (!normalizedDrawingId) return;
-		openNoteEditor(normalizedDrawingId);
+		openNoteEditor(normalizedDrawingId, { replaceTop: true, closeAttachmentBrowser: true });
 	}, [openNoteEditor]);
 
 	const createAttachedDrawing = React.useCallback(async (noteId: string) => {
@@ -4264,7 +4271,7 @@ export function App(): React.JSX.Element {
 		if (sidebarView === 'trash') {
 			return `${t('app.sidebarTrash')} / ${activeWorkspaceSidebarPath}`;
 		}
-		return `All notes / ${activeWorkspaceSidebarPath}`;
+		return `${t('app.sidebarNotes')} / ${activeWorkspaceSidebarPath}`;
 	}, [activeWorkspaceSidebarPath, sidebarView, t, viewMode]);
 
 	const exitSpecialSidebarView = React.useCallback(() => {
@@ -6599,6 +6606,21 @@ export function App(): React.JSX.Element {
 		});
 		return () => cancelAnimationFrame(raf);
 	}, [isMobileSearchOpen, isMobileSidebarOpen, isMobileViewport]);
+
+	React.useEffect(() => {
+		if (!isMobileViewport || !isMobileSearchOpen || typeof window === 'undefined') return;
+		if (isOverlayHistoryState(window.history.state)) return;
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot(
+			{
+				...current,
+				isMobileSearchOpen: true,
+				isMobileSidebarOpen: false,
+				isFabOpen: false,
+			},
+			'push'
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot, isMobileSearchOpen, isMobileViewport]);
 
 	React.useEffect(() => {
 		if (!isMobileViewport || !isMobileSearchOpen || typeof window === 'undefined' || !window.visualViewport) {
@@ -8984,10 +9006,7 @@ export function App(): React.JSX.Element {
 				onAddDrawing={noteAttachmentBrowserState?.kind === 'drawings' && noteAttachmentBrowserState.canEdit ? () => {
 					void createAttachedDrawing(noteAttachmentBrowserState.noteId);
 				} : undefined}
-				onOpenDrawing={(drawingId) => {
-					closeNoteAttachmentBrowser();
-					openAttachedDrawing(drawingId);
-				}}
+				onOpenDrawing={openAttachedDrawing}
 				onDeleteDrawing={noteAttachmentBrowserState?.kind === 'drawings' && noteAttachmentBrowserState.canEdit ? (drawingId) => deleteAttachedDrawing(noteAttachmentBrowserState.noteId, drawingId) : undefined}
 				loadDrawingDoc={loadDrawingDoc}
 			/>

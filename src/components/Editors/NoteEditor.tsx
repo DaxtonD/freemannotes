@@ -724,6 +724,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	React.useEffect(() => {
 		if (!mediaDockOpen || isCoarsePointer || typeof document === 'undefined') return;
 		const handlePointerDown = (event: PointerEvent): void => {
+			if (document.body.dataset.freemannotesNoteImageUploadOpen === 'true') return;
 			const target = event.target;
 			if (!(target instanceof Element)) return;
 			if (mediaFlyoutRef.current?.contains(target)) return;

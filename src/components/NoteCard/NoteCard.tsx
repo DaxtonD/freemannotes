@@ -449,11 +449,14 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 				key={key}
 				className={styles.richTaskItem}
 				data-checked={checked ? 'true' : 'false'}
-				onPointerDown={indexPath ? (e) => e.stopPropagation() : undefined}
-				onPointerUp={indexPath ? (e) => e.stopPropagation() : undefined}
-				onClick={indexPath ? (e) => e.stopPropagation() : undefined}
 			>
-				<span className={styles.richTaskCheckbox} aria-hidden="true">
+				<span
+					className={styles.richTaskCheckbox}
+					aria-hidden="true"
+					onPointerDown={indexPath ? (e) => e.stopPropagation() : undefined}
+					onPointerUp={indexPath ? (e) => e.stopPropagation() : undefined}
+					onClick={indexPath ? (e) => e.stopPropagation() : undefined}
+				>
 					<input
 						type="checkbox"
 						checked={checked}
