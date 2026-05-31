@@ -15,6 +15,7 @@ import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
 import { getCachedRemoteNoteLinks, syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { getCachedRemoteNoteImages } from '../../core/noteMediaStore';
+import { getNotePinPrefsSnapshot, resolveUserNotePinned, setUserNotePinnedOnDoc, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
 import type { ViewMode } from '../../core/viewMode';
@@ -25,7 +26,7 @@ import {
 	type NoteShareCollaboratorSnapshot,
 	type SharedNotePlacement,
 } from '../../core/noteShareApi';
-import { readDrawingLinkState, readNoteFromDoc, setNotePinned } from '../../core/noteModel';
+import { readDrawingLinkState, readNoteFromDoc } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
@@ -1085,6 +1086,7 @@ function setChecklistCompletedState(doc: Y.Doc, completed: boolean): void {
 export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
 	React.useSyncExternalStore(subscribeNoteColorPrefs, getUserNoteColorPrefsSnapshot, getUserNoteColorPrefsSnapshot);
+	const pinPrefsSnapshot = React.useSyncExternalStore(subscribeNotePinPrefs, getNotePinPrefsSnapshot, getNotePinPrefsSnapshot);
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
 	const isDevBuild =
@@ -1092,9 +1094,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		(typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production');
 	const startupDebugEnabled = isDevBuild || isDebugLoggingEnabled();
 	const resolveMediaDocId = React.useCallback((noteId: string): string => {
+		// Guard first: manager.resolveRoomName() never throws for unregistered aliases
+		// — it falls back to `${activeWorkspaceId}:${rawNoteId}`, producing an invalid
+		// docId like `workspaceId:shared-placement:uuid`. Callers with a placement
+		// should use placement.roomId directly; this fallback must not be called.
+		if (noteId.startsWith('shared-placement:')) return '';
 		try {
-			// Shared aliases need to resolve back to their source room so media and
-			// collaborator lookups hit the real document namespace instead of the alias.
 			return manager.resolveRoomName(noteId);
 		} catch {
 			return props.activeWorkspaceId ? `${props.activeWorkspaceId}:${noteId}` : '';
@@ -1729,6 +1734,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	);
 
 	const noteSnapshots = React.useMemo<VisibleNoteSnapshot[]>(() => {
+		void pinPrefsSnapshot;
 		return orderedIds.map((id) => {
 			const liveDoc = docsById[id] ?? manager.peekDoc(id) ?? null;
 			const doc = liveDoc && hasRenderableNoteContent(liveDoc) ? liveDoc : null;
@@ -1747,13 +1753,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				collectionId: placement ? placement.collectionId : note.collectionId,
 				labelIds: placement ? placement.labelIds : note.labelIds,
 				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
-				isPinned: note.isPinned,
+				isPinned: resolveUserNotePinned({
+					docId: docId || id,
+					noteId: id,
+					userId: props.authUserId,
+					legacyPinned: note.isPinned,
+				}),
 				lastAccessedAt: note.lastAccessedAt,
 				trashed: note.trashed,
 				archived: note.archived,
 			};
 		});
-	}, [docsById, manager, metadataVersion, orderedIds, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias, workspaceRenderSnapshotNoteById]);
+	}, [docsById, manager, metadataVersion, orderedIds, pinPrefsSnapshot, props.authUserId, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias, workspaceRenderSnapshotNoteById]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
 
 	const baseVisibleIds = React.useMemo<string[]>(() => {
@@ -4063,7 +4074,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					onClose={() => { setMoreMenuNoteId(null); setMoreMenuAnchorRect(null); }}
 					onTogglePin={(moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;
-						setNotePinned(moreMenuDoc, !(noteSnapshotById.get(moreMenuNoteId)?.isPinned === true));
+						if (!moreMenuDocId) return;
+						setUserNotePinnedOnDoc({
+							doc: moreMenuDoc,
+							docId: moreMenuDocId,
+							noteId: moreMenuNoteId,
+							userId: props.authUserId,
+							pinned: !(noteSnapshotById.get(moreMenuNoteId)?.isPinned === true),
+						});
 					} : undefined}
 					onCheckAll={(moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;

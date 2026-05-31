@@ -88,6 +88,7 @@ import {
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
 import { addNoteDrawingId, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readNoteFromDoc, removeNoteDrawingId } from './core/noteModel';
+import { moveUserNotePinPreference, resolveUserNotePinned, setUserNotePinnedOnDoc } from './core/notePinPreferences';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
 import { activateWorkspace, fetchUserPreferences, flushUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
@@ -97,7 +98,7 @@ import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
 import { createCollection, deleteCollection, getCollectionsRegistryDoc, readCollectionsFromDoc, subscribeCollections, updateCollection, type CollectionRecord, type CollectionTreeNode, buildCollectionTree, buildCollectionPathMap } from './services/collectionService';
 import { createLabel, deleteLabel, getLabelsRegistryDoc, readLabelsFromDoc, subscribeLabels, updateLabel, type LabelRecord } from './services/labelService';
-import { assignNoteLabels, assignNotePinned, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
+import { assignNoteLabels, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
 import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode, SortDirection } from './utilities/getVisibleNotes';
 import {
 	flushPendingCollaboratorActions,
@@ -107,6 +108,7 @@ import {
 	moveCachedNoteShareCollaborators,
 	readCachedNoteShareCollaborators,
 	readPendingCollaboratorActions,
+	syncAttachedDrawingCollaborators,
 	syncNoteShareCollaborators,
 	updateSharedNotePlacementMetadata,
 	type SharedNotePlacement,
@@ -123,12 +125,14 @@ import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkA
 import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
 import { emptyTrashNow, moveNoteToWorkspace } from './core/noteManagementApi';
 import { getAppDebugSessionId, logClientEvent } from './core/debugLogger';
+import { beginMoveDebugTrace, logMoveDebugClient } from './core/moveDebugTrace';
 import { flushPendingNoteMoves, queuePendingNoteMove, removePendingNoteMove } from './core/noteMoveQueue';
 import {
 	emitNoteMediaChanged,
 	filterRemoteNoteImagesByPendingDeletes,
 	getCachedRemoteNoteImages,
 	moveLocalNoteMedia,
+	refreshRemoteNoteImages,
 	readQueuedNoteImageDeletions,
 	readQueuedNoteImages,
 	readStoredRemoteNoteImages,
@@ -140,6 +144,7 @@ import {
 	emitNoteDocumentsChanged,
 	getCachedNoteDocuments,
 	moveLocalNoteDocuments,
+	refreshRemoteNoteDocuments,
 	readQueuedNoteDocuments,
 	readStoredRemoteNoteDocuments,
 	scheduleQueuedNoteDocumentFlush,
@@ -148,7 +153,8 @@ import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
-import { clearCachedReminderStates, readCachedReminderStates, writeCachedReminderStates } from './core/reminderCache';
+import { clearCachedReminderStates, moveCachedReminderStates, readCachedReminderStates, writeCachedReminderStates } from './core/reminderCache';
+import { moveNoteOrderSnapshotEntry } from './core/noteOrderSnapshot';
 import { getUserNoteColorPrefsSnapshot, replaceUserNoteColorPrefs, setUserNoteColorPreferenceScope } from './core/noteColorPreferences';
 import { useStartupHydration } from './core/StartupHydrationContext';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
@@ -1162,6 +1168,73 @@ export function App(): React.JSX.Element {
 	sharedPlacementsRef.current = sharedPlacements;
 	const activeWorkspaceSharedPlacementsRef = React.useRef<readonly SharedNotePlacement[]>(activeWorkspaceSharedPlacements);
 	activeWorkspaceSharedPlacementsRef.current = activeWorkspaceSharedPlacements;
+	const [manualRoomAliases, setManualRoomAliases] = React.useState<Record<string, string>>({});
+	const manualRoomAliasesRef = React.useRef<Record<string, string>>(manualRoomAliases);
+	manualRoomAliasesRef.current = manualRoomAliases;
+	const mergeExternalRoomAliases = React.useCallback((placements: readonly SharedNotePlacement[]): Record<string, string> => ({
+		...Object.fromEntries(placements.map((placement) => [placement.aliasId, placement.roomId] as const)),
+		...manualRoomAliases,
+	}), [manualRoomAliases]);
+	const ensureManualRoomAlias = React.useCallback((aliasId: string, roomId: string): void => {
+		const normalizedAliasId = String(aliasId || '').trim();
+		const normalizedRoomId = String(roomId || '').trim();
+		if (!normalizedAliasId || !normalizedRoomId) return;
+		const current = manualRoomAliasesRef.current;
+		if (current[normalizedAliasId] === normalizedRoomId) return;
+		const nextAliases = { ...current, [normalizedAliasId]: normalizedRoomId };
+		manualRoomAliasesRef.current = nextAliases;
+		setManualRoomAliases(nextAliases);
+		manager.setExternalRoomAliases({
+			...Object.fromEntries(sharedPlacementsRef.current.map((placement) => [placement.aliasId, placement.roomId] as const)),
+			...nextAliases,
+		});
+	}, [manager]);
+	const removeManualRoomAlias = React.useCallback((aliasId: string): void => {
+		const normalizedAliasId = String(aliasId || '').trim();
+		if (!normalizedAliasId) return;
+		const current = manualRoomAliasesRef.current;
+		if (!(normalizedAliasId in current)) return;
+		const nextAliases = Object.fromEntries(Object.entries(current).filter(([key]) => key !== normalizedAliasId));
+		manualRoomAliasesRef.current = nextAliases;
+		setManualRoomAliases(nextAliases);
+		manager.setExternalRoomAliases({
+			...Object.fromEntries(sharedPlacementsRef.current.map((placement) => [placement.aliasId, placement.roomId] as const)),
+			...nextAliases,
+		});
+	}, [manager]);
+	React.useEffect(() => {
+		const current = manualRoomAliasesRef.current;
+		const sharedAliasIds = new Set(sharedPlacements.map((placement) => placement.aliasId));
+		const staleSharedAliases = Object.keys(current).filter((aliasId) => aliasId.startsWith('shared-placement:') && !sharedAliasIds.has(aliasId));
+		if (staleSharedAliases.length === 0) return;
+		const nextAliases = Object.fromEntries(
+			Object.entries(current).filter(([aliasId]) => !aliasId.startsWith('shared-placement:') || sharedAliasIds.has(aliasId))
+		);
+		manualRoomAliasesRef.current = nextAliases;
+		setManualRoomAliases(nextAliases);
+		manager.setExternalRoomAliases({
+			...Object.fromEntries(sharedPlacements.map((placement) => [placement.aliasId, placement.roomId] as const)),
+			...nextAliases,
+		});
+	}, [manager, sharedPlacements]);
+	const resolveRelatedNoteRoomId = React.useCallback((parentNoteId: string, relatedNoteId: string): string => {
+		const normalizedRelatedNoteId = String(relatedNoteId || '').trim();
+		if (!normalizedRelatedNoteId) return '';
+		if (normalizedRelatedNoteId.includes(':')) return normalizedRelatedNoteId;
+		const parentRoomId = manager.resolveRoomName(parentNoteId);
+		const separator = parentRoomId.indexOf(':');
+		if (separator <= 0) return normalizedRelatedNoteId;
+		return `${parentRoomId.slice(0, separator)}:${normalizedRelatedNoteId}`;
+	}, [manager]);
+	const ensureRelatedNoteAlias = React.useCallback((parentNoteId: string, relatedNoteId: string): string => {
+		const normalizedRelatedNoteId = String(relatedNoteId || '').trim();
+		if (!normalizedRelatedNoteId) return '';
+		const relatedRoomId = resolveRelatedNoteRoomId(parentNoteId, normalizedRelatedNoteId);
+		if (relatedRoomId) {
+			ensureManualRoomAlias(normalizedRelatedNoteId, relatedRoomId);
+		}
+		return normalizedRelatedNoteId;
+	}, [ensureManualRoomAlias, resolveRelatedNoteRoomId]);
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
@@ -1236,6 +1309,7 @@ export function App(): React.JSX.Element {
 	const [openDocId, setOpenDocId] = React.useState<string | null>(null);
 	const pendingNewNoteIdsRef = React.useRef<Set<string>>(new Set());
 	const pendingNewNoteCleanupIdsRef = React.useRef<Set<string>>(new Set());
+	const pendingAttachedDrawingParentsRef = React.useRef<Map<string, string>>(new Map());
 	// Tracks the note currently being created as a draft — kept hidden from the grid
 	// and bubble view until finalization (saved = visible, discarded = never shown).
 	const [draftNoteId, setDraftNoteId] = React.useState<string | null>(null);
@@ -2021,21 +2095,42 @@ export function App(): React.JSX.Element {
 		setNoteAttachmentBrowserState(null);
 	}, [goBackIfOverlayHistory]);
 
-	const loadDrawingDoc = React.useCallback(async (drawingId: string): Promise<Y.Doc | null> => {
-		const normalizedDrawingId = String(drawingId || '').trim();
+	const canSyncAttachedDrawingAccess = React.useCallback((parentNoteId: string): boolean => {
+		const normalizedParentNoteId = String(parentNoteId || '').trim();
+		if (!normalizedParentNoteId) return false;
+		const placement = sharedPlacements.find((item) => item.aliasId === normalizedParentNoteId) ?? null;
+		return placement ? true : canEditActiveWorkspace;
+	}, [canEditActiveWorkspace, sharedPlacements]);
+
+	const syncAttachedDrawingAccess = React.useCallback(async (parentNoteId: string, drawingId: string): Promise<void> => {
+		if (!canSyncAttachedDrawingAccess(parentNoteId)) return;
+		const parentDocId = manager.resolveRoomName(parentNoteId);
+		const drawingDocId = resolveRelatedNoteRoomId(parentNoteId, drawingId);
+		if (!parentDocId || !drawingDocId || parentDocId === drawingDocId) return;
+		await syncAttachedDrawingCollaborators({ parentDocId, drawingDocId }).catch(() => undefined);
+	}, [canSyncAttachedDrawingAccess, manager, resolveRelatedNoteRoomId]);
+
+	const loadDrawingDoc = React.useCallback(async (parentNoteId: string, drawingId: string): Promise<Y.Doc | null> => {
+		const normalizedDrawingId = ensureRelatedNoteAlias(parentNoteId, drawingId);
 		if (!normalizedDrawingId) return null;
+		// Access sync is intentionally NOT called here — thumbnail loading should never
+		// trigger the collaborator-sync API, which would fire a metadata event on every
+		// thumbnail render and create an infinite refresh loop (metadata event →
+		// refreshNoteShareState → re-render → new loadDrawingDoc reference → effect
+		// re-runs → API call → metadata event → …).  Access sync happens once in
+		// openAttachedDrawing, just before the editor is opened.
 		return manager.getDocWithSync(normalizedDrawingId);
-	}, [manager]);
+	}, [ensureRelatedNoteAlias, manager]);
 
 	const deleteAttachedDrawing = React.useCallback(async (noteId: string, drawingId: string) => {
 		const normalizedNoteId = String(noteId || '').trim();
-		const normalizedDrawingId = String(drawingId || '').trim();
+		const normalizedDrawingId = ensureRelatedNoteAlias(normalizedNoteId, drawingId);
 		if (!normalizedNoteId || !normalizedDrawingId) return;
 		const parentDoc = manager.getDoc(normalizedNoteId);
 		if (!parentDoc) return;
 		removeNoteDrawingId(parentDoc, normalizedDrawingId);
 		await manager.deleteNote(normalizedDrawingId, true);
-	}, [manager]);
+	}, [ensureRelatedNoteAlias, manager]);
 
 	const openMobileSidebar = React.useCallback(() => {
 		setIsMobileSidebarDragging(false);
@@ -2303,11 +2398,12 @@ export function App(): React.JSX.Element {
 		[commitOverlaySnapshot, getOverlaySnapshot, manager]
 	);
 
-	const openAttachedDrawing = React.useCallback((drawingId: string) => {
-		const normalizedDrawingId = String(drawingId || '').trim();
+	const openAttachedDrawing = React.useCallback(async (parentNoteId: string, drawingId: string) => {
+		const normalizedDrawingId = ensureRelatedNoteAlias(parentNoteId, drawingId);
 		if (!normalizedDrawingId) return;
+		await syncAttachedDrawingAccess(parentNoteId, normalizedDrawingId);
 		openNoteEditor(normalizedDrawingId, { replaceTop: true, closeAttachmentBrowser: true });
-	}, [openNoteEditor]);
+	}, [ensureRelatedNoteAlias, openNoteEditor, syncAttachedDrawingAccess]);
 
 	const createAttachedDrawing = React.useCallback(async (noteId: string) => {
 		const normalizedNoteId = String(noteId || '').trim();
@@ -2315,14 +2411,17 @@ export function App(): React.JSX.Element {
 		const parentDoc = manager.getDoc(normalizedNoteId);
 		if (!parentDoc) return;
 
-		// Attached drawings stay hidden from the note grid by skipping createNote()
-		// and linking a standalone drawing doc directly from the parent note.
+		// Attached drawings stay hidden from the note grid and remain local drafts
+		// until Save links them into the parent note.
 		const drawingId = makeNoteId('drawing-note');
+		ensureRelatedNoteAlias(normalizedNoteId, drawingId);
+		pendingNewNoteIdsRef.current.add(drawingId);
+		pendingAttachedDrawingParentsRef.current.set(drawingId, normalizedNoteId);
+		setDraftNoteId(drawingId);
 		const drawingDoc = await manager.getDocWithSync(drawingId);
 		initDrawingNoteDoc(drawingDoc, '');
-		addNoteDrawingId(parentDoc, drawingId);
 		openNoteEditor(drawingId);
-	}, [manager, openNoteEditor]);
+	}, [ensureRelatedNoteAlias, manager, openNoteEditor]);
 
 	const getPendingNewNoteDisposition = React.useCallback(
 		async (noteId: string): Promise<{ keep: boolean; type: 'text' | 'checklist' | 'drawing' }> => {
@@ -2384,6 +2483,7 @@ export function App(): React.JSX.Element {
 			if (!pendingNewNoteIdsRef.current.has(noteId) || pendingNewNoteCleanupIdsRef.current.has(noteId)) return;
 			pendingNewNoteCleanupIdsRef.current.add(noteId);
 			try {
+				const attachedParentNoteId = pendingAttachedDrawingParentsRef.current.get(noteId) ?? null;
 				const rawNoteType = String(manager.getDoc(noteId)?.getMap('metadata')?.get('type') ?? 'text');
 				const noteType = rawNoteType === 'checklist'
 					? 'checklist' as const
@@ -2395,13 +2495,21 @@ export function App(): React.JSX.Element {
 					: { keep: false, type: noteType };
 				pendingNewNoteIdsRef.current.delete(noteId);
 				pendingNewNoteCollectionSeedRef.current.delete(noteId);
+				pendingAttachedDrawingParentsRef.current.delete(noteId);
 				// If the draft is no longer the actively open editor note, unhide it now.
 				// When the editor is still mounted we keep the pending flag until close so
 				// attachment/media panels never switch into server-refresh mode mid-teardown.
 				if (selectedNoteId !== noteId) {
 					setDraftNoteId((prev) => prev === noteId ? null : prev);
 				}
-				if (disposition.keep) return;
+				if (disposition.keep) {
+					if (attachedParentNoteId) {
+						const parentDoc = manager.getDoc(attachedParentNoteId);
+						addNoteDrawingId(parentDoc, noteId);
+						await syncAttachedDrawingAccess(attachedParentNoteId, noteId);
+					}
+					return;
+				}
 				await manager.permanentlyDeleteNote(noteId).catch(() => undefined);
 				if (mode === 'save') {
 					showBriefDialog(
@@ -2416,7 +2524,7 @@ export function App(): React.JSX.Element {
 				pendingNewNoteCleanupIdsRef.current.delete(noteId);
 			}
 		},
-		[getPendingNewNoteDisposition, manager, noteReminderByDocId, showBriefDialog]
+		[getPendingNewNoteDisposition, manager, noteReminderByDocId, selectedNoteId, showBriefDialog, syncAttachedDrawingAccess]
 	);
 
 	const closeNoteEditor = React.useCallback(async () => {
@@ -4314,7 +4422,7 @@ export function App(): React.JSX.Element {
 	const moveNoteWorkspaceOptions = React.useMemo(() => {
 		return sidebarWorkspaces.filter((workspace) => workspace.id !== authWorkspaceId && workspace.systemKind !== 'SHARED_WITH_ME' && canEditWorkspaceContent(workspace.role));
 	}, [authWorkspaceId, sidebarWorkspaces]);
-	const selectedEditorSharedPlacement = React.useMemo(
+	const selectedNoteSharedPlacement = React.useMemo(
 		() => selectedNoteId ? sharedPlacements.find((placement) => placement.aliasId === selectedNoteId) ?? null : null,
 		[selectedNoteId, sharedPlacements]
 	);
@@ -4384,7 +4492,7 @@ export function App(): React.JSX.Element {
 	);
 	const noteCollectionMetadata = useEffectiveNoteMetadataSnapshot(noteCollectionDoc, noteCollectionPlacement);
 	const noteLabelsMetadata = useEffectiveNoteMetadataSnapshot(noteLabelsDoc, noteLabelsPlacement);
-	const selectedNoteMetadata = useEffectiveNoteMetadataSnapshot(editorMode === 'none' && selectedNoteId ? openDoc : null, selectedEditorSharedPlacement);
+	const selectedNoteMetadata = useEffectiveNoteMetadataSnapshot(editorMode === 'none' && selectedNoteId ? openDoc : null, selectedNoteSharedPlacement);
 
 	React.useEffect(() => {
 		if (!activeCollectionId) return;
@@ -4561,8 +4669,8 @@ export function App(): React.JSX.Element {
 			const noteOrder = await manager.getNoteOrder().catch(() => null);
 			if (cancelled) return;
 			const localDocIds = noteOrder && noteOrder.length > 0
-				? noteOrder.toArray().map((noteId) => manager.resolveRoomName(noteId)).filter(Boolean)
-				: startupHydration.noteOrderIds.map((noteId) => manager.resolveRoomName(noteId)).filter(Boolean);
+				? noteOrder.toArray().filter((noteId) => !noteId.startsWith('shared-placement:')).map((noteId) => manager.resolveRoomName(noteId)).filter(Boolean)
+				: startupHydration.noteOrderIds.filter((noteId) => !noteId.startsWith('shared-placement:')).map((noteId) => manager.resolveRoomName(noteId)).filter(Boolean);
 			const sharedDocIds = visibleSharedPlacements.map((placement) => String(placement.roomId || '').trim()).filter(Boolean);
 			const docIds = [...new Set([...localDocIds, ...sharedDocIds])];
 			if (docIds.length === 0) return;
@@ -4737,7 +4845,7 @@ export function App(): React.JSX.Element {
 			]);
 			setSharedPlacements(cachedAllPlacements);
 			setActiveWorkspaceSharedPlacements(cachedActivePlacements);
-			manager.setExternalRoomAliases(Object.fromEntries(cachedAllPlacements.map((placement) => [placement.aliasId, placement.roomId])));
+			manager.setExternalRoomAliases(mergeExternalRoomAliases(cachedAllPlacements));
 		}
 		const lastKnownSharedPlacements = sharedPlacementsRef.current;
 		const lastKnownActiveWorkspacePlacements = activeWorkspaceSharedPlacementsRef.current;
@@ -4815,7 +4923,7 @@ export function App(): React.JSX.Element {
 			// visibleSharedPlacements filters what the NoteGrid actually displays.
 			setSharedPlacements(resolvedAllPlacements);
 			setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
-			manager.setExternalRoomAliases(Object.fromEntries(resolvedAllPlacements.map((placement) => [placement.aliasId, placement.roomId])));
+			manager.setExternalRoomAliases(mergeExternalRoomAliases(resolvedAllPlacements));
 			if (authUserId) {
 				const workspacePlacementWrites: Promise<void>[] = [];
 				if (authWorkspaceId) {
@@ -5010,8 +5118,7 @@ export function App(): React.JSX.Element {
 			return;
 		}
 		// sharedPlacements holds ALL placements so this covers every SHARED_WITH_ME workspace.
-		const aliases = Object.fromEntries(sharedPlacements.map((placement) => [placement.aliasId, placement.roomId]));
-		manager.setExternalRoomAliases(aliases);
+		manager.setExternalRoomAliases(mergeExternalRoomAliases(sharedPlacements));
 	}, [authStatus, manager, sharedPlacements]);
 
 	React.useEffect(() => {
@@ -7363,19 +7470,52 @@ export function App(): React.JSX.Element {
 		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
 		const shouldQueueImmediately = authOfflineMode || browserOffline;
 		let shouldShowQueuedMessage = shouldQueueImmediately;
+		const moveDebugTrace = beginMoveDebugTrace({
+			noteId,
+			sourceWorkspaceId: authWorkspaceId,
+			targetWorkspaceId,
+		});
+		const moveDebugTraceId = moveDebugTrace?.traceId ?? null;
+		logMoveDebugClient(moveDebugTraceId, 'move-start', {
+			noteId,
+			sourceDocId,
+			targetDocId,
+			shouldQueueImmediately,
+			authOfflineMode,
+			browserOffline,
+		});
+		const refreshMovedNoteRemoteState = async (): Promise<void> => {
+			await Promise.allSettled([
+				refreshRemoteNoteImages(targetDocId, { force: true }),
+				refreshRemoteNoteDocuments(targetDocId, { userId: authUserId, force: true }),
+			]);
+		};
 		setMoveNoteBusy(true);
 		setMoveNoteError(null);
 		try {
-			await manager.moveNoteToWorkspaceLocally(noteId, targetWorkspaceId, {
+			if (!shouldQueueImmediately && authUserId) {
+				removePendingNoteMove(authUserId, noteId);
+			}
+			const metadataMapping = await manager.moveNoteToWorkspaceLocally(noteId, targetWorkspaceId, {
 				sourceWorkspaceId: authWorkspaceId,
 				title: noteTitle,
 			});
+			logMoveDebugClient(moveDebugTraceId, 'local-move-complete', {
+				noteId,
+				targetDocId,
+				collectionPairCount: metadataMapping.collectionIdPairs.length,
+				labelPairCount: metadataMapping.labelIdPairs.length,
+			});
+			removeManualRoomAlias(noteId);
 			// Keep docId-keyed local caches aligned with the optimistic move so chips,
 			// previews, and attachment panels stay populated before the server round-trip.
 			await Promise.allSettled([
 				moveLocalNoteMedia(sourceDocId, targetDocId, authUserId),
 				moveLocalNoteLinks(sourceDocId, targetDocId, authUserId),
 				moveLocalNoteDocuments(sourceDocId, targetDocId, authUserId),
+				Promise.resolve().then(() => moveUserNotePinPreference(sourceDocId, targetDocId, authUserId)),
+				Promise.resolve().then(() => moveNoteOrderSnapshotEntry(authWorkspaceId, targetWorkspaceId, noteId)),
+				authUserId ? Promise.resolve().then(() => moveCachedReminderStates({ userId: authUserId, noteId, sourceWorkspaceId: authWorkspaceId, targetWorkspaceId })) : Promise.resolve(),
 				authUserId ? moveCachedNoteShareCollaborators(authUserId, sourceDocId, targetDocId) : Promise.resolve(),
 			]);
 			setSelectedNoteId((current) => current === noteId ? null : current);
@@ -7384,18 +7524,28 @@ export function App(): React.JSX.Element {
 				setOpenDoc(null);
 				return null;
 			});
-			if (authUserId) {
+			if (shouldQueueImmediately && authUserId) {
+				logMoveDebugClient(moveDebugTraceId, 'move-queued-offline', {
+					noteId,
+					targetDocId,
+				});
 				queuePendingNoteMove({
 					userId: authUserId,
 					noteId,
 					sourceWorkspaceId: authWorkspaceId,
 					targetWorkspaceId,
 					title: noteTitle,
+					metadataMapping,
 				});
 			}
 			if (!shouldQueueImmediately) {
 				try {
-					await moveNoteToWorkspace(noteId, targetWorkspaceId, authWorkspaceId);
+					await moveNoteToWorkspace(noteId, targetWorkspaceId, authWorkspaceId, metadataMapping, moveDebugTraceId);
+					await refreshMovedNoteRemoteState();
+					logMoveDebugClient(moveDebugTraceId, 'server-move-success', {
+						noteId,
+						targetDocId,
+					});
 					if (authUserId) {
 						removePendingNoteMove(authUserId, noteId);
 					}
@@ -7406,16 +7556,38 @@ export function App(): React.JSX.Element {
 						? (error as { status: number }).status
 						: null;
 					const isNetworkFailure = /failed to fetch|networkerror|load failed/i.test(message);
-					if (status === 409) {
-						if (authUserId) {
-							removePendingNoteMove(authUserId, noteId);
-						}
-						shouldShowQueuedMessage = false;
-					} else if (isNetworkFailure || status == null || status >= 500) {
+					logMoveDebugClient(moveDebugTraceId, 'server-move-error', {
+						noteId,
+						targetDocId,
+						status,
+						message,
+						isNetworkFailure,
+					});
+					if (isNetworkFailure || status == null || status >= 500) {
 						// Keep the local move and persisted queue when the server response is
 						// ambiguous. The move may have already committed remotely.
+						logMoveDebugClient(moveDebugTraceId, 'move-queued-ambiguous', {
+							noteId,
+							targetDocId,
+							status,
+						});
+						if (authUserId) {
+							queuePendingNoteMove({
+								userId: authUserId,
+								noteId,
+								sourceWorkspaceId: authWorkspaceId,
+								targetWorkspaceId,
+								title: noteTitle,
+								metadataMapping,
+							});
+						}
 						shouldShowQueuedMessage = true;
 					} else {
+						logMoveDebugClient(moveDebugTraceId, 'rollback-start', {
+							noteId,
+							targetDocId,
+							status,
+						});
 						await manager.moveNoteToWorkspaceLocally(noteId, authWorkspaceId, {
 							sourceWorkspaceId: targetWorkspaceId,
 							title: noteTitle,
@@ -7424,14 +7596,25 @@ export function App(): React.JSX.Element {
 							moveLocalNoteMedia(targetDocId, sourceDocId, authUserId),
 							moveLocalNoteLinks(targetDocId, sourceDocId, authUserId),
 							moveLocalNoteDocuments(targetDocId, sourceDocId, authUserId),
+							Promise.resolve().then(() => moveUserNotePinPreference(targetDocId, sourceDocId, authUserId)),
+							Promise.resolve().then(() => moveNoteOrderSnapshotEntry(targetWorkspaceId, authWorkspaceId, noteId)),
+							authUserId ? Promise.resolve().then(() => moveCachedReminderStates({ userId: authUserId, noteId, sourceWorkspaceId: targetWorkspaceId, targetWorkspaceId: authWorkspaceId })) : Promise.resolve(),
 							authUserId ? moveCachedNoteShareCollaborators(authUserId, targetDocId, sourceDocId) : Promise.resolve(),
 						]);
 						if (authUserId) {
 							removePendingNoteMove(authUserId, noteId);
 						}
+						logMoveDebugClient(moveDebugTraceId, 'rollback-complete', {
+							noteId,
+							targetDocId,
+							status,
+						});
 						throw error;
 					}
 				}
+			}
+			if (!shouldShowQueuedMessage) {
+				await refreshNoteShareStateRef.current().catch(() => undefined);
 			}
 			setMoveNoteModalState(null);
 			showBriefDialog(t(shouldShowQueuedMessage ? 'workspace.moveNoteQueued' : 'workspace.moveNoteSuccess'));
@@ -7440,7 +7623,7 @@ export function App(): React.JSX.Element {
 		} finally {
 			setMoveNoteBusy(false);
 		}
-	}, [authOfflineMode, authUserId, authWorkspaceId, manager, moveNoteModalState, showBriefDialog, t]);
+	}, [authOfflineMode, authUserId, authWorkspaceId, manager, moveNoteModalState, removeManualRoomAlias, showBriefDialog, t]);
 
 	const handleEmptyTrashNow = React.useCallback(async () => {
 		if (authStatus !== 'authed' || authOfflineMode || typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -7474,9 +7657,36 @@ export function App(): React.JSX.Element {
 
 	const selectedNoteRoomId = React.useMemo(() => {
 		if (!selectedNoteId) return '';
-		const placement = sharedPlacements.find((item) => item.aliasId === selectedNoteId) ?? null;
-		return placement?.roomId || (authWorkspaceId ? `${authWorkspaceId}:${selectedNoteId}` : selectedNoteId);
-	}, [authWorkspaceId, selectedNoteId, sharedPlacements]);
+		if (selectedNoteSharedPlacement?.roomId) return selectedNoteSharedPlacement.roomId;
+		const manualRoomId = selectedNoteId.startsWith('shared-placement:') ? '' : manualRoomAliases[selectedNoteId];
+		if (manualRoomId) return manualRoomId;
+		if (selectedNoteId.startsWith('shared-placement:')) return '';
+		try {
+			return manager.resolveRoomName(selectedNoteId);
+		} catch {
+			return authWorkspaceId ? `${authWorkspaceId}:${selectedNoteId}` : selectedNoteId;
+		}
+	}, [authWorkspaceId, manager, manualRoomAliases, selectedNoteId, selectedNoteSharedPlacement]);
+	const selectedMovedSharedPlacement = React.useMemo(() => {
+		if (!selectedNoteId || selectedNoteId.startsWith('shared-placement:')) return null;
+		return activeWorkspaceSharedPlacements.find((placement) => placement.sourceNoteId === selectedNoteId) ?? null;
+	}, [activeWorkspaceSharedPlacements, selectedNoteId]);
+
+	React.useEffect(() => {
+		if (!selectedNoteId || !selectedMovedSharedPlacement) return;
+		setSelectedNoteId((current) => current === selectedNoteId ? selectedMovedSharedPlacement.aliasId : current);
+	}, [selectedMovedSharedPlacement, selectedNoteId]);
+
+	React.useEffect(() => {
+		if (!selectedNoteId || !selectedNoteId.startsWith('shared-placement:')) return;
+		if (selectedNoteSharedPlacement) return;
+		setSelectedNoteId((current) => current === selectedNoteId ? null : current);
+		setOpenDoc(null);
+		setOpenDocId((current) => current === selectedNoteId ? null : current);
+		setCollaboratorModalState((current) => current?.noteId === selectedNoteId ? null : current);
+		setNoteImageModalState((current) => current?.noteId === selectedNoteId ? null : current);
+		setNoteAttachmentBrowserState((current) => current?.noteId === selectedNoteId ? null : current);
+	}, [selectedNoteId, selectedNoteSharedPlacement]);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -7485,6 +7695,14 @@ export function App(): React.JSX.Element {
 			setOpenDoc(null);
 			setOpenDocId(null);
 			return;
+		}
+		if (selectedNoteId.startsWith('shared-placement:')) {
+			if (!selectedNoteRoomId) {
+				setOpenDoc(null);
+				setOpenDocId(null);
+				return;
+			}
+			ensureManualRoomAlias(selectedNoteId, selectedNoteRoomId);
 		}
 		// Re-open the editor whenever a shared-note alias is remapped to a different
 		// underlying room (for example after the owner moves the shared note).
@@ -7505,7 +7723,7 @@ export function App(): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [manager, selectedNoteId, selectedNoteRoomId]);
+	}, [ensureManualRoomAlias, manager, selectedNoteId, selectedNoteRoomId]);
 
 	const sidebarIsCollapsed = !isMobileViewport && isSidebarCollapsed;
 	React.useEffect(() => {
@@ -7816,6 +8034,21 @@ export function App(): React.JSX.Element {
 		});
 	};
 
+	// Stable memoized loadDrawingDoc prop for NoteDrawingBrowserModal.
+	// Using an inline arrow in JSX would create a new function reference on every
+	// render, causing DrawingsPanel's effect (which depends on loadDrawingDoc) to
+	// re-run and flash "Loading..." unnecessarily on unrelated state updates.
+	// NOTE: must be declared before any early-return (auth gate, share route, etc.)
+	// so the hook is always called unconditionally on every render.
+	const drawingBrowserNoteId = noteAttachmentBrowserState?.kind === 'drawings' ? noteAttachmentBrowserState.noteId : null;
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	const drawingBrowserLoadDoc = React.useCallback(
+		(drawingId: string) => drawingBrowserNoteId ? loadDrawingDoc(drawingBrowserNoteId, drawingId) : Promise.resolve(null),
+		// loadDrawingDoc is stable (useCallback with [ensureRelatedNoteAlias, manager]);
+		// drawingBrowserNoteId only changes when a different note's drawings modal opens.
+		[drawingBrowserNoteId, loadDrawingDoc]
+	);
+
 	// ── Auth gate / splash overlay ────────────────────────────────────────
 	// 'unauth'  → show login form (early return)
 	// 'loading' → show full-page splash (early return – no workspace data yet)
@@ -7836,8 +8069,8 @@ export function App(): React.JSX.Element {
 	const canCreateNotesInCurrentContext = viewMode === 'bubble'
 		? Boolean(bubbleSelectedWorkspace?.id && bubbleSelectedWorkspace.systemKind !== 'SHARED_WITH_ME' && canEditBubbleSelectedWorkspace)
 		: canCreateNotesInActiveWorkspace;
-	const selectedSharedPlacement = selectedNoteId ? sharedPlacements.find((placement) => placement.aliasId === selectedNoteId) ?? null : null;
-	const selectedNoteDocId = selectedNoteId ? selectedSharedPlacement?.roomId || (authWorkspaceId ? `${authWorkspaceId}:${selectedNoteId}` : '') : '';
+	const selectedSharedPlacement = selectedNoteSharedPlacement;
+	const selectedNoteDocId = selectedNoteRoomId;
 	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
 	const canManageSelectedNoteCollaborators = selectedSharedPlacement ? selectedSharedPlacement.role === 'EDITOR' : canEditActiveWorkspace;
 	const crossWorkspacePlacement = crossWorkspaceNote ? sharedPlacements.find((placement) => placement.aliasId === crossWorkspaceNote.noteId) ?? null : null;
@@ -7853,6 +8086,22 @@ export function App(): React.JSX.Element {
 		? crossWorkspacePlacement.role === 'EDITOR'
 		: canEditCrossWorkspace;
 	const selectedNewNoteCollectionSeed = selectedNoteId ? pendingNewNoteCollectionSeedRef.current.get(selectedNoteId) ?? null : null;
+	const toggleSelectedNotePin = (): void => {
+		if (!openDoc || !selectedNoteId || !selectedNoteDocId) return;
+		const isPinned = resolveUserNotePinned({
+			docId: selectedNoteDocId,
+			noteId: selectedNoteId,
+			userId: authUserId,
+			legacyPinned: readNoteMetadataState(openDoc).isPinned,
+		});
+		setUserNotePinnedOnDoc({
+			doc: openDoc,
+			docId: selectedNoteDocId,
+			noteId: selectedNoteId,
+			userId: authUserId,
+			pinned: !isPinned,
+		});
+	};
 	const selectedQuickCreateCollectionOption = selectedNoteId && openDoc && selectedNewNoteCollectionSeed && !selectedNoteReadOnly
 		? {
 			label: selectedNewNoteCollectionSeed.label,
@@ -7875,6 +8124,7 @@ export function App(): React.JSX.Element {
 		WebkitBackdropFilter: `blur(${blurPx}px)`,
 		pointerEvents: isMobileSidebarOpen && !isMobileSidebarDragging ? 'auto' : 'none',
 	} as React.CSSProperties;
+
 
 	return (
 		<>
@@ -9081,9 +9331,9 @@ export function App(): React.JSX.Element {
 				onAddDrawing={noteAttachmentBrowserState?.kind === 'drawings' && noteAttachmentBrowserState.canEdit ? () => {
 					void createAttachedDrawing(noteAttachmentBrowserState.noteId);
 				} : undefined}
-				onOpenDrawing={openAttachedDrawing}
+				onOpenDrawing={noteAttachmentBrowserState?.kind === 'drawings' ? (drawingId) => openAttachedDrawing(noteAttachmentBrowserState.noteId, drawingId) : undefined}
 				onDeleteDrawing={noteAttachmentBrowserState?.kind === 'drawings' && noteAttachmentBrowserState.canEdit ? (drawingId) => deleteAttachedDrawing(noteAttachmentBrowserState.noteId, drawingId) : undefined}
-				loadDrawingDoc={loadDrawingDoc}
+				loadDrawingDoc={noteAttachmentBrowserState?.kind === 'drawings' ? drawingBrowserLoadDoc : undefined}
 			/>
 			<NoteImageUploadModal
 				isOpen={Boolean(noteImageModalState)}
@@ -9188,7 +9438,7 @@ export function App(): React.JSX.Element {
 							}}
 							onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 							onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
-							onTogglePin={selectedNoteReadOnly ? undefined : () => assignNotePinned(openDoc, !readNoteMetadataState(openDoc).isPinned)}
+							onTogglePin={selectedNoteReadOnly ? undefined : toggleSelectedNotePin}
 							isPendingNew={draftNoteId === selectedNoteId}
 							readOnly={selectedNoteReadOnly}
 						/>
@@ -9214,13 +9464,13 @@ export function App(): React.JSX.Element {
 						onAddDocument={selectedNoteReadOnly ? undefined : () => {
 							void createAttachedDrawing(selectedNoteId);
 						}}
-						onOpenDrawing={openAttachedDrawing}
+						onOpenDrawing={(drawingId) => openAttachedDrawing(selectedNoteId, drawingId)}
 						onDeleteDrawing={selectedNoteReadOnly ? undefined : (drawingId) => deleteAttachedDrawing(selectedNoteId, drawingId)}
-						loadDrawingDoc={loadDrawingDoc}
+						loadDrawingDoc={(drawingId) => loadDrawingDoc(selectedNoteId, drawingId)}
 						onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
 						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
-						onTogglePin={selectedNoteReadOnly ? undefined : () => assignNotePinned(openDoc, !readNoteMetadataState(openDoc).isPinned)}
+						onTogglePin={selectedNoteReadOnly ? undefined : toggleSelectedNotePin}
 						onShowBriefDialog={showBriefDialog}
 						readOnly={selectedNoteReadOnly}
 						initialShowCompleted={checklistShowCompletedPref}

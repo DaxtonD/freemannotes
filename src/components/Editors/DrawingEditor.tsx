@@ -485,11 +485,17 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (!api) return;
+		// Defer binding creation until the WebSocket provider's awareness object is
+		// available. ExcalidrawBinding immediately calls awareness.getStates() in its
+		// constructor — passing undefined crashes with "this.awareness is undefined".
+		// props.awareness is in the dependency array, so this effect re-runs once the
+		// WS provider connects and App passes a real Awareness instance.
+		if (props.awareness == null) return;
 		const binding = new ExcalidrawBinding(
 			yElements,
 			yAssets,
 			api,
-			props.awareness ?? undefined
+			props.awareness
 		);
 		bindingRef.current = binding;
 		const bindingWithSnapshot = binding as ExcalidrawBinding & Partial<BindingSnapshot>;

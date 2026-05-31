@@ -9,6 +9,7 @@ import {
 	type CachedCollaboratorSnapshot,
 	type PendingCollaboratorAction,
 } from './noteShareCollaboratorStore';
+import { appendMoveDebugQuery, getMoveDebugTraceIdForDocId } from './moveDebugTrace';
 import { requestPwaBackgroundSync } from './pwa';
 import { updateKnownUserCache } from './userIdentityCache';
 import { updateAvatarCache } from './userAvatarCache';
@@ -146,7 +147,8 @@ async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): P
 }
 
 async function requestNoteShareCollaborators(docId: string): Promise<NoteShareCollaboratorSnapshot> {
-	return fetchJson(`/api/note-shares/collaborators?docId=${encodeURIComponent(docId)}`);
+	const traceId = getMoveDebugTraceIdForDocId(docId);
+	return fetchJson(appendMoveDebugQuery(`/api/note-shares/collaborators?docId=${encodeURIComponent(docId)}`, traceId));
 }
 
 async function requestCreateNoteShareInvitation(args: { docId: string; identifier: string; role: NoteShareRole }): Promise<{ invitation: NoteShareInvitation }> {
@@ -174,6 +176,13 @@ async function requestUpdateNoteShareCollaboratorRole(collaboratorId: string, ro
 	return fetchJson(`/api/note-shares/collaborators/${encodeURIComponent(collaboratorId)}`, {
 		method: 'PUT',
 		body: JSON.stringify({ role }),
+	});
+}
+
+async function requestSyncAttachedDrawingCollaborators(args: { parentDocId: string; drawingDocId: string }): Promise<{ ok: true; collaboratorCount: number }> {
+	return fetchJson('/api/note-shares/attached-drawing-access', {
+		method: 'POST',
+		body: JSON.stringify(args),
 	});
 }
 
@@ -411,6 +420,15 @@ export async function updateNoteShareCollaboratorRole(collaboratorId: string, ro
 	return requestUpdateNoteShareCollaboratorRole(collaboratorId, role);
 }
 
+export async function syncAttachedDrawingCollaborators(args: { parentDocId: string; drawingDocId: string }): Promise<{ ok: true; collaboratorCount: number }> {
+	const parentDocId = String(args.parentDocId || '').trim();
+	const drawingDocId = String(args.drawingDocId || '').trim();
+	if (!parentDocId || !drawingDocId) {
+		return { ok: true, collaboratorCount: 0 };
+	}
+	return requestSyncAttachedDrawingCollaborators({ parentDocId, drawingDocId });
+}
+
 export async function readCachedNoteShareCollaborators(userId: string, docId: string): Promise<NoteShareCollaboratorSnapshot | null> {
 	return readCachedCollaboratorSnapshot(userId, docId) as Promise<NoteShareCollaboratorSnapshot | null>;
 }
@@ -431,9 +449,6 @@ export async function syncNoteShareCollaborators(userId: string, docId: string, 
 		return (await readCachedCollaboratorSnapshot(userId, docId)) as NoteShareCollaboratorSnapshot | null;
 	} catch (error) {
 		if (isMissingAccessError(error)) {
-			if (opts?.suppressError) {
-				return (await readCachedCollaboratorSnapshot(userId, docId)) as NoteShareCollaboratorSnapshot | null;
-			}
 			await clearCollaboratorSnapshot(userId, docId);
 			return null;
 		}

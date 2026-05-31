@@ -313,8 +313,8 @@ if (DATABASE_URL.length > 0) {
 	try {
 		const { PrismaClient } = require('@prisma/client');
 		prisma = new PrismaClient({
-			// Log slow queries in development for debugging.
-			log: process.env.NODE_ENV !== 'production'
+			// Log warn/error in all environments; opt-in to query logging via LOG_PRISMA_QUERIES=true.
+			log: process.env.LOG_PRISMA_QUERIES === 'true'
 				? ['query', 'warn', 'error']
 				: ['warn', 'error'],
 		});

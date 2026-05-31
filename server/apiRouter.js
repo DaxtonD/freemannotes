@@ -34,6 +34,8 @@ const { docs: liveDocs } = require('y-websocket/bin/utils');
 const { createTimestampFormatter } = require('./timezone');
 const { findLiveWorkspace, findLiveWorkspaceMembership } = require('./workspaceAccess');
 const { normalizeWorkspaceRole, canEditWorkspaceContent } = require('./workspaceRoles');
+const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
+const { getMoveDebugTrace, normalizeMoveDebugTraceId, recordMoveDebugTrace } = require('./moveDebugTrace');
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const COLLECTIONS_REGISTRY_ID = '__collections_registry__';
@@ -426,6 +428,10 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		}
 	}
 
+	function workspaceRoleToNoteShareRole(role) {
+		return canEditWorkspaceContent(normalizeWorkspaceRole(role, 'VIEWER')) ? 'EDITOR' : 'VIEWER';
+	}
+
 	function readMoveMetadata(doc) {
 		const metadata = doc.getMap('metadata');
 		return {
@@ -460,7 +466,35 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		}).filter(Boolean);
 	}
 
-	function createCollectionInRegistryDoc(doc, { name, parentId = null }) {
+	function normalizeMoveIdPairs(value) {
+		if (!Array.isArray(value)) return [];
+		return value.map((entry) => {
+			if (!entry || typeof entry !== 'object') return null;
+			const sourceId = normalizeId(entry.sourceId);
+			const targetId = normalizeId(entry.targetId);
+			if (!sourceId || !targetId) return null;
+			return { sourceId, targetId };
+		}).filter(Boolean);
+	}
+
+	function normalizeClientMoveMetadata(value) {
+		if (!value || typeof value !== 'object') return null;
+		const collectionId = normalizeOptionalId(value.collectionId);
+		const labelIds = normalizeLabelIds(value.labelIds);
+		const collectionIdPairs = normalizeMoveIdPairs(value.collectionIdPairs);
+		const labelIdPairs = normalizeMoveIdPairs(value.labelIdPairs);
+		if (!collectionId && labelIds.length === 0 && collectionIdPairs.length === 0 && labelIdPairs.length === 0) {
+			return null;
+		}
+		return {
+			collectionId,
+			labelIds,
+			collectionIdPairs,
+			labelIdPairs,
+		};
+	}
+
+	function createCollectionInRegistryDoc(doc, { id = null, name, parentId = null }) {
 		const normalizedName = normalizeName(name);
 		if (!normalizedName) return null;
 		const normalizedParentId = normalizeOptionalId(parentId);
@@ -471,7 +505,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		const createdAt = nowIso();
 		const row = new Y.Map();
 		const collection = {
-			id: makeGeneratedId('collection'),
+			id: normalizeOptionalId(id) || makeGeneratedId('collection'),
 			name: normalizedName,
 			parentId: normalizedParentId,
 		};
@@ -486,14 +520,14 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		return collection;
 	}
 
-	function createLabelInRegistryDoc(doc, { name, color = null }) {
+	function createLabelInRegistryDoc(doc, { id = null, name, color = null }) {
 		const normalizedName = normalizeName(name);
 		if (!normalizedName) return null;
 		const existing = readLabelsFromRegistryDoc(doc).find((label) => normalizeComparableName(label.name) === normalizeComparableName(normalizedName)) || null;
 		if (existing) return existing;
 		const row = new Y.Map();
 		const label = {
-			id: makeGeneratedId('label'),
+			id: normalizeOptionalId(id) || makeGeneratedId('label'),
 			name: normalizedName,
 			color: typeof color === 'string' && color.trim() ? color.trim() : null,
 		};
@@ -507,7 +541,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		return label;
 	}
 
-	function ensureTargetCollectionIdForMove(sourceCollectionId, sourceCollectionsDoc, targetCollectionsDoc) {
+	function ensureTargetCollectionIdForMove(sourceCollectionId, sourceCollectionsDoc, targetCollectionsDoc, preferredTargetIdsBySourceId = new Map()) {
 		const normalizedSourceId = normalizeOptionalId(sourceCollectionId);
 		if (!normalizedSourceId) return null;
 		const sourceCollections = readCollectionsFromRegistryDoc(sourceCollectionsDoc);
@@ -528,6 +562,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			)) || null;
 			if (!targetCollection) {
 				targetCollection = createCollectionInRegistryDoc(targetCollectionsDoc, {
+					id: preferredTargetIdsBySourceId.get(sourceCollection.id) || null,
 					name: sourceCollection.name,
 					parentId: targetParentId,
 				});
@@ -538,7 +573,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		return targetParentId;
 	}
 
-	function ensureTargetLabelIdsForMove(sourceLabelIds, sourceLabelsDoc, targetLabelsDoc) {
+	function ensureTargetLabelIdsForMove(sourceLabelIds, sourceLabelsDoc, targetLabelsDoc, preferredTargetIdsBySourceId = new Map()) {
 		const sourceIds = normalizeLabelIds(sourceLabelIds);
 		if (sourceIds.length === 0) return [];
 		const sourceById = new Map(readLabelsFromRegistryDoc(sourceLabelsDoc).map((label) => [label.id, label]));
@@ -551,6 +586,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			let targetLabel = targetByName.get(comparableName) || null;
 			if (!targetLabel) {
 				targetLabel = createLabelInRegistryDoc(targetLabelsDoc, {
+					id: preferredTargetIdsBySourceId.get(sourceLabel.id) || null,
 					name: sourceLabel.name,
 					color: sourceLabel.color,
 				});
@@ -565,10 +601,12 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		return nextLabelIds;
 	}
 
-	async function remapMoveNoteStateForWorkspaceMove(tx, sourceWorkspaceId, targetWorkspaceId, noteState) {
+	async function remapMoveNoteStateForWorkspaceMove(tx, sourceWorkspaceId, targetWorkspaceId, noteState, clientMetadataMapping = null) {
 		const moveDoc = new Y.Doc();
 		Y.applyUpdate(moveDoc, new Uint8Array(noteState));
 		const sourceMetadata = readMoveMetadata(moveDoc);
+		const preferredCollectionIdsBySourceId = new Map((clientMetadataMapping?.collectionIdPairs || []).map((entry) => [entry.sourceId, entry.targetId]));
+		const preferredLabelIdsBySourceId = new Map((clientMetadataMapping?.labelIdPairs || []).map((entry) => [entry.sourceId, entry.targetId]));
 		let targetCollectionRegistry = null;
 		let targetLabelRegistry = null;
 		let mappedCollectionId = null;
@@ -584,6 +622,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 				sourceMetadata.collectionId,
 				sourceCollectionRegistry.doc,
 				targetCollectionRegistry.doc,
+				preferredCollectionIdsBySourceId,
 			);
 		}
 
@@ -597,6 +636,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 				sourceMetadata.labelIds,
 				sourceLabelRegistry.doc,
 				targetLabelRegistry.doc,
+				preferredLabelIdsBySourceId,
 			);
 		}
 
@@ -678,6 +718,25 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return String(storedDocId).startsWith(prefix)
 				? String(storedDocId).slice(prefix.length)
 				: storedDocId;
+		}
+
+		if (pathname === '/api/debug/move-trace' && method === 'GET') {
+			if (!req.auth || !req.auth.userId) {
+				jsonResponse(res, 401, { error: 'Not authenticated' });
+				return true;
+			}
+			const traceId = normalizeMoveDebugTraceId(url.searchParams.get('traceId'));
+			if (!traceId) {
+				jsonResponse(res, 400, { error: 'traceId is required' });
+				return true;
+			}
+			const trace = getMoveDebugTrace(traceId);
+			if (!trace) {
+				jsonResponse(res, 404, { error: 'Trace not found', traceId });
+				return true;
+			}
+			jsonResponse(res, 200, trace);
+			return true;
 		}
 
 		// ── Health endpoint ──────────────────────────────────────────────
@@ -1175,26 +1234,39 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 					}
 
 					const body = await readJsonBody(req);
+					const debugTraceId = normalizeMoveDebugTraceId(body?.debugTraceId);
+					req.moveDebugTraceId = debugTraceId;
+					const clientMetadataMapping = normalizeClientMoveMetadata(body?.metadataMapping);
 					const sessionWorkspaceId = getSessionWorkspaceId();
 					const sourceWorkspaceId = typeof body?.sourceWorkspaceId === 'string' && body.sourceWorkspaceId.trim()
 						? body.sourceWorkspaceId.trim()
 						: sessionWorkspaceId;
 					const targetWorkspaceId = typeof body?.targetWorkspaceId === 'string' ? body.targetWorkspaceId.trim() : '';
+					recordMoveDebugTrace(debugTraceId, 'move-request', {
+						userId: String(req.auth.userId || ''),
+						sessionWorkspaceId,
+						sourceWorkspaceId,
+						targetWorkspaceId,
+					});
 					if (!sourceWorkspaceId) {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'missing-source-workspace-id' });
 						jsonResponse(res, 400, { error: 'sourceWorkspaceId is required' });
 						return;
 					}
 					if (!targetWorkspaceId) {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'missing-target-workspace-id' });
 						jsonResponse(res, 400, { error: 'targetWorkspaceId is required' });
 						return;
 					}
 					if (targetWorkspaceId === sourceWorkspaceId) {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'same-workspace' });
 						jsonResponse(res, 400, { error: 'Note is already in that workspace' });
 						return;
 					}
 
 					const noteId = decodeURIComponent(moveNoteMatch[1]).trim();
 					if (!noteId) {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'missing-note-id' });
 						jsonResponse(res, 400, { error: 'noteId is required' });
 						return;
 					}
@@ -1208,23 +1280,36 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 							select: { id: true, state: true, stateVector: true },
 						}),
 					]);
+					recordMoveDebugTrace(debugTraceId, 'move-preflight', {
+						noteId,
+						sourceMembershipRole: sourceMembership ? String(sourceMembership.role || '') : null,
+						targetMembershipRole: targetMembership ? String(targetMembership.role || '') : null,
+						targetWorkspaceFound: Boolean(targetWorkspace),
+						targetWorkspaceSystemKind: targetWorkspace ? targetWorkspace.systemKind ?? null : null,
+						sourceRowFound: Boolean(sourceRow),
+					});
 					if (!sourceMembership || !canEditWorkspaceContent(sourceMembership.role)) {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'missing-source-edit-access', noteId });
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
 					if (!targetWorkspace) {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'target-workspace-missing', noteId });
 						jsonResponse(res, 404, { error: 'Target workspace not found' });
 						return;
 					}
 					if (targetWorkspace.systemKind === 'SHARED_WITH_ME') {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'target-workspace-shared-with-me', noteId });
 						jsonResponse(res, 400, { error: 'Notes cannot be moved into Shared With Me' });
 						return;
 					}
 					if (!targetMembership || !canEditWorkspaceContent(targetMembership.role)) {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'missing-target-edit-access', noteId });
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
 					if (!sourceRow) {
+						recordMoveDebugTrace(debugTraceId, 'move-rejected', { reason: 'source-note-missing', noteId });
 						jsonResponse(res, 404, { error: 'Note not found' });
 						return;
 					}
@@ -1239,16 +1324,106 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						? readTitleFromDoc(liveSourceDoc)
 						: readTitleFromState(sourceRow.state, noteId);
 
-					const targetDocExists = await prisma.document.findUnique({
+					const targetDocRow = await prisma.document.findUnique({
 						where: { docId: targetDocId },
 						select: { id: true },
 					});
-					if (targetDocExists) {
+					let reusableTargetDocRow = null;
+					let targetDocConflictState = null;
+					if (targetDocRow) {
+						// A previous move can fail after writing the target note row but before
+						// the FK-bound child tables are repointed. Treat that shape as resumable
+						// state instead of a hard conflict so the next move attempt can finish.
+						const [
+							targetShareAccessTokenCount,
+							targetShareTokenCount,
+							targetShareInvitationCount,
+							targetCollaboratorCount,
+							targetImageCount,
+							targetLinkCount,
+							targetDocumentCount,
+						] = await Promise.all([
+							prisma.shareAccessToken.count({
+								where: {
+									entityType: 'NOTE',
+									entityId: targetDocId,
+								},
+							}),
+							prisma.shareToken.count({ where: { docId: targetDocId } }),
+							prisma.noteShareInvitation.count({
+								where: {
+									docId: targetDocId,
+									revokedAt: null,
+								},
+							}),
+							prisma.noteCollaborator.count({
+								where: {
+									docId: targetDocId,
+									revokedAt: null,
+								},
+							}),
+							prisma.noteImage.count({
+								where: {
+									docId: targetDocId,
+									deletedAt: null,
+								},
+							}),
+							prisma.noteLink.count({
+								where: {
+									docId: targetDocId,
+									deletedAt: null,
+								},
+							}),
+							prisma.noteDocument.count({
+								where: {
+									docId: targetDocId,
+									deletedAt: null,
+								},
+							}),
+						]);
+						targetDocConflictState = {
+							shareAccessTokenCount: targetShareAccessTokenCount,
+							shareTokenCount: targetShareTokenCount,
+							shareInvitationCount: targetShareInvitationCount,
+							collaboratorCount: targetCollaboratorCount,
+							imageCount: targetImageCount,
+							linkCount: targetLinkCount,
+							documentCount: targetDocumentCount,
+						};
+						if (
+							targetShareAccessTokenCount === 0
+							&& targetShareTokenCount === 0
+							&& targetShareInvitationCount === 0
+							&& targetCollaboratorCount === 0
+							&& targetImageCount === 0
+							&& targetLinkCount === 0
+							&& targetDocumentCount === 0
+						) {
+							reusableTargetDocRow = targetDocRow;
+						}
+					}
+					recordMoveDebugTrace(debugTraceId, 'move-doc-state', {
+						noteId,
+						sourceDocId,
+						targetDocId,
+						liveSourceDoc: Boolean(liveSourceDoc),
+						targetDocExists: Boolean(targetDocRow),
+						reusableTargetDoc: Boolean(reusableTargetDocRow),
+						targetDocConflictState,
+					});
+					if (targetDocRow && !reusableTargetDocRow) {
+						recordMoveDebugTrace(debugTraceId, 'move-conflict', {
+							noteId,
+							sourceDocId,
+							targetDocId,
+							reason: 'target-doc-exists',
+							targetDocConflictState,
+						});
 						jsonResponse(res, 409, { error: 'A note with this id already exists in the target workspace' });
 						return;
 					}
 
-					const [shareCollaborators, shareInvitations] = await Promise.all([
+					const [shareCollaborators, shareInvitations, sourceWorkspaceMembers] = await Promise.all([
 						prisma.noteCollaborator.findMany({
 							where: { docId: sourceDocId, revokedAt: null },
 							select: { userId: true },
@@ -1257,18 +1432,107 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 							where: { docId: sourceDocId, revokedAt: null },
 							select: { inviteeUserId: true, inviterUserId: true },
 						}),
+						prisma.workspaceMember.findMany({
+							where: {
+								workspaceId: sourceWorkspaceId,
+								workspace: { is: { deletedAt: null } },
+								user: { disabled: false },
+							},
+							select: {
+								userId: true,
+								role: true,
+								user: {
+									select: {
+										id: true,
+										email: true,
+										name: true,
+									},
+								},
+							},
+						}),
 					]);
+					const existingCollaboratorUserIds = new Set(shareCollaborators.map((row) => String(row.userId || '')).filter(Boolean));
+					const retainedWorkspaceCollaborators = sourceWorkspaceMembers
+						.filter((member) => member.user && String(member.userId || '') !== String(req.auth.userId || ''))
+						.filter((member) => !existingCollaboratorUserIds.has(String(member.userId || '')));
 					const affectedShareUserIds = Array.from(new Set([
 						req.auth && req.auth.userId ? String(req.auth.userId) : '',
 						...shareCollaborators.map((row) => String(row.userId || '')),
 						...shareInvitations.map((row) => String(row.inviteeUserId || '')),
 						...shareInvitations.map((row) => String(row.inviterUserId || '')),
+						...retainedWorkspaceCollaborators.map((row) => String(row.userId || '')),
 					].filter(Boolean)));
 					let targetCollectionRegistryState = null;
 					let targetLabelRegistryState = null;
 
+					// Extract drawing IDs from the note Yjs state so drawing sub-documents
+					// can be migrated to the target workspace inside the transaction.
+					const rawDrawingIds = [];
+					if (noteState) {
+						const drawingMigrationDoc = new Y.Doc();
+						try {
+							Y.applyUpdate(drawingMigrationDoc, new Uint8Array(noteState));
+							rawDrawingIds.push(...drawingMigrationDoc.getArray('drawingIds').toArray()
+								.filter((id) => typeof id === 'string' && String(id).trim() && !String(id).includes(':')));
+						} finally {
+							drawingMigrationDoc.destroy();
+						}
+					}
+					const sourceDrawingDocIds = rawDrawingIds.map((drawingId) => `${sourceWorkspaceId}:${drawingId}`);
+					const sourceDrawingRows = sourceDrawingDocIds.length > 0
+						? await prisma.document.findMany({
+							where: { docId: { in: sourceDrawingDocIds } },
+							select: { id: true, docId: true, state: true, stateVector: true },
+						})
+						: [];
+					const sourceDrawingRowsByDocId = new Map(sourceDrawingRows.map((row) => [row.docId, row]));
+					const drawingMoveRows = rawDrawingIds.map((drawingId) => {
+						const sourceDrawingDocId = `${sourceWorkspaceId}:${drawingId}`;
+						const targetDrawingDocId = `${targetWorkspaceId}:${drawingId}`;
+						const sourceDrawingRow = sourceDrawingRowsByDocId.get(sourceDrawingDocId) || null;
+						const liveDrawingDoc = liveDocs.get(sourceDrawingDocId) || null;
+						return {
+							drawingId,
+							sourceDrawingDocId,
+							targetDrawingDocId,
+							sourceRowId: sourceDrawingRow ? sourceDrawingRow.id : null,
+							state: liveDrawingDoc
+								? Buffer.from(Y.encodeStateAsUpdate(liveDrawingDoc))
+								: sourceDrawingRow ? sourceDrawingRow.state : null,
+							stateVector: liveDrawingDoc
+								? Buffer.from(Y.encodeStateVector(liveDrawingDoc))
+								: sourceDrawingRow ? sourceDrawingRow.stateVector : null,
+						};
+					}).filter((row) => row.state && row.stateVector);
+					recordMoveDebugTrace(debugTraceId, 'move-related-state', {
+						noteId,
+						drawingCount: rawDrawingIds.length,
+						drawingDocRowCount: drawingMoveRows.length,
+						shareCollaboratorCount: shareCollaborators.length,
+						shareInvitationCount: shareInvitations.length,
+						sourceWorkspaceMemberCount: sourceWorkspaceMembers.length,
+						retainedWorkspaceCollaboratorCount: retainedWorkspaceCollaborators.length,
+						affectedShareUserCount: affectedShareUserIds.length,
+					});
+
+					// Pre-compute Shared With Me workspaces for retained collaborators
+					// before the transaction to avoid extra round-trips inside the
+					// interactive transaction and isolate any creation errors.
+					const sharedWithMeByInviteeId = new Map();
+					for (const member of retainedWorkspaceCollaborators) {
+						const inviteeUserId = String(member.userId || '').trim();
+						if (!inviteeUserId) continue;
+						try {
+							const swm = await ensureSharedWithMeWorkspace(prisma, inviteeUserId);
+							sharedWithMeByInviteeId.set(inviteeUserId, swm);
+						} catch (swmErr) {
+							console.warn('[api] ensureSharedWithMeWorkspace failed for', inviteeUserId, swmErr.message);
+							sharedWithMeByInviteeId.set(inviteeUserId, null);
+						}
+					}
+
 					await prisma.$transaction(async (tx) => {
-						const remappedMoveState = await remapMoveNoteStateForWorkspaceMove(tx, sourceWorkspaceId, targetWorkspaceId, noteState);
+						const remappedMoveState = await remapMoveNoteStateForWorkspaceMove(tx, sourceWorkspaceId, targetWorkspaceId, noteState, clientMetadataMapping);
 						const sourceRegistry = await loadRegistryRow(tx, sourceWorkspaceId);
 						const targetRegistry = await loadRegistryRow(tx, targetWorkspaceId);
 
@@ -1276,6 +1540,39 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						addNoteToRegistryDoc(targetRegistry.doc, noteId, noteTitle);
 						targetCollectionRegistryState = remappedMoveState.targetCollectionRegistryState;
 						targetLabelRegistryState = remappedMoveState.targetLabelRegistryState;
+
+						// Keep foreign keys valid throughout the move: the target note and drawing
+						// rows must exist before any collaborator/share/media rows can point at
+						// the new docIds.
+						if (reusableTargetDocRow) {
+							await tx.document.update({
+								where: { id: reusableTargetDocRow.id },
+								data: {
+									workspaceId: targetWorkspaceId,
+									state: remappedMoveState.noteStateBuffer,
+									stateVector: remappedMoveState.noteStateVector,
+								},
+							});
+						} else {
+							await tx.document.create({
+								data: {
+									workspaceId: targetWorkspaceId,
+									docId: targetDocId,
+									state: remappedMoveState.noteStateBuffer,
+									stateVector: remappedMoveState.noteStateVector,
+								},
+							});
+						}
+						for (const drawingRow of drawingMoveRows) {
+							await tx.document.create({
+								data: {
+									workspaceId: targetWorkspaceId,
+									docId: drawingRow.targetDrawingDocId,
+									state: drawingRow.state,
+									stateVector: drawingRow.stateVector,
+								},
+							});
+						}
 
 						await tx.shareAccessToken.updateMany({
 							where: {
@@ -1327,15 +1624,63 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 							},
 						});
 
-						await tx.document.update({
-							where: { id: sourceRow.id },
-							data: {
-								workspaceId: targetWorkspaceId,
-								docId: targetDocId,
-								state: remappedMoveState.noteStateBuffer,
-								stateVector: remappedMoveState.noteStateVector,
-							},
-						});
+						// Migrate drawing sub-documents that belong to this note.
+						// Drawings are stored as separate document rows with docId
+						// = sourceWorkspaceId:drawingId. After a note move the client
+						// constructs drawingDocId using the parent note's new workspace
+						// prefix, so the drawing rows must be updated to match.
+						for (const drawingRow of drawingMoveRows) {
+							await tx.noteCollaborator.updateMany({
+								where: { docId: drawingRow.sourceDrawingDocId },
+								data: { docId: drawingRow.targetDrawingDocId, sourceWorkspaceId: targetWorkspaceId },
+							});
+						}
+
+						for (const member of retainedWorkspaceCollaborators) {
+							const inviteeUserId = String(member.userId || '').trim();
+							const inviteeEmail = String(member.user?.email || '').trim();
+							if (!inviteeUserId || !inviteeEmail) continue;
+							const invitation = await tx.noteShareInvitation.create({
+								data: {
+									docId: targetDocId,
+									sourceWorkspaceId: targetWorkspaceId,
+									sourceNoteId: noteId,
+									inviterUserId: req.auth.userId,
+									inviteeUserId,
+									inviteeEmail,
+									inviteeName: member.user?.name || null,
+									role: workspaceRoleToNoteShareRole(member.role),
+									status: 'ACCEPTED',
+									respondedAt: new Date(),
+								},
+							});
+							const collaborator = await tx.noteCollaborator.create({
+								data: {
+									docId: targetDocId,
+									sourceWorkspaceId: targetWorkspaceId,
+									sourceNoteId: noteId,
+									userId: inviteeUserId,
+									invitationId: invitation.id,
+									role: invitation.role,
+								},
+							});
+							// Place the shared note into the invitee's Shared With Me workspace
+							// so it appears in the correct location in their account. Using the
+							// source workspace here would point them to a workspace that no
+							// longer contains the note.
+							const inviteeSharedWithMeWorkspace = sharedWithMeByInviteeId.get(inviteeUserId) ?? null;
+							await tx.noteSharePlacement.create({
+								data: {
+									userId: inviteeUserId,
+									invitationId: invitation.id,
+									collaboratorId: collaborator.id,
+									targetWorkspaceId: inviteeSharedWithMeWorkspace ? String(inviteeSharedWithMeWorkspace.id) : targetWorkspaceId,
+									folderName: null,
+									collectionId: null,
+									labelIds: [],
+								},
+							});
+						}
 
 						await saveRegistryRow(tx, sourceWorkspaceId, sourceRegistry);
 						await saveRegistryRow(tx, targetWorkspaceId, targetRegistry);
@@ -1344,6 +1689,13 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						}
 						if (remappedMoveState.targetLabelRegistry) {
 							await saveWorkspaceDocRow(tx, targetWorkspaceId, remappedMoveState.targetLabelRegistry);
+						}
+						await tx.document.delete({ where: { id: sourceRow.id } });
+						const sourceDrawingRowIds = drawingMoveRows.map((row) => row.sourceRowId).filter(Boolean);
+						if (sourceDrawingRowIds.length > 0) {
+							await tx.document.deleteMany({
+								where: { id: { in: sourceDrawingRowIds } },
+							});
 						}
 					});
 
@@ -1360,12 +1712,24 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						});
 					}
 					closeLiveRoom(sourceDocId);
+					// Close live rooms for all drawing sub-documents so connected clients
+					// reconnect using the new docId (targetWorkspaceId:drawingId).
+					for (const drawingId of rawDrawingIds) {
+						closeLiveRoom(`${sourceWorkspaceId}:${drawingId}`);
+					}
 
 					jsonResponse(res, 200, {
 						noteId,
 						sourceWorkspaceId,
 						targetWorkspaceId,
 						docId: targetDocId,
+					});
+					recordMoveDebugTrace(debugTraceId, 'move-success', {
+						noteId,
+						sourceDocId,
+						targetDocId,
+						drawingCount: rawDrawingIds.length,
+						retainedWorkspaceCollaboratorCount: retainedWorkspaceCollaborators.length,
 					});
 
 					if (typeof onWorkspaceMetadataChanged === 'function' && affectedShareUserIds.length > 0) {
@@ -1376,12 +1740,26 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 								docId: targetDocId,
 								userIds: affectedShareUserIds,
 							});
+							recordMoveDebugTrace(debugTraceId, 'move-metadata-published', {
+								noteId,
+								targetDocId,
+								userCount: affectedShareUserIds.length,
+							});
 						} catch (publishErr) {
+							recordMoveDebugTrace(debugTraceId, 'move-metadata-publish-error', {
+								noteId,
+								targetDocId,
+								error: publishErr && publishErr.message ? publishErr.message : String(publishErr),
+							});
 							console.warn('[api] note move metadata publish failed:', publishErr.message);
 						}
 					}
 				} catch (err) {
-					console.error('[api] POST /api/notes/:noteId/move error:', err.message);
+					recordMoveDebugTrace(normalizeMoveDebugTraceId(req.moveDebugTraceId) || null, 'move-error', {
+						error: err && err.message ? err.message : String(err),
+						stack: err && err.stack ? String(err.stack) : null,
+					});
+					console.error('[api] POST /api/notes/:noteId/move error:', err.message, err.stack);
 					jsonResponse(res, 500, { error: 'Internal server error' });
 				}
 			})();

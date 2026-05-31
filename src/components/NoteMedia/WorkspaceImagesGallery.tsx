@@ -271,6 +271,10 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 	const sectionRef = React.useRef<HTMLElement | null>(null);
 
 	const resolveMediaDocId = React.useCallback((noteId: string): string => {
+		// Guard first: manager.resolveRoomName() never throws for unregistered aliases
+		// — it falls back to `${activeWorkspaceId}:${rawNoteId}`, producing an invalid
+		// docId. Callers with a placement should use placement.roomId directly.
+		if (noteId.startsWith('shared-placement:')) return '';
 		try {
 			return manager.resolveRoomName(noteId);
 		} catch {

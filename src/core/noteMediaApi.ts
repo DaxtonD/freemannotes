@@ -1,4 +1,5 @@
 import { fetchJsonWithTimeout } from './network';
+import { appendMoveDebugQuery, getMoveDebugTraceIdForDocId } from './moveDebugTrace';
 
 async function fetchJson<T>(
 	input: RequestInfo | URL,
@@ -75,7 +76,8 @@ export type NoteSearchResponse = {
 };
 
 export async function listNoteImages(docId: string): Promise<NoteImageListResponse> {
-	return fetchJson(`/api/note-media?docId=${encodeURIComponent(docId)}`, {}, {
+	const traceId = getMoveDebugTraceIdForDocId(docId);
+	return fetchJson(appendMoveDebugQuery(`/api/note-media?docId=${encodeURIComponent(docId)}`, traceId), {}, {
 		requestName: 'note-media-list',
 		timeoutMs: 4000,
 	});

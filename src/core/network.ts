@@ -75,7 +75,9 @@ export async function fetchJsonWithTimeout<T>(input: RequestInfo | URL, init: Ti
 	const body = contentType.includes('application/json') ? await response.json().catch(() => null) : null;
 	if (!response.ok) {
 		const message = body && typeof body.error === 'string' ? body.error : `Request failed (${response.status})`;
-		throw new Error(message);
+		const error = new Error(message) as Error & { status?: number };
+		error.status = response.status;
+		throw error;
 	}
 	return body as T;
 }

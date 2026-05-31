@@ -1,5 +1,7 @@
 import type { ExtractedNoteLink } from './noteLinks';
 
+type HttpError = Error & { status?: number };
+
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
 	// Shared wrapper so link-preview endpoints behave like the rest of the authenticated API.
 	const response = await fetch(input, {
@@ -10,7 +12,9 @@ async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): P
 	const body = contentType.includes('application/json') ? await response.json().catch(() => null) : null;
 	if (!response.ok) {
 		const message = body && typeof body.error === 'string' ? body.error : `Request failed (${response.status})`;
-		throw new Error(message);
+		const error = new Error(message) as HttpError;
+		error.status = response.status;
+		throw error;
 	}
 	return body as T;
 }

@@ -72,7 +72,7 @@ async function findPreferredWorkspaceMembership(prisma, userId, select = { works
 				is: {
 					deletedAt: null,
 					ownerUserId: userId,
-					systemKind: null,
+					OR: [{ systemKind: null }, { systemKind: 'PERSONAL' }],
 				},
 			},
 		},

@@ -1,7 +1,7 @@
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { WebsocketProvider } from 'y-websocket';
-import { touchUpdatedAt, setNoteTrashed, readTrashState, setNoteCollection, setNoteLabelIds, readCollectionState, readLabelState } from './noteModel';
+import { touchUpdatedAt, setNoteTrashed, readTrashState, setNoteCollection, setNoteLabelIds, readCollectionState, readDrawingLinkState, readLabelState } from './noteModel';
 import { RICHTEXT_INTERNAL_ORIGIN } from './richText';
 import { COLLECTIONS_REGISTRY_DOC_ID, createCollection, readCollectionsFromDoc, type CollectionRecord } from '../services/collectionService';
 import { LABELS_REGISTRY_DOC_ID, createLabel, readLabelsFromDoc, type LabelRecord } from '../services/labelService';
@@ -13,14 +13,15 @@ import {
 	peekNoteDebugContext,
 	initIndexedDbDebugLogging,
 } from './debugLogger';
+import { EMPTY_MOVE_NOTE_METADATA_MAPPING, type MoveNoteMetadataIdPair, type MoveNoteMetadataMapping } from './noteMoveMetadata';
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const NOTES_LIST_KEY = 'notesList';
 const NOTE_ORDER_KEY = 'noteOrder';
 
-type LocalMoveMetadataMapping = {
+type LocalMoveCollectionMapping = {
 	collectionId: string | null;
-	labelIds: string[];
+	collectionIdPairs: MoveNoteMetadataIdPair[];
 };
 
 /**
@@ -728,28 +729,40 @@ export class DocumentManager {
 		await this.deleteNote(noteId, true);
 	}
 
-	public async moveNoteToWorkspaceLocally(noteId: string, targetWorkspaceId: string, opts?: { sourceWorkspaceId?: string | null; title?: string | null }): Promise<void> {
+	public async moveNoteToWorkspaceLocally(noteId: string, targetWorkspaceId: string, opts?: { sourceWorkspaceId?: string | null; title?: string | null }): Promise<MoveNoteMetadataMapping> {
 		const key = this.normalizeNoteId(noteId);
 		const sourceWorkspaceId = typeof opts?.sourceWorkspaceId === 'string' && opts.sourceWorkspaceId.trim()
 			? opts.sourceWorkspaceId.trim()
 			: this.activeWorkspaceId;
 		const normalizedTargetWorkspaceId = typeof targetWorkspaceId === 'string' ? targetWorkspaceId.trim() : '';
+		const sourceWorkspaceIsActive = sourceWorkspaceId === this.activeWorkspaceId;
 		if (!sourceWorkspaceId) {
 			throw new Error('Cannot move a note without an active source workspace');
 		}
 		if (!normalizedTargetWorkspaceId) {
 			throw new Error('Target workspace is required');
 		}
-		if (sourceWorkspaceId !== this.activeWorkspaceId) {
-			throw new Error('Local note moves require the source workspace to be active');
-		}
 		if (normalizedTargetWorkspaceId === sourceWorkspaceId) {
-			return;
+			return EMPTY_MOVE_NOTE_METADATA_MAPPING;
 		}
 
-		const sourceDoc = await this.getDocWithSync(key);
+		const sourceNoteRoomName = `${sourceWorkspaceId}:${key}`;
+		const sourceRegistryRoomName = `${sourceWorkspaceId}:${NOTES_REGISTRY_ID}`;
+		// Rollbacks can target a workspace that is no longer active in the UI. In that
+		// case read the source note and registry through isolated IndexedDB rooms instead
+		// of the live active-workspace providers.
+		const sourceNoteRoom = sourceWorkspaceIsActive
+			? null
+			: await this.openIsolatedRoom(sourceNoteRoomName, { initializeRegistry: false });
+		const sourceRegistryRoom = sourceWorkspaceIsActive
+			? null
+			: await this.openIsolatedRoom(sourceRegistryRoomName, { initializeRegistry: true });
+		const sourceDoc = sourceWorkspaceIsActive
+			? await this.getDocReady(key)
+			: sourceNoteRoom.doc;
 		const noteTitle = String(opts?.title || sourceDoc.getText('title').toString() || key).trim() || key;
 		const noteState = Y.encodeStateAsUpdate(sourceDoc);
+		const drawingIds = readDrawingLinkState(sourceDoc).drawingIds.filter((drawingId) => !drawingId.includes(':'));
 		const metadataMapping = await this.remapNoteMoveMetadata(sourceDoc, normalizedTargetWorkspaceId);
 		const targetNoteRoomName = `${normalizedTargetWorkspaceId}:${key}`;
 		const targetRegistryRoomName = `${normalizedTargetWorkspaceId}:${NOTES_REGISTRY_ID}`;
@@ -761,8 +774,34 @@ export class DocumentManager {
 			? null
 			: await this.openIsolatedRoom(targetRegistryRoomName, { initializeRegistry: true });
 		const targetRegistryDoc = cachedTargetRegistryDoc ?? targetRegistryRoom.doc;
+		const targetDrawingRooms: Array<{
+			sourceRoomName: string;
+			targetRoomName: string;
+			state: Uint8Array;
+			targetRoom: { doc: Y.Doc; destroy: () => void };
+		}> = [];
+		const sourceDrawingRooms: Array<{ roomName: string; room: { doc: Y.Doc; destroy: () => void } }> = [];
 
 		try {
+			for (const drawingId of drawingIds) {
+				const sourceDrawingRoomName = `${sourceWorkspaceId}:${drawingId}`;
+				const sourceDrawingRoom = sourceWorkspaceIsActive
+					? null
+					: await this.openIsolatedRoom(sourceDrawingRoomName, { initializeRegistry: false });
+				if (sourceDrawingRoom) {
+					sourceDrawingRooms.push({ roomName: sourceDrawingRoomName, room: sourceDrawingRoom });
+				}
+				const sourceDrawingDoc = sourceWorkspaceIsActive
+					? await this.getDocReady(drawingId)
+					: sourceDrawingRoom.doc;
+				const targetRoomName = `${normalizedTargetWorkspaceId}:${drawingId}`;
+				targetDrawingRooms.push({
+					sourceRoomName: sourceDrawingRoomName,
+					targetRoomName: targetRoomName,
+					state: Y.encodeStateAsUpdate(sourceDrawingDoc),
+					targetRoom: await this.openIsolatedRoom(targetRoomName, { initializeRegistry: false }),
+				});
+			}
 			Y.applyUpdate(targetNoteRoom.doc, noteState);
 			targetNoteRoom.doc.transact(() => {
 				setNoteCollection(targetNoteRoom.doc, metadataMapping.collectionId);
@@ -772,54 +811,93 @@ export class DocumentManager {
 			this.upsertRegistryNoteEntry(targetRegistryDoc, key, noteTitle);
 			await this.waitForIsolatedRoomPersistence(targetNoteRoomName, targetNoteRoom.doc, { initializeRegistry: false });
 			await this.waitForIsolatedRoomPersistence(targetRegistryRoomName, targetRegistryDoc, { initializeRegistry: true });
-			const sourceRegistryDoc = await this.getNotesRegistryDoc();
+			for (const drawingRoom of targetDrawingRooms) {
+				Y.applyUpdate(drawingRoom.targetRoom.doc, drawingRoom.state);
+				await this.waitForIsolatedRoomPersistence(drawingRoom.targetRoomName, drawingRoom.targetRoom.doc, { initializeRegistry: false });
+			}
+			const sourceRegistryDoc = sourceWorkspaceIsActive
+				? await this.getNotesRegistryDoc()
+				: sourceRegistryRoom.doc;
 			this.removeRegistryNoteEntry(sourceRegistryDoc, key);
-			await this.waitForPersistenceTurn();
-			this.destroyDoc(key);
-			await this.deleteIndexedDbDatabase(`${sourceWorkspaceId}:${key}`);
+			if (sourceWorkspaceIsActive) {
+				await this.waitForPersistenceTurn();
+			} else {
+				await this.waitForIsolatedRoomPersistence(sourceRegistryRoomName, sourceRegistryDoc, { initializeRegistry: true });
+			}
+			this.destroyRoom(sourceNoteRoomName);
+			await this.deleteIndexedDbDatabase(sourceNoteRoomName);
+			for (const drawingRoom of targetDrawingRooms) {
+				this.destroyRoom(drawingRoom.sourceRoomName);
+				await this.deleteIndexedDbDatabase(drawingRoom.sourceRoomName);
+			}
+			return metadataMapping;
 		} finally {
+			for (const drawingRoom of sourceDrawingRooms) {
+				drawingRoom.room.destroy();
+			}
+			sourceNoteRoom?.destroy();
+			sourceRegistryRoom?.destroy();
+			for (const drawingRoom of targetDrawingRooms) {
+				drawingRoom.targetRoom.destroy();
+			}
 			targetNoteRoom.destroy();
 			targetRegistryRoom?.destroy();
 		}
 	}
 
-	private async remapNoteMoveMetadata(sourceDoc: Y.Doc, targetWorkspaceId: string): Promise<LocalMoveMetadataMapping> {
+	private async remapNoteMoveMetadata(sourceDoc: Y.Doc, targetWorkspaceId: string): Promise<MoveNoteMetadataMapping> {
 		const sourceCollectionId = readCollectionState(sourceDoc).collectionId;
 		const sourceLabelIds = readLabelState(sourceDoc).labelIds;
 		if (!sourceCollectionId && sourceLabelIds.length === 0) {
-			return { collectionId: null, labelIds: [] };
+			return EMPTY_MOVE_NOTE_METADATA_MAPPING;
 		}
 
 		const sourceCollectionsDoc = await this.getDocWithSync(COLLECTIONS_REGISTRY_DOC_ID);
 		const sourceLabelsDoc = await this.getDocWithSync(LABELS_REGISTRY_DOC_ID);
+		const targetCollectionsRoomName = `${targetWorkspaceId}:${COLLECTIONS_REGISTRY_DOC_ID}`;
+		const targetLabelsRoomName = `${targetWorkspaceId}:${LABELS_REGISTRY_DOC_ID}`;
+		const cachedTargetCollectionsDoc = this.docs.get(targetCollectionsRoomName) ?? null;
+		const cachedTargetLabelsDoc = this.docs.get(targetLabelsRoomName) ?? null;
 		const targetCollectionsRoom = await this.openIsolatedRoom(`${targetWorkspaceId}:${COLLECTIONS_REGISTRY_DOC_ID}`);
 		const targetLabelsRoom = await this.openIsolatedRoom(`${targetWorkspaceId}:${LABELS_REGISTRY_DOC_ID}`);
 		try {
-			const collectionId = this.ensureTargetCollectionForMove(
+			const collectionMapping = this.ensureTargetCollectionForMove(
 				readCollectionsFromDoc(sourceCollectionsDoc),
 				targetCollectionsRoom.doc,
 				sourceCollectionId,
 			);
-			const labelIds = this.ensureTargetLabelsForMove(
+			const labelMapping = this.ensureTargetLabelsForMove(
 				readLabelsFromDoc(sourceLabelsDoc),
 				targetLabelsRoom.doc,
 				sourceLabelIds,
 			);
 			await this.waitForIsolatedRoomPersistence(`${targetWorkspaceId}:${COLLECTIONS_REGISTRY_DOC_ID}`, targetCollectionsRoom.doc);
 			await this.waitForIsolatedRoomPersistence(`${targetWorkspaceId}:${LABELS_REGISTRY_DOC_ID}`, targetLabelsRoom.doc);
-			return { collectionId, labelIds };
+			if (cachedTargetCollectionsDoc && cachedTargetCollectionsDoc !== targetCollectionsRoom.doc) {
+				Y.applyUpdate(cachedTargetCollectionsDoc, Y.encodeStateAsUpdate(targetCollectionsRoom.doc), this.internalOrigin);
+			}
+			if (cachedTargetLabelsDoc && cachedTargetLabelsDoc !== targetLabelsRoom.doc) {
+				Y.applyUpdate(cachedTargetLabelsDoc, Y.encodeStateAsUpdate(targetLabelsRoom.doc), this.internalOrigin);
+			}
+			return {
+				collectionId: collectionMapping.collectionId,
+				labelIds: labelMapping.labelIds,
+				collectionIdPairs: collectionMapping.collectionIdPairs,
+				labelIdPairs: labelMapping.labelIdPairs,
+			};
 		} finally {
 			targetCollectionsRoom.destroy();
 			targetLabelsRoom.destroy();
 		}
 	}
 
-	private ensureTargetLabelsForMove(sourceLabels: readonly LabelRecord[], targetLabelsDoc: Y.Doc, sourceLabelIds: readonly string[]): string[] {
-		if (sourceLabelIds.length === 0) return [];
+	private ensureTargetLabelsForMove(sourceLabels: readonly LabelRecord[], targetLabelsDoc: Y.Doc, sourceLabelIds: readonly string[]): Pick<MoveNoteMetadataMapping, 'labelIds' | 'labelIdPairs'> {
+		if (sourceLabelIds.length === 0) return { labelIds: [], labelIdPairs: [] };
 		const sourceById = new Map(sourceLabels.map((label) => [label.id, label]));
 		const targetLabels = readLabelsFromDoc(targetLabelsDoc);
 		const targetByName = new Map(targetLabels.map((label) => [label.name.trim().toLocaleLowerCase(), label]));
 		const nextLabelIds: string[] = [];
+		const labelIdPairs: MoveNoteMetadataIdPair[] = [];
 		for (const sourceLabelId of sourceLabelIds) {
 			const sourceLabel = sourceById.get(sourceLabelId) ?? null;
 			if (!sourceLabel) continue;
@@ -833,13 +911,14 @@ export class DocumentManager {
 			}
 			if (targetLabel && !nextLabelIds.includes(targetLabel.id)) {
 				nextLabelIds.push(targetLabel.id);
+				labelIdPairs.push({ sourceId: sourceLabel.id, targetId: targetLabel.id });
 			}
 		}
-		return nextLabelIds;
+		return { labelIds: nextLabelIds, labelIdPairs };
 	}
 
-	private ensureTargetCollectionForMove(sourceCollections: readonly CollectionRecord[], targetCollectionsDoc: Y.Doc, sourceCollectionId: string | null): string | null {
-		if (!sourceCollectionId) return null;
+	private ensureTargetCollectionForMove(sourceCollections: readonly CollectionRecord[], targetCollectionsDoc: Y.Doc, sourceCollectionId: string | null): LocalMoveCollectionMapping {
+		if (!sourceCollectionId) return { collectionId: null, collectionIdPairs: [] };
 		const sourceById = new Map(sourceCollections.map((collection) => [collection.id, collection]));
 		const sourceChain: CollectionRecord[] = [];
 		let cursor = sourceById.get(sourceCollectionId) ?? null;
@@ -849,9 +928,10 @@ export class DocumentManager {
 			sourceChain.unshift(cursor);
 			cursor = cursor.parentId ? sourceById.get(cursor.parentId) ?? null : null;
 		}
-		if (sourceChain.length === 0) return null;
+		if (sourceChain.length === 0) return { collectionId: null, collectionIdPairs: [] };
 
 		let targetParentId: string | null = null;
+		const collectionIdPairs: MoveNoteMetadataIdPair[] = [];
 		for (const sourceCollection of sourceChain) {
 			const comparableName = sourceCollection.name.trim().toLocaleLowerCase();
 			let targetCollection = readCollectionsFromDoc(targetCollectionsDoc).find((collection) => (
@@ -863,10 +943,16 @@ export class DocumentManager {
 					parentId: targetParentId,
 				}) ?? null;
 			}
-			if (!targetCollection) return targetParentId;
+			if (!targetCollection) {
+				return {
+					collectionId: targetParentId,
+					collectionIdPairs,
+				};
+			}
+			collectionIdPairs.push({ sourceId: sourceCollection.id, targetId: targetCollection.id });
 			targetParentId = targetCollection.id;
 		}
-		return targetParentId;
+		return { collectionId: targetParentId, collectionIdPairs };
 	}
 
 	public destroyDoc(noteId: string): void {
