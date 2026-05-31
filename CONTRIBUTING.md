@@ -16,6 +16,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [1. Application Debug Logging](#1-application-debug-logging)
   - [2. Masonry Layout Debug System](#2-masonry-layout-debug-system)
   - [3. Masonry Visual Overlay](#3-masonry-visual-overlay)
+  - [4. Workspace Move Tracing](#4-workspace-move-tracing)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
 - [Native Platform Companions](#native-platform-companions)
   - [Architecture overview](#architecture-overview)
@@ -257,6 +258,68 @@ window.__noteGridDebugOverlay = true
 No reload is needed — the overlay appears within ~250 ms. To hide it, set the flag to `false` or reload without it.
 
 > **Note:** This overlay is only available in development builds (`npm run dev`). It is stripped from production bundles.
+
+---
+
+### 4. Workspace Move Tracing
+
+**What it covers:** End-to-end tracing for note moves between workspaces, including the optimistic client move, the server-side move transaction, and follow-up media/collaborator access requests.
+
+**How to enable:**
+
+#### Option A — URL query parameter (recommended during live repros)
+
+Append `?moveDebug=1` to the app URL before reproducing the move:
+
+```
+http://localhost:27015/?moveDebug=1
+```
+
+Equivalent query aliases also work:
+
+- `?debugMove=1`
+- `?moveTrace=1`
+
+The flag is copied into localStorage so it stays enabled across reloads until you disable it.
+
+#### Option B — localStorage (manual, survives reloads)
+
+In the browser console:
+
+```js
+localStorage.setItem('freemannotes.moveDebug', '1')
+location.reload()
+```
+
+**How to disable:**
+
+Use either of these:
+
+```js
+localStorage.setItem('freemannotes.moveDebug', '0')
+location.reload()
+```
+
+or append `?moveDebug=0` to the URL once.
+
+**What you should see:**
+
+- The browser console prints a `[move-debug] trace started` message.
+- That log includes a `traceId` and a `traceUrl` like `/api/debug/move-trace?traceId=...`.
+- Subsequent move phases are logged as `[move-debug] ...` console entries while the trace is enabled.
+
+**How to retrieve the trace:**
+
+1. Reproduce the move issue with tracing enabled.
+2. Copy the `traceUrl` from the initial console log.
+3. Open that URL while authenticated, or fetch it from DevTools / your browser.
+4. Save the returned JSON and include it with the bug report.
+
+**What the trace contains:**
+
+- Client-side move phases such as `move-start`, `local-move-complete`, `server-move-error`, and `rollback-start`
+- Server-side phases such as `move-preflight`, `move-doc-state`, `move-related-state`, `move-success`, and `move-error`
+- Related follow-up checks such as note-media access and collaborator snapshot requests
 
 ---
 

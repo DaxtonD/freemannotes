@@ -46,6 +46,41 @@ function attachProxyErrorHandlers(proxy, label) {
 	});
 }
 
+function excalidrawFontsPlugin() {
+	const fontsSourceDir = path.resolve(__dirname, 'node_modules/@excalidraw/excalidraw/dist/prod/fonts');
+	let resolvedOutDir = '';
+	return {
+		name: 'freemannotes:excalidraw-fonts',
+		configResolved(config) {
+			resolvedOutDir = config.build.outDir;
+		},
+		// Dev server: serve Excalidraw font files from node_modules at /fonts/*.
+		configureServer(server) {
+			server.middlewares.use('/fonts', (req, res, next) => {
+				const safeSuffix = (req.url || '/').replace(/\\/g, '/').replace(/\.\.+/g, '');
+				const resolved = path.resolve(fontsSourceDir, '.' + safeSuffix);
+				if (!resolved.startsWith(fontsSourceDir + path.sep) && resolved !== fontsSourceDir) {
+					next();
+					return;
+				}
+				if (!fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
+					next();
+					return;
+				}
+				res.setHeader('Content-Type', resolved.endsWith('.woff2') ? 'font/woff2' : 'application/octet-stream');
+				res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+				fs.createReadStream(resolved).pipe(res);
+			});
+		},
+		// Build: copy fonts directory into the output so they're served at /fonts/*.
+		closeBundle() {
+			if (!resolvedOutDir || !fs.existsSync(fontsSourceDir)) return;
+			const fontsDestDir = path.resolve(__dirname, resolvedOutDir, 'fonts');
+			fs.cpSync(fontsSourceDir, fontsDestDir, { recursive: true, force: true });
+		},
+	};
+}
+
 function yjsWebsocketPlugin() {
 	return {
 		name: 'freemannotes:yjs-websocket',
@@ -101,6 +136,7 @@ module.exports = defineConfig(({ mode }) => {
 	return {
 		envDir,
 		plugins: [
+			excalidrawFontsPlugin(),
 			react(),
 			VitePWA({
 				strategies: 'injectManifest',

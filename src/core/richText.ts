@@ -450,13 +450,10 @@ export function getPlainTextFromRichFragment(fragment: Y.XmlFragment, variant: R
 export function replaceRichFragmentFromJson(fragment: Y.XmlFragment, json: JSONContent, variant: RichTextVariant): void {
 	const doc = (fragment as unknown as { doc?: Y.Doc | null }).doc ?? null;
 	const apply = (): void => {
-		try {
-			if (fragment.length > 0) {
-				fragment.delete(0, fragment.length);
-			}
-		} catch {
-			// Detached fragments have no readable length yet. Treat them as empty and
-			// populate them directly; once attached, Yjs will integrate the content.
+		// Detached fragments log a noisy Yjs warning when their length is read.
+		// Only clear existing content once the fragment is attached to a real doc.
+		if (doc && fragment.length > 0) {
+			fragment.delete(0, fragment.length);
 		}
 		prosemirrorJSONToYXmlFragment(getSchemaForVariant(variant), json, fragment);
 	};

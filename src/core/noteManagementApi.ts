@@ -1,3 +1,5 @@
+import type { MoveNoteMetadataMapping } from './noteMoveMetadata';
+
 type MoveNoteResponse = {
 	noteId: string;
 	sourceWorkspaceId: string;
@@ -59,12 +61,20 @@ async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): P
 	return body as T;
 }
 
-export async function moveNoteToWorkspace(noteId: string, targetWorkspaceId: string, sourceWorkspaceId?: string | null): Promise<MoveNoteResponse> {
+export async function moveNoteToWorkspace(
+	noteId: string,
+	targetWorkspaceId: string,
+	sourceWorkspaceId?: string | null,
+	metadataMapping?: MoveNoteMetadataMapping | null,
+	debugTraceId?: string | null,
+): Promise<MoveNoteResponse> {
 	return fetchJson(`/api/notes/${encodeURIComponent(noteId)}/move`, {
 		method: 'POST',
 		body: JSON.stringify({
 			targetWorkspaceId,
 			sourceWorkspaceId: typeof sourceWorkspaceId === 'string' ? sourceWorkspaceId.trim() : undefined,
+			metadataMapping: metadataMapping ?? undefined,
+			debugTraceId: typeof debugTraceId === 'string' && debugTraceId.trim() ? debugTraceId.trim() : undefined,
 		}),
 	});
 }

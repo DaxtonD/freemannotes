@@ -18,6 +18,7 @@ const { buildLinkSeed, isLikelyBadPreviewImageUrl, resolveNoteLinkPreview } = re
 const { resolveDocAccess } = require('./noteShareRouter');
 const { buildSearchSnippet, decodeDocumentState, normalizeText } = require('./noteSnapshot');
 const { queueNoteImageOcr } = require('./ocr');
+const { normalizeMoveDebugTraceId, recordMoveDebugTrace } = require('./moveDebugTrace');
 
 const MAX_FILES_PER_UPLOAD = 12;
 // Tracks docIds currently undergoing background URL hydration.
@@ -134,8 +135,11 @@ function decodeLabelRegistryState(state) {
 	return labels;
 }
 
-async function ensureMediaAccess(prisma, session, rawDocId, { requireEdit = false } = {}) {
-	const access = await resolveDocAccess(prisma, session, rawDocId);
+async function ensureMediaAccess(prisma, session, rawDocId, { requireEdit = false, debugTraceId = null, debugContext = 'note-media' } = {}) {
+	const access = await resolveDocAccess(prisma, session, rawDocId, {
+		debugTraceId,
+		context: debugContext,
+	});
 	if (!access) return { error: { status: 403, body: { error: 'Forbidden' } }, access: null };
 	if (requireEdit && access.accessRole !== 'EDITOR' && access.canManage !== true) {
 		return { error: { status: 403, body: { error: 'Forbidden' } }, access: null };
@@ -632,11 +636,35 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 				try {
 					const session = requireAuth(req, res);
 					if (!session) return;
-					const accessResult = await ensureMediaAccess(prisma, session, url.searchParams.get('docId'));
+					const rawDocId = url.searchParams.get('docId');
+					const debugTraceId = normalizeMoveDebugTraceId(url.searchParams.get('debugTraceId') || req.headers['x-fn-debug-trace']);
+					recordMoveDebugTrace(debugTraceId, 'note-media-request', {
+						userId: String(session.userId || ''),
+						sessionWorkspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,
+						rawDocId,
+					});
+					const accessResult = await ensureMediaAccess(prisma, session, rawDocId, {
+						debugTraceId,
+						debugContext: 'note-media-list',
+					});
 					if (accessResult.error) {
+						recordMoveDebugTrace(debugTraceId, 'note-media-denied', {
+							userId: String(session.userId || ''),
+							rawDocId,
+							status: accessResult.error.status,
+						});
 						jsonResponse(res, accessResult.error.status, accessResult.error.body);
 						return;
 					}
+					recordMoveDebugTrace(debugTraceId, 'note-media-access', {
+						userId: String(session.userId || ''),
+						rawDocId,
+						docId: accessResult.access.docId,
+						sourceWorkspaceId: accessResult.access.sourceWorkspaceId,
+						accessRole: accessResult.access.accessRole,
+						canManage: accessResult.access.canManage === true,
+						via: accessResult.access.via || null,
+					});
 					const images = await prisma.noteImage.findMany({
 						where: {
 							docId: accessResult.access.docId,
@@ -644,6 +672,10 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							assetStatus: 'READY',
 						},
 						orderBy: { createdAt: 'asc' },
+					});
+					recordMoveDebugTrace(debugTraceId, 'note-media-response', {
+						docId: accessResult.access.docId,
+						count: images.length,
 					});
 					jsonResponse(res, 200, { images: images.map(mapNoteImage), count: images.length });
 				} catch (err) {

@@ -5,6 +5,7 @@ const { enforceSameOrigin } = require('./auth');
 const { findLiveWorkspaceMembership, resolveLiveWorkspaceId } = require('./workspaceAccess');
 const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
 const { normalizeWorkspaceRole, canEditWorkspaceContent, canManageWorkspace, canViewWorkspace } = require('./workspaceRoles');
+const { normalizeMoveDebugTraceId, recordMoveDebugTrace } = require('./moveDebugTrace');
 
 function jsonResponse(res, status, body) {
 	const json = JSON.stringify(body);
@@ -119,7 +120,7 @@ async function resolveTargetWorkspaceId(prisma, userId, targetKind) {
 				is: {
 					deletedAt: null,
 					ownerUserId: userId,
-					systemKind: null,
+					OR: [{ systemKind: null }, { systemKind: 'PERSONAL' }],
 				},
 			},
 		},
@@ -173,17 +174,45 @@ async function getSessionUser(prisma, session) {
 	});
 }
 
-async function resolveDocAccess(prisma, session, rawDocId) {
-	if (!session || !session.userId) return null;
+async function resolveDocAccess(prisma, session, rawDocId, opts = {}) {
+	const debugTraceId = normalizeMoveDebugTraceId(opts && opts.debugTraceId);
+	const context = opts && typeof opts.context === 'string' ? opts.context.trim() : '';
+	recordMoveDebugTrace(debugTraceId, 'resolve-doc-access-start', {
+		context: context || null,
+		userId: session && session.userId ? String(session.userId) : null,
+		sessionWorkspaceId: session && typeof session.workspaceId === 'string' ? session.workspaceId : null,
+		rawDocId: typeof rawDocId === 'string' ? rawDocId : null,
+	});
+	if (!session || !session.userId) {
+		recordMoveDebugTrace(debugTraceId, 'resolve-doc-access-denied', {
+			context: context || null,
+			reason: 'missing-session',
+		});
+		return null;
+	}
 	const docId = resolveDocRoomId(rawDocId, session.workspaceId || null);
 	const room = splitDocRoomId(docId);
-	if (!room) return null;
+	if (!room) {
+		recordMoveDebugTrace(debugTraceId, 'resolve-doc-access-denied', {
+			context: context || null,
+			reason: 'invalid-doc-room',
+			docId,
+		});
+		return null;
+	}
 
 	const document = await prisma.document.findUnique({
 		where: { docId: room.docId },
 		select: { docId: true, workspaceId: true },
 	});
 	if (!document || String(document.workspaceId) !== room.sourceWorkspaceId) {
+		recordMoveDebugTrace(debugTraceId, 'resolve-doc-access-denied', {
+			context: context || null,
+			reason: !document ? 'document-missing' : 'workspace-mismatch',
+			docId: room.docId,
+			documentWorkspaceId: document ? String(document.workspaceId) : null,
+			roomSourceWorkspaceId: room.sourceWorkspaceId,
+		});
 		return null;
 	}
 
@@ -193,6 +222,16 @@ async function resolveDocAccess(prisma, session, rawDocId) {
 	const membership = await findLiveWorkspaceMembership(prisma, session.userId, room.sourceWorkspaceId, { role: true });
 	if (membership) {
 		const normalizedRole = normalizeWorkspaceRole(membership.role, 'VIEWER');
+		recordMoveDebugTrace(debugTraceId, 'resolve-doc-access-granted', {
+			context: context || null,
+			docId: room.docId,
+			sourceWorkspaceId: room.sourceWorkspaceId,
+			sourceNoteId: room.sourceNoteId,
+			via: 'workspace-member',
+			membershipRole: membership.role,
+			accessRole: canEditWorkspaceContent(normalizedRole) ? 'EDITOR' : 'VIEWER',
+			canManage: canManageWorkspace(normalizedRole),
+		});
 		return {
 			docId: room.docId,
 			sourceWorkspaceId: room.sourceWorkspaceId,
@@ -211,7 +250,27 @@ async function resolveDocAccess(prisma, session, rawDocId) {
 		},
 		select: { id: true, role: true },
 	});
-	if (!collaborator) return null;
+	if (!collaborator) {
+		recordMoveDebugTrace(debugTraceId, 'resolve-doc-access-denied', {
+			context: context || null,
+			reason: 'collaborator-missing',
+			docId: room.docId,
+			sourceWorkspaceId: room.sourceWorkspaceId,
+			sourceNoteId: room.sourceNoteId,
+		});
+		return null;
+	}
+
+	recordMoveDebugTrace(debugTraceId, 'resolve-doc-access-granted', {
+		context: context || null,
+		docId: room.docId,
+		sourceWorkspaceId: room.sourceWorkspaceId,
+		sourceNoteId: room.sourceNoteId,
+		via: 'collaborator',
+		accessRole: collaborator.role,
+		canManage: false,
+		collaboratorId: collaborator.id,
+	});
 
 	return {
 		docId: room.docId,
@@ -683,14 +742,160 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 			return true;
 		}
 
+		if (pathname === '/api/note-shares/attached-drawing-access' && method === 'POST') {
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const body = await readJsonBody(req);
+					if (!body || typeof body !== 'object') {
+						jsonResponse(res, 400, { error: 'Request body must be a JSON object' });
+						return;
+					}
+
+					const access = await resolveDocAccess(prisma, session, body.parentDocId);
+					if (!access) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					const drawingDocId = resolveDocRoomId(body.drawingDocId, access.sourceWorkspaceId);
+					const drawingRoom = splitDocRoomId(drawingDocId);
+					if (!drawingDocId || !drawingRoom || drawingRoom.sourceWorkspaceId !== access.sourceWorkspaceId) {
+						jsonResponse(res, 400, { error: 'Attached drawing must stay in the parent workspace' });
+						return;
+					}
+
+					const drawingDocument = await prisma.document.findUnique({
+						where: { docId: drawingDocId },
+						select: { docId: true, workspaceId: true },
+					});
+					if (drawingDocument && String(drawingDocument.workspaceId) !== drawingRoom.sourceWorkspaceId) {
+						jsonResponse(res, 404, { error: 'Attached drawing not found' });
+						return;
+					}
+
+					if (!drawingDocument) {
+						const emptyDoc = new Y.Doc();
+						try {
+							await prisma.document.create({
+								data: {
+									workspaceId: drawingRoom.sourceWorkspaceId,
+									docId: drawingDocId,
+									state: Buffer.from(Y.encodeStateAsUpdate(emptyDoc)),
+									stateVector: Buffer.from(Y.encodeStateVector(emptyDoc)),
+								},
+							});
+						} catch (createErr) {
+							const code = typeof createErr === 'object' && createErr && 'code' in createErr ? String(createErr.code) : '';
+							if (code !== 'P2002') {
+								throw createErr;
+							}
+						} finally {
+							emptyDoc.destroy();
+						}
+					}
+
+					// EDITORs propagate access to all parent note collaborators.
+					// VIEWERs (and any other non-editor role) only register themselves
+					// so they can open the drawing without causing a WS auth loop.
+					const collaboratorsToSync = access.accessRole === 'EDITOR'
+						? await prisma.noteCollaborator.findMany({
+							where: {
+								docId: access.docId,
+								revokedAt: null,
+							},
+							select: { userId: true, role: true },
+						})
+						: [{ userId: session.userId, role: access.accessRole }];
+
+					// Check which rows already exist with the correct role so we can skip
+					// upserts (and the metadata event) when nothing actually changed.
+					// This prevents an infinite refresh loop: upsert → metadata event →
+					// client re-renders → loadDrawingDoc → upsert → … (defense-in-depth
+					// alongside the client-side fix that removed syncAttachedDrawingAccess
+					// from loadDrawingDoc).
+					const existingRows = await prisma.noteCollaborator.findMany({
+						where: {
+							docId: drawingDocId,
+							userId: { in: collaboratorsToSync.map((c) => c.userId) },
+							revokedAt: null,
+						},
+						select: { userId: true, role: true },
+					});
+					const existingMap = new Map(existingRows.map((r) => [r.userId, r.role]));
+					const needsUpsert = collaboratorsToSync.filter(
+						(c) => !existingMap.has(c.userId) || existingMap.get(c.userId) !== c.role
+					);
+
+					if (needsUpsert.length > 0) {
+						await prisma.$transaction(needsUpsert.map((collaborator) => prisma.noteCollaborator.upsert({
+							where: { docId_userId: { docId: drawingDocId, userId: collaborator.userId } },
+							update: {
+								sourceWorkspaceId: drawingRoom.sourceWorkspaceId,
+								sourceNoteId: drawingRoom.sourceNoteId,
+								role: collaborator.role,
+								revokedAt: null,
+							},
+							create: {
+								docId: drawingDocId,
+								sourceWorkspaceId: drawingRoom.sourceWorkspaceId,
+								sourceNoteId: drawingRoom.sourceNoteId,
+								userId: collaborator.userId,
+								role: collaborator.role,
+							},
+						})));
+					}
+
+					jsonResponse(res, 200, { ok: true, collaboratorCount: collaboratorsToSync.length });
+
+					// Only publish the metadata event when rows were actually created or
+					// updated (i.e. something changed).  Firing on no-op upserts would
+					// trigger refreshNoteShareState on every client, which re-renders
+					// App.tsx, which produces a new loadDrawingDoc function reference,
+					// which makes DrawingsPanel re-run its effect — an infinite loop.
+					if (typeof onWorkspaceMetadataChanged === 'function' && needsUpsert.length > 0) {
+						try {
+							await onWorkspaceMetadataChanged({
+								reason: 'note-share-updated',
+								workspaceId: drawingRoom.sourceWorkspaceId,
+								docId: drawingDocId,
+								userIds: needsUpsert.map((collaborator) => collaborator.userId),
+							});
+						} catch (publishErr) {
+							console.warn('[note-share] attached drawing publish failed:', publishErr.message);
+						}
+					}
+				} catch (err) {
+					console.error('[note-share] attached drawing collaborator sync error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		const collaboratorsMatch = pathname === '/api/note-shares/collaborators' && method === 'GET';
 		if (collaboratorsMatch) {
 			(async () => {
 				try {
 					const session = requireAuth(req, res);
 					if (!session) return;
-					const access = await resolveDocAccess(prisma, session, url.searchParams.get('docId'));
+					const rawDocId = url.searchParams.get('docId');
+					const debugTraceId = normalizeMoveDebugTraceId(url.searchParams.get('debugTraceId') || req.headers['x-fn-debug-trace']);
+					recordMoveDebugTrace(debugTraceId, 'note-share-collaborators-request', {
+						userId: String(session.userId || ''),
+						sessionWorkspaceId: typeof session.workspaceId === 'string' ? session.workspaceId : null,
+						rawDocId,
+					});
+					const access = await resolveDocAccess(prisma, session, rawDocId, {
+						debugTraceId,
+						context: 'note-share-collaborators',
+					});
 					if (!access) {
+						recordMoveDebugTrace(debugTraceId, 'note-share-collaborators-denied', {
+							userId: String(session.userId || ''),
+							rawDocId,
+						});
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}
@@ -749,6 +954,18 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						? workspaceMembers.filter((member) => member.user && member.user.disabled !== true)
 						: [];
 					const visibleCollaborators = mergeVisibleCollaborators(directCollaborators, visibleWorkspaceMembers, session.userId);
+					recordMoveDebugTrace(debugTraceId, 'note-share-collaborators-response', {
+						docId: access.docId,
+						sourceWorkspaceId: access.sourceWorkspaceId,
+						sourceNoteId: access.sourceNoteId,
+						via: access.via || null,
+						accessRole: access.accessRole,
+						canManage: access.canManage === true,
+						visibleCollaboratorCount: visibleCollaborators.length,
+						pendingInvitationCount: access.canManage ? pendingInvites.length : 0,
+						workspaceMemberCount: visibleWorkspaceMembers.length,
+						directCollaboratorCount: directCollaborators.length,
+					});
 
 					jsonResponse(res, 200, {
 						roomId: access.docId,

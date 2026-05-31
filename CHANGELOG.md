@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.0 - 2026-05-30
+
+### Added
+- **Workspace note moves now have a built-in trace workflow for live debugging.** Client and server move phases can be captured with `?moveDebug=1` and retrieved from `/api/debug/move-trace?traceId=...`, making collaborator/media follow-up failures much easier to diagnose without shipping one-off logging patches.
+
+### Changed
+- **Card banner artwork now ships as SVG assets instead of PNGs.** The banner set is lighter to bundle and better aligned with the rest of the app's vector-heavy offline asset pipeline.
+- **Build and server diagnostics are more intentional by default.** Excalidraw font files are now served from `/fonts/*` in both dev and production builds, Prisma query logging is opt-in through `LOG_PRISMA_QUERIES=true`, and personal-workspace lookup now treats `PERSONAL` system workspaces as first-class user destinations.
+
+### Fixed
+- **Moving a note between workspaces now preserves the moved note's full working state more reliably.** The optimistic/local move path keeps docId-keyed image, link, collaborator, reminder, and note-order caches aligned with the new workspace, remaps collection and label IDs into the target workspace, and keeps attached drawing subdocuments on the same move path.
+- **Interrupted note moves now resume safely instead of corrupting server state or failing with a false conflict.** The server move transaction now creates target document rows before repointing foreign-keyed child rows, reuses stale target note rows left behind by a partial move, and keeps collaborator/share/media rows consistent as the source rows are retired.
+- **Shared-note follow-through after a move is steadier for both owners and collaborators.** Media and collaborator refreshes now carry move trace IDs, stale shared-placement aliases no longer resolve to invalid doc IDs, retained workspace members are materialized into direct share rows during a move, and transient post-move 403/404 or empty responses stop wiping richer migrated caches before the server catches up.
+- **Startup and collaboration regressions uncovered during the move investigation are resolved.** Fresh login no longer trips the restored auth gate hook order, detached rich-text fragments no longer warn at startup, the drawing editor waits for Yjs awareness before binding collaboration, and note pin state resolves through the user-scoped pin preference store in note grids.
+
 ## 1.4.9 - 2026-05-25
 
 ### Changed

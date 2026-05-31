@@ -27,6 +27,11 @@ const remoteCache = new Map<string, readonly NoteLinkRecord[]>();
 const pendingRefreshes = new Map<string, Promise<readonly NoteLinkRecord[]>>();
 const pendingFlushes = new Map<string, Promise<void>>();
 
+function isMissingAccessError(error: unknown): boolean {
+	const status = (error as { status?: number } | null)?.status;
+	return status === 403 || status === 404;
+}
+
 export type NoteLinksChangedReason = 'cache' | 'remote';
 
 type RefreshRemoteNoteLinksOptions = {
@@ -413,6 +418,12 @@ export async function refreshRemoteNoteLinks(
 			// clients react when fresh preview metadata arrives from the server.
 			await writeCachedLinks(docId, merged, { emit: true });
 			return merged;
+		} catch (error) {
+			if (isMissingAccessError(error)) {
+				await writeCachedLinks(docId, [], { emit: true });
+				return [];
+			}
+			throw error;
 		} finally {
 			pendingRefreshes.delete(docId);
 		}
@@ -438,7 +449,12 @@ export async function flushQueuedNoteLinkSync(userId: string): Promise<void> {
 					await writeCachedLinks(snapshot.docId, response.links, { emit: false });
 					emitNoteLinksChanged(snapshot.docId, 'remote');
 					await deleteQueuedSnapshot(snapshot.id);
-				} catch {
+				} catch (error) {
+					if (isMissingAccessError(error)) {
+						await writeCachedLinks(snapshot.docId, [], { emit: true });
+						await deleteQueuedSnapshot(snapshot.id).catch(() => undefined);
+						continue;
+					}
 					// Per-snapshot failure: leave the snapshot in the queue for the
 					// next flush attempt instead of aborting the entire batch.
 				}

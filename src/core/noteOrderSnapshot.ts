@@ -45,6 +45,20 @@ export function writeNoteOrderSnapshot(workspaceId: string, ids: string[]): void
 	}
 }
 
+export function moveNoteOrderSnapshotEntry(sourceWorkspaceId: string, targetWorkspaceId: string, noteId: string): void {
+	if (!sourceWorkspaceId || !targetWorkspaceId || sourceWorkspaceId === targetWorkspaceId) return;
+	const normalizedNoteId = String(noteId || '').trim();
+	if (!normalizedNoteId) return;
+	const sourceSnapshot = readNoteOrderSnapshot(sourceWorkspaceId).filter((id) => id !== normalizedNoteId);
+	const targetSnapshot = readNoteOrderSnapshot(targetWorkspaceId).filter((id) => id !== normalizedNoteId);
+	if (sourceSnapshot.length > 0) {
+		writeNoteOrderSnapshot(sourceWorkspaceId, sourceSnapshot);
+	} else {
+		clearNoteOrderSnapshot(sourceWorkspaceId);
+	}
+	writeNoteOrderSnapshot(targetWorkspaceId, [normalizedNoteId, ...targetSnapshot]);
+}
+
 /**
  * Removes the snapshot for the given workspace (e.g. on workspace deletion).
  */

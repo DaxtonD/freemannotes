@@ -52,6 +52,32 @@ export function writeCachedReminderStates(userId: string, reminders: readonly No
 	}
 }
 
+export function moveCachedReminderStates(args: {
+	userId: string;
+	noteId: string;
+	sourceWorkspaceId: string;
+	targetWorkspaceId: string;
+}): void {
+	if (typeof window === 'undefined') return;
+	const userId = String(args.userId || '').trim();
+	const noteId = String(args.noteId || '').trim();
+	const sourceWorkspaceId = String(args.sourceWorkspaceId || '').trim();
+	const targetWorkspaceId = String(args.targetWorkspaceId || '').trim();
+	if (!userId || !noteId || !sourceWorkspaceId || !targetWorkspaceId || sourceWorkspaceId === targetWorkspaceId) return;
+	const sourceDocId = `${sourceWorkspaceId}:${noteId}`;
+	const targetDocId = `${targetWorkspaceId}:${noteId}`;
+	const reminders = readCachedReminderStates(userId);
+	if (reminders.length === 0) return;
+	writeCachedReminderStates(userId, reminders.map((entry) => {
+		if (entry.docId !== sourceDocId) return entry;
+		return {
+			...entry,
+			docId: targetDocId,
+			workspaceId: targetWorkspaceId,
+		};
+	}));
+}
+
 export function clearCachedReminderStates(userId: string): void {
 	if (typeof window === 'undefined' || !userId) return;
 	try {

@@ -49,6 +49,13 @@ const remoteCache = new Map<string, readonly NoteImageRecord[]>();
 const pendingRemoteRefreshes = new Map<string, Promise<readonly NoteImageRecord[]>>();
 const remoteRefreshTimestamps = new Map<string, number>();
 const remoteFileNameOverrides = new Map<string, string>();
+const movedCacheGraceUntil = new Map<string, number>();
+const MOVE_CACHE_GRACE_MS = 8_000;
+
+function isMissingAccessError(error: unknown): boolean {
+	const status = (error as { status?: number } | null)?.status;
+	return status === 403 || status === 404;
+}
 
 function parseDocId(docId: string): { workspaceId: string; noteId: string } {
 	const normalizedDocId = String(docId || '').trim();
@@ -78,6 +85,13 @@ function mergeRemoteImageCache(entries: readonly NoteImageRecord[]): readonly No
 		byId.set(entry.id, entry);
 	}
 	return Array.from(byId.values()).sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}
+
+function shouldPreserveMovedCache(docId: string): boolean {
+	const graceUntil = movedCacheGraceUntil.get(docId) || 0;
+	if (graceUntil > Date.now()) return true;
+	movedCacheGraceUntil.delete(docId);
+	return false;
 }
 
 function applyRemoteFileNameOverrides(images: readonly NoteImageRecord[]): NoteImageRecord[] {
@@ -586,6 +600,7 @@ export async function moveLocalNoteMedia(sourceDocId: string, targetDocId: strin
 	if (migratedSourceCache.length > 0 || existingTargetCache.length > 0) {
 		remoteCache.set(target, mergeRemoteImageCache([...existingTargetCache, ...migratedSourceCache]));
 	}
+	movedCacheGraceUntil.set(target, Date.now() + MOVE_CACHE_GRACE_MS);
 	remoteCache.delete(source);
 	remoteRefreshTimestamps.delete(source);
 	const targetRefreshAt = remoteRefreshTimestamps.get(target);
@@ -682,16 +697,37 @@ export async function refreshRemoteNoteImages(
 		return pending;
 	}
 	const work = (async () => {
-		const response = await listNoteImages(docId);
-		// A successful empty response is authoritative: the note really has no
-		// remaining remote images. Reusing the old cache here makes deleted images
-		// reappear in the media panel until the user tries (and fails) to delete
-		// them again.
-		const images = applyRemoteFileNameOverrides(response.images);
-		remoteCache.set(docId, images);
-		remoteRefreshTimestamps.set(docId, Date.now());
-		void syncRemotePreviewRows(docId, images);
-		return images;
+		try {
+			const response = await listNoteImages(docId);
+			const cachedImages = remoteCache.get(docId) || await readStoredRemoteNoteImages(docId);
+			const preserveMovedCache = shouldPreserveMovedCache(docId) && cachedImages.length > 0;
+			const fetchedImages = applyRemoteFileNameOverrides(response.images);
+			const images = preserveMovedCache
+				? applyRemoteFileNameOverrides(mergeRemoteImageCache([...cachedImages, ...fetchedImages]))
+				: fetchedImages;
+			if (preserveMovedCache) {
+				const cachedIds = new Set(cachedImages.map((image) => image.id));
+				const fetchedIds = new Set(fetchedImages.map((image) => image.id));
+				const serverCaughtUp = cachedIds.size === 0 || Array.from(cachedIds).every((id) => fetchedIds.has(id));
+				if (serverCaughtUp) {
+					movedCacheGraceUntil.delete(docId);
+				}
+			}
+			remoteCache.set(docId, images);
+			remoteRefreshTimestamps.set(docId, Date.now());
+			void syncRemotePreviewRows(docId, images);
+			return images;
+		} catch (error) {
+			if (isMissingAccessError(error)) {
+				remoteCache.set(docId, []);
+				remoteRefreshTimestamps.delete(docId);
+				movedCacheGraceUntil.delete(docId);
+				await syncRemotePreviewRows(docId, []);
+				emitNoteMediaChanged(docId);
+				return [];
+			}
+			throw error;
+		}
 	})();
 	pendingRemoteRefreshes.set(docId, work);
 	try {

@@ -1,4 +1,5 @@
 import { moveNoteToWorkspace } from './noteManagementApi';
+import type { MoveNoteMetadataIdPair, MoveNoteMetadataMapping } from './noteMoveMetadata';
 
 export type PendingNoteMove = {
 	id: string;
@@ -7,6 +8,7 @@ export type PendingNoteMove = {
 	sourceWorkspaceId: string;
 	targetWorkspaceId: string;
 	title: string | null;
+	metadataMapping: MoveNoteMetadataMapping | null;
 	createdAt: string;
 	updatedAt: string;
 };
@@ -28,6 +30,36 @@ function normalizeId(value: unknown): string {
 function normalizeTitle(value: unknown): string | null {
 	const title = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
 	return title.length > 0 ? title : null;
+}
+
+function normalizeIdPairs(value: unknown): MoveNoteMetadataIdPair[] {
+	if (!Array.isArray(value)) return [];
+	const pairs: MoveNoteMetadataIdPair[] = [];
+	for (const entry of value) {
+		if (!entry || typeof entry !== 'object') continue;
+		const sourceId = normalizeId((entry as { sourceId?: unknown }).sourceId);
+		const targetId = normalizeId((entry as { targetId?: unknown }).targetId);
+		if (!sourceId || !targetId) continue;
+		pairs.push({ sourceId, targetId });
+	}
+	return pairs;
+}
+
+function normalizeMetadataMapping(value: unknown): MoveNoteMetadataMapping | null {
+	if (!value || typeof value !== 'object') return null;
+	const collectionId = normalizeId((value as { collectionId?: unknown }).collectionId) || null;
+	const labelIds = Array.isArray((value as { labelIds?: unknown[] }).labelIds)
+		? Array.from(new Set((value as { labelIds: unknown[] }).labelIds.map((entry) => normalizeId(entry)).filter(Boolean)))
+		: [];
+	const collectionIdPairs = normalizeIdPairs((value as { collectionIdPairs?: unknown }).collectionIdPairs);
+	const labelIdPairs = normalizeIdPairs((value as { labelIdPairs?: unknown }).labelIdPairs);
+	if (!collectionId && labelIds.length === 0 && collectionIdPairs.length === 0 && labelIdPairs.length === 0) return null;
+	return {
+		collectionId,
+		labelIds,
+		collectionIdPairs,
+		labelIdPairs,
+	};
 }
 
 function readQueue(userId: string): PendingNoteMove[] {
@@ -54,6 +86,7 @@ function readQueue(userId: string): PendingNoteMove[] {
 					sourceWorkspaceId,
 					targetWorkspaceId,
 					title: normalizeTitle(item.title),
+					metadataMapping: normalizeMetadataMapping((item as { metadataMapping?: unknown }).metadataMapping),
 					createdAt,
 					updatedAt,
 				};
@@ -98,6 +131,7 @@ export function queuePendingNoteMove(args: {
 	sourceWorkspaceId: string;
 	targetWorkspaceId: string;
 	title?: string | null;
+	metadataMapping?: MoveNoteMetadataMapping | null;
 }): PendingNoteMove | null {
 	const userId = normalizeId(args.userId);
 	const noteId = normalizeId(args.noteId);
@@ -121,6 +155,7 @@ export function queuePendingNoteMove(args: {
 		sourceWorkspaceId: originalSourceWorkspaceId,
 		targetWorkspaceId,
 		title: normalizeTitle(args.title),
+		metadataMapping: normalizeMetadataMapping(args.metadataMapping),
 		createdAt: existing?.createdAt || nowIso(),
 		updatedAt: nowIso(),
 	};
@@ -140,7 +175,7 @@ export async function flushPendingNoteMoves(userId: string): Promise<void> {
 	const pending = readQueue(normalizedUserId);
 	for (const move of pending) {
 		try {
-			await moveNoteToWorkspace(move.noteId, move.targetWorkspaceId, move.sourceWorkspaceId);
+			await moveNoteToWorkspace(move.noteId, move.targetWorkspaceId, move.sourceWorkspaceId, move.metadataMapping);
 			removePendingNoteMove(normalizedUserId, move.noteId);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error ?? '');
