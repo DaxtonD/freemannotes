@@ -40,6 +40,22 @@ export function getNoteBannerVariantFileName(fileName: string, layout: NoteBanne
 	return layout === 'list' ? `${stem}W${ext}` : `${stem}${ext}`;
 }
 
+function resolveThemeBannerAssetFileName(
+	fileName: string,
+	themeId?: ThemeId | null,
+	layout: NoteBannerAssetLayout = 'card'
+): string {
+	const { stem, ext } = splitBannerFileName(fileName);
+	if (!stem) return '';
+	const canonicalStem = stem.toLowerCase();
+	const extension = (ext || '.svg').toLowerCase();
+	// Banner assets now follow one on-disk convention across both theme folders:
+	// lowercase stem names for card art and the same lowercase stem plus `W` for
+	// list art. URL generation must normalize to that convention so legacy stored
+	// filenames keep working on Linux's case-sensitive filesystem.
+	return layout === 'list' ? `${canonicalStem}W${extension}` : `${canonicalStem}${extension}`;
+}
+
 let cachedPromise: Promise<readonly NoteBannerOption[]> | null = null;
 let cachedOptions: readonly NoteBannerOption[] | null = null;
 
@@ -49,7 +65,7 @@ export function getNoteBannerAssetUrl(
 	layout: NoteBannerAssetLayout = 'card'
 ): string {
 	const variantBasePath = themeId && isLightTheme(themeId) ? '/CardBanners/Light' : '/CardBanners/Dark';
-	const resolvedFileName = getNoteBannerVariantFileName(fileName, layout);
+	const resolvedFileName = resolveThemeBannerAssetFileName(fileName, themeId, layout);
 	return `${variantBasePath}/${encodeURIComponent(resolvedFileName)}`;
 }
 

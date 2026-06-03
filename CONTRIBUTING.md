@@ -87,18 +87,23 @@ Freeman Notes now keeps note banner artwork in theme-specific folders with separ
 
 Required banner files:
 
-- `public/CardBanners/Dark/Title.svg` for the dark card banner at `520x240`
-- `public/CardBanners/Dark/TitleW.svg` for the dark list/strip banner at `1000x520`
-- `public/CardBanners/Light/Title.svg` for the light card banner at `520x240`
-- `public/CardBanners/Light/TitleW.svg` for the light list/strip banner at `1000x520`
+- `public/CardBanners/Dark/title.svg` for the dark card banner at `520x240`
+- `public/CardBanners/Dark/titleW.svg` for the dark list/strip banner at `1000x520`
+- `public/CardBanners/Light/title.svg` for the light card banner at `520x240`
+- `public/CardBanners/Light/titleW.svg` for the light list/strip banner at `1000x520`
 
 Naming rules:
 
-- Keep the same base name across all four files, for example `Calendar.svg` and `CalendarW.svg`
-- The picker modal only shows the card asset name, such as `Calendar.svg`
-- Card views load `Title.svg`
-- List and strip views automatically load `TitleW.svg`
+- Use a lowercase base name across all four files, for example `calendar.svg` and `calendarW.svg`
+- The only uppercase character in the filename should be the `W` suffix used by the list/strip variant
+- The picker modal only shows the card asset name, such as `calendar.svg`
+- Card views load `title.svg`
+- List and strip views automatically load `titleW.svg`
 - Stored banner preferences still persist only the base filename, so no preference migration is needed
+
+Why this matters:
+
+- Production Docker deployments run on Linux, which is case-sensitive. Mixed-case banner filenames can appear to work on Windows/macOS development machines and then fail in production.
 
 If you add a new banner, you must add all four files. Do not add only a light theme, only a dark theme, or only one size.
 

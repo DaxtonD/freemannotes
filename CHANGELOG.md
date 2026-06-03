@@ -4,6 +4,9 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Fixed
+- **Banner artwork now loads reliably in Linux/Docker production builds.** The banner asset set now follows one lowercase on-disk naming convention across both theme folders, the dark-theme typo in the travel list asset was corrected, and banner URL generation now normalizes stored filenames before resolving paths on case-sensitive filesystems.
+
 ## 1.5.1 - 2026-06-02
 
 ### Added
