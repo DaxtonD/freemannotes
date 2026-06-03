@@ -7,6 +7,7 @@ import {
 	getCachedRemoteNoteLinks,
 	getNoteLinksChangedEventName,
 	getQueuedIntentUrls,
+	noteLinkNeedsHydration,
 	readStoredNoteLinks,
 	refreshRemoteNoteLinks,
 } from '../../core/noteLinkStore';
@@ -68,10 +69,7 @@ function pickDisplayImageUrl(link: NoteLinkRecord): string | null {
 }
 
 function needsRemoteHydration(links: readonly NoteLinkRecord[]): boolean {
-	// Only PENDING rows need hydration. FAILED means the server attempted
-	// resolution and the URL couldn't be fetched (paywall, bot-block, etc.) –
-	// treat it as terminal and show the basic fallback card instead of looping.
-	return links.some((link) => link.status === 'PENDING');
+	return links.some(noteLinkNeedsHydration);
 }
 
 function LinkPreviewImage(props: { link: NoteLinkRecord }): React.JSX.Element {

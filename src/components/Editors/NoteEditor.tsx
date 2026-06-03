@@ -33,6 +33,7 @@ import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNo
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { getUserNoteBannerFile, saveUserNoteBannerFile } from '../../core/noteBannerPreferences';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import {
 	createRichTextDocFromPlainText,
@@ -60,10 +61,14 @@ import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
+import { NoteBannerPickerModal } from '../NoteCard/NoteBannerPickerModal';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DrawingsPanel } from './DrawingsPanel';
 import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible, focusRichTextEditable } from './RichTextEditor';
 import styles from './Editors.module.css';
+import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
+import { assignNoteBannerFile } from '../../services/noteService';
+import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 
 export type NoteEditorProps = {
 	noteId: string;
@@ -595,6 +600,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
+	const [isBannerPickerOpen, setIsBannerPickerOpen] = React.useState(false);
 	const mediaFlyoutRef = React.useRef<HTMLElement | null>(null);
 	const titleFieldRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const textBodyFieldRef = React.useRef<HTMLDivElement | null>(null);
@@ -638,8 +644,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (!next) return;
 		const added = addNotePreviewLinkToDoc(props.doc, next);
 		if (!added) return;
+		void syncNoteLinksForDoc({
+			userId: props.authUserId,
+			docId: props.docId,
+			links: extractNoteLinksFromDoc(props.doc),
+		});
 		props.onShowBriefDialog?.(t('links.addedToast'));
-	}, [props.doc, props.onShowBriefDialog, readOnly, t]);
+	}, [props.authUserId, props.doc, props.docId, props.onShowBriefDialog, readOnly, t]);
 	const handleDeleteUrlPreview = React.useCallback((normalizedUrl: string): void => {
 		if (readOnly) return;
 		removeNotePreviewLinkFromDoc(props.doc, normalizedUrl);
@@ -1053,6 +1064,19 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		},
 		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId)),
 		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId))
+	);
+	const noteBannerFile = useSyncExternalStore(
+		(onStoreChange) => {
+			const unsubscribePrefs = subscribeNoteBannerPrefs(onStoreChange);
+			const observer = (): void => onStoreChange();
+			metadata.observe(observer);
+			return () => {
+				unsubscribePrefs();
+				metadata.unobserve(observer);
+			};
+		},
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId)),
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId))
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
@@ -2955,6 +2979,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setMoreMenuAnchorRect(null);
 					props.onAddImage?.();
 				} : undefined}
+				onSelectBannerImage={!readOnly ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					setIsBannerPickerOpen(true);
+				} : undefined}
 				onAddDocument={props.onAddDocument ? () => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
@@ -3004,6 +3033,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			selectedToken={colorToken}
 			onClose={() => setIsColorPickerOpen(false)}
 			onSelect={handleSelectNoteColor}
+		/>
+		<NoteBannerPickerModal
+			isOpen={isBannerPickerOpen}
+			themeId={props.themeId}
+			selectedFileName={noteBannerFile}
+			onClose={() => setIsBannerPickerOpen(false)}
+			onSelect={(fileName) => {
+				assignNoteBannerFile(props.doc, fileName);
+				setIsBannerPickerOpen(false);
+			}}
 		/>
 
 		{/* Floating keyboard toolbar + occlusion backdrop:

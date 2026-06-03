@@ -1,15 +1,15 @@
 {
   "name": "freemannotes",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "main": "index.js",
   "scripts": {
     "dev": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",
     "dev:web": "node server/waitForServer.js && vite --host",
     "predev:server": "npm run db:generate:if-needed",
     "dev:server": "node server/dbInitCli.js && node --watch server.js",
-    "prestart": "npm run db:generate:if-needed",
+    "prestart": "npm run db:generate:if-needed && npm run db:init",
     "start": "npm run build && node server.js",
-    "prestart:server": "npm run db:generate:if-needed",
+    "prestart:server": "npm run db:generate:if-needed && npm run db:init",
     "start:server": "node server.js",
     "db:init": "node server/dbInitCli.js",
     "preview": "vite preview --host",

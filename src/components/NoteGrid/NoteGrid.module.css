@@ -203,6 +203,7 @@
 	width: 100%;
 	height: 100%;
 	box-sizing: border-box;
+	position: relative;
 	display: flex;
 	flex-direction: column;
 	justify-content: center;
@@ -216,6 +217,37 @@
 		inset 3px 0 0 var(--note-color-accent, transparent),
 		0 1px 0 color-mix(in srgb, var(--color-border) 52%, transparent);
 	overflow: hidden;
+}
+
+.listDragGhostBanner::before,
+.listDragGhostBanner::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 0;
+}
+
+.listDragGhostBanner::before {
+	background-image: var(--list-drag-ghost-banner-image);
+	background-position: center;
+	background-repeat: no-repeat;
+	background-size: cover;
+	filter: var(--note-banner-image-filter, none);
+}
+
+.listDragGhostBanner::after {
+	background:
+		linear-gradient(
+			180deg,
+			var(--note-banner-overlay-top, color-mix(in srgb, var(--note-color-header-bg, var(--note-color-card-bg, var(--color-surface))) 6%, transparent)),
+			var(--note-banner-overlay-bottom, color-mix(in srgb, var(--note-color-header-bg, var(--note-color-card-bg, var(--color-surface))) 22%, transparent))
+		);
+}
+
+.listDragGhost > * {
+	position: relative;
+	z-index: 1;
 }
 
 .listDragGhostMain {
@@ -282,6 +314,11 @@
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+
+.listDragGhostBanner .listDragGhostTitle,
+.listDragGhostBanner .listDragGhostPreview {
+	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
 }
 
 .overlay {

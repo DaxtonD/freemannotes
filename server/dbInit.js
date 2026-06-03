@@ -43,6 +43,7 @@ const { execFileSync } = require('child_process');
 
 const KNOWN_BROKEN_MIGRATION = '20260311000100_owner_editor_viewer_roles';
 const KNOWN_BROKEN_MIGRATION_HINT = 'relation "share_access_token" does not exist';
+const KNOWN_ROLLBACK_RECOVERY_MIGRATION = '20260603120000_note_card_banner_title_position';
 
 function getRepoRoot() {
 	return path.resolve(__dirname, '..');
@@ -75,6 +76,18 @@ function recoverKnownBrokenMigration(databaseUrl) {
 	console.warn(`[dbInit] Attempting automatic recovery for failed migration ${KNOWN_BROKEN_MIGRATION}`);
 	runPrismaCommand(['migrate', 'resolve', '--rolled-back', KNOWN_BROKEN_MIGRATION], databaseUrl);
 	console.warn(`[dbInit] Marked ${KNOWN_BROKEN_MIGRATION} as rolled back; retrying migrate deploy`);
+}
+
+function shouldRecoverKnownRollbackMigration(message) {
+	const text = String(message || '');
+	return text.includes('P3009')
+		&& (text.includes(`The \`${KNOWN_ROLLBACK_RECOVERY_MIGRATION}\` migration`) || text.includes(`Migration name: ${KNOWN_ROLLBACK_RECOVERY_MIGRATION}`));
+}
+
+function recoverKnownRollbackMigration(databaseUrl) {
+	console.warn(`[dbInit] Attempting automatic recovery for failed migration ${KNOWN_ROLLBACK_RECOVERY_MIGRATION}`);
+	runPrismaCommand(['migrate', 'resolve', '--rolled-back', KNOWN_ROLLBACK_RECOVERY_MIGRATION], databaseUrl);
+	console.warn(`[dbInit] Marked ${KNOWN_ROLLBACK_RECOVERY_MIGRATION} as rolled back; retrying migrate deploy`);
 }
 
 function hasCommittedMigrations() {
@@ -272,6 +285,25 @@ function syncSchema(databaseUrl) {
 			if (shouldRecoverKnownBrokenMigration(message)) {
 				try {
 					recoverKnownBrokenMigration(databaseUrl);
+					const retryOutput = runPrismaCommand(command, databaseUrl);
+					const retryText = retryOutput.toString().trim();
+					if (retryText.includes('already in sync') || retryText.includes('No pending migrations')) {
+						console.info('[dbInit] Schema is already in sync — no changes applied');
+					} else {
+						console.info('[dbInit] Schema changes applied successfully after migration recovery');
+						if (retryText) {
+							console.info('[dbInit] Prisma output:\n' + retryText);
+						}
+					}
+					return;
+				} catch (recoveryErr) {
+					const recoveryMessage = recoveryErr.stderr ? recoveryErr.stderr.toString().trim() : recoveryErr.message;
+					console.warn('[dbInit] Automatic migration recovery failed: ' + recoveryMessage);
+				}
+			}
+			if (shouldRecoverKnownRollbackMigration(message)) {
+				try {
+					recoverKnownRollbackMigration(databaseUrl);
 					const retryOutput = runPrismaCommand(command, databaseUrl);
 					const retryText = retryOutput.toString().trim();
 					if (retryText.includes('already in sync') || retryText.includes('No pending migrations')) {

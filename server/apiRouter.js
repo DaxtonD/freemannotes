@@ -40,6 +40,7 @@ const { getMoveDebugTrace, normalizeMoveDebugTraceId, recordMoveDebugTrace } = r
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const COLLECTIONS_REGISTRY_ID = '__collections_registry__';
 const LABELS_REGISTRY_ID = '__labels_registry__';
+const CARD_BANNERS_DIR = path.resolve(__dirname, '..', 'public', 'CardBanners', 'Dark');
 const CUSTOM_EXCALIDRAW_LIBRARY_DIR = path.resolve(__dirname, '..', 'third-party', 'excalidraw-libraries');
 const EXCALIDRAW_BUNDLED_LIBRARY_DEFINITIONS = Object.freeze([
 	{
@@ -123,6 +124,29 @@ function titleCaseLibraryName(value) {
 		.filter(Boolean)
 		.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
 		.join(' ');
+}
+
+function normalizeBannerDisplayName(fileName) {
+	const normalized = String(fileName ?? '').trim().replace(/W(?=\.[^.]+$)/, '');
+	const match = normalized.match(/^(.*?)(\.[^.]+)?$/);
+	const stem = String(match?.[1] || '').trim();
+	const ext = String(match?.[2] || '').toLowerCase();
+	if (!stem) return normalized;
+	return `${stem.charAt(0).toUpperCase()}${stem.slice(1).toLowerCase()}${ext}`;
+}
+
+function readCardBannerDefinitions() {
+	if (!fs.existsSync(CARD_BANNERS_DIR)) {
+		return [];
+	}
+	return fs.readdirSync(CARD_BANNERS_DIR, { withFileTypes: true })
+		.filter((entry) => entry.isFile() && /\.(svg|png|jpe?g|webp|avif)$/i.test(entry.name) && !/W\.[^.]+$/i.test(entry.name))
+		.map((entry) => ({
+			fileName: entry.name,
+			label: normalizeBannerDisplayName(entry.name),
+			url: `/CardBanners/Dark/${encodeURIComponent(entry.name)}`,
+		}))
+		.sort((left, right) => left.label.localeCompare(right.label));
 }
 
 function readCustomExcalidrawLibraryMetadata(metadataPath) {
@@ -927,6 +951,22 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return true;
 		}
 
+		if (pathname === '/api/card-banners' && method === 'GET') {
+			(async () => {
+				try {
+					const access = await requireWorkspaceMember();
+					if (!access) return;
+					jsonResponse(res, 200, {
+						banners: readCardBannerDefinitions(),
+					});
+				} catch (err) {
+					console.error('[api] GET /api/card-banners error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		const excalidrawLibraryMatch = pathname.match(/^\/api\/excalidraw-libraries\/([^/]+)$/);
 		if (excalidrawLibraryMatch && method === 'GET') {
 			const libraryId = decodeURIComponent(excalidrawLibraryMatch[1]);
@@ -1702,14 +1742,17 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 					updateLiveRegistryDoc(makeRoomDocId(sourceWorkspaceId, NOTES_REGISTRY_ID), (doc) => removeNoteFromRegistryDoc(doc, noteId));
 					updateLiveRegistryDoc(makeRoomDocId(targetWorkspaceId, NOTES_REGISTRY_ID), (doc) => addNoteToRegistryDoc(doc, noteId, noteTitle));
 					if (targetCollectionRegistryState) {
-						updateLiveRegistryDoc(makeRoomDocId(targetWorkspaceId, COLLECTIONS_REGISTRY_ID), (doc) => {
-							Y.applyUpdate(doc, new Uint8Array(targetCollectionRegistryState));
-						});
+						// Do not merge a full saved registry snapshot back into an already-live
+						// room here. If the room history diverged during prior optimistic moves,
+						// replaying the whole document can duplicate logically identical
+						// collection rows. Force the room to reconnect from the persisted state.
+						closeLiveRoom(makeRoomDocId(targetWorkspaceId, COLLECTIONS_REGISTRY_ID));
 					}
 					if (targetLabelRegistryState) {
-						updateLiveRegistryDoc(makeRoomDocId(targetWorkspaceId, LABELS_REGISTRY_ID), (doc) => {
-							Y.applyUpdate(doc, new Uint8Array(targetLabelRegistryState));
-						});
+						// Same rationale as collections above: reconnect the live labels room so
+						// clients reload the canonical saved registry state instead of merging a
+						// potentially divergent full-document update.
+						closeLiveRoom(makeRoomDocId(targetWorkspaceId, LABELS_REGISTRY_ID));
 					}
 					closeLiveRoom(sourceDocId);
 					// Close live rooms for all drawing sub-documents so connected clients

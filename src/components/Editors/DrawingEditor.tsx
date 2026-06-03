@@ -12,13 +12,16 @@ import { DRAWING_BACKGROUND_PRESETS, getDrawingRecommendedInkColor, normalizeDra
 import { getDeviceId } from '../../core/deviceId';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { useI18n } from '../../core/i18n';
+import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { isLightTheme, type ThemeId } from '../../core/theme';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { assignDrawingBackgroundColor, readNoteMetadataState } from '../../services/noteService';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
+import { NoteBannerPickerModal } from '../NoteCard/NoteBannerPickerModal';
 import styles from './Editors.module.css';
 
 type DrawingEditorProps = {
@@ -260,6 +263,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
+	const [isBannerPickerOpen, setIsBannerPickerOpen] = React.useState(false);
 	const colorToken = useSyncExternalStore(
 		(onStoreChange) => {
 			const metadataObserver = (): void => onStoreChange();
@@ -272,6 +276,19 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		},
 		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId)),
 		() => readEffectiveNoteColorToken(metadata, getUserNoteColorToken(props.noteId), hasUserNoteColorPref(props.noteId))
+	);
+	const noteBannerFile = useSyncExternalStore(
+		(onStoreChange) => {
+			const metadataObserver = (): void => onStoreChange();
+			metadata.observe(metadataObserver);
+			const unsubscribePrefs = subscribeNoteBannerPrefs(onStoreChange);
+			return () => {
+				metadata.unobserve(metadataObserver);
+				unsubscribePrefs();
+			};
+		},
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId)),
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId))
 	);
 	const resolvedNoteColor = React.useMemo(
 		() => (colorToken ? resolveThemeNoteColorModel(props.themeId).tokens[colorToken] : null),
@@ -1206,6 +1223,11 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 						setMoreMenuAnchorRect(null);
 						props.onAddImage?.();
 					} : undefined}
+					onSelectBannerImage={!readOnly ? () => {
+						setIsMoreMenuOpen(false);
+						setMoreMenuAnchorRect(null);
+						setIsBannerPickerOpen(true);
+					} : undefined}
 					onAddReminder={props.onAddReminder ? () => {
 						setIsMoreMenuOpen(false);
 						setMoreMenuAnchorRect(null);
@@ -1234,6 +1256,16 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 				selectedToken={colorToken}
 				onClose={() => setIsColorPickerOpen(false)}
 				onSelect={handleSelectNoteColor}
+			/>
+			<NoteBannerPickerModal
+				isOpen={isBannerPickerOpen}
+				themeId={props.themeId}
+				selectedFileName={noteBannerFile}
+				onClose={() => setIsBannerPickerOpen(false)}
+				onSelect={(fileName) => {
+					assignNoteBannerFile(props.doc, fileName);
+					setIsBannerPickerOpen(false);
+				}}
 			/>
 		</div>
 	);

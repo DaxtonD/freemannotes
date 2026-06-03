@@ -1428,11 +1428,8 @@ process.on('uncaughtException', (err) => {
 			await ensureDatabase(DATABASE_URL);
 		} catch (err) {
 			console.error('[server] Database initialization failed:', err.message);
-			if (process.env.NODE_ENV === 'production') {
-				console.error('[server] Production startup requires a valid, migrated database. Exiting.');
-				process.exit(1);
-			}
-			console.error('[server] The server will start, but persistence may not work.');
+			console.error('[server] Startup requires a valid, migrated database. Exiting.');
+			process.exit(1);
 		}
 
 		// ── Set PostgreSQL session timezone ───────────────────────────

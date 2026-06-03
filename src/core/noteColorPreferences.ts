@@ -118,7 +118,7 @@ export function saveUserNoteColorToken(deviceId: string, noteId: string, token: 
 			replaceUserNoteColorPrefs(pref.noteColorsByNoteId as Record<string, NoteColorToken | null>);
 		}
 	}).catch(() => undefined);
-	void flushUserPreferences().catch(() => undefined);
+	void flushUserPreferences(deviceId).catch(() => undefined);
 }
 
 /**

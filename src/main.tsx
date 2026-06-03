@@ -2,15 +2,22 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import '@excalidraw/excalidraw/index.css';
 import { App } from './App';
+import { loadImage } from './core/avatarProfileImage';
 import { DocumentManager } from './core/DocumentManager';
 import { DocumentManagerProvider } from './core/DocumentManagerContext';
 import { initPwa } from './core/pwa';
 import { logClientEvent } from './core/debugLogger';
 import { StartupHydrationProvider } from './core/StartupHydrationContext';
-import { hydrateStartupSnapshot, readSynchronousStartupHydrationSnapshot, type StartupHydrationSnapshot } from './core/startupHydration';
+import {
+	hydrateStartupSnapshot,
+	readSynchronousStartupHydrationSnapshot,
+	readSynchronousWarmStartupBannerUrls,
+	type StartupHydrationSnapshot,
+} from './core/startupHydration';
 import { applyTheme, getStoredThemeIdForUser } from './core/theme';
 import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
+import { loadViewMode } from './core/viewMode';
 import { readWorkspaceSelectionCache } from './core/workspaceSelectionCache';
 import './styles/variables.css';
 import './styles/globals.css';
@@ -94,7 +101,33 @@ installTouchDragPolyfill();
 
 // Apply the last-used theme before React mounts so Android standalone chrome
 // sees the current app background immediately instead of the HTML fallback.
-applyTheme(getStoredThemeIdForUser(readCachedAuthUserId()));
+const cachedAuthUserId = readCachedAuthUserId();
+const startupThemeId = getStoredThemeIdForUser(cachedAuthUserId);
+applyTheme(startupThemeId);
+
+async function preloadWarmStartupBanners(): Promise<void> {
+	const warmStartupBannerUrls = readSynchronousWarmStartupBannerUrls(startupThemeId, loadViewMode());
+	if (warmStartupBannerUrls.length === 0 || typeof window === 'undefined') return;
+
+	const startedAt = Date.now();
+	let timedOut = false;
+	let timeoutId = 0;
+	await Promise.race([
+		Promise.allSettled(warmStartupBannerUrls.map((url) => loadImage(url))),
+		new Promise<void>((resolve) => {
+			timeoutId = window.setTimeout(() => {
+				timedOut = true;
+				resolve();
+			}, 900);
+		}),
+	]);
+	window.clearTimeout(timeoutId);
+	void logClientEvent('STARTUP_BANNER_PRELOAD', {
+		urlCount: warmStartupBannerUrls.length,
+		latencyMs: Date.now() - startedAt,
+		timedOut,
+	});
+}
 
 function BootRoot(): React.JSX.Element {
 	const [startupHydration, setStartupHydration] = React.useState<StartupHydrationSnapshot>(() => readSynchronousStartupHydrationSnapshot());
@@ -140,13 +173,17 @@ function BootRoot(): React.JSX.Element {
 
 void logClientEvent('APP_INIT', {
 	cachedWorkspaceId: readCachedWorkspaceId(),
-	cachedAuthUserId: readCachedAuthUserId(),
+	cachedAuthUserId,
 });
 
-createRoot(rootEl).render(
-	<React.StrictMode>
-		<BootRoot />
-	</React.StrictMode>
-);
+async function bootstrap(): Promise<void> {
+	await preloadWarmStartupBanners();
+	createRoot(rootEl).render(
+		<React.StrictMode>
+			<BootRoot />
+		</React.StrictMode>
+	);
+	initPwa();
+}
 
-initPwa();
+void bootstrap();

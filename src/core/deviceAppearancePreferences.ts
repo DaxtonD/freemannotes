@@ -8,6 +8,8 @@ export type EditorToolbarMode = 'full' | 'condensed';
 const STORAGE_KEY = 'freemannotes.deviceAppearancePreferences.v2';
 const LEGACY_STORAGE_KEY = 'freemannotes.deviceAppearancePreferences.v1';
 
+export type NoteCardBannerTitlePosition = 'above' | 'below';
+
 export type CachedDeviceAppearancePreferences = {
 	userId: string | null;
 	deviceId: string;
@@ -15,6 +17,7 @@ export type CachedDeviceAppearancePreferences = {
 	noteEditorFontScale: number;
 	editorToolbarMode: EditorToolbarMode;
 	noteCardMaxHeightPx: number;
+	noteCardBannerTitlePosition: NoteCardBannerTitlePosition;
 	checklistShowCompleted: boolean;
 	quickDeleteChecklist: boolean;
 	noteCardClickOpens: boolean;
@@ -64,6 +67,14 @@ export function normalizeEditorToolbarMode(value: unknown): EditorToolbarMode {
 	return value === 'condensed' ? 'condensed' : 'full';
 }
 
+export function getDefaultNoteCardBannerTitlePosition(): NoteCardBannerTitlePosition {
+	return 'above';
+}
+
+export function normalizeNoteCardBannerTitlePosition(value: unknown): NoteCardBannerTitlePosition {
+	return value === 'below' ? 'below' : 'above';
+}
+
 function normalizeSnapshot(value: Partial<CachedDeviceAppearancePreferences> | null | undefined): CachedDeviceAppearancePreferences | null {
 	if (!value || typeof value !== 'object') return null;
 	if (typeof value.deviceId !== 'string' || !value.deviceId) return null;
@@ -74,6 +85,7 @@ function normalizeSnapshot(value: Partial<CachedDeviceAppearancePreferences> | n
 		noteEditorFontScale: clampFontScale(Number(value.noteEditorFontScale)),
 		editorToolbarMode: normalizeEditorToolbarMode(value.editorToolbarMode),
 		noteCardMaxHeightPx: clampNoteCardMaxHeightPx(Number(value.noteCardMaxHeightPx)),
+		noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition(value.noteCardBannerTitlePosition),
 		checklistShowCompleted: normalizeBoolean(value.checklistShowCompleted, false),
 		quickDeleteChecklist: normalizeBoolean(value.quickDeleteChecklist, false),
 		noteCardClickOpens: normalizeBoolean(value.noteCardClickOpens, true),
@@ -124,6 +136,7 @@ function readLegacySnapshot(deviceId: string): CachedDeviceAppearancePreferences
 			noteEditorFontScale: clampFontScale(Number(parsed.noteEditorFontScale)),
 			editorToolbarMode: 'full',
 			noteCardMaxHeightPx: clampNoteCardMaxHeightPx(Number(parsed.noteCardMaxHeightPx)),
+			noteCardBannerTitlePosition: getDefaultNoteCardBannerTitlePosition(),
 			checklistShowCompleted: false,
 			quickDeleteChecklist: false,
 			noteCardClickOpens: true,

@@ -1,5 +1,10 @@
 import type { LocaleCode } from './i18n';
-import { normalizeEditorToolbarMode, type EditorToolbarMode } from './deviceAppearancePreferences';
+import {
+	normalizeEditorToolbarMode,
+	normalizeNoteCardBannerTitlePosition,
+	type EditorToolbarMode,
+	type NoteCardBannerTitlePosition,
+} from './deviceAppearancePreferences';
 
 export type UserDevicePreferences = {
 	userId: string;
@@ -11,6 +16,7 @@ export type UserDevicePreferences = {
 	noteEditorFontScale: number;
 	editorToolbarMode: EditorToolbarMode;
 	noteCardMaxHeightPx: number | null;
+	noteCardBannerTitlePosition: NoteCardBannerTitlePosition;
 	activeWorkspaceId: string | null;
 	activeSharedFolder: string | null;
 	checklistShowCompleted: boolean;
@@ -24,6 +30,8 @@ export type UserDevicePreferences = {
 	bubbleWorkspaceColors: Record<string, string>;
 	/** Per-user note color overrides: { [noteId]: NoteColorToken | null } */
 	noteColorsByNoteId: Record<string, string | null>;
+	/** Per-user note banner overrides: { [noteId]: bannerFileName | null } */
+	noteBannersByNoteId: Record<string, string | null>;
 	/** Per-user dismissed failed-link notification IDs: { [failedLinkId]: true } */
 	dismissedFailedLinkIds: Record<string, boolean>;
 	createdAt: string | null;
@@ -94,7 +102,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 		const body = await res.json().catch(() => null);
 		if (!body || typeof body !== 'object') return null;
 		const legacyNoteCardInteractions = (body as any).noteCardClickOpens !== false;
-		return {
+		const pref: UserDevicePreferences = {
 			userId: String((body as any).userId || ''),
 			deviceId: String((body as any).deviceId || deviceId),
 			deleteAfterDays: normalizeDeleteAfterDays((body as any).deleteAfterDays),
@@ -104,6 +112,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			noteEditorFontScale: normalizeFontScale((body as any).noteEditorFontScale),
 			editorToolbarMode: normalizeEditorToolbarMode((body as any).editorToolbarMode),
 			noteCardMaxHeightPx: normalizeNoteCardMaxHeightPx((body as any).noteCardMaxHeightPx),
+			noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition((body as any).noteCardBannerTitlePosition),
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
@@ -115,10 +124,16 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
 			noteColorsByNoteId: safeJsonNullableStringRecord((body as any).noteColorsByNoteId),
+			noteBannersByNoteId: safeJsonNullableStringRecord((body as any).noteBannersByNoteId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};
+		const pendingPatch = mergePreferencePatches(
+			readPersistedPendingPatch(deviceId),
+			_pendingDeviceId === deviceId ? _pendingPatch : {},
+		);
+		return applyPendingPatchToPreferences(pref, pendingPatch);
 	} catch {
 		return null;
 	}
@@ -132,6 +147,7 @@ type PreferencePatch = {
 	noteEditorFontScale?: number;
 	editorToolbarMode?: EditorToolbarMode;
 	noteCardMaxHeightPx?: number | null;
+	noteCardBannerTitlePosition?: NoteCardBannerTitlePosition;
 	activeSharedFolder?: string | null;
 	checklistShowCompleted?: boolean;
 	quickDeleteChecklist?: boolean;
@@ -142,8 +158,85 @@ type PreferencePatch = {
 	noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
 	bubbleWorkspaceColors?: Record<string, string>;
 	noteColorsByNoteId?: Record<string, string | null>;
+	noteBannersByNoteId?: Record<string, string | null>;
 	dismissedFailedLinkIds?: Record<string, boolean>;
 };
+
+const PENDING_PREFERENCES_STORAGE_KEY_PREFIX = 'freemannotes.pendingUserPreferencesPatch.v1';
+
+function getPendingPreferencesStorageKey(deviceId: string): string {
+	return `${PENDING_PREFERENCES_STORAGE_KEY_PREFIX}:${deviceId}`;
+}
+
+function hasPatchEntries(patch: PreferencePatch | null | undefined): patch is PreferencePatch {
+	return Boolean(patch && Object.keys(patch).length > 0);
+}
+
+function mergePreferencePatches(base: PreferencePatch, overlay: PreferencePatch): PreferencePatch {
+	return { ...base, ...overlay };
+}
+
+function readPersistedPendingPatch(deviceId: string): PreferencePatch {
+	try {
+		if (typeof localStorage === 'undefined') return {};
+		const raw = localStorage.getItem(getPendingPreferencesStorageKey(deviceId));
+		if (!raw) return {};
+		const parsed = JSON.parse(raw);
+		return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+			? parsed as PreferencePatch
+			: {};
+	} catch {
+		return {};
+	}
+}
+
+function persistPendingPatch(deviceId: string, patch: PreferencePatch): void {
+	try {
+		if (typeof localStorage === 'undefined') return;
+		if (!hasPatchEntries(patch)) {
+			localStorage.removeItem(getPendingPreferencesStorageKey(deviceId));
+			return;
+		}
+		localStorage.setItem(getPendingPreferencesStorageKey(deviceId), JSON.stringify(patch));
+	} catch {
+		// Ignore localStorage errors.
+	}
+}
+
+function applyPendingPatchToPreferences(pref: UserDevicePreferences, patch: PreferencePatch): UserDevicePreferences {
+	if (!hasPatchEntries(patch)) return pref;
+	const next: UserDevicePreferences = {
+		...pref,
+		noteCardCompletedExpandedByNoteId: { ...pref.noteCardCompletedExpandedByNoteId },
+		bubbleWorkspaceColors: { ...pref.bubbleWorkspaceColors },
+		noteColorsByNoteId: { ...pref.noteColorsByNoteId },
+		noteBannersByNoteId: { ...pref.noteBannersByNoteId },
+		dismissedFailedLinkIds: { ...pref.dismissedFailedLinkIds },
+	};
+	if ('deleteAfterDays' in patch) next.deleteAfterDays = patch.deleteAfterDays ?? null;
+	if ('theme' in patch) next.theme = patch.theme ?? null;
+	if ('language' in patch) next.language = patch.language ?? null;
+	if ('noteCardFontScale' in patch && typeof patch.noteCardFontScale === 'number') next.noteCardFontScale = normalizeFontScale(patch.noteCardFontScale);
+	if ('noteEditorFontScale' in patch && typeof patch.noteEditorFontScale === 'number') next.noteEditorFontScale = normalizeFontScale(patch.noteEditorFontScale);
+	if ('editorToolbarMode' in patch && patch.editorToolbarMode) next.editorToolbarMode = normalizeEditorToolbarMode(patch.editorToolbarMode);
+	if ('noteCardMaxHeightPx' in patch) next.noteCardMaxHeightPx = normalizeNoteCardMaxHeightPx(patch.noteCardMaxHeightPx);
+	if ('noteCardBannerTitlePosition' in patch) next.noteCardBannerTitlePosition = normalizeNoteCardBannerTitlePosition(patch.noteCardBannerTitlePosition);
+	if ('activeSharedFolder' in patch) next.activeSharedFolder = patch.activeSharedFolder ?? null;
+	if ('checklistShowCompleted' in patch && typeof patch.checklistShowCompleted === 'boolean') next.checklistShowCompleted = patch.checklistShowCompleted;
+	if ('quickDeleteChecklist' in patch && typeof patch.quickDeleteChecklist === 'boolean') next.quickDeleteChecklist = patch.quickDeleteChecklist;
+	if ('noteCardClickOpens' in patch && typeof patch.noteCardClickOpens === 'boolean') next.noteCardClickOpens = patch.noteCardClickOpens;
+	if ('noteCardCheckboxInteractions' in patch && typeof patch.noteCardCheckboxInteractions === 'boolean') next.noteCardCheckboxInteractions = patch.noteCardCheckboxInteractions;
+	if ('noteCardLinkInteractions' in patch && typeof patch.noteCardLinkInteractions === 'boolean') next.noteCardLinkInteractions = patch.noteCardLinkInteractions;
+	if ('noteCardCompletedInteractions' in patch && typeof patch.noteCardCompletedInteractions === 'boolean') next.noteCardCompletedInteractions = patch.noteCardCompletedInteractions;
+	if (patch.noteCardCompletedExpandedPatch?.noteId) {
+		next.noteCardCompletedExpandedByNoteId[patch.noteCardCompletedExpandedPatch.noteId] = Boolean(patch.noteCardCompletedExpandedPatch.expanded);
+	}
+	if ('bubbleWorkspaceColors' in patch && patch.bubbleWorkspaceColors) next.bubbleWorkspaceColors = { ...patch.bubbleWorkspaceColors };
+	if ('noteColorsByNoteId' in patch && patch.noteColorsByNoteId) next.noteColorsByNoteId = { ...patch.noteColorsByNoteId };
+	if ('noteBannersByNoteId' in patch && patch.noteBannersByNoteId) next.noteBannersByNoteId = { ...patch.noteBannersByNoteId };
+	if ('dismissedFailedLinkIds' in patch && patch.dismissedFailedLinkIds) next.dismissedFailedLinkIds = { ...patch.dismissedFailedLinkIds };
+	return next;
+}
 
 const PREF_DEBOUNCE_MS = 1000;
 let _pendingPatch: PreferencePatch = {};
@@ -151,19 +244,37 @@ let _pendingDeviceId: string | null = null;
 let _debounceTimer: ReturnType<typeof setTimeout> | null = null;
 let _pendingResolvers: Array<(result: UserDevicePreferences | null) => void> = [];
 
-async function _flushPreferences(): Promise<void> {
+function ensurePendingPatchLoaded(deviceId: string): void {
+	const persisted = readPersistedPendingPatch(deviceId);
+	if (!hasPatchEntries(persisted)) return;
+	_pendingPatch = mergePreferencePatches(persisted, _pendingPatch);
+}
+
+async function _flushPreferences(deviceIdOverride?: string): Promise<void> {
 	if (_debounceTimer) { clearTimeout(_debounceTimer); _debounceTimer = null; }
-	const deviceId = _pendingDeviceId;
-	const patch = _pendingPatch;
+	const deviceId = _pendingDeviceId ?? deviceIdOverride ?? null;
 	const resolvers = _pendingResolvers;
-	_pendingDeviceId = null;
-	_pendingPatch = {};
 	_pendingResolvers = [];
-	if (!deviceId || Object.keys(patch).length === 0) {
+	if (!deviceId) {
+		resolvers.forEach(r => r(null));
+		return;
+	}
+	_pendingDeviceId = deviceId;
+	ensurePendingPatchLoaded(deviceId);
+	const patch = _pendingPatch;
+	if (!hasPatchEntries(patch)) {
+		persistPendingPatch(deviceId, {});
 		resolvers.forEach(r => r(null));
 		return;
 	}
 	const result = await _sendPreferences(deviceId, patch);
+	if (result) {
+		_pendingDeviceId = null;
+		_pendingPatch = {};
+		persistPendingPatch(deviceId, {});
+	} else {
+		persistPendingPatch(deviceId, patch);
+	}
 	resolvers.forEach(r => r(result));
 }
 
@@ -194,6 +305,7 @@ async function _sendPreferences(
 			noteEditorFontScale: normalizeFontScale((body as any).noteEditorFontScale),
 			editorToolbarMode: normalizeEditorToolbarMode((body as any).editorToolbarMode),
 			noteCardMaxHeightPx: normalizeNoteCardMaxHeightPx((body as any).noteCardMaxHeightPx),
+			noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition((body as any).noteCardBannerTitlePosition),
 			activeWorkspaceId: (body as any).activeWorkspaceId ? String((body as any).activeWorkspaceId) : null,
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
@@ -205,6 +317,7 @@ async function _sendPreferences(
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
 			noteColorsByNoteId: safeJsonNullableStringRecord((body as any).noteColorsByNoteId),
+			noteBannersByNoteId: safeJsonNullableStringRecord((body as any).noteBannersByNoteId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
@@ -217,8 +330,8 @@ async function _sendPreferences(
 /** Immediately flush any pending debounced preference save.  Call after discrete
  *  user actions (e.g. color-picker selection) to ensure data is persisted even if
  *  the user navigates away within the normal 1-second debounce window. */
-export function flushUserPreferences(): Promise<void> {
-	return _flushPreferences();
+export function flushUserPreferences(deviceId?: string): Promise<void> {
+	return _flushPreferences(deviceId);
 }
 
 export function updateUserPreferences(
@@ -231,7 +344,9 @@ export function updateUserPreferences(
 			void _flushPreferences();
 		}
 		_pendingDeviceId = deviceId;
-		Object.assign(_pendingPatch, patch);
+		ensurePendingPatchLoaded(deviceId);
+		_pendingPatch = mergePreferencePatches(_pendingPatch, patch);
+		persistPendingPatch(deviceId, _pendingPatch);
 		_pendingResolvers.push(resolve);
 		if (_debounceTimer) clearTimeout(_debounceTimer);
 		_debounceTimer = setTimeout(() => void _flushPreferences(), PREF_DEBOUNCE_MS);

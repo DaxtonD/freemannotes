@@ -365,17 +365,17 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 
 	const filteredPriorCollaborators = React.useMemo(() => {
 		const query = identifier.trim().toLowerCase();
-		if (!query) return [];
 		return priorCollaborators.filter((user) => {
 			if (!user.email) return false;
 			if (isDuplicateCollaboratorIdentifier(snapshot, user.email)) return false;
+			if (!query) return true;
 			const name = (user.name || '').toLowerCase();
 			const email = user.email.toLowerCase();
 			return name.includes(query) || email.includes(query);
 		});
 	}, [identifier, priorCollaborators, snapshot]);
 
-	const showPriorCollaboratorSuggestions = identifierFocused && !dismissSuggestions && identifier.trim().length > 0 && !busy;
+	const showPriorCollaboratorSuggestions = identifierFocused && !dismissSuggestions && !busy;
 
 	const handleSelectPriorCollaborator = React.useCallback((user: PriorCollaboratorUser) => {
 		if (!user.email) return;

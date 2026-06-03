@@ -27,11 +27,6 @@ const remoteCache = new Map<string, readonly NoteLinkRecord[]>();
 const pendingRefreshes = new Map<string, Promise<readonly NoteLinkRecord[]>>();
 const pendingFlushes = new Map<string, Promise<void>>();
 
-function isMissingAccessError(error: unknown): boolean {
-	const status = (error as { status?: number } | null)?.status;
-	return status === 403 || status === 404;
-}
-
 export type NoteLinksChangedReason = 'cache' | 'remote';
 
 type RefreshRemoteNoteLinksOptions = {
@@ -332,6 +327,24 @@ export function isPlaceholderLink(link: NoteLinkRecord): boolean {
 	return link.status === 'PENDING';
 }
 
+function isLikelyBadPreviewImageUrl(url: string | null | undefined): boolean {
+	const value = String(url || '').trim().toLowerCase();
+	if (!value) return true;
+	if (value.includes('fls-na.amazon.') || value.includes('uedata=')) return true;
+	if (value.includes('sprite') || value.includes('sash/') || value.endsWith('.svg')) return true;
+	if (value.includes('transparent') || value.includes('pixel')) return true;
+	return false;
+}
+
+export function noteLinkNeedsHydration(link: NoteLinkRecord): boolean {
+	if (!link || typeof link !== 'object') return false;
+	if (link.status === 'FAILED') return false;
+	return link.status !== 'READY'
+		|| (!link.title && !link.description && !link.mainContent)
+		|| !link.imageUrl
+		|| isLikelyBadPreviewImageUrl(link.imageUrl);
+}
+
 function mergeFetchedLinksWithCachedPlaceholders(
 	fetched: readonly NoteLinkRecord[],
 	cached: readonly NoteLinkRecord[],
@@ -418,12 +431,6 @@ export async function refreshRemoteNoteLinks(
 			// clients react when fresh preview metadata arrives from the server.
 			await writeCachedLinks(docId, merged, { emit: true });
 			return merged;
-		} catch (error) {
-			if (isMissingAccessError(error)) {
-				await writeCachedLinks(docId, [], { emit: true });
-				return [];
-			}
-			throw error;
 		} finally {
 			pendingRefreshes.delete(docId);
 		}
@@ -449,14 +456,11 @@ export async function flushQueuedNoteLinkSync(userId: string): Promise<void> {
 					await writeCachedLinks(snapshot.docId, response.links, { emit: false });
 					emitNoteLinksChanged(snapshot.docId, 'remote');
 					await deleteQueuedSnapshot(snapshot.id);
-				} catch (error) {
-					if (isMissingAccessError(error)) {
-						await writeCachedLinks(snapshot.docId, [], { emit: true });
-						await deleteQueuedSnapshot(snapshot.id).catch(() => undefined);
-						continue;
-					}
+				} catch {
 					// Per-snapshot failure: leave the snapshot in the queue for the
-					// next flush attempt instead of aborting the entire batch.
+					// next flush attempt instead of aborting the entire batch. This is
+					// required for offline-created notes: reconnect can attempt link sync
+					// before the note/registry Yjs rooms are re-authorized on the server.
 				}
 			}
 		} finally {
@@ -515,7 +519,7 @@ export async function getQueuedIntentUrls(userId: string, docId: string): Promis
 export async function scanAllDocumentsForPlaceholders(): Promise<void> {
 	if (isOffline()) return;
 	for (const [docId, links] of remoteCache) {
-		const placeholders = links.filter(isPlaceholderLink);
+		const placeholders = links.filter(noteLinkNeedsHydration);
 		if (placeholders.length === 0) continue;
 		void refreshRemoteNoteLinks(docId, { force: true }).catch(() => undefined);
 	}

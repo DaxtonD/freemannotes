@@ -1,6 +1,7 @@
 import React from 'react';
 import type { LocaleCode } from '../../core/i18n';
 import type { ThemeId } from '../../core/theme';
+import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import styles from './PreferencesModal.module.css';
 
 type ThemeCategory = 'built-in' | 'earth' | 'nord' | 'catppuccin' | 'gruvbox' | 'everforest' | 'rose-pine' | 'tokyo-night';
@@ -85,6 +86,9 @@ export type AppearanceModalProps = {
 	noteCardMaxHeightPx: number;
 	onNoteCardMaxHeightPxChange: (nextHeightPx: number) => void;
 	onNoteCardMaxHeightPxCommit: (nextHeightPx: number) => void;
+	noteCardBannerTitlePosition: NoteCardBannerTitlePosition;
+	onNoteCardBannerTitlePositionChange: (nextPosition: NoteCardBannerTitlePosition) => void;
+	onNoteCardBannerTitlePositionCommit: (nextPosition: NoteCardBannerTitlePosition) => void;
 };
 
 const FONT_SCALE_MIN = 0.60;
@@ -162,16 +166,19 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 		noteCardFontScale: props.noteCardFontScale,
 		noteEditorFontScale: props.noteEditorFontScale,
 		noteCardMaxHeightPx: props.noteCardMaxHeightPx,
+		noteCardBannerTitlePosition: props.noteCardBannerTitlePosition,
 	}));
 	const [displaySizeInitial, setDisplaySizeInitial] = React.useState(() => ({
 		noteCardFontScale: props.noteCardFontScale,
 		noteEditorFontScale: props.noteEditorFontScale,
 		noteCardMaxHeightPx: props.noteCardMaxHeightPx,
+		noteCardBannerTitlePosition: props.noteCardBannerTitlePosition,
 	}));
 	const hasDisplaySizeChanges = (
 		displaySizeDraft.noteCardFontScale !== displaySizeInitial.noteCardFontScale ||
 		displaySizeDraft.noteEditorFontScale !== displaySizeInitial.noteEditorFontScale ||
-		displaySizeDraft.noteCardMaxHeightPx !== displaySizeInitial.noteCardMaxHeightPx
+		displaySizeDraft.noteCardMaxHeightPx !== displaySizeInitial.noteCardMaxHeightPx ||
+		displaySizeDraft.noteCardBannerTitlePosition !== displaySizeInitial.noteCardBannerTitlePosition
 	);
 
 	React.useEffect(() => {
@@ -189,6 +196,7 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 			noteCardFontScale: props.noteCardFontScale,
 			noteEditorFontScale: props.noteEditorFontScale,
 			noteCardMaxHeightPx: props.noteCardMaxHeightPx,
+			noteCardBannerTitlePosition: props.noteCardBannerTitlePosition,
 		};
 		setDisplaySizeInitial(initial);
 		setDisplaySizeDraft(initial);
@@ -199,6 +207,7 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 		props.onNoteCardFontScaleChange(displaySizeInitial.noteCardFontScale);
 		props.onNoteEditorFontScaleChange(displaySizeInitial.noteEditorFontScale);
 		props.onNoteCardMaxHeightPxChange(displaySizeInitial.noteCardMaxHeightPx);
+		props.onNoteCardBannerTitlePositionChange(displaySizeInitial.noteCardBannerTitlePosition);
 	};
 
 	if (!props.isOpen) return null;
@@ -342,6 +351,21 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 										}}
 									/>
 
+									<label className={styles.field}>
+										<span>{props.t('prefs.noteCardBannerTitlePosition')}</span>
+										<select
+											value={displaySizeDraft.noteCardBannerTitlePosition}
+											onChange={(event) => {
+												const value = event.target.value as NoteCardBannerTitlePosition;
+												setDisplaySizeDraft((draft) => ({ ...draft, noteCardBannerTitlePosition: value }));
+												props.onNoteCardBannerTitlePositionChange(value);
+											}}
+										>
+											<option value="below">{props.t('prefs.noteCardBannerTitlePositionBelow')}</option>
+											<option value="above">{props.t('prefs.noteCardBannerTitlePositionAbove')}</option>
+										</select>
+									</label>
+
 									<div className={styles.displaySizeSaveRow}>
 										<button
 											type="button"
@@ -351,6 +375,7 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 												props.onNoteCardFontScaleCommit(displaySizeDraft.noteCardFontScale);
 												props.onNoteEditorFontScaleCommit(displaySizeDraft.noteEditorFontScale);
 												props.onNoteCardMaxHeightPxCommit(displaySizeDraft.noteCardMaxHeightPx);
+												props.onNoteCardBannerTitlePositionCommit(displaySizeDraft.noteCardBannerTitlePosition);
 												setDisplaySizeInitial({ ...displaySizeDraft });
 											}}
 										>

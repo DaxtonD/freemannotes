@@ -36,6 +36,10 @@ function isStaticAssetRequest(request, url) {
 	return url.pathname.startsWith('/assets/') || url.pathname.startsWith('/locales/');
 }
 
+function isNoteBannerAssetRequest(url) {
+	return url.origin === self.location.origin && url.pathname.startsWith('/CardBanners/');
+}
+
 function isApiGetRequest(request, url) {
 	// Auth/session probes must always hit the network so cookie truth wins over
 	// any stale service-worker cache entry.
@@ -138,6 +142,48 @@ async function networkFirst(request, cacheName) {
 	} catch {
 		return (await cache.match(request)) || Response.error();
 	}
+}
+
+async function networkFirstStaticAsset(request) {
+	const cache = await caches.open(STATIC_CACHE);
+	try {
+		const response = await fetch(request, { cache: 'no-store' });
+		if (canStoreResponseInCache(response)) {
+			await cache.put(request, response.clone());
+		} else {
+			await cache.delete(request);
+		}
+		return response;
+	} catch {
+		const cached = await cache.match(request);
+		if (cached) return cached;
+		const shellCache = await caches.open(APP_SHELL_CACHE);
+		return (await shellCache.match(request)) || Response.error();
+	}
+}
+
+async function precachedBannerFirst(request) {
+	const shellCache = await caches.open(APP_SHELL_CACHE);
+	const staticCache = await caches.open(STATIC_CACHE);
+	const precached = await shellCache.match(request);
+	const cached = precached || await staticCache.match(request);
+	const networkPromise = fetch(request, { cache: 'no-store' })
+		.then(async (response) => {
+			if (canStoreResponseInCache(response)) {
+				await staticCache.put(request, response.clone());
+			} else {
+				await staticCache.delete(request);
+			}
+			return response;
+		})
+		.catch(() => null);
+	if (cached) {
+		void networkPromise;
+		return cached;
+	}
+	const networkResponse = await networkPromise;
+	if (networkResponse) return networkResponse;
+	return Response.error();
 }
 
 async function cacheFirstImage(request) {
@@ -255,6 +301,11 @@ self.addEventListener('fetch', (event) => {
 
 	if (isStaticAssetRequest(request, url)) {
 		event.respondWith(staleWhileRevalidate(request, STATIC_CACHE));
+		return;
+	}
+
+	if (isNoteBannerAssetRequest(url)) {
+		event.respondWith(precachedBannerFirst(request));
 		return;
 	}
 

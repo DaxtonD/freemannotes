@@ -7,9 +7,16 @@ import { faBell, faEllipsisVertical, faFileLines, faFolder, faListCheck, faTag, 
 import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
+import { NoteBannerPickerModal } from '../NoteCard/NoteBannerPickerModal';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc } from '../../core/noteLinks';
+import { loadImage } from '../../core/avatarProfileImage';
+import { getNoteBannerAssetUrl } from '../../core/noteBannerApi';
+import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
+import { getNoteBannerPresentationStyle, useThemedNoteBannerImageUrl } from '../../core/noteBannerTheme';
+import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorPrefsSnapshot, getUserNoteColorToken, hasUserNoteColorPref, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { getUserNoteBannerPrefsSnapshot, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
@@ -18,6 +25,7 @@ import { getCachedRemoteNoteImages } from '../../core/noteMediaStore';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, setUserNotePinnedOnDoc, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
+import { assignNoteBannerFile } from '../../services/noteService';
 import type { ViewMode } from '../../core/viewMode';
 import { NoteListView } from './NoteListView';
 import {
@@ -140,6 +148,7 @@ export type NoteGridProps = {
 	refreshCollaboratorsToken?: number;
 	canEditWorkspaceContent?: boolean;
 	canReorder?: boolean;
+	noteCardBannerTitlePosition?: NoteCardBannerTitlePosition;
 	noteCardCheckboxInteractions?: boolean;
 	noteCardLinkInteractions?: boolean;
 	noteCardCompletedInteractions?: boolean;
@@ -219,9 +228,22 @@ const MAX_VISIBLE_COLLABORATORS = 6;
 const MAX_VISIBLE_METADATA_ENTRIES = 6;
 const INITIAL_DATA_SETTLE_MS = 450;
 
+function hasCanonicalNoteMetadata(metadata: Y.Map<unknown>): boolean {
+	return metadata.has('type')
+		&& metadata.has('createdAt')
+		&& metadata.has('updatedAt')
+		&& metadata.has('trashed')
+		&& metadata.has('archived')
+		&& metadata.has('collectionId')
+		&& metadata.has('labelIds')
+		&& metadata.has('reminderAt')
+		&& metadata.has('isPinned')
+		&& metadata.has('lastAccessedAt');
+}
+
 function hasRenderableNoteContent(doc: Y.Doc): boolean {
 	const metadata = doc.getMap<unknown>('metadata');
-	if (metadata.size > 0) return true;
+	if (hasCanonicalNoteMetadata(metadata)) return true;
 	if (doc.getText('title').length > 0) return true;
 	if (doc.getText('content').length > 0) return true;
 	if (doc.getXmlFragment('contentRich').length > 0) return true;
@@ -640,6 +662,7 @@ type GridNoteCardProps = {
 	allowChecklistItemInteractions?: boolean;
 	allowLinkInteractions?: boolean;
 	allowCompletedItemInteractions?: boolean;
+	bannerTitlePosition?: NoteCardBannerTitlePosition;
 	isTrashView?: boolean;
 	maxCardHeightPx: number;
 	isPlaceholder: boolean;
@@ -995,6 +1018,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					allowChecklistItemInteractions={props.allowChecklistItemInteractions}
 					allowLinkInteractions={props.allowLinkInteractions}
 					allowCompletedItemInteractions={props.allowCompletedItemInteractions}
+					bannerTitlePosition={props.bannerTitlePosition}
 					isTrashView={props.isTrashView}
 					initialLinkRecords={props.initialLinkRecords}
 					preserveControlShell={props.preserveControlShell}
@@ -1086,6 +1110,7 @@ function setChecklistCompletedState(doc: Y.Doc, completed: boolean): void {
 export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const { t } = useI18n();
 	React.useSyncExternalStore(subscribeNoteColorPrefs, getUserNoteColorPrefsSnapshot, getUserNoteColorPrefsSnapshot);
+	const noteBannerPrefsSnapshot = React.useSyncExternalStore(subscribeNoteBannerPrefs, getUserNoteBannerPrefsSnapshot, getUserNoteBannerPrefsSnapshot);
 	const pinPrefsSnapshot = React.useSyncExternalStore(subscribeNotePinPrefs, getNotePinPrefsSnapshot, getNotePinPrefsSnapshot);
 	const manager = useDocumentManager();
 	const connection = useConnectionStatus();
@@ -1307,6 +1332,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const noteHeightBumpRafRef = React.useRef<number>(0);
 	const noteCardLayoutRefreshRafRef = React.useRef<number>(0);
 	const layoutSnapshotHeightSeedKeyRef = React.useRef<string | null>(null);
+	const seededHeightNoteIdsRef = React.useRef<Set<string>>(new Set());
 
 
 	// Seed height cache on first render from localStorage (before first pack)
@@ -1314,7 +1340,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		heightCacheLoadedRef.current = true;
 		if (props.deviceId) {
 			const cached = loadNoteHeightCache(props.deviceId);
-			for (const [k, v] of cached) noteHeightByIdRef.current.set(k, v);
+			for (const [k, v] of cached) {
+				noteHeightByIdRef.current.set(k, v);
+				seededHeightNoteIdsRef.current.add(k);
+			}
 		}
 	}
 	const layoutViewportBucket = React.useMemo(
@@ -1349,6 +1378,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		for (const rect of cachedLayoutSnapshot.rects) {
 			if (rect.height > 0) {
 				noteHeightByIdRef.current.set(rect.noteId, Math.round(rect.height));
+				seededHeightNoteIdsRef.current.add(rect.noteId);
 			}
 		}
 	}
@@ -1459,6 +1489,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [moreMenuNoteId, setMoreMenuNoteId] = React.useState<string | null>(null);
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [moreMenuOpenedByLongPress, setMoreMenuOpenedByLongPress] = React.useState(false);
+	const [bannerPickerNoteId, setBannerPickerNoteId] = React.useState<string | null>(null);
 	const isTrashView = Boolean(props.showTrashed);
 	const isGridVisible = props.isVisible !== false;
 
@@ -2271,6 +2302,45 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		() => (isGridVisible && props.viewMode === 'card' ? renderedIds.slice(0, viewportCapacity) : renderedIds),
 		[isGridVisible, props.viewMode, renderedIds, viewportCapacity]
 	);
+	const shouldGateViewportBannerAssets = isGridVisible && props.viewMode === 'card' && Boolean(cachedLayoutSnapshotSeedKey);
+	const viewportBannerUrls = React.useMemo(() => {
+		if (!shouldGateViewportBannerAssets) return [] as string[];
+		const urls: string[] = [];
+		const seen = new Set<string>();
+		for (const noteId of layoutMeasurementTargetIds) {
+			const doc = docsById[noteId];
+			const fileName = doc
+				? readEffectiveNoteBannerFile(doc.getMap<any>('metadata'), noteBannerPrefsSnapshot[noteId] ?? null)
+				: (noteBannerPrefsSnapshot[noteId] ?? null);
+			if (!fileName) continue;
+			const url = getNoteBannerAssetUrl(fileName, props.themeId, 'card');
+			if (seen.has(url)) continue;
+			seen.add(url);
+			urls.push(url);
+		}
+		return urls;
+	}, [docsById, layoutMeasurementTargetIds, noteBannerPrefsSnapshot, props.themeId, shouldGateViewportBannerAssets]);
+	const [viewportBannerAssetsReady, setViewportBannerAssetsReady] = React.useState(false);
+	React.useEffect(() => {
+		if (!shouldGateViewportBannerAssets || viewportBannerUrls.length === 0) {
+			setViewportBannerAssetsReady(true);
+			return;
+		}
+
+		let cancelled = false;
+		setViewportBannerAssetsReady(false);
+		const timeoutId = window.setTimeout(() => {
+			if (!cancelled) setViewportBannerAssetsReady(true);
+		}, 1200);
+		void Promise.allSettled(viewportBannerUrls.map((url) => loadImage(url))).then(() => {
+			if (!cancelled) setViewportBannerAssetsReady(true);
+		});
+
+		return () => {
+			cancelled = true;
+			window.clearTimeout(timeoutId);
+		};
+	}, [shouldGateViewportBannerAssets, viewportBannerUrls]);
 	const measuredRenderedCardCount = React.useMemo(
 		() => renderedIds.reduce((count, id) => count + (noteHeightByIdRef.current.has(id) ? 1 : 0), 0),
 		[noteHeightsVersion, renderedIds]
@@ -2344,6 +2414,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			setInitialLayoutSettled(false);
 			return;
 		}
+		if (!viewportBannerAssetsReady) {
+			setInitialLayoutSettled(false);
+			return;
+		}
 		if (!isGridVisible || props.viewMode !== 'card' || renderedIds.length === 0) {
 			setInitialLayoutSettled(true);
 			return;
@@ -2390,7 +2464,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				cancelAnimationFrame(rafId);
 			}
 		};
-	}, [allDocsLoaded, initialDataSettled, isGridVisible, layoutMeasurementTargetIds, layoutReady, noteHeightsVersion, props.enableLayoutAnimations, props.viewMode, renderedIds.length]);
+	}, [allDocsLoaded, initialDataSettled, isGridVisible, layoutMeasurementTargetIds, layoutReady, noteHeightsVersion, props.enableLayoutAnimations, props.viewMode, renderedIds.length, viewportBannerAssetsReady]);
 
 	// ── Viewport-first layout settled ─────────────────────────────────────
 	// Mirrors initialLayoutSettled but only waits for the first viewportCapacity
@@ -2405,6 +2479,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!noteOrder && orderedIds.length === 0) { setViewportLayoutSettled(false); return; }
 		// Wait for full data quiescence before checking viewport stability.
 		if (!allDocsLoaded || !initialDataSettled) { setViewportLayoutSettled(false); return; }
+		if (!viewportBannerAssetsReady) { setViewportLayoutSettled(false); return; }
 		// Apply the same WS-ordering guards as allDocsLoaded to prevent premature
 		// reveal with a stale or incomplete note order.
 		if (noteOrder != null && connection.state !== 'offline' && !connection.registryWsSynced && !shimmerStalled) {
@@ -2449,7 +2524,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, [allDocsLoaded, connection.pendingNoteWsSync, connection.registryWsSynced, connection.state, docsById,
 		initialDataSettled, isGridVisible, noteHeightsVersion, noteOrder, orderedIds.length,
-		props.viewMode, renderedIds, shimmerStalled, viewportCapacity, wsSyncJustFired]);
+		props.viewMode, renderedIds, shimmerStalled, viewportBannerAssetsReady, viewportCapacity, wsSyncJustFired]);
 
 	React.useEffect(() => {
 		if (!allDocsLoaded) {
@@ -2540,10 +2615,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// column-count change) use viewportAnchorColumnsRef as before so that
 		// drag commits apply their full-anchor map and structural resets pack freely.
 		const repackReason = repackReasonRef.current;
+		const hasPersistedHeightSeedForCurrentGrid = renderedIds.some((id) => seededHeightNoteIdsRef.current.has(id));
+		const shouldPreserveSettledStartupColumns = !(repackReason === 'initial-measurement' && !hasPersistedHeightSeedForCurrentGrid);
 		const isColumnCountChanged =
 			settledColumnsRef.current.length > 0 &&
 			settledColumnsRef.current.length !== columnCount;
 		const useSettledAnchors =
+			shouldPreserveSettledStartupColumns &&
 			repackReason !== 'drag-drop' &&
 			repackReason !== 'workspace-change' &&
 			repackReason !== 'view-mode-change' &&
@@ -2590,8 +2668,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			gapPx,
 			fallbackHeightPx: fallbackH,
 			anchoredColumnById,
-			preferredColumnById: settledColumnByIdRef.current,
-			preferredSiblingIndexById: settledSiblingIndexByIdRef.current,
+			preferredColumnById: shouldPreserveSettledStartupColumns ? settledColumnByIdRef.current : undefined,
+			preferredSiblingIndexById: shouldPreserveSettledStartupColumns ? settledSiblingIndexByIdRef.current : undefined,
 			onAssign: (decision) => {
 				placementDecisions.set(decision.noteId, decision);
 			},
@@ -3010,10 +3088,42 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		activeNote && !isTrashView && (activeNote.isShared ? activePlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
 	);
 	const activeSnapshot = activeNote ? noteSnapshotById.get(activeNote.id) : undefined;
-	const activeIsPinned = activeSnapshot?.isPinned === true;
-	const activeHasReminder = Boolean(activeSnapshot?.reminderAt);
 	const activeTitle = activeDoc?.getText('title').toString().trim() || t('note.untitled');
 	const activeIsChecklist = Boolean(activeDoc && String(activeDoc.getMap<any>('metadata').get('type') ?? '') === 'checklist');
+	const activeNoteBannerFile = activeNote
+		? (activeDoc
+			? readEffectiveNoteBannerFile(activeDoc.getMap<any>('metadata'), noteBannerPrefsSnapshot[activeNote.id] ?? null)
+			: (noteBannerPrefsSnapshot[activeNote.id] ?? null))
+		: null;
+	const activeBaseGhostStyle = React.useMemo(() => {
+		if (!activeNote || !activeDoc) return undefined;
+		return getNoteColorVars(activeNote.id, activeDoc, props.themeId);
+	}, [activeDoc, activeNote, props.themeId]);
+	const activeBaseGhostVarMap = activeBaseGhostStyle as Record<string, string> | undefined;
+	const activeNoteBannerUrl = useThemedNoteBannerImageUrl(activeNoteBannerFile, props.themeId, {
+		surface: activeBaseGhostVarMap?.['--note-color-card-bg'],
+		surfaceAlt: activeBaseGhostVarMap?.['--note-color-header-bg'],
+		text: activeBaseGhostVarMap?.['--note-color-text'],
+		accent: activeBaseGhostVarMap?.['--note-color-accent'],
+	}, 'list');
+	const activeNoteBannerPresentationStyle = React.useMemo<React.CSSProperties>(
+		() => getNoteBannerPresentationStyle(props.themeId, {
+			surface: activeBaseGhostVarMap?.['--note-color-card-bg'],
+			surfaceAlt: activeBaseGhostVarMap?.['--note-color-header-bg'],
+			text: activeBaseGhostVarMap?.['--note-color-text'],
+			accent: activeBaseGhostVarMap?.['--note-color-accent'],
+		}),
+		[props.themeId, activeBaseGhostVarMap?.['--note-color-accent'], activeBaseGhostVarMap?.['--note-color-card-bg'], activeBaseGhostVarMap?.['--note-color-header-bg'], activeBaseGhostVarMap?.['--note-color-text']]
+	);
+	const activeListGhostStyle = React.useMemo(() => {
+		if (!activeNote || !activeDoc) return undefined;
+		if (!activeNoteBannerUrl) return activeBaseGhostStyle;
+		return {
+			...activeBaseGhostStyle,
+			...activeNoteBannerPresentationStyle,
+			'--list-drag-ghost-banner-image': `url("${activeNoteBannerUrl}")`,
+		} as React.CSSProperties;
+	}, [activeBaseGhostStyle, activeDoc, activeNote, activeNoteBannerPresentationStyle, activeNoteBannerUrl]);
 	const activeStripPreview = React.useMemo(() => {
 		if (props.viewMode !== 'strip' || !activeDoc || !activeNote) return '';
 		try {
@@ -3377,6 +3487,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				allowChecklistItemInteractions={props.noteCardCheckboxInteractions !== false}
 				allowLinkInteractions={props.noteCardLinkInteractions !== false}
 				allowCompletedItemInteractions={!isSnapshotCard && props.noteCardCompletedInteractions !== false}
+				bannerTitlePosition={props.noteCardBannerTitlePosition}
 				suppressContentInteractions={isChipInteractionGuardActive}
 				onAddReminder={props.onAddReminder ? () => props.onAddReminder?.(note.id, docId, doc.getText('title').toString()) : undefined}
 				onRestoreNote={isTrashView ? () => { void manager.restoreNote(note.id); } : undefined}
@@ -3400,7 +3511,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -3626,6 +3737,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										selectedNoteId={props.selectedNoteId}
 										moreMenuNoteId={moreMenuNoteId}
 										themeId={props.themeId}
+										bannerTitlePosition={props.noteCardBannerTitlePosition}
 										activeDragId={dragManager.activeDragId}
 										setItemElement={dragManager.setItemElement}
 										setHandleElement={dragManager.setHandleElement}
@@ -3667,6 +3779,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								selectedNoteId={props.selectedNoteId}
 								moreMenuNoteId={moreMenuNoteId}
 								themeId={props.themeId}
+								bannerTitlePosition={props.noteCardBannerTitlePosition}
 								activeDragId={dragManager.activeDragId}
 								setItemElement={dragManager.setItemElement}
 								setHandleElement={dragManager.setHandleElement}
@@ -3791,43 +3904,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					transition={dropOverlayTransition}
 				>
 					{props.viewMode === 'list' || props.viewMode === 'strip' ? (
-						<div className={styles.listDragGhost} style={getNoteColorVars(activeNote.id, activeDoc, props.themeId)}>
+						<div className={`${styles.listDragGhost}${activeNoteBannerFile ? ` ${styles.listDragGhostBanner}` : ''}`} style={activeListGhostStyle}>
 							<div className={styles.listDragGhostMain}>
 								<span className={styles.listDragGhostType}>
 									<FontAwesomeIcon icon={activeIsChecklist ? faListCheck : faFileLines} />
 								</span>
 								<span className={styles.listDragGhostTitle}>{activeTitle}</span>
-								{activeIsPinned ? (
-									<span className={styles.listDragGhostBadge}>
-										<FontAwesomeIcon icon={faThumbtack} />
-									</span>
-								) : null}
-								{activeHasReminder ? (
-									<span className={styles.listDragGhostBadge}>
-										<FontAwesomeIcon icon={faBell} />
-									</span>
-								) : null}
-								{activeSnapshot?.collectionId && collectionPathById.get(activeSnapshot.collectionId) ? (
-									<span className={styles.listDragGhostBadge} title={collectionPathById.get(activeSnapshot.collectionId) ?? undefined}>
-										<FontAwesomeIcon icon={faFolder} />
-									</span>
-								) : null}
-								{(activeSnapshot?.labelIds?.length ?? 0) > 0 ? (
-									<span className={styles.listDragGhostBadge}>
-										<FontAwesomeIcon icon={faTag} />
-										{(activeSnapshot?.labelIds?.length ?? 0) > 1 ? (
-											<span className={styles.listDragGhostBadgeCount}>{activeSnapshot!.labelIds!.length}</span>
-										) : null}
-									</span>
-								) : null}
-								{(collaboratorCountByNoteId[activeNote.id] ?? 0) > 0 ? (
-									<span className={styles.listDragGhostBadge}>
-										<FontAwesomeIcon icon={faUsers} />
-										{(collaboratorCountByNoteId[activeNote.id] ?? 0) > 1 ? (
-											<span className={styles.listDragGhostBadgeCount}>{collaboratorCountByNoteId[activeNote.id]}</span>
-										) : null}
-									</span>
-								) : null}
 								<span className={styles.listDragGhostMore} aria-hidden="true">
 									<FontAwesomeIcon icon={faEllipsisVertical} />
 								</span>
@@ -3879,6 +3961,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								canEdit={activeCanEdit}
 								hasPendingSync={activeHasPendingSync}
 								maxCardHeightPx={props.maxCardHeightPx}
+								bannerTitlePosition={props.noteCardBannerTitlePosition}
 							/>
 						)
 					)}
@@ -4108,6 +4191,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						if (!moreMenuDocId || !moreMenuDoc) return;
 						props.onAddImage?.(noteId, moreMenuDocId, moreMenuDoc.getText('title').toString());
 					} : undefined}
+					onSelectBannerImage={moreMenuCanEdit ? () => {
+						setBannerPickerNoteId(moreMenuNoteId);
+					} : undefined}
 					onAddDocument={props.onAddDocument && (moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;
 						const noteId = moreMenuNoteId;
@@ -4175,6 +4261,25 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							return;
 						}
 						void manager.trashNote(noteId);
+					}}
+				/>
+			) : null}
+			{bannerPickerNoteId ? (
+				<NoteBannerPickerModal
+					isOpen={true}
+					themeId={props.themeId}
+					selectedFileName={(() => {
+						const pickerDoc = docsById[bannerPickerNoteId];
+						const legacyFallback = noteBannerPrefsSnapshot[bannerPickerNoteId] ?? null;
+						return pickerDoc ? readEffectiveNoteBannerFile(pickerDoc.getMap<any>('metadata'), legacyFallback) : legacyFallback;
+					})()}
+					onClose={() => setBannerPickerNoteId(null)}
+					onSelect={(fileName) => {
+						const pickerDoc = docsById[bannerPickerNoteId];
+						if (pickerDoc) {
+							assignNoteBannerFile(pickerDoc, fileName);
+						}
+						setBannerPickerNoteId(null);
 					}}
 				/>
 			) : null}

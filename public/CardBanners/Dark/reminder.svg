@@ -1,0 +1,95 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="240" viewBox="0 0 520 240">
+  <defs>
+    <filter id="tex" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="linearRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.60" numOctaves="4" seed="12" stitchTiles="stitch" result="n"/>
+      <feColorMatrix in="n" type="saturate" values="0" result="gn"/>
+      <feBlend in="SourceGraphic" in2="gn" mode="overlay"/>
+    </filter>
+    <linearGradient id="hfade_reminder" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#200C0A" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#200C0A" stop-opacity="0"/>
+      <stop offset="82%" stop-color="#200C0A" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#200C0A" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="vign_reminder" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#D06050" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#D06050" stop-opacity="0.09"/>
+    </linearGradient>
+  </defs>
+
+  <!-- base -->
+  <rect width="520" height="240" fill="#200C0A"/>
+  <rect width="520" height="240" fill="url(#vign_reminder)"/>
+
+  <!-- diagonal hatch -->
+  <g>
+    <line x1="-144" y1="0" x2="96" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-126" y1="0" x2="114" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-108" y1="0" x2="132" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-90" y1="0" x2="150" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-72" y1="0" x2="168" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-54" y1="0" x2="186" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-36" y1="0" x2="204" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-18" y1="0" x2="222" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="0" y1="0" x2="240" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="18" y1="0" x2="258" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="36" y1="0" x2="276" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="54" y1="0" x2="294" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="72" y1="0" x2="312" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="90" y1="0" x2="330" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="108" y1="0" x2="348" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="126" y1="0" x2="366" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="144" y1="0" x2="384" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="162" y1="0" x2="402" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="180" y1="0" x2="420" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="198" y1="0" x2="438" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="216" y1="0" x2="456" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="234" y1="0" x2="474" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="252" y1="0" x2="492" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="270" y1="0" x2="510" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="288" y1="0" x2="528" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="306" y1="0" x2="546" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="324" y1="0" x2="564" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="342" y1="0" x2="582" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="360" y1="0" x2="600" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="378" y1="0" x2="618" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="396" y1="0" x2="636" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="414" y1="0" x2="654" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="432" y1="0" x2="672" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="450" y1="0" x2="690" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="468" y1="0" x2="708" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="486" y1="0" x2="726" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="504" y1="0" x2="744" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="522" y1="0" x2="762" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+      <line x1="540" y1="0" x2="780" y2="240" stroke="#401210" stroke-width="2.2" opacity="0.4"/>
+    <rect width="520" height="240" fill="url(#hfade_reminder)"/>
+  </g>
+
+  <!-- paper texture -->
+  <rect width="520" height="240" fill="#200C0A" filter="url(#tex)" opacity="0.06"/>
+
+  <!-- icon -->
+  <g transform="translate(420,120)">
+  <!-- vibration lines -->
+  <path d="M-52,-20 Q-56,-8 -52,4" fill="none" stroke="#D06050" stroke-width="2.5" stroke-linecap="round" opacity="0.45"/>
+  <path d="M52,-20 Q56,-8 52,4" fill="none" stroke="#D06050" stroke-width="2.5" stroke-linecap="round" opacity="0.45"/>
+  <path d="M-62,-28 Q-68,-10 -62,10" fill="none" stroke="#D06050" stroke-width="2" stroke-linecap="round" opacity="0.28"/>
+  <path d="M62,-28 Q68,-10 62,10" fill="none" stroke="#D06050" stroke-width="2" stroke-linecap="round" opacity="0.28"/>
+  <!-- stem -->
+  <line x1="0" y1="-62" x2="0" y2="-50" stroke="#D06050" stroke-width="4" stroke-linecap="round"/>
+  <!-- bell shape -->
+  <path d="M-44,-18 C-44,-52 -24,-60 0,-60 C24,-60 44,-52 44,-18 L52,24 L-52,24 Z" fill="#D06050" opacity="0.28"/>
+  <path d="M-44,-18 C-44,-52 -24,-60 0,-60 C24,-60 44,-52 44,-18 L52,24 L-52,24 Z" fill="none" stroke="#D06050" stroke-width="3.5" stroke-linejoin="round"/>
+  <!-- clapper bar -->
+  <line x1="-52" y1="24" x2="52" y2="24" stroke="#D06050" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- clapper -->
+  <circle cx="0" cy="40" r="10" fill="#D06050" opacity="0.35"/>
+  <circle cx="0" cy="40" r="10" fill="none" stroke="#D06050" stroke-width="3"/>
+  <!-- notification badge -->
+  <circle cx="34" cy="-46" r="10" fill="#D06050" opacity="0.85"/>
+  <text x="29" y="-42" font-family="Arial,sans-serif" font-size="12" fill="white" font-weight="bold">!</text>
+</g>
+
+  <!-- border -->
+  <rect width="520" height="240" fill="none" stroke="#401210" stroke-width="1" opacity="0.3"/>
+</svg>

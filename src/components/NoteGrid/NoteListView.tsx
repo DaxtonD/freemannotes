@@ -11,20 +11,20 @@ import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import * as Y from 'yjs';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-	faBell,
 	faEllipsisVertical,
 	faFileLines,
-	faFolder,
 	faListCheck,
 	faRotateLeft,
-	faTag,
-	faThumbtack,
-	faUsers,
 } from '@fortawesome/free-solid-svg-icons';
+import { getNoteBannerPresentationStyle, useThemedNoteBannerImageUrl } from '../../core/noteBannerTheme';
+import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
+import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { getUserNoteColorPrefsSnapshot, getUserNoteColorToken, hasUserNoteColorPref, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { useNoteBannerReadableColors } from '../../core/noteBannerReadability';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { readNoteFromDoc } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
+import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import type { VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
 import type { LabelRecord } from '../../services/labelService';
 import { applyDocumentFlipAnimations, measureDocumentRects, type DocumentRectMap } from './flip';
@@ -48,6 +48,7 @@ export type NoteListViewProps = {
 	selectedNoteId: string | null;
 	moreMenuNoteId: string | null;
 	themeId: ThemeId;
+	bannerTitlePosition?: NoteCardBannerTitlePosition;
 	activeDragId: string | null;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
@@ -72,6 +73,7 @@ function getColorVars(noteId: string, doc: Y.Doc, themeId: ThemeId): React.CSSPr
 	return {
 		'--list-row-accent': resolved.accentColor,
 		'--list-row-bg': resolved.cardBackground,
+		'--list-row-header-bg': resolved.headerBackground,
 		'--list-row-border': resolved.borderColor,
 		'--list-row-text': resolved.textColor,
 		'--list-row-muted': resolved.mutedTextColor,
@@ -108,6 +110,7 @@ type NoteRowProps = {
 	isPlaceholder: boolean;
 	showPreview: boolean;
 	themeId: ThemeId;
+	bannerTitlePosition?: NoteCardBannerTitlePosition;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	shouldSuppressOpen: () => boolean;
@@ -124,12 +127,57 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 	const { noteId, doc, snapshot, showPreview } = props;
 
 	const title = doc.getText('title').toString() || '\u00A0';
-	const isPinned = snapshot?.isPinned ?? false;
-	const hasReminder = Boolean(snapshot?.reminderAt);
 	const noteType = String(doc.getMap<any>('metadata').get('type') ?? '') === 'checklist' ? 'checklist' : 'text';
+	const metadata = React.useMemo(() => doc.getMap<any>('metadata'), [doc]);
 	const colorVars = getColorVars(noteId, doc, props.themeId);
+	const colorVarMap = colorVars as Record<string, string> | undefined;
+	const noteBannerFile = React.useSyncExternalStore(
+		(onStoreChange) => {
+			const unsubscribePrefs = subscribeNoteBannerPrefs(onStoreChange);
+			const observer = (): void => onStoreChange();
+			metadata.observe(observer);
+			return () => {
+				unsubscribePrefs();
+				metadata.unobserve(observer);
+			};
+		},
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(noteId)),
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(noteId))
+	);
+	const noteBannerUrl = useThemedNoteBannerImageUrl(noteBannerFile, props.themeId, {
+		surface: colorVarMap?.['--list-row-bg'],
+		surfaceAlt: colorVarMap?.['--list-row-header-bg'],
+		text: colorVarMap?.['--list-row-text'],
+		accent: colorVarMap?.['--list-row-accent'],
+	}, 'list');
+	const noteBannerPresentationStyle = React.useMemo<React.CSSProperties>(
+		() => getNoteBannerPresentationStyle(props.themeId, {
+			surface: colorVarMap?.['--list-row-bg'],
+			surfaceAlt: colorVarMap?.['--list-row-header-bg'],
+			text: colorVarMap?.['--list-row-text'],
+			accent: colorVarMap?.['--list-row-accent'],
+		}),
+		[props.themeId, colorVarMap?.['--list-row-accent'], colorVarMap?.['--list-row-bg'], colorVarMap?.['--list-row-header-bg'], colorVarMap?.['--list-row-text']]
+	);
+	const noteBannerReadableColors = useNoteBannerReadableColors(noteBannerUrl);
+	const bannerTitlePosition = props.bannerTitlePosition === 'below' ? 'below' : 'above';
 	const preview = showPreview ? getContentPreview(doc, noteId) : null;
 	const showRestoreAction = props.isTrashView && typeof props.onRestoreNote === 'function';
+	const rowStyle = React.useMemo(() => {
+		if (!noteBannerUrl) return colorVars;
+		return {
+			...colorVars,
+			...noteBannerPresentationStyle,
+			'--list-row-banner-image': `url("${noteBannerUrl}")`,
+			'--list-row-banner-border': noteBannerReadableColors?.backgroundColor ?? colorVarMap?.['--list-row-accent'],
+			'--list-row-banner-text': noteBannerReadableColors?.textColor,
+			'--list-row-banner-muted': noteBannerReadableColors?.mutedTextColor,
+			'--list-row-banner-text-shadow': noteBannerReadableColors?.textShadow,
+			'--list-row-banner-surface': noteBannerReadableColors?.surfaceColor,
+			'--list-row-banner-control-bg': noteBannerReadableColors?.controlBackgroundColor,
+			'--list-row-banner-control-border': noteBannerReadableColors?.controlBorderColor,
+		} as React.CSSProperties;
+	}, [colorVars, noteBannerPresentationStyle, noteBannerReadableColors?.controlBackgroundColor, noteBannerReadableColors?.controlBorderColor, noteBannerReadableColors?.mutedTextColor, noteBannerReadableColors?.surfaceColor, noteBannerReadableColors?.textColor, noteBannerReadableColors?.textShadow, noteBannerUrl]);
 
 	const handleItemRef = React.useCallback(
 		(node: HTMLDivElement | null) => {
@@ -187,6 +235,9 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 			ref={handleItemRef}
 			className={[
 				styles.row,
+				noteBannerUrl ? styles.rowBanner : '',
+				noteBannerUrl && bannerTitlePosition === 'above' ? styles.rowBannerTitleAbove : '',
+				noteBannerUrl && bannerTitlePosition === 'below' ? styles.rowBannerTitleBelow : '',
 				showRestoreAction ? styles.rowTrash : '',
 				props.isSelected ? styles.rowSelected : '',
 				props.isMoreMenuOpen ? styles.rowMenuOpen : '',
@@ -195,7 +246,7 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 			]
 				.filter(Boolean)
 				.join(' ')}
-			style={colorVars}
+			style={rowStyle}
 			role={props.canOpenNotes ? 'button' : undefined}
 			tabIndex={props.canOpenNotes ? 0 : undefined}
 			data-note-card="true"
@@ -220,7 +271,9 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 				</div>
 			) : null}
 
-			<div className={styles.rowMain}>
+			<div
+				className={styles.rowMain}
+			>
 				<span
 					className={styles.rowTypeIcon}
 					data-drag-handle="true"
@@ -229,36 +282,6 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 					<FontAwesomeIcon icon={noteType === 'checklist' ? faListCheck : faFileLines} />
 				</span>
 				<span className={styles.rowTitle}>{title}</span>
-
-				<span className={styles.rowBadges}>
-					{isPinned ? (
-						<span className={styles.badge} title="Pinned">
-							<FontAwesomeIcon icon={faThumbtack} />
-						</span>
-					) : null}
-					{hasReminder ? (
-						<span className={styles.badge} title="Has reminder">
-							<FontAwesomeIcon icon={faBell} />
-						</span>
-					) : null}
-					{props.collectionPath ? (
-						<span className={styles.badge} title={props.collectionPath}>
-							<FontAwesomeIcon icon={faFolder} />
-						</span>
-					) : null}
-					{props.labels.length > 0 ? (
-						<span className={styles.badge} title={`${props.labels.length} label${props.labels.length !== 1 ? 's' : ''}`}>
-							<FontAwesomeIcon icon={faTag} />
-							{props.labels.length > 1 ? <span className={styles.badgeCount}>{props.labels.length}</span> : null}
-						</span>
-					) : null}
-					{props.collaboratorCount > 0 ? (
-						<span className={styles.badge} title={`${props.collaboratorCount} collaborator${props.collaboratorCount !== 1 ? 's' : ''}`}>
-							<FontAwesomeIcon icon={faUsers} />
-							{props.collaboratorCount > 1 ? <span className={styles.badgeCount}>{props.collaboratorCount}</span> : null}
-						</span>
-					) : null}
-				</span>
 			</div>
 
 			{showPreview && preview ? (
@@ -406,6 +429,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 						isPlaceholder={props.activeDragId === noteId}
 						showPreview={showPreview}
 						themeId={props.themeId}
+						bannerTitlePosition={props.bannerTitlePosition}
 						setItemElement={props.setItemElement}
 						setHandleElement={props.setHandleElement}
 						shouldSuppressOpen={props.shouldSuppressOpen}

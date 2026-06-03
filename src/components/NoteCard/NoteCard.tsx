@@ -42,10 +42,15 @@ import {
 	setNoteCardCompletedExpanded,
 } from '../../core/noteCardCompletedExpansion';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
+import { resolveNoteBannerReadableColors, useNoteBannerReadableColors } from '../../core/noteBannerReadability';
+import { getNoteBannerPresentationStyle, transformNoteBannerSampleColor, useThemedNoteBannerImageUrl } from '../../core/noteBannerTheme';
 import type { NoteLinkRecord } from '../../core/noteLinkApi';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
+import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import type { NoteType } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
+import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from './NoteColorPickerModal';
@@ -83,6 +88,7 @@ export type NoteCardProps = {
 	suppressContentInteractions?: boolean;
 	initialLinkRecords?: readonly NoteLinkRecord[];
 	preserveControlShell?: boolean;
+	bannerTitlePosition?: NoteCardBannerTitlePosition;
 };
 
 type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null; completedAt: number | null };
@@ -94,6 +100,7 @@ type NoteCardStyle = React.CSSProperties & {
 	'--note-color-text'?: string;
 	'--note-color-muted'?: string;
 	'--note-color-accent'?: string;
+	'--note-card-banner-highlight'?: string;
 	'--note-card-collapsed-checklist-height'?: string;
 	'--note-card-expanded-checklist-max-height'?: string;
 };
@@ -688,24 +695,100 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : typeValue === 'drawing' ? 'drawing' : 'text';
+	const noteBannerFile = React.useSyncExternalStore(
+		(onStoreChange) => {
+			const unsubscribePrefs = subscribeNoteBannerPrefs(onStoreChange);
+			const observer = (): void => onStoreChange();
+			metadata.observe(observer);
+			return () => {
+				unsubscribePrefs();
+				metadata.unobserve(observer);
+			};
+		},
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId)),
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId))
+	);
 	const resolvedColor = React.useMemo(
 		() => (colorToken ? resolveThemeNoteColorModel(props.themeId).tokens[colorToken] : null),
 		[colorToken, props.themeId]
 	);
+	const headerBannerUrl = useThemedNoteBannerImageUrl(noteBannerFile, props.themeId, {
+		surface: resolvedColor?.cardBackground,
+		surfaceAlt: resolvedColor?.headerBackground,
+		text: resolvedColor?.textColor,
+		accent: resolvedColor?.accentColor,
+	});
+	const headerBannerPresentationStyle = React.useMemo<React.CSSProperties>(
+		() => getNoteBannerPresentationStyle(props.themeId, {
+			surface: resolvedColor?.cardBackground,
+			surfaceAlt: resolvedColor?.headerBackground,
+			text: resolvedColor?.textColor,
+			accent: resolvedColor?.accentColor,
+		}),
+		[props.themeId, resolvedColor?.accentColor, resolvedColor?.cardBackground, resolvedColor?.headerBackground, resolvedColor?.textColor]
+	);
+	const bannerTitlePosition = props.bannerTitlePosition === 'below' ? 'below' : 'above';
+	const rawHeaderBannerTitleColors = useNoteBannerReadableColors(headerBannerUrl, { startY: 0.62, endY: 1 });
+	const headerBannerTitleColors = React.useMemo(() => {
+		if (!rawHeaderBannerTitleColors) return null;
+		if (!resolvedColor) return rawHeaderBannerTitleColors;
+		// Keep the title-row background in lockstep with the recolored banner media.
+		// Sampling the raw asset alone drifts as soon as an explicit note color tints
+		// the banner away from its shipped SVG average.
+		return resolveNoteBannerReadableColors(transformNoteBannerSampleColor(props.themeId, rawHeaderBannerTitleColors.backgroundColor, {
+			surface: resolvedColor.cardBackground,
+			surfaceAlt: resolvedColor.headerBackground,
+			text: resolvedColor.textColor,
+			accent: resolvedColor.accentColor,
+		}));
+	}, [props.themeId, rawHeaderBannerTitleColors, resolvedColor]);
+	const headerBannerTitleStyle = React.useMemo<React.CSSProperties | undefined>(
+		() => (
+			headerBannerTitleColors
+				? {
+					backgroundColor: headerBannerTitleColors.backgroundColor,
+					color: headerBannerTitleColors.textColor,
+					order: bannerTitlePosition === 'above' ? 0 : 1,
+				}
+				: undefined
+		),
+		[bannerTitlePosition, headerBannerTitleColors]
+	);
+	const derivedBannerCardColors = React.useMemo(() => {
+		if (!headerBannerTitleColors) return null;
+		const cardBackground = headerBannerTitleColors.backgroundColor;
+		const textColor = headerBannerTitleColors.textColor;
+		return {
+			cardBackground,
+			headerBackground: cardBackground,
+			borderColor: `color-mix(in srgb, ${cardBackground} 76%, ${textColor} 24%)`,
+			textColor,
+			mutedTextColor: `color-mix(in srgb, ${textColor} 68%, ${cardBackground} 32%)`,
+			accentColor: cardBackground,
+		};
+	}, [headerBannerTitleColors]);
+	// Bannered cards intentionally separate the tint source from the displayed
+	// surface palette: the saved note color still recolors the banner, but the
+	// visible card body follows the transformed banner sample so header, media, and
+	// body remain one coherent surface.
+	const displayedCardColors = React.useMemo(
+		() => (headerBannerUrl && derivedBannerCardColors ? derivedBannerCardColors : resolvedColor),
+		[derivedBannerCardColors, headerBannerUrl, resolvedColor]
+	);
 	const drawingPlaceholderOptions = React.useMemo<DrawingPlaceholderOptions | undefined>(() => {
-		if (!resolvedColor) return undefined;
+		if (!displayedCardColors) return undefined;
 		return {
 			seed: props.noteId,
 			colors: {
-				background: resolvedColor.cardBackground,
-				surface: resolvedColor.headerBackground,
-				border: resolvedColor.borderColor,
-				text: resolvedColor.textColor,
-				muted: resolvedColor.mutedTextColor,
-				accent: resolvedColor.accentColor,
+				background: displayedCardColors.cardBackground,
+				surface: displayedCardColors.headerBackground,
+				border: displayedCardColors.borderColor,
+				text: displayedCardColors.textColor,
+				muted: displayedCardColors.mutedTextColor,
+				accent: displayedCardColors.accentColor,
 			},
 		};
-	}, [props.noteId, resolvedColor]);
+	}, [displayedCardColors, props.noteId]);
 
 	const title = useOptionalYTextValue(React.useCallback(() => props.doc.getText('title'), [props.doc]));
 	const content = useOptionalYTextValue(
@@ -1061,13 +1144,18 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [collapsedChecklistMinHeightPx, expandedChecklistMaxHeightPx, requestChecklistLayoutRefresh, type]);
 	const cardStyle = React.useMemo(() => {
 		const nextStyle: NoteCardStyle = {};
-		if (resolvedColor) {
-			nextStyle['--note-color-card-bg'] = resolvedColor.cardBackground;
-			nextStyle['--note-color-header-bg'] = resolvedColor.headerBackground;
-			nextStyle['--note-color-border'] = resolvedColor.borderColor;
-			nextStyle['--note-color-text'] = resolvedColor.textColor;
-			nextStyle['--note-color-muted'] = resolvedColor.mutedTextColor;
-			nextStyle['--note-color-accent'] = resolvedColor.accentColor;
+		if (displayedCardColors) {
+			nextStyle['--note-color-card-bg'] = displayedCardColors.cardBackground;
+			nextStyle['--note-color-header-bg'] = displayedCardColors.headerBackground;
+			nextStyle['--note-color-border'] = displayedCardColors.borderColor;
+			nextStyle['--note-color-text'] = displayedCardColors.textColor;
+			nextStyle['--note-color-muted'] = displayedCardColors.mutedTextColor;
+			nextStyle['--note-color-accent'] = displayedCardColors.accentColor;
+		}
+		if (headerBannerTitleColors?.backgroundColor) {
+			nextStyle['--note-card-banner-highlight'] = headerBannerTitleColors.backgroundColor;
+		} else if (resolvedColor?.accentColor) {
+			nextStyle['--note-card-banner-highlight'] = resolvedColor.accentColor;
 		}
 		if (type === 'checklist') {
 			nextStyle['--note-card-collapsed-checklist-height'] = `${collapsedChecklistMinHeightPx}px`;
@@ -1080,7 +1168,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			nextStyle.minHeight = forcedHeightPx;
 		}
 		return Object.keys(nextStyle).length > 0 ? nextStyle : undefined;
-	}, [collapsedChecklistMinHeightPx, expandedChecklistMaxHeightPx, props.forcedHeightPx, resolvedColor, type]);
+	}, [collapsedChecklistMinHeightPx, displayedCardColors, expandedChecklistMaxHeightPx, headerBannerTitleColors?.backgroundColor, props.forcedHeightPx, resolvedColor?.accentColor, type]);
 	const textPreviewStyle = React.useMemo(() => {
 		if (type !== 'text') return undefined;
 		if (!Number.isFinite(Number(textPreviewLayout.maxHeightPx)) || !textPreviewLayout.maxHeightPx || textPreviewLayout.maxHeightPx <= 0) return undefined;
@@ -1435,11 +1523,36 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const disableImageAction = !props.onAddImage || (!renderInteractiveShell && !canEdit);
 	const disableChecklistCheckbox = !allowChecklistItemInteractions;
 	const disableCompletedChecklistCheckbox = !allowCompletedItemInteractions;
+	const headerTitleValue = title.trim().length > 0 ? title : t('note.untitled');
+	const headerTitleRow = headerBannerUrl ? (
+		<div className={styles.headerBannerTitleRow} style={headerBannerTitleStyle}>
+			<span className={styles.headerTitle} title={headerTitleValue}>
+				{headerTitleValue}
+			</span>
+			<div className={styles.headerBadges}>
+				{props.isPinned ? (
+					<span aria-label={t('noteMenu.pinNote')} title={t('noteMenu.pinNote')} className={styles.pinBadge}>
+						<FontAwesomeIcon icon={faThumbtack} />
+					</span>
+				) : null}
+				{reminderAt ? (
+					<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={styles.reminderBadge}>
+						<FontAwesomeIcon icon={faBell} />
+					</span>
+				) : null}
+				{props.hasPendingSync ? (
+					<span aria-label={t('note.pendingSync')} title={t('note.pendingSync')} className={styles.pendingSync}>
+						↻
+					</span>
+				) : null}
+			</div>
+		</div>
+	) : null;
 
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}`}
+			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${headerBannerUrl ? ` ${styles.cardWithBannerHighlight}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			aria-label={`Note ${props.noteId}`}
@@ -1608,7 +1721,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			}}
 		>
 			<div
-				className={styles.header}
+				className={`${styles.header}${noteBannerFile ? ` ${styles.headerWithBanner}` : ''}`}
 				ref={handleHeaderRef}
 				data-drag-handle="true"
 				{...props.dragHandleProps}
@@ -1617,22 +1730,44 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					e.stopPropagation();
 				}}
 			>
-				<span className={styles.headerTitle}>{title.trim().length > 0 ? title : t('note.untitled')}</span>
-				{props.isPinned ? (
-					<span aria-label={t('noteMenu.pinNote')} title={t('noteMenu.pinNote')} className={styles.pinBadge}>
-						<FontAwesomeIcon icon={faThumbtack} />
-					</span>
+				{headerBannerUrl ? (
+					headerTitleRow
 				) : null}
-				{reminderAt ? (
-					<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={styles.reminderBadge}>
-						<FontAwesomeIcon icon={faBell} />
-					</span>
+				{headerBannerUrl ? (
+					<div
+						className={styles.headerBannerMedia}
+						style={{
+							...headerBannerPresentationStyle,
+							order: bannerTitlePosition === 'above' ? 1 : 0,
+						}}
+					>
+						<img className={styles.headerBannerImage} src={headerBannerUrl} alt="" aria-hidden="true" />
+					</div>
 				) : null}
-				{props.hasPendingSync ? (
-					<span aria-label={t('note.pendingSync')} title={t('note.pendingSync')} className={styles.pendingSync}>
-						↻
-					</span>
-				) : null}
+				{headerBannerUrl ? null : (
+					<>
+						<span className={styles.headerTitle} title={headerTitleValue}>
+							{headerTitleValue}
+						</span>
+						<div className={styles.headerBadges}>
+							{props.isPinned ? (
+								<span aria-label={t('noteMenu.pinNote')} title={t('noteMenu.pinNote')} className={styles.pinBadge}>
+									<FontAwesomeIcon icon={faThumbtack} />
+								</span>
+							) : null}
+							{reminderAt ? (
+								<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={styles.reminderBadge}>
+									<FontAwesomeIcon icon={faBell} />
+								</span>
+							) : null}
+							{props.hasPendingSync ? (
+								<span aria-label={t('note.pendingSync')} title={t('note.pendingSync')} className={styles.pendingSync}>
+									↻
+								</span>
+							) : null}
+						</div>
+					</>
+				)}
 			</div>
 
 			{props.metaChips ? (

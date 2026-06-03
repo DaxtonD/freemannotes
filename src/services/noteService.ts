@@ -1,11 +1,13 @@
 import * as Y from 'yjs';
 import {
+	readNoteBannerState,
 	readDrawingBackgroundState,
 	readCollectionState,
 	readLabelState,
 	readLastAccessedAt,
 	readPinState,
 	readReminderState,
+	setNoteBannerFile,
 	setDrawingBackgroundColor,
 	setNoteCollection,
 	setNoteLabelIds,
@@ -36,6 +38,10 @@ export function assignDrawingBackgroundColor(doc: Y.Doc, color: string): void {
 	setDrawingBackgroundColor(doc, color);
 }
 
+export function assignNoteBannerFile(doc: Y.Doc, fileName: string | null): void {
+	setNoteBannerFile(doc, fileName);
+}
+
 export function markNoteAccessed(doc: Y.Doc, origin?: symbol): void {
 	touchLastAccessedAt(doc, origin);
 }
@@ -47,6 +53,8 @@ export function readNoteMetadataState(doc: Y.Doc): {
 	isPinned: boolean;
 	lastAccessedAt: string;
 	drawingBackgroundColor: string;
+	bannerFile: string | null;
+	hasSharedBannerPreference: boolean;
 } {
 	return {
 		collectionId: readCollectionState(doc).collectionId,
@@ -55,5 +63,7 @@ export function readNoteMetadataState(doc: Y.Doc): {
 		isPinned: readPinState(doc).isPinned,
 		lastAccessedAt: readLastAccessedAt(doc),
 		drawingBackgroundColor: readDrawingBackgroundState(doc).drawingBackgroundColor,
+		bannerFile: readNoteBannerState(doc).bannerFile,
+		hasSharedBannerPreference: readNoteBannerState(doc).hasSharedBannerPreference,
 	};
 }
