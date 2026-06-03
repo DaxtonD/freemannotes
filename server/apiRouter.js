@@ -40,7 +40,10 @@ const { getMoveDebugTrace, normalizeMoveDebugTraceId, recordMoveDebugTrace } = r
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const COLLECTIONS_REGISTRY_ID = '__collections_registry__';
 const LABELS_REGISTRY_ID = '__labels_registry__';
-const CARD_BANNERS_DIR = path.resolve(__dirname, '..', 'public', 'CardBanners', 'Dark');
+const CARD_BANNER_CANDIDATE_DIRS = [
+	path.resolve(__dirname, '..', 'public', 'CardBanners', 'Dark'),
+	path.resolve(__dirname, '..', 'dist', 'CardBanners', 'Dark'),
+];
 const CUSTOM_EXCALIDRAW_LIBRARY_DIR = path.resolve(__dirname, '..', 'third-party', 'excalidraw-libraries');
 const EXCALIDRAW_BUNDLED_LIBRARY_DEFINITIONS = Object.freeze([
 	{
@@ -135,11 +138,23 @@ function normalizeBannerDisplayName(fileName) {
 	return `${stem.charAt(0).toUpperCase()}${stem.slice(1).toLowerCase()}${ext}`;
 }
 
+function resolveCardBannerDirectory() {
+	for (const candidateDir of CARD_BANNER_CANDIDATE_DIRS) {
+		if (fs.existsSync(candidateDir)) return candidateDir;
+	}
+	return CARD_BANNER_CANDIDATE_DIRS[0];
+}
+
 function readCardBannerDefinitions() {
-	if (!fs.existsSync(CARD_BANNERS_DIR)) {
+	const cardBannersDir = resolveCardBannerDirectory();
+	if (!fs.existsSync(cardBannersDir)) {
 		return [];
 	}
-	return fs.readdirSync(CARD_BANNERS_DIR, { withFileTypes: true })
+	// Docker/Unraid production images ship the built `dist/` tree, not the source
+	// `public/` directory. Banner discovery must therefore read from whichever
+	// runtime directory actually exists instead of assuming the source tree is
+	// present on disk.
+	return fs.readdirSync(cardBannersDir, { withFileTypes: true })
 		.filter((entry) => entry.isFile() && /\.(svg|png|jpe?g|webp|avif)$/i.test(entry.name) && !/W\.[^.]+$/i.test(entry.name))
 		.map((entry) => ({
 			fileName: entry.name,
