@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="240" viewBox="0 0 1000 240">
+  <defs>
+    <filter id="tex" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="linearRGB">
+      <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="4" seed="12" stitchTiles="stitch" result="n"/>
+      <feColorMatrix in="n" type="saturate" values="0" result="gn"/>
+      <feBlend in="SourceGraphic" in2="gn" mode="overlay"/>
+    </filter>
+    <linearGradient id="hfade_finance" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"  stop-color="#EEF0E5" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#EEF0E5" stop-opacity="0"/>
+      <stop offset="82%" stop-color="#EEF0E5" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#EEF0E5" stop-opacity="1"/>
+    </linearGradient>
+    <linearGradient id="vign_finance" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#6A7A30" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#6A7A30" stop-opacity="0.09"/>
+    </linearGradient>
+  </defs>
+
+  <!-- base -->
+  <rect width="1000" height="240" fill="#EEF0E5"/>
+  <rect width="1000" height="240" fill="url(#vign_finance)"/>
+
+  <!-- diagonal hatch -->
+  <g>
+    <line x1="-144" y1="0" x2="96" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-126" y1="0" x2="114" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-108" y1="0" x2="132" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-90" y1="0" x2="150" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-72" y1="0" x2="168" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-54" y1="0" x2="186" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-36" y1="0" x2="204" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-18" y1="0" x2="222" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="0" y1="0" x2="240" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="18" y1="0" x2="258" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="36" y1="0" x2="276" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="54" y1="0" x2="294" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="72" y1="0" x2="312" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="90" y1="0" x2="330" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="108" y1="0" x2="348" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="126" y1="0" x2="366" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="144" y1="0" x2="384" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="162" y1="0" x2="402" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="180" y1="0" x2="420" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="198" y1="0" x2="438" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="216" y1="0" x2="456" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="234" y1="0" x2="474" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="252" y1="0" x2="492" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="270" y1="0" x2="510" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="288" y1="0" x2="528" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="306" y1="0" x2="546" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="324" y1="0" x2="564" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="342" y1="0" x2="582" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="360" y1="0" x2="600" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="378" y1="0" x2="618" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="396" y1="0" x2="636" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="414" y1="0" x2="654" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="432" y1="0" x2="672" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="450" y1="0" x2="690" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="468" y1="0" x2="708" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="486" y1="0" x2="726" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="504" y1="0" x2="744" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="522" y1="0" x2="762" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="540" y1="0" x2="780" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="558" y1="0" x2="798" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="576" y1="0" x2="816" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="594" y1="0" x2="834" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="612" y1="0" x2="852" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="630" y1="0" x2="870" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="648" y1="0" x2="888" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="666" y1="0" x2="906" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="684" y1="0" x2="924" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="702" y1="0" x2="942" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="720" y1="0" x2="960" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="738" y1="0" x2="978" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="756" y1="0" x2="996" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="774" y1="0" x2="1014" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="792" y1="0" x2="1032" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="810" y1="0" x2="1050" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="828" y1="0" x2="1068" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="846" y1="0" x2="1086" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+    <rect width="1000" height="240" fill="url(#hfade_finance)"/>
+  </g>
+
+  <!-- paper texture -->
+  <rect width="1000" height="240" fill="#EEF0E5" filter="url(#tex)" opacity="0.04"/>
+
+  <!-- icon -->
+  <g transform="translate(880,120)">
+  <!-- wallet body -->
+  <rect x="-38" y="-24" width="76" height="52" rx="7" fill="#96AA54" opacity="0.3"/>
+  <rect x="-38" y="-24" width="76" height="52" rx="7" fill="none" stroke="#6A7A30" stroke-width="3.5"/>
+  <!-- wallet flap top -->
+  <path d="M-38,-24 L38,-24 L38,-8 Q38,4 24,4 L-38,4 Z" fill="#6A7A30" opacity="0.18"/>
+  <line x1="-38" y1="4" x2="38" y2="4" stroke="#6A7A30" stroke-width="2.5"/>
+  <!-- coin pocket -->
+  <rect x="14" y="-18" width="22" height="34" rx="11" fill="none" stroke="#6A7A30" stroke-width="2.5"/>
+  <circle cx="25" cy="-1" r="8" fill="#6A7A30" opacity="0.45"/>
+  <text x="21" y="3" font-family="Georgia,serif" font-size="11" fill="#6A7A30" font-weight="bold" opacity="0.9">$</text>
+  <!-- chart bars left -->
+  <rect x="-34" y="0" width="8" height="20" rx="2" fill="#6A7A30" opacity="0.55"/>
+  <rect x="-22" y="-8" width="8" height="28" rx="2" fill="#6A7A30" opacity="0.55"/>
+  <rect x="-10" y="-4" width="8" height="24" rx="2" fill="#6A7A30" opacity="0.55"/>
+</g>
+
+  <!-- border -->
+  <rect width="1000" height="240" fill="none" stroke="#96AA54" stroke-width="1" opacity="0.3"/>
+</svg>

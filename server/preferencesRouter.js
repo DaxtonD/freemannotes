@@ -47,11 +47,16 @@ const MIN_NOTE_CARD_HEIGHT_PX = 320;
 const MAX_NOTE_CARD_HEIGHT_PX = 1400;
 
 const VALID_EDITOR_TOOLBAR_MODES = new Set(['full', 'condensed']);
+const VALID_NOTE_CARD_BANNER_TITLE_POSITIONS = new Set(['above', 'below']);
 
 function normalizeFontScale(raw) {
 	const value = Number(raw);
 	if (!Number.isFinite(value)) return 1;
 	return Math.min(MAX_FONT_SCALE, Math.max(MIN_FONT_SCALE, value));
+}
+
+function normalizeNoteCardBannerTitlePosition(value) {
+	return VALID_NOTE_CARD_BANNER_TITLE_POSITIONS.has(value) ? value : 'above';
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -236,6 +241,8 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 		'sand', 'peach', 'cream', 'lavender', 'white',
 	]);
 
+	const VALID_NOTE_BANNER_FILE_RE = /^[A-Za-z0-9][A-Za-z0-9 _-]{0,158}\.(svg|png|jpe?g|webp|avif)$/i;
+
 	/**
 	 * Returns the authenticated userId from the request, or null if the
 	 * request is not authenticated.
@@ -295,6 +302,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							noteCardFontScale: 1,
 							noteEditorFontScale: 1,
 							editorToolbarMode: 'full',
+							noteCardBannerTitlePosition: 'above',
 							checklistShowCompleted: false,
 							quickDeleteChecklist: false,
 							noteCardClickOpens: true,
@@ -328,6 +336,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteCardMaxHeightPx: Number.isFinite(Number(devicePref.noteCardMaxHeightPx))
 							? Number(devicePref.noteCardMaxHeightPx)
 							: null,
+						noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition(devicePref.noteCardBannerTitlePosition),
 						activeWorkspaceId: normalizedActiveWorkspaceId,
 						activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
@@ -339,6 +348,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 						bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
 						noteColorsByNoteId: safeJsonNullableStringRecord(userPref.noteColorsByNoteId),
+						noteBannersByNoteId: safeJsonNullableStringRecord(userPref.noteBannersByNoteId),
 						dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
 						createdAt: fmt(devicePref.createdAt),
 						updatedAt: fmt(devicePref.updatedAt),
@@ -464,6 +474,34 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						}
 					}
 
+					if ('noteBannersByNoteId' in body) {
+						const banners = body.noteBannersByNoteId;
+						if (banners == null || banners === '') {
+							userUpdateData.noteBannersByNoteId = {};
+						} else if (banners && typeof banners === 'object' && !Array.isArray(banners)) {
+							const normalized = {};
+							for (const [k, v] of Object.entries(banners)) {
+								if (typeof k !== 'string' || k.length === 0 || k.length > 120) continue;
+								if (v == null || v === '') {
+									normalized[k] = null;
+									continue;
+								}
+								if (typeof v === 'string' && VALID_NOTE_BANNER_FILE_RE.test(v.trim())) {
+									normalized[k] = v.trim();
+								}
+							}
+							if (Object.keys(normalized).length <= 1000) {
+								userUpdateData.noteBannersByNoteId = normalized;
+							} else {
+								jsonResponse(res, 400, { error: 'noteBannersByNoteId exceeds 1000 entries' });
+								return;
+							}
+						} else {
+							jsonResponse(res, 400, { error: 'noteBannersByNoteId must be an object or null' });
+							return;
+						}
+					}
+
 					const deviceUpdateData = {};
 					if ('theme' in body) {
 						if (body.theme == null || body.theme === '') {
@@ -530,6 +568,14 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							}
 							deviceUpdateData.noteCardMaxHeightPx = height;
 						}
+					}
+
+					if ('noteCardBannerTitlePosition' in body) {
+						if (!VALID_NOTE_CARD_BANNER_TITLE_POSITIONS.has(body.noteCardBannerTitlePosition)) {
+							jsonResponse(res, 400, { error: 'noteCardBannerTitlePosition must be above or below' });
+							return;
+						}
+						deviceUpdateData.noteCardBannerTitlePosition = body.noteCardBannerTitlePosition;
 					}
 
 					if ('activeSharedFolder' in body) {
@@ -643,6 +689,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							noteCardMaxHeightPx: Number.isFinite(Number(devicePref.noteCardMaxHeightPx))
 								? Number(devicePref.noteCardMaxHeightPx)
 								: null,
+							noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition(devicePref.noteCardBannerTitlePosition),
 							activeWorkspaceId: normalizedActiveWorkspaceId,
 							activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 							checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
@@ -654,6 +701,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							noteCardCompletedExpandedByNoteId: devicePref.noteCardCompletedExpandedByNoteId || {},
 							bubbleWorkspaceColors: safeJsonRecord(userPref.bubbleWorkspaceColors),
 							noteColorsByNoteId: safeJsonNullableStringRecord(userPref.noteColorsByNoteId),
+							noteBannersByNoteId: safeJsonNullableStringRecord(userPref.noteBannersByNoteId),
 							dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
 							createdAt: fmt(devicePref.createdAt),
 							updatedAt: fmt(devicePref.updatedAt),
@@ -716,6 +764,10 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 											: 'full',
 									noteCardMaxHeightPx:
 										typeof deviceData.noteCardMaxHeightPx === 'number' ? deviceData.noteCardMaxHeightPx : null,
+									noteCardBannerTitlePosition:
+										typeof deviceData.noteCardBannerTitlePosition === 'string' && VALID_NOTE_CARD_BANNER_TITLE_POSITIONS.has(deviceData.noteCardBannerTitlePosition)
+											? deviceData.noteCardBannerTitlePosition
+											: 'above',
 									activeWorkspaceId: null,
 									activeSharedFolder: deviceData.activeSharedFolder ?? null,
 									checklistShowCompleted:
@@ -755,6 +807,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 									noteCardFontScale: 1,
 									noteEditorFontScale: 1,
 									editorToolbarMode: 'full',
+									noteCardBannerTitlePosition: 'above',
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
 									noteCardClickOpens: true,
@@ -801,6 +854,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteCardMaxHeightPx: Number.isFinite(Number(pref.devicePref.noteCardMaxHeightPx))
 							? Number(pref.devicePref.noteCardMaxHeightPx)
 							: null,
+						noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition(pref.devicePref.noteCardBannerTitlePosition),
 						activeWorkspaceId: normalizedActiveWorkspaceId,
 						activeSharedFolder: normalizeActiveSharedFolder(pref.devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(pref.devicePref.checklistShowCompleted),
@@ -812,6 +866,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteCardCompletedExpandedByNoteId: pref.devicePref.noteCardCompletedExpandedByNoteId || {},
 						bubbleWorkspaceColors: safeJsonRecord(pref.userPref.bubbleWorkspaceColors),
 						noteColorsByNoteId: safeJsonNullableStringRecord(pref.userPref.noteColorsByNoteId),
+						noteBannersByNoteId: safeJsonNullableStringRecord(pref.userPref.noteBannersByNoteId),
 						dismissedFailedLinkIds: safeJsonBooleanRecord(pref.userPref.dismissedFailedLinkIds),
 						createdAt: fmt(pref.devicePref.createdAt),
 						updatedAt: fmt(pref.devicePref.updatedAt),

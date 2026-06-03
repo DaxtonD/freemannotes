@@ -2,14 +2,19 @@ import type { DocumentManager } from './DocumentManager';
 import { logClientEvent } from './debugLogger';
 import { getDeviceId } from './deviceId';
 import { readCachedDeviceAppearancePreferences, type CachedDeviceAppearancePreferences } from './deviceAppearancePreferences';
+import { getNoteBannerAssetUrl } from './noteBannerApi';
+import { readUserNoteBannerPrefsSnapshot } from './noteBannerPreferences';
 import { readNoteOrderSnapshot } from './noteOrderSnapshot';
 import { readCachedReminderStates } from './reminderCache';
+import type { ThemeId } from './theme';
 import { readWorkspaceSelectionCache } from './workspaceSelectionCache';
 import { readWorkspaceListLocalCache } from './workspaceListLocalCache';
 import { readCachedWorkspaceSnapshot, type CachedWorkspaceSnapshot, type CachedWorkspaceListItem } from './workspaceMetadataStore';
+import { readWorkspaceRenderSnapshot } from './workspaceRenderSnapshot';
 import { getCollectionsRegistryDoc, readCollectionsFromDoc, type CollectionRecord } from '../services/collectionService';
 import { getLabelsRegistryDoc, readLabelsFromDoc, type LabelRecord } from '../services/labelService';
 import type { NoteReminderState } from './pushApi';
+import type { ViewMode } from './viewMode';
 
 type AuthCacheShape = {
 	v?: unknown;
@@ -30,6 +35,14 @@ export type StartupHydrationSnapshot = {
 	collections: readonly CollectionRecord[];
 	labels: readonly LabelRecord[];
 	hydratedAt: number;
+};
+
+const STARTUP_BANNER_SCAN_LIMIT = 24;
+const STARTUP_BANNER_PRELOAD_LIMIT: Record<ViewMode, number> = {
+	bubble: 0,
+	card: 8,
+	list: 12,
+	strip: 12,
 };
 
 function buildStartupHydrationBase(): Omit<StartupHydrationSnapshot, 'workspaceSnapshot' | 'collections' | 'labels' | 'hydratedAt'> {
@@ -183,4 +196,39 @@ export async function hydrateStartupSnapshot(manager: DocumentManager): Promise<
 		labels,
 		hydratedAt,
 	};
+}
+
+export function readSynchronousWarmStartupBannerUrls(themeId: ThemeId | null | undefined, viewMode: ViewMode): string[] {
+	if (viewMode === 'bubble') return [];
+	const preloadLimit = STARTUP_BANNER_PRELOAD_LIMIT[viewMode];
+	if (preloadLimit <= 0) return [];
+
+	const base = buildStartupHydrationBase();
+	if (!base.hasWarmCache || !base.userId || !base.workspaceId) return [];
+
+	const noteBannerPrefs = readUserNoteBannerPrefsSnapshot(base.userId);
+	if (Object.keys(noteBannerPrefs).length === 0) return [];
+
+	const renderSnapshot = readWorkspaceRenderSnapshot(base.workspaceId);
+	const orderedIdsSource = renderSnapshot?.orderedIds.length ? renderSnapshot.orderedIds : base.noteOrderIds;
+	if (orderedIdsSource.length === 0) return [];
+	const renderSnapshotNotesById = new Map((renderSnapshot?.notes ?? []).map((note) => [note.id, note]));
+
+	const urls: string[] = [];
+	const seen = new Set<string>();
+	for (const noteId of orderedIdsSource.slice(0, STARTUP_BANNER_SCAN_LIMIT)) {
+		if (noteId.startsWith('shared-placement:')) continue;
+		const snapshotNote = renderSnapshotNotesById.get(noteId);
+		const fileName = snapshotNote?.hasSharedBannerPreference
+			? (snapshotNote.bannerFile ?? null)
+			: (noteBannerPrefs[noteId] ?? null);
+		if (!fileName) continue;
+		const url = getNoteBannerAssetUrl(fileName, themeId, viewMode === 'card' ? 'card' : 'list');
+		if (seen.has(url)) continue;
+		seen.add(url);
+		urls.push(url);
+		if (urls.length >= preloadLimit) break;
+	}
+
+	return urls;
 }

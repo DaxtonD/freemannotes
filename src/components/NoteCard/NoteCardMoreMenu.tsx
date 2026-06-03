@@ -17,6 +17,7 @@ import {
 	faXmark,
 } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
+import { byPrefixAndName } from '../../core/byPrefixAndName';
 import { useI18n } from '../../core/i18n';
 import styles from './NoteCardMoreMenu.module.css';
 
@@ -31,6 +32,7 @@ export type NoteCardMoreMenuProps = {
 	onTrash?: (() => void) | undefined;
 	onAddCollaborator?: (() => void) | undefined;
 	onAddImage?: (() => void) | undefined;
+	onSelectBannerImage?: (() => void) | undefined;
 	onAddDocument?: (() => void) | undefined;
 	onAddUrlPreview?: (() => void) | undefined;
 	onAddReminder?: (() => void) | undefined;
@@ -356,6 +358,18 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 					},
 				}]
 				: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, disabled: isTrashView, action: noop }])
+			: []),
+		...(props.onSelectBannerImage
+			? [{
+				key: 'banner-image',
+				labelKey: 'noteMenu.selectBannerImage',
+				icon: byPrefixAndName.far['clapperboard'],
+				disabled: isTrashView,
+				action: () => {
+					props.onClose();
+					props.onSelectBannerImage?.();
+				},
+			}]
 			: []),
 		...(showAddDocument
 			? (props.onAddDocument

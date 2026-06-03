@@ -1,6 +1,6 @@
 .card {
 	border: 1px solid var(--note-color-border, var(--color-border));
-	border-radius: var(--radius-sm);
+	border-radius: var(--radius-md);
 	box-sizing: border-box;
 	padding: 0;
 	background-color: var(--note-color-card-bg, var(--color-surface));
@@ -13,6 +13,11 @@
 	position: relative;
 	display: flex;
 	flex-direction: column;
+}
+
+.cardWithBannerHighlight {
+	border-color: var(--note-card-banner-highlight, var(--note-color-border, var(--color-border)));
+	box-shadow: inset 0 0 0 1px var(--note-card-banner-highlight, transparent);
 }
 
 .moreMenuOpen {
@@ -97,10 +102,71 @@
 	align-items: center;
 	gap: var(--space-2);
 	padding: 8px 10px;
-	border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+	border-radius: var(--radius-md) var(--radius-md) 0 0;
 	background: var(--note-color-header-bg, color-mix(in srgb, var(--color-surface-2) 78%, var(--color-text) 22%));
-	border-bottom: 1px solid var(--note-color-border, color-mix(in srgb, var(--color-border) 70%, var(--color-text) 30%));
 	flex: 0 0 auto;
+	position: relative;
+	isolation: isolate;
+}
+
+.headerWithBanner {
+	display: flex;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 0;
+	padding: 0;
+	border-bottom-color: transparent;
+	overflow: hidden;
+	background: transparent;
+}
+
+.headerBannerMedia {
+	position: relative;
+	overflow: hidden;
+	isolation: isolate;
+}
+
+.headerBannerMedia::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(180deg, var(--note-banner-overlay-top, transparent), var(--note-banner-overlay-bottom, transparent));
+	pointer-events: none;
+	z-index: 1;
+}
+
+.headerBannerMedia::before {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background: var(--note-banner-colorize, transparent);
+	opacity: var(--note-banner-colorize-opacity, 0);
+	mix-blend-mode: multiply;
+	pointer-events: none;
+	z-index: 1;
+}
+
+.headerBannerImage {
+	display: block;
+	width: 100%;
+	height: auto;
+	pointer-events: none;
+	user-select: none;
+	-webkit-user-drag: none;
+	filter: var(--note-banner-image-filter, saturate(1.02) contrast(1.02));
+	position: relative;
+	z-index: 0;
+}
+
+.headerBannerTitleRow {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	padding: 8px 10px;
+	background: var(--note-color-header-bg, color-mix(in srgb, var(--color-surface-2) 78%, var(--color-text) 22%));
+	min-width: 0;
+	position: relative;
+	z-index: 1;
 }
 
 @media (pointer: coarse) {
@@ -119,6 +185,19 @@
 
 .headerTitle {
 	flex: 1;
+	min-width: 0;
+	line-height: 1.18;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow: hidden;
+}
+
+.headerBadges {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
 }
 
 .headerType {

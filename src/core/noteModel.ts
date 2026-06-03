@@ -17,6 +17,7 @@
 
 import * as Y from 'yjs';
 import type { JSONContent } from '@tiptap/core';
+import { NOTE_BANNER_METADATA_FIELD, hasSharedNoteBannerPreference, normalizeNoteBannerFile, readSharedNoteBannerFile } from './noteBanners';
 import type { NoteColorToken } from './noteColors';
 import { DEFAULT_DRAWING_BACKGROUND, readDrawingBackgroundColorFromMetadata } from './drawingBackground';
 import {
@@ -94,6 +95,10 @@ export interface Note {
 	trashedAt: string | null;
 	/** Semantic color token applied to this note across all themes. */
 	colorToken?: NoteColorToken | null;
+	/** Shared note banner selection replicated through Yjs metadata. */
+	bannerFile?: string | null;
+	/** Whether the note has an explicit shared banner selection, including clears. */
+	hasSharedBannerPreference?: boolean;
 	/** Optional collection assignment for tree-based workspace organization. */
 	collectionId: string | null;
 	/** Zero or more label ids assigned to the note. */
@@ -224,6 +229,7 @@ export function initTextNoteDoc(doc: Y.Doc, title: string, body: string, richCon
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
 		metadata.set('colorToken', null);
+		metadata.set(NOTE_BANNER_METADATA_FIELD, null);
 		metadata.set('drawingBackgroundColor', DEFAULT_DRAWING_BACKGROUND);
 		metadata.set('collectionId', null);
 		metadata.set('labelIds', []);
@@ -277,6 +283,7 @@ export function initChecklistNoteDoc(
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
 		metadata.set('colorToken', null);
+		metadata.set(NOTE_BANNER_METADATA_FIELD, null);
 		metadata.set('drawingBackgroundColor', DEFAULT_DRAWING_BACKGROUND);
 		metadata.set('collectionId', null);
 		metadata.set('labelIds', []);
@@ -352,6 +359,7 @@ export function initDrawingNoteDoc(doc: Y.Doc, title: string): void {
 		metadata.set('archived', false);
 		metadata.set('archivedAt', null);
 		metadata.set('colorToken', null);
+		metadata.set(NOTE_BANNER_METADATA_FIELD, null);
 		metadata.set('drawingBackgroundColor', DEFAULT_DRAWING_BACKGROUND);
 		metadata.set('collectionId', null);
 		metadata.set('labelIds', []);
@@ -399,6 +407,8 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 	const archivedAt = typeof rawArchivedAt === 'string' ? rawArchivedAt : null;
 	const rawColorToken = metadata.get('colorToken');
 	const colorToken = typeof rawColorToken === 'string' ? (rawColorToken as NoteColorToken) : null;
+	const bannerFile = readSharedNoteBannerFile(metadata);
+	const hasExplicitSharedBannerPreference = hasSharedNoteBannerPreference(metadata);
 	const drawingBackgroundColor = readDrawingBackgroundColorFromMetadata(metadata);
 	const collectionId = normalizeOptionalId(metadata.get('collectionId'));
 	const labelIds = normalizeLabelIds(metadata.get('labelIds'));
@@ -419,6 +429,8 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 		archivedAt,
 		trashedAt,
 		colorToken,
+		bannerFile,
+		hasSharedBannerPreference: hasExplicitSharedBannerPreference,
 		drawingBackgroundColor,
 		collectionId,
 		labelIds,
@@ -602,6 +614,14 @@ export function readDrawingBackgroundState(doc: Y.Doc): { drawingBackgroundColor
 	return { drawingBackgroundColor: readDrawingBackgroundColorFromMetadata(metadata) };
 }
 
+export function readNoteBannerState(doc: Y.Doc): { bannerFile: string | null; hasSharedBannerPreference: boolean } {
+	const metadata = doc.getMap<any>('metadata');
+	return {
+		bannerFile: readSharedNoteBannerFile(metadata),
+		hasSharedBannerPreference: hasSharedNoteBannerPreference(metadata),
+	};
+}
+
 export function setNoteDrawingIds(doc: Y.Doc, drawingIds: readonly string[], origin?: symbol): void {
 	const normalizedDrawingIds = normalizeDrawingIds(drawingIds);
 	const drawingIdArray = doc.getArray<string>('drawingIds');
@@ -640,6 +660,20 @@ export function setDrawingBackgroundColor(doc: Y.Doc, color: string, origin?: sy
 	});
 	const run = (): void => {
 		metadata.set('drawingBackgroundColor', normalizedColor);
+		metadata.set('updatedAt', Date.now());
+	};
+	if (origin) {
+		doc.transact(run, origin);
+	} else {
+		doc.transact(run);
+	}
+}
+
+export function setNoteBannerFile(doc: Y.Doc, fileName: string | null, origin?: symbol): void {
+	const metadata = doc.getMap<any>('metadata');
+	const normalizedFileName = normalizeNoteBannerFile(fileName);
+	const run = (): void => {
+		metadata.set(NOTE_BANNER_METADATA_FIELD, normalizedFileName);
 		metadata.set('updatedAt', Date.now());
 	};
 	if (origin) {

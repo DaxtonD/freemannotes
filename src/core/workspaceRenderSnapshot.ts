@@ -62,6 +62,8 @@ export type WorkspaceRenderSnapshotNote = {
 	trashed: boolean;
 	archived: boolean;
 	colorToken: string | null;
+	bannerFile: string | null;
+	hasSharedBannerPreference: boolean;
 	collaboratorCount: number;
 	attachmentCounts: WorkspaceRenderSnapshotAttachmentCounts;
 	previewLinks: ExtractedNoteLink[];
@@ -191,6 +193,8 @@ function sanitizeNotes(value: unknown): WorkspaceRenderSnapshotNote[] {
 			trashed: Boolean((note as { trashed?: unknown }).trashed),
 			archived: Boolean((note as { archived?: unknown }).archived),
 			colorToken: asStringOrNull((note as { colorToken?: unknown }).colorToken),
+			bannerFile: asStringOrNull((note as { bannerFile?: unknown }).bannerFile),
+			hasSharedBannerPreference: Boolean((note as { hasSharedBannerPreference?: unknown }).hasSharedBannerPreference),
 			collaboratorCount: Math.max(0, Math.floor(asNumber((note as { collaboratorCount?: unknown }).collaboratorCount))),
 			attachmentCounts: {
 				images: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { images?: unknown } }).attachmentCounts?.images))),
@@ -322,6 +326,7 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 	const note = readNoteFromDoc(args.doc, args.noteId);
 	const metadata = args.doc.getMap<any>('metadata');
 	const colorToken = asStringOrNull(metadata.get('colorToken'));
+	const bannerFile = note.bannerFile ?? null;
 	const checklistArray = note.type === 'checklist' ? args.doc.getArray<Y.Map<any>>('checklist') : null;
 	const previewLinks = extractNoteLinksFromDoc(args.doc);
 	return {
@@ -352,6 +357,8 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 		trashed: note.trashed,
 		archived: note.archived,
 		colorToken,
+		bannerFile,
+		hasSharedBannerPreference: note.hasSharedBannerPreference === true,
 		collaboratorCount: Math.max(0, Math.floor(Number(args.collaboratorCount ?? 0) || 0)),
 		attachmentCounts: {
 			images: Math.max(0, Math.floor(Number(args.attachmentCounts?.images ?? 0) || 0)),
@@ -377,6 +384,9 @@ export function createSnapshotDocFromWorkspaceRenderSnapshot(note: WorkspaceRend
 	metadata.set('isPinned', note.isPinned);
 	metadata.set('lastAccessedAt', note.lastAccessedAt);
 	metadata.set('colorToken', note.colorToken);
+	if (note.hasSharedBannerPreference) {
+		metadata.set('bannerFile', note.bannerFile ?? null);
+	}
 	metadata.set('trashedAt', null);
 	metadata.set('archivedAt', null);
 	setNotePreviewLinksOnDoc(doc, note.previewLinks.map((link) => link.url));

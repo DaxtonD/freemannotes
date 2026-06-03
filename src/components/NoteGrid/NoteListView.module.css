@@ -34,6 +34,53 @@
 	overflow: hidden;
 }
 
+.rowBanner::before,
+.rowBanner::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	z-index: 0;
+}
+
+.rowBanner::before {
+	background-image: var(--list-row-banner-image);
+	background-position: center;
+	background-repeat: no-repeat;
+	background-size: cover;
+	filter: var(--note-banner-image-filter, none);
+}
+
+.rowBanner::after {
+	background:
+		linear-gradient(
+			180deg,
+			var(--note-banner-overlay-top, color-mix(in srgb, var(--list-row-header-bg, var(--list-row-bg, var(--color-surface-2))) 6%, transparent)),
+			var(--note-banner-overlay-bottom, color-mix(in srgb, var(--list-row-header-bg, var(--list-row-bg, var(--color-surface-2))) 20%, transparent))
+		);
+}
+
+.rowBanner > * {
+	position: relative;
+	z-index: 1;
+}
+
+.rowBanner {
+	border-color: var(--list-row-banner-border, transparent);
+	box-shadow:
+		inset 3px 0 0 var(--list-row-accent, transparent),
+		inset 0 0 0 1px var(--list-row-banner-border, transparent),
+		0 1px 0 color-mix(in srgb, var(--color-border) 50%, transparent);
+}
+
+.rowBannerTitleAbove {
+	justify-content: flex-start;
+}
+
+.rowBannerTitleBelow {
+	justify-content: flex-end;
+}
+
 .rowPlaceholder {
 	opacity: 0;
 	box-shadow: none;
@@ -94,6 +141,15 @@
 	gap: 8px;
 	width: 100%;
 	min-width: 0;
+	position: relative;
+	border-radius: 10px;
+	padding: 4px 8px 4px 0;
+	overflow: hidden;
+}
+
+.rowMain > * {
+	position: relative;
+	z-index: 1;
 }
 
 .rowTypeIcon {
@@ -108,6 +164,10 @@
 	font-size: 11px;
 	flex: 0 0 auto;
 	cursor: grab;
+}
+
+.rowBanner .rowTypeIcon {
+	color: var(--list-row-banner-text, var(--list-row-text, var(--color-text)));
 }
 
 .rowTypeIcon:active {
@@ -130,6 +190,15 @@
 	color: inherit;
 }
 
+.rowBanner .rowTitle,
+.rowBanner .rowPreview {
+	text-shadow: var(--list-row-banner-text-shadow, none);
+}
+
+.rowBanner .rowTitle {
+	color: var(--list-row-banner-text, var(--list-row-text, var(--color-text)));
+}
+
 /* ── Content preview (strip mode) ─────────────────────────────────────── */
 
 .rowPreview {
@@ -142,6 +211,14 @@
 	text-overflow: ellipsis;
 	padding-right: 32px;
 	line-height: 1.45;
+}
+
+.rowStrip.rowBanner .rowPreview {
+	width: calc(100% - 38px);
+	margin-left: 30px;
+	padding: 0;
+	padding-right: 34px;
+	color: var(--list-row-banner-muted, var(--list-row-muted, var(--color-text-muted)));
 }
 
 .trashRestoreRow {
@@ -211,12 +288,22 @@
 	color: var(--list-row-muted, var(--color-text-muted));
 }
 
+.rowBanner .rowBadges {
+	color: var(--list-row-banner-text, var(--list-row-text, var(--color-text)));
+}
+
 .badge {
 	display: inline-flex;
 	align-items: center;
 	gap: 3px;
 	font-size: 11px;
 	opacity: 0.72;
+}
+
+.rowBanner .badge {
+	color: inherit;
+	opacity: 1;
+	text-shadow: var(--list-row-banner-text-shadow, none);
 }
 
 .badgeCount {
@@ -247,6 +334,12 @@
 	flex-shrink: 0;
 }
 
+.rowBanner .moreBtn {
+	color: var(--list-row-banner-text, var(--list-row-text, var(--color-text)));
+	opacity: 0.88;
+	text-shadow: var(--list-row-banner-text-shadow, none);
+}
+
 .row:hover .moreBtn,
 .row:focus-visible .moreBtn,
 .rowMenuOpen .moreBtn {
@@ -257,4 +350,9 @@
 .moreBtn:focus-visible {
 	opacity: 1 !important;
 	background: color-mix(in srgb, var(--color-text) 10%, transparent);
+}
+
+.rowBanner .moreBtn:hover,
+.rowBanner .moreBtn:focus-visible {
+	filter: brightness(1.04);
 }

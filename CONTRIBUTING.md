@@ -9,6 +9,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
 - [Prerequisites](#prerequisites)
 - [Local Setup](#local-setup)
 - [Running the App](#running-the-app)
+  - [Banner Artwork](#banner-artwork)
 - [Environment Configuration](#environment-configuration)
   - [Server config (`.env`)](#server-config-env)
   - [Client build config (`env.vite/`)](#client-build-config-envvite)
@@ -79,6 +80,35 @@ npm run db:init
 | `npm run preview` | Serve the last build locally via Vite preview. |
 
 For development, `npm run dev` is the right command. It starts both the backend (`server.js`) and the Vite dev server concurrently, with hot module replacement for the client.
+
+### Banner Artwork
+
+Freeman Notes now keeps note banner artwork in theme-specific folders with separate card and list-view SVGs.
+
+Required banner files:
+
+- `public/CardBanners/Dark/Title.svg` for the dark card banner at `520x240`
+- `public/CardBanners/Dark/TitleW.svg` for the dark list/strip banner at `1000x520`
+- `public/CardBanners/Light/Title.svg` for the light card banner at `520x240`
+- `public/CardBanners/Light/TitleW.svg` for the light list/strip banner at `1000x520`
+
+Naming rules:
+
+- Keep the same base name across all four files, for example `Calendar.svg` and `CalendarW.svg`
+- The picker modal only shows the card asset name, such as `Calendar.svg`
+- Card views load `Title.svg`
+- List and strip views automatically load `TitleW.svg`
+- Stored banner preferences still persist only the base filename, so no preference migration is needed
+
+If you add a new banner, you must add all four files. Do not add only a light theme, only a dark theme, or only one size.
+
+Recommended workflow after changing banner art:
+
+```bash
+npm run build
+```
+
+If a banner appears unchanged after updating the SVGs, refresh the app or clear any cached service worker assets before retesting.
 
 ---
 

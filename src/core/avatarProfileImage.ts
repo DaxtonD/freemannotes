@@ -1,13 +1,45 @@
 export type CropAreaPixels = { width: number; height: number; x: number; y: number };
 
+const imagePromiseCache = new Map<string, Promise<HTMLImageElement>>();
+
+async function decodeImageIfNeeded(image: HTMLImageElement): Promise<void> {
+	if (typeof image.decode !== 'function') return;
+	try {
+		await image.decode();
+	} catch {
+		// Ignore decode failures and fall back to the loaded image element.
+	}
+}
+
 export function loadImage(src: string): Promise<HTMLImageElement> {
-	return new Promise((resolve, reject) => {
+	const cacheKey = String(src || '').trim();
+	if (!cacheKey) return Promise.reject(new Error('Failed to load image'));
+	const cachedRequest = imagePromiseCache.get(cacheKey);
+	if (cachedRequest) return cachedRequest;
+
+	const request = new Promise<HTMLImageElement>((resolve, reject) => {
 		const img = new Image();
-		img.addEventListener('load', () => resolve(img));
-		img.addEventListener('error', () => reject(new Error('Failed to load image')));
+		const cleanup = (): void => {
+			img.removeEventListener('load', handleLoad);
+			img.removeEventListener('error', handleError);
+		};
+		const handleLoad = (): void => {
+			cleanup();
+			void decodeImageIfNeeded(img).finally(() => resolve(img));
+		};
+		const handleError = (): void => {
+			cleanup();
+			imagePromiseCache.delete(cacheKey);
+			reject(new Error('Failed to load image'));
+		};
+		img.addEventListener('load', handleLoad);
+		img.addEventListener('error', handleError);
 		img.crossOrigin = 'anonymous';
-		img.src = src;
+		img.src = cacheKey;
 	});
+
+	imagePromiseCache.set(cacheKey, request);
+	return request;
 }
 
 export function getDefaultCenteredSquareCrop(image: HTMLImageElement): CropAreaPixels {

@@ -247,6 +247,8 @@ model UserDevicePreference {
   editorToolbarMode String @default("full") @map("editor_toolbar_mode")
   /// Maximum rendered note-card height on the notes grid for this device.
   noteCardMaxHeightPx Int? @map("note_card_max_height_px")
+  /// Per-device note-card banner preference: place the title above or below the banner image.
+  noteCardBannerTitlePosition String @default("above") @map("note_card_banner_title_position")
 
   /// Per-device workspace selection.
   activeWorkspaceId String? @map("active_workspace_id") @db.Uuid
@@ -675,6 +677,11 @@ model UserPreference {
   /// Shape: { [noteId: string]: NoteColorToken | null }
   /// Null is an explicit per-user clear that hides any legacy shared-doc color.
   noteColorsByNoteId Json @default("{}") @map("note_colors_by_note_id") @db.JsonB
+
+  /// Per-user note banner overrides.
+  /// Shape: { [noteId: string]: bannerFileName | null }
+  /// Null is an explicit per-user clear for the selected card-header banner.
+  noteBannersByNoteId Json @default("{}") @map("note_banners_by_note_id") @db.JsonB
 
   /// Timestamps for auditing.
   createdAt DateTime @default(now()) @map("created_at")

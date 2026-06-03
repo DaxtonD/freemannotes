@@ -1094,7 +1094,18 @@ export class DocumentManager {
 
 	private hasPersistedNoteContent(doc: Y.Doc): boolean {
 		const metadata = doc.getMap<any>('metadata');
-		if (metadata.size > 0) return true;
+		if (
+			metadata.has('type') &&
+			metadata.has('createdAt') &&
+			metadata.has('updatedAt') &&
+			metadata.has('trashed') &&
+			metadata.has('archived') &&
+			metadata.has('collectionId') &&
+			metadata.has('labelIds') &&
+			metadata.has('reminderAt') &&
+			metadata.has('isPinned') &&
+			metadata.has('lastAccessedAt')
+		) return true;
 
 		if (doc.getText('title').length > 0) return true;
 		if (doc.getText('content').length > 0) return true;

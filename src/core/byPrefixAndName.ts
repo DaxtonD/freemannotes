@@ -1,5 +1,5 @@
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
-import { faBan, faCheck, faFloppyDisk, faRedo, faUndo } from '@fortawesome/free-solid-svg-icons';
+import { faBan, faCheck, faClapperboard, faFloppyDisk, faRedo, faUndo } from '@fortawesome/free-solid-svg-icons';
 import { faCircleXmark } from '@fortawesome/free-regular-svg-icons';
 
 // Central icon registry used by editor dock actions.
@@ -25,6 +25,7 @@ export const byPrefixAndName: {
 		redo: faRedo,
 	},
 	far: {
+		clapperboard: faClapperboard,
 		xmark: faCircleXmark,
 	},
 };

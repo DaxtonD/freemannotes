@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.1 - 2026-06-02
+
+### Added
+- **Note cards can now use banner artwork as a first-class visual surface.** Banner selection is available across the grid, editors, and card menus with dedicated card/list asset contracts, localized labeling, and a distinct banner-picker icon path.
+
+### Changed
+- **Banner presentation is now collaborative and workspace-live instead of device-local.** Banner selection moved into shared note metadata so editors and eligible collaborators see updates immediately across devices, while legacy per-user banner preferences remain as a fallback for older notes until they are explicitly touched.
+- **Card, list, and detailed-list banner rendering now follow clearer appearance rules.** Users can choose whether titles render above or below banners, the default is now above, compact list views stay distraction-free without note chips, and drag previews follow the same reduced metadata treatment.
+- **Bannered card visuals are now intentionally unified.** When a banner is present, title readability, banner tinting, and the displayed card surface now derive from the same transformed banner palette so the header, media, and body no longer fight each other when a note color is also selected.
+
+### Fixed
+- **Warm startup and offline-first note recovery are more reliable again.** Startup hydration, render snapshots, offline banner preload, and cached workspace restores now reopen previously loaded workspaces more consistently without dropping saved notes or waiting for a full live refresh.
+- **Banner and collaborator interactions no longer regress during offline or cold-start sessions.** Collaborator pickers can surface immediately from cached state, banner selections hydrate earlier, and previously loaded shared workspaces reopen faster with steadier live note state.
+- **Reminder clears no longer come back after reloads or reconnects.** Local reminder caches and pending reminder mutations now reconcile explicit clears correctly so stale reminders do not resurrect from cached or queued state.
+- **Development startup applies the expected database migration path again.** The server/db init flow now uses the corrected migration path during local startup so `npm start` and related server boots do not silently miss recent schema changes.
+
 ## 1.5.0 - 2026-05-30
 
 ### Added

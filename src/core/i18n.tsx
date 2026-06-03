@@ -202,6 +202,9 @@ const FALLBACK_MESSAGES: Dictionary = {
 		noteCardFontScale: 'Note card text size',
 		noteEditorFontScale: 'Note editor text size',
 		noteCardMaxHeight: 'Maximum note card height',
+		noteCardBannerTitlePosition: 'Banner title position',
+		noteCardBannerTitlePositionAbove: 'Above banner image',
+		noteCardBannerTitlePositionBelow: 'Below banner image',
 		themeCategoryBuiltIn: 'Built-in',
 		themeCategoryEarth: 'Earth',
 		themeCategoryNord: 'Nord',
@@ -481,6 +484,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 	noteMenu: {
 		pinNote: 'Pin note',
 		unpinNote: 'Unpin note',
+		selectBannerImage: 'Select banner image',
 		addCollaborator: 'Add collaborator',
 		addImage: 'Add image',
 		addDocument: 'Add Drawing',
@@ -529,6 +533,13 @@ const FALLBACK_MESSAGES: Dictionary = {
 		peach: 'Peach',
 		cream: 'Cream',
 		lavender: 'Lavender'
+	},
+	noteBanners: {
+		dialogTitle: 'Note banner',
+		none: 'No banner',
+		loading: 'Loading banner images…',
+		failed: 'Failed to load banner images',
+		empty: 'No banner images are available.',
 	},
 	note: {
 		untitled: '(untitled)',

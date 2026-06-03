@@ -76,13 +76,16 @@ import { type ChecklistItem } from './core/bindings';
 import {
 	clampFontScale,
 	clampNoteCardMaxHeightPx,
+	getDefaultNoteCardBannerTitlePosition,
 	getDefaultNoteCardFontScale,
 	getDefaultNoteCardMaxHeightPx,
 	getDefaultNoteEditorFontScale,
 	isLocalAppearancePreferenceNewer,
 	normalizeEditorToolbarMode,
+	normalizeNoteCardBannerTitlePosition,
 	readCachedDeviceAppearancePreferences,
 	type EditorToolbarMode,
+	type NoteCardBannerTitlePosition,
 	writeCachedDeviceAppearancePreferences,
 } from './core/deviceAppearancePreferences';
 import { useDocumentManager } from './core/DocumentManagerContext';
@@ -154,8 +157,9 @@ import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
 import { clearCachedReminderStates, moveCachedReminderStates, readCachedReminderStates, writeCachedReminderStates } from './core/reminderCache';
-import { moveNoteOrderSnapshotEntry } from './core/noteOrderSnapshot';
+import { moveNoteOrderSnapshotEntry, readNoteOrderSnapshot, writeNoteOrderSnapshot } from './core/noteOrderSnapshot';
 import { getUserNoteColorPrefsSnapshot, replaceUserNoteColorPrefs, setUserNoteColorPreferenceScope } from './core/noteColorPreferences';
+import { getUserNoteBannerPrefsSnapshot, replaceUserNoteBannerPrefs, setUserNoteBannerPreferenceScope } from './core/noteBannerPreferences';
 import { useStartupHydration } from './core/StartupHydrationContext';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
@@ -951,17 +955,18 @@ export function App(): React.JSX.Element {
 		startupHydration.workspaceId ?? cachedWorkspaceSelection?.workspaceId ?? cachedAuth?.workspaceId ?? null
 	);
 	const hasWarmStartupCache = startupHydration.hasWarmCache || initialWorkspaceRenderSnapshotAvailable;
+	const canSkipStartupSplash = canRestoreCachedAuthImmediately && hasWarmStartupCache;
 	type SplashDismissMode = 'viewport' | 'full';
 	const [authStatus, setAuthStatus] = React.useState<'loading' | 'authed' | 'unauth'>(() =>
 		canRestoreCachedAuthImmediately ? 'authed' : 'loading'
 	);
-	// Splash overlay is startup-only. Even with warm cache we keep it mounted
-	// until NoteGrid reports the viewport-stable first paint, so cached docs never
-	// visibly hydrate in front of the user on PWA relaunch.
+	// Splash overlay is startup-only. Cold starts keep it mounted until NoteGrid
+	// reports the viewport-stable first paint. Warm cached launches skip it so the
+	// OS splash hands directly to the cached workspace render.
 	// gridReady → starts fade-out; splashGone → removes the DOM node entirely.
-	const [gridReady, setGridReady] = React.useState(initialWorkspaceRenderSnapshotAvailable);
-	const [splashGone, setSplashGone] = React.useState(initialWorkspaceRenderSnapshotAvailable);
-	const [splashDismissMode, setSplashDismissMode] = React.useState<SplashDismissMode>(() => hasWarmStartupCache ? 'full' : 'viewport');
+	const [gridReady, setGridReady] = React.useState(canSkipStartupSplash);
+	const [splashGone, setSplashGone] = React.useState(canSkipStartupSplash);
+	const [splashDismissMode, setSplashDismissMode] = React.useState<SplashDismissMode>('viewport');
 	const splashTimerRef = React.useRef<number>(0);
 	const prevAuthStatusRef = React.useRef(authStatus);
 	React.useEffect(() => {
@@ -1008,16 +1013,11 @@ export function App(): React.JSX.Element {
 	// touch the workspace state while it is still in the temporal dead zone.
 	React.useEffect(() => {
 		const restoredWorkspaceId = authWorkspaceId ?? cachedWorkspaceSelection?.workspaceId ?? cachedAuth?.workspaceId ?? null;
-		const canSkipSplash = hasWorkspaceRenderSnapshot(restoredWorkspaceId);
-		if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed' && !canSkipSplash) {
+		if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed') {
 			clearTimeout(splashTimerRef.current);
 			setSplashDismissMode('viewport');
 			setGridReady(false);
 			setSplashGone(false);
-		} else if (prevAuthStatusRef.current === 'unauth' && authStatus === 'authed' && canSkipSplash) {
-			clearTimeout(splashTimerRef.current);
-			setGridReady(true);
-			setSplashGone(true);
 		}
 		prevAuthStatusRef.current = authStatus;
 	}, [authStatus, authWorkspaceId, cachedWorkspaceSelection, cachedAuth]);
@@ -1086,12 +1086,13 @@ export function App(): React.JSX.Element {
 		const prev = prevAuthWorkspaceIdForSplashRef.current;
 		prevAuthWorkspaceIdForSplashRef.current = authWorkspaceId;
 		if (prev !== null && authWorkspaceId !== null && prev !== authWorkspaceId) {
+			const hasWarmWorkspaceSnapshot = hasWorkspaceRenderSnapshot(authWorkspaceId);
 			clearTimeout(splashTimerRef.current);
-			if (hasWorkspaceRenderSnapshot(authWorkspaceId)) {
+			setSplashDismissMode('viewport');
+			if (hasWarmWorkspaceSnapshot) {
 				setGridReady(true);
 				setSplashGone(true);
 			} else {
-				setSplashDismissMode('viewport');
 				setGridReady(false);
 				setSplashGone(false);
 			}
@@ -1346,6 +1347,9 @@ export function App(): React.JSX.Element {
 	const [noteCardMaxHeightPref, setNoteCardMaxHeightPref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()
 	);
+	const [noteCardBannerTitlePositionPref, setNoteCardBannerTitlePositionPref] = React.useState<NoteCardBannerTitlePosition>(
+		() => normalizeNoteCardBannerTitlePosition(cachedDeviceAppearancePrefs?.noteCardBannerTitlePosition)
+	);
 	const [trashDeleteAfterDaysPref, setTrashDeleteAfterDaysPref] = React.useState<number | null>(30);
 	const [checklistShowCompletedPref, setChecklistShowCompletedPref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.checklistShowCompleted ?? false
@@ -1484,6 +1488,29 @@ export function App(): React.JSX.Element {
 		existing.push(entry);
 		writePendingReminderMutations(existing);
 	}, [readPendingReminderMutations, writePendingReminderMutations]);
+	const removePendingReminderMutation = React.useCallback((docId: string, noteId: string): void => {
+		const next = readPendingReminderMutations().filter((candidate) => !(candidate.docId === docId && candidate.noteId === noteId));
+		writePendingReminderMutations(next);
+	}, [readPendingReminderMutations, writePendingReminderMutations]);
+	const updateCachedReminderState = React.useCallback((entry: {
+		docId: string;
+		noteId: string;
+		workspaceId: string;
+		reminderAt: string | null;
+	}): void => {
+		if (!authUserId) return;
+		const current = readCachedReminderStates(authUserId);
+		const next = current.filter((candidate) => !(candidate.docId === entry.docId && candidate.noteId === entry.noteId));
+		if (entry.reminderAt) {
+			next.push({
+				docId: entry.docId,
+				noteId: entry.noteId,
+				workspaceId: entry.workspaceId,
+				reminderAt: entry.reminderAt,
+			});
+		}
+		writeCachedReminderStates(authUserId, next);
+	}, [authUserId]);
 	const applyPendingReminderMutations = React.useCallback((base: Record<string, string | null>): Record<string, string | null> => {
 		let next = base;
 		for (const entry of readPendingReminderMutations()) {
@@ -2493,24 +2520,40 @@ export function App(): React.JSX.Element {
 				const disposition = mode === 'save'
 					? await getPendingNewNoteDisposition(noteId)
 					: { keep: false, type: noteType };
-				pendingNewNoteIdsRef.current.delete(noteId);
-				pendingNewNoteCollectionSeedRef.current.delete(noteId);
-				pendingAttachedDrawingParentsRef.current.delete(noteId);
-				// If the draft is no longer the actively open editor note, unhide it now.
-				// When the editor is still mounted we keep the pending flag until close so
-				// attachment/media panels never switch into server-refresh mode mid-teardown.
-				if (selectedNoteId !== noteId) {
-					setDraftNoteId((prev) => prev === noteId ? null : prev);
-				}
 				if (disposition.keep) {
 					if (attachedParentNoteId) {
 						const parentDoc = manager.getDoc(attachedParentNoteId);
 						addNoteDrawingId(parentDoc, noteId);
 						await syncAttachedDrawingAccess(attachedParentNoteId, noteId);
+					} else {
+						const title = manager.getDoc(noteId)?.getText('title')?.toString() ?? '';
+						await manager.createNote(noteId, title);
+						if (authWorkspaceId) {
+							const nextSnapshotIds = [
+								noteId,
+								...readNoteOrderSnapshot(authWorkspaceId).filter((id) => id !== noteId),
+							];
+							writeNoteOrderSnapshot(authWorkspaceId, nextSnapshotIds);
+						}
+					}
+					pendingNewNoteIdsRef.current.delete(noteId);
+					pendingNewNoteCollectionSeedRef.current.delete(noteId);
+					pendingAttachedDrawingParentsRef.current.delete(noteId);
+					// If the draft is no longer the actively open editor note, unhide it now.
+					// When the editor is still mounted we keep the pending flag until close so
+					// attachment/media panels never switch into server-refresh mode mid-teardown.
+					if (selectedNoteId !== noteId) {
+						setDraftNoteId((prev) => prev === noteId ? null : prev);
 					}
 					return;
 				}
 				await manager.permanentlyDeleteNote(noteId).catch(() => undefined);
+				pendingNewNoteIdsRef.current.delete(noteId);
+				pendingNewNoteCollectionSeedRef.current.delete(noteId);
+				pendingAttachedDrawingParentsRef.current.delete(noteId);
+				if (selectedNoteId !== noteId) {
+					setDraftNoteId((prev) => prev === noteId ? null : prev);
+				}
 				if (mode === 'save') {
 					showBriefDialog(
 						disposition.type === 'checklist'
@@ -2524,7 +2567,7 @@ export function App(): React.JSX.Element {
 				pendingNewNoteCleanupIdsRef.current.delete(noteId);
 			}
 		},
-		[getPendingNewNoteDisposition, manager, noteReminderByDocId, selectedNoteId, showBriefDialog, syncAttachedDrawingAccess]
+		[authWorkspaceId, getPendingNewNoteDisposition, manager, noteReminderByDocId, selectedNoteId, showBriefDialog, syncAttachedDrawingAccess]
 	);
 
 	const closeNoteEditor = React.useCallback(async () => {
@@ -2532,7 +2575,12 @@ export function App(): React.JSX.Element {
 		if (selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)) {
 			await finalizePendingNewNote(selectedNoteId, 'cancel');
 		}
-		if (goBackIfOverlayHistory()) return;
+		if (goBackIfOverlayHistory()) {
+			if (closingNoteId) {
+				setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
+			}
+			return;
+		}
 		setSelectedNoteId(null);
 		setEditorMode('none');
 		if (closingNoteId) {
@@ -2543,19 +2591,40 @@ export function App(): React.JSX.Element {
 	const savePendingNewNoteAndClose = React.useCallback(async () => {
 		const closingNoteId = selectedNoteId;
 		if (selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)) {
-			await finalizePendingNewNote(selectedNoteId, 'save');
+			try {
+				await finalizePendingNewNote(selectedNoteId, 'save');
+			} catch (error) {
+				console.error('Failed to save pending note draft', error);
+				showBriefDialog('failed to save note');
+				return;
+			}
 		}
-		if (goBackIfOverlayHistory()) return;
+		if (goBackIfOverlayHistory()) {
+			if (closingNoteId) {
+				setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
+			}
+			return;
+		}
 		setSelectedNoteId(null);
 		setEditorMode('none');
 		if (closingNoteId) {
 			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
 		}
-	}, [finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId]);
+	}, [finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId, showBriefDialog]);
 
 	React.useEffect(() => {
 		const previousSelectedNoteId = previousSelectedNoteIdRef.current;
-		if (previousSelectedNoteId && previousSelectedNoteId !== selectedNoteId && pendingNewNoteIdsRef.current.has(previousSelectedNoteId)) {
+		const openingPendingAttachedDrawing = Boolean(
+			previousSelectedNoteId
+			&& selectedNoteId
+			&& pendingAttachedDrawingParentsRef.current.get(selectedNoteId) === previousSelectedNoteId
+		);
+		if (
+			previousSelectedNoteId
+			&& previousSelectedNoteId !== selectedNoteId
+			&& pendingNewNoteIdsRef.current.has(previousSelectedNoteId)
+			&& !openingPendingAttachedDrawing
+		) {
 			void finalizePendingNewNote(previousSelectedNoteId, 'cancel');
 		}
 		previousSelectedNoteIdRef.current = selectedNoteId;
@@ -2689,6 +2758,7 @@ export function App(): React.JSX.Element {
 		noteEditorFontScale?: number | null;
 		editorToolbarMode?: EditorToolbarMode | null;
 		noteCardMaxHeightPx?: number | null;
+		noteCardBannerTitlePosition?: NoteCardBannerTitlePosition | null;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
 		noteCardClickOpens?: boolean;
@@ -2701,6 +2771,7 @@ export function App(): React.JSX.Element {
 		setNoteEditorFontScalePref(clampFontScale(next.noteEditorFontScale ?? getDefaultNoteEditorFontScale()));
 		setEditorToolbarModePref(normalizeEditorToolbarMode(next.editorToolbarMode));
 		setNoteCardMaxHeightPref(clampNoteCardMaxHeightPx(next.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()));
+		setNoteCardBannerTitlePositionPref(normalizeNoteCardBannerTitlePosition(next.noteCardBannerTitlePosition));
 		setChecklistShowCompletedPref(Boolean(next.checklistShowCompleted));
 		setQuickDeleteChecklistPref(Boolean(next.quickDeleteChecklist));
 		setNoteCardClickOpensPref(legacyNoteCardInteractions);
@@ -2714,6 +2785,7 @@ export function App(): React.JSX.Element {
 		noteEditorFontScale?: number;
 		editorToolbarMode?: EditorToolbarMode;
 		noteCardMaxHeightPx?: number;
+		noteCardBannerTitlePosition?: NoteCardBannerTitlePosition;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
 		noteCardClickOpens?: boolean;
@@ -2729,6 +2801,7 @@ export function App(): React.JSX.Element {
 			noteEditorFontScale: clampFontScale(next.noteEditorFontScale ?? noteEditorFontScalePref),
 			editorToolbarMode: normalizeEditorToolbarMode(next.editorToolbarMode ?? editorToolbarModePref),
 			noteCardMaxHeightPx: clampNoteCardMaxHeightPx(next.noteCardMaxHeightPx ?? noteCardMaxHeightPref),
+			noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition(next.noteCardBannerTitlePosition ?? noteCardBannerTitlePositionPref),
 			checklistShowCompleted: next.checklistShowCompleted ?? checklistShowCompletedPref,
 			quickDeleteChecklist: next.quickDeleteChecklist ?? quickDeleteChecklistPref,
 			noteCardClickOpens: next.noteCardClickOpens ?? noteCardClickOpensPref,
@@ -2737,7 +2810,7 @@ export function App(): React.JSX.Element {
 			noteCardCompletedInteractions: next.noteCardCompletedInteractions ?? noteCardCompletedInteractionsPref,
 			updatedAt: next.updatedAt ?? new Date().toISOString(),
 		});
-	}, [authUserId, checklistShowCompletedPref, deviceId, editorToolbarModePref, noteCardCheckboxInteractionsPref, noteCardClickOpensPref, noteCardCompletedInteractionsPref, noteCardFontScalePref, noteCardLinkInteractionsPref, noteCardMaxHeightPref, noteEditorFontScalePref, quickDeleteChecklistPref]);
+	}, [authUserId, checklistShowCompletedPref, deviceId, editorToolbarModePref, noteCardBannerTitlePositionPref, noteCardCheckboxInteractionsPref, noteCardClickOpensPref, noteCardCompletedInteractionsPref, noteCardFontScalePref, noteCardLinkInteractionsPref, noteCardMaxHeightPref, noteEditorFontScalePref, quickDeleteChecklistPref]);
 
 	const syncLocalDevicePrefsFromServer = React.useCallback((pref: UserDevicePreferences): void => {
 		applyDevicePreferenceState(pref);
@@ -2746,6 +2819,7 @@ export function App(): React.JSX.Element {
 			noteEditorFontScale: pref.noteEditorFontScale,
 			editorToolbarMode: pref.editorToolbarMode,
 			noteCardMaxHeightPx: pref.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx(),
+			noteCardBannerTitlePosition: pref.noteCardBannerTitlePosition,
 			checklistShowCompleted: pref.checklistShowCompleted,
 			quickDeleteChecklist: pref.quickDeleteChecklist,
 			noteCardClickOpens: pref.noteCardClickOpens,
@@ -2758,6 +2832,7 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		setUserNoteColorPreferenceScope(authUserId ?? null);
+		setUserNoteBannerPreferenceScope(authUserId ?? null);
 	}, [authUserId]);
 
 	const pendingAppearanceSyncStorageKey = React.useMemo(
@@ -2806,6 +2881,7 @@ export function App(): React.JSX.Element {
 			noteEditorFontScale: localAppearanceSnapshot.noteEditorFontScale,
 			editorToolbarMode: localAppearanceSnapshot.editorToolbarMode,
 			noteCardMaxHeightPx: localAppearanceSnapshot.noteCardMaxHeightPx,
+			noteCardBannerTitlePosition: localAppearanceSnapshot.noteCardBannerTitlePosition,
 			checklistShowCompleted: localAppearanceSnapshot.checklistShowCompleted,
 			quickDeleteChecklist: localAppearanceSnapshot.quickDeleteChecklist,
 			noteCardClickOpens: localAppearanceSnapshot.noteCardClickOpens,
@@ -2823,6 +2899,7 @@ export function App(): React.JSX.Element {
 		noteEditorFontScale?: number;
 		editorToolbarMode?: EditorToolbarMode;
 		noteCardMaxHeightPx?: number;
+		noteCardBannerTitlePosition?: NoteCardBannerTitlePosition;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
 		noteCardClickOpens?: boolean;
@@ -2882,6 +2959,18 @@ export function App(): React.JSX.Element {
 		const normalized = clampNoteCardMaxHeightPx(nextHeight);
 		setNoteCardMaxHeightPref(normalized);
 		commitAppearancePreferencePatch({ noteCardMaxHeightPx: normalized });
+	}, [commitAppearancePreferencePatch]);
+
+	const handleNoteCardBannerTitlePositionChange = React.useCallback((nextPosition: NoteCardBannerTitlePosition) => {
+		const normalized = normalizeNoteCardBannerTitlePosition(nextPosition);
+		setNoteCardBannerTitlePositionPref(normalized);
+		persistDevicePrefsLocally({ noteCardBannerTitlePosition: normalized });
+	}, [persistDevicePrefsLocally]);
+
+	const commitNoteCardBannerTitlePositionChange = React.useCallback((nextPosition: NoteCardBannerTitlePosition) => {
+		const normalized = normalizeNoteCardBannerTitlePosition(nextPosition);
+		setNoteCardBannerTitlePositionPref(normalized);
+		commitAppearancePreferencePatch({ noteCardBannerTitlePosition: normalized });
 	}, [commitAppearancePreferencePatch]);
 
 	const commitChecklistShowCompletedPref = React.useCallback((next: boolean) => {
@@ -3328,6 +3417,7 @@ export function App(): React.JSX.Element {
 			if (cancelled) return;
 			if (pref) {
 				const localNoteColorPrefs = getUserNoteColorPrefsSnapshot();
+				const localNoteBannerPrefs = getUserNoteBannerPrefsSnapshot();
 				if (
 					Object.keys(localNoteColorPrefs).length > 0
 					&& Object.keys(pref.noteColorsByNoteId || {}).length === 0
@@ -3338,6 +3428,18 @@ export function App(): React.JSX.Element {
 					if (cancelled) return;
 					if (updatedNoteColorPrefs) {
 						pref = updatedNoteColorPrefs;
+					}
+				}
+				if (
+					Object.keys(localNoteBannerPrefs).length > 0
+					&& Object.keys(pref.noteBannersByNoteId || {}).length === 0
+				) {
+					const updatedNoteBannerPrefs = await updateUserPreferences(deviceId, {
+						noteBannersByNoteId: localNoteBannerPrefs,
+					});
+					if (cancelled) return;
+					if (updatedNoteBannerPrefs) {
+						pref = updatedNoteBannerPrefs;
 					}
 				}
 				let syncedWorkspaceId = pref.activeWorkspaceId;
@@ -3426,6 +3528,7 @@ export function App(): React.JSX.Element {
 						noteEditorFontScale: localAppearanceSnapshot.noteEditorFontScale,
 						editorToolbarMode: localAppearanceSnapshot.editorToolbarMode,
 						noteCardMaxHeightPx: localAppearanceSnapshot.noteCardMaxHeightPx,
+						noteCardBannerTitlePosition: localAppearanceSnapshot.noteCardBannerTitlePosition,
 						checklistShowCompleted: localAppearanceSnapshot.checklistShowCompleted,
 						quickDeleteChecklist: localAppearanceSnapshot.quickDeleteChecklist,
 						noteCardClickOpens: localAppearanceSnapshot.noteCardClickOpens,
@@ -3444,6 +3547,7 @@ export function App(): React.JSX.Element {
 						noteCardMaxHeightPx: getDefaultNoteCardMaxHeightPx(),
 						noteCardFontScale: getDefaultNoteCardFontScale(),
 						noteEditorFontScale: getDefaultNoteEditorFontScale(),
+						noteCardBannerTitlePosition: getDefaultNoteCardBannerTitlePosition(),
 					};
 					applyDevicePreferenceState({ ...pref, ...freshDefaults });
 					persistDevicePrefsLocallyRef.current({
@@ -3451,6 +3555,7 @@ export function App(): React.JSX.Element {
 						noteEditorFontScale: freshDefaults.noteEditorFontScale,
 						editorToolbarMode: pref.editorToolbarMode ?? 'full',
 						noteCardMaxHeightPx: freshDefaults.noteCardMaxHeightPx,
+						noteCardBannerTitlePosition: freshDefaults.noteCardBannerTitlePosition,
 						checklistShowCompleted: pref.checklistShowCompleted ?? false,
 						quickDeleteChecklist: pref.quickDeleteChecklist ?? false,
 						noteCardClickOpens: pref.noteCardClickOpens ?? true,
@@ -3469,6 +3574,7 @@ export function App(): React.JSX.Element {
 				setTrashDeleteAfterDaysPref(pref.deleteAfterDays ?? null);
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
 				replaceUserNoteColorPrefs(pref.noteColorsByNoteId || {});
+				replaceUserNoteBannerPrefs(pref.noteBannersByNoteId || {});
 				setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors || {});
 				// Merge the server-backed dismissed IDs with the local offline cache so
 				// users keep dismissals made on other devices without losing any that
@@ -3571,6 +3677,7 @@ export function App(): React.JSX.Element {
 					// is true (started offline) or false (was online, went offline, switched workspace).
 					// probeSession only enables WebSocket AFTER activation completes.
 					await probeSession({ allowOfflineRestore: true });
+					await flushUserPreferences(deviceId);
 					await syncPendingAppearancePreferencesRef.current();
 					await flushPendingReminderMutationsRef.current();
 					// After the session is fully established, kick off a background preload
@@ -4569,6 +4676,12 @@ export function App(): React.JSX.Element {
 		if (!noteReminderModalState) return;
 		const { docId, noteId, title } = noteReminderModalState;
 		setNoteReminderByDocId((current) => updateReminderLookup(current, docId, noteId, reminderAt));
+		updateCachedReminderState({
+			docId,
+			noteId,
+			workspaceId: authWorkspaceId ?? '',
+			reminderAt,
+		});
 		setNoteReminderModalState(null);
 		// Sync reminder to server so the push scheduler can fire the notification.
 		if (authStatus === 'authed') {
@@ -4585,6 +4698,7 @@ export function App(): React.JSX.Element {
 				queuePendingReminderMutation(pendingEntry);
 				return;
 			}
+			queuePendingReminderMutation(pendingEntry);
 			void syncNoteReminder({
 				deviceId,
 				docId,
@@ -4592,8 +4706,9 @@ export function App(): React.JSX.Element {
 				workspaceId: authWorkspaceId ?? '',
 				reminderAt,
 				noteTitle: title || undefined,
+			}).then(() => {
+				removePendingReminderMutation(docId, noteId);
 			}).catch(() => {
-				queuePendingReminderMutation(pendingEntry);
 				void fetchNoteReminderStates()
 					.then((data) => {
 						writeCachedReminderStates(authUserId ?? '', data.reminders);
@@ -4602,7 +4717,7 @@ export function App(): React.JSX.Element {
 					.catch(() => undefined);
 			});
 		}
-	}, [applyPendingReminderMutations, authStatus, authOfflineMode, noteReminderModalState, deviceId, authUserId, authWorkspaceId, queuePendingReminderMutation]);
+	}, [applyPendingReminderMutations, authStatus, authOfflineMode, noteReminderModalState, deviceId, authUserId, authWorkspaceId, queuePendingReminderMutation, removePendingReminderMutation, updateCachedReminderState]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) {
@@ -5377,6 +5492,7 @@ export function App(): React.JSX.Element {
 							void fetchUserPreferences(deviceId).then((pref) => {
 								if (pref) {
 									replaceUserNoteColorPrefs(pref.noteColorsByNoteId || {});
+									replaceUserNoteBannerPrefs(pref.noteBannersByNoteId || {});
 									setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors || {});
 								}
 							});
@@ -5567,7 +5683,7 @@ export function App(): React.JSX.Element {
 		// Queue the update then flush immediately — bypasses the 1-second debounce so
 		// the save goes out before the user can navigate away or refresh the page.
 		void updateUserPreferences(deviceId, { bubbleWorkspaceColors: next });
-		void flushUserPreferences();
+		void flushUserPreferences(deviceId);
 	}, [bubbleWorkspaceColorOverrides, deviceId]);
 
 	// Close the bubble color picker when the user clicks or taps outside it.
@@ -5601,9 +5717,11 @@ export function App(): React.JSX.Element {
 				return;
 			}
 
-			// Create the real note up front so the compose session has the same feature
-			// surface as editing an existing note, including media, collaborators, and
-			// metadata assignment while the note is still effectively a draft.
+			// Create the real note doc up front so the compose session has the same
+			// feature surface as editing an existing note, including media,
+			// collaborators, and metadata assignment while the note is still
+			// effectively a draft. Keep the draft out of registry/noteOrder until
+			// Save so other devices never render an empty unsaved note.
 			const noteId = makeNoteId(
 				mode === 'checklist'
 					? 'checklist-note'
@@ -5635,7 +5753,6 @@ export function App(): React.JSX.Element {
 			} else {
 				pendingNewNoteCollectionSeedRef.current.delete(noteId);
 			}
-			await manager.createNote(noteId, '');
 			openNoteEditor(noteId, opts);
 		},
 		[activateWorkspaceFromSidebar, activeCollection, activeCollectionId, authWorkspaceId, bubbleSelectedWorkspace, canEditActiveWorkspace, collectionPathById, manager, openNoteEditor, showBriefDialog, sidebarView, t, viewMode]
@@ -7787,13 +7904,14 @@ export function App(): React.JSX.Element {
 		void flushQueuedNoteLinkSync(authUserId);
 		let retryTimer: ReturnType<typeof setTimeout> | null = null;
 		const MAX_RECONNECT_FLUSH_ATTEMPTS = 8;
+		const INITIAL_NOTE_LINK_RECONNECT_DELAY_MS = 2100;
 		const onOnline = (): void => {
 			// Small delay to let the network connection stabilise after the
 			// browser fires the `online` event (DNS/TLS may still be settling).
 			if (retryTimer !== null) { clearTimeout(retryTimer); retryTimer = null; }
 			const attemptFlush = (attempt: number): void => {
 				void (async () => {
-					await new Promise((r) => setTimeout(r, attempt === 0 ? 600 : 2000));
+					await new Promise((r) => setTimeout(r, attempt === 0 ? INITIAL_NOTE_LINK_RECONNECT_DELAY_MS : 2000));
 					void scheduleQueuedNoteImageFlush(authUserId);
 					void scheduleQueuedNoteDocumentFlush(authUserId);
 					await flushQueuedNoteLinkSync(authUserId);
@@ -8071,6 +8189,7 @@ export function App(): React.JSX.Element {
 		: canCreateNotesInActiveWorkspace;
 	const selectedSharedPlacement = selectedNoteSharedPlacement;
 	const selectedNoteDocId = selectedNoteRoomId;
+	const selectedNoteIsPendingNew = Boolean(selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId));
 	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
 	const canManageSelectedNoteCollaborators = selectedSharedPlacement ? selectedSharedPlacement.role === 'EDITOR' : canEditActiveWorkspace;
 	const crossWorkspacePlacement = crossWorkspaceNote ? sharedPlacements.find((placement) => placement.aliasId === crossWorkspaceNote.noteId) ?? null : null;
@@ -9122,6 +9241,7 @@ export function App(): React.JSX.Element {
 						noteCardCheckboxInteractions={noteCardCheckboxInteractionsPref}
 						noteCardLinkInteractions={noteCardLinkInteractionsPref}
 						noteCardCompletedInteractions={noteCardCompletedInteractionsPref}
+						noteCardBannerTitlePosition={noteCardBannerTitlePositionPref}
 						// When the trash view is active, NoteGrid switches to rendering trashed notes.
 						showTrashed={sidebarView === 'trash'}
 						showArchived={sidebarView === 'archive'}
@@ -9425,7 +9545,7 @@ export function App(): React.JSX.Element {
 							doc={openDoc}
 							awareness={manager.getAwareness(selectedNoteId)}
 							onClose={closeNoteEditor}
-							onSave={draftNoteId === selectedNoteId ? savePendingNewNoteAndClose : closeNoteEditor}
+							onSave={selectedNoteIsPendingNew ? savePendingNewNoteAndClose : closeNoteEditor}
 							onDelete={onDeleteSelectedNote}
 							onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 							onAddImage={selectedNoteReadOnly ? undefined : () => {
@@ -9439,7 +9559,7 @@ export function App(): React.JSX.Element {
 							onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 							onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 							onTogglePin={selectedNoteReadOnly ? undefined : toggleSelectedNotePin}
-							isPendingNew={draftNoteId === selectedNoteId}
+							isPendingNew={selectedNoteIsPendingNew}
 							readOnly={selectedNoteReadOnly}
 						/>
 					</React.Suspense>
@@ -9453,9 +9573,9 @@ export function App(): React.JSX.Element {
 						doc={openDoc}
 						quickCreateCollectionOption={selectedQuickCreateCollectionOption}
 						onClose={closeNoteEditor}
-						onSavePendingNew={draftNoteId === selectedNoteId ? savePendingNewNoteAndClose : undefined}
+						onSavePendingNew={selectedNoteIsPendingNew ? savePendingNewNoteAndClose : undefined}
 						onDelete={onDeleteSelectedNote}
-						isPendingNew={draftNoteId === selectedNoteId}
+						isPendingNew={selectedNoteIsPendingNew}
 						onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 						onAddImage={selectedNoteReadOnly ? undefined : () => {
 							if (!selectedNoteDocId) return;
@@ -9646,6 +9766,9 @@ export function App(): React.JSX.Element {
 				noteCardMaxHeightPx={noteCardMaxHeightPref}
 				onNoteCardMaxHeightPxChange={handleNoteCardMaxHeightChange}
 				onNoteCardMaxHeightPxCommit={commitNoteCardMaxHeightChange}
+				noteCardBannerTitlePosition={noteCardBannerTitlePositionPref}
+				onNoteCardBannerTitlePositionChange={handleNoteCardBannerTitlePositionChange}
+				onNoteCardBannerTitlePositionCommit={commitNoteCardBannerTitlePositionChange}
 			/>
 
 			<UserRegistrationInviteModal
