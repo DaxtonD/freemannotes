@@ -9,6 +9,20 @@
 	gap: 2px;
 }
 
+.mobileFabSpacer {
+	display: none;
+	flex: 0 0 auto;
+}
+
+@media (pointer: coarse) {
+	.mobileFabSpacer {
+		/* Mirror the FAB footprint closely enough that the last row can clear it
+		   without adding desktop-only slack to the virtualized list. */
+		display: block;
+		height: calc(104px + var(--app-fab-offset-bottom, 0px));
+	}
+}
+
 /* ── Row ──────────────────────────────────────────────────────────────── */
 
 .row {
@@ -126,8 +140,6 @@
 }
 
 .rowStrip {
-	flex-direction: column;
-	align-items: flex-start;
 	height: 64px;
 	padding-top: 8px;
 	padding-bottom: 8px;
@@ -138,9 +150,10 @@
 .rowMain {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: 10px;
 	width: 100%;
 	min-width: 0;
+	height: 100%;
 	position: relative;
 	border-radius: 10px;
 	padding: 4px 8px 4px 0;
@@ -153,20 +166,23 @@
 }
 
 .rowTypeIcon {
-	width: 22px;
-	height: 22px;
+	width: 32px;
+	height: 32px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	border-radius: 999px;
-	background: color-mix(in srgb, var(--color-surface) 84%, var(--color-accent) 16%);
+	border: 1px solid color-mix(in srgb, var(--list-row-border, var(--color-border)) 76%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 78%, var(--color-accent) 22%);
 	color: var(--list-row-muted, var(--color-text-muted));
-	font-size: 11px;
+	font-size: 15px;
 	flex: 0 0 auto;
 	cursor: grab;
 }
 
 .rowBanner .rowTypeIcon {
+	background: var(--list-row-banner-control-bg, color-mix(in srgb, var(--color-surface) 74%, var(--color-accent) 26%));
+	border-color: var(--list-row-banner-control-border, transparent);
 	color: var(--list-row-banner-text, var(--list-row-text, var(--color-text)));
 }
 
@@ -174,14 +190,18 @@
 	cursor: grabbing;
 }
 
-.rowStrip .rowMain {
-	/* In strip mode the more button shifts so title may expand to full width */
-	padding-right: 0;
+.rowTextColumn {
+	display: flex;
+	flex: 1 1 auto;
+	min-width: 0;
+	flex-direction: column;
+	justify-content: center;
+	gap: 1px;
 }
 
 .rowTitle {
-	flex: 1 1 auto;
 	min-width: 0;
+	display: block;
 	font-size: var(--font-size-sm);
 	font-weight: 600;
 	white-space: nowrap;
@@ -195,6 +215,14 @@
 	text-shadow: var(--list-row-banner-text-shadow, none);
 }
 
+.rowStrip.rowBannerTitleAbove .rowTextColumn {
+	justify-content: flex-start;
+}
+
+.rowStrip.rowBannerTitleBelow .rowTextColumn {
+	justify-content: flex-end;
+}
+
 .rowBanner .rowTitle {
 	color: var(--list-row-banner-text, var(--list-row-text, var(--color-text)));
 }
@@ -202,22 +230,20 @@
 /* ── Content preview (strip mode) ─────────────────────────────────────── */
 
 .rowPreview {
-	width: 100%;
 	min-width: 0;
 	font-size: var(--font-size-xs);
 	color: var(--list-row-muted, var(--color-text-muted));
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	padding-right: 32px;
 	line-height: 1.45;
 }
 
+.rowStrip .rowPreview {
+	padding-right: 8px;
+}
+
 .rowStrip.rowBanner .rowPreview {
-	width: calc(100% - 38px);
-	margin-left: 30px;
-	padding: 0;
-	padding-right: 34px;
 	color: var(--list-row-banner-muted, var(--list-row-muted, var(--color-text-muted)));
 }
 

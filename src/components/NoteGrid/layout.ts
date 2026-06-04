@@ -5,6 +5,8 @@ export type GridLayoutConfig = {
 	mobileSectionBleedPx: number;
 };
 
+type HeightLookup = Pick<ReadonlyMap<string, number>, 'get'>;
+
 export type MasonryItemLayout = {
 	id: string;
 	columnIndex: number;
@@ -132,7 +134,7 @@ export function getGridLayoutForViewport(
 export function splitIntoColumnsByHeight(
 	ids: readonly string[],
 	columnCount: number,
-	heightById: ReadonlyMap<string, number>,
+	heightById: HeightLookup,
 	gapPx: number,
 	fallbackHeightPx: number
 ): string[][] {
@@ -162,7 +164,7 @@ export function splitIntoColumnsByHeight(
 export function splitIntoColumnsByHeightAnchored(args: {
 	ids: readonly string[];
 	columnCount: number;
-	heightById: ReadonlyMap<string, number>;
+	heightById: HeightLookup;
 	gapPx: number;
 	fallbackHeightPx: number;
 	anchoredColumnById?: ReadonlyMap<string, number> | null;
@@ -252,7 +254,7 @@ export function splitIntoColumnsByHeightAnchored(args: {
 export function computeStableRepackSlots(
 	ids: readonly string[],
 	columnCount: number,
-	heightById: ReadonlyMap<string, number>,
+	heightById: HeightLookup,
 	gapPx: number,
 	fallbackHeightPx: number,
 	lockTopCount: number,

@@ -758,21 +758,21 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		if (!headerBannerTitleColors) return null;
 		const cardBackground = headerBannerTitleColors.backgroundColor;
 		const textColor = headerBannerTitleColors.textColor;
+		const accentColor = `color-mix(in srgb, ${cardBackground} 44%, ${textColor} 56%)`;
 		return {
 			cardBackground,
 			headerBackground: cardBackground,
 			borderColor: `color-mix(in srgb, ${cardBackground} 76%, ${textColor} 24%)`,
 			textColor,
 			mutedTextColor: `color-mix(in srgb, ${textColor} 68%, ${cardBackground} 32%)`,
-			accentColor: cardBackground,
+			accentColor,
 		};
 	}, [headerBannerTitleColors]);
-	// Bannered cards intentionally separate the tint source from the displayed
-	// surface palette: the saved note color still recolors the banner, but the
-	// visible card body follows the transformed banner sample so header, media, and
-	// body remain one coherent surface.
+	// Only banner-only notes promote the sampled banner palette across the full
+	// card. When a note already has an explicit color, that note color remains the
+	// card surface and is used to tint the banner image instead.
 	const displayedCardColors = React.useMemo(
-		() => (headerBannerUrl && derivedBannerCardColors ? derivedBannerCardColors : resolvedColor),
+		() => (resolvedColor ? resolvedColor : (headerBannerUrl && derivedBannerCardColors ? derivedBannerCardColors : null)),
 		[derivedBannerCardColors, headerBannerUrl, resolvedColor]
 	);
 	const drawingPlaceholderOptions = React.useMemo<DrawingPlaceholderOptions | undefined>(() => {

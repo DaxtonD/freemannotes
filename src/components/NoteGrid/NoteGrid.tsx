@@ -1,7 +1,7 @@
 import React from 'react';
 import type * as Y from 'yjs';
 import { createPortal } from 'react-dom';
-import { motion, LayoutGroup, AnimatePresence } from 'framer-motion';
+import { motion, LayoutGroup, AnimatePresence, type Transition } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBell, faEllipsisVertical, faFileLines, faFolder, faListCheck, faTag, faThumbtack, faUsers } from '@fortawesome/free-solid-svg-icons';
 import { NoteCard } from '../NoteCard/NoteCard';
@@ -662,6 +662,7 @@ type GridNoteCardProps = {
 	allowChecklistItemInteractions?: boolean;
 	allowLinkInteractions?: boolean;
 	allowCompletedItemInteractions?: boolean;
+	suppressContentInteractions?: boolean;
 	bannerTitlePosition?: NoteCardBannerTitlePosition;
 	isTrashView?: boolean;
 	maxCardHeightPx: number;
@@ -735,7 +736,7 @@ function renderMetaChipShell(
 	icon: typeof faFolder | typeof faTag | typeof faUsers,
 	count: number,
 	label: string,
-	colorStyle: React.CSSProperties
+	colorStyle?: React.CSSProperties
 ): React.ReactNode {
 	return (
 		<span
@@ -1018,6 +1019,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					allowChecklistItemInteractions={props.allowChecklistItemInteractions}
 					allowLinkInteractions={props.allowLinkInteractions}
 					allowCompletedItemInteractions={props.allowCompletedItemInteractions}
+					suppressContentInteractions={props.suppressContentInteractions}
 					bannerTitlePosition={props.bannerTitlePosition}
 					isTrashView={props.isTrashView}
 					initialLinkRecords={props.initialLinkRecords}
@@ -1260,7 +1262,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const prevCollabSyncDepsRef = React.useRef<{
 		pendingSyncSig: string;
 		authUserId: string | null | undefined;
-		refreshToken: number;
+		refreshToken: number | undefined;
 		noteSig: string;
 	} | null>(null);
 	const collaboratorOverlayListRef = React.useRef<HTMLDivElement | null>(null);
@@ -1308,6 +1310,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [mobileSectionBleedPx, setMobileSectionBleedPx] = React.useState<number>(() => {
 		if (typeof window === 'undefined') return 0;
 		return getGridLayoutForViewport(window.innerWidth, window.innerWidth, window.innerHeight).mobileSectionBleedPx;
+	});
+	const [sectionWidthPx, setSectionWidthPx] = React.useState<number>(() => {
+		if (typeof window === 'undefined') return 0;
+		return window.innerWidth;
 	});
 	const [noteHeightsVersion, setNoteHeightsVersion] = React.useState(0);
 	const latestNoteHeightsVersionRef = React.useRef(0);
@@ -1375,7 +1381,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// shuffle once live measurements arrive.
 	if (cachedLayoutSnapshotSeedKey && layoutSnapshotHeightSeedKeyRef.current !== cachedLayoutSnapshotSeedKey) {
 		layoutSnapshotHeightSeedKeyRef.current = cachedLayoutSnapshotSeedKey;
-		for (const rect of cachedLayoutSnapshot.rects) {
+		for (const rect of cachedLayoutSnapshot?.rects ?? []) {
 			if (rect.height > 0) {
 				noteHeightByIdRef.current.set(rect.noteId, Math.round(rect.height));
 				seededHeightNoteIdsRef.current.add(rect.noteId);
@@ -1440,8 +1446,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const prevVpWorkspaceRef = React.useRef(props.activeWorkspaceId);
 	const prevVpViewModeRef = React.useRef(props.viewMode);
 	React.useEffect(() => {
-		const wsChanged = prevVpWorkspaceRef.current !== props.activeWorkspaceId;
-		const vmChanged = prevVpViewModeRef.current !== props.viewMode;
+		const previousWorkspaceId = prevVpWorkspaceRef.current ?? undefined;
+		const previousViewMode = prevVpViewModeRef.current;
+		const wsChanged = previousWorkspaceId !== props.activeWorkspaceId;
+		const vmChanged = previousViewMode !== props.viewMode;
 		prevVpWorkspaceRef.current = props.activeWorkspaceId;
 		prevVpViewModeRef.current = props.viewMode;
 		if (wsChanged || vmChanged) {
@@ -1470,8 +1478,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			expansionAffectedNoteIdsRef.current.clear();
 			lastRebalanceSuppressionReasonRef.current = null;
 			repackReasonRef.current = wsChanged ? 'workspace-change' : 'view-mode-change';
-			if (wsChanged) debugWorkspaceSwitch(prevVpWorkspaceRef.current, props.activeWorkspaceId);
-			if (vmChanged) debugViewSwitch(String(prevVpViewModeRef.current), String(props.viewMode));
+			if (wsChanged) debugWorkspaceSwitch(previousWorkspaceId, props.activeWorkspaceId ?? undefined);
+			if (vmChanged) debugViewSwitch(String(previousViewMode), String(props.viewMode));
 		}
 	}, [props.activeWorkspaceId, props.viewMode]);
 
@@ -1645,6 +1653,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!isGridVisible) return;
 		const containerWidth = sectionRef.current?.clientWidth ?? window.innerWidth;
 		if (containerWidth <= 0) return;
+		setSectionWidthPx((previous) => (previous === containerWidth ? previous : containerWidth));
 		const next = getGridLayoutForViewport(containerWidth, window.innerWidth, window.innerHeight);
 		if (
 			columnCount !== next.columnCount ||
@@ -2738,10 +2747,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
 	const listColumnCount = React.useMemo(() => {
 		if (isCoarsePointer) return 1;
-		if (columnCount >= 5) return 3;
-		if (columnCount >= 3) return 2;
+		// List-like rows do not share the masonry card aspect ratio, so using the
+		// masonry column count made them wait too long to grow and shrink. Drive
+		// desktop list breakpoints from the measured section width instead.
+		const listColumnGapPx = 8;
+		const minListColumnWidthPx = props.viewMode === 'strip' ? 420 : 380;
+		if (sectionWidthPx >= minListColumnWidthPx * 3 + listColumnGapPx * 2) return 3;
+		if (sectionWidthPx >= minListColumnWidthPx * 2 + listColumnGapPx) return 2;
 		return 1;
-	}, [columnCount, isCoarsePointer]);
+	}, [isCoarsePointer, props.viewMode, sectionWidthPx]);
 	const dragColumns = React.useMemo(() => {
 		if (!isListLikeView) return resolvedBaseColumns;
 		if (groupedSections.length > 0) return [visibleIds];
@@ -3066,7 +3080,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						const rect = documentRects.get(id);
 						if (!rect) return [];
 						return [{
-							id,
+							noteId: id,
 							x: Math.round(rect.left - gridRect.left),
 							y: Math.round(rect.top - gridRect.top),
 							width: Math.round(rect.width),
@@ -3727,7 +3741,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								{splitIntoListColumns(section.noteIds, listColumnCount).map((colIds, colIdx) => (
 								<div key={colIdx} className={styles.listColumn}>
 									<NoteListView
-										variant={props.viewMode}
+										variant={props.viewMode === 'strip' ? 'strip' : 'list'}
 										orderedIds={colIds}
 										docsById={docsById}
 										noteSnapshotById={noteSnapshotById}
@@ -3769,7 +3783,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						{listRenderColumns.map((colIds, colIdx) => (
 						<div key={colIdx} className={styles.listColumn}>
 							<NoteListView
-								variant={props.viewMode}
+								variant={props.viewMode === 'strip' ? 'strip' : 'list'}
 								orderedIds={colIds}
 								docsById={docsById}
 								noteSnapshotById={noteSnapshotById}
@@ -3864,7 +3878,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				(() => {
 					const overlayRect = dragManager.dragOverlay ?? dragManager.dropOverlay;
 					if (!overlayRect) return null;
-					const dragPreviewAnimate = { opacity: 0.92, scale: 1.012, y: -2 } as const;
+					const dragPreviewAnimate = { opacity: 0.92, scale: .90, y: -2 } as const;
 					const dropOverlayAnimate = isDropSettling
 						? (dropSettlingOverlayTarget
 							? {
@@ -3878,10 +3892,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							}
 							: { opacity: 0, scale: 1, y: 0 })
 						: dragPreviewAnimate;
-					const dropOverlayTransition = isDropSettling
+					const dropOverlayTransition: Transition | undefined = isDropSettling
 						? (dropSettlingOverlayTarget
 							? {
-								type: 'spring',
+								type: 'spring' as const,
 								stiffness: 430,
 								damping: 36,
 								mass: 1,

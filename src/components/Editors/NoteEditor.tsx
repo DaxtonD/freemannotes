@@ -33,7 +33,7 @@ import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNo
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
-import { getUserNoteBannerFile, saveUserNoteBannerFile } from '../../core/noteBannerPreferences';
+import { getUserNoteBannerFile, saveUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import {
 	createRichTextDocFromPlainText,
@@ -68,7 +68,6 @@ import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible, focusRic
 import styles from './Editors.module.css';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { assignNoteBannerFile } from '../../services/noteService';
-import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 
 export type NoteEditorProps = {
 	noteId: string;

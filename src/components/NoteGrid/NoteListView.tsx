@@ -14,6 +14,7 @@ import {
 	faEllipsisVertical,
 	faFileLines,
 	faListCheck,
+	faPenNib,
 	faRotateLeft,
 } from '@fortawesome/free-solid-svg-icons';
 import { getNoteBannerPresentationStyle, useThemedNoteBannerImageUrl } from '../../core/noteBannerTheme';
@@ -127,7 +128,14 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 	const { noteId, doc, snapshot, showPreview } = props;
 
 	const title = doc.getText('title').toString() || '\u00A0';
-	const noteType = String(doc.getMap<any>('metadata').get('type') ?? '') === 'checklist' ? 'checklist' : 'text';
+	const rawNoteType = String(doc.getMap<any>('metadata').get('type') ?? '');
+	const noteType = rawNoteType === 'checklist'
+		? 'checklist'
+		: rawNoteType === 'drawing'
+			? 'drawing'
+			: 'text';
+	const noteTypeLabel = noteType === 'checklist' ? 'Checklist' : noteType === 'drawing' ? 'Drawing' : 'Note';
+	const noteTypeIcon = noteType === 'checklist' ? faListCheck : noteType === 'drawing' ? faPenNib : faFileLines;
 	const metadata = React.useMemo(() => doc.getMap<any>('metadata'), [doc]);
 	const colorVars = getColorVars(noteId, doc, props.themeId);
 	const colorVarMap = colorVars as Record<string, string> | undefined;
@@ -277,16 +285,17 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 				<span
 					className={styles.rowTypeIcon}
 					data-drag-handle="true"
-					title={noteType === 'checklist' ? 'Checklist' : 'Note'}
+					title={noteTypeLabel}
 				>
-					<FontAwesomeIcon icon={noteType === 'checklist' ? faListCheck : faFileLines} />
+					<FontAwesomeIcon icon={noteTypeIcon} />
 				</span>
-				<span className={styles.rowTitle}>{title}</span>
+				<div className={styles.rowTextColumn}>
+					<span className={styles.rowTitle}>{title}</span>
+					{showPreview && preview ? (
+						<div className={styles.rowPreview}>{preview}</div>
+					) : null}
+				</div>
 			</div>
-
-			{showPreview && preview ? (
-				<div className={styles.rowPreview}>{preview}</div>
-			) : null}
 
 			<button
 				type="button"
@@ -443,6 +452,9 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 					/>
 				);
 			})}
+			{/* Keep the final mobile list row scrollable above the fixed FAB so its
+			    trailing more-menu button does not get trapped underneath the overlay. */}
+			<div className={styles.mobileFabSpacer} aria-hidden="true" />
 		</div>
 	);
 }

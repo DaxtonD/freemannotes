@@ -124,6 +124,7 @@
 	position: relative;
 	overflow: hidden;
 	isolation: isolate;
+	aspect-ratio: 16 / 4.6;
 }
 
 .headerBannerMedia::after {
@@ -141,7 +142,7 @@
 	inset: 0;
 	background: var(--note-banner-colorize, transparent);
 	opacity: var(--note-banner-colorize-opacity, 0);
-	mix-blend-mode: multiply;
+	mix-blend-mode: var(--note-banner-colorize-blend-mode, multiply);
 	pointer-events: none;
 	z-index: 1;
 }
@@ -149,7 +150,9 @@
 .headerBannerImage {
 	display: block;
 	width: 100%;
-	height: auto;
+	height: 100%;
+	object-fit: cover;
+	object-position: center;
 	pointer-events: none;
 	user-select: none;
 	-webkit-user-drag: none;
@@ -222,7 +225,7 @@
 	border-radius: 999px;
 	border: 1px solid color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 28%, var(--note-color-border, var(--color-border)));
 	background: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 14%, var(--note-color-header-bg, var(--color-surface-2)));
-	color: var(--note-color-accent, var(--color-accent));
+	color: var(--note-color-text, var(--color-text));
 	font-size: 11px;
 	line-height: 1;
 	flex-shrink: 0;
@@ -237,7 +240,7 @@
 	border-radius: 999px;
 	border: 1px solid color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 28%, var(--note-color-border, var(--color-border)));
 	background: color-mix(in srgb, var(--note-color-accent, var(--color-accent)) 10%, var(--note-color-header-bg, var(--color-surface-2)));
-	color: var(--note-color-accent, var(--color-accent));
+	color: var(--note-color-text, var(--color-text));
 	font-size: 11px;
 	line-height: 1;
 	flex-shrink: 0;
