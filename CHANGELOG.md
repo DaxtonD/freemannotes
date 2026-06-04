@@ -4,9 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.2 - 2026-06-03
+
+### Changed
+- **List and detailed-list note rows now communicate note type more clearly.** Desktop list-like views use width-based column breakpoints so they resize more predictably, list rows use larger note-type icons, drawing notes now render a dedicated drawing icon, and detailed-list previews stay aligned directly beneath the title.
+- **Bannered note cards now follow the selected card color more closely.** Explicit note colors drive a stronger shared banner/title tint treatment so colored cards read as one surface instead of fighting the banner's original hue.
+
 ### Fixed
+- **Development startup and locale bundling are stable again.** The dev server now uses dedicated web/server helper scripts, locale JSON is bundled from `src/locales`, and the recent duplicate banner-preference import regression no longer breaks Vite startup.
 - **Banner artwork now loads reliably in Linux/Docker production builds.** The banner asset set now follows one lowercase on-disk naming convention across both theme folders, the dark-theme typo in the travel list asset was corrected, and banner URL generation now normalizes stored filenames before resolving paths on case-sensitive filesystems.
 - **Banner pickers now populate correctly in Docker and Unraid production runtimes.** The server banner-definition API no longer assumes the source `public/` tree exists inside the runtime image and now falls back to the built `dist/CardBanners/Dark` directory that production containers actually ship.
+- **Grid/list banner presentation regressions are resolved.** Grid card banners now use the intended centered crop, banner-only cards keep a readable checkbox accent color, and mobile list views reserve enough bottom space for the last row to scroll clear of the floating action button.
+
 
 ## 1.5.1 - 2026-06-02
 

@@ -27,7 +27,7 @@ const LOCALE_LABELS: Record<string, string> = {
 
 // Bundle locale payloads at build-time so switching languages works fully
 // offline (no runtime network fetch required for shipped locale files).
-const LOCALE_MESSAGE_MODULES = import.meta.glob('../../public/locales/*.json', {
+const LOCALE_MESSAGE_MODULES = import.meta.glob('../locales/*.json', {
 	eager: true,
 	import: 'default',
 }) as Record<string, Dictionary>;

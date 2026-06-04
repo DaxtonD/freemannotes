@@ -27,11 +27,9 @@ function splitBannerFileName(fileName: string): { stem: string; ext: string } {
 }
 
 export function getNormalizedBannerDisplayName(fileName: string): string {
-	const { stem, ext } = splitBannerFileName(fileName);
+	const { stem } = splitBannerFileName(fileName);
 	if (!stem) return '';
-	const normalizedStem = stem.charAt(0).toUpperCase() + stem.slice(1).toLowerCase();
-	const normalizedExt = ext ? ext.toLowerCase() : '';
-	return `${normalizedStem}${normalizedExt}`;
+	return stem.charAt(0).toUpperCase() + stem.slice(1).toLowerCase();
 }
 
 export function getNoteBannerVariantFileName(fileName: string, layout: NoteBannerAssetLayout = 'card'): string {

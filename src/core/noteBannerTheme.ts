@@ -21,6 +21,7 @@ type NoteBannerPresentationStyle = React.CSSProperties & {
 	'--note-banner-overlay-bottom'?: string;
 	'--note-banner-colorize'?: string;
 	'--note-banner-colorize-opacity'?: string;
+	'--note-banner-colorize-blend-mode'?: 'multiply' | 'normal';
 };
 
 type NoteBannerPresentationFactors = {
@@ -29,6 +30,7 @@ type NoteBannerPresentationFactors = {
 	saturate: number;
 	colorize: string;
 	colorizeOpacity: number;
+	colorizeBlendMode: 'multiply' | 'normal';
 	topWash: string;
 	bottomWash: string;
 	topAlpha: number;
@@ -163,6 +165,7 @@ function resolvePresentationFactors(themeId: ThemeId, input: NoteBannerThemeInpu
 	const surfaceAlt = normalizeColor(input.surfaceAlt, input.surface ?? theme.variables['--color-surface-2'] ?? surface);
 	const accent = normalizeColor(input.accent, theme.variables['--color-accent'] ?? (lightTheme ? '#7c6854' : '#899593'));
 	const hasExplicitSurface = Boolean(input.surface);
+	const explicitSurfaceColorize = surface;
 	const surfaceLuminance = relativeLuminance(parseColor(surfaceAlt) as RgbColor);
 	const brighten = hasExplicitSurface
 		? (lightTheme ? 0.988 + surfaceLuminance * 0.008 : 1.0)
@@ -171,27 +174,31 @@ function resolvePresentationFactors(themeId: ThemeId, input: NoteBannerThemeInpu
 		? (lightTheme ? 0.985 : 1.005)
 		: (lightTheme ? 1.012 : 1.03);
 	const saturate = hasExplicitSurface
-		? (lightTheme ? 0.9 : 0.94)
+		? (lightTheme ? 0.66 : 0.74)
 		: (lightTheme ? 1.01 : 1.02);
 	const topWash = hasExplicitSurface
-		? mixHex(surface, '#ffffff', lightTheme ? 0.04 : 0.025)
+		? mixHex(explicitSurfaceColorize, '#ffffff', lightTheme ? 0.03 : 0.02)
 		: mixHex(surface, '#ffffff', lightTheme ? 0.08 : 0.06);
 	const bottomWash = hasExplicitSurface
-		? mixHex(surfaceAlt, accent, lightTheme ? 0.12 : 0.18)
+		? mixHex(surface, surfaceAlt, lightTheme ? 0.28 : 0.2)
 		: mixHex(surfaceAlt, accent, lightTheme ? 0.025 : 0.1);
 	const topAlpha = hasExplicitSurface
 		? (lightTheme ? 0.02 : 0.035)
 		: (lightTheme ? 0.006 + surfaceLuminance * 0.009 : 0.03);
 	const bottomAlpha = hasExplicitSurface
-		? (lightTheme ? 0.22 : 0.28)
+		? (lightTheme ? 0.22 : 0.24)
 		: (lightTheme ? 0.018 + surfaceLuminance * 0.014 : 0.1);
 
 	return {
 		brighten,
 		contrast,
 		saturate,
-		colorize: surfaceAlt,
-		colorizeOpacity: hasExplicitSurface ? (lightTheme ? 0.28 : 0.34) : 0,
+		// When a note already has an explicit card color, the banner should read as
+		// that color family with the artwork details peeking through, not as the raw
+		// banner hue with a light tint layered on top.
+		colorize: hasExplicitSurface ? explicitSurfaceColorize : surfaceAlt,
+		colorizeOpacity: hasExplicitSurface ? (lightTheme ? 0.46 : 0.38) : 0,
+		colorizeBlendMode: hasExplicitSurface ? 'normal' : 'multiply',
 		topWash,
 		bottomWash,
 		topAlpha,
@@ -211,7 +218,9 @@ export function transformNoteBannerSampleColor(themeId: ThemeId, sampleColor: st
 
 	const colorize = parseColor(factors.colorize);
 	if (colorize && factors.colorizeOpacity > 0) {
-		transformed = mixRgb(transformed, multiplyRgb(transformed, colorize), factors.colorizeOpacity);
+		transformed = factors.colorizeBlendMode === 'normal'
+			? mixRgb(transformed, colorize, factors.colorizeOpacity)
+			: mixRgb(transformed, multiplyRgb(transformed, colorize), factors.colorizeOpacity);
 	}
 
 	const bottomWash = parseColor(factors.bottomWash);
@@ -231,6 +240,7 @@ export function getNoteBannerPresentationStyle(themeId: ThemeId, input: NoteBann
 		'--note-banner-overlay-bottom': toRgba(factors.bottomWash, factors.bottomAlpha),
 		'--note-banner-colorize': factors.colorize,
 		'--note-banner-colorize-opacity': factors.colorizeOpacity > 0 ? factors.colorizeOpacity.toFixed(2) : '0',
+		'--note-banner-colorize-blend-mode': factors.colorizeBlendMode,
 	};
 }
 

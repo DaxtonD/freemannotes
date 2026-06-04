@@ -194,7 +194,9 @@ module.exports = defineConfig(({ mode }) => {
 		server: {
 			host: true,
 			port: devPort,
-			strictPort: true,
+			// Dev should recover onto the next open port instead of failing outright
+			// when another local Vite session already owns 5173.
+			strictPort: false,
 			allowedHosts: true,
 			proxy: {
 				// Proxy API + uploads to the Node server so cookie-based auth remains same-origin.
