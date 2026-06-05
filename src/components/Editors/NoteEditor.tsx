@@ -592,6 +592,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(() => {
 		try { return sessionStorage.getItem('__freemannotes_mediaDockOpen') === '1'; } catch { return false; }
 	});
+	const [mediaSheetProgress, setMediaSheetProgress] = React.useState(() => mediaDockOpen ? 1 : 0);
+	const [isMediaSheetDragging, setIsMediaSheetDragging] = React.useState(false);
+	const [isMediaSheetClosing, setIsMediaSheetClosing] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(() => readStoredMediaDockTab(props.noteId));
 	// More-menu state (editor 3-dot button):
 	// - Desktop: anchored popover positioned relative to the trigger button rect.
@@ -601,6 +604,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
 	const [isBannerPickerOpen, setIsBannerPickerOpen] = React.useState(false);
 	const mediaFlyoutRef = React.useRef<HTMLElement | null>(null);
+	const mediaSheetRef = React.useRef<HTMLElement | null>(null);
+	const mediaSheetDragRef = React.useRef<{
+		startX: number;
+		startY: number;
+		startProgress: number;
+		sheetHeight: number;
+		verticalLocked: boolean;
+	} | null>(null);
+	const ignoreNextMediaDockClickRef = React.useRef(false);
 	const titleFieldRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const textBodyFieldRef = React.useRef<HTMLDivElement | null>(null);
 	const resizeTitleField = React.useCallback((): void => {
@@ -616,6 +628,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	React.useEffect(() => {
 		try { sessionStorage.setItem('__freemannotes_mediaDockOpen', mediaDockOpen ? '1' : '0'); } catch { /* */ }
 	}, [mediaDockOpen]);
+	React.useEffect(() => {
+		if (isMediaSheetDragging) return;
+		if (!mediaDockOpen && mediaSheetProgress > 0.001) {
+			setIsMediaSheetClosing(true);
+		}
+		if (mediaDockOpen && isMediaSheetClosing) {
+			setIsMediaSheetClosing(false);
+		}
+		setMediaSheetProgress(mediaDockOpen ? 1 : 0);
+	}, [isMediaSheetClosing, isMediaSheetDragging, mediaDockOpen, mediaSheetProgress]);
 	React.useEffect(() => {
 		setMediaDockTab(readStoredMediaDockTab(props.noteId));
 	}, [props.noteId]);
@@ -773,38 +795,92 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const mediaSheetSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
 	const mediaDockHistoryTokenRef = React.useRef(`note-editor-media-dock:${Math.random().toString(36).slice(2, 10)}`);
 	const pendingMediaDockCleanupRef = React.useRef<number | null>(null);
+	const clampMediaSheetProgress = React.useCallback((value: number): number => Math.max(0, Math.min(1, value)), []);
+	const getMediaSheetHeight = React.useCallback((): number => {
+		const currentHeight = mediaSheetRef.current?.getBoundingClientRect().height ?? 0;
+		if (Number.isFinite(currentHeight) && currentHeight > 0) return currentHeight;
+		if (typeof window === 'undefined') return 620;
+		return Math.min(window.innerHeight * 0.72, 620);
+	}, []);
 	const handleInteractionGuardEvent = React.useCallback((event: React.SyntheticEvent): void => {
 		if (!interactionGuardActive) return;
 		event.preventDefault();
 		event.stopPropagation();
 	}, [interactionGuardActive]);
-	const handleTouchStart = React.useCallback((event: React.TouchEvent): void => {
+	const handleToggleMediaDock = React.useCallback((): void => {
+		if (isMobileLandscapeRef.current) return;
+		if (ignoreNextMediaDockClickRef.current) {
+			ignoreNextMediaDockClickRef.current = false;
+			return;
+		}
+		setIsMediaSheetClosing(false);
+		setMediaDockOpen((prev) => !prev);
+	}, []);
+	const handleDockTabTouchStart = React.useCallback((event: React.TouchEvent): void => {
 		const t0 = event.touches[0];
 		if (!t0) return;
 		event.stopPropagation();
 		dockTouchStartRef.current = { x: t0.clientX, y: t0.clientY };
 	}, []);
-	const handleDockTouchMove = React.useCallback((event: React.TouchEvent): void => {
-		if (!dockTouchStartRef.current) return;
+	const handleMediaDockDragStart = React.useCallback((event: React.TouchEvent): void => {
+		if (isMobileLandscapeRef.current) return;
+		const t0 = event.touches[0];
+		if (!t0) return;
 		event.stopPropagation();
-	}, []);
-	const handleHandleTouchEnd = React.useCallback(
-		(event: React.TouchEvent): void => {
-			// Landscape branch: never open/close media via vertical swipes.
-			if (isMobileLandscapeRef.current) return;
-			const start = dockTouchStartRef.current;
-			const t0 = event.changedTouches[0];
-			if (!start || !t0) return;
-			event.stopPropagation();
-			dockTouchStartRef.current = null;
-			const dx = t0.clientX - start.x;
-			const dy = t0.clientY - start.y;
-			if (Math.abs(dy) < 28 || Math.abs(dy) < Math.abs(dx)) return;
-			if (dy < 0) setMediaDockOpen(true);
-			if (dy > 0) setMediaDockOpen(false);
-		},
-		[]
-	);
+		setIsMediaSheetClosing(false);
+		mediaSheetDragRef.current = {
+			startX: t0.clientX,
+			startY: t0.clientY,
+			startProgress: mediaSheetProgress,
+			sheetHeight: getMediaSheetHeight(),
+			verticalLocked: false,
+		};
+	}, [getMediaSheetHeight, mediaSheetProgress]);
+	const handleMediaDockDragMove = React.useCallback((event: React.TouchEvent): void => {
+		const gesture = mediaSheetDragRef.current;
+		const t0 = event.touches[0];
+		if (!gesture || !t0) return;
+		event.stopPropagation();
+		const dx = t0.clientX - gesture.startX;
+		const dy = t0.clientY - gesture.startY;
+
+		if (!gesture.verticalLocked) {
+			if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+				mediaSheetDragRef.current = null;
+				setIsMediaSheetDragging(false);
+				setMediaSheetProgress(mediaDockOpen ? 1 : 0);
+				return;
+			}
+			if (Math.abs(dy) <= 6 || Math.abs(dy) < Math.abs(dx) * 0.75) return;
+			gesture.verticalLocked = true;
+		}
+
+		if (event.cancelable) event.preventDefault();
+		setIsMediaSheetDragging(true);
+		setMediaSheetProgress(clampMediaSheetProgress(gesture.startProgress - (dy / Math.max(gesture.sheetHeight, 1))));
+	}, [clampMediaSheetProgress, mediaDockOpen]);
+	const handleMediaDockDragEnd = React.useCallback((event: React.TouchEvent): void => {
+		const gesture = mediaSheetDragRef.current;
+		if (!gesture) return;
+		event.stopPropagation();
+		mediaSheetDragRef.current = null;
+		if (!gesture.verticalLocked) {
+			setIsMediaSheetDragging(false);
+			setMediaSheetProgress(mediaDockOpen ? 1 : 0);
+			return;
+		}
+		ignoreNextMediaDockClickRef.current = true;
+		const shouldOpen = gesture.startProgress >= 0.5 ? mediaSheetProgress > 0.72 : mediaSheetProgress >= 0.3;
+		setIsMediaSheetDragging(false);
+		if (shouldOpen) setMediaSheetProgress(1);
+		setMediaDockOpen(shouldOpen);
+	}, [mediaDockOpen, mediaSheetProgress]);
+	const handleMediaSheetTransitionEnd = React.useCallback((event: React.TransitionEvent<HTMLElement>): void => {
+		if (event.target !== event.currentTarget) return;
+		if (event.propertyName !== 'transform') return;
+		if (mediaDockOpen || mediaSheetProgress > 0.001) return;
+		setIsMediaSheetClosing(false);
+	}, [mediaDockOpen, mediaSheetProgress]);
 	const handleDockSwipeEnd = React.useCallback(
 		(event: React.TouchEvent): void => {
 			// Landscape branch: horizontal media tab swipe is disabled.
@@ -1241,8 +1317,32 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			'--note-editor-text': resolvedColor.textColor,
 			'--note-editor-muted': resolvedColor.mutedTextColor,
 			'--note-editor-accent': resolvedColor.accentColor,
+				'--note-editor-control': resolvedColor.token === 'white' ? '#000000' : resolvedColor.textColor,
+				'--note-editor-control-accent': resolvedColor.token === 'white' ? '#000000' : resolvedColor.accentColor,
 		} as React.CSSProperties & Record<string, string>;
 	}, [resolvedColor]);
+	const mediaDockThemeStyle = useMemo(() => {
+		const style: React.CSSProperties & Record<string, string> = { ...(editorColorStyle ?? {}) };
+		if (resolvedColor) {
+			style['--color-surface'] = resolvedColor.cardBackground;
+			style['--color-surface-2'] = resolvedColor.headerBackground;
+			style['--color-border'] = resolvedColor.borderColor;
+			style['--color-text'] = resolvedColor.textColor;
+			style['--color-text-muted'] = resolvedColor.mutedTextColor;
+			style['--color-accent'] = resolvedColor.token === 'white' ? '#000000' : resolvedColor.accentColor;
+		}
+		return Object.keys(style).length > 0 ? style : undefined;
+	}, [editorColorStyle, resolvedColor]);
+	const mediaSheetVisualProgress = clampMediaSheetProgress(mediaSheetProgress);
+	const isMediaSheetActive = mediaSheetVisualProgress > 0.001 || isMediaSheetClosing;
+	const mediaSheetStyle = useMemo(() => {
+		const style: React.CSSProperties & Record<string, string> = {
+			...(mediaDockThemeStyle ?? {}),
+			'--media-sheet-open-progress': mediaSheetVisualProgress.toFixed(4),
+		};
+		style.pointerEvents = 'auto';
+		return style;
+	}, [mediaDockThemeStyle, mediaSheetVisualProgress]);
 	const editorShellStyle = useMemo(() => {
 		const style: React.CSSProperties & Record<string, string> = { ...(editorColorStyle ?? {}) };
 		if (isCoarsePointer) {
@@ -2101,33 +2201,89 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						</section>
 					) : null}
 					{mobileKeyboardOpen ? null : <div className={styles.editorBottomArea}>
-						<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
-							<button
-								type="button"
-								className={styles.mediaDockHandle}
-								onClick={() => {
-									if (isMobileLandscapeRef.current) return;
-									setMediaDockOpen((prev) => !prev);
-								}}
-								onTouchStart={handleTouchStart}
-								onTouchMove={handleDockTouchMove}
-								onTouchEnd={handleHandleTouchEnd}
-								aria-label={t('editors.mediaDock')}
-							>
-								<span className={styles.mediaDockPill} aria-hidden="true" />
-								<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
-							</button>
-						</section>
+						{isCoarsePointer ? (
+							<div className={`${styles.mediaDockSlot}${isMediaSheetActive ? ` ${styles.mediaDockSlotActive}` : ''}`}>
+								<section
+									ref={mediaSheetRef}
+									className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}${isMediaSheetDragging ? ` ${styles.mediaSheetDragging}` : ''}${!isMediaSheetActive ? ` ${styles.mediaSheetClosed}` : ''}`}
+									aria-label={t('editors.mediaDock')}
+									style={mediaSheetStyle}
+									onTransitionEnd={handleMediaSheetTransitionEnd}
+									onClick={(e) => e.stopPropagation()}
+								>
+									<button
+										type="button"
+										className={styles.mediaSheetHandle}
+										onClick={handleToggleMediaDock}
+										onTouchStart={handleMediaDockDragStart}
+										onTouchMove={handleMediaDockDragMove}
+										onTouchEnd={handleMediaDockDragEnd}
+										onTouchCancel={handleMediaDockDragEnd}
+										aria-label={t('editors.mediaDock')}
+									>
+										<span className={styles.mediaDockPill} aria-hidden="true" />
+										<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+									</button>
+
+									<header className={styles.mediaSheetHeader}>
+										<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabTouchStart} onTouchEnd={handleDockSwipeEnd}>
+											<button
+												type="button"
+												role="tab"
+												aria-selected={mediaDockTab === 0}
+												className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(0, event)}
+												onClick={() => setMediaDockTab(0)}
+											>
+												{t('editors.mediaTabMedia')}
+											</button>
+											<button
+												type="button"
+												role="tab"
+												aria-selected={mediaDockTab === 1}
+												className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(1, event)}
+												onClick={() => setMediaDockTab(1)}
+											>
+												{t('editors.mediaTabLinks')}
+											</button>
+											<button
+												type="button"
+												role="tab"
+												aria-selected={mediaDockTab === 2}
+												className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
+												onClick={() => setMediaDockTab(2)}
+											>
+												{t('editors.mediaTabDocuments')}
+											</button>
+										</div>
+										<button
+											type="button"
+											className={styles.mediaSheetClose}
+											onPointerUp={closeMediaDockFromPointerEvent}
+											onClick={closeMediaDock}
+											aria-label={t('common.close')}
+										>
+											✕
+										</button>
+									</header>
+
+									<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
+										<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
+											{renderMediaDockPanel()}
+										</div>
+									</div>
+								</section>
+							</div>
+						) : null}
 
 						<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')}>
 							<div className={styles.bottomDockLeft}>
 								<button
 									type="button"
 									className={styles.mediaDockText}
-									onClick={() => {
-										if (isMobileLandscapeRef.current) return;
-										setMediaDockOpen((prev) => !prev);
-									}}
+									onClick={handleToggleMediaDock}
 									aria-label={t('editors.mediaDock')}
 								>
 									{t('editors.mediaTabMedia')}
@@ -2140,81 +2296,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</div>}
 				</section>
 
-				{isCoarsePointer && !mobileKeyboardOpen ? <section
-					className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}`}
-					aria-label={t('editors.mediaDock')}
-					onClick={(e) => e.stopPropagation()}
-				>
-					<button
-						type="button"
-						className={styles.mediaSheetHandle}
-						onClick={() => {
-							if (isMobileLandscapeRef.current) return;
-							setMediaDockOpen((prev) => !prev);
-						}}
-						onTouchStart={handleTouchStart}
-						onTouchMove={handleDockTouchMove}
-						onTouchEnd={handleHandleTouchEnd}
-						aria-label={t('editors.mediaDock')}
-					>
-						<span className={styles.mediaDockPill} aria-hidden="true" />
-					</button>
-
-					<header className={styles.mediaSheetHeader}>
-						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleTouchStart} onTouchEnd={handleDockSwipeEnd}>
-							<button
-								type="button"
-								role="tab"
-								aria-selected={mediaDockTab === 0}
-								className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
-								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(0, event)}
-								onClick={() => setMediaDockTab(0)}
-							>
-								{t('editors.mediaTabMedia')}
-							</button>
-							<button
-								type="button"
-								role="tab"
-								aria-selected={mediaDockTab === 1}
-								className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
-								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(1, event)}
-								onClick={() => setMediaDockTab(1)}
-							>
-								{t('editors.mediaTabLinks')}
-							</button>
-							<button
-								type="button"
-								role="tab"
-								aria-selected={mediaDockTab === 2}
-								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
-								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
-								onClick={() => setMediaDockTab(2)}
-							>
-								{t('editors.mediaTabDocuments')}
-							</button>
-						</div>
-							<button
-								type="button"
-								className={styles.mediaSheetClose}
-								onPointerUp={closeMediaDockFromPointerEvent}
-								onClick={closeMediaDock}
-								aria-label={t('common.close')}
-							>
-							✕
-						</button>
-					</header>
-
-					<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
-						<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
-							{renderMediaDockPanel()}
-						</div>
-					</div>
-				</section> : null}
-
 				{!isCoarsePointer ? <aside
 					className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
 					onClick={(e) => e.stopPropagation()}
 					aria-hidden={!mediaDockOpen}
+					style={mediaDockThemeStyle}
 				>
 					<header className={styles.mediaFlyoutHeader}>
 						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')}>
@@ -2709,23 +2795,82 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								</button>
 							</div>
 						) : null}
-						<section className={styles.mediaDock} aria-label={t('editors.mediaDock')}>
-						<button
-							type="button"
-							className={styles.mediaDockHandle}
-							onClick={() => {
-								if (isMobileLandscapeRef.current) return;
-								setMediaDockOpen((prev) => !prev);
-							}}
-							onTouchStart={handleTouchStart}
-							onTouchMove={handleDockTouchMove}
-							onTouchEnd={handleHandleTouchEnd}
-							aria-label={t('editors.mediaDock')}
-						>
-							<span className={styles.mediaDockPill} aria-hidden="true" />
-							<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
-						</button>
-						</section>
+						{isCoarsePointer ? (
+							<div className={`${styles.mediaDockSlot}${isMediaSheetActive ? ` ${styles.mediaDockSlotActive}` : ''}`}>
+								<section
+									ref={mediaSheetRef}
+									className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}${isMediaSheetDragging ? ` ${styles.mediaSheetDragging}` : ''}${!isMediaSheetActive ? ` ${styles.mediaSheetClosed}` : ''}`}
+									aria-label={t('editors.mediaDock')}
+									style={mediaSheetStyle}
+									onTransitionEnd={handleMediaSheetTransitionEnd}
+									onClick={(e) => e.stopPropagation()}
+								>
+									<button
+										type="button"
+										className={styles.mediaSheetHandle}
+										onClick={handleToggleMediaDock}
+										onTouchStart={handleMediaDockDragStart}
+										onTouchMove={handleMediaDockDragMove}
+										onTouchEnd={handleMediaDockDragEnd}
+										onTouchCancel={handleMediaDockDragEnd}
+										aria-label={t('editors.mediaDock')}
+									>
+										<span className={styles.mediaDockPill} aria-hidden="true" />
+										<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+									</button>
+
+									<header className={styles.mediaSheetHeader}>
+										<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabTouchStart} onTouchEnd={handleDockSwipeEnd}>
+											<button
+												type="button"
+												role="tab"
+												aria-selected={mediaDockTab === 0}
+												className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
+												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(0, event)}
+												onClick={() => setMediaDockTab(0)}
+											>
+												{t('editors.mediaTabMedia')}
+											</button>
+											<button
+												type="button"
+												role="tab"
+												aria-selected={mediaDockTab === 1}
+												className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
+												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(1, event)}
+												onClick={() => setMediaDockTab(1)}
+											>
+												{t('editors.mediaTabLinks')}
+											</button>
+											<button
+												type="button"
+												role="tab"
+												aria-selected={mediaDockTab === 2}
+												className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
+												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
+												onClick={() => setMediaDockTab(2)}
+											>
+												{t('editors.mediaTabDocuments')}
+											</button>
+										</div>
+										<button
+											type="button"
+											className={styles.mediaSheetClose}
+											onPointerUp={closeMediaDockFromPointerEvent}
+											onClick={closeMediaDock}
+											aria-label={t('common.close')}
+										>
+											✕
+										</button>
+									</header>
+
+									<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
+										<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
+											{renderMediaDockPanel()}
+										</div>
+									</div>
+								</section>
+							</div>
+						) : null}
 					</div>
 
 					<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')}>
@@ -2771,10 +2916,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								type="button"
 								className={styles.mediaDockText}
 								data-note-editor-media-dock-trigger="true"
-								onClick={() => {
-									if (isMobileLandscapeRef.current) return;
-									setMediaDockOpen((prev) => !prev);
-								}}
+								onClick={handleToggleMediaDock}
 								aria-label={t('editors.mediaDock')}
 							>
 								{t('editors.mediaTabMedia')}
@@ -2827,82 +2969,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			    The mobile media sheet is also removed while typing. Even if it is visually off
 			    screen, keeping it mounted would preserve extra mobile footer affordances that can
 			    interfere with the simplified keyboard-open editing layout. */}
-			{isCoarsePointer && !mobileKeyboardOpen ? <section
-				className={`${styles.mediaSheet}${mediaDockOpen ? ` ${styles.mediaSheetOpen}` : ''}`}
-				aria-label={t('editors.mediaDock')}
-				onClick={(e) => e.stopPropagation()}
-			>
-				<button
-					type="button"
-					className={styles.mediaSheetHandle}
-					onClick={() => {
-						if (isMobileLandscapeRef.current) return;
-						setMediaDockOpen((prev) => !prev);
-					}}
-					onTouchStart={handleTouchStart}
-					onTouchMove={handleDockTouchMove}
-					onTouchEnd={handleHandleTouchEnd}
-					aria-label={t('editors.mediaDock')}
-				>
-					<span className={styles.mediaDockPill} aria-hidden="true" />
-				</button>
-
-				<header className={styles.mediaSheetHeader}>
-					<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleTouchStart} onTouchEnd={handleDockSwipeEnd}>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={mediaDockTab === 0}
-							className={`${styles.mediaTab}${mediaDockTab === 0 ? ` ${styles.mediaTabActive}` : ''}`}
-							onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(0, event)}
-							onClick={() => setMediaDockTab(0)}
-						>
-							{t('editors.mediaTabMedia')}
-						</button>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={mediaDockTab === 1}
-							className={`${styles.mediaTab}${mediaDockTab === 1 ? ` ${styles.mediaTabActive}` : ''}`}
-							onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(1, event)}
-							onClick={() => setMediaDockTab(1)}
-						>
-							{t('editors.mediaTabLinks')}
-						</button>
-						<button
-							type="button"
-							role="tab"
-							aria-selected={mediaDockTab === 2}
-							className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
-							onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
-							onClick={() => setMediaDockTab(2)}
-						>
-							{t('editors.mediaTabDocuments')}
-						</button>
-					</div>
-					<button
-						type="button"
-						className={styles.mediaSheetClose}
-						onPointerUp={closeMediaDockFromPointerEvent}
-						onClick={closeMediaDock}
-						aria-label={t('common.close')}
-					>
-						✕
-					</button>
-				</header>
-
-				<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
-					<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
-						{renderMediaDockPanel()}
-					</div>
-				</div>
-			</section> : null}
-
 			{!isCoarsePointer ? <aside
 				ref={mediaFlyoutRef}
 				className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
 				onClick={(e) => e.stopPropagation()}
 				aria-hidden={!mediaDockOpen}
+				style={mediaDockThemeStyle}
 			>
 					<header className={styles.mediaFlyoutHeader}>
 						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')}>

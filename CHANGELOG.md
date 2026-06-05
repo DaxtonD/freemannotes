@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.3 - 2026-06-04
+
+### Changed
+- **Mobile media sheets now use one anchored drag-following model across saved and draft editors.** Saved notes plus the draft text and checklist editors now share the same handle-anchored mobile media sheet behavior, note-color-driven media panel theming, and stable collapse/open transitions so the sheet tracks the dock instead of appearing as a separate overlay.
+- **Shell branding and quick-create icons are separated cleanly again.** The header/splash app icon now uses its own stable branded asset path, while the mobile FAB keeps its dedicated theme-aware button artwork and the Appearance preference now labels the display controls simply as `Display`.
+
+### Fixed
+- **Saved-note and draft media-sheet regressions are resolved.** The checklist editor regained its missing Media header/handle, the sheet no longer starts below the dock or duplicates handles, dock chrome stays visible during collapse, and the drawings tab no longer shows the lingering linked-drawings placeholder copy.
+- **Banner, icon, and drag-preview polish regressions are cleaned up.** The Select banner image modal now blocks background touch scrolling, the original app header/splash image renders reliably again, the FAB rotates correctly on open, and dragged note ghosts no longer shrink across grid, list, or strip views.
+- **Light note-color control contrast is consistent again.** White and other light note colors now keep readable checklist controls and media drag handles with the intended dark contrast treatment.
+
 ## 1.5.2 - 2026-06-03
 
 ### Changed

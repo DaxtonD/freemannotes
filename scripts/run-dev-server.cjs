@@ -4,6 +4,12 @@ const { spawn } = require('node:child_process');
 const path = require('node:path');
 
 const rootDir = path.resolve(__dirname, '..');
+try {
+	require('dotenv').config({ path: path.join(rootDir, '.env') });
+} catch {
+	// Best effort only; server.js also loads dotenv, but the wrapper needs the
+	// project env before it decides which defaults to inject for dev.
+}
 const env = { ...process.env };
 
 if (!String(env.PORT || '').trim()) {

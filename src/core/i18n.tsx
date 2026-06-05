@@ -196,7 +196,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		updatedNotificationBody: 'Freeman Notes has been updated successfully and the latest version is now active.',
 		comingSoon: 'This section is planned for a future phase.',
 		appearanceTitle: 'Appearance Settings',
-		displaySize: 'Display Size',
+		displaySize: 'Display',
 		theme: 'Theme',
 		language: 'Language',
 		noteCardFontScale: 'Note card text size',

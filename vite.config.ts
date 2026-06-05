@@ -16,6 +16,20 @@ import type { Plugin } from 'vite';
 const packageJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as { version?: string };
 const appVersion = String(packageJson.version || 'dev');
 
+function parsePublicOrigin(rawValue: string): URL | null {
+	const normalized = String(rawValue || '').trim();
+	if (!normalized) return null;
+	try {
+		const url = new URL(normalized);
+		url.pathname = '/';
+		url.search = '';
+		url.hash = '';
+		return url;
+	} catch {
+		return null;
+	}
+}
+
 function attachProxyErrorHandlers(proxy: any, label: string): void {
 	const swallowSocketError = (socket: any): void => {
 		if (!socket || typeof socket.on !== 'function') return;
@@ -144,8 +158,21 @@ export default defineConfig(({ mode }) => {
 	const env = loadEnv(mode, envDir, 'VITE_');
 	const devPort = Number(env.VITE_DEV_PORT || 5173);
 	const apiProxyTarget = String(env.VITE_API_PROXY_TARGET || 'http://localhost:27015').trim();
+	const publicDevOrigin = parsePublicOrigin(String(env.VITE_DEV_PUBLIC_ORIGIN || ''));
 	const yjsEmbedEnv = String(env.VITE_YJS_EMBED || '').trim();
 	const yjsProxyEnv = String(env.VITE_YJS_PROXY || '').trim();
+	const strictDevPort = publicDevOrigin
+		? true
+		: String(env.VITE_DEV_STRICT_PORT || '').trim() === '1';
+	const hmrConfig = publicDevOrigin
+		? {
+			protocol: publicDevOrigin.protocol === 'https:' ? 'wss' : 'ws',
+			host: publicDevOrigin.hostname,
+			clientPort: publicDevOrigin.port
+				? Number(publicDevOrigin.port)
+				: (publicDevOrigin.protocol === 'https:' ? 443 : 80),
+		}
+		: undefined;
 	// Branch policy for Yjs transport in Vite:
 	// - Development branch: always embed Yjs websocket in Vite to eliminate noisy
 	//   /yjs ws proxy disconnect logs during iterative mobile testing.
@@ -214,9 +241,11 @@ export default defineConfig(({ mode }) => {
 		server: {
 			host: true,
 			port: devPort,
-			// Dev should recover onto the next open port instead of failing outright
-			// when another local Vite session already owns 5173.
-			strictPort: false,
+			// Reverse-proxied dev domains need a stable port; ad-hoc local sessions can
+			// still opt into fallback ports by leaving VITE_DEV_PUBLIC_ORIGIN unset.
+			strictPort: strictDevPort,
+			origin: publicDevOrigin?.origin,
+			hmr: hmrConfig,
 			allowedHosts: true,
 			proxy: {
 				// Proxy API + uploads to the Node server so cookie-based auth remains same-origin.

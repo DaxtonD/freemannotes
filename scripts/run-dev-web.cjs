@@ -5,11 +5,24 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const rootDir = path.resolve(__dirname, '..');
+try {
+	require('dotenv').config({ path: path.join(rootDir, '.env') });
+} catch {
+	// Best effort only; the wrapper needs project env before defaulting proxy and
+	// public-origin settings for reverse-proxied dev domains.
+}
 const env = { ...process.env };
 
 if (!String(env.VITE_API_PROXY_TARGET || '').trim()) {
 	const targetPort = String(env.PORT || '').trim() || '27016';
 	env.VITE_API_PROXY_TARGET = `http://localhost:${targetPort}`;
+}
+
+if (!String(env.VITE_DEV_PUBLIC_ORIGIN || '').trim()) {
+	const appUrl = String(env.APP_URL || '').trim();
+	if (appUrl) {
+		env.VITE_DEV_PUBLIC_ORIGIN = appUrl;
+	}
 }
 
 function resolveViteEntrypoint() {
