@@ -135,10 +135,7 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 			</div>
 			{error ? <p className={styles.error}>{error}</p> : null}
 			{drawings.length === 0 ? (
-				<div className={styles.placeholderCard}>
-					<p className={styles.placeholderTitle}>{t('documents.emptyTitle')}</p>
-					<p className={styles.placeholderBody}>{t('documents.emptyBody')}</p>
-				</div>
+				null
 			) : (
 				<div className={styles.list}>
 					{drawings.map((drawing) => (

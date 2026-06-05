@@ -1452,7 +1452,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const vmChanged = previousViewMode !== props.viewMode;
 		prevVpWorkspaceRef.current = props.activeWorkspaceId;
 		prevVpViewModeRef.current = props.viewMode;
-		if (wsChanged || vmChanged) {
+		if (!wsChanged && !vmChanged) {
+			return;
+		}
+		if (wsChanged) {
 			// NoteGrid stays mounted across workspace switches, so every startup gate
 			// has to be rearmed here before App waits for the next viewport-ready paint.
 			readyNotifiedRef.current = false;
@@ -1473,14 +1476,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			settledColumnByIdRef.current = new Map();
 			settledSiblingIndexByIdRef.current = new Map();
 			settledColumnsRef.current = [];
-			invalidatedNoteReasonsRef.current.clear();
-			recentlyMovedNoteIdsRef.current.clear();
-			expansionAffectedNoteIdsRef.current.clear();
-			lastRebalanceSuppressionReasonRef.current = null;
-			repackReasonRef.current = wsChanged ? 'workspace-change' : 'view-mode-change';
-			if (wsChanged) debugWorkspaceSwitch(previousWorkspaceId, props.activeWorkspaceId ?? undefined);
-			if (vmChanged) debugViewSwitch(String(previousViewMode), String(props.viewMode));
 		}
+		// View changes should reuse the already-loaded docs and the last settled card
+		// columns. Re-arming cold-start gates here brings back visible note movement.
+		invalidatedNoteReasonsRef.current.clear();
+		recentlyMovedNoteIdsRef.current.clear();
+		expansionAffectedNoteIdsRef.current.clear();
+		lastRebalanceSuppressionReasonRef.current = null;
+		repackReasonRef.current = wsChanged ? 'workspace-change' : 'view-mode-change';
+		if (wsChanged) debugWorkspaceSwitch(previousWorkspaceId, props.activeWorkspaceId ?? undefined);
+		if (vmChanged) debugViewSwitch(String(previousViewMode), String(props.viewMode));
 	}, [props.activeWorkspaceId, props.viewMode]);
 
 	React.useEffect(() => {
@@ -1806,6 +1811,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		});
 	}, [docsById, manager, metadataVersion, orderedIds, pinPrefsSnapshot, props.authUserId, props.noteReminderByDocId, resolveMediaDocId, sharedPlacementByAlias, workspaceRenderSnapshotNoteById]);
 	const noteSnapshotById = React.useMemo(() => new Map(noteSnapshots.map((note) => [note.id, note] as const)), [noteSnapshots]);
+	const unresolvedOrderedIds = React.useMemo(
+		() => orderedIds.filter((id) => {
+			const liveDoc = docsById[id] ?? manager.peekDoc(id) ?? null;
+			if (liveDoc && hasRenderableNoteContent(liveDoc)) return false;
+			return !snapshotDocById.has(id);
+		}),
+		[docsById, manager, orderedIds, snapshotDocById]
+	);
 
 	const baseVisibleIds = React.useMemo<string[]>(() => {
 		const ids = getVisibleNotes(noteSnapshots, {
@@ -2209,10 +2222,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useEffect(() => {
 		const canResolveWithoutRegistryOrder = !noteOrder && orderedIds.length > 0;
 		if (!noteOrder && !canResolveWithoutRegistryOrder) return;
-		if (orderedIds.length > 0 && orderedIds.some((id) => !docsById[id])) {
-			// Notes are present but their docs haven't arrived yet.
-			// Reset to hydrating only during the initial boot phase so that
-			// the shimmer shows on first login (not just on page refresh).
+		if (orderedIds.length > 0 && unresolvedOrderedIds.length > 0) {
+			// Keep the startup gate aligned with the real render path: an ordered
+			// note is not ready until it can render as either a live doc or a
+			// snapshot-backed shell. Otherwise the splash can fade into skeletons.
 			if (!initialLoadCompleteRef.current) {
 				setAllDocsLoaded(false);
 			}
@@ -2289,7 +2302,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!allDocsLoaded) {
 			setAllDocsLoaded(true);
 		}
-	}, [noteOrder, orderedIds, docsById, allDocsLoaded, connection.registryWsSynced, connection.state, wsSyncJustFired, shimmerStalled, connection.pendingNoteWsSync]);
+	}, [noteOrder, orderedIds, unresolvedOrderedIds.length, allDocsLoaded, connection.registryWsSynced, connection.state, wsSyncJustFired, shimmerStalled, connection.pendingNoteWsSync]);
 
 	React.useEffect(() => {
 		if (!allDocsLoaded) {
@@ -2360,7 +2373,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	);
 	React.useEffect(() => {
 		if (!startupDebugEnabled) return;
-		const unresolvedOrderedIds = orderedIds.filter((id) => !(docsById[id] ?? manager.peekDoc(id)));
 		const blocker = !noteOrder
 			? 'waiting-note-order'
 			: !allDocsLoaded
@@ -2633,7 +2645,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			shouldPreserveSettledStartupColumns &&
 			repackReason !== 'drag-drop' &&
 			repackReason !== 'workspace-change' &&
-			repackReason !== 'view-mode-change' &&
 			!isColumnCountChanged &&
 			settledColumnByIdRef.current.size > 0;
 		let anchoredColumnById: ReadonlyMap<string, number>;
@@ -3878,7 +3889,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				(() => {
 					const overlayRect = dragManager.dragOverlay ?? dragManager.dropOverlay;
 					if (!overlayRect) return null;
-					const dragPreviewAnimate = { opacity: 0.92, scale: .90, y: -2 } as const;
+					// Grid, list, and strip all share this overlay path, so keep the ghost at
+					// full size here or every drag preview will visibly shrink.
+					const dragPreviewAnimate = { opacity: 0.92, scale: 1, y: -2 } as const;
 					const dropOverlayAnimate = isDropSettling
 						? (dropSettlingOverlayTarget
 							? {

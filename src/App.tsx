@@ -22,10 +22,6 @@ import {
 	faTrash,
 	faXmark,
 } from '@fortawesome/free-solid-svg-icons';
-import fabIconDark from '../version.png';
-import fabIconLight from '../version-light.png';
-import appIconDark from '../darkicon.png';
-import appIconLight from '../lighticon.png';
 import { ChecklistEditor } from './components/Editors/ChecklistEditor';
 import { NoteEditor } from './components/Editors/NoteEditor';
 const DrawingEditor = React.lazy(async () => {
@@ -218,6 +214,11 @@ type MoveNoteModalState = {
 	noteId: string;
 	title: string;
 };
+
+const FAB_LIGHT_ICON_SRC = '/icons/FAB-light.png';
+const FAB_DARK_ICON_SRC = '/icons/FAB-dark.png';
+const APP_HEADER_LIGHT_ICON_SRC = '/icons/app-header-light.png';
+const APP_HEADER_DARK_ICON_SRC = '/icons/app-header-dark.png';
 
 type SendInviteContext =
 	| { kind: 'workspace'; workspaceId: string | null; workspaceName: string | null }
@@ -6522,7 +6523,7 @@ export function App(): React.JSX.Element {
 	}, [locales]);
 
 	const fabIconSrc = React.useMemo(() => {
-		return isLightTheme(themeId) ? fabIconDark : fabIconLight;
+		return isLightTheme(themeId) ? FAB_LIGHT_ICON_SRC : FAB_DARK_ICON_SRC;
 	}, [themeId]);
 	const isIosStandalonePwa = isMobileViewport && detectIosStandaloneDisplayMode();
 	const isAndroidStandalonePwa = isMobileViewport && detectAndroidStandaloneDisplayMode();
@@ -6539,13 +6540,11 @@ export function App(): React.JSX.Element {
 				aria-label={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
 				title={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
 			>
-				<span
+				<img
 					aria-hidden="true"
 					className="mobile-fab-icon"
-					style={{
-						WebkitMaskImage: `url(${fabIconSrc})`,
-						maskImage: `url(${fabIconSrc})`,
-					}}
+					src={fabIconSrc}
+					alt=""
 				/>
 			</button>
 		);
@@ -6605,7 +6604,7 @@ export function App(): React.JSX.Element {
 	}, [fabIconSrc, isFabOpen, openCreateEditorForCurrentContext, showMobileFab, t, toggleFab]);
 
 	const headerIconSrc = React.useMemo(() => {
-		return isLightTheme(themeId) ? appIconLight : appIconDark;
+		return isLightTheme(themeId) ? APP_HEADER_LIGHT_ICON_SRC : APP_HEADER_DARK_ICON_SRC;
 	}, [themeId]);
 
 	// Debounce the header "connecting" state so brief workspace-switch

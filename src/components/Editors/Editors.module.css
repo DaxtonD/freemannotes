@@ -500,81 +500,11 @@
 	margin-right: 0 !important;
 	margin-bottom: 0 !important;
 	padding-top: 0;
-	padding-right: 0;
 	padding-left: 0;
-	padding-bottom: var(--sab, 0);
 }
 
-.drawingCanvasHost :global(.App-bottom-bar > .Island),
-.drawingCanvasHostTouch :global(.App-bottom-bar > .Island) {
-	width: 100% !important;
-	max-width: 100% !important;
-	min-width: 100% !important;
-}
-
-.drawingCanvasHost :global(.App-toolbar-content),
-.drawingCanvasHostTouch :global(.App-toolbar-content) {
-	padding: 8px max(var(--sal, 0), 8px) calc(var(--sab, 0) + 8px) max(var(--sar, 0), 8px);
-}
-
-.drawingCanvasHost :global(.App-top-bar .App-toolbar-content),
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-content) {
-	padding-top: 0;
-	padding-bottom: 0;
-}
-
-.drawingCanvasHost :global(.App-top-bar .App-toolbar.App-toolbar--mobile),
-.drawingCanvasHost :global(.App-top-bar .App-toolbar-content) {
-	overflow-x: auto;
-	overflow-y: hidden;
-	scrollbar-width: none;
-	-webkit-overflow-scrolling: touch;
-}
-
-.drawingCanvasHost :global(.App-top-bar .App-toolbar.App-toolbar--mobile::-webkit-scrollbar),
-.drawingCanvasHost :global(.App-top-bar .App-toolbar-content::-webkit-scrollbar) {
-	display: none;
-}
-
-.drawingCanvasHost :global(.App-top-bar .App-toolbar.App-toolbar--mobile .Stack.Stack_horizontal),
-.drawingCanvasHost :global(.App-top-bar .App-toolbar-content > .Stack.Stack_horizontal) {
-	width: max-content;
-	min-width: max-content;
-	flex-wrap: nowrap;
-}
-
-@media (pointer: fine) {
-	.drawingCanvasHost :global(.FixedSideContainer_side_top) {
-		z-index: 4;
-	}
-
-	.drawingCanvasHost :global(.App-top-bar) {
-		width: 100%;
-		box-sizing: border-box;
-		padding-right: clamp(8.5rem, 15vw, 10.5rem);
-		background: var(--note-editor-header, var(--color-surface-2));
-	}
-
-	.drawingCanvasHost :global(.App-top-bar > section) {
-		width: 100%;
-		max-width: 100%;
-		margin: 0;
-	}
-
-	.drawingCanvasHost :global(.App-top-bar .Stack.Stack_vertical),
-	.drawingCanvasHost :global(.App-top-bar .App-toolbar-container),
-	.drawingCanvasHost :global(.App-top-bar .App-toolbar.App-toolbar--mobile) {
-		min-width: 0;
-	}
-
-	.drawingCanvasHost :global(.layer-ui__wrapper__top-right) {
-		padding-right: max(var(--sar, 0), 8px);
-		box-sizing: border-box;
-	}
-
-	.drawingCanvasHost :global(.layer-ui__wrapper__top-right > *) {
-		flex: 0 0 auto;
-	}
+.drawingCanvasHost :global(.layer-ui__wrapper__top-right > *) {
+	flex: 0 0 auto;
 }
 
 @media (pointer: fine) and (max-width: 1360px) {
@@ -1441,13 +1371,17 @@
 	overflow: hidden;
 }
 
+.mediaDockSlot {
+	display: none;
+}
+
 .mediaDockHandle {
 	width: 100%;
 	border: 0;
 	background: transparent;
 	padding: 8px;
 	cursor: pointer;
-	color: inherit;
+	color: var(--note-editor-text, var(--color-text));
 	/* Prevent native scrolling when swiping the handle. */
 	touch-action: none;
 }
@@ -1457,7 +1391,7 @@
 	margin-top: 6px;
 	text-align: center;
 	font-size: var(--font-size-sm);
-	color: var(--color-text);
+	color: var(--note-editor-text, var(--color-text));
 }
 
 .mediaDockPill {
@@ -1466,7 +1400,7 @@
 	height: 4px;
 	border-radius: 999px;
 	margin: 0 auto;
-	background: color-mix(in srgb, var(--color-text-muted) 55%, transparent);
+	background: var(--note-editor-control, var(--note-editor-text, var(--color-text)));
 }
 
 .mediaDockInner {
@@ -1531,7 +1465,7 @@
 	background: transparent;
 	padding: 10px 14px 6px;
 	cursor: pointer;
-	color: inherit;
+	color: var(--note-editor-text, var(--color-text));
 	touch-action: none;
 }
 
@@ -1548,7 +1482,7 @@
 .mediaSheetClose {
 	border: 0;
 	background: transparent;
-	color: var(--color-text);
+	color: var(--note-editor-text, var(--color-text));
 	width: 36px;
 	height: 36px;
 	border-radius: var(--radius-md);
@@ -1559,7 +1493,7 @@
 
 .mediaSheetClose:hover,
 .mediaSheetClose:focus-visible {
-	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+	background: color-mix(in srgb, var(--note-editor-header, var(--color-surface-2)) 86%, transparent);
 }
 
 .mediaSheetBody {
@@ -1574,14 +1508,14 @@
 	display: flex;
 	gap: 8px;
 	padding: 8px;
-	border-top: 1px solid var(--color-border);
+	border-top: 1px solid var(--note-editor-border, var(--color-border));
 }
 
 .mediaTab {
 	flex: 1;
 	border: 0;
 	background: transparent;
-	color: var(--color-text-muted);
+	color: var(--note-editor-muted, var(--color-text-muted));
 	border-radius: var(--radius-md);
 	height: 34px;
 	cursor: pointer;
@@ -1589,12 +1523,12 @@
 
 .mediaTab:hover,
 .mediaTab:focus-visible {
-	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+	background: color-mix(in srgb, var(--note-editor-header, var(--color-surface-2)) 86%, transparent);
 }
 
 .mediaTabActive {
-	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
-	color: var(--color-text);
+	background: color-mix(in srgb, var(--note-editor-header, var(--color-surface-2)) 86%, transparent);
+	color: var(--note-editor-text, var(--color-text));
 }
 
 .mediaPanel {
@@ -1787,12 +1721,10 @@
 	}
 
 	.editorBlurred.mediaOpen .editorBlockLayer {
-		opacity: 1;
 		pointer-events: auto;
 	}
 
 	.editorBlurred.mediaOpen .bottomDockClose {
-		pointer-events: none;
 		opacity: 0.6;
 	}
 
@@ -1805,7 +1737,6 @@
 	.bottomDockButtonCompact {
 		width: 46px;
 		height: 46px;
-		font-size: 18px;
 		transition: transform 120ms ease, background 160ms ease;
 	}
 
@@ -1837,8 +1768,8 @@
 		top: var(--app-header-offset, 0px);
 		bottom: 0;
 		width: min(420px, 46vw);
-		background: var(--color-surface);
-		border-left: 1px solid var(--color-border);
+		background: var(--note-editor-surface, var(--color-surface));
+		border-left: 1px solid var(--note-editor-border, var(--color-border));
 		z-index: 235;
 		flex-direction: column;
 		transform: translateX(100%);
@@ -1863,7 +1794,8 @@
 		justify-content: space-between;
 		gap: 8px;
 		padding: 8px;
-		border-bottom: 1px solid var(--color-border);
+		border-bottom: 1px solid var(--note-editor-border, var(--color-border));
+		background: color-mix(in srgb, var(--note-editor-header, var(--color-surface-2)) 88%, var(--note-editor-surface, var(--color-surface)) 12%);
 	}
 
 	.mediaFlyoutClose {
@@ -1876,12 +1808,12 @@
 		border-radius: 50%;
 		cursor: pointer;
 		background: transparent;
-		color: var(--color-text);
+		color: var(--note-editor-text, var(--color-text));
 	}
 
 	.mediaFlyoutClose:hover,
 	.mediaFlyoutClose:focus-visible {
-		background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+		background: color-mix(in srgb, var(--note-editor-header, var(--color-surface-2)) 86%, transparent);
 	}
 
 	.mediaFlyoutBody {
@@ -1897,6 +1829,18 @@
 		padding-bottom: var(--app-safe-bottom-visual, env(safe-area-inset-bottom, 0px));
 	}
 
+	.mediaDockSlot {
+		display: block;
+		position: relative;
+		min-height: var(--media-sheet-peek-height, 56px);
+		overflow: hidden;
+		z-index: 1;
+	}
+
+	.mediaDockSlotActive {
+		overflow: visible;
+	}
+
 	.mobileChecklistMediaRow {
 		position: relative;
 		display: flex;
@@ -1904,7 +1848,13 @@
 		justify-content: center;
 		width: calc(100% + 24px);
 		margin-left: -12px;
-		min-height: 40px;
+		min-height: var(--media-sheet-peek-height, 56px);
+	}
+
+	.mobileChecklistMediaRow .mediaDockSlot {
+		flex: 1 1 auto;
+		width: 100%;
+		max-width: none;
 	}
 
 	.mobileChecklistMediaRow .mobileChecklistUndoFabCluster {
@@ -1914,6 +1864,7 @@
 		left: max(calc(env(safe-area-inset-left, 0px) + 8px), 8px);
 		top: 50%;
 		transform: translateY(-50%);
+		z-index: 3;
 	}
 
 	.mobileChecklistMediaRow .mediaDock {
@@ -1921,7 +1872,8 @@
 		width: auto;
 	}
 
-	.mobileChecklistMediaRow .mediaDockHandle {
+	.mobileChecklistMediaRow .mediaDockHandle,
+	.mobileChecklistMediaRow .mediaSheetHandle {
 		width: auto;
 		min-width: 160px;
 		padding: 8px 0;
@@ -1946,23 +1898,43 @@
 		right: 0;
 		bottom: 0;
 		height: min(72dvh, 620px);
-		background: var(--color-surface);
+		--media-sheet-peek-height: 56px;
+		background: var(--note-editor-surface, var(--color-surface));
 		border-top-left-radius: 18px;
 		border-top-right-radius: 18px;
-		transform: translateY(100%);
-		opacity: 0;
-		pointer-events: none;
+		transform: translateY(calc((100% - var(--media-sheet-peek-height, 56px)) * (1 - var(--media-sheet-open-progress, 0))));
+		opacity: 1;
 		will-change: transform, opacity;
 		transition: transform 260ms ease, opacity 260ms ease;
-		z-index: 225;
+		z-index: 1;
 		flex-direction: column;
-		box-shadow: 0 -16px 40px -22px rgba(0, 0, 0, 0.6);
+		box-shadow: none;
+	}
+
+	.mediaSheetHeader,
+	.mediaSheetBody {
+		opacity: var(--media-sheet-open-progress, 0);
+		transition: opacity 200ms ease;
 	}
 
 	.mediaSheetOpen {
-		transform: translateY(0);
+		--media-sheet-open-progress: 1;
+	}
+
+	.mediaSheetDragging {
+		transition: none;
+	}
+
+	.mediaSheetClosed {
 		opacity: 1;
-		pointer-events: auto;
+		background: transparent;
+		box-shadow: none;
+	}
+
+	.mediaSheetClosed .mediaSheetHeader,
+	.mediaSheetClosed .mediaSheetBody {
+		opacity: 0;
+		pointer-events: none;
 	}
 
 	.mediaTabs {
@@ -1976,6 +1948,8 @@
 		padding: 8px 8px;
 		justify-content: space-between;
 		gap: 12px;
+		position: relative;
+		z-index: 2;
 	}
 
 	.bottomDockLeft {
@@ -2005,7 +1979,7 @@
 	.mediaDockPill {
 		width: 140px;
 		height: 5px;
-		background: color-mix(in srgb, var(--color-text) 78%, transparent);
+		background: color-mix(in srgb, var(--note-editor-control, var(--note-editor-text, var(--color-text))) 78%, transparent);
 	}
 
 	.mediaPanelPlaceholder {
@@ -2061,7 +2035,7 @@
 .richEditorContent {
 	min-height: 0;
 	outline: none;
-	color: var(--color-text);
+	color: var(--note-editor-text, var(--color-text));
 	font: inherit;
 	font-size: calc(1rem * var(--note-editor-font-scale, 1));
 	line-height: 1.55;
@@ -2485,6 +2459,7 @@ Drag handle:
 	border: 0;
 	border-radius: var(--radius-sm);
 	background: transparent;
+	color: var(--note-editor-control, var(--note-editor-text, var(--color-text)));
 	font-size: 14px;
 	cursor: grab;
 	touch-action: none;
@@ -2519,7 +2494,7 @@ Drag handle:
 	align-self: start;
 	appearance: none;
 	-webkit-appearance: none;
-	border: 1.5px solid color-mix(in srgb, var(--color-border) 82%, var(--color-text) 18%);
+	border: 1.5px solid color-mix(in srgb, var(--note-editor-control, var(--note-editor-text, var(--color-text))) 82%, var(--note-editor-border, var(--color-border)) 18%);
 	border-radius: 5px;
 	background: transparent;
 	box-shadow: none;
@@ -2529,8 +2504,8 @@ Drag handle:
 }
 
 .checklistCheckbox:checked {
-	background: var(--note-editor-accent, var(--color-accent));
-	border-color: color-mix(in srgb, var(--note-editor-accent, var(--color-accent)) 76%, var(--color-border) 24%);
+	background: var(--note-editor-control-accent, var(--note-editor-accent, var(--color-accent)));
+	border-color: color-mix(in srgb, var(--note-editor-control-accent, var(--note-editor-accent, var(--color-accent))) 76%, var(--note-editor-border, var(--color-border)) 24%);
 	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M1.8 6.1 4.7 9 10.2 3.3' fill='none' stroke='white' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 	background-repeat: no-repeat;
 	background-position: center;
@@ -2538,7 +2513,7 @@ Drag handle:
 }
 
 .checklistCheckbox:focus-visible {
-	box-shadow: 0 0 0 2px color-mix(in srgb, var(--note-editor-accent, var(--color-accent)) 26%, transparent);
+	box-shadow: 0 0 0 2px color-mix(in srgb, var(--note-editor-control-accent, var(--note-editor-accent, var(--color-accent))) 26%, transparent);
 }
 
 .checklistCheckbox:disabled {
