@@ -125,6 +125,7 @@ import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './
 import { emptyTrashNow, moveNoteToWorkspace } from './core/noteManagementApi';
 import { getAppDebugSessionId, logClientEvent } from './core/debugLogger';
 import { beginMoveDebugTrace, logMoveDebugClient } from './core/moveDebugTrace';
+import { createViewTransitionTraceId, recordViewTransitionTrace } from './core/viewTransitionDebug';
 import { flushPendingNoteMoves, queuePendingNoteMove, removePendingNoteMove } from './core/noteMoveQueue';
 import {
 	emitNoteMediaChanged,
@@ -1555,6 +1556,7 @@ export function App(): React.JSX.Element {
 	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(_restoredOverlay?.isMobileSearchOpen ?? false);
 	const [isFabOpen, setIsFabOpen] = React.useState(_restoredOverlay?.isFabOpen ?? false);
 	const [viewMode, setViewMode] = React.useState<ViewMode>(() => loadViewMode());
+	const [viewTransitionTraceId, setViewTransitionTraceId] = React.useState<string | null>(null);
 	const [isViewModePickerOpen, setIsViewModePickerOpen] = React.useState(false);
 	const [bubbleZoom, setBubbleZoom] = React.useState(() => loadBubbleZoom());
 	const viewModeOptions = React.useMemo(
@@ -1585,9 +1587,21 @@ export function App(): React.JSX.Element {
 	const prevViewModeForSplashRef = React.useRef(viewMode);
 	React.useEffect(() => {
 		if (prevViewModeForSplashRef.current === viewMode) return;
+		const traceId = createViewTransitionTraceId('view-mode', prevViewModeForSplashRef.current, viewMode);
+		setViewTransitionTraceId(traceId);
+		recordViewTransitionTrace(traceId, 'APP_VIEW_MODE_SWITCH', {
+			from: prevViewModeForSplashRef.current,
+			to: viewMode,
+			sidebarView,
+			activeWorkspaceId: authWorkspaceId ?? null,
+			selectedNoteId: selectedNoteId ?? null,
+			gridViewMode: viewMode === 'bubble' ? 'card' : viewMode,
+			bubbleZoom,
+			searchQueryLength: deferredSearchQuery.trim().length,
+		});
 		void logClientEvent('VIEW_SWITCH', { kind: 'view-mode', from: prevViewModeForSplashRef.current, to: viewMode });
 		prevViewModeForSplashRef.current = viewMode;
-	}, [viewMode]);
+	}, [authWorkspaceId, bubbleZoom, deferredSearchQuery, selectedNoteId, sidebarView, viewMode]);
 	const activeGridViewMode = (viewMode === 'bubble' ? 'card' : viewMode);
 	const scrollPersistTimerRef = React.useRef<number>(0);
 	const suppressWorkspaceScrollPersistUntilRef = React.useRef(0);
@@ -6733,6 +6747,7 @@ export function App(): React.JSX.Element {
 	const sidebarGroupContent = React.useMemo<Record<string, SidebarSubmenuNode[]>>(
 		() => ({
 			reminders: [
+				{ id: 'past-due', label: t('app.sidebarPastDue'), kind: 'item' },
 				{ id: 'later-today', label: t('app.sidebarToday'), kind: 'item' },
 				{ id: 'tomorrow', label: t('reminders.tomorrow'), kind: 'item' },
 				{ id: 'next-week', label: t('app.sidebarNextWeek'), kind: 'item' },
@@ -9306,6 +9321,8 @@ export function App(): React.JSX.Element {
 						deviceId={deviceId}
 						layoutDensityKey={noteGridLayoutDensityKey}
 						viewMode={viewMode === 'bubble' ? 'card' : viewMode}
+						debugHostViewMode={viewMode}
+						debugTransitionTraceId={viewTransitionTraceId}
 						isVisible={viewMode !== 'bubble' && sidebarView !== 'images'}
 						hiddenNoteId={draftNoteId}
 				/>
@@ -9343,6 +9360,7 @@ export function App(): React.JSX.Element {
 							searchQuery={deferredSearchQuery}
 							sidebarIsCollapsed={sidebarIsCollapsed}
 							hiddenNoteId={draftNoteId}
+							debugTransitionTraceId={viewTransitionTraceId}
 							onSelectNote={handleBubbleNoteSelect}
 							workspaceColorOverrides={bubbleWorkspaceColorOverrides}
 						/>

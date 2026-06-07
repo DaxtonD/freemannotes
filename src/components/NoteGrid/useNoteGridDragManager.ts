@@ -101,6 +101,9 @@ export type DragManagerResult = {
 	getItemElement: (id: string) => HTMLDivElement | null;
 	shouldSuppressOpen: () => boolean;
 	clearDropOverlay: () => void;
+	startTouchDrag: (id: string, input: PointerInput) => boolean;
+	updateTouchDrag: (input: PointerInput) => void;
+	finishTouchDrag: () => void;
 	cancelDrag: () => void;
 };
 
@@ -170,6 +173,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const touchDragSessionRef = React.useRef(false);
 	const suppressOpenUntilRef = React.useRef(0);
 	const lastPointerRef = React.useRef<PointerInput | null>(null);
+	const edgeAutoScrollerRef = React.useRef<ReturnType<typeof createPointerEdgeAutoScroller> | null>(null);
 
 	const scheduleRegistrationRefresh = React.useCallback((): void => {
 		if (typeof window === 'undefined') {
@@ -285,15 +289,23 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				getViewportRect
 			);
 			if (!ip) return;
+			const sourceColumn = columnsRef.current.findIndex((column) => column.includes(activeId));
+			const isCrossColumnInsertion = sourceColumn >= 0 && ip.column !== sourceColumn;
 			const prev = insertionPointRef.current;
 			// No-op if the resolved insertion point hasn't changed.
 			if (prev && prev.column === ip.column && prev.index === ip.index) return;
 			insertionPointRef.current = ip;
 			// Arm the cooldown before triggering the React state update so the
 			// next pointer-move event that arrives during framer-motion's spring
-			// is skipped. insertionSettleMs defaults to 280 ms (masonry spring
-			// duration); list views can pass a shorter value.
-			insertionCooldownRef.current = Date.now() + Math.max(0, insertionSettleMsRef.current);
+			// is skipped. Cross-column touch insertions need a shorter guard than
+			// the full masonry settle window, otherwise the dragged card appears to
+			// freeze as soon as the destination column begins its neighbour shift.
+			// Keep the full cooldown for same-column reorders so they retain their
+			// proven anti-oscillation behavior.
+			const cooldownMs = touchDragSessionRef.current && isCrossColumnInsertion
+				? Math.min(96, Math.max(0, insertionSettleMsRef.current))
+				: Math.max(0, insertionSettleMsRef.current);
+			insertionCooldownRef.current = Date.now() + cooldownMs;
 			setInsertionPoint({ column: ip.column, index: ip.index });
 		},
 		[getRectForId, getColumnRect, getViewportRect]
@@ -391,6 +403,111 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		onTouchDropCommitRef.current?.();
 	}, []);
 
+	const beginManagedDrag = React.useCallback((activeId: string, input: PointerInput, isTouchDrag: boolean): boolean => {
+		clearDropOverlay();
+		const element = itemElementsRef.current.get(activeId);
+		if (!element) return false;
+		const rect = element.getBoundingClientRect();
+		activeDragIdRef.current = activeId;
+		touchDragSessionRef.current = isTouchDrag;
+		pointerOffsetRef.current = {
+			x: input.clientX - rect.left,
+			y: input.clientY - rect.top,
+		};
+		lastPointerRef.current = input;
+		previewSizeRef.current = { width: rect.width, height: rect.height };
+		setActiveDragId(activeId);
+		setIsTouchDragging(isTouchDrag);
+		const overlayLeft = computeOverlayLeft(input);
+		const overlayTop = computeOverlayTop(input);
+		setDragOverlay({
+			id: activeId,
+			left: overlayLeft,
+			top: overlayTop,
+			width: previewSizeRef.current.width,
+			height: previewSizeRef.current.height,
+			settleTo: null,
+		});
+		dragOverlayRef.current = {
+			id: activeId,
+			left: overlayLeft,
+			top: overlayTop,
+			width: previewSizeRef.current.width,
+			height: previewSizeRef.current.height,
+			settleTo: null,
+		};
+		debugDragStart(activeId);
+		if (isTouchDrag || usePointerEdgeAutoScrollRef.current) {
+			edgeAutoScrollerRef.current?.start();
+		}
+		updateInsertionPoint(input);
+		return true;
+	}, [clearDropOverlay, computeOverlayLeft, computeOverlayTop, updateInsertionPoint]);
+
+	const updateManagedDrag = React.useCallback((pointer: PointerInput): void => {
+		const activeId = activeDragIdRef.current;
+		if (!activeId) return;
+		lastPointerRef.current = pointer;
+		const overlayLeft = computeOverlayLeft(pointer);
+		const overlayTop = computeOverlayTop(pointer);
+		setDragOverlay({
+			id: activeId,
+			left: overlayLeft,
+			top: overlayTop,
+			width: previewSizeRef.current.width,
+			height: previewSizeRef.current.height,
+			settleTo: null,
+		});
+		dragOverlayRef.current = {
+			id: activeId,
+			left: overlayLeft,
+			top: overlayTop,
+			width: previewSizeRef.current.width,
+			height: previewSizeRef.current.height,
+			settleTo: null,
+		};
+		updateInsertionPoint(pointer);
+	}, [computeOverlayLeft, computeOverlayTop, updateInsertionPoint]);
+
+	const finishManagedDrag = React.useCallback((): void => {
+		edgeAutoScrollerRef.current?.stop();
+		const activeId = activeDragIdRef.current;
+		const ip = insertionPointRef.current;
+		if (activeId) debugDragEnd(activeId);
+
+		if (!activeId || !ip) {
+			finalizeTouchDrop();
+			clearDragState();
+			return;
+		}
+
+		const finalColumns = insertIntoColumns(columnsRef.current, activeId, ip.column, ip.index);
+		const originalColumns = columnsRef.current;
+		const columnsChanged =
+			finalColumns.length !== originalColumns.length ||
+			finalColumns.some((col, i) => !arraysEqual(col, originalColumns[i]));
+		if (!columnsChanged) {
+			startDropOverlaySettle(activeId, dragOverlayRef.current ? { ...dragOverlayRef.current } : null);
+			finalizeTouchDrop();
+			clearDragState();
+			return;
+		}
+
+		const draggedHeight = Math.max(
+			0,
+			Math.round(itemElementsRef.current.get(activeId)?.getBoundingClientRect().height ?? previewSizeRef.current.height)
+		);
+		startDropOverlaySettle(activeId, dragOverlayRef.current ? { ...dragOverlayRef.current } : null);
+		onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
+		finalizeTouchDrop();
+		clearDragState();
+	}, [clearDragState, finalizeTouchDrop, startDropOverlaySettle]);
+
+	const cancelManagedDrag = React.useCallback((): void => {
+		edgeAutoScrollerRef.current?.stop();
+		clearDragState();
+	}, [clearDragState]);
+
 	const setItemElement = React.useCallback((id: string, node: HTMLDivElement | null): void => {
 		const previous = itemElementsRef.current.get(id) ?? null;
 		if (previous === node) return;
@@ -482,127 +599,32 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				updateInsertionPoint(pointer);
 			},
 		});
+		edgeAutoScrollerRef.current = edgeAutoScroller;
 		const cleanup = monitorForElements({
 			canMonitor: ({ source }) => isPragmaticDragData(source.data),
 			onDragStart: (event: any) => {
-				clearDropOverlay();
 				const data = isPragmaticDragData(event.source.data) ? event.source.data : null;
 				if (!data) return;
 				const activeId = normalizeId(data.noteId);
-				const element = itemElementsRef.current.get(activeId);
-				if (!element) return;
-				const rect = element.getBoundingClientRect();
 				const input = event.location.current.input as PointerInput;
-				activeDragIdRef.current = activeId;
 				const isTouchDrag = isTouchDragCandidateRef.current();
-				touchDragSessionRef.current = isTouchDrag;
-				pointerOffsetRef.current = {
-					x: input.clientX - rect.left,
-					y: input.clientY - rect.top,
-				};
-				lastPointerRef.current = input;
-				previewSizeRef.current = { width: rect.width, height: rect.height };
-				setActiveDragId(activeId);
-				setIsTouchDragging(isTouchDrag);
-				const overlayLeft = computeOverlayLeft(input);
-				const overlayTop = computeOverlayTop(input);
-				setDragOverlay({
-					id: activeId,
-					left: overlayLeft,
-					top: overlayTop,
-					width: previewSizeRef.current.width,
-					height: previewSizeRef.current.height,
-					settleTo: null,
-				});
-				dragOverlayRef.current = {
-					id: activeId,
-					left: overlayLeft,
-					top: overlayTop,
-					width: previewSizeRef.current.width,
-					height: previewSizeRef.current.height,
-					settleTo: null,
-				};
-				debugDragStart(activeId);
-				if (usePointerEdgeAutoScrollRef.current) {
-					edgeAutoScroller.start();
-				}
-				updateInsertionPoint(input);
+				beginManagedDrag(activeId, input, isTouchDrag);
 			},
 			onDrag: (event: any) => {
-				const activeId = activeDragIdRef.current;
-				if (!activeId) return;
 				const pointer = event.location.current.input as PointerInput;
-				lastPointerRef.current = pointer;
-				const overlayLeft = computeOverlayLeft(pointer);
-				const overlayTop = computeOverlayTop(pointer);
-				setDragOverlay({
-					id: activeId,
-					left: overlayLeft,
-					top: overlayTop,
-					width: previewSizeRef.current.width,
-					height: previewSizeRef.current.height,
-					settleTo: null,
-				});
-				dragOverlayRef.current = {
-					id: activeId,
-					left: overlayLeft,
-					top: overlayTop,
-					width: previewSizeRef.current.width,
-					height: previewSizeRef.current.height,
-					settleTo: null,
-				};
-				updateInsertionPoint(pointer);
+				updateManagedDrag(pointer);
 			},
 			onDrop: () => {
-				edgeAutoScroller.stop();
-				const activeId = activeDragIdRef.current;
-				const ip = insertionPointRef.current;
-				if (activeId) debugDragEnd(activeId);
-
-				if (!activeId || !ip) {
-					finalizeTouchDrop();
-					clearDragState();
-					return;
-				}
-
-				// Build the final column layout with the dragged card spliced into
-				// the insertion point.  Compare column layouts — not the flat
-				// reading order — to decide whether the drop is a no-op.  With
-				// height-based masonry packing, a cross-column move can produce
-				// the same row-major flat order (e.g. moving a tall card from
-				// col 0 to col 1 leaves the interleaved reading order unchanged)
-				// even though the visual layout clearly changed.
-				const finalColumns = insertIntoColumns(columnsRef.current, activeId, ip.column, ip.index);
-				const originalColumns = columnsRef.current;
-				const columnsChanged =
-					finalColumns.length !== originalColumns.length ||
-					finalColumns.some((col, i) => !arraysEqual(col, originalColumns[i]));
-				if (!columnsChanged) {
-					startDropOverlaySettle(activeId, dragOverlayRef.current ? { ...dragOverlayRef.current } : null);
-					finalizeTouchDrop();
-					clearDragState();
-					return;
-				}
-
-				const draggedHeight = Math.max(
-					0,
-					Math.round(itemElementsRef.current.get(activeId)?.getBoundingClientRect().height ?? previewSizeRef.current.height)
-				);
-				startDropOverlaySettle(activeId, dragOverlayRef.current ? { ...dragOverlayRef.current } : null);
-				onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
-				finalizeTouchDrop();
-				// Clear drag state after scheduling the committed layout so React can
-				// transition directly from the live preview into the final grid state
-				// instead of briefly re-rendering the pre-drop base columns.
-				clearDragState();
+				finishManagedDrag();
 			},
 		});
 		return () => {
 			edgeAutoScroller.stop();
+			edgeAutoScrollerRef.current = null;
 			cleanup();
 			clearDragState();
 		};
-	}, [clearDragState, clearDropOverlay, computeOverlayLeft, computeOverlayTop, finalizeTouchDrop, updateInsertionPoint]);
+	}, [beginManagedDrag, clearDragState, finishManagedDrag, updateManagedDrag]);
 
 	// Cancel drag if the active card disappears from the list
 	React.useEffect(() => {
@@ -645,6 +667,9 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		getItemElement,
 		shouldSuppressOpen,
 		clearDropOverlay,
-		cancelDrag: clearDragState,
+		startTouchDrag: (id, input) => beginManagedDrag(id, input, true),
+		updateTouchDrag: updateManagedDrag,
+		finishTouchDrag: finishManagedDrag,
+		cancelDrag: cancelManagedDrag,
 	};
 }

@@ -182,6 +182,17 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		event.preventDefault();
 		event.stopPropagation();
 	}, [interactionGuardActive]);
+	const handleBottomDockTouchEnd = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		if (!isCoarsePointer) return;
+		const target = event.target;
+		if (!(target instanceof Element)) return;
+		const button = target.closest('button');
+		if (!(button instanceof HTMLButtonElement)) return;
+		if (!event.currentTarget.contains(button) || button.disabled) return;
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+		button.click();
+	}, [isCoarsePointer]);
 
 	const focusBodyEditor = React.useCallback((): void => {
 		if (textEditor && !textEditor.isDestroyed) {
@@ -577,7 +588,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						</div>
 					) : null}
 
-					<nav className={styles.bottomDock} aria-label={t('editors.bottomDock')}>
+					<nav className={styles.bottomDock} aria-label={t('editors.bottomDock')} onTouchEndCapture={handleBottomDockTouchEnd}>
 						<div className={styles.bottomDockLeft}>
 							<button
 								type="button"

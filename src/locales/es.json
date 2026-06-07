@@ -889,6 +889,7 @@
   "noteMenu": {
     "pinNote": "Fijar nota",
     "unpinNote": "Desfijar nota",
+    "selectBannerImage": "Seleccionar imagen de banner",
     "addCollaborator": "Colaboradores",
     "addImage": "Añadir imagen",
     "addDocument": "Añadir dibujo",
@@ -938,6 +939,35 @@
     "peach": "Melocotón",
     "cream": "Crema",
     "lavender": "Lavanda"
+  },
+  "noteBanners": {
+    "dialogTitle": "Banner de nota",
+    "none": "Sin banner",
+    "loading": "Cargando banners…",
+    "failed": "No se pudieron cargar los banners",
+    "empty": "No hay banners disponibles.",
+    "images": {
+      "calendar": "Calendario",
+      "checklist": "Lista de tareas",
+      "coding": "Programación",
+      "finance": "Finanzas",
+      "gaming": "Juegos",
+      "grocery": "Compras",
+      "health": "Salud",
+      "household": "Hogar",
+      "ideas": "Ideas",
+      "important": "Importante",
+      "industrial": "Industrial",
+      "journal": "Diario",
+      "maintenance": "Mantenimiento",
+      "media": "Multimedia",
+      "reading": "Lectura",
+      "recipes": "Recetas",
+      "reminder": "Recordatorio",
+      "school": "Escuela",
+      "travel": "Viajes",
+      "work": "Trabajo"
+    }
   },
   "push": {
     "statusEnabled": "Notificaciones push activadas",

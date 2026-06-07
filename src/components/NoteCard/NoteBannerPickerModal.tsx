@@ -61,6 +61,13 @@ export function NoteBannerPickerModal(props: NoteBannerPickerModalProps): React.
 			: options.length === 0
 				? t('noteBanners.empty')
 				: null;
+	const localizedOptions = React.useMemo(() => options.map((option) => {
+		const translatedLabel = t(option.labelKey);
+		return {
+			...option,
+			displayLabel: translatedLabel === option.labelKey ? option.label : translatedLabel,
+		};
+	}).sort((left, right) => left.displayLabel.localeCompare(right.displayLabel)), [options, t]);
 
 	return createPortal(
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
@@ -88,7 +95,7 @@ export function NoteBannerPickerModal(props: NoteBannerPickerModalProps): React.
 						<span className={styles.clearPreview} aria-hidden="true" />
 						<span className={styles.label}>{t('noteBanners.none')}</span>
 					</button>
-					{options.map((option) => (
+					{localizedOptions.map((option) => (
 						<button
 							key={option.fileName}
 							type="button"
@@ -97,7 +104,7 @@ export function NoteBannerPickerModal(props: NoteBannerPickerModalProps): React.
 							onClick={() => props.onSelect(option.fileName)}
 						>
 							<span className={styles.preview} aria-hidden="true" style={{ backgroundImage: `url("${getNoteBannerAssetUrl(option.fileName, props.themeId, 'card')}")` }} />
-							<span className={styles.label}>{option.label}</span>
+							<span className={styles.label}>{option.displayLabel}</span>
 						</button>
 					))}
 				</div>

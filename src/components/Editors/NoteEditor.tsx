@@ -608,8 +608,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const mediaSheetDragRef = React.useRef<{
 		startX: number;
 		startY: number;
+		startTime: number;
 		startProgress: number;
 		sheetHeight: number;
+		lastY: number;
+		lastTime: number;
 		verticalLocked: boolean;
 	} | null>(null);
 	const ignoreNextMediaDockClickRef = React.useRef(false);
@@ -725,6 +728,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// cause transient Visual Viewport shrinks that look like a keyboard to
 	// useKeyboardHeight — this ref lets us ignore those false positives.
 	const editorOverlayRefCb = React.useRef<HTMLDivElement | null>(null);
+	const dismissEditorOverlayFocus = React.useCallback((): void => {
+		if (typeof document === 'undefined') return;
+		const active = document.activeElement;
+		if (!(active instanceof HTMLElement) || !editorOverlayRefCb.current?.contains(active)) return;
+		active.blur();
+		window.getSelection()?.removeAllRanges();
+	}, []);
 	const isMobileLandscape = useIsMobileLandscape();
 	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
 	React.useEffect(() => {
@@ -807,6 +817,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		event.preventDefault();
 		event.stopPropagation();
 	}, [interactionGuardActive]);
+	const handleBottomDockTouchEnd = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		if (!isCoarsePointer) return;
+		const target = event.target;
+		if (!(target instanceof Element)) return;
+		const button = target.closest('button');
+		if (!(button instanceof HTMLButtonElement)) return;
+		if (!event.currentTarget.contains(button) || button.disabled) return;
+		if (event.cancelable) event.preventDefault();
+		event.stopPropagation();
+		button.click();
+	}, [isCoarsePointer]);
 	const handleToggleMediaDock = React.useCallback((): void => {
 		if (isMobileLandscapeRef.current) return;
 		if (ignoreNextMediaDockClickRef.current) {
@@ -826,13 +847,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (isMobileLandscapeRef.current) return;
 		const t0 = event.touches[0];
 		if (!t0) return;
+		const gestureTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
 		event.stopPropagation();
 		setIsMediaSheetClosing(false);
 		mediaSheetDragRef.current = {
 			startX: t0.clientX,
 			startY: t0.clientY,
+			startTime: gestureTime,
 			startProgress: mediaSheetProgress,
 			sheetHeight: getMediaSheetHeight(),
+			lastY: t0.clientY,
+			lastTime: gestureTime,
 			verticalLocked: false,
 		};
 	}, [getMediaSheetHeight, mediaSheetProgress]);
@@ -845,17 +870,19 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		const dy = t0.clientY - gesture.startY;
 
 		if (!gesture.verticalLocked) {
-			if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+			if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy) * 1.1) {
 				mediaSheetDragRef.current = null;
 				setIsMediaSheetDragging(false);
 				setMediaSheetProgress(mediaDockOpen ? 1 : 0);
 				return;
 			}
-			if (Math.abs(dy) <= 6 || Math.abs(dy) < Math.abs(dx) * 0.75) return;
+			if (Math.abs(dy) <= 4 || Math.abs(dy) < Math.abs(dx) * 0.55) return;
 			gesture.verticalLocked = true;
 		}
 
 		if (event.cancelable) event.preventDefault();
+		gesture.lastY = t0.clientY;
+		gesture.lastTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
 		setIsMediaSheetDragging(true);
 		setMediaSheetProgress(clampMediaSheetProgress(gesture.startProgress - (dy / Math.max(gesture.sheetHeight, 1))));
 	}, [clampMediaSheetProgress, mediaDockOpen]);
@@ -869,8 +896,24 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			setMediaSheetProgress(mediaDockOpen ? 1 : 0);
 			return;
 		}
+		const touch = event.changedTouches[0];
+		const endY = touch?.clientY ?? gesture.lastY;
+		const endTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
+		const totalDy = endY - gesture.startY;
+		const totalDt = Math.max(endTime - gesture.startTime, 1);
+		const recentDy = endY - gesture.lastY;
+		const recentDt = Math.max(endTime - gesture.lastTime, 1);
+		const recentVelocity = recentDy / recentDt;
+		const isQuickOpenFlick = (totalDy < -18 && totalDt < 240) || recentVelocity < -0.35;
+		const isQuickCloseFlick = (totalDy > 18 && totalDt < 240) || recentVelocity > 0.35;
 		ignoreNextMediaDockClickRef.current = true;
-		const shouldOpen = gesture.startProgress >= 0.5 ? mediaSheetProgress > 0.72 : mediaSheetProgress >= 0.3;
+		const shouldOpen = isQuickOpenFlick
+			? true
+			: isQuickCloseFlick
+				? false
+				: gesture.startProgress >= 0.5
+					? mediaSheetProgress > 0.66
+					: mediaSheetProgress >= 0.24;
 		setIsMediaSheetDragging(false);
 		if (shouldOpen) setMediaSheetProgress(1);
 		setMediaDockOpen(shouldOpen);
@@ -1052,6 +1095,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowEditor, setActiveChecklistRowEditor] = React.useState<Editor | null>(null);
+	const [activeChecklistRowHistoryState, setActiveChecklistRowHistoryState] = React.useState({ canUndo: false, canRedo: false });
 	const checkboxUndoStack = React.useRef<readonly ChecklistItem[][]>([]);
 	const checkboxRedoStack = React.useRef<readonly ChecklistItem[][]>([]);
 	const [checkboxUndoAvail, setCheckboxUndoAvail] = React.useState(false);
@@ -1155,15 +1199,133 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
+	const [textHistoryState, setTextHistoryState] = React.useState({ canUndo: false, canRedo: false });
+	const updateTextHistoryState = React.useCallback((editor: Editor | null): void => {
+		if (!editor) {
+			setTextHistoryState((prev) => (prev.canUndo || prev.canRedo ? { canUndo: false, canRedo: false } : prev));
+			return;
+		}
+		let canUndo = false;
+		let canRedo = false;
+		try {
+			const canApi = editor.can() as { undo?: () => boolean; redo?: () => boolean };
+			canUndo = typeof canApi.undo === 'function' ? Boolean(canApi.undo()) : false;
+			canRedo = typeof canApi.redo === 'function' ? Boolean(canApi.redo()) : false;
+		} catch {
+			canUndo = false;
+			canRedo = false;
+		}
+		setTextHistoryState((prev) => (prev.canUndo === canUndo && prev.canRedo === canRedo
+			? prev
+			: { canUndo, canRedo }));
+	}, []);
+	React.useEffect(() => {
+		if (!textEditor) {
+			updateTextHistoryState(null);
+			return;
+		}
+		const handleHistoryChange = (): void => {
+			updateTextHistoryState(textEditor);
+		};
+		handleHistoryChange();
+		textEditor.on('transaction', handleHistoryChange);
+		textEditor.on('selectionUpdate', handleHistoryChange);
+		textEditor.on('focus', handleHistoryChange);
+		textEditor.on('blur', handleHistoryChange);
+		return () => {
+			textEditor.off('transaction', handleHistoryChange);
+			textEditor.off('selectionUpdate', handleHistoryChange);
+			textEditor.off('focus', handleHistoryChange);
+			textEditor.off('blur', handleHistoryChange);
+		};
+	}, [textEditor, updateTextHistoryState]);
+	const updateActiveChecklistRowHistoryState = React.useCallback((editor: Editor | null): void => {
+		if (!editor) {
+			setActiveChecklistRowHistoryState((prev) => (prev.canUndo || prev.canRedo ? { canUndo: false, canRedo: false } : prev));
+			return;
+		}
+		let canUndo = false;
+		let canRedo = false;
+		try {
+			const canApi = editor.can() as { undo?: () => boolean; redo?: () => boolean };
+			canUndo = typeof canApi.undo === 'function' ? Boolean(canApi.undo()) : false;
+			canRedo = typeof canApi.redo === 'function' ? Boolean(canApi.redo()) : false;
+		} catch {
+			canUndo = false;
+			canRedo = false;
+		}
+		setActiveChecklistRowHistoryState((prev) => (prev.canUndo === canUndo && prev.canRedo === canRedo
+			? prev
+			: { canUndo, canRedo }));
+	}, []);
+	React.useEffect(() => {
+		if (!activeChecklistRowEditor) {
+			updateActiveChecklistRowHistoryState(null);
+			return;
+		}
+		const handleHistoryChange = (): void => {
+			updateActiveChecklistRowHistoryState(activeChecklistRowEditor);
+		};
+		handleHistoryChange();
+		activeChecklistRowEditor.on('transaction', handleHistoryChange);
+		activeChecklistRowEditor.on('selectionUpdate', handleHistoryChange);
+		activeChecklistRowEditor.on('focus', handleHistoryChange);
+		activeChecklistRowEditor.on('blur', handleHistoryChange);
+		return () => {
+			activeChecklistRowEditor.off('transaction', handleHistoryChange);
+			activeChecklistRowEditor.off('selectionUpdate', handleHistoryChange);
+			activeChecklistRowEditor.off('focus', handleHistoryChange);
+			activeChecklistRowEditor.off('blur', handleHistoryChange);
+		};
+	}, [activeChecklistRowEditor, updateActiveChecklistRowHistoryState]);
+	const canRunChecklistPrimaryUndo = activeChecklistRowHistoryState.canUndo || checkboxUndoAvail;
+	const canRunChecklistPrimaryRedo = activeChecklistRowHistoryState.canRedo || checkboxRedoAvail;
+	const handleChecklistPrimaryUndo = (): void => {
+		if (activeChecklistRowHistoryState.canUndo && activeChecklistRowEditor) {
+			try {
+				const chain = activeChecklistRowEditor.chain().focus() as { undo?: () => { run: () => boolean } };
+				if (typeof chain.undo === 'function') {
+					chain.undo().run();
+				}
+				return;
+			} catch {
+				// Ignore transient editor teardown while the dock is animating.
+			}
+		}
+		undoCheckboxChange();
+	};
+	const handleChecklistPrimaryRedo = (): void => {
+		if (activeChecklistRowHistoryState.canRedo && activeChecklistRowEditor) {
+			try {
+				const chain = activeChecklistRowEditor.chain().focus() as { redo?: () => { run: () => boolean } };
+				if (typeof chain.redo === 'function') {
+					chain.redo().run();
+				}
+				return;
+			} catch {
+				// Ignore transient editor teardown while the dock is animating.
+			}
+		}
+		redoCheckboxChange();
+	};
 	// Mirror the draft checklist editor: only surface the mobile undo/redo affordance
-	// when checklist checkbox history exists and no competing mobile overlay is open.
+	// when checklist history exists and no competing mobile overlay is open.
+	// Unlike text notes, checklist row editing should keep the footer history buttons
+	// available while the keyboard is open so they remain beside the media handle.
 	const showMobileChecklistUndoFab = isCoarsePointer
 		&& type === 'checklist'
+		&& !readOnly
+		&& !mediaDockOpen
+		&& !isMoreMenuOpen
+		&& (canRunChecklistPrimaryUndo || canRunChecklistPrimaryRedo);
+	const showMobileTextUndoFab = isCoarsePointer
+		&& type === 'text'
 		&& !readOnly
 		&& !mobileKeyboardOpen
 		&& !mediaDockOpen
 		&& !isMoreMenuOpen
-		&& (checkboxUndoAvail || checkboxRedoAvail);
+		&& (textHistoryState.canUndo || textHistoryState.canRedo);
+	const showMobileHistoryFab = showMobileChecklistUndoFab || showMobileTextUndoFab;
 	// Android standalone PWAs can leave the fullscreen overlay scrolled after
 	// nested modal flows (for example Add Image -> close -> reopen editor). Keep
 	// the overlay pinned to the origin so the editor shell always reopens flush
@@ -1376,8 +1538,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	}, [editorColorStyle, isCoarsePointer, mobileKeyboardOpen, visualViewport]);
 	const handleOpenColorPicker = React.useCallback((): void => {
 		if (readOnly) return;
+		dismissEditorOverlayFocus();
 		setIsColorPickerOpen(true);
-	}, [readOnly]);
+	}, [dismissEditorOverlayFocus, readOnly]);
 	const handleSelectNoteColor = React.useCallback((token: Parameters<typeof saveUserNoteColorToken>[2]): void => {
 		saveUserNoteColorToken(getDeviceId(), props.noteId, token);
 		setIsColorPickerOpen(false);
@@ -1397,11 +1560,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (type !== 'checklist') return;
 		if (!wasOpen || mobileKeyboardOpen) return;
 		if (Date.now() < ignoreKeyboardCloseUntilRef.current) return;
-		setActiveChecklistRowId(null);
 		setFocusRowId(null);
-		setActiveChecklistRowEditor(null);
-		// Remove any lingering :focus-within highlight by clearing DOM focus.
-		// This must not move focus to another input (which could re-open the keyboard).
+		// Keep the active row/editor mounted so footer undo/redo can target the same
+		// checklist text history after the keyboard is dismissed.
+		// Only clear DOM focus so the keyboard stays closed.
 		if (document.activeElement instanceof HTMLElement) {
 			document.activeElement.blur();
 		}
@@ -1677,6 +1839,30 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		setCheckboxRedoAvail(checkboxRedoStack.current.length > 0);
 		replaceChecklistItems(snapshot);
 	}, [normalizedItems, prepareChecklistRowFocusHandoff, replaceChecklistItems]);
+
+	const handleTextUndo = React.useCallback((): void => {
+		if (!textEditor) return;
+		try {
+			const chain = textEditor.chain().focus() as { undo?: () => { run: () => boolean } };
+			if (typeof chain.undo === 'function') {
+				chain.undo().run();
+			}
+		} catch {
+			// Ignore transient editor teardown while the sheet animates.
+		}
+	}, [textEditor]);
+
+	const handleTextRedo = React.useCallback((): void => {
+		if (!textEditor) return;
+		try {
+			const chain = textEditor.chain().focus() as { redo?: () => { run: () => boolean } };
+			if (typeof chain.redo === 'function') {
+				chain.redo().run();
+			}
+		} catch {
+			// Ignore transient editor teardown while the sheet animates.
+		}
+	}, [textEditor]);
 
 	const checkAllChecklistItems = React.useCallback((): void => {
 		if (type !== 'checklist' || readOnly || normalizedItems.length === 0) return;
@@ -2278,7 +2464,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							</div>
 						) : null}
 
-						<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')}>
+						<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')} onTouchEndCapture={handleBottomDockTouchEnd}>
 							<div className={styles.bottomDockLeft}>
 								<button
 									type="button"
@@ -2425,35 +2611,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					}}
 				/>
 				{type === 'checklist' ? (
-					<header className={styles.editorTopBar}>
-						{props.isPendingNew && isModified && props.onSavePendingNew ? (
-							<button
-								type="button"
-								className={styles.closeIconButton}
-								onClick={handleSavePendingNew}
-								aria-label={t('common.save')}
-								title={t('common.save')}
-							>
-								<FontAwesomeIcon icon={byPrefixAndName.fas['floppy-disk']} />
-							</button>
-						) : !props.isPendingNew ? (
-							<button
-								type="button"
-								className={styles.closeIconButton}
-								onClick={handleClose}
-								aria-label={t('common.save')}
-								title={t('common.save')}
-							>
-								<FontAwesomeIcon icon={byPrefixAndName.fas['floppy-disk']} />
-							</button>
-						) : null}
-						{props.isPendingNew ? <button type="button" className={styles.closeIconButton} onClick={handleClose} aria-label={t('common.close')}>
-							✕
-						</button> : null}
-					</header>
-				) : null}
-
-				{type === 'checklist' ? (
 					<textarea
 						name="note-title"
 						autoComplete="off"
@@ -2547,7 +2704,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				{type === 'checklist' ? (
 					<section aria-label="Checklist" className={`${styles.editorContainer} ${styles.checklistEditorSection}`}>
 						<div className={styles.checklistToolbarSlot}>
-												<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} onMakeChecklistCount={!readOnly && activeChecklistRowItem && !isChecklistCountItem(activeChecklistRowItem) ? makeActiveChecklistCount : undefined} onIncrementChecklistCount={!readOnly && activeChecklistCountItem ? incrementActiveChecklistCount : undefined} onDecrementChecklistCount={!readOnly && activeChecklistCountItem ? decrementActiveChecklistCount : undefined} onRemoveChecklistCount={!readOnly && activeChecklistCountItem ? removeActiveChecklistCount : undefined} />
+												<RichTextToolbar editor={activeChecklistRowEditor} variant="minimal" compact toolbarMode={props.toolbarMode} hideStrikeButton applyInlineFormattingToWholeEditor preferEditorUndoRedo onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} onUndoCheckbox={!readOnly ? undoCheckboxChange : undefined} onRedoCheckbox={!readOnly ? redoCheckboxChange : undefined} checkboxUndoAvail={checkboxUndoAvail} checkboxRedoAvail={checkboxRedoAvail} onMakeChecklistCount={!readOnly && activeChecklistRowItem && !isChecklistCountItem(activeChecklistRowItem) ? makeActiveChecklistCount : undefined} onIncrementChecklistCount={!readOnly && activeChecklistCountItem ? incrementActiveChecklistCount : undefined} onDecrementChecklistCount={!readOnly && activeChecklistCountItem ? decrementActiveChecklistCount : undefined} onRemoveChecklistCount={!readOnly && activeChecklistCountItem ? removeActiveChecklistCount : undefined} />
 						</div>
 						{/* Keyboard-open branch:
 						    Checklist mode does not use the generic rich-text viewport above, so we add
@@ -2766,8 +2923,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				    layout at all. Rendering `null` here removes the footer from the document flow,
 				    which prevents it from being scrolled into view behind the keyboard. */}
 				{mobileKeyboardOpen ? null : <div className={styles.editorBottomArea}>
-					<div className={type === 'checklist' ? styles.mobileChecklistMediaRow : undefined}>
-						{showMobileChecklistUndoFab ? (
+					<div className={isCoarsePointer ? styles.mobileChecklistMediaRow : undefined}>
+						{showMobileHistoryFab ? (
 							<div
 								className={styles.mobileChecklistUndoFabCluster}
 								onPointerDown={(event) => event.stopPropagation()}
@@ -2776,20 +2933,20 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<button
 									type="button"
 									className={styles.mobileChecklistUndoFabButton}
-									onClick={undoCheckboxChange}
-									disabled={!checkboxUndoAvail}
-									aria-label={t('editors.undoCheckbox')}
-									title={t('editors.undoCheckbox')}
+									onClick={type === 'checklist' ? handleChecklistPrimaryUndo : handleTextUndo}
+									disabled={type === 'checklist' ? !canRunChecklistPrimaryUndo : !textHistoryState.canUndo}
+									aria-label={type === 'checklist' ? (activeChecklistRowHistoryState.canUndo ? t('editors.undo') : t('editors.undoCheckbox')) : t('editors.undo')}
+									title={type === 'checklist' ? (activeChecklistRowHistoryState.canUndo ? t('editors.undo') : t('editors.undoCheckbox')) : t('editors.undo')}
 								>
 									<FontAwesomeIcon icon={byPrefixAndName.fas.undo} />
 								</button>
 								<button
 									type="button"
 									className={styles.mobileChecklistUndoFabButton}
-									onClick={redoCheckboxChange}
-									disabled={!checkboxRedoAvail}
-									aria-label={t('editors.redoCheckbox')}
-									title={t('editors.redoCheckbox')}
+									onClick={type === 'checklist' ? handleChecklistPrimaryRedo : handleTextRedo}
+									disabled={type === 'checklist' ? !canRunChecklistPrimaryRedo : !textHistoryState.canRedo}
+									aria-label={type === 'checklist' ? (activeChecklistRowHistoryState.canRedo ? t('editors.redo') : t('editors.redoCheckbox')) : t('editors.redo')}
+									title={type === 'checklist' ? (activeChecklistRowHistoryState.canRedo ? t('editors.redo') : t('editors.redoCheckbox')) : t('editors.redo')}
 								>
 									<FontAwesomeIcon icon={byPrefixAndName.fas.redo} />
 								</button>
@@ -2873,13 +3030,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						) : null}
 					</div>
 
-					<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')}>
+					<nav className={`${styles.bottomDock}${type === 'checklist' ? ` ${styles.bottomDockCompact}` : ''}`} aria-label={t('editors.bottomDock')} onTouchEndCapture={handleBottomDockTouchEnd}>
 						<div className={styles.bottomDockLeft}>
 							<button
 								type="button"
 								className={`${styles.bottomDockButton}${type === 'checklist' ? ` ${styles.bottomDockButtonCompact}` : ''}`}
 								aria-label={t('editors.dockAction')}
 								onClick={(e) => {
+									dismissEditorOverlayFocus();
 									// Capture the trigger button's rect so the desktop popover can anchor
 									// to it. (On mobile this is ignored since the menu is a sheet.)
 									setMoreMenuAnchorRect(e.currentTarget.getBoundingClientRect().toJSON());
@@ -3135,6 +3293,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						toolbarMode={props.toolbarMode}
 						hideStrikeButton={type === 'checklist'}
 						applyInlineFormattingToWholeEditor={type === 'checklist'}
+						preferEditorUndoRedo={type === 'checklist'}
 						onCreateUrlPreview={handleCreateUrlPreview}
 						noteAutoScrollEnabled={noteAutoScrollEnabled}
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}

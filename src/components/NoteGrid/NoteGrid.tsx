@@ -65,6 +65,7 @@ import { useNoteGridDragManager } from './useNoteGridDragManager';
 import { VirtualizedNoteColumn } from './VirtualizedNoteColumn';
 import { loadNoteHeightCache, saveNoteHeightCache } from '../../core/noteHeightCache';
 import { isDebugLoggingEnabled, logClientEvent } from '../../core/debugLogger';
+import { isViewTransitionDebugEnabled, recordViewTransitionTrace } from '../../core/viewTransitionDebug';
 import {
 	getLayoutDeviceType,
 	getLayoutViewportBucket,
@@ -178,6 +179,10 @@ export type NoteGridProps = {
 	layoutDensityKey?: string;
 	/** Active view mode. 'list' and 'strip' replace the masonry grid with flat rows. */
 	viewMode?: ViewMode;
+	/** Parent App view mode, including 'bubble' while the grid stays mounted but hidden. */
+	debugHostViewMode?: ViewMode;
+	/** Correlation id for the current view-switch runtime trace. */
+	debugTransitionTraceId?: string | null;
 	/** True only when the grid is actually visible in layout, not kept mounted under display:none. */
 	isVisible?: boolean;
 	/** Note ID to suppress from the display — used while a new note is being drafted. */
@@ -227,6 +232,13 @@ type NoteGridSection = {
 const MAX_VISIBLE_COLLABORATORS = 6;
 const MAX_VISIBLE_METADATA_ENTRIES = 6;
 const INITIAL_DATA_SETTLE_MS = 450;
+const TOUCH_DRAG_LONG_PRESS_MS = 400;
+
+type TouchSelectionLockSnapshot = {
+	htmlUserSelect: string;
+	bodyUserSelect: string;
+	bodyWebkitUserSelect: string;
+};
 
 function hasCanonicalNoteMetadata(metadata: Y.Map<unknown>): boolean {
 	return metadata.has('type')
@@ -671,11 +683,13 @@ type GridNoteCardProps = {
 	preserveControlShell?: boolean;
 	isOverlayActiveCard?: boolean;
 	layoutReady: boolean;
+	debugTransitionTraceId?: string | null;
 	dropSettling?: boolean;
 	hideDuringDropSettle?: boolean;
 	disablePositionLayout?: boolean;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
+	useWholeCardDragHandle?: boolean;
 };
 
 const GRID_LAYOUT_TRANSITION = { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 } as const;
@@ -965,6 +979,14 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 		[props.note.id, props.setHandleElement]
 	);
 
+	const handleCardContentRef = React.useCallback(
+		(node: HTMLDivElement | null) => {
+			if (!props.useWholeCardDragHandle) return;
+			props.setHandleElement(props.note.id, node);
+		},
+		[props.note.id, props.setHandleElement, props.useWholeCardDragHandle]
+	);
+
 	return (
 		<motion.div
 			ref={handleItemRef}
@@ -989,6 +1011,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 			data-note-id={props.note.id}
 		>
 			<div
+				ref={props.useWholeCardDragHandle ? handleCardContentRef : undefined}
 				data-note-content="true"
 				className={[
 					props.selected ? styles.itemSelected : '',
@@ -1024,7 +1047,9 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					isTrashView={props.isTrashView}
 					initialLinkRecords={props.initialLinkRecords}
 					preserveControlShell={props.preserveControlShell}
-					dragHandleRef={handleDragHandleRef}
+					debugTransitionTraceId={props.debugTransitionTraceId}
+					dragHandleRef={props.useWholeCardDragHandle ? undefined : handleDragHandleRef}
+					useWholeCardDragHandle={props.useWholeCardDragHandle}
 				/>
 			</div>
 		</motion.div>
@@ -1120,6 +1145,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		(typeof (import.meta as any).env !== 'undefined' && (import.meta as any).env.DEV) ||
 		(typeof process !== 'undefined' && process.env?.NODE_ENV !== 'production');
 	const startupDebugEnabled = isDevBuild || isDebugLoggingEnabled();
+	const transitionDebugEnabled = Boolean(props.debugTransitionTraceId) && isViewTransitionDebugEnabled();
 	const resolveMediaDocId = React.useCallback((noteId: string): string => {
 		// Guard first: manager.resolveRoomName() never throws for unregistered aliases
 		// — it falls back to `${activeWorkspaceId}:${rawNoteId}`, producing an invalid
@@ -1494,9 +1520,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [initialLayoutSettled]);
 
 	const touchStartPointRef = React.useRef<{ x: number; y: number } | null>(null);
+	const touchLastPointRef = React.useRef<{ x: number; y: number } | null>(null);
 	const pendingTouchIntentRef = React.useRef(false);
 	const touchScrollDetectedRef = React.useRef(false);
 	const suppressTouchDragUntilRef = React.useRef(0);
+	const touchLongPressTimerRef = React.useRef<number>(0);
+	const coarseTouchDragGateRef = React.useRef(false);
+	const touchSelectionLockRef = React.useRef<TouchSelectionLockSnapshot | null>(null);
 	// ── More-menu state ──────────────────────────────────────────────────
 	// Tracks which note's long-press more-menu is currently open (null = closed).
 	const [moreMenuNoteId, setMoreMenuNoteId] = React.useState<string | null>(null);
@@ -1505,6 +1535,53 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [bannerPickerNoteId, setBannerPickerNoteId] = React.useState<string | null>(null);
 	const isTrashView = Boolean(props.showTrashed);
 	const isGridVisible = props.isVisible !== false;
+	const previousGridVisibleRef = React.useRef(isGridVisible);
+	const previousGridVisibilityDebugRef = React.useRef(isGridVisible);
+	const transitionGridSnapshotRef = React.useRef('');
+
+	React.useEffect(() => {
+		const wasVisible = previousGridVisibleRef.current;
+		previousGridVisibleRef.current = isGridVisible;
+		if (!isGridVisible || wasVisible || !initialLayoutSettled || typeof window === 'undefined') return;
+		if (transitionDebugEnabled && props.debugTransitionTraceId) {
+			recordViewTransitionTrace(props.debugTransitionTraceId, 'NOTEGRID_RESTORE_GATE_START', {
+				hostViewMode: props.debugHostViewMode ?? null,
+				gridViewMode: props.viewMode ?? 'card',
+				noteHeightsVersion,
+			});
+		}
+		setStartupLayoutAnimationsReady(false);
+		let raf2 = 0;
+		const raf1 = window.requestAnimationFrame(() => {
+			raf2 = window.requestAnimationFrame(() => {
+				setStartupLayoutAnimationsReady(true);
+				if (transitionDebugEnabled && props.debugTransitionTraceId) {
+					recordViewTransitionTrace(props.debugTransitionTraceId, 'NOTEGRID_RESTORE_GATE_END', {
+						hostViewMode: props.debugHostViewMode ?? null,
+						gridViewMode: props.viewMode ?? 'card',
+						noteHeightsVersion,
+					});
+				}
+			});
+		});
+		return () => {
+			window.cancelAnimationFrame(raf1);
+			if (raf2) window.cancelAnimationFrame(raf2);
+		};
+	}, [initialLayoutSettled, isGridVisible, noteHeightsVersion, props.debugHostViewMode, props.debugTransitionTraceId, props.viewMode, transitionDebugEnabled]);
+
+	React.useEffect(() => {
+		if (!transitionDebugEnabled || !props.debugTransitionTraceId) return;
+		const previousVisibility = previousGridVisibilityDebugRef.current;
+		if (previousVisibility === isGridVisible) return;
+		previousGridVisibilityDebugRef.current = isGridVisible;
+		recordViewTransitionTrace(props.debugTransitionTraceId, 'NOTEGRID_VISIBILITY', {
+			fromVisible: previousVisibility,
+			toVisible: isGridVisible,
+			hostViewMode: props.debugHostViewMode ?? null,
+			gridViewMode: props.viewMode ?? 'card',
+		});
+	}, [isGridVisible, props.debugHostViewMode, props.debugTransitionTraceId, props.viewMode, transitionDebugEnabled]);
 
 	React.useEffect(() => {
 		if (moreMenuNoteId !== null) return;
@@ -1609,6 +1686,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [initialLayoutSettled, noteHeightsVersion, props.deviceId]);
 
 	const handleMeasuredCardHeight = React.useCallback((noteId: string, height: number): void => {
+		if (!isGridVisible) return;
 		const normalizedHeight = Math.max(0, Math.round(height));
 		if (!noteId || normalizedHeight <= 0) return;
 		const previousMeasuredHeight = noteHeightByIdRef.current.get(noteId);
@@ -1632,11 +1710,25 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			previousMeasuredHeight,
 			previousMeasuredHeight === undefined ? 'initial-measurement' : 'measured-card-height'
 		);
+		if (transitionDebugEnabled && props.debugTransitionTraceId) {
+			const measuredDoc = docsById[noteId] ?? manager.peekDoc(noteId) ?? snapshotDocById.get(noteId) ?? null;
+			const noteType = String(measuredDoc?.getMap('metadata').get('type') ?? 'text') === 'checklist' ? 'checklist' : 'text';
+			recordViewTransitionTrace(props.debugTransitionTraceId, 'NOTEGRID_CARD_HEIGHT_CHANGE', {
+				noteId,
+				noteType,
+				previousHeight: previousMeasuredHeight ?? null,
+				nextHeight: normalizedHeight,
+				deltaHeight: previousMeasuredHeight == null ? null : normalizedHeight - previousMeasuredHeight,
+				reason: previousMeasuredHeight === undefined ? 'initial-measurement' : 'measured-card-height',
+				hostViewMode: props.debugHostViewMode ?? null,
+				gridViewMode: props.viewMode ?? 'card',
+			});
+		}
 		// ResizeObserver callbacks can land in bursts while images/fonts settle.
 		// Coalesce those updates so masonry only repacks once per animation frame.
 		noteHeightByIdRef.current.set(noteId, normalizedHeight);
 		scheduleMeasuredHeightRefresh();
-	}, [scheduleMeasuredHeightRefresh]);
+	}, [docsById, isGridVisible, manager, props.debugHostViewMode, props.debugTransitionTraceId, props.viewMode, scheduleMeasuredHeightRefresh, snapshotDocById, transitionDebugEnabled]);
 
 	React.useEffect(() => {
 		return () => {
@@ -1697,16 +1789,56 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		const onScroll = (): void => {
+			if (dragManager.activeDragId) return;
 			if (!pendingTouchIntentRef.current) return;
 			touchScrollDetectedRef.current = true;
 			pendingTouchIntentRef.current = false;
+			coarseTouchDragGateRef.current = false;
 			touchStartPointRef.current = null;
+			touchLastPointRef.current = null;
+			const selectionLock = touchSelectionLockRef.current;
+			if (selectionLock && typeof document !== 'undefined') {
+				document.documentElement.style.userSelect = selectionLock.htmlUserSelect;
+				document.body.style.userSelect = selectionLock.bodyUserSelect;
+				document.body.style.webkitUserSelect = selectionLock.bodyWebkitUserSelect;
+				touchSelectionLockRef.current = null;
+			}
+			if (touchLongPressTimerRef.current && typeof window !== 'undefined') {
+				window.clearTimeout(touchLongPressTimerRef.current);
+				touchLongPressTimerRef.current = 0;
+			}
 			suppressTouchDragUntilRef.current = Date.now() + 200;
 		};
 		window.addEventListener('scroll', onScroll, { passive: true, capture: true });
 		return () => {
 			window.removeEventListener('scroll', onScroll, true);
 		};
+	}, []);
+
+	const lockTouchSelection = React.useCallback((): void => {
+		if (touchSelectionLockRef.current) return;
+		if (typeof document === 'undefined') return;
+		const html = document.documentElement;
+		const body = document.body;
+		touchSelectionLockRef.current = {
+			htmlUserSelect: html.style.userSelect,
+			bodyUserSelect: body.style.userSelect,
+			bodyWebkitUserSelect: body.style.webkitUserSelect,
+		};
+		html.style.userSelect = 'none';
+		body.style.userSelect = 'none';
+		body.style.webkitUserSelect = 'none';
+	}, []);
+
+	const unlockTouchSelection = React.useCallback((): void => {
+		const snapshot = touchSelectionLockRef.current;
+		if (!snapshot || typeof document === 'undefined') return;
+		const html = document.documentElement;
+		const body = document.body;
+		html.style.userSelect = snapshot.htmlUserSelect;
+		body.style.userSelect = snapshot.bodyUserSelect;
+		body.style.webkitUserSelect = snapshot.bodyWebkitUserSelect;
+		touchSelectionLockRef.current = null;
 	}, []);
 
 	// ── Load Yjs data: notesList + noteOrder ─────────────────────────────
@@ -1949,6 +2081,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!props.activeCollaboratorFilter) return baseVisibleIds;
 		return baseVisibleIds.filter((noteId) => collaboratorMatchesFilter(collaboratorSummariesByNoteId[noteId], props.activeCollaboratorFilter));
 	}, [baseVisibleIds, collaboratorSummariesByNoteId, props.activeCollaboratorFilter]);
+	const shouldTemporarilyOverrideGridPlacement = props.viewMode === 'card' && (
+		Boolean(props.activeCollaboratorFilter)
+		|| Boolean(props.activeCollectionId)
+		|| (props.activeLabelIds?.length ?? 0) > 0
+		|| (props.reminderFilter ?? 'all') !== 'all'
+		|| (props.sortMode ?? 'manual') !== 'manual'
+		|| (props.sortGrouping ?? 'none') !== 'none'
+		|| props.showTrashed === true
+		|| props.showArchived === true
+	);
 	const initialDataSettleSignature = React.useMemo(
 		() => `${orderedIds.join('\u001f')}\u001e${visibleIds.join('\u001f')}`,
 		[orderedIds, visibleIds]
@@ -2054,6 +2196,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Apply the warm-start layout snapshot before paint so the reopened PWA does
 	// not first render in fallback order and then visibly jump once effects run.
 	React.useLayoutEffect(() => {
+		if (shouldTemporarilyOverrideGridPlacement) return;
 		if (!cachedLayoutSnapshot || !props.activeWorkspaceId) return;
 		const cacheKey = `${props.activeWorkspaceId}:${props.viewMode ?? 'card'}:${layoutDeviceType}:${layoutDensityKey}:${layoutViewportBucket}`;
 		if (appliedLayoutCacheKeyRef.current === cacheKey) return;
@@ -2062,7 +2205,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (nextLayoutOrder.length > 0) {
 			setLayoutOrderIds((previous) => (arraysEqual(previous, nextLayoutOrder) ? previous : nextLayoutOrder));
 		}
-	}, [cachedLayoutSnapshot, layoutDensityKey, layoutDeviceType, layoutViewportBucket, props.activeWorkspaceId, props.viewMode, visibleIds]);
+	}, [cachedLayoutSnapshot, layoutDensityKey, layoutDeviceType, layoutViewportBucket, props.activeWorkspaceId, props.viewMode, shouldTemporarilyOverrideGridPlacement, visibleIds]);
 
 	React.useEffect(() => {
 		if (!notesList || !noteOrder) return;
@@ -2423,6 +2566,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		void logClientEvent('NOTE_GRID_STARTUP', parsedSnapshot);
 	}, [allDocsLoaded, connection.pendingNoteWsSync, connection.registryWsSynced, connection.state, docsById, initialDataSettled, initialLayoutSettled, isGridVisible, layoutMeasurementTargetIds.length, layoutReady, manager, measuredLayoutTargetCount, measuredRenderedCardCount, noteHeightsVersion, noteOrder, orderedIds, props.activeWorkspaceId, props.enableLayoutAnimations, props.viewMode, renderedIds, shimmerStalled, startupDebugEnabled, visibleIds, wsSyncJustFired]);
 	React.useEffect(() => {
+		return () => {
+			if (touchLongPressTimerRef.current && typeof window !== 'undefined') {
+				window.clearTimeout(touchLongPressTimerRef.current);
+				touchLongPressTimerRef.current = 0;
+			}
+		};
+	}, []);
+
+	React.useEffect(() => {
 		if (!allDocsLoaded) {
 			setInitialLayoutSettled(false);
 			return;
@@ -2642,6 +2794,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			settledColumnsRef.current.length > 0 &&
 			settledColumnsRef.current.length !== columnCount;
 		const useSettledAnchors =
+			!shouldTemporarilyOverrideGridPlacement &&
 			shouldPreserveSettledStartupColumns &&
 			repackReason !== 'drag-drop' &&
 			repackReason !== 'workspace-change' &&
@@ -2651,10 +2804,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (useSettledAnchors) {
 			anchoredColumnById = settledColumnByIdRef.current;
 		} else {
-			anchoredColumnById = viewportAnchorColumnsRef.current;
+			anchoredColumnById = shouldTemporarilyOverrideGridPlacement ? new Map<string, number>() : viewportAnchorColumnsRef.current;
 			// Recovery fallback: if viewport anchors were cleared (e.g. on first
 			// render before captureAnchors fires) reconstruct them from layout.
 			if (
+				!shouldTemporarilyOverrideGridPlacement &&
 				props.viewMode === 'card' &&
 				anchoredColumnById.size === 0 &&
 				repackReason === 'measured-card-height' &&
@@ -2688,8 +2842,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			gapPx,
 			fallbackHeightPx: fallbackH,
 			anchoredColumnById,
-			preferredColumnById: shouldPreserveSettledStartupColumns ? settledColumnByIdRef.current : undefined,
-			preferredSiblingIndexById: shouldPreserveSettledStartupColumns ? settledSiblingIndexByIdRef.current : undefined,
+			preferredColumnById: shouldPreserveSettledStartupColumns && !shouldTemporarilyOverrideGridPlacement ? settledColumnByIdRef.current : undefined,
+			preferredSiblingIndexById: shouldPreserveSettledStartupColumns && !shouldTemporarilyOverrideGridPlacement ? settledSiblingIndexByIdRef.current : undefined,
 			onAssign: (decision) => {
 				placementDecisions.set(decision.noteId, decision);
 			},
@@ -2752,7 +2906,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			columns,
 			placementDecisions,
 		};
-	}, [renderedIds, columnCount, noteHeightsVersion, mobileGridGapPx, packedHeightLookup, props.maxCardHeightPx, props.viewMode]);
+	}, [columnCount, mobileGridGapPx, noteHeightsVersion, packedHeightLookup, props.maxCardHeightPx, props.viewMode, renderedIds, shouldTemporarilyOverrideGridPlacement]);
 	const packedColumns = packedLayout.columns;
 	const resolvedBaseColumns = packedColumns;
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
@@ -2782,7 +2936,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		gridRef,
 		columns: dragColumns,
 		visibleIds,
-		canStartDrag: () => !isTrashView && props.canReorder !== false && !touchScrollDetectedRef.current && Date.now() >= suppressTouchDragUntilRef.current,
+		canStartDrag: () => !isTrashView
+			&& props.canReorder !== false
+			&& (!isCoarsePointer || (pendingTouchIntentRef.current && coarseTouchDragGateRef.current))
+			&& !touchScrollDetectedRef.current
+			&& Date.now() >= suppressTouchDragUntilRef.current,
 		isTouchDragCandidate: () => pendingTouchIntentRef.current,
 		onCommitOrder: commitVisibleOrder,
 		onTouchDropCommit: props.onTouchReorderEnd,
@@ -2790,9 +2948,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		usePointerEdgeAutoScroll: isListLikeView,
 	});
 
+
+
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
 		if (isListLikeView) return;
+		if (shouldTemporarilyOverrideGridPlacement) return;
 		let rafId = 0;
 		const captureAnchors = (): void => {
 			if (dragManager.activeDragId) return;
@@ -2832,7 +2993,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			window.removeEventListener('scroll', scheduleCapture);
 			window.removeEventListener('resize', scheduleCapture);
 		};
-	}, [dragManager.activeDragId, isListLikeView, props.maxCardHeightPx, resolvedBaseColumns]);
+	}, [dragManager.activeDragId, isListLikeView, props.maxCardHeightPx, resolvedBaseColumns, shouldTemporarilyOverrideGridPlacement]);
 
 	React.useEffect(() => {
 		if (isListLikeView) {
@@ -3001,14 +3162,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				debugSiblingOrderChanged(logPayload);
 			}
 		}
-		settledColumnsRef.current = resolvedBaseColumns.map((column) => [...column]);
-		settledColumnByIdRef.current = nextColumnById;
-		settledSiblingIndexByIdRef.current = nextSiblingIndexById;
+		if (!shouldTemporarilyOverrideGridPlacement) {
+			settledColumnsRef.current = resolvedBaseColumns.map((column) => [...column]);
+			settledColumnByIdRef.current = nextColumnById;
+			settledSiblingIndexByIdRef.current = nextSiblingIndexById;
+		}
 		invalidatedNoteReasonsRef.current.clear();
 		expansionAffectedNoteIdsRef.current.clear();
 		recentlyMovedNoteIdsRef.current.clear();
 		repackReasonRef.current = 'settled';
-	}, [columnCount, dragManager.activeDragId, isListLikeView, mobileCardWidthPx, mobileGridGapPx, packedLayout.placementDecisions, props.maxCardHeightPx, props.viewMode, renderedIds.length, resolvedBaseColumns, visibleIds]);
+	}, [columnCount, dragManager.activeDragId, isListLikeView, mobileCardWidthPx, mobileGridGapPx, packedLayout.placementDecisions, props.maxCardHeightPx, props.viewMode, renderedIds.length, resolvedBaseColumns, shouldTemporarilyOverrideGridPlacement, visibleIds]);
 
 	// ── Active columns for rendering ──────────────────────────────────────
 	// During drag, use previewColumns (with the card at the insertion point
@@ -3027,20 +3190,48 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const previous = {
 			htmlTouchAction: html.style.touchAction,
 			htmlOverscrollBehavior: html.style.overscrollBehavior,
+			htmlOverflow: html.style.overflow,
+			htmlUserSelect: html.style.userSelect,
 			bodyTouchAction: body.style.touchAction,
 			bodyOverscrollBehavior: body.style.overscrollBehavior,
+			bodyOverflow: body.style.overflow,
+			bodyUserSelect: body.style.userSelect,
+			bodyWebkitUserSelect: body.style.webkitUserSelect,
 		};
 		html.style.touchAction = 'none';
 		html.style.overscrollBehavior = 'none';
+		html.style.overflow = 'hidden';
+		html.style.userSelect = 'none';
 		body.style.touchAction = 'none';
 		body.style.overscrollBehavior = 'none';
+		body.style.overflow = 'hidden';
+		body.style.userSelect = 'none';
+		body.style.webkitUserSelect = 'none';
+		try {
+			window.getSelection?.()?.removeAllRanges();
+		} catch {
+			// Ignore selection-clear failures on restricted browsers.
+		}
 		return () => {
 			html.style.touchAction = previous.htmlTouchAction;
 			html.style.overscrollBehavior = previous.htmlOverscrollBehavior;
+			html.style.overflow = previous.htmlOverflow;
+			html.style.userSelect = previous.htmlUserSelect;
 			body.style.touchAction = previous.bodyTouchAction;
 			body.style.overscrollBehavior = previous.bodyOverscrollBehavior;
+			body.style.overflow = previous.bodyOverflow;
+			body.style.userSelect = previous.bodyUserSelect;
+			body.style.webkitUserSelect = previous.bodyWebkitUserSelect;
+			// If a body-surface long-press drag was in progress, lockTouchSelection()
+			// ran before isTouchDragging became true, so its snapshot captured the
+			// true original userSelect (while the isTouchDragging snapshot captured
+			// the already-locked 'none').  Calling unlockTouchSelection() here
+			// overwrites the just-restored 'none' with the true original value.
+			// unlockTouchSelection is a no-op when touchSelectionLockRef is null
+			// (header/banner drags that never called lockTouchSelection).
+			unlockTouchSelection();
 		};
-	}, [dragManager.isTouchDragging]);
+	}, [dragManager.isTouchDragging, unlockTouchSelection]);
 
 	// When the max-card-height preference changes, all previously measured heights
 	// are stale (the CSS cap has moved). Clear the in-memory cache so the next
@@ -3068,6 +3259,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useLayoutEffect(() => {
 		if (!isGridVisible) return;
 		if (isListLikeView) return;
+		if (shouldTemporarilyOverrideGridPlacement) return;
 		if (!initialLayoutSettled) return;
 		const grid = gridRef.current;
 		if (!grid) return;
@@ -3101,7 +3293,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				}
 			);
 		}
-	}, [columnCount, columns, dragManager.activeDragId, initialLayoutSettled, isGridVisible, isListLikeView, layoutDensityKey, layoutDeviceType, layoutViewportBucket, noteHeightsVersion, props.activeWorkspaceId, props.viewMode, renderedIds]);
+		}, [columnCount, columns, dragManager.activeDragId, initialLayoutSettled, isGridVisible, isListLikeView, layoutDensityKey, layoutDeviceType, layoutViewportBucket, noteHeightsVersion, props.activeWorkspaceId, props.viewMode, renderedIds, shouldTemporarilyOverrideGridPlacement]);
 
 	const activeOverlayId = dragManager.activeDragId ?? dragManager.dropOverlay?.id ?? null;
 	const activeDoc = activeOverlayId ? docsById[activeOverlayId] : undefined;
@@ -3341,6 +3533,46 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return { top, left, width: overlayWidth };
 	}, [isCoarsePointer, openMetadataChip]);
 	const cardPositionAnimationsReady = layoutReady && startupLayoutAnimationsReady;
+
+	React.useEffect(() => {
+		if (!transitionDebugEnabled || !props.debugTransitionTraceId) return;
+		const snapshot = [
+			props.debugTransitionTraceId,
+			props.debugHostViewMode ?? 'unknown',
+			props.viewMode ?? 'card',
+			isGridVisible ? '1' : '0',
+			allDocsLoaded ? '1' : '0',
+			initialDataSettled ? '1' : '0',
+			initialLayoutSettled ? '1' : '0',
+			layoutReady ? '1' : '0',
+			startupLayoutAnimationsReady ? '1' : '0',
+			cardPositionAnimationsReady ? '1' : '0',
+			renderedIds.length,
+			visibleIds.length,
+			measuredRenderedCardCount,
+			noteHeightsVersion,
+			repackReasonRef.current,
+		].join('|');
+		if (transitionGridSnapshotRef.current === snapshot) return;
+		transitionGridSnapshotRef.current = snapshot;
+		recordViewTransitionTrace(props.debugTransitionTraceId, 'NOTEGRID_STATE', {
+			hostViewMode: props.debugHostViewMode ?? null,
+			gridViewMode: props.viewMode ?? 'card',
+			isGridVisible,
+			allDocsLoaded,
+			initialDataSettled,
+			initialLayoutSettled,
+			layoutReady,
+			startupLayoutAnimationsReady,
+			cardPositionAnimationsReady,
+			renderedCount: renderedIds.length,
+			visibleCount: visibleIds.length,
+			measuredRenderedCardCount,
+			noteHeightsVersion,
+			repackReason: repackReasonRef.current,
+			workspaceId: props.activeWorkspaceId ?? null,
+		});
+	}, [allDocsLoaded, cardPositionAnimationsReady, initialDataSettled, initialLayoutSettled, isGridVisible, layoutReady, measuredRenderedCardCount, noteHeightsVersion, props.activeWorkspaceId, props.debugHostViewMode, props.debugTransitionTraceId, props.viewMode, renderedIds.length, startupLayoutAnimationsReady, transitionDebugEnabled, visibleIds.length]);
 	const isDropSettling = Boolean(dragManager.dropOverlay) && !dragManager.activeDragId;
 	const dropSettlingOverlayTarget = isDropSettling ? dragManager.dropOverlay?.settleTo ?? null : null;
 	const dropSettlingNoteId = isDropSettling ? dragManager.dropOverlay?.id ?? null : null;
@@ -3531,12 +3763,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				isPlaceholder={isPlaceholder}
 				isOverlayActiveCard={overlayActiveNoteId === note.id}
 				layoutReady={cardPositionAnimationsReady}
+				debugTransitionTraceId={props.debugTransitionTraceId}
 				hideDuringDropSettle={dropSettlingNoteId === note.id}
 				setItemElement={dragManager.setItemElement}
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
+				useWholeCardDragHandle={isCoarsePointer}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -3704,35 +3938,97 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				const target = event.target as HTMLElement | null;
 				if (!target?.closest('[data-note-card="true"], [data-note-list-row="true"]')) return;
 				if (target.closest('input, button, textarea, select, a, [role="textbox"]')) return;
+				const isBodySurface = Boolean(target.closest('[data-note-drag-manual="true"], [data-note-list-row="true"]'));
 				const touch = event.touches[0];
 				pendingTouchIntentRef.current = true;
 				touchScrollDetectedRef.current = false;
 				touchStartPointRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+				touchLastPointRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+				if (touchLongPressTimerRef.current && typeof window !== 'undefined') {
+					window.clearTimeout(touchLongPressTimerRef.current);
+					touchLongPressTimerRef.current = 0;
+				}
+				if (!isBodySurface) {
+					// Header / banner: allow drag immediately on movement.
+					coarseTouchDragGateRef.current = true;
+					return;
+				}
+				// Body surface: require long-press before drag is allowed.
+				coarseTouchDragGateRef.current = false;
+				lockTouchSelection();
+				if (!touch || !isCoarsePointer || isTrashView || props.canReorder === false || typeof window === 'undefined') return;
+				touchLongPressTimerRef.current = window.setTimeout(() => {
+					touchLongPressTimerRef.current = 0;
+					if (!pendingTouchIntentRef.current || touchScrollDetectedRef.current) return;
+					// Long-press confirmed: open the gate so pragmatic DnD can start the drag
+					// on the next pointer movement. Pragmatic's event-driven transport (rather
+					// than our manual window-touchmove path) is what prevents the cross-column
+					// freeze that the app-owned transport had.
+					coarseTouchDragGateRef.current = true;
+					try {
+						window.getSelection?.()?.removeAllRanges();
+					} catch {
+						// Ignore selection-clear failures on restricted browsers.
+					}
+				}, TOUCH_DRAG_LONG_PRESS_MS);
 			}}
 			onTouchMoveCapture={(event) => {
-				if (!pendingTouchIntentRef.current) return;
-				if (dragManager.activeDragId) return;
-				const start = touchStartPointRef.current;
 				const touch = event.touches[0];
+				if (touch) {
+					touchLastPointRef.current = { x: touch.clientX, y: touch.clientY };
+				}
+				if (dragManager.activeDragId) {
+					// Pragmatic DnD is managing the drag — prevent scroll bleed.
+					if (event.cancelable) event.preventDefault();
+					return;
+				}
+				if (!pendingTouchIntentRef.current) return;
+				const start = touchStartPointRef.current;
 				if (!start || !touch) return;
 				const dx = touch.clientX - start.x;
 				const dy = touch.clientY - start.y;
 				if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) >= 8) {
 					touchScrollDetectedRef.current = true;
 					pendingTouchIntentRef.current = false;
+					coarseTouchDragGateRef.current = false;
 					touchStartPointRef.current = null;
+					touchLastPointRef.current = null;
+					unlockTouchSelection();
+					if (touchLongPressTimerRef.current && typeof window !== 'undefined') {
+						window.clearTimeout(touchLongPressTimerRef.current);
+						touchLongPressTimerRef.current = 0;
+					}
 					suppressTouchDragUntilRef.current = Date.now() + 200;
 				}
 			}}
 			onTouchEndCapture={() => {
+				if (touchLongPressTimerRef.current && typeof window !== 'undefined') {
+					window.clearTimeout(touchLongPressTimerRef.current);
+					touchLongPressTimerRef.current = 0;
+				}
+				// Pragmatic DnD handles its own pointer-up during an active drag.
+				if (!dragManager.activeDragId) {
+					unlockTouchSelection();
+				}
 				pendingTouchIntentRef.current = false;
+				coarseTouchDragGateRef.current = false;
 				touchScrollDetectedRef.current = false;
 				touchStartPointRef.current = null;
+				touchLastPointRef.current = null;
 			}}
 			onTouchCancelCapture={() => {
+				if (touchLongPressTimerRef.current && typeof window !== 'undefined') {
+					window.clearTimeout(touchLongPressTimerRef.current);
+					touchLongPressTimerRef.current = 0;
+				}
+				if (!dragManager.activeDragId) {
+					unlockTouchSelection();
+				}
 				pendingTouchIntentRef.current = false;
+				coarseTouchDragGateRef.current = false;
 				touchScrollDetectedRef.current = false;
 				touchStartPointRef.current = null;
+				touchLastPointRef.current = null;
 			}}
 		>
 			{visibleIds.length === 0 ? (

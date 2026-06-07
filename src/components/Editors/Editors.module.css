@@ -228,7 +228,7 @@
 }
 
 .fullscreenEditor {
-	width: min(960px, 100%);
+	width: 100%;
 	grid-row: 1;
 	height: 100%;
 	max-height: 100%;
@@ -285,32 +285,18 @@
 
 @media (pointer: fine) {
 	.fullscreenOverlay {
-		/*
-			Desktop: keep the app header and creation buttons visible.
-			`--app-editor-top-offset` is measured in App.tsx as the bottom of `.top-actions`.
-			Important: the overlay itself stays full-viewport so it can:
-			- disable clicks everywhere outside the editor
-			- apply a blur to the entire app background
-		*/
-		/*
-			Desktop layout:
-			- Row 1: reserved space above the editor (header only)
-			- Row 2: editor fills the remaining viewport height
-			
-			This guarantees the editor bottom never runs past the window.
-		*/
-		padding-top: 0;
-		grid-template-rows: var(--app-header-offset, 0px) minmax(0, 1fr);
+		/* Desktop/tablet full-screen editor should cover the app header as well. */
+		grid-template-rows: 1fr;
 	}
 
 	.fullscreenEditor {
-		grid-row: 2;
+		grid-row: 1;
 		/*
 			Clamp editor size to the viewport explicitly so heavy checklist DOM
 			can't accidentally force an overflow past the bottom edge.
 		*/
-		height: calc(100dvh - var(--app-header-offset, 0px));
-		max-height: calc(100dvh - var(--app-header-offset, 0px));
+		height: 100dvh;
+		max-height: 100dvh;
 	}
 }
 
@@ -1562,6 +1548,15 @@
 	caret-color: transparent !important;
 }
 
+.editorBlurred.mediaOpen .editorBlockLayer {
+	opacity: 1;
+	pointer-events: auto;
+	background: color-mix(in srgb, var(--note-editor-surface, var(--color-surface)) 18%, transparent);
+	backdrop-filter: blur(5px);
+	-webkit-backdrop-filter: blur(5px);
+	transition: opacity 220ms ease, backdrop-filter 220ms ease;
+}
+
 .mediaPanelPlaceholder {
 	height: 170px;
 	border-radius: var(--radius-md);
@@ -1826,6 +1821,7 @@
 @media (pointer: coarse) {
 	.editorBottomArea {
 		gap: 6px;
+		background: var(--note-editor-surface, var(--color-surface));
 		padding-bottom: var(--app-safe-bottom-visual, env(safe-area-inset-bottom, 0px));
 	}
 
@@ -1908,7 +1904,7 @@
 		transition: transform 260ms ease, opacity 260ms ease;
 		z-index: 1;
 		flex-direction: column;
-		box-shadow: none;
+		box-shadow: 0 -8px 22px rgba(15, 23, 42, 0.12), 0 -2px 6px rgba(15, 23, 42, 0.08);
 	}
 
 	.mediaSheetHeader,
@@ -2880,9 +2876,9 @@ Drag ghost:
 	height: 40px;
 	padding: 0;
 	border-radius: 999px;
-	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
-	background: color-mix(in srgb, var(--color-surface) 94%, var(--color-surface-2));
-	color: var(--color-text);
+	border: 1px solid color-mix(in srgb, var(--note-editor-border, var(--color-border)) 82%, transparent);
+	background: color-mix(in srgb, var(--note-editor-surface, var(--color-surface)) 94%, var(--note-editor-header, var(--color-surface-2)));
+	color: var(--note-editor-text, var(--color-text));
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -2894,8 +2890,8 @@ Drag ghost:
 
 .mobileChecklistUndoFabButton:hover,
 .mobileChecklistUndoFabButton:focus-visible {
-	background: color-mix(in srgb, var(--color-surface) 88%, var(--color-surface-2));
-	border-color: color-mix(in srgb, var(--color-accent) 28%, var(--color-border));
+	background: color-mix(in srgb, var(--note-editor-surface, var(--color-surface)) 88%, var(--note-editor-header, var(--color-surface-2)));
+	border-color: color-mix(in srgb, var(--note-editor-accent, var(--color-accent)) 28%, var(--note-editor-border, var(--color-border)));
 	transform: translateY(-1px);
 }
 

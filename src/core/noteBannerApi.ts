@@ -3,6 +3,7 @@ import { isLightTheme, type ThemeId } from './theme';
 export type NoteBannerOption = {
 	fileName: string;
 	label: string;
+	labelKey: string;
 	url: string;
 };
 
@@ -30,6 +31,16 @@ export function getNormalizedBannerDisplayName(fileName: string): string {
 	const { stem } = splitBannerFileName(fileName);
 	if (!stem) return '';
 	return stem.charAt(0).toUpperCase() + stem.slice(1).toLowerCase();
+}
+
+function getNormalizedBannerTranslationStem(fileName: string): string {
+	const { stem } = splitBannerFileName(fileName);
+	return stem.trim().toLowerCase();
+}
+
+export function getNoteBannerLabelKey(fileName: string): string {
+	const stem = getNormalizedBannerTranslationStem(fileName);
+	return stem ? `noteBanners.images.${stem}` : 'noteBanners.images.unknown';
 }
 
 export function getNoteBannerVariantFileName(fileName: string, layout: NoteBannerAssetLayout = 'card'): string {
@@ -89,10 +100,11 @@ function normalizeBannerOptions(input: unknown): readonly NoteBannerOption[] {
 			: '';
 		if (!fileName) return [];
 		const label = getNormalizedBannerDisplayName(fileName);
+		const labelKey = getNoteBannerLabelKey(fileName);
 		const url = typeof (entry as { url?: unknown }).url === 'string'
 			? (entry as { url: string }).url
 			: getNoteBannerAssetUrl(fileName, null, 'card');
-		return [{ fileName, label, url }];
+		return [{ fileName, label, labelKey, url }];
 	});
 }
 

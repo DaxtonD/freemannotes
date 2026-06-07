@@ -17,9 +17,19 @@ export type NoteColorPickerModalProps = {
 	onSelect: (token: NoteColorToken | null) => void;
 };
 
+function isNoteColorPickerHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return (value as { __noteColorPicker?: boolean }).__noteColorPicker === true;
+}
+
 export function NoteColorPickerModal(props: NoteColorPickerModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
 	const themeModel = React.useMemo(() => resolveThemeNoteColorModel(props.themeId), [props.themeId]);
+	const onCloseRef = React.useRef(props.onClose);
+
+	React.useEffect(() => {
+		onCloseRef.current = props.onClose;
+	}, [props.onClose]);
 
 	React.useEffect(() => {
 		// The picker is portaled above the editor/card chrome, so handle Escape at the
@@ -31,6 +41,36 @@ export function NoteColorPickerModal(props: NoteColorPickerModalProps): React.JS
 		window.addEventListener('keydown', onKeyDown);
 		return () => window.removeEventListener('keydown', onKeyDown);
 	}, [props.isOpen, props.onClose]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || typeof window === 'undefined') return;
+		const mql = window.matchMedia('(pointer: coarse)');
+		if (!mql.matches) return;
+
+		let active = true;
+		let didPush = false;
+		const pushTimer = window.setTimeout(() => {
+			if (!active) return;
+			didPush = true;
+			window.history.pushState({ __noteColorPicker: true }, '');
+		}, 0);
+		const onPopState = (): void => {
+			if (!active || !didPush) return;
+			active = false;
+			onCloseRef.current();
+		};
+		window.addEventListener('popstate', onPopState);
+
+		return () => {
+			window.clearTimeout(pushTimer);
+			window.removeEventListener('popstate', onPopState);
+			if (active && didPush && isNoteColorPickerHistoryState(window.history.state)) {
+				active = false;
+				window.history.back();
+			}
+			active = false;
+		};
+	}, [props.isOpen]);
 
 	if (!props.isOpen || typeof document === 'undefined') return null;
 

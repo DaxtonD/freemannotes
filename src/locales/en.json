@@ -893,6 +893,7 @@
   "noteMenu": {
     "pinNote": "Pin note",
     "unpinNote": "Unpin note",
+    "selectBannerImage": "Select banner image",
     "addCollaborator": "Collaborators",
     "addImage": "Add image",
     "addDocument": "Add Drawing",
@@ -942,6 +943,35 @@
     "peach": "Peach",
     "cream": "Cream",
     "lavender": "Lavender"
+  },
+  "noteBanners": {
+    "dialogTitle": "Note banner",
+    "none": "No banner",
+    "loading": "Loading banner images…",
+    "failed": "Failed to load banner images",
+    "empty": "No banner images are available.",
+    "images": {
+      "calendar": "Calendar",
+      "checklist": "Checklist",
+      "coding": "Coding",
+      "finance": "Finance",
+      "gaming": "Gaming",
+      "grocery": "Grocery",
+      "health": "Health",
+      "household": "Household",
+      "ideas": "Ideas",
+      "important": "Important",
+      "industrial": "Industrial",
+      "journal": "Journal",
+      "maintenance": "Maintenance",
+      "media": "Media",
+      "reading": "Reading",
+      "recipes": "Recipes",
+      "reminder": "Reminder",
+      "school": "School",
+      "travel": "Travel",
+      "work": "Work"
+    }
   },
   "push": {
     "statusEnabled": "Push notifications enabled",

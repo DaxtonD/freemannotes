@@ -10,6 +10,11 @@ type ReminderModalProps = {
 	onSave: (reminderAt: string | null) => void;
 };
 
+function isReminderModalHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return (value as { __reminderModal?: boolean }).__reminderModal === true;
+}
+
 function toLocalDateInput(value: Date): string {
 	const year = value.getFullYear();
 	const month = `${value.getMonth() + 1}`.padStart(2, '0');
@@ -35,6 +40,11 @@ export function ReminderModal(props: ReminderModalProps): React.JSX.Element | nu
 	const { t } = useI18n();
 	const [dateValue, setDateValue] = React.useState('');
 	const [timeValue, setTimeValue] = React.useState('09:00');
+	const onCloseRef = React.useRef(props.onClose);
+
+	React.useEffect(() => {
+		onCloseRef.current = props.onClose;
+	}, [props.onClose]);
 
 	React.useEffect(() => {
 		if (!props.isOpen) return;
@@ -48,6 +58,45 @@ export function ReminderModal(props: ReminderModalProps): React.JSX.Element | nu
 		setDateValue(toLocalDateInput(next));
 		setTimeValue(toLocalTimeInput(next));
 	}, [props.isOpen, props.reminderAt]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || typeof window === 'undefined') return;
+		const onKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === 'Escape') onCloseRef.current();
+		};
+		window.addEventListener('keydown', onKeyDown);
+		return () => window.removeEventListener('keydown', onKeyDown);
+	}, [props.isOpen]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || typeof window === 'undefined') return;
+		const mql = window.matchMedia('(pointer: coarse)');
+		if (!mql.matches) return;
+
+		let active = true;
+		let didPush = false;
+		const pushTimer = window.setTimeout(() => {
+			if (!active) return;
+			didPush = true;
+			window.history.pushState({ __reminderModal: true }, '');
+		}, 0);
+		const onPopState = (): void => {
+			if (!active || !didPush) return;
+			active = false;
+			onCloseRef.current();
+		};
+		window.addEventListener('popstate', onPopState);
+
+		return () => {
+			window.clearTimeout(pushTimer);
+			window.removeEventListener('popstate', onPopState);
+			if (active && didPush && isReminderModalHistoryState(window.history.state)) {
+				active = false;
+				window.history.back();
+			}
+			active = false;
+		};
+	}, [props.isOpen]);
 
 	const applyQuickOption = React.useCallback((mode: 'later-today' | 'tomorrow' | 'next-week') => {
 		const base = new Date();

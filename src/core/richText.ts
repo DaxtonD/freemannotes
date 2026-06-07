@@ -278,10 +278,10 @@ const MobileSafeTaskItem = TaskItem.extend({
 	},
 });
 
-function buildStarterKit(variant: RichTextVariant) {
+function buildStarterKit(variant: RichTextVariant, enableUndoRedo: boolean) {
 	if (variant === 'minimal') {
 		return StarterKit.configure({
-			undoRedo: false,
+			undoRedo: enableUndoRedo,
 			link: false,
 			underline: false,
 			heading: false,
@@ -294,7 +294,7 @@ function buildStarterKit(variant: RichTextVariant) {
 	}
 
 	return StarterKit.configure({
-		undoRedo: false,
+		undoRedo: enableUndoRedo,
 		link: false,
 		underline: false,
 	});
@@ -306,8 +306,9 @@ export function createRichTextExtensions(args: {
 	includeCollaboration?: boolean;
 	fragment?: Y.XmlFragment | null;
 }): Extensions {
+	const enableUndoRedo = args.includeCollaboration !== true;
 	const extensions: Extensions = [
-		buildStarterKit(args.variant),
+		buildStarterKit(args.variant, enableUndoRedo),
 		Underline,
 		Highlight.configure({ multicolor: true }),
 		Link.configure({
