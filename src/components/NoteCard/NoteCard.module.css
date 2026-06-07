@@ -352,12 +352,20 @@
 	flex-direction: column;
 }
 
+.bodyMenuSafe {
+	padding-bottom: calc(var(--space-2) + 20px);
+}
+
 .drawingBody {
 	padding: 10px;
 	align-items: stretch;
 	justify-content: center;
 	flex: 1 1 auto;
 	min-height: 150px;
+}
+
+.drawingBodyMenuSafe {
+	padding-bottom: 30px;
 }
 
 .drawingThumbnail {
@@ -802,6 +810,10 @@
 	border-top: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 68%, transparent);
 }
 
+.completedSectionMenuSafe {
+	padding-bottom: 20px;
+}
+
 .completedToggle {
 	align-self: stretch;
 	border: 0;
@@ -885,6 +897,47 @@
 	flex-direction: column;
 	gap: 8px;
 	flex: 0 0 auto;
+}
+
+.linkPreviewRailMenuSafe {
+	padding-bottom: 28px;
+}
+
+.cardMenuButton {
+	position: absolute;
+	right: 2px;
+	bottom: 2px;
+	width: 24px;
+	height: 24px;
+	border: 0;
+	border-radius: 999px;
+	background: transparent;
+	color: color-mix(in srgb, var(--note-color-text, var(--color-text)) 30%, var(--note-color-muted, var(--color-text-muted)) 70%);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 11px;
+	line-height: 1;
+	cursor: pointer;
+	z-index: 4;
+	box-shadow: none;
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+	opacity: 0.62;
+	transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease;
+}
+
+.cardMenuButton:hover,
+.cardMenuButton:focus-visible {
+	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 18%, transparent);
+	color: color-mix(in srgb, var(--note-color-text, var(--color-text)) 42%, var(--note-color-muted, var(--color-text-muted)) 58%);
+	opacity: 0.84;
+	outline: none;
+}
+
+.cardMenuButton:active {
+	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 24%, transparent);
+	opacity: 0.96;
 }
 
 .cardFooter {
@@ -1024,6 +1077,23 @@
 @media (pointer: coarse) {
 	.body {
 		padding-bottom: calc(var(--space-2) + 6px);
+	}
+
+	.linkPreviewRail {
+		padding-right: 0;
+	}
+
+	.bodyMenuSafe {
+		padding-bottom: calc(var(--space-2) + 22px);
+	}
+
+	.completedSectionMenuSafe {
+		padding-bottom: 22px;
+	}
+
+	.linkPreviewRailMenuSafe {
+		padding-right: 0;
+		padding-bottom: 30px;
 	}
 
 	.checklistCardCompletedExpanded .completedSection {

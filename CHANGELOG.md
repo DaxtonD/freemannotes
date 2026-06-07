@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.4 - 2026-06-06
+
+### Added
+- **Bubble-view mode switches now carry traceable layout diagnostics.** View-mode changes can stamp a transition trace ID through the bubble layout path so intermittent warm-switch or repack issues can be inspected without shipping one-off logging patches.
+
+### Changed
+- **Bubble view and reminder navigation now behave more intentionally across device sizes.** Bubble cards use steadier packed layouts without the idle float animation, collaborator counts are cached between renders, zoom/detail scaling is tuned more carefully across mobile and desktop widths, and the sidebar Reminders section now includes `Past Due`.
+- **Note-card action chrome now adapts cleanly to the active input model.** Mobile note cards keep the persistent corner 3-dot entry point, desktop cards keep the footer-dock menu action, and desktop more-menus stay aligned with their source card while clamping fully inside the viewport.
+
+### Fixed
+- **Touch note-card dragging no longer freezes when crossing columns.** Coarse-pointer card drags now use the same pragmatic drag path as the working title/banner handle path, with steadier cross-column insertion cooldowns and cleanup so whole-card drags can move between columns without locking up.
+- **Desktop/tablet editors and checklist controls are consistent again.** Fine-pointer editors now cover the full app shell, duplicate checklist save/close chrome is removed, checklist footer undo/redo stays wired after keyboard dismissal, and the shared autoscroll toolbar control renders correctly across draft and existing note/checklist editors.
+- **Note-card and editor actions no longer lose or clip key controls.** The desktop dock regained its 3-dot action, desktop more-menus no longer open partly off-screen, and note-card menu spacing no longer cuts off preview rails while still keeping the open menu visually tied to its source note.
+
 ## 1.5.3 - 2026-06-04
 
 ### Changed

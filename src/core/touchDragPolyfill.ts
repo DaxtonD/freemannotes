@@ -28,6 +28,7 @@ const MAX_EDGE_SCROLL_SPEED_PX_PER_SECOND = 1500;
 
 let syntheticTouchDragActive = false;
 
+
 function needsPolyfill(): boolean {
 	if (typeof navigator === 'undefined' || typeof window === 'undefined') return false;
 	const ua = navigator.userAgent;

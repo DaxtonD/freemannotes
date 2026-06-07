@@ -80,6 +80,7 @@ export type NoteCardProps = {
 	shouldSuppressOpen?: () => boolean;
 	dragHandleRef?: (node: HTMLDivElement | null) => void;
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
+	useWholeCardDragHandle?: boolean;
 	maxCardHeightPx?: number;
 	forcedHeightPx?: number;
 	allowChecklistItemInteractions?: boolean;
@@ -88,6 +89,7 @@ export type NoteCardProps = {
 	suppressContentInteractions?: boolean;
 	initialLinkRecords?: readonly NoteLinkRecord[];
 	preserveControlShell?: boolean;
+	debugTransitionTraceId?: string | null;
 	bannerTitlePosition?: NoteCardBannerTitlePosition;
 };
 
@@ -149,6 +151,13 @@ function isInteractiveTarget(target: EventTarget | null): boolean {
 function isCoarsePointerDevice(): boolean {
 	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
 	return window.matchMedia('(pointer: coarse)').matches;
+}
+
+function isElementLayoutMeasurable(element: HTMLElement | null): boolean {
+	if (!element) return false;
+	if (element.getClientRects().length === 0) return false;
+	const rect = element.getBoundingClientRect();
+	return rect.width > 0 && rect.height > 0;
 }
 
 function suppressNextDocumentCompatibilityMouseEvents(): void {
@@ -665,6 +674,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const { t } = useI18n();
 	const maxCardHeightPx = Math.max(220, props.maxCardHeightPx ?? 300);
 	const noteCardLinkPreviewMaxItems = maxCardHeightPx >= 420 ? 3 : 2;
+	const hasFinePointer = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+		? window.matchMedia('(pointer: fine)').matches
+		: true;
+	const initialChecklistCardPaddingBottomPx = hasFinePointer ? 50 : 0;
+	const initialChecklistBodyPaddingVerticalPx = hasFinePointer ? 14 : 18;
 	// Budget checklist preview rows using the rendered row pitch, not just the
 	// text line box, so hidden counts stay accurate as card heights change.
 	const collapsedChecklistLineHeightPx = 26;
@@ -864,9 +878,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		headerHeightPx: 39,
 		metaHeightPx: props.metaChips ? 40 : 0,
 		linkPreviewHeightPx: estimateInitialChecklistRailHeight(initialPreviewLinkCount),
-		completedBaseHeightPx: 33,
-		cardPaddingBottomPx: 0,
-		bodyPaddingVerticalPx: 8,
+		// Match the CSS min-height for the completed toggle rail so checklist cards
+		// reserve that band before the first DOM measurement runs.
+		completedBaseHeightPx: 38,
+		cardPaddingBottomPx: initialChecklistCardPaddingBottomPx,
+		bodyPaddingVerticalPx: initialChecklistBodyPaddingVerticalPx,
 		bodyScrollHeightPx: 0,
 		renderedCardScrollHeightPx: 0,
 		contentRegionScrollHeightPx: 0,
@@ -903,7 +919,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const measureChecklistTextLayout = React.useCallback((): void => {
 		if (type !== 'checklist') return;
 		const card = cardRef.current;
-		if (!card) return;
+		if (!isElementLayoutMeasurable(card)) return;
 		const next: Record<string, boolean> = {};
 		const nextClamped: Record<string, boolean> = {};
 		const mergeMeasuredState = (previous: Record<string, boolean>, measured: Record<string, boolean>): Record<string, boolean> => {
@@ -1248,6 +1264,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			const body = bodyRef.current;
 			const preview = contentPreviewRef.current;
 			if (!card || !body || !preview) return;
+			if (!isElementLayoutMeasurable(card)) return;
 
 			// Measure with the preview's current clamp temporarily removed so content
 			// height is always based on the natural rich-text flow.
@@ -1359,6 +1376,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			const toggle = completedToggleRef.current;
 			const completed = completedSectionRef.current;
 			if (!card || !contentRegion || !body || !toggle || !completed) return;
+			if (!isElementLayoutMeasurable(card)) return;
 			const cardStyle = window.getComputedStyle(card);
 			const bodyStyle = window.getComputedStyle(body);
 			const completedStyle = window.getComputedStyle(completed);
@@ -1497,15 +1515,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		event.stopPropagation();
 		const cardRect = cardRef.current?.getBoundingClientRect();
 		const footerRect = footerRef.current?.getBoundingClientRect();
-		// Footer-triggered menus anchor to the card's left edge and the dock band
-		// so the desktop popover lines up with the card rather than the button.
+		const triggerRect = event.currentTarget.getBoundingClientRect();
+		// Card-triggered menus anchor to the card's left edge while using the
+		// trigger/footer band for vertical placement so the desktop popover lines up
+		// with the card instead of snapping tightly to the ellipsis button.
 		props.onMoreMenu?.(
 			cardRect
 				? {
-					top: footerRect?.top ?? cardRect.bottom,
+					top: footerRect?.top ?? triggerRect.top,
 					left: cardRect.left,
 					width: cardRect.width,
-					height: footerRect?.height ?? 0,
+					height: footerRect?.height ?? triggerRect.height,
 				}
 				: null
 		);
@@ -1521,6 +1541,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const disableReminderAction = !props.onAddReminder || (!renderInteractiveShell && !canEdit);
 	const disableCollaboratorAction = !props.onAddCollaborator || (!renderInteractiveShell && !canEdit);
 	const disableImageAction = !props.onAddImage || (!renderInteractiveShell && !canEdit);
+	// The floating corner ellipsis is touch-only; fine-pointer desktops reopen the
+	// same menu from the footer dock so the card body stays visually cleaner.
+	const hasMenuButton = Boolean(props.onMoreMenu) && isCoarsePointerDevice();
 	const disableChecklistCheckbox = !allowChecklistItemInteractions;
 	const disableCompletedChecklistCheckbox = !allowCompletedItemInteractions;
 	const headerTitleValue = title.trim().length > 0 ? title : t('note.untitled');
@@ -1555,6 +1578,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${headerBannerUrl ? ` ${styles.cardWithBannerHighlight}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
+			data-drag-handle={props.useWholeCardDragHandle ? 'true' : undefined}
 			aria-label={`Note ${props.noteId}`}
 			role={props.onOpen ? 'button' : undefined}
 			tabIndex={props.onOpen ? 0 : undefined}
@@ -1575,9 +1599,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					activeTouchOpenGesturePointerId = e.pointerId;
 					activeTouchOpenGestureStartedAt = now;
 				}
-				// If the touch started on the drag handle (header), let
-				// pragmatic-drag-and-drop own the gesture — don't capture the
-				// pointer or start the long-press (more-menu) timer.
+				// If the touch started on the drag handle, let pragmatic-drag-and-drop
+				// own the gesture instead of capturing it at the card root.
 				const target = e.target as HTMLElement | null;
 				const isDragHandle = Boolean(target?.closest('[data-drag-handle="true"]'));
 				// Touch/coarse branch: capture the pointer so this interaction stays
@@ -1596,33 +1619,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					moved: false,
 					pointerId: e.pointerId,
 				};
-							// Long-press timer (touch/coarse only): start a 400ms timer.
-							// If the pointer doesn't move >6px before it fires, open the more-menu.
-							// This is intentionally disabled for touches that start on the drag
-							// handle so drag gestures don't accidentally open the menu.
 				longPressFiredRef.current = false;
 				clearLongPressTimer();
-				if (!isDragHandle && props.onMoreMenu && (e.pointerType === 'touch' || isCoarsePointerDevice())) {
-					const onMoreMenu = props.onMoreMenu;
-					longPressTimerRef.current = window.setTimeout(() => {
-						longPressTimerRef.current = 0;
-						const state = pointerDownRef.current;
-						if (!state || state.moved) return;
-						longPressFiredRef.current = true;
-						pointerDownRef.current = null;
-						// Clear any native text selection Android may have
-						// started during the long-press gesture.
-						window.getSelection()?.removeAllRanges();							// Release pointer capture now so the full-screen overlay that
-							// mounts next correctly receives the still-pressed touch events.
-							// Without this the note card keeps all pointer events via capture,
-							// preventing the sheet's absorption handlers from ever firing.
-							const capturedCard = cardRef.current;
-							if (capturedCard && typeof capturedCard.releasePointerCapture === 'function') {
-								try { capturedCard.releasePointerCapture(state.pointerId); } catch { /* ignore */ }
-							}						triggerLongPressHaptic();
-						onMoreMenu();
-					}, 400);
-				}
 			}}
 			onPointerMove={(e) => {
 				// Mark as moved beyond threshold to suppress accidental open during drag/scroll.
@@ -1691,10 +1689,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				suppressGestureOpenRef.current = false;
 			}}
 			onTouchEnd={(e) => {
-				// After a long-press opens the more-menu the finger is still down.
-				// Prevent the browser from synthesising a click from this touch
-				// sequence — otherwise the click fires at the finger's current
-				// position and lands on whichever menu item is underneath.
+				// Guard kept for any future long-press gesture owner on this card path.
 				if (longPressFiredRef.current) {
 					e.preventDefault();
 					// Consume this guard once so later taps (for example metadata chips)
@@ -1816,7 +1811,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					/>
 				) : null}
 				{type === 'drawing' ? (
-					<div ref={bodyRef} className={`${styles.body} ${styles.drawingBody}`}>
+					<div ref={bodyRef} className={`${styles.body} ${styles.drawingBody}${hasMenuButton ? ` ${styles.bodyMenuSafe} ${styles.drawingBodyMenuSafe}` : ''}`} data-note-drag-manual="true">
 						{drawingThumbnailUrl ? (
 							<img className={styles.drawingThumbnail} src={drawingThumbnailUrl} alt="" />
 						) : (
@@ -1824,12 +1819,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 						)}
 					</div>
 				) : type === 'text' ? (
-					<div ref={bodyRef} className={styles.body}>
+					<div ref={bodyRef} className={`${styles.body}${hasMenuButton ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
 						<div ref={contentPreviewRef} className={`${styles.contentPreview}${textPreviewLayout.isOverflowing ? ` ${styles.contentPreviewOverflowing}` : ''}`} style={textPreviewStyle}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
 					</div>
 				) : (
 					<>
-						<div ref={bodyRef} className={styles.body}>
+						<div ref={bodyRef} className={`${styles.body}${hasMenuButton ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
 							<ul ref={checklistRef} className={styles.checklist}>
 								{activeChecklistItemsToRender.map((item) => (
 									<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
@@ -1862,7 +1857,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							) : null}
 						</div>
 
-						<div ref={completedSectionRef} className={styles.completedSection}>
+						<div ref={completedSectionRef} className={`${styles.completedSection}${hasMenuButton ? ` ${styles.completedSectionMenuSafe}` : ''}`}>
 							{allowCompletedItemInteractions ? (
 								<button
 									ref={completedToggleRef as React.RefObject<HTMLButtonElement>}
@@ -1937,25 +1932,38 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				)}
 
 				{props.docId ? (
-					<div ref={linkPreviewRailRef} className={styles.linkPreviewRail}>
+					<div ref={linkPreviewRailRef} className={`${styles.linkPreviewRail}${hasMenuButton ? ` ${styles.linkPreviewRailMenuSafe}` : ''}`}>
 						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} initialLinks={props.initialLinkRecords} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={noteCardLinkPreviewMaxItems} disableInitialRemoteRefresh disableOpenLinks={!allowLinkInteractions} />
 					</div>
 				) : null}
 			</div>
+				{hasMenuButton ? (
+					<button
+						type="button"
+						className={styles.cardMenuButton}
+						onPointerDown={(e) => e.stopPropagation()}
+						onClick={handleMoreMenuAction}
+						aria-label={t('editors.dockAction')}
+					>
+						<FontAwesomeIcon icon={faEllipsisVertical} />
+					</button>
+				) : null}
 			<div ref={footerRef} className={`${styles.cardFooter}${suppressContentInteractions ? ` ${styles.cardFooterGuarded}` : ''}`}>
 				{/* Desktop-only footer dock mirrors the editor action strip so note
 				    cards and editors share the same action vocabulary. */}
 				<nav className={styles.cardDock} aria-label={t('editors.bottomDock')}>
 					<div className={styles.cardDockLeft}>
-						<button
-							type="button"
-							className={styles.cardDockButton}
-							onPointerDown={(e) => e.stopPropagation()}
-							onClick={handleMoreMenuAction}
-							aria-label={t('editors.dockAction')}
-						>
-							<FontAwesomeIcon icon={faEllipsisVertical} />
-						</button>
+						{props.onMoreMenu ? (
+							<button
+								type="button"
+								className={styles.cardDockButton}
+								onPointerDown={(e) => e.stopPropagation()}
+								onClick={handleMoreMenuAction}
+								aria-label={t('editors.dockAction')}
+							>
+								<FontAwesomeIcon icon={faEllipsisVertical} />
+							</button>
+						) : null}
 						<button
 							type="button"
 							className={styles.cardDockButton}

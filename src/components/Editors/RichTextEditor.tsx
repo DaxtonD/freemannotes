@@ -81,6 +81,7 @@ type RichTextToolbarProps = {
 	toolbarMode?: EditorToolbarMode;
 	hideStrikeButton?: boolean;
 	applyInlineFormattingToWholeEditor?: boolean;
+	preferEditorUndoRedo?: boolean;
 	onCreateUrlPreview?: () => void;
 	noteAutoScrollEnabled?: boolean;
 	onToggleNoteAutoScroll?: () => void;
@@ -452,13 +453,11 @@ function renderToolbarImageIcon(iconFileName: string): React.JSX.Element {
 	if (iconFileName === 'CheckCount.png') {
 		return <span className={styles.formatButtonLabel} aria-hidden="true">+1</span>;
 	}
-	const variantClassName = iconFileName === 'URL-Preview.png'
-		? styles.formatButtonMaskIcon
-		: iconFileName === 'autoscroll.png'
-			? styles.formatButtonMaskIconAutoScroll
-			: '';
-	if (variantClassName) {
-		return <span className={variantClassName} aria-hidden="true" />;
+	if (iconFileName === 'URL-Preview.png') {
+		return <span className={styles.formatButtonMaskIcon} aria-hidden="true" />;
+	}
+	if (iconFileName === 'autoscroll.png') {
+		return <span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />;
 	}
 	const basePath = import.meta.env.BASE_URL || '/';
 	const normalizedBasePath = basePath.endsWith('/') ? basePath : `${basePath}/`;
@@ -550,22 +549,34 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		isHighlight: false,
 		activeHighlightColor: null,
 	};
-	const canRunPrimaryUndo = Boolean(props.checkboxUndoAvail) || resolvedToolbarState.canUndo;
-	const canRunPrimaryRedo = Boolean(props.checkboxRedoAvail) || resolvedToolbarState.canRedo;
+	const canRunPrimaryUndo = props.preferEditorUndoRedo
+		? resolvedToolbarState.canUndo || Boolean(props.checkboxUndoAvail)
+		: Boolean(props.checkboxUndoAvail) || resolvedToolbarState.canUndo;
+	const canRunPrimaryRedo = props.preferEditorUndoRedo
+		? resolvedToolbarState.canRedo || Boolean(props.checkboxRedoAvail)
+		: Boolean(props.checkboxRedoAvail) || resolvedToolbarState.canRedo;
 	const handlePrimaryUndo = React.useCallback((): void => {
+		if (props.preferEditorUndoRedo && resolvedToolbarState.canUndo) {
+			runUndo(props.editor);
+			return;
+		}
 		if (props.checkboxUndoAvail && props.onUndoCheckbox) {
 			props.onUndoCheckbox();
 			return;
 		}
 		runUndo(props.editor);
-	}, [props.checkboxUndoAvail, props.editor, props.onUndoCheckbox]);
+	}, [props.checkboxUndoAvail, props.editor, props.onUndoCheckbox, props.preferEditorUndoRedo, resolvedToolbarState.canUndo]);
 	const handlePrimaryRedo = React.useCallback((): void => {
+		if (props.preferEditorUndoRedo && resolvedToolbarState.canRedo) {
+			runRedo(props.editor);
+			return;
+		}
 		if (props.checkboxRedoAvail && props.onRedoCheckbox) {
 			props.onRedoCheckbox();
 			return;
 		}
 		runRedo(props.editor);
-	}, [props.checkboxRedoAvail, props.editor, props.onRedoCheckbox]);
+	}, [props.checkboxRedoAvail, props.editor, props.onRedoCheckbox, props.preferEditorUndoRedo, resolvedToolbarState.canRedo]);
 
 	const preventToolbarFocusSteal = React.useCallback((event: React.SyntheticEvent): void => {
 		// Keep focus on the active editor so checklist toolbar taps don't blur the

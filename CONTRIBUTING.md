@@ -96,7 +96,7 @@ Naming rules:
 
 - Use a lowercase base name across all four files, for example `calendar.svg` and `calendarW.svg`
 - The only uppercase character in the filename should be the `W` suffix used by the list/strip variant
-- The picker modal only shows the card asset name, such as `calendar.svg`
+- The picker modal label is resolved from the banner i18n key `noteBanners.images.<stem>`, where `<stem>` is the banner filename without the extension or `W` suffix. For `calendar.svg`, the key is `noteBanners.images.calendar`
 - Card views load `title.svg`
 - List and strip views automatically load `titleW.svg`
 - Stored banner preferences still persist only the base filename, so no preference migration is needed
@@ -106,6 +106,20 @@ Why this matters:
 - Production Docker deployments run on Linux, which is case-sensitive. Mixed-case banner filenames can appear to work on Windows/macOS development machines and then fail in production.
 
 If you add a new banner, you must add all four files. Do not add only a light theme, only a dark theme, or only one size.
+
+If you add a new banner, you must also add its label key manually so shipped locales stay correct:
+
+- Add `noteBanners.images.<stem>` to `src/locales/en.json`
+- Add `noteBanners.images.<stem>` to `src/locales/es.json`
+- Add the same English fallback entry to `src/core/i18n.tsx` under `noteBanners.images`
+
+Example for `travel.svg`:
+
+- `src/locales/en.json` → `noteBanners.images.travel = "Travel"`
+- `src/locales/es.json` → `noteBanners.images.travel = "Viajes"`
+- `src/core/i18n.tsx` → `noteBanners.images.travel = "Travel"`
+
+Without those manual keys, new banner images will still load but the picker label will fall back to the filename-derived English display name instead of a localized string.
 
 Recommended workflow after changing banner art:
 

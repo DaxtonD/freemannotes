@@ -490,33 +490,59 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	// - Prefer left alignment with the trigger.
 	// - Clamp to the viewport so it never renders off-screen.
 	const [popoverStyle, setPopoverStyle] = React.useState<React.CSSProperties>({});
-	React.useLayoutEffect(() => {
-		if (!anchor || !menuRef.current) return;
+	const updatePopoverStyle = React.useCallback((): void => {
+		if (!anchor || !menuRef.current || typeof window === 'undefined') return;
 		const menu = menuRef.current;
 		const menuRect = menu.getBoundingClientRect();
 		const vw = window.innerWidth;
 		const vh = window.innerHeight;
 		const pad = 8;
+		const gap = anchor.height > 0 ? 4 : 0;
 		const upwardLift = 12;
+		// Cap the menu to the viewport and pick the roomier side of the anchor so
+		// desktop popovers stay fully visible even when the window gets short.
+		const maxHeight = Math.max(160, vh - pad * 2);
+		const renderedMenuHeight = Math.min(menuRect.height, maxHeight);
+		const spaceAbove = Math.max(0, anchor.top - pad - upwardLift - gap);
+		const spaceBelow = Math.max(0, vh - pad - (anchor.top + anchor.height + gap));
+		const shouldOpenAbove = spaceAbove >= renderedMenuHeight || spaceAbove >= spaceBelow;
 
-		// Prefer left-aligned with the anchor's left edge
+		// Keep the menu visually attached to the note by left-aligning to the card,
+		// then clamp to the viewport if the window gets too narrow.
 		let left = anchor.left;
-		// Prefer above the anchor (opens upward from the button)
-		let top = anchor.top - menuRect.height - (anchor.height > 0 ? 4 : 0) - upwardLift;
+		let top = shouldOpenAbove
+			? anchor.top - renderedMenuHeight - gap - upwardLift
+			: anchor.top + anchor.height + gap;
 
-		// If it overflows top, show below instead. Footer-triggered anchors carry
-		// footer height so the downward fallback clears the dock band cleanly.
-		if (top < pad) {
-			top = anchor.top + anchor.height + 4;
-		}
-		// Clamp horizontal
 		if (left + menuRect.width > vw - pad) left = vw - pad - menuRect.width;
 		if (left < pad) left = pad;
-		// Clamp vertical
+		if (top + renderedMenuHeight > vh - pad) top = vh - pad - renderedMenuHeight;
 		if (top < pad) top = pad;
 
-		setPopoverStyle({ top, left });
+		setPopoverStyle({
+			top,
+			left,
+			maxHeight,
+			transformOrigin: shouldOpenAbove ? 'bottom left' : 'top left',
+		});
 	}, [anchor]);
+
+	React.useLayoutEffect(() => {
+		updatePopoverStyle();
+	}, [updatePopoverStyle]);
+
+	React.useEffect(() => {
+		if (!anchor || typeof window === 'undefined') return;
+		const handleViewportChange = (): void => {
+			updatePopoverStyle();
+		};
+		window.addEventListener('resize', handleViewportChange);
+		window.addEventListener('scroll', handleViewportChange, true);
+		return () => {
+			window.removeEventListener('resize', handleViewportChange);
+			window.removeEventListener('scroll', handleViewportChange, true);
+		};
+	}, [anchor, updatePopoverStyle]);
 
 	return (
 		<div

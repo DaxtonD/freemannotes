@@ -22,7 +22,6 @@ import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBell, faThumbtack, faUsers } from '@fortawesome/free-solid-svg-icons';
-import { motion, LayoutGroup } from 'framer-motion';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import type { ThemeId } from '../../core/theme';
 import { readNoteFromDoc } from '../../core/noteModel';
@@ -37,6 +36,7 @@ import {
 	type WorkspaceSystemKind,
 } from '../../core/noteShareApi';
 import { readCachedSharedNotePlacementsForWorkspace } from '../../core/noteSharePlacementStore';
+import { isViewTransitionDebugEnabled, recordViewTransitionTrace } from '../../core/viewTransitionDebug';
 import type { ReminderFilterMode } from '../../utilities/getVisibleNotes';
 import styles from './BubbleView.module.css';
 
@@ -492,6 +492,8 @@ type LoadedInactiveNote = RegistryEntry & {
 	hasReminder: boolean;
 	searchText: string;
 };
+
+const bubbleCollaboratorCountsCache = new Map<string, Record<string, number>>();
 
 function extractNoteSearchText(noteId: string, doc: Y.Doc | null, fallbackTitle = ''): string {
 	if (!doc) return fallbackTitle.trim();
@@ -1096,7 +1098,6 @@ function useBubbleCollaboratorCounts(
 	notes: readonly BubbleNote[],
 	manager: ReturnType<typeof useDocumentManager>
 ): Record<string, number> {
-	const [counts, setCounts] = React.useState<Record<string, number>>({});
 	const activeEntries = React.useMemo(
 		() => notes
 			.filter((note) => note.isActiveWorkspace)
@@ -1107,9 +1108,19 @@ function useBubbleCollaboratorCounts(
 		() => activeEntries.map((entry) => `${entry.noteId}:${entry.docId}`).join('|'),
 		[activeEntries]
 	);
+	const cacheKey = React.useMemo(
+		() => `${authUserId ?? 'anon'}::${signature}`,
+		[authUserId, signature]
+	);
+	const [counts, setCounts] = React.useState<Record<string, number>>(() => bubbleCollaboratorCountsCache.get(cacheKey) ?? {});
+
+	React.useEffect(() => {
+		setCounts(bubbleCollaboratorCountsCache.get(cacheKey) ?? {});
+	}, [cacheKey]);
 
 	React.useEffect(() => {
 		if (!authUserId || activeEntries.length === 0) {
+			bubbleCollaboratorCountsCache.set(cacheKey, {});
 			setCounts({});
 			return;
 		}
@@ -1122,6 +1133,7 @@ function useBubbleCollaboratorCounts(
 				for (const row of rows) {
 					next[row.noteId] = row.count;
 				}
+				bubbleCollaboratorCountsCache.set(cacheKey, next);
 				const previousKeys = Object.keys(previous);
 				const nextKeys = Object.keys(next);
 				if (previousKeys.length === nextKeys.length && nextKeys.every((key) => previous[key] === next[key])) {
@@ -1161,7 +1173,7 @@ function useBubbleCollaboratorCounts(
 		return () => {
 			cancelled = true;
 		};
-	}, [activeEntries, authUserId, signature]);
+	}, [activeEntries, authUserId, cacheKey, signature]);
 
 	return counts;
 }
@@ -1336,22 +1348,7 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 	};
 
 	return (
-		<motion.div
-			layoutId={`bubble-${note.workspaceId}-${note.noteId}`}
-			className={styles.bubbleShell}
-			initial={suppressInitialAnimation ? false : { opacity: 0, scale: 0.35 }}
-			animate={{ opacity: 1, scale: 1 }}
-			exit={{ opacity: 0, scale: 0.3 }}
-			/* Gentler spring than the default so bubbles drift in naturally rather
-			   than snapping into place.  Staggered delay mirrors the score-sorted
-			   order: important bubbles appear first, smaller ones drift in behind. */
-			transition={{
-				type: 'spring',
-				stiffness: 180,
-				damping: 18,
-				delay: Math.min(entryIndex * 0.028, 1.0),
-			}}
-		>
+		<div className={styles.bubbleShell}>
 			<button
 				type="button"
 				className={[
@@ -1386,7 +1383,7 @@ const Bubble = React.memo(function Bubble({ note, doc, sizeClass, detailLevel, b
 					</span>
 				) : null}
 			</button>
-		</motion.div>
+		</div>
 	);
 });
 
@@ -1412,6 +1409,7 @@ export type BubbleViewProps = {
 	sidebarIsCollapsed: boolean;
 	/** Note ID to keep hidden from the bubble display while being drafted. */
 	hiddenNoteId?: string | null;
+	debugTransitionTraceId?: string | null;
 	/** Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken } */
 	workspaceColorOverrides?: Readonly<Record<string, string>>;
 	onSelectNote: (noteId: string, workspaceId: string) => void | Promise<void>;
@@ -1430,9 +1428,11 @@ export function BubbleView({
 	searchQuery,
 	sidebarIsCollapsed,
 	hiddenNoteId,
+	debugTransitionTraceId,
 	workspaceColorOverrides,
 	onSelectNote,
 }: BubbleViewProps): React.JSX.Element {
+	const transitionDebugEnabled = Boolean(debugTransitionTraceId) && isViewTransitionDebugEnabled();
 	const manager = useDocumentManager();
 	const pinPrefsSnapshot = React.useSyncExternalStore(subscribeNotePinPrefs, getNotePinPrefsSnapshot, getNotePinPrefsSnapshot);
 	const notes = useBubbleNotes(workspaces, activeWorkspaceId, sharedPlacements, showTrashed, reminderFilter, noteReminderByDocId, authUserId, pinPrefsSnapshot);
@@ -1456,6 +1456,7 @@ export function BubbleView({
 		const w = window.innerWidth;
 		return Math.max(300, w <= 768 ? w - 16 : w - 336);
 	});
+	const [hasMeasuredCloud, setHasMeasuredCloud] = React.useState(false);
 	const [cloudDocumentTop, setCloudDocumentTop] = React.useState(0);
 	const [viewportMetrics, setViewportMetrics] = React.useState(() => ({
 		scrollY: typeof window === 'undefined' ? 0 : window.scrollY,
@@ -1469,11 +1470,15 @@ export function BubbleView({
 			roRef.current.disconnect();
 			roRef.current = null;
 		}
+		setHasMeasuredCloud(false);
 		if (!el) return;
 		const measure = (): void => {
 			const rect = el.getBoundingClientRect();
 			const w = rect.width;
-			if (w > 0) setContainerWidth(Math.floor(w));
+			if (w > 0) {
+				setContainerWidth(Math.floor(w));
+				setHasMeasuredCloud(true);
+			}
 			setCloudDocumentTop(Math.max(0, Math.round(rect.top + window.scrollY)));
 		};
 		const observer = new ResizeObserver(measure);
@@ -1487,15 +1492,6 @@ export function BubbleView({
 	// const [debugCopyState, setDebugCopyState] = React.useState<'idle' | 'copied' | 'failed'>('idle');
 	const smoothedScoreRef = React.useRef<Record<string, number>>({});
 	// const lastDebugKeyRef = React.useRef('');
-	// Advance smooth scores on a regular 1.5 s tick so scores converge on devices
-	// that receive infrequent Y.js sync pulses. Without this, a remote client that
-	// gets a single sync event would only apply one EMA step, leaving scores
-	// visually lagging well behind the local originator.
-	const [scoreTick, setScoreTick] = React.useState(0);
-	React.useEffect(() => {
-		const id = window.setInterval(() => setScoreTick((t) => t + 1), 1500);
-		return () => window.clearInterval(id);
-	}, []);
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -1538,7 +1534,6 @@ export function BubbleView({
 		return entries;
 	}, [themeId, workspaces, workspaceColorOverrides]);
 	const scoredNotes = React.useMemo(() => {
-		void scoreTick; // re-run each tick so smooth scores converge between Y.js events
 		const nowMs = Date.now();
 		return notes.map((note) => {
 			const activityKey = `${note.workspaceId}:${note.noteId}`;
@@ -1558,7 +1553,7 @@ export function BubbleView({
 				hasCollaborators: collaboratorCount > 0,
 			};
 		});
-	}, [collaboratorCountByNoteId, notes, scoreTick]);
+	}, [collaboratorCountByNoteId, notes]);
 	const filteredNotes = React.useMemo(() => {
 		return scoredNotes.filter((note) => {
 			if (hiddenNoteId && note.noteId === hiddenNoteId) return false;
@@ -1638,15 +1633,167 @@ export function BubbleView({
 	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [activeWorkspaceId, containerWidth, effectiveZoom, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
 	const visiblePackedItems = React.useMemo(() => {
+		if (!hasMeasuredCloud) return packedLayout.items;
 		const viewportTopWithinCloud = Math.max(0, viewportMetrics.scrollY - cloudDocumentTop - BUBBLE_VIEW_OVERSCAN_PX);
 		const viewportBottomWithinCloud = viewportMetrics.scrollY - cloudDocumentTop + viewportMetrics.height + BUBBLE_VIEW_OVERSCAN_PX;
 		return packedLayout.items.filter((item) => item.top + item.layoutDiameter >= viewportTopWithinCloud && item.top <= viewportBottomWithinCloud);
-	}, [cloudDocumentTop, packedLayout.items, viewportMetrics]);
+	}, [cloudDocumentTop, hasMeasuredCloud, packedLayout.items, viewportMetrics]);
 	const packedLayoutSignature = React.useMemo(
 		() => packedLayout.items.map((item) => `${item.note.workspaceId}:${item.note.noteId}:${Math.round(item.left)}:${Math.round(item.top)}:${Math.round(item.layoutDiameter)}`).join('|'),
 		[packedLayout.items]
 	);
+	const [allowBubbleLayoutTransitions, setAllowBubbleLayoutTransitions] = React.useState(false);
 	const [suppressInitialBubbleAnimation, setSuppressInitialBubbleAnimation] = React.useState(() => hasSeenBubbleLayout(packedLayoutSignature));
+	const previousPackedLayoutRef = React.useRef<Map<string, { left: number; top: number; diameter: number; score: number }>>(new Map());
+	const previousBubbleMeasureSnapshotRef = React.useRef('');
+	const previousScoreSnapshotRef = React.useRef<Map<string, { score: number; collaborators: number }>>(new Map());
+
+	React.useEffect(() => {
+		if (!transitionDebugEnabled || !debugTransitionTraceId) return;
+		recordViewTransitionTrace(debugTransitionTraceId, 'BUBBLE_VIEW_MOUNT', {
+			activeWorkspaceId,
+			hiddenNoteId: hiddenNoteId ?? null,
+			searchQueryLength: searchQuery.trim().length,
+			workspaceCount: workspaces.length,
+		});
+		return () => {
+			recordViewTransitionTrace(debugTransitionTraceId, 'BUBBLE_VIEW_UNMOUNT', {
+				activeWorkspaceId,
+			});
+		};
+	}, [activeWorkspaceId, debugTransitionTraceId, hiddenNoteId, searchQuery, transitionDebugEnabled, workspaces.length]);
+
+	React.useEffect(() => {
+		if (!transitionDebugEnabled || !debugTransitionTraceId) return;
+		const nextScoreSnapshot = new Map<string, { score: number; collaborators: number }>();
+		let scoreChangedCount = 0;
+		let collaboratorChangedCount = 0;
+		const samples: Array<Record<string, unknown>> = [];
+		for (const note of scoredNotes) {
+			const collaborators = collaboratorCountByNoteId[note.noteId] ?? 0;
+			nextScoreSnapshot.set(note.noteId, { score: note.score, collaborators });
+			const previous = previousScoreSnapshotRef.current.get(note.noteId);
+			if (!previous) continue;
+			const scoreDelta = Math.round((note.score - previous.score) * 100) / 100;
+			const collaboratorsChanged = previous.collaborators !== collaborators;
+			if (Math.abs(scoreDelta) > 0.01) scoreChangedCount += 1;
+			if (collaboratorsChanged) collaboratorChangedCount += 1;
+			if ((Math.abs(scoreDelta) > 0.01 || collaboratorsChanged) && samples.length < 6) {
+				samples.push({
+					noteId: note.noteId,
+					scoreBefore: previous.score,
+					scoreAfter: note.score,
+					scoreDelta,
+					collaboratorsBefore: previous.collaborators,
+					collaboratorsAfter: collaborators,
+				});
+			}
+		}
+		if (previousScoreSnapshotRef.current.size > 0 && (scoreChangedCount > 0 || collaboratorChangedCount > 0)) {
+			recordViewTransitionTrace(debugTransitionTraceId, 'BUBBLE_VIEW_SCORE_CHANGE', {
+				scoreChangedCount,
+				collaboratorChangedCount,
+				samples,
+			});
+		}
+		previousScoreSnapshotRef.current = nextScoreSnapshot;
+	}, [collaboratorCountByNoteId, debugTransitionTraceId, scoredNotes, transitionDebugEnabled]);
+
+	React.useEffect(() => {
+		if (!transitionDebugEnabled || !debugTransitionTraceId) return;
+		const snapshot = [
+			hasMeasuredCloud ? '1' : '0',
+			containerWidth,
+			cloudDocumentTop,
+			viewportMetrics.scrollY,
+			viewportMetrics.height,
+			visiblePackedItems.length,
+		].join('|');
+		if (previousBubbleMeasureSnapshotRef.current === snapshot) return;
+		previousBubbleMeasureSnapshotRef.current = snapshot;
+		recordViewTransitionTrace(debugTransitionTraceId, 'BUBBLE_VIEW_MEASURE', {
+			hasMeasuredCloud,
+			containerWidth,
+			cloudDocumentTop,
+			viewportScrollY: viewportMetrics.scrollY,
+			viewportHeight: viewportMetrics.height,
+			visiblePackedCount: visiblePackedItems.length,
+			filteredCount: filteredNotes.length,
+		});
+	}, [cloudDocumentTop, containerWidth, debugTransitionTraceId, filteredNotes.length, hasMeasuredCloud, transitionDebugEnabled, viewportMetrics.height, viewportMetrics.scrollY, visiblePackedItems.length]);
+
+	React.useEffect(() => {
+		if (!transitionDebugEnabled || !debugTransitionTraceId) return;
+		const nextLayout = new Map<string, { left: number; top: number; diameter: number; score: number }>();
+		for (const item of packedLayout.items) {
+			nextLayout.set(item.note.noteId, {
+				left: item.left,
+				top: item.top,
+				diameter: item.layoutDiameter,
+				score: item.note.score,
+			});
+		}
+		const previousLayout = previousPackedLayoutRef.current;
+		let movedCount = 0;
+		let resizedCount = 0;
+		let enteredCount = 0;
+		let exitedCount = 0;
+		const samples: Array<Record<string, unknown>> = [];
+		for (const [noteId, current] of nextLayout) {
+			const previous = previousLayout.get(noteId);
+			if (!previous) {
+				enteredCount += 1;
+				continue;
+			}
+			const moved = previous.left !== current.left || previous.top !== current.top;
+			const resized = previous.diameter !== current.diameter;
+			if (moved) movedCount += 1;
+			if (resized) resizedCount += 1;
+			if ((moved || resized) && samples.length < 8) {
+				samples.push({
+					noteId,
+					leftBefore: previous.left,
+					leftAfter: current.left,
+					topBefore: previous.top,
+					topAfter: current.top,
+					diameterBefore: previous.diameter,
+					diameterAfter: current.diameter,
+					scoreBefore: previous.score,
+					scoreAfter: current.score,
+				});
+			}
+		}
+		for (const noteId of previousLayout.keys()) {
+			if (!nextLayout.has(noteId)) exitedCount += 1;
+		}
+		recordViewTransitionTrace(debugTransitionTraceId, 'BUBBLE_VIEW_LAYOUT', {
+			allowBubbleLayoutTransitions,
+			hasMeasuredCloud,
+			containerWidth,
+			packedCount: packedLayout.items.length,
+			visiblePackedCount: visiblePackedItems.length,
+			movedCount,
+			resizedCount,
+			enteredCount,
+			exitedCount,
+			samples,
+		});
+		previousPackedLayoutRef.current = nextLayout;
+	}, [allowBubbleLayoutTransitions, containerWidth, debugTransitionTraceId, hasMeasuredCloud, packedLayout.items, packedLayoutSignature, transitionDebugEnabled, visiblePackedItems.length]);
+
+	React.useLayoutEffect(() => {
+		setAllowBubbleLayoutTransitions(false);
+	}, [hasMeasuredCloud]);
+
+	React.useLayoutEffect(() => {
+		if (!hasMeasuredCloud || packedLayout.items.length === 0 || typeof window === 'undefined') return;
+		const frameId = window.requestAnimationFrame(() => {
+			setAllowBubbleLayoutTransitions(true);
+		});
+		return () => {
+			window.cancelAnimationFrame(frameId);
+		};
+	}, [hasMeasuredCloud, packedLayout.items.length, packedLayoutSignature]);
 
 	React.useEffect(() => {
 		const alreadySeen = hasSeenBubbleLayout(packedLayoutSignature);
@@ -1761,45 +1908,43 @@ export function BubbleView({
 	}
 
 	return (
-		<LayoutGroup>
-			<div
-				ref={cloudRef}
-				className={styles.cloud}
-				style={{
-					'--bv-scale': String(scale),
-					height: `${packedLayout.totalHeight + 48}px`,
-				} as React.CSSProperties}
-			>
-				{/* Keep the full cloud height in flow, but only mount bubbles near the
-				    viewport so large cross-workspace note sets do not render at once. */}
-				{visiblePackedItems.map((item, entryIndex) => (
-					<div
-						key={`${item.note.workspaceId}:${item.note.noteId}`}
-						className={styles.cloudItem}
-						style={{
-							left: item.left,
-							top: item.top,
-							width: item.layoutDiameter,
-							height: item.layoutDiameter,
-						}}
-					>
-						<Bubble
-							note={item.note}
-							doc={item.doc}
-							sizeClass={item.sizeClass}
-							detailLevel={item.detailLevel}
-							bubbleDiameter={item.bubbleDiameter}
-							workspaceColorStyle={item.workspaceColorStyle}
-							rotateDeg={item.rotateDeg}
-							floatDuration={item.floatDuration}
-							floatDelay={item.floatDelay}
-							entryIndex={entryIndex}
-							suppressInitialAnimation={suppressInitialBubbleAnimation}
-							onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
-						/>
-					</div>
-				))}
-			</div>
-		</LayoutGroup>
+		<div
+			ref={cloudRef}
+			className={styles.cloud}
+			style={{
+				'--bv-scale': String(scale),
+				height: `${(hasMeasuredCloud ? packedLayout.totalHeight : 300) + 48}px`,
+			} as React.CSSProperties}
+		>
+			{/* Keep the full cloud height in flow, but avoid viewport virtualization
+			    until the cloud position has been measured once after the view switch. */}
+			{(hasMeasuredCloud ? visiblePackedItems : []).map((item, entryIndex) => (
+				<div
+					key={`${item.note.workspaceId}:${item.note.noteId}`}
+					className={`${styles.cloudItem}${allowBubbleLayoutTransitions ? '' : ` ${styles.cloudItemStatic}`}`}
+					style={{
+						left: item.left,
+						top: item.top,
+						width: item.layoutDiameter,
+						height: item.layoutDiameter,
+					}}
+				>
+					<Bubble
+						note={item.note}
+						doc={item.doc}
+						sizeClass={item.sizeClass}
+						detailLevel={item.detailLevel}
+						bubbleDiameter={item.bubbleDiameter}
+						workspaceColorStyle={item.workspaceColorStyle}
+						rotateDeg={item.rotateDeg}
+						floatDuration={item.floatDuration}
+						floatDelay={item.floatDelay}
+						entryIndex={entryIndex}
+						suppressInitialAnimation={suppressInitialBubbleAnimation}
+						onSelect={() => onSelectNote(item.note.noteId, item.note.workspaceId)}
+					/>
+				</div>
+			))}
+		</div>
 	);
 }
