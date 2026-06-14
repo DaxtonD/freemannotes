@@ -1315,6 +1315,16 @@
 	mask-image: url('/icons/autoscroll.png');
 }
 
+.formatButtonMaskIconHeadingCollapse {
+	-webkit-mask-image: url('/icons/Arrow.png');
+	mask-image: url('/icons/Arrow.png');
+	transition: transform 160ms ease;
+}
+
+.formatButtonMaskIconHeadingCollapseCollapsed {
+	transform: rotate(-90deg);
+}
+
 .formatButtonMaskIconUndoCheckbox {
 	-webkit-mask-image: url('/icons/undo-checkbox.png');
 	mask-image: url('/icons/undo-checkbox.png');
@@ -2066,17 +2076,29 @@
 
 .richEditorContent:global(.ProseMirror) ul,
 .richEditorContent:global(.ProseMirror) ol,
-.richEditorContent:global(.ProseMirror) h1,
-.richEditorContent:global(.ProseMirror) h2,
-.richEditorContent:global(.ProseMirror) h3,
-.richEditorContent:global(.ProseMirror) h4,
-.richEditorContent:global(.ProseMirror) h5,
-.richEditorContent:global(.ProseMirror) h6,
 .richEditorContent:global(.ProseMirror) blockquote,
 .richEditorContent:global(.ProseMirror) pre,
 .richEditorContent:global(.ProseMirror) table,
 .richEditorContent:global(.ProseMirror) hr {
 	margin: 0 0 0.6em;
+}
+
+.richEditorContent:global(.ProseMirror) h1,
+.richEditorContent:global(.ProseMirror) h2,
+.richEditorContent:global(.ProseMirror) h3,
+.richEditorContent:global(.ProseMirror) h4,
+.richEditorContent:global(.ProseMirror) h5,
+.richEditorContent:global(.ProseMirror) h6 {
+	margin: 0.6em 0;
+}
+
+.richEditorContent:global(.ProseMirror) > h1:first-child,
+.richEditorContent:global(.ProseMirror) > h2:first-child,
+.richEditorContent:global(.ProseMirror) > h3:first-child,
+.richEditorContent:global(.ProseMirror) > h4:first-child,
+.richEditorContent:global(.ProseMirror) > h5:first-child,
+.richEditorContent:global(.ProseMirror) > h6:first-child {
+	margin-top: 0;
 }
 
 .richEditorContent:global(.ProseMirror) ul,
@@ -2156,6 +2178,160 @@
 	letter-spacing: 0.03em;
 	text-transform: uppercase;
 	color: var(--color-text-muted);
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-hidden) {
+	display: none;
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-hidden.fn-collapsible-heading-hidden-exit) {
+	display: block !important;
+	overflow: hidden;
+	pointer-events: none;
+	max-height: var(--collapsible-heading-block-height, 0px);
+	margin-top: var(--collapsible-heading-block-margin-top, 0px);
+	margin-bottom: var(--collapsible-heading-block-margin-bottom, 0px);
+	padding-top: var(--collapsible-heading-block-padding-top, 0px);
+	padding-bottom: var(--collapsible-heading-block-padding-bottom, 0px);
+	opacity: 1;
+	transform: translateY(0);
+	transform-origin: top;
+	will-change: max-height, opacity, margin, padding, transform;
+	animation: collapsibleHeadingBlockExit 200ms ease-in-out forwards;
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-enter) {
+	display: block !important;
+	overflow: hidden;
+	pointer-events: none;
+	max-height: var(--collapsible-heading-block-height, 0px);
+	margin-top: var(--collapsible-heading-block-margin-top, 0px);
+	margin-bottom: var(--collapsible-heading-block-margin-bottom, 0px);
+	padding-top: var(--collapsible-heading-block-padding-top, 0px);
+	padding-bottom: var(--collapsible-heading-block-padding-bottom, 0px);
+	opacity: 1;
+	transform: translateY(0);
+	transform-origin: top;
+	will-change: max-height, opacity, margin, padding, transform;
+	animation: collapsibleHeadingBlockEnter 200ms ease-in-out both;
+}
+
+@keyframes collapsibleHeadingBlockExit {
+	to {
+		max-height: 0;
+		margin-top: 0;
+		margin-bottom: 0;
+		padding-top: 0;
+		padding-bottom: 0;
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+}
+
+@keyframes collapsibleHeadingBlockEnter {
+	from {
+		max-height: 0;
+		margin-top: 0;
+		margin-bottom: 0;
+		padding-top: 0;
+		padding-bottom: 0;
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading) {
+	--collapsible-heading-arrow-gap: 1.05rem;
+	--collapsible-heading-arrow-slot: 1.3rem;
+	--collapsible-heading-summary-space: 0rem;
+	--collapsible-heading-summary-shift: -10px;
+	white-space: normal;
+	display: block;
+	width: fit-content;
+	max-width: 100%;
+	position: relative;
+	cursor: default;
+	padding-inline-end: calc(var(--collapsible-heading-arrow-slot) + var(--collapsible-heading-arrow-gap) + var(--collapsible-heading-summary-space));
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading.fn-collapsible-heading-toggle-hover) {
+	cursor: default;
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading.is-collapsed[data-collapsible-heading-summary]:not([data-collapsible-heading-summary=''])) {
+	--collapsible-heading-summary-space: 5.8rem;
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading.is-collapsed[data-collapsible-heading-summary]:not([data-collapsible-heading-summary='']))::before {
+	content: attr(data-collapsible-heading-summary);
+	position: absolute;
+	inset-inline-end: var(--collapsible-heading-summary-shift);
+	top: 50%;
+	transform: translateY(-50%);
+	font-size: 0.76em;
+	font-weight: 600;
+	line-height: 1;
+	letter-spacing: 0.01em;
+	white-space: nowrap;
+	color: color-mix(in srgb, currentColor 62%, transparent);
+	pointer-events: none;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading)::after {
+	content: '';
+	position: absolute;
+	display: block;
+	inset-inline-end: calc(var(--collapsible-heading-summary-space) + var(--collapsible-heading-arrow-gap) - 7px);
+	top: 50%;
+	z-index: 1;
+	color: inherit;
+	width: 20px;
+	height: 20px;
+	transform: translateY(-50%) rotate(90deg);
+	user-select: none;
+	-webkit-user-select: none;
+	background-color: currentColor;
+	-webkit-mask-image: url('/icons/Arrow.png');
+	-webkit-mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	-webkit-mask-size: 12px 12px;
+	mask-image: url('/icons/Arrow.png');
+	mask-repeat: no-repeat;
+	mask-position: center;
+	mask-size: 12px 12px;
+	pointer-events: none;
+	transition: transform 160ms ease, color 140ms ease;
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading.is-collapsed)::after {
+	transform: translateY(-50%) rotate(0deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading)::after {
+		transition: none;
+	}
+
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-hidden.fn-collapsible-heading-hidden-exit) {
+		animation: none;
+	}
+
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-enter) {
+		animation: none;
+	}
+}
+
+@media (pointer: coarse) {
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading) {
+		--collapsible-heading-arrow-gap: 0.96rem;
+	}
+
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading.is-collapsed[data-collapsible-heading-summary]:not([data-collapsible-heading-summary=''])) {
+		--collapsible-heading-summary-space: 4.55rem;
+		--collapsible-heading-summary-shift: -4px;
+	}
 }
 
 .richEditorContent:global(.ProseMirror) blockquote {
@@ -2310,6 +2486,7 @@
 .checklistRowRichStack {
 	flex: 1 1 auto;
 	display: block;
+	position: relative;
 	width: auto;
 	min-width: 0;
 	min-height: auto;
@@ -2334,6 +2511,8 @@
 	background: transparent;
 	font-size: calc(1rem * var(--note-editor-font-scale, 1));
 	line-height: var(--checklist-text-line-height);
+	position: relative;
+	z-index: 1;
 }
 
 .checklistRowRichEditor:global(.ProseMirror) {
@@ -2345,6 +2524,32 @@
 
 .checklistRowRichEditor :global(p) {
 	margin: 0;
+}
+
+.checklistAutocompleteOverlay {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	min-height: 16px;
+	display: block;
+	font-size: calc(1rem * var(--note-editor-font-scale, 1));
+	line-height: var(--checklist-text-line-height);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: var(--color-text-subtle);
+	user-select: none;
+	-webkit-user-select: none;
+	z-index: 2;
+	transform: translateY(var(--checklist-text-vertical-adjust));
+}
+
+.checklistAutocompletePrefix {
+	color: transparent;
+	white-space: pre-wrap;
+}
+
+.checklistAutocompleteSuffix {
+	color: color-mix(in srgb, var(--color-text-muted) 90%, transparent);
 }
 
 .checklistRowPreview {
@@ -2466,6 +2671,13 @@ Drag handle:
 
 .dragHandle:disabled {
 	opacity: 1;
+	cursor: default;
+}
+
+/* Completed/read-only rows: let vertical scroll pass through non-draggable handles. */
+.dragHandleNonDraggable {
+	pointer-events: none;
+	touch-action: pan-y;
 	cursor: default;
 }
 

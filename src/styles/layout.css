@@ -783,6 +783,26 @@
 	overscroll-behavior: none;
 }
 
+@media (pointer: coarse) {
+	/* Do not set overflow:hidden on fab-open — iOS/PWA scroll lives on
+	   .test-harness-root and freezing overflow snaps the grid to the top. */
+	.test-harness-root.fab-open {
+		touch-action: none;
+		overscroll-behavior: none;
+	}
+
+	.test-harness-root.fab-open .app-main {
+		pointer-events: none;
+	}
+
+	.test-harness-root.fab-open .mobile-fab,
+	.test-harness-root.fab-open .mobile-fab-stack,
+	.test-harness-root.fab-open .mobile-fab-backdrop {
+		touch-action: manipulation;
+		pointer-events: auto;
+	}
+}
+
 .app-shell.sidebar-collapsed {
 	grid-template-columns: 72px minmax(0, 1fr);
 }
@@ -1088,6 +1108,31 @@
 	flex: 0 0 auto;
 	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
 	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.sidebar-collaborator-avatar,
+.sidebar-collaborator-avatar-fallback {
+	width: 18px;
+	height: 18px;
+	border-radius: 999px;
+	flex: 0 0 auto;
+}
+
+.sidebar-collaborator-avatar {
+	object-fit: cover;
+	border: 1px solid color-mix(in srgb, var(--color-border) 62%, transparent);
+	background: var(--color-surface-raised);
+}
+
+.sidebar-collaborator-avatar-fallback {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+	color: var(--color-text-muted);
+	font-size: 10px;
+	font-weight: 700;
+	border: 1px solid color-mix(in srgb, var(--color-border) 54%, transparent);
 }
 
 .sidebar-submenu-item:hover,
@@ -2632,6 +2677,8 @@
 	-webkit-tap-highlight-color: transparent;
 	-webkit-appearance: none;
 	appearance: none;
+	touch-action: none;
+	overscroll-behavior: none;
 	/* Keep the FAB veil above the header/sidebar so opening quick-create blurs
 	   the full app viewport rather than only the notes pane underneath it. */
 	z-index: 980;
@@ -2723,6 +2770,10 @@
 
 .mobile-fab-stack.is-open .mobile-fab-action:nth-child(3) {
 	transition-delay: 140ms;
+}
+
+.mobile-fab-stack.is-open .mobile-fab-action:nth-child(4) {
+	transition-delay: 190ms;
 }
 
 .mobile-fab {

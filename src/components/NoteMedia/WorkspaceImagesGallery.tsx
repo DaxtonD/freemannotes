@@ -8,6 +8,7 @@ import { useI18n } from '../../core/i18n';
 import { getConnectionQuality, subscribeConnectionQualityChange } from '../../core/networkQuality';
 import { readNoteFromDoc } from '../../core/noteModel';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
+import { resolveNoteReminderAt } from '../../core/reminderLookup';
 import {
 	readCachedNoteShareCollaborators,
 	syncNoteShareCollaborators,
@@ -367,7 +368,7 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 				updatedAt: note.updatedAt,
 				collectionId: placement ? placement.collectionId : note.collectionId,
 				labelIds: placement ? placement.labelIds : note.labelIds,
-				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
+				reminderAt: resolveNoteReminderAt(props.noteReminderByDocId, docId, id),
 				isPinned: resolveUserNotePinned({
 					docId: docId || id,
 					noteId: id,

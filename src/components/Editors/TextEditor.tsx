@@ -498,6 +498,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						// Hide the inline toolbar on coarse pointers because it is re-mounted as a
 						// portal above the keyboard while the keyboard is open.
 						hideToolbar={isCoarsePointer}
+							collapsibleHeadingNoteId={DRAFT_TEXT_AUTOSCROLL_ID}
 						caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 						viewportClassName={mobileKeyboardOpen ? styles.editorViewportKeyboardOpen : undefined}
 						contentClassName={styles.fullBodyFieldRich}

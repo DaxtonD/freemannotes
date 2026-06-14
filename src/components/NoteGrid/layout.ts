@@ -31,7 +31,8 @@ export type MasonryLayout = {
 export type StableMasonryPlacementReason =
 	| 'anchored-visible-column'
 	| 'preserve-previous-column'
-	| 'shortest-column';
+	| 'shortest-column'
+	| 'reading-order-deal';
 
 export type StableMasonryPlacementDecision = {
 	noteId: string;
@@ -441,6 +442,51 @@ export function mergeVisibleOrderIntoFullOrder(
 	return next;
 }
 
+/**
+ * Display-layer sort: pinned IDs first, preserving relative order within each tier.
+ *
+ * INVARIANT: This is display-only. Never write its output to Yjs `noteOrder`.
+ * Pin/unpin toggles only update user prefs; this function re-derives the grid
+ * order on read. See memory/pinning-architecture.md.
+ */
+export function applyPinnedDisplaySort(
+	ids: readonly string[],
+	isPinned: (id: string) => boolean
+): string[] {
+	const pinned: string[] = [];
+	const unpinned: string[] = [];
+	for (const id of ids) {
+		if (isPinned(id)) pinned.push(id);
+		else unpinned.push(id);
+	}
+	return [...pinned, ...unpinned];
+}
+
+/**
+ * Apply a within-tier drag result to canonical visible order.
+ *
+ * Used at drag-commit time so only the dragged note's pin tier is reordered in
+ * Yjs. IDs in the other tier keep their canonical slots; cross-tier moves happen
+ * via Pin/Unpin, not drag-and-drop.
+ *
+ * @param canonicalVisibleOrder Visible IDs in manual/canonical order (not pin-sorted).
+ * @param readingOrder          Row-major order from flattenColumns after drag preview.
+ * @param tierIsPinned          Whether the dragged note is in the pinned tier.
+ */
+export function applyTierReorderToCanonicalVisible(
+	canonicalVisibleOrder: readonly string[],
+	readingOrder: readonly string[],
+	tierIsPinned: boolean,
+	isPinned: (id: string) => boolean
+): string[] {
+	const tierNewOrder = readingOrder.filter((id) => isPinned(id) === tierIsPinned);
+	let tierCursor = 0;
+	return canonicalVisibleOrder.map((id) => {
+		if (isPinned(id) !== tierIsPinned) return id;
+		return tierNewOrder[tierCursor++] ?? id;
+	});
+}
+
 export function reorderByInsertion(
 	ids: readonly string[],
 	activeId: string,
@@ -536,26 +582,22 @@ function getVisibilityBiasedMidY(
  * ═══════════════════════════════════════════════════════════════════════════
  * DESIGN PRINCIPLE — anchor vs. ghost rectangle
  * ═══════════════════════════════════════════════════════════════════════════
- * ALL cross-column logic is driven by the live drag anchor: the raw pointer
- * position (pointer.clientX / pointer.clientY) passed in as dragAnchorX/Y.
- * This is intentional and critical.
+ * Column detection (horizontal) always uses the raw pointer (dragAnchorX).
  *
- * Previous attempts used the ghost card's center or edges. That caused two
- * failure modes:
- *   1. A short card dragged over a tall checklist card: the ghost bottom could
- *      never reach the tall card's midpoint, so the tall card was silently
- *      skipped and insertion always landed below it — never before it.
- *   2. Different card heights made cross-column insertion feel non-deterministic
- *      because the trigger threshold varied with the dragged card's own size.
+ * Row detection (vertical) uses TWO strategies selected by usePointerRowTest:
+ *   • Ghost leading-edge — origin column and adopted foreign columns.
+ *   • Pointer Y — first insertion only when entering a foreign column.
  *
- * Using the raw anchor point makes cross-column insertion identical to how a
- * simple vertical list responds: the user's finger crosses a midpoint → the
- * neighbor shifts.  Card height is irrelevant.
+ * Do NOT infer row strategy from layout column membership alone: during drag
+ * preview the card still appears in the origin column in `columns`, which
+ * previously kept pointer mode active for the entire cross-column drag.
  *
- * Same-column reordering STILL uses the ghost's leading edge (ghostTopY /
- * ghostBottomY) because the leading-edge heuristic gives the proven
- * "the dragged card must travel past its own half-height" feel that is
- * familiar and correct for reordering within a list.
+ * Cross-column ENTRY uses pointer Y so the first neighbor shift follows the
+ * finger (height-independent). See getVisibilityBiasedMidY for clipped cards.
+ *
+ * IN-COLUMN (and post-adoption foreign column) uses ghost leading edges so the
+ * dragged card must travel ~half its height past a neighbour before swapping —
+ * the proven resistive feel for same-column reordering.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * COLUMN DETECTION (horizontal)
@@ -573,7 +615,7 @@ function getVisibilityBiasedMidY(
  * the source column, making the transition instant and predictable.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * ROW DETECTION (vertical) — same-column path
+ * ROW DETECTION (vertical) — in-column / adopted-column path (ghost edges)
  * ═══════════════════════════════════════════════════════════════════════════
  * Uses the ghost card's leading edge against each card's midpoint:
  *   - Dragging DOWN: ghostBottom is the leading edge.
@@ -590,8 +632,12 @@ function getVisibilityBiasedMidY(
  * a neighbour before triggering a swap — which feels physically natural.
  *
  * ═══════════════════════════════════════════════════════════════════════════
- * ROW DETECTION (vertical) — cross-column path
+ * ROW DETECTION (vertical) — foreign-column entry path (pointer Y)
  * ═══════════════════════════════════════════════════════════════════════════
+ * Active only while inColumnRowTestColumn !== bestColumn (first insertion in
+ * that foreign column). After the drag manager records the first insertion it
+ * sets inColumnRowTestColumn and subsequent moves use ghost edges above.
+ *
  * Uses the raw drag anchor Y against each destination card's midpoint:
  *   Insert before card[i] when dragAnchorY < card[i].effectiveMidY
  * The destination column behaves like a local vertical list driven entirely
@@ -601,6 +647,13 @@ function getVisibilityBiasedMidY(
  * clipped by the grid container (see getVisibilityBiasedMidY). This prevents
  * mostly-hidden cards near the viewport edge from eagerly claiming the slot
  * for an insertion point the user cannot see.
+ *
+ * ═══════════════════════════════════════════════════════════════════════════
+ * PIN TIERS (optional isPinned callback)
+ * ═══════════════════════════════════════════════════════════════════════════
+ * When isPinned is provided, row hit-tests skip opposite-tier cards and insert
+ * indices clamp to the active tier. Preview insertion uses
+ * insertIntoColumnsRespectingPinGroups in the drag manager.
  *
  * ═══════════════════════════════════════════════════════════════════════════
  * OSCILLATION PREVENTION
@@ -623,9 +676,87 @@ function getVisibilityBiasedMidY(
  * @param getColumnRect  Returns the live DOMRect for a column container.
  * @param getViewportRect Returns top/bottom of the grid scroll container,
  *                        used for the visibility bias on cross-column drags.
+ * @param isPinned         Optional pin-tier filter for drag preview.
+ * @param dragOriginColumn Column index where the drag started (layout columns,
+ *                        not preview). When set with inColumnRowTestColumn,
+ *                        enables hybrid row hit-testing (see below).
+ * @param inColumnRowTestColumn After the first insertion in a foreign column,
+ *                        this column uses ghost-edge row tests like a native
+ *                        in-column drag. null = still in pointer entry phase.
  * @returns { column, index } where index is the slot BEFORE which the card
  *          should be inserted, or null when columns is empty.
+ *
+ * Hybrid row hit-testing (when dragOriginColumn is provided):
+ *   • Origin column → ghost leading-edge tests.
+ *   • Foreign column, first entry (inColumnRowTestColumn !== bestColumn) → pointer Y.
+ *   • Foreign column after first insertion (inColumnRowTestColumn === bestColumn) → ghost edges.
  */
+/** Clamp a raw insert index to the active pin tier within one column. */
+function clampInsertionIndexForPinGroup(
+	index: number,
+	activeIsPinned: boolean,
+	pinnedCount: number
+): number {
+	return activeIsPinned ? Math.min(index, pinnedCount) : Math.max(index, pinnedCount);
+}
+
+/**
+ * Return true when the pointer is vertically over an opposite-pin card in the
+ * target column. When true, drag preview leaves columns unchanged (no neighbor
+ * shift) — avoids implying a valid drop across pin tiers.
+ */
+export function shouldSuppressPinGroupInsertion(
+	colWithoutActive: readonly string[],
+	activeId: string,
+	dragAnchorY: number,
+	isPinned: (id: string) => boolean,
+	getRectForId: (id: string) => DOMRect | null
+): boolean {
+	const activeIsPinned = isPinned(activeId);
+	for (const id of colWithoutActive) {
+		if (isPinned(id) === activeIsPinned) continue;
+		const rect = getRectForId(id);
+		if (!rect) continue;
+		if (dragAnchorY >= rect.top && dragAnchorY <= rect.bottom) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * Splice the dragged card into the pinned or unpinned sub-block of one column,
+ * then reconcatenate [...pinned, ...unpinned]. Opposite-tier cards never shift
+ * during drag preview. Used instead of insertIntoColumns when pin groups apply.
+ */
+export function insertIntoColumnsRespectingPinGroups(
+	columns: readonly string[][],
+	activeId: string,
+	insertColumn: number,
+	insertIndex: number,
+	isPinned: (id: string) => boolean
+): string[][] {
+	const next = columns.map((col) => col.filter((id) => id !== activeId));
+	const targetCol = next[insertColumn] ?? next[0];
+	const pinnedBlock: string[] = [];
+	const unpinnedBlock: string[] = [];
+	for (const id of targetCol) {
+		if (isPinned(id)) pinnedBlock.push(id);
+		else unpinnedBlock.push(id);
+	}
+	const activeIsPinned = isPinned(activeId);
+	if (activeIsPinned) {
+		const idx = Math.min(insertIndex, pinnedBlock.length);
+		pinnedBlock.splice(idx, 0, activeId);
+	} else {
+		const unpinnedSubIndex = Math.max(0, insertIndex - pinnedBlock.length);
+		unpinnedBlock.splice(unpinnedSubIndex, 0, activeId);
+	}
+	targetCol.length = 0;
+	targetCol.push(...pinnedBlock, ...unpinnedBlock);
+	return next;
+}
+
 export function findInsertionPoint(
 	columns: readonly string[][],
 	activeId: string,
@@ -635,7 +766,10 @@ export function findInsertionPoint(
 	dragAnchorY: number,
 	getRectForId: (id: string) => DOMRect | null,
 	getColumnRect: (columnIndex: number) => DOMRect | null,
-	getViewportRect: () => Pick<DOMRect, 'top' | 'bottom'> | null
+	getViewportRect: () => Pick<DOMRect, 'top' | 'bottom'> | null,
+	isPinned?: (id: string) => boolean,
+	dragOriginColumn?: number,
+	inColumnRowTestColumn?: number | null
 ): { column: number; index: number } | null {
 	if (columns.length === 0) return null;
 	// Locate which column the dragged card currently lives in.
@@ -683,55 +817,60 @@ export function findInsertionPoint(
 	// Empty destination column → trivially insert at index 0.
 	if (col.length === 0) return { column: bestColumn, index: 0 };
 
+	const pinGroupActive = typeof isPinned === 'function';
+	const activeIsPinned = pinGroupActive ? isPinned(activeId) : false;
+	const pinnedCount = pinGroupActive ? col.filter((id) => isPinned(id)).length : 0;
+	const clampIndex = (index: number): number => (
+		pinGroupActive ? clampInsertionIndexForPinGroup(index, activeIsPinned, pinnedCount) : index
+	);
+
 	// ghostCenterY is only used by the same-column leading-edge test; it is
 	// NOT used for cross-column detection (that uses dragAnchorY directly).
 	const ghostCenterY = (ghostTopY + ghostBottomY) / 2;
 
-	const isCrossColumn = bestColumn !== sourceColumn;
-	// Visibility bias only matters for cross-column drops where destination
-	// cards might be partially clipped. Same-column cards are always visible
-	// relative to the drag (the user is already looking at that column).
-	const viewportRect = isCrossColumn ? getViewportRect() : null;
+	// ── Hybrid row strategy ─────────────────────────────────────────────────
+	// When dragOriginColumn is set (always during managed drags), foreign columns
+	// use pointer Y only until inColumnRowTestColumn === bestColumn. Otherwise
+	// fall back to legacy isCrossColumn = bestColumn !== sourceColumn.
+	// IMPORTANT: Do not revert to sourceColumn membership alone — layout columns
+	// still list the card in the origin column during drag preview.
+	const usePointerRowTest = typeof dragOriginColumn === 'number' && dragOriginColumn >= 0
+		? (
+			bestColumn !== dragOriginColumn
+			&& inColumnRowTestColumn !== bestColumn
+		)
+		: bestColumn !== sourceColumn;
+	// Visibility bias only for pointer-based foreign-column entry.
+	const viewportRect = usePointerRowTest ? getViewportRect() : null;
 
 	for (let i = 0; i < col.length; i++) {
+		// Pin tiers: only same-tier cards participate in neighbor-shift hit tests.
+		if (pinGroupActive && isPinned(col[i]) !== activeIsPinned) continue;
 		const rect = getRectForId(col[i]);
 		if (!rect) continue;
-		// midY: for cross-column use the visibility-biased midpoint;
-		//       for same-column use the plain geometric midpoint.
-		const midY = isCrossColumn
+		const midY = usePointerRowTest
 			? getVisibilityBiasedMidY(rect, viewportRect)
 			: rect.top + rect.height / 2;
 
-		if (isCrossColumn) {
-			// ── Cross-column: anchor crosses destination midpoint ──────────
-			// The raw pointer position decides insertion, not the ghost rect.
-			// This makes every destination card behave like a midpoint-triggered
-			// shift, identical to how a simple single-column reorder works.
-			// IMPORTANT: do not change this to use ghostCenterY or ghost edges —
-			// that reintroduces the height-mismatch failure mode described above.
+		if (usePointerRowTest) {
+			// ── Cross-column entry: anchor crosses destination midpoint ────────
 			if (dragAnchorY < midY) {
-				return { column: bestColumn, index: i };
+				return { column: bestColumn, index: clampIndex(i) };
 			}
 		} else {
-			// ── Same-column: leading-edge crosses destination midpoint ──────
-			// Which edge of the ghost is "leading" (closest to the destination):
-			//   - Ghost above card (ghostCenterY < midY) → dragging DOWN → leading edge is ghostBottomY
-			//   - Ghost below card (ghostCenterY > midY) → dragging UP   → leading edge is ghostTopY
-			// Insert before card[i] when the leading edge hasn't yet passed midY.
-			// This requires traveling half the card's height before the swap triggers,
-			// which gives the interaction its natural, "physically resistive" feel.
-			// IMPORTANT: do not change this to anchor-based (dragAnchorY) —
-			// that would make same-column swaps trigger too early (at the grab
-			// point, not at the card edge) which feels twitchy for tall cards.
+			// ── In-column: leading-edge crosses destination midpoint ───────────
 			const ghostEdge = ghostCenterY < midY ? ghostBottomY : ghostTopY;
 			if (ghostEdge < midY) {
-				return { column: bestColumn, index: i };
+				return { column: bestColumn, index: clampIndex(i) };
 			}
 		}
 	}
 
-	// Anchor is below all destination cards → insert at the end.
-	return { column: bestColumn, index: col.length };
+	// Anchor is below all destination cards → insert at the end of the active pin tier.
+	const fallThroughIndex = pinGroupActive
+		? (activeIsPinned ? pinnedCount : col.length)
+		: col.length;
+	return { column: bestColumn, index: fallThroughIndex };
 }
 
 /**
@@ -774,6 +913,22 @@ export function flattenColumns(columns: readonly string[][]): string[] {
 		}
 	}
 	return result;
+}
+
+/**
+ * Assign notes to columns in round-robin order so row-major flattening matches
+ * the input list exactly: flattenColumns(result) === ids.
+ *
+ * INVARIANT: Use this for all viewport-driven masonry packing in NoteGrid.
+ * Do NOT use splitIntoColumnsByHeight for column membership — greedy height
+ * packing assigns different columns when card heights change across viewports,
+ * which breaks row-major reading order on resize (e.g. A,B,D,C,F,E instead of
+ * A,B,C,D,E,F). Heights only affect Y positions within a column, not membership.
+ *
+ * See memory/pinning-architecture.md § Reading order vs masonry.
+ */
+export function splitIntoColumnsByReadingOrder(ids: readonly string[], columnCount: number): string[][] {
+	return dealIntoColumns(ids, columnCount);
 }
 
 /**

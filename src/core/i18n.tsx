@@ -100,6 +100,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		expandSidebar: 'Expand sidebar',
 		openQuickCreate: 'Open quick create',
 		closeQuickCreate: 'Close quick create',
+		createQuickReminder: 'Quick reminder',
 		createNote: 'Create note',
 		createChecklist: 'Create checklist',
 		createDrawing: 'Create drawing',
@@ -266,6 +267,9 @@ const FALLBACK_MESSAGES: Dictionary = {
 	reminders: {
 		addTitle: 'Add reminder',
 		addDescription: 'Schedule a reminder for this note.',
+		quickAddTitle: 'Quick reminder',
+		quickAddDescription: 'Create a note with a title and reminder time.',
+		quickCreateAction: 'Create reminder',
 		laterToday: 'Later today',
 		tomorrow: 'Tomorrow',
 		nextWeek: 'Next week',

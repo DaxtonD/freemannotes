@@ -23,6 +23,7 @@
     "expandSidebar": "Expandir barra lateral",
     "openQuickCreate": "Abrir creación rápida",
     "closeQuickCreate": "Cerrar creación rápida",
+    "createQuickReminder": "Recordatorio rápido",
     "createNote": "Crear nota",
     "createChecklist": "Crear lista",
     "createDrawing": "Crear dibujo",
@@ -217,6 +218,9 @@
   "reminders": {
     "addTitle": "Añadir recordatorio",
     "addDescription": "Programa un recordatorio para esta nota.",
+    "quickAddTitle": "Recordatorio rápido",
+    "quickAddDescription": "Crea una nota con un título y una fecha u hora de recordatorio.",
+    "quickCreateAction": "Crear recordatorio",
     "laterToday": "Más tarde hoy",
     "tomorrow": "Mañana",
     "nextWeek": "La próxima semana",

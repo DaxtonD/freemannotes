@@ -1,5 +1,6 @@
 import { generateText, getRenderedAttributes, getSchema, type Editor, type Extensions, type JSONContent } from '@tiptap/core';
 import Collaboration from '@tiptap/extension-collaboration';
+import Heading from '@tiptap/extension-heading';
 import Highlight from '@tiptap/extension-highlight';
 import Link from '@tiptap/extension-link';
 import Placeholder from '@tiptap/extension-placeholder';
@@ -12,10 +13,14 @@ import StarterKit from '@tiptap/starter-kit';
 import MarkdownIt from 'markdown-it';
 import markdownItTaskLists from 'markdown-it-task-lists';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
-import { Plugin } from '@tiptap/pm/state';
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
+import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
 import { ReplaceStep } from '@tiptap/pm/transform';
 import { prosemirrorJSONToYXmlFragment, yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import * as Y from 'yjs';
+import { buildCollapsibleHeadingLayout, getCollapsibleHeadingMeta } from './collapsibleRichHeadings';
+import { getRichHeadingCollapsed, saveRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefs } from './collapsibleHeadingPreferences';
+import { getDeviceId } from './deviceId';
 import { getExternalLinkRel, getExternalLinkTarget } from './externalLinks';
 
 export const TEXT_NOTE_RICH_FIELD = 'contentRich';
@@ -44,6 +49,909 @@ const MARKDOWN_MARK_PATTERN = /==(?=\S)([\s\S]*?\S)==/g;
 // Meta key used to mark internally-generated regeneration transactions so the
 // plugin does not re-process its own output and loop indefinitely.
 const TASK_ITEM_REGEN_META = 'taskItemCrdt';
+const COLLAPSIBLE_HEADING_REFRESH_META = 'collapsibleHeadingRefresh';
+const COLLAPSIBLE_HEADING_ID_REPAIR_META = 'collapsibleHeadingRepair';
+const COLLAPSIBLE_HEADING_ANIMATION_MS = 200;
+const COLLAPSIBLE_HEADING_MAX_ANIMATED_BLOCKS = 18;
+const COLLAPSIBLE_HEADING_MAX_ANIMATED_HEIGHT = 1800;
+const COLLAPSIBLE_HEADING_TOGGLE_HITBOX_PX = 28;
+const COLLAPSIBLE_HEADING_SELECTION_REPAIR_META = 'collapsibleHeadingSelectionRepair';
+const COLLAPSIBLE_HEADING_ANIMATION_REFRESH_EVENT = 'freemannotes:rich-heading-animation-refresh';
+const activeCollapsibleHeadingAnimations = new Set<string>();
+const activeCollapsedHeadingExitAnimations = new Map<string, Map<number, AnimatedHiddenBlockMetrics>>();
+const activeCollapsedHeadingExitAnimationTimeouts = new Map<string, number>();
+const activeExpandedHeadingEnterAnimations = new Map<string, Map<number, AnimatedHiddenBlockMetrics>>();
+const activeExpandedHeadingEnterAnimationTimeouts = new Map<string, number>();
+const lastMeasuredCollapsibleHeadingBlocks = new Map<string, Map<number, AnimatedHiddenBlockMetrics>>();
+const visibleCollapsedHeadingExitStarts = new Map<string, number>();
+
+function createCollapsibleHeadingId(): string {
+	try {
+		return crypto.randomUUID();
+	} catch {
+		return `heading-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+	}
+}
+
+function findActiveHeading(state: Editor['state']): { node: ProseMirrorNode; pos: number } | null {
+	const { $from } = state.selection;
+	for (let depth = $from.depth; depth > 0; depth -= 1) {
+		const node = $from.node(depth);
+		if (node.type.name === 'heading') {
+			return { node, pos: $from.before(depth) };
+		}
+	}
+	return null;
+}
+
+function isSelectionWithinHeadingText(
+	state: Editor['state'],
+	headingPos: number,
+	headingNode: ProseMirrorNode,
+): boolean {
+	const textStart = headingPos + 1;
+	const textEnd = headingPos + headingNode.nodeSize - 1;
+	return state.selection.from >= textStart && state.selection.to <= textEnd;
+}
+
+function findCollapsedHeadingEnterContext(state: Editor['state'], noteId: string): {
+	heading: { node: ProseMirrorNode; pos: number };
+	meta: { level: number; collapseId: string };
+	blocks: ProseMirrorNode[];
+	positions: number[];
+	headingIndex: number;
+} | null {
+	const activeHeading = findActiveHeading(state);
+	if (activeHeading) {
+		const meta = getCollapsibleHeadingMeta(activeHeading.node);
+		if (
+			meta.collapsible &&
+			meta.collapseId &&
+			meta.level != null &&
+			getRichHeadingCollapsed(noteId, meta.collapseId) &&
+			isSelectionWithinHeadingText(state, activeHeading.pos, activeHeading.node)
+		) {
+			const { blocks, positions } = getTopLevelBlocks(state.doc);
+			const headingIndex = positions.indexOf(activeHeading.pos);
+			if (headingIndex >= 0) {
+				return {
+					heading: activeHeading,
+					meta: { level: meta.level, collapseId: meta.collapseId },
+					blocks,
+					positions,
+					headingIndex,
+				};
+			}
+		}
+	}
+	if (!state.selection.empty) return null;
+	const { blocks, positions } = getTopLevelBlocks(state.doc);
+	for (let index = 0; index < blocks.length; index += 1) {
+		const node = blocks[index];
+		if (positions[index] + node.nodeSize !== state.selection.from) continue;
+		const meta = getCollapsibleHeadingMeta(node);
+		if (!meta.collapsible || !meta.collapseId || meta.level == null || !getRichHeadingCollapsed(noteId, meta.collapseId)) {
+			continue;
+		}
+		return {
+			heading: { node, pos: positions[index] },
+			meta: { level: meta.level, collapseId: meta.collapseId },
+			blocks,
+			positions,
+			headingIndex: index,
+		};
+	}
+	return null;
+}
+
+function getTopLevelBlocks(doc: ProseMirrorNode): { blocks: ProseMirrorNode[]; positions: number[] } {
+	const blocks: ProseMirrorNode[] = [];
+	const positions: number[] = [];
+	doc.forEach((node, offset) => {
+		blocks.push(node);
+		positions.push(offset);
+	});
+	return { blocks, positions };
+}
+
+function getHeadingSectionIndexes(
+	blocks: readonly ProseMirrorNode[],
+	headingIndex: number,
+	headingLevel: number,
+): { startIndex: number; endIndexExclusive: number } {
+	let endIndexExclusive = blocks.length;
+	for (let index = headingIndex + 1; index < blocks.length; index += 1) {
+		const meta = getCollapsibleHeadingMeta(blocks[index]);
+		if (meta.level != null && meta.level <= headingLevel) {
+			endIndexExclusive = index;
+			break;
+		}
+	}
+	return { startIndex: headingIndex + 1, endIndexExclusive };
+}
+
+function getHeadingSectionRange(
+	doc: ProseMirrorNode,
+	blocks: readonly ProseMirrorNode[],
+	positions: readonly number[],
+	headingIndex: number,
+	headingNode: ProseMirrorNode,
+	headingLevel: number,
+): { contentStartPos: number; contentEndPos: number; blockPositions: number[] } {
+	const { startIndex, endIndexExclusive } = getHeadingSectionIndexes(blocks, headingIndex, headingLevel);
+	return {
+		contentStartPos: positions[headingIndex] + headingNode.nodeSize,
+		contentEndPos: endIndexExclusive < positions.length ? positions[endIndexExclusive] : doc.content.size,
+		blockPositions: positions.slice(startIndex, endIndexExclusive),
+	};
+}
+
+type CollapsibleHeadingLocation = {
+	pos: number;
+	node: ProseMirrorNode;
+	index: number;
+	level: number;
+	collapseId: string;
+	collapsed: boolean;
+};
+
+function findCollapsibleHeadingById(doc: ProseMirrorNode, noteId: string, collapseId: string): CollapsibleHeadingLocation | null {
+	const { blocks, positions } = getTopLevelBlocks(doc);
+	const layout = buildCollapsibleHeadingLayout(blocks, (candidateId) => getRichHeadingCollapsed(noteId, candidateId));
+	for (let index = 0; index < layout.length; index += 1) {
+		const item = layout[index];
+		if (item.hidden || !item.collapsible || item.collapseId !== collapseId || item.headingLevel == null) continue;
+		return {
+			pos: positions[index],
+			node: blocks[index],
+			index,
+			level: item.headingLevel,
+			collapseId,
+			collapsed: item.collapsed,
+		};
+	}
+	return null;
+}
+
+function makeCollapsibleHeadingUiKey(noteId: string, collapseId: string): string {
+	return `${noteId}::${collapseId}`;
+}
+
+function dispatchCollapsibleHeadingAnimationRefresh(noteId: string): void {
+	if (typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
+	window.dispatchEvent(new CustomEvent(COLLAPSIBLE_HEADING_ANIMATION_REFRESH_EVENT, {
+		detail: { noteId },
+	}));
+}
+
+function findCollapsibleHeadingElement(target: EventTarget | null): HTMLElement | null {
+	if (!(target instanceof Node)) return null;
+	const element = target instanceof HTMLElement ? target : target.parentElement;
+	return element?.closest('[data-collapsible-heading="true"]') as HTMLElement | null;
+}
+
+function setCollapsibleHeadingToggleHover(element: HTMLElement | null, isHoveringToggle: boolean): void {
+	if (!element) return;
+	element.classList.toggle('fn-collapsible-heading-toggle-hover', isHoveringToggle);
+}
+
+function resolveHeadingOverlayLengthPx(element: HTMLElement, value: string): number {
+	const trimmed = value.trim();
+	if (!trimmed) return 0;
+	if (trimmed.endsWith('px')) return Number.parseFloat(trimmed) || 0;
+	if (trimmed.endsWith('rem')) {
+		const rootFontSize = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16;
+		return (Number.parseFloat(trimmed) || 0) * rootFontSize;
+	}
+	if (trimmed.endsWith('em')) {
+		const fontSize = Number.parseFloat(window.getComputedStyle(element).fontSize) || 16;
+		return (Number.parseFloat(trimmed) || 0) * fontSize;
+	}
+	return Number.parseFloat(trimmed) || 0;
+}
+
+function isCoarsePointerInteraction(): boolean {
+	return typeof window !== 'undefined'
+		&& typeof window.matchMedia === 'function'
+		&& window.matchMedia('(pointer: coarse)').matches;
+}
+
+function getCollapsibleHeadingToggleHitboxPx(): number {
+	if (isCoarsePointerInteraction()) {
+		return 44;
+	}
+	return COLLAPSIBLE_HEADING_TOGGLE_HITBOX_PX;
+}
+
+function suppressCoarsePointerEditorFocus(view: EditorView): void {
+	if (!isCoarsePointerInteraction()) return;
+	const root = view.dom as HTMLElement | null;
+	const active = document.activeElement;
+	if (active instanceof HTMLElement && (active === root || root?.contains(active))) {
+		active.blur();
+	}
+}
+
+function isCollapsibleHeadingToggleHit(element: HTMLElement, event: MouseEvent): boolean {
+	const rect = element.getBoundingClientRect();
+	if (event.clientY < rect.top || event.clientY > rect.bottom) return false;
+	const styles = window.getComputedStyle(element);
+	const summarySpace = resolveHeadingOverlayLengthPx(element, styles.getPropertyValue('--collapsible-heading-summary-space'));
+	const arrowGap = resolveHeadingOverlayLengthPx(element, styles.getPropertyValue('--collapsible-heading-arrow-gap'));
+	const reservedInlineEnd = Math.max(
+		resolveHeadingOverlayLengthPx(element, styles.paddingInlineEnd || styles.paddingRight),
+		summarySpace + arrowGap + 20,
+		getCollapsibleHeadingToggleHitboxPx(),
+	);
+	const hitboxPx = getCollapsibleHeadingToggleHitboxPx();
+	const horizontalSlopPx = isCoarsePointerInteraction() ? 10 : 4;
+	const hitWidth = Math.max(reservedInlineEnd, hitboxPx);
+	const hitLeft = rect.right - hitWidth - horizontalSlopPx;
+	const hitRight = rect.right + horizontalSlopPx;
+	return event.clientX >= hitLeft && event.clientX <= hitRight;
+}
+
+function findCollapsedHeadingOwnerForSelection(
+	doc: ProseMirrorNode,
+	noteId: string,
+	selectionPos: number,
+): { pos: number; node: ProseMirrorNode } | null {
+	const collapsedStack: Array<{ pos: number; node: ProseMirrorNode; level: number; collapseId: string }> = [];
+	const { blocks, positions } = getTopLevelBlocks(doc);
+	for (let index = 0; index < blocks.length; index += 1) {
+		const node = blocks[index];
+		const pos = positions[index];
+		const meta = getCollapsibleHeadingMeta(node);
+		if (meta.level != null) {
+			while (collapsedStack.length > 0 && meta.level <= collapsedStack[collapsedStack.length - 1].level) {
+				collapsedStack.pop();
+			}
+		}
+		const blockStart = pos;
+		const blockEnd = pos + node.nodeSize;
+		if (collapsedStack.length > 0 && selectionPos >= blockStart && selectionPos <= blockEnd) {
+			const owner = collapsedStack[collapsedStack.length - 1];
+			const visibleExitStart = visibleCollapsedHeadingExitStarts.get(makeCollapsibleHeadingUiKey(noteId, owner.collapseId));
+			if (typeof visibleExitStart === 'number' && selectionPos >= visibleExitStart) {
+				return null;
+			}
+			return { pos: owner.pos, node: owner.node };
+		}
+		if (meta.level != null && meta.collapsible && meta.collapseId && getRichHeadingCollapsed(noteId, meta.collapseId)) {
+			collapsedStack.push({ pos, node, level: meta.level, collapseId: meta.collapseId });
+		}
+	}
+	return null;
+}
+
+function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
+	let current = node?.parentElement ?? null;
+	while (current) {
+		const style = window.getComputedStyle(current);
+		const overflowY = style.overflowY;
+		const isScrollable = (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay') && current.scrollHeight > current.clientHeight;
+		if (isScrollable) return current;
+		current = current.parentElement;
+	}
+	return null;
+}
+
+function prefersReducedMotion(): boolean {
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+	return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function preserveHeadingViewportPosition(view: EditorView, headingPos: number, callback: () => void): void {
+	const headingElement = view.nodeDOM(headingPos);
+	const beforeRect = headingElement instanceof HTMLElement ? headingElement.getBoundingClientRect() : null;
+	const scrollContainer = view.dom instanceof HTMLElement ? getScrollContainer(view.dom) : null;
+	const pageScrollTop = typeof window === 'undefined' ? 0 : window.scrollY;
+	callback();
+	const updatedHeadingElement = view.nodeDOM(headingPos);
+	const afterRect = updatedHeadingElement instanceof HTMLElement ? updatedHeadingElement.getBoundingClientRect() : null;
+	if (!beforeRect || !afterRect) return;
+	const delta = afterRect.top - beforeRect.top;
+	if (Math.abs(delta) < 0.5) return;
+	if (scrollContainer) {
+		scrollContainer.scrollTop += delta;
+		return;
+	}
+	if (typeof window !== 'undefined') {
+		window.scrollTo({ top: pageScrollTop + delta, left: window.scrollX, behavior: 'auto' });
+	}
+}
+
+function selectionIntersectsCollapsedRange(state: Editor['state'], startPos: number, endPos: number): boolean {
+	if (endPos <= startPos) return false;
+	return state.selection.from < endPos && state.selection.to > startPos;
+}
+
+function collectHeadingSectionElements(view: EditorView, blockPositions: readonly number[]): Array<{ element: HTMLElement; pos: number }> {
+	const elements: Array<{ element: HTMLElement; pos: number }> = [];
+	for (const pos of blockPositions) {
+		const domNode = view.nodeDOM(pos);
+		if (domNode instanceof HTMLElement) {
+			elements.push({ element: domNode, pos });
+		}
+	}
+	return elements;
+}
+
+function shouldAnimateHeadingSection(elements: readonly { element: HTMLElement; pos: number }[]): boolean {
+	if (prefersReducedMotion() || elements.length === 0 || elements.length > COLLAPSIBLE_HEADING_MAX_ANIMATED_BLOCKS) {
+		return false;
+	}
+	let totalHeight = 0;
+	for (const { element } of elements) {
+		totalHeight += element.offsetHeight;
+		if (totalHeight > COLLAPSIBLE_HEADING_MAX_ANIMATED_HEIGHT) return false;
+	}
+	return totalHeight > 0;
+}
+
+type AnimatedBlockSnapshot = {
+	pos: number;
+	element: HTMLElement;
+	previousStyle: string | null;
+	height: number;
+	rect: DOMRect;
+	marginTop: string;
+	marginBottom: string;
+	paddingTop: string;
+	paddingBottom: string;
+};
+
+type AnimatedHiddenBlockMetrics = {
+	height: number;
+	marginTop: string;
+	marginBottom: string;
+	paddingTop: string;
+	paddingBottom: string;
+};
+
+function captureAnimatedBlockSnapshots(elements: readonly { element: HTMLElement; pos: number }[]): AnimatedBlockSnapshot[] {
+	return elements
+		.map(({ element, pos }) => {
+			const computedStyle = window.getComputedStyle(element);
+			return {
+				pos,
+				element,
+				previousStyle: element.getAttribute('style'),
+				height: element.offsetHeight,
+				rect: element.getBoundingClientRect(),
+				marginTop: computedStyle.marginTop,
+				marginBottom: computedStyle.marginBottom,
+				paddingTop: computedStyle.paddingTop,
+				paddingBottom: computedStyle.paddingBottom,
+			};
+		})
+		.filter((snapshot) => snapshot.height > 0);
+}
+
+function restoreAnimatedBlockStyles(snapshots: readonly AnimatedBlockSnapshot[]): void {
+	for (const snapshot of snapshots) {
+		if (snapshot.previousStyle == null) {
+			snapshot.element.removeAttribute('style');
+		} else {
+			snapshot.element.setAttribute('style', snapshot.previousStyle);
+		}
+	}
+}
+
+function animateCollapsedHeadingBlocks(
+	snapshots: readonly AnimatedBlockSnapshot[],
+	direction: 'collapse' | 'expand',
+	onComplete: () => void,
+): void {
+	if (snapshots.length === 0) {
+		onComplete();
+		return;
+	}
+	const transition = `max-height ${COLLAPSIBLE_HEADING_ANIMATION_MS}ms ease-in-out, opacity ${COLLAPSIBLE_HEADING_ANIMATION_MS}ms ease-in-out, margin-top ${COLLAPSIBLE_HEADING_ANIMATION_MS}ms ease-in-out, margin-bottom ${COLLAPSIBLE_HEADING_ANIMATION_MS}ms ease-in-out, padding-top ${COLLAPSIBLE_HEADING_ANIMATION_MS}ms ease-in-out, padding-bottom ${COLLAPSIBLE_HEADING_ANIMATION_MS}ms ease-in-out, transform ${COLLAPSIBLE_HEADING_ANIMATION_MS}ms ease-in-out`;
+	let finished = false;
+	const finish = (): void => {
+		if (finished) return;
+		finished = true;
+		restoreAnimatedBlockStyles(snapshots);
+		onComplete();
+	};
+	for (const snapshot of snapshots) {
+		const { element } = snapshot;
+		element.style.overflow = 'hidden';
+		element.style.pointerEvents = 'none';
+		element.style.willChange = 'max-height, opacity, margin, padding, transform';
+		element.style.maxHeight = direction === 'collapse' ? `${snapshot.height}px` : '0px';
+		element.style.opacity = direction === 'collapse' ? '1' : '0';
+		element.style.marginTop = direction === 'collapse' ? snapshot.marginTop : '0px';
+		element.style.marginBottom = direction === 'collapse' ? snapshot.marginBottom : '0px';
+		element.style.paddingTop = direction === 'collapse' ? snapshot.paddingTop : '0px';
+		element.style.paddingBottom = direction === 'collapse' ? snapshot.paddingBottom : '0px';
+		element.style.transform = direction === 'collapse' ? 'translateY(0)' : 'translateY(-4px)';
+	}
+	requestAnimationFrame(() => {
+		for (const snapshot of snapshots) {
+			const { element } = snapshot;
+			element.style.transition = transition;
+			element.style.maxHeight = direction === 'collapse' ? '0px' : `${snapshot.height}px`;
+			element.style.opacity = direction === 'collapse' ? '0' : '1';
+			element.style.marginTop = direction === 'collapse' ? '0px' : snapshot.marginTop;
+			element.style.marginBottom = direction === 'collapse' ? '0px' : snapshot.marginBottom;
+			element.style.paddingTop = direction === 'collapse' ? '0px' : snapshot.paddingTop;
+			element.style.paddingBottom = direction === 'collapse' ? '0px' : snapshot.paddingBottom;
+			element.style.transform = direction === 'collapse' ? 'translateY(-4px)' : 'translateY(0)';
+		}
+	});
+	window.setTimeout(finish, COLLAPSIBLE_HEADING_ANIMATION_MS + 80);
+}
+
+function toggleCollapsibleHeadingSection(
+	view: EditorView,
+	noteId: string,
+	headingPos: number,
+	headingNode: ProseMirrorNode,
+	headingLevel: number,
+	headingIndex: number,
+	blocks: readonly ProseMirrorNode[],
+	positions: readonly number[],
+	collapseId: string,
+	isCollapsed: boolean,
+): void {
+	const animationKey = `${noteId}::${collapseId}`;
+	visibleCollapsedHeadingExitStarts.delete(makeCollapsibleHeadingUiKey(noteId, collapseId));
+	if (activeCollapsibleHeadingAnimations.has(animationKey)) return;
+	const section = getHeadingSectionRange(view.state.doc, blocks, positions, headingIndex, headingNode, headingLevel);
+	const headingEndPos = Math.max(headingPos + 1, headingPos + headingNode.nodeSize - 1);
+	const applyCollapsedState = (nextCollapsed: boolean): void => {
+		preserveHeadingViewportPosition(view, headingPos, () => {
+			saveRichHeadingCollapsed(getDeviceId(), noteId, collapseId, nextCollapsed);
+		});
+	};
+	if (!isCollapsed && selectionIntersectsCollapsedRange(view.state, section.contentStartPos, section.contentEndPos)) {
+		view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, headingEndPos)));
+	}
+	if (isCollapsed) {
+		const expandMetrics = lastMeasuredCollapsibleHeadingBlocks.get(animationKey);
+		if (!expandMetrics || expandMetrics.size === 0 || prefersReducedMotion()) {
+			applyCollapsedState(false);
+			return;
+		}
+		activeCollapsibleHeadingAnimations.add(animationKey);
+		activeExpandedHeadingEnterAnimations.set(animationKey, new Map(expandMetrics));
+		const existingEnterTimeout = activeExpandedHeadingEnterAnimationTimeouts.get(animationKey);
+		if (existingEnterTimeout != null) {
+			window.clearTimeout(existingEnterTimeout);
+		}
+		const cleanupEnterTimeout = window.setTimeout(() => {
+			activeExpandedHeadingEnterAnimations.delete(animationKey);
+			activeExpandedHeadingEnterAnimationTimeouts.delete(animationKey);
+			activeCollapsibleHeadingAnimations.delete(animationKey);
+			dispatchCollapsibleHeadingAnimationRefresh(noteId);
+		}, COLLAPSIBLE_HEADING_ANIMATION_MS + 80);
+		activeExpandedHeadingEnterAnimationTimeouts.set(animationKey, cleanupEnterTimeout);
+		applyCollapsedState(false);
+		return;
+	}
+	const visibleElements = collectHeadingSectionElements(view, section.blockPositions);
+	if (!shouldAnimateHeadingSection(visibleElements)) {
+		applyCollapsedState(true);
+		return;
+	}
+	const collapseSnapshots = captureAnimatedBlockSnapshots(visibleElements);
+	activeCollapsibleHeadingAnimations.add(animationKey);
+	activeCollapsedHeadingExitAnimations.set(
+		animationKey,
+		new Map(
+			collapseSnapshots.map((snapshot) => [
+				snapshot.pos,
+				{
+					height: snapshot.height,
+					marginTop: snapshot.marginTop,
+					marginBottom: snapshot.marginBottom,
+					paddingTop: snapshot.paddingTop,
+					paddingBottom: snapshot.paddingBottom,
+				},
+			])
+		)
+	);
+	lastMeasuredCollapsibleHeadingBlocks.set(
+		animationKey,
+		new Map(
+			collapseSnapshots.map((snapshot) => [
+				snapshot.pos,
+				{
+					height: snapshot.height,
+					marginTop: snapshot.marginTop,
+					marginBottom: snapshot.marginBottom,
+					paddingTop: snapshot.paddingTop,
+					paddingBottom: snapshot.paddingBottom,
+				},
+			])
+		)
+	);
+	const existingTimeout = activeCollapsedHeadingExitAnimationTimeouts.get(animationKey);
+	if (existingTimeout != null) {
+		window.clearTimeout(existingTimeout);
+	}
+	applyCollapsedState(true);
+	const cleanupTimeout = window.setTimeout(() => {
+		activeCollapsedHeadingExitAnimations.delete(animationKey);
+		activeCollapsedHeadingExitAnimationTimeouts.delete(animationKey);
+		activeCollapsibleHeadingAnimations.delete(animationKey);
+		dispatchCollapsibleHeadingAnimationRefresh(noteId);
+	}, COLLAPSIBLE_HEADING_ANIMATION_MS + 80);
+	activeCollapsedHeadingExitAnimationTimeouts.set(animationKey, cleanupTimeout);
+}
+
+function buildCollapsibleHeadingDecorations(doc: ProseMirrorNode, noteId: string): DecorationSet {
+	const { blocks, positions } = getTopLevelBlocks(doc);
+	const decorations: Decoration[] = [];
+	const layout = buildCollapsibleHeadingLayout(blocks, (collapseId) => getRichHeadingCollapsed(noteId, collapseId));
+	const collapsedContentCounts = new Map<string, number>();
+	let activeCollapsedOwnerId: string | null = null;
+
+	layout.forEach((item, index) => {
+		if (!item.hidden) {
+			activeCollapsedOwnerId = item.collapsed && item.collapseId ? item.collapseId : null;
+			return;
+		}
+		if (!activeCollapsedOwnerId) return;
+		const visibleExitStart = visibleCollapsedHeadingExitStarts.get(makeCollapsibleHeadingUiKey(noteId, activeCollapsedOwnerId));
+		if (typeof visibleExitStart === 'number' && positions[index] >= visibleExitStart) {
+			return;
+		}
+		collapsedContentCounts.set(activeCollapsedOwnerId, (collapsedContentCounts.get(activeCollapsedOwnerId) ?? 0) + 1);
+	});
+
+	activeCollapsedOwnerId = null;
+
+	layout.forEach((item, index) => {
+		const node = item.block;
+		const pos = positions[index];
+		let enterMetrics: AnimatedHiddenBlockMetrics | undefined;
+		for (const metricsByPos of activeExpandedHeadingEnterAnimations.values()) {
+			enterMetrics = metricsByPos.get(pos);
+			if (enterMetrics) break;
+		}
+		if (!item.hidden) {
+			activeCollapsedOwnerId = item.collapsed && item.collapseId ? item.collapseId : null;
+		}
+		if (item.hidden) {
+			const visibleExitStart = activeCollapsedOwnerId ? visibleCollapsedHeadingExitStarts.get(makeCollapsibleHeadingUiKey(noteId, activeCollapsedOwnerId)) : undefined;
+			if (typeof visibleExitStart === 'number' && pos >= visibleExitStart) {
+				return;
+			}
+			const exitAnimation = activeCollapsedOwnerId ? activeCollapsedHeadingExitAnimations.get(makeCollapsibleHeadingUiKey(noteId, activeCollapsedOwnerId)) : null;
+			const exitMetrics = exitAnimation?.get(pos);
+			if (exitMetrics) {
+				decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+					class: 'fn-collapsible-heading-hidden fn-collapsible-heading-hidden-exit',
+					style: `--collapsible-heading-block-height:${exitMetrics.height}px;--collapsible-heading-block-margin-top:${exitMetrics.marginTop};--collapsible-heading-block-margin-bottom:${exitMetrics.marginBottom};--collapsible-heading-block-padding-top:${exitMetrics.paddingTop};--collapsible-heading-block-padding-bottom:${exitMetrics.paddingBottom};`,
+				}));
+				return;
+			}
+			decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+				class: 'fn-collapsible-heading-hidden',
+				style: 'display:none;',
+			}));
+			return;
+		}
+		if (enterMetrics && !(item.collapsible && item.headingLevel != null)) {
+			decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+				class: 'fn-collapsible-heading-enter',
+				style: `--collapsible-heading-block-height:${enterMetrics.height}px;--collapsible-heading-block-margin-top:${enterMetrics.marginTop};--collapsible-heading-block-margin-bottom:${enterMetrics.marginBottom};--collapsible-heading-block-padding-top:${enterMetrics.paddingTop};--collapsible-heading-block-padding-bottom:${enterMetrics.paddingBottom};`,
+			}));
+		}
+		if (!item.collapsible || !item.collapseId || item.headingLevel == null) return;
+		const collapsedContentCount = item.collapsed ? (collapsedContentCounts.get(item.collapseId) ?? 0) : 0;
+		const isWritingUnderCollapsedHeading = item.collapsed && visibleCollapsedHeadingExitStarts.has(makeCollapsibleHeadingUiKey(noteId, item.collapseId));
+		const collapsedContentSummary = isWritingUnderCollapsedHeading
+			? 'Writing...'
+			: collapsedContentCount <= 0
+				? ''
+				: collapsedContentCount === 1
+					? '• 1 line'
+					: `• ${collapsedContentCount > 99 ? '99+' : String(collapsedContentCount)} lines`;
+		decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+			class: item.collapsed ? 'fn-collapsible-heading is-collapsed' : 'fn-collapsible-heading',
+			'data-collapsible-heading': 'true',
+			'data-collapsible-heading-id': item.collapseId,
+			'data-collapsible-heading-collapsed': item.collapsed ? 'true' : 'false',
+			'data-collapsible-heading-summary': collapsedContentSummary,
+		}));
+	});
+
+	return DecorationSet.create(doc, decorations);
+}
+
+function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
+	const pluginKey = new PluginKey<DecorationSet>('freemannotes-collapsible-headings');
+	let hoveredHeadingElement: HTMLElement | null = null;
+	return new Plugin({
+		key: pluginKey,
+		appendTransaction: (transactions, _oldState, newState) => {
+			if (transactions.some((tr) => tr.getMeta(COLLAPSIBLE_HEADING_SELECTION_REPAIR_META))) {
+				return null;
+			}
+			if (!transactions.some((tr) => tr.selectionSet || tr.docChanged)) return null;
+			const hiddenOwner = findCollapsedHeadingOwnerForSelection(newState.doc, noteId, newState.selection.from);
+			if (!hiddenOwner) return null;
+			const repairPos = Math.max(hiddenOwner.pos + 1, hiddenOwner.pos + hiddenOwner.node.nodeSize - 1);
+			if (newState.selection.from === repairPos && newState.selection.to === repairPos) return null;
+			return newState.tr
+				.setMeta(COLLAPSIBLE_HEADING_SELECTION_REPAIR_META, true)
+				.setSelection(TextSelection.create(newState.doc, repairPos));
+		},
+		state: {
+			init: (_config, state) => buildCollapsibleHeadingDecorations(state.doc, noteId),
+			apply: (tr, value, _oldState, newState) => {
+				if (tr.docChanged || tr.selectionSet || tr.getMeta(pluginKey) || tr.getMeta(COLLAPSIBLE_HEADING_REFRESH_META)) {
+					return buildCollapsibleHeadingDecorations(newState.doc, noteId);
+				}
+				return value;
+			},
+		},
+		view: (view) => {
+			const refreshDecorations = (): void => {
+				if (view.isDestroyed) return;
+				view.dispatch(view.state.tr.setMeta(COLLAPSIBLE_HEADING_REFRESH_META, true));
+			};
+			const clearHoveredHeading = (): void => {
+				if (!hoveredHeadingElement) return;
+				setCollapsibleHeadingToggleHover(hoveredHeadingElement, false);
+				hoveredHeadingElement = null;
+			};
+			const handlePointerHover = (event: MouseEvent): void => {
+				const headingElement = findCollapsibleHeadingElement(event.target);
+				const isHoveringToggle = headingElement ? isCollapsibleHeadingToggleHit(headingElement, event) : false;
+				if (hoveredHeadingElement && hoveredHeadingElement !== headingElement) {
+					setCollapsibleHeadingToggleHover(hoveredHeadingElement, false);
+				}
+				if (headingElement && isHoveringToggle) {
+					setCollapsibleHeadingToggleHover(headingElement, true);
+					hoveredHeadingElement = headingElement;
+					return;
+				}
+				clearHoveredHeading();
+			};
+			const unsubscribe = subscribeCollapsedRichHeadingPrefs(() => {
+				refreshDecorations();
+			});
+			const handleHeadingToggle = (event: Event): void => {
+				const detail = event instanceof CustomEvent ? event.detail as { noteId?: unknown } | null : null;
+				if (detail && typeof detail.noteId === 'string' && detail.noteId !== noteId) return;
+				refreshDecorations();
+			};
+			const handleAnimationRefresh = (event: Event): void => {
+				const detail = event instanceof CustomEvent ? event.detail as { noteId?: unknown } | null : null;
+				if (detail && typeof detail.noteId === 'string' && detail.noteId !== noteId) return;
+				refreshDecorations();
+			};
+			window.addEventListener('freemannotes:rich-heading-toggle', handleHeadingToggle as EventListener);
+			window.addEventListener(COLLAPSIBLE_HEADING_ANIMATION_REFRESH_EVENT, handleAnimationRefresh as EventListener);
+			view.dom.addEventListener('mousemove', handlePointerHover);
+			view.dom.addEventListener('mouseleave', clearHoveredHeading);
+			return {
+				destroy() {
+					view.dom.removeEventListener('mousemove', handlePointerHover);
+					view.dom.removeEventListener('mouseleave', clearHoveredHeading);
+					clearHoveredHeading();
+					unsubscribe();
+					window.removeEventListener('freemannotes:rich-heading-toggle', handleHeadingToggle as EventListener);
+					window.removeEventListener(COLLAPSIBLE_HEADING_ANIMATION_REFRESH_EVENT, handleAnimationRefresh as EventListener);
+				},
+			};
+		},
+		props: {
+			handleDOMEvents: {
+				mousemove(_view, event) {
+					if (!(event instanceof MouseEvent)) return false;
+					const headingElement = findCollapsibleHeadingElement(event.target);
+					const isHoveringToggle = headingElement ? isCollapsibleHeadingToggleHit(headingElement, event) : false;
+					if (hoveredHeadingElement && hoveredHeadingElement !== headingElement) {
+						setCollapsibleHeadingToggleHover(hoveredHeadingElement, false);
+					}
+					if (headingElement) {
+						setCollapsibleHeadingToggleHover(headingElement, isHoveringToggle);
+						hoveredHeadingElement = isHoveringToggle ? headingElement : null;
+					} else if (hoveredHeadingElement) {
+						setCollapsibleHeadingToggleHover(hoveredHeadingElement, false);
+						hoveredHeadingElement = null;
+					}
+					return false;
+				},
+				mouseleave() {
+					if (hoveredHeadingElement) {
+						setCollapsibleHeadingToggleHover(hoveredHeadingElement, false);
+						hoveredHeadingElement = null;
+					}
+					return false;
+				},
+				pointerdown(view, event) {
+					if (!(event instanceof PointerEvent) || event.pointerType !== 'touch') return false;
+					const headingElement = findCollapsibleHeadingElement(event.target);
+					if (!headingElement || !isCollapsibleHeadingToggleHit(headingElement, event)) return false;
+					suppressCoarsePointerEditorFocus(view);
+					event.preventDefault();
+					event.stopPropagation();
+					return true;
+				},
+				mousedown(view, event) {
+					if (!(event instanceof MouseEvent) || event.button !== 0) return false;
+					const headingElement = findCollapsibleHeadingElement(event.target);
+					if (!headingElement || !isCollapsibleHeadingToggleHit(headingElement, event)) return false;
+					suppressCoarsePointerEditorFocus(view);
+					event.preventDefault();
+					event.stopPropagation();
+					return true;
+				},
+				touchstart(view, event) {
+					const touch = event.touches[0];
+					if (!touch) return false;
+					const headingElement = findCollapsibleHeadingElement(touch.target);
+					if (!headingElement) return false;
+					const syntheticMouseEvent = {
+						clientX: touch.clientX,
+						clientY: touch.clientY,
+					} as MouseEvent;
+					if (!isCollapsibleHeadingToggleHit(headingElement, syntheticMouseEvent)) return false;
+					suppressCoarsePointerEditorFocus(view);
+					if (event.cancelable) event.preventDefault();
+					event.stopPropagation();
+					return true;
+				},
+				click(view, event) {
+					if (!(event instanceof MouseEvent) || event.button !== 0) return false;
+					const headingElement = findCollapsibleHeadingElement(event.target);
+					if (!headingElement || !isCollapsibleHeadingToggleHit(headingElement, event)) return false;
+					suppressCoarsePointerEditorFocus(view);
+					event.preventDefault();
+					event.stopPropagation();
+					if (event.detail !== 1) return true;
+					const collapseId = headingElement.getAttribute('data-collapsible-heading-id');
+					if (!collapseId) return false;
+					const heading = findCollapsibleHeadingById(view.state.doc, noteId, collapseId);
+					if (!heading) return false;
+					const { blocks, positions } = getTopLevelBlocks(view.state.doc);
+					toggleCollapsibleHeadingSection(
+						view,
+						noteId,
+						heading.pos,
+						heading.node,
+						heading.level,
+						heading.index,
+						blocks,
+						positions,
+						heading.collapseId,
+						heading.collapsed,
+					);
+					return true;
+				},
+			},
+			handleKeyDown(view, event) {
+				if (event.key !== 'Enter' || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) {
+					return false;
+				}
+				const enterContext = findCollapsedHeadingEnterContext(view.state, noteId);
+				if (!enterContext) {
+					return false;
+				}
+				const { heading, meta, blocks, positions, headingIndex } = enterContext;
+				const section = getHeadingSectionRange(view.state.doc, blocks, positions, headingIndex, heading.node, meta.level);
+				const paragraph = view.state.schema.nodes.paragraph?.createAndFill();
+				if (!paragraph) return true;
+				event.preventDefault();
+				visibleCollapsedHeadingExitStarts.set(makeCollapsibleHeadingUiKey(noteId, meta.collapseId), section.contentEndPos);
+				let tr = view.state.tr.insert(section.contentEndPos, paragraph);
+				tr = tr.setMeta(COLLAPSIBLE_HEADING_REFRESH_META, true);
+				tr = tr.setSelection(TextSelection.create(tr.doc, section.contentEndPos + 1));
+				view.dispatch(tr);
+				return true;
+			},
+			decorations(state) {
+				return pluginKey.getState(state) ?? null;
+			},
+		},
+	});
+}
+
+const CollapsibleHeading = Heading.extend({
+	addAttributes() {
+		return {
+			...this.parent?.(),
+			collapsible: {
+				default: false,
+				parseHTML: (element: Element) => element.getAttribute('data-collapsible') === 'true',
+				renderHTML: (attrs: Record<string, unknown>) => attrs.collapsible ? { 'data-collapsible': 'true' } : {},
+			},
+			collapseId: {
+				default: null as string | null,
+				parseHTML: (element: Element) => element.getAttribute('data-collapse-id') || null,
+				renderHTML: (attrs: Record<string, unknown>) =>
+					typeof attrs.collapseId === 'string' && attrs.collapseId
+						? { 'data-collapse-id': attrs.collapseId }
+						: {},
+			},
+		};
+	},
+
+	addCommands() {
+		return {
+			...this.parent?.(),
+			setHeading: (attributes: Record<string, unknown>) => ({ commands, state }) => {
+				const activeHeading = findActiveHeading(state);
+				return commands.setNode(this.name, activeHeading ? { ...activeHeading.node.attrs, ...attributes } : attributes);
+			},
+			toggleHeading: (attributes: Record<string, unknown>) => ({ commands, state }) => {
+				const activeHeading = findActiveHeading(state);
+				return commands.toggleNode(this.name, 'paragraph', activeHeading ? { ...activeHeading.node.attrs, ...attributes } : attributes);
+			},
+			toggleHeadingCollapsible: () => ({ state, dispatch }) => {
+				const activeHeading = findActiveHeading(state);
+				if (!activeHeading) return false;
+				const meta = getCollapsibleHeadingMeta(activeHeading.node);
+				if (meta.level == null || meta.level > 5) return false;
+				const nextCollapsible = !Boolean(activeHeading.node.attrs.collapsible);
+				const nextAttrs = {
+					...activeHeading.node.attrs,
+					collapsible: nextCollapsible,
+					collapseId: nextCollapsible
+						? (typeof activeHeading.node.attrs.collapseId === 'string' && activeHeading.node.attrs.collapseId
+							? activeHeading.node.attrs.collapseId
+							: createCollapsibleHeadingId())
+						: activeHeading.node.attrs.collapseId ?? null,
+				};
+				if (!dispatch) return true;
+				dispatch(state.tr.setNodeMarkup(activeHeading.pos, undefined, nextAttrs));
+				return true;
+			},
+		};
+	},
+
+	addProseMirrorPlugins() {
+		const noteId = typeof this.options.noteId === 'string' && this.options.noteId ? this.options.noteId : null;
+		const plugins = [...(this.parent?.() ?? [])];
+		plugins.push(new Plugin({
+			appendTransaction: (transactions, _oldState, newState) => {
+				if (!transactions.some((tr) => tr.docChanged) || transactions.some((tr) => tr.getMeta(COLLAPSIBLE_HEADING_ID_REPAIR_META))) {
+					return null;
+				}
+				const seen = new Set<string>();
+				let nextTr = newState.tr.setMeta(COLLAPSIBLE_HEADING_ID_REPAIR_META, true);
+				let changed = false;
+				newState.doc.descendants((node, pos) => {
+					const meta = getCollapsibleHeadingMeta(node);
+					if (
+						node.type.name === 'heading' &&
+						Boolean(node.attrs.collapsible) &&
+						node.textContent.trim().length === 0
+					) {
+						nextTr = nextTr.setNodeMarkup(pos, undefined, {
+							...node.attrs,
+							collapsible: false,
+							collapseId: null,
+						});
+						changed = true;
+						return false;
+					}
+					if (!meta.collapsible || meta.level == null || meta.level > 5) return false;
+					let nextCollapseId = meta.collapseId;
+					if (!nextCollapseId || seen.has(nextCollapseId)) {
+						nextCollapseId = createCollapsibleHeadingId();
+						nextTr = nextTr.setNodeMarkup(pos, undefined, { ...node.attrs, collapseId: nextCollapseId });
+						changed = true;
+					}
+					seen.add(nextCollapseId);
+					return false;
+				});
+				return changed ? nextTr : null;
+			},
+		}));
+		if (noteId) {
+			plugins.push(createCollapsibleHeadingDecorationPlugin(noteId));
+		}
+		return plugins;
+	},
+});
 
 const MobileSafeTaskItem = TaskItem.extend({
 	addAttributes() {
@@ -297,6 +1205,7 @@ function buildStarterKit(variant: RichTextVariant, enableUndoRedo: boolean) {
 		undoRedo: enableUndoRedo,
 		link: false,
 		underline: false,
+		heading: false,
 	});
 }
 
@@ -305,10 +1214,12 @@ export function createRichTextExtensions(args: {
 	placeholder?: string;
 	includeCollaboration?: boolean;
 	fragment?: Y.XmlFragment | null;
+	collapsibleHeadingNoteId?: string | null;
 }): Extensions {
 	const enableUndoRedo = args.includeCollaboration !== true;
 	const extensions: Extensions = [
 		buildStarterKit(args.variant, enableUndoRedo),
+		...(args.variant === 'full' ? [CollapsibleHeading.configure({ noteId: args.collapsibleHeadingNoteId ?? null })] : []),
 		Underline,
 		Highlight.configure({ multicolor: true }),
 		Link.configure({

@@ -173,8 +173,24 @@ function getWorkspaceDisplayName(name, systemKind) {
 	return rawName;
 }
 
-function buildReminderUrl(reminder) {
-	return `/?workspace=${encodeURIComponent(String(reminder.workspaceId))}&note=${encodeURIComponent(String(reminder.noteId))}`;
+function buildReminderTargetUrl(reminder) {
+	const workspaceId = encodeURIComponent(String(reminder.workspaceId));
+	const noteId = encodeURIComponent(String(reminder.noteId));
+	const docId = encodeURIComponent(String(reminder.docId || ''));
+	return `/?workspace=${workspaceId}&note=${noteId}&doc=${docId}`;
+}
+
+async function isReminderNoteTrashed(prisma, reminder) {
+	try {
+		const document = await prisma.document.findUnique({
+			where: { docId: reminder.docId },
+			select: { state: true },
+		});
+		if (!document?.state) return true;
+		return Boolean(decodeDocumentState(document.state).trashed);
+	} catch {
+		return false;
+	}
 }
 
 async function loadReminderMetadata(prisma, reminder) {
@@ -223,7 +239,7 @@ function createReminderNotificationPayload(reminder, metadata) {
 	const noteTitle = String(reminder.noteTitle || 'Untitled note').trim() || 'Untitled note';
 	const workspaceName = String(metadata.workspaceName || 'Workspace').trim() || 'Workspace';
 	const reminderAtLabel = formatReminderDateTime(reminder.reminderAt);
-	const noteUrl = buildReminderUrl(reminder);
+	const noteUrl = buildReminderTargetUrl(reminder);
 	const previewText = normalizeText(metadata.notePreviewText || '');
 	const title = noteTitle;
 	const bodyLines = [
@@ -269,6 +285,9 @@ function createReminderNotificationPayload(reminder, metadata) {
 			previewText,
 			reminderAt: reminder.reminderAt instanceof Date ? reminder.reminderAt.toISOString() : String(reminder.reminderAt || ''),
 			url: noteUrl,
+			workspaceId: String(reminder.workspaceId),
+			noteId: String(reminder.noteId),
+			docId: String(reminder.docId || ''),
 			tag: `freeman-notes-reminder-${String(reminder.docId)}`,
 			icon: iconUrl,
 			badge: badgeUrl,
@@ -397,7 +416,53 @@ async function getFcmAccessToken() {
 	return data.access_token;
 }
 
-// ── Retry helper ──────────────────────────────────────────────────────────────
+function normalizeWebPushAssetPath(value) {
+	const asString = String(value || '').trim();
+	if (!asString) return undefined;
+	if (asString.startsWith('/')) return asString;
+	try {
+		const parsed = new URL(asString);
+		if (parsed.origin === APP_URL || !APP_URL) {
+			return `${parsed.pathname}${parsed.search}${parsed.hash}` || undefined;
+		}
+	} catch {
+		return asString;
+	}
+	return asString;
+}
+
+function buildWebPushNotificationBody(payload) {
+	const rawData = payload.data && typeof payload.data === 'object' ? payload.data : {};
+	const compactData = {};
+	for (const [key, value] of Object.entries(rawData)) {
+		if (value === undefined || value === null) continue;
+		if (key === 'previewText') continue;
+		if (key === 'icon' || key === 'badge' || key === 'image') continue;
+		compactData[key] = typeof value === 'string' ? value : String(value);
+	}
+	const icon = normalizeWebPushAssetPath(rawData.icon);
+	const badge = normalizeWebPushAssetPath(rawData.badge);
+	const image = normalizeWebPushAssetPath(rawData.image);
+	if (icon) compactData.icon = icon;
+	if (badge) compactData.badge = badge;
+	if (image) compactData.image = image;
+	return JSON.stringify({
+		title: String(payload.title ?? ''),
+		body: String(payload.body ?? ''),
+		type: typeof payload.type === 'string' ? payload.type : 'generic',
+		icon,
+		badge,
+		image,
+		data: compactData,
+	});
+}
+
+function formatWebPushError(err) {
+	const statusCode = Number(err?.statusCode);
+	const statusSuffix = Number.isFinite(statusCode) && statusCode > 0 ? ` (HTTP ${statusCode})` : '';
+	const bodySuffix = err?.body ? `: ${String(err.body).slice(0, 240)}` : '';
+	return `${String(err?.message ?? err)}${statusSuffix}${bodySuffix}`;
+}
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 500;
 
@@ -518,15 +583,7 @@ async function sendOneSubscription(sub, payload, prisma) {
 				keys: { p256dh: sub.p256dh ?? '', auth: sub.auth ?? '' },
 			};
 			await withRetry(() =>
-				webpush.sendNotification(webPushSub, JSON.stringify({
-					title: payload.title,
-					body: payload.body,
-					type: payload.type,
-					icon: payload.data?.icon,
-					badge: payload.data?.badge,
-					image: payload.data?.image,
-					data: payload.data ?? {},
-				}))
+				webpush.sendNotification(webPushSub, buildWebPushNotificationBody(payload))
 			);
 		}
 
@@ -543,6 +600,10 @@ async function sendOneSubscription(sub, payload, prisma) {
 		// Clean up permanently expired subscriptions
 		if (err.statusCode === 410 || err.statusCode === 404) {
 			await prisma.pushSubscription.delete({ where: { id: sub.id } }).catch(() => {});
+			console.info(
+				`[push] removed expired subscription (platform=${sub.platform} device=${sub.deviceId}) — re-enable notifications in Preferences`
+			);
+			return;
 		}
 
 		throw err;
@@ -559,7 +620,7 @@ function logPushSendFailures(results, subscriptions) {
 				: String(sub.endpoint ?? '').replace(/^https:\/\/[^/]+/, (host) => host.slice(0, 40));
 			console.error(
 				`[push] send failed (platform=${sub.platform} device=${sub.deviceId} endpoint=${endpointHint}):`,
-				result.reason?.message ?? result.reason
+				formatWebPushError(result.reason)
 			);
 		}
 	}
@@ -770,6 +831,15 @@ function startReminderScheduler(prisma, redis, onReminderFired) {
 		}
 
 		for (const reminder of reminders) {
+			if (await isReminderNoteTrashed(prisma, reminder)) {
+				try {
+					await prisma.noteReminder.delete({ where: { id: reminder.id } });
+				} catch {
+					// Row may have been cleared elsewhere — skip silently.
+				}
+				continue;
+			}
+
 			// Mark fired first to prevent duplicate delivery if another instance
 			// or the next check cycle finds the same row.
 			let marked;
@@ -788,6 +858,9 @@ function startReminderScheduler(prisma, redis, onReminderFired) {
 			const capturedReminder = reminder;
 			setTimeout(async () => {
 				try {
+					if (await isReminderNoteTrashed(prisma, capturedReminder)) {
+						return;
+					}
 					const metadata = await loadReminderMetadata(prisma, capturedReminder);
 					await sendExternalNotificationToUser(
 						prisma,

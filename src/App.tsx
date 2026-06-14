@@ -63,6 +63,7 @@ import { MoveNoteModal } from './components/Workspaces/MoveNoteModal';
 import { CollectionManagementModal } from './components/Workspaces/CollectionManagementModal';
 import { NoteCollectionModal } from './components/Workspaces/NoteCollectionModal';
 import { NoteLabelsModal } from './components/Workspaces/NoteLabelsModal';
+import { QuickReminderModal } from './components/Workspaces/QuickReminderModal';
 import { ReminderModal } from './components/Workspaces/ReminderModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
@@ -86,8 +87,8 @@ import {
 } from './core/deviceAppearancePreferences';
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
-import { addNoteDrawingId, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readNoteFromDoc, removeNoteDrawingId } from './core/noteModel';
-import { moveUserNotePinPreference, resolveUserNotePinned, setUserNotePinnedOnDoc } from './core/notePinPreferences';
+import { addNoteDrawingId, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readNoteFromDoc, removeNoteDrawingId, setNoteReminder } from './core/noteModel';
+import { getNotePinPrefsSnapshot, moveUserNotePinPreference, replaceUserNotePinPrefs, resolveUserNotePinned, setUserNotePinnedOnDoc, setUserNotePinPreferenceScope } from './core/notePinPreferences';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
 import { activateWorkspace, fetchUserPreferences, flushUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
@@ -97,7 +98,7 @@ import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
 import { createCollection, deleteCollection, getCollectionsRegistryDoc, readCollectionsFromDoc, subscribeCollections, updateCollection, type CollectionRecord, type CollectionTreeNode, buildCollectionTree, buildCollectionPathMap } from './services/collectionService';
 import { createLabel, deleteLabel, getLabelsRegistryDoc, readLabelsFromDoc, subscribeLabels, updateLabel, type LabelRecord } from './services/labelService';
-import { assignNoteLabels, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
+import { assignNoteBannerFile, assignNoteLabels, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
 import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode, SortDirection } from './utilities/getVisibleNotes';
 import {
 	flushPendingCollaboratorActions,
@@ -109,6 +110,7 @@ import {
 	readPendingCollaboratorActions,
 	syncAttachedDrawingCollaborators,
 	syncNoteShareCollaborators,
+	type NoteShareCollaboratorSnapshot,
 	updateSharedNotePlacementMetadata,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
@@ -153,10 +155,28 @@ import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
+import {
+	buildReminderLookup,
+	mergeServerReminderLookup,
+	readReminderLookupValue,
+	updateReminderLookup,
+} from './core/reminderLookup';
+import {
+	captureNotificationDeepLink,
+	clearNotificationDeepLinkFromUrl,
+	clearPendingNotificationDeepLink,
+	isNotificationDeepLinkConsumed,
+	markNotificationDeepLinkConsumed,
+	NOTIFICATION_DEEP_LINK_STASHED_EVENT,
+	parseNotificationDeepLinkMessage,
+	readNotificationDeepLinkFromUrl,
+	stashNotificationDeepLink,
+} from './core/notificationDeepLink';
 import { clearCachedReminderStates, moveCachedReminderStates, readCachedReminderStates, writeCachedReminderStates } from './core/reminderCache';
 import { moveNoteOrderSnapshotEntry, readNoteOrderSnapshot, writeNoteOrderSnapshot } from './core/noteOrderSnapshot';
 import { getUserNoteColorPrefsSnapshot, replaceUserNoteColorPrefs, setUserNoteColorPreferenceScope } from './core/noteColorPreferences';
 import { getUserNoteBannerPrefsSnapshot, replaceUserNoteBannerPrefs, setUserNoteBannerPreferenceScope } from './core/noteBannerPreferences';
+import { replaceCollapsedRichHeadingPrefs, setCollapsibleHeadingPreferenceScope } from './core/collapsibleHeadingPreferences';
 import { useStartupHydration } from './core/StartupHydrationContext';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
 import { listWorkspacePendingInvites } from './core/workspaceInviteApi';
@@ -216,6 +236,10 @@ type MoveNoteModalState = {
 	title: string;
 };
 
+type SidebarCollaboratorEntry = NoteGridCollaboratorFilter & {
+	noteCount: number;
+};
+
 const FAB_LIGHT_ICON_SRC = '/icons/FAB-light.png';
 const FAB_DARK_ICON_SRC = '/icons/FAB-dark.png';
 const APP_HEADER_LIGHT_ICON_SRC = '/icons/app-header-light.png';
@@ -253,6 +277,69 @@ function truncateUiName(value: string, maxLength = 48): string {
 	const normalized = String(value ?? '').trim();
 	if (normalized.length <= maxLength) return normalized;
 	return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}...`;
+}
+
+function normalizeSidebarCollaboratorEmail(value: unknown): string {
+	return String(value ?? '').trim().toLowerCase();
+}
+
+function buildSidebarCollaboratorKey(args: { userId?: string | null; email?: string | null }): string {
+	const userId = typeof args.userId === 'string' ? args.userId.trim() : '';
+	if (userId) return `user:${userId}`;
+	return `email:${normalizeSidebarCollaboratorEmail(args.email)}`;
+}
+
+function getSidebarCollaboratorLabel(user: { id?: string | null; name?: string | null; email?: string | null } | null | undefined): string {
+	return String(user?.name || user?.email || user?.id || '').trim();
+}
+
+function getSidebarCollaboratorInitial(label: string): string {
+	const trimmed = String(label || '').trim();
+	return trimmed ? trimmed.slice(0, 1).toUpperCase() : '?';
+}
+
+function buildWorkspaceCollaboratorEntries(snapshots: readonly (NoteShareCollaboratorSnapshot | null)[]): SidebarCollaboratorEntry[] {
+	const collaboratorsByKey = new Map<string, SidebarCollaboratorEntry>();
+	for (const snapshot of snapshots) {
+		if (!snapshot) continue;
+		const seenInSnapshot = new Set<string>();
+		const upsert = (candidate: { id?: string | null; name?: string | null; email?: string | null; profileImage?: string | null } | null | undefined): void => {
+			const label = getSidebarCollaboratorLabel(candidate);
+			const email = String(candidate?.email || '').trim();
+			const userId = typeof candidate?.id === 'string' ? candidate.id : null;
+			if (!label && !email) return;
+			const key = buildSidebarCollaboratorKey({ userId, email });
+			if (seenInSnapshot.has(key)) return;
+			seenInSnapshot.add(key);
+			const existing = collaboratorsByKey.get(key);
+			if (existing) {
+				existing.noteCount += 1;
+				if (!existing.avatar && candidate?.profileImage) existing.avatar = candidate.profileImage;
+				if ((!existing.label || existing.label === existing.email) && label) existing.label = label;
+				if (!existing.email && email) existing.email = email;
+				return;
+			}
+			collaboratorsByKey.set(key, {
+				key,
+				userId,
+				label: label || email,
+				email,
+				avatar: candidate?.profileImage ?? null,
+				noteCount: 1,
+			});
+		};
+
+		upsert(snapshot.sharedBy);
+		for (const collaborator of snapshot.collaborators ?? []) {
+			upsert({
+				id: collaborator.userId,
+				name: collaborator.user?.name,
+				email: collaborator.user?.email,
+				profileImage: collaborator.user?.profileImage,
+			});
+		}
+	}
+	return Array.from(collaboratorsByKey.values()).sort((left, right) => left.label.localeCompare(right.label));
 }
 
 function getCompressedSidebarCollectionPrefix(path: string, depth: number): string | null {
@@ -525,59 +612,6 @@ function useEffectiveNoteMetadataSnapshot(doc: Y.Doc | null, sharedPlacement: Sh
 	}, [baseSnapshot, placementLabelIdsKey, sharedPlacement]);
 }
 
-function buildReminderLookup(reminders: readonly NoteReminderState[]): Record<string, string | null> {
-	const next: Record<string, string | null> = {};
-	for (const reminder of reminders) {
-		// Store both the canonical doc id and the local alias/note id so shared
-		// placements, bubble view, and direct note editors can resolve the same
-		// reminder timestamp without duplicating lookup rules.
-		const reminderAt = typeof reminder.reminderAt === 'string' && reminder.reminderAt.trim().length > 0
-			? reminder.reminderAt
-			: null;
-		if (reminder.docId) {
-			next[reminder.docId] = reminderAt;
-		}
-		if (reminder.noteId && !(reminder.noteId in next)) {
-			next[reminder.noteId] = reminderAt;
-		}
-	}
-	return next;
-}
-
-function updateReminderLookup(
-	lookup: Record<string, string | null>,
-	docId: string,
-	noteId: string,
-	reminderAt: string | null
-): Record<string, string | null> {
-	const next = { ...lookup };
-	if (docId) {
-		if (reminderAt) next[docId] = reminderAt;
-		else next[docId] = null;
-	}
-	if (noteId) {
-		if (reminderAt) next[noteId] = reminderAt;
-		else next[noteId] = null;
-	}
-	return next;
-}
-
-function readReminderLookupValue(
-	lookup: Record<string, string | null>,
-	docId: string | null | undefined,
-	noteId?: string | null
-): string | null {
-	if (docId) {
-		const direct = lookup[docId];
-		if (typeof direct === 'string' && direct.trim().length > 0) return direct;
-	}
-	if (noteId) {
-		const fallback = lookup[noteId];
-		if (typeof fallback === 'string' && fallback.trim().length > 0) return fallback;
-	}
-	return null;
-}
-
 type MetadataNoteModalState = {
 	noteId: string;
 	docId?: string;
@@ -742,6 +776,18 @@ const _restoredOverlay: OverlaySnapshot | null = (() => {
 	return null;
 })();
 
+if (typeof window !== 'undefined') {
+	try {
+		const bootstrapDeepLink = readNotificationDeepLinkFromUrl();
+		if (bootstrapDeepLink) {
+			stashNotificationDeepLink(bootstrapDeepLink);
+			clearNotificationDeepLinkFromUrl();
+		}
+	} catch {
+		// ignore
+	}
+}
+
 function isMoreMenuHistoryState(value: unknown): boolean {
 	if (!value || typeof value !== 'object') return false;
 	return (value as { __moreMenu?: boolean }).__moreMenu === true;
@@ -816,6 +862,12 @@ function detectStandaloneDisplayMode(): boolean {
 		// iOS Safari
 		Boolean((window.navigator as unknown as { standalone?: boolean }).standalone)
 	);
+}
+
+function shouldUseMobileOverlayHistory(isMobileViewport: boolean): boolean {
+	if (isMobileViewport) return true;
+	if (typeof window === 'undefined') return false;
+	return window.matchMedia('(pointer: coarse)').matches;
 }
 
 function detectIosStandaloneDisplayMode(): boolean {
@@ -1432,6 +1484,8 @@ export function App(): React.JSX.Element {
 	const [searchResultsBusy, setSearchResultsBusy] = React.useState(false);
 	const [searchResultsError, setSearchResultsError] = React.useState<string | null>(null);
 	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
+	const [workspaceCollaborators, setWorkspaceCollaborators] = React.useState<SidebarCollaboratorEntry[]>([]);
+	const [workspaceCollaboratorsBusy, setWorkspaceCollaboratorsBusy] = React.useState(false);
 	const [collectionsDoc, setCollectionsDoc] = React.useState<Y.Doc | null>(null);
 	const [collections, setCollections] = React.useState<CollectionRecord[]>(() => [...startupHydration.collections]);
 	const [labelsDoc, setLabelsDoc] = React.useState<Y.Doc | null>(null);
@@ -1451,6 +1505,7 @@ export function App(): React.JSX.Element {
 	const [noteLabelsModalState, setNoteLabelsModalState] = React.useState<MetadataNoteModalState | null>(null);
 	const [labelManagementModalState, setLabelManagementModalState] = React.useState<LabelManagementModalState | null>(null);
 	const [noteReminderModalState, setNoteReminderModalState] = React.useState<ReminderNoteModalState | null>(null);
+	const [isQuickReminderOpen, setIsQuickReminderOpen] = React.useState(false);
 	const [noteReminderByDocId, setNoteReminderByDocId] = React.useState<Record<string, string | null>>(
 		() => buildReminderLookup(startupHydration.reminderStates)
 	);
@@ -1520,6 +1575,61 @@ export function App(): React.JSX.Element {
 		}
 		return next;
 	}, [readPendingReminderMutations]);
+	const applyServerReminderStates = React.useCallback((
+		current: Record<string, string | null>,
+		reminders: readonly NoteReminderState[],
+	): Record<string, string | null> => {
+		return applyPendingReminderMutations(mergeServerReminderLookup(current, buildReminderLookup(reminders)));
+	}, [applyPendingReminderMutations]);
+	const persistNoteReminderState = React.useCallback((entry: {
+		docId: string;
+		noteId: string;
+		workspaceId: string;
+		reminderAt: string | null;
+		noteTitle?: string;
+	}): void => {
+		const doc = manager.peekDoc(entry.noteId);
+		if (doc) setNoteReminder(doc, entry.reminderAt);
+		setNoteReminderByDocId((current) => updateReminderLookup(current, entry.docId, entry.noteId, entry.reminderAt));
+		updateCachedReminderState({
+			docId: entry.docId,
+			noteId: entry.noteId,
+			workspaceId: entry.workspaceId,
+			reminderAt: entry.reminderAt,
+		});
+		if (authStatus !== 'authed') return;
+		const pendingEntry: PendingReminderSync = {
+			docId: entry.docId,
+			noteId: entry.noteId,
+			workspaceId: entry.workspaceId,
+			reminderAt: entry.reminderAt,
+			noteTitle: entry.noteTitle,
+			updatedAt: new Date().toISOString(),
+		};
+		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+		if (authOfflineMode || browserOffline) {
+			queuePendingReminderMutation(pendingEntry);
+			return;
+		}
+		queuePendingReminderMutation(pendingEntry);
+		void syncNoteReminder({
+			deviceId,
+			docId: entry.docId,
+			noteId: entry.noteId,
+			workspaceId: entry.workspaceId,
+			reminderAt: entry.reminderAt,
+			noteTitle: entry.noteTitle,
+		}).then(() => {
+			removePendingReminderMutation(entry.docId, entry.noteId);
+		}).catch(() => {
+			void fetchNoteReminderStates()
+				.then((data) => {
+					writeCachedReminderStates(authUserId ?? '', data.reminders);
+					setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
+				})
+				.catch(() => undefined);
+		});
+	}, [applyPendingReminderMutations, applyServerReminderStates, authOfflineMode, authStatus, authUserId, deviceId, manager, queuePendingReminderMutation, removePendingReminderMutation, updateCachedReminderState]);
 	const flushPendingReminderMutations = React.useCallback(async (): Promise<void> => {
 		if (authStatus !== 'authed' || authOfflineMode) return;
 		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
@@ -1546,9 +1656,9 @@ export function App(): React.JSX.Element {
 		const data = await fetchNoteReminderStates().catch(() => null);
 		if (data) {
 			writeCachedReminderStates(authUserId ?? '', data.reminders);
-			setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
+			setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
 		}
-	}, [applyPendingReminderMutations, authOfflineMode, authStatus, authUserId, deviceId, readPendingReminderMutations, writePendingReminderMutations]);
+	}, [applyPendingReminderMutations, applyServerReminderStates, authOfflineMode, authStatus, authUserId, deviceId, readPendingReminderMutations, writePendingReminderMutations]);
 	const [moveNoteModalState, setMoveNoteModalState] = React.useState<MoveNoteModalState | null>(null);
 	const [moveNoteBusy, setMoveNoteBusy] = React.useState(false);
 	const [moveNoteError, setMoveNoteError] = React.useState<string | null>(null);
@@ -1821,7 +1931,7 @@ export function App(): React.JSX.Element {
 			// Persist to sessionStorage so the snapshot survives Android page kills
 			// even when a media-dock/image-viewer entry sits on top in history.
 			try { sessionStorage.setItem(SS_OVERLAY_KEY, JSON.stringify(snapshot)); } catch { /* quota */ }
-			if (!isMobileViewport || typeof window === 'undefined') return;
+			if (!shouldUseMobileOverlayHistory(isMobileViewport) || typeof window === 'undefined') return;
 			try {
 				const nextState: OverlayHistoryState = {
 					[OVERLAY_HISTORY_KEY]: true,
@@ -1844,7 +1954,7 @@ export function App(): React.JSX.Element {
 	);
 
 	const replaceActiveOverlaySnapshot = React.useCallback((snapshot: OverlaySnapshot) => {
-		if (isMobileViewport && typeof window !== 'undefined' && isOverlayHistoryState(window.history.state)) {
+		if (shouldUseMobileOverlayHistory(isMobileViewport) && typeof window !== 'undefined' && isOverlayHistoryState(window.history.state)) {
 			commitOverlaySnapshot(snapshot, 'replace');
 			return;
 		}
@@ -1852,7 +1962,7 @@ export function App(): React.JSX.Element {
 	}, [applyOverlaySnapshot, commitOverlaySnapshot, isMobileViewport]);
 
 	const goBackIfOverlayHistory = React.useCallback((): boolean => {
-		if (!isMobileViewport || typeof window === 'undefined') return false;
+		if (!shouldUseMobileOverlayHistory(isMobileViewport) || typeof window === 'undefined') return false;
 		if (!isOverlayHistoryState(window.history.state)) return false;
 		// Prevent queuing multiple history.back() from rapid taps; the guard
 		// is cleared in the popstate handler once navigation completes.
@@ -2287,6 +2397,7 @@ export function App(): React.JSX.Element {
 		Boolean(noteLabelsModalState) ||
 		Boolean(labelManagementModalState) ||
 		Boolean(noteReminderModalState) ||
+		isQuickReminderOpen ||
 		Boolean(moveNoteModalState) ||
 		isCollectionManagementOpen ||
 		Boolean(workspaceDeletedNotice);
@@ -2412,11 +2523,51 @@ export function App(): React.JSX.Element {
 	type NoteEditorOpenOptions = {
 		replaceTop?: boolean;
 		closeAttachmentBrowser?: boolean;
+		fromExternalDeepLink?: boolean;
 	};
 	const openNoteEditor = React.useCallback(
 		(noteId: string, opts?: NoteEditorOpenOptions) => {
 			markNoteAccessed(manager.getDoc(noteId), manager.getAccessOrigin());
 			const current = getOverlaySnapshot();
+			const mobileOverlay = shouldUseMobileOverlayHistory(isMobileViewport);
+			if (opts?.fromExternalDeepLink && mobileOverlay) {
+				const editorSnapshot: OverlaySnapshot = {
+					...current,
+					sidebarView: 'notes',
+					isMobileSearchOpen: false,
+					editorMode: 'none',
+					selectedNoteId: noteId,
+					noteAttachmentBrowserState: opts?.closeAttachmentBrowser ? null : current.noteAttachmentBrowserState,
+					isMobileSidebarOpen: false,
+					isFabOpen: false,
+				};
+				// Cold-start deep links (email/push) land on a non-overlay history entry.
+				// Convert that entry into a grid guard so Back/Save stay inside the app.
+				if (typeof window !== 'undefined' && !isOverlayHistoryState(window.history.state)) {
+					try {
+						const gridSnapshot: OverlaySnapshot = {
+							...EMPTY_OVERLAY_SNAPSHOT,
+							sidebarView: 'notes',
+						};
+						const guardState: OverlayHistoryState = {
+							[OVERLAY_HISTORY_KEY]: true,
+							snapshot: gridSnapshot,
+							kind: 'root',
+						};
+						window.history.replaceState(
+							guardState,
+							'',
+							`${window.location.pathname}${window.location.search}${window.location.hash}`,
+						);
+						applyOverlaySnapshot(gridSnapshot);
+					} catch {
+						// ignore
+					}
+				}
+				// Push onto overlay history so Back/Save return to the grid instead of leaving the PWA.
+				commitOverlaySnapshot(editorSnapshot, 'push');
+				return;
+			}
 			const historyState = typeof window !== 'undefined' ? window.history.state : null;
 			// When the editor is reopened from a nested media layer, replace that top
 			// history entry instead of stacking another editor snapshot on top of it.
@@ -2437,7 +2588,7 @@ export function App(): React.JSX.Element {
 				shouldReplaceTop ? 'replace' : 'push'
 			);
 		},
-		[commitOverlaySnapshot, getOverlaySnapshot, manager]
+		[commitOverlaySnapshot, applyOverlaySnapshot, getOverlaySnapshot, isMobileViewport, manager]
 	);
 
 	const openAttachedDrawing = React.useCallback(async (parentNoteId: string, drawingId: string) => {
@@ -2585,6 +2736,22 @@ export function App(): React.JSX.Element {
 		[authWorkspaceId, getPendingNewNoteDisposition, manager, noteReminderByDocId, selectedNoteId, showBriefDialog, syncAttachedDrawingAccess]
 	);
 
+	const collapseEditorOverlay = React.useCallback((): void => {
+		const gridSnapshot: OverlaySnapshot = {
+			...getOverlaySnapshot(),
+			editorMode: 'none',
+			selectedNoteId: null,
+			isMobileSearchOpen: false,
+			isMobileSidebarOpen: false,
+			isFabOpen: false,
+		};
+		if (shouldUseMobileOverlayHistory(isMobileViewport) && typeof window !== 'undefined' && isOverlayHistoryState(window.history.state)) {
+			commitOverlaySnapshot(gridSnapshot, 'replace');
+			return;
+		}
+		applyOverlaySnapshot(gridSnapshot);
+	}, [applyOverlaySnapshot, commitOverlaySnapshot, getOverlaySnapshot, isMobileViewport]);
+
 	const closeNoteEditor = React.useCallback(async () => {
 		const closingNoteId = selectedNoteId;
 		if (selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)) {
@@ -2594,6 +2761,14 @@ export function App(): React.JSX.Element {
 			if (closingNoteId) {
 				setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
 			}
+			// history.back() can no-op when the launch entry was never converted into a guard.
+			if (typeof window !== 'undefined') {
+				window.setTimeout(() => {
+					isNavigatingBackRef.current = false;
+					if (selectedNoteIdRef.current !== closingNoteId) return;
+					collapseEditorOverlay();
+				}, 0);
+			}
 			return;
 		}
 		setSelectedNoteId(null);
@@ -2601,7 +2776,7 @@ export function App(): React.JSX.Element {
 		if (closingNoteId) {
 			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
 		}
-	}, [finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId]);
+	}, [collapseEditorOverlay, finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId]);
 
 	const savePendingNewNoteAndClose = React.useCallback(async () => {
 		const closingNoteId = selectedNoteId;
@@ -2618,6 +2793,13 @@ export function App(): React.JSX.Element {
 			if (closingNoteId) {
 				setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
 			}
+			if (typeof window !== 'undefined') {
+				window.setTimeout(() => {
+					isNavigatingBackRef.current = false;
+					if (selectedNoteIdRef.current !== closingNoteId) return;
+					collapseEditorOverlay();
+				}, 0);
+			}
 			return;
 		}
 		setSelectedNoteId(null);
@@ -2625,7 +2807,7 @@ export function App(): React.JSX.Element {
 		if (closingNoteId) {
 			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
 		}
-	}, [finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId, showBriefDialog]);
+	}, [collapseEditorOverlay, finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId, showBriefDialog]);
 
 	React.useEffect(() => {
 		const previousSelectedNoteId = previousSelectedNoteIdRef.current;
@@ -2667,6 +2849,24 @@ export function App(): React.JSX.Element {
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot({ ...current, isFabOpen: false }, 'replace');
 	}, [commitOverlaySnapshot, getOverlaySnapshot, isEditorOverlayOpen, isFabOpen]);
+
+	// Block background pan/scroll while the mobile FAB menu is open without toggling
+	// overflow on the scroll root — that pattern snaps iOS/PWA grids back to the top.
+	React.useEffect(() => {
+		if (!isFabOpen || !showMobileFab || !isMobileViewport || typeof document === 'undefined') return;
+		const allowTouchTarget = (target: EventTarget | null): boolean => {
+			if (!(target instanceof Element)) return false;
+			return Boolean(target.closest('.mobile-fab-backdrop, .mobile-fab-stack, .mobile-fab'));
+		};
+		const onTouchMove = (event: TouchEvent): void => {
+			if (allowTouchTarget(event.target)) return;
+			if (event.cancelable) event.preventDefault();
+		};
+		document.addEventListener('touchmove', onTouchMove, { passive: false, capture: true });
+		return () => {
+			document.removeEventListener('touchmove', onTouchMove, { capture: true });
+		};
+	}, [isFabOpen, isMobileViewport, showMobileFab]);
 
 	React.useEffect(() => {
 		const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
@@ -2848,7 +3048,9 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		setUserNoteColorPreferenceScope(authUserId ?? null);
 		setUserNoteBannerPreferenceScope(authUserId ?? null);
-	}, [authUserId]);
+		setUserNotePinPreferenceScope(authUserId ?? null);
+		setCollapsibleHeadingPreferenceScope(authUserId ?? null, deviceId ?? null);
+	}, [authUserId, deviceId]);
 
 	const pendingAppearanceSyncStorageKey = React.useMemo(
 		() => `freemannotes.pendingAppearanceSync.v1:${authUserId ?? ''}:${deviceId}`,
@@ -3433,6 +3635,7 @@ export function App(): React.JSX.Element {
 			if (pref) {
 				const localNoteColorPrefs = getUserNoteColorPrefsSnapshot();
 				const localNoteBannerPrefs = getUserNoteBannerPrefsSnapshot();
+				const localNotePinPrefs = getNotePinPrefsSnapshot();
 				if (
 					Object.keys(localNoteColorPrefs).length > 0
 					&& Object.keys(pref.noteColorsByNoteId || {}).length === 0
@@ -3455,6 +3658,18 @@ export function App(): React.JSX.Element {
 					if (cancelled) return;
 					if (updatedNoteBannerPrefs) {
 						pref = updatedNoteBannerPrefs;
+					}
+				}
+				if (
+					Object.keys(localNotePinPrefs).length > 0
+					&& Object.keys(pref.notePinsByDocId || {}).length === 0
+				) {
+					const updatedNotePinPrefs = await updateUserPreferences(deviceId, {
+						notePinsByDocId: localNotePinPrefs,
+					});
+					if (cancelled) return;
+					if (updatedNotePinPrefs) {
+						pref = updatedNotePinPrefs;
 					}
 				}
 				let syncedWorkspaceId = pref.activeWorkspaceId;
@@ -3588,8 +3803,10 @@ export function App(): React.JSX.Element {
 				}
 				setTrashDeleteAfterDaysPref(pref.deleteAfterDays ?? null);
 				seedNoteCardCompletedExpandedByNoteId(pref.noteCardCompletedExpandedByNoteId || {});
+				replaceCollapsedRichHeadingPrefs(pref.collapsedRichHeadingIds || {});
 				replaceUserNoteColorPrefs(pref.noteColorsByNoteId || {});
 				replaceUserNoteBannerPrefs(pref.noteBannersByNoteId || {});
+				replaceUserNotePinPrefs(pref.notePinsByDocId || {});
 				setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors || {});
 				// Merge the server-backed dismissed IDs with the local offline cache so
 				// users keep dismissals made on other devices without losing any that
@@ -4398,6 +4615,67 @@ export function App(): React.JSX.Element {
 		setActiveSortGrouping('none');
 	}, [activeSharedFolder, authWorkspaceId, sidebarView]);
 
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId || !authWorkspaceId) {
+			setWorkspaceCollaborators([]);
+			setWorkspaceCollaboratorsBusy(false);
+			return;
+		}
+		let cancelled = false;
+		const loadWorkspaceCollaborators = async (): Promise<void> => {
+			setWorkspaceCollaboratorsBusy(true);
+			const noteOrder = await manager.getNoteOrder().catch(() => null);
+			if (cancelled) return;
+			const localDocIds = noteOrder && noteOrder.length > 0
+				? noteOrder.toArray().filter((noteId) => !noteId.startsWith('shared-placement:')).map((noteId) => manager.resolveRoomName(noteId)).filter(Boolean)
+				: startupHydration.noteOrderIds.filter((noteId) => !noteId.startsWith('shared-placement:')).map((noteId) => manager.resolveRoomName(noteId)).filter(Boolean);
+			const sharedDocIds = activeWorkspaceSharedPlacements.map((placement) => String(placement.roomId || '').trim()).filter(Boolean);
+			const docIds = [...new Set([...localDocIds, ...sharedDocIds])];
+			if (docIds.length === 0) {
+				if (!cancelled) {
+					setWorkspaceCollaborators([]);
+					setWorkspaceCollaboratorsBusy(false);
+				}
+				return;
+			}
+			const cachedSnapshots = await Promise.all(docIds.map((docId) => readCachedNoteShareCollaborators(authUserId, docId).catch(() => null)));
+			if (cancelled) return;
+			setWorkspaceCollaborators(buildWorkspaceCollaboratorEntries(cachedSnapshots));
+			if (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
+				setWorkspaceCollaboratorsBusy(false);
+				return;
+			}
+			const syncedSnapshots = await Promise.all(docIds.map((docId) => syncNoteShareCollaborators(authUserId, docId, { suppressError: true }).catch(() => null)));
+			if (cancelled) return;
+			setWorkspaceCollaborators(buildWorkspaceCollaboratorEntries(syncedSnapshots.map((snapshot, index) => snapshot ?? cachedSnapshots[index] ?? null)));
+			setWorkspaceCollaboratorsBusy(false);
+		};
+		void loadWorkspaceCollaborators();
+		return () => {
+			cancelled = true;
+		};
+	}, [activeWorkspaceSharedPlacements, authOfflineMode, authStatus, authUserId, authWorkspaceId, collaborationRefreshToken, manager, startupHydration.noteOrderIds]);
+
+	React.useEffect(() => {
+		if (!noteGridCollaboratorFilter) return;
+		const next = workspaceCollaborators.find((entry) => entry.key === noteGridCollaboratorFilter.key);
+		if (!next) return;
+		if (
+			next.label === noteGridCollaboratorFilter.label &&
+			next.email === noteGridCollaboratorFilter.email &&
+			next.avatar === noteGridCollaboratorFilter.avatar
+		) {
+			return;
+		}
+		setNoteGridCollaboratorFilter({
+			key: next.key,
+			userId: next.userId,
+			label: next.label,
+			email: next.email,
+			avatar: next.avatar,
+		});
+	}, [noteGridCollaboratorFilter, workspaceCollaborators]);
+
 	const collectionTree = React.useMemo(() => buildCollectionTree(collections), [collections]);
 	const collectionPathById = React.useMemo(() => buildCollectionPathMap(collections), [collections]);
 	const collectionParentById = React.useMemo(() => new Map(collections.map((collection) => [collection.id, collection.parentId] as const)), [collections]);
@@ -4690,49 +4968,15 @@ export function App(): React.JSX.Element {
 	const handleSaveNoteReminder = React.useCallback((reminderAt: string | null) => {
 		if (!noteReminderModalState) return;
 		const { docId, noteId, title } = noteReminderModalState;
-		setNoteReminderByDocId((current) => updateReminderLookup(current, docId, noteId, reminderAt));
-		updateCachedReminderState({
+		persistNoteReminderState({
 			docId,
 			noteId,
 			workspaceId: authWorkspaceId ?? '',
 			reminderAt,
+			noteTitle: title || undefined,
 		});
 		setNoteReminderModalState(null);
-		// Sync reminder to server so the push scheduler can fire the notification.
-		if (authStatus === 'authed') {
-			const pendingEntry: PendingReminderSync = {
-				docId,
-				noteId,
-				workspaceId: authWorkspaceId ?? '',
-				reminderAt,
-				noteTitle: title || undefined,
-				updatedAt: new Date().toISOString(),
-			};
-			const browserOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
-			if (authOfflineMode || browserOffline) {
-				queuePendingReminderMutation(pendingEntry);
-				return;
-			}
-			queuePendingReminderMutation(pendingEntry);
-			void syncNoteReminder({
-				deviceId,
-				docId,
-				noteId,
-				workspaceId: authWorkspaceId ?? '',
-				reminderAt,
-				noteTitle: title || undefined,
-			}).then(() => {
-				removePendingReminderMutation(docId, noteId);
-			}).catch(() => {
-				void fetchNoteReminderStates()
-					.then((data) => {
-						writeCachedReminderStates(authUserId ?? '', data.reminders);
-						setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
-					})
-					.catch(() => undefined);
-			});
-		}
-	}, [applyPendingReminderMutations, authStatus, authOfflineMode, noteReminderModalState, deviceId, authUserId, authWorkspaceId, queuePendingReminderMutation, removePendingReminderMutation, updateCachedReminderState]);
+	}, [authWorkspaceId, noteReminderModalState, persistNoteReminderState]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) {
@@ -4751,13 +4995,13 @@ export function App(): React.JSX.Element {
 			.then((data) => {
 				if (cancelled) return;
 				writeCachedReminderStates(authUserId, data.reminders);
-				setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
+				setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
 			})
 			.catch(() => undefined);
 		return () => {
 			cancelled = true;
 		};
-	}, [applyPendingReminderMutations, authOfflineMode, authStatus, authUserId]);
+	}, [applyPendingReminderMutations, applyServerReminderStates, authOfflineMode, authStatus, authUserId]);
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || authOfflineMode) return;
@@ -5489,7 +5733,7 @@ export function App(): React.JSX.Element {
 							void fetchNoteReminderStates()
 								.then((data) => {
 									writeCachedReminderStates(authUserId, data.reminders);
-									setNoteReminderByDocId(applyPendingReminderMutations(buildReminderLookup(data.reminders)));
+									setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
 								})
 								.catch(() => undefined);
 							return;
@@ -5506,8 +5750,10 @@ export function App(): React.JSX.Element {
 							// Another session changed a user-scoped preference (e.g. bubble colors or note colors).
 							void fetchUserPreferences(deviceId).then((pref) => {
 								if (pref) {
+									replaceCollapsedRichHeadingPrefs(pref.collapsedRichHeadingIds || {});
 									replaceUserNoteColorPrefs(pref.noteColorsByNoteId || {});
 									replaceUserNoteBannerPrefs(pref.noteBannersByNoteId || {});
+									replaceUserNotePinPrefs(pref.notePinsByDocId || {});
 									setBubbleWorkspaceColorOverrides(pref.bubbleWorkspaceColors || {});
 								}
 							});
@@ -6568,6 +6814,20 @@ export function App(): React.JSX.Element {
 					type="button"
 					className="mobile-fab-action"
 					onClick={() => {
+						replaceActiveOverlaySnapshot({
+							...getOverlaySnapshot(),
+							isFabOpen: false,
+						});
+						setIsQuickReminderOpen(true);
+					}}
+				>
+					<FontAwesomeIcon icon={faBell} />
+					{t('app.createQuickReminder')}
+				</button>
+				<button
+					type="button"
+					className="mobile-fab-action"
+					onClick={() => {
 						void openCreateEditorForCurrentContext('text', { replaceTop: true });
 					}}
 				>
@@ -6615,7 +6875,7 @@ export function App(): React.JSX.Element {
 			</>
 		);
 		return content;
-	}, [fabIconSrc, isFabOpen, openCreateEditorForCurrentContext, showMobileFab, t, toggleFab]);
+	}, [fabIconSrc, getOverlaySnapshot, isFabOpen, openCreateEditorForCurrentContext, replaceActiveOverlaySnapshot, showMobileFab, t, toggleFab]);
 
 	const headerIconSrc = React.useMemo(() => {
 		return isLightTheme(themeId) ? APP_HEADER_LIGHT_ICON_SRC : APP_HEADER_DARK_ICON_SRC;
@@ -6657,6 +6917,7 @@ export function App(): React.JSX.Element {
 		label: string;
 		kind: 'item' | 'heading' | 'muted' | 'action';
 		color?: string | null;
+		avatar?: string | null;
 	};
 
 	type SidebarSubmenuToggle = {
@@ -6674,6 +6935,7 @@ export function App(): React.JSX.Element {
 			{ id: 'workspaces', label: viewMode === 'bubble' ? 'Workspaces' : t('workspace.sidebarTitle'), icon: faGrip, kind: 'group' },
 			{ id: 'collections', label: viewMode === 'bubble' ? 'All Collections' : t('app.sidebarCollections'), icon: faFolder, kind: 'group' },
 			{ id: 'labels', label: viewMode === 'bubble' ? 'All Labels' : t('app.sidebarLabels'), icon: faTag, kind: 'group' },
+			{ id: 'collaborators', label: t('prefs.collaborators'), icon: faShareNodes, kind: 'group' },
 			{ id: 'sorting', label: t('app.sidebarSorting'), icon: faArrowDownWideShort, kind: 'group' },
 			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
 			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
@@ -6682,6 +6944,7 @@ export function App(): React.JSX.Element {
 			if (viewMode !== 'bubble') return true;
 			return entry.id !== 'collections'
 				&& entry.id !== 'labels'
+				&& entry.id !== 'collaborators'
 				&& entry.id !== 'sorting'
 				&& entry.id !== 'images'
 				&& entry.id !== 'trash';
@@ -6760,9 +7023,24 @@ export function App(): React.JSX.Element {
 				// dropdown renderer can stay common across groups.
 				? labels.map((label) => ({ id: label.id, label: label.name, kind: 'item' as const, color: label.color ?? null }))
 				: [{ id: 'no-labels', label: t('app.sidebarNoLabels'), kind: 'muted' }],
+			collaborators: workspaceCollaborators.length > 0
+				? [
+					...workspaceCollaborators.map((collaborator) => ({
+						id: collaborator.key,
+						label: collaborator.label,
+						kind: 'item' as const,
+						avatar: collaborator.avatar,
+					})),
+					...(noteGridCollaboratorFilter ? [{ id: 'clear-collaborator-filter', label: t('app.sidebarClear'), kind: 'action' as const }] : []),
+				]
+				: [{
+					id: workspaceCollaboratorsBusy ? 'loading-collaborators' : 'no-collaborators',
+					label: workspaceCollaboratorsBusy ? t('common.loading') : t('share.noneCollaborators'),
+					kind: 'muted' as const,
+				}],
 			collections: sidebarUsesBubbleSummaryMenus ? [{ id: 'all-collections', label: 'All Collections', kind: 'muted' }] : [],
 		}),
-		[labels, sidebarUsesBubbleSummaryMenus, t]
+		[labels, noteGridCollaboratorFilter, sidebarUsesBubbleSummaryMenus, t, workspaceCollaborators, workspaceCollaboratorsBusy]
 	);
 
 	const sortingPrimaryItems = React.useMemo<SidebarSubmenuNode[]>(
@@ -7568,6 +7846,14 @@ export function App(): React.JSX.Element {
 			// in the registry and order arrays but is hidden from the main grid.
 			// Server-side cleanup permanently removes it after deleteAfterDays.
 			await manager.trashNote(noteId);
+			if (authWorkspaceId) {
+				persistNoteReminderState({
+					docId: manager.resolveRoomName(noteId),
+					noteId,
+					workspaceId: authWorkspaceId,
+					reminderAt: null,
+				});
+			}
 			setSelectedNoteId((prev) => (prev === noteId ? null : prev));
 			setOpenDocId((prevId) => {
 				if (prevId !== noteId) return prevId;
@@ -7575,7 +7861,7 @@ export function App(): React.JSX.Element {
 				return null;
 			});
 		},
-		[canEditActiveWorkspace, manager, sharedPlacements, showBriefDialog, t]
+		[authWorkspaceId, canEditActiveWorkspace, manager, persistNoteReminderState, sharedPlacements, showBriefDialog, t]
 	);
 
 	const closeMoveNoteModal = React.useCallback(() => {
@@ -7591,6 +7877,53 @@ export function App(): React.JSX.Element {
 		setMoveNoteError(null);
 		setMoveNoteModalState({ noteId, title: String(title || '').trim() });
 	}, [authStatus, authWorkspaceId]);
+
+	const handleCreateQuickReminder = React.useCallback(async (value: { title: string; reminderAt: string }) => {
+		if (!canEditActiveWorkspace || !authWorkspaceId) {
+			showBriefDialog(t('share.roleViewer'));
+			replaceActiveOverlaySnapshot({
+				...getOverlaySnapshot(),
+				isFabOpen: false,
+			});
+			setIsQuickReminderOpen(false);
+			return;
+		}
+		const title = value.title.trim();
+		if (!title || !value.reminderAt) return;
+		try {
+			const noteId = makeNoteId('text-note');
+			const docId = manager.resolveRoomName(noteId);
+			const doc = await manager.getDocWithSync(noteId);
+			initTextNoteDoc(doc, title, '', undefined, []);
+			assignNoteBannerFile(doc, 'reminder.svg');
+			if (sidebarView === 'notes' && activeCollectionId) {
+				assignNoteToCollection(doc, activeCollectionId);
+			}
+			await manager.createNote(noteId, title);
+			persistNoteReminderState({
+				docId,
+				noteId,
+				workspaceId: authWorkspaceId,
+				reminderAt: value.reminderAt,
+				noteTitle: title,
+			});
+			replaceActiveOverlaySnapshot({
+				...getOverlaySnapshot(),
+				isFabOpen: false,
+			});
+			setSidebarView('notes');
+			if (typeof window !== 'undefined') {
+				suppressWorkspaceScrollPersistUntilRef.current = Date.now() + 400;
+				writeWorkspaceRenderSnapshotScroll(authWorkspaceId, activeGridViewMode, 0);
+				window.requestAnimationFrame(() => {
+					window.scrollTo({ left: 0, top: 0, behavior: 'auto' });
+				});
+			}
+			setIsQuickReminderOpen(false);
+		} catch {
+			showBriefDialog('failed to save note');
+		}
+	}, [activeCollectionId, activeGridViewMode, authWorkspaceId, canEditActiveWorkspace, getOverlaySnapshot, manager, persistNoteReminderState, replaceActiveOverlaySnapshot, showBriefDialog, sidebarView, t]);
 
 	const handleMoveNoteToWorkspace = React.useCallback(async (targetWorkspaceId: string) => {
 		if (!moveNoteModalState || !authWorkspaceId) return;
@@ -8150,6 +8483,80 @@ export function App(): React.JSX.Element {
 		}
 	}, [activateWorkspaceFromSidebar, authWorkspaceId, getOverlaySnapshot, isMobileViewport, openNoteEditor, replaceActiveOverlaySnapshot]);
 
+	const notificationDeepLinkOpeningRef = React.useRef(false);
+	const openNotificationDeepLink = React.useCallback(async (): Promise<void> => {
+		if (authStatus !== 'authed' || notificationDeepLinkOpeningRef.current) return;
+		const deepLink = captureNotificationDeepLink();
+		if (!deepLink) return;
+		notificationDeepLinkOpeningRef.current = true;
+		try {
+			if (deepLink.workspaceId && deepLink.workspaceId !== authWorkspaceId) {
+				await activateWorkspaceFromSidebar(deepLink.workspaceId, { activeSharedFolder: null });
+			}
+			const refreshedLink = captureNotificationDeepLink();
+			if (!refreshedLink) return;
+			clearPendingNotificationDeepLink();
+			markNotificationDeepLinkConsumed(refreshedLink);
+			setSidebarView('notes');
+			const mobileOverlay = shouldUseMobileOverlayHistory(isMobileViewport);
+			openNoteEditor(refreshedLink.noteId, {
+				fromExternalDeepLink: mobileOverlay,
+				replaceTop: !mobileOverlay,
+			});
+		} finally {
+			notificationDeepLinkOpeningRef.current = false;
+		}
+	}, [activateWorkspaceFromSidebar, authStatus, authWorkspaceId, isMobileViewport, openNoteEditor]);
+
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const capture = (): void => {
+			const link = readNotificationDeepLinkFromUrl();
+			if (!link) return;
+			stashNotificationDeepLink(link);
+			// Strip params from the launch entry so a later Back cannot re-trigger the deep link.
+			clearNotificationDeepLinkFromUrl();
+		};
+		capture();
+		const onPopState = (): void => {
+			const link = readNotificationDeepLinkFromUrl();
+			if (!link) return;
+			if (isNotificationDeepLinkConsumed(link)) {
+				clearNotificationDeepLinkFromUrl();
+				return;
+			}
+			void openNotificationDeepLink();
+		};
+		const onPageShow = (): void => {
+			capture();
+			void openNotificationDeepLink();
+		};
+		const onServiceWorkerMessage = (event: MessageEvent): void => {
+			if (event.data?.type !== 'FREEMANNOTES_NOTIFICATION_OPEN') return;
+			const parsed = parseNotificationDeepLinkMessage(event.data);
+			if (parsed) stashNotificationDeepLink(parsed);
+		};
+		const onDeepLinkStashed = (): void => {
+			void openNotificationDeepLink();
+		};
+		window.addEventListener('popstate', onPopState);
+		window.addEventListener('pageshow', onPageShow);
+		window.addEventListener(NOTIFICATION_DEEP_LINK_STASHED_EVENT, onDeepLinkStashed);
+		const serviceWorker = navigator.serviceWorker;
+		serviceWorker?.addEventListener('message', onServiceWorkerMessage);
+		return () => {
+			window.removeEventListener('popstate', onPopState);
+			window.removeEventListener('pageshow', onPageShow);
+			window.removeEventListener(NOTIFICATION_DEEP_LINK_STASHED_EVENT, onDeepLinkStashed);
+			serviceWorker?.removeEventListener('message', onServiceWorkerMessage);
+		};
+	}, [openNotificationDeepLink]);
+
+	React.useEffect(() => {
+		if (authStatus !== 'authed') return;
+		void openNotificationDeepLink();
+	}, [authStatus, authWorkspaceId, gridReady, openNotificationDeepLink]);
+
 	const toggleSidebar = () => {
 		if (isMobileViewport) {
 			if (isMobileSidebarOpen) {
@@ -8232,6 +8639,7 @@ export function App(): React.JSX.Element {
 			docId: selectedNoteDocId,
 			noteId: selectedNoteId,
 			userId: authUserId,
+			deviceId,
 			pinned: !isPinned,
 		});
 	};
@@ -8921,13 +9329,34 @@ export function App(): React.JSX.Element {
 														}
 														const isLabelsItemActive = entry.id === 'labels' && item.kind === 'item' && activeLabelIds.includes(item.id);
 														const isReminderItemActive = entry.id === 'reminders' && item.kind === 'item' && activeReminderFilter === item.id;
-														const className = `${item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item'}${isLabelsItemActive || isReminderItemActive ? ' is-active' : ''}`;
+														const isCollaboratorItemActive = entry.id === 'collaborators' && item.kind === 'item' && noteGridCollaboratorFilter?.key === item.id;
+														const className = `${item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item'}${isLabelsItemActive || isReminderItemActive || isCollaboratorItemActive ? ' is-active' : ''}`;
 														return (
 															<button
 																key={item.id}
 																type="button"
 																className={className}
 																onClick={() => {
+																	if (entry.id === 'collaborators' && item.kind === 'item') {
+																		const collaborator = workspaceCollaborators.find((entry) => entry.key === item.id);
+																		if (!collaborator) return;
+																		setSidebarView(filterSidebarView);
+																		setNoteGridCollaboratorFilter((current) => current?.key === collaborator.key ? null : {
+																			key: collaborator.key,
+																			userId: collaborator.userId,
+																			label: collaborator.label,
+																			email: collaborator.email,
+																			avatar: collaborator.avatar,
+																		});
+																		if (isMobileViewport) closeMobileSidebar();
+																		return;
+																	}
+																	if (entry.id === 'collaborators' && item.id === 'clear-collaborator-filter') {
+																		setSidebarView(filterSidebarView);
+																		setNoteGridCollaboratorFilter(null);
+																		if (isMobileViewport) closeMobileSidebar();
+																		return;
+																	}
 																	if (entry.id === 'labels' && item.kind === 'item') {
 																		setSidebarView(filterSidebarView);
 																		setActiveLabelIds((current) => current.includes(item.id) ? current.filter((entryId) => entryId !== item.id) : [...current, item.id]);
@@ -8948,6 +9377,13 @@ export function App(): React.JSX.Element {
 															>
 																<span className="sidebar-submenu-item-copy">
 																	{entry.id === 'labels' && item.kind === 'item' && item.color ? <span className="sidebar-submenu-color-pill" style={{ backgroundColor: item.color }} aria-hidden="true" /> : null}
+																	{entry.id === 'collaborators' && item.kind === 'item' ? (
+																		item.avatar ? (
+																			<img className="sidebar-collaborator-avatar" src={item.avatar} alt="" />
+																		) : (
+																			<span className="sidebar-collaborator-avatar-fallback" aria-hidden="true">{getSidebarCollaboratorInitial(item.label)}</span>
+																		)
+																	) : null}
 																	{entry.id === 'labels' && item.kind === 'item' ? (
 																		<OverflowMarqueeText
 																			value={item.label}
@@ -9085,6 +9521,18 @@ export function App(): React.JSX.Element {
 						// Reserve the button-row height unconditionally so the grid
 						// doesn't shift down when canCreateNotesInCurrentContext resolves.
 						<div className="top-actions">
+							<button
+								type="button"
+								className="top-action-card"
+								disabled={!canCreateNotesInCurrentContext}
+								onClick={() => {
+									setSidebarView('notes');
+									setIsQuickReminderOpen(true);
+								}}
+							>
+								<FontAwesomeIcon icon={faBell} />
+								{t('app.createQuickReminder')}
+							</button>
 							<button
 								type="button"
 								className="top-action-card"
@@ -9267,6 +9715,9 @@ export function App(): React.JSX.Element {
 						onAddReminder={openNoteReminderModal}
 						onAddToCollection={openNoteCollectionModal}
 						onAddLabels={openNoteLabelsModal}
+						onTrashNote={(noteId) => {
+							void onDeleteSelectedNote(noteId);
+						}}
 						onMoveToWorkspace={(noteId, title) => openMoveNoteModal(noteId, title)}
 						onOpenAttachmentBrowser={openNoteAttachmentBrowser}
 						onSelectCollaboratorFilter={setNoteGridCollaboratorFilter}
@@ -9733,6 +10184,14 @@ export function App(): React.JSX.Element {
 				onSave={handleSaveNoteReminder}
 			/>
 
+			<QuickReminderModal
+				isOpen={isQuickReminderOpen}
+				onClose={() => setIsQuickReminderOpen(false)}
+				onSave={(value) => {
+					void handleCreateQuickReminder(value);
+				}}
+			/>
+
 			<MoveNoteModal
 				isOpen={Boolean(moveNoteModalState)}
 				onClose={closeMoveNoteModal}
@@ -9849,7 +10308,11 @@ export function App(): React.JSX.Element {
 							await activateWorkspaceFromSidebar(reminder.workspaceId, { activeSharedFolder: null });
 						}
 						if (reminder.noteId) {
-							openNoteEditor(reminder.noteId, { replaceTop: true });
+							const mobileOverlay = shouldUseMobileOverlayHistory(isMobileViewport);
+							openNoteEditor(reminder.noteId, {
+								fromExternalDeepLink: mobileOverlay,
+								replaceTop: !mobileOverlay,
+							});
 						}
 					})();
 				}}
