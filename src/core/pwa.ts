@@ -327,15 +327,57 @@ function handleServiceWorkerMessage(event: MessageEvent): void {
 	}
 }
 
+function isStandalonePwa(): boolean {
+	if (typeof window === 'undefined') return false;
+	return Boolean(
+		window.matchMedia?.('(display-mode: standalone)')?.matches
+		|| window.matchMedia?.('(display-mode: fullscreen)')?.matches
+		|| window.matchMedia?.('(display-mode: minimal-ui)')?.matches
+		|| (window.navigator as Navigator & { standalone?: boolean }).standalone
+	);
+}
+
+function registerAppServiceWorker(): void {
+	if (!('serviceWorker' in navigator)) return;
+	navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+	let hadControllerOnInit = Boolean(navigator.serviceWorker.controller);
+	navigator.serviceWorker.addEventListener('controllerchange', () => {
+		swAutoApplying = false;
+		swPendingApply = false;
+		if (!hadControllerOnInit) {
+			hadControllerOnInit = true;
+			return;
+		}
+		if (typeof window !== 'undefined') {
+			window.location.replace(window.location.href);
+		}
+	});
+	updateServiceWorker = registerSW({
+		immediate: true,
+		onNeedRefresh() {
+			swPendingApply = true;
+			void applyPwaUpdateImmediately();
+		},
+		onOfflineReady() {
+			setSnapshot({ offlineReady: true });
+		},
+		onRegisteredSW(_swUrl, registration) {
+			swRegistration = registration || null;
+			registration?.update().catch(() => undefined);
+			scheduleServiceWorkerUpdateChecks();
+		},
+	});
+}
+
 export function initPwa(): void {
 	if (initialized || typeof window === 'undefined') return;
 	initialized = true;
 	reconcileVersionNotifications();
 	refreshMobileViewportBehavior();
 
-	if (import.meta.env.DEV) {
-		// Dev should always reflect the latest code, not whatever an older worker or
-		// cache entry left behind from a previous build.
+	if (import.meta.env.DEV && !isStandalonePwa()) {
+		// Browser-tab dev should stay cache-free, but installed dev PWAs need a live
+		// service worker so push subscriptions remain valid across reloads.
 		navigator.serviceWorker?.getRegistrations?.()
 			.then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
 			.then(() => caches.keys())
@@ -365,46 +407,7 @@ export function initPwa(): void {
 		refreshMobileViewportBehavior();
 	});
 
-	if ('serviceWorker' in navigator) {
-		navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
-		// Capture whether there was already an active controller when the app
-		// started.  On a cold start (cleared cache), the controller is null here;
-		// the first controllerchange that fires is the SW claiming the fresh page
-		// via clients.claim() in its activate handler.  That claim does NOT need a
-		// reload — the page already loaded with the right assets.  We only need to
-		// reload when a *new* SW replaces an *old* one (skipWaiting path).
-		let hadControllerOnInit = Boolean(navigator.serviceWorker.controller);
-		navigator.serviceWorker.addEventListener('controllerchange', () => {
-			swAutoApplying = false;
-			swPendingApply = false;
-			if (!hadControllerOnInit) {
-				// First-install claim on a cold start: arm for future real updates
-				// and skip the reload that causes the double-load the user sees.
-				hadControllerOnInit = true;
-				return;
-			}
-			if (typeof window !== 'undefined') {
-				// Use replace() rather than reload() — more reliable on iOS standalone
-				// PWA where location.reload() can fail after a controller change.
-				window.location.replace(window.location.href);
-			}
-		});
-		updateServiceWorker = registerSW({
-			immediate: true,
-			onNeedRefresh() {
-				swPendingApply = true;
-				void applyPwaUpdateImmediately();
-			},
-			onOfflineReady() {
-				setSnapshot({ offlineReady: true });
-			},
-			onRegisteredSW(_swUrl, registration) {
-				swRegistration = registration || null;
-				registration?.update().catch(() => undefined);
-				scheduleServiceWorkerUpdateChecks();
-			},
-		});
-	}
+	registerAppServiceWorker();
 
 	recomputeInstallAvailability();
 	refreshMobileViewportBehavior();

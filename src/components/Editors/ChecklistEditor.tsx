@@ -25,7 +25,7 @@ import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem }
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
-import { createRichTextDocFromPlainText, splitMinimalRichTextAtSelection } from '../../core/richText';
+import { createRichTextDocFromPlainText, getPlainTextFromRichJson, splitMinimalRichTextAtSelection } from '../../core/richText';
 import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, removeChecklistItemWithChildren, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
@@ -183,6 +183,42 @@ function reconcileDraftItems(nextItems: readonly ChecklistItem[], previousItems:
 			richContent,
 		};
 	});
+}
+
+function normalizeChecklistAutocompleteText(value: string): string {
+	return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function matchesChecklistAutocompleteCandidate(normalizedCandidate: string, normalizedTyped: string): boolean {
+	if (!normalizedTyped) return false;
+	if (normalizedCandidate.startsWith(normalizedTyped)) return true;
+	return normalizedCandidate.split(' ').some((part) => part.startsWith(normalizedTyped));
+}
+
+function getChecklistAutocompleteSuggestion(
+	items: readonly DraftChecklistItem[],
+	rowId: string | null,
+	currentText: string
+): string | null {
+	if (!rowId) return null;
+	const normalizedTyped = normalizeChecklistAutocompleteText(currentText);
+	if (!normalizedTyped) return null;
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		const candidate = items[index];
+		if (candidate.id === rowId) continue;
+		const candidateText = String(
+			candidate.text?.trim().length
+				? candidate.text
+				: getPlainTextFromRichJson(candidate.richContent, 'minimal')
+		).trim();
+		if (!candidateText) continue;
+		const normalizedCandidate = normalizeChecklistAutocompleteText(candidateText);
+		if (!normalizedCandidate || normalizedCandidate === normalizedTyped) continue;
+		if (matchesChecklistAutocompleteCandidate(normalizedCandidate, normalizedTyped)) {
+			return candidateText;
+		}
+	}
+	return null;
 }
 
 export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element {
@@ -528,6 +564,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeRowId, setActiveRowId] = React.useState<string | null>(null);
+	const [activeRowAutocompleteText, setActiveRowAutocompleteText] = React.useState('');
 	const [activeRowEditor, setActiveRowEditor] = React.useState<Editor | null>(null);
 	const [activeRowHistoryState, setActiveRowHistoryState] = React.useState({ canUndo: false, canRedo: false });
 	const latestItemsRef = React.useRef<DraftChecklistItem[]>(items);
@@ -974,11 +1011,72 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		},
 		[addItem, items, updateItem]
 	);
+	const acceptAutocompleteSuggestion = React.useCallback((rowId: string, suggestion: string): void => {
+		const currentRow = items.find((row) => row.id === rowId) ?? null;
+		const richContent = createRichTextDocFromPlainText(suggestion);
+		latestRowPayloadRef.current = { id: rowId, text: suggestion, richContent };
+		setActiveRowAutocompleteText(suggestion);
+		updateItem(rowId, { text: suggestion, richContent });
+		if (activeRowId !== rowId) {
+			setActiveRowId(rowId);
+		}
+		if (focusRowId !== rowId) {
+			setFocusRowId(rowId);
+		}
+	}, [activeRowId, focusRowId, items, updateItem]);
+	const acceptAutocompleteSuggestionAndInsert = React.useCallback((rowId: string, suggestion: string): void => {
+		const currentRow = items.find((row) => row.id === rowId) ?? null;
+		acceptAutocompleteSuggestion(rowId, suggestion);
+		addItem(items.findIndex((row) => row.id === rowId), {
+			text: '',
+			completed: false,
+			parentId: currentRow?.parentId ?? null,
+			countValue: currentRow?.countValue != null ? 1 : null,
+			richContent: createRichTextDocFromPlainText(''),
+		});
+	}, [acceptAutocompleteSuggestion, addItem, items]);
 
 	const activeRowItem = React.useMemo(
 		() => items.find((item) => item.id === activeRowId) ?? null,
 		[activeRowId, items]
 	);
+	React.useEffect(() => {
+		if (!activeRowId) {
+			setActiveRowAutocompleteText('');
+			return;
+		}
+		setActiveRowAutocompleteText(
+			activeRowItem
+				? String(activeRowItem.text ?? '').trim().length > 0
+					? activeRowItem.text
+					: getPlainTextFromRichJson(activeRowItem.richContent, 'minimal')
+				: ''
+		);
+	}, [activeRowId, activeRowItem]);
+	const activeRowAutocompleteSuggestion = React.useMemo(
+		() => getChecklistAutocompleteSuggestion(items, activeRowId, activeRowAutocompleteText),
+		[activeRowAutocompleteText, activeRowId, items]
+	);
+	const activeRowAutocompleteSuffix = React.useMemo(() => {
+		if (!activeRowAutocompleteSuggestion) return '';
+		const typed = String(activeRowAutocompleteText ?? '');
+		if (!typed) return '';
+		return activeRowAutocompleteSuggestion.toLowerCase().startsWith(typed.toLowerCase())
+			? activeRowAutocompleteSuggestion.slice(typed.length)
+			: '';
+	}, [activeRowAutocompleteSuggestion, activeRowAutocompleteText]);
+	const handleChecklistRowEnter = React.useCallback((rowId: string, editor: Editor): void => {
+		if (rowId === activeRowId && activeRowAutocompleteSuggestion) {
+			acceptAutocompleteSuggestionAndInsert(rowId, activeRowAutocompleteSuggestion);
+			return;
+		}
+		insertItemAfter(rowId, editor);
+	}, [acceptAutocompleteSuggestionAndInsert, activeRowAutocompleteSuggestion, activeRowId, insertItemAfter]);
+	const handleActiveAutocompletePress = React.useCallback((event: React.SyntheticEvent, rowId: string): void => {
+		if (rowId !== activeRowId || !activeRowAutocompleteSuggestion) return;
+		event.preventDefault();
+		acceptAutocompleteSuggestion(rowId, activeRowAutocompleteSuggestion);
+	}, [acceptAutocompleteSuggestion, activeRowAutocompleteSuggestion, activeRowId]);
 	const activeCountItem = React.useMemo(
 		() => activeRowItem && isChecklistCountItem(activeRowItem) ? activeRowItem : null,
 		[activeRowItem]
@@ -1469,38 +1567,53 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 														/>
 													</label>
 													{activeRowId === item.id ? (
-														<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowRichShell}>
+														<div
+															ref={(node) => { rowInputsRef.current.set(item.id, node); }}
+															className={styles.checklistRowRichShell}
+															onMouseDown={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
+															onPointerDown={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
+															onClick={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
+														>
 															{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}
-															<RichTextEditor
-																key={item.id}
-																variant="minimal"
-																emitInitialChange={false}
-																content={item.richContent}
-																placeholder={t('editors.checklistItemPlaceholder')}
-																hideToolbar
-																autoFocus={focusRowId === item.id}
-																caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
-																containerClassName={styles.checklistRowRichStack}
-																viewportClassName={styles.checklistRowRichViewport}
-																contentClassName={styles.checklistRowRichEditor}
-																onEditorChange={setActiveRowEditor}
-																onChange={(payload) => {
-																	// Signal-only compatibility branch:
-																	// `RichTextEditor` can emit undefined payloads in lightweight mode.
-																	// This draft editor still requests full payloads, so guard defensively.
-																	if (!payload) return;
-																	latestRowPayloadRef.current = { id: item.id, text: payload.text, richContent: payload.json };
-																	updateItem(item.id, { text: payload.text, richContent: payload.json });
-																}}
-																onEnter={(editor) => insertItemAfter(item.id, editor)}
-																onShiftEnter={() => undefined}
-																onBackspaceWhenEmpty={() => {
-																	if (activeItems[0]?.id === item.id) return;
-																	removeItemAndFocus(item.id);
-																}}
+															<div className={styles.checklistRowRichStack}>
+																<RichTextEditor
+																	key={item.id}
+																	variant="minimal"
+																	emitInitialChange={false}
+																	content={item.richContent}
+																	placeholder={t('editors.checklistItemPlaceholder')}
+																	hideToolbar
+																	autoFocus={focusRowId === item.id}
+																	caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
+																	viewportClassName={styles.checklistRowRichViewport}
+																	contentClassName={styles.checklistRowRichEditor}
+																	onEditorChange={setActiveRowEditor}
+																	onChange={(payload) => {
+																		// Signal-only compatibility branch:
+																		// `RichTextEditor` can emit undefined payloads in lightweight mode.
+																		// This draft editor still requests full payloads, so guard defensively.
+																		if (!payload) return;
+																		const plainText = getPlainTextFromRichJson(payload.json, 'minimal');
+																		latestRowPayloadRef.current = { id: item.id, text: plainText, richContent: payload.json };
+																		setActiveRowAutocompleteText(plainText);
+																		updateItem(item.id, { text: plainText, richContent: payload.json });
+																	}}
+																	onEnter={(editor) => handleChecklistRowEnter(item.id, editor)}
+																	onShiftEnter={() => undefined}
+																	onBackspaceWhenEmpty={() => {
+																		if (activeItems[0]?.id === item.id) return;
+																		removeItemAndFocus(item.id);
+																	}}
 																	onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
 																	onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
-															/>
+																/>
+																{activeRowId === item.id && activeRowAutocompleteSuffix ? (
+																	<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
+																		<span className={styles.checklistAutocompletePrefix}>{activeRowAutocompleteText}</span>
+																		<span className={styles.checklistAutocompleteSuffix}>{activeRowAutocompleteSuffix}</span>
+																	</div>
+																) : null}
+															</div>
 														</div>
 													) : (
 														<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowPreview} onClick={() => activateRow(item.id)}>
@@ -1579,7 +1692,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 											<li key={`ghost-${item.id}`}
 												className={`${styles.checklistItem} ${styles.checklistGhostItem}`}
 												aria-hidden="true">
-											<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled />
+											<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true" />
 										<label className={styles.checklistCheckboxHitArea}>
 											<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 										</label>
@@ -1589,9 +1702,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 									</li>
 								) : (
 											<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-											<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
+											<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true">
 													<FontAwesomeIcon icon={faGripVertical} />
-											</button>
+											</div>
 										<label className={styles.checklistCheckboxHitArea} aria-label={item.completed ? 'Completed' : 'Not completed'}>
 											<input
 												type="checkbox"
@@ -1603,36 +1716,51 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 											/>
 										</label>
 											{activeRowId === item.id ? (
-																	<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowRichShell}>
+																	<div
+																		ref={(node) => { rowInputsRef.current.set(item.id, node); }}
+																		className={styles.checklistRowRichShell}
+																		onMouseDown={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
+																		onPointerDown={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
+																		onClick={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
+																	>
 																		{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}
-															<RichTextEditor
-																key={item.id}
-																variant="minimal"
-																emitInitialChange={false}
-																content={item.richContent}
-																placeholder={t('editors.checklistItemPlaceholder')}
-																hideToolbar
-																autoFocus={focusRowId === item.id}
-																caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
-																containerClassName={styles.checklistRowRichStack}
-																viewportClassName={styles.checklistRowRichViewport}
-																contentClassName={styles.checklistRowRichEditor}
-																onEditorChange={setActiveRowEditor}
-																onChange={(payload) => {
-																	// Same guard in completed-items branch for symmetry and safety.
-																	if (!payload) return;
-																	latestRowPayloadRef.current = { id: item.id, text: payload.text, richContent: payload.json };
-																	updateItem(item.id, { text: payload.text, richContent: payload.json });
-																}}
-																onEnter={(editor) => insertItemAfter(item.id, editor)}
-																onShiftEnter={() => undefined}
-																onBackspaceWhenEmpty={() => {
-																	if (activeItems[0]?.id === item.id) return;
-																	removeItem(item.id);
-																}}
-																	onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
-																	onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
-													/>
+																	<div className={styles.checklistRowRichStack}>
+																		<RichTextEditor
+																			key={item.id}
+																			variant="minimal"
+																			emitInitialChange={false}
+																			content={item.richContent}
+																			placeholder={t('editors.checklistItemPlaceholder')}
+																			hideToolbar
+																			autoFocus={focusRowId === item.id}
+																			caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
+																			viewportClassName={styles.checklistRowRichViewport}
+																			contentClassName={styles.checklistRowRichEditor}
+																			onEditorChange={setActiveRowEditor}
+																			onChange={(payload) => {
+																				// Same guard in completed-items branch for symmetry and safety.
+																				if (!payload) return;
+																				const plainText = getPlainTextFromRichJson(payload.json, 'minimal');
+																				latestRowPayloadRef.current = { id: item.id, text: plainText, richContent: payload.json };
+																				setActiveRowAutocompleteText(plainText);
+																				updateItem(item.id, { text: plainText, richContent: payload.json });
+																			}}
+																			onEnter={(editor) => handleChecklistRowEnter(item.id, editor)}
+																			onShiftEnter={() => undefined}
+																			onBackspaceWhenEmpty={() => {
+																				if (activeItems[0]?.id === item.id) return;
+																				removeItem(item.id);
+																			}}
+																			onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
+																			onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
+																		/>
+																		{activeRowId === item.id && activeRowAutocompleteSuffix ? (
+																			<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
+																				<span className={styles.checklistAutocompletePrefix}>{activeRowAutocompleteText}</span>
+																				<span className={styles.checklistAutocompleteSuffix}>{activeRowAutocompleteSuffix}</span>
+																			</div>
+																		) : null}
+																	</div>
 												</div>
 													) : (
 														<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowPreview} onClick={() => activateRow(item.id)}>

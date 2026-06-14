@@ -4,6 +4,27 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.5 - 2026-06-13
+
+### Added
+- **Note pins are now per-user preferences synced across devices.** Pin state lives in `UserPreference.notePinsByDocId`, hydrates on login, and broadcasts through the existing user-preferences pipeline so each user’s pinned notes follow them without rewriting shared Yjs note order.
+- **Quick reminder creation from the notes workspace.** A dedicated quick-reminder modal creates a text note and registers its reminder in one flow from the top actions row.
+- **Collapsible rich-text headings in note editors.** Heading blocks can collapse and expand in text notes, with per-device collapse preferences synced through user preferences.
+- **Centralized reminder lookup utilities.** Reminder state for cards, filters, and editors now flows through shared lookup helpers so doc/note IDs, local cache, pending offline mutations, and server refresh reconcile consistently.
+
+### Changed
+- **Pinning and grid drag now use a display-layer pin tier on top of canonical note order.** Yjs `noteOrder` stays manual/canonical; pinned notes sort to the top for display only, drag commits reorder within the active pin tier, and cross-tier neighbor shifts no longer mix pinned and unpinned cards during drag previews.
+- **Card-grid reading order stays stable across viewport sizes.** Masonry columns are packed in round-robin reading order instead of height-greedy placement, so A→B→C→D order no longer reshuffles when column count or card heights change.
+- **Cross-column drag hit-testing is hybrid again.** The first insertion into a foreign column follows pointer Y; after the dragged card adopts that column, row hit-tests use the same ghost-edge logic as native in-column drags.
+- **Mobile/PWA checklist editors scroll through completed-row handles.** Non-draggable completed-item grip icons no longer block vertical page scroll along the left edge.
+- **Touch note-card drags no longer lock root overflow.** Scroll suppression during touch drag uses `touch-action` and grid-level `preventDefault` instead of `overflow: hidden` on `html`/`body`, which was breaking the sticky scope chip when the page was scrolled.
+
+### Fixed
+- **Drawing note cards can be long-pressed to drag from the preview image.** The thumbnail no longer intercepts the grid’s coarse-pointer drag gesture.
+- **Pin and unpin no longer flash thumbtack badges or shuffle columns multiple times.** Display-order updates sync on the same render pass, pin-tier settle gates no longer re-arm on pin toggles, and preference POST responses now include `notePinsByDocId` instead of wiping local pin state.
+- **Reminder bell icons now clear on every device when a reminder is deleted.** Server reminder refresh no longer preserves stale local lookup entries for notes removed on another client.
+- **Push reminder sync and notification deep links are more reliable.** Reminder state changes broadcast to connected clients, preference API responses include pin/reminder fields consistently, and installed/PWA flows handle notification navigation more predictably.
+
 ## 1.5.4 - 2026-06-06
 
 ### Added

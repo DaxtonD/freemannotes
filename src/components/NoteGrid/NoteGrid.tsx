@@ -23,6 +23,7 @@ import { useI18n } from '../../core/i18n';
 import { getCachedRemoteNoteLinks, syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { getCachedRemoteNoteImages } from '../../core/noteMediaStore';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, setUserNotePinnedOnDoc, subscribeNotePinPrefs } from '../../core/notePinPreferences';
+import { resolveNoteReminderAt } from '../../core/reminderLookup';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
 import { assignNoteBannerFile } from '../../services/noteService';
@@ -49,8 +50,11 @@ import {
 import { buildNoteGroupSections } from '../../utilities/noteGrouping';
 import { measureDocumentRects } from './flip';
 import {
+	applyPinnedDisplaySort,
+	applyTierReorderToCanonicalVisible,
 	arraysEqual,
 	buildMasonryLayoutFromColumns,
+	dealIntoColumns,
 	flattenColumns,
 	getGridLayoutForViewport,
 	MOBILE_GRID_EDGE_MARGIN_PX,
@@ -58,8 +62,7 @@ import {
 	mergeVisibleOrderIntoFullOrder,
 	readCssPxVariable,
 	type StableMasonryPlacementDecision,
-	splitIntoColumnsByHeight,
-	splitIntoColumnsByHeightAnchored,
+	splitIntoColumnsByReadingOrder,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
 import { VirtualizedNoteColumn } from './VirtualizedNoteColumn';
@@ -156,6 +159,7 @@ export type NoteGridProps = {
 	onAddReminder?: (noteId: string, docId: string, title?: string) => void;
 	onAddToCollection?: (noteId: string, title?: string) => void;
 	onAddLabels?: (noteId: string, title?: string) => void;
+	onTrashNote?: (noteId: string) => void;
 	onSelectCollectionFilter?: (collectionId: string) => void;
 	onToggleLabelFilter?: (labelId: string) => void;
 	maxCardHeightPx: number;
@@ -1625,11 +1629,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				section.style.paddingBottom = expandedChecklistNoteIdsRef.current.size > 0 ? '50vh' : '';
 			}
 		};
+		const handleRichHeadingToggle = (event: Event): void => {
+			const detail = (event as CustomEvent<{ noteId?: string; collapsed?: boolean }>).detail;
+			if (!detail?.noteId) return;
+			repackReasonRef.current = detail.collapsed ? 'heading-collapse' : 'heading-expand';
+			expansionAffectedNoteIdsRef.current.add(detail.noteId);
+			invalidatedNoteReasonsRef.current.set(detail.noteId, repackReasonRef.current);
+		};
 		window.addEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
 		window.addEventListener('freemannotes:checklist-toggle', handleChecklistToggle as EventListener);
+		window.addEventListener('freemannotes:rich-heading-toggle', handleRichHeadingToggle as EventListener);
 		return () => {
 			window.removeEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
 			window.removeEventListener('freemannotes:checklist-toggle', handleChecklistToggle as EventListener);
+			window.removeEventListener('freemannotes:rich-heading-toggle', handleRichHeadingToggle as EventListener);
 			if (noteCardLayoutRefreshRafRef.current) {
 				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
 				noteCardLayoutRefreshRafRef.current = 0;
@@ -1883,7 +1896,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const cleanups: Array<() => void> = [];
 		for (const [, doc] of entries) {
 			const metadata = doc.getMap('metadata');
-			const handler = (): void => { setMetadataVersion((version) => version + 1); };
+			const handler = (event: Y.YMapEvent<unknown>): void => {
+				// Pin display is user-scoped via notePinPreferences; clearing legacy
+				// metadata.isPinned on pin toggle must not rebuild every card snapshot.
+				if (event.keysChanged.size === 1 && event.keysChanged.has('isPinned')) return;
+				setMetadataVersion((version) => version + 1);
+			};
 			metadata.observe(handler);
 			cleanups.push(() => metadata.unobserve(handler));
 		}
@@ -1929,7 +1947,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				updatedAt: note.updatedAt,
 				collectionId: placement ? placement.collectionId : note.collectionId,
 				labelIds: placement ? placement.labelIds : note.labelIds,
-				reminderAt: (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null,
+				reminderAt: resolveNoteReminderAt(props.noteReminderByDocId, docId, id),
 				isPinned: resolveUserNotePinned({
 					docId: docId || id,
 					noteId: id,
@@ -1952,7 +1970,21 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		[docsById, manager, orderedIds, snapshotDocById]
 	);
 
-	const baseVisibleIds = React.useMemo<string[]>(() => {
+	// ── Display order pipeline ───────────────────────────────────────────────
+	// Two orderings derived from the same filters:
+	//   visibleIds (baseVisibleIds) — pin tier sort for rendering when manual/default.
+	//   canonicalVisibleIds — manual order only; used for Yjs drag commit so pin
+	//   state never rewrites shared noteOrder. See memory/pinning-architecture.md.
+	const shouldPrioritizePinnedForDisplay = !props.showTrashed
+		&& !props.showArchived
+		&& !props.activeCollaboratorFilter
+		&& !props.activeCollectionId
+		&& (props.activeLabelIds?.length ?? 0) === 0
+		&& props.reminderFilter === 'all'
+		&& props.sortMode === 'manual'
+		&& props.sortGrouping === 'none';
+
+	const buildFilteredVisibleIds = React.useCallback((prioritizePinned: boolean): string[] => {
 		const ids = getVisibleNotes(noteSnapshots, {
 			showTrashed: props.showTrashed,
 			showArchived: props.showArchived,
@@ -1961,14 +1993,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			reminderFilter: props.reminderFilter,
 			sortMode: props.sortMode,
 			sortDirection: props.sortDirection,
-			prioritizePinned: !props.showTrashed
-				&& !props.showArchived
-				&& !props.activeCollaboratorFilter
-				&& !props.activeCollectionId
-				&& (props.activeLabelIds?.length ?? 0) === 0
-				&& props.reminderFilter === 'all'
-				&& props.sortMode === 'manual'
-				&& props.sortGrouping === 'none',
+			prioritizePinned,
 		}).map((note) => note.id);
 		const unresolvedIds = !allDocsLoaded
 			? orderedIds.filter((id) => !(docsById[id] ?? manager.peekDoc(id)))
@@ -1978,7 +2003,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// ^ Suppress the draft note ID from the visible list so it never renders as
 		//   an empty card while the user is composing it in the editor overlay.
 		return mergedIds;
-	}, [allDocsLoaded, docsById, manager, noteSnapshots, orderedIds, props.activeCollectionId, props.activeCollaboratorFilter, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortGrouping, props.sortMode]);
+	}, [allDocsLoaded, docsById, manager, noteSnapshots, orderedIds, props.activeCollectionId, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode]);
+
+	const baseVisibleIds = React.useMemo<string[]>(
+		() => buildFilteredVisibleIds(shouldPrioritizePinnedForDisplay),
+		[buildFilteredVisibleIds, shouldPrioritizePinnedForDisplay]
+	);
+
+	// Same visible set as baseVisibleIds but preserves manual/canonical sequence
+	// (no pinnedFirst). Required for tier-local drag commits into Yjs noteOrder.
+	const canonicalVisibleIds = React.useMemo<string[]>(
+		() => buildFilteredVisibleIds(false),
+		[buildFilteredVisibleIds]
+	);
 
 	const visibleNoteEntries = React.useMemo(() => {
 		return baseVisibleIds
@@ -2081,6 +2118,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!props.activeCollaboratorFilter) return baseVisibleIds;
 		return baseVisibleIds.filter((noteId) => collaboratorMatchesFilter(collaboratorSummariesByNoteId[noteId], props.activeCollaboratorFilter));
 	}, [baseVisibleIds, collaboratorSummariesByNoteId, props.activeCollaboratorFilter]);
+
+	const canonicalVisibleIdsFiltered = React.useMemo<string[]>(() => {
+		// Same collaborator filter as visibleIds; keep canonical order within the set.
+		if (!props.activeCollaboratorFilter) return canonicalVisibleIds;
+		const visibleSet = new Set(
+			baseVisibleIds.filter((noteId) => collaboratorMatchesFilter(collaboratorSummariesByNoteId[noteId], props.activeCollaboratorFilter))
+		);
+		return canonicalVisibleIds.filter((noteId) => visibleSet.has(noteId));
+	}, [baseVisibleIds, canonicalVisibleIds, collaboratorSummariesByNoteId, props.activeCollaboratorFilter]);
 	const shouldTemporarilyOverrideGridPlacement = props.viewMode === 'card' && (
 		Boolean(props.activeCollaboratorFilter)
 		|| Boolean(props.activeCollectionId)
@@ -2091,16 +2137,17 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		|| props.showTrashed === true
 		|| props.showArchived === true
 	);
+	// Pin/unpin only reorders the display layer (visibleIds); Yjs orderedIds is unchanged.
+	// Including visibleIds here re-armed initialDataSettled for 450ms on every pin toggle,
+	// causing pin-badge flicker and multi-pass masonry column shuffles.
 	const initialDataSettleSignature = React.useMemo(
-		() => `${orderedIds.join('\u001f')}\u001e${visibleIds.join('\u001f')}`,
-		[orderedIds, visibleIds]
+		() => orderedIds.join('\u001f'),
+		[orderedIds]
 	);
 
 	// ── Commit drag result to Yjs ─────────────────────────────────────────
-	// Called by the drag manager's onDrop handler with the raw column layout
-	// from the insertion point. Start from the exact preview layout, then allow
-	// a tiny amount of constrained adjacent-column balancing so tall whitespace
-	// gaps can tighten without triggering broad post-drop reshuffles.
+	// Writes within-tier reordering into canonical noteOrder only. Pin tier sort
+	// is display-layer (applyPinnedDisplaySort); Yjs never receives pinned-first.
 	const commitVisibleOrder = React.useCallback(
 		(finalColumns: string[][], draggedId: string, draggedHeight: number) => {
 			if (!noteOrder) return;
@@ -2108,15 +2155,21 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			const readingOrder = props.viewMode === 'list' || props.viewMode === 'strip'
 				? flattenListColumns(finalColumns)
 				: flattenColumns(finalColumns);
-			const pinnedVisibleIds = new Set(
-				visibleIds.filter((id) => noteSnapshotById.get(id)?.isPinned === true)
+			const isPinnedNote = (id: string): boolean => noteSnapshotById.get(id)?.isPinned === true;
+			const draggedIsPinned = isPinnedNote(draggedId);
+			// Reorder only within the dragged note's pin tier in canonical space.
+			const nextCanonicalVisible = applyTierReorderToCanonicalVisible(
+				canonicalVisibleIdsFiltered,
+				readingOrder,
+				draggedIsPinned,
+				isPinnedNote,
 			);
-			const constrainedReadingOrder = [
-				...readingOrder.filter((id) => pinnedVisibleIds.has(id)),
-				...readingOrder.filter((id) => !pinnedVisibleIds.has(id)),
-			];
-			pendingCommittedVisibleOrderRef.current = constrainedReadingOrder.slice();
-			setLayoutOrderIds((previous) => (arraysEqual(previous, constrainedReadingOrder) ? previous : constrainedReadingOrder));
+			// Display layer may apply pin tier sort; Yjs merge uses nextCanonicalVisible only.
+			const displayOrderAfterCommit = shouldPrioritizePinnedForDisplay
+				? applyPinnedDisplaySort(nextCanonicalVisible, isPinnedNote)
+				: nextCanonicalVisible;
+			pendingCommittedVisibleOrderRef.current = displayOrderAfterCommit.slice();
+			setLayoutOrderIds((previous) => (arraysEqual(previous, displayOrderAfterCommit) ? previous : displayOrderAfterCommit));
 			repackReasonRef.current = 'drag-drop';
 			recentlyMovedNoteIdsRef.current = new Set([draggedId]);
 			invalidatedNoteReasonsRef.current.set(draggedId, 'drag-drop');
@@ -2167,7 +2220,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			});
 
 			const current = readOrderIds(noteOrder);
-			const next = mergeVisibleOrderIntoFullOrder(current, visibleIds, constrainedReadingOrder);
+			// IMPORTANT: merge canonical order into Yjs — never applyPinnedDisplaySort here.
+			const next = mergeVisibleOrderIntoFullOrder(current, canonicalVisibleIdsFiltered, nextCanonicalVisible);
 			if (arraysEqual(current, next)) return;
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
 			ydoc.transact(() => {
@@ -2175,7 +2229,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				noteOrder.insert(0, next);
 			});
 		},
-		[getEstimatedNoteHeight, noteOrder, noteSnapshotById, props.viewMode, visibleIds]
+		[getEstimatedNoteHeight, noteOrder, noteSnapshotById, props.viewMode, canonicalVisibleIdsFiltered, shouldPrioritizePinnedForDisplay]
 	);
 
 	React.useLayoutEffect(() => {
@@ -2269,7 +2323,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					const previousSnapshot = workspaceRenderSnapshotNoteById.get(id) ?? null;
 					const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === id);
 					const docId = placement?.roomId || resolveMediaDocId(id);
-					const reminderAt = (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[id] ?? null;
+					const reminderAt = resolveNoteReminderAt(props.noteReminderByDocId, docId, id);
 					const previewLinks = extractNoteLinksFromDoc(liveDoc);
 					const cachedPreviewCards = toWorkspaceRenderSnapshotPreviewCards(getCachedRemoteNoteLinks(docId));
 					return buildWorkspaceRenderSnapshotNote({
@@ -2461,7 +2515,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, [allDocsLoaded, initialDataSettleSignature]);
 
-	const renderedIds = layoutOrderIds.length > 0 ? layoutOrderIds : visibleIds;
+	const renderedIds = React.useMemo(() => {
+		const pendingCommitted = pendingCommittedVisibleOrderRef.current;
+		if (pendingCommitted) return pendingCommitted;
+		return visibleIds;
+	}, [layoutOrderIds, visibleIds]);
 	const renderedIdsSignature = React.useMemo(() => renderedIds.join('\u001f'), [renderedIds]);
 	const layoutMeasurementTargetIds = React.useMemo(
 		() => (isGridVisible && props.viewMode === 'card' ? renderedIds.slice(0, viewportCapacity) : renderedIds),
@@ -2762,151 +2820,44 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [noteSnapshotById, renderedIds, sharedNoteIdSet]);
 
 	// ── Column computation: packedColumns ─────────────────────────────────
-	// Greedy shortest-column masonry: each card from the canonical order is
-	// placed into whichever column currently has the least accumulated
-	// height.  This produces visually balanced columns at every column
-	// count.  Different devices may compute different column assignments
-	// (because card heights vary across viewports), but the canonical order
-	// in Yjs is deterministic — each device simply packs from it locally.
+	// Reading-order masonry: round-robin column assignment from renderedIds so
+	// flattenColumns(columns) always equals renderedIds regardless of viewport,
+	// card heights, or column count. Layout only affects visual placement.
+	//
+	// INVARIANT: flattenColumns(columns) === renderedIds at every column count.
+	// Do not reintroduce splitIntoColumnsByHeight or cross-column rebalancing here.
 	const packedLayout = React.useMemo(() => {
-		void noteHeightsVersion;
-		const gapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
-		const fallbackH = Math.min(props.maxCardHeightPx, 220);
-
-		// ── Anchor strategy ─────────────────────────────────────────────────
-		// STABLE repacks (height changes, expansion, framer-motion oscillations,
-		// same-width resize) must NEVER move notes between columns.  We lock
-		// every note to its last-settled column by using settledColumnByIdRef as
-		// the anchor map.  This covers ALL notes — not just the viewport-visible
-		// subset — eliminating the entire class of bugs where:
-		//   • framer-motion height oscillations cause greedy shortest-column jumps
-		//   • checklist expand/collapse reshuffles adjacent column notes
-		//   • swapping bottom notes forces top notes to repack (viewport scroll-down
-		//     left top notes unanchored so the rebalancer had a free prefix of zero)
-		//
-		// DYNAMIC repacks (explicit drag-drop, workspace/view-mode change,
-		// column-count change) use viewportAnchorColumnsRef as before so that
-		// drag commits apply their full-anchor map and structural resets pack freely.
-		const repackReason = repackReasonRef.current;
-		const hasPersistedHeightSeedForCurrentGrid = renderedIds.some((id) => seededHeightNoteIdsRef.current.has(id));
-		const shouldPreserveSettledStartupColumns = !(repackReason === 'initial-measurement' && !hasPersistedHeightSeedForCurrentGrid);
-		const isColumnCountChanged =
-			settledColumnsRef.current.length > 0 &&
-			settledColumnsRef.current.length !== columnCount;
-		const useSettledAnchors =
-			!shouldTemporarilyOverrideGridPlacement &&
-			shouldPreserveSettledStartupColumns &&
-			repackReason !== 'drag-drop' &&
-			repackReason !== 'workspace-change' &&
-			!isColumnCountChanged &&
-			settledColumnByIdRef.current.size > 0;
-		let anchoredColumnById: ReadonlyMap<string, number>;
-		if (useSettledAnchors) {
-			anchoredColumnById = settledColumnByIdRef.current;
-		} else {
-			anchoredColumnById = shouldTemporarilyOverrideGridPlacement ? new Map<string, number>() : viewportAnchorColumnsRef.current;
-			// Recovery fallback: if viewport anchors were cleared (e.g. on first
-			// render before captureAnchors fires) reconstruct them from layout.
-			if (
-				!shouldTemporarilyOverrideGridPlacement &&
-				props.viewMode === 'card' &&
-				anchoredColumnById.size === 0 &&
-				repackReason === 'measured-card-height' &&
-				gridRef.current
-			) {
-				const anchorSourceColumns = viewportAnchorSourceColumnsRef.current.length > 0
-					? viewportAnchorSourceColumnsRef.current
-					: settledColumnsRef.current;
-				if (anchorSourceColumns.length > 0) {
-					const recoveredAnchors = collectViewportAnchorColumns({
-						columns: anchorSourceColumns,
-						grid: gridRef.current,
-						overscanPx: Math.max(24, Math.round(fallbackH * 0.2)),
-					});
-					if (recoveredAnchors.size > 0) {
-						anchoredColumnById = recoveredAnchors;
-						viewportAnchorColumnsRef.current = recoveredAnchors;
-						debugLayoutInvalidation('VIEWPORT_ANCHOR_RECOVERY', {
-							reason: repackReason,
-							anchorCount: recoveredAnchors.size,
-						});
-					}
-				}
-			}
-		}
+		const columns = splitIntoColumnsByReadingOrder(renderedIds, columnCount);
+		// Placement decisions feed debug logging only; packing is deterministic deal.
 		const placementDecisions = new Map<string, StableMasonryPlacementDecision>();
-		const columns = splitIntoColumnsByHeightAnchored({
-			ids: renderedIds,
-			columnCount,
-			heightById: packedHeightLookup,
-			gapPx,
-			fallbackHeightPx: fallbackH,
-			anchoredColumnById,
-			preferredColumnById: shouldPreserveSettledStartupColumns && !shouldTemporarilyOverrideGridPlacement ? settledColumnByIdRef.current : undefined,
-			preferredSiblingIndexById: shouldPreserveSettledStartupColumns && !shouldTemporarilyOverrideGridPlacement ? settledSiblingIndexByIdRef.current : undefined,
-			onAssign: (decision) => {
-				placementDecisions.set(decision.noteId, decision);
-			},
-		});
-		// Bottom-note rebalancing: only the absolute bottom-most note of the
-		// tallest column may migrate to the shortest column, one move at a time.
-		// Mid-grid notes are never touched, preventing the "notes flying"
-		// symptom.  Transient height oscillations (framer-motion, image loads)
-		// are suppressed entirely to keep the grid visually stable.
-		if (columnCount > 1) {
-			const isChecklist = repackReason === 'checklist-expand' || repackReason === 'checklist-collapse';
-			const isPreferenceChange = repackReason === 'max-card-height-change';
-			// Suppress rebalancing for pure height fluctuations (framer-motion
-			// spring oscillations, measured-card-height events, content loads).
-			// useSettledAnchors is true for all such events; checklist events and
-			// max-card-height preference changes also set useSettledAnchors but
-			// intentionally deserve a bottom-note balancing pass.
-			const suppressRebalance = useSettledAnchors && !isChecklist && !isPreferenceChange;
-			if (!suppressRebalance) {
-				let lockedPrefixCounts: number[];
-				if (isChecklist || isPreferenceChange) {
-					// The packing step already locked every note via settledColumnByIdRef.
-					// Allow only the bottom-most note of each column to migrate so a
-					// checklist expand/collapse can trim trailing height imbalances
-					// without disturbing any mid-grid card positions.
-					lockedPrefixCounts = columns.map((col) => Math.max(0, col.length - 1));
-				} else {
-					// For drag-drop and structural repacks, lock the anchored prefix;
-					// only unlocked tail notes (off-screen or newly added) may move.
-					// Always cap at col.length-1 so the bottom-most note is never
-					// fully locked — even when all notes are in the anchor map (as
-					// drag-drop builds a full-coverage anchor map to suppress
-					// framer-motion oscillations during the drop animation).
-					// Without this cap the rebalancer bails immediately when every
-					// note is anchored (locked count === column length), producing
-					// the "600 px spread after drop, no balancing" bug.
-					lockedPrefixCounts = columns.map((col) => {
-						let count = 0;
-						while (count < col.length && anchoredColumnById.has(col[count])) {
-							count++;
-						}
-						return Math.min(count, Math.max(0, col.length - 1));
-					});
-				}
-				const rebalanced = rebalanceBottomNote({
-					columns,
-					heightOf: (id) => packedHeightLookup.get(id) ?? fallbackH,
-					gapPx,
-					fallbackHeightPx: fallbackH,
-					lockedPrefixCounts,
-					maxMoves: 3,
+		const columnHeightsAtDecision = new Array<number>(columns.length).fill(0);
+		for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+			const columnIds = columns[columnIndex] ?? [];
+			for (let siblingIndex = 0; siblingIndex < columnIds.length; siblingIndex++) {
+				const noteId = columnIds[siblingIndex];
+				placementDecisions.set(noteId, {
+					noteId,
+					assignedColumn: columnIndex,
+					assignedSiblingIndex: siblingIndex,
+					previousColumn: settledColumnByIdRef.current.get(noteId) ?? null,
+					previousSiblingIndex: settledSiblingIndexByIdRef.current.get(noteId) ?? null,
+					shortestColumn: columnIndex,
+					shortestColumnHeight: 0,
+					preferredColumn: settledColumnByIdRef.current.get(noteId) ?? null,
+					preferredColumnHeight: null,
+					anchoredColumn: null,
+					stabilitySlackPx: 0,
+					measuredHeight: packedHeightLookup.get(noteId) ?? Math.min(props.maxCardHeightPx, 220),
+					columnHeightsAtDecision,
+					viewportStabilityOverridden: false,
+					stableOrderOverridden: false,
+					tieBreakerOccurred: false,
+					reason: 'reading-order-deal',
 				});
-				return {
-					columns: rebalanced,
-					placementDecisions,
-				};
 			}
 		}
-		return {
-			columns,
-			placementDecisions,
-		};
-	}, [columnCount, mobileGridGapPx, noteHeightsVersion, packedHeightLookup, props.maxCardHeightPx, props.viewMode, renderedIds, shouldTemporarilyOverrideGridPlacement]);
+		return { columns, placementDecisions };
+	}, [columnCount, packedHeightLookup, props.maxCardHeightPx, renderedIds]);
 	const packedColumns = packedLayout.columns;
 	const resolvedBaseColumns = packedColumns;
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
@@ -2945,7 +2896,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		onCommitOrder: commitVisibleOrder,
 		onTouchDropCommit: props.onTouchReorderEnd,
 		insertionSettleMs: isListLikeView ? 96 : 280,
-		usePointerEdgeAutoScroll: isListLikeView,
+		// Pin-tier drag preview/commit guards (user-scoped via notePinPreferences).
+		isPinnedNote: (id) => noteSnapshotById.get(id)?.isPinned === true,
 	});
 
 
@@ -3181,7 +3133,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const columns = dragManager.previewColumns ?? dragColumns;
 	const listRenderColumns = React.useMemo(() => (isListLikeView ? columns : []), [columns, isListLikeView]);
 
-	// Freeze touch actions during touch drag to prevent browser scroll interference
+	// Freeze touch actions during touch drag to prevent browser scroll interference.
+	// Do NOT set overflow:hidden on html/body — it breaks position:sticky on
+	// .app-main-sticky (scope chip) when the page is scrolled, making the chip
+	// vanish. Scroll is suppressed via touch-action/overscroll-behavior plus
+	// touchmove preventDefault while activeDragId is set on the grid section.
 	React.useEffect(() => {
 		if (!dragManager.isTouchDragging) return;
 		if (typeof document === 'undefined') return;
@@ -3190,21 +3146,17 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const previous = {
 			htmlTouchAction: html.style.touchAction,
 			htmlOverscrollBehavior: html.style.overscrollBehavior,
-			htmlOverflow: html.style.overflow,
 			htmlUserSelect: html.style.userSelect,
 			bodyTouchAction: body.style.touchAction,
 			bodyOverscrollBehavior: body.style.overscrollBehavior,
-			bodyOverflow: body.style.overflow,
 			bodyUserSelect: body.style.userSelect,
 			bodyWebkitUserSelect: body.style.webkitUserSelect,
 		};
 		html.style.touchAction = 'none';
 		html.style.overscrollBehavior = 'none';
-		html.style.overflow = 'hidden';
 		html.style.userSelect = 'none';
 		body.style.touchAction = 'none';
 		body.style.overscrollBehavior = 'none';
-		body.style.overflow = 'hidden';
 		body.style.userSelect = 'none';
 		body.style.webkitUserSelect = 'none';
 		try {
@@ -3215,11 +3167,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return () => {
 			html.style.touchAction = previous.htmlTouchAction;
 			html.style.overscrollBehavior = previous.htmlOverscrollBehavior;
-			html.style.overflow = previous.htmlOverflow;
 			html.style.userSelect = previous.htmlUserSelect;
 			body.style.touchAction = previous.bodyTouchAction;
 			body.style.overscrollBehavior = previous.bodyOverscrollBehavior;
-			body.style.overflow = previous.bodyOverflow;
 			body.style.userSelect = previous.bodyUserSelect;
 			body.style.webkitUserSelect = previous.bodyWebkitUserSelect;
 			// If a body-surface long-press drag was in progress, lockTouchSelection()
@@ -3646,7 +3596,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const noteType = String(doc.getMap('metadata').get('type') ?? 'text') === 'checklist' ? 'checklist' : 'text';
 		const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
 		const docId = placement?.roomId || resolveMediaDocId(note.id);
-		const reminderAt = (docId ? props.noteReminderByDocId?.[docId] : undefined) ?? props.noteReminderByDocId?.[note.id] ?? snapshotShell?.reminderAt ?? null;
+		const reminderAt = resolveNoteReminderAt(props.noteReminderByDocId, docId, note.id, snapshotShell?.reminderAt ?? null);
 		const canEditNote = !isSnapshotCard && !isTrashView && (note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false);
 		const title = doc.getText('title').toString();
 		const initialLinkRecords = docId && snapshotShell?.previewCards?.length
@@ -4138,7 +4088,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				}}>
 					{isGroupedView
 						? groupedSections.map((section) => {
-							const sectionColumns = splitIntoColumnsByHeight(section.noteIds, columnCount, packedHeightLookup, groupedGapPx, groupedFallbackHeightPx);
+							// Preserve section reading order across columns (same invariant as main grid).
+							const sectionColumns = dealIntoColumns(section.noteIds, columnCount);
 							return (
 								<div key={section.key} className={styles.groupSection}>
 									<div className={styles.groupHeader}>
@@ -4486,6 +4437,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							docId: moreMenuDocId,
 							noteId: moreMenuNoteId,
 							userId: props.authUserId,
+							deviceId: props.deviceId,
 							pinned: !(noteSnapshotById.get(moreMenuNoteId)?.isPinned === true),
 						});
 					} : undefined}
@@ -4581,6 +4533,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						setMoreMenuAnchorRect(null);
 						if (isTrashView) {
 							void manager.restoreNote(noteId);
+							return;
+						}
+						if (props.onTrashNote) {
+							props.onTrashNote(noteId);
 							return;
 						}
 						void manager.trashNote(noteId);

@@ -26,12 +26,15 @@ export type UserDevicePreferences = {
 	noteCardLinkInteractions: boolean;
 	noteCardCompletedInteractions: boolean;
 	noteCardCompletedExpandedByNoteId: Record<string, boolean>;
+	collapsedRichHeadingIds: Record<string, boolean>;
 	/** Per-user workspace bubble color overrides: { [workspaceId]: NoteColorToken } */
 	bubbleWorkspaceColors: Record<string, string>;
 	/** Per-user note color overrides: { [noteId]: NoteColorToken | null } */
 	noteColorsByNoteId: Record<string, string | null>;
 	/** Per-user note banner overrides: { [noteId]: bannerFileName | null } */
 	noteBannersByNoteId: Record<string, string | null>;
+	/** Per-user note pin overrides keyed by concrete docId: { [docId]: boolean } */
+	notePinsByDocId: Record<string, boolean>;
 	/** Per-user dismissed failed-link notification IDs: { [failedLinkId]: true } */
 	dismissedFailedLinkIds: Record<string, boolean>;
 	createdAt: string | null;
@@ -44,6 +47,16 @@ function safeJson(value: any): Record<string, boolean> {
 	for (const [k, v] of Object.entries(value)) {
 		if (typeof k !== 'string' || !k) continue;
 		out[k] = Boolean(v);
+	}
+	return out;
+}
+
+function safeStrictBooleanRecord(value: any): Record<string, boolean> {
+	if (!value || typeof value !== 'object') return {};
+	const out: Record<string, boolean> = {};
+	for (const [k, v] of Object.entries(value)) {
+		if (typeof k !== 'string' || !k) continue;
+		if (typeof v === 'boolean') out[k] = v;
 	}
 	return out;
 }
@@ -122,9 +135,11 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			noteCardLinkInteractions: (body as any).noteCardLinkInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedInteractions: (body as any).noteCardCompletedInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
+			collapsedRichHeadingIds: safeJson((body as any).collapsedRichHeadingIds),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
 			noteColorsByNoteId: safeJsonNullableStringRecord((body as any).noteColorsByNoteId),
 			noteBannersByNoteId: safeJsonNullableStringRecord((body as any).noteBannersByNoteId),
+			notePinsByDocId: safeStrictBooleanRecord((body as any).notePinsByDocId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
@@ -156,9 +171,11 @@ type PreferencePatch = {
 	noteCardLinkInteractions?: boolean;
 	noteCardCompletedInteractions?: boolean;
 	noteCardCompletedExpandedPatch?: { noteId: string; expanded: boolean };
+	collapsedRichHeadingIds?: Record<string, boolean>;
 	bubbleWorkspaceColors?: Record<string, string>;
 	noteColorsByNoteId?: Record<string, string | null>;
 	noteBannersByNoteId?: Record<string, string | null>;
+	notePinsByDocId?: Record<string, boolean>;
 	dismissedFailedLinkIds?: Record<string, boolean>;
 };
 
@@ -208,9 +225,11 @@ function applyPendingPatchToPreferences(pref: UserDevicePreferences, patch: Pref
 	const next: UserDevicePreferences = {
 		...pref,
 		noteCardCompletedExpandedByNoteId: { ...pref.noteCardCompletedExpandedByNoteId },
+		collapsedRichHeadingIds: { ...pref.collapsedRichHeadingIds },
 		bubbleWorkspaceColors: { ...pref.bubbleWorkspaceColors },
 		noteColorsByNoteId: { ...pref.noteColorsByNoteId },
 		noteBannersByNoteId: { ...pref.noteBannersByNoteId },
+		notePinsByDocId: { ...pref.notePinsByDocId },
 		dismissedFailedLinkIds: { ...pref.dismissedFailedLinkIds },
 	};
 	if ('deleteAfterDays' in patch) next.deleteAfterDays = patch.deleteAfterDays ?? null;
@@ -231,9 +250,11 @@ function applyPendingPatchToPreferences(pref: UserDevicePreferences, patch: Pref
 	if (patch.noteCardCompletedExpandedPatch?.noteId) {
 		next.noteCardCompletedExpandedByNoteId[patch.noteCardCompletedExpandedPatch.noteId] = Boolean(patch.noteCardCompletedExpandedPatch.expanded);
 	}
+	if ('collapsedRichHeadingIds' in patch && patch.collapsedRichHeadingIds) next.collapsedRichHeadingIds = safeJson(patch.collapsedRichHeadingIds);
 	if ('bubbleWorkspaceColors' in patch && patch.bubbleWorkspaceColors) next.bubbleWorkspaceColors = { ...patch.bubbleWorkspaceColors };
 	if ('noteColorsByNoteId' in patch && patch.noteColorsByNoteId) next.noteColorsByNoteId = { ...patch.noteColorsByNoteId };
 	if ('noteBannersByNoteId' in patch && patch.noteBannersByNoteId) next.noteBannersByNoteId = { ...patch.noteBannersByNoteId };
+	if ('notePinsByDocId' in patch && patch.notePinsByDocId) next.notePinsByDocId = safeStrictBooleanRecord(patch.notePinsByDocId);
 	if ('dismissedFailedLinkIds' in patch && patch.dismissedFailedLinkIds) next.dismissedFailedLinkIds = { ...patch.dismissedFailedLinkIds };
 	return next;
 }
@@ -315,9 +336,11 @@ async function _sendPreferences(
 			noteCardLinkInteractions: (body as any).noteCardLinkInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedInteractions: (body as any).noteCardCompletedInteractions !== false && legacyNoteCardInteractions,
 			noteCardCompletedExpandedByNoteId: safeJson((body as any).noteCardCompletedExpandedByNoteId),
+			collapsedRichHeadingIds: safeJson((body as any).collapsedRichHeadingIds),
 			bubbleWorkspaceColors: safeJsonStringRecord((body as any).bubbleWorkspaceColors),
 			noteColorsByNoteId: safeJsonNullableStringRecord((body as any).noteColorsByNoteId),
 			noteBannersByNoteId: safeJsonNullableStringRecord((body as any).noteBannersByNoteId),
+			notePinsByDocId: safeStrictBooleanRecord((body as any).notePinsByDocId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,

@@ -390,12 +390,6 @@ self.addEventListener('push', (event) => {
 		data: payload.data,
 		vibrate: normalizeVibrate(payload.data?.vibrate),
 		requireInteraction: payload.data?.requireInteraction === true,
-		actions: payload.data?.type === 'reminder'
-			? [
-				{ action: 'open-note', title: 'Open note' },
-				{ action: 'dismiss', title: 'Dismiss' },
-			]
-			: undefined,
 	}).then(async () => {
 		// Notify open app windows so the bell badge can refresh immediately.
 		await postMessageToClients({ type: 'FREEMANNOTES_PUSH_RECEIVED', notificationData: payload.data });
@@ -409,11 +403,8 @@ self.addEventListener('notificationclick', (event) => {
 	if (event.action === 'dismiss') return;
 
 	const data = event.notification.data || {};
-	// Determine the deep-link target URL from notification data.
-	// Format: /?workspace=<id>&note=<id>  or a fully-qualified URL in data.url
 	let targetUrl = '/';
 	if (data.url && typeof data.url === 'string') {
-		// Use the URL from the notification payload (already constructed by the server)
 		try {
 			const parsed = new URL(data.url, self.location.origin);
 			if (parsed.origin === self.location.origin) {
@@ -423,23 +414,98 @@ self.addEventListener('notificationclick', (event) => {
 			targetUrl = '/';
 		}
 	} else if (data.workspaceId && data.noteId) {
-		targetUrl = `/?workspace=${encodeURIComponent(String(data.workspaceId))}&note=${encodeURIComponent(String(data.noteId))}`;
+		const docQuery = data.docId ? `&doc=${encodeURIComponent(String(data.docId))}` : '';
+		targetUrl = `/?workspace=${encodeURIComponent(String(data.workspaceId))}&note=${encodeURIComponent(String(data.noteId))}${docQuery}`;
+	} else if (typeof data.docId === 'string' && data.docId.includes(':')) {
+		const separatorIndex = data.docId.indexOf(':');
+		const workspaceId = data.docId.slice(0, separatorIndex);
+		const noteId = data.docId.slice(separatorIndex + 1);
+		targetUrl = `/?workspace=${encodeURIComponent(workspaceId)}&note=${encodeURIComponent(noteId)}&doc=${encodeURIComponent(String(data.docId))}`;
+	} else if (typeof data.tag === 'string') {
+		const match = data.tag.match(/^freeman-notes-reminder-(.+)$/);
+		if (match && match[1].includes(':')) {
+			const docId = match[1];
+			const separatorIndex = docId.indexOf(':');
+			const workspaceId = docId.slice(0, separatorIndex);
+			const noteId = docId.slice(separatorIndex + 1);
+			targetUrl = `/?workspace=${encodeURIComponent(workspaceId)}&note=${encodeURIComponent(noteId)}&doc=${encodeURIComponent(docId)}`;
+		}
 	}
 
+	const absoluteTargetUrl = new URL(targetUrl, self.location.origin).href;
+	let workspaceId = data.workspaceId;
+	let noteId = data.noteId;
+	let docId = data.docId;
+	try {
+		const parsedTarget = new URL(targetUrl, self.location.origin);
+		workspaceId = workspaceId || parsedTarget.searchParams.get('workspace') || undefined;
+		noteId = noteId || parsedTarget.searchParams.get('note') || undefined;
+		docId = docId || parsedTarget.searchParams.get('doc') || undefined;
+	} catch {
+		// ignore
+	}
+	const openMessage = {
+		type: 'FREEMANNOTES_NOTIFICATION_OPEN',
+		url: targetUrl,
+		workspaceId,
+		noteId,
+		docId,
+	};
+
+	const filterSameOriginClients = (clientList) =>
+		clientList.filter((client) => {
+			try {
+				return new URL(client.url).origin === self.location.origin;
+			} catch {
+				return false;
+			}
+		});
+
+	const wakeExistingClients = async (sameOriginClients) => {
+		for (const client of sameOriginClients) {
+			try {
+				client.postMessage(openMessage);
+			} catch {
+				// ignore
+			}
+		}
+		const targetClient =
+			sameOriginClients.find((client) => client.visibilityState === 'visible') ??
+			sameOriginClients[sameOriginClients.length - 1];
+		if (!targetClient) return false;
+		if (typeof targetClient.navigate === 'function') {
+			await targetClient.navigate(targetUrl).catch(() => {});
+		}
+		if (typeof targetClient.focus === 'function') {
+			await targetClient.focus().catch(() => {});
+		}
+		return true;
+	};
+
+	// Tap the notification body to open the note (no action buttons — Android
+	// Chrome does not reliably grant openWindow/focus to notification actions).
 	event.waitUntil(
 		(async () => {
-			// Try to reuse an already-open window on this origin rather than opening a new tab.
-			const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-			for (const client of clients) {
-				if (new URL(client.url).origin === self.location.origin) {
-					// Navigate the existing window to the target note
-					await client.navigate(targetUrl);
-					await client.focus();
-					return;
+			const clientList = await self.clients.matchAll({
+				type: 'window',
+				includeUncontrolled: true,
+			});
+			const sameOriginClients = filterSameOriginClients(clientList);
+			if (sameOriginClients.length > 0) {
+				const woke = await wakeExistingClients(sameOriginClients);
+				if (woke) return;
+			}
+
+			if (typeof self.clients.openWindow === 'function') {
+				const opened = await self.clients.openWindow(absoluteTargetUrl).catch(() => null);
+				if (opened) {
+					try {
+						opened.postMessage(openMessage);
+					} catch {
+						// ignore
+					}
 				}
 			}
-			// No existing window — open a new one
-			await self.clients.openWindow(targetUrl);
 		})()
 	);
 });

@@ -5,7 +5,7 @@ import { disableNativeDragPreview } from '@atlaskit/pragmatic-drag-and-drop/elem
 import { autoScrollForElements, autoScrollWindowForElements } from '@atlaskit/pragmatic-drag-and-drop-auto-scroll/element';
 import { createPointerEdgeAutoScroller, getClosestVerticalScrollContainer } from './autoScroll';
 import { isTouchDragPolyfillActive } from '../../core/touchDragPolyfill';
-import { arraysEqual, findInsertionPoint, insertIntoColumns } from './layout';
+import { arraysEqual, findInsertionPoint, insertIntoColumns, insertIntoColumnsRespectingPinGroups, shouldSuppressPinGroupInsertion } from './layout';
 import { debugDragEnd, debugDragStart } from './gridDebug';
 
 type DragOverlayState = {
@@ -35,6 +35,8 @@ type DragManagerArgs = {
 	onTouchDropCommit?: () => void;
 	insertionSettleMs?: number;
 	usePointerEdgeAutoScroll?: boolean;
+	/** User-scoped pin resolution for pin-tier drag preview and commit guards. */
+	isPinnedNote?: (id: string) => boolean;
 };
 
 type PragmaticDragData = {
@@ -158,6 +160,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const onTouchDropCommitRef = React.useRef(args.onTouchDropCommit);
 	const insertionSettleMsRef = React.useRef(args.insertionSettleMs ?? 280);
 	const usePointerEdgeAutoScrollRef = React.useRef(Boolean(args.usePointerEdgeAutoScroll));
+	const isPinnedNoteRef = React.useRef(args.isPinnedNote);
 	// Ghost position: the pointer offset records where within the card the user
 	// initially grabbed (pointerXY - cardRect.topLeft).  This is subtracted from
 	// the live pointer position to keep the ghost anchored at the grab point.
@@ -173,6 +176,14 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const touchDragSessionRef = React.useRef(false);
 	const suppressOpenUntilRef = React.useRef(0);
 	const lastPointerRef = React.useRef<PointerInput | null>(null);
+	const dragAnchorYRef = React.useRef(0);
+	// Column where the drag started (index into args.columns / dragColumns).
+	// Layout columns still list the card here during preview; do not use this
+	// alone to decide cross-column row hit-tests — see inColumnRowTestColumnRef.
+	const dragOriginColumnRef = React.useRef(-1);
+	// Foreign column that completed its pointer-based entry insertion. When
+	// inColumnRowTestColumnRef === bestColumn, findInsertionPoint uses ghost edges.
+	const inColumnRowTestColumnRef = React.useRef<number | null>(null);
 	const edgeAutoScrollerRef = React.useRef<ReturnType<typeof createPointerEdgeAutoScroller> | null>(null);
 
 	const scheduleRegistrationRefresh = React.useCallback((): void => {
@@ -195,6 +206,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	onTouchDropCommitRef.current = args.onTouchDropCommit;
 	insertionSettleMsRef.current = args.insertionSettleMs ?? 280;
 	usePointerEdgeAutoScrollRef.current = Boolean(args.usePointerEdgeAutoScroll);
+	isPinnedNoteRef.current = args.isPinnedNote;
 
 	const getRectForId = React.useCallback((id: string): DOMRect | null => {
 		return itemElementsRef.current.get(id)?.getBoundingClientRect() ?? null;
@@ -246,10 +258,11 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	 *   Same-column ordering uses ghostTopY / ghostBottomY so it keeps the
 	 *   proven "leading-edge crosses neighbour midpoint" feel.
 	 *
-	 *   Cross-column ordering uses the raw anchor point so the destination
-	 *   column behaves like a simple vertical list driven by the finger position
-	 *   and is completely independent of the dragged card's height. See the
-	 *   design notes in findInsertionPoint (layout.ts) for the full rationale.
+	 *   Cross-column entry (first insertion in a foreign column) uses the raw
+	 *   anchor point so the destination column responds to the finger position.
+	 *   After that first insertion, inColumnRowTestColumnRef adopts the column
+	 *   and subsequent row tests use ghost edges — identical to native in-column
+	 *   drags. See findInsertionPoint (layout.ts) for the transition logic.
 	 *
 	 * COOLDOWN:
 	 *   insertionCooldownRef guards against running a new hit-test within
@@ -264,6 +277,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		(pointer: PointerInput): void => {
 			const activeId = activeDragIdRef.current;
 			if (!activeId) return;
+			dragAnchorYRef.current = pointer.clientY;
 			// Cooldown: skip while framer-motion is still animating card positions
 			// after the last insertion-point change (prevents rect-read oscillation).
 			if (Date.now() < insertionCooldownRef.current) return;
@@ -286,15 +300,26 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				pointer.clientY,    // drag anchor Y: raw pointer, not ghost top edge
 				getRectForId,
 				getColumnRect,
-				getViewportRect
+				getViewportRect,
+				isPinnedNoteRef.current,
+				dragOriginColumnRef.current,
+				inColumnRowTestColumnRef.current
 			);
 			if (!ip) return;
-			const sourceColumn = columnsRef.current.findIndex((column) => column.includes(activeId));
-			const isCrossColumnInsertion = sourceColumn >= 0 && ip.column !== sourceColumn;
+			const originColumn = dragOriginColumnRef.current;
+			// Short touch cooldown only during pointer-based foreign-column entry.
+			const isCrossColumnEntryPhase = originColumn >= 0
+				&& ip.column !== originColumn
+				&& inColumnRowTestColumnRef.current !== ip.column;
 			const prev = insertionPointRef.current;
 			// No-op if the resolved insertion point hasn't changed.
 			if (prev && prev.column === ip.column && prev.index === ip.index) return;
 			insertionPointRef.current = ip;
+			// Hybrid transition: after the first insertion in a foreign column,
+			// adopt ghost-edge row tests for that column (see memory/drag-insertion-hit-testing.md).
+			if (originColumn >= 0 && ip.column !== originColumn) {
+				inColumnRowTestColumnRef.current = ip.column;
+			}
 			// Arm the cooldown before triggering the React state update so the
 			// next pointer-move event that arrives during framer-motion's spring
 			// is skipped. Cross-column touch insertions need a shorter guard than
@@ -302,7 +327,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			// freeze as soon as the destination column begins its neighbour shift.
 			// Keep the full cooldown for same-column reorders so they retain their
 			// proven anti-oscillation behavior.
-			const cooldownMs = touchDragSessionRef.current && isCrossColumnInsertion
+			const cooldownMs = touchDragSessionRef.current && isCrossColumnEntryPhase
 				? Math.min(96, Math.max(0, insertionSettleMsRef.current))
 				: Math.max(0, insertionSettleMsRef.current);
 			insertionCooldownRef.current = Date.now() + cooldownMs;
@@ -332,6 +357,8 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		insertionCooldownRef.current = 0;
 		touchDragSessionRef.current = false;
 		lastPointerRef.current = null;
+		dragOriginColumnRef.current = -1;
+		inColumnRowTestColumnRef.current = null;
 		setActiveDragId(null);
 		setDragOverlay(null);
 		dragOverlayRef.current = null;
@@ -410,6 +437,9 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		const rect = element.getBoundingClientRect();
 		activeDragIdRef.current = activeId;
 		touchDragSessionRef.current = isTouchDrag;
+		// Reset hybrid hit-test state for this drag session.
+		dragOriginColumnRef.current = columnsRef.current.findIndex((column) => column.includes(activeId));
+		inColumnRowTestColumnRef.current = null;
 		pointerOffsetRef.current = {
 			x: input.clientX - rect.left,
 			y: input.clientY - rect.top,
@@ -469,6 +499,30 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		updateInsertionPoint(pointer);
 	}, [computeOverlayLeft, computeOverlayTop, updateInsertionPoint]);
 
+	const applyPinAwareInsertion = React.useCallback((
+		columns: string[][],
+		activeId: string,
+		ip: InsertionPoint
+	): string[][] => {
+		// Pin tiers: splice within pinned/unpinned blocks only. When the pointer
+		// is over an opposite-tier card, leave columns unchanged (no false drop target).
+		const isPinnedNote = isPinnedNoteRef.current;
+		if (!isPinnedNote) {
+			return insertIntoColumns(columns, activeId, ip.column, ip.index);
+		}
+		const colWithoutActive = (columns[ip.column] ?? []).filter((id) => id !== activeId);
+		if (shouldSuppressPinGroupInsertion(
+			colWithoutActive,
+			activeId,
+			dragAnchorYRef.current,
+			isPinnedNote,
+			getRectForId
+		)) {
+			return columns;
+		}
+		return insertIntoColumnsRespectingPinGroups(columns, activeId, ip.column, ip.index, isPinnedNote);
+	}, [getRectForId]);
+
 	const finishManagedDrag = React.useCallback((): void => {
 		edgeAutoScrollerRef.current?.stop();
 		const activeId = activeDragIdRef.current;
@@ -481,7 +535,8 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			return;
 		}
 
-		const finalColumns = insertIntoColumns(columnsRef.current, activeId, ip.column, ip.index);
+		// Respects pin-tier blocks; may return unchanged columns when suppressed.
+		const finalColumns = applyPinAwareInsertion(columnsRef.current, activeId, ip);
 		const originalColumns = columnsRef.current;
 		const columnsChanged =
 			finalColumns.length !== originalColumns.length ||
@@ -501,7 +556,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
 		finalizeTouchDrop();
 		clearDragState();
-	}, [clearDragState, finalizeTouchDrop, startDropOverlaySettle]);
+	}, [applyPinAwareInsertion, clearDragState, finalizeTouchDrop, startDropOverlaySettle]);
 
 	const cancelManagedDrag = React.useCallback((): void => {
 		edgeAutoScrollerRef.current?.stop();
@@ -645,15 +700,13 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		};
 	}, [clearDragState, clearDropOverlay]);
 
-	// Compute preview columns: the current column layout with the dragged card
-	// relocated to the live insertion point.  NoteGrid renders these columns
-	// instead of the base columns during a drag, and framer-motion's `layout`
-	// prop automatically animates the position changes (neighbors sliding apart
-	// to make room, placeholder holding the original space).
+	// Compute preview columns: relocate the dragged card to the live insertion
+	// point for neighbor-shift animation. dragOverlay is a dependency so pin-group
+	// suppress checks re-run when the pointer moves (dragAnchorYRef updates).
 	const previewColumns = React.useMemo<string[][] | null>(() => {
 		if (!activeDragId || !insertionPoint) return null;
-		return insertIntoColumns(args.columns, activeDragId, insertionPoint.column, insertionPoint.index);
-	}, [activeDragId, insertionPoint, args.columns]);
+		return applyPinAwareInsertion(args.columns, activeDragId, insertionPoint);
+	}, [activeDragId, insertionPoint, args.columns, dragOverlay, applyPinAwareInsertion]);
 
 	return {
 		activeDragId,

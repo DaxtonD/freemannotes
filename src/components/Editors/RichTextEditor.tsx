@@ -35,6 +35,7 @@ import {
 	faUnderline,
 } from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
+import { getCollapsedRichHeadingPrefsSnapshot, getRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefs } from '../../core/collapsibleHeadingPreferences';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { createRichTextExtensions, getMarkdownPasteHtml, type RichTextVariant } from '../../core/richText';
 import { prepareConvertedClipboardPayload, type ClipboardConversionTarget } from '../../core/clipboardConversion';
@@ -72,6 +73,7 @@ type RichTextEditorProps = {
 	copyMode?: ClipboardConversionTarget;
 	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
 	onClipboardStatusChange?: (message: string) => void;
+	collapsibleHeadingNoteId?: string | null;
 };
 
 type RichTextToolbarProps = {
@@ -96,6 +98,7 @@ type RichTextToolbarProps = {
 	onRemoveChecklistCount?: () => void;
 	onIncrementChecklistCount?: () => void;
 	onDecrementChecklistCount?: () => void;
+	collapsibleHeadingNoteId?: string | null;
 };
 
 type CondensedToolbarSection = 'formatting' | 'headings' | 'lists' | 'insert' | 'layout' | 'copy' | null;
@@ -466,6 +469,11 @@ function renderToolbarImageIcon(iconFileName: string): React.JSX.Element {
 
 export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element {
 	const { t } = useI18n();
+	React.useSyncExternalStore(
+		subscribeCollapsedRichHeadingPrefs,
+		getCollapsedRichHeadingPrefsSnapshot,
+		getCollapsedRichHeadingPrefsSnapshot,
+	);
 	const resolvedCopyMode = props.copyMode ?? 'rich-text';
 	// Toolbar touch tracking:
 	// We record the initial touch point so we can distinguish between two very different
@@ -479,6 +487,11 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		selector: ({ editor }) => {
 			const isHighlight = Boolean(editor?.isActive('highlight'));
 			const highlightAttrs = isHighlight ? (editor?.getAttributes('highlight') as { color?: unknown } | undefined) : undefined;
+			const headingAttrs = editor?.getAttributes('heading') as { level?: unknown; collapsible?: unknown; collapseId?: unknown } | undefined;
+			const activeHeadingLevel = editor?.isActive('heading') ? Number(headingAttrs?.level ?? NaN) : NaN;
+			const normalizedHeadingLevel = Number.isFinite(activeHeadingLevel) ? Math.round(activeHeadingLevel) : null;
+			const headingCollapseId = typeof headingAttrs?.collapseId === 'string' && headingAttrs.collapseId ? headingAttrs.collapseId : null;
+			const isCollapsibleHeading = Boolean(headingAttrs?.collapsible) && normalizedHeadingLevel != null && normalizedHeadingLevel <= 5 && headingCollapseId !== null;
 			return {
 				canUndo: canRunUndo(editor),
 				canRedo: canRunRedo(editor),
@@ -501,6 +514,10 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				isHeading4: Boolean(editor?.isActive('heading', { level: 4 })),
 				isHeading5: Boolean(editor?.isActive('heading', { level: 5 })),
 				isHeading6: Boolean(editor?.isActive('heading', { level: 6 })),
+				activeHeadingLevel: normalizedHeadingLevel,
+				isCollapsibleHeading,
+				isCollapsedHeading: Boolean(props.collapsibleHeadingNoteId && headingCollapseId && getRichHeadingCollapsed(props.collapsibleHeadingNoteId, headingCollapseId)),
+				canToggleHeadingCollapsible: normalizedHeadingLevel != null && normalizedHeadingLevel <= 5 && canRunRichTextCommand(editor, 'toggleHeadingCollapsible'),
 				isBulletList: Boolean(editor?.isActive('bulletList')),
 				isOrderedList: Boolean(editor?.isActive('orderedList')),
 				isTaskList: Boolean(editor?.isActive('taskList')),
@@ -537,6 +554,10 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		isHeading4: false,
 		isHeading5: false,
 		isHeading6: false,
+		activeHeadingLevel: null,
+		isCollapsibleHeading: false,
+		isCollapsedHeading: false,
+		canToggleHeadingCollapsible: false,
 		isBulletList: false,
 		isOrderedList: false,
 		isTaskList: false,
@@ -962,6 +983,8 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const noteAutoScrollLabel = props.noteAutoScrollEnabled
 		? t('editors.disableNoteAutoScroll')
 		: t('editors.enableNoteAutoScroll');
+	const headingCollapseToggleLabel = resolvedToolbarState.isCollapsibleHeading ? 'Disable collapsible section' : 'Enable collapsible section';
+	const showHeadingCollapseToggle = resolvedToolbarState.activeHeadingLevel != null && resolvedToolbarState.activeHeadingLevel <= 5;
 	// Minimal/mobile toolbars do not render the full list/blockquote section, so
 	// surface nest/outdent only when the current selection is already inside a
 	// structured context that can actually be deepened or lifted.
@@ -1002,6 +1025,9 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const toggleCondensedSection = React.useCallback((section: Exclude<CondensedToolbarSection, null>): void => {
 		setCondensedSection((current) => (current === section ? null : section));
 	}, []);
+	const handleToggleHeadingCollapsible = React.useCallback((): void => {
+		runRichTextCommand(props.editor, 'toggleHeadingCollapsible');
+	}, [props.editor]);
 	// Condensed mode keeps the primary row short on mobile and exposes one grouped
 	// secondary section at a time so the command set stays identical to full mode.
 	const condensedSectionContent = isCondensedToolbar
@@ -1056,6 +1082,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading4 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(4)}>H4</button>
 							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading5 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(5)}>H5</button>
 							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading6 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(6)}>H6</button>
+							{showHeadingCollapseToggle ? (
+								<button
+									type="button"
+									className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isCollapsibleHeading ? ` ${styles.headingToolbarButtonActive}` : ''}`}
+									aria-label={headingCollapseToggleLabel}
+									title={headingCollapseToggleLabel}
+									onMouseDown={preventToolbarFocusSteal}
+									onPointerDown={preventToolbarFocusSteal}
+									onClick={handleToggleHeadingCollapsible}
+									disabled={!resolvedToolbarState.canToggleHeadingCollapsible}
+								>
+									<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconHeadingCollapse}${resolvedToolbarState.isCollapsedHeading ? ` ${styles.formatButtonMaskIconHeadingCollapseCollapsed}` : ''}`} aria-hidden="true" />
+								</button>
+							) : null}
 						</>
 					);
 				case 'lists':
@@ -1404,6 +1444,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						>
 							<span className={styles.headingMenuButtonLabel}>{activeHeadingLabel}</span>
 						</button>
+						{showHeadingCollapseToggle ? (
+							<button
+								type="button"
+								className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isCollapsibleHeading ? ` ${styles.formatButtonActive}` : ''}`}
+								aria-label={headingCollapseToggleLabel}
+								title={headingCollapseToggleLabel}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={handleToggleHeadingCollapsible}
+								disabled={!resolvedToolbarState.canToggleHeadingCollapsible}
+							>
+								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconHeadingCollapse}${resolvedToolbarState.isCollapsedHeading ? ` ${styles.formatButtonMaskIconHeadingCollapseCollapsed}` : ''}`} aria-hidden="true" />
+							</button>
+						) : null}
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBulletList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBulletList().run()}>
 							<FontAwesomeIcon icon={faListUl} />
 						</button>
@@ -1639,6 +1693,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading4 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(4)}>H4</button>
 					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading5 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(5)}>H5</button>
 					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading6 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(6)}>H6</button>
+					{showHeadingCollapseToggle ? (
+						<button
+							type="button"
+							className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isCollapsibleHeading ? ` ${styles.headingToolbarButtonActive}` : ''}`}
+							aria-label={headingCollapseToggleLabel}
+							title={headingCollapseToggleLabel}
+							onMouseDown={preventToolbarFocusSteal}
+							onPointerDown={preventToolbarFocusSteal}
+							onClick={handleToggleHeadingCollapsible}
+							disabled={!resolvedToolbarState.canToggleHeadingCollapsible}
+						>
+							<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconHeadingCollapse}${resolvedToolbarState.isCollapsedHeading ? ` ${styles.formatButtonMaskIconHeadingCollapseCollapsed}` : ''}`} aria-hidden="true" />
+						</button>
+					) : null}
 				</div>
 			) : null}
 			{tableMenuOpen && tableMenuPosition && typeof document !== 'undefined'
@@ -1880,6 +1948,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				placeholder: props.placeholder,
 				includeCollaboration: Boolean(props.fragment),
 				fragment: props.fragment ?? null,
+				collapsibleHeadingNoteId: props.collapsibleHeadingNoteId ?? null,
 			}),
 			editable: props.editable !== false,
 			content: props.fragment ? undefined : props.content ?? undefined,
@@ -2070,7 +2139,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				latestHandlersRef.current.onChange?.();
 			},
 		},
-		[emitInitialChange, handleMobileTaskCheckboxToggle, handleTaskCheckboxInteractionEnd, handleTaskCheckboxInteractionStart, props.editable, props.fragment, props.placeholder, serializeChangePayload, suppressMobileTaskCheckboxFocus, toggleMobileTaskCheckboxFromTarget, variant]
+		[emitInitialChange, handleMobileTaskCheckboxToggle, handleTaskCheckboxInteractionEnd, handleTaskCheckboxInteractionStart, props.collapsibleHeadingNoteId, props.editable, props.fragment, props.placeholder, serializeChangePayload, suppressMobileTaskCheckboxFocus, toggleMobileTaskCheckboxFromTarget, variant]
 	);
 
 	React.useEffect(() => {
@@ -2119,7 +2188,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 
 	return (
 		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`}>
-			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} toolbarMode={props.toolbarMode} onCreateUrlPreview={props.onCreateUrlPreview} noteAutoScrollEnabled={props.noteAutoScrollEnabled} onToggleNoteAutoScroll={props.onToggleNoteAutoScroll} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} />}
+			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} toolbarMode={props.toolbarMode} onCreateUrlPreview={props.onCreateUrlPreview} noteAutoScrollEnabled={props.noteAutoScrollEnabled} onToggleNoteAutoScroll={props.onToggleNoteAutoScroll} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} collapsibleHeadingNoteId={props.collapsibleHeadingNoteId} />}
 			{clipboardStatusMessage && !(props.hideToolbar && props.onClipboardStatusChange) ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
 			<EditorContent editor={editor} className={`${styles.richEditorViewport}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}`} />
 			{/*

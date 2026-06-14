@@ -210,7 +210,9 @@ module.exports = defineConfig(({ mode }) => {
 					maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
 				},
 				devOptions: {
-					enabled: false,
+					enabled: true,
+					type: 'classic',
+					navigateFallback: '/index.html',
 				},
 			}),
 			...(embedYjs ? [yjsWebsocketPlugin()] : []),

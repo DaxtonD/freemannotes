@@ -19,8 +19,7 @@ type PreferencesSection =
 	| 'appearance'
 	| 'editor'
 	| 'notifications'
-	| 'note-management'
-	| 'collaborators';
+	| 'note-management';
 
 type SectionConfig = {
 	id: PreferencesSection;
@@ -35,7 +34,6 @@ const sections: readonly SectionConfig[] = [
 	{ id: 'editor', labelKey: 'prefs.editor' },
 	{ id: 'notifications', labelKey: 'prefs.notifications' },
 	{ id: 'note-management', labelKey: 'prefs.noteManagement' },
-	{ id: 'collaborators', labelKey: 'prefs.collaborators' },
 ];
 
 export type PreferencesModalProps = {

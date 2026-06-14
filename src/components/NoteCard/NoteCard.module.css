@@ -380,6 +380,9 @@
 	object-fit: contain;
 	object-position: center;
 	display: block;
+	pointer-events: none;
+	-webkit-user-drag: none;
+	user-select: none;
 }
 
 .drawingThumbnailSkeleton {

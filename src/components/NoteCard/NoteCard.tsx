@@ -14,6 +14,8 @@ import {
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
+import { buildCollapsibleHeadingLayout } from '../../core/collapsibleRichHeadings';
+import { getCollapsedRichHeadingPrefsSnapshot, getRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefs } from '../../core/collapsibleHeadingPreferences';
 import { getDeviceId } from '../../core/deviceId';
 import {
 	getDrawingThumbnailCacheKey,
@@ -355,7 +357,7 @@ function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string, all
 
 function renderTableCellContent(nodes: readonly JSONContent[], keyPrefix: string, allowLinkInteraction: boolean): React.ReactNode {
 	const children = nodes
-		.map((child, index) => renderBlockNode(child, `${keyPrefix}:${index}`, false, true, allowLinkInteraction))
+		.map((child, index) => renderBlockNode(child, `${keyPrefix}:${index}`, { inTableCell: true, allowLinkInteraction }))
 		.filter(Boolean);
 	return children.length > 0 ? children : <span className={styles.richTableEmpty}>&nbsp;</span>;
 }
@@ -415,7 +417,22 @@ function renderTableNode(block: JSONContent, key: string, allowLinkInteraction: 
 	);
 }
 
-function renderBlockNode(block: JSONContent, key: string, inListItem = false, inTableCell = false, allowLinkInteraction = true, onToggleTaskItem?: (indexPath: number[]) => void): React.ReactNode {
+type RichPreviewRenderOptions = {
+	inListItem?: boolean;
+	inTableCell?: boolean;
+	allowLinkInteraction?: boolean;
+	onToggleTaskItem?: (indexPath: number[]) => void;
+	noteId?: string;
+};
+
+function renderBlockNode(block: JSONContent, key: string, options: RichPreviewRenderOptions = {}): React.ReactNode {
+	const {
+		inListItem = false,
+		inTableCell = false,
+		allowLinkInteraction = true,
+		onToggleTaskItem,
+		noteId,
+	} = options;
 	const style = getTextAlignStyle(block);
 
 	if (block.type === 'paragraph' || block.type === 'heading') {
@@ -437,27 +454,27 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (block.type === 'bulletList' || block.type === 'orderedList') {
-		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, false, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId })).filter(Boolean);
 		if (items.length === 0) return null;
 		const ListTag = block.type === 'orderedList' ? 'ol' : 'ul';
 		return <ListTag key={key} className={block.type === 'orderedList' ? styles.richOrderedList : styles.richList}>{items}</ListTag>;
 	}
 
 	if (block.type === 'taskList') {
-		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, false, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId })).filter(Boolean);
 		if (items.length === 0) return null;
 		return <ul key={key} className={styles.richTaskList}>{items}</ul>;
 	}
 
 	if (block.type === 'listItem') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem: true, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId })).filter(Boolean);
 		if (children.length === 0) return null;
 		return <li key={key} className={styles.richListItem}>{children}</li>;
 	}
 
 	if (block.type === 'taskItem') {
 		const checked = getTaskItemChecked(block);
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, true, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem: true, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId })).filter(Boolean);
 		if (children.length === 0) return null;
 		const indexPath = onToggleTaskItem ? key.split(':').slice(1).map(Number) : null;
 		return (
@@ -488,7 +505,7 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (block.type === 'blockquote') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, false, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId })).filter(Boolean);
 		if (children.length === 0) return null;
 		return <blockquote key={key} className={styles.richBlockquote}>{children}</blockquote>;
 	}
@@ -511,7 +528,7 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	}
 
 	if (Array.isArray(block.content) && block.content.length > 0) {
-		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, inListItem, inTableCell, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
+		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId })).filter(Boolean);
 		if (children.length === 0) return null;
 		return <React.Fragment key={key}>{children}</React.Fragment>;
 	}
@@ -519,9 +536,21 @@ function renderBlockNode(block: JSONContent, key: string, inListItem = false, in
 	return null;
 }
 
-function renderRichPreview(json: JSONContent | null | undefined, allowLinkInteraction = true, onToggleTaskItem?: (indexPath: number[]) => void): React.ReactNode {
+function renderRichPreview(
+	json: JSONContent | null | undefined,
+	allowLinkInteraction = true,
+	onToggleTaskItem?: (indexPath: number[]) => void,
+	noteId?: string,
+): React.ReactNode {
 	if (!json?.content) return null;
-	const blocks = json.content.map((block, index) => renderBlockNode(block, `block:${index}`, false, false, allowLinkInteraction, onToggleTaskItem)).filter(Boolean);
+	const visibleBlocks = noteId
+		? buildCollapsibleHeadingLayout(json.content, (collapseId) => getRichHeadingCollapsed(noteId, collapseId))
+			.filter((item) => !item.hidden)
+			.map((item) => item.block)
+		: json.content;
+	const blocks = visibleBlocks
+		.map((block, index) => renderBlockNode(block, `block:${index}`, { allowLinkInteraction, onToggleTaskItem, noteId }))
+		.filter(Boolean);
 	return blocks.length > 0 ? blocks : null;
 }
 
@@ -855,6 +884,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		});
 	}, [canEdit, props.authUserId, props.doc, props.docId]);
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
+	React.useSyncExternalStore(
+		subscribeCollapsedRichHeadingPrefs,
+		getCollapsedRichHeadingPrefsSnapshot,
+		getCollapsedRichHeadingPrefsSnapshot,
+	);
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const [clampedById, setClampedById] = React.useState<Record<string, boolean>>({});
 	const [textPreviewLayout, setTextPreviewLayout] = React.useState<{ maxHeightPx: number | null; isOverflowing: boolean }>({
@@ -1813,14 +1847,20 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				{type === 'drawing' ? (
 					<div ref={bodyRef} className={`${styles.body} ${styles.drawingBody}${hasMenuButton ? ` ${styles.bodyMenuSafe} ${styles.drawingBodyMenuSafe}` : ''}`} data-note-drag-manual="true">
 						{drawingThumbnailUrl ? (
-							<img className={styles.drawingThumbnail} src={drawingThumbnailUrl} alt="" />
+							<img
+								className={styles.drawingThumbnail}
+								src={drawingThumbnailUrl}
+								alt=""
+								draggable={false}
+								onDragStart={(e) => e.preventDefault()}
+							/>
 						) : (
 							<div className={styles.drawingThumbnailSkeleton} aria-hidden="true" />
 						)}
 					</div>
 				) : type === 'text' ? (
 					<div ref={bodyRef} className={`${styles.body}${hasMenuButton ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
-						<div ref={contentPreviewRef} className={`${styles.contentPreview}${textPreviewLayout.isOverflowing ? ` ${styles.contentPreviewOverflowing}` : ''}`} style={textPreviewStyle}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined) ?? content}</div>
+						<div ref={contentPreviewRef} className={`${styles.contentPreview}${textPreviewLayout.isOverflowing ? ` ${styles.contentPreviewOverflowing}` : ''}`} style={textPreviewStyle}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined, props.noteId) ?? content}</div>
 					</div>
 				) : (
 					<>

@@ -207,6 +207,38 @@ function renderChecklistPreviewContent(item: ChecklistItem, content: React.React
 		: content;
 }
 
+function normalizeChecklistAutocompleteText(value: string): string {
+	return String(value ?? '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function matchesChecklistAutocompleteCandidate(normalizedCandidate: string, normalizedTyped: string): boolean {
+	if (!normalizedTyped) return false;
+	if (normalizedCandidate.startsWith(normalizedTyped)) return true;
+	return normalizedCandidate.split(' ').some((part) => part.startsWith(normalizedTyped));
+}
+
+function getChecklistAutocompleteSuggestion(
+	items: readonly ChecklistItem[],
+	rowId: string | null,
+	currentText: string
+): string | null {
+	if (!rowId) return null;
+	const normalizedTyped = normalizeChecklistAutocompleteText(currentText);
+	if (!normalizedTyped) return null;
+	for (let index = items.length - 1; index >= 0; index -= 1) {
+		const candidate = items[index];
+		if (candidate.id === rowId) continue;
+		const candidateText = String(candidate.text ?? '').trim();
+		if (!candidateText) continue;
+		const normalizedCandidate = normalizeChecklistAutocompleteText(candidateText);
+		if (!normalizedCandidate || normalizedCandidate === normalizedTyped) continue;
+		if (matchesChecklistAutocompleteCandidate(normalizedCandidate, normalizedTyped)) {
+			return candidateText;
+		}
+	}
+	return null;
+}
+
 function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
 	return yarray
 		.toArray()
@@ -414,6 +446,12 @@ type ChecklistRowContentProps = {
 	toggleCompleted: (id: string, checked: boolean) => void;
 	remove: (id: string, options?: { clearSelection?: boolean }) => void;
 	insertAfter: (id: string, editor?: Editor) => void;
+	acceptSuggestion?: (id: string, suggestion: string) => void;
+	acceptSuggestionAndInsert?: (id: string, suggestion: string) => void;
+	onTextChange?: (id: string, text: string) => void;
+	autocompleteText?: string;
+	autocompleteSuffix?: string;
+	autocompleteSuggestion?: string | null;
 	setActiveEditor: (editor: Editor | null) => void;
 	onArrowUpAtBoundary?: () => void;
 	onArrowDownAtBoundary?: () => void;
@@ -435,6 +473,12 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 		toggleCompleted,
 		remove,
 		insertAfter,
+		acceptSuggestion,
+		acceptSuggestionAndInsert,
+		onTextChange,
+		autocompleteText,
+		autocompleteSuffix,
+		autocompleteSuggestion,
 		setActiveEditor,
 		onArrowUpAtBoundary,
 		onArrowDownAtBoundary,
@@ -456,8 +500,17 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	}, [item.id, remove]);
 
 	const handleInsertAfter = React.useCallback((editor: Editor): void => {
+		if (autocompleteSuggestion && acceptSuggestionAndInsert) {
+			acceptSuggestionAndInsert(item.id, autocompleteSuggestion);
+			return;
+		}
 		insertAfter(item.id, editor);
-	}, [insertAfter, item.id]);
+	}, [acceptSuggestionAndInsert, autocompleteSuggestion, insertAfter, item.id]);
+	const handleActiveAutocompletePress = React.useCallback((event: React.SyntheticEvent): void => {
+		if (!autocompleteSuggestion || !acceptSuggestion) return;
+		event.preventDefault();
+		acceptSuggestion(item.id, autocompleteSuggestion);
+	}, [acceptSuggestion, autocompleteSuggestion, item.id]);
 
 	if (!isActive) {
 		const previewMap = itemMap ?? findChecklistItemMapById(checklistArray, item.id);
@@ -507,41 +560,55 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 				/>
 			</label>
 			{liveItemMap && fragment ? (
-				<div ref={contentRef} className={styles.checklistRowRichShell}>
+				<div
+					ref={contentRef}
+					className={styles.checklistRowRichShell}
+					onMouseDown={autocompleteSuggestion ? handleActiveAutocompletePress : undefined}
+					onPointerDown={autocompleteSuggestion ? handleActiveAutocompletePress : undefined}
+					onClick={autocompleteSuggestion ? handleActiveAutocompletePress : undefined}
+				>
 					{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}
-					<RichTextEditor
-						variant="minimal"
-						fragment={fragment}
-						// Mount-emission branch:
-						// This row editor mounts whenever active row focus changes. We skip the
-						// initial change event so row activation itself does not trigger an
-						// immediate parent update.
-						emitInitialChange={false}
-						// Serialization branch:
-						// For Yjs-backed checklist rows we do not need JSON/text payloads from
-						// TipTap on each keystroke. We can sync plain text from the shared
-						// fragment directly, so signal-only updates are cheaper.
-						serializeChangePayload={false}
-						placeholder={placeholderText}
-						hideToolbar
-						autoFocus={autoFocus}
-						caretVisibilityBottomInset={caretVisibilityBottomInset}
-						containerClassName={styles.checklistRowRichStack}
-						viewportClassName={styles.checklistRowRichViewport}
-						contentClassName={styles.checklistRowRichEditor}
-						onEditorChange={setActiveEditor}
-						onChange={() => {
-							syncChecklistItemPlainText(liveItemMap, fragment);
-						}}
-						onEnter={handleInsertAfter}
-						onShiftEnter={() => undefined}
-						onBackspaceWhenEmpty={() => {
-							if (isProtectedFromEmptyBackspace) return;
-							remove(item.id);
-						}}
-						onArrowUpAtBoundary={onArrowUpAtBoundary}
-						onArrowDownAtBoundary={onArrowDownAtBoundary}
-					/>
+					<div className={styles.checklistRowRichStack}>
+						<RichTextEditor
+							variant="minimal"
+							fragment={fragment}
+							// Mount-emission branch:
+							// This row editor mounts whenever active row focus changes. We skip the
+							// initial change event so row activation itself does not trigger an
+							// immediate parent update.
+							emitInitialChange={false}
+							// Serialization branch:
+							// For Yjs-backed checklist rows we do not need JSON/text payloads from
+							// TipTap on each keystroke. We can sync plain text from the shared
+							// fragment directly, so signal-only updates are cheaper.
+							serializeChangePayload={false}
+							placeholder={placeholderText}
+							hideToolbar
+							autoFocus={autoFocus}
+							caretVisibilityBottomInset={caretVisibilityBottomInset}
+							viewportClassName={styles.checklistRowRichViewport}
+							contentClassName={styles.checklistRowRichEditor}
+							onEditorChange={setActiveEditor}
+							onChange={() => {
+								const nextText = syncChecklistItemPlainText(liveItemMap, fragment);
+								onTextChange?.(item.id, nextText);
+							}}
+							onEnter={handleInsertAfter}
+							onShiftEnter={() => undefined}
+							onBackspaceWhenEmpty={() => {
+								if (isProtectedFromEmptyBackspace) return;
+								remove(item.id);
+							}}
+							onArrowUpAtBoundary={onArrowUpAtBoundary}
+							onArrowDownAtBoundary={onArrowDownAtBoundary}
+						/>
+						{autocompleteSuffix ? (
+							<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
+								<span className={styles.checklistAutocompletePrefix}>{autocompleteText}</span>
+								<span className={styles.checklistAutocompleteSuffix}>{autocompleteSuffix}</span>
+							</div>
+						) : null}
+					</div>
 				</div>
 			) : (
 				<div ref={contentRef} className={styles.checklistRowPreview} onClick={handleActivate}>
@@ -576,6 +643,12 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	prev.toggleCompleted === next.toggleCompleted &&
 	prev.remove === next.remove &&
 	prev.insertAfter === next.insertAfter &&
+	prev.acceptSuggestion === next.acceptSuggestion &&
+	prev.acceptSuggestionAndInsert === next.acceptSuggestionAndInsert &&
+	prev.onTextChange === next.onTextChange &&
+	prev.autocompleteText === next.autocompleteText &&
+	prev.autocompleteSuffix === next.autocompleteSuffix &&
+	prev.autocompleteSuggestion === next.autocompleteSuggestion &&
 	prev.setActiveEditor === next.setActiveEditor &&
 	prev.onArrowUpAtBoundary === next.onArrowUpAtBoundary &&
 	prev.onArrowDownAtBoundary === next.onArrowDownAtBoundary
@@ -1094,6 +1167,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const completedSectionRef = React.useRef<HTMLElement | null>(null);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
+	const [activeChecklistAutocompleteText, setActiveChecklistAutocompleteText] = React.useState('');
 	const [activeChecklistRowEditor, setActiveChecklistRowEditor] = React.useState<Editor | null>(null);
 	const [activeChecklistRowHistoryState, setActiveChecklistRowHistoryState] = React.useState({ canUndo: false, canRedo: false });
 	const checkboxUndoStack = React.useRef<readonly ChecklistItem[][]>([]);
@@ -1622,6 +1696,31 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		() => normalizedItems.find((item) => item.id === activeChecklistRowId) ?? null,
 		[activeChecklistRowId, normalizedItems]
 	);
+	React.useEffect(() => {
+		if (type !== 'checklist') {
+			setActiveChecklistAutocompleteText('');
+			return;
+		}
+		if (!activeChecklistRowId) {
+			setActiveChecklistAutocompleteText('');
+			return;
+		}
+		setActiveChecklistAutocompleteText(activeChecklistRowItem?.text ?? '');
+	}, [activeChecklistRowId, activeChecklistRowItem?.text, type]);
+	const activeChecklistAutocompleteSuggestion = useMemo(
+		() => type === 'checklist'
+			? getChecklistAutocompleteSuggestion(normalizedItems, activeChecklistRowId, activeChecklistAutocompleteText)
+			: null,
+		[activeChecklistAutocompleteText, activeChecklistRowId, normalizedItems, type]
+	);
+	const activeChecklistAutocompleteSuffix = useMemo(() => {
+		if (!activeChecklistAutocompleteSuggestion) return '';
+		const typed = String(activeChecklistAutocompleteText ?? '');
+		if (!typed) return '';
+		return activeChecklistAutocompleteSuggestion.toLowerCase().startsWith(typed.toLowerCase())
+			? activeChecklistAutocompleteSuggestion.slice(typed.length)
+			: '';
+	}, [activeChecklistAutocompleteSuggestion, activeChecklistAutocompleteText]);
 	const activeChecklistCountItem = useMemo(
 		() => activeChecklistRowItem && isChecklistCountItem(activeChecklistRowItem) ? activeChecklistRowItem : null,
 		[activeChecklistRowItem]
@@ -2092,6 +2191,35 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		},
 		[addChecklistItem, checklistArray, items]
 	);
+	const handleChecklistRowTextChange = React.useCallback((rowId: string, text: string): void => {
+		if (rowId !== activeChecklistRowId) return;
+		setActiveChecklistAutocompleteText(text);
+	}, [activeChecklistRowId]);
+	const acceptChecklistAutocompleteSuggestion = React.useCallback((rowId: string, suggestion: string): void => {
+		if (type !== 'checklist') return;
+		const map = findChecklistItemMapById(checklistArray, rowId);
+		if (!map) return;
+		const doc = (checklistArray as any).doc as Y.Doc | null | undefined;
+		const apply = (): void => {
+			map.set('text', suggestion);
+			const fragment = ensureChecklistItemRichContent(map);
+			replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(suggestion), 'minimal');
+		};
+		if (doc) doc.transact(apply);
+		else apply();
+		setActiveChecklistAutocompleteText(suggestion);
+	}, [checklistArray, type]);
+	const acceptChecklistAutocompleteSuggestionAndInsert = React.useCallback((rowId: string, suggestion: string): void => {
+		const currentItem = items.find((row) => row.id === rowId) ?? null;
+		const currentIndex = items.findIndex((row) => row.id === rowId);
+		acceptChecklistAutocompleteSuggestion(rowId, suggestion);
+		addChecklistItem(currentIndex === -1 ? undefined : currentIndex, {
+			text: '',
+			parentId: currentItem?.parentId ?? null,
+			countValue: currentItem?.countValue != null ? 1 : null,
+			richContent: createRichTextDocFromPlainText(''),
+		});
+	}, [acceptChecklistAutocompleteSuggestion, addChecklistItem, items]);
 
 	const incrementActiveChecklistCount = React.useCallback((): void => {
 		if (type !== 'checklist' || !activeChecklistCountItem || !isChecklistCountItem(activeChecklistCountItem)) return;
@@ -2344,6 +2472,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								placeholder={t('editors.startTyping')}
 								hideToolbar
 								editable={false}
+								collapsibleHeadingNoteId={props.noteId}
 								viewportClassName={mobileKeyboardOpen ? styles.editorViewportKeyboardOpen : undefined}
 								contentClassName={styles.fullBodyFieldRich}
 							/>
@@ -2355,9 +2484,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<ul className={styles.checklistList}>
 									{activeItems.map((item) => (
 										<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-											<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
+											<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true">
 												<FontAwesomeIcon icon={faGripVertical} />
-											</button>
+											</div>
 											<label className={styles.checklistCheckboxHitArea} aria-hidden="true">
 												<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly tabIndex={-1} />
 											</label>
@@ -2371,9 +2500,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 										<ul className={styles.checklistList}>
 											{completedItems.map((item) => (
 												<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-													<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
+													<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true">
 														<FontAwesomeIcon icon={faGripVertical} />
-													</button>
+													</div>
 													<label className={styles.checklistCheckboxHitArea} aria-hidden="true">
 														<input type="checkbox" className={styles.checklistCheckbox} checked={item.completed} readOnly tabIndex={-1} />
 													</label>
@@ -2683,6 +2812,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							placeholder={t('editors.startTyping')}
 							hideToolbar={isCoarsePointer}
 							suppressMobileTaskCheckboxFocus={isCoarsePointer}
+							collapsibleHeadingNoteId={props.noteId}
 							noteAutoScrollEnabled={noteAutoScrollEnabled}
 							onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
 							caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
@@ -2821,6 +2951,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																toggleCompleted={toggleChecklistCompleted}
 																remove={removeChecklistItem}
 																insertAfter={insertChecklistItemAfter}
+																acceptSuggestion={acceptChecklistAutocompleteSuggestion}
+																acceptSuggestionAndInsert={acceptChecklistAutocompleteSuggestionAndInsert}
+																onTextChange={handleChecklistRowTextChange}
+																autocompleteText={activeChecklistRowId === item.id ? activeChecklistAutocompleteText : ''}
+																autocompleteSuffix={activeChecklistRowId === item.id ? activeChecklistAutocompleteSuffix : ''}
+																autocompleteSuggestion={activeChecklistRowId === item.id ? activeChecklistAutocompleteSuggestion : null}
 																setActiveEditor={setActiveChecklistRowEditor}
 																onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'previous')}
 																onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
@@ -2876,7 +3012,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									<ul className={styles.checklistList}>
 											{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
 												<li key={`ghost-${item.id}`} className={`${styles.checklistItem} ${styles.checklistGhostItem}`} aria-hidden="true">
-													<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled />
+													<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true" />
 													<label className={styles.checklistCheckboxHitArea}>
 														<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 													</label>
@@ -2886,9 +3022,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 												</li>
 											) : (
 												<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeChecklistRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
-													<button type="button" className={styles.dragHandle} aria-hidden="true" tabIndex={-1} disabled>
+													<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true">
 														<FontAwesomeIcon icon={faGripVertical} />
-													</button>
+													</div>
 													<ChecklistRowContent
 														item={item}
 														itemMap={checklistMapsById.get(item.id) ?? null}
@@ -2904,6 +3040,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 														toggleCompleted={toggleChecklistCompleted}
 														remove={removeChecklistItem}
 														insertAfter={insertChecklistItemAfter}
+														acceptSuggestion={acceptChecklistAutocompleteSuggestion}
+														acceptSuggestionAndInsert={acceptChecklistAutocompleteSuggestionAndInsert}
+														onTextChange={handleChecklistRowTextChange}
+														autocompleteText={activeChecklistRowId === item.id ? activeChecklistAutocompleteText : ''}
+														autocompleteSuffix={activeChecklistRowId === item.id ? activeChecklistAutocompleteSuffix : ''}
+														autocompleteSuggestion={activeChecklistRowId === item.id ? activeChecklistAutocompleteSuggestion : null}
 														setActiveEditor={setActiveChecklistRowEditor}
 															onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'previous')}
 															onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}

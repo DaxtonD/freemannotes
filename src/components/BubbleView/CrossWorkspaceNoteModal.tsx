@@ -42,6 +42,7 @@ export type CrossWorkspaceNoteModalProps = {
 	workspaceId: string;
 	workspaceName: string;
 	themeId: ThemeId;
+	deviceId?: string | null;
 	authUserId?: string | null;
 	websocketUrl: string;
 	readOnly?: boolean;
@@ -63,6 +64,7 @@ export function CrossWorkspaceNoteModal({
 	workspaceId,
 	workspaceName,
 	themeId,
+	deviceId,
 	authUserId,
 	websocketUrl,
 	readOnly = false,
@@ -251,7 +253,7 @@ export function CrossWorkspaceNoteModal({
 					userId: authUserId,
 					legacyPinned: readNoteMetadataState(doc).isPinned,
 				});
-				setUserNotePinnedOnDoc({ doc, docId, noteId, userId: authUserId, pinned: !isPinned });
+				setUserNotePinnedOnDoc({ doc, docId, noteId, userId: authUserId, deviceId, pinned: !isPinned });
 			}}
 		/>
 	);
