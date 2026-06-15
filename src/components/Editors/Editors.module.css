@@ -2054,6 +2054,7 @@
 	   must target `.richEditorContent:global(.ProseMirror)` rather than assuming a child node. */
 	min-height: 100%;
 	outline: none;
+	position: relative;
 }
 
 .richEditorContent:global(.ProseMirror) p.is-editor-empty:first-child::before {
@@ -2184,64 +2185,41 @@
 	display: none;
 }
 
-.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-hidden.fn-collapsible-heading-hidden-exit) {
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-section-block-fade-out) {
 	display: block !important;
-	overflow: hidden;
-	pointer-events: none;
-	max-height: var(--collapsible-heading-block-height, 0px);
-	margin-top: var(--collapsible-heading-block-margin-top, 0px);
-	margin-bottom: var(--collapsible-heading-block-margin-bottom, 0px);
-	padding-top: var(--collapsible-heading-block-padding-top, 0px);
-	padding-bottom: var(--collapsible-heading-block-padding-bottom, 0px);
 	opacity: 1;
-	transform: translateY(0);
-	transform-origin: top;
-	will-change: max-height, opacity, margin, padding, transform;
-	animation: collapsibleHeadingBlockExit 200ms ease-in-out forwards;
+	pointer-events: none;
+	will-change: opacity;
+	animation: collapsibleHeadingSectionBlockFadeOut var(--collapsible-heading-fade-ms, 180ms) cubic-bezier(0.33, 1, 0.68, 1) both;
 }
 
-.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-enter) {
-	display: block !important;
-	overflow: hidden;
+.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-section-block-fade-in) {
+	opacity: 0;
 	pointer-events: none;
-	max-height: var(--collapsible-heading-block-height, 0px);
-	margin-top: var(--collapsible-heading-block-margin-top, 0px);
-	margin-bottom: var(--collapsible-heading-block-margin-bottom, 0px);
-	padding-top: var(--collapsible-heading-block-padding-top, 0px);
-	padding-bottom: var(--collapsible-heading-block-padding-bottom, 0px);
-	opacity: 1;
-	transform: translateY(0);
-	transform-origin: top;
-	will-change: max-height, opacity, margin, padding, transform;
-	animation: collapsibleHeadingBlockEnter 200ms ease-in-out both;
+	will-change: opacity;
+	animation: collapsibleHeadingSectionBlockFadeIn var(--collapsible-heading-fade-ms, 180ms) cubic-bezier(0.33, 1, 0.68, 1) both;
 }
 
-@keyframes collapsibleHeadingBlockExit {
+@keyframes collapsibleHeadingSectionBlockFadeOut {
+	from {
+		opacity: 1;
+	}
 	to {
-		max-height: 0;
-		margin-top: 0;
-		margin-bottom: 0;
-		padding-top: 0;
-		padding-bottom: 0;
 		opacity: 0;
-		transform: translateY(-4px);
 	}
 }
 
-@keyframes collapsibleHeadingBlockEnter {
+@keyframes collapsibleHeadingSectionBlockFadeIn {
 	from {
-		max-height: 0;
-		margin-top: 0;
-		margin-bottom: 0;
-		padding-top: 0;
-		padding-bottom: 0;
 		opacity: 0;
-		transform: translateY(-4px);
+	}
+	to {
+		opacity: 1;
 	}
 }
 
 .richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading) {
-	--collapsible-heading-arrow-gap: 1.05rem;
+	--collapsible-heading-arrow-gap: 1.15rem;
 	--collapsible-heading-arrow-slot: 1.3rem;
 	--collapsible-heading-summary-space: 0rem;
 	--collapsible-heading-summary-shift: -10px;
@@ -2314,18 +2292,17 @@
 		transition: none;
 	}
 
-	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-hidden.fn-collapsible-heading-hidden-exit) {
-		animation: none;
-	}
-
-	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-enter) {
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-hidden.fn-collapsible-heading-hidden-exit),
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-enter),
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-section-block-fade-out),
+	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading-section-block-fade-in) {
 		animation: none;
 	}
 }
 
 @media (pointer: coarse) {
 	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading) {
-		--collapsible-heading-arrow-gap: 0.96rem;
+		--collapsible-heading-arrow-gap: 1.12rem;
 	}
 
 	.richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading.is-collapsed[data-collapsible-heading-summary]:not([data-collapsible-heading-summary=''])) {

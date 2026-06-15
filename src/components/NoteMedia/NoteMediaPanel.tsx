@@ -133,13 +133,23 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		setLoading(true);
 		setError(null);
 		try {
+			const loadRemoteImages = async (): Promise<readonly NoteImageRecord[]> => {
+				// Unsaved notes are not in registry yet, so `/api/note-media` can 403/404
+				// even after a successful upload. Keep showing local cache + IDB previews
+				// until the note is published on Save.
+				if (props.isPendingNew) {
+					const cached = getCachedRemoteNoteImages(props.docId);
+					if (cached.length > 0) return cached;
+					const stored = await readStoredRemoteNoteImages(props.docId);
+					return stored.length > 0 ? stored : cached;
+				}
+				return refreshRemoteNoteImages(props.docId).catch(async () => {
+					const stored = await readStoredRemoteNoteImages(props.docId);
+					return stored.length > 0 ? stored : getCachedRemoteNoteImages(props.docId);
+				});
+			};
 			const [remoteImages, queuedResponse, queuedDeleteResponse, previewRows] = await Promise.all([
-				props.isPendingNew
-					? Promise.resolve([] as readonly ReturnType<typeof getCachedRemoteNoteImages>[number][])
-					: refreshRemoteNoteImages(props.docId).catch(async () => {
-						const stored = await readStoredRemoteNoteImages(props.docId);
-						return stored.length > 0 ? stored : getCachedRemoteNoteImages(props.docId);
-					}),
+				loadRemoteImages(),
 				props.authUserId ? readQueuedNoteImages(props.authUserId, props.docId) : Promise.resolve([]),
 				props.authUserId ? readQueuedNoteImageDeletions(props.authUserId, props.docId) : Promise.resolve([]),
 				readStoredNoteImagePreviewRows(props.docId),

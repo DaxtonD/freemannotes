@@ -30,6 +30,31 @@ function loadFromStorage(storageKey: string): Record<string, boolean> {
 let activeStorageKey = makeStorageKey(null, null);
 let cache: Record<string, boolean> = loadFromStorage(activeStorageKey);
 const listeners = new Set<() => void>();
+const listenersByNoteId = new Map<string, Set<() => void>>();
+const notePrefVersionByNoteId = new Map<string, number>();
+
+function extractNoteIdFromPrefKey(key: string): string | null {
+	const separatorIndex = key.indexOf('::');
+	if (separatorIndex <= 0) return null;
+	return key.slice(0, separatorIndex);
+}
+
+function collectNoteIdsFromPrefKeys(keys: Iterable<string>): Set<string> {
+	const noteIds = new Set<string>();
+	for (const key of keys) {
+		const noteId = extractNoteIdFromPrefKey(key);
+		if (noteId) noteIds.add(noteId);
+	}
+	return noteIds;
+}
+
+function bumpNotePrefVersion(noteId: string): void {
+	notePrefVersionByNoteId.set(noteId, (notePrefVersionByNoteId.get(noteId) ?? 0) + 1);
+}
+
+function resetAllNotePrefVersions(): void {
+	notePrefVersionByNoteId.clear();
+}
 
 function persist(): void {
 	try {
@@ -40,8 +65,25 @@ function persist(): void {
 	}
 }
 
-function notifyListeners(): void {
+function notifyGlobalListeners(): void {
 	for (const listener of listeners) listener();
+}
+
+function notifyScopedListenersForNote(noteId: string): void {
+	const scopedListeners = listenersByNoteId.get(noteId);
+	if (!scopedListeners) return;
+	for (const listener of scopedListeners) listener();
+}
+
+function notifyAllScopedListeners(): void {
+	for (const scopedListeners of listenersByNoteId.values()) {
+		for (const listener of scopedListeners) listener();
+	}
+}
+
+function notifyListenersOnPrefChange(changedNoteId?: string): void {
+	notifyGlobalListeners();
+	if (changedNoteId) notifyScopedListenersForNote(changedNoteId);
 }
 
 function dispatchHeadingToggleEvent(noteId: string, collapsed: boolean): void {
@@ -56,13 +98,36 @@ export function setCollapsibleHeadingPreferenceScope(userId: string | null, devi
 	if (nextStorageKey === activeStorageKey) return;
 	activeStorageKey = nextStorageKey;
 	cache = loadFromStorage(activeStorageKey);
-	notifyListeners();
+	resetAllNotePrefVersions();
+	notifyAllPrefListeners();
+}
+
+function notifyAllPrefListeners(): void {
+	notifyGlobalListeners();
+	notifyAllScopedListeners();
 }
 
 export function replaceCollapsedRichHeadingPrefs(nextPrefs: Record<string, boolean>): void {
-	cache = normalizePrefs(nextPrefs);
+	const previousKeys = new Set(Object.keys(cache));
+	const nextCache = normalizePrefs(nextPrefs);
+	const nextKeys = new Set(Object.keys(nextCache));
+	const changedKeys = new Set<string>();
+	for (const key of previousKeys) {
+		if (!nextKeys.has(key)) changedKeys.add(key);
+	}
+	for (const key of nextKeys) {
+		if (!previousKeys.has(key)) changedKeys.add(key);
+	}
+	cache = nextCache;
 	persist();
-	notifyListeners();
+	const changedNoteIds = collectNoteIdsFromPrefKeys(changedKeys);
+	for (const noteId of changedNoteIds) {
+		bumpNotePrefVersion(noteId);
+	}
+	notifyGlobalListeners();
+	for (const noteId of changedNoteIds) {
+		notifyScopedListenersForNote(noteId);
+	}
 }
 
 export function getCollapsedRichHeadingPrefsSnapshot(): Record<string, boolean> {
@@ -91,7 +156,8 @@ export function setRichHeadingCollapsed(noteId: string, collapseId: string | nul
 		return;
 	}
 	persist();
-	notifyListeners();
+	bumpNotePrefVersion(noteId);
+	notifyListenersOnPrefChange(noteId);
 	dispatchHeadingToggleEvent(noteId, collapsed);
 }
 
@@ -118,4 +184,23 @@ export function subscribeCollapsedRichHeadingPrefs(listener: () => void): () => 
 	return () => {
 		listeners.delete(listener);
 	};
+}
+
+export function subscribeCollapsedRichHeadingPrefsForNote(noteId: string, listener: () => void): () => void {
+	let scopedListeners = listenersByNoteId.get(noteId);
+	if (!scopedListeners) {
+		scopedListeners = new Set();
+		listenersByNoteId.set(noteId, scopedListeners);
+	}
+	scopedListeners.add(listener);
+	return () => {
+		scopedListeners?.delete(listener);
+		if (scopedListeners && scopedListeners.size === 0) {
+			listenersByNoteId.delete(noteId);
+		}
+	};
+}
+
+export function getCollapsedRichHeadingPrefsForNoteVersion(noteId: string): number {
+	return notePrefVersionByNoteId.get(noteId) ?? 0;
 }

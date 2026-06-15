@@ -19,6 +19,7 @@ import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
 import { loadViewMode } from './core/viewMode';
 import { readWorkspaceSelectionCache } from './core/workspaceSelectionCache';
+import { installHeadingCollapseDebugConsole } from './core/collapsibleHeadingCollapseDebug';
 import './styles/variables.css';
 import './styles/globals.css';
 import './styles/layout.css';
@@ -177,6 +178,7 @@ void logClientEvent('APP_INIT', {
 });
 
 async function bootstrap(): Promise<void> {
+	installHeadingCollapseDebugConsole();
 	await preloadWarmStartupBanners();
 	createRoot(rootEl).render(
 		<React.StrictMode>

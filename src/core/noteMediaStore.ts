@@ -362,7 +362,6 @@ async function promoteQueuedPreviewRow(docId: string, queuedRowId: string, image
 	try {
 		const existingRows = await readPreviewRowsByDoc(docId);
 		const queuedPreview = existingRows.find((row) => row.id === queuedRowId && row.kind === 'queued');
-		if (!queuedPreview?.thumbnailBlob) return;
 		await upsertPreviewRows([
 			{
 				id: image.id,
@@ -370,9 +369,9 @@ async function promoteQueuedPreviewRow(docId: string, queuedRowId: string, image
 				docId,
 				remoteImageId: image.id,
 				image,
-				thumbnailBlob: queuedPreview.thumbnailBlob,
+				thumbnailBlob: queuedPreview?.thumbnailBlob || null,
 				previewVersion: NOTE_MEDIA_PREVIEW_VERSION,
-				createdAt: queuedPreview.createdAt || image.createdAt,
+				createdAt: queuedPreview?.createdAt || image.createdAt,
 				updatedAt: image.updatedAt,
 			},
 		]);
@@ -719,6 +718,11 @@ export async function refreshRemoteNoteImages(
 			return images;
 		} catch (error) {
 			if (isMissingAccessError(error)) {
+				const preserved = remoteCache.get(docId) || await readStoredRemoteNoteImages(docId);
+				if (preserved.length > 0) {
+					remoteCache.set(docId, preserved);
+					return preserved;
+				}
 				remoteCache.set(docId, []);
 				remoteRefreshTimestamps.delete(docId);
 				movedCacheGraceUntil.delete(docId);
@@ -808,7 +812,14 @@ export async function flushQueuedNoteImages(userId: string): Promise<void> {
 						type: row.mimeType || row.blob.type || 'application/octet-stream',
 					});
 					const response = await uploadNoteImages(row.docId, [file]);
-					for (const image of response.images) {
+					const uploadedImages = applyRemoteFileNameOverrides(response.images);
+					if (uploadedImages.length > 0) {
+						remoteCache.set(
+							row.docId,
+							mergeRemoteImageCache([...(remoteCache.get(row.docId) || []), ...uploadedImages]),
+						);
+					}
+					for (const image of uploadedImages) {
 						if (!image.fileName && row.fileName) {
 							remoteFileNameOverrides.set(image.id, row.fileName);
 						}

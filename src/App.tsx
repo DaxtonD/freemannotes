@@ -68,6 +68,7 @@ import { ReminderModal } from './components/Workspaces/ReminderModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid/NoteGrid';
+import { captureTopVisibleListScrollAnchor, type ListScrollAnchor } from './components/NoteGrid/listScrollAnchor';
 import type { NoteAttachmentBrowserKind } from './components/NoteAttachments/NoteAttachmentCountChip';
 import { type ChecklistItem } from './core/bindings';
 import {
@@ -87,7 +88,7 @@ import {
 } from './core/deviceAppearancePreferences';
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
-import { addNoteDrawingId, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readNoteFromDoc, removeNoteDrawingId, setNoteReminder } from './core/noteModel';
+import { addNoteDrawingId, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readDrawingLinkState, readNoteFromDoc, removeNoteDrawingId, setNoteReminder } from './core/noteModel';
 import { getNotePinPrefsSnapshot, moveUserNotePinPreference, replaceUserNotePinPrefs, resolveUserNotePinned, setUserNotePinnedOnDoc, setUserNotePinPreferenceScope } from './core/notePinPreferences';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
@@ -793,6 +794,11 @@ function isMoreMenuHistoryState(value: unknown): boolean {
 	return (value as { __moreMenu?: boolean }).__moreMenu === true;
 }
 
+function isNoteImageUploadHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return typeof (value as { __noteImageUpload?: unknown }).__noteImageUpload === 'string';
+}
+
 function isNoteImageViewerHistoryState(value: unknown): boolean {
 	if (!value || typeof value !== 'object') return false;
 	return typeof (value as { __noteImageViewer?: unknown }).__noteImageViewer === 'string';
@@ -1363,6 +1369,10 @@ export function App(): React.JSX.Element {
 	const [openDoc, setOpenDoc] = React.useState<Y.Doc | null>(null);
 	const [openDocId, setOpenDocId] = React.useState<string | null>(null);
 	const pendingNewNoteIdsRef = React.useRef<Set<string>>(new Set());
+	const [pendingNewNotesRevision, setPendingNewNotesRevision] = React.useState(0);
+	const markPendingNewNotesChanged = React.useCallback((): void => {
+		setPendingNewNotesRevision((value) => value + 1);
+	}, []);
 	const pendingNewNoteCleanupIdsRef = React.useRef<Set<string>>(new Set());
 	const pendingAttachedDrawingParentsRef = React.useRef<Map<string, string>>(new Map());
 	// Tracks the note currently being created as a draft — kept hidden from the grid
@@ -1685,11 +1695,24 @@ export function App(): React.JSX.Element {
 		return { mode: 'card' as ViewMode, icon: faGrip, label: t('app.viewCard') };
 	}, [t, viewMode, viewModeOptions]);
 	const viewModeIcon = selectedViewModeOption.icon;
+	const listScrollAnchorRef = React.useRef<ListScrollAnchor | null>(null);
+	const [listScrollAnchor, setListScrollAnchor] = React.useState<ListScrollAnchor | null>(null);
+	const clearListScrollAnchor = React.useCallback(() => {
+		listScrollAnchorRef.current = null;
+		setListScrollAnchor(null);
+	}, []);
 	const selectViewMode = React.useCallback((nextMode: ViewMode) => {
+		const prevMode = viewMode;
+		const isListVariantSwap = (prevMode === 'list' || prevMode === 'strip')
+			&& (nextMode === 'list' || nextMode === 'strip')
+			&& prevMode !== nextMode;
+		const anchor = isListVariantSwap ? captureTopVisibleListScrollAnchor() : null;
+		listScrollAnchorRef.current = anchor;
+		setListScrollAnchor(anchor);
 		setViewMode(nextMode);
 		saveViewMode(nextMode);
 		setIsViewModePickerOpen(false);
-	}, []);
+	}, [viewMode]);
 	React.useEffect(() => {
 		saveBubbleZoom(bubbleZoom);
 	}, [bubbleZoom]);
@@ -1715,6 +1738,10 @@ export function App(): React.JSX.Element {
 	const activeGridViewMode = (viewMode === 'bubble' ? 'card' : viewMode);
 	const scrollPersistTimerRef = React.useRef<number>(0);
 	const suppressWorkspaceScrollPersistUntilRef = React.useRef(0);
+	const handleListScrollAnchorApplied = React.useCallback(() => {
+		suppressWorkspaceScrollPersistUntilRef.current = Date.now() + 180;
+		clearListScrollAnchor();
+	}, [clearListScrollAnchor]);
 	const previousWorkspaceScrollScopeRef = React.useRef<{ workspaceId: string | null; viewMode: typeof activeGridViewMode }>({
 		workspaceId: authWorkspaceId,
 		viewMode: activeGridViewMode,
@@ -1754,6 +1781,12 @@ export function App(): React.JSX.Element {
 			writeWorkspaceRenderSnapshotScroll(previous.workspaceId, previous.viewMode, window.scrollY || 0);
 		}
 		previousWorkspaceScrollScopeRef.current = { workspaceId: authWorkspaceId, viewMode: activeGridViewMode };
+		// List ↔ detailed-list switches anchor to the top-visible note instead of
+		// restoring raw scrollY (row heights differ between variants).
+		if (listScrollAnchorRef.current) {
+			suppressWorkspaceScrollPersistUntilRef.current = Date.now() + 400;
+			return;
+		}
 		const restoredScrollY = authWorkspaceId ? readWorkspaceRenderSnapshotScroll(authWorkspaceId, activeGridViewMode) : null;
 		suppressWorkspaceScrollPersistUntilRef.current = Date.now() + 400;
 		window.requestAnimationFrame(() => {
@@ -2609,18 +2642,19 @@ export function App(): React.JSX.Element {
 		const drawingId = makeNoteId('drawing-note');
 		ensureRelatedNoteAlias(normalizedNoteId, drawingId);
 		pendingNewNoteIdsRef.current.add(drawingId);
+		markPendingNewNotesChanged();
 		pendingAttachedDrawingParentsRef.current.set(drawingId, normalizedNoteId);
 		setDraftNoteId(drawingId);
 		const drawingDoc = await manager.getDocWithSync(drawingId);
 		initDrawingNoteDoc(drawingDoc, '');
 		openNoteEditor(drawingId);
-	}, [ensureRelatedNoteAlias, manager, openNoteEditor]);
+	}, [ensureRelatedNoteAlias, manager, markPendingNewNotesChanged, openNoteEditor]);
 
 	const getPendingNewNoteDisposition = React.useCallback(
 		async (noteId: string): Promise<{ keep: boolean; type: 'text' | 'checklist' | 'drawing' }> => {
 			const doc = manager.getDoc(noteId);
 			if (!doc) return { keep: true, type: 'text' };
-			const reminderDocId = manager.resolveRoomName(noteId);
+			const docId = manager.resolveRoomName(noteId);
 
 			// New notes are created immediately so the full editor can enable attachments,
 			// collaborators, reminders, and collection actions. Cleanup therefore needs to
@@ -2638,28 +2672,31 @@ export function App(): React.JSX.Element {
 			if (snapshot.type === 'drawing' && doc.getArray<Y.Map<any>>('elements').length > 0) {
 				return { keep: true, type: snapshot.type };
 			}
-			if (snapshot.collectionId || readReminderLookupValue(noteReminderByDocId, reminderDocId, noteId) || snapshot.labelIds.length > 0) {
+			if (snapshot.collectionId || readReminderLookupValue(noteReminderByDocId, docId, noteId) || snapshot.labelIds.length > 0) {
 				return { keep: true, type: snapshot.type };
 			}
 			if (getNotePreviewLinksFromDoc(doc).length > 0) {
 				return { keep: true, type: snapshot.type };
 			}
+			if (readDrawingLinkState(doc).drawingIds.length > 0) {
+				return { keep: true, type: snapshot.type };
+			}
 
 			const [storedImages, queuedImages, queuedImageDeletions, storedDocuments, queuedDocuments, collaboratorSnapshot, pendingCollaboratorQueue] = await Promise.all([
-				readStoredRemoteNoteImages(noteId).catch(() => []),
-				authUserId ? readQueuedNoteImages(authUserId, noteId).catch(() => []) : Promise.resolve([]),
-				authUserId ? readQueuedNoteImageDeletions(authUserId, noteId).catch(() => []) : Promise.resolve([]),
-				readStoredRemoteNoteDocuments(noteId).catch(() => []),
-				authUserId ? readQueuedNoteDocuments(authUserId, noteId).catch(() => []) : Promise.resolve([]),
-				authUserId ? readCachedNoteShareCollaborators(authUserId, noteId).catch(() => null) : Promise.resolve(null),
-				authUserId ? readPendingCollaboratorActions(authUserId, noteId).catch(() => []) : Promise.resolve([]),
+				readStoredRemoteNoteImages(docId).catch(() => []),
+				authUserId ? readQueuedNoteImages(authUserId, docId).catch(() => []) : Promise.resolve([]),
+				authUserId ? readQueuedNoteImageDeletions(authUserId, docId).catch(() => []) : Promise.resolve([]),
+				readStoredRemoteNoteDocuments(docId).catch(() => []),
+				authUserId ? readQueuedNoteDocuments(authUserId, docId).catch(() => []) : Promise.resolve([]),
+				authUserId ? readCachedNoteShareCollaborators(authUserId, docId).catch(() => null) : Promise.resolve(null),
+				authUserId ? readPendingCollaboratorActions(authUserId, docId).catch(() => []) : Promise.resolve([]),
 			]);
 
-			const remoteImages = storedImages.length > 0 ? storedImages : getCachedRemoteNoteImages(noteId);
+			const remoteImages = storedImages.length > 0 ? storedImages : getCachedRemoteNoteImages(docId);
 			if (filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedImageDeletions).length + queuedImages.length > 0) {
 				return { keep: true, type: snapshot.type };
 			}
-			if (Math.max(storedDocuments.length + queuedDocuments.length, getCachedNoteDocuments(noteId).length) > 0) {
+			if (Math.max(storedDocuments.length + queuedDocuments.length, getCachedNoteDocuments(docId).length) > 0) {
 				return { keep: true, type: snapshot.type };
 			}
 			if ((collaboratorSnapshot?.collaborators?.length ?? 0) > 0 || (collaboratorSnapshot?.pendingInvitations?.length ?? 0) > 0 || pendingCollaboratorQueue.length > 0) {
@@ -2703,6 +2740,7 @@ export function App(): React.JSX.Element {
 						}
 					}
 					pendingNewNoteIdsRef.current.delete(noteId);
+					markPendingNewNotesChanged();
 					pendingNewNoteCollectionSeedRef.current.delete(noteId);
 					pendingAttachedDrawingParentsRef.current.delete(noteId);
 					// If the draft is no longer the actively open editor note, unhide it now.
@@ -2715,6 +2753,7 @@ export function App(): React.JSX.Element {
 				}
 				await manager.permanentlyDeleteNote(noteId).catch(() => undefined);
 				pendingNewNoteIdsRef.current.delete(noteId);
+				markPendingNewNotesChanged();
 				pendingNewNoteCollectionSeedRef.current.delete(noteId);
 				pendingAttachedDrawingParentsRef.current.delete(noteId);
 				if (selectedNoteId !== noteId) {
@@ -2733,7 +2772,7 @@ export function App(): React.JSX.Element {
 				pendingNewNoteCleanupIdsRef.current.delete(noteId);
 			}
 		},
-		[authWorkspaceId, getPendingNewNoteDisposition, manager, noteReminderByDocId, selectedNoteId, showBriefDialog, syncAttachedDrawingAccess]
+		[authWorkspaceId, getPendingNewNoteDisposition, manager, markPendingNewNotesChanged, noteReminderByDocId, selectedNoteId, showBriefDialog, syncAttachedDrawingAccess]
 	);
 
 	const collapseEditorOverlay = React.useCallback((): void => {
@@ -5994,6 +6033,7 @@ export function App(): React.JSX.Element {
 			// never render the note during the creation window (avoids a brief flash and
 			// the 403 API calls that follow from attachment chips being mounted).
 			pendingNewNoteIdsRef.current.add(noteId);
+			markPendingNewNotesChanged();
 			setDraftNoteId(noteId);
 			const doc = await manager.getDocWithSync(noteId);
 			if (mode === 'checklist') {
@@ -6016,7 +6056,7 @@ export function App(): React.JSX.Element {
 			}
 			openNoteEditor(noteId, opts);
 		},
-		[activateWorkspaceFromSidebar, activeCollection, activeCollectionId, authWorkspaceId, bubbleSelectedWorkspace, canEditActiveWorkspace, collectionPathById, manager, openNoteEditor, showBriefDialog, sidebarView, t, viewMode]
+		[activateWorkspaceFromSidebar, activeCollection, activeCollectionId, authWorkspaceId, bubbleSelectedWorkspace, canEditActiveWorkspace, collectionPathById, manager, markPendingNewNotesChanged, openNoteEditor, showBriefDialog, sidebarView, t, viewMode]
 	);
 
 	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
@@ -7692,7 +7732,7 @@ export function App(): React.JSX.Element {
 				applyOverlaySnapshot(state.snapshot);
 				return;
 			}
-			if (isNoteImageViewerHistoryState(state) || isNoteEditorMediaDockHistoryState(state)) {
+			if (isNoteImageViewerHistoryState(state) || isNoteEditorMediaDockHistoryState(state) || isNoteImageUploadHistoryState(state)) {
 				return;
 			}
 
@@ -8587,6 +8627,10 @@ export function App(): React.JSX.Element {
 		// drawingBrowserNoteId only changes when a different note's drawings modal opens.
 		[drawingBrowserNoteId, loadDrawingDoc]
 	);
+	const selectedNoteIsPendingNew = React.useMemo(
+		() => Boolean(selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)),
+		[selectedNoteId, pendingNewNotesRevision],
+	);
 
 	// ── Auth gate / splash overlay ────────────────────────────────────────
 	// 'unauth'  → show login form (early return)
@@ -8610,7 +8654,6 @@ export function App(): React.JSX.Element {
 		: canCreateNotesInActiveWorkspace;
 	const selectedSharedPlacement = selectedNoteSharedPlacement;
 	const selectedNoteDocId = selectedNoteRoomId;
-	const selectedNoteIsPendingNew = Boolean(selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId));
 	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
 	const canManageSelectedNoteCollaborators = selectedSharedPlacement ? selectedSharedPlacement.role === 'EDITOR' : canEditActiveWorkspace;
 	const crossWorkspacePlacement = crossWorkspaceNote ? sharedPlacements.find((placement) => placement.aliasId === crossWorkspaceNote.noteId) ?? null : null;
@@ -9776,6 +9819,8 @@ export function App(): React.JSX.Element {
 						debugTransitionTraceId={viewTransitionTraceId}
 						isVisible={viewMode !== 'bubble' && sidebarView !== 'images'}
 						hiddenNoteId={draftNoteId}
+						listScrollAnchor={listScrollAnchor}
+						onListScrollAnchorApplied={handleListScrollAnchorApplied}
 				/>
 				</div>
 				{sidebarView === 'images' ? (

@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useSyncExternalStore } from 'react';
+import React, { useMemo, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import type { Editor } from '@tiptap/core';
 import {
@@ -39,6 +39,7 @@ import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
 	ensureTextNoteRichContent,
+	finalizeCollapsedHeadingWritingForNote,
 	getChecklistItemPlainText,
 	getChecklistItemRichPreviewJson,
 	replaceRichFragmentFromJson,
@@ -58,6 +59,15 @@ import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { useVisualViewportHeight } from '../../core/useVisualViewportHeight';
 import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
+import {
+	filterRemoteNoteImagesByPendingDeletes,
+	getCachedRemoteNoteImages,
+	getNoteMediaChangedEventName,
+	readQueuedNoteImageDeletions,
+	readQueuedNoteImages,
+	readStoredRemoteNoteImages,
+} from '../../core/noteMediaStore';
+import { readDrawingLinkState } from '../../core/noteModel';
 import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
@@ -662,10 +672,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const readOnly = props.readOnly === true;
 	const keyboardVisibilityPaddingPx = 88;
 	const [isModified, setIsModified] = React.useState(false);
-	const [mediaDockOpen, setMediaDockOpen] = React.useState(() => {
-		try { return sessionStorage.getItem('__freemannotes_mediaDockOpen') === '1'; } catch { return false; }
-	});
-	const [mediaSheetProgress, setMediaSheetProgress] = React.useState(() => mediaDockOpen ? 1 : 0);
+	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
+	const [mediaSheetProgress, setMediaSheetProgress] = React.useState(0);
 	const [isMediaSheetDragging, setIsMediaSheetDragging] = React.useState(false);
 	const [isMediaSheetClosing, setIsMediaSheetClosing] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(() => readStoredMediaDockTab(props.noteId));
@@ -702,9 +710,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
 
 	React.useEffect(() => {
-		try { sessionStorage.setItem('__freemannotes_mediaDockOpen', mediaDockOpen ? '1' : '0'); } catch { /* */ }
-	}, [mediaDockOpen]);
-	React.useEffect(() => {
 		if (isMediaSheetDragging) return;
 		if (!mediaDockOpen && mediaSheetProgress > 0.001) {
 			setIsMediaSheetClosing(true);
@@ -715,6 +720,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		setMediaSheetProgress(mediaDockOpen ? 1 : 0);
 	}, [isMediaSheetClosing, isMediaSheetDragging, mediaDockOpen, mediaSheetProgress]);
 	React.useEffect(() => {
+		setMediaDockOpen(false);
+		setMediaSheetProgress(0);
+		setIsMediaSheetClosing(false);
+		setIsMediaSheetDragging(false);
 		setMediaDockTab(readStoredMediaDockTab(props.noteId));
 	}, [props.noteId]);
 	React.useEffect(() => {
@@ -735,6 +744,62 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		() => extractNoteLinksFromDoc(props.doc),
 		() => extractNoteLinksFromDoc(props.doc)
 	);
+	const linkedDrawingIdsSnapshot = useSyncExternalStore(
+		(onStoreChange) => {
+			if (!props.isPendingNew) return () => {};
+			const drawingIds = props.doc.getArray<string>('drawingIds');
+			const observer = (): void => onStoreChange();
+			drawingIds.observe(observer);
+			props.doc.on('afterTransaction', observer);
+			return () => {
+				drawingIds.unobserve(observer);
+				props.doc.off('afterTransaction', observer);
+			};
+		},
+		() => (props.isPendingNew ? JSON.stringify(readDrawingLinkState(props.doc).drawingIds) : '[]'),
+		() => (props.isPendingNew ? JSON.stringify(readDrawingLinkState(props.doc).drawingIds) : '[]'),
+	);
+	const linkedDrawingIds = React.useMemo(() => {
+		if (!props.isPendingNew) return [];
+		try {
+			const parsed = JSON.parse(linkedDrawingIdsSnapshot);
+			return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
+		} catch {
+			return [];
+		}
+	}, [linkedDrawingIdsSnapshot, props.isPendingNew]);
+	const [pendingNewImageCount, setPendingNewImageCount] = React.useState(0);
+	React.useEffect(() => {
+		if (!props.isPendingNew) return;
+		let cancelled = false;
+		const refreshImageCount = async (): Promise<void> => {
+			const [queuedImages, queuedDeletes, storedRemoteImages] = await Promise.all([
+				props.authUserId ? readQueuedNoteImages(props.authUserId, props.docId) : Promise.resolve([]),
+				props.authUserId ? readQueuedNoteImageDeletions(props.authUserId, props.docId) : Promise.resolve([]),
+				readStoredRemoteNoteImages(props.docId),
+			]);
+			const remoteImages = storedRemoteImages.length > 0
+				? storedRemoteImages
+				: getCachedRemoteNoteImages(props.docId);
+			const nextCount = filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes).length + queuedImages.length;
+			if (!cancelled) {
+				setPendingNewImageCount((current) => (current === nextCount ? current : nextCount));
+			}
+		};
+		void refreshImageCount();
+		const eventName = getNoteMediaChangedEventName();
+		const onMediaChanged = (event: Event): void => {
+			const detail = (event as CustomEvent<{ docId?: string }>).detail;
+			if (!detail?.docId || detail.docId === props.docId) {
+				void refreshImageCount();
+			}
+		};
+		window.addEventListener(eventName, onMediaChanged as EventListener);
+		return () => {
+			cancelled = true;
+			window.removeEventListener(eventName, onMediaChanged as EventListener);
+		};
+	}, [props.authUserId, props.docId, props.isPendingNew]);
 	const handleCreateUrlPreview = React.useCallback((): void => {
 		if (readOnly) return;
 		const next = window.prompt(t('links.prompt'), 'https://');
@@ -1163,6 +1228,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			props.doc.off('afterTransaction', onAfterTransaction);
 		};
 	}, [props.doc, props.noteId]);
+	const canSavePendingNew = React.useMemo(
+		() => isModified
+			|| (props.isPendingNew && (
+				extractedLinks.length > 0
+				|| linkedDrawingIds.length > 0
+				|| pendingNewImageCount > 0
+			)),
+		[extractedLinks.length, isModified, linkedDrawingIds.length, pendingNewImageCount, props.isPendingNew],
+	);
 	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
 	const completedSectionRef = React.useRef<HTMLElement | null>(null);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
@@ -2335,14 +2409,21 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		else apply();
 	}, [checklistArray, type]);
 
+	const finalizeRichHeadingWritingState = React.useCallback((): void => {
+		if (type !== 'text') return;
+		// Collapsed-heading "Writing..." is session UI only; clear it on every close/save path.
+		finalizeCollapsedHeadingWritingForNote(props.noteId, textEditor);
+	}, [props.noteId, textEditor, type]);
 	const handleClose = React.useCallback((): void => {
 		pruneEmptyChecklistRows();
+		finalizeRichHeadingWritingState();
 		void props.onClose();
-	}, [pruneEmptyChecklistRows, props]);
+	}, [finalizeRichHeadingWritingState, pruneEmptyChecklistRows, props]);
 	const handleSavePendingNew = React.useCallback((): void => {
 		pruneEmptyChecklistRows();
+		finalizeRichHeadingWritingState();
 		void props.onSavePendingNew?.();
-	}, [pruneEmptyChecklistRows, props]);
+	}, [finalizeRichHeadingWritingState, pruneEmptyChecklistRows, props]);
 	React.useLayoutEffect(() => {
 		resizeTitleField();
 	}, [resizeTitleField, title]);
@@ -2443,7 +2524,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				role="presentation"
 				onPointerDownCapture={handleOverlayBackdropPressStart}
 				onMouseDownCapture={handleOverlayBackdropPressStart}
-				onClick={(event) => handleOverlayBackdropClick(event, props.onClose)}
+				onClick={(event) => handleOverlayBackdropClick(event, handleClose)}
 			>
 				<section
 					aria-label={`Editor ${props.noteId}`}
@@ -2452,7 +2533,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					onClick={(event) => event.stopPropagation()}
 				>
 					<header className={styles.editorTopBar}>
-						<button type="button" className={styles.closeIconButton} onClick={props.onClose} aria-label={t('common.close')}>
+						<button type="button" className={styles.closeIconButton} onClick={handleClose} aria-label={t('common.close')}>
 							✕
 						</button>
 					</header>
@@ -2604,7 +2685,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									{t('editors.mediaTabMedia')}
 								</button>
 							</div>
-							<button type="button" className={styles.bottomDockClose} onClick={props.onClose} aria-label={t('common.close')} title={t('common.close')}>
+							<button type="button" className={styles.bottomDockClose} onClick={handleClose} aria-label={t('common.close')} title={t('common.close')}>
 								<FontAwesomeIcon icon={byPrefixAndName.far.xmark} />
 							</button>
 						</nav>
@@ -3228,7 +3309,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									<FontAwesomeIcon icon={byPrefixAndName.far.xmark} />
 								</button>
 							) : null}
-							{props.isPendingNew && isModified && props.onSavePendingNew ? (
+							{props.isPendingNew && canSavePendingNew && props.onSavePendingNew ? (
 								<button
 									type="button"
 									className={styles.bottomDockClose}
@@ -3449,6 +3530,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						onRemoveChecklistCount={type === 'checklist' && activeChecklistCountItem ? removeActiveChecklistCount : undefined}
 						copyMode={type === 'text' ? copyMode : undefined}
 						onCopyModeChange={type === 'text' ? setCopyMode : undefined}
+						collapsibleHeadingNoteId={type === 'text' ? props.noteId : undefined}
 					/>
 				</div>
 			</>,

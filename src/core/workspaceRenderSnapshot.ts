@@ -2,6 +2,7 @@ import type { JSONContent } from '@tiptap/core';
 import * as Y from 'yjs';
 import { normalizeChecklistCountValue } from './checklistCounts';
 import { readNoteFromDoc } from './noteModel';
+import { resolveUserNotePinned } from './notePinPreferences';
 import { extractNoteLinksFromDoc, setNotePreviewLinksOnDoc, type ExtractedNoteLink } from './noteLinks';
 import type { NoteLinkRecord } from './noteLinkApi';
 import {
@@ -318,6 +319,8 @@ export function clearWorkspaceRenderSnapshot(workspaceId: string): void {
 export function buildWorkspaceRenderSnapshotNote(args: {
 	noteId: string;
 	doc: Y.Doc;
+	docId?: string | null;
+	userId?: string | null;
 	reminderAt: string | null;
 	collaboratorCount?: number;
 	attachmentCounts?: Partial<WorkspaceRenderSnapshotAttachmentCounts>;
@@ -351,7 +354,13 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 		collectionId: note.collectionId,
 		labelIds: [...note.labelIds],
 		reminderAt: args.reminderAt,
-		isPinned: note.isPinned,
+		// Persist user-scoped pin state so warm render snapshots match grid pin tiers.
+		isPinned: resolveUserNotePinned({
+			docId: args.docId || args.noteId,
+			noteId: args.noteId,
+			userId: args.userId,
+			legacyPinned: note.isPinned,
+		}),
 		lastAccessedAt: note.lastAccessedAt,
 		drawingIds: [...note.drawingIds],
 		trashed: note.trashed,
