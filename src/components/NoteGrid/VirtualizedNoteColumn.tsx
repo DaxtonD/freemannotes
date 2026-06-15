@@ -1,5 +1,6 @@
 import React from 'react';
 import { useWindowVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
+import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import styles from './NoteGrid.module.css';
 
 type VirtualizedNoteColumnProps = {
@@ -47,6 +48,7 @@ const VirtualizedNoteColumnItem = React.memo(function VirtualizedNoteColumnItem(
 		const observer = new ResizeObserver((entries) => {
 			const entry = entries[0];
 			const height = Math.round(entry?.contentRect.height ?? node.getBoundingClientRect().height);
+			recordHeadingCollapseDebug('resizeObserver', { noteId: props.noteId, height, surface: 'virtual-column-item' });
 			if (height > 0) {
 				props.onItemHeightChange(props.noteId, height);
 			}
@@ -122,6 +124,7 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 		(index: number) => props.noteIds[index] ?? index,
 		[props.noteIds]
 	);
+	const noteIdsSignature = React.useMemo(() => props.noteIds.join('\u001f'), [props.noteIds]);
 
 	const virtualizer = useWindowVirtualizer<HTMLDivElement>({
 		count: props.noteIds.length,
@@ -138,8 +141,10 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 
 	React.useEffect(() => {
 		if (!shouldVirtualize) return;
+		// Remeasure when column membership/order changes, not just length — warm pin-order
+		// fixes reorder ids without changing count and must refresh the virtual window.
 		virtualizer.measure();
-	}, [scrollMargin, shouldVirtualize, virtualizer]);
+	}, [noteIdsSignature, scrollMargin, shouldVirtualize, virtualizer]);
 
 	const virtualItems = shouldVirtualize ? virtualizer.getVirtualItems() : [];
 	// Padding preserves the full column height in the DOM, so scroll position,

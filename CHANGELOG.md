@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.6 - 2026-06-14
+
+### Added
+- **Collapsible rich-text heading polish for production use.** In-flow opacity fade animations for collapse/expand, Enter-to-write under collapsed headings with transient `Writing...` feedback, and scoped per-note collapse-pref subscriptions to avoid grid-wide re-renders.
+- **Heading collapse debug tooling.** Enable via `localStorage.__headingCollapseDebug = '1'` and summarize with `window.__printHeadingCollapseDebugSummary()`.
+
+### Changed
+- **Warm PWA grid startup now honors cached pin order immediately.** `pickRenderedDisplayOrder()` bridges warm layout cache and live pin snapshots; workspace render snapshots persist user-scoped pin state; virtual columns remeasure when note order changes.
+
+### Fixed
+- **Collapsible heading expand/collapse animations.** Removed two-phase expand spacer that caused empty gaps and missing fades; decoration refresh is sequenced so opacity animations run reliably on PWA/production builds.
+- **Collapsible heading chevron hit-testing.** Toggle hitbox is anchored to the chevron icon so the caret can be placed after the last heading character while coarse pointers keep a 44px target.
+- **Collapsible heading summary UI.** Removed persistent `• N lines` / item counts beside headings; `Writing...` clears on note save/close and empty draft paragraphs are pruned.
+- **Warm-load pinned notes missing from the top of the grid.** Pinned notes no longer pop in a beat after reopen when the layout cache already had the correct pin-tier order.
+
 ## 1.5.5 - 2026-06-13
 
 ### Added

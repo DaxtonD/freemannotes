@@ -462,6 +462,51 @@ export function applyPinnedDisplaySort(
 	return [...pinned, ...unpinned];
 }
 
+export function isPinTierSorted(
+	ids: readonly string[],
+	isPinned: (id: string) => boolean,
+): boolean {
+	let seenUnpinned = false;
+	for (const id of ids) {
+		if (isPinned(id)) {
+			if (seenUnpinned) return false;
+		} else {
+			seenUnpinned = true;
+		}
+	}
+	return true;
+}
+
+export function layoutOrderMatchesVisible(layoutOrderIds: readonly string[], visibleIds: readonly string[]): boolean {
+	if (layoutOrderIds.length === 0 || layoutOrderIds.length !== visibleIds.length) return false;
+	const visibleSet = new Set(visibleIds);
+	return layoutOrderIds.every((id) => visibleSet.has(id));
+}
+
+/** Prefer warm cached display order until live pin snapshots catch up; prefer visibleIds once pin tiers are current. */
+export function pickRenderedDisplayOrder(args: {
+	layoutOrderIds: readonly string[];
+	visibleIds: readonly string[];
+	shouldPrioritizePinned: boolean;
+	isPinned: (id: string) => boolean;
+}): string[] {
+	const { layoutOrderIds, visibleIds, shouldPrioritizePinned, isPinned } = args;
+	if (!layoutOrderMatchesVisible(layoutOrderIds, visibleIds)) {
+		return [...visibleIds];
+	}
+	if (arraysEqual(layoutOrderIds, visibleIds)) {
+		return [...visibleIds];
+	}
+	if (shouldPrioritizePinned) {
+		const visiblePinSorted = isPinTierSorted(visibleIds, isPinned);
+		const layoutPinSorted = isPinTierSorted(layoutOrderIds, isPinned);
+		if (!visiblePinSorted && layoutPinSorted) {
+			return [...layoutOrderIds];
+		}
+	}
+	return [...visibleIds];
+}
+
 /**
  * Apply a within-tier drag result to canonical visible order.
  *

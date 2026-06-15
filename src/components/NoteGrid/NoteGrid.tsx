@@ -28,6 +28,7 @@ import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRec
 import type { LabelRecord } from '../../services/labelService';
 import { assignNoteBannerFile } from '../../services/noteService';
 import type { ViewMode } from '../../core/viewMode';
+import type { ListScrollAnchor } from './listScrollAnchor';
 import { NoteListView } from './NoteListView';
 import {
 	readCachedNoteShareCollaborators,
@@ -60,6 +61,7 @@ import {
 	MOBILE_GRID_EDGE_MARGIN_PX,
 	mergeVisibleIdsIntoLayoutOrder,
 	mergeVisibleOrderIntoFullOrder,
+	pickRenderedDisplayOrder,
 	readCssPxVariable,
 	type StableMasonryPlacementDecision,
 	splitIntoColumnsByReadingOrder,
@@ -112,6 +114,7 @@ import {
 	debugHeightVersionBump,
 	debugUpdateLiveState,
 } from './gridDebug';
+import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import { NoteGridDebugOverlay } from './NoteGridDebugOverlay';
 
 type Note = {
@@ -191,6 +194,9 @@ export type NoteGridProps = {
 	isVisible?: boolean;
 	/** Note ID to suppress from the display — used while a new note is being drafted. */
 	hiddenNoteId?: string | null;
+	/** When switching list ↔ strip, restore this row's viewport Y after layout. */
+	listScrollAnchor?: ListScrollAnchor | null;
+	onListScrollAnchorApplied?: () => void;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -1632,17 +1638,26 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const handleRichHeadingToggle = (event: Event): void => {
 			const detail = (event as CustomEvent<{ noteId?: string; collapsed?: boolean }>).detail;
 			if (!detail?.noteId) return;
-			repackReasonRef.current = detail.collapsed ? 'heading-collapse' : 'heading-expand';
+			recordHeadingCollapseDebug('richHeadingToggleEvent', { noteId: detail.noteId, collapsed: detail.collapsed, surface: 'notegrid' });
+		};
+		const handleHeadingAnimationRefresh = (event: Event): void => {
+			const detail = (event as CustomEvent<{ noteId?: string; collapsed?: boolean }>).detail;
+			if (!detail?.noteId) return;
+			const collapsed = detail.collapsed === true;
+			recordHeadingCollapseDebug('animationRefreshEvent', { noteId: detail.noteId, collapsed: detail.collapsed, surface: 'notegrid' });
+			repackReasonRef.current = collapsed ? 'heading-collapse' : 'heading-expand';
 			expansionAffectedNoteIdsRef.current.add(detail.noteId);
 			invalidatedNoteReasonsRef.current.set(detail.noteId, repackReasonRef.current);
 		};
 		window.addEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
 		window.addEventListener('freemannotes:checklist-toggle', handleChecklistToggle as EventListener);
 		window.addEventListener('freemannotes:rich-heading-toggle', handleRichHeadingToggle as EventListener);
+		window.addEventListener('freemannotes:rich-heading-animation-refresh', handleHeadingAnimationRefresh as EventListener);
 		return () => {
 			window.removeEventListener('freemannotes:note-card-layout-change', handleNoteCardLayoutChange as EventListener);
 			window.removeEventListener('freemannotes:checklist-toggle', handleChecklistToggle as EventListener);
 			window.removeEventListener('freemannotes:rich-heading-toggle', handleRichHeadingToggle as EventListener);
+			window.removeEventListener('freemannotes:rich-heading-animation-refresh', handleHeadingAnimationRefresh as EventListener);
 			if (noteCardLayoutRefreshRafRef.current) {
 				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
 				noteCardLayoutRefreshRafRef.current = 0;
@@ -1656,6 +1671,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (latestNoteHeightsVersionRef.current !== noteHeightsVersion) {
+			recordHeadingCollapseDebug('heightVersionBump', { noteHeightsVersion });
 			debugHeightVersionBump(repackReasonRef.current, { noteHeightsVersion });
 		}
 		latestNoteHeightsVersionRef.current = noteHeightsVersion;
@@ -1716,6 +1732,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			repackReasonRef.current = previousMeasuredHeight === undefined ? 'initial-measurement' : 'measured-card-height';
 		}
 		invalidatedNoteReasonsRef.current.set(noteId, repackReasonRef.current);
+		recordHeadingCollapseDebug('noteMeasure', { noteId, height: normalizedHeight, previousHeight: previousMeasuredHeight ?? null, surface: 'notegrid' });
 		debugNoteMeasure(noteId, normalizedHeight, previousMeasuredHeight);
 		debugNoteHeightInvalidated(
 			noteId,
@@ -1935,7 +1952,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			const doc = liveDoc && hasRenderableNoteContent(liveDoc) ? liveDoc : null;
 			if (!doc) {
 				const snapshotNote = workspaceRenderSnapshotNoteById.get(id);
-				return snapshotNote ? createVisibleNoteSnapshotFromRenderSnapshot(snapshotNote) : createFallbackNoteSnapshot(id);
+				if (!snapshotNote) return createFallbackNoteSnapshot(id);
+				const placement = sharedPlacementByAlias.get(id) ?? null;
+				const docId = placement?.roomId || resolveMediaDocId(id);
+				// Warm boot renders snapshot shells before live Yjs docs; pin tier must come
+				// from user prefs, not legacy metadata.isPinned on the snapshot payload.
+				return {
+					...createVisibleNoteSnapshotFromRenderSnapshot(snapshotNote),
+					isPinned: resolveUserNotePinned({
+						docId: docId || id,
+						noteId: id,
+						userId: props.authUserId,
+						legacyPinned: snapshotNote.isPinned,
+					}),
+				};
 			}
 			const note = readNoteFromDoc(doc, id);
 			const placement = sharedPlacementByAlias.get(id) ?? null;
@@ -2329,6 +2359,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					return buildWorkspaceRenderSnapshotNote({
 						noteId: id,
 						doc: liveDoc,
+						docId,
+						userId: props.authUserId,
 						reminderAt,
 						collaboratorCount: Math.max(collaboratorSummariesByNoteId[id]?.count ?? 0, previousSnapshot?.collaboratorCount ?? 0),
 						attachmentCounts: {
@@ -2518,8 +2550,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const renderedIds = React.useMemo(() => {
 		const pendingCommitted = pendingCommittedVisibleOrderRef.current;
 		if (pendingCommitted) return pendingCommitted;
-		return visibleIds;
-	}, [layoutOrderIds, visibleIds]);
+		// Warm layout cache stores pin-sorted order in layoutOrderIds; visibleIds can lag
+		// on snapshot shells until user pin prefs hydrate. pickRenderedDisplayOrder bridges
+		// that gap without reintroducing pin-toggle flicker (see memory/pinning-architecture.md).
+		return pickRenderedDisplayOrder({
+			layoutOrderIds,
+			visibleIds,
+			shouldPrioritizePinned: shouldPrioritizePinnedForDisplay,
+			isPinned: (id) => noteSnapshotById.get(id)?.isPinned === true,
+		});
+	}, [layoutOrderIds, noteSnapshotById, shouldPrioritizePinnedForDisplay, visibleIds]);
 	const renderedIdsSignature = React.useMemo(() => renderedIds.join('\u001f'), [renderedIds]);
 	const layoutMeasurementTargetIds = React.useMemo(
 		() => (isGridVisible && props.viewMode === 'card' ? renderedIds.slice(0, viewportCapacity) : renderedIds),
@@ -2985,6 +3025,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			recentlyMovedCount: recentlyMovedNoteIdsRef.current.size,
 		});
 		debugColumnHeightsBefore(previousLayout?.columnHeights ?? [], { reason });
+		recordHeadingCollapseDebug('repackStart', { reason, renderedCount: renderedIds.length, columnCount });
 		debugRepackStart(renderedIds.length, columnCount, reason);
 		const masonryLayout = buildMasonryLayoutFromColumns({
 			columns: resolvedBaseColumns,
@@ -3000,6 +3041,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				viewportAnchorCount: viewportAnchorColumnsRef.current.size,
 			});
 		}
+		recordHeadingCollapseDebug('repackEnd', { reason, renderedCount: renderedIds.length, columnCount });
 		debugRepackEnd({
 			renderedCount: renderedIds.length,
 			columnCount,
@@ -3132,6 +3174,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// automatically animates position changes when columns swap.
 	const columns = dragManager.previewColumns ?? dragColumns;
 	const listRenderColumns = React.useMemo(() => (isListLikeView ? columns : []), [columns, isListLikeView]);
+
+	React.useEffect(() => {
+		if (!props.listScrollAnchor || !isListLikeView) return;
+		const anchorNoteId = props.listScrollAnchor.noteId;
+		const inAnyColumn = listRenderColumns.some((column) => column.includes(anchorNoteId));
+		if (!inAnyColumn) {
+			props.onListScrollAnchorApplied?.();
+		}
+	}, [isListLikeView, listRenderColumns, props.listScrollAnchor, props.onListScrollAnchorApplied]);
 
 	// Freeze touch actions during touch drag to prevent browser scroll interference.
 	// Do NOT set overflow:hidden on html/body — it breaks position:sticky on
@@ -4009,6 +4060,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										moreMenuNoteId={moreMenuNoteId}
 										themeId={props.themeId}
 										bannerTitlePosition={props.noteCardBannerTitlePosition}
+										scrollAnchor={props.listScrollAnchor}
+										onScrollAnchorApplied={props.onListScrollAnchorApplied}
 										activeDragId={dragManager.activeDragId}
 										setItemElement={dragManager.setItemElement}
 										setHandleElement={dragManager.setHandleElement}
@@ -4051,6 +4104,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								moreMenuNoteId={moreMenuNoteId}
 								themeId={props.themeId}
 								bannerTitlePosition={props.noteCardBannerTitlePosition}
+								scrollAnchor={props.listScrollAnchor}
+								onScrollAnchorApplied={props.onListScrollAnchorApplied}
 								activeDragId={dragManager.activeDragId}
 								setItemElement={dragManager.setItemElement}
 								setHandleElement={dragManager.setHandleElement}

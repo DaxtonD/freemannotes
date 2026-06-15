@@ -14,6 +14,11 @@ const CAPTURE_JPEG_QUALITY = 0.7;
 const CAMERA_ASPECT_RATIO = 4 / 3;
 const IMAGE_UPLOAD_BODY_FLAG = 'freemannotesNoteImageUploadOpen';
 
+function isMoreMenuHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return (value as { __moreMenu?: boolean }).__moreMenu === true;
+}
+
 type CameraZoomCapability = {
 	min?: number;
 	max?: number;
@@ -697,23 +702,34 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	React.useEffect(() => {
 		if (!props.isOpen || !isCoarsePointer || typeof window === 'undefined') return;
 		let active = true;
-		let didPush = false;
+		const ownsHistoryEntryRef = { current: false };
 		const token = historyTokenRef.current;
 		const onPopState = (): void => {
 			if (!active) return;
+			const state = window.history.state as { __noteImageUpload?: string } | null;
+			if (state?.__noteImageUpload === token) return;
 			stopCameraStream();
 			props.onClose();
 		};
 		window.addEventListener('popstate', onPopState);
-		const currentState = window.history.state as { __noteImageUpload?: string } | null;
-		if (currentState?.__noteImageUpload !== token) {
-			window.history.pushState({ __noteImageUpload: token }, '');
-			didPush = true;
-		}
+		const pushTimer = window.setTimeout(() => {
+			if (!active) return;
+			const currentState = window.history.state;
+			if (isMoreMenuHistoryState(currentState)) {
+				window.history.replaceState({ __noteImageUpload: token }, '');
+				ownsHistoryEntryRef.current = true;
+				return;
+			}
+			if ((currentState as { __noteImageUpload?: string } | null)?.__noteImageUpload !== token) {
+				window.history.pushState({ __noteImageUpload: token }, '');
+				ownsHistoryEntryRef.current = true;
+			}
+		}, 0);
 		return () => {
 			active = false;
+			window.clearTimeout(pushTimer);
 			window.removeEventListener('popstate', onPopState);
-			if (!didPush) return;
+			if (!ownsHistoryEntryRef.current) return;
 			window.setTimeout(() => {
 				const state = window.history.state as { __noteImageUpload?: string } | null;
 				if (state?.__noteImageUpload === token) {

@@ -15,7 +15,8 @@ import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { buildCollapsibleHeadingLayout } from '../../core/collapsibleRichHeadings';
-import { getCollapsedRichHeadingPrefsSnapshot, getRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefs } from '../../core/collapsibleHeadingPreferences';
+import { getCollapsedRichHeadingPrefsForNoteVersion, getRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefsForNote } from '../../core/collapsibleHeadingPreferences';
+import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import { getDeviceId } from '../../core/deviceId';
 import {
 	getDrawingThumbnailCacheKey,
@@ -700,6 +701,7 @@ function useDrawingThumbnail(
 }
 
 export function NoteCard(props: NoteCardProps): React.JSX.Element {
+	recordHeadingCollapseDebug('reactRenderNoteCard', { noteId: props.noteId });
 	const { t } = useI18n();
 	const maxCardHeightPx = Math.max(220, props.maxCardHeightPx ?? 300);
 	const noteCardLinkPreviewMaxItems = maxCardHeightPx >= 420 ? 3 : 2;
@@ -885,9 +887,9 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [canEdit, props.authUserId, props.doc, props.docId]);
 	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	React.useSyncExternalStore(
-		subscribeCollapsedRichHeadingPrefs,
-		getCollapsedRichHeadingPrefsSnapshot,
-		getCollapsedRichHeadingPrefsSnapshot,
+		(onStoreChange) => subscribeCollapsedRichHeadingPrefsForNote(props.noteId, onStoreChange),
+		() => getCollapsedRichHeadingPrefsForNoteVersion(props.noteId),
+		() => 0,
 	);
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const [clampedById, setClampedById] = React.useState<Record<string, boolean>>({});
@@ -1374,6 +1376,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			if (frameId) window.cancelAnimationFrame(frameId);
 			frameId = window.requestAnimationFrame(() => {
 				frameId = 0;
+				recordHeadingCollapseDebug('resizeObserver', { noteId: props.noteId, surface: 'text-preview' });
 				measure();
 			});
 		};

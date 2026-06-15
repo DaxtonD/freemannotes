@@ -65,6 +65,15 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	const menuRef = React.useRef<HTMLDivElement>(null);
 	const onCloseRef = React.useRef(props.onClose);
 	onCloseRef.current = props.onClose;
+	// When a menu item opens another mobile overlay, skip history.back() on unmount.
+	// Otherwise the deferred popstate from the menu layer can race the child modal
+	// and immediately dismiss it (Add image / reminder / collection, etc.).
+	const skipHistoryBackRef = React.useRef(false);
+	const closeForChildOverlay = React.useCallback((run: () => void) => {
+		skipHistoryBackRef.current = true;
+		props.onClose();
+		run();
+	}, [props.onClose]);
 	const isMoreMenuHistoryEntry = React.useCallback((value: unknown): boolean => {
 		if (!value || typeof value !== 'object') return false;
 		return (value as { __moreMenu?: boolean }).__moreMenu === true;
@@ -136,7 +145,7 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 		return () => {
 			window.clearTimeout(pushTimer);
 			window.removeEventListener('popstate', onPopState);
-			if (active && didPush && isMoreMenuHistoryEntry(window.history.state)) {
+			if (active && didPush && !skipHistoryBackRef.current && isMoreMenuHistoryEntry(window.history.state)) {
 				active = false;
 				window.history.back();
 			}
@@ -340,8 +349,9 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				icon: faUserPlus,
 				disabled: isTrashView,
 				action: () => {
-					props.onClose();
-					props.onAddCollaborator?.();
+					closeForChildOverlay(() => {
+						props.onAddCollaborator?.();
+					});
 				},
 			}]
 			: []),
@@ -353,8 +363,9 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 					icon: faImage,
 					disabled: isTrashView,
 					action: () => {
-						props.onClose();
-						props.onAddImage?.();
+						closeForChildOverlay(() => {
+							props.onAddImage?.();
+						});
 					},
 				}]
 				: [{ key: 'image', labelKey: 'noteMenu.addImage', icon: faImage, disabled: isTrashView, action: noop }])
@@ -366,8 +377,9 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				icon: byPrefixAndName.far['clapperboard'],
 				disabled: isTrashView,
 				action: () => {
-					props.onClose();
-					props.onSelectBannerImage?.();
+					closeForChildOverlay(() => {
+						props.onSelectBannerImage?.();
+					});
 				},
 			}]
 			: []),
@@ -379,8 +391,9 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 					icon: faPenNib,
 					disabled: isTrashView,
 					action: () => {
-						props.onClose();
-						props.onAddDocument?.();
+						closeForChildOverlay(() => {
+							props.onAddDocument?.();
+						});
 					},
 				}]
 				: [{ key: 'document', labelKey: 'noteMenu.addDocument', icon: faPenNib, disabled: isTrashView, action: noop }])
@@ -404,8 +417,9 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				icon: faBell,
 				disabled: isTrashView,
 				action: () => {
-					props.onClose();
-					props.onAddReminder?.();
+					closeForChildOverlay(() => {
+						props.onAddReminder?.();
+					});
 				},
 			}]
 			: [{ key: 'reminder', labelKey: 'noteMenu.addReminder', icon: faBell, disabled: isTrashView, action: noop }]),
@@ -416,8 +430,9 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				icon: faFolderOpen,
 				disabled: isTrashView,
 				action: () => {
-					props.onClose();
-					props.onMoveToWorkspace?.();
+					closeForChildOverlay(() => {
+						props.onMoveToWorkspace?.();
+					});
 				},
 			}]
 			: []),
@@ -437,8 +452,9 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				icon: faFolderPlus,
 				disabled: isTrashView,
 				action: () => {
-					props.onClose();
-					props.onAddToCollection?.();
+					closeForChildOverlay(() => {
+						props.onAddToCollection?.();
+					});
 				},
 			}]
 			: [{ key: 'collection', labelKey: 'noteMenu.addToCollection', icon: faFolderPlus, disabled: isTrashView, action: noop }]),
@@ -449,8 +465,9 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				icon: faTag,
 				disabled: isTrashView,
 				action: () => {
-					props.onClose();
-					props.onAddLabels?.();
+					closeForChildOverlay(() => {
+						props.onAddLabels?.();
+					});
 				},
 			}]
 			: [{ key: 'label', labelKey: 'noteMenu.addLabel', icon: faTag, disabled: isTrashView, action: noop }]),

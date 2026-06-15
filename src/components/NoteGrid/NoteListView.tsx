@@ -29,6 +29,7 @@ import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePre
 import type { VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
 import type { LabelRecord } from '../../services/labelService';
 import { applyDocumentFlipAnimations, measureDocumentRects, type DocumentRectMap } from './flip';
+import { applyListScrollAnchorToRow, type ListScrollAnchor } from './listScrollAnchor';
 import styles from './NoteListView.module.css';
 
 const LIST_ROW_GAP_PX = 2;
@@ -61,6 +62,9 @@ export type NoteListViewProps = {
 	onSelectNote: (noteId: string) => void;
 	onMoreMenu: (noteId: string, anchorRect: DOMRect | null) => void;
 	onRestoreNote?: (noteId: string) => void;
+	/** Restore this row's viewport Y after a list ↔ strip switch. */
+	scrollAnchor?: ListScrollAnchor | null;
+	onScrollAnchorApplied?: () => void;
 };
 
 function getColorVars(noteId: string, doc: Y.Doc, themeId: ThemeId): React.CSSProperties | undefined {
@@ -368,6 +372,64 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 		if (!shouldVirtualize) return;
 		virtualizer.measure();
 	}, [scrollMargin, shouldVirtualize, virtualizer]);
+
+	React.useLayoutEffect(() => {
+		const anchor = props.scrollAnchor;
+		if (!anchor) return;
+		const index = props.orderedIds.indexOf(anchor.noteId);
+		if (index < 0) return;
+
+		let cancelled = false;
+		let attempts = 0;
+		const stride = estimatedRowHeight + LIST_ROW_GAP_PX;
+
+		const tryAnchor = (): void => {
+			if (cancelled) return;
+			attempts += 1;
+
+			const row = containerRef.current?.querySelector<HTMLElement>(
+				`[data-note-list-row="true"][data-note-id="${CSS.escape(anchor.noteId)}"]`,
+			);
+
+			if (!row && shouldVirtualize) {
+				// Rough scroll so the virtualizer mounts the anchor row; fine-tune below.
+				const targetScrollY = scrollMargin + index * stride - anchor.viewportTopPx;
+				window.scrollTo({ left: 0, top: Math.max(0, Math.round(targetScrollY)), behavior: 'auto' });
+				if (attempts < 8) {
+					window.requestAnimationFrame(tryAnchor);
+				} else {
+					props.onScrollAnchorApplied?.();
+				}
+				return;
+			}
+
+			if (!row) {
+				if (attempts < 8) {
+					window.requestAnimationFrame(tryAnchor);
+				} else {
+					props.onScrollAnchorApplied?.();
+				}
+				return;
+			}
+
+			const settled = applyListScrollAnchorToRow(row, anchor);
+			if (!settled && attempts < 8) {
+				window.requestAnimationFrame(tryAnchor);
+				return;
+			}
+			props.onScrollAnchorApplied?.();
+		};
+
+		let raf2 = 0;
+		const raf1 = window.requestAnimationFrame(() => {
+			raf2 = window.requestAnimationFrame(tryAnchor);
+		});
+		return () => {
+			cancelled = true;
+			window.cancelAnimationFrame(raf1);
+			window.cancelAnimationFrame(raf2);
+		};
+	}, [estimatedRowHeight, props.onScrollAnchorApplied, props.orderedIds, props.scrollAnchor, props.variant, scrollMargin, shouldVirtualize]);
 
 	const virtualItems = shouldVirtualize ? virtualizer.getVirtualItems() : [];
 	const leadingPaddingPx = shouldVirtualize && virtualItems.length > 0

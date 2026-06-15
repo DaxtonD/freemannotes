@@ -99,3 +99,58 @@ export function buildCollapsibleHeadingLayout<T extends JSONContent | ProseMirro
 
 	return items;
 }
+
+function forEachChild(node: HeadingLike, callback: (child: HeadingLike) => void): void {
+	if (!node) return;
+	if ('forEach' in node && typeof (node as ProseMirrorNode).forEach === 'function') {
+		(node as ProseMirrorNode).forEach((child) => callback(child));
+		return;
+	}
+	if ('content' in node && Array.isArray((node as { content?: unknown }).content)) {
+		for (const child of (node as { content: HeadingLike[] }).content) {
+			callback(child);
+		}
+	}
+}
+
+function countListContentUnits(node: HeadingLike): number {
+	let count = 0;
+	forEachChild(node, (child) => {
+		if (getTypeName(child) !== 'listItem') return;
+		count += 1;
+		forEachChild(child, (inner) => {
+			const innerType = getTypeName(inner);
+			if (innerType === 'bulletList' || innerType === 'orderedList' || innerType === 'taskList') {
+				count += countListContentUnits(inner);
+			}
+		});
+	});
+	return count;
+}
+
+/** Count document content units in a collapsed section block (paragraphs, list items, etc.). */
+export function countCollapsibleContentUnits(node: HeadingLike): number {
+	const typeName = getTypeName(node);
+	if (!typeName) return 0;
+	switch (typeName) {
+		case 'bulletList':
+		case 'orderedList':
+		case 'taskList':
+			return countListContentUnits(node);
+		case 'blockquote': {
+			let innerCount = 0;
+			forEachChild(node, (child) => {
+				innerCount += countCollapsibleContentUnits(child);
+			});
+			return innerCount > 0 ? innerCount : 1;
+		}
+		case 'horizontalRule':
+			return 0;
+		default:
+			return 1;
+	}
+}
+
+export function formatCollapsedContentSummary(_count: number, isWriting = false): string {
+	return isWriting ? 'Writing...' : '';
+}
