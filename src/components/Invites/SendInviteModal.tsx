@@ -250,7 +250,6 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 
 	const filteredPriorCollaborators = React.useMemo(() => {
 		const query = identifier.trim().toLowerCase();
-		if (!query) return [];
 		const memberEmails = new Set(inviteState.members.map((member) => String(member.email || '').trim().toLowerCase()).filter(Boolean));
 		const inviteEmails = new Set(inviteState.invites.map((invite) => String(invite.email || '').trim().toLowerCase()).filter(Boolean));
 		return priorCollaborators.filter((user) => {
@@ -258,11 +257,13 @@ export function SendInviteModal(props: Props): React.JSX.Element | null {
 			const name = String(user.name || '').trim().toLowerCase();
 			if (!email) return false;
 			if (memberEmails.has(email) || inviteEmails.has(email)) return false;
+			if (!query) return true;
 			return email.includes(query) || name.includes(query);
 		});
 	}, [identifier, inviteState.invites, inviteState.members, priorCollaborators]);
 
-	const showPriorCollaboratorSuggestions = identifierFocused && !dismissSuggestions && identifier.trim().length > 0 && !busy && !actionBusyKey;
+	// Match CollaboratorModal: show the full prior-collaborator list on focus, then filter by typed text.
+	const showPriorCollaboratorSuggestions = identifierFocused && !dismissSuggestions && !busy && !actionBusyKey;
 
 	const handleSelectPriorCollaborator = React.useCallback((user: PriorCollaboratorUser) => {
 		if (!user.email) return;

@@ -94,6 +94,7 @@ import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedE
 import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
 import { activateWorkspace, fetchUserPreferences, flushUserPreferences, updateUserPreferences, type UserDevicePreferences } from './core/userDevicePreferencesApi';
 import { useConnectionStatus } from './core/useConnectionStatus';
+import { useBodyScrollLock } from './core/useBodyScrollLock';
 import { useIsCoarsePointer } from './core/useIsCoarsePointer';
 import { useIsMobileLandscape } from './core/useIsMobileLandscape';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from './core/passwordStrength';
@@ -2793,8 +2794,13 @@ export function App(): React.JSX.Element {
 
 	const closeNoteEditor = React.useCallback(async () => {
 		const closingNoteId = selectedNoteId;
+		const attachedParentNoteId = closingNoteId ? pendingAttachedDrawingParentsRef.current.get(closingNoteId) ?? null : null;
 		if (selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)) {
 			await finalizePendingNewNote(selectedNoteId, 'cancel');
+		}
+		if (attachedParentNoteId) {
+			openNoteEditor(attachedParentNoteId, { replaceTop: true });
+			return;
 		}
 		if (goBackIfOverlayHistory()) {
 			if (closingNoteId) {
@@ -2815,7 +2821,43 @@ export function App(): React.JSX.Element {
 		if (closingNoteId) {
 			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
 		}
-	}, [collapseEditorOverlay, finalizePendingNewNote, goBackIfOverlayHistory, selectedNoteId]);
+	}, [collapseEditorOverlay, finalizePendingNewNote, goBackIfOverlayHistory, openNoteEditor, selectedNoteId]);
+
+	const saveDrawingEditor = React.useCallback(async () => {
+		const closingNoteId = selectedNoteId;
+		const attachedParentNoteId = closingNoteId ? pendingAttachedDrawingParentsRef.current.get(closingNoteId) ?? null : null;
+		if (selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)) {
+			try {
+				await finalizePendingNewNote(selectedNoteId, 'save');
+			} catch (error) {
+				console.error('Failed to save pending drawing draft', error);
+				showBriefDialog('failed to save note');
+				return;
+			}
+		}
+		if (attachedParentNoteId) {
+			openNoteEditor(attachedParentNoteId, { replaceTop: true });
+			return;
+		}
+		if (goBackIfOverlayHistory()) {
+			if (closingNoteId) {
+				setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
+			}
+			if (typeof window !== 'undefined') {
+				window.setTimeout(() => {
+					isNavigatingBackRef.current = false;
+					if (selectedNoteIdRef.current !== closingNoteId) return;
+					collapseEditorOverlay();
+				}, 0);
+			}
+			return;
+		}
+		setSelectedNoteId(null);
+		setEditorMode('none');
+		if (closingNoteId) {
+			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
+		}
+	}, [collapseEditorOverlay, finalizePendingNewNote, goBackIfOverlayHistory, openNoteEditor, selectedNoteId, showBriefDialog]);
 
 	const savePendingNewNoteAndClose = React.useCallback(async () => {
 		const closingNoteId = selectedNoteId;
@@ -4745,8 +4787,8 @@ export function App(): React.JSX.Element {
 			const collectionLabel = collectionPathById.get(activeCollection.id) ?? activeCollection.name;
 			chips.push({
 				key: `collection:${activeCollection.id}`,
-				label: `Collection: ${collectionLabel}`,
-				title: 'Collection:',
+				label: `${t('search.collectionPrefix')} ${collectionLabel}`,
+				title: t('search.collectionPrefix'),
 				value: collectionLabel,
 				onClear: () => setActiveCollectionId(null),
 			});
@@ -4754,8 +4796,8 @@ export function App(): React.JSX.Element {
 		for (const label of activeLabels) {
 			chips.push({
 				key: `label:${label.id}`,
-				label: `Label: ${label.name}`,
-				title: 'Label:',
+				label: `${t('search.labelPrefix')} ${label.name}`,
+				title: t('search.labelPrefix'),
 				value: label.name,
 				onClear: () => setActiveLabelIds((current) => current.filter((entry) => entry !== label.id)),
 			});
@@ -7793,23 +7835,10 @@ export function App(): React.JSX.Element {
 		};
 	}, [noteCardFontScalePref, noteEditorFontScalePref]);
 
-	React.useEffect(() => {
-		// When an editor is open, the rest of the app should be visually/background-inactive.
-		// The editor overlay blocks clicks; this additionally prevents background scroll
-		// (wheel/trackpad) on desktop and elastic scroll on mobile.
-		if (typeof document === 'undefined') return;
-		const editorOpen = editorMode !== 'none' || Boolean(selectedNoteId);
-		if (!editorOpen) return;
-
-		const prevOverflow = document.body.style.overflow;
-		const prevOverscroll = (document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior;
-		document.body.style.overflow = 'hidden';
-		(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = 'none';
-		return () => {
-			document.body.style.overflow = prevOverflow;
-			(document.body.style as unknown as { overscrollBehavior?: string }).overscrollBehavior = prevOverscroll || '';
-		};
-	}, [editorMode, selectedNoteId]);
+	// Lock html/body scroll (and preserve scroll position) while any editor overlay is open.
+	// Body-only overflow was insufficient on desktop: the document/html scrollbar stayed
+	// live and wheel events could still scroll the note grid behind the editor.
+	useBodyScrollLock(isEditorOverlayOpen, { disableTouchAction: false });
 
 	const onSaveText = React.useCallback(
 		async (args: { title: string; body: string; richContent: import('@tiptap/core').JSONContent; previewLinks: string[] }) => {
@@ -8404,13 +8433,16 @@ export function App(): React.JSX.Element {
 		};
 	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, collections, deferredSearchQuery, labels, manager, sharedPlacements, sidebarView, t, viewMode]);
 
-	const clearSearchAndClose = React.useCallback(() => {
+	const clearSearch = React.useCallback(() => {
 		setSearchQuery('');
 		setSearchResults([]);
 		setSearchResultsError(null);
 		setSearchResultsBusy(false);
+	}, []);
+	const clearSearchAndClose = React.useCallback(() => {
+		clearSearch();
 		closeMobileSearch();
-	}, [closeMobileSearch]);
+	}, [clearSearch, closeMobileSearch]);
 	const groupedSearchResults = React.useMemo(() => {
 		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
 		for (const result of searchResults) {
@@ -8433,8 +8465,8 @@ export function App(): React.JSX.Element {
 		if (kind === 'collaborator') return t('search.matchCollaborator');
 		if (kind === 'link') return t('search.matchLink');
 		if (kind === 'document') return t('search.matchDocument');
-		if (kind === 'collection') return 'Collection';
-		if (kind === 'label') return 'Label';
+		if (kind === 'collection') return t('search.matchCollection');
+		if (kind === 'label') return t('search.matchLabel');
 		return t('search.matchNote');
 	}, [t]);
 	const canShowGlobalSearchResults = viewMode !== 'bubble' && sidebarView !== 'images';
@@ -8449,6 +8481,15 @@ export function App(): React.JSX.Element {
 				</div>
 				<div className="global-search-results-meta">
 					{searchResultsBusy ? t('common.loading') : `${searchResults.length} ${searchResults.length === 1 ? t('search.resultSingular') : t('search.resultPlural')}`}
+					<button
+						type="button"
+						className="global-search-results-close"
+						onClick={clearSearch}
+						aria-label={t('common.close')}
+						title={t('common.close')}
+					>
+						<FontAwesomeIcon icon={faXmark} />
+					</button>
 				</div>
 			</div>
 			{searchResultsError ? <p className="global-search-results-error">{searchResultsError}</p> : null}
@@ -8484,8 +8525,8 @@ export function App(): React.JSX.Element {
 										{result.collaboratorMatches.length > 0 || result.collectionMatches.length > 0 || result.labelMatches.length > 0 ? (
 											<div className="global-search-result-contexts">
 												{result.collaboratorMatches.map((label) => <span key={`${result.docId}:${label}`} className="global-search-result-context">{t('search.collaboratorPrefix')} {label}</span>)}
-												{result.collectionMatches.map((label) => <span key={`${result.docId}:collection:${label}`} className="global-search-result-context">Collection: {label}</span>)}
-												{result.labelMatches.map((label) => <span key={`${result.docId}:label:${label}`} className="global-search-result-context">Label: {label}</span>)}
+												{result.collectionMatches.map((label) => <span key={`${result.docId}:collection:${label}`} className="global-search-result-context">{t('search.collectionPrefix')} {label}</span>)}
+												{result.labelMatches.map((label) => <span key={`${result.docId}:label:${label}`} className="global-search-result-context">{t('search.labelPrefix')} {label}</span>)}
 											</div>
 										) : null}
 										<div className="global-search-result-meta">{result.imageCount > 0 ? `${result.imageCount} ${result.imageCount === 1 ? t('media.imageSingular') : t('media.imagePlural')} · ` : ''}{new Date(result.updatedAt).toLocaleString(locale)}</div>
@@ -8855,22 +8896,38 @@ export function App(): React.JSX.Element {
 								</span>
 						</div>
 						<div className="app-header-search">
-							<input
-								type="search"
-								name="global-search"
-								autoComplete="off"
-								autoCorrect="off"
-								autoCapitalize="none"
-								spellCheck={false}
-								data-bwignore="true"
-								data-lpignore="true"
-								data-1p-ignore="true"
-								className="app-header-search-input"
-								value={searchQuery}
-								onChange={(event) => setSearchQuery(event.target.value)}
-								placeholder={t('app.globalSearchPlaceholder')}
-								aria-label={t('app.globalSearchPlaceholder')}
-							/>
+							<div className="app-header-search-field">
+								<input
+									type="search"
+									name="global-search"
+									autoComplete="off"
+									autoCorrect="off"
+									autoCapitalize="none"
+									spellCheck={false}
+									data-bwignore="true"
+									data-lpignore="true"
+									data-1p-ignore="true"
+									className="app-header-search-input"
+									value={searchQuery}
+									onChange={(event) => setSearchQuery(event.target.value)}
+									onKeyDown={(event) => {
+										if (event.key === 'Escape' && searchQuery.trim()) clearSearch();
+									}}
+									placeholder={t('app.globalSearchPlaceholder')}
+									aria-label={t('app.globalSearchPlaceholder')}
+								/>
+								{searchQuery.trim() ? (
+									<button
+										type="button"
+										className="app-header-search-clear"
+										onClick={clearSearch}
+										aria-label={t('common.close')}
+										title={t('common.close')}
+									>
+										<FontAwesomeIcon icon={faXmark} />
+									</button>
+								) : null}
+							</div>
 						</div>
 						<div className="app-header-right">
 							<button
@@ -9821,6 +9878,7 @@ export function App(): React.JSX.Element {
 						hiddenNoteId={draftNoteId}
 						listScrollAnchor={listScrollAnchor}
 						onListScrollAnchorApplied={handleListScrollAnchorApplied}
+						loadDrawingDoc={loadDrawingDoc}
 				/>
 				</div>
 				{sidebarView === 'images' ? (
@@ -10058,7 +10116,7 @@ export function App(): React.JSX.Element {
 							doc={openDoc}
 							awareness={manager.getAwareness(selectedNoteId)}
 							onClose={closeNoteEditor}
-							onSave={selectedNoteIsPendingNew ? savePendingNewNoteAndClose : closeNoteEditor}
+							onSave={selectedNoteIsPendingNew ? saveDrawingEditor : closeNoteEditor}
 							onDelete={onDeleteSelectedNote}
 							onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 							onAddImage={selectedNoteReadOnly ? undefined : () => {

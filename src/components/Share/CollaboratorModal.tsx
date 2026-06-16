@@ -8,7 +8,6 @@ import {
 	queueNoteShareCollaboratorRevokeAction,
 	queueNoteShareCollaboratorRoleAction,
 	readCachedNoteShareCollaborators,
-	readPendingCollaboratorActions,
 	revokeNoteShareCollaborator,
 	syncNoteShareCollaborators,
 	updateNoteShareCollaboratorRole,
@@ -143,7 +142,6 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const { t } = useI18n();
 	const [busy, setBusy] = React.useState(false);
 	const [loading, setLoading] = React.useState(false);
-	const [syncing, setSyncing] = React.useState(false);
 	const [accessResolved, setAccessResolved] = React.useState(false);
 	const [openPanel, setOpenPanel] = React.useState<'invite' | 'link' | 'pending' | 'collaborators'>('invite');
 	const [shareQrModalOpen, setShareQrModalOpen] = React.useState(false);
@@ -159,7 +157,6 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	// Populated from localStorage on open so previously generated links are
 	// immediately visible without a server round-trip.
 	const [cachedLinks, setCachedLinks] = React.useState<CachedNoteShareLink[]>([]);
-	const [pendingActionCount, setPendingActionCount] = React.useState(0);
 	const [isOffline, setIsOffline] = React.useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
 	const [snapshot, setSnapshot] = React.useState<NoteShareCollaboratorSnapshot>(EMPTY_SNAPSHOT);
 	const [priorCollaborators, setPriorCollaborators] = React.useState<PriorCollaboratorUser[]>([]);
@@ -206,9 +203,8 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		};
 	}, [shareLink]);
 
-	// Reload the cached-links list whenever the modal opens or the note changes
-	// so the QR Code section immediately shows any previously generated tokens.
-	React.useEffect(() => {
+	// Reload cached share links before paint so the link section does not grow in after open.
+	React.useLayoutEffect(() => {
 		if (!props.isOpen || !props.docId) {
 			setCachedLinks([]);
 			return;
@@ -216,13 +212,18 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		setCachedLinks(readAllCachedNoteShareLinks(props.docId));
 	}, [props.isOpen, props.docId]);
 
+	// Seed an optimistic manager snapshot before paint for owned notes so accordion
+	// sections and controls are stable on the first frame (IDB hydrate follows).
+	React.useLayoutEffect(() => {
+		if (!props.isOpen || !props.authUserId || !props.docId || !props.offlineCanManageHint) return;
+		setSnapshot((current) => (
+			current.canManage ? current : buildOfflineManagerSnapshot(props.authUserId!, props.docId!, current.sourceNoteId ? current : null)
+		));
+	}, [props.authUserId, props.docId, props.isOpen, props.offlineCanManageHint]);
+
 	const loadCachedState = React.useCallback(async (): Promise<boolean> => {
 		if (!props.authUserId || !props.docId) return false;
-		const [cached, pendingActions] = await Promise.all([
-			readCachedNoteShareCollaborators(props.authUserId, props.docId),
-			readPendingCollaboratorActions(props.authUserId, props.docId),
-		]);
-		setPendingActionCount(pendingActions.length);
+		const cached = await readCachedNoteShareCollaborators(props.authUserId, props.docId);
 		if (cached) {
 			const normalized = props.offlineCanManageHint && !cached.canManage ? buildOfflineManagerSnapshot(props.authUserId, props.docId, cached) : cached;
 			setSnapshot(normalized);
@@ -249,21 +250,16 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			setLoading(false);
 			return;
 		}
-		setSyncing(true);
 		try {
 			await flushPendingCollaboratorActions(props.authUserId);
 			const fresh = await syncNoteShareCollaborators(props.authUserId, props.docId, { suppressError: true });
 			if (loadRequestIdRef.current !== requestId) return;
 			if (!fresh) {
 				setSnapshot(EMPTY_SNAPSHOT);
-				setPendingActionCount(0);
 				props.onAccessRemoved?.();
 				return;
 			}
 			setSnapshot(fresh);
-			const pendingActions = await readPendingCollaboratorActions(props.authUserId, props.docId);
-			if (loadRequestIdRef.current !== requestId) return;
-			setPendingActionCount(pendingActions.length);
 		} catch {
 			if (loadRequestIdRef.current !== requestId) return;
 			if (!hadCache) {
@@ -272,7 +268,6 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		} finally {
 			if (loadRequestIdRef.current !== requestId) return;
 			setAccessResolved(true);
-			setSyncing(false);
 			setLoading(false);
 		}
 	}, [loadCachedState, props.authUserId, props.docId, props.offlineCanManageHint, props.onAccessRemoved]);
@@ -352,7 +347,6 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		setShareQrDataUrl(null);
 		setError(null);
 		setSuccess(null);
-		setPendingActionCount(0);
 		setSnapshot(EMPTY_SNAPSHOT);
 	}, [props.isOpen]);
 
@@ -613,6 +607,9 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const currentUserCollaborator = snapshot.currentUser && (snapshot.selfCollaboratorId || snapshot.sharedBy) ? snapshot.currentUser : null;
 	const visibleCollaboratorCount = snapshot.collaborators.length + (snapshot.sharedBy ? 1 : 0);
 	const resolvedNoteTitle = (props.noteTitle || snapshot.noteTitle || '').trim() || t('note.untitled');
+	// App only opens this modal for users who can manage, but snapshot.canManage starts false
+	// until IDB/server hydrate. Keep all accordion headers mounted until access resolves.
+	const showManageSections = snapshot.canManage || !accessResolved;
 
 	if (!props.isOpen) return null;
 
@@ -631,11 +628,10 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 					</header>
 
 					{statusMessage ? <div className={statusClassName}>{statusMessage}</div> : null}
-					{!isOffline && (syncing || pendingActionCount > 0) ? <div className={styles.info}>{t('share.collaboratorSyncPending')}</div> : null}
 					{accessResolved && !snapshot.canManage ? <div className={styles.info}>{t('share.viewOnlyAccess')}</div> : null}
 
 					<div className={styles.collabModalBody}>
-						{snapshot.canManage ? (
+						{showManageSections ? (
 							<>
 								<div className={`${styles.sectionDisclosure} ${openPanel === 'invite' ? styles.sectionDisclosureExpanded : ''}`}>
 									<button type="button" className={`${styles.sectionSummaryButton} ${openPanel === 'invite' ? styles.sectionSummaryButtonExpanded : ''}`} onClick={() => setOpenPanel('invite')} aria-expanded={openPanel === 'invite'}>

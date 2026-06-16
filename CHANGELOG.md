@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.7 - 2026-06-15
+
+### Added
+- **`noteCardDragMediaRetention` module.** Retains blob URLs for image/drawing card previews for the duration of a grid drag so cross-column remounts do not revoke URLs the markup ghost still references.
+- **Collapsible heading section-boundary test.** `tests/collapsible-heading-boundaries.test.js` covers collapsible-only section ownership, nested collapse, and markdown-it `horizontalRule` ad blocks between headings.
+- **i18n locale key rule for agents.** `.cursor/rules/i18n-locale-keys.mdc` (local only); workflow documented in `memory/i18n.md`.
+
+### Changed
+- **Drawings panel tab lists drawing name and relative created date** instead of generic “Drawing preview ready” / element-count copy.
+- **Search results and filter chips use i18n for `Collection:` / `Label:` prefixes** (`search.collectionPrefix`, `search.labelPrefix`, `search.matchCollection`, `search.matchLabel`; en + es).
+
+### Fixed
+- **Cross-column note-card drag no longer drops media previews.** Blob URLs are retained during drag and revoked after drop-settle; `NoteCard` defers revoke when retention is active.
+- **Drag-start flash on media/drawing cards.** Grid drag ghost uses a synchronous HTML markup snapshot only — not a live `NoteCard` and not `placeholderHiddenDragId` (that path duplicated the card in the grid).
+- **Desktop search clear control restored.** × button clears the search bar and results again on desktop header and mobile search overlay.
+- **Collaborator modal layout on open.** Removed syncing label that shifted layout; accordion manage sections stay mounted until access resolves (`showManageSections`); cached share links hydrate in `useLayoutEffect` before paint so link rows do not pop in one-by-one.
+- **SendInviteModal prior collaborator suggestions on focus.** Identifier field shows the privacy-scoped suggestion list on focus, matching CollaboratorModal behavior.
+- **Collapsible heading section boundaries.** Collapsed sections end at the next **collapsible** heading of the same or higher level — non-collapsible headings no longer break multi-H1 pasted markdown collapse.
+- **Nested collapsed heading parent expand/collapse flash.** Section hidden state and collapsible heading decorations apply before parent opacity fades.
+- **Markdown horizontal rules inside collapsed sections.** Sections containing `horizontalRule` nodes collapse instantly so `<hr>` atoms are not left visible mid-fade.
+- **Collapsible heading toggle stomped by stale prefs echo.** A 3s recent-local-write guard preserves optimistic collapse toggles when debounced preferences API or websocket snapshots arrive stale.
+
 ## 1.5.6 - 2026-06-14
 
 ### Added

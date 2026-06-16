@@ -30,3 +30,4 @@ node_modules/.prisma/
 # Local AI assistant memory / project notes (not part of the codebase)
 memory/
 .cursor/
+CURSOR_CONTEXT.md
