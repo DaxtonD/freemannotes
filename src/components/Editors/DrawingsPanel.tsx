@@ -1,6 +1,6 @@
 import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faPenNib, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
 import { buildDrawingPlaceholderDataUrl, getDrawingThumbnailVersion, renderDrawingThumbnail } from '../../core/drawingThumbnails';
 import { readDrawingLinkState } from '../../core/noteModel';
@@ -11,8 +11,28 @@ type DrawingSummary = {
 	id: string;
 	title: string;
 	thumbnailUrl: string;
-	elementCount: number;
+	createdAt: string;
 };
+
+function formatRelativeDate(value: string, locale: string): string {
+	const time = Date.parse(value);
+	if (!Number.isFinite(time)) return '';
+	const deltaMs = time - Date.now();
+	const rtf = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
+	const minuteDelta = Math.round(deltaMs / 60_000);
+	if (Math.abs(minuteDelta) < 60) return rtf.format(minuteDelta, 'minute');
+	const hourDelta = Math.round(deltaMs / 3_600_000);
+	if (Math.abs(hourDelta) < 24) return rtf.format(hourDelta, 'hour');
+	const dayDelta = Math.round(deltaMs / 86_400_000);
+	return rtf.format(dayDelta, 'day');
+}
+
+function readDrawingCreatedAtIso(drawingDoc: Y.Doc | null | undefined): string {
+	if (!drawingDoc) return '';
+	const createdAtMs = Number(drawingDoc.getMap('metadata').get('createdAt') ?? 0);
+	if (!Number.isFinite(createdAtMs) || createdAtMs <= 0) return '';
+	return new Date(createdAtMs).toISOString();
+}
 
 type DrawingsPanelProps = {
 	doc: Y.Doc;
@@ -47,7 +67,7 @@ function useDrawingIds(doc: Y.Doc): readonly string[] {
 }
 
 export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
-	const { t } = useI18n();
+	const { t, locale } = useI18n();
 	const canEdit = props.canEdit === true;
 	const drawingIds = useDrawingIds(props.doc);
 	const [drawings, setDrawings] = React.useState<readonly DrawingSummary[]>([]);
@@ -77,10 +97,8 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 						const thumbnailUrl = drawingDoc
 							? await renderDrawingThumbnail(drawingId, drawingDoc, title, getDrawingThumbnailVersion(drawingDoc))
 							: await buildDrawingPlaceholderDataUrl(title, { seed: drawingId });
-						const elementCount = drawingDoc
-							? drawingDoc.getArray<Y.Map<any>>('elements').toArray().filter((entry) => !entry.get('el')?.isDeleted).length
-							: 0;
-						return { id: drawingId, title, thumbnailUrl, elementCount } satisfies DrawingSummary;
+						const createdAt = readDrawingCreatedAtIso(drawingDoc);
+						return { id: drawingId, title, thumbnailUrl, createdAt } satisfies DrawingSummary;
 					})
 				);
 				if (cancelled) return;
@@ -163,11 +181,9 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 								<img className={styles.thumbnail} src={drawing.thumbnailUrl} alt="" />
 								<div className={styles.copy}>
 									<p className={styles.title}>{drawing.title}</p>
-									<p className={styles.description}>{drawing.elementCount > 0 ? t('documents.processing') : t('drawings.emptyPreview')}</p>
-									<p className={styles.meta}>
-										<FontAwesomeIcon icon={faPenNib} />
-										<span style={{ marginLeft: 8 }}>{drawing.elementCount === 1 ? `1 ${t('drawings.elementSingular')}` : `${drawing.elementCount} ${t('drawings.elementPlural')}`}</span>
-									</p>
+									{drawing.createdAt ? (
+										<p className={styles.description}>{formatRelativeDate(drawing.createdAt, locale)}</p>
+									) : null}
 								</div>
 							</button>
 						</div>

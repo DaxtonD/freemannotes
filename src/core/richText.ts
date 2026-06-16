@@ -18,7 +18,7 @@ import { Decoration, DecorationSet, type EditorView } from '@tiptap/pm/view';
 import { ReplaceStep } from '@tiptap/pm/transform';
 import { prosemirrorJSONToYXmlFragment, yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import * as Y from 'yjs';
-import { buildCollapsibleHeadingLayout, getCollapsibleHeadingMeta } from './collapsibleRichHeadings';
+import { buildCollapsibleHeadingLayout, getCollapsibleHeadingMeta, getHeadingSectionEndIndex } from './collapsibleRichHeadings';
 import { getRichHeadingCollapsed, saveRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefs } from './collapsibleHeadingPreferences';
 import {
 	beginHeadingCollapseDebugSession,
@@ -173,15 +173,10 @@ function getHeadingSectionIndexes(
 	headingIndex: number,
 	headingLevel: number,
 ): { startIndex: number; endIndexExclusive: number } {
-	let endIndexExclusive = blocks.length;
-	for (let index = headingIndex + 1; index < blocks.length; index += 1) {
-		const meta = getCollapsibleHeadingMeta(blocks[index]);
-		if (meta.level != null && meta.level <= headingLevel) {
-			endIndexExclusive = index;
-			break;
-		}
-	}
-	return { startIndex: headingIndex + 1, endIndexExclusive };
+	return {
+		startIndex: headingIndex + 1,
+		endIndexExclusive: getHeadingSectionEndIndex(blocks, headingIndex, headingLevel),
+	};
 }
 
 function hasFollowingTopLevelBlocks(
@@ -220,18 +215,55 @@ type CollapsibleHeadingLocation = {
 
 function findCollapsibleHeadingById(doc: ProseMirrorNode, noteId: string, collapseId: string): CollapsibleHeadingLocation | null {
 	const { blocks, positions } = getTopLevelBlocks(doc);
-	const layout = buildCollapsibleHeadingLayout(blocks, (candidateId) => getRichHeadingCollapsed(noteId, candidateId));
-	for (let index = 0; index < layout.length; index += 1) {
-		const item = layout[index];
-		if (item.hidden || !item.collapsible || item.collapseId !== collapseId || item.headingLevel == null) continue;
+	for (let index = 0; index < blocks.length; index += 1) {
+		const meta = getCollapsibleHeadingMeta(blocks[index]);
+		if (!meta.collapsible || meta.collapseId !== collapseId || meta.level == null) continue;
 		return {
 			pos: positions[index],
 			node: blocks[index],
 			index,
-			level: item.headingLevel,
+			level: meta.level,
 			collapseId,
-			collapsed: item.collapsed,
+			collapsed: getRichHeadingCollapsed(noteId, collapseId),
 		};
+	}
+	return null;
+}
+
+function findCollapsibleHeadingFromToggleElement(
+	view: EditorView,
+	noteId: string,
+	headingElement: HTMLElement,
+): CollapsibleHeadingLocation | null {
+	const collapseId = headingElement.getAttribute('data-collapsible-heading-id');
+	if (collapseId) {
+		const found = findCollapsibleHeadingById(view.state.doc, noteId, collapseId);
+		if (found) return found;
+	}
+	try {
+		const pos = view.posAtDOM(headingElement, 0);
+		if (typeof pos !== 'number' || pos < 0) return null;
+		const $pos = view.state.doc.resolve(pos);
+		for (let depth = $pos.depth; depth > 0; depth -= 1) {
+			const node = $pos.node(depth);
+			if (node.type.name !== 'heading') continue;
+			const meta = getCollapsibleHeadingMeta(node);
+			if (!meta.collapsible || !meta.collapseId || meta.level == null) return null;
+			const headingPos = $pos.before(depth);
+			const { blocks, positions } = getTopLevelBlocks(view.state.doc);
+			const headingIndex = positions.indexOf(headingPos);
+			if (headingIndex < 0) return null;
+			return {
+				pos: headingPos,
+				node,
+				index: headingIndex,
+				level: meta.level,
+				collapseId: meta.collapseId,
+				collapsed: getRichHeadingCollapsed(noteId, meta.collapseId),
+			};
+		}
+	} catch {
+		return null;
 	}
 	return null;
 }
@@ -359,7 +391,7 @@ function findCollapsedHeadingOwnerForSelection(
 		const node = blocks[index];
 		const pos = positions[index];
 		const meta = getCollapsibleHeadingMeta(node);
-		if (meta.level != null) {
+		if (meta.collapsible && meta.level != null) {
 			while (collapsedStack.length > 0 && meta.level <= collapsedStack[collapsedStack.length - 1].level) {
 				collapsedStack.pop();
 			}
@@ -620,6 +652,7 @@ function toggleCollapsibleHeadingSection(
 		const storedMetrics = lastSectionCollapseMetrics.get(animationKey);
 		if (!storedMetrics || storedMetrics.totalHeight <= 0 || storedMetrics.blocks.size === 0 || prefersReducedMotion()) {
 			applyCollapsedState(false);
+			refreshCollapsibleHeadingDecorations(view);
 			dispatchCollapsibleHeadingAnimationRefresh(noteId, false);
 			return;
 		}
@@ -672,6 +705,7 @@ function toggleCollapsibleHeadingSection(
 		} else {
 			applyCollapsedState(true);
 		}
+		refreshCollapsibleHeadingDecorations(view);
 		dispatchCollapsibleHeadingAnimationRefresh(noteId, true);
 		return;
 	}
@@ -716,6 +750,34 @@ function buildCollapsibleHeadingDecorations(doc: ProseMirrorNode, noteId: string
 	layout.forEach((item, index) => {
 		const node = item.block;
 		const pos = positions[index];
+		if (!item.hidden) {
+			activeCollapsedOwnerId = item.collapsed && item.collapseId ? item.collapseId : null;
+		}
+		// Nested hide/collapsible heading chrome wins over parent section fade animations.
+		if (item.hidden) {
+			const visibleExitStart = activeCollapsedOwnerId ? visibleCollapsedHeadingExitStarts.get(makeCollapsibleHeadingUiKey(noteId, activeCollapsedOwnerId)) : undefined;
+			if (typeof visibleExitStart === 'number' && pos >= visibleExitStart) {
+				return;
+			}
+			decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+				class: 'fn-collapsible-heading-hidden',
+				style: 'display:none;',
+			}));
+			return;
+		}
+		if (item.collapsible && item.collapseId && item.headingLevel != null) {
+			const collapsedContentSummary = item.collapsed && activeCollapsedHeadingWritingLabels.has(makeCollapsibleHeadingUiKey(noteId, item.collapseId))
+				? 'Writing...'
+				: '';
+			decorations.push(Decoration.node(pos, pos + node.nodeSize, {
+				class: item.collapsed ? 'fn-collapsible-heading is-collapsed' : 'fn-collapsible-heading',
+				'data-collapsible-heading': 'true',
+				'data-collapsible-heading-id': item.collapseId,
+				'data-collapsible-heading-collapsed': item.collapsed ? 'true' : 'false',
+				'data-collapsible-heading-summary': collapsedContentSummary,
+			}));
+			return;
+		}
 		const sectionAnimation = getSectionAnimationForBlock(noteId, pos);
 		if (sectionAnimation) {
 			if (sectionAnimation.phase === 'collapse-fade') {
@@ -733,31 +795,6 @@ function buildCollapsibleHeadingDecorations(doc: ProseMirrorNode, noteId: string
 				return;
 			}
 		}
-		if (!item.hidden) {
-			activeCollapsedOwnerId = item.collapsed && item.collapseId ? item.collapseId : null;
-		}
-		if (item.hidden) {
-			const visibleExitStart = activeCollapsedOwnerId ? visibleCollapsedHeadingExitStarts.get(makeCollapsibleHeadingUiKey(noteId, activeCollapsedOwnerId)) : undefined;
-			if (typeof visibleExitStart === 'number' && pos >= visibleExitStart) {
-				return;
-			}
-			decorations.push(Decoration.node(pos, pos + node.nodeSize, {
-				class: 'fn-collapsible-heading-hidden',
-				style: 'display:none;',
-			}));
-			return;
-		}
-		if (!item.collapsible || !item.collapseId || item.headingLevel == null) return;
-		const collapsedContentSummary = item.collapsed && activeCollapsedHeadingWritingLabels.has(makeCollapsibleHeadingUiKey(noteId, item.collapseId))
-			? 'Writing...'
-			: '';
-		decorations.push(Decoration.node(pos, pos + node.nodeSize, {
-			class: item.collapsed ? 'fn-collapsible-heading is-collapsed' : 'fn-collapsible-heading',
-			'data-collapsible-heading': 'true',
-			'data-collapsible-heading-id': item.collapseId,
-			'data-collapsible-heading-collapsed': item.collapsed ? 'true' : 'false',
-			'data-collapsible-heading-summary': collapsedContentSummary,
-		}));
 	});
 
 	return DecorationSet.create(doc, decorations);
@@ -913,9 +950,7 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 					event.preventDefault();
 					event.stopPropagation();
 					if (event.detail !== 1) return true;
-					const collapseId = headingElement.getAttribute('data-collapsible-heading-id');
-					if (!collapseId) return false;
-					const heading = findCollapsibleHeadingById(view.state.doc, noteId, collapseId);
+					const heading = findCollapsibleHeadingFromToggleElement(view, noteId, headingElement);
 					if (!heading) return false;
 					const { blocks, positions } = getTopLevelBlocks(view.state.doc);
 					toggleCollapsibleHeadingSection(

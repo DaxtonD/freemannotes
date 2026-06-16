@@ -463,10 +463,14 @@
     "matchCollaborator": "Colaborador",
     "matchLink": "Enlace",
     "matchDocument": "Documento",
+    "matchCollection": "Colección",
+    "matchLabel": "Etiqueta",
     "archivedBadge": "Archivada",
     "workspacePrefix": "Espacio de trabajo:",
     "sharedPrefix": "Compartido:",
-    "collaboratorPrefix": "Colaborador:"
+    "collaboratorPrefix": "Colaborador:",
+    "collectionPrefix": "Colección:",
+    "labelPrefix": "Etiqueta:"
   },
   "note": {
     "untitled": "(sin título)",
@@ -612,7 +616,6 @@
     "leftNoteToast": "Has salido de la nota",
     "accessRemovedToast": "Ya no tienes acceso a esta nota",
     "offlineCollaborators": "Mostrando colaboradores almacenados mientras no hay conexión. Los cambios se sincronizarán cuando vuelva la conexión.",
-    "collaboratorSyncPending": "Los cambios de colaboradores se están sincronizando con el servidor.",
     "viewOnlyAccess": "Puedes usar esta nota, pero solo los miembros del espacio de trabajo original pueden gestionar colaboradores.",
     "collaboratorSuggestionsLoading": "Cargando colaboradores…",
     "collaboratorSuggestionsEmpty": "Ningún colaborador anterior coincide con esta búsqueda",

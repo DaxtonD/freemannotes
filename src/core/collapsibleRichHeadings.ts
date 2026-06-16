@@ -68,6 +68,37 @@ export function getCollapsibleHeadingMeta(node: HeadingLike): CollapsibleHeading
 	return { level, collapsible, collapseId };
 }
 
+/** Collapsible headings at same or higher outline level end a collapsed parent's section. */
+export function isCollapsibleHeadingSectionBoundary(meta: CollapsibleHeadingMeta, ownerLevel: number): boolean {
+	return meta.collapsible && meta.level != null && meta.level <= ownerLevel;
+}
+
+export function popCollapsedAncestorLevelsForHeading(
+	collapsedAncestorLevels: number[],
+	meta: CollapsibleHeadingMeta,
+): void {
+	if (!meta.collapsible || meta.level == null) return;
+	while (collapsedAncestorLevels.length > 0 && meta.level <= collapsedAncestorLevels[collapsedAncestorLevels.length - 1]) {
+		collapsedAncestorLevels.pop();
+	}
+}
+
+export function getHeadingSectionEndIndex(
+	blocks: readonly HeadingLike[],
+	headingIndex: number,
+	headingLevel: number,
+): number {
+	let endIndexExclusive = blocks.length;
+	for (let index = headingIndex + 1; index < blocks.length; index += 1) {
+		const meta = getCollapsibleHeadingMeta(blocks[index]);
+		if (isCollapsibleHeadingSectionBoundary(meta, headingLevel)) {
+			endIndexExclusive = index;
+			break;
+		}
+	}
+	return endIndexExclusive;
+}
+
 export function buildCollapsibleHeadingLayout<T extends JSONContent | ProseMirrorNode>(
 	blocks: readonly T[],
 	isCollapsed: (collapseId: string) => boolean,
@@ -77,11 +108,7 @@ export function buildCollapsibleHeadingLayout<T extends JSONContent | ProseMirro
 
 	for (const block of blocks) {
 		const meta = getCollapsibleHeadingMeta(block);
-		if (meta.level != null) {
-			while (collapsedAncestorLevels.length > 0 && meta.level <= collapsedAncestorLevels[collapsedAncestorLevels.length - 1]) {
-				collapsedAncestorLevels.pop();
-			}
-		}
+		popCollapsedAncestorLevelsForHeading(collapsedAncestorLevels, meta);
 		const hidden = collapsedAncestorLevels.length > 0;
 		const collapsed = !hidden && meta.collapsible && meta.collapseId ? isCollapsed(meta.collapseId) : false;
 		items.push({

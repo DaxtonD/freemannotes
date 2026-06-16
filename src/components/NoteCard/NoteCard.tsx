@@ -19,6 +19,11 @@ import { getCollapsedRichHeadingPrefsForNoteVersion, getRichHeadingCollapsed, su
 import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import { getDeviceId } from '../../core/deviceId';
 import {
+	isNoteCardDragMediaRetentionActive,
+	retainNoteCardDragMediaBlobUrls,
+} from '../../core/noteCardDragMediaRetention';
+import {
+	buildDrawingPlaceholderDataUrl,
 	getDrawingThumbnailCacheKey,
 	getDrawingThumbnailVersion,
 	peekLatestDrawingThumbnail,
@@ -28,6 +33,16 @@ import {
 	renderDrawingThumbnail,
 	type DrawingPlaceholderOptions,
 } from '../../core/drawingThumbnails';
+import {
+	filterRemoteNoteImagesByPendingDeletes,
+	getCachedRemoteNoteImages,
+	getNoteMediaChangedEventName,
+	readQueuedNoteImageDeletions,
+	readQueuedNoteImages,
+	readStoredNoteImagePreviewRows,
+	readStoredRemoteNoteImages,
+	refreshRemoteNoteImages,
+} from '../../core/noteMediaStore';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { useI18n } from '../../core/i18n';
 import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
@@ -51,7 +66,7 @@ import { getNoteBannerPresentationStyle, transformNoteBannerSampleColor, useThem
 import type { NoteLinkRecord } from '../../core/noteLinkApi';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
-import type { NoteType } from '../../core/noteModel';
+import { readDrawingLinkState, type NoteType } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
@@ -94,6 +109,12 @@ export type NoteCardProps = {
 	preserveControlShell?: boolean;
 	debugTransitionTraceId?: string | null;
 	bannerTitlePosition?: NoteCardBannerTitlePosition;
+	loadDrawingDoc?: (drawingId: string) => Promise<Y.Doc | null>;
+};
+
+type NoteCardImagePreview = {
+	id: string;
+	url: string;
 };
 
 type NoteCardChecklistItem = ChecklistItem & { richContent: JSONContent | null; completedAt: number | null };
@@ -321,6 +342,85 @@ function extractPlainTextFromNode(node: JSONContent | null | undefined): string 
 function extractPlainTextFromNodes(nodes: readonly JSONContent[] | null | undefined): string {
 	if (!Array.isArray(nodes) || nodes.length === 0) return '';
 	return nodes.map((node) => extractPlainTextFromNode(node)).join('').replace(/\s+/g, ' ').trim();
+}
+
+function isTextNoteContentEmpty(content: string, richContent: JSONContent, _noteId: string): boolean {
+	if (content.trim().length > 0) return false;
+	// Empty TipTap docs still render a placeholder paragraph (<br />), so inspect
+	// plain text instead of React preview nodes when deciding media-only cards.
+	return extractPlainTextFromNode(richContent).length === 0;
+}
+
+function isChecklistContentEmpty(items: readonly NoteCardChecklistItem[], _noteId: string): boolean {
+	if (items.length === 0) return true;
+	return items.every((item) => {
+		if (item.text.trim().length > 0) return false;
+		return extractPlainTextFromNode(item.richContent ?? createRichTextDocFromPlainText(item.text)).length === 0;
+	});
+}
+
+type NoteCardImagePreviewSource = {
+	id: string;
+	url: string | null;
+	blob: Blob | null;
+};
+
+function buildNoteCardImagePreviewSources(args: {
+	remoteImages: readonly { id: string; thumbnailUrl?: string | null; originalUrl?: string | null }[];
+	queuedRows: readonly { id: string; operationType?: string; blob?: Blob | null; sourceUrl?: string | null }[];
+	previewRows: readonly { id: string; kind: 'remote' | 'queued'; remoteImageId?: string | null; thumbnailBlob?: Blob | null }[];
+}): readonly NoteCardImagePreviewSource[] {
+	const previewByRemoteId = new Map(
+		args.previewRows
+			.filter((row) => row.kind === 'remote' && row.remoteImageId)
+			.map((row) => [String(row.remoteImageId), row] as const)
+	);
+	const previewByQueuedId = new Map(
+		args.previewRows
+			.filter((row) => row.kind === 'queued')
+			.map((row) => [row.id, row] as const)
+	);
+	const results: NoteCardImagePreviewSource[] = [];
+	for (const image of args.remoteImages) {
+		const previewRow = previewByRemoteId.get(image.id);
+		results.push({
+			id: image.id,
+			url: String(image.thumbnailUrl || image.originalUrl || '').trim() || null,
+			blob: previewRow?.thumbnailBlob instanceof Blob ? previewRow.thumbnailBlob : null,
+		});
+	}
+	for (const row of args.queuedRows) {
+		if (row.operationType === 'delete') continue;
+		if (results.some((entry) => entry.id === row.id)) continue;
+		const previewRow = previewByQueuedId.get(row.id);
+		results.push({
+			id: row.id,
+			url: typeof row.sourceUrl === 'string' && row.sourceUrl.trim().length > 0 ? row.sourceUrl.trim() : null,
+			blob: row.blob instanceof Blob
+				? row.blob
+				: previewRow?.thumbnailBlob instanceof Blob
+					? previewRow.thumbnailBlob
+					: null,
+		});
+	}
+	return results.slice(0, 4);
+}
+
+function mapNoteCardImagePreviews(sources: readonly NoteCardImagePreviewSource[], objectUrls: string[]): readonly NoteCardImagePreview[] {
+	const nextObjectUrls: string[] = [];
+	const previews: NoteCardImagePreview[] = [];
+	for (const source of sources) {
+		let url = source.url?.trim() ?? '';
+		if (!url && source.blob instanceof Blob) {
+			url = URL.createObjectURL(source.blob);
+			nextObjectUrls.push(url);
+		}
+		if (url.length > 0) {
+			previews.push({ id: source.id, url });
+		}
+	}
+	objectUrls.splice(0, objectUrls.length, ...nextObjectUrls);
+	return previews;
 }
 
 function applyMarks(node: JSONContent, content: React.ReactNode, key: string, allowLinkInteraction: boolean): React.ReactNode {
@@ -625,6 +725,148 @@ function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardCheckl
 	);
 }
 
+function useLinkedDrawingIds(doc: Y.Doc): readonly string[] {
+	const drawingIds = React.useMemo(() => doc.getArray<string>('drawingIds'), [doc]);
+	const snapshot = React.useSyncExternalStore(
+		(onStoreChange) => {
+			const observer = (): void => onStoreChange();
+			drawingIds.observe(observer);
+			return () => drawingIds.unobserve(observer);
+		},
+		() => JSON.stringify(readDrawingLinkState(doc).drawingIds),
+		() => JSON.stringify(readDrawingLinkState(doc).drawingIds)
+	);
+	return React.useMemo(() => {
+		try {
+			const parsed = JSON.parse(snapshot);
+			return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === 'string') : [];
+		} catch {
+			return [];
+		}
+	}, [snapshot]);
+}
+
+function useLinkedDrawingThumbnail(
+	drawingIds: readonly string[],
+	loadDrawingDoc: ((drawingId: string) => Promise<Y.Doc | null>) | undefined,
+	placeholderOptions: DrawingPlaceholderOptions | undefined,
+	fallbackTitle: string,
+): string | null {
+	const firstDrawingId = drawingIds[0] ?? '';
+	const placeholderThemeKey = React.useMemo(
+		() => placeholderOptions?.colors
+			? `${placeholderOptions.colors.background || ''}|${placeholderOptions.colors.surface || ''}|${placeholderOptions.colors.border || ''}|${placeholderOptions.colors.text || ''}|${placeholderOptions.colors.muted || ''}|${placeholderOptions.colors.accent || ''}`
+			: '',
+		[placeholderOptions]
+	);
+	const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(null);
+
+	React.useEffect(() => {
+		let cancelled = false;
+		if (!firstDrawingId || !loadDrawingDoc) {
+			setThumbnailUrl(null);
+			return () => {
+				cancelled = true;
+			};
+		}
+
+		void (async () => {
+			try {
+				const drawingDoc = await loadDrawingDoc(firstDrawingId);
+				const title = drawingDoc?.getText('title').toString().trim() || fallbackTitle;
+				const nextUrl = drawingDoc
+					? await renderDrawingThumbnail(firstDrawingId, drawingDoc, title, getDrawingThumbnailVersion(drawingDoc), placeholderOptions)
+					: await buildDrawingPlaceholderDataUrl(title, { ...placeholderOptions, seed: firstDrawingId });
+				if (!cancelled) {
+					setThumbnailUrl(nextUrl);
+				}
+			} catch {
+				if (cancelled) return;
+				const nextUrl = await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: firstDrawingId });
+				if (!cancelled) {
+					setThumbnailUrl(nextUrl);
+				}
+			}
+		})();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [fallbackTitle, firstDrawingId, loadDrawingDoc, placeholderOptions, placeholderThemeKey]);
+
+	return thumbnailUrl;
+}
+
+function useNoteCardImages(
+	docId: string | undefined,
+	noteId: string,
+	authUserId?: string | null,
+): readonly NoteCardImagePreview[] {
+	const resolvedDocId = docId?.trim() ?? '';
+	const objectUrlsRef = React.useRef<string[]>([]);
+	const [images, setImages] = React.useState<readonly NoteCardImagePreview[]>([]);
+
+	React.useEffect(() => {
+		const revokeObjectUrls = (): void => {
+			for (const url of objectUrlsRef.current) {
+				URL.revokeObjectURL(url);
+			}
+			objectUrlsRef.current = [];
+		};
+
+		if (!resolvedDocId) {
+			revokeObjectUrls();
+			setImages([]);
+			return revokeObjectUrls;
+		}
+
+		let cancelled = false;
+		const hydrateFromLocal = async (): Promise<void> => {
+			const [storedRemote, queuedRows, queuedDeletes, previewRows] = await Promise.all([
+				readStoredRemoteNoteImages(resolvedDocId),
+				authUserId ? readQueuedNoteImages(authUserId, resolvedDocId) : Promise.resolve([]),
+				authUserId ? readQueuedNoteImageDeletions(authUserId, resolvedDocId) : Promise.resolve([]),
+				readStoredNoteImagePreviewRows(resolvedDocId),
+			]);
+			const remoteImages = filterRemoteNoteImagesByPendingDeletes(
+				storedRemote.length > 0 ? storedRemote : getCachedRemoteNoteImages(resolvedDocId),
+				queuedDeletes
+			);
+			const sources = buildNoteCardImagePreviewSources({ remoteImages, queuedRows, previewRows });
+			if (cancelled) return;
+			revokeObjectUrls();
+			setImages(mapNoteCardImagePreviews(sources, objectUrlsRef.current));
+		};
+
+		void hydrateFromLocal();
+		void refreshRemoteNoteImages(resolvedDocId).catch(() => []).then((refreshed) => {
+			if (cancelled || refreshed.length === 0) return;
+			void hydrateFromLocal();
+		});
+
+		const eventName = getNoteMediaChangedEventName();
+		const onChanged = (event: Event): void => {
+			const detail = (event as CustomEvent<{ docId?: string }>).detail;
+			if (!detail?.docId || detail.docId === resolvedDocId) {
+				void hydrateFromLocal();
+			}
+		};
+		window.addEventListener(eventName, onChanged as EventListener);
+		return () => {
+			cancelled = true;
+			window.removeEventListener(eventName, onChanged as EventListener);
+			if (isNoteCardDragMediaRetentionActive(noteId)) {
+				retainNoteCardDragMediaBlobUrls(noteId, objectUrlsRef.current);
+				objectUrlsRef.current = [];
+				return;
+			}
+			revokeObjectUrls();
+		};
+	}, [authUserId, noteId, resolvedDocId]);
+
+	return images;
+}
+
 function useDrawingThumbnail(
 	doc: Y.Doc,
 	noteId: string,
@@ -840,6 +1082,14 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		React.useCallback(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type])
 	);
 	const drawingThumbnailUrl = useDrawingThumbnail(props.doc, props.noteId, type, title, drawingPlaceholderOptions);
+	const linkedDrawingIds = useLinkedDrawingIds(props.doc);
+	const linkedDrawingThumbnailUrl = useLinkedDrawingThumbnail(
+		linkedDrawingIds,
+		props.loadDrawingDoc,
+		drawingPlaceholderOptions,
+		title.trim() || t('note.untitled'),
+	);
+	const noteImages = useNoteCardImages(props.docId, props.noteId, props.authUserId);
 	const reminderAt = props.reminderAt ?? '';
 	const richContent = useTextNoteRichPreview(props.doc, content);
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
@@ -865,6 +1115,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		() => normalizeChecklistHierarchy(checklistItems) as NoteCardChecklistItem[],
 		[checklistItems]
 	);
+	const isMediaOnlyEmpty = !title.trim() && (
+		type === 'text'
+			? isTextNoteContentEmpty(content, richContent, props.noteId)
+			: type === 'checklist'
+				? isChecklistContentEmpty(normalizedItems, props.noteId)
+				: false
+	);
+	const showLinkedDrawingPreview = isMediaOnlyEmpty && linkedDrawingIds.length > 0;
+	const showImageGridPreview = isMediaOnlyEmpty && linkedDrawingIds.length === 0 && noteImages.length > 0;
+	const mediaPreviewThumbnailUrl = type === 'drawing' ? drawingThumbnailUrl : linkedDrawingThumbnailUrl;
 	const extractedLinks = React.useSyncExternalStore(
 		(onStoreChange) => {
 			const observer = (): void => onStoreChange();
@@ -1209,7 +1469,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		} else if (resolvedColor?.accentColor) {
 			nextStyle['--note-card-banner-highlight'] = resolvedColor.accentColor;
 		}
-		if (type === 'checklist') {
+		if (type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview) {
 			nextStyle['--note-card-collapsed-checklist-height'] = `${collapsedChecklistMinHeightPx}px`;
 			nextStyle['--note-card-expanded-checklist-max-height'] = `${expandedChecklistMaxHeightPx}px`;
 		}
@@ -1220,7 +1480,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			nextStyle.minHeight = forcedHeightPx;
 		}
 		return Object.keys(nextStyle).length > 0 ? nextStyle : undefined;
-	}, [collapsedChecklistMinHeightPx, displayedCardColors, expandedChecklistMaxHeightPx, headerBannerTitleColors?.backgroundColor, props.forcedHeightPx, resolvedColor?.accentColor, type]);
+	}, [collapsedChecklistMinHeightPx, displayedCardColors, expandedChecklistMaxHeightPx, headerBannerTitleColors?.backgroundColor, props.forcedHeightPx, resolvedColor?.accentColor, showImageGridPreview, showLinkedDrawingPreview, type]);
 	const textPreviewStyle = React.useMemo(() => {
 		if (type !== 'text') return undefined;
 		if (!Number.isFinite(Number(textPreviewLayout.maxHeightPx)) || !textPreviewLayout.maxHeightPx || textPreviewLayout.maxHeightPx <= 0) return undefined;
@@ -1286,7 +1546,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [measureChecklistTextLayout, normalizedItems, showCompleted, type]);
 
 	React.useLayoutEffect(() => {
-		if (type !== 'text') {
+		if (type !== 'text' || showLinkedDrawingPreview || showImageGridPreview) {
 			setTextPreviewLayout((previous) => previous.maxHeightPx === null && !previous.isOverflowing
 				? previous
 				: { maxHeightPx: null, isOverflowing: false });
@@ -1399,7 +1659,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			window.removeEventListener('resize', scheduleMeasure);
 			viewport?.removeEventListener('resize', scheduleMeasure);
 		};
-	}, [content, maxCardHeightPx, richContent, type]);
+	}, [content, maxCardHeightPx, richContent, showImageGridPreview, showLinkedDrawingPreview, type]);
 
 	React.useLayoutEffect(() => {
 		if (type !== 'checklist') return;
@@ -1612,7 +1872,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	return (
 		<article
 			ref={cardRef}
-			className={`${styles.card}${type === 'checklist' ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${headerBannerUrl ? ` ${styles.cardWithBannerHighlight}` : ''}`}
+			className={`${styles.card}${showLinkedDrawingPreview || showImageGridPreview ? ` ${styles.mediaPreviewCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview ? ` ${styles.checklistCard}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && (!showCompleted || completedChecklistItems.length === 0) ? ` ${styles.checklistCardCollapsed}` : ''}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.checklistCardCompletedExpanded}` : ''}${props.isMoreMenuOpen ? ` ${styles.moreMenuOpen}` : ''}${props.isTrashView ? ` ${styles.trashCard}` : ''}${headerBannerUrl ? ` ${styles.cardWithBannerHighlight}` : ''}`}
 			style={cardStyle}
 			data-note-card="true"
 			data-drag-handle={props.useWholeCardDragHandle ? 'true' : undefined}
@@ -1828,7 +2088,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				</div>
 			) : null}
 
-			<div ref={contentRegionRef} className={`${styles.contentRegion}${showCompleted && completedChecklistItems.length > 0 ? ` ${styles.contentRegionCompletedExpanded}` : ''}`}>
+			<div ref={contentRegionRef} className={`${styles.contentRegion}${type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview && showCompleted && completedChecklistItems.length > 0 ? ` ${styles.contentRegionCompletedExpanded}` : ''}`}>
 				{suppressContentInteractions ? (
 					<div
 						className={styles.contentInteractionGuard}
@@ -1847,12 +2107,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 						}}
 					/>
 				) : null}
-				{type === 'drawing' ? (
+				{type === 'drawing' || showLinkedDrawingPreview ? (
 					<div ref={bodyRef} className={`${styles.body} ${styles.drawingBody}${hasMenuButton ? ` ${styles.bodyMenuSafe} ${styles.drawingBodyMenuSafe}` : ''}`} data-note-drag-manual="true">
-						{drawingThumbnailUrl ? (
+						{mediaPreviewThumbnailUrl ? (
 							<img
 								className={styles.drawingThumbnail}
-								src={drawingThumbnailUrl}
+								src={mediaPreviewThumbnailUrl}
 								alt=""
 								draggable={false}
 								onDragStart={(e) => e.preventDefault()}
@@ -1860,6 +2120,22 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 						) : (
 							<div className={styles.drawingThumbnailSkeleton} aria-hidden="true" />
 						)}
+					</div>
+				) : showImageGridPreview ? (
+					<div ref={bodyRef} className={`${styles.body} ${styles.mediaImageBody}${hasMenuButton ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
+						<div className={styles.mediaImageGrid}>
+							{noteImages.map((image) => (
+								<div key={image.id} className={styles.mediaImageGridCell}>
+									<img
+										className={styles.mediaImageThumb}
+										src={image.url}
+										alt=""
+										draggable={false}
+										onDragStart={(e) => e.preventDefault()}
+									/>
+								</div>
+							))}
+						</div>
 					</div>
 				) : type === 'text' ? (
 					<div ref={bodyRef} className={`${styles.body}${hasMenuButton ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">

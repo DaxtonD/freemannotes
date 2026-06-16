@@ -29,6 +29,8 @@ function loadFromStorage(storageKey: string): Record<string, boolean> {
 
 let activeStorageKey = makeStorageKey(null, null);
 let cache: Record<string, boolean> = loadFromStorage(activeStorageKey);
+const RECENT_LOCAL_RICH_HEADING_PREF_GUARD_MS = 3000;
+const recentLocalRichHeadingPrefExpiryByKey = new Map<string, number>();
 const listeners = new Set<() => void>();
 const listenersByNoteId = new Map<string, Set<() => void>>();
 const notePrefVersionByNoteId = new Map<string, number>();
@@ -107,9 +109,32 @@ function notifyAllPrefListeners(): void {
 	notifyAllScopedListeners();
 }
 
+function markRecentLocalRichHeadingPrefWrite(key: string): void {
+	recentLocalRichHeadingPrefExpiryByKey.set(key, Date.now() + RECENT_LOCAL_RICH_HEADING_PREF_GUARD_MS);
+}
+
+function pruneExpiredRecentLocalRichHeadingPrefWrites(): void {
+	const now = Date.now();
+	for (const [key, expiresAt] of recentLocalRichHeadingPrefExpiryByKey) {
+		if (expiresAt <= now) recentLocalRichHeadingPrefExpiryByKey.delete(key);
+	}
+}
+
+/** Keep optimistic local toggles when a stale server/websocket snapshot arrives right after save. */
+function preserveRecentLocalRichHeadingPrefWrites(serverPrefs: Record<string, boolean>): Record<string, boolean> {
+	pruneExpiredRecentLocalRichHeadingPrefWrites();
+	if (recentLocalRichHeadingPrefExpiryByKey.size === 0) return serverPrefs;
+	const merged = { ...serverPrefs };
+	for (const key of recentLocalRichHeadingPrefExpiryByKey.keys()) {
+		if (cache[key] === true) merged[key] = true;
+		else delete merged[key];
+	}
+	return merged;
+}
+
 export function replaceCollapsedRichHeadingPrefs(nextPrefs: Record<string, boolean>): void {
 	const previousKeys = new Set(Object.keys(cache));
-	const nextCache = normalizePrefs(nextPrefs);
+	const nextCache = normalizePrefs(preserveRecentLocalRichHeadingPrefWrites(nextPrefs));
 	const nextKeys = new Set(Object.keys(nextCache));
 	const changedKeys = new Set<string>();
 	for (const key of previousKeys) {
@@ -168,6 +193,7 @@ export function saveRichHeadingCollapsed(
 	collapsed: boolean,
 ): void {
 	if (!collapseId) return;
+	markRecentLocalRichHeadingPrefWrite(makeCollapsedRichHeadingKey(noteId, collapseId));
 	setRichHeadingCollapsed(noteId, collapseId, collapsed);
 	void updateUserPreferences(deviceId, {
 		collapsedRichHeadingIds: getCollapsedRichHeadingPrefsSnapshot(),

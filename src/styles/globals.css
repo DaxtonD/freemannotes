@@ -34,6 +34,8 @@ html.body-scroll-locked,
 body.body-scroll-locked {
 	overflow: hidden;
 	overscroll-behavior: none;
+	/* Drop stable gutter while locked so the page scrollbar track does not stay visible. */
+	scrollbar-gutter: auto;
 }
 
 html.body-scroll-locked,

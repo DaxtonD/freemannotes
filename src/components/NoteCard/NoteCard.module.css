@@ -396,6 +396,64 @@
 	display: block;
 }
 
+.mediaImageBody {
+	padding: 10px;
+	align-items: stretch;
+	justify-content: flex-start;
+	flex: 0 0 auto;
+	min-height: 0;
+	overflow: visible;
+}
+
+.mediaImageGrid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 5px;
+	width: 100%;
+	flex: 0 0 auto;
+	align-content: start;
+}
+
+.mediaImageGridCell {
+	position: relative;
+	width: 100%;
+	/* Padding-bottom squares avoid aspect-ratio + flex/grid shrink overlap on narrow desktop cards. */
+	padding-bottom: 100%;
+	height: 0;
+	overflow: hidden;
+	border-radius: 14px;
+	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 72%, transparent);
+	background: color-mix(in srgb, var(--note-color-header-bg, var(--color-surface-2)) 78%, transparent);
+}
+
+.mediaImageThumb {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	object-position: center;
+	display: block;
+	pointer-events: none;
+	-webkit-user-drag: none;
+	user-select: none;
+}
+
+/* Image/drawing-only cards need their natural height; max-height squish overlaps thumbnails. */
+.mediaPreviewCard {
+	max-height: none;
+	height: auto;
+}
+
+.mediaPreviewCard .contentRegion {
+	flex: 0 0 auto;
+	overflow: visible;
+}
+
+.mediaPreviewCard .drawingBody {
+	flex: 0 0 auto;
+}
+
 .checklistCard .body {
 	padding-bottom: var(--space-2);
 	flex: 0 0 auto;

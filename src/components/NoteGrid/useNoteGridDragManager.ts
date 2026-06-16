@@ -1,4 +1,8 @@
 import React from 'react';
+import {
+	beginNoteCardDragMediaRetention,
+	endNoteCardDragMediaRetention,
+} from '../../core/noteCardDragMediaRetention';
 import { combine } from '@atlaskit/pragmatic-drag-and-drop/combine';
 import { draggable, dropTargetForElements, monitorForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import { disableNativeDragPreview } from '@atlaskit/pragmatic-drag-and-drop/element/disable-native-drag-preview';
@@ -94,6 +98,10 @@ export type DragManagerResult = {
 	isTouchDragging: boolean;
 	dragOverlay: DragOverlayState | null;
 	dropOverlay: DragOverlayState | null;
+	/** HTML snapshot captured synchronously at drag start for the ghost preview. */
+	dragPreviewMarkupSnapshot: string;
+	/** Synchronous companion to dragPreviewMarkupSnapshot for the first overlay paint. */
+	dragPreviewMarkupRef: React.MutableRefObject<string>;
 	/** Columns with the dragged card relocated to the insertion point. null when not dragging. */
 	previewColumns: string[][] | null;
 	/** Increments each time a card item or handle element is registered or unregistered. */
@@ -146,6 +154,8 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	const [activeDragId, setActiveDragId] = React.useState<string | null>(null);
 	const [dragOverlay, setDragOverlay] = React.useState<DragOverlayState | null>(null);
 	const [dropOverlay, setDropOverlay] = React.useState<DragOverlayState | null>(null);
+	const [dragPreviewMarkupSnapshot, setDragPreviewMarkupSnapshot] = React.useState('');
+	const dragPreviewMarkupRef = React.useRef('');
 	const [insertionPoint, setInsertionPoint] = React.useState<InsertionPoint | null>(null);
 	const [isTouchDragging, setIsTouchDragging] = React.useState(false);
 	const activeDragIdRef = React.useRef<string | null>(null);
@@ -366,6 +376,12 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		setIsTouchDragging(false);
 	}, []);
 
+	const finalizeDragPreviewMedia = React.useCallback((): void => {
+		dragPreviewMarkupRef.current = '';
+		setDragPreviewMarkupSnapshot('');
+		endNoteCardDragMediaRetention();
+	}, []);
+
 	const clearDropOverlay = React.useCallback((): void => {
 		if (dropOverlayTrackingRafRef.current && typeof window !== 'undefined') {
 			window.cancelAnimationFrame(dropOverlayTrackingRafRef.current);
@@ -417,8 +433,9 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		dropOverlayTimerRef.current = window.setTimeout(() => {
 			dropOverlayTimerRef.current = 0;
 			clearDropOverlay();
+			finalizeDragPreviewMedia();
 		}, 320);
-	}, [clearDropOverlay]);
+	}, [clearDropOverlay, finalizeDragPreviewMedia]);
 
 	const shouldSuppressOpen = React.useCallback((): boolean => {
 		return Date.now() < suppressOpenUntilRef.current;
@@ -432,8 +449,17 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 
 	const beginManagedDrag = React.useCallback((activeId: string, input: PointerInput, isTouchDrag: boolean): boolean => {
 		clearDropOverlay();
+		finalizeDragPreviewMedia();
 		const element = itemElementsRef.current.get(activeId);
 		if (!element) return false;
+		// Capture card innerHTML synchronously for the drag ghost. A live NoteCard overlay
+		// reloads media async and flashes blank; hiding the source card via
+		// placeholderHiddenDragId duplicated the card in the grid — markup-only ghost only.
+		const contentElement = element.querySelector<HTMLElement>('[data-note-content="true"]');
+		const previewMarkup = contentElement?.innerHTML ?? '';
+		dragPreviewMarkupRef.current = previewMarkup;
+		setDragPreviewMarkupSnapshot(previewMarkup);
+		beginNoteCardDragMediaRetention(activeId);
 		const rect = element.getBoundingClientRect();
 		activeDragIdRef.current = activeId;
 		touchDragSessionRef.current = isTouchDrag;
@@ -472,7 +498,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		}
 		updateInsertionPoint(input);
 		return true;
-	}, [clearDropOverlay, computeOverlayLeft, computeOverlayTop, updateInsertionPoint]);
+	}, [clearDropOverlay, computeOverlayLeft, computeOverlayTop, finalizeDragPreviewMedia, updateInsertionPoint]);
 
 	const updateManagedDrag = React.useCallback((pointer: PointerInput): void => {
 		const activeId = activeDragIdRef.current;
@@ -531,6 +557,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 
 		if (!activeId || !ip) {
 			finalizeTouchDrop();
+			finalizeDragPreviewMedia();
 			clearDragState();
 			return;
 		}
@@ -556,12 +583,14 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
 		finalizeTouchDrop();
 		clearDragState();
-	}, [applyPinAwareInsertion, clearDragState, finalizeTouchDrop, startDropOverlaySettle]);
+	}, [applyPinAwareInsertion, clearDragState, finalizeDragPreviewMedia, finalizeTouchDrop, startDropOverlaySettle]);
 
 	const cancelManagedDrag = React.useCallback((): void => {
 		edgeAutoScrollerRef.current?.stop();
+		clearDropOverlay();
+		finalizeDragPreviewMedia();
 		clearDragState();
-	}, [clearDragState]);
+	}, [clearDragState, clearDropOverlay, finalizeDragPreviewMedia]);
 
 	const setItemElement = React.useCallback((id: string, node: HTMLDivElement | null): void => {
 		const previous = itemElementsRef.current.get(id) ?? null;
@@ -685,8 +714,10 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 	React.useEffect(() => {
 		if (!activeDragId) return;
 		if (args.visibleIds.includes(activeDragId)) return;
+		clearDropOverlay();
+		finalizeDragPreviewMedia();
 		clearDragState();
-	}, [activeDragId, args.visibleIds, clearDragState]);
+	}, [activeDragId, args.visibleIds, clearDragState, clearDropOverlay, finalizeDragPreviewMedia]);
 
 	// Cleanup on unmount
 	React.useEffect(() => {
@@ -696,9 +727,10 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 				registrationVersionRafRef.current = 0;
 			}
 			clearDropOverlay();
+			finalizeDragPreviewMedia();
 			clearDragState();
 		};
-	}, [clearDragState, clearDropOverlay]);
+	}, [clearDragState, clearDropOverlay, finalizeDragPreviewMedia]);
 
 	// Compute preview columns: relocate the dragged card to the live insertion
 	// point for neighbor-shift animation. dragOverlay is a dependency so pin-group
@@ -713,6 +745,8 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 		isTouchDragging,
 		dragOverlay,
 		dropOverlay,
+		dragPreviewMarkupSnapshot,
+		dragPreviewMarkupRef,
 		previewColumns,
 		registrationVersion,
 		setItemElement,

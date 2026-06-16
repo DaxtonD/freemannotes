@@ -197,6 +197,7 @@ export type NoteGridProps = {
 	/** When switching list ↔ strip, restore this row's viewport Y after layout. */
 	listScrollAnchor?: ListScrollAnchor | null;
 	onListScrollAnchorApplied?: () => void;
+	loadDrawingDoc?: (noteId: string, drawingId: string) => Promise<Y.Doc | null>;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -697,6 +698,7 @@ type GridNoteCardProps = {
 	dropSettling?: boolean;
 	hideDuringDropSettle?: boolean;
 	disablePositionLayout?: boolean;
+	loadDrawingDoc?: (drawingId: string) => Promise<Y.Doc | null>;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	useWholeCardDragHandle?: boolean;
@@ -1058,6 +1060,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					initialLinkRecords={props.initialLinkRecords}
 					preserveControlShell={props.preserveControlShell}
 					debugTransitionTraceId={props.debugTransitionTraceId}
+					loadDrawingDoc={props.loadDrawingDoc}
 					dragHandleRef={props.useWholeCardDragHandle ? undefined : handleDragHandleRef}
 					useWholeCardDragHandle={props.useWholeCardDragHandle}
 				/>
@@ -3360,17 +3363,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			return '';
 		}
 	}, [activeDoc, activeNote, props.viewMode]);
-	const [dragPreviewMarkup, setDragPreviewMarkup] = React.useState('');
-	React.useLayoutEffect(() => {
-		const previewNoteId = dragManager.activeDragId ?? dragManager.dropOverlay?.id ?? null;
-		if (!previewNoteId || isListLikeView) {
-			setDragPreviewMarkup('');
-			return;
-		}
-		const itemElement = dragManager.getItemElement(previewNoteId);
-		const contentElement = itemElement?.querySelector<HTMLElement>('[data-note-content="true"]') ?? null;
-		setDragPreviewMarkup(contentElement?.innerHTML ?? '');
-	}, [dragManager, dragManager.activeDragId, dragManager.dropOverlay?.id, isListLikeView]);
+	const dragPreviewMarkup = dragManager.dragPreviewMarkupSnapshot || dragManager.dragPreviewMarkupRef.current;
 	const activeCollaboratorSummary = activeNote ? collaboratorSummariesByNoteId[activeNote.id] ?? null : null;
 	const moreMenuDoc = moreMenuNoteId ? docsById[moreMenuNoteId] : undefined;
 	const moreMenuPlacement = moreMenuNoteId ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === moreMenuNoteId) : undefined;
@@ -3769,9 +3762,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setItemElement={dragManager.setItemElement}
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 				useWholeCardDragHandle={isCoarsePointer}
+				loadDrawingDoc={props.loadDrawingDoc ? (drawingId) => props.loadDrawingDoc!(note.id, drawingId) : undefined}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -4248,51 +4242,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							) : null}
 						</div>
 					) : (
-						dragPreviewMarkup ? (
-							<DragPreviewMarkup markup={dragPreviewMarkup} />
-						) : (
-							<NoteCard
-								noteId={activeNote.id}
-								docId={activeDocId || undefined}
-								authUserId={props.authUserId}
-								themeId={props.themeId}
-								doc={activeDoc}
-								metaChips={renderNoteMetaChips({
-									noteId: activeNote.id,
-									docId: activeDocId ?? null,
-									doc: activeDoc,
-									sharedPlacement: sharedPlacementByAlias.get(activeNote.id) ?? null,
-									collectionPathById,
-									labelById,
-									activeCollectionId: props.activeCollectionId,
-									activeLabelIds: props.activeLabelIds,
-									authUserId: props.authUserId,
-									canEditNote: activeCanEdit,
-									suspendAttachmentRemoteRefresh,
-									disableAttachmentInitialRemoteRefresh,
-									collaboratorSummary: activeCollaboratorSummary,
-									snapshotShell: workspaceRenderSnapshotNoteById.get(activeNote.id) ?? null,
-									onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
-									onOpenMetadataChip: ({ noteId, kind, anchorRect, entries }) => {
-										setOpenCollaboratorChip(null);
-										setOpenMetadataChip((current) => current && current.noteId === noteId && current.kind === kind ? null : { noteId, kind, anchorRect, entries });
-									},
-									onAttachmentChipOpenStateChange: (chipNoteId, isOpen) => {
-										setOpenAttachmentChipNoteId((current) => {
-											if (isOpen) return chipNoteId;
-											return current === chipNoteId ? null : current;
-										});
-									},
-									t,
-									themeId: props.themeId,
-									title: activeDoc.getText('title').toString(),
-								})}
-								canEdit={activeCanEdit}
-								hasPendingSync={activeHasPendingSync}
-								maxCardHeightPx={props.maxCardHeightPx}
-								bannerTitlePosition={props.noteCardBannerTitlePosition}
-							/>
-						)
+						<DragPreviewMarkup markup={dragPreviewMarkup} />
 					)}
 				</motion.div>
 					);
