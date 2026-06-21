@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.9 - 2026-06-20
+
+### Fixed
+- **List/strip view scroll jumps to top after drag-and-drop.** Two-part fix: (1) `dragColumns` in `NoteGrid` now uses `renderedIds` (which includes the pending committed order) instead of stale `visibleIds` when the drag preview clears, so row order does not revert at drop. (2) `NoteListView` keeps window virtualization enabled during drag — toggling it off remounted the full list, collapsed document height, and reset `window.scrollY`. Neighbor shift animations instead run via document-space flip on mounted rows (wider overscan during drag/drop settle).
+
 ## 1.5.8 - 2026-06-20
 
 ### Added
