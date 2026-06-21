@@ -53,6 +53,8 @@ export type NoteListViewProps = {
 	themeId: ThemeId;
 	bannerTitlePosition?: NoteCardBannerTitlePosition;
 	activeDragId: string | null;
+	/** Included in isDragSession so neighbor flip animations still run through drop overlay settle. */
+	isDropSettling?: boolean;
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	shouldSuppressOpen: () => boolean;
@@ -326,7 +328,12 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 	const previousRectsRef = React.useRef<DocumentRectMap>(new Map());
 	const hasMeasuredRef = React.useRef(false);
 	const [scrollMargin, setScrollMargin] = React.useState(0);
-	const shouldVirtualize = !props.activeDragId && props.orderedIds.length >= MIN_ROWS_BEFORE_VIRTUALIZING;
+	// Never toggle virtualization off during drag — remounting the list collapses document
+	// height and resets window scroll. Neighbor shift uses document-space flip on the
+	// rows that stay mounted (see isDragSession below). Do not reintroduce
+	// `!activeDragId` guards here; scroll-restore after re-enable was unreliable.
+	const shouldVirtualize = props.orderedIds.length >= MIN_ROWS_BEFORE_VIRTUALIZING;
+	const isDragSession = Boolean(props.activeDragId || props.isDropSettling);
 	const estimatedRowHeight = showPreview ? STRIP_ROW_HEIGHT_PX : LIST_ROW_HEIGHT_PX;
 
 	React.useLayoutEffect(() => {
@@ -360,7 +367,8 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 	const virtualizer = useWindowVirtualizer<HTMLDivElement>({
 		count: props.orderedIds.length,
 		estimateSize: () => estimatedRowHeight,
-		overscan: 10,
+		// Wider overscan during drag/drop so more neighbors are mounted for flip animations.
+		overscan: isDragSession ? 24 : 10,
 		gap: LIST_ROW_GAP_PX,
 		scrollMargin,
 		getItemKey: (index) => props.orderedIds[index] ?? index,
@@ -445,15 +453,18 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 	const renderedItems = shouldVirtualize
 		? virtualItems.map((item) => ({ key: item.key, noteId: props.orderedIds[item.index] ?? '' }))
 		: props.orderedIds.map((noteId) => ({ key: noteId, noteId }));
+	// Full column order, not just visible virtual rows — insertion preview changes order
+	// before the virtual window recycles, and flip must run on every reorder.
 	const renderedIdsSignature = React.useMemo(
-		() => renderedItems.map((item) => item.noteId).join('|'),
-		[renderedItems]
+		() => props.orderedIds.join('|'),
+		[props.orderedIds]
 	);
 
 	React.useLayoutEffect(() => {
 		const container = containerRef.current;
 		if (!container) return;
-		if (shouldVirtualize) {
+		// Idle virtualized lists only snapshot rects; flip runs during drag sessions.
+		if (shouldVirtualize && !isDragSession) {
 			previousRectsRef.current = measureDocumentRects(container);
 			hasMeasuredRef.current = true;
 			return;
@@ -471,7 +482,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 			skipForScroll: false,
 			suppressUniformGlobalShift: true,
 		});
-	}, [props.activeDragId, renderedIdsSignature, shouldVirtualize, showPreview]);
+	}, [isDragSession, props.activeDragId, renderedIdsSignature, shouldVirtualize, showPreview]);
 
 	return (
 		<div

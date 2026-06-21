@@ -2920,9 +2920,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [isCoarsePointer, props.viewMode, sectionWidthPx]);
 	const dragColumns = React.useMemo(() => {
 		if (!isListLikeView) return resolvedBaseColumns;
-		if (groupedSections.length > 0) return [visibleIds];
-		return splitIntoListColumns(visibleIds, listColumnCount);
-	}, [groupedSections.length, isListLikeView, listColumnCount, resolvedBaseColumns, visibleIds]);
+		if (groupedSections.length > 0) return [renderedIds];
+		// Use renderedIds (includes pendingCommittedVisibleOrderRef after drop) — not
+		// visibleIds. When previewColumns clears at drop, stale visibleIds briefly
+		// reverts row order and remounts list rows (scroll jumps to top). Pair with
+		// NoteListView keeping virtualization enabled during drag — do not disable
+		// virtualization there to "fix" scroll; that remounts the full list instead.
+		return splitIntoListColumns(renderedIds, listColumnCount);
+	}, [groupedSections.length, isListLikeView, listColumnCount, renderedIds, resolvedBaseColumns]);
 
 	// ── Wire up the drag manager ──────────────────────────────────────────
 	// Passes baseColumns as the starting column layout.  During drag, the
@@ -4070,6 +4075,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										scrollAnchor={props.listScrollAnchor}
 										onScrollAnchorApplied={props.onListScrollAnchorApplied}
 										activeDragId={dragManager.activeDragId}
+										isDropSettling={isDropSettling}
 										setItemElement={dragManager.setItemElement}
 										setHandleElement={dragManager.setHandleElement}
 										shouldSuppressOpen={() => dragManager.shouldSuppressOpen() || moreMenuNoteId !== null}
@@ -4114,6 +4120,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								scrollAnchor={props.listScrollAnchor}
 								onScrollAnchorApplied={props.onListScrollAnchorApplied}
 								activeDragId={dragManager.activeDragId}
+								isDropSettling={isDropSettling}
 								setItemElement={dragManager.setItemElement}
 								setHandleElement={dragManager.setHandleElement}
 								shouldSuppressOpen={() => dragManager.shouldSuppressOpen() || moreMenuNoteId !== null}
