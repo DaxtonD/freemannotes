@@ -454,6 +454,41 @@
 	flex: 0 0 auto;
 }
 
+/* Linked drawing preview (text/checklist note with an attached drawing): cropped square,
+   same layout as image grid tiles so card height is stable and never oscillates. */
+.linkedDrawingPreviewBody {
+	padding: 10px;
+	align-items: stretch;
+	flex: 0 0 auto;
+	min-height: 0;
+	overflow: visible;
+}
+
+.linkedDrawingPreviewCell {
+	position: relative;
+	width: 100%;
+	/* padding-bottom square avoids aspect-ratio + flex shrink issues on narrow cards */
+	padding-bottom: 100%;
+	height: 0;
+	overflow: hidden;
+	border-radius: 14px;
+	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 72%, transparent);
+	background: color-mix(in srgb, var(--note-color-header-bg, var(--color-surface-2)) 78%, transparent);
+}
+
+.linkedDrawingPreviewThumb {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	object-position: center;
+	display: block;
+	pointer-events: none;
+	-webkit-user-drag: none;
+	user-select: none;
+}
+
 .checklistCard .body {
 	padding-bottom: var(--space-2);
 	flex: 0 0 auto;

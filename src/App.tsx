@@ -135,12 +135,14 @@ import {
 	emitNoteMediaChanged,
 	filterRemoteNoteImagesByPendingDeletes,
 	getCachedRemoteNoteImages,
+	hasQueuedNoteImageUploads,
 	moveLocalNoteMedia,
 	refreshRemoteNoteImages,
 	readQueuedNoteImageDeletions,
 	readQueuedNoteImages,
 	readStoredRemoteNoteImages,
 	scheduleQueuedNoteImageFlush,
+	warmQueuedImageCounts,
 	warmWorkspaceImageMetadata,
 } from './core/noteMediaStore';
 import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, moveLocalNoteLinks, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
@@ -808,6 +810,30 @@ function isNoteImageViewerHistoryState(value: unknown): boolean {
 function isNoteEditorMediaDockHistoryState(value: unknown): boolean {
 	if (!value || typeof value !== 'object') return false;
 	return typeof (value as { __noteEditorMediaDock?: unknown }).__noteEditorMediaDock === 'string';
+}
+
+/**
+ * Returns true for history markers pushed by coarse-pointer card-action modals
+ * (⋮ menu, reminder, collection, labels, color picker, chip overlays).
+ *
+ * These entries are NOT App overlay snapshots — they are lightweight dismiss-layer
+ * markers managed by individual modal components. Landing on one after history.back()
+ * means we are still inside the app grid; we must NOT collapse the UI or fire the
+ * exit guard. See memory/mobile-back-history.md for the full root-cause explanation.
+ */
+function isMobileDismissLayerHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	const state = value as Record<string, unknown>;
+	if (state.__moreMenu === true) return true;
+	if (state.__reminderModal === true) return true;
+	if (state.__quickReminderModal === true) return true;
+	if (state.__noteCollectionModal === true) return true;
+	if (state.__noteLabelsModal === true) return true;
+	if (state.__collectionManagementModal === true) return true;
+	if (state.__noteColorPicker === true) return true;
+	if (state.__noteBannerPicker === true) return true;
+	const chipOverlay = state.__chipOverlay;
+	return chipOverlay === 'collaborator' || chipOverlay === 'attachments';
 }
 
 function hasOverlaySnapshotContent(snapshot: OverlaySnapshot): boolean {
@@ -5129,7 +5155,12 @@ export function App(): React.JSX.Element {
 			const sharedDocIds = visibleSharedPlacements.map((placement) => String(placement.roomId || '').trim()).filter(Boolean);
 			const docIds = [...new Set([...localDocIds, ...sharedDocIds])];
 			if (docIds.length === 0) return;
-			await warmWorkspaceImageMetadata(docIds, { onlineRefreshLimit: 24, minIntervalMs: 1500 });
+			await Promise.all([
+				warmWorkspaceImageMetadata(docIds, { onlineRefreshLimit: 24, minIntervalMs: 1500 }),
+				// Hydrate the synchronous queued-count cache so the grid's chip-row gate
+				// already knows about offline-queued images on warm boot.
+				warmQueuedImageCounts(authUserId, docIds),
+			]);
 		})();
 		return () => {
 			cancelled = true;
@@ -7777,6 +7808,23 @@ export function App(): React.JSX.Element {
 			if (isNoteImageViewerHistoryState(state) || isNoteEditorMediaDockHistoryState(state) || isNoteImageUploadHistoryState(state)) {
 				return;
 			}
+			// Closing a card-action modal (reminder, collection, labels, color picker, ⋮ menu,
+			// chip overlay) calls history.back() and can land on an orphaned dismiss-layer entry
+			// pushed by a preceding modal (e.g. __moreMenu left behind when reminder opened).
+			// These are still in-app states — do not collapse the UI or trigger the exit guard.
+			if (isMobileDismissLayerHistoryState(state)) {
+				exitBackPressRef.current.count = 0;
+				// Edge case: if the sidebar was closed via history.back() and we land here
+				// (e.g. __moreMenu orphaned by banner/color picker opened via ⋮ menu),
+				// the popstate would normally not apply an overlay snapshot and
+				// isMobileSidebarOpen stays stuck true, blocking the FAB indefinitely.
+				// Detect this and close the sidebar explicitly.
+				const currentSnapshot = currentOverlaySnapshotRef.current;
+				if (currentSnapshot.isMobileSidebarOpen) {
+					applyOverlaySnapshot({ ...currentSnapshot, isMobileSidebarOpen: false, isFabOpen: false });
+				}
+				return;
+			}
 
 			// If we popped to a non-overlay history entry, collapse to base.
 			applyOverlaySnapshot(EMPTY_OVERLAY_SNAPSHOT);
@@ -8336,10 +8384,11 @@ export function App(): React.JSX.Element {
 					// are picked up even if a websocket reconnect event is delayed.
 					void scanAllDocumentsForPlaceholders();
 
-					const stillQueued = await hasQueuedNoteLinkSync(authUserId);
-					if (stillQueued && attempt < MAX_RECONNECT_FLUSH_ATTEMPTS) {
-						retryTimer = setTimeout(() => { retryTimer = null; attemptFlush(attempt + 1); }, 3000);
-					}
+				const stillQueued = await hasQueuedNoteLinkSync(authUserId);
+				const stillQueuedImages = await hasQueuedNoteImageUploads(authUserId);
+				if ((stillQueued || stillQueuedImages) && attempt < MAX_RECONNECT_FLUSH_ATTEMPTS) {
+					retryTimer = setTimeout(() => { retryTimer = null; attemptFlush(attempt + 1); }, 3000);
+				}
 				})();
 			};
 			attemptFlush(0);

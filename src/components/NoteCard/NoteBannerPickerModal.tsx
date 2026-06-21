@@ -14,14 +14,54 @@ export type NoteBannerPickerModalProps = {
 	onSelect: (fileName: string | null) => void;
 };
 
+function isNoteBannerPickerHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return (value as { __noteBannerPicker?: boolean }).__noteBannerPicker === true;
+}
+
 export function NoteBannerPickerModal(props: NoteBannerPickerModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
 	const [options, setOptions] = React.useState<readonly NoteBannerOption[]>([]);
 	const [loading, setLoading] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
+	const onCloseRef = React.useRef(props.onClose);
+	React.useEffect(() => { onCloseRef.current = props.onClose; }, [props.onClose]);
+
 	// The fixed overlay alone is not enough on mobile; without the shared root scroll
 	// lock, touchmove can still scroll the note grid underneath the banner picker.
 	useBodyScrollLock(props.isOpen);
+
+	// Push a dismiss-layer history entry on mobile so Android back closes the picker
+	// instead of collapsing the whole overlay stack. Mirrors NoteColorPickerModal.
+	React.useEffect(() => {
+		if (!props.isOpen || typeof window === 'undefined') return;
+		const mql = window.matchMedia('(pointer: coarse)');
+		if (!mql.matches) return;
+
+		let active = true;
+		let didPush = false;
+		const pushTimer = window.setTimeout(() => {
+			if (!active) return;
+			didPush = true;
+			window.history.pushState({ __noteBannerPicker: true }, '');
+		}, 0);
+		const onPopState = (): void => {
+			if (!active || !didPush) return;
+			active = false;
+			onCloseRef.current();
+		};
+		window.addEventListener('popstate', onPopState);
+
+		return () => {
+			window.clearTimeout(pushTimer);
+			window.removeEventListener('popstate', onPopState);
+			if (active && didPush && isNoteBannerPickerHistoryState(window.history.state)) {
+				active = false;
+				window.history.back();
+			}
+			active = false;
+		};
+	}, [props.isOpen]);
 
 	React.useEffect(() => {
 		if (!props.isOpen || typeof window === 'undefined') return;

@@ -200,7 +200,10 @@
 	transform-origin: center center;
 	transform: rotate(var(--bv-bubble-rotate, 0deg));
 	touch-action: manipulation;
-	animation: none;
+	/* Per-bubble float timing is seeded deterministically in BubbleView.tsx and
+	   written into --bv-float-duration / --bv-float-delay. Do not set this to
+	   `none` — that silences the oscillation even though the keyframe exists. */
+	animation: bubbleFloat var(--bv-float-duration, 8s) var(--bv-float-delay, 0s) infinite ease-in-out;
 	overflow: hidden;
 	isolation: isolate;
 }

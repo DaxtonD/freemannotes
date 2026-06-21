@@ -12,8 +12,10 @@ import {
 	hydrateStartupSnapshot,
 	readSynchronousStartupHydrationSnapshot,
 	readSynchronousWarmStartupBannerUrls,
+	readSynchronousWarmStartupMediaDocIds,
 	type StartupHydrationSnapshot,
 } from './core/startupHydration';
+import { warmWorkspaceImageMetadata } from './core/noteMediaStore';
 import { applyTheme, getStoredThemeIdForUser } from './core/theme';
 import { installTouchDragPolyfill } from './core/touchDragPolyfill';
 import { I18nProvider } from './core/i18n';
@@ -177,9 +179,37 @@ void logClientEvent('APP_INIT', {
 	cachedAuthUserId,
 });
 
+async function preloadWarmStartupImages(): Promise<void> {
+	const docIds = readSynchronousWarmStartupMediaDocIds(16);
+	if (docIds.length === 0) return;
+	const startedAt = Date.now();
+	let timedOut = false;
+	let timeoutId = 0;
+	// IDB-only warm: no online refresh here (App.tsx handles that after auth).
+	// Race against 600 ms so image preload never delays cold start.
+	await Promise.race([
+		warmWorkspaceImageMetadata(docIds, { onlineRefreshLimit: 0 }),
+		new Promise<void>((resolve) => {
+			timeoutId = window.setTimeout(() => {
+				timedOut = true;
+				resolve();
+			}, 600);
+		}),
+	]);
+	window.clearTimeout(timeoutId);
+	void logClientEvent('STARTUP_IMAGE_PRELOAD', {
+		docIdCount: docIds.length,
+		latencyMs: Date.now() - startedAt,
+		timedOut,
+	});
+}
+
 async function bootstrap(): Promise<void> {
 	installHeadingCollapseDebugConsole();
-	await preloadWarmStartupBanners();
+	await Promise.all([
+		preloadWarmStartupBanners(),
+		preloadWarmStartupImages(),
+	]);
 	createRoot(rootEl).render(
 		<React.StrictMode>
 			<BootRoot />

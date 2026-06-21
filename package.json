@@ -1,6 +1,6 @@
 {
   "name": "freemannotes",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "main": "index.js",
   "scripts": {
     "dev": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",

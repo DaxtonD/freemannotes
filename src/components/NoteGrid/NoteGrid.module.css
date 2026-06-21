@@ -205,10 +205,8 @@
 	box-sizing: border-box;
 	position: relative;
 	display: flex;
-	flex-direction: column;
-	justify-content: center;
-	gap: 6px;
-	padding: 8px 12px;
+	align-items: center;
+	padding: 6px 8px 6px 14px;
 	border-radius: var(--radius-sm);
 	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 80%, var(--color-border));
 	background: var(--note-color-card-bg, var(--color-surface));
@@ -253,25 +251,35 @@
 .listDragGhostMain {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: 10px;
 	min-width: 0;
+	width: 100%;
 }
 
 .listDragGhostType {
-	width: 20px;
-	height: 20px;
+	width: 32px;
+	height: 32px;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	border-radius: 999px;
-	font-size: 11px;
+	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 76%, transparent);
+	font-size: 15px;
 	color: var(--note-color-muted, var(--color-text-muted));
-	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 82%, var(--color-accent) 18%);
+	background: color-mix(in srgb, var(--color-surface) 78%, var(--color-accent) 22%);
 	flex: 0 0 auto;
 }
 
-.listDragGhostTitle {
+.listDragGhostTextColumn {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	gap: 1px;
 	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.listDragGhostTitle {
 	min-width: 0;
 	white-space: nowrap;
 	overflow: hidden;
@@ -297,14 +305,15 @@
 }
 
 .listDragGhostMore {
+	width: 28px;
+	height: 28px;
 	font-size: 12px;
-	opacity: 0.56;
+	opacity: 0.4;
 	color: var(--note-color-muted, var(--color-text-muted));
 	flex: 0 0 auto;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	margin-left: 4px;
 }
 
 .listDragGhostPreview {

@@ -10,7 +10,7 @@ import { MOBILE_GRID_EDGE_MARGIN_PX } from '../NoteGrid/layout';
 import { readDrawingLinkState } from '../../core/noteModel';
 import { extractNoteLinksFromDoc } from '../../core/noteLinks';
 import { getCachedRemoteNoteLinks, getNoteLinksChangedEventName, readStoredNoteLinks, refreshRemoteNoteLinks } from '../../core/noteLinkStore';
-import { filterRemoteNoteImagesByPendingDeletes, getCachedRemoteNoteImages, getNoteMediaChangedEventName, readQueuedNoteImageDeletions, readQueuedNoteImages, readStoredRemoteNoteImages, refreshRemoteNoteImages } from '../../core/noteMediaStore';
+import { filterQueuedUploadsNotYetRemote, filterRemoteNoteImagesByPendingDeletes, getCachedRemoteNoteImages, getNoteMediaChangedEventName, readQueuedNoteImageDeletions, readQueuedNoteImages, readStoredRemoteNoteImages, refreshRemoteNoteImages } from '../../core/noteMediaStore';
 import styles from './NoteAttachmentCountChip.module.css';
 
 export type NoteAttachmentBrowserKind = 'images' | 'links' | 'drawings';
@@ -140,12 +140,15 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		]);
 		const extractedLinkCount = extractNoteLinksFromDoc(props.doc).length;
 		const drawingCount = readDrawingLinkState(props.doc).drawingIds.length;
+		const visibleRemoteLocal = includeMedia
+			? filterRemoteNoteImagesByPendingDeletes(
+				storedRemoteImages.length > 0 ? storedRemoteImages : getCachedRemoteNoteImages(props.docId),
+				queuedDeletes
+			)
+			: [];
 		const localCounts: AttachmentCounts = {
 			images: includeMedia
-				? filterRemoteNoteImagesByPendingDeletes(
-					storedRemoteImages.length > 0 ? storedRemoteImages : getCachedRemoteNoteImages(props.docId),
-					queuedDeletes
-				).length + queuedImages.length
+				? visibleRemoteLocal.length + filterQueuedUploadsNotYetRemote(queuedImages, visibleRemoteLocal).length
 				: countsRef.current.images,
 			links: includeLinks ? Math.max(storedRemoteLinks.length, extractedLinkCount) : countsRef.current.links,
 			drawings: includeDrawings ? drawingCount : countsRef.current.drawings,
@@ -172,9 +175,10 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 					})
 					: Promise.resolve<readonly ReturnType<typeof getCachedRemoteNoteLinks>[number][]>([]),
 			]);
+			const visibleRemoteSync = filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes);
 			const remoteCounts: AttachmentCounts = {
 				images: includeMedia
-					? filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes).length + queuedImages.length
+					? visibleRemoteSync.length + filterQueuedUploadsNotYetRemote(queuedImages, visibleRemoteSync).length
 					: localCounts.images,
 				links: includeLinks ? Math.max(remoteLinks.length, extractedLinkCount) : localCounts.links,
 				drawings: includeDrawings ? drawingCount : localCounts.drawings,
