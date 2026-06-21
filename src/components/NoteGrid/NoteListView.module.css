@@ -210,6 +210,12 @@
 	color: inherit;
 }
 
+.rowTitleMuted {
+	font-weight: 500;
+	color: var(--list-row-muted, var(--color-text-muted));
+	font-style: italic;
+}
+
 .rowBanner .rowTitle,
 .rowBanner .rowPreview {
 	text-shadow: var(--list-row-banner-text-shadow, none);

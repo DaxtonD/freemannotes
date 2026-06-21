@@ -78,6 +78,7 @@ import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible, focusRic
 import styles from './Editors.module.css';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { assignNoteBannerFile } from '../../services/noteService';
+import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
 
 export type NoteEditorProps = {
 	noteId: string;
@@ -697,6 +698,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		verticalLocked: boolean;
 	} | null>(null);
 	const ignoreNextMediaDockClickRef = React.useRef(false);
+	// Track the previous noteId so the dock-reset effect only fires on actual note
+	// switches, not on the initial mount. Without this, the reset runs on first open
+	// and the carried touch from the card tap can bump mediaSheetProgress and trigger
+	// the close animation (media handle slides up then fades). See memory/editor-and-checklist.md.
+	const prevEditorNoteIdRef = React.useRef<string | null>(null);
+	// Suppress media-sheet drag gestures for a short window after any note open.
+	// The touch that tapped the card to open the editor can carry into the handle
+	// area and start an unintended drag if not blocked.
+	const mediaSheetGestureSuppressUntilRef = React.useRef(0);
 	const titleFieldRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const textBodyFieldRef = React.useRef<HTMLDivElement | null>(null);
 	const resizeTitleField = React.useCallback((): void => {
@@ -709,8 +719,24 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
 
+	const isMediaSheetGestureSuppressed = React.useCallback((): boolean => {
+		return typeof performance !== 'undefined'
+			? performance.now() < mediaSheetGestureSuppressUntilRef.current
+			: false;
+	}, []);
+
 	React.useEffect(() => {
 		if (isMediaSheetDragging) return;
+		if (isMediaSheetGestureSuppressed()) {
+			// Carried touch from the card tap is still active. Snap progress back to
+			// zero immediately — do not play the close animation or it looks like the
+			// panel auto-opens and then slides away on its own.
+			if (!mediaDockOpen && mediaSheetProgress > 0.001) {
+				setMediaSheetProgress(0);
+				setIsMediaSheetClosing(false);
+			}
+			return;
+		}
 		if (!mediaDockOpen && mediaSheetProgress > 0.001) {
 			setIsMediaSheetClosing(true);
 		}
@@ -718,13 +744,26 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			setIsMediaSheetClosing(false);
 		}
 		setMediaSheetProgress(mediaDockOpen ? 1 : 0);
-	}, [isMediaSheetClosing, isMediaSheetDragging, mediaDockOpen, mediaSheetProgress]);
+	}, [isMediaSheetClosing, isMediaSheetDragging, isMediaSheetGestureSuppressed, mediaDockOpen, mediaSheetProgress]);
+
 	React.useEffect(() => {
-		setMediaDockOpen(false);
-		setMediaSheetProgress(0);
-		setIsMediaSheetClosing(false);
-		setIsMediaSheetDragging(false);
+		// Only reset dock state when actually switching notes (prevEditorNoteIdRef is
+		// non-null and differs). On first mount we intentionally skip the reset so the
+		// noteId effect does not race with the carried touch from the card tap.
+		const switchedNote = prevEditorNoteIdRef.current !== null && prevEditorNoteIdRef.current !== props.noteId;
+		if (switchedNote) {
+			setMediaDockOpen(false);
+			setMediaSheetProgress(0);
+			setIsMediaSheetClosing(false);
+			setIsMediaSheetDragging(false);
+		}
+		prevEditorNoteIdRef.current = props.noteId;
 		setMediaDockTab(readStoredMediaDockTab(props.noteId));
+		// Suppress drag gestures for 450ms after every open/switch so the touch that
+		// opened this note cannot accidentally trigger the media sheet drag.
+		mediaSheetGestureSuppressUntilRef.current = (
+			typeof performance !== 'undefined' ? performance.now() : Date.now()
+		) + 450;
 	}, [props.noteId]);
 	React.useEffect(() => {
 		try {
@@ -983,6 +1022,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	}, []);
 	const handleMediaDockDragStart = React.useCallback((event: React.TouchEvent): void => {
 		if (isMobileLandscapeRef.current) return;
+		if (isMediaSheetGestureSuppressed()) return;
 		const t0 = event.touches[0];
 		if (!t0) return;
 		const gestureTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -998,8 +1038,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			lastTime: gestureTime,
 			verticalLocked: false,
 		};
-	}, [getMediaSheetHeight, mediaSheetProgress]);
+	}, [getMediaSheetHeight, isMediaSheetGestureSuppressed, mediaSheetProgress]);
 	const handleMediaDockDragMove = React.useCallback((event: React.TouchEvent): void => {
+		if (isMediaSheetGestureSuppressed()) return;
 		const gesture = mediaSheetDragRef.current;
 		const t0 = event.touches[0];
 		if (!gesture || !t0) return;
@@ -1023,8 +1064,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		gesture.lastTime = typeof performance !== 'undefined' ? performance.now() : Date.now();
 		setIsMediaSheetDragging(true);
 		setMediaSheetProgress(clampMediaSheetProgress(gesture.startProgress - (dy / Math.max(gesture.sheetHeight, 1))));
-	}, [clampMediaSheetProgress, mediaDockOpen]);
+	}, [clampMediaSheetProgress, isMediaSheetGestureSuppressed, mediaDockOpen]);
 	const handleMediaDockDragEnd = React.useCallback((event: React.TouchEvent): void => {
+		if (isMediaSheetGestureSuppressed()) {
+			// Discard the gesture completely — clean up any partial state so the sheet
+			// is not left in a dragging/mid-progress limbo after the suppress window ends.
+			mediaSheetDragRef.current = null;
+			setIsMediaSheetDragging(false);
+			return;
+		}
 		const gesture = mediaSheetDragRef.current;
 		if (!gesture) return;
 		event.stopPropagation();
@@ -1055,7 +1103,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		setIsMediaSheetDragging(false);
 		if (shouldOpen) setMediaSheetProgress(1);
 		setMediaDockOpen(shouldOpen);
-	}, [mediaDockOpen, mediaSheetProgress]);
+	}, [isMediaSheetGestureSuppressed, mediaDockOpen, mediaSheetProgress]);
 	const handleMediaSheetTransitionEnd = React.useCallback((event: React.TransitionEvent<HTMLElement>): void => {
 		if (event.target !== event.currentTarget) return;
 		if (event.propertyName !== 'transform') return;
@@ -3493,6 +3541,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			onClose={() => setIsBannerPickerOpen(false)}
 			onSelect={(fileName) => {
 				assignNoteBannerFile(props.doc, fileName);
+				writeNoteBannerWarmCacheFile(props.noteId, fileName);
 				setIsBannerPickerOpen(false);
 			}}
 		/>

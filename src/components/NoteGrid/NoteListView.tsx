@@ -17,6 +17,7 @@ import {
 	faPenNib,
 	faRotateLeft,
 } from '@fortawesome/free-solid-svg-icons';
+import { useI18n } from '../../core/i18n';
 import { getNoteBannerPresentationStyle, useThemedNoteBannerImageUrl } from '../../core/noteBannerTheme';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
@@ -130,8 +131,11 @@ type NoteRowProps = {
 
 const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Element {
 	const { noteId, doc, snapshot, showPreview } = props;
+	const { t } = useI18n();
 
-	const title = doc.getText('title').toString() || '\u00A0';
+	const rawTitle = doc.getText('title').toString();
+	const title = rawTitle || t('note.untitled');
+	const isTitleMuted = !rawTitle;
 	const rawNoteType = String(doc.getMap<any>('metadata').get('type') ?? '');
 	const noteType = rawNoteType === 'checklist'
 		? 'checklist'
@@ -294,7 +298,7 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 					<FontAwesomeIcon icon={noteTypeIcon} />
 				</span>
 				<div className={styles.rowTextColumn}>
-					<span className={styles.rowTitle}>{title}</span>
+					<span className={isTitleMuted ? `${styles.rowTitle} ${styles.rowTitleMuted}` : styles.rowTitle}>{title}</span>
 					{showPreview && preview ? (
 						<div className={styles.rowPreview}>{preview}</div>
 					) : null}

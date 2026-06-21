@@ -1,6 +1,7 @@
 import type { JSONContent } from '@tiptap/core';
 import * as Y from 'yjs';
 import { normalizeChecklistCountValue } from './checklistCounts';
+import { getNoteBannerWarmCacheEntry } from './noteBannerWarmCache';
 import { readNoteFromDoc } from './noteModel';
 import { resolveUserNotePinned } from './notePinPreferences';
 import { extractNoteLinksFromDoc, setNotePreviewLinksOnDoc, type ExtractedNoteLink } from './noteLinks';
@@ -393,11 +394,29 @@ export function createSnapshotDocFromWorkspaceRenderSnapshot(note: WorkspaceRend
 	metadata.set('isPinned', note.isPinned);
 	metadata.set('lastAccessedAt', note.lastAccessedAt);
 	metadata.set('colorToken', note.colorToken);
-	if (note.hasSharedBannerPreference) {
+	// Warm cache takes priority over the render snapshot's (possibly stale) banner
+	// data. This ensures first-paint correctness when the user added/removed a
+	// banner just before closing the app and the debounced snapshot hadn't saved.
+	const warmBannerEntry = getNoteBannerWarmCacheEntry(note.id);
+	if (warmBannerEntry !== undefined) {
+		// Warm cache present: use it. null → no banner (don't set the key so
+		// hasSharedNoteBannerPreference stays false and readEffectiveNoteBannerFile
+		// returns null); string → set bannerFile so the banner shows immediately.
+		if (warmBannerEntry !== null) {
+			metadata.set('bannerFile', warmBannerEntry);
+		}
+	} else if (note.hasSharedBannerPreference) {
 		metadata.set('bannerFile', note.bannerFile ?? null);
 	}
 	metadata.set('trashedAt', null);
 	metadata.set('archivedAt', null);
+	// Populate drawingIds so useLinkedDrawingIds returns the correct IDs from the
+	// very first render. Without this the snapshot doc returns [] and drawingSlots=0,
+	// causing a layout shift + blank-then-appear flash when the live doc loads.
+	if (note.drawingIds.length > 0) {
+		doc.getArray<string>('drawingIds').push([...note.drawingIds]);
+	}
+
 	setNotePreviewLinksOnDoc(doc, note.previewLinks.map((link) => link.url));
 
 	doc.getText('title').insert(0, note.title);

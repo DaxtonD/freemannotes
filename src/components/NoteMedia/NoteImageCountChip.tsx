@@ -2,7 +2,7 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faImage } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
-import { filterRemoteNoteImagesByPendingDeletes, getCachedRemoteNoteImages, getNoteMediaChangedEventName, readQueuedNoteImageDeletions, readQueuedNoteImages, readStoredRemoteNoteImages, refreshRemoteNoteImages } from '../../core/noteMediaStore';
+import { filterQueuedUploadsNotYetRemote, filterRemoteNoteImagesByPendingDeletes, getCachedRemoteNoteImages, getNoteMediaChangedEventName, readQueuedNoteImageDeletions, readQueuedNoteImages, readStoredRemoteNoteImages, refreshRemoteNoteImages } from '../../core/noteMediaStore';
 
 type NoteImageCountChipProps = {
 	docId: string;
@@ -24,7 +24,9 @@ export function NoteImageCountChip(props: NoteImageCountChipProps): React.JSX.El
 			: [[], []];
 		const storedRemote = await readStoredRemoteNoteImages(props.docId);
 		const cachedRemote = storedRemote.length > 0 ? storedRemote : getCachedRemoteNoteImages(props.docId);
-		setCount(filterRemoteNoteImagesByPendingDeletes(cachedRemote, queuedDeletes).length + queued.length);
+		const visibleRemote = filterRemoteNoteImagesByPendingDeletes(cachedRemote, queuedDeletes);
+		const activeQueued = filterQueuedUploadsNotYetRemote(queued, visibleRemote);
+		setCount(visibleRemote.length + activeQueued.length);
 
 		if (!options?.syncRemote) return;
 		try {
@@ -34,7 +36,9 @@ export function NoteImageCountChip(props: NoteImageCountChipProps): React.JSX.El
 				force: options.forceRemote,
 				minIntervalMs: options.forceRemote ? 0 : 15_000,
 			});
-			setCount(filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes).length + queued.length);
+			const visibleRemoteImages = filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes);
+			const activeQueuedImages = filterQueuedUploadsNotYetRemote(queued, visibleRemoteImages);
+			setCount(visibleRemoteImages.length + activeQueuedImages.length);
 		} catch {
 			// Keep the best local count when the server cannot be reached.
 		}

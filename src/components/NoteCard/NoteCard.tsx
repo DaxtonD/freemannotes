@@ -746,51 +746,120 @@ function useLinkedDrawingIds(doc: Y.Doc): readonly string[] {
 	}, [snapshot]);
 }
 
+const MEDIA_PREVIEW_MAX = 4;
+/** Max linked-drawing doc slots loaded per card (2 keeps startup costs bounded). */
+const DRAWING_PREVIEW_MAX = 2;
+
+/**
+ * How many drawing and image cells to show in the unified preview grid.
+ * Rules:
+ *   - Total ≤ MEDIA_PREVIEW_MAX (4)
+ *   - Drawings capped at DRAWING_PREVIEW_MAX (2)
+ *   - Remaining slots filled with images
+ * This gives a balanced mix when both types exist.
+ */
+function computeMediaPreviewSlots(drawingCount: number, imageCount: number): { drawingSlots: number; imageSlots: number } {
+	const drawingSlots = Math.min(drawingCount, DRAWING_PREVIEW_MAX);
+	const imageSlots = Math.min(imageCount, MEDIA_PREVIEW_MAX - drawingSlots);
+	return { drawingSlots, imageSlots };
+}
+
 function useLinkedDrawingThumbnail(
 	drawingIds: readonly string[],
+	/** Which slot in the array to load (0 or 1). No-op if index ≥ drawingIds.length. */
+	index: number,
 	loadDrawingDoc: ((drawingId: string) => Promise<Y.Doc | null>) | undefined,
 	placeholderOptions: DrawingPlaceholderOptions | undefined,
 	fallbackTitle: string,
 ): string | null {
-	const firstDrawingId = drawingIds[0] ?? '';
+	const firstDrawingId = drawingIds[index] ?? '';
 	const placeholderThemeKey = React.useMemo(
 		() => placeholderOptions?.colors
 			? `${placeholderOptions.colors.background || ''}|${placeholderOptions.colors.surface || ''}|${placeholderOptions.colors.border || ''}|${placeholderOptions.colors.text || ''}|${placeholderOptions.colors.muted || ''}|${placeholderOptions.colors.accent || ''}`
 			: '',
 		[placeholderOptions]
 	);
-	const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(null);
+	// Synchronously seed the thumbnail from the persistent cache (same source used by
+	// native drawing cards) so view-switch and warm-start cards don't start blank.
+	const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(
+		() => (firstDrawingId ? peekLatestDrawingThumbnail(firstDrawingId) : null)
+	);
+	// Stable-ref for the debounce timer so we can cancel it in cleanup.
+	const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	React.useEffect(() => {
 		let cancelled = false;
-		if (!firstDrawingId || !loadDrawingDoc) {
-			setThumbnailUrl(null);
-			return () => {
-				cancelled = true;
-			};
+		if (debounceTimerRef.current) {
+			clearTimeout(debounceTimerRef.current);
+			debounceTimerRef.current = null;
 		}
 
-		void (async () => {
+		if (!firstDrawingId || !loadDrawingDoc) {
+			setThumbnailUrl(null);
+			return () => { cancelled = true; };
+		}
+
+		const doRender = async (doc: Y.Doc | null): Promise<void> => {
 			try {
-				const drawingDoc = await loadDrawingDoc(firstDrawingId);
-				const title = drawingDoc?.getText('title').toString().trim() || fallbackTitle;
-				const nextUrl = drawingDoc
-					? await renderDrawingThumbnail(firstDrawingId, drawingDoc, title, getDrawingThumbnailVersion(drawingDoc), placeholderOptions)
+				const title = doc?.getText('title').toString().trim() || fallbackTitle;
+				const nextUrl = doc
+					? await renderDrawingThumbnail(firstDrawingId, doc, title, getDrawingThumbnailVersion(doc), placeholderOptions)
 					: await buildDrawingPlaceholderDataUrl(title, { ...placeholderOptions, seed: firstDrawingId });
-				if (!cancelled) {
-					setThumbnailUrl(nextUrl);
-				}
+				if (!cancelled) setThumbnailUrl(nextUrl);
 			} catch {
 				if (cancelled) return;
 				const nextUrl = await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: firstDrawingId });
-				if (!cancelled) {
-					setThumbnailUrl(nextUrl);
+				if (!cancelled) setThumbnailUrl(nextUrl);
+			}
+		};
+
+		// Track the drawing doc so we can subscribe to live changes.
+		let drawingDoc: Y.Doc | null = null;
+		let lastVersionKey = '';
+		let unsubscribeDoc: (() => void) | null = null;
+
+		void (async () => {
+			try {
+				drawingDoc = await loadDrawingDoc(firstDrawingId);
+				if (cancelled) return;
+
+				if (drawingDoc) {
+					lastVersionKey = getDrawingThumbnailVersion(drawingDoc);
+
+					// Subscribe to drawing doc changes (propagated via Yjs across all clients).
+					// Guard with a version key so animation frames / metadata-only transactions
+					// that don't change the visual content don't trigger spurious re-renders.
+					// Debounce 500 ms: prevents render-per-stroke jitter during active editing.
+					const observer = (): void => {
+						if (!drawingDoc) return;
+						const newVersion = getDrawingThumbnailVersion(drawingDoc);
+						if (newVersion === lastVersionKey) return;
+						lastVersionKey = newVersion;
+						if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+						debounceTimerRef.current = setTimeout(() => {
+							debounceTimerRef.current = null;
+							if (!cancelled) void doRender(drawingDoc);
+						}, 500);
+					};
+					drawingDoc.on('afterTransaction', observer);
+					unsubscribeDoc = () => drawingDoc!.off('afterTransaction', observer);
 				}
+
+				await doRender(drawingDoc);
+			} catch {
+				if (cancelled) return;
+				const nextUrl = await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: firstDrawingId });
+				if (!cancelled) setThumbnailUrl(nextUrl);
 			}
 		})();
 
 		return () => {
 			cancelled = true;
+			if (debounceTimerRef.current) {
+				clearTimeout(debounceTimerRef.current);
+				debounceTimerRef.current = null;
+			}
+			if (unsubscribeDoc) unsubscribeDoc();
 		};
 	}, [fallbackTitle, firstDrawingId, loadDrawingDoc, placeholderOptions, placeholderThemeKey]);
 
@@ -804,7 +873,16 @@ function useNoteCardImages(
 ): readonly NoteCardImagePreview[] {
 	const resolvedDocId = docId?.trim() ?? '';
 	const objectUrlsRef = React.useRef<string[]>([]);
-	const [images, setImages] = React.useState<readonly NoteCardImagePreview[]>([]);
+	// Synchronously seed from the in-memory remote cache populated by
+	// warmWorkspaceImageMetadata so view-switch and workspace-switch cards
+	// don't start blank. Remote images have CDN URLs — no blob creation needed.
+	const [images, setImages] = React.useState<readonly NoteCardImagePreview[]>(() => {
+		if (!resolvedDocId) return [];
+		const cached = getCachedRemoteNoteImages(resolvedDocId);
+		if (cached.length === 0) return [];
+		const sources = buildNoteCardImagePreviewSources({ remoteImages: cached, queuedRows: [], previewRows: [] });
+		return mapNoteCardImagePreviews(sources, objectUrlsRef.current);
+	});
 
 	React.useEffect(() => {
 		const revokeObjectUrls = (): void => {
@@ -1083,11 +1161,22 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	);
 	const drawingThumbnailUrl = useDrawingThumbnail(props.doc, props.noteId, type, title, drawingPlaceholderOptions);
 	const linkedDrawingIds = useLinkedDrawingIds(props.doc);
-	const linkedDrawingThumbnailUrl = useLinkedDrawingThumbnail(
+	// Two hook calls cover the max DRAWING_PREVIEW_MAX (2) drawing slots.
+	// Each is a no-op when its index exceeds linkedDrawingIds.length.
+	const linkedDrawingThumbnailFallbackTitle = title.trim() || t('note.untitled');
+	const linkedDrawingThumbnail0 = useLinkedDrawingThumbnail(
 		linkedDrawingIds,
+		0,
 		props.loadDrawingDoc,
 		drawingPlaceholderOptions,
-		title.trim() || t('note.untitled'),
+		linkedDrawingThumbnailFallbackTitle,
+	);
+	const linkedDrawingThumbnail1 = useLinkedDrawingThumbnail(
+		linkedDrawingIds,
+		1,
+		props.loadDrawingDoc,
+		drawingPlaceholderOptions,
+		linkedDrawingThumbnailFallbackTitle,
 	);
 	const noteImages = useNoteCardImages(props.docId, props.noteId, props.authUserId);
 	const reminderAt = props.reminderAt ?? '';
@@ -1115,16 +1204,25 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		() => normalizeChecklistHierarchy(checklistItems) as NoteCardChecklistItem[],
 		[checklistItems]
 	);
-	const isMediaOnlyEmpty = !title.trim() && (
+	// Show media previews whenever the note body is empty, regardless of title.
+	// Title-only notes (title + no content) still show image/drawing thumbnails.
+	const isMediaOnlyEmpty = (
 		type === 'text'
 			? isTextNoteContentEmpty(content, richContent, props.noteId)
 			: type === 'checklist'
 				? isChecklistContentEmpty(normalizedItems, props.noteId)
 				: false
 	);
-	const showLinkedDrawingPreview = isMediaOnlyEmpty && linkedDrawingIds.length > 0;
-	const showImageGridPreview = isMediaOnlyEmpty && linkedDrawingIds.length === 0 && noteImages.length > 0;
-	const mediaPreviewThumbnailUrl = type === 'drawing' ? drawingThumbnailUrl : linkedDrawingThumbnailUrl;
+	const { drawingSlots, imageSlots } = React.useMemo(
+		() => isMediaOnlyEmpty
+			? computeMediaPreviewSlots(linkedDrawingIds.length, noteImages.length)
+			: { drawingSlots: 0, imageSlots: 0 },
+		[isMediaOnlyEmpty, linkedDrawingIds.length, noteImages.length],
+	);
+	const showMediaPreview = drawingSlots + imageSlots > 0;
+	// Legacy aliases: kept so existing height-effect conditions don't need rewriting.
+	const showLinkedDrawingPreview = showMediaPreview;
+	const showImageGridPreview = showMediaPreview;
 	const extractedLinks = React.useSyncExternalStore(
 		(onStoreChange) => {
 			const observer = (): void => onStoreChange();
@@ -2107,12 +2205,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 						}}
 					/>
 				) : null}
-				{type === 'drawing' || showLinkedDrawingPreview ? (
+				{type === 'drawing' ? (
+					/* Native drawing note: variable-height thumbnail showing the full drawing */
 					<div ref={bodyRef} className={`${styles.body} ${styles.drawingBody}${hasMenuButton ? ` ${styles.bodyMenuSafe} ${styles.drawingBodyMenuSafe}` : ''}`} data-note-drag-manual="true">
-						{mediaPreviewThumbnailUrl ? (
+						{drawingThumbnailUrl ? (
 							<img
 								className={styles.drawingThumbnail}
-								src={mediaPreviewThumbnailUrl}
+								src={drawingThumbnailUrl}
 								alt=""
 								draggable={false}
 								onDragStart={(e) => e.preventDefault()}
@@ -2121,18 +2220,28 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							<div className={styles.drawingThumbnailSkeleton} aria-hidden="true" />
 						)}
 					</div>
-				) : showImageGridPreview ? (
+				) : showMediaPreview ? (
+					/* Mixed media grid: drawing thumbnails (slot 0, 1) + image thumbnails, up to 4 total.
+					   Cell count is fixed at render time so card height never oscillates on async loads. */
 					<div ref={bodyRef} className={`${styles.body} ${styles.mediaImageBody}${hasMenuButton ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
 						<div className={styles.mediaImageGrid}>
-							{noteImages.map((image) => (
+							{drawingSlots > 0 && linkedDrawingIds[0] ? (
+								<div key={`d0-${linkedDrawingIds[0]}`} className={styles.mediaImageGridCell}>
+									{linkedDrawingThumbnail0 ? (
+										<img className={styles.mediaImageThumb} src={linkedDrawingThumbnail0} alt="" draggable={false} onDragStart={(e) => e.preventDefault()} />
+									) : null}
+								</div>
+							) : null}
+							{drawingSlots > 1 && linkedDrawingIds[1] ? (
+								<div key={`d1-${linkedDrawingIds[1]}`} className={styles.mediaImageGridCell}>
+									{linkedDrawingThumbnail1 ? (
+										<img className={styles.mediaImageThumb} src={linkedDrawingThumbnail1} alt="" draggable={false} onDragStart={(e) => e.preventDefault()} />
+									) : null}
+								</div>
+							) : null}
+							{noteImages.slice(0, imageSlots).map((image) => (
 								<div key={image.id} className={styles.mediaImageGridCell}>
-									<img
-										className={styles.mediaImageThumb}
-										src={image.url}
-										alt=""
-										draggable={false}
-										onDragStart={(e) => e.preventDefault()}
-									/>
+									<img className={styles.mediaImageThumb} src={image.url} alt="" draggable={false} onDragStart={(e) => e.preventDefault()} />
 								</div>
 							))}
 						</div>

@@ -30,6 +30,13 @@ const NOTE_MEDIA_PREVIEW_STORE = 'note_media_preview';
 const NOTE_MEDIA_CHANGED_EVENT = 'freemannotes:note-media-changed';
 const NOTE_MEDIA_PREVIEW_VERSION = 2;
 
+// Upload retry / backoff constants
+const FLUSH_DEBOUNCE_MS = 400;
+const FLUSH_BACKOFF_INITIAL_MS = 2_000;
+const FLUSH_BACKOFF_MAX_MS = 60_000;
+// Delay before retrying a row whose note returned 403/404 (awaiting server sync)
+const FLUSH_ACCESS_RETRY_MS = 5_000;
+
 export type StoredNoteImagePreviewRecord = {
 	id: string;
 	kind: 'remote' | 'queued';
@@ -45,7 +52,13 @@ export type StoredNoteImagePreviewRecord = {
 let dbPromise: Promise<IDBDatabase> | null = null;
 const pendingFlushes = new Map<string, Promise<void>>();
 const flushTimers = new Map<string, number>();
+const flushFollowUpTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const flushBackoffMs = new Map<string, number>();
 const remoteCache = new Map<string, readonly NoteImageRecord[]>();
+// Synchronous in-memory count of pending upload rows per docId. Updated without an
+// IDB round-trip so NoteGrid can include queued images in `liveAttachmentTotal` and
+// avoid the early-return gate that prevents the chip from mounting while offline.
+const queuedCountByDocId = new Map<string, number>();
 const pendingRemoteRefreshes = new Map<string, Promise<readonly NoteImageRecord[]>>();
 const remoteRefreshTimestamps = new Map<string, number>();
 const remoteFileNameOverrides = new Map<string, string>();
@@ -104,6 +117,94 @@ function applyRemoteFileNameOverrides(images: readonly NoteImageRecord[]): NoteI
 
 function isOffline(): boolean {
 	return shouldTreatConnectionAsOffline();
+}
+
+// Strict offline check: only blocks on a hard navigator.onLine=false.
+// Uploads are allowed to run on slow/poor connections; they use dynamic timeouts
+// and exponential backoff so they eventually succeed even at 128 kb/s.
+function isBrowserOffline(): boolean {
+	return typeof navigator !== 'undefined' && navigator.onLine === false;
+}
+
+// Budget: ~100 KB/s (conservative for cellular connections).
+// Min timeout: 90s. Max: 10 min. On slow links the flush will retry via follow-up.
+function computeUploadTimeoutMs(byteSize: number): number {
+	const budgetMs = Math.round((Math.max(0, byteSize) / (100 * 1024)) * 1000);
+	return Math.max(90_000, Math.min(600_000, budgetMs + 30_000));
+}
+
+// Exclude queued uploads that already exist on the server (matched by remoteImageId
+// or by fileName+byteSize fingerprint). This prevents double-counting when the upload
+// succeeded but the queue entry hasn't been cleaned up yet (partial reconnect).
+export function filterQueuedUploadsNotYetRemote(
+	queuedRows: readonly QueuedNoteImageRow[],
+	remoteImages: readonly NoteImageRecord[],
+): QueuedNoteImageRow[] {
+	if (queuedRows.length === 0) return [];
+	if (remoteImages.length === 0) return [...queuedRows];
+	const remoteIds = new Set(remoteImages.map((img) => img.id));
+	const remoteKeys = new Set(
+		remoteImages
+			.filter((img) => img.fileName && img.byteSize > 0)
+			.map((img) => `${img.fileName}:${img.byteSize}`)
+	);
+	return queuedRows.filter((row) => {
+		if (row.remoteImageId && remoteIds.has(row.remoteImageId)) return false;
+		const key = row.fileName && row.byteSize > 0 ? `${row.fileName}:${row.byteSize}` : null;
+		return !(key && remoteKeys.has(key));
+	});
+}
+
+export async function hasQueuedNoteImageUploads(userId: string): Promise<boolean> {
+	if (!userId) return false;
+	const rows = await readAllQueuedNoteImages(userId);
+	return rows.some(isUploadRow);
+}
+
+// Returns the number of pending upload rows for a docId from the synchronous
+// in-memory cache. Zero until warmQueuedImageCounts() has run or images are
+// queued in the current session.
+export function getQueuedNoteImageCount(docId: string): number {
+	return queuedCountByDocId.get(docId) || 0;
+}
+
+// Hydrate the synchronous count cache from IDB at startup so NoteGrid can gate
+// the chip row correctly on warm boot without waiting for chip mount effects.
+export async function warmQueuedImageCounts(userId: string, docIds: readonly string[]): Promise<void> {
+	if (!userId || docIds.length === 0) return;
+	try {
+		const allRows = await readAllQueuedNoteImages(userId);
+		const uploadRows = allRows.filter(isUploadRow);
+		const docIdSet = new Set(docIds.map((id) => String(id).trim()).filter(Boolean));
+		const countsByDocId = new Map<string, number>();
+		for (const row of uploadRows) {
+			if (docIdSet.has(row.docId)) {
+				countsByDocId.set(row.docId, (countsByDocId.get(row.docId) || 0) + 1);
+			}
+		}
+		for (const [docId, count] of countsByDocId) {
+			queuedCountByDocId.set(docId, count);
+		}
+	} catch {
+		// Best-effort; chips will self-correct after mounting.
+	}
+}
+
+// Exponential-backoff follow-up flush. Replaces any pending follow-up for this user.
+// Resets backoff counter after a successful upload pass (noteFlushProgress).
+function scheduleFlushFollowUp(userId: string, delayMs?: number): void {
+	if (!userId) return;
+	const existing = flushFollowUpTimers.get(userId);
+	if (existing !== undefined) clearTimeout(existing);
+	const currentBackoff = flushBackoffMs.get(userId) ?? FLUSH_BACKOFF_INITIAL_MS;
+	const waitMs = delayMs ?? currentBackoff;
+	const nextBackoff = Math.min(currentBackoff * 2, FLUSH_BACKOFF_MAX_MS);
+	flushBackoffMs.set(userId, nextBackoff);
+	const timer = setTimeout(() => {
+		flushFollowUpTimers.delete(userId);
+		void scheduleQueuedNoteImageFlush(userId);
+	}, waitMs);
+	flushFollowUpTimers.set(userId, timer);
 }
 
 function createId(prefix: string): string {
@@ -446,6 +547,9 @@ export async function queueNoteImagesForUpload(args: {
 	}));
 	await upsertQueuedRows(rows);
 	await Promise.all(rows.map((row, index) => storeQueuedPreviewRow(docId, row.id, args.files[index], createdAt).catch(() => undefined)));
+	// Update synchronous count cache immediately so NoteGrid can mount the chip
+	// row on the next render without waiting for the IDB async round-trip.
+	queuedCountByDocId.set(docId, (queuedCountByDocId.get(docId) || 0) + rows.length);
 	emitNoteMediaChanged(docId);
 	void requestPwaBackgroundSync();
 	await scheduleQueuedNoteImageFlush(userId);
@@ -650,7 +754,12 @@ export async function deleteQueuedNoteImage(id: string): Promise<void> {
 			return null;
 		});
 		await deletePreviewRows([id]).catch(() => undefined);
-		if (docId) emitNoteMediaChanged(docId);
+		if (docId) {
+			const next = Math.max(0, (queuedCountByDocId.get(docId) || 0) - 1);
+			if (next === 0) queuedCountByDocId.delete(docId);
+			else queuedCountByDocId.set(docId, next);
+			emitNoteMediaChanged(docId);
+		}
 	} catch {
 		// ignore
 	}
@@ -723,11 +832,10 @@ export async function refreshRemoteNoteImages(
 					remoteCache.set(docId, preserved);
 					return preserved;
 				}
+				// Note may not exist server-side yet (offline-created note awaiting sync).
+				// Do NOT wipe IDB preview rows or emit a changed event — wiping would destroy
+				// queued-upload thumbnail blobs and emit would trigger an infinite refresh loop.
 				remoteCache.set(docId, []);
-				remoteRefreshTimestamps.delete(docId);
-				movedCacheGraceUntil.delete(docId);
-				await syncRemotePreviewRows(docId, []);
-				emitNoteMediaChanged(docId);
 				return [];
 			}
 			throw error;
@@ -780,22 +888,41 @@ export async function scheduleQueuedNoteImageFlush(userId: string): Promise<void
 		const timer = window.setTimeout(() => {
 			flushTimers.delete(userId);
 			resolve();
-		}, 200);
+		}, FLUSH_DEBOUNCE_MS);
 		flushTimers.set(userId, timer);
 	});
 	await flushQueuedNoteImages(userId);
 }
 
 export async function flushQueuedNoteImages(userId: string): Promise<void> {
-	if (!userId || isOffline()) return;
+	// Use strict navigator.onLine check so uploads proceed on slow/poor connections.
+	if (!userId || isBrowserOffline()) return;
 	if (pendingFlushes.has(userId)) {
 		await pendingFlushes.get(userId);
 		return;
 	}
 	const work = (async () => {
 		const rows = await readAllQueuedNoteImages(userId);
+
+		// Reset all previously-failed upload rows to 'pending' so they are retried
+		// in this pass. The failed state is only a transient UI hint; auto-retry is
+		// the source of truth for true offline-first behavior.
+		const failedUploadRows = rows.filter((r) => r.syncStatus === 'failed' && isUploadRow(r));
+		if (failedUploadRows.length > 0) {
+			await upsertQueuedRows(failedUploadRows.map((r) => ({
+				...r,
+				syncStatus: 'pending' as const,
+				lastError: null,
+				updatedAt: nowIso(),
+			})));
+		}
+
+		const touchedDocIds = new Set<string>();
+		let anySucceeded = false;
+		let anyRetryable = false;
+
 		for (const row of rows) {
-			if (isOffline()) return;
+			if (isBrowserOffline()) break;
 			try {
 				if (row.operationType === 'delete') {
 					if (row.remoteImageId) {
@@ -803,15 +930,28 @@ export async function flushQueuedNoteImages(userId: string): Promise<void> {
 						removeRemoteImageFromCache(row.docId, row.remoteImageId);
 						await deletePreviewRows([row.remoteImageId]).catch(() => undefined);
 					}
+					await updateQueuedRow(row.id, () => null);
+					const dNext = Math.max(0, (queuedCountByDocId.get(row.docId) || 0) - 1);
+					if (dNext === 0) queuedCountByDocId.delete(row.docId);
+					else queuedCountByDocId.set(row.docId, dNext);
+					touchedDocIds.add(row.docId);
+					anySucceeded = true;
 				} else if (row.operationType === 'import-url') {
 					if (!row.sourceUrl) throw new Error('Import-URL payload is missing');
 					await importNoteImageUrl(row.docId, row.sourceUrl);
+					await updateQueuedRow(row.id, () => null);
+					const iNext = Math.max(0, (queuedCountByDocId.get(row.docId) || 0) - 1);
+					if (iNext === 0) queuedCountByDocId.delete(row.docId);
+					else queuedCountByDocId.set(row.docId, iNext);
+					touchedDocIds.add(row.docId);
+					anySucceeded = true;
 				} else {
 					if (!row.blob) throw new Error('Upload payload is missing');
 					const file = new File([row.blob], row.fileName || 'image', {
 						type: row.mimeType || row.blob.type || 'application/octet-stream',
 					});
-					const response = await uploadNoteImages(row.docId, [file]);
+					const timeoutMs = computeUploadTimeoutMs(row.byteSize);
+					const response = await uploadNoteImages(row.docId, [file], { timeoutMs });
 					const uploadedImages = applyRemoteFileNameOverrides(response.images);
 					if (uploadedImages.length > 0) {
 						remoteCache.set(
@@ -825,19 +965,59 @@ export async function flushQueuedNoteImages(userId: string): Promise<void> {
 						}
 						await promoteQueuedPreviewRow(row.docId, row.id, image);
 					}
+					await updateQueuedRow(row.id, () => null);
+					const uNext = Math.max(0, (queuedCountByDocId.get(row.docId) || 0) - 1);
+					if (uNext === 0) queuedCountByDocId.delete(row.docId);
+					else queuedCountByDocId.set(row.docId, uNext);
+					touchedDocIds.add(row.docId);
+					anySucceeded = true;
 				}
-				await updateQueuedRow(row.id, () => null);
-				await refreshRemoteNoteImages(row.docId).catch(() => undefined);
-				emitNoteMediaChanged(row.docId);
 			} catch (error) {
-				await updateQueuedRow(row.id, (current) => ({
-					...current,
-					updatedAt: nowIso(),
-					syncStatus: 'failed',
-					lastError: error instanceof Error ? error.message : 'Upload failed',
-				}));
-				emitNoteMediaChanged(row.docId);
+				touchedDocIds.add(row.docId);
+				if (isMissingAccessError(error)) {
+					// Note not yet on server (offline-created note awaiting sync).
+					// Keep row pending and retry soon after the note sync completes.
+					await updateQueuedRow(row.id, (current) => ({
+						...current,
+						syncStatus: 'pending' as const,
+						lastError: null,
+						updatedAt: nowIso(),
+					}));
+					scheduleFlushFollowUp(userId, FLUSH_ACCESS_RETRY_MS);
+					anyRetryable = true;
+				} else {
+					// Transient network/timeout error — mark failed for UI feedback,
+					// then schedule a follow-up that will reset it back to pending.
+					await updateQueuedRow(row.id, (current) => ({
+						...current,
+						updatedAt: nowIso(),
+						syncStatus: 'failed' as const,
+						lastError: error instanceof Error ? error.message : 'Upload failed',
+					}));
+					anyRetryable = true;
+				}
 			}
+		}
+
+		// Batch remote refresh + UI notification once per touched note (not per row).
+		await Promise.all(
+			Array.from(touchedDocIds).map((docId) =>
+				refreshRemoteNoteImages(docId).catch(() => undefined)
+			)
+		);
+		for (const docId of touchedDocIds) {
+			emitNoteMediaChanged(docId);
+		}
+
+		if (anySucceeded) {
+			// Reset backoff after at least one image succeeded.
+			flushBackoffMs.delete(userId);
+		}
+
+		// If rows remain (failed, pending-403, or new arrivals), schedule a follow-up
+		// flush with exponential backoff so uploads complete without user intervention.
+		if (anyRetryable || await hasQueuedNoteImageUploads(userId)) {
+			scheduleFlushFollowUp(userId);
 		}
 	})();
 	pendingFlushes.set(userId, work);

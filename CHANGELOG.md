@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.5.8 - 2026-06-20
+
+### Added
+- **Bubble view float animation restored.** The `bubbleFloat` keyframe, per-bubble `--bv-float-duration` / `--bv-float-delay` CSS variables, and hover `animation-play-state: paused` were all intact; a stray `animation: none` added during virtualization work silenced them. Restored to `animation: bubbleFloat …`.
+
+### Changed
+- **Excalidraw editor defaults.** New drawings open with Nunito as the default text font, thin stroke width, architect sloppiness (0), and sharp edges. Existing drawings continue to restore their own saved `appState`.
+
+### Fixed
+- **Excalidraw drawing anchor lands at wrong position.** The `syncViewportOffsets` effect that keeps Excalidraw's `offsetTop`/`offsetLeft` in sync with the canvas element's actual viewport position was previously guarded on `usesMobileEditorLayout` only. On desktop, the offset stayed at 0, causing first-click anchors to appear at an incorrect scene position (often the screen center). Guard removed so the sync runs on all device types.
+- **List view untitled notes show `(untitled)`.** Notes without a title now display the localised `(untitled)` label in both list and detailed-list views, matching note card and search behaviour.
+- **List view drag ghost matches real note row.** Ghost icon, title, content, and 3-dot menu now exactly mirror the live row layout for all note types (text, checklist, drawing) in both list views.
+- **Mobile FAB disappears after banner image change + sidebar open.** `NoteBannerPickerModal` now pushes a `__noteBannerPicker` history entry on mobile; `App.tsx` recognises it as a dismiss-layer state and corrects a stuck `isMobileSidebarOpen: true` condition that blocked the FAB.
+- **"Move to workspace" modal allows background scroll.** `useBodyScrollLock` added to `MoveNoteModal` so the note grid no longer scrolls behind the modal on iOS and desktop.
+- **Note banner warm-start pop-in / stale-removal.** A `noteBannerWarmCache` (localStorage) is written at every banner assignment and read by `createSnapshotDocFromWorkspaceRenderSnapshot`, ensuring the correct banner state is present on the first paint of a warm restart.
+- **Cold-start drag animations work on first drag.** `cardPositionAnimationsReady` now bypasses startup gates whenever a drag is active, so neighbour cards animate on the very first drag after a cold boot.
+
 ## 1.5.7 - 2026-06-15
 
 ### Added

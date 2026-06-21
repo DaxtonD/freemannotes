@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { CaptureUpdateAction, Excalidraw, MainMenu, defaultLang, languages, loadLibraryFromBlob } from '@excalidraw/excalidraw';
+import { CaptureUpdateAction, FONT_FAMILY, Excalidraw, MainMenu, defaultLang, languages, loadLibraryFromBlob } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBell, faEllipsisVertical, faUserPlus } from '@fortawesome/free-solid-svg-icons';
@@ -18,7 +18,8 @@ import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, su
 import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { isLightTheme, type ThemeId } from '../../core/theme';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
-import { assignDrawingBackgroundColor, readNoteMetadataState } from '../../services/noteService';
+import { assignDrawingBackgroundColor, assignNoteBannerFile, readNoteMetadataState } from '../../services/noteService';
+import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
 import { NoteBannerPickerModal } from '../NoteCard/NoteBannerPickerModal';
@@ -359,16 +360,23 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 			// Seed the first frame directly from IndexedDB-backed Yjs state so drawings
 			// reopen instantly before websocket reconciliation finishes.
 			elements,
-			appState: {
-				activeTool: {
-					type: 'selection' as const,
-					customType: null,
-					locked: true,
-					lastActiveTool: null,
-				},
-				currentItemStrokeColor: recommendedInkColor,
-				viewBackgroundColor: drawingBackgroundColor,
+		appState: {
+			activeTool: {
+				type: 'selection' as const,
+				customType: null,
+				locked: true,
+				lastActiveTool: null,
 			},
+			currentItemStrokeColor: recommendedInkColor,
+			viewBackgroundColor: drawingBackgroundColor,
+			// Default tool style: Nunito text, thin stroke, architect sloppiness (0),
+			// sharp edges. These only apply to new drawings; existing drawings restore
+			// their own saved appState.
+			currentItemFontFamily: FONT_FAMILY.Nunito,
+			currentItemRoughness: 0,
+			currentItemStrokeWidth: 1,
+			currentItemRoundness: 'sharp' as const,
+		},
 		};
 	}, [drawingBackgroundColor, initialSceneElements]);
 
@@ -675,8 +683,13 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		};
 	}, [api]);
 
+	// Sync Excalidraw's offsetTop/offsetLeft with the canvas element's actual
+	// position in the viewport. Without this, pointer events are miscalculated
+	// and first-click anchors land at the wrong scene position. Previously
+	// guarded on `usesMobileEditorLayout` — removed so desktop editors (where
+	// the canvas may be offset by a header/toolbar) are also corrected.
 	React.useEffect(() => {
-		if (!api || !usesMobileEditorLayout || typeof window === 'undefined') return;
+		if (!api || typeof window === 'undefined') return;
 
 		let frameId = 0;
 		const syncViewportOffsets = (): void => {
@@ -1264,6 +1277,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 				onClose={() => setIsBannerPickerOpen(false)}
 				onSelect={(fileName) => {
 					assignNoteBannerFile(props.doc, fileName);
+					writeNoteBannerWarmCacheFile(props.noteId, fileName);
 					setIsBannerPickerOpen(false);
 				}}
 			/>

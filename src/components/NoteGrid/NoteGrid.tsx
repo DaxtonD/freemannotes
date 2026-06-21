@@ -3,7 +3,7 @@ import type * as Y from 'yjs';
 import { createPortal } from 'react-dom';
 import { motion, LayoutGroup, AnimatePresence, type Transition } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faBell, faEllipsisVertical, faFileLines, faFolder, faListCheck, faTag, faThumbtack, faUsers } from '@fortawesome/free-solid-svg-icons';
+import { faBell, faEllipsisVertical, faFileLines, faFolder, faListCheck, faPenNib, faTag, faThumbtack, faUsers } from '@fortawesome/free-solid-svg-icons';
 import { NoteCard } from '../NoteCard/NoteCard';
 import { NoteAttachmentCountChip, type NoteAttachmentBrowserKind } from '../NoteAttachments/NoteAttachmentCountChip';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
@@ -21,12 +21,13 @@ import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
 import { getCachedRemoteNoteLinks, syncNoteLinksForDoc } from '../../core/noteLinkStore';
-import { getCachedRemoteNoteImages } from '../../core/noteMediaStore';
+import { getCachedRemoteNoteImages, getQueuedNoteImageCount } from '../../core/noteMediaStore';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, setUserNotePinnedOnDoc, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import { resolveNoteReminderAt } from '../../core/reminderLookup';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
 import { assignNoteBannerFile } from '../../services/noteService';
+import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
 import type { ViewMode } from '../../core/viewMode';
 import type { ListScrollAnchor } from './listScrollAnchor';
 import { NoteListView } from './NoteListView';
@@ -837,7 +838,9 @@ function renderNoteMetaChips(args: {
 	const liveAttachmentTotal = args.docId
 		? Math.max(
 			attachmentShellTotal,
-			(allowsImages ? getCachedRemoteNoteImages(args.docId).length : 0) +
+			// Include queued (offline) uploads in the gate so the chip row mounts even
+			// before images are uploaded to the server.
+			(allowsImages ? getCachedRemoteNoteImages(args.docId).length + getQueuedNoteImageCount(args.docId) : 0) +
 			(allowsLinks ? Math.max(getCachedRemoteNoteLinks(args.docId).length, extractNoteLinksFromDoc(args.doc).length) : 0) +
 			(allowsDrawings ? readDrawingLinkState(args.doc).drawingIds.length : 0)
 		)
@@ -3310,7 +3313,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	);
 	const activeSnapshot = activeNote ? noteSnapshotById.get(activeNote.id) : undefined;
 	const activeTitle = activeDoc?.getText('title').toString().trim() || t('note.untitled');
-	const activeIsChecklist = Boolean(activeDoc && String(activeDoc.getMap<any>('metadata').get('type') ?? '') === 'checklist');
+	const activeRawNoteType = activeDoc ? String(activeDoc.getMap<any>('metadata').get('type') ?? '') : '';
+	const activeIsChecklist = activeRawNoteType === 'checklist';
+	const activeIsDrawing = activeRawNoteType === 'drawing';
 	const activeNoteBannerFile = activeNote
 		? (activeDoc
 			? readEffectiveNoteBannerFile(activeDoc.getMap<any>('metadata'), noteBannerPrefsSnapshot[activeNote.id] ?? null)
@@ -3526,7 +3531,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			: Math.max(12, openMetadataChip.anchorRect.top - estimatedHeight - 8);
 		return { top, left, width: overlayWidth };
 	}, [isCoarsePointer, openMetadataChip]);
-	const cardPositionAnimationsReady = layoutReady && startupLayoutAnimationsReady;
+	// On cold start, both layoutReady and startupLayoutAnimationsReady can be false
+	// during the WS-cycling delay (allDocsLoaded briefly goes false, cancelling the
+	// 2-rAF timer and the 4-frame height-stability window). If the user drags a card
+	// before both gates fire, neighbor shifts snap. An active drag is explicit user
+	// intent — bypass both startup gates entirely when activeDragId is set so that
+	// neighbor animations always work on the first drag. The drop triggers a repack
+	// that stabilises heights, letting startupLayoutAnimationsReady fire normally
+	// for all subsequent drags.
+	const cardPositionAnimationsReady = Boolean(dragManager.activeDragId) || (layoutReady && startupLayoutAnimationsReady);
 
 	React.useEffect(() => {
 		if (!transitionDebugEnabled || !props.debugTransitionTraceId) return;
@@ -4230,16 +4243,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						<div className={`${styles.listDragGhost}${activeNoteBannerFile ? ` ${styles.listDragGhostBanner}` : ''}`} style={activeListGhostStyle}>
 							<div className={styles.listDragGhostMain}>
 								<span className={styles.listDragGhostType}>
-									<FontAwesomeIcon icon={activeIsChecklist ? faListCheck : faFileLines} />
+									<FontAwesomeIcon icon={activeIsChecklist ? faListCheck : activeIsDrawing ? faPenNib : faFileLines} />
 								</span>
-								<span className={styles.listDragGhostTitle}>{activeTitle}</span>
+								<div className={styles.listDragGhostTextColumn}>
+									<span className={styles.listDragGhostTitle}>{activeTitle}</span>
+									{props.viewMode === 'strip' && activeStripPreview ? (
+										<div className={styles.listDragGhostPreview}>{activeStripPreview}</div>
+									) : null}
+								</div>
 								<span className={styles.listDragGhostMore} aria-hidden="true">
 									<FontAwesomeIcon icon={faEllipsisVertical} />
 								</span>
 							</div>
-							{props.viewMode === 'strip' && activeStripPreview ? (
-								<div className={styles.listDragGhostPreview}>{activeStripPreview}</div>
-							) : null}
 						</div>
 					) : (
 						<DragPreviewMarkup markup={dragPreviewMarkup} />
@@ -4558,13 +4573,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						return pickerDoc ? readEffectiveNoteBannerFile(pickerDoc.getMap<any>('metadata'), legacyFallback) : legacyFallback;
 					})()}
 					onClose={() => setBannerPickerNoteId(null)}
-					onSelect={(fileName) => {
-						const pickerDoc = docsById[bannerPickerNoteId];
-						if (pickerDoc) {
-							assignNoteBannerFile(pickerDoc, fileName);
-						}
-						setBannerPickerNoteId(null);
-					}}
+				onSelect={(fileName) => {
+					const pickerDoc = docsById[bannerPickerNoteId];
+					if (pickerDoc) {
+						assignNoteBannerFile(pickerDoc, fileName);
+						// Persist immediately so warm-start reads the correct banner
+						// even if the render snapshot hasn't been flushed yet.
+						writeNoteBannerWarmCacheFile(bannerPickerNoteId, fileName);
+					}
+					setBannerPickerNoteId(null);
+				}}
 				/>
 			) : null}
 			{process.env.NODE_ENV !== 'production' ? (

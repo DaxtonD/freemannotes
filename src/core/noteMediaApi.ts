@@ -83,7 +83,11 @@ export async function listNoteImages(docId: string): Promise<NoteImageListRespon
 	});
 }
 
-export async function uploadNoteImages(docId: string, files: readonly File[]): Promise<NoteImageListResponse> {
+export async function uploadNoteImages(
+	docId: string,
+	files: readonly File[],
+	options: { timeoutMs?: number } = {},
+): Promise<NoteImageListResponse> {
 	const formData = new FormData();
 	formData.append('docId', docId);
 	for (const file of files) {
@@ -94,7 +98,7 @@ export async function uploadNoteImages(docId: string, files: readonly File[]): P
 		body: formData,
 	}, {
 		requestName: 'note-media-upload',
-		timeoutMs: 90000,
+		timeoutMs: options.timeoutMs ?? 90_000,
 	});
 }
 

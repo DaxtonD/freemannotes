@@ -269,6 +269,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		verticalLocked: boolean;
 	} | null>(null);
 	const ignoreNextMediaDockClickRef = React.useRef(false);
+	// Suppress media-sheet drag gestures for a short window after the editor opens.
+	// The touch that tapped the card can carry into the handle area and trigger an
+	// unintended drag that makes the sheet slide up then immediately fade away.
+	const mediaSheetGestureSuppressUntilRef = React.useRef(0);
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
 	const keyboard = useKeyboardHeight();
@@ -295,8 +299,29 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		if (!mobileKeyboardOpen) return;
 		setMediaDockOpen(false);
 	}, [mobileKeyboardOpen]);
+	const isMediaSheetGestureSuppressed = React.useCallback((): boolean => {
+		return typeof performance !== 'undefined'
+			? performance.now() < mediaSheetGestureSuppressUntilRef.current
+			: false;
+	}, []);
+
+	// Set the suppress window once on mount so any touch that opened the editor cannot
+	// accidentally trigger the media sheet drag.
+	React.useEffect(() => {
+		mediaSheetGestureSuppressUntilRef.current = (
+			typeof performance !== 'undefined' ? performance.now() : Date.now()
+		) + 450;
+	}, []);
+
 	React.useEffect(() => {
 		if (isMediaSheetDragging) return;
+		if (isMediaSheetGestureSuppressed()) {
+			if (!mediaDockOpen && mediaSheetProgress > 0.001) {
+				setMediaSheetProgress(0);
+				setIsMediaSheetClosing(false);
+			}
+			return;
+		}
 		if (!mediaDockOpen && mediaSheetProgress > 0.001) {
 			setIsMediaSheetClosing(true);
 		}
@@ -304,7 +329,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			setIsMediaSheetClosing(false);
 		}
 		setMediaSheetProgress(mediaDockOpen ? 1 : 0);
-	}, [isMediaSheetClosing, isMediaSheetDragging, mediaDockOpen, mediaSheetProgress]);
+	}, [isMediaSheetClosing, isMediaSheetDragging, isMediaSheetGestureSuppressed, mediaDockOpen, mediaSheetProgress]);
 	React.useEffect(() => {
 		if (!mediaDockOpen || !isCoarsePointer || typeof document === 'undefined') return;
 		const active = document.activeElement;
@@ -423,6 +448,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	}, []);
 	const handleMediaDockDragStart = React.useCallback((event: React.TouchEvent): void => {
 		if (isMobileLandscapeRef.current) return;
+		if (isMediaSheetGestureSuppressed()) return;
 		const t0 = event.touches[0];
 		if (!t0) return;
 		event.stopPropagation();
@@ -434,8 +460,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			sheetHeight: getMediaSheetHeight(),
 			verticalLocked: false,
 		};
-	}, [getMediaSheetHeight, mediaSheetProgress]);
+	}, [getMediaSheetHeight, isMediaSheetGestureSuppressed, mediaSheetProgress]);
 	const handleMediaDockDragMove = React.useCallback((event: React.TouchEvent): void => {
+		if (isMediaSheetGestureSuppressed()) return;
 		const gesture = mediaSheetDragRef.current;
 		const t0 = event.touches[0];
 		if (!gesture || !t0) return;
@@ -457,8 +484,13 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		if (event.cancelable) event.preventDefault();
 		setIsMediaSheetDragging(true);
 		setMediaSheetProgress(clampMediaSheetProgress(gesture.startProgress - (dy / Math.max(gesture.sheetHeight, 1))));
-	}, [clampMediaSheetProgress, mediaDockOpen]);
+	}, [clampMediaSheetProgress, isMediaSheetGestureSuppressed, mediaDockOpen]);
 	const handleMediaDockDragEnd = React.useCallback((event: React.TouchEvent): void => {
+		if (isMediaSheetGestureSuppressed()) {
+			mediaSheetDragRef.current = null;
+			setIsMediaSheetDragging(false);
+			return;
+		}
 		const gesture = mediaSheetDragRef.current;
 		if (!gesture) return;
 		event.stopPropagation();
@@ -473,7 +505,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		setIsMediaSheetDragging(false);
 		if (shouldOpen) setMediaSheetProgress(1);
 		setMediaDockOpen(shouldOpen);
-	}, [mediaDockOpen, mediaSheetProgress]);
+	}, [isMediaSheetGestureSuppressed, mediaDockOpen, mediaSheetProgress]);
 	const handleMediaSheetTransitionEnd = React.useCallback((event: React.TransitionEvent<HTMLElement>): void => {
 		if (event.target !== event.currentTarget) return;
 		if (event.propertyName !== 'transform') return;

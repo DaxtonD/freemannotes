@@ -3,6 +3,7 @@ import { logClientEvent } from './debugLogger';
 import { getDeviceId } from './deviceId';
 import { readCachedDeviceAppearancePreferences, type CachedDeviceAppearancePreferences } from './deviceAppearancePreferences';
 import { getNoteBannerAssetUrl } from './noteBannerApi';
+import { readNoteBannerWarmCache } from './noteBannerWarmCache';
 import { readUserNoteBannerPrefsSnapshot } from './noteBannerPreferences';
 import { readNoteOrderSnapshot } from './noteOrderSnapshot';
 import { readCachedReminderStates } from './reminderCache';
@@ -198,6 +199,27 @@ export async function hydrateStartupSnapshot(manager: DocumentManager): Promise<
 	};
 }
 
+/**
+ * Returns docIds (workspace-prefixed room names) for the first SCAN_LIMIT notes in the
+ * render snapshot that have at least one image attachment. Used to preload image metadata
+ * from IDB into the in-memory remoteCache before createRoot() so cards don't start blank.
+ * Mirrors the docId format from DocumentManager.roomNameFor: `${workspaceId}:${noteId}`.
+ */
+export function readSynchronousWarmStartupMediaDocIds(limit = 16): string[] {
+	const base = buildStartupHydrationBase();
+	if (!base.hasWarmCache || !base.workspaceId) return [];
+	const renderSnapshot = readWorkspaceRenderSnapshot(base.workspaceId);
+	if (!renderSnapshot?.notes?.length) return [];
+	const docIds: string[] = [];
+	for (const note of renderSnapshot.notes) {
+		if ((note.attachmentCounts?.images ?? 0) > 0 && !note.id.startsWith('shared-placement:')) {
+			docIds.push(`${base.workspaceId}:${note.id}`);
+			if (docIds.length >= limit) break;
+		}
+	}
+	return docIds;
+}
+
 export function readSynchronousWarmStartupBannerUrls(themeId: ThemeId | null | undefined, viewMode: ViewMode): string[] {
 	if (viewMode === 'bubble') return [];
 	const preloadLimit = STARTUP_BANNER_PRELOAD_LIMIT[viewMode];
@@ -207,6 +229,18 @@ export function readSynchronousWarmStartupBannerUrls(themeId: ThemeId | null | u
 	if (!base.hasWarmCache || !base.userId || !base.workspaceId) return [];
 
 	const noteBannerPrefs = readUserNoteBannerPrefsSnapshot(base.userId);
+	// The warm cache is read here only to extend preloading when legacy prefs are
+	// already active. DO NOT use it to open the preload gate on its own:
+	// the warm cache persists across sessions, so non-empty warm cache would block
+	// createRoot() on up to 900 ms of banner image decoding on every warm start for
+	// users who ever changed a banner. The snapshot-doc fix in
+	// createSnapshotDocFromWorkspaceRenderSnapshot handles first-paint correctness
+	// without blocking startup.
+	const noteBannerWarmCache = readNoteBannerWarmCache();
+
+	// Preserve original gate: only legacy per-user prefs open the preload path.
+	// Shared banners (Yjs metadata) are handled by the snapshot-doc warm-cache fix
+	// and must NOT gate createRoot() here.
 	if (Object.keys(noteBannerPrefs).length === 0) return [];
 
 	const renderSnapshot = readWorkspaceRenderSnapshot(base.workspaceId);
@@ -219,9 +253,19 @@ export function readSynchronousWarmStartupBannerUrls(themeId: ThemeId | null | u
 	for (const noteId of orderedIdsSource.slice(0, STARTUP_BANNER_SCAN_LIMIT)) {
 		if (noteId.startsWith('shared-placement:')) continue;
 		const snapshotNote = renderSnapshotNotesById.get(noteId);
-		const fileName = snapshotNote?.hasSharedBannerPreference
-			? (snapshotNote.bannerFile ?? null)
-			: (noteBannerPrefs[noteId] ?? null);
+
+		// Warm cache takes priority over the render snapshot (it may reflect a recent
+		// pick not yet saved). Falls back to shared-banner render-snapshot entry then
+		// to legacy user prefs. This path is only reached when noteBannerPrefs is
+		// non-empty, so the user has legacy prefs and banners are likely HTTP-cached.
+		let fileName: string | null;
+		if (noteId in noteBannerWarmCache) {
+			fileName = noteBannerWarmCache[noteId];
+		} else if (snapshotNote?.hasSharedBannerPreference) {
+			fileName = snapshotNote.bannerFile ?? null;
+		} else {
+			fileName = noteBannerPrefs[noteId] ?? null;
+		}
 		if (!fileName) continue;
 		const url = getNoteBannerAssetUrl(fileName, themeId, viewMode === 'card' ? 'card' : 'list');
 		if (seen.has(url)) continue;

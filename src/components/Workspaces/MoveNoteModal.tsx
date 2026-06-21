@@ -1,6 +1,7 @@
 import React from 'react';
 import { canEditWorkspaceContent, getWorkspaceRoleLabelKey, type WorkspaceRole } from '../../core/workspaceRoles';
 import { getWorkspaceDisplayName } from '../../core/workspaceDisplay';
+import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import styles from './MoveNoteModal.module.css';
 
 type WorkspaceOption = {
@@ -30,6 +31,7 @@ type MoveNoteModalProps = {
 };
 
 export function MoveNoteModal(props: MoveNoteModalProps): React.JSX.Element | null {
+	useBodyScrollLock(props.isOpen);
 	const availableWorkspaces = React.useMemo(() => {
 		return props.workspaces.filter((workspace) => {
 			if (workspace.id === props.currentWorkspaceId) return false;

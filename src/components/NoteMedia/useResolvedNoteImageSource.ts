@@ -28,6 +28,12 @@ async function hasCachedImage(url: string): Promise<boolean> {
 	}
 }
 
+// blob: URLs are device-local object URLs and remain accessible regardless of
+// network connectivity. Queued-upload preview tiles pass a blob: URL as fullUrl.
+function isBlobUrl(url: string | null | undefined): url is string {
+	return typeof url === 'string' && url.startsWith('blob:');
+}
+
 function resolveImmediateSource(args: {
 	fullUrl?: string | null;
 	thumbnailUrl?: string | null;
@@ -41,6 +47,10 @@ function resolveImmediateSource(args: {
 	// Pick the source directly from the current inputs so viewer navigation never
 	// has to wait for an effect before switching away from the previous image.
 	if (mode === 'viewer') {
+		// Prefer blob: URLs first — they are locally accessible even when the device
+		// is offline (queued image previews use URL.createObjectURL on the raw blob).
+		if (isBlobUrl(fullUrl)) return { src: fullUrl, isOfflinePreview: true };
+		if (isBlobUrl(thumbnailUrl)) return { src: thumbnailUrl, isOfflinePreview: true };
 		if (objectUrl && (offline || poorConnection)) {
 			return { src: objectUrl, isOfflinePreview: true };
 		}
@@ -55,6 +65,9 @@ function resolveImmediateSource(args: {
 		}
 		return { src: null, isOfflinePreview: false };
 	}
+	// thumbnail mode
+	if (isBlobUrl(fullUrl)) return { src: fullUrl, isOfflinePreview: true };
+	if (isBlobUrl(thumbnailUrl)) return { src: thumbnailUrl, isOfflinePreview: true };
 	if (objectUrl && (offline || poorConnection)) {
 		return { src: objectUrl, isOfflinePreview: true };
 	}

@@ -7,8 +7,8 @@ import { deleteNoteImage, type NoteImageRecord } from '../../core/noteMediaApi';
 import {
 	deleteQueuedNoteImage,
 	emitNoteMediaChanged,
+	filterQueuedUploadsNotYetRemote,
 	filterRemoteNoteImagesByPendingDeletes,
-	flushQueuedNoteImages,
 	getCachedRemoteNoteImages,
 	getNoteMediaChangedEventName,
 	readStoredNoteImagePreviewRows,
@@ -17,6 +17,7 @@ import {
 	readQueuedNoteImageDeletions,
 	refreshRemoteNoteImages,
 	queueRemoteNoteImageDeletion,
+	scheduleQueuedNoteImageFlush,
 	type StoredNoteImagePreviewRecord,
 	type QueuedNoteImageRow,
 } from '../../core/noteMediaStore';
@@ -125,12 +126,21 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const [storedPreviewRows, setStoredPreviewRows] = React.useState<readonly StoredNoteImagePreviewRecord[]>([]);
 	const newestQueuedTileRef = React.useRef<HTMLDivElement | null>(null);
 	const previousQueuedCountRef = React.useRef(0);
+	// Suppress the queued-tile scrollIntoView for 500ms after the panel first mounts
+	// or its docId changes. Without this guard, the initial IDB hydration of queued images
+	// fires scrollIntoView on the tile (which is inside the peek-position media sheet), and
+	// the browser tries to scroll the nearest scrollable ancestor to bring the hidden tile
+	// into view. This nudges the visual viewport or the editor scroll container, causing
+	// the media sheet to appear to slide upward and then close without user interaction.
+	const skipQueuedScrollUntilRef = React.useRef<number>(
+		typeof performance !== 'undefined' ? performance.now() + 500 : Date.now() + 500
+	);
 	const tileTouchStartRef = React.useRef<{ index: number; x: number; y: number } | null>(null);
 	const lastTouchOpenRef = React.useRef<{ index: number; at: number } | null>(null);
 	const deleteTouchHandledRef = React.useRef<{ id: string; at: number } | null>(null);
 
-	const refresh = React.useCallback(async () => {
-		setLoading(true);
+	const refresh = React.useCallback(async (options?: { silent?: boolean }) => {
+		if (!options?.silent) setLoading(true);
 		setError(null);
 		try {
 			const loadRemoteImages = async (): Promise<readonly NoteImageRecord[]> => {
@@ -175,9 +185,23 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		const objectUrls: string[] = [];
+		// Index queued preview rows by queue row id so we can fall back to the IDB
+		// thumbnail blob when the in-memory row.blob has been cleared (e.g. after
+		// the app warm-loaded from IDB without re-reading the original file).
+		const previewByQueuedId = new Map(
+			storedPreviewRows
+				.filter((r) => r.kind === 'queued')
+				.map((r) => [r.id, r])
+		);
 		const nextItems = queuedImages.map((row) => {
 			if (row.blob instanceof Blob) {
 				const previewUrl = URL.createObjectURL(row.blob);
+				objectUrls.push(previewUrl);
+				return { ...row, previewUrl };
+			}
+			const previewRow = previewByQueuedId.get(row.id);
+			if (previewRow?.thumbnailBlob instanceof Blob) {
+				const previewUrl = URL.createObjectURL(previewRow.thumbnailBlob);
 				objectUrls.push(previewUrl);
 				return { ...row, previewUrl };
 			}
@@ -192,11 +216,23 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 				URL.revokeObjectURL(previewUrl);
 			}
 		};
-	}, [queuedImages]);
+	}, [queuedImages, storedPreviewRows]);
+
+	// Reset the scroll-suppress window whenever the panel switches to a different note.
+	React.useEffect(() => {
+		skipQueuedScrollUntilRef.current = (
+			typeof performance !== 'undefined' ? performance.now() : Date.now()
+		) + 500;
+	}, [props.docId]);
 
 	React.useEffect(() => {
 		if (localPreviewItems.length > previousQueuedCountRef.current) {
-			newestQueuedTileRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+			const isSuppressed = typeof performance !== 'undefined'
+				? performance.now() < skipQueuedScrollUntilRef.current
+				: false;
+			if (!isSuppressed) {
+				newestQueuedTileRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+			}
 		}
 		previousQueuedCountRef.current = localPreviewItems.length;
 	}, [localPreviewItems]);
@@ -206,22 +242,25 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		const onChanged = (event: Event): void => {
 			const detail = (event as CustomEvent<{ docId?: string }>).detail;
 			if (!detail?.docId || detail.docId === props.docId) {
-				void refresh();
+				// Silent refresh avoids the Loading flicker on every media sync event.
+				void refresh({ silent: true });
 			}
 		};
 		const onOnline = (): void => {
 			if (props.authUserId) {
-				void flushQueuedNoteImages(props.authUserId);
+				// Use debounced scheduler so a burst of online events coalesces into one flush.
+				void scheduleQueuedNoteImageFlush(props.authUserId);
 			}
 			void refresh();
 		};
 		window.addEventListener(eventName, onChanged as EventListener);
 		window.addEventListener('online', onOnline);
 		const unsubscribeConnection = subscribeConnectionQualityChange(() => {
-			if (getConnectionQuality() === 'good' && props.authUserId) {
-				void flushQueuedNoteImages(props.authUserId);
+			const quality = getConnectionQuality();
+			if (quality !== 'offline' && props.authUserId) {
+				void scheduleQueuedNoteImageFlush(props.authUserId);
 			}
-			void refresh();
+			void refresh({ silent: true });
 		});
 		return () => {
 			window.removeEventListener(eventName, onChanged as EventListener);
@@ -240,10 +279,24 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			.map((row) => [row.remoteImageId as string, row] as const);
 		return new Map(entries);
 	}, [storedPreviewRows]);
-	const queuedCount = localPreviewItems.length;
+	const storedPreviewByQueuedId = React.useMemo(() => {
+		const entries = storedPreviewRows
+			.filter((row) => row.kind === 'queued')
+			.map((row) => [row.id, row] as const);
+		return new Map(entries);
+	}, [storedPreviewRows]);
+	// Exclude queued rows already present in the remote list (deduplication for the
+	// case where the upload completed but the queue entry hasn't been cleaned up yet).
+	const activeQueuedImages = React.useMemo(
+		() => filterQueuedUploadsNotYetRemote(queuedImages, visibleRemoteImages),
+		[queuedImages, visibleRemoteImages]
+	);
+	const queuedCount = activeQueuedImages.length;
 	const queuedDeleteCount = queuedDeletions.length;
 	const totalCount = visibleRemoteImages.length + queuedCount;
-	const failedCount = localPreviewItems.filter((item) => item.syncStatus === 'failed').length;
+	const failedCount = localPreviewItems.filter(
+		(item) => item.syncStatus === 'failed' && activeQueuedImages.some((q) => q.id === item.id)
+	).length;
 
 	const handleDeleteRemote = React.useCallback(async (image: NoteImageRecord) => {
 		if (!props.canEdit) return;
@@ -329,7 +382,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const handleRetry = React.useCallback(async () => {
 		if (!props.authUserId) return;
 		setError(null);
-		await flushQueuedNoteImages(props.authUserId);
+		await scheduleQueuedNoteImageFlush(props.authUserId);
 		await refresh();
 	}, [props.authUserId, refresh]);
 
@@ -353,7 +406,11 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		})),
 		...localPreviewItems.map((item, index) => ({
 			src: item.previewUrl || item.sourceUrl || '',
-			fallbackThumbnailBlob: null,
+			// Provide the raw blob as a fallback so the viewer can render the image
+			// even when offline (useResolvedNoteImageSource will create an objectUrl).
+			fallbackThumbnailBlob: item.blob instanceof Blob
+				? item.blob
+				: storedPreviewByQueuedId.get(item.id)?.thumbnailBlob || null,
 			thumbnailUrl: null,
 			title: item.fileName
 				? item.fileName.replace(/\.[^.]+$/, '')
@@ -363,7 +420,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			subtitle: item.lastError || `${t('media.queuedState')} ${formatRelativeDate(item.createdAt, locale)}`,
 			onDelete: props.canEdit ? () => void handleDeleteQueued(item) : undefined,
 		})),
-	]), [deletingId, handleDeleteQueued, handleDeleteRemote, locale, localPreviewItems, props.canEdit, storedPreviewByRemoteId, t, visibleRemoteImages]);
+	]), [deletingId, handleDeleteQueued, handleDeleteRemote, locale, localPreviewItems, props.canEdit, storedPreviewByQueuedId, storedPreviewByRemoteId, t, visibleRemoteImages]);
 	React.useEffect(() => {
 		setViewerState((current) => {
 			if (!current) return null;
