@@ -5,10 +5,6 @@ import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { NotificationsSection } from './NotificationsSection';
 import styles from './PreferencesModal.module.css';
-import aboutIconLightAsset from '../../../lighticon.png';
-import aboutIconDarkAsset from '../../../darkicon.png';
-import versionIconLightAsset from '../../../version-light.png';
-import versionIconDarkAsset from '../../../version.png';
 
 type ConnectionState = 'connected' | 'connecting' | 'offline';
 
@@ -39,6 +35,8 @@ const sections: readonly SectionConfig[] = [
 export type PreferencesModalProps = {
 	isOpen: boolean;
 	onClose: () => void;
+	/** Direct close — bypasses history.back() so the X feels like an instant dismiss. */
+	onCloseDirect?: () => void;
 	t: (key: string) => string;
 	isLightTheme?: boolean;
 	quickDeleteChecklist: boolean;
@@ -76,6 +74,8 @@ export type PreferencesModalProps = {
 type SectionModalProps = {
 	section: PreferencesSection;
 	onClose: () => void;
+	/** Closes the whole preferences modal, not just the sub-section. */
+	onCloseAll?: () => void;
 	t: (key: string) => string;
 	isLightTheme: boolean;
 	quickDeleteChecklist: boolean;
@@ -98,11 +98,11 @@ type SectionModalProps = {
 	deviceId: string;
 };
 
-const ABOUT_ICON_LIGHT = aboutIconLightAsset;
-const ABOUT_ICON_DARK = aboutIconDarkAsset;
+const ABOUT_ICON_LIGHT = '/icons/app-header-light.png';
+const ABOUT_ICON_DARK = '/icons/app-header-dark.png';
 const ABOUT_WORDMARK = '/icons/freemannotes.png';
-const VERSION_ICON_LIGHT = versionIconLightAsset;
-const VERSION_ICON_DARK = versionIconDarkAsset;
+const VERSION_ICON_LIGHT = '/icons/version-light.png';
+const VERSION_ICON_DARK = '/icons/version.png';
 
 function formatBytes(bytes: number): string {
 	const value = Number(bytes || 0);
@@ -518,11 +518,8 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 		<div className={styles.subOverlay} role="presentation" onClick={props.onClose}>
 			<section className={styles.subModal} role="dialog" aria-modal="true" aria-label={sectionTitle} onClick={(e) => e.stopPropagation()}>
 				<header className={styles.subHeader}>
-					<button type="button" className={styles.iconButtonLeft} onClick={props.onClose} aria-label={props.t('common.back')}>
-						←
-					</button>
 					<h3 className={styles.subTitle}>{sectionTitle}</h3>
-					<button type="button" className={styles.iconButton} onClick={props.onClose} aria-label={props.t('common.close')}>
+					<button type="button" className={styles.iconButton} onClick={props.onCloseAll ?? props.onClose} aria-label={props.t('common.close')}>
 						✕
 					</button>
 				</header>
@@ -569,6 +566,12 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 				) : (
 					<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
 				)}
+
+				<footer className={styles.subFooter}>
+					<button type="button" className={styles.subBackButton} onClick={props.onClose} aria-label={props.t('common.back')}>
+						← {props.t('common.back')}
+					</button>
+				</footer>
 			</section>
 		</div>
 	);
@@ -600,11 +603,8 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 				onClick={(event) => event.stopPropagation()}
 			>
 				<header className={styles.header}>
-					<button type="button" className={styles.iconButtonLeft} onClick={props.onClose} aria-label={props.t('common.back')}>
-						←
-					</button>
 					<h2 className={styles.title}>{props.t('prefs.title')}</h2>
-					<button type="button" className={styles.iconButton} onClick={props.onClose} aria-label={props.t('common.close')}>
+					<button type="button" className={styles.iconButton} onClick={props.onCloseDirect ?? props.onClose} aria-label={props.t('common.close')}>
 						✕
 					</button>
 				</header>
@@ -663,6 +663,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 				<SectionModal
 					section={activeSection}
 					onClose={() => setActiveSection(null)}
+					onCloseAll={props.onCloseDirect ?? props.onClose}
 					t={props.t}
 					isLightTheme={props.isLightTheme !== false}
 					quickDeleteChecklist={props.quickDeleteChecklist}

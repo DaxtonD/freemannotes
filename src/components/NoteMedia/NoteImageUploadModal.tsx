@@ -1,6 +1,6 @@
 import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faCamera, faChevronDown, faChevronUp, faImage, faMinus, faPen, faPlus, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faCamera, faChevronDown, faChevronUp, faFileLines, faImage, faListCheck, faMinus, faPen, faPenNib, faPlus, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
 import { queueNoteImageUrlForImport, queueNoteImagesForUpload, readQueuedNoteImages, readStoredRemoteNoteImages } from '../../core/noteMediaStore';
 import { applyTheme, getStoredThemeId } from '../../core/theme';
@@ -73,6 +73,7 @@ type NoteImageUploadModalProps = {
 	authUserId?: string | null;
 	offlineMode?: boolean;
 	noteTitle?: string | null;
+	noteType?: 'text' | 'checklist' | 'drawing';
 	onClose: () => void;
 	onUploaded?: (result: { queued: boolean; count: number }) => void;
 };
@@ -538,6 +539,8 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 	const [rearCameraOptions, setRearCameraOptions] = React.useState<RearCameraOption[]>([]);
 	const [selectedCameraDeviceId, setSelectedCameraDeviceId] = React.useState<string | null>(null);
 	const [isZoomBusy, setIsZoomBusy] = React.useState(false);
+	const [confirmationMessage, setConfirmationMessage] = React.useState<string | null>(null);
+	const confirmationTimeoutRef = React.useRef<number | null>(null);
 	const busy = isProcessingSelection || isStartingCamera || isCapturingPhoto;
 	const isCameraVisible = isCameraOpen || isStartingCamera;
 	const isCoarsePointer = useIsCoarsePointer();
@@ -690,6 +693,11 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 			setIsProcessingSelection(false);
 			photoCounterRef.current = 0;
 			stopCameraStream();
+			setConfirmationMessage(null);
+			if (confirmationTimeoutRef.current !== null) {
+				window.clearTimeout(confirmationTimeoutRef.current);
+				confirmationTimeoutRef.current = null;
+			}
 		}
 	}, [props.isOpen, releaseSelectedEntries, stopCameraStream]);
 
@@ -1040,26 +1048,49 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 				usedNames.add(normalized);
 			}
 
-			setSelected((prev) => {
-				releaseSelectedEntries(prev);
-				return [];
-			});
-			setError(null);
-
+			const uploadCount = toSubmit.length;
 			const fileNames = toSubmit.map((item) => {
 				const ext = getExtension(item.fileName);
 				const base = item.name.trim() || item.defaultName;
 				return `${base}${ext}`;
 			});
-			await queueNoteImagesForUpload({
-				userId: props.authUserId!,
-				docId: props.docId!,
-				files,
-				fileNames,
+
+			// Clear selection and show confirmation immediately — before the async
+			// IDB write so the user gets instant feedback regardless of queue speed.
+			setSelected((prev) => {
+				releaseSelectedEntries(prev);
+				return [];
 			});
-			closeAfterKeyboardSettles(() => {
-				props.onUploaded?.({ queued: true, count: toSubmit.length });
-			});
+			setError(null);
+			const noteName = props.noteTitle;
+			const confirmMsg = noteName
+				? `${uploadCount} ${uploadCount === 1 ? 'photo' : 'photos'} added to ${noteName}`
+				: `${uploadCount} ${uploadCount === 1 ? 'photo' : 'photos'} added`;
+			if (confirmationTimeoutRef.current !== null) window.clearTimeout(confirmationTimeoutRef.current);
+			setConfirmationMessage(confirmMsg);
+			confirmationTimeoutRef.current = window.setTimeout(() => {
+				confirmationTimeoutRef.current = null;
+				setConfirmationMessage(null);
+			}, 4000);
+			const activeEl = document.activeElement;
+			if (activeEl instanceof HTMLInputElement || activeEl instanceof HTMLTextAreaElement) activeEl.blur();
+
+			try {
+				await queueNoteImagesForUpload({
+					userId: props.authUserId!,
+					docId: props.docId!,
+					files,
+					fileNames,
+				});
+				props.onUploaded?.({ queued: true, count: uploadCount });
+			} catch {
+				setError('Failed to save photos. Please try again.');
+				setConfirmationMessage(null);
+				if (confirmationTimeoutRef.current !== null) {
+					window.clearTimeout(confirmationTimeoutRef.current);
+					confirmationTimeoutRef.current = null;
+				}
+			}
 		})();
 	};
 
@@ -1083,9 +1114,19 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 		}
 		setError(null);
 		void queueNoteImageUrlForImport({ userId: props.authUserId, docId: props.docId!, imageUrl: normalizedUrl });
-		closeAfterKeyboardSettles(() => {
-			props.onUploaded?.({ queued: true, count: 1 });
-		});
+		setImageUrl('');
+		setUrlSectionOpen(false);
+		const urlNoteName = props.noteTitle;
+		const urlConfirmMsg = urlNoteName ? `Image URL added to ${urlNoteName}` : 'Image URL added';
+		if (confirmationTimeoutRef.current !== null) window.clearTimeout(confirmationTimeoutRef.current);
+		setConfirmationMessage(urlConfirmMsg);
+		confirmationTimeoutRef.current = window.setTimeout(() => {
+			confirmationTimeoutRef.current = null;
+			setConfirmationMessage(null);
+		}, 4000);
+		const activeEl = document.activeElement;
+		if (activeEl instanceof HTMLInputElement || activeEl instanceof HTMLTextAreaElement) activeEl.blur();
+		props.onUploaded?.({ queued: true, count: 1 });
 	};
 
 	const count = selected.length;
@@ -1106,7 +1147,13 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 					<header className={styles.header}>
 						<div>
 							<h2 className={styles.title}>{t('noteMenu.addImage')}</h2>
-							<p className={styles.subtitle}>{props.noteTitle ? `${t('media.forPrefix')} ${props.noteTitle}` : t('media.attachToNote')}</p>
+							<p className={styles.subtitle}>
+								<FontAwesomeIcon
+									icon={props.noteType === 'checklist' ? faListCheck : props.noteType === 'drawing' ? faPenNib : faFileLines}
+									className={styles.subtitleIcon}
+								/>
+								{`${props.noteType === 'checklist' ? 'Checklist' : props.noteType === 'drawing' ? 'Drawing' : 'Note'}: ${props.noteTitle || '(untitled)'}`}
+							</p>
 						</div>
 						<button
 							type="button"
@@ -1227,9 +1274,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 								</button>
 								<button type="button" className={`${styles.cameraFab} ${styles.cameraFabCapture}`} onClick={handleCapturePhoto} disabled={!isCameraReady || isCapturingPhoto || isProcessingSelection} aria-label={t('media.capturePhoto')}>
 									{/* Keep these controls network-independent so camera actions remain visible offline. */}
-									<span className={styles.cameraCaptureIcon} aria-hidden="true">
-										<span className={styles.cameraCaptureIconInner} />
-									</span>
+									<img src="/icons/Capture.png" className={styles.cameraCaptureIcon} aria-hidden="true" alt="" />
 									<span className={styles.cameraFabLabel}>{t('media.capturePhoto')}</span>
 								</button>
 								<button
@@ -1250,6 +1295,11 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 
 					{!isCameraVisible && (
 						<>
+							{confirmationMessage ? (
+								<div className={styles.confirmationBanner} role="status">
+									{confirmationMessage}
+								</div>
+							) : null}
 							<div className={styles.actionRow}>
 								<button type="button" className={`${styles.actionButton}${keyboard.isOpen ? ` ${styles.actionButtonCompact}` : ''}`} onClick={() => fileInputRef.current?.click()} disabled={busy}>
 									<FontAwesomeIcon icon={faImage} className={styles.actionIcon} />
