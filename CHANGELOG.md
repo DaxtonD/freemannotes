@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.0 - 2026-06-21
+
+### Added
+- **BubbleView `notesStable` flag.** `useBubbleNotes` now returns `{ notes, notesStable }`. The flag gates `stableFilteredNotes` updates and CSS transition enablement so no repacks or snaps occur while inactive workspaces are still streaming in from IDB.
+- **BubbleView `layoutChangeKey`.** Encodes `${containerWidth}:${Math.round(effectiveZoom)}`; the disable `useLayoutEffect` fires on this key so zoom-slider drags and window resizes snap bubbles immediately, while score-driven repositioning keeps the slow organic transitions.
+
+### Changed
+- **BubbleView debounce raised 120 ms → 5 000 ms.** Score buckets change on ≥5-min granularity; the longer debounce batches rapid Yjs `updatedAt` writes during collaborative editing without losing any scoring signal.
+- **BubbleView content/checklist Yjs observers removed.** `onContentChange` and `onChecklistChange` fired on every keystroke but don't affect scoring. Only `meta.observe` and `titleText.observe` are wired in `useBubbleNotes`.
+- **BubbleView `cloudRef` / `hasMeasuredCloud` — ResizeObserver-only.** The synchronous pre-warm call no longer sets `hasMeasuredCloud=true`; only the ResizeObserver callback does, ensuring the browser has finalised layout before bubbles are positioned and transitions enabled.
+- **BubbleView size-class gate for `stableFilteredNotes`.** `packedLayout` deps use `stableFilteredNotes` (updated only when `notesStable=true` and a size class changed) instead of raw `filteredNotes`, eliminating streaming repacks and minor-EMA micro-repositioning.
+- **BubbleView CSS transitions slowed.** `.cloudItem` and `.bubble` width transitions changed from 640 ms cubic-bezier to 2 500 ms / 4 000 ms ease-in-out so score-driven drift is imperceptibly slow.
+- **BubbleView two-`useLayoutEffect` pattern.** Disable effect reacts to `layoutChangeKey` only (not `notesStable`); enable effect requires both `hasMeasuredCloud` and `notesStable` and uses a `requestAnimationFrame` delay before enabling transitions.
+- **BubbleView CSS overflow fix.** Removed `overflow-x: hidden; overflow-y: visible` from `.cloud` and `.container` — the CSS spec computes this pair as `overflow-y: auto`, creating a scroll container that clipped bubbles and showed spurious scrollbars.
+- **Camera capture button in NoteImageUploadModal.** Replaced CSS-drawn button (nested spans + circle CSS) with `<img src="/icons/Capture.png" />`.
+- **PreferencesModal X button closes instantly.** Root modal X now calls `onCloseDirect` (via `commitOverlaySnapshot('replace')`) instead of `history.back()`, fixing the extra back-navigation step.
+- **PreferencesModal sub-section X closes entire modal.** Added `onCloseAll` prop; sub-section X now closes the whole modal rather than returning to the list.
+- **PreferencesModal Back button moved to footer.** Back arrow relocated from top-left header to a `← Back` button in `.subFooter` at the bottom-left of each sub-section.
+- **PreferencesModal About section icons.** Switched from PNG imports to static `/icons/` URL paths, fixing broken images in production builds.
+
+### Fixed
+- **Collaborators not appearing in sidebar after note move.** `handleMoveNote` success path now calls `bumpCollaborationRefreshToken()`, forcing the collaborator sidebar to reload for the moved note's new workspace location.
+- **BubbleView bubbles flicker on every collaborative keystroke.** Content and checklist observers removed from `useBubbleNotes`; 5 s debounce batches remaining metadata changes.
+- **BubbleView streaming-load jitter.** `stableFilteredNotes` stays frozen while `notesStable=false` so no partial repacks occur as individual workspaces load in parallel.
+- **BubbleView snap-on-view-switch (bubble→list→bubble).** `hasMeasuredCloud` only set from ResizeObserver callback, not the synchronous pre-warm, so bubbles never position against a stale width before layout is final.
+
 ## 1.5.9 - 2026-06-20
 
 ### Fixed

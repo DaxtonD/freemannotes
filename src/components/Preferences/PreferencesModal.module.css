@@ -51,23 +51,6 @@
 	color: var(--color-text);
 }
 
-.iconButtonLeft {
-	position: absolute;
-	left: 0;
-	right: auto;
-	top: 0;
-	border: 0;
-	font-size: 26px;
-	line-height: 1;
-	padding: 0;
-	width: 32px;
-	height: 32px;
-	border-radius: 50%;
-	cursor: pointer;
-	background: transparent;
-	color: var(--color-text);
-}
-
 .sections {
 	display: flex;
 	flex-direction: column;
@@ -320,6 +303,23 @@
 .subPlaceholder {
 	font-size: 14px;
 	color: var(--color-text-muted);
+}
+
+.subFooter {
+	display: flex;
+	align-items: center;
+	padding-top: 4px;
+}
+
+.subBackButton {
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+	padding: 14px 18px;
+	font-size: 15px;
+	font-weight: 600;
+	cursor: pointer;
+	background: var(--color-surface-2);
+	color: var(--color-text);
 }
 
 .installSection {

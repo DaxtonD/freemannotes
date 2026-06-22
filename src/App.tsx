@@ -225,6 +225,7 @@ type NoteImageModalState = {
 	noteId: string;
 	docId: string;
 	title: string;
+	noteType?: 'text' | 'checklist' | 'drawing';
 };
 
 type NoteAttachmentBrowserState = {
@@ -2079,6 +2080,11 @@ export function App(): React.JSX.Element {
 		);
 	}, [commitOverlaySnapshot, getOverlaySnapshot, isMobileSidebarOpen, isMobileViewport]);
 
+	const closePreferencesDirectly = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		commitOverlaySnapshot({ ...current, isPreferencesOpen: false }, 'replace');
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
+
 	const openAppearanceFromPreferences = React.useCallback(() => {
 		const current = getOverlaySnapshot();
 		commitOverlaySnapshot(
@@ -2249,8 +2255,8 @@ export function App(): React.JSX.Element {
 		showBriefDialog(t('share.leftNoteToast'));
 	}, [closeCollaboratorModal, showBriefDialog, t]);
 
-	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string) => {
-		setNoteImageModalState({ noteId, docId, title: title || '' });
+	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string, noteType?: 'text' | 'checklist' | 'drawing') => {
+		setNoteImageModalState({ noteId, docId, title: title || '', noteType });
 	}, []);
 
 	const closeNoteImageModal = React.useCallback(() => {
@@ -8197,6 +8203,10 @@ export function App(): React.JSX.Element {
 			if (!shouldShowQueuedMessage) {
 				await refreshNoteShareStateRef.current().catch(() => undefined);
 			}
+			// Refresh the sidebar collaborator list so collaborators that moved with the
+			// note appear (or disappear) in the current workspace without requiring a
+			// manual workspace switch to trigger loadWorkspaceCollaborators.
+			bumpCollaborationRefreshToken();
 			setMoveNoteModalState(null);
 			showBriefDialog(t(shouldShowQueuedMessage ? 'workspace.moveNoteQueued' : 'workspace.moveNoteSuccess'));
 		} catch (error) {
@@ -8204,7 +8214,7 @@ export function App(): React.JSX.Element {
 		} finally {
 			setMoveNoteBusy(false);
 		}
-	}, [authOfflineMode, authUserId, authWorkspaceId, manager, moveNoteModalState, removeManualRoomAlias, showBriefDialog, t]);
+	}, [authOfflineMode, authUserId, authWorkspaceId, bumpCollaborationRefreshToken, manager, moveNoteModalState, removeManualRoomAlias, showBriefDialog, t]);
 
 	const handleEmptyTrashNow = React.useCallback(async () => {
 		if (authStatus !== 'authed' || authOfflineMode || typeof navigator !== 'undefined' && navigator.onLine === false) {
@@ -10081,12 +10091,8 @@ export function App(): React.JSX.Element {
 				authUserId={authUserId}
 				offlineMode={authOfflineMode}
 				noteTitle={noteImageModalState?.title ?? null}
+				noteType={noteImageModalState?.noteType}
 				onClose={closeNoteImageModal}
-				onUploaded={(result) => showBriefDialog(
-					result.queued
-						? `${result.count} ${result.count === 1 ? t('media.queuedUploadToastSingular') : t('media.queuedUploadToastPlural')}`
-						: (result.count === 1 ? t('media.addedToastSingular') : `${result.count} ${t('media.addedToastPlural')}`)
-				)}
 			/>
 			{briefDialogMessage ? (
 				<div className="brief-dialog" role="status" aria-live="polite">
@@ -10170,7 +10176,7 @@ export function App(): React.JSX.Element {
 							onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 							onAddImage={selectedNoteReadOnly ? undefined : () => {
 								if (!selectedNoteDocId) return;
-								openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
+								openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString(), 'drawing');
 							}}
 							onAddReminder={selectedNoteReadOnly ? undefined : () => {
 								if (!selectedNoteDocId) return;
@@ -10199,7 +10205,9 @@ export function App(): React.JSX.Element {
 						onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 						onAddImage={selectedNoteReadOnly ? undefined : () => {
 							if (!selectedNoteDocId) return;
-							openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString());
+							const rawType = String(openDoc.getMap<any>('metadata').get('type') ?? '');
+							const noteType = rawType === 'checklist' ? 'checklist' : rawType === 'drawing' ? 'drawing' : 'text' as const;
+							openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString(), noteType);
 						}}
 						onAddDocument={selectedNoteReadOnly ? undefined : () => {
 							void createAttachedDrawing(selectedNoteId);
@@ -10230,6 +10238,7 @@ export function App(): React.JSX.Element {
 					if (goBackIfOverlayHistory()) return;
 					setIsPreferencesOpen(false);
 				}}
+				onCloseDirect={closePreferencesDirectly}
 				t={t}
 				isLightTheme={isLightTheme(themeId)}
 				quickDeleteChecklist={quickDeleteChecklistPref}

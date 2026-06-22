@@ -1,4 +1,4 @@
-/**
+﻿/**
  * BubbleView – cross-workspace notes overview.
  *
  * Renders all accessible notes as size-weighted bubbles arranged in 3 lanes.
@@ -755,12 +755,17 @@ function useBubbleNotes(
 	noteReminderByDocId: Record<string, string | null>,
 	authUserId: string | null | undefined,
 	pinPrefsSnapshot: Record<string, boolean>
-): BubbleNote[] {
+): { notes: BubbleNote[]; notesStable: boolean } {
 	const manager = useDocumentManager();
 	const [notes, setNotes] = React.useState<BubbleNote[]>([]);
+	const [notesStable, setNotesStable] = React.useState(false);
 
 	React.useEffect(() => {
 		if (!activeWorkspaceId) return;
+		// Reset stable flag whenever deps change (workspace switch, filter change, etc).
+		// The flag is NOT reset inside refresh() so that periodic 5s score-refreshes
+		// do not briefly disable transitions and cause a snap.
+		setNotesStable(false);
 		let cancelled = false;
 		let refreshTimer = 0;
 		const cleanups: Array<() => void> = [];
@@ -772,13 +777,16 @@ function useBubbleNotes(
 			}
 		};
 
+		// 5 s debounce: score buckets change on ≥5-min granularity, so anything shorter
+		// is noise. It also prevents Yjs `updatedAt` writes on every sync keystroke from
+		// triggering a full refresh cascade during collaborative editing.
 		const scheduleRefresh = (): void => {
 			if (cancelled) return;
 			if (refreshTimer) window.clearTimeout(refreshTimer);
 			refreshTimer = window.setTimeout(() => {
 				refreshTimer = 0;
 				void refresh();
-			}, 120);
+			}, 5_000);
 		};
 
 		const refresh = async (): Promise<void> => {
@@ -812,17 +820,11 @@ function useBubbleNotes(
 							scheduleRefresh();
 						};
 						const onTitleChange = (): void => scheduleRefresh();
-						const onContentChange = (): void => scheduleRefresh();
-						const onChecklistChange = (): void => scheduleRefresh();
 						meta.observe(onMetadataChange);
 						titleText.observe(onTitleChange);
-						contentText.observe(onContentChange);
-						checklist.observeDeep(onChecklistChange);
 						cleanups.push(() => {
 							try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
 							try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
-							try { contentText.unobserve(onContentChange); } catch { /* ignore */ }
-							try { checklist.unobserveDeep(onChecklistChange); } catch { /* ignore */ }
 						});
 						const isTrashed = Boolean(meta.get('trashed'));
 						if (showTrashed ? !isTrashed : isTrashed) return null;
@@ -888,17 +890,11 @@ function useBubbleNotes(
 							scheduleRefresh();
 						};
 						const onTitleChange = (): void => scheduleRefresh();
-						const onContentChange = (): void => scheduleRefresh();
-						const onChecklistChange = (): void => scheduleRefresh();
 						meta.observe(onMetadataChange);
 						titleText.observe(onTitleChange);
-						contentText.observe(onContentChange);
-						checklist.observeDeep(onChecklistChange);
 						cleanups.push(() => {
 							try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
 							try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
-							try { contentText.unobserve(onContentChange); } catch { /* ignore */ }
-							try { checklist.unobserveDeep(onChecklistChange); } catch { /* ignore */ }
 						});
 						const isTrashed = Boolean(meta.get('trashed'));
 						if (showTrashed ? !isTrashed : isTrashed) return null;
@@ -952,17 +948,11 @@ function useBubbleNotes(
 										scheduleRefresh();
 									};
 									const onTitleChange = (): void => scheduleRefresh();
-									const onContentChange = (): void => scheduleRefresh();
-									const onChecklistChange = (): void => scheduleRefresh();
 									meta.observe(onMetadataChange);
 									titleText.observe(onTitleChange);
-									contentText.observe(onContentChange);
-									checklist.observeDeep(onChecklistChange);
 									cleanups.push(() => {
 										try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
 										try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
-										try { contentText.unobserve(onContentChange); } catch { /* ignore */ }
-										try { checklist.unobserveDeep(onChecklistChange); } catch { /* ignore */ }
 									});
 									const isTrashed = Boolean(meta.get('trashed'));
 									if (showTrashed ? !isTrashed : isTrashed) return null;
@@ -1079,6 +1069,8 @@ function useBubbleNotes(
 					}
 				})
 			);
+			// All workspaces have been loaded — enable layout transitions.
+			if (!cancelled) setNotesStable(true);
 		};
 
 		void refresh();
@@ -1090,7 +1082,10 @@ function useBubbleNotes(
 		};
 	}, [activeWorkspaceId, authUserId, manager, noteReminderByDocId, pinPrefsSnapshot, reminderFilter, sharedPlacements, showTrashed, workspaces]);
 
-	return notes;
+	// notesStable contract: false while any workspace is still loading (dep change resets it);
+	// true only after Promise.all(otherWorkspaces) resolves in refresh(). The BubbleView
+	// component uses it to gate stableFilteredNotes updates and layout transitions.
+	return { notes, notesStable };
 }
 
 function useBubbleCollaboratorCounts(
@@ -1435,7 +1430,7 @@ export function BubbleView({
 	const transitionDebugEnabled = Boolean(debugTransitionTraceId) && isViewTransitionDebugEnabled();
 	const manager = useDocumentManager();
 	const pinPrefsSnapshot = React.useSyncExternalStore(subscribeNotePinPrefs, getNotePinPrefsSnapshot, getNotePinPrefsSnapshot);
-	const notes = useBubbleNotes(workspaces, activeWorkspaceId, sharedPlacements, showTrashed, reminderFilter, noteReminderByDocId, authUserId, pinPrefsSnapshot);
+	const { notes, notesStable } = useBubbleNotes(workspaces, activeWorkspaceId, sharedPlacements, showTrashed, reminderFilter, noteReminderByDocId, authUserId, pinPrefsSnapshot);
 	// Exclude the draft note from collaborator syncing — it hasn't been persisted
 	// to the server yet so the API would return 403 for it.
 	const notesForCollaborators = React.useMemo(
@@ -1472,18 +1467,21 @@ export function BubbleView({
 		}
 		setHasMeasuredCloud(false);
 		if (!el) return;
-		const measure = (): void => {
+		// fromObserver=true means the browser has finalized layout — safe to show bubbles.
+		// The synchronous pre-warm call (fromObserver=false) only updates containerWidth
+		// so the first ResizeObserver pack uses the correct width without a visible snap.
+		const measure = (fromObserver = false): void => {
 			const rect = el.getBoundingClientRect();
 			const w = rect.width;
 			if (w > 0) {
 				setContainerWidth(Math.floor(w));
-				setHasMeasuredCloud(true);
+				if (fromObserver) setHasMeasuredCloud(true);
 			}
 			setCloudDocumentTop(Math.max(0, Math.round(rect.top + window.scrollY)));
 		};
-		const observer = new ResizeObserver(measure);
+		const observer = new ResizeObserver(() => measure(true));
 		observer.observe(el);
-		measure();
+		measure(false);
 		roRef.current = observer;
 	}, []);
 	// const [debugEnabled, setDebugEnabled] = React.useState(() => isBubbleDebugEnabled());
@@ -1526,6 +1524,10 @@ export function BubbleView({
 	const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
 	const scale = getBubbleZoomScale(clampedZoom, viewportWidth);
 	const effectiveZoom = getDesktopEquivalentZoom(scale);
+	// Changes when the user drags the zoom slider or resizes the window — these
+	// layout changes should snap bubbles to new positions immediately rather than
+	// using the slow organic transition.
+	const layoutChangeKey = `${containerWidth}:${Math.round(effectiveZoom)}`;
 	const workspaceColorSchemeById = React.useMemo(() => {
 		const entries = new Map<string, ReturnType<typeof getWorkspaceBubbleColorSchemeOverridden>>();
 		for (const workspace of workspaces) {
@@ -1576,9 +1578,33 @@ export function BubbleView({
 	// densely packed without row artefacts.  Large bubbles are sorted first so
 	// they claim the upper area; small ones fill the gaps.
 	const PACK_GAP = Math.max(4, 8 * scale);
+
+	// Size-class gate: packedLayout only repacks when a note crosses a size-class
+	// threshold (e.g. size3→size4). Minor EMA fluctuations within the same class
+	// don't change filteredNotesSizeKey → stableFilteredNotes doesn't update → no repack.
+	// This also prevents N streaming repacks on load while notesStable=false.
+	const filteredNotesSizeKey = React.useMemo(
+		() => filteredNotes
+			.map((n) => `${n.workspaceId}:${n.noteId}:${scoreToSizeClass(n.score)}`)
+			.sort()
+			.join('|'),
+		[filteredNotes]
+	);
+	const stableFilteredNotesRef = React.useRef<typeof filteredNotes>(filteredNotes);
+	const prevSizeKeyRef = React.useRef('');
+	// Only commit a new layout when all workspaces have finished loading.
+	// During the streaming load phase (notesStable=false), successive setNotes calls
+	// would trigger N repacks — one per inactive workspace — causing visible snapping
+	// on every workspace arrival. Wait for the stable snapshot instead.
+	if (notesStable && filteredNotesSizeKey !== prevSizeKeyRef.current) {
+		prevSizeKeyRef.current = filteredNotesSizeKey;
+		stableFilteredNotesRef.current = filteredNotes;
+	}
+	const stableFilteredNotes = stableFilteredNotesRef.current;
+
 	const packedLayout = React.useMemo((): { items: PackedBubbleLayoutItem[]; totalHeight: number } => {
 		// Cap at MAX_LAYOUT_BUBBLES to bound packing time for very large workspaces.
-		const visible = filteredNotes.slice(0, MAX_LAYOUT_BUBBLES);
+		const visible = stableFilteredNotes.slice(0, MAX_LAYOUT_BUBBLES);
 		const sorted = [...visible].sort((a, b) =>
 			b.score !== a.score ? b.score - a.score : a.title.localeCompare(b.title)
 		);
@@ -1631,7 +1657,7 @@ export function BubbleView({
 
 		return { items, totalHeight };
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [activeWorkspaceId, containerWidth, effectiveZoom, filteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
+	}, [activeWorkspaceId, containerWidth, effectiveZoom, stableFilteredNotes, manager, scale, themeId, workspaceColorSchemeById]);
 	const visiblePackedItems = React.useMemo(() => {
 		if (!hasMeasuredCloud) return packedLayout.items;
 		const viewportTopWithinCloud = Math.max(0, viewportMetrics.scrollY - cloudDocumentTop - BUBBLE_VIEW_OVERSCAN_PX);
@@ -1781,19 +1807,25 @@ export function BubbleView({
 		previousPackedLayoutRef.current = nextLayout;
 	}, [allowBubbleLayoutTransitions, containerWidth, debugTransitionTraceId, hasMeasuredCloud, packedLayout.items, packedLayoutSignature, transitionDebugEnabled, visiblePackedItems.length]);
 
+	// Two-effect pattern: DISABLE fires on layoutChangeKey (zoom/resize) or cloud remount —
+	// these should snap immediately. It does NOT include notesStable so 5s score-refreshes
+	// don't briefly kill transitions and cause a visual snap.
 	React.useLayoutEffect(() => {
 		setAllowBubbleLayoutTransitions(false);
-	}, [hasMeasuredCloud]);
+	}, [hasMeasuredCloud, layoutChangeKey]);
 
+	// ENABLE fires after every repack, but only when both hasMeasuredCloud AND notesStable
+	// are true. The RAF one-frame delay ensures the browser has painted static positions
+	// before CSS transitions engage — without it bubbles snap then slide from wrong origin.
 	React.useLayoutEffect(() => {
-		if (!hasMeasuredCloud || packedLayout.items.length === 0 || typeof window === 'undefined') return;
+		if (!hasMeasuredCloud || !notesStable || packedLayout.items.length === 0 || typeof window === 'undefined') return;
 		const frameId = window.requestAnimationFrame(() => {
 			setAllowBubbleLayoutTransitions(true);
 		});
 		return () => {
 			window.cancelAnimationFrame(frameId);
 		};
-	}, [hasMeasuredCloud, packedLayout.items.length, packedLayoutSignature]);
+	}, [hasMeasuredCloud, notesStable, packedLayout.items.length, packedLayoutSignature]);
 
 	React.useEffect(() => {
 		const alreadySeen = hasSeenBubbleLayout(packedLayoutSignature);

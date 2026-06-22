@@ -60,6 +60,27 @@
 	font-size: 0.92rem;
 }
 
+.subtitleIcon {
+	margin-right: 5px;
+	font-size: 0.85em;
+}
+
+.confirmationBanner {
+	padding: 10px 14px;
+	background: color-mix(in srgb, #22c55e 14%, var(--color-surface-2));
+	border: 1px solid color-mix(in srgb, #22c55e 35%, var(--color-border));
+	border-radius: 10px;
+	color: var(--color-text);
+	font-size: 0.92rem;
+	font-weight: 500;
+	animation: confirmBannerIn 0.18s ease-out;
+}
+
+@keyframes confirmBannerIn {
+	from { opacity: 0; transform: translateY(-4px); }
+	to   { opacity: 1; transform: translateY(0); }
+}
+
 .close {
 	border: 0;
 	background: transparent;
@@ -386,25 +407,10 @@
 }
 
 .cameraCaptureIcon {
-	position: relative;
 	width: 74px;
 	height: 74px;
-	display: inline-flex;
-	align-items: center;
-	justify-content: center;
-	border-radius: 999px;
-	box-sizing: border-box;
-	border: 5px solid rgba(255, 255, 255, 0.96);
-	background: rgba(255, 255, 255, 0.08);
-	box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24), inset 0 0 0 1px rgba(255, 255, 255, 0.22);
-}
-
-.cameraCaptureIconInner {
-	width: 54px;
-	height: 54px;
-	border-radius: 999px;
-	background: rgba(255, 255, 255, 0.97);
-	box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+	display: block;
+	object-fit: contain;
 }
 
 .cameraSideIcon {
@@ -703,11 +709,6 @@
 	.cameraCaptureIcon {
 		width: 70px;
 		height: 70px;
-	}
-
-	.cameraCaptureIconInner {
-		width: 50px;
-		height: 50px;
 	}
 
 	.cameraFabCancel {
