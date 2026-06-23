@@ -32,16 +32,27 @@ html {
 
 html.body-scroll-locked,
 body.body-scroll-locked {
-	overflow: hidden;
 	overscroll-behavior: none;
-	/* Drop stable gutter while locked so the page scrollbar track does not stay visible. */
-	scrollbar-gutter: auto;
 }
 
-html.body-scroll-locked,
-body.body-scroll-locked,
-html.body-scroll-locked #root {
-	height: 100%;
+@media (pointer: fine) {
+	/* Desktop: prevent keyboard/wheel scroll of the background while a modal is open.
+	   On mobile (pointer: coarse) we intentionally skip overflow:hidden here — applying
+	   it to the scroll root resets the visual scroll to y=0 on Android Chrome, making
+	   backdrop-filter:blur() overlays show the wrong part of the grid. touch-action:none
+	   (set via useBodyScrollLock inline style + CSS below) is sufficient for mobile. */
+	html.body-scroll-locked,
+	body.body-scroll-locked {
+		overflow: hidden;
+		/* Drop stable gutter while locked so the page scrollbar track does not stay visible. */
+		scrollbar-gutter: auto;
+	}
+
+	html.body-scroll-locked,
+	body.body-scroll-locked,
+	html.body-scroll-locked #root {
+		height: 100%;
+	}
 }
 
 html.ios-standalone-pwa,
