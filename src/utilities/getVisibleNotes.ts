@@ -1,4 +1,4 @@
-export type ReminderFilterMode = 'all' | 'past-due' | 'due-soon' | 'later-today' | 'tomorrow' | 'next-week';
+export type ReminderFilterMode = 'all' | 'has-reminder' | 'past-due' | 'due-soon' | 'later-today' | 'tomorrow' | 'next-week';
 
 export type SortDirection = 'asc' | 'desc';
 
@@ -58,6 +58,7 @@ function endOfTomorrow(now: Date): number {
 
 function withinReminderFilter(reminderAt: string | null, mode: ReminderFilterMode, nowMs: number): boolean {
 	if (mode === 'all') return true;
+	if (mode === 'has-reminder') return reminderAt !== null;
 	if (!reminderAt) return false;
 	const reminderMs = toTimestamp(reminderAt, Number.NaN);
 	if (!Number.isFinite(reminderMs)) return false;

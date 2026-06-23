@@ -4837,6 +4837,7 @@ export function App(): React.JSX.Element {
 		if (activeReminderFilter !== 'all') {
 			const reminderLabels: Record<ReminderFilterMode, string> = {
 				all: t('app.sidebarAll'),
+				'has-reminder': t('app.sidebarAll'),
 				'past-due': t('app.sidebarPastDue'),
 				'later-today': t('app.sidebarToday'),
 				tomorrow: t('reminders.tomorrow'),
@@ -7129,6 +7130,7 @@ export function App(): React.JSX.Element {
 	const sidebarGroupContent = React.useMemo<Record<string, SidebarSubmenuNode[]>>(
 		() => ({
 			reminders: [
+				{ id: 'has-reminder', label: t('app.sidebarAll'), kind: 'item' },
 				{ id: 'past-due', label: t('app.sidebarPastDue'), kind: 'item' },
 				{ id: 'later-today', label: t('app.sidebarToday'), kind: 'item' },
 				{ id: 'tomorrow', label: t('reminders.tomorrow'), kind: 'item' },
