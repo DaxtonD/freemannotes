@@ -83,13 +83,13 @@ body.ios-standalone-pwa {
 		touch-action: none;
 	}
 
-	html.body-scroll-locked .test-harness-root,
-	html.body-scroll-locked .app-shell,
-	html.body-scroll-locked .app-main,
-	html.body-scroll-locked .app-sidebar {
-		overflow: hidden !important;
-		overscroll-behavior: none;
-	}
+	/* Do NOT set overflow:hidden on .app-main, .app-shell, .test-harness-root,
+	   or .app-sidebar here — those elements are not scroll containers (the scroll
+	   lives on the window/html element). Applying overflow:hidden to them creates
+	   an unintended scroll container that snaps the note grid to the top and breaks
+	   position:sticky on .app-main-sticky (the label chip row). The same reasoning
+	   applies as the fab-open rule in layout.css: use touch-action:none (applied
+	   above on html/body) instead of overflow on inner elements. */
 
 	html.android-standalone-pwa,
 	body.android-standalone-pwa,

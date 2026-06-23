@@ -98,6 +98,15 @@ if (!rootEl) {
 // @atlaskit/pragmatic-drag-and-drop works on Firefox Android.
 installTouchDragPolyfill();
 
+// Prevent the browser from auto-restoring scroll position on history.back() /
+// history.forward(). The app manages scroll positions manually via
+// writeWorkspaceRenderSnapshotScroll / readWorkspaceRenderSnapshotScroll.
+// Without this, history.back() on Android can snap the note grid to y=0 when
+// the browser restores the scroll saved at the time a dismiss-layer entry was pushed.
+if (typeof window !== 'undefined' && 'scrollRestoration' in history) {
+	history.scrollRestoration = 'manual';
+}
+
 // Excalidraw 0.18+ loads fonts from a configurable asset base path. Point it at
 // the app origin so exported PWA builds can self-host those files offline.
 (window as any).EXCALIDRAW_ASSET_PATH = '/';
