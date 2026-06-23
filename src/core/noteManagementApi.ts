@@ -91,3 +91,11 @@ export async function fetchAboutHudStats(): Promise<AboutHudStatsResponse> {
 		method: 'GET',
 	});
 }
+
+export async function devClearAllNotifications(): Promise<{ deleted: number }> {
+	return fetchJson('/api/dev/clear-notifications', { method: 'POST' });
+}
+
+export async function devResetNoteOrder(): Promise<{ cleaned: number; total: number }> {
+	return fetchJson('/api/dev/reset-note-order', { method: 'POST' });
+}
