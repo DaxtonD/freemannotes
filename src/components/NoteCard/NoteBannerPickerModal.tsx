@@ -92,6 +92,15 @@ export function NoteBannerPickerModal(props: NoteBannerPickerModalProps): React.
 		};
 	}, [props.isOpen, t]);
 
+	// Must be called unconditionally before any early return (React hook rules).
+	const localizedOptions = React.useMemo(() => options.map((option) => {
+		const translatedLabel = t(option.labelKey);
+		return {
+			...option,
+			displayLabel: translatedLabel === option.labelKey ? option.label : translatedLabel,
+		};
+	}).sort((left, right) => left.displayLabel.localeCompare(right.displayLabel)), [options, t]);
+
 	if (!props.isOpen || typeof document === 'undefined') return null;
 
 	const statusText = error
@@ -101,13 +110,6 @@ export function NoteBannerPickerModal(props: NoteBannerPickerModalProps): React.
 			: options.length === 0
 				? t('noteBanners.empty')
 				: null;
-	const localizedOptions = React.useMemo(() => options.map((option) => {
-		const translatedLabel = t(option.labelKey);
-		return {
-			...option,
-			displayLabel: translatedLabel === option.labelKey ? option.label : translatedLabel,
-		};
-	}).sort((left, right) => left.displayLabel.localeCompare(right.displayLabel)), [options, t]);
 
 	return createPortal(
 		<div className={styles.overlay} role="presentation" onClick={props.onClose}>
