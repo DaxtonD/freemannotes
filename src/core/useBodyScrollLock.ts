@@ -6,14 +6,8 @@ const SCROLL_LOCK_ALLOW_TOUCH_CLASS = 'body-scroll-lock-allow-touch';
 let activeLockCount = 0;
 let previousBodyTouchAction = '';
 let previousHtmlTouchAction = '';
-
-// Desktop uses position:fixed on body to lock scroll without overflow:hidden.
-// overflow:hidden on the scroll root resets window.scrollY to 0 in Chrome, making
-// the backdrop-filter:blur() overlay show the wrong part of the grid.
-let previousBodyPosition = '';
-let previousBodyTop = '';
-let previousBodyLeft = '';
-let previousBodyWidth = '';
+let previousHtmlOverflow = '';
+let previousBodyOverflow = '';
 let lockedScrollX = 0;
 let lockedScrollY = 0;
 
@@ -23,9 +17,19 @@ export function useBodyScrollLock(locked: boolean, options?: { disableTouchActio
 		const html = document.documentElement;
 		const body = document.body;
 		const disableTouchAction = options?.disableTouchAction !== false;
-		// pointer:fine = desktop — we use position:fixed on body to freeze scroll
-		// without overflow:hidden (which visually snaps the page to y=0).
-		// pointer:coarse = mobile — touch-action:none is sufficient; no position change needed.
+		// Behaviour differs by input modality:
+		//
+		// Desktop (pointer:fine): apply overflow:hidden on html/body in JS to prevent
+		// keyboard/wheel scroll of the background. Chrome desktop preserves window.scrollY
+		// (the internal scrollTop is kept even when overflow:hidden) so the visual does NOT
+		// snap to y=0 — the backdrop-filter:blur() shows the correct grid position.
+		// Save + restore scrollX/Y as a safety net for unlock.
+		//
+		// Mobile (pointer:coarse): do NOT apply overflow:hidden — Chrome Android resets the
+		// visual scroll to y=0 when overflow:hidden is applied to the scroll root, making the
+		// backdrop-filter show the wrong part of the grid and breaking position:sticky on
+		// .app-main-sticky. touch-action:none + overscroll-behavior:none (CSS class) is
+		// sufficient to prevent touch scroll without affecting the visual position.
 		const isDesktop = typeof window !== 'undefined' && window.matchMedia('(pointer: fine)').matches;
 
 		if (activeLockCount === 0) {
@@ -35,14 +39,10 @@ export function useBodyScrollLock(locked: boolean, options?: { disableTouchActio
 			if (isDesktop) {
 				lockedScrollX = window.scrollX ?? 0;
 				lockedScrollY = window.scrollY ?? 0;
-				previousBodyPosition = body.style.position;
-				previousBodyTop = body.style.top;
-				previousBodyLeft = body.style.left;
-				previousBodyWidth = body.style.width;
-				body.style.position = 'fixed';
-				body.style.top = `-${lockedScrollY}px`;
-				body.style.left = lockedScrollX ? `-${lockedScrollX}px` : '0';
-				body.style.width = '100%';
+				previousHtmlOverflow = html.style.overflow;
+				previousBodyOverflow = body.style.overflow;
+				html.style.overflow = 'hidden';
+				body.style.overflow = 'hidden';
 			}
 
 			html.classList.add(SCROLL_LOCK_CLASS);
@@ -67,10 +67,10 @@ export function useBodyScrollLock(locked: boolean, options?: { disableTouchActio
 			html.style.touchAction = previousHtmlTouchAction;
 			body.style.touchAction = previousBodyTouchAction;
 			if (isDesktop) {
-				body.style.position = previousBodyPosition;
-				body.style.top = previousBodyTop;
-				body.style.left = previousBodyLeft;
-				body.style.width = previousBodyWidth;
+				html.style.overflow = previousHtmlOverflow;
+				body.style.overflow = previousBodyOverflow;
+				// Restore scroll position after removing overflow:hidden so the page
+				// returns to exactly where it was before the modal opened.
 				window.scrollTo({ left: lockedScrollX, top: lockedScrollY, behavior: 'instant' as ScrollBehavior });
 			}
 		};
