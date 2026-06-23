@@ -17,6 +17,10 @@ yarn-debug.log*
 yarn-error.log*
 freeman-debug.log
 
+# AI
+CLAUDE_CONTEXT.md
+CLAUDE.md
+
 # Local Yjs persistence artifacts
 .yjs-data/
 

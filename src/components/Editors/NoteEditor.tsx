@@ -890,21 +890,32 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	}, [props.authUserId, props.doc, props.docId]);
 	const keyboard = useKeyboardHeight();
 	const visualViewport = useVisualViewportHeight();
-	// Mobile-only keyboard branch:
-	// - `useKeyboardHeight()` is driven by the Visual Viewport API, so `keyboard.isOpen`
-	//   reflects whether the on-screen keyboard has reduced the visible viewport.
-	// - We intentionally gate this branch by `isCoarsePointer` because desktop virtual
-	//   keyboards and narrow windows should keep the normal dock/media layout.
-	// - Downstream, this flag removes the mobile dock/media sheet from layout entirely
-	//   so the editor body ends at the keyboard instead of allowing hidden footer UI to
-	//   remain scrollable beneath the visible editing surface.
-	const mobileKeyboardOpen = isCoarsePointer && keyboard.isOpen;
 	// Ref for the editor overlay DOM node.  Used to check whether the
 	// keyboard-triggering element is inside the editor (vs. a higher-z-index
 	// modal like NoteImageUploadModal).  Camera Activity transitions on Android
 	// cause transient Visual Viewport shrinks that look like a keyboard to
 	// useKeyboardHeight — this ref lets us ignore those false positives.
 	const editorOverlayRefCb = React.useRef<HTMLDivElement | null>(null);
+	// Mobile-only keyboard branch:
+	// - `useKeyboardHeight()` is driven by the Visual Viewport API, so `keyboard.isOpen`
+	//   reflects whether the on-screen keyboard has reduced the visible viewport.
+	// - We intentionally gate this branch by `isCoarsePointer` because desktop virtual
+	//   keyboards and narrow windows should keep the normal dock/media layout.
+	// - Only treat the keyboard as editor-hosted when focus lives inside the editor
+	//   overlay and no higher-z image-upload modal is open; camera/file-picker viewport
+	//   shrinks otherwise hide the media handle until the note is reopened.
+	// - Downstream, this flag removes the mobile dock/media sheet from layout entirely
+	//   so the editor body ends at the keyboard instead of allowing hidden footer UI to
+	//   remain scrollable beneath the visible editing surface.
+	const mobileKeyboardOpen = React.useMemo(() => {
+		if (!isCoarsePointer || !keyboard.isOpen) return false;
+		if (props.hideFormattingToolbar) return false;
+		if (typeof document === 'undefined') return false;
+		if (document.body.dataset.freemannotesNoteImageUploadOpen === 'true') return false;
+		const active = document.activeElement;
+		if (!(active instanceof HTMLElement) || !editorOverlayRefCb.current?.contains(active)) return false;
+		return true;
+	}, [isCoarsePointer, keyboard.isOpen, keyboard.visibleBottom, props.hideFormattingToolbar]);
 	const dismissEditorOverlayFocus = React.useCallback((): void => {
 		if (typeof document === 'undefined') return;
 		const active = document.activeElement;
@@ -1190,8 +1201,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		setMediaDockTab(tab);
 	}, []);
 	const handleOpenImageFromMediaDock = React.useCallback((): void => {
+		// Bottom-dock Add Image should match the in-panel flow: expand the media sheet
+		// first so the upload modal stacks above it and the sheet stays open afterward.
+		if (isCoarsePointer && !isMobileLandscapeRef.current) {
+			setMediaDockTab(0);
+			setIsMediaSheetClosing(false);
+			setMediaDockOpen(true);
+			setMediaSheetProgress(1);
+		}
 		props.onAddImage?.();
-	}, [props]);
+	}, [isCoarsePointer, props.onAddImage]);
 	const handleMediaSheetTouchStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
 		if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageViewerOpen === 'true') {
 			mediaSheetSwipeStartRef.current = null;
@@ -3550,7 +3569,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		    The editor shell stops at `keyboard.visibleBottom`, so the remaining layout
 		    viewport below that edge must be explicitly covered while the mobile keyboard
 		    animates in. Otherwise the underlying notes grid can flash through. */}
-		{isCoarsePointer && keyboard.isOpen && !props.hideFormattingToolbar ? createPortal(
+		{mobileKeyboardOpen ? createPortal(
 			<>
 				<div className={styles.keyboardOcclusion} style={{ top: `${keyboard.visibleBottom}px` }} />
 				<div
