@@ -56,6 +56,7 @@ import {
 	applyTierReorderToCanonicalVisible,
 	arraysEqual,
 	buildMasonryLayoutFromColumns,
+	computeTailBalancedSlots,
 	dealIntoColumns,
 	flattenColumns,
 	getGridLayoutForViewport,
@@ -64,8 +65,8 @@ import {
 	mergeVisibleOrderIntoFullOrder,
 	pickRenderedDisplayOrder,
 	readCssPxVariable,
+	splitIntoColumnsBySlotLengths,
 	type StableMasonryPlacementDecision,
-	splitIntoColumnsByReadingOrder,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
 import { VirtualizedNoteColumn } from './VirtualizedNoteColumn';
@@ -132,7 +133,7 @@ export type NoteGridProps = {
 	onSelectNote: (noteId: string) => void;
 	onTouchReorderEnd?: () => void;
 	onAddCollaborator?: (noteId: string, title?: string) => void;
-	onAddImage?: (noteId: string, docId: string, title?: string) => void;
+	onAddImage?: (noteId: string, docId: string, title?: string, noteType?: 'text' | 'checklist' | 'drawing') => void;
 	onAddDocument?: (noteId: string, docId: string, title?: string) => void;
 	onMoveToWorkspace?: (noteId: string, title?: string) => void;
 	onOpenAttachmentBrowser?: (
@@ -2866,15 +2867,30 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [noteSnapshotById, renderedIds, sharedNoteIdSet]);
 
 	// ── Column computation: packedColumns ─────────────────────────────────
-	// Reading-order masonry: round-robin column assignment from renderedIds so
-	// flattenColumns(columns) always equals renderedIds regardless of viewport,
-	// card heights, or column count. Layout only affects visual placement.
+	// Tail-balanced masonry: start from round-robin slot sizes then iteratively
+	// transfer one slot from the tallest column to the shortest column up to
+	// maxPasses times (or until imbalance ≤ 150 px). Column content is always
+	// determined by splitIntoColumnsBySlotLengths (row-major from canonical order),
+	// so flattenColumns(columns) === renderedIds is preserved after every adjustment.
+	// Only the bottom rows of the tallest column participate — top and mid cards never
+	// migrate. Heights only affect slot allocation, never canonical note ordering.
 	//
 	// INVARIANT: flattenColumns(columns) === renderedIds at every column count.
-	// Do not reintroduce splitIntoColumnsByHeight or cross-column rebalancing here.
+	// Do not use splitIntoColumnsByHeight — it breaks this invariant.
 	const packedLayout = React.useMemo(() => {
-		const columns = splitIntoColumnsByReadingOrder(renderedIds, columnCount);
-		// Placement decisions feed debug logging only; packing is deterministic deal.
+		const fallbackH = Math.min(props.maxCardHeightPx, 220);
+		const gapPx = mobileGridGapPx ?? 16;
+		const slots = computeTailBalancedSlots({
+			ids: renderedIds,
+			columnCount,
+			heightById: packedHeightLookup,
+			gapPx,
+			fallbackHeightPx: fallbackH,
+			thresholdPx: 150,
+			maxPasses: 4,
+		});
+		const columns = splitIntoColumnsBySlotLengths(renderedIds, slots);
+		// Placement decisions feed debug logging only; packing is tail-balanced deal.
 		const placementDecisions = new Map<string, StableMasonryPlacementDecision>();
 		const columnHeightsAtDecision = new Array<number>(columns.length).fill(0);
 		for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
@@ -2893,7 +2909,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					preferredColumnHeight: null,
 					anchoredColumn: null,
 					stabilitySlackPx: 0,
-					measuredHeight: packedHeightLookup.get(noteId) ?? Math.min(props.maxCardHeightPx, 220),
+					measuredHeight: packedHeightLookup.get(noteId) ?? fallbackH,
 					columnHeightsAtDecision,
 					viewportStabilityOverridden: false,
 					stableOrderOverridden: false,
@@ -2903,7 +2919,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			}
 		}
 		return { columns, placementDecisions };
-	}, [columnCount, packedHeightLookup, props.maxCardHeightPx, renderedIds]);
+	}, [columnCount, mobileGridGapPx, packedHeightLookup, props.maxCardHeightPx, renderedIds]);
 	const packedColumns = packedLayout.columns;
 	const resolvedBaseColumns = packedColumns;
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
@@ -3763,7 +3779,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				onAddCollaborator={props.onAddCollaborator ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
 				onAddImage={props.onAddImage ? () => {
 					if (!docId) return;
-					props.onAddImage?.(note.id, docId, doc.getText('title').toString());
+					const rawNoteType = String(doc.getMap<any>('metadata').get('type') ?? '');
+					const noteType = rawNoteType === 'checklist' ? 'checklist' : rawNoteType === 'drawing' ? 'drawing' : 'text' as const;
+					props.onAddImage?.(note.id, docId, doc.getText('title').toString(), noteType);
 				} : undefined}
 				onMoreMenu={(anchorRect) => {
 					const cardEl = gridRef.current?.querySelector(`[data-note-id="${note.id}"]`);

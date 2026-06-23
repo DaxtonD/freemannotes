@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.1 - 2026-06-22
+
+### Added
+- **Sidebar reminders "All" section.** New `has-reminder` filter mode surfaces every note in the current workspace that has any reminder set, regardless of due date. Appears as the first item in the Reminders sidebar group.
+
+### Changed
+- **Masonry tail-balanced column layout.** Column slot allocation now starts from round-robin sizes then iteratively transfers one slot from the tallest column to the shortest (up to 4 passes, 150 px minimum imbalance threshold). Only the bottom rows of the tallest column participate — canonical note order and the `flattenColumns === renderedIds` invariant are both preserved. Addresses uneven columns introduced when canonical order was unified across device widths.
+
+### Fixed
+- **Notes grid scrolls during modal open/close on desktop.** When a modal (image upload, label, collection, move, collaborator) was opened while the grid was scrolled down, the grid visibly scrolled down then snapped back on modal close. `useBodyScrollLock` now applies `html/body overflow:hidden` via JS inline style guarded by `pointer:fine` media query; Chrome desktop preserves `window.scrollY` under `overflow:hidden` so the grid position is unchanged. Mobile is unaffected (touch-action only).
+- **Preferences modal Back button was a bare `←` icon.** User and Appearance sub-sections referenced an undefined `iconButtonLeft` CSS class, rendering an unstyled arrow in the header. Replaced with a `← Back` text button in `.subFooter` at the bottom left of each sub-section, consistent with all other sections.
+- **Preferences Notifications Back button hidden behind scroll.** On mobile, the Back button was inside the scrollable recent-deliveries area and unreachable without scrolling to the bottom. Back button now sits in a `position: sticky; bottom: 0` footer outside the scroll container. Recent delivery log capped to 4 entries on all screen sizes.
+- **Checklist autocomplete ghost text overflows note card.** Long autocomplete suggestions expanded across multiple lines. Ghost text is now capped at 2 lines with `…` via `-webkit-line-clamp: 2`.
+- **Android camera activity hides media handle.** Camera and file-picker transitions on Android cause a transient Visual Viewport shrink that `useKeyboardHeight` interprets as a software keyboard, collapsing the media sheet. `mobileKeyboardOpen` is now a `useMemo` that additionally requires focus to be inside the editor overlay and no image-upload modal to be open, filtering out the false-positive shrinks.
+- **Bottom-dock Add Image button skips media sheet on mobile.** Tapping the dock's image button launched the upload modal without first opening the media sheet, causing the sheet to remain closed after the upload was confirmed. The handler now expands the media sheet before calling `onAddImage` so the sheet stays visible after upload.
+
 ## 1.6.0 - 2026-06-21
 
 ### Added

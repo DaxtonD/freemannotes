@@ -961,6 +961,78 @@ export function flattenColumns(columns: readonly string[][]): string[] {
 }
 
 /**
+ * Compute column slot lengths that balance column heights while preserving
+ * the flattenColumns invariant.
+ *
+ * Starts from round-robin slot sizes and iteratively transfers one slot from
+ * the tallest column to the shortest column as long as the transfer reduces
+ * imbalance and the imbalance exceeds `thresholdPx`.
+ *
+ * Column content for given slot sizes is determined by splitIntoColumnsBySlotLengths
+ * (row-major from canonical order), so flattenColumns(result) === ids is preserved
+ * after every adjustment. Only the BOTTOM rows of the tallest column participate —
+ * mid-column and top-column cards never migrate.
+ */
+export function computeTailBalancedSlots(args: {
+	ids: readonly string[];
+	columnCount: number;
+	heightById: HeightLookup;
+	gapPx: number;
+	fallbackHeightPx: number;
+	thresholdPx?: number;
+	maxPasses?: number;
+}): number[] {
+	const cols = Math.max(1, args.columnCount);
+	const N = args.ids.length;
+	if (N === 0 || cols === 1) return Array.from({ length: cols }, () => N);
+
+	const thresholdPx = args.thresholdPx ?? 150;
+	const maxPasses = args.maxPasses ?? 4;
+
+	// Round-robin starting slots: first (N % cols) columns get one extra card.
+	const slots = Array.from({ length: cols }, (_, i) => Math.floor(N / cols) + (i < N % cols ? 1 : 0));
+
+	const columnHeightsForSlots = (currentSlots: readonly number[]): number[] => {
+		const columns = splitIntoColumnsBySlotLengths(args.ids, currentSlots);
+		return columns.map((colIds) => {
+			if (colIds.length === 0) return 0;
+			let h = 0;
+			for (const id of colIds) h += args.heightById.get(id) ?? args.fallbackHeightPx;
+			h += (colIds.length - 1) * args.gapPx;
+			return h;
+		});
+	};
+
+	for (let pass = 0; pass < maxPasses; pass++) {
+		const heights = columnHeightsForSlots(slots);
+		let tallestIdx = 0;
+		let shortestIdx = 0;
+		for (let i = 1; i < heights.length; i++) {
+			if (heights[i] > heights[tallestIdx]) tallestIdx = i;
+			if (heights[i] < heights[shortestIdx]) shortestIdx = i;
+		}
+		const imbalance = heights[tallestIdx] - heights[shortestIdx];
+		if (imbalance <= thresholdPx) break;
+		if (slots[tallestIdx] <= 1) break;
+		if (tallestIdx === shortestIdx) break;
+
+		const nextSlots = slots.slice();
+		nextSlots[tallestIdx] -= 1;
+		nextSlots[shortestIdx] += 1;
+
+		const nextHeights = columnHeightsForSlots(nextSlots);
+		const nextImbalance = Math.max(...nextHeights) - Math.min(...nextHeights);
+		if (nextImbalance < imbalance) {
+			for (let i = 0; i < slots.length; i++) slots[i] = nextSlots[i];
+		} else {
+			break;
+		}
+	}
+
+	return slots;
+}
+
+/**
  * Assign notes to columns in round-robin order so row-major flattening matches
  * the input list exactly: flattenColumns(result) === ids.
  *
