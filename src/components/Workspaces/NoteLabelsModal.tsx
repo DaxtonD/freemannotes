@@ -291,8 +291,13 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 
 		const pushTimer = window.setTimeout(() => {
 			if (!active) return;
+			const currentState = window.history.state as { __moreMenu?: boolean } | null;
+			if (currentState?.__moreMenu === true) {
+				window.history.replaceState({ __noteLabelsModal: true }, '');
+			} else {
+				window.history.pushState({ __noteLabelsModal: true }, '');
+			}
 			didPush = true;
-			window.history.pushState({ __noteLabelsModal: true }, '');
 		}, 0);
 
 		const onPopState = (): void => {

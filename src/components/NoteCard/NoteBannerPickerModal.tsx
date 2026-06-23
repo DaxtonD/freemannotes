@@ -42,8 +42,17 @@ export function NoteBannerPickerModal(props: NoteBannerPickerModalProps): React.
 		let didPush = false;
 		const pushTimer = window.setTimeout(() => {
 			if (!active) return;
+			// If the more menu opened us via closeForChildOverlay it skips its own
+			// history.back(), leaving an orphaned {__moreMenu} entry. Replace it so
+			// pressing back from within the picker lands on the grid snapshot instead
+			// of requiring an extra back press to clear the orphaned entry.
+			const currentState = window.history.state as { __moreMenu?: boolean } | null;
+			if (currentState?.__moreMenu === true) {
+				window.history.replaceState({ __noteBannerPicker: true }, '');
+			} else {
+				window.history.pushState({ __noteBannerPicker: true }, '');
+			}
 			didPush = true;
-			window.history.pushState({ __noteBannerPicker: true }, '');
 		}, 0);
 		const onPopState = (): void => {
 			if (!active || !didPush) return;

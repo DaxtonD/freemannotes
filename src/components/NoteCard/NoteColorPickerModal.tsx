@@ -51,8 +51,13 @@ export function NoteColorPickerModal(props: NoteColorPickerModalProps): React.JS
 		let didPush = false;
 		const pushTimer = window.setTimeout(() => {
 			if (!active) return;
+			const currentState = window.history.state as { __moreMenu?: boolean } | null;
+			if (currentState?.__moreMenu === true) {
+				window.history.replaceState({ __noteColorPicker: true }, '');
+			} else {
+				window.history.pushState({ __noteColorPicker: true }, '');
+			}
 			didPush = true;
-			window.history.pushState({ __noteColorPicker: true }, '');
 		}, 0);
 		const onPopState = (): void => {
 			if (!active || !didPush) return;

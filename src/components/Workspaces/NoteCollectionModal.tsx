@@ -118,8 +118,13 @@ export function NoteCollectionModal(props: NoteCollectionModalProps): React.JSX.
 
 		const pushTimer = window.setTimeout(() => {
 			if (!active) return;
+			const currentState = window.history.state as { __moreMenu?: boolean } | null;
+			if (currentState?.__moreMenu === true) {
+				window.history.replaceState({ __noteCollectionModal: true }, '');
+			} else {
+				window.history.pushState({ __noteCollectionModal: true }, '');
+			}
 			didPush = true;
-			window.history.pushState({ __noteCollectionModal: true }, '');
 		}, 0);
 
 		const onPopState = (): void => {

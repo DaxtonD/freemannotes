@@ -202,12 +202,14 @@ Moving a note changes docId: `${sourceWorkspaceId}:${noteId}` → `${targetWorks
 ### Mobile History Stack (Android PWA)
 `isMobileDismissLayerHistoryState()` recognizes: `__moreMenu`, `__reminderModal`, `__quickReminderModal`, `__noteCollectionModal`, `__noteLabelsModal`, `__collectionManagementModal`, `__noteColorPicker`, `__noteBannerPicker`, `__chipOverlay=collaborator|attachments`. On popstate landing on these: reset exit-back count, return early. Do NOT call `applyOverlaySnapshot(EMPTY)` — grid is still at base.
 
-`closeForChildOverlay` (more-menu) skips `history.back()` when opening nested modals. Image upload modal replaces `{__moreMenu}` history in place (deferred push). App popstate ignores `__noteImageUpload` entries.
+`closeForChildOverlay` (more-menu) skips `history.back()` when opening nested modals, leaving an orphaned `{__moreMenu}` entry. All modals opened via `closeForChildOverlay` (`NoteBannerPickerModal`, `NoteColorPickerModal`, `NoteLabelsModal`, `NoteCollectionModal`, `ReminderModal`) use `replaceState` instead of `pushState` when the current history state is `{__moreMenu:true}` — same as the image upload modal — so the orphan is consumed and back-button press count stays at 1. App popstate ignores `__noteImageUpload` entries.
 
-`NoteBannerPickerModal` pushes `{__noteBannerPicker:true}` on coarse-pointer and calls `history.back()` on cleanup — same pattern as `NoteColorPickerModal`.
+`NoteBannerPickerModal` pushes/replaces `{__noteBannerPicker:true}` on coarse-pointer and calls `history.back()` on cleanup — same pattern as `NoteColorPickerModal`.
 
 ### Scroll Lock
 Use `useBodyScrollLock` from `src/core/useBodyScrollLock`. Mobile FAB (`isFabOpen`) must NOT use body scroll lock — iOS scroll lives on `.test-harness-root`. Document viewer with pinch: `disableTouchAction=false`. Desktop editor open: `useBodyScrollLock(isEditorOverlayOpen)` + `pointer-events: none` on `.editor-open .app-shell`.
+
+Do NOT apply `overflow:hidden` to `.app-main`, `.app-shell`, `.test-harness-root`, or `.app-sidebar` via body-scroll-locked CSS — those are not scroll containers on mobile and gaining `overflow:hidden` snaps the grid to y=0 and breaks `position:sticky` on `.app-main-sticky`. The `html/body { overflow:hidden }` inline styles set by `useBodyScrollLock` plus `touch-action:none` on `html/body` are sufficient. See `globals.css` `@media (pointer:coarse)` scroll-lock comment.
 
 ### Collapsible Rich Headings
 - `heading.attrs.collapsible` + `collapseId` live on Yjs (shared, all devices). Collapsed/expanded state: device-local in `user_device_preference.collapsed_rich_heading_ids` + localStorage `freemannotes.collapsibleHeadingPrefs.v1:${userId}::${deviceId}`. Never sync via Yjs.
