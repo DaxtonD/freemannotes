@@ -222,11 +222,8 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 				onClick={(e) => e.stopPropagation()}
 			>
 				<header className={styles.subHeader}>
-				<button type="button" className={styles.iconButtonLeft} onClick={() => { if (hasDisplaySizeChanges) revertDisplaySizePreview(); props.onBack(); }} aria-label={props.t('common.back')}>
-					←
-				</button>
-				<h3 className={styles.subTitle}>{props.t('prefs.appearance')}</h3>
-				<button type="button" className={styles.iconButton} onClick={() => { if (hasDisplaySizeChanges) revertDisplaySizePreview(); props.onClose(); }} aria-label={props.t('common.close')}>
+					<h3 className={styles.subTitle}>{props.t('prefs.appearance')}</h3>
+					<button type="button" className={styles.iconButton} onClick={() => { if (hasDisplaySizeChanges) revertDisplaySizePreview(); props.onClose(); }} aria-label={props.t('common.close')}>
 						✕
 					</button>
 				</header>
@@ -387,6 +384,17 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 						</div>
 					</div>
 				</div>
+
+				<footer className={styles.subFooter}>
+					<button
+						type="button"
+						className={styles.subBackButton}
+						onClick={() => { if (hasDisplaySizeChanges) revertDisplaySizePreview(); props.onBack(); }}
+						aria-label={props.t('common.back')}
+					>
+						← {props.t('common.back')}
+					</button>
+				</footer>
 			</section>
 		</div>
 	);

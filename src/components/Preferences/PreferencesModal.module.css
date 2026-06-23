@@ -300,6 +300,12 @@
 	outline-offset: -2px;
 }
 
+.subModalBody {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
 .subPlaceholder {
 	font-size: 14px;
 	color: var(--color-text-muted);
@@ -755,6 +761,17 @@
 		-webkit-overflow-scrolling: touch;
 		padding: 14px;
 		gap: 12px;
+	}
+
+	/* On mobile the subModal itself is the scroll container (overflow: auto above).
+	   Make the footer sticky within that scroll container so the Back button stays
+	   visible at the bottom of the visible modal area even when content is tall.
+	   A background is applied to prevent content from showing through. */
+	.subFooter {
+		position: sticky;
+		bottom: 0;
+		background: var(--color-surface);
+		margin-top: 4px;
 	}
 
 	.title {

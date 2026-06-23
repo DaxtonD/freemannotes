@@ -45,9 +45,6 @@ export function UserModal(props: UserModalProps): React.JSX.Element | null {
 		<div className={styles.subOverlay} role="presentation" onClick={props.onClose}>
 			<section className={styles.subModal} role="dialog" aria-modal="true" aria-label={props.t('prefs.user')} onClick={(event) => event.stopPropagation()}>
 				<header className={styles.subHeader}>
-					<button type="button" className={styles.iconButtonLeft} onClick={props.onBack} aria-label={props.t('common.back')}>
-						←
-					</button>
 					<h3 className={styles.subTitle}>{props.t('prefs.user')}</h3>
 					<button type="button" className={styles.iconButton} onClick={props.onClose} aria-label={props.t('common.close')}>
 						✕
@@ -144,6 +141,12 @@ export function UserModal(props: UserModalProps): React.JSX.Element | null {
 						</button>
 					</div>
 				</div>
+
+				<footer className={styles.subFooter}>
+					<button type="button" className={styles.subBackButton} onClick={props.onBack} aria-label={props.t('common.back')}>
+						← {props.t('common.back')}
+					</button>
+				</footer>
 			</section>
 		</div>
 	);

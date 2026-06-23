@@ -434,7 +434,7 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 				<div className={styles.healthSection}>
 					<p className={styles.healthTitle}>{t('push.recentDeliveries') || 'Recent Deliveries'}</p>
 					<div className={styles.logList}>
-						{status.recentLogs.map((log, index) => (
+						{status.recentLogs.slice(0, 4).map((log, index) => (
 							<div key={index} className={styles.logRow}>
 								<span className={`${styles.logStatus} ${log.status === 'sent' ? styles.logStatusSent : styles.logStatusFailed}`}>
 									{log.status === 'sent' ? '✓' : '✕'} {log.status}

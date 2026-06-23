@@ -524,48 +524,50 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 					</button>
 				</header>
 
-				{props.section === 'install' && props.installAvailable ? (
-					<InstallSectionContent
-						t={props.t}
-						installMethod={props.installMethod ?? null}
-						installBusy={Boolean(props.installBusy)}
-						onInstallApp={props.onInstallApp}
-					/>
-				) : props.section === 'editor' ? (
-					<EditorSectionContent
-						t={props.t}
-						quickDeleteChecklist={props.quickDeleteChecklist}
-						onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
-						editorToolbarMode={props.editorToolbarMode}
-						onEditorToolbarModeChange={props.onEditorToolbarModeChange}
-						noteCardCheckboxInteractions={props.noteCardCheckboxInteractions}
-						onNoteCardCheckboxInteractionsChange={props.onNoteCardCheckboxInteractionsChange}
-						noteCardLinkInteractions={props.noteCardLinkInteractions}
-						onNoteCardLinkInteractionsChange={props.onNoteCardLinkInteractionsChange}
-						noteCardCompletedInteractions={props.noteCardCompletedInteractions}
-						onNoteCardCompletedInteractionsChange={props.onNoteCardCompletedInteractionsChange}
-					/>
-				) : props.section === 'note-management' ? (
-					<NoteManagementSectionContent
-						t={props.t}
-						deleteAfterDays={props.deleteAfterDays}
-						onDeleteAfterDaysChange={props.onDeleteAfterDaysChange}
-					/>
-				) : props.section === 'about' ? (
-					<AboutSectionContent
-						t={props.t}
-						isLightTheme={props.isLightTheme}
-						connectionState={props.connectionState}
-					/>
-				) : props.section === 'notifications' ? (
-					<NotificationsSection
-						t={props.t}
-						deviceId={props.deviceId}
-						connectionState={props.connectionState}
-					/>
-				) : (
-					<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
-				)}
+				<div className={styles.subModalBody}>
+					{props.section === 'install' && props.installAvailable ? (
+						<InstallSectionContent
+							t={props.t}
+							installMethod={props.installMethod ?? null}
+							installBusy={Boolean(props.installBusy)}
+							onInstallApp={props.onInstallApp}
+						/>
+					) : props.section === 'editor' ? (
+						<EditorSectionContent
+							t={props.t}
+							quickDeleteChecklist={props.quickDeleteChecklist}
+							onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+							editorToolbarMode={props.editorToolbarMode}
+							onEditorToolbarModeChange={props.onEditorToolbarModeChange}
+							noteCardCheckboxInteractions={props.noteCardCheckboxInteractions}
+							onNoteCardCheckboxInteractionsChange={props.onNoteCardCheckboxInteractionsChange}
+							noteCardLinkInteractions={props.noteCardLinkInteractions}
+							onNoteCardLinkInteractionsChange={props.onNoteCardLinkInteractionsChange}
+							noteCardCompletedInteractions={props.noteCardCompletedInteractions}
+							onNoteCardCompletedInteractionsChange={props.onNoteCardCompletedInteractionsChange}
+						/>
+					) : props.section === 'note-management' ? (
+						<NoteManagementSectionContent
+							t={props.t}
+							deleteAfterDays={props.deleteAfterDays}
+							onDeleteAfterDaysChange={props.onDeleteAfterDaysChange}
+						/>
+					) : props.section === 'about' ? (
+						<AboutSectionContent
+							t={props.t}
+							isLightTheme={props.isLightTheme}
+							connectionState={props.connectionState}
+						/>
+					) : props.section === 'notifications' ? (
+						<NotificationsSection
+							t={props.t}
+							deviceId={props.deviceId}
+							connectionState={props.connectionState}
+						/>
+					) : (
+						<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
+					)}
+				</div>
 
 				<footer className={styles.subFooter}>
 					<button type="button" className={styles.subBackButton} onClick={props.onClose} aria-label={props.t('common.back')}>
