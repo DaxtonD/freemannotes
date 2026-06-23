@@ -1983,6 +1983,98 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return true;
 		}
 
+		// ── POST /api/dev/clear-notifications — delete all reminders for the current user ──
+		// Developer tool: forces-clears lingering NoteReminder rows that keep re-firing
+		// after the user has already dismissed them in the UI.
+		if (pathname === '/api/dev/clear-notifications' && method === 'POST') {
+			(async () => {
+				const userId = requireAuthUserId();
+				if (!userId) return;
+				try {
+					const result = await prisma.noteReminder.deleteMany({ where: { userId } });
+					jsonResponse(res, 200, { ok: true, deleted: result.count });
+				} catch (err) {
+					console.error('[api] POST /api/dev/clear-notifications error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		// ── POST /api/dev/reset-note-order — rebuild noteOrder from notesList ──
+		// Developer tool: de-duplicates noteOrder, removes stale IDs not present in
+		// notesList, and appends any orphaned notesList entries. Preserves existing
+		// relative ordering for notes that already appear in noteOrder.
+		if (pathname === '/api/dev/reset-note-order' && method === 'POST') {
+			(async () => {
+				const workspace = await requireWorkspaceMember();
+				if (!workspace) return;
+				const { workspaceId } = workspace;
+				try {
+					let cleaned = 0;
+					let total = 0;
+					let registryDocId = '';
+					let cleanedOrder = [];
+
+					await prisma.$transaction(async (tx) => {
+						const registry = await loadRegistryRow(tx, workspaceId);
+						registryDocId = registry.docId;
+						const notesList = registry.doc.getArray('notesList');
+						const noteOrder = registry.doc.getArray('noteOrder');
+
+						// Collect valid note IDs from notesList (source of truth for membership).
+						const validIds = new Set();
+						for (let i = 0; i < notesList.length; i++) {
+							const item = notesList.get(i);
+							const id = String(item?.get?.('id') ?? '').trim();
+							if (id) validIds.add(id);
+						}
+						total = validIds.size;
+
+						// Walk existing noteOrder: de-duplicate and filter to valid IDs only.
+						const seen = new Set();
+						cleanedOrder = [];
+						for (let i = 0; i < noteOrder.length; i++) {
+							const id = String(noteOrder.get(i) ?? '').trim();
+							if (id && validIds.has(id) && !seen.has(id)) {
+								seen.add(id);
+								cleanedOrder.push(id);
+							}
+						}
+						// Append notes present in notesList but missing from noteOrder.
+						for (const id of validIds) {
+							if (!seen.has(id)) cleanedOrder.push(id);
+						}
+						cleaned = cleanedOrder.length;
+
+						// Rewrite noteOrder atomically.
+						registry.doc.transact(() => {
+							if (noteOrder.length > 0) noteOrder.delete(0, noteOrder.length);
+							if (cleanedOrder.length > 0) noteOrder.insert(0, cleanedOrder);
+						});
+
+						await saveRegistryRow(tx, workspaceId, registry);
+					});
+
+					// Propagate to any live WebSocket room for the registry.
+					updateLiveRegistryDoc(registryDocId, (liveDoc) => {
+						const liveOrder = liveDoc.getArray('noteOrder');
+						liveDoc.transact(() => {
+							if (liveOrder.length > 0) liveOrder.delete(0, liveOrder.length);
+							if (cleanedOrder.length > 0) liveOrder.insert(0, cleanedOrder);
+						});
+					});
+
+					console.log(`[api] POST /api/dev/reset-note-order: workspace=${workspaceId} cleaned=${cleaned} total=${total}`);
+					jsonResponse(res, 200, { ok: true, cleaned, total });
+				} catch (err) {
+					console.error('[api] POST /api/dev/reset-note-order error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		// ── Not handled by this router → fall through ────────────────────
 		return false;
 	}

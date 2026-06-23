@@ -1,6 +1,6 @@
 import React from 'react';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
-import { fetchAboutHudStats, type AboutHudStatsResponse } from '../../core/noteManagementApi';
+import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devResetNoteOrder } from '../../core/noteManagementApi';
 import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { NotificationsSection } from './NotificationsSection';
@@ -141,6 +141,7 @@ function AboutSectionContent(props: {
 	t: (key: string) => string;
 	isLightTheme: boolean;
 	connectionState: ConnectionState;
+	deviceId: string;
 }): React.JSX.Element {
 	const [hud, setHud] = React.useState<AboutHudStatsResponse | null>(null);
 	const [hudLoading, setHudLoading] = React.useState(true);
@@ -184,6 +185,52 @@ function AboutSectionContent(props: {
 			setDevToolsRunning(false);
 		}
 	}, [devToolsRunning]);
+
+	// Deletes all NoteReminder rows for this user so lingering notifications stop
+	// re-firing after dismissal.
+	const handleClearAllNotifications = React.useCallback(async () => {
+		if (devToolsRunning) return;
+		setDevToolsRunning(true);
+		setDevToolsResult(null);
+		try {
+			const result = await devClearAllNotifications();
+			setDevToolsResult(`Done — cleared ${result.deleted} reminder${result.deleted === 1 ? '' : 's'}.`);
+		} catch (err) {
+			setDevToolsResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			setDevToolsRunning(false);
+		}
+	}, [devToolsRunning]);
+
+	// De-duplicates and repairs the canonical noteOrder in the workspace registry
+	// Yjs doc, fixing uneven masonry caused by stale or duplicate ordering entries.
+	const handleResetNoteOrder = React.useCallback(async () => {
+		if (devToolsRunning) return;
+		setDevToolsRunning(true);
+		setDevToolsResult(null);
+		try {
+			const result = await devResetNoteOrder();
+			setDevToolsResult(`Done — rebuilt order for ${result.cleaned} of ${result.total} notes. Reload to see changes.`);
+		} catch (err) {
+			setDevToolsResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			setDevToolsRunning(false);
+		}
+	}, [devToolsRunning]);
+
+	// Clears the per-device card height cache from localStorage so every note card
+	// is remeasured from scratch on the next load (fixes stale heights from URL
+	// previews and other dynamic-content changes).
+	const handleRemeasureCardHeights = React.useCallback(() => {
+		if (devToolsRunning) return;
+		const key = `freemannotes.noteHeights.${props.deviceId}`;
+		try {
+			window.localStorage.removeItem(key);
+		} catch {
+			// localStorage blocked — proceed with reload anyway
+		}
+		window.location.reload();
+	}, [devToolsRunning, props.deviceId]);
 
 	const fetchHud = React.useCallback(async () => {
 		setHudLoading(true);
@@ -333,14 +380,41 @@ function AboutSectionContent(props: {
 			{devToolsUnlocked ? (
 				<div style={{ marginTop: '20px', padding: '12px 14px', border: '1px solid rgba(128,128,128,0.25)', borderRadius: '8px', background: 'rgba(0,0,0,0.03)' }}>
 					<p style={{ margin: '0 0 10px', fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.5 }}>Developer Tools</p>
-					<button
-						type="button"
-						className={styles.footerButton}
-						disabled={devToolsRunning || props.connectionState !== 'connected'}
-						onClick={() => { void handleFlushOrphanedPreviews(); }}
-					>
-						{devToolsRunning ? 'Running…' : 'Clear orphaned URL previews'}
-					</button>
+					<div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+						<button
+							type="button"
+							className={styles.footerButton}
+							disabled={devToolsRunning || props.connectionState !== 'connected'}
+							onClick={() => { void handleFlushOrphanedPreviews(); }}
+						>
+							Clear orphaned URL previews
+						</button>
+						<button
+							type="button"
+							className={styles.footerButton}
+							disabled={devToolsRunning || props.connectionState !== 'connected'}
+							onClick={() => { void handleClearAllNotifications(); }}
+						>
+							Force clear all notifications
+						</button>
+						<button
+							type="button"
+							className={styles.footerButton}
+							disabled={devToolsRunning || props.connectionState !== 'connected'}
+							onClick={() => { void handleResetNoteOrder(); }}
+						>
+							Reset canonical note order
+						</button>
+						<button
+							type="button"
+							className={styles.footerButton}
+							disabled={devToolsRunning}
+							onClick={handleRemeasureCardHeights}
+						>
+							Remeasure all card heights
+						</button>
+						{devToolsRunning ? <p style={{ margin: '4px 0 0', fontSize: '13px', opacity: 0.75 }}>Running…</p> : null}
+					</div>
 					{devToolsResult ? <p style={{ margin: '8px 0 0', fontSize: '13px', opacity: 0.75 }}>{devToolsResult}</p> : null}
 				</div>
 			) : null}
@@ -557,6 +631,7 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 							t={props.t}
 							isLightTheme={props.isLightTheme}
 							connectionState={props.connectionState}
+							deviceId={props.deviceId}
 						/>
 					) : props.section === 'notifications' ? (
 						<NotificationsSection
