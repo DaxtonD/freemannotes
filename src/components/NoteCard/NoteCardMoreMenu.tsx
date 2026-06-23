@@ -153,21 +153,22 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 		};
 	}, [isMoreMenuHistoryEntry]);
 
-	// Prevent body/html scroll while menu is open (including iOS rubber-banding)
+	// Prevent touch scroll of the background while menu is open.
+	// We use touch-action:none only (no overflow:hidden) so the visual scroll
+	// position is preserved — overflow:hidden on html resets the visual scroll
+	// to y=0 on Android Chrome, making the blurred backdrop show the wrong content
+	// and causing the sticky label chip to lose its sticky context.
 	React.useEffect(() => {
 		if (isDesktop) return; // desktop popover doesn't need scroll lock
 		const html = document.documentElement;
 		const body = document.body;
-		const prevHtmlOverflow = html.style.overflow;
-		const prevBodyOverflow = body.style.overflow;
 		const prevHtmlTouchAction = html.style.touchAction;
-		html.style.overflow = 'hidden';
-		body.style.overflow = 'hidden';
+		const prevBodyTouchAction = body.style.touchAction;
 		html.style.touchAction = 'none';
+		body.style.touchAction = 'none';
 		return () => {
-			html.style.overflow = prevHtmlOverflow;
-			body.style.overflow = prevBodyOverflow;
 			html.style.touchAction = prevHtmlTouchAction;
+			body.style.touchAction = prevBodyTouchAction;
 		};
 	}, []);
 

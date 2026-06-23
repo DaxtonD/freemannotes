@@ -2,6 +2,8 @@
 	position: fixed;
 	inset: 0;
 	background: var(--color-overlay);
+	backdrop-filter: blur(8px);
+	-webkit-backdrop-filter: blur(8px);
 	display: flex;
 	/* flex-start anchors items to the top of the content box (inside padding).
 	   Combined with margin: auto on the modal, items are visually centred when

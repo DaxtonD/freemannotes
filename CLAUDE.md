@@ -211,6 +211,8 @@ Use `useBodyScrollLock` from `src/core/useBodyScrollLock`. Mobile FAB (`isFabOpe
 
 Do NOT apply `overflow:hidden` to `.app-main`, `.app-shell`, `.test-harness-root`, or `.app-sidebar` via body-scroll-locked CSS — those are not scroll containers on mobile and gaining `overflow:hidden` snaps the grid to y=0 and breaks `position:sticky` on `.app-main-sticky`. The `html/body { overflow:hidden }` inline styles set by `useBodyScrollLock` plus `touch-action:none` on `html/body` are sufficient. See `globals.css` `@media (pointer:coarse)` scroll-lock comment.
 
+**On mobile (`pointer:coarse`), `useBodyScrollLock` does NOT set `overflow:hidden` on html/body** — it only sets `touch-action:none` (non-allow-touch) and adds the `body-scroll-locked` CSS class (which applies `overscroll-behavior:none`). `overflow:hidden` on the scroll root resets the visual scroll to y=0 on Android Chrome, making `backdrop-filter:blur()` overlays show the wrong part of the grid and causing `.app-main-sticky` to lose its sticky scroll context. On desktop (`pointer:fine`), `overflow:hidden` IS applied (via `@media (pointer:fine)` CSS rule) to prevent keyboard/wheel scroll of the background. `NoteCardMoreMenu` follows the same rule: mobile uses only `touch-action:none`, not `overflow:hidden`.
+
 ### Collapsible Rich Headings
 - `heading.attrs.collapsible` + `collapseId` live on Yjs (shared, all devices). Collapsed/expanded state: device-local in `user_device_preference.collapsed_rich_heading_ids` + localStorage `freemannotes.collapsibleHeadingPrefs.v1:${userId}::${deviceId}`. Never sync via Yjs.
 - Section boundary stops only at **collapsible** headings with `level <= owner` (`isCollapsibleHeadingSectionBoundary` in `collapsibleRichHeadings.ts`).
