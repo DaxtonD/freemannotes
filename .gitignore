@@ -17,9 +17,16 @@ yarn-debug.log*
 yarn-error.log*
 freeman-debug.log
 
-# AI
-CLAUDE_CONTEXT.md
+# AI assistant files and settings (not part of the codebase)
 CLAUDE.md
+CLAUDE_CONTEXT.md
+.claude/
+.cursor/
+CURSOR_CONTEXT.md
+.aider*
+.anthropic/
+*.cursorrules
+memory/
 
 # Local Yjs persistence artifacts
 .yjs-data/
@@ -30,8 +37,3 @@ screenjitter.mp4
 # Prisma generated client (regenerated on npm install / prisma generate)
 # The schema.prisma file IS tracked; the generated output is NOT.
 node_modules/.prisma/
-
-# Local AI assistant memory / project notes (not part of the codebase)
-memory/
-.cursor/
-CURSOR_CONTEXT.md

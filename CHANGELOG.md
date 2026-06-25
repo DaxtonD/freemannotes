@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.2 - 2026-06-24
+
+### Added
+- **PWA session restore after page discard.** Android/iOS can silently kill the PWA process when it is backgrounded (`sessionStorage` is lost but `localStorage` survives). A new `src/core/sessionRestore.ts` utility writes the open note to `freemannotes.session-restore.v1` on every navigation change. After auth completes, a once-per-session effect re-opens the note if the stored workspace matches. Cleared on sign-out. Requires local test: open a note, background the app 5–10 min, return — note should restore instead of landing on the grid.
+- **SW debug logging.** Service worker lifecycle events (install, activate, cache hits, update checks, navigation) are captured to `localStorage` and surfaced in Preferences → Developer Tools (10-tap dev mode). Buttons: enable/disable, copy log to clipboard, clear log. Documents PWA reload regressions without needing DevTools. See `CONTRIBUTING.md` for the full event reference.
+- **i18n for developer tools UI strings.** All button labels and section heading in the PreferencesModal dev tools panel now use `t('prefs.devTools*')` keys instead of hardcoded English. Spanish translations added; fallback entries in `FALLBACK_MESSAGES`.
+
+### Fixed
+- **Label deletion leaves stale chips on notes.** Deleting a label only removed it from the registry and from the one note open in the labels modal. All other notes retained the chip visually. `handleDeleteLabel` now iterates every loaded note doc via `manager.peekDoc` after the registry delete and strips the label. A `useEffect` on `openDoc` performs lazy cleanup for docs that weren't in memory at delete time (pruning any IDs no longer present in the registry on note open). The first-click confirmation button now shows the affected note count from the workspace render snapshot.
+- **Collection deletion leaves notes assigned to deleted collection.** Same root cause and fix as label deletion. `handleDeleteCollection` clears `collectionId` across all loaded docs; lazy cleanup prunes stale IDs on open. The `window.confirm` message now includes the note count: `Delete "{name}"? {count} note(s) in this collection will be unassigned.`
+- **Label/collection duplication when moving notes to an offline workspace.** When the target workspace had never opened a WS session (e.g. created while offline), its labels/collections registry had no live doc and no DB row. The server created new Yjs `Y.Map` entries for each remapped label/collection. When the offline client later synced, Yjs's append-only `Y.Array` preserved both entries — duplicates. Fix: `loadWorkspaceDocRow` now returns `wasEmpty`. `ensureTargetLabelIdsForMove` and `ensureTargetCollectionIdForMove` accept `targetWasEmpty`; when true and the client supplied a `preferredTargetIdsBySourceId` entry, they use the preferred ID directly and skip writing new Yjs entries. The empty registry is also not persisted to DB, preventing a blank server snapshot from clobbering the client's offline state on sync.
+- **Undo/redo re-opens the software keyboard on mobile.** The bottom-left FAB undo/redo buttons (visible only when the keyboard is dismissed) called `.chain().focus()`, which re-focused the editor and triggered the soft keyboard. Separate no-focus handler variants (`handleTextUndoNoFocus`, `handleTextRedoNoFocus`, `handleChecklistPrimaryUndoNoFocus`, `handleChecklistPrimaryRedoNoFocus`) now drive the FAB buttons. The TipTap toolbar undo/redo (visible inside the keyboard) continues to call `.focus()` unchanged.
+
 ## 1.6.1 - 2026-06-22
 
 ### Added

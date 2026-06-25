@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(git tag *)",
-      "Bash(grep -n \"function createApiRouter\\\\|{ prisma, adapter\\\\|prisma\\\\b\" server/apiRouter.js)",
-      "Bash(git commit -m ' *)"
-    ]
-  }
-}
