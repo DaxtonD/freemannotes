@@ -1523,6 +1523,25 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		}
 		redoCheckboxChange();
 	};
+	// FAB variants for checklist — see handleTextUndoNoFocus for full rationale.
+	const handleChecklistPrimaryUndoNoFocus = (): void => {
+		if (activeChecklistRowHistoryState.canUndo && activeChecklistRowEditor) {
+			try {
+				const chain = activeChecklistRowEditor.chain() as { undo?: () => { run: () => boolean } };
+				if (typeof chain.undo === 'function') { chain.undo().run(); return; }
+			} catch {}
+		}
+		undoCheckboxChange();
+	};
+	const handleChecklistPrimaryRedoNoFocus = (): void => {
+		if (activeChecklistRowHistoryState.canRedo && activeChecklistRowEditor) {
+			try {
+				const chain = activeChecklistRowEditor.chain() as { redo?: () => { run: () => boolean } };
+				if (typeof chain.redo === 'function') { chain.redo().run(); return; }
+			} catch {}
+		}
+		redoCheckboxChange();
+	};
 	// Mirror the draft checklist editor: only surface the mobile undo/redo affordance
 	// when checklist history exists and no competing mobile overlay is open.
 	// Unlike text notes, checklist row editing should keep the footer history buttons
@@ -2102,6 +2121,27 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		} catch {
 			// Ignore transient editor teardown while the sheet animates.
 		}
+	}, [textEditor]);
+
+	// FAB variants — identical to the handlers above but WITHOUT .focus().
+	// The toolbar undo/redo (inside the keyboard) needs .focus() to keep the cursor
+	// visible. The bottom-left FAB is only shown when mobileKeyboardOpen is false;
+	// calling .focus() there would re-open the software keyboard, which is unwanted.
+	// Do NOT merge these with the focus variants — they serve different contexts.
+	const handleTextUndoNoFocus = React.useCallback((): void => {
+		if (!textEditor) return;
+		try {
+			const chain = textEditor.chain() as { undo?: () => { run: () => boolean } };
+			if (typeof chain.undo === 'function') chain.undo().run();
+		} catch {}
+	}, [textEditor]);
+
+	const handleTextRedoNoFocus = React.useCallback((): void => {
+		if (!textEditor) return;
+		try {
+			const chain = textEditor.chain() as { redo?: () => { run: () => boolean } };
+			if (typeof chain.redo === 'function') chain.redo().run();
+		} catch {}
 	}, [textEditor]);
 
 	const checkAllChecklistItems = React.useCallback((): void => {
@@ -3223,7 +3263,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<button
 									type="button"
 									className={styles.mobileChecklistUndoFabButton}
-									onClick={type === 'checklist' ? handleChecklistPrimaryUndo : handleTextUndo}
+									onClick={type === 'checklist' ? handleChecklistPrimaryUndoNoFocus : handleTextUndoNoFocus}
 									disabled={type === 'checklist' ? !canRunChecklistPrimaryUndo : !textHistoryState.canUndo}
 									aria-label={type === 'checklist' ? (activeChecklistRowHistoryState.canUndo ? t('editors.undo') : t('editors.undoCheckbox')) : t('editors.undo')}
 									title={type === 'checklist' ? (activeChecklistRowHistoryState.canUndo ? t('editors.undo') : t('editors.undoCheckbox')) : t('editors.undo')}
@@ -3233,7 +3273,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<button
 									type="button"
 									className={styles.mobileChecklistUndoFabButton}
-									onClick={type === 'checklist' ? handleChecklistPrimaryRedo : handleTextRedo}
+									onClick={type === 'checklist' ? handleChecklistPrimaryRedoNoFocus : handleTextRedoNoFocus}
 									disabled={type === 'checklist' ? !canRunChecklistPrimaryRedo : !textHistoryState.canRedo}
 									aria-label={type === 'checklist' ? (activeChecklistRowHistoryState.canRedo ? t('editors.redo') : t('editors.redoCheckbox')) : t('editors.redo')}
 									title={type === 'checklist' ? (activeChecklistRowHistoryState.canRedo ? t('editors.redo') : t('editors.redoCheckbox')) : t('editors.redo')}

@@ -56,6 +56,7 @@ type NoteCollectionModalProps = {
 	onCreate: (args: { name: string; parentId: string | null }) => string | null;
 	onRename: (collectionId: string, nextName: string) => boolean;
 	onDelete: (collectionId: string) => void;
+	onGetCollectionNoteCount?: (collectionId: string) => number;
 	onSelectCollection: (collectionId: string | null) => void;
 };
 
@@ -211,7 +212,9 @@ export function NoteCollectionModal(props: NoteCollectionModalProps): React.JSX.
 	}, [collectionById, draftAction, props, t]);
 
 	const handleDelete = React.useCallback((collectionId: string, name: string): void => {
-		if (!window.confirm(t('collections.deleteConfirmPrefix').replace('{name}', name))) return;
+		const count = props.onGetCollectionNoteCount?.(collectionId) ?? 0;
+		const msg = t('collections.deleteConfirmPrefix').replace('{name}', name).replace('{count}', String(count));
+		if (!window.confirm(msg)) return;
 		props.onDelete(collectionId);
 		setDraftAction((current) => {
 			if (!current) return null;

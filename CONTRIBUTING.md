@@ -14,10 +14,11 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [Server config (`.env`)](#server-config-env)
   - [Client build config (`env.vite/`)](#client-build-config-envvite)
 - [Debug Tools](#debug-tools)
-  - [1. Application Debug Logging](#1-application-debug-logging)
-  - [2. Masonry Layout Debug System](#2-masonry-layout-debug-system)
-  - [3. Masonry Visual Overlay](#3-masonry-visual-overlay)
-  - [4. Workspace Move Tracing](#4-workspace-move-tracing)
+  - [1. Service Worker / PWA Update Debug Logging](#1-service-worker--pwa-update-debug-logging)
+  - [2. Application Debug Logging](#2-application-debug-logging)
+  - [3. Masonry Layout Debug System](#3-masonry-layout-debug-system)
+  - [4. Masonry Visual Overlay](#4-masonry-visual-overlay)
+  - [5. Workspace Move Tracing](#5-workspace-move-tracing)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
 - [Native Platform Companions](#native-platform-companions)
   - [Architecture overview](#architecture-overview)
@@ -170,11 +171,53 @@ VITE_DEBUG_LOGGING=1
 
 ## Debug Tools
 
-Freeman Notes ships three independent debug systems. Each targets a different layer of the app.
+Freeman Notes ships four independent debug systems. Each targets a different layer of the app.
 
 ---
 
-### 1. Application Debug Logging
+### 1. Service Worker / PWA Update Debug Logging
+
+**What it covers:** Every PWA lifecycle decision that can trigger a page reload — service worker controller changes, background/foreground visibility transitions, network version checks, idle-timer checks, and the immediate cause of any `location.replace()` call. Useful for diagnosing unexpected app reloads on mobile PWAs.
+
+**How to enable:**
+
+1. Open the app and go to **Settings → About** (tap the version badge 10 times to unlock Developer Tools).
+2. Tap **"Enable SW debug logging"**.
+3. The button label changes to "Disable SW debug logging" and a confirmation message appears.
+
+All subsequent PWA lifecycle events are written to `localStorage` and survive page reloads, so the log from before an unexpected reload is available after it happens.
+
+**How to retrieve the log:**
+
+1. After reproducing the issue (e.g. an unexpected reload after backgrounding the app), open Settings → About → Developer Tools.
+2. Tap **"Copy SW debug log"** — the log is copied to the clipboard.
+3. Paste it into the bug report.
+
+**What the log contains** (one JSON line per event):
+
+| Event | When it fires |
+|---|---|
+| `init` | Fresh page load, with app version and whether a SW was already controlling |
+| `visibilitychange` | Every foreground / background transition, with full state snapshot |
+| `controllerchange` | SW controller swap, with `wasAutoApplying` flag |
+| `onNeedRefresh` | New SW version detected and waiting |
+| `versionMismatch` | `/api/version` returned a newer version than the running client |
+| `updateNow` | Timer, focus, or visibility event triggered an update check |
+| `canSafelyApply` | Every update-safety check, with the exact reason it blocked or passed |
+| `deferredCheck-firing` | Idle timer passed — an update is about to be applied |
+| `swApply-start` | SW skip-waiting is being sent |
+| `RELOAD_network` | `location.replace('/')` is about to fire from a network version mismatch |
+| `RELOAD_controllerchange` | `location.replace()` is about to fire from a SW controller change |
+
+**How to disable:**
+
+Tap **"Disable SW debug logging"** in Developer Tools, or tap **"Clear SW debug log"** to wipe existing entries without disabling capture.
+
+**Note:** Logging is a no-op when disabled — zero localStorage writes. It is safe to leave the flag enabled long-term during active debugging.
+
+---
+
+### 2. Application Debug Logging
 
 **What it covers:** General client-side events (Yjs sync, document load, workspace changes) POSTed to `/api/debug-log`, plus IndexedDB state tracing.
 
@@ -221,7 +264,7 @@ location.reload()
 
 ---
 
-### 2. Masonry Layout Debug System
+### 3. Masonry Layout Debug System
 
 **What it covers:** The note card grid layout engine — every repack decision, column assignment, card height measurement, drag-drop event, checklist expand/collapse, and viewport anchor calculation.
 
@@ -294,7 +337,7 @@ location.reload()
 
 ---
 
-### 3. Masonry Visual Overlay
+### 4. Masonry Visual Overlay
 
 **What it covers:** A live on-screen HUD showing real-time column heights, note positions, repack count, and placement decisions directly on top of the grid. Useful when actively working on layout algorithm changes.
 
@@ -310,7 +353,7 @@ No reload is needed — the overlay appears within ~250 ms. To hide it, set the 
 
 ---
 
-### 4. Workspace Move Tracing
+### 5. Workspace Move Tracing
 
 **What it covers:** End-to-end tracing for note moves between workspaces, including the optimistic client move, the server-side move transaction, and follow-up media/collaborator access requests.
 
@@ -376,7 +419,7 @@ or append `?moveDebug=0` to the URL once.
 
 When reporting a masonry layout issue (cards in the wrong column, column imbalance, cards jumping after drag-drop), please include:
 
-1. **Debug payload** — captured immediately after the issue appears using `window.__noteGridDebugDownloadImportant()` (see [Masonry Layout Debug System](#2-masonry-layout-debug-system) above)
+1. **Debug payload** — captured immediately after the issue appears using `window.__noteGridDebugDownloadImportant()` (see [Masonry Layout Debug System](#3-masonry-layout-debug-system) above)
 2. **Device and viewport** — device type (desktop/tablet/phone), approximate screen width, browser
 3. **Steps to reproduce** — what you did before the issue appeared (e.g., "dragged card A over card B, then expanded the completed items section on card C")
 4. **How reliably it reproduces** — every time, intermittently, or only after a specific sequence

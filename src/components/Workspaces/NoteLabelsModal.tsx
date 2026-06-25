@@ -235,6 +235,7 @@ type NoteLabelsModalProps = {
 	onCreateLabel: (args: { name: string; color?: string | null }) => string | null;
 	onUpdateLabel: (labelId: string, patch: { name?: string; color?: string | null }) => boolean;
 	onDeleteLabel: (labelId: string) => void;
+	onGetLabelNoteCount?: (labelId: string) => number;
 	showSelection?: boolean;
 };
 
@@ -467,7 +468,11 @@ export function NoteLabelsModal(props: NoteLabelsModalProps): React.JSX.Element 
 												{t('common.cancel')}
 											</button>
 											<button type="button" className={styles.dangerButton} onClick={() => deleteEditingLabel(editingLabelId)}>
-												{deleteConfirmLabelId === editingLabelId ? t('labels.confirmDeleteAction') : t('labels.deleteAction')}
+												{deleteConfirmLabelId === editingLabelId
+													? (props.onGetLabelNoteCount && editingLabelId
+														? t('labels.confirmDeleteWithCount').replace('{count}', String(props.onGetLabelNoteCount(editingLabelId!)))
+														: t('labels.confirmDeleteAction'))
+													: t('labels.deleteAction')}
 											</button>
 										</>
 									) : (

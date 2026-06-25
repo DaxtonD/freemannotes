@@ -157,6 +157,7 @@ import {
 } from './core/noteDocumentStore';
 import { searchOfflineNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
+import { clearSessionRestoreNote, readSessionRestoreNote, setSessionRestoreNote } from './core/sessionRestore';
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
 import {
@@ -198,6 +199,7 @@ import {
 } from './core/workspaceMetadataStore';
 import {
 	hasWorkspaceRenderSnapshot,
+	readWorkspaceRenderSnapshot,
 	readWorkspaceRenderSnapshotScroll,
 	writeWorkspaceRenderSnapshotScroll,
 } from './core/workspaceRenderSnapshot';
@@ -1393,6 +1395,10 @@ export function App(): React.JSX.Element {
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(_restoredOverlay?.selectedNoteId ?? null);
 	const selectedNoteIdRef = React.useRef(selectedNoteId);
 	selectedNoteIdRef.current = selectedNoteId;
+	// Mirror the open note to localStorage so it can be restored if the OS kills the PWA process.
+	React.useEffect(() => {
+		setSessionRestoreNote(selectedNoteId, authWorkspaceId);
+	}, [selectedNoteId, authWorkspaceId]);
 	// Loaded Y.Doc for the selected note.
 	const [openDoc, setOpenDoc] = React.useState<Y.Doc | null>(null);
 	const [openDocId, setOpenDocId] = React.useState<string | null>(null);
@@ -2656,6 +2662,18 @@ export function App(): React.JSX.Element {
 		},
 		[commitOverlaySnapshot, applyOverlaySnapshot, getOverlaySnapshot, isMobileViewport, manager]
 	);
+
+	// Restore the last open note after an OS-initiated page discard (Android/iOS kills the
+	// PWA process; sessionStorage is gone but localStorage survives). Fires once per session
+	// after auth and workspace are confirmed. Skipped if overlay history already restored a note.
+	const sessionRestoreAttemptedRef = React.useRef(false);
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authWorkspaceId || sessionRestoreAttemptedRef.current) return;
+		sessionRestoreAttemptedRef.current = true;
+		if (selectedNoteId) return;
+		const noteId = readSessionRestoreNote(authWorkspaceId);
+		if (noteId) openNoteEditor(noteId);
+	}, [authStatus, authWorkspaceId, openNoteEditor, selectedNoteId]);
 
 	const openAttachedDrawing = React.useCallback(async (parentNoteId: string, drawingId: string) => {
 		const normalizedDrawingId = ensureRelatedNoteAlias(parentNoteId, drawingId);
@@ -4165,6 +4183,7 @@ export function App(): React.JSX.Element {
 		// on this device starts with a clean sidebar (no stale entries from previous session).
 		clearWorkspaceListLocalCache(authUserId ?? '');
 		clearCachedReminderStates(authUserId ?? '');
+		clearSessionRestoreNote();
 		setSharedPlacements([]);
 		setActiveWorkspaceSharedPlacements([]);
 		setActiveSharedFolder(null);
@@ -5029,13 +5048,22 @@ export function App(): React.JSX.Element {
 	const handleDeleteCollection = React.useCallback((collectionId: string) => {
 		if (!collectionsDoc) return;
 		deleteCollection(collectionsDoc, collectionId);
+		// Clean up all currently-loaded note docs.
+		void manager.getNoteOrder().then((noteOrder) => {
+			for (const noteId of noteOrder.toArray()) {
+				const doc = manager.peekDoc(noteId);
+				if (!doc) continue;
+				if (readNoteMetadataState(doc).collectionId === collectionId) {
+					assignNoteToCollection(doc, null);
+				}
+			}
+		}).catch(() => undefined);
+		// Shared placement for the note open in the collection modal.
 		if (noteCollectionPlacement && noteCollectionMetadata.collectionId === collectionId) {
 			void saveSharedPlacementMetadata(noteCollectionPlacement, { collectionId: null });
-		} else if (noteCollectionDoc && readNoteMetadataState(noteCollectionDoc).collectionId === collectionId) {
-			assignNoteToCollection(noteCollectionDoc, null);
 		}
 		setActiveCollectionId((current) => current === collectionId ? null : current);
-	}, [collectionsDoc, noteCollectionDoc, noteCollectionMetadata.collectionId, noteCollectionPlacement, saveSharedPlacementMetadata]);
+	}, [collectionsDoc, manager, noteCollectionMetadata.collectionId, noteCollectionPlacement, saveSharedPlacementMetadata]);
 	const handleCreateLabel = React.useCallback((args: { name: string; color?: string | null }): string | null => {
 		if (!labelsDoc) return null;
 		return createLabel(labelsDoc, args)?.id ?? null;
@@ -5047,18 +5075,25 @@ export function App(): React.JSX.Element {
 	const handleDeleteLabel = React.useCallback((labelId: string) => {
 		if (!labelsDoc) return;
 		deleteLabel(labelsDoc, labelId);
+		// Clean up all currently-loaded note docs.
+		void manager.getNoteOrder().then((noteOrder) => {
+			for (const noteId of noteOrder.toArray()) {
+				const doc = manager.peekDoc(noteId);
+				if (!doc) continue;
+				const current = readNoteMetadataState(doc).labelIds;
+				if (current.includes(labelId)) {
+					assignNoteLabels(doc, current.filter((entry) => entry !== labelId));
+				}
+			}
+		}).catch(() => undefined);
+		// Shared placement for the note open in the labels modal.
 		if (noteLabelsPlacement && noteLabelsMetadata.labelIds.includes(labelId)) {
 			void saveSharedPlacementMetadata(noteLabelsPlacement, {
 				labelIds: noteLabelsMetadata.labelIds.filter((entry) => entry !== labelId),
 			});
-		} else if (noteLabelsDoc) {
-			const current = readNoteMetadataState(noteLabelsDoc).labelIds;
-			if (current.includes(labelId)) {
-				assignNoteLabels(noteLabelsDoc, current.filter((entry) => entry !== labelId));
-			}
 		}
 		setActiveLabelIds((current) => current.filter((entry) => entry !== labelId));
-	}, [labelsDoc, noteLabelsDoc, noteLabelsMetadata.labelIds, noteLabelsPlacement, saveSharedPlacementMetadata]);
+	}, [labelsDoc, manager, noteLabelsMetadata.labelIds, noteLabelsPlacement, saveSharedPlacementMetadata]);
 	const handleSelectNoteCollection = React.useCallback((collectionId: string | null) => {
 		if (noteCollectionPlacement) {
 			void saveSharedPlacementMetadata(noteCollectionPlacement, { collectionId });
@@ -5067,6 +5102,23 @@ export function App(): React.JSX.Element {
 		if (!noteCollectionDoc) return;
 		assignNoteToCollection(noteCollectionDoc, collectionId);
 	}, [noteCollectionDoc, noteCollectionPlacement, saveSharedPlacementMetadata]);
+
+	// Lazy cleanup: when a note doc is opened, prune any label/collection IDs that no
+	// longer exist in the registry (e.g. the note was offline when a label was deleted).
+	const labelIds = React.useMemo(() => new Set(labels.map((l) => l.id)), [labels]);
+	const collectionIds = React.useMemo(() => new Set(collections.map((c) => c.id)), [collections]);
+	React.useEffect(() => {
+		if (!openDoc) return;
+		const meta = readNoteMetadataState(openDoc);
+		const nextLabelIds = meta.labelIds.filter((id) => labelIds.has(id));
+		if (nextLabelIds.length !== meta.labelIds.length) {
+			assignNoteLabels(openDoc, nextLabelIds);
+		}
+		if (meta.collectionId && !collectionIds.has(meta.collectionId)) {
+			assignNoteToCollection(openDoc, null);
+		}
+	}, [openDoc, labelIds, collectionIds]);
+
 	const handleToggleNoteLabel = React.useCallback((labelId: string) => {
 		const current = noteLabelsMetadata.labelIds;
 		const nextLabelIds = current.includes(labelId)
@@ -10303,6 +10355,9 @@ export function App(): React.JSX.Element {
 				onCreate={handleCreateCollection}
 				onRename={handleRenameCollection}
 				onDelete={handleDeleteCollection}
+				onGetCollectionNoteCount={(collectionId) =>
+					readWorkspaceRenderSnapshot(authWorkspaceId)?.notes.filter((n) => n.collectionId === collectionId).length ?? 0
+				}
 			/>
 
 			<NoteCollectionModal
@@ -10314,6 +10369,9 @@ export function App(): React.JSX.Element {
 				onCreate={handleCreateCollection}
 				onRename={handleRenameCollection}
 				onDelete={handleDeleteCollection}
+				onGetCollectionNoteCount={(collectionId) =>
+					readWorkspaceRenderSnapshot(authWorkspaceId)?.notes.filter((n) => n.collectionId === collectionId).length ?? 0
+				}
 				onSelectCollection={handleSelectNoteCollection}
 			/>
 
@@ -10327,6 +10385,9 @@ export function App(): React.JSX.Element {
 				onCreateLabel={handleCreateLabel}
 				onUpdateLabel={handleUpdateLabel}
 				onDeleteLabel={handleDeleteLabel}
+				onGetLabelNoteCount={(labelId) =>
+					readWorkspaceRenderSnapshot(authWorkspaceId)?.notes.filter((n) => n.labelIds.includes(labelId)).length ?? 0
+				}
 			/>
 
 			<NoteLabelsModal
@@ -10336,6 +10397,9 @@ export function App(): React.JSX.Element {
 				onCreateLabel={handleCreateLabel}
 				onUpdateLabel={handleUpdateLabel}
 				onDeleteLabel={handleDeleteLabel}
+				onGetLabelNoteCount={(labelId) =>
+					readWorkspaceRenderSnapshot(authWorkspaceId)?.notes.filter((n) => n.labelIds.includes(labelId)).length ?? 0
+				}
 				showSelection={false}
 			/>
 

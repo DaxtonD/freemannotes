@@ -405,6 +405,9 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		const doc = new Y.Doc();
 		initializeDoc(doc);
 		const liveDoc = liveDocs.get(docId) || null;
+		// Track whether the registry had any prior content so callers can decide
+		// whether to create new entries or trust the client's offline-computed mapping.
+		const wasEmpty = !liveDoc && !(row?.state && row.state.length > 0);
 		if (liveDoc) {
 			// Moves need the freshest registry state so label/collection ids can be
 			// remapped against rows created moments earlier in the live Yjs session.
@@ -412,7 +415,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		} else if (row?.state && row.state.length > 0) {
 			Y.applyUpdate(doc, new Uint8Array(row.state));
 		}
-		return { docId, row, doc };
+		return { docId, row, doc, wasEmpty };
 	}
 
 	async function saveRegistryRow(tx, workspaceId, registry) {
@@ -580,9 +583,22 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		return label;
 	}
 
-	function ensureTargetCollectionIdForMove(sourceCollectionId, sourceCollectionsDoc, targetCollectionsDoc, preferredTargetIdsBySourceId = new Map()) {
+	/**
+	 * Remap a source collection ID to its equivalent in the target workspace.
+	 *
+	 * @param {boolean} targetWasEmpty - True when the target registry had no live session
+	 *   and no DB row at move time (i.e. the workspace was created offline and has never
+	 *   synced). In that case we MUST NOT write new Y.Map entries into the registry:
+	 *   Yjs arrays are append-only CRDTs — both the server entry and the client's offline
+	 *   entry would survive the merge, producing duplicates. Instead, we use the client's
+	 *   preferred ID directly and skip writing the registry altogether (see caller).
+	 *
+	 * Returns { collectionId, createdEntries } so the caller knows whether any new Yjs
+	 * entries were actually written and whether to persist the modified registry.
+	 */
+	function ensureTargetCollectionIdForMove(sourceCollectionId, sourceCollectionsDoc, targetCollectionsDoc, preferredTargetIdsBySourceId = new Map(), targetWasEmpty = false) {
 		const normalizedSourceId = normalizeOptionalId(sourceCollectionId);
-		if (!normalizedSourceId) return null;
+		if (!normalizedSourceId) return { collectionId: null, createdEntries: false };
 		const sourceCollections = readCollectionsFromRegistryDoc(sourceCollectionsDoc);
 		const sourceById = new Map(sourceCollections.map((collection) => [collection.id, collection]));
 		const sourceChain = [];
@@ -593,51 +609,79 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			sourceChain.unshift(cursor);
 			cursor = cursor.parentId ? sourceById.get(cursor.parentId) || null : null;
 		}
-		if (sourceChain.length === 0) return null;
+		if (sourceChain.length === 0) return { collectionId: null, createdEntries: false };
 		let targetParentId = null;
+		let createdEntries = false;
 		for (const sourceCollection of sourceChain) {
 			let targetCollection = readCollectionsFromRegistryDoc(targetCollectionsDoc).find((collection) => (
 				collection.parentId === targetParentId && normalizeComparableName(collection.name) === normalizeComparableName(sourceCollection.name)
 			)) || null;
 			if (!targetCollection) {
+				const preferredId = preferredTargetIdsBySourceId.get(sourceCollection.id) || null;
+				// Same rationale as ensureTargetLabelIdsForMove: if the target workspace's
+				// registry hasn't synced, use the client's preferred ID directly to avoid
+				// duplicating Yjs entries when the offline registry eventually syncs.
+				if (targetWasEmpty && preferredId) {
+					targetParentId = preferredId;
+					continue;
+				}
 				targetCollection = createCollectionInRegistryDoc(targetCollectionsDoc, {
-					id: preferredTargetIdsBySourceId.get(sourceCollection.id) || null,
+					id: preferredId,
 					name: sourceCollection.name,
 					parentId: targetParentId,
 				});
+				if (targetCollection) createdEntries = true;
 			}
-			if (!targetCollection) return targetParentId;
+			if (!targetCollection) return { collectionId: targetParentId, createdEntries };
 			targetParentId = targetCollection.id;
 		}
-		return targetParentId;
+		return { collectionId: targetParentId, createdEntries };
 	}
 
-	function ensureTargetLabelIdsForMove(sourceLabelIds, sourceLabelsDoc, targetLabelsDoc, preferredTargetIdsBySourceId = new Map()) {
+	/**
+	 * Remap source label IDs to their equivalents in the target workspace.
+	 * See ensureTargetCollectionIdForMove for the full rationale behind targetWasEmpty.
+	 * Returns { labelIds, createdEntries }.
+	 */
+	function ensureTargetLabelIdsForMove(sourceLabelIds, sourceLabelsDoc, targetLabelsDoc, preferredTargetIdsBySourceId = new Map(), targetWasEmpty = false) {
 		const sourceIds = normalizeLabelIds(sourceLabelIds);
-		if (sourceIds.length === 0) return [];
+		if (sourceIds.length === 0) return { labelIds: [], createdEntries: false };
 		const sourceById = new Map(readLabelsFromRegistryDoc(sourceLabelsDoc).map((label) => [label.id, label]));
 		const targetByName = new Map(readLabelsFromRegistryDoc(targetLabelsDoc).map((label) => [normalizeComparableName(label.name), label]));
 		const nextLabelIds = [];
+		let createdEntries = false;
 		for (const sourceLabelId of sourceIds) {
 			const sourceLabel = sourceById.get(sourceLabelId) || null;
 			if (!sourceLabel) continue;
 			const comparableName = normalizeComparableName(sourceLabel.name);
 			let targetLabel = targetByName.get(comparableName) || null;
 			if (!targetLabel) {
+				const preferredId = preferredTargetIdsBySourceId.get(sourceLabel.id) || null;
+				// If the target workspace's registry was entirely absent (offline workspace
+				// that hasn't synced yet), don't insert a new Yjs entry — it would
+				// create a duplicate row when the client's offline registry eventually
+				// syncs via the WS. Use the preferred client-computed ID directly.
+				if (targetWasEmpty && preferredId) {
+					if (!nextLabelIds.includes(preferredId)) {
+						nextLabelIds.push(preferredId);
+					}
+					continue;
+				}
 				targetLabel = createLabelInRegistryDoc(targetLabelsDoc, {
-					id: preferredTargetIdsBySourceId.get(sourceLabel.id) || null,
+					id: preferredId,
 					name: sourceLabel.name,
 					color: sourceLabel.color,
 				});
 				if (targetLabel) {
 					targetByName.set(comparableName, targetLabel);
+					createdEntries = true;
 				}
 			}
 			if (targetLabel && !nextLabelIds.includes(targetLabel.id)) {
 				nextLabelIds.push(targetLabel.id);
 			}
 		}
-		return nextLabelIds;
+		return { labelIds: nextLabelIds, createdEntries };
 	}
 
 	async function remapMoveNoteStateForWorkspaceMove(tx, sourceWorkspaceId, targetWorkspaceId, noteState, clientMetadataMapping = null) {
@@ -656,13 +700,21 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 				loadCollectionRegistryRow(tx, sourceWorkspaceId),
 				loadCollectionRegistryRow(tx, targetWorkspaceId),
 			]);
-			targetCollectionRegistry = nextTargetCollectionRegistry;
-			mappedCollectionId = ensureTargetCollectionIdForMove(
+			const collectionResult = ensureTargetCollectionIdForMove(
 				sourceMetadata.collectionId,
 				sourceCollectionRegistry.doc,
-				targetCollectionRegistry.doc,
+				nextTargetCollectionRegistry.doc,
 				preferredCollectionIdsBySourceId,
+				nextTargetCollectionRegistry.wasEmpty,
 			);
+			mappedCollectionId = collectionResult.collectionId;
+			// Only persist the modified registry if new entries were actually written.
+			// Skipping the write when the target workspace was offline-only prevents
+			// the server's empty snapshot from clobbering the client's offline state
+			// when the Yjs WS eventually syncs.
+			if (collectionResult.createdEntries) {
+				targetCollectionRegistry = nextTargetCollectionRegistry;
+			}
 		}
 
 		if (sourceMetadata.labelIds.length > 0) {
@@ -670,13 +722,17 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 				loadLabelRegistryRow(tx, sourceWorkspaceId),
 				loadLabelRegistryRow(tx, targetWorkspaceId),
 			]);
-			targetLabelRegistry = nextTargetLabelRegistry;
-			mappedLabelIds = ensureTargetLabelIdsForMove(
+			const labelResult = ensureTargetLabelIdsForMove(
 				sourceMetadata.labelIds,
 				sourceLabelRegistry.doc,
-				targetLabelRegistry.doc,
+				nextTargetLabelRegistry.doc,
 				preferredLabelIdsBySourceId,
+				nextTargetLabelRegistry.wasEmpty,
 			);
+			mappedLabelIds = labelResult.labelIds;
+			if (labelResult.createdEntries) {
+				targetLabelRegistry = nextTargetLabelRegistry;
+			}
 		}
 
 		moveDoc.transact(() => {

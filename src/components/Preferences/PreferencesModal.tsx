@@ -1,6 +1,7 @@
 import React from 'react';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devResetNoteOrder } from '../../core/noteManagementApi';
+import { readPwaDebugLog, clearPwaDebugLog, getPwaDebugEnabled, setPwaDebugEnabled } from '../../core/pwa';
 import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { NotificationsSection } from './NotificationsSection';
@@ -153,6 +154,7 @@ function AboutSectionContent(props: {
 	const [devToolsUnlocked, setDevToolsUnlocked] = React.useState(false);
 	const [devToolsRunning, setDevToolsRunning] = React.useState(false);
 	const [devToolsResult, setDevToolsResult] = React.useState<string | null>(null);
+	const [swDebugEnabled, setSwDebugEnabled] = React.useState(() => getPwaDebugEnabled());
 	const iconTapTimerRef = React.useRef<number>(0);
 
 	const handleIconTap = React.useCallback(() => {
@@ -231,6 +233,29 @@ function AboutSectionContent(props: {
 		}
 		window.location.reload();
 	}, [devToolsRunning, props.deviceId]);
+
+	const handleToggleSwDebug = React.useCallback(() => {
+		const next = !swDebugEnabled;
+		setPwaDebugEnabled(next);
+		setSwDebugEnabled(next);
+		setDevToolsResult(next ? 'SW debug logging enabled — reproduce the issue, then copy the log.' : 'SW debug logging disabled.');
+	}, [swDebugEnabled]);
+
+	const handleCopyPwaDebugLog = React.useCallback(() => {
+		const entries = readPwaDebugLog();
+		const text = entries.length === 0
+			? '(no PWA debug log entries)'
+			: entries.map((e) => `${e.t} [${e.e}]${e.d ? ' ' + JSON.stringify(e.d) : ''}`).join('\n');
+		navigator.clipboard.writeText(text).catch(() => {
+			window.prompt('Copy this PWA debug log:', text);
+		});
+		setDevToolsResult(`Copied ${entries.length} log entries to clipboard.`);
+	}, []);
+
+	const handleClearPwaDebugLog = React.useCallback(() => {
+		clearPwaDebugLog();
+		setDevToolsResult('PWA debug log cleared.');
+	}, []);
 
 	const fetchHud = React.useCallback(async () => {
 		setHudLoading(true);
@@ -379,7 +404,7 @@ function AboutSectionContent(props: {
 			</div>
 			{devToolsUnlocked ? (
 				<div style={{ marginTop: '20px', padding: '12px 14px', border: '1px solid rgba(128,128,128,0.25)', borderRadius: '8px', background: 'rgba(0,0,0,0.03)' }}>
-					<p style={{ margin: '0 0 10px', fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.5 }}>Developer Tools</p>
+					<p style={{ margin: '0 0 10px', fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.5 }}>{props.t('prefs.devToolsSection')}</p>
 					<div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
 						<button
 							type="button"
@@ -387,7 +412,7 @@ function AboutSectionContent(props: {
 							disabled={devToolsRunning || props.connectionState !== 'connected'}
 							onClick={() => { void handleFlushOrphanedPreviews(); }}
 						>
-							Clear orphaned URL previews
+							{props.t('prefs.devToolsClearOrphanedPreviews')}
 						</button>
 						<button
 							type="button"
@@ -395,7 +420,7 @@ function AboutSectionContent(props: {
 							disabled={devToolsRunning || props.connectionState !== 'connected'}
 							onClick={() => { void handleClearAllNotifications(); }}
 						>
-							Force clear all notifications
+							{props.t('prefs.devToolsForceClearNotifications')}
 						</button>
 						<button
 							type="button"
@@ -403,7 +428,7 @@ function AboutSectionContent(props: {
 							disabled={devToolsRunning || props.connectionState !== 'connected'}
 							onClick={() => { void handleResetNoteOrder(); }}
 						>
-							Reset canonical note order
+							{props.t('prefs.devToolsResetNoteOrder')}
 						</button>
 						<button
 							type="button"
@@ -411,9 +436,32 @@ function AboutSectionContent(props: {
 							disabled={devToolsRunning}
 							onClick={handleRemeasureCardHeights}
 						>
-							Remeasure all card heights
+							{props.t('prefs.devToolsRemeasureCardHeights')}
 						</button>
-						{devToolsRunning ? <p style={{ margin: '4px 0 0', fontSize: '13px', opacity: 0.75 }}>Running…</p> : null}
+						<button
+							type="button"
+							className={styles.footerButton}
+							onClick={handleToggleSwDebug}
+						>
+							{props.t(swDebugEnabled ? 'prefs.devToolsDisableSwDebug' : 'prefs.devToolsEnableSwDebug')}
+						</button>
+						<button
+							type="button"
+							className={styles.footerButton}
+							disabled={!swDebugEnabled}
+							onClick={handleCopyPwaDebugLog}
+						>
+							{props.t('prefs.devToolsCopySwLog')}
+						</button>
+						<button
+							type="button"
+							className={styles.footerButton}
+							disabled={!swDebugEnabled}
+							onClick={handleClearPwaDebugLog}
+						>
+							{props.t('prefs.devToolsClearSwLog')}
+						</button>
+						{devToolsRunning ? <p style={{ margin: '4px 0 0', fontSize: '13px', opacity: 0.75 }}>{props.t('prefs.devToolsRunning')}</p> : null}
 					</div>
 					{devToolsResult ? <p style={{ margin: '8px 0 0', fontSize: '13px', opacity: 0.75 }}>{devToolsResult}</p> : null}
 				</div>

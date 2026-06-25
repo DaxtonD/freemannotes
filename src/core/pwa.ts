@@ -30,9 +30,58 @@ const SW_UPDATE_POLL_MS = 60_000;
 const SW_UPDATE_IDLE_MS = 90_000;
 const PWA_VERSION_STORAGE_KEY = 'freemannotes.pwa.current-version.v1';
 const PWA_UPDATED_NOTICE_KEY = 'freemannotes.pwa.updated-notice.v1';
+const PWA_DEBUG_ENABLED_KEY = 'freemannotes.pwa.debug-enabled.v1';
+const PWA_DEBUG_LOG_KEY = 'freemannotes.pwa.debug-log.v1';
+const PWA_DEBUG_MAX_ENTRIES = 150;
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 const DEFAULT_VIEWPORT_CONTENT = 'width=device-width, initial-scale=1, viewport-fit=cover';
 const IOS_VIEWPORT_LOCKED_CONTENT = `${DEFAULT_VIEWPORT_CONTENT}, minimum-scale=1, maximum-scale=1, user-scalable=no`;
+
+type PwaDebugEntry = { t: string; e: string; d?: Record<string, unknown> };
+
+function pwaLog(event: string, details?: Record<string, unknown>): void {
+	if (typeof window === 'undefined') return;
+	try {
+		if (window.localStorage.getItem(PWA_DEBUG_ENABLED_KEY) !== '1') return;
+		const raw = window.localStorage.getItem(PWA_DEBUG_LOG_KEY);
+		const entries: PwaDebugEntry[] = raw ? (JSON.parse(raw) as PwaDebugEntry[]) : [];
+		entries.push({ t: new Date().toISOString(), e: event, ...(details ? { d: details } : {}) });
+		window.localStorage.setItem(PWA_DEBUG_LOG_KEY, JSON.stringify(entries.slice(-PWA_DEBUG_MAX_ENTRIES)));
+	} catch {
+		// ignore storage errors
+	}
+}
+
+export function getPwaDebugEnabled(): boolean {
+	if (typeof window === 'undefined') return false;
+	try { return window.localStorage.getItem(PWA_DEBUG_ENABLED_KEY) === '1'; } catch { return false; }
+}
+
+export function setPwaDebugEnabled(enabled: boolean): void {
+	if (typeof window === 'undefined') return;
+	try {
+		if (enabled) {
+			window.localStorage.setItem(PWA_DEBUG_ENABLED_KEY, '1');
+		} else {
+			window.localStorage.removeItem(PWA_DEBUG_ENABLED_KEY);
+		}
+	} catch { /* ignore */ }
+}
+
+export function readPwaDebugLog(): PwaDebugEntry[] {
+	if (typeof window === 'undefined') return [];
+	try {
+		const raw = window.localStorage.getItem(PWA_DEBUG_LOG_KEY);
+		return raw ? (JSON.parse(raw) as PwaDebugEntry[]) : [];
+	} catch {
+		return [];
+	}
+}
+
+export function clearPwaDebugLog(): void {
+	if (typeof window === 'undefined') return;
+	try { window.localStorage.removeItem(PWA_DEBUG_LOG_KEY); } catch { /* ignore */ }
+}
 
 let initialized = false;
 let deferredInstallPrompt: BeforeInstallPromptEvent | null = null;
@@ -196,11 +245,30 @@ function markPwaInteraction(): void {
 	pwaLastInteractionAt = Date.now();
 }
 
-function canSafelyApplyPwaUpdate(): boolean {
+function canSafelyApplyPwaUpdate(caller?: string): boolean {
 	if (typeof document === 'undefined') return !pwaUpdateBlocked;
-	if (pwaUpdateBlocked) return false;
-	if (document.visibilityState === 'hidden') return true;
-	return Date.now() - pwaLastInteractionAt >= SW_UPDATE_IDLE_MS;
+	const vis = document.visibilityState;
+	const idleMs = Date.now() - pwaLastInteractionAt;
+	let result: boolean;
+	let reason: string;
+	if (pwaUpdateBlocked) {
+		result = false;
+		reason = 'blocked';
+	} else if (vis !== 'visible') {
+		// Never apply while the page is hidden: Chrome PWA queues location.replace()
+		// calls made on a backgrounded page and executes them on foreground, producing
+		// a surprise reload the moment the user returns to the app.
+		result = false;
+		reason = 'hidden';
+	} else if (idleMs < SW_UPDATE_IDLE_MS) {
+		result = false;
+		reason = `not-idle(${Math.round(idleMs / 1000)}s)`;
+	} else {
+		result = true;
+		reason = 'safe';
+	}
+	pwaLog('canSafelyApply', { caller, result, reason, vis, idleMs, swPendingApply, networkVersionPending });
+	return result;
 }
 
 async function applyNetworkVersionUpdate(): Promise<void> {
@@ -208,6 +276,12 @@ async function applyNetworkVersionUpdate(): Promise<void> {
 	swPendingApply = false;
 	setSnapshot({ updateAvailable: false });
 	if (typeof window !== 'undefined') {
+		pwaLog('RELOAD_network', {
+			vis: document.visibilityState,
+			idleMs: Date.now() - pwaLastInteractionAt,
+			pwaUpdateBlocked,
+			swAutoApplying,
+		});
 		// Use replace() rather than reload() — more reliable on iOS standalone PWA
 		// where location.reload() can fail to escape a frozen WKWebView snapshot.
 		window.location.replace('/');
@@ -231,8 +305,9 @@ async function checkNetworkVersion(): Promise<void> {
 		// new index.html + hashed assets are loaded. This is the most reliable
 		// approach for iOS Safari standalone where the SW update mechanism is
 		// insufficient to escape a frozen WKWebView session.
+		pwaLog('versionMismatch', { serverVersion, clientVersion: APP_VERSION });
 		networkVersionPending = true;
-		if (canSafelyApplyPwaUpdate()) {
+		if (canSafelyApplyPwaUpdate('checkNetworkVersion')) {
 			await applyNetworkVersionUpdate();
 		} else {
 			swPendingApply = true;
@@ -245,9 +320,10 @@ async function checkNetworkVersion(): Promise<void> {
 	}
 }
 
-function scheduleDeferredPwaApplyCheck(): void {
+function scheduleDeferredPwaApplyCheck(caller?: string): void {
 	if (!swPendingApply) return;
-	if (!canSafelyApplyPwaUpdate()) return;
+	if (!canSafelyApplyPwaUpdate(`deferredCheck(${caller ?? '?'})`)) return;
+	pwaLog('deferredCheck-firing', { caller, networkVersionPending });
 	if (networkVersionPending) {
 		void applyNetworkVersionUpdate();
 		return;
@@ -258,36 +334,40 @@ function scheduleDeferredPwaApplyCheck(): void {
 
 function scheduleServiceWorkerUpdateChecks(): void {
 	if (typeof window === 'undefined' || typeof document === 'undefined') return;
-	const updateNow = () => {
+	const updateNow = (trigger: string) => {
+		pwaLog('updateNow', { trigger, swPendingApply, networkVersionPending });
 		void swRegistration?.update().catch(() => undefined);
-		scheduleDeferredPwaApplyCheck();
+		scheduleDeferredPwaApplyCheck(trigger);
 		void checkNetworkVersion();
 	};
 	if (swUpdateTimer !== null) {
 		window.clearInterval(swUpdateTimer);
 	}
-	swUpdateTimer = window.setInterval(updateNow, SW_UPDATE_POLL_MS);
+	swUpdateTimer = window.setInterval(() => updateNow('timer'), SW_UPDATE_POLL_MS);
 	window.addEventListener('pointerdown', markPwaInteraction, { passive: true });
 	window.addEventListener('keydown', markPwaInteraction);
 	window.addEventListener('touchstart', markPwaInteraction, { passive: true });
-	window.addEventListener('focus', updateNow);
+	window.addEventListener('focus', () => updateNow('focus'));
 	document.addEventListener('visibilitychange', () => {
-		if (document.visibilityState === 'visible') {
+		const vis = document.visibilityState;
+		pwaLog('visibilitychange', { vis, swPendingApply, networkVersionPending, pwaUpdateBlocked, idleMs: Date.now() - pwaLastInteractionAt });
+		if (vis === 'visible') {
 			markPwaInteraction();
-			updateNow();
+			updateNow('visibilityVisible');
 			return;
 		}
-		scheduleDeferredPwaApplyCheck();
+		scheduleDeferredPwaApplyCheck('visibilityHidden');
 	});
 }
 
 async function applyPwaUpdateImmediately(): Promise<void> {
 	if (!updateServiceWorker || swAutoApplying) return;
-	if (!canSafelyApplyPwaUpdate()) {
+	if (!canSafelyApplyPwaUpdate('applyImmediately')) {
 		swPendingApply = true;
 		setSnapshot({ updateAvailable: true });
 		return;
 	}
+	pwaLog('swApply-start');
 	swAutoApplying = true;
 	swPendingApply = false;
 	setSnapshot({ updateAvailable: true });
@@ -342,19 +422,37 @@ function registerAppServiceWorker(): void {
 	navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
 	let hadControllerOnInit = Boolean(navigator.serviceWorker.controller);
 	navigator.serviceWorker.addEventListener('controllerchange', () => {
+		const wasAutoApplying = swAutoApplying;
 		swAutoApplying = false;
 		swPendingApply = false;
+		pwaLog('controllerchange', {
+			hadControllerOnInit,
+			wasAutoApplying,
+			vis: typeof document !== 'undefined' ? document.visibilityState : 'unknown',
+			pwaUpdateBlocked,
+			idleMs: Date.now() - pwaLastInteractionAt,
+		});
 		if (!hadControllerOnInit) {
 			hadControllerOnInit = true;
 			return;
 		}
 		if (typeof window !== 'undefined') {
+			// Defer reload when the page is hidden or a modal/editor is blocking.
+			// Calling location.replace() while hidden causes Chrome PWA to queue the
+			// navigation and execute it the moment the user foregrounds the app.
+			if (document.visibilityState !== 'visible' || pwaUpdateBlocked) {
+				swPendingApply = true;
+				networkVersionPending = true;
+				return;
+			}
+			pwaLog('RELOAD_controllerchange', { wasAutoApplying, idleMs: Date.now() - pwaLastInteractionAt });
 			window.location.replace(window.location.href);
 		}
 	});
 	updateServiceWorker = registerSW({
 		immediate: true,
 		onNeedRefresh() {
+			pwaLog('onNeedRefresh', { swPendingApply, vis: document.visibilityState, idleMs: Date.now() - pwaLastInteractionAt });
 			swPendingApply = true;
 			void applyPwaUpdateImmediately();
 		},
@@ -372,6 +470,11 @@ function registerAppServiceWorker(): void {
 export function initPwa(): void {
 	if (initialized || typeof window === 'undefined') return;
 	initialized = true;
+	pwaLog('init', {
+		appVersion: APP_VERSION,
+		hadController: Boolean(navigator.serviceWorker?.controller),
+		vis: document.visibilityState,
+	});
 	reconcileVersionNotifications();
 	refreshMobileViewportBehavior();
 
@@ -437,12 +540,14 @@ export async function promptInstallApp(): Promise<'accepted' | 'dismissed' | 'un
 }
 
 export async function applyPwaUpdate(): Promise<void> {
+	pwaLog('applyPwaUpdate-manual', { networkVersionPending });
 	swPendingApply = false;
 	if (networkVersionPending) {
 		await applyNetworkVersionUpdate();
 		return;
 	}
 	if (!updateServiceWorker) return;
+	swAutoApplying = true;
 	await updateServiceWorker(true);
 	swAutoApplying = false;
 	setSnapshot({ updateAvailable: false });
@@ -461,7 +566,7 @@ export function acknowledgePwaUpdated(): void {
 export function setPwaUpdateBlocked(next: boolean): void {
 	pwaUpdateBlocked = next;
 	if (!next) {
-		scheduleDeferredPwaApplyCheck();
+		scheduleDeferredPwaApplyCheck('unblocked');
 	}
 }
 
