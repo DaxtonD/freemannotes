@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.3 - 2026-06-26
+
+### Fixed
+- **Drawing images disappear on reopen.** Images added via the Excalidraw image tool were blank when the drawing was closed and reopened. The `ExcalidrawBinding` (which calls `api.addFiles`) only runs when a WebSocket awareness object is available, so offline or slow-connect reopens never restored the files. A new `useEffect` on `[api, yAssets]` calls `api.addFiles` as soon as Excalidraw mounts, covering both the case where IDB has already applied its state and the async case where IDB loads after mount via a `yAssets` observer.
+- **Android hyperlinks lose unsaved note data.** Tapping a hyperlink in an unsaved note editor while in Android standalone (PWA) mode navigated the WebView in-place (`target="_self"`), discarding all React state. Pressing back returned to a blank app. `getExternalLinkTarget()` now always returns `"_blank"`, opening links in a Chrome Custom Tab and leaving the PWA intact.
+- **Grouping filter chip label blank.** Applying a group-by filter from the sidebar showed a blank chip at the top of the notes grid. `ScrollingScopeChipLabel` renders `chip.value` (scrolling part) and `chip.title` (static prefix), but the grouping chip was only setting `chip.label`. Added `title` and `value` fields to match the chip contract used by all other filter chips.
+- **Background scroll through modal overlays on touch devices.** Touching the dim background area beside a modal (outside the modal box) scrolled the notes grid behind it. Added `touch-action: none` to the overlay element CSS for: `PreferencesModal` (main overlay and `subOverlay` covering User, Appearance, Note Management sub-sections), `SendInviteModal`, `MetadataModal` (shared by Manage Labels and Manage Collections), and `WorkspaceSwitcherModal`. `touch-action` is not inherited, so each modal's children retain their default scroll behaviour.
+- **Cross-column drag reverts to original position (dead-zone no-op).** Dragging a note to a different column showed the correct insertion preview but snapped back on drop. When the destination's row-major index in `flattenColumns` matched the note's existing canonical position, `applyTierReorderToCanonicalVisible` produced an unchanged order and the Yjs write was skipped. Fixed with a cross-column swap fallback: when the post-drag flattened order equals the pre-drag canonical order but the note's column changed, the dragged note swaps with whichever note occupied that column slot before the drag.
+
 ## 1.6.2 - 2026-06-24
 
 ### Added

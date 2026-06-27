@@ -35,7 +35,7 @@ type DragManagerArgs = {
 	visibleIds: string[];
 	canStartDrag: () => boolean;
 	isTouchDragCandidate: () => boolean;
-	onCommitOrder: (finalColumns: string[][], draggedId: string, draggedHeight: number) => void;
+	onCommitOrder: (finalColumns: string[][], draggedId: string, draggedHeight: number, originalColumns: string[][]) => void;
 	onTouchDropCommit?: () => void;
 	insertionSettleMs?: number;
 	usePointerEdgeAutoScroll?: boolean;
@@ -580,7 +580,7 @@ export function useNoteGridDragManager(args: DragManagerArgs): DragManagerResult
 			Math.round(itemElementsRef.current.get(activeId)?.getBoundingClientRect().height ?? previewSizeRef.current.height)
 		);
 		startDropOverlaySettle(activeId, dragOverlayRef.current ? { ...dragOverlayRef.current } : null);
-		onCommitOrderRef.current(finalColumns, activeId, draggedHeight);
+		onCommitOrderRef.current(finalColumns, activeId, draggedHeight, originalColumns);
 		finalizeTouchDrop();
 		clearDragState();
 	}, [applyPinAwareInsertion, clearDragState, finalizeDragPreviewMedia, finalizeTouchDrop, startDropOverlaySettle]);

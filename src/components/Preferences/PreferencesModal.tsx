@@ -1,4 +1,5 @@
 import React from 'react';
+import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devResetNoteOrder } from '../../core/noteManagementApi';
 import { readPwaDebugLog, clearPwaDebugLog, getPwaDebugEnabled, setPwaDebugEnabled } from '../../core/pwa';
@@ -705,6 +706,8 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 export function PreferencesModal(props: PreferencesModalProps): React.JSX.Element | null {
 	const [activeSection, setActiveSection] = React.useState<PreferencesSection | null>(null);
 	const visibleSections = React.useMemo(() => getVisibleSections(Boolean(props.installAvailable)), [props.installAvailable]);
+
+	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
 
 	React.useEffect(() => {
 		if (props.isOpen) return;

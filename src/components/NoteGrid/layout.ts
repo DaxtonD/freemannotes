@@ -1065,3 +1065,160 @@ export function dealIntoColumns(ids: readonly string[], columnCount: number): st
 	}
 	return columns;
 }
+
+// ─── Option B: two-layer masonry architecture ────────────────────────────────
+//
+// The three functions below implement the separation between canonical note
+// ordering (stored in Yjs, never altered by visual layout) and display column
+// placement (device-local, derived from canonical order but not round-trip safe).
+//
+// computeDisplayColumns  — builds display columns from canonical columns by
+//   directly migrating the bottom note of the tallest column to the shortest
+//   column, one note at a time, until no migration reduces the grid height or
+//   the imbalance falls below thresholdPx.  Avoids the cascade problem of
+//   slot-based balancing with 3+ equal-height columns.
+//
+// findColumnNeighborAnchor — given the final drag columns (derived from display
+//   columns), locates the same-tier sibling immediately before or after the
+//   dragged note within its column.  Used at commit time instead of
+//   flattenColumns(finalColumns) to determine canonical insertion intent.
+//
+// applyTierReorderByInsertion — applies a single within-tier reorderByInsertion
+//   to the canonical visible order, leaving opposite-tier notes untouched.
+//   Replaces the applyTierReorderToCanonicalVisible + flattenColumns pipeline
+//   when finalColumns are display columns (which do not satisfy the
+//   flattenColumns === renderedIds invariant).
+
+/**
+ * Build display columns from canonical round-robin columns by directly
+ * migrating the bottom note of the tallest column to the shortest column.
+ *
+ * Unlike computeTailBalancedSlots (slot-based), this operates at the note
+ * level: only one specific note moves per pass, with no cascading effect on
+ * other columns.  The trade-off is that flattenColumns(result) may differ from
+ * the canonical reading order, so these columns must NEVER be written to Yjs
+ * and must not be used with flattenColumns to derive a commit order.
+ *
+ * Use dealIntoColumns to produce canonicalColumns before calling this function.
+ */
+export function computeDisplayColumns(args: {
+	canonicalColumns: readonly string[][];
+	heightById: HeightLookup;
+	gapPx: number;
+	fallbackHeightPx: number;
+	thresholdPx?: number;
+	maxPasses?: number;
+}): string[][] {
+	const { canonicalColumns, heightById, gapPx, fallbackHeightPx } = args;
+	const thresholdPx = args.thresholdPx ?? 150;
+	const maxPasses = args.maxPasses ?? 8;
+
+	if (canonicalColumns.length <= 1) return canonicalColumns.map((col) => col.slice());
+
+	const computeHeight = (col: readonly string[]): number => {
+		if (col.length === 0) return 0;
+		let h = 0;
+		for (const id of col) h += heightById.get(id) ?? fallbackHeightPx;
+		return h + (col.length - 1) * gapPx;
+	};
+
+	const columns: string[][] = canonicalColumns.map((col) => col.slice());
+
+	for (let pass = 0; pass < maxPasses; pass++) {
+		const heights = columns.map(computeHeight);
+		let tallestIdx = 0;
+		let shortestIdx = 0;
+		for (let i = 1; i < heights.length; i++) {
+			if (heights[i] > heights[tallestIdx]) tallestIdx = i;
+			if (heights[i] < heights[shortestIdx]) shortestIdx = i;
+		}
+		if (tallestIdx === shortestIdx) break;
+		if (heights[tallestIdx] - heights[shortestIdx] <= thresholdPx) break;
+		if (columns[tallestIdx].length <= 1) break;
+
+		const bottomNote = columns[tallestIdx][columns[tallestIdx].length - 1];
+		const noteHeight = heightById.get(bottomNote) ?? fallbackHeightPx;
+		// Height of tallest column after removing its bottom note (loses note + 1 gap).
+		const newHeightTallest = heights[tallestIdx] - noteHeight - gapPx;
+		// Height of shortest column after receiving the note (gains note + 1 gap, or
+		// just the note height if the shortest column is currently empty).
+		const newHeightShortest = columns[shortestIdx].length === 0
+			? noteHeight
+			: heights[shortestIdx] + gapPx + noteHeight;
+
+		// Only migrate when the overall grid height (max column height) decreases.
+		if (Math.max(newHeightTallest, newHeightShortest) >= heights[tallestIdx]) break;
+
+		columns[tallestIdx] = columns[tallestIdx].slice(0, -1);
+		columns[shortestIdx] = [...columns[shortestIdx], bottomNote];
+	}
+
+	return columns;
+}
+
+/**
+ * Given the final columns produced by a drag operation, find the same-tier
+ * sibling immediately before or after the dragged note within its column.
+ *
+ * This is the canonical anchor used by applyTierReorderByInsertion at commit
+ * time. It replaces the flattenColumns(finalColumns) approach when the columns
+ * are display columns (which may not satisfy flattenColumns === canonicalOrder).
+ *
+ * Returns null when the dragged note is the only member of its tier in its
+ * column (drop is a no-op in canonical space) or when the note is not found.
+ */
+export function findColumnNeighborAnchor(
+	columns: readonly string[][],
+	draggedId: string,
+	isPinned?: (id: string) => boolean,
+): { id: string; placeAfter: boolean } | null {
+	for (const col of columns) {
+		const idx = col.indexOf(draggedId);
+		if (idx < 0) continue;
+		const activeIsPinned = isPinned ? isPinned(draggedId) : false;
+		// Prefer the next same-tier sibling: inserting before it expresses the
+		// user's intent most directly (the dragged note lands above it).
+		for (let i = idx + 1; i < col.length; i++) {
+			if (!isPinned || isPinned(col[i]) === activeIsPinned) {
+				return { id: col[i], placeAfter: false };
+			}
+		}
+		// Fall back to the previous same-tier sibling when the dragged note is
+		// at the bottom of its tier block (no next same-tier sibling exists).
+		for (let i = idx - 1; i >= 0; i--) {
+			if (!isPinned || isPinned(col[i]) === activeIsPinned) {
+				return { id: col[i], placeAfter: true };
+			}
+		}
+		return null; // Only note in its tier in this column — position unchanged.
+	}
+	return null; // Dragged note not found in any column.
+}
+
+/**
+ * Apply a within-tier drag-drop reorder to the canonical visible order using
+ * a single reorderByInsertion call rather than a full reading-order remap.
+ *
+ * This replaces the applyTierReorderToCanonicalVisible + flattenColumns
+ * pipeline when finalColumns are display columns.  The anchor (id + placeAfter)
+ * comes from findColumnNeighborAnchor.  Opposite-tier notes are never touched.
+ *
+ * Returns the canonical order unchanged when anchorId is null (no-op drop).
+ */
+export function applyTierReorderByInsertion(
+	canonicalVisibleOrder: readonly string[],
+	draggedId: string,
+	anchorId: string | null,
+	placeAfter: boolean,
+	tierIsPinned: boolean,
+	isPinned: (id: string) => boolean,
+): string[] {
+	if (!anchorId) return canonicalVisibleOrder.slice();
+	const tierIds = canonicalVisibleOrder.filter((id) => isPinned(id) === tierIsPinned);
+	const newTierOrder = reorderByInsertion(tierIds, draggedId, anchorId, placeAfter);
+	let tierCursor = 0;
+	return canonicalVisibleOrder.map((id) => {
+		if (isPinned(id) !== tierIsPinned) return id;
+		return newTierOrder[tierCursor++] ?? id;
+	});
+}

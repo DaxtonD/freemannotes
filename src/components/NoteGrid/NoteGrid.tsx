@@ -66,6 +66,7 @@ import {
 	pickRenderedDisplayOrder,
 	readCssPxVariable,
 	splitIntoColumnsBySlotLengths,
+	swapIds,
 	type StableMasonryPlacementDecision,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
@@ -2186,7 +2187,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Writes within-tier reordering into canonical noteOrder only. Pin tier sort
 	// is display-layer (applyPinnedDisplaySort); Yjs never receives pinned-first.
 	const commitVisibleOrder = React.useCallback(
-		(finalColumns: string[][], draggedId: string, draggedHeight: number) => {
+		(finalColumns: string[][], draggedId: string, draggedHeight: number, originalColumns: string[][]) => {
 			if (!noteOrder) return;
 			const isListLikeCommit = props.viewMode === 'list' || props.viewMode === 'strip';
 			const readingOrder = props.viewMode === 'list' || props.viewMode === 'strip'
@@ -2195,12 +2196,28 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			const isPinnedNote = (id: string): boolean => noteSnapshotById.get(id)?.isPinned === true;
 			const draggedIsPinned = isPinnedNote(draggedId);
 			// Reorder only within the dragged note's pin tier in canonical space.
-			const nextCanonicalVisible = applyTierReorderToCanonicalVisible(
+			let nextCanonicalVisible = applyTierReorderToCanonicalVisible(
 				canonicalVisibleIdsFiltered,
 				readingOrder,
 				draggedIsPinned,
 				isPinnedNote,
 			);
+			// Cross-column no-op fallback: when flattenColumns produces the same reading
+			// order as the current canonical (e.g. inserting a note at its canonical
+			// row-major equivalent position), the drag visually crossed columns but the
+			// canonical order is unchanged. Recover by swapping the dragged note with
+			// the note that occupied the destination index in the pre-drag columns.
+			if (!isListLikeCommit && nextCanonicalVisible.every((id, i) => id === canonicalVisibleIdsFiltered[i])) {
+				const destCol = finalColumns.findIndex((col) => col.includes(draggedId));
+				const origCol = originalColumns.findIndex((col) => col.includes(draggedId));
+				if (destCol >= 0 && origCol >= 0 && destCol !== origCol) {
+					const destIdx = finalColumns[destCol].indexOf(draggedId);
+					const noteAtDest = originalColumns[destCol]?.[destIdx] ?? null;
+					if (noteAtDest && noteAtDest !== draggedId) {
+						nextCanonicalVisible = swapIds(canonicalVisibleIdsFiltered, draggedId, noteAtDest);
+					}
+				}
+			}
 			// Display layer may apply pin tier sort; Yjs merge uses nextCanonicalVisible only.
 			const displayOrderAfterCommit = shouldPrioritizePinnedForDisplay
 				? applyPinnedDisplaySort(nextCanonicalVisible, isPinnedNote)
@@ -2960,7 +2977,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			&& !touchScrollDetectedRef.current
 			&& Date.now() >= suppressTouchDragUntilRef.current,
 		isTouchDragCandidate: () => pendingTouchIntentRef.current,
-		onCommitOrder: commitVisibleOrder,
+		onCommitOrder: (finalColumns, draggedId, draggedHeight, originalColumns) => commitVisibleOrder(finalColumns, draggedId, draggedHeight, originalColumns),
 		onTouchDropCommit: props.onTouchReorderEnd,
 		insertionSettleMs: isListLikeView ? 96 : 280,
 		// Pin-tier drag preview/commit guards (user-scoped via notePinPreferences).

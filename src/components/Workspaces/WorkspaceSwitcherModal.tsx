@@ -1,4 +1,5 @@
 import React from 'react';
+import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { getDeviceId } from '../../core/deviceId';
 import { canManageWorkspace, getWorkspaceRoleLabelKey, normalizeWorkspaceRole, type WorkspaceRole } from '../../core/workspaceRoles';
 import {
@@ -173,6 +174,7 @@ function isGatewayError(error: unknown): boolean {
 }
 
 export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
+	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
 	const deviceId = React.useMemo(() => getDeviceId(), []);
 	const [busy, setBusy] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
