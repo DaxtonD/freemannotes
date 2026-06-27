@@ -8,6 +8,11 @@
 	padding: 20px;
 	/* Must sit above sticky/fixed app header (z-index ~120). */
 	z-index: 240;
+	/* Prevent the notes grid from scrolling when the user touches the dim
+	   background area around the modal. touch-action is not inherited, so
+	   the modal's children keep their default touch-action: auto and remain
+	   interactive/scrollable. */
+	touch-action: none;
 }
 
 .modal {
@@ -137,6 +142,7 @@
 	padding: 20px;
 	/* Above main modal overlay. */
 	z-index: 250;
+	touch-action: none;
 }
 
 .subModal {

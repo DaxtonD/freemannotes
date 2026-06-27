@@ -10,8 +10,8 @@ export function isAndroidStandaloneExternalNavigationMode(): boolean {
 	);
 }
 
-export function getExternalLinkTarget(): '_self' | '_blank' {
-	return isAndroidStandaloneExternalNavigationMode() ? '_self' : '_blank';
+export function getExternalLinkTarget(): '_blank' {
+	return '_blank';
 }
 
 export function getExternalLinkRel(): string {

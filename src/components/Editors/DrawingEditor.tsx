@@ -510,6 +510,25 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (!api) return;
+		// Seed image files from yAssets into Excalidraw. This covers two cases:
+		// 1. IDB has already loaded by the time api mounts → files are available immediately.
+		// 2. IDB loads after mount (async) → the yAssets observer fires and adds files then.
+		// The ExcalidrawBinding also calls addFiles on WS connect, so these calls are additive.
+		const addYAssetFiles = () => {
+			const files = [...yAssets.keys()].map((k) => yAssets.get(k)).filter(Boolean);
+			if (files.length > 0) {
+				api.addFiles(files as Parameters<typeof api.addFiles>[0]);
+			}
+		};
+		addYAssetFiles();
+		yAssets.observe(addYAssetFiles);
+		return () => {
+			yAssets.unobserve(addYAssetFiles);
+		};
+	}, [api, yAssets]);
+
+	React.useEffect(() => {
+		if (!api) return;
 		// Defer binding creation until the WebSocket provider's awareness object is
 		// available. ExcalidrawBinding immediately calls awareness.getStates() in its
 		// constructor — passing undefined crashes with "this.awareness is undefined".

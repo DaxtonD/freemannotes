@@ -9,6 +9,7 @@
 	z-index: 130;
 	overflow: auto;
 	overscroll-behavior: contain;
+	touch-action: none;
 }
 
 .modal {

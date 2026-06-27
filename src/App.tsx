@@ -4912,6 +4912,8 @@ export function App(): React.JSX.Element {
 			chips.push({
 				key: `grouping:${activeSortGrouping}`,
 				label: `${t('app.sidebarGroupBy')}: ${groupingLabels[activeSortGrouping]}`,
+				title: `${t('app.sidebarGroupBy')}:`,
+				value: groupingLabels[activeSortGrouping],
 				onClear: () => setActiveSortGrouping('none'),
 			});
 		}
