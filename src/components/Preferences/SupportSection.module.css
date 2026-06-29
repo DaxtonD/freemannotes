@@ -1,0 +1,160 @@
+.root {
+	display: flex;
+	flex-direction: column;
+	gap: 24px;
+	padding: 4px 0;
+}
+
+.blurb {
+	margin: 0;
+	font-size: 14px;
+	line-height: 1.6;
+	color: var(--color-text-secondary);
+}
+
+/* ── Donation buttons ─────────────────────────────────────────────────── */
+
+.buttons {
+	display: flex;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.donateBtn {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 20px;
+	border-radius: 8px;
+	font-size: 14px;
+	font-weight: 600;
+	text-decoration: none;
+	transition: opacity 0.15s;
+	white-space: nowrap;
+}
+
+.donateBtn:hover {
+	opacity: 0.85;
+}
+
+.donateBtnBmc {
+	background: #ffdd00;
+	color: #000;
+}
+
+.donateBtnPaypal {
+	background: #0070ba;
+	color: #fff;
+}
+
+/* ── Supporter status strip ───────────────────────────────────────────── */
+
+.supporterStatus {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 14px 16px;
+	background: var(--color-surface-3, var(--color-surface-2));
+	border: 1px solid var(--color-border);
+	border-radius: 10px;
+}
+
+.heartIcon {
+	color: #e05c73;
+	margin-right: 6px;
+}
+
+.visibilityToggle {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 13px;
+	color: var(--color-text-secondary);
+	cursor: pointer;
+	user-select: none;
+}
+
+.visibilityToggle input {
+	width: 16px;
+	height: 16px;
+	cursor: pointer;
+	accent-color: var(--color-accent, #e05c73);
+}
+
+/* ── Contributors list ────────────────────────────────────────────────── */
+
+.contributorsSection {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.contributorsTitle {
+	margin: 0;
+	font-size: 13px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--color-text-secondary);
+}
+
+.heartIconSmall {
+	color: #e05c73;
+	margin-right: 6px;
+	font-size: 11px;
+}
+
+.loadingText,
+.emptyText {
+	margin: 0;
+	font-size: 13px;
+	color: var(--color-text-secondary);
+}
+
+.contributorsList {
+	list-style: none;
+	margin: 0;
+	padding: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.contributorRow {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.contributorAvatar {
+	width: 32px;
+	height: 32px;
+	border-radius: 50%;
+	overflow: hidden;
+	flex-shrink: 0;
+}
+
+.contributorAvatarImg {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.contributorAvatarFallback {
+	width: 100%;
+	height: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--color-surface-3, var(--color-surface-2));
+	border: 1px solid var(--color-border);
+	border-radius: 50%;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--color-text-secondary);
+}
+
+.contributorName {
+	font-size: 14px;
+	font-weight: 500;
+}

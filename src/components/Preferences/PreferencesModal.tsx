@@ -6,6 +6,7 @@ import { readPwaDebugLog, clearPwaDebugLog, getPwaDebugEnabled, setPwaDebugEnabl
 import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { NotificationsSection } from './NotificationsSection';
+import { SupportSection } from './SupportSection';
 import styles from './PreferencesModal.module.css';
 
 type ConnectionState = 'connected' | 'connecting' | 'offline';
@@ -17,7 +18,8 @@ type PreferencesSection =
 	| 'appearance'
 	| 'editor'
 	| 'notifications'
-	| 'note-management';
+	| 'note-management'
+	| 'support';
 
 type SectionConfig = {
 	id: PreferencesSection;
@@ -32,6 +34,7 @@ const sections: readonly SectionConfig[] = [
 	{ id: 'editor', labelKey: 'prefs.editor' },
 	{ id: 'notifications', labelKey: 'prefs.notifications' },
 	{ id: 'note-management', labelKey: 'prefs.noteManagement' },
+	{ id: 'support', labelKey: 'prefs.support' },
 ];
 
 export type PreferencesModalProps = {
@@ -71,6 +74,9 @@ export type PreferencesModalProps = {
 	showSendInvite?: boolean;
 	onSendInvite?: () => void;
 	onSignOut?: () => void;
+	isSupporter?: boolean;
+	supporterShowPublic?: boolean;
+	onSupporterVisibilityChange?: (showPublic: boolean) => void;
 };
 
 type SectionModalProps = {
@@ -98,6 +104,9 @@ type SectionModalProps = {
 	onInstallApp?: () => void | Promise<void>;
 	connectionState: ConnectionState;
 	deviceId: string;
+	isSupporter?: boolean;
+	supporterShowPublic?: boolean;
+	onSupporterVisibilityChange?: (showPublic: boolean) => void;
 };
 
 const ABOUT_ICON_LIGHT = '/icons/app-header-light.png';
@@ -688,6 +697,13 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 							deviceId={props.deviceId}
 							connectionState={props.connectionState}
 						/>
+					) : props.section === 'support' ? (
+						<SupportSection
+							t={props.t}
+							isSupporter={props.isSupporter ?? false}
+							supporterShowPublic={props.supporterShowPublic ?? false}
+							onVisibilityChange={props.onSupporterVisibilityChange ?? (() => {})}
+						/>
 					) : (
 						<div className={styles.subPlaceholder}>{props.t('prefs.comingSoon')}</div>
 					)}
@@ -812,6 +828,9 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					onInstallApp={props.onInstallApp}
 					connectionState={props.connectionState ?? 'connecting'}
 					deviceId={props.deviceId ?? ''}
+					isSupporter={props.isSupporter}
+					supporterShowPublic={props.supporterShowPublic}
+					onSupporterVisibilityChange={props.onSupporterVisibilityChange}
 				/>
 			) : null}
 		</div>

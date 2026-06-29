@@ -506,6 +506,14 @@
 	border-color: color-mix(in srgb, #16a34a 28%, var(--color-border));
 }
 
+.supporterHeart {
+	color: #e05c73;
+	font-size: 11px;
+	margin-left: 6px;
+	vertical-align: middle;
+	opacity: 0.9;
+}
+
 .input,
 .select {
 	appearance: none;

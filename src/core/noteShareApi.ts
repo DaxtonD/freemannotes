@@ -23,6 +23,7 @@ export type NoteShareInviter = {
 	name: string;
 	email: string;
 	profileImage?: string | null;
+	isSupporter?: boolean;
 };
 
 export type NoteShareInvitation = {

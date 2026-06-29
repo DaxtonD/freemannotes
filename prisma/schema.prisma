@@ -167,10 +167,13 @@ model User {
   name         String
   passwordHash String     @map("password_hash")
   role         GlobalRole @default(USER)
-  profileImage String?    @map("profile_image")
-  disabled     Boolean    @default(false)
-  lastLogin    DateTime?  @map("last_login")
-  createdAt    DateTime   @default(now()) @map("created_at")
+  profileImage        String?    @map("profile_image")
+  disabled            Boolean    @default(false)
+  lastLogin           DateTime?  @map("last_login")
+  createdAt           DateTime   @default(now()) @map("created_at")
+  isSupporter         Boolean    @default(false) @map("is_supporter")
+  supporterShowPublic Boolean    @default(false) @map("supporter_show_public")
+  supporterSince      DateTime?  @map("supporter_since")
 
   memberships WorkspaceMember[]
   preferences UserPreference?

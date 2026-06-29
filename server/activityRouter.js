@@ -376,7 +376,7 @@ function createActivityRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							user: { disabled: false },
 						},
 						include: {
-							user: { select: { id: true, name: true, email: true, profileImage: true } },
+							user: { select: { id: true, name: true, email: true, profileImage: true, isSupporter: true } },
 						},
 						orderBy: { user: { name: 'asc' } },
 					});
@@ -388,6 +388,7 @@ function createActivityRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							email: m.user.email,
 							avatarUrl: m.user.profileImage || null,
 							role: m.role,
+							isSupporter: m.user.isSupporter ?? false,
 						})),
 					});
 				} catch (err) {
