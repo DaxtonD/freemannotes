@@ -760,3 +760,16 @@ export function touchLastAccessedAt(doc: Y.Doc, origin?: symbol): void {
 		doc.transact(run);
 	}
 }
+
+// Draft-gate flag. Set immediately after a new note doc is initialised so the
+// server's _syncEntityReferences skips mention/activity emission until the user
+// actually saves. Cleared just before createNote() so the server processes all
+// @mentions added during the draft session in a single pass. Discarded notes
+// are permanently deleted, so the flag is never cleared for them.
+export function setNoteDocPendingNew(doc: Y.Doc): void {
+	doc.getMap<any>('metadata').set('pendingNew', true);
+}
+
+export function clearNoteDocPendingNew(doc: Y.Doc): void {
+	doc.getMap<any>('metadata').delete('pendingNew');
+}

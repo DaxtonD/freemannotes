@@ -145,7 +145,7 @@ function sendRoleAware(doc, conn, message) {
 	}
 }
 
-function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice(1).split('?')[0], gc = true, readOnly = false } = {}) {
+function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice(1).split('?')[0], gc = true, readOnly = false, userId = null } = {}) {
 	conn.binaryType = 'arraybuffer';
 	const doc = getYDoc(docName, gc);
 	doc.conns.set(conn, new Set());
@@ -185,6 +185,7 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 						}
 					} else if (syncMessageType === syncProtocol.messageYjsUpdate) {
 						syncProtocol.readUpdate(decoder, doc, conn);
+						if (userId) persistAdapter?.recordDocUpdate(docName, userId);
 					}
 					if (encoding.length(encoder) > 1) {
 						sendRoleAware(doc, conn, encoding.toUint8Array(encoder));
@@ -293,6 +294,9 @@ let profileRouter = null;
 /** @type {ReturnType<import('./server/noteMediaRouter').createNoteMediaRouter> | null} */
 let noteMediaRouter = null;
 
+/** @type {ReturnType<import('./server/activityRouter').createActivityRouter> | null} */
+let activityRouter = null;
+
 /** @type {ReturnType<import('./server/adminRouter').createAdminRouter> | null} */
 let adminRouter = null;
 
@@ -395,6 +399,50 @@ if (DATABASE_URL.length > 0) {
 				redis: redis || null,
 				workspaceName: 'default',
 				debounceMs: 2000,
+				onActivityEmitted: ({ targetUserIds: userIds }) => {
+					broadcastWorkspaceMetadataChanged({
+						reason: 'inbox_updated',
+						workspaceId: null,
+						userIds,
+					});
+				},
+				onMentionRevoked: ({ revokedUserIds }) => {
+					broadcastWorkspaceMetadataChanged({
+						reason: 'inbox_updated',
+						workspaceId: null,
+						userIds: revokedUserIds,
+					});
+				},
+				onMentionInvitationCreated: async ({ targetUserId, actorId, docId, noteTitle, mentionExcerpt }) => {
+					try {
+						// Check if the user has opted out of mention push notifications.
+						const pref = await prisma.userPreference.findUnique({
+							where: { userId: targetUserId },
+							select: { mentionNotifications: true },
+						});
+						if (pref && pref.mentionNotifications === false) return;
+
+						// Resolve actor name for the push title.
+						let actorName = 'Someone';
+						if (actorId) {
+							const actor = await prisma.user.findUnique({
+								where: { id: actorId },
+								select: { name: true },
+							});
+							if (actor?.name) actorName = actor.name;
+						}
+
+						const { sendPushToUser } = require('./server/pushService');
+						await sendPushToUser(prisma, targetUserId, {
+							type: 'mention',
+							title: `${actorName} mentioned you`,
+							body: mentionExcerpt || noteTitle || 'in a note',
+							data: { type: 'mention', docId, url: '/' },
+						});
+					} catch (pushErr) {
+						console.warn('[push] mention push failed:', pushErr.message);
+					}
+				},
 			});
 			console.info('[server] YjsPersistenceAdapter initialized');
 		} catch (err) {
@@ -564,6 +612,29 @@ if (DATABASE_URL.length > 0) {
 		} catch (err) {
 			console.error('[server] Failed to initialize Note media API router:', err.message);
 			noteMediaRouter = null;
+		}
+
+		try {
+			const { createActivityRouter } = require('./server/activityRouter');
+			activityRouter = createActivityRouter({
+				prisma,
+				onWorkspaceMetadataChanged: async (event) => {
+					const normalized = normalizeWorkspaceMetadataEvent({
+						...event,
+						type: 'workspace-metadata-changed',
+						origin: SERVER_INSTANCE_ID,
+					});
+					if (!normalized) return;
+					broadcastWorkspaceMetadataChanged(normalized);
+					if (redis) {
+						await publishWorkspaceMetadataEvent(redis, normalized);
+					}
+				},
+			});
+			console.info('[server] Activity / Inbox API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Activity API router:', err.message);
+			activityRouter = null;
 		}
 
 		try {
@@ -789,6 +860,11 @@ const server = http.createServer((req, res) => {
 
 		// ── Note-share collaboration router ─────────────────────────────
 		if (noteShareRouter && noteShareRouter(req, res)) {
+			return;
+		}
+
+		// ── Activity / Inbox router ──────────────────────────────────────
+		if (activityRouter && activityRouter(req, res)) {
 			return;
 		}
 
@@ -1239,12 +1315,25 @@ wss.on('connection', (conn, req) => {
 							})
 							: null;
 						if (!foreignCollaborator) {
+							// DEBUG: find any NoteCollaborator for this user+note to diagnose docId mismatch
+							const noteIdPart = raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw;
+							const anyCollaborator = await prisma.noteCollaborator.findFirst({
+								where: {
+									userId: session.userId,
+									docId: { contains: noteIdPart },
+								},
+								select: { docId: true, revokedAt: true },
+							});
 							console.warn(
 								'[ws] close forbidden namespace',
 								JSON.stringify({
 									userId: session.userId,
 									workspaceId: session.workspaceId,
 									rawRoom: raw,
+									debugExactDocIdFound: false,
+									debugCollaboratorWithSameNoteId: anyCollaborator
+										? { docId: anyCollaborator.docId, revokedAt: anyCollaborator.revokedAt }
+										: null,
 								})
 							);
 							conn.close(1008, 'forbidden');
@@ -1278,7 +1367,7 @@ wss.on('connection', (conn, req) => {
 
 			// y-websocket expects req.url === '/<room>'
 			req.url = `/${docName}`;
-			setupRoleAwareWSConnection(conn, req, { gc: true, readOnly });
+			setupRoleAwareWSConnection(conn, req, { gc: true, readOnly, userId: session.userId });
 		} catch (err) {
 			console.error('[ws] connection setup error:', err.message);
 			try {

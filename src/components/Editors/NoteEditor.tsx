@@ -104,6 +104,7 @@ export type NoteEditorProps = {
 	onAddReminder?: () => void;
 	onAddToCollection?: () => void;
 	onAddLabels?: () => void;
+	onOpenNote?: (noteId: string) => void;
 	onShowBriefDialog?: (message: string) => void;
 	readOnly?: boolean;
 	initialShowCompleted?: boolean;
@@ -160,7 +161,7 @@ function suppressNextDocumentCompatibilityMouseEvents(): void {
  * Lightweight renderer for ProseMirror JSON content in non-active rows.
  * Handles bold, italic, underline, and hard breaks — no TipTap instance needed.
  */
-function renderRichPreview(json: import('@tiptap/core').JSONContent | null | undefined): React.ReactNode {
+function renderRichPreview(json: import('@tiptap/core').JSONContent | null | undefined, onNoteClick?: (noteId: string) => void): React.ReactNode {
 	if (!json?.content) return null;
 	const applyMarks = (node: import('@tiptap/core').JSONContent, content: React.ReactNode, key: React.Key): React.ReactNode => {
 		let element = content;
@@ -202,6 +203,19 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 				{bi > 0 ? <br /> : null}
 				{block.content.map((node, ni) => {
 					if (node.type === 'hardBreak') return <br key={ni} />;
+					if (node.type === 'reference') {
+						const label = typeof node.attrs?.label === 'string' ? node.attrs.label : '';
+						const id = typeof node.attrs?.id === 'string' ? node.attrs.id : '';
+						const isNote = node.attrs?.type === 'note';
+						if (isNote && id && onNoteClick) {
+							return (
+								<span key={ni} className={styles.referenceChipPreview} role="button" onClick={(e) => { e.stopPropagation(); onNoteClick(id); }}>
+									@{label}
+								</span>
+							);
+						}
+						return <span key={ni} className={styles.referenceChipPreview}>@{label}</span>;
+					}
 					if (node.type !== 'text' || !node.text) return null;
 					return <React.Fragment key={ni}>{applyMarks(node, node.text, `${bi}-${ni}`)}</React.Fragment>;
 				})}
@@ -466,6 +480,7 @@ type ChecklistRowContentProps = {
 	setActiveEditor: (editor: Editor | null) => void;
 	onArrowUpAtBoundary?: () => void;
 	onArrowDownAtBoundary?: () => void;
+	onNoteClick?: (noteId: string) => void;
 };
 
 const ChecklistRowContent = React.memo(function ChecklistRowContent(props: ChecklistRowContentProps): React.JSX.Element {
@@ -525,7 +540,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 
 	if (!isActive) {
 		const previewMap = itemMap ?? findChecklistItemMapById(checklistArray, item.id);
-		const richPreview = renderRichPreview(previewMap ? getChecklistItemRichPreviewJson(previewMap) : null);
+		const richPreview = renderRichPreview(previewMap ? getChecklistItemRichPreviewJson(previewMap) : null, props.onNoteClick);
 
 		return (
 			<>
@@ -612,6 +627,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 							}}
 							onArrowUpAtBoundary={onArrowUpAtBoundary}
 							onArrowDownAtBoundary={onArrowDownAtBoundary}
+							onNoteClick={props.onNoteClick}
 						/>
 						{autocompleteSuffix ? (
 							<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
@@ -3015,6 +3031,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							onChange={() => {
 								syncTextNotePlainText(props.doc, richContentFragment);
 							}}
+							onNoteClick={props.onOpenNote}
 						/>
 					</div>
 				) : null}
@@ -3148,6 +3165,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																setActiveEditor={setActiveChecklistRowEditor}
 																onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'previous')}
 																onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
+																onNoteClick={props.onOpenNote}
 															/>
 														</li>
 															);
@@ -3205,7 +3223,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 														<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 													</label>
 													<div className={styles.checklistRowPreview}>
-														{renderChecklistPreviewContent(item, renderRichPreview(getChecklistItemRichPreviewJson(checklistMapsById.get(item.id) ?? null)) || item.text || '\u00A0')}
+														{renderChecklistPreviewContent(item, renderRichPreview(getChecklistItemRichPreviewJson(checklistMapsById.get(item.id) ?? null), props.onOpenNote) || item.text || '\u00A0')}
 													</div>
 												</li>
 											) : (
@@ -3237,6 +3255,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 														setActiveEditor={setActiveChecklistRowEditor}
 															onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'previous')}
 															onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
+															onNoteClick={props.onOpenNote}
 													/>
 												</li>
 											))}

@@ -363,6 +363,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteBannersByNoteId: safeJsonNullableStringRecord(userPref.noteBannersByNoteId),
 						notePinsByDocId: safeJsonStrictBooleanRecord(userPref.notePinsByDocId),
 						dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
+						mentionNotifications: userPref.mentionNotifications !== false,
 						createdAt: fmt(devicePref.createdAt),
 						updatedAt: fmt(devicePref.updatedAt),
 						timezone: timezone || 'UTC',
@@ -535,6 +536,14 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							jsonResponse(res, 400, { error: 'notePinsByDocId must be an object or null' });
 							return;
 						}
+					}
+
+					if ('mentionNotifications' in body) {
+						if (typeof body.mentionNotifications !== 'boolean') {
+							jsonResponse(res, 400, { error: 'mentionNotifications must be a boolean' });
+							return;
+						}
+						userUpdateData.mentionNotifications = body.mentionNotifications;
 					}
 
 					const deviceUpdateData = {};

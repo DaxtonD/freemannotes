@@ -190,6 +190,9 @@ model User {
   noteReminders NoteReminder[]
   passwordResetTokens PasswordResetToken[]
   createdUserRegistrationInvites UserRegistrationInviteToken[] @relation("CreatedUserRegistrationInvites")
+  activityActions Activity[]
+  activityTargets ActivityTarget[]
+  activityReads   ActivityRead[]
 
   @@map("user")
 }
@@ -369,6 +372,8 @@ model NoteShareInvitation {
   inviteeEmail      String          @map("invitee_email")
   inviteeName       String?         @map("invitee_name")
   role              NoteShareRole
+  source            String          @default("direct")
+  mentionExcerpt    String?         @db.Text @map("mention_excerpt")
   status            NoteShareStatus @default(PENDING)
   respondedAt       DateTime?       @map("responded_at")
   revokedAt         DateTime?       @map("revoked_at")
@@ -692,6 +697,9 @@ model UserPreference {
   /// User-scoped; not visible to collaborators on shared notes.
   notePinsByDocId Json @default("{}") @map("note_pins_by_doc_id") @db.JsonB
 
+  /// Whether to receive push notifications for @mentions (default: true).
+  mentionNotifications Boolean @default(true) @map("mention_notifications")
+
   /// Timestamps for auditing.
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -787,4 +795,120 @@ model NoteReminder {
   @@index([userId])
   @@index([reminderAt, fired])
   @@map("note_reminder")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Activity – immutable event record for the inbox / activity stream.
+//
+// Each row records a single collaborative action (mention, assignment,
+// note share, etc.). Activities are append-only; they are never updated.
+// Read/archive state is tracked separately in ActivityRead.
+//
+// actorId is nullable so system-generated events (e.g. automated reminders)
+// can be recorded without a human actor.
+//
+// deepLink is a JSON discriminated union that always carries enough
+// information to navigate to the exact block, checklist item, or note:
+//   { kind: 'note' }
+//   { kind: 'prosemirror_node', nodeId: string }
+//   { kind: 'checklist_item', checklistItemId: string }
+//
+// snapshot captures a plain-text excerpt at emission time so the inbox
+// is fully renderable offline without loading the Yjs doc.
+// ─────────────────────────────────────────────────────────────────────────
+model Activity {
+  id                String   @id @default(uuid()) @db.Uuid
+  kind              String   // 'mention' | 'assignment_created' | 'assignment_completed' | 'note_shared' | 'note_share_accepted'
+  actorId           String?  @map("actor_id") @db.Uuid
+  sourceDocId       String   @map("source_doc_id")
+  sourceWorkspaceId String   @map("source_workspace_id") @db.Uuid
+  sourceNoteId      String   @map("source_note_id")
+  subjectType       String   @map("subject_type")   // 'note' | 'checklist_item'
+  subjectId         String   @map("subject_id")     // noteId | checklistItemId
+  deepLink          Json     @map("deep_link")
+  snapshot          Json?
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  actor   User?            @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  targets ActivityTarget[]
+  reads   ActivityRead[]
+
+  @@index([sourceDocId])
+  @@index([createdAt])
+  @@map("activity")
+}
+
+// Junction: which users see this activity in their inbox.
+model ActivityTarget {
+  activityId String   @map("activity_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([activityId, userId])
+  @@index([userId])
+  @@map("activity_target")
+}
+
+// Per-user read/archive state for activities. Mutable, keyed by (userId, activityId).
+// archived=true hides the item from the inbox; the row is preserved for future
+// Activity History / Audit views without any schema changes.
+model ActivityRead {
+  userId     String    @map("user_id") @db.Uuid
+  activityId String    @map("activity_id") @db.Uuid
+  readAt     DateTime  @default(now()) @map("read_at")
+  archived   Boolean   @default(false)
+  archivedAt DateTime? @map("archived_at")
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, activityId])
+  @@index([userId, archived])
+  @@map("activity_read")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// EntityReference – current-state index of all reference chips in Yjs docs.
+//
+// Populated by YjsPersistenceAdapter on every doc save by diffing the
+// ProseMirror JSON for Reference nodes. Powers backlinks and, after
+// diffing, drives mention activity emission.
+//
+// targetType is an open string so future entity types (project, task,
+// drawing) can be added without a schema migration.
+// ─────────────────────────────────────────────────────────────────────────
+model EntityReference {
+  id                String   @id @default(uuid()) @db.Uuid
+  sourceDocId       String   @map("source_doc_id")
+  sourceWorkspaceId String   @map("source_workspace_id") @db.Uuid
+  sourceNoteId      String   @map("source_note_id")
+  targetType        String   @map("target_type")   // 'note' | 'user' | future types
+  targetId          String   @map("target_id")     // UUID of the referenced entity
+  nodeId            String   @map("node_id")       // stable ProseMirror node attr
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([sourceDocId, nodeId])
+  @@index([targetType, targetId])
+  @@map("entity_reference")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// AssignmentIndex – mirrors current checklist assignment state for diffing.
+//
+// Populated by YjsPersistenceAdapter on every doc save. Enables the
+// persistence layer to detect new/removed assignments and emit the
+// correct assignment_created / assignment_completed activities without
+// loading the previous Yjs binary state.
+// ─────────────────────────────────────────────────────────────────────────
+model AssignmentIndex {
+  sourceDocId     String   @map("source_doc_id")
+  checklistItemId String   @map("checklist_item_id")
+  assignedUserId  String   @map("assigned_user_id") @db.Uuid
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([sourceDocId, checklistItemId, assignedUserId])
+  @@index([assignedUserId])
+  @@map("assignment_index")
 }

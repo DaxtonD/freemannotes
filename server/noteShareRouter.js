@@ -436,6 +436,8 @@ function dedupeInvitationList(invitations) {
 	});
 }
 
+const { emitNoteSharedActivity, emitNoteShareAcceptedActivity } = require('./activityEmitter');
+
 function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 	function requireAuth(req, res) {
 		if (!req.auth || !req.auth.userId) {
@@ -490,9 +492,15 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const normalizedInvitations = invitations.map(mapInvitation);
 					const dedupedInvitations = dedupeInvitationList(normalizedInvitations);
 
+					// Mention-sourced invitations are surfaced through the Inbox (activity
+					// feed) rather than the bell notification panel, so exclude them from
+					// pendingCount to prevent double-counting in the badge.
+					const pendingCount = invitations.filter(
+						(inv) => inv.status === 'PENDING' && inv.source !== 'mention'
+					).length;
 					jsonResponse(res, 200, {
 						invitations: dedupedInvitations,
-						pendingCount: dedupedInvitations.filter((item) => item.status === 'PENDING').length,
+						pendingCount,
 					});
 				} catch (err) {
 					console.error('[note-share] list invitations error:', err.message);
@@ -708,7 +716,9 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					jsonResponse(res, 201, { invitation: mapInvitation(invitation) });
 
 					// Fire push notification to the invitee if they are a registered user.
-					if (invitee.user) {
+					// Suppress for mention-sourced invitations — the push was already sent
+					// by YjsPersistenceAdapter when the invitation was created.
+					if (invitee.user && invitation.source !== 'mention') {
 						try {
 							const { sendPushToUser } = require('./pushService');
 							await sendPushToUser(prisma, invitee.user.id, {
@@ -719,6 +729,20 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							});
 						} catch (pushErr) {
 							console.warn('[push] note-share push failed:', pushErr.message);
+						}
+					}
+
+					if (invitee.user) {
+						try {
+							await emitNoteSharedActivity(prisma, {
+								actorId: actor.id,
+								inviteeUserId: invitee.user.id,
+								sourceDocId: access.docId,
+								sourceWorkspaceId: access.sourceWorkspaceId,
+								sourceNoteId: access.sourceNoteId,
+							});
+						} catch (emitErr) {
+							console.warn('[activity] note_shared emit failed:', emitErr.message);
 						}
 					}
 
@@ -1220,6 +1244,33 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							labelIds: normalizeLabelIds(accepted.placement.labelIds),
 						},
 					});
+
+					try {
+						let acceptedNoteTitle = null;
+						try {
+							const acceptedDoc = await prisma.document.findUnique({ where: { docId: invitation.docId }, select: { state: true } });
+							if (acceptedDoc?.state) acceptedNoteTitle = readDocumentTitle(acceptedDoc.state);
+						} catch { /* non-fatal */ }
+						await emitNoteShareAcceptedActivity(prisma, {
+							actorId: user.id,
+							inviterUserId: invitation.inviterUserId,
+							sourceDocId: invitation.docId,
+							sourceWorkspaceId: invitation.sourceWorkspaceId,
+							sourceNoteId: invitation.sourceNoteId,
+							noteTitle: acceptedNoteTitle,
+						});
+						// Push a real-time inbox refresh to the inviter so their badge updates
+						// without requiring a manual page reload.
+						if (typeof onWorkspaceMetadataChanged === 'function') {
+							onWorkspaceMetadataChanged({
+								reason: 'inbox_updated',
+								workspaceId: null,
+								userIds: [invitation.inviterUserId],
+							}).catch(() => {});
+						}
+					} catch (emitErr) {
+						console.warn('[activity] note_share_accepted emit failed:', emitErr.message);
+					}
 
 					if (typeof onWorkspaceMetadataChanged === 'function') {
 						try {

@@ -33,7 +33,10 @@ function shouldHandleNavigation(url) {
 function isStaticAssetRequest(request, url) {
 	if (url.origin !== self.location.origin) return false;
 	if (request.destination === 'style' || request.destination === 'script' || request.destination === 'font' || request.destination === 'worker') return true;
-	return url.pathname.startsWith('/assets/') || url.pathname.startsWith('/locales/');
+	// /icons/ contains app UI assets (logo, nav icons) that are precached in
+	// APP_SHELL_CACHE; they must use staleWhileRevalidate so the shell-cache
+	// fallback path is available when the user is offline before first visit.
+	return url.pathname.startsWith('/assets/') || url.pathname.startsWith('/locales/') || url.pathname.startsWith('/icons/');
 }
 
 function isNoteBannerAssetRequest(url) {

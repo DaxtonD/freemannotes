@@ -75,6 +75,7 @@ type RichTextEditorProps = {
 	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
 	onClipboardStatusChange?: (message: string) => void;
 	collapsibleHeadingNoteId?: string | null;
+	onNoteClick?: (noteId: string) => void;
 };
 
 type RichTextToolbarProps = {
@@ -2226,8 +2227,20 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		event.stopPropagation();
 	}, []);
 
+	const handleReferenceClick = React.useCallback((e: React.MouseEvent<HTMLDivElement>): void => {
+		if (!props.onNoteClick) return;
+		const target = (e.target as HTMLElement).closest('[data-reference="true"][data-type="note"]');
+		if (!target) return;
+		const noteId = target.getAttribute('data-id');
+		if (noteId) {
+			e.preventDefault();
+			e.stopPropagation();
+			props.onNoteClick(noteId);
+		}
+	}, [props.onNoteClick]);
+
 	return (
-		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`}>
+		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`} onClick={handleReferenceClick}>
 			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} toolbarMode={props.toolbarMode} onCreateUrlPreview={props.onCreateUrlPreview} noteAutoScrollEnabled={props.noteAutoScrollEnabled} onToggleNoteAutoScroll={props.onToggleNoteAutoScroll} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} collapsibleHeadingNoteId={props.collapsibleHeadingNoteId} />}
 			{clipboardStatusMessage && !(props.hideToolbar && props.onClipboardStatusChange) ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
 			<EditorContent editor={editor} className={`${styles.richEditorViewport}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}`} />

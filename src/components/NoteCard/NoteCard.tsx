@@ -451,6 +451,11 @@ function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string, all
 	return nodes.flatMap((node, index) => {
 		const key = `${keyPrefix}:${index}`;
 		if (node.type === 'hardBreak') return [<br key={key} />];
+		if (node.type === 'reference') {
+			const label = String(node.attrs?.label ?? '').trim();
+			if (!label) return [];
+			return [<span key={key} className={styles.richReferenceChip}>@{label}</span>];
+		}
 		if (node.type !== 'text' || !node.text) return [];
 		return [<React.Fragment key={key}>{applyMarks(node, node.text, key, allowLinkInteraction)}</React.Fragment>];
 	});

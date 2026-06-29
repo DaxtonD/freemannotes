@@ -493,7 +493,8 @@
     "viewCard": "Vista de tarjetas",
     "viewList": "Vista de lista",
     "viewStrip": "Vista de tira",
-    "viewBubble": "Vista de burbujas"
+    "viewBubble": "Vista de burbujas",
+    "viewInbox": "Bandeja de entrada"
   },
   "workspace": {
     "title": "Espacios de trabajo",
@@ -611,6 +612,10 @@
     "notificationsSubtitle": "Revisa tus notificaciones en un solo lugar.",
     "clearNotifications": "Borrar notificaciones",
     "noNotifications": "No hay notificaciones en este momento.",
+    "inboxUnreadOne": "1 mención o tarea sin leer",
+    "inboxUnreadMany": "{count} menciones y tareas sin leer",
+    "inboxUnreadSubtitle": "Las menciones y tareas están en tu Bandeja de entrada.",
+    "openInbox": "Abrir bandeja de entrada",
     "unknownInviter": "Invitador desconocido",
     "wantsToShare": "quiere compartir",
     "withYou": "contigo.",
@@ -1020,6 +1025,8 @@
     "iosStep2": "Selecciona \"Añadir a pantalla de inicio\"",
     "iosStep3": "Abre la app desde tu pantalla de inicio",
     "iosStep4": "Vuelve aquí y activa las notificaciones",
-    "iosDontAllow": "⚠️ NO toques \"No permitir\" — iOS no puede volver a solicitar permiso tras la denegación."
+    "iosDontAllow": "⚠️ NO toques \"No permitir\" — iOS no puede volver a solicitar permiso tras la denegación.",
+    "mentionNotifications": "Notificaciones de @mención",
+    "mentionNotificationsDesc": "Enviar una notificación push cuando alguien te @mencione en una nota"
   }
 }

@@ -13,6 +13,7 @@ import {
 	faFolder,
 	faGrip,
 	faImage,
+	faInbox,
 	faList,
 	faListCheck,
 	faMagnifyingGlass,
@@ -88,7 +89,7 @@ import {
 } from './core/deviceAppearancePreferences';
 import { useDocumentManager } from './core/DocumentManagerContext';
 import { type LocaleCode, useI18n } from './core/i18n';
-import { addNoteDrawingId, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readDrawingLinkState, readNoteFromDoc, removeNoteDrawingId, setNoteReminder } from './core/noteModel';
+import { addNoteDrawingId, clearNoteDocPendingNew, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readDrawingLinkState, readNoteFromDoc, removeNoteDrawingId, setNoteDocPendingNew, setNoteReminder } from './core/noteModel';
 import { getNotePinPrefsSnapshot, moveUserNotePinPreference, replaceUserNotePinPrefs, resolveUserNotePinned, setUserNotePinnedOnDoc, setUserNotePinPreferenceScope } from './core/notePinPreferences';
 import { seedNoteCardCompletedExpandedByNoteId } from './core/noteCardCompletedExpansion';
 import { applyTheme, getStoredThemeId, getStoredThemeIdForUser, isLightTheme, persistThemeId, persistThemeIdForUser, THEMES, type ThemeId } from './core/theme';
@@ -212,6 +213,7 @@ import { type ViewMode, loadViewMode, saveViewMode } from './core/viewMode';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from './core/bubbleZoom';
 import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle, WORKSPACE_COLOR_TOKENS } from './core/bubbleWorkspaceColors';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
+import { InboxView } from './components/InboxView/InboxView';
 import { CrossWorkspaceNoteModal } from './components/BubbleView/CrossWorkspaceNoteModal';
 
 type EditorMode = 'none' | 'text' | 'checklist';
@@ -1331,6 +1333,7 @@ export function App(): React.JSX.Element {
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
 	const [pendingReminderNotificationCount, setPendingReminderNotificationCount] = React.useState(0);
+	const [inboxUnreadCount, setInboxUnreadCount] = React.useState(0);
 	const [firedReminders, setFiredReminders] = React.useState<FiredReminder[]>([]);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
 	// Tracks failed-link notification IDs the user has explicitly dismissed so
@@ -1371,6 +1374,7 @@ export function App(): React.JSX.Element {
 		dismissedFailedLinkIdsRef.current = next;
 	}, [authUserId]);
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
+	const [inboxRefreshToken, setInboxRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(_restoredOverlay?.collaboratorModalState ?? null);
 	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(() => {
 		try {
@@ -1713,14 +1717,16 @@ export function App(): React.JSX.Element {
 	const [viewTransitionTraceId, setViewTransitionTraceId] = React.useState<string | null>(null);
 	const [isViewModePickerOpen, setIsViewModePickerOpen] = React.useState(false);
 	const [bubbleZoom, setBubbleZoom] = React.useState(() => loadBubbleZoom());
+	const inboxIconSrc = isLightTheme(themeId) ? '/icons/inbox-light.png' : '/icons/inbox-dark.png';
 	const viewModeOptions = React.useMemo(
 		() => [
+			{ mode: 'inbox' as ViewMode, icon: faInbox, imgSrc: inboxIconSrc, label: t('app.viewInbox') },
 			{ mode: 'card' as ViewMode, icon: faGrip, label: t('app.viewCard') },
 			{ mode: 'list' as ViewMode, icon: faList, label: t('app.viewList') },
 			{ mode: 'strip' as ViewMode, icon: faBarsStaggered, label: t('app.viewDetailedList') },
 			{ mode: 'bubble' as ViewMode, icon: faCircleDot, label: t('app.viewBubble') },
 		],
-		[t]
+		[inboxIconSrc, t]
 	);
 	const selectedViewModeOption = React.useMemo(() => {
 		for (const option of viewModeOptions) {
@@ -1735,6 +1741,16 @@ export function App(): React.JSX.Element {
 		listScrollAnchorRef.current = null;
 		setListScrollAnchor(null);
 	}, []);
+	// Tracks the last content view mode (non-inbox, non-bubble) so sidebar nav can return to it.
+	const lastContentViewModeRef = React.useRef<ViewMode>(
+		viewMode !== 'inbox' && viewMode !== 'bubble' ? viewMode : 'card'
+	);
+	React.useEffect(() => {
+		if (viewMode !== 'inbox' && viewMode !== 'bubble') {
+			lastContentViewModeRef.current = viewMode;
+		}
+	}, [viewMode]);
+
 	const selectViewMode = React.useCallback((nextMode: ViewMode) => {
 		const prevMode = viewMode;
 		const isListVariantSwap = (prevMode === 'list' || prevMode === 'strip')
@@ -1747,6 +1763,7 @@ export function App(): React.JSX.Element {
 		saveViewMode(nextMode);
 		setIsViewModePickerOpen(false);
 	}, [viewMode]);
+
 	React.useEffect(() => {
 		saveBubbleZoom(bubbleZoom);
 	}, [bubbleZoom]);
@@ -1769,7 +1786,7 @@ export function App(): React.JSX.Element {
 		void logClientEvent('VIEW_SWITCH', { kind: 'view-mode', from: prevViewModeForSplashRef.current, to: viewMode });
 		prevViewModeForSplashRef.current = viewMode;
 	}, [authWorkspaceId, bubbleZoom, deferredSearchQuery, selectedNoteId, sidebarView, viewMode]);
-	const activeGridViewMode = (viewMode === 'bubble' ? 'card' : viewMode);
+	const activeGridViewMode = (viewMode === 'bubble' || viewMode === 'inbox') ? 'card' : viewMode;
 	const scrollPersistTimerRef = React.useRef<number>(0);
 	const suppressWorkspaceScrollPersistUntilRef = React.useRef(0);
 	const handleListScrollAnchorApplied = React.useCallback(() => {
@@ -2476,6 +2493,7 @@ export function App(): React.JSX.Element {
 	const showMobileFab =
 		isMobileViewport &&
 		viewMode !== 'bubble' &&
+		viewMode !== 'inbox' &&
 		sidebarView === 'notes' &&
 		Boolean(authWorkspaceId && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' && canEditActiveWorkspace) &&
 		!isFabBlockedByOverlay;
@@ -2492,7 +2510,7 @@ export function App(): React.JSX.Element {
 		Boolean(noteImageModalState) ||
 		Boolean(noteAttachmentBrowserState) ||
 		userModalBusy;
-	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0);
+	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + inboxUnreadCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0);
 
 	React.useEffect(() => {
 		setPwaUpdateBlocked(isPwaUpdateBlocked);
@@ -2780,7 +2798,9 @@ export function App(): React.JSX.Element {
 						addNoteDrawingId(parentDoc, noteId);
 						await syncAttachedDrawingAccess(attachedParentNoteId, noteId);
 					} else {
-						const title = manager.getDoc(noteId)?.getText('title')?.toString() ?? '';
+						const commitDoc = manager.getDoc(noteId);
+						const title = commitDoc?.getText('title')?.toString() ?? '';
+						if (commitDoc) clearNoteDocPendingNew(commitDoc);
 						await manager.createNote(noteId, title);
 						if (authWorkspaceId) {
 							const nextSnapshotIds = [
@@ -5617,6 +5637,25 @@ export function App(): React.JSX.Element {
 		}
 		setCollaborationRefreshToken((value) => value + 1);
 	}, []);
+	const bumpInboxRefreshToken = React.useCallback(() => {
+		setInboxRefreshToken((value) => value + 1);
+	}, []);
+
+	// Fetch the authoritative unread inbox count from the server. Re-runs
+	// whenever bumpInboxRefreshToken is called — triggered by:
+	//   • InboxView archiveAll (user clears inbox)
+	//   • workspace metadata 'inbox_updated' push (e.g. a collaborator accepted a share)
+	// Using the server count rather than InboxView's local unreadIds.size avoids
+	// an off-by-one when there are more unread items than the loaded page covers.
+	React.useEffect(() => {
+		if (!authUserId) { setInboxUnreadCount(0); return; }
+		let cancelled = false;
+		fetch('/api/inbox/count').then((r) => r.ok ? r.json() : null).then((data) => {
+			if (!cancelled && data?.unread != null) setInboxUnreadCount(data.unread);
+		}).catch(() => {});
+		return () => { cancelled = true; };
+	}, [authUserId, inboxRefreshToken]);
+
 	const documentViewerOpenRef = React.useRef(false);
 	const pendingViewerRefreshRef = React.useRef(false);
 
@@ -5901,6 +5940,10 @@ export function App(): React.JSX.Element {
 							void refreshNoteShareStateRef.current();
 							return;
 						}
+						if (payload.type === 'workspace-metadata-changed' && payload.reason === 'inbox_updated') {
+							bumpInboxRefreshToken();
+							return;
+						}
 						if (payload.type === 'workspace-metadata-changed' && payload.reason === 'reminder-state-changed') {
 							if (!authUserId || authOfflineMode) return;
 							void fetchNoteReminderStates()
@@ -6177,6 +6220,7 @@ export function App(): React.JSX.Element {
 			} else {
 				initTextNoteDoc(doc, '', '', undefined, []);
 			}
+			setNoteDocPendingNew(doc);
 			if (sidebarView === 'notes' && activeCollectionId && activeCollection) {
 				// Seed the active collection so quick-create from a filtered collection keeps
 				// the new note visible there unless the user opts out in the editor.
@@ -8946,7 +8990,9 @@ export function App(): React.JSX.Element {
 								aria-pressed={isViewModePickerOpen}
 								title={selectedViewModeOption.label}
 							>
-								<FontAwesomeIcon icon={viewModeIcon} />
+								{selectedViewModeOption.imgSrc
+									? <img src={selectedViewModeOption.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
+									: <FontAwesomeIcon icon={viewModeIcon} />}
 							</button>
 							<button
 								type="button"
@@ -9068,7 +9114,9 @@ export function App(): React.JSX.Element {
 								aria-pressed={isViewModePickerOpen}
 								title={selectedViewModeOption.label}
 							>
-								<FontAwesomeIcon icon={viewModeIcon} />
+								{selectedViewModeOption.imgSrc
+									? <img src={selectedViewModeOption.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
+									: <FontAwesomeIcon icon={viewModeIcon} />}
 							</button>
 							<button
 								type="button"
@@ -9095,7 +9143,9 @@ export function App(): React.JSX.Element {
 								aria-label={option.label}
 								title={option.label}
 							>
-								<FontAwesomeIcon icon={option.icon} />
+								{option.imgSrc
+									? <img src={option.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
+									: <FontAwesomeIcon icon={option.icon} />}
 							</button>
 						))}
 					</div>
@@ -9124,6 +9174,13 @@ export function App(): React.JSX.Element {
 				<aside
 					ref={mobileSidebarRef}
 					className={`app-sidebar${sidebarIsCollapsed ? ' is-collapsed' : ''}${isMobileSidebarOpen ? ' is-mobile-open' : ''}${isMobileSidebarDragging ? ' is-mobile-dragging' : ''}`}
+					onClickCapture={() => {
+						if (viewMode === 'inbox') {
+							const target = lastContentViewModeRef.current;
+							setViewMode(target);
+							saveViewMode(target);
+						}
+					}}
 				>
 					<nav className="app-sidebar-nav" aria-label={t('grid.notes')}>
 						{sidebarEntries.map((entry) => {
@@ -9729,8 +9786,8 @@ export function App(): React.JSX.Element {
 				</aside>
 
 				<main className="app-main">
-					{/* Bubble view is read-only; quick-create stays in the grid/list views only. */}
-					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') ? (
+					{/* Bubble/Inbox views are read-only; quick-create stays in the grid/list views only. */}
+					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') && viewMode !== 'inbox' ? (
 						<div ref={topControlsRef} className="app-main-sticky">
 							{sidebarView === 'notes' && viewMode !== 'bubble' && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' ? (
 						// Reserve the button-row height unconditionally so the grid
@@ -9892,8 +9949,8 @@ export function App(): React.JSX.Element {
 						) : null}
 					</section>
 
-				{/* NoteGrid stays mounted in bubble mode (display:none) so DocumentManager keeps docs loaded. */}
-				<div style={{ display: viewMode === 'bubble' || sidebarView === 'images' ? 'none' : undefined }}>
+				{/* NoteGrid stays mounted in bubble/inbox mode (display:none) so DocumentManager keeps docs loaded. */}
+				<div style={{ display: viewMode === 'bubble' || viewMode === 'inbox' || sidebarView === 'images' ? 'none' : undefined }}>
 					<NoteGrid
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
@@ -10014,6 +10071,43 @@ export function App(): React.JSX.Element {
 						searchQuery={deferredSearchQuery}
 					/>
 				) : null}
+				{/* InboxView — activity feed for mentions and assignments */}
+				{viewMode === 'inbox' && authUserId ? (
+					<InboxView
+						authUserId={authUserId}
+						themeId={themeId}
+						iconSrc={inboxIconSrc}
+						refreshToken={inboxRefreshToken}
+						onOpenNote={async (noteId, workspaceId, roomId) => {
+							console.debug('[InboxView.onOpenNote]', { noteId, workspaceId, roomId });
+							if (noteId.startsWith('shared-placement:')) {
+								// Pre-register the alias so DocumentManager can route before
+								// refreshNoteShareState completes its API calls.
+								if (roomId) ensureManualRoomAlias(noteId, roomId);
+								// Must refresh sharedPlacements so the guard effect
+								// (selectedNoteSharedPlacement == null → close) doesn't fire.
+								await refreshNoteShareStateRef.current();
+								try { await manager.getDocWithSync(noteId); } catch {}
+								openNoteEditor(noteId);
+								return;
+							}
+							if (workspaceId && workspaceId !== authWorkspaceId) {
+								// Previously accepted cross-workspace note: find the alias.
+								const placement = sharedPlacements.find(
+									(p) => p.sourceNoteId === noteId && p.sourceWorkspaceId === workspaceId
+								);
+								if (placement) {
+									try { await manager.getDocWithSync(placement.aliasId); } catch {}
+									openNoteEditor(placement.aliasId);
+									return;
+								}
+							}
+							openNoteEditor(noteId);
+						}}
+						onAllArchived={bumpInboxRefreshToken}
+					/>
+				) : null}
+
 				{/* BubbleView overlays the grid — NoteGrid stays mounted above (display:none) */}
 				{viewMode === 'bubble' && sidebarView !== 'images' && authWorkspaceId ? (
 						<BubbleView
@@ -10275,6 +10369,7 @@ export function App(): React.JSX.Element {
 						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 						onTogglePin={selectedNoteReadOnly ? undefined : toggleSelectedNotePin}
+						onOpenNote={(noteId) => openNoteEditor(noteId)}
 						onShowBriefDialog={showBriefDialog}
 						readOnly={selectedNoteReadOnly}
 						initialShowCompleted={checklistShowCompletedPref}
@@ -10576,6 +10671,12 @@ export function App(): React.JSX.Element {
 				onChanged={() => {
 					bumpCollaborationRefreshToken();
 					void refreshNoteShareState();
+				}}
+				inboxUnreadCount={inboxUnreadCount}
+				onOpenInbox={() => {
+					setIsShareNotificationsOpen(false);
+					setViewMode('inbox');
+					saveViewMode('inbox');
 				}}
 			/>
 

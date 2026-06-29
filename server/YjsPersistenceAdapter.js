@@ -33,6 +33,13 @@
 
 const Y = require('yjs');
 const { logEvent, getRoomDebugContext } = require('./debugLogger');
+const { extractEntityReferences } = require('./extractEntityReferences.cjs');
+const { emitActivity } = require('./activityEmitter');
+
+/** XmlFragment key for rich-text note content. Must match richText.ts TEXT_NOTE_RICH_FIELD. */
+const RICH_TEXT_FRAGMENT_KEY = 'contentRich';
+/** Yjs room suffix for registry docs — skip reference extraction for these. */
+const REGISTRY_SUFFIX_RE = /^__|__$/;
 
 // ─── Configuration constants ────────────────────────────────────────────────
 
@@ -48,6 +55,129 @@ const DEFAULT_WORKSPACE_NAME = 'default';
  * own timeout so persistence is never blocked by an unreachable Redis.
  */
 const REDIS_TIMEOUT_MS = 3000;
+
+// ─── XML fragment walker (reference extraction) ─────────────────────────────
+
+/**
+ * Walks a Y.XmlFragment and returns all Reference nodes (atom inline elements
+ * stored by y-prosemirror for the TipTap `reference` node type).
+ *
+ * y-prosemirror serializes ProseMirror nodes as Y.XmlElement with the node's
+ * type name as the tag name and ProseMirror attrs as XML attributes.
+ *
+ * @param {import('yjs').XmlFragment} fragment
+ * @returns {{ nodeId: string, targetType: string, targetId: string, label: string }[]}
+ */
+/**
+ * Walks a Y.XmlFragment collecting reference nodes.
+ * Each result includes a `listContext` field indicating whether the reference
+ * sits inside a task/list item — used to distinguish assignments from mentions.
+ *
+ * @param {import('yjs').XmlFragment} fragment
+ * @returns {{ nodeId: string, targetType: string, targetId: string, label: string, listContext: 'taskItem'|'listItem'|null }[]}
+ */
+const _BLOCK_NODE_NAMES = new Set(['paragraph', 'heading', 'taskItem', 'listItem', 'blockquote']);
+
+/**
+ * Extract plain text from a Yjs node, substituting reference atoms with "@label".
+ * Uses toDelta() on XmlText to avoid mark-formatting artifacts (e.g. <strike>).
+ */
+function _getPlainText(node) {
+	if (node instanceof Y.XmlText) {
+		try {
+			return node.toDelta().reduce((acc, op) => {
+				return acc + (typeof op.insert === 'string' ? op.insert : '');
+			}, '');
+		} catch {
+			return node.toString();
+		}
+	}
+	if (node instanceof Y.XmlElement) {
+		if (node.nodeName === 'reference') return `@${node.getAttribute('label') || ''}`;
+		if (node.nodeName === 'hardBreak') return '\n';
+		return node.toArray().map(_getPlainText).join('');
+	}
+	return '';
+}
+
+/**
+ * Walk a Y.XmlFragment and return all reference nodes found.
+ * Each result includes nodeId, targetType, targetId, label, listContext, editRole, and excerpt.
+ * The excerpt uses the text immediately BEFORE the reference within the same block,
+ * so long paragraphs with mentions at the end show useful context rather than the start.
+ */
+function _walkXmlFragmentForReferences(fragment) {
+	const refs = [];
+
+	function walk(node, context) {
+		if (!(node instanceof Y.XmlElement)) return;
+		const name = node.nodeName;
+
+		let childContext = context;
+		if (name === 'taskItem') childContext = 'taskItem';
+		else if (name === 'listItem') childContext = 'listItem';
+
+		if (_BLOCK_NODE_NAMES.has(name)) {
+			// Walk this block's inline children in order, accumulating text before each reference.
+			let textBefore = '';
+			for (const child of node.toArray()) {
+				if (child instanceof Y.XmlElement && child.nodeName === 'reference') {
+					const nodeId = child.getAttribute('nodeId') || child.getAttribute('nodeid') || '';
+					const targetType = child.getAttribute('type') || '';
+					const targetId = child.getAttribute('id') || '';
+					const label = child.getAttribute('label') || '';
+					const editRole = child.getAttribute('editRole') || child.getAttribute('editrole') || 'EDITOR';
+					// Excerpt = last ≤200 chars of block text before this reference
+					const trimmed = textBefore.trim();
+					const excerpt = trimmed.length > 0 ? trimmed.slice(-200) : null;
+					if (nodeId && targetId && (targetType === 'note' || targetType === 'user')) {
+						refs.push({ nodeId, targetType, targetId, label, listContext: childContext, editRole, excerpt });
+					}
+					textBefore += `@${label}`;
+				} else if (child instanceof Y.XmlElement && _BLOCK_NODE_NAMES.has(child.nodeName)) {
+					// Nested block (e.g. listItem inside a blockquote)
+					walk(child, childContext);
+				} else {
+					textBefore += _getPlainText(child);
+				}
+			}
+		} else {
+			// Non-block container (doc, bulletList, orderedList, etc.): recurse into children.
+			for (const child of node.toArray()) walk(child, childContext);
+		}
+	}
+
+	for (const child of fragment.toArray()) walk(child, null);
+	return refs;
+}
+
+/**
+ * Walk all checklist item rich-content fragments in the doc and collect references.
+ * Checklist items are stored as Y.Map inside a Y.Array at key 'checklist'.
+ * Each item's rich content is a Y.XmlFragment at key 'contentRich'.
+ */
+function _walkChecklistForReferences(yDoc) {
+	const refs = [];
+	try {
+		const items = yDoc.getArray('checklist');
+		if (!items || items.length === 0) return refs;
+		for (const item of items.toArray()) {
+			if (!item || typeof item.get !== 'function') continue;
+			const fragment = item.get('contentRich');
+			if (!(fragment instanceof Y.XmlFragment)) continue;
+			const itemRefs = _walkXmlFragmentForReferences(fragment);
+			// Fall back to the plain-text 'text' field as the excerpt if the rich
+			// walker did not capture block context (top-level fragment nodes)
+			const itemText = String(item.get('text') || '').trim().slice(0, 200) || null;
+			for (const ref of itemRefs) {
+				refs.push({ ...ref, excerpt: ref.excerpt || itemText, listContext: 'taskItem' });
+			}
+		}
+	} catch {
+		// non-fatal — continue without checklist refs
+	}
+	return refs;
+}
 
 // ─── Adapter class ──────────────────────────────────────────────────────────
 
@@ -127,6 +257,49 @@ class YjsPersistenceAdapter {
 		 * @type {Map<string, Buffer>}
 		 */
 		this._lastPersistedStateVector = new Map();
+
+		/**
+		 * Last known actor (userId) per room. Set by recordDocUpdate() when a WS
+		 * client sends an update. Used to attribute mention activities to the correct
+		 * user. Best-effort: in multi-user sessions this will be the last writer.
+		 * @type {Map<string, string>}
+		 */
+		this._docActors = new Map();
+
+		/**
+		 * Optional callback fired after an activity is successfully emitted. Receives
+		 * the list of target user IDs so the caller can push a real-time notification
+		 * (e.g. via the workspace metadata WS channel).
+		 * @type {((payload: { targetUserIds: string[] }) => void) | null}
+		 */
+		this._onActivityEmitted = typeof options.onActivityEmitted === 'function'
+			? options.onActivityEmitted
+			: null;
+
+		/**
+		 * Optional async callback fired after a mention invitation is created.
+		 * The server.js caller uses this to send the push notification without
+		 * coupling push logic into the adapter.
+		 * @type {((payload: { targetUserId: string; actorId: string | null; docId: string; noteTitle: string | null; mentionExcerpt: string | null; editRole: string }) => Promise<void>) | null}
+		 */
+		this._onMentionInvitationCreated = typeof options.onMentionInvitationCreated === 'function'
+			? options.onMentionInvitationCreated
+			: null;
+		/** @type {((payload: { revokedUserIds: string[] }) => void) | null} */
+		this._onMentionRevoked = typeof options.onMentionRevoked === 'function'
+			? options.onMentionRevoked
+			: null;
+	}
+
+	/**
+	 * Record the userId of the most recent update sender for a room.
+	 * Called from the WebSocket message handler before scheduling a debounced write.
+	 *
+	 * @param {string} docName
+	 * @param {string} userId
+	 */
+	recordDocUpdate(docName, userId) {
+		if (docName && userId) this._docActors.set(docName, userId);
 	}
 
 	// ─── Public API (y-websocket persistence interface) ───────────────────────
@@ -398,6 +571,10 @@ class YjsPersistenceAdapter {
 			logEvent('YJS_PERSIST', { ...getRoomDebugContext(docName), event: 'db-upsert', bytes: state.length });
 			this._lastPersistedStateVector.set(docName, Buffer.from(stateVector));
 			console.info(`[persist] saved to PostgreSQL: room=${docName} bytes=${state.length}`);
+
+			// Best-effort entity reference sync (mention detection). Runs after the
+			// primary persist so it never blocks or rolls back document saves.
+			this._syncEntityReferences(docName, yDoc, workspaceId).catch(() => {});
 		} catch (err) {
 			console.error(`[persist] PostgreSQL write failed for room=${docName}:`, err.message);
 			// Non-fatal: the doc is still in memory and will be retried on next debounce.
@@ -441,6 +618,255 @@ class YjsPersistenceAdapter {
 			);
 		} catch (err) {
 			console.warn(`[persist] Redis write failed for room=${docName}:`, err.message);
+		}
+	}
+
+	// ─── Entity reference sync ───────────────────────────────────────────────
+
+	/**
+	 * Extracts Reference nodes from the Yjs doc's XmlFragment, diffs against the
+	 * EntityReference table, and emits mention activities for newly-added user
+	 * references. Best-effort: exceptions are caught and logged, never propagated.
+	 *
+	 * Only runs for note docs (docName = "<workspaceId>:<noteId>"). Registry docs
+	 * and docs whose noteId starts/ends with "__" are skipped.
+	 *
+	 * @param {string} docName
+	 * @param {import('yjs').Doc} yDoc
+	 * @param {string} workspaceId
+	 */
+	async _syncEntityReferences(docName, yDoc, workspaceId) {
+		try {
+			// Only process note docs, not registry docs.
+			const colonIdx = docName.indexOf(':');
+			if (colonIdx < 1) return;
+			const noteId = docName.slice(colonIdx + 1);
+			if (REGISTRY_SUFFIX_RE.test(noteId)) return;
+
+			// Skip activity emission for pending-new drafts. The flag is cleared when
+			// the user saves the note, at which point this handler will run again and
+			// process any mentions that were added during the draft session.
+			if (yDoc.getMap('metadata').get('pendingNew') === true) return;
+
+			// Collect references from both the rich-text fragment and checklist items.
+			const fragment = yDoc.getXmlFragment(RICH_TEXT_FRAGMENT_KEY);
+			const richRefs = _walkXmlFragmentForReferences(fragment);
+			const checklistRefs = _walkChecklistForReferences(yDoc);
+			const freshRefs = [...richRefs, ...checklistRefs];
+
+			// Load previously stored references for this doc.
+			const stored = await this._prisma.entityReference.findMany({
+				where: { sourceDocId: docName },
+				select: { nodeId: true, targetType: true, targetId: true },
+			});
+			const storedByNodeId = new Map(stored.map((r) => [r.nodeId, r]));
+			const freshByNodeId = new Map(freshRefs.map((r) => [r.nodeId, r]));
+
+			// Compute added and removed sets.
+			const added = freshRefs.filter((r) => !storedByNodeId.has(r.nodeId));
+			const removedNodeIds = stored
+				.filter((r) => !freshByNodeId.has(r.nodeId))
+				.map((r) => r.nodeId);
+			const removedUserTargetIds = stored
+				.filter((r) => !freshByNodeId.has(r.nodeId) && r.targetType === 'user')
+				.map((r) => r.targetId);
+
+			// Nothing changed — skip all DB writes.
+			if (added.length === 0 && removedNodeIds.length === 0) return;
+
+			// Delete removed references.
+			if (removedNodeIds.length > 0) {
+				await this._prisma.entityReference.deleteMany({
+					where: { sourceDocId: docName, nodeId: { in: removedNodeIds } },
+				});
+
+				// Revoke any PENDING mention invitations for users whose reference was removed.
+				if (removedUserTargetIds.length > 0) {
+					await this._prisma.noteShareInvitation.updateMany({
+						where: {
+							docId: docName,
+							inviteeUserId: { in: removedUserTargetIds },
+							source: 'mention',
+							status: 'PENDING',
+						},
+						data: { status: 'REVOKED', revokedAt: new Date() },
+					}).catch((err) => {
+						console.warn(`[references] mention invitation revoke failed for ${docName}:`, err.message);
+					});
+
+					// Archive the inbox activity for removed users so the card disappears
+					// regardless of whether the invitation was already accepted.
+					try {
+						const activitiesToArchive = await this._prisma.activity.findMany({
+							where: {
+								kind: 'mention',
+								sourceDocId: docName,
+								targets: { some: { userId: { in: removedUserTargetIds } } },
+							},
+							include: {
+								targets: {
+									where: { userId: { in: removedUserTargetIds } },
+									select: { userId: true },
+								},
+							},
+						});
+						if (activitiesToArchive.length > 0) {
+							const now = new Date();
+							await this._prisma.$transaction(
+								activitiesToArchive.flatMap((a) =>
+									a.targets.map((t) =>
+										this._prisma.activityRead.upsert({
+											where: { userId_activityId: { userId: t.userId, activityId: a.id } },
+											update: { archived: true, archivedAt: now },
+											create: { userId: t.userId, activityId: a.id, archived: true, archivedAt: now },
+										})
+									)
+								)
+							);
+						}
+					} catch (err) {
+						console.warn(`[references] mention activity archive failed for ${docName}:`, err.message);
+					}
+
+					this._onMentionRevoked?.({ revokedUserIds: removedUserTargetIds });
+				}
+			}
+
+			// Upsert added references.
+			if (added.length > 0) {
+				await this._prisma.entityReference.createMany({
+					data: added.map((r) => ({
+						sourceDocId: docName,
+						sourceWorkspaceId: workspaceId,
+						sourceNoteId: noteId,
+						targetType: r.targetType,
+						targetId: r.targetId,
+						nodeId: r.nodeId,
+					})),
+					skipDuplicates: true,
+				});
+			}
+
+			// Process newly-added user references: emit activities and create invitations.
+			const newUserRefs = added.filter((r) => r.targetType === 'user');
+			if (newUserRefs.length === 0) return;
+
+			const actorId = this._docActors.get(docName) ?? null;
+			const noteTitle = yDoc.getText('title').toString().trim() || null;
+
+			// Determine which new mentions belong to users who already have access
+			// to THIS note (workspace members or direct note collaborators).
+			const targetUserIds = newUserRefs.map((r) => r.targetId);
+			const [members, directCollaborators] = await Promise.all([
+				this._prisma.workspaceMember.findMany({
+					where: { workspaceId, userId: { in: targetUserIds } },
+					select: { userId: true },
+				}),
+				this._prisma.noteCollaborator.findMany({
+					where: { docId: docName, userId: { in: targetUserIds }, revokedAt: null },
+					select: { userId: true },
+				}),
+			]);
+			const hasAccessSet = new Set([
+				...members.map((m) => m.userId),
+				...directCollaborators.map((c) => c.userId),
+			]);
+
+			for (const ref of newUserRefs) {
+				if (actorId && actorId === ref.targetId) continue; // skip self-mention
+
+				const isAssignment = ref.listContext === 'taskItem' || ref.listContext === 'listItem';
+				let invitationId = null;
+
+				if (!hasAccessSet.has(ref.targetId)) {
+					// User has no access to this note — create an implicit share invitation.
+					try {
+						const existingPending = await this._prisma.noteShareInvitation.findFirst({
+							where: {
+								docId: docName,
+								inviteeUserId: ref.targetId,
+								source: 'mention',
+								status: 'PENDING',
+							},
+							select: { id: true },
+						});
+
+						if (!existingPending) {
+							if (!actorId) {
+								// Can't create invitation without knowing who did the mention.
+								// Emit the activity without an invitation.
+								invitationId = null;
+							} else {
+								// Look up the invitee's email for the invitation record.
+								const invitee = await this._prisma.user.findUnique({
+									where: { id: ref.targetId },
+									select: { email: true, name: true },
+								});
+								if (invitee) {
+									const invitation = await this._prisma.noteShareInvitation.create({
+										data: {
+											docId: docName,
+											sourceWorkspaceId: workspaceId,
+											sourceNoteId: noteId,
+											inviterUserId: actorId,
+											inviteeUserId: ref.targetId,
+											inviteeEmail: invitee.email,
+											inviteeName: invitee.name,
+											role: ref.editRole === 'VIEWER' ? 'VIEWER' : 'EDITOR',
+											source: 'mention',
+											mentionExcerpt: ref.excerpt,
+											status: 'PENDING',
+										},
+									});
+									invitationId = invitation.id;
+
+									// Notify server.js to send the push (check pref there)
+									this._onMentionInvitationCreated?.({
+										targetUserId: ref.targetId,
+										actorId,
+										docId: docName,
+										noteTitle,
+										mentionExcerpt: ref.excerpt,
+										editRole: ref.editRole || 'EDITOR',
+									}).catch((err) => {
+										console.warn(`[references] mention push failed for ${docName}:`, err?.message);
+									});
+								}
+							}
+						} else {
+							invitationId = existingPending.id;
+						}
+					} catch (err) {
+						console.warn(`[references] mention invitation create failed for ${docName}:`, err.message);
+					}
+				}
+
+				// Emit the activity (mention or assignment). Include invitationId in
+				// the snapshot so InboxView can show Accept & View.
+				await emitActivity(this._prisma, {
+					kind: isAssignment ? 'assignment_created' : 'mention',
+					actorId,
+					sourceDocId: docName,
+					sourceWorkspaceId: workspaceId,
+					sourceNoteId: noteId,
+					subjectType: isAssignment ? 'checklist_item' : 'note',
+					subjectId: noteId,
+					deepLink: { kind: 'prosemirror_node', nodeId: ref.nodeId },
+					snapshot: {
+						noteTitle,
+						mentionExcerpt: ref.excerpt,
+						assigneeLabel: ref.label,
+						invitationId,
+					},
+					targetUserIds: [ref.targetId],
+				}).then(() => {
+					this._onActivityEmitted?.({ targetUserIds: [ref.targetId] });
+				}).catch((err) => {
+					console.warn(`[references] activity emit failed for ${docName}:`, err.message);
+				});
+			}
+		} catch (err) {
+			console.warn(`[references] _syncEntityReferences failed for ${docName}:`, err.message);
 		}
 	}
 

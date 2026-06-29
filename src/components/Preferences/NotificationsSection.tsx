@@ -27,6 +27,7 @@ export type NotificationsSectionProps = {
 };
 
 type TestResult = { ok: boolean; message: string } | null;
+type MentionNotifState = { value: boolean; saving: boolean };
 
 /**
  * Formats a Unix-style ISO timestamp into a human-readable relative string.
@@ -84,6 +85,32 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 	const [status, setStatus] = React.useState<PushSubscriptionStatus | null>(null);
 	const [loadingStatus, setLoadingStatus] = React.useState(true);
 	const [statusError, setStatusError] = React.useState<string | null>(null);
+
+	const [mentionNotif, setMentionNotif] = React.useState<MentionNotifState | null>(null);
+
+	React.useEffect(() => {
+		fetch(`/api/user/preferences?deviceId=${encodeURIComponent(deviceId)}`)
+			.then((r) => r.json())
+			.then((d) => setMentionNotif({ value: d.mentionNotifications !== false, saving: false }))
+			.catch(() => {});
+	}, [deviceId]);
+
+	async function handleMentionNotifToggle() {
+		if (!mentionNotif || mentionNotif.saving) return;
+		const next = !mentionNotif.value;
+		setMentionNotif({ value: next, saving: true });
+		try {
+			await fetch(`/api/user/preferences?deviceId=${encodeURIComponent(deviceId)}`, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ mentionNotifications: next }),
+				credentials: 'include',
+			});
+			setMentionNotif({ value: next, saving: false });
+		} catch {
+			setMentionNotif({ value: !next, saving: false });
+		}
+	}
 
 	const [subscribing, setSubscribing] = React.useState(false);
 	const [unsubscribing, setUnsubscribing] = React.useState(false);
@@ -354,6 +381,31 @@ export function NotificationsSection(props: NotificationsSectionProps): React.JS
 					<div className={styles.iosWarning}>
 						{t('push.iosDontAllow') || '⚠️ Do NOT tap "Don\'t Allow" — iOS cannot re-prompt after denial without resetting Safari settings.'}
 					</div>
+				</div>
+			)}
+
+			{/* ── Mention notification preference ──────────────────────── */}
+			{mentionNotif !== null && (
+				<div className={styles.prefRow}>
+					<div className={styles.prefRowText}>
+						<span className={styles.prefRowLabel}>
+							{t('push.mentionNotifications') || '@mention push notifications'}
+						</span>
+						<span className={styles.prefRowDesc}>
+							{t('push.mentionNotificationsDesc') || 'Send a push notification when someone @mentions you in a note'}
+						</span>
+					</div>
+					<button
+						type="button"
+						role="switch"
+						aria-checked={mentionNotif.value}
+						className={`${styles.toggle} ${mentionNotif.value ? styles.toggleOn : ''}`}
+						onClick={handleMentionNotifToggle}
+						disabled={mentionNotif.saving}
+						aria-label={t('push.mentionNotifications') || '@mention push notifications'}
+					>
+						<span className={styles.toggleThumb} />
+					</button>
 				</div>
 			)}
 

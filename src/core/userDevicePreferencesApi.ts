@@ -37,6 +37,8 @@ export type UserDevicePreferences = {
 	notePinsByDocId: Record<string, boolean>;
 	/** Per-user dismissed failed-link notification IDs: { [failedLinkId]: true } */
 	dismissedFailedLinkIds: Record<string, boolean>;
+	/** Whether to receive push notifications for @mentions (default: true) */
+	mentionNotifications: boolean;
 	createdAt: string | null;
 	updatedAt: string | null;
 };
@@ -141,6 +143,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			noteBannersByNoteId: safeJsonNullableStringRecord((body as any).noteBannersByNoteId),
 			notePinsByDocId: safeStrictBooleanRecord((body as any).notePinsByDocId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
+			mentionNotifications: (body as any).mentionNotifications !== false,
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};
@@ -342,6 +345,7 @@ async function _sendPreferences(
 			noteBannersByNoteId: safeJsonNullableStringRecord((body as any).noteBannersByNoteId),
 			notePinsByDocId: safeStrictBooleanRecord((body as any).notePinsByDocId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
+			mentionNotifications: (body as any).mentionNotifications !== false,
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
 		};
