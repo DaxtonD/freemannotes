@@ -359,6 +359,7 @@ function mapCollaborator(collaborator) {
 				name: collaborator.user.name,
 				email: collaborator.user.email,
 				profileImage: collaborator.user.profileImage || null,
+				isSupporter: collaborator.user.isSupporter ?? false,
 			}
 			: null,
 	};
@@ -927,7 +928,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const [collaborators, pendingInvites, selfCollaborator, workspaceMembers, currentUser, document] = await Promise.all([
 						prisma.noteCollaborator.findMany({
 							where: { docId: access.docId, revokedAt: null },
-							include: { user: { select: { id: true, name: true, email: true, profileImage: true } } },
+							include: { user: { select: { id: true, name: true, email: true, profileImage: true, isSupporter: true } } },
 							orderBy: { createdAt: 'asc' },
 						}),
 						prisma.noteShareInvitation.findMany({

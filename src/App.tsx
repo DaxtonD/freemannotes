@@ -1092,6 +1092,8 @@ export function App(): React.JSX.Element {
 	const [authUserId, setAuthUserId] = React.useState<string | null>(() => cachedAuth?.userId ?? null);
 	const [authUserRole, setAuthUserRole] = React.useState<GlobalUserRole | null>(() => cachedAuth?.role ?? null);
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(() => cachedAuth?.profileImage ?? null);
+	const [authIsSupporter, setAuthIsSupporter] = React.useState(false);
+	const [authSupporterShowPublic, setAuthSupporterShowPublic] = React.useState(false);
 	const [registrationInviteToken, setRegistrationInviteToken] = React.useState<string | null>(initialRegistrationInvite.token);
 	const [registrationInviteEmail, setRegistrationInviteEmail] = React.useState<string>(initialRegistrationInvite.email ?? '');
 	const [authWorkspaceId, setAuthWorkspaceId] = React.useState<string | null>(() => {
@@ -3549,6 +3551,8 @@ export function App(): React.JSX.Element {
 					setAuthUserId(null);
 					setAuthUserRole(null);
 					setAuthProfileImage(null);
+					setAuthIsSupporter(false);
+					setAuthSupporterShowPublic(false);
 					setAuthWorkspaceId(null);
 					setAuthOfflineMode(false);
 					manager.setActiveWorkspaceId(null);
@@ -3568,6 +3572,8 @@ export function App(): React.JSX.Element {
 				setAuthUserId(userId);
 				setAuthUserRole(role);
 				setAuthProfileImage(profileImage);
+				setAuthIsSupporter(body?.user?.isSupporter === true);
+				setAuthSupporterShowPublic(body?.user?.supporterShowPublic === true);
 				setAuthWorkspaceId(effectiveWorkspaceId);
 				setAuthOfflineMode(false);
 				writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage, role });
@@ -10443,6 +10449,9 @@ export function App(): React.JSX.Element {
 				showSendInvite={isGlobalAdmin}
 				onSendInvite={openSendInviteFromPreferences}
 				onSignOut={() => void signOut()}
+				isSupporter={authIsSupporter}
+				supporterShowPublic={authSupporterShowPublic}
+				onSupporterVisibilityChange={(showPublic) => setAuthSupporterShowPublic(showPublic)}
 			/>
 
 			<CollectionManagementModal

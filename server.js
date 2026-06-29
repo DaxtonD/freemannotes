@@ -297,6 +297,9 @@ let noteMediaRouter = null;
 /** @type {ReturnType<import('./server/activityRouter').createActivityRouter> | null} */
 let activityRouter = null;
 
+/** @type {ReturnType<import('./server/supporterRouter').createSupporterRouter> | null} */
+let supporterRouter = null;
+
 /** @type {ReturnType<import('./server/adminRouter').createAdminRouter> | null} */
 let adminRouter = null;
 
@@ -638,6 +641,15 @@ if (DATABASE_URL.length > 0) {
 		}
 
 		try {
+			const { createSupporterRouter } = require('./server/supporterRouter');
+			supporterRouter = createSupporterRouter({ prisma });
+			console.info('[server] Supporter API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Supporter API router:', err.message);
+			supporterRouter = null;
+		}
+
+		try {
 			const { createAdminRouter } = require('./server/adminRouter');
 			adminRouter = createAdminRouter({ prisma });
 			console.info('[server] Admin API router initialized');
@@ -865,6 +877,11 @@ const server = http.createServer((req, res) => {
 
 		// ── Activity / Inbox router ──────────────────────────────────────
 		if (activityRouter && activityRouter(req, res)) {
+			return;
+		}
+
+		// ── Supporter router ─────────────────────────────────────────────
+		if (supporterRouter && supporterRouter(req, res)) {
 			return;
 		}
 

@@ -158,6 +158,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		notificationsSubtitle: 'Review app updates, invites, and link issues in one place.',
 		noNotifications: 'No notifications right now.',
 		noteManagement: 'Note management',
+		support: 'Support',
 		collaborators: 'Collaborators',
 		editor: 'Editor',
 		userAvatarTitle: 'Profile photo',
@@ -703,6 +704,15 @@ const FALLBACK_MESSAGES: Dictionary = {
 		acceptFailed: 'Failed to accept invite',
 		accepted: 'Workspace joined',
 		acceptOfflineUnavailable: 'Workspace invites can only be accepted while online',
+	},
+	support: {
+		blurb: 'Freeman Notes is free and open source. If it saves you time or brings you joy, a coffee goes a long way.',
+		buyMeACoffee: 'Buy Me a Coffee',
+		paypal: 'PayPal',
+		thankYou: "You're a supporter — thank you!",
+		showOnContributors: 'Show my name on the contributors page',
+		contributorsTitle: 'Contributors',
+		contributorsEmpty: 'Be the first to support Freeman Notes!',
 	},
 	share: {
 		share: 'Share',

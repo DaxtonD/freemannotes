@@ -80,6 +80,7 @@
     "appearance": "Apariencia",
     "notifications": "Notificaciones",
     "noteManagement": "Gestión de notas",
+    "support": "Apoyar",
     "collaborators": "Colaboradores",
     "editor": "Editor",
     "userAvatarTitle": "Foto de perfil",
@@ -603,6 +604,15 @@
     "acceptFailed": "No se pudo aceptar la invitación",
     "accepted": "Espacio de trabajo unido",
     "acceptOfflineUnavailable": "Las invitaciones al espacio de trabajo solo pueden aceptarse con conexión"
+  },
+  "support": {
+    "blurb": "Freeman Notes es gratuito y de código abierto. Si te ahorra tiempo o te trae alegría, un café hace mucho.",
+    "buyMeACoffee": "Invítame un café",
+    "paypal": "PayPal",
+    "thankYou": "¡Eres un colaborador, gracias!",
+    "showOnContributors": "Mostrar mi nombre en la página de colaboradores",
+    "contributorsTitle": "Colaboradores",
+    "contributorsEmpty": "¡Sé el primero en apoyar Freeman Notes!"
   },
   "share": {
     "share": "Compartir",

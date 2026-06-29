@@ -568,7 +568,7 @@ function createApiAuthRouter({ prisma }) {
 
 					let user = await prisma.user.findUnique({
 						where: { id: session.userId },
-						select: { id: true, email: true, name: true, role: true, disabled: true, profileImage: true, lastLogin: true, createdAt: true },
+						select: { id: true, email: true, name: true, role: true, disabled: true, profileImage: true, lastLogin: true, createdAt: true, isSupporter: true, supporterShowPublic: true },
 					});
 					if (!user || user.disabled) {
 						jsonResponse(res, 200, { authenticated: false, user: null, workspaceId: null });
@@ -582,7 +582,7 @@ function createApiAuthRouter({ prisma }) {
 							user = await prisma.user.update({
 								where: { id: user.id },
 								data: { role: 'ADMIN' },
-								select: { id: true, email: true, name: true, role: true, disabled: true, profileImage: true, lastLogin: true, createdAt: true },
+								select: { id: true, email: true, name: true, role: true, disabled: true, profileImage: true, lastLogin: true, createdAt: true, isSupporter: true, supporterShowPublic: true },
 							});
 						}
 					}
@@ -673,6 +673,8 @@ function createApiAuthRouter({ prisma }) {
 							profileImage: user.profileImage,
 							lastLogin: user.lastLogin ? user.lastLogin.toISOString() : null,
 							createdAt: user.createdAt.toISOString(),
+							isSupporter: user.isSupporter ?? false,
+							supporterShowPublic: user.supporterShowPublic ?? false,
 						},
 						workspaceId: effectiveWorkspaceId || null,
 					});

@@ -1,5 +1,7 @@
 import React from 'react';
 import QRCode from 'qrcode';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import { faHeart } from '@fortawesome/free-solid-svg-icons';
 import {
 	cancelNoteShareInvitation,
 	createNoteShareInvitation,
@@ -849,7 +851,12 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 														<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('share.statusAccepted')}</span>
 													</div>
 													<div className={styles.rowCopy}>
-														<div className={styles.rowPrimary}>{getDisplayLabel(collaborator.user || { id: collaborator.userId })}</div>
+														<div className={styles.rowPrimary}>
+															{getDisplayLabel(collaborator.user || { id: collaborator.userId })}
+															{collaborator.user?.isSupporter ? (
+																<FontAwesomeIcon icon={faHeart} className={styles.supporterHeart} title="Supporter" />
+															) : null}
+														</div>
 														<div className={styles.rowSecondary}>{collaborator.user?.email || renderNoteRole(collaborator.role, t)}</div>
 														{isWorkspaceInheritedCollaborator(collaborator) ? <div className={styles.rowTertiary}>{t('share.inheritedWorkspaceAccess')}</div> : null}
 													</div>
