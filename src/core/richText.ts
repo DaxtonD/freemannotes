@@ -29,6 +29,7 @@ import {
 } from './collapsibleHeadingCollapseDebug';
 import { getDeviceId } from './deviceId';
 import { getExternalLinkRel, getExternalLinkTarget } from './externalLinks';
+import { ReferenceExtension } from './extensions/ReferenceExtension';
 
 export const TEXT_NOTE_RICH_FIELD = 'contentRich';
 export const CHECKLIST_ITEM_RICH_FIELD = 'contentRich';
@@ -1437,9 +1438,12 @@ export function createRichTextExtensions(args: {
 			TableRow,
 			TableHeader,
 			TableCell,
-			TextAlign.configure({ types: ['heading', 'paragraph'] })
+			TextAlign.configure({ types: ['heading', 'paragraph'] }),
 		);
 	}
+
+	// ReferenceExtension enabled for both variants so @mention works in checklist items
+	extensions.push(ReferenceExtension);
 
 	if (args.placeholder) {
 		extensions.push(

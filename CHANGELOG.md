@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.4 - 2026-06-28
+
+### Added
+- **Inbox view and @mention activity system.** Collaborators can now @mention each other inside rich-text notes, checklist items, and quick reminders. Mentions create a real-time inbox card for the mentioned user with an "Accept & View" button when access needs to be granted, or a plain notification card when the user already has access. Assignments (mentions beside a checkbox item) surface as `assignment_created` cards. The inbox is accessible via the new Inbox navigation button with a live unread badge.
+- **Bell notification panel shows inbox teaser.** When the badge count includes unread inbox items (mentions/assignments), clicking the bell now shows a compact "N unread mentions & assignments" card with an "Open Inbox" button, eliminating the confusing "No notifications right now" state when the badge is non-zero.
+- **Draft-gate for @mentions.** Push notifications and inbox cards for @mentions are suppressed while a note is still unsaved (pending new). Mentions are only processed when the user saves the note; discarding a draft note produces no notifications at all.
+
+### Fixed
+- **"Accept & View" button missing on assignment cards.** Inbox cards for `assignment_created` activities (mentions beside a checkbox in a checklist note or rich-text task item) were not showing the "Accept & View" button. The `showAcceptBtn` guard now includes `assignment_created` alongside `mention`.
+- **Double-counting in notification badge.** Mention invitations were being counted in both `pendingShareNotificationCount` (via `/api/note-shares/invitations`) and `inboxUnreadCount`. The invitations endpoint now excludes `source: 'mention'` invitations from `pendingCount` since these are surfaced through the inbox.
+- **"Clear all" in inbox left stale badge count.** The previous `archiveAll` handler sent only the currently visible page of activities to `/api/inbox/archive`. If the user was on the "assigned" tab, unread items on "mentions" and "all" tabs were never archived, leaving the badge positive after clearing. A new `POST /api/inbox/archive-all` endpoint archives every non-archived activity for the user in a single transaction.
+- **User A doesn't see real-time inbox updates when User B accepts a share.** After `emitNoteShareAcceptedActivity`, the server now also broadcasts `reason: 'inbox_updated'` via `onWorkspaceMetadataChanged` targeted at the inviter's userId, causing their client to re-fetch the inbox count without a page reload.
+- **App icons and inbox icon fail offline.** The app header logo and inbox nav icon (`/icons/*.png`) were routed through `cacheFirstImage` in the service worker, which only checks `IMAGE_CACHE` and has no fallback to `APP_SHELL_CACHE` (where `precacheAppShell` stores them on install). These paths are now classified as static app-shell assets via `isStaticAssetRequest`, routing them through `staleWhileRevalidate` which falls back to `APP_SHELL_CACHE` — making them available offline even on first use after install.
+
 ## 1.6.3 - 2026-06-26
 
 ### Fixed

@@ -2348,6 +2348,48 @@
 	margin-block: 1em;
 }
 
+/* ── Reference chips (@-mention / [[note]] inline atoms) ───────────────── */
+.richEditorContent:global(.ProseMirror) :global(.fn-reference-chip) {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.05em 0.45em;
+	border-radius: var(--radius-sm, 4px);
+	background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+	color: var(--color-accent);
+	font-weight: 500;
+	font-size: 0.93em;
+	white-space: nowrap;
+	cursor: pointer;
+	user-select: none;
+	-webkit-user-select: none;
+	transition: background 80ms;
+}
+
+.richEditorContent:global(.ProseMirror) :global(.fn-reference-chip):hover {
+	background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+/* Reference chip in checklist row previews (outside ProseMirror) */
+.referenceChipPreview {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.05em 0.45em;
+	border-radius: var(--radius-sm, 4px);
+	background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+	color: var(--color-accent);
+	font-weight: 500;
+	font-size: 0.93em;
+	white-space: nowrap;
+	cursor: pointer;
+	user-select: none;
+	-webkit-user-select: none;
+	transition: background 80ms;
+}
+
+.referenceChipPreview:hover {
+	background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
 .richEditorContent:global(.ProseMirror) table {
 	width: 100%;
 	border-collapse: collapse;

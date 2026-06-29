@@ -22,6 +22,9 @@ import { I18nProvider } from './core/i18n';
 import { loadViewMode } from './core/viewMode';
 import { readWorkspaceSelectionCache } from './core/workspaceSelectionCache';
 import { installHeadingCollapseDebugConsole } from './core/collapsibleHeadingCollapseDebug';
+import { registerReferenceProvider } from './core/references/ReferenceProvider';
+import { UserReferenceProvider } from './core/references/providers/UserReferenceProvider';
+import { NoteReferenceProvider, setNoteReferenceSource } from './core/references/providers/NoteReferenceProvider';
 import './styles/variables.css';
 import './styles/globals.css';
 import './styles/layout.css';
@@ -92,6 +95,45 @@ const rootEl = document.getElementById('root');
 if (!rootEl) {
 	throw new Error('Missing #root element');
 }
+
+// Register @ reference providers. Order determines dropdown group order.
+registerReferenceProvider(UserReferenceProvider);
+registerReferenceProvider(NoteReferenceProvider);
+setNoteReferenceSource(async () => {
+	try {
+		const list = await manager.getNotesList();
+		return list.toArray()
+			.map((item) => {
+				const id = String(item.get('id') ?? '');
+				const registryTitle = String(item.get('title') ?? '').trim();
+
+				// peekDoc returns the Y.Doc only if already loaded — no side effects.
+				let title = registryTitle;
+				let noteType: string | undefined;
+				let skip = false;
+				try {
+					const doc = manager.peekDoc(id);
+					if (doc) {
+						const metadata = doc.getMap<any>('metadata');
+						// Title lives on the Y.Doc root as a Y.Text, not inside metadata.
+						title = doc.getText('title').toString().trim();
+						const raw = String(metadata.get('type') ?? '');
+						if (raw) noteType = raw;
+						// Exclude trashed notes from suggestions.
+						if (Boolean(metadata.get('trashed'))) skip = true;
+					} else if (!registryTitle) {
+						// Unloaded note with no registry title: likely a stale/orphaned
+						// registry entry. Skip it to avoid spurious "Untitled" rows.
+						skip = true;
+					}
+				} catch { /* best-effort */ }
+				return { id, title, noteType, skip };
+			})
+			.filter((n) => Boolean(n.id) && !n.skip);
+	} catch {
+		return [];
+	}
+});
 
 // Firefox Android does not synthesize dragstart from touch long-press.
 // Install a polyfill that bridges touch events → DragEvents so

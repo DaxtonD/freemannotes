@@ -493,7 +493,8 @@
     "viewCard": "Card view",
     "viewList": "List view",
     "viewStrip": "Strip view",
-    "viewBubble": "Bubble view"
+    "viewBubble": "Bubble view",
+    "viewInbox": "Inbox"
   },
   "workspace": {
     "title": "Workspaces",
@@ -612,6 +613,10 @@
     "notificationsSubtitle": "Review your notifications in one place.",
     "clearNotifications": "Clear notifications",
     "noNotifications": "No notifications right now.",
+    "inboxUnreadOne": "1 unread mention or assignment",
+    "inboxUnreadMany": "{count} unread mentions & assignments",
+    "inboxUnreadSubtitle": "Mentions and assignments are in your Inbox.",
+    "openInbox": "Open Inbox",
     "joinNoteLabel": "Join note",
     "fromLabel": "From",
     "sharedAt": "Shared",
@@ -1024,6 +1029,8 @@
     "iosStep2": "Select \"Add to Home Screen\"",
     "iosStep3": "Open the app from your Home Screen",
     "iosStep4": "Return here and enable notifications",
-    "iosDontAllow": "⚠️ Do NOT tap \"Don't Allow\" — iOS cannot re-prompt after denial."
+    "iosDontAllow": "⚠️ Do NOT tap \"Don't Allow\" — iOS cannot re-prompt after denial.",
+    "mentionNotifications": "@mention notifications",
+    "mentionNotificationsDesc": "Send a push notification when someone @mentions you in a note"
   }
 }

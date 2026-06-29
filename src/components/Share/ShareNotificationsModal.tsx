@@ -40,6 +40,8 @@ type Props = {
 	onAcceptedWorkspaceInvite?: (workspaceId: string) => void;
 	onClearFailedLinks?: () => void;
 	onOpenFailedLink?: (failure: FailedNoteLinkRecord) => void;
+	inboxUnreadCount?: number;
+	onOpenInbox?: () => void;
 };
 
 type PlacementChoice = 'personal' | 'shared-root' | 'shared-folder';
@@ -197,10 +199,12 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const hasNoteInvites = visibleInvitations.length > 0;
 	const hasFailedLinks = failedLinkNotifications.length > 0;
 	const hasFiredReminders = firedReminders.length > 0;
+	const inboxUnreadCount = props.inboxUnreadCount ?? 0;
+	const hasInboxUnread = inboxUnreadCount > 0;
 	// Use the authoritative pending count too, because reminder rows can be stale
 	// on mobile/PWA while the badge count is already non-zero.
 	const hasPendingReminderNotifications = (props.pendingReminderCount ?? 0) > 0;
-	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders || hasPendingReminderNotifications;
+	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders || hasPendingReminderNotifications || hasInboxUnread;
 	const hasAppNotification = hasAppUpdate || hasAppUpdated;
 	const modalTitle = t('share.notifications');
 	const modalSubtitle = hasAppNotification ? t('prefs.notificationsSubtitle') : t('share.notificationsSubtitle');
@@ -369,6 +373,39 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 				<div className={styles.modalBody}>
 					{error ? <div className={styles.error}>{error}</div> : null}
 				{visibleInvitations.length === 0 && workspaceInvites.length === 0 && failedLinkNotifications.length === 0 && firedReminders.length === 0 && !hasAppNotification ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
+
+				{hasInboxUnread ? (
+					<div className={`${styles.section} ${styles.notificationList}`}>
+						<div className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
+							<div className={styles.notificationHeader}>
+								<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
+									@
+								</div>
+								<div className={styles.notificationCopy}>
+									<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
+										<strong>
+											{inboxUnreadCount === 1
+												? t('share.inboxUnreadOne')
+												: t('share.inboxUnreadMany').replace('{count}', String(inboxUnreadCount))}
+										</strong>
+									</div>
+									<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
+										{t('share.inboxUnreadSubtitle')}
+									</div>
+								</div>
+							</div>
+							<div className={styles.actionRow}>
+								<button
+									type="button"
+									className={styles.primaryButton}
+									onClick={() => { props.onOpenInbox?.(); props.onClose(); }}
+								>
+									{t('share.openInbox')}
+								</button>
+							</div>
+						</div>
+					</div>
+				) : null}
 
 				{hasFiredReminders ? (
 					<div className={`${styles.section} ${styles.notificationList}`}>

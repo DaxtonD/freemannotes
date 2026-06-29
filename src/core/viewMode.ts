@@ -7,14 +7,15 @@
  * The selected mode is persisted in localStorage so it survives page reloads.
  */
 
-export type ViewMode = 'card' | 'list' | 'strip' | 'bubble';
+export type ViewMode = 'card' | 'list' | 'strip' | 'bubble' | 'inbox';
 
 const STORAGE_KEY = 'fn_view_mode_v1';
 
+// Inbox is excluded from the cycle — it's a dedicated navigation mode, not a grid variant.
 const CYCLE_ORDER: ViewMode[] = ['card', 'list', 'strip', 'bubble'];
 
 function isViewMode(value: unknown): value is ViewMode {
-	return value === 'card' || value === 'list' || value === 'strip' || value === 'bubble';
+	return value === 'card' || value === 'list' || value === 'strip' || value === 'bubble' || value === 'inbox';
 }
 
 export function loadViewMode(): ViewMode {

@@ -1292,7 +1292,13 @@ export class DocumentManager {
 			this.updateConnectionState();
 			this.emitConnectionStatus();
 		};
-		const onConnectionClose = (): void => {
+		const onConnectionClose = (event?: CloseEvent): void => {
+			if ((event as any)?.code === 1008) {
+				// Server explicitly denied access (share revoked or note deleted).
+				// Stop retrying — schedule room destruction to unwind after this handler.
+				setTimeout(() => { if (this.docs.has(roomName)) this.destroyRoom(roomName); }, 0);
+				return;
+			}
 			if (this.wsDebug) {
 				console.info(`[yjs-ws] room=${roomName} connection-close url=${this.websocketUrl}`);
 			}

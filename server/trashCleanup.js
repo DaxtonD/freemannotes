@@ -201,6 +201,13 @@ function createTrashCleanup({ prisma, adapter, redis = null, intervalMs = DEFAUL
 		// ── Step 4: Permanently delete expired docs from PostgreSQL ─────
 		let deletedCount = 0;
 		try {
+			// Revoke NoteCollaborator access before deleting the docs so that
+			// collaborators' clients stop trying to sync removed notes and so
+			// the placements API (filtered by revokedAt: null) no longer returns them.
+			await prisma.noteCollaborator.updateMany({
+				where: { docId: { in: expiredNoteIds }, revokedAt: null },
+				data: { revokedAt: new Date() },
+			});
 			await prisma.shareAccessToken.deleteMany({
 				where: {
 					entityType: 'NOTE',

@@ -1,6 +1,6 @@
 {
   "name": "freemannotes",
-  "version": "1.6.3",
+  "version": "1.6.4",
   "main": "index.js",
   "scripts": {
     "dev": "concurrently -k -n server,web \"npm run dev:server\" \"npm run dev:web\"",
@@ -47,7 +47,6 @@
     "@hello-pangea/dnd": "^18.0.1",
     "@iamjariwala/react-doc-viewer": "^1.8.0",
     "@prisma/client": "^5.22.0",
-    "prisma": "^5.22.0",
     "@tanstack/react-virtual": "^3.13.24",
     "@tiptap/extension-bubble-menu": "^3.20.1",
     "@tiptap/extension-character-count": "^3.20.1",
@@ -65,6 +64,7 @@
     "@tiptap/extension-underline": "^3.20.1",
     "@tiptap/react": "^3.20.1",
     "@tiptap/starter-kit": "^3.20.1",
+    "@tiptap/suggestion": "^3.27.1",
     "@tiptap/y-tiptap": "^3.0.2",
     "bcryptjs": "^3.0.3",
     "busboy": "^1.6.0",
@@ -80,6 +80,7 @@
     "nodemailer": "^8.0.1",
     "pdf-parse": "^2.4.5",
     "pg": "^8.19.0",
+    "prisma": "^5.22.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
