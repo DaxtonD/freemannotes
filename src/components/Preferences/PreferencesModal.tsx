@@ -389,6 +389,8 @@ function AboutSectionContent(props: {
 				<p>{props.t('prefs.aboutBodyLine1')}</p>
 				<p>{props.t('prefs.aboutBodyLine2')}</p>
 				<p>{props.t('prefs.aboutBodyLine3')}</p>
+				<p>{props.t('prefs.aboutBodyLine4')}</p>
+				<p className={styles.aboutQuote}>{props.t('prefs.aboutBodyLine5')}</p>
 			</div>
 			<div className={styles.aboutFooterStats} aria-live="polite">
 				<div className={styles.aboutFooterGroup}>
