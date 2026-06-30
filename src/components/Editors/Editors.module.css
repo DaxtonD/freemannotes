@@ -2348,46 +2348,98 @@
 	margin-block: 1em;
 }
 
-/* ── Reference chips (@-mention / [[note]] inline atoms) ───────────────── */
-.richEditorContent:global(.ProseMirror) :global(.fn-reference-chip) {
+/* ── Reference chips (inline mention / note-link atoms) ─────────────────── */
+:global(.fn-reference-chip) {
 	display: inline-flex;
 	align-items: center;
-	padding: 0.05em 0.45em;
-	border-radius: var(--radius-sm, 4px);
-	background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+	gap: 0.28em;
+	padding: 0.08em 0.42em;
+	border-radius: 2em;
+	background: color-mix(in srgb, var(--color-accent) 13%, transparent);
 	color: var(--color-accent);
 	font-weight: 500;
-	font-size: 0.93em;
+	font-size: 0.9em;
 	white-space: nowrap;
 	cursor: pointer;
 	user-select: none;
 	-webkit-user-select: none;
 	transition: background 80ms;
+	vertical-align: middle;
+	line-height: 1.5;
 }
 
-.richEditorContent:global(.ProseMirror) :global(.fn-reference-chip):hover {
+:global(.fn-reference-chip):hover {
 	background: color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
-/* Reference chip in checklist row previews (outside ProseMirror) */
+/* Icon for note-type chips (document / checklist / drawing / reminder) */
+:global(.fn-reference-chip__icon) {
+	display: inline-flex;
+	align-items: center;
+	font-size: 0.72em;
+	opacity: 0.8;
+	flex-shrink: 0;
+}
+
+/* Colored initials avatar for user-mention chips */
+/* Avatar image (when URL available) */
+:global(.fn-reference-chip__avatar-img) {
+	width: 1.35em;
+	height: 1.35em;
+	border-radius: 50%;
+	object-fit: cover;
+	flex-shrink: 0;
+	vertical-align: middle;
+}
+
+/* Initials fallback when no avatar URL */
+:global(.fn-reference-chip__avatar) {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 1.35em;
+	height: 1.35em;
+	border-radius: 50%;
+	color: #fff;
+	font-size: 0.6em;
+	font-weight: 700;
+	letter-spacing: -0.02em;
+	flex-shrink: 0;
+}
+
+:global(.fn-reference-chip__label) {
+	max-width: 18em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+/* Reference chip in checklist row card previews (React-rendered, outside ProseMirror) */
 .referenceChipPreview {
 	display: inline-flex;
 	align-items: center;
-	padding: 0.05em 0.45em;
-	border-radius: var(--radius-sm, 4px);
-	background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+	gap: 0.25em;
+	padding: 0.08em 0.42em;
+	border-radius: 2em;
+	background: color-mix(in srgb, var(--color-accent) 13%, transparent);
 	color: var(--color-accent);
 	font-weight: 500;
-	font-size: 0.93em;
+	font-size: 0.9em;
 	white-space: nowrap;
 	cursor: pointer;
 	user-select: none;
 	-webkit-user-select: none;
 	transition: background 80ms;
+	vertical-align: middle;
 }
 
 .referenceChipPreview:hover {
 	background: color-mix(in srgb, var(--color-accent) 22%, transparent);
+}
+
+.referenceChipPreviewIcon {
+	font-size: 0.72em;
+	opacity: 0.8;
+	flex-shrink: 0;
 }
 
 .richEditorContent:global(.ProseMirror) table {

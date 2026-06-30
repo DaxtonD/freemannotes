@@ -1,6 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Editor } from '@tiptap/core';
+import { ReactNodeViewRenderer } from '@tiptap/react';
 import { PluginKey } from '@tiptap/pm/state';
 import { Suggestion, type SuggestionProps, type SuggestionKeyDownProps } from '@tiptap/suggestion';
 import { v4 as uuidv4 } from 'uuid';
@@ -8,8 +9,19 @@ import { Reference } from './Reference';
 import type { ReferenceGroup, ReferenceResult } from '../references/ReferenceProvider';
 import { searchReferenceProviders } from '../references/ReferenceProvider';
 import ReferenceDropdown, { type RolePickState } from '../../components/References/ReferenceDropdown';
+import { ReferenceChip } from '../../components/References/ReferenceChip';
 
 export const ReferenceSuggestionKey = new PluginKey('referenceSuggestion');
+
+// Per-editor registry of synchronous close functions. Used by NoteEditor to
+// close the dropdown immediately when the media panel opens, and by the
+// outside-pointer handler below. Bypasses editor.commands.blur() which uses
+// requestAnimationFrame and is unreliable on iOS Safari.
+const editorForceCloseMap = new WeakMap<Editor, () => void>();
+
+export function closeReferenceSuggestion(editor: Editor): void {
+	editorForceCloseMap.get(editor)?.();
+}
 
 type SuggestionItem = ReferenceGroup;
 type SelectedItem = ReferenceResult;
@@ -89,11 +101,6 @@ export const ReferenceExtension = Reference.extend({
 		document.body.appendChild(container);
 		const root = createRoot(container);
 
-		editor.on('destroy', () => {
-			root.unmount();
-			container.remove();
-		});
-
 		// Shared suggestion state (persists across onStart/onUpdate/onExit cycles)
 		let groups: SuggestionItem[]                              = [];
 		let selectedIndex                                          = 0;
@@ -105,6 +112,44 @@ export const ReferenceExtension = Reference.extend({
 
 		// Role picker state — set when user selects a user-type item
 		let rolePickState: RolePickState | null                    = null;
+
+		// Range and query from the last onStart/onUpdate call. Used by forceClose to
+		// move the cursor out of the suggestion range so the plugin lifecycle fires onExit.
+		let latestRange: { from: number; to: number } | null = null;
+		let latestQuery = '';
+		// True when the user selected an item via command(); prevents onExit from
+		// deleting the range that the command already replaced with a reference node.
+		let commandWasExecuted = false;
+
+		// Synchronously close the dropdown by moving the cursor just before the `@`
+		// trigger. This dispatches a ProseMirror selection-change transaction which
+		// the Suggestion plugin detects, causing it to call onExit. onExit then does
+		// full cleanup (hiding container, removing listeners) and — if the query was
+		// empty — deletes the bare `@` the user didn't intend to keep.
+		const forceClose = () => {
+			if (container.style.display === 'none') return;
+			if (editor.isDestroyed) return;
+
+			if (latestRange) {
+				// Moving cursor to latestRange.from (position of @) puts it before the
+				// trigger character, breaking the suggestion range. The plugin detects
+				// the selection change and calls onExit synchronously.
+				editor.commands.setTextSelection(latestRange.from);
+			} else {
+				// Fallback: suggestion state not yet tracked — hide directly.
+				container.style.display       = 'none';
+				container.style.pointerEvents = 'none';
+				rolePickState = null;
+			}
+			editor.view.dom.blur();
+		};
+		editorForceCloseMap.set(editor, forceClose);
+
+		editor.on('destroy', () => {
+			editorForceCloseMap.delete(editor);
+			root.unmount();
+			container.remove();
+		});
 
 		const confirmWithRole = (roleIndex: 0 | 1) => {
 			if (!rolePickState) return;
@@ -186,6 +231,7 @@ export const ReferenceExtension = Reference.extend({
 					range: { from: number; to: number };
 					props: SelectedItem;
 				}) => {
+					commandWasExecuted = true;
 					(cmdEditor as any)
 						.chain()
 						.focus()
@@ -198,6 +244,8 @@ export const ReferenceExtension = Reference.extend({
 								label: result.label,
 								nodeId: uuidv4(),
 								editRole: result.editRole ?? 'EDITOR',
+								noteType: result.noteType ?? null,
+								avatarUrl: result.avatarUrl ?? null,
 							},
 						})
 						.insertContent(' ')
@@ -226,6 +274,9 @@ export const ReferenceExtension = Reference.extend({
 						onStart(props: SuggestionProps<SuggestionItem, SelectedItem>) {
 							latestCommand    = props.command;
 							latestClientRect = props.clientRect ?? null;
+							latestRange      = props.range;
+							latestQuery      = props.query ?? '';
+							commandWasExecuted = false;
 							groups           = props.items ?? [];
 							selectedIndex    = 0;
 
@@ -250,7 +301,10 @@ export const ReferenceExtension = Reference.extend({
 							outsidePointerHandler = (e: PointerEvent) => {
 								const target = e.target as Node;
 								if (!container.contains(target) && !editor.view.dom.contains(target)) {
-									editor.commands.blur();
+									// forceClose hides the container synchronously, then calls
+									// view.dom.blur() directly — bypassing the requestAnimationFrame
+									// delay in editor.commands.blur() that causes iOS to undo it.
+									forceClose();
 								}
 							};
 							document.addEventListener('pointerdown', outsidePointerHandler, { capture: true });
@@ -259,6 +313,8 @@ export const ReferenceExtension = Reference.extend({
 						onUpdate(props: SuggestionProps<SuggestionItem, SelectedItem>) {
 							latestCommand    = props.command;
 							latestClientRect = props.clientRect ?? null;
+							latestRange      = props.range;
+							latestQuery      = props.query ?? '';
 							groups           = props.items ?? [];
 							selectedIndex    = 0;
 							reposition();
@@ -319,7 +375,7 @@ export const ReferenceExtension = Reference.extend({
 							return false;
 						},
 
-						onExit() {
+						onExit(props: SuggestionProps<SuggestionItem, SelectedItem>) {
 							if (vpResizeHandler && window.visualViewport) {
 								window.visualViewport.removeEventListener('resize', vpResizeHandler);
 								vpResizeHandler = null;
@@ -328,16 +384,30 @@ export const ReferenceExtension = Reference.extend({
 								document.removeEventListener('pointerdown', outsidePointerHandler, { capture: true });
 								outsidePointerHandler = null;
 							}
-							rolePickState = null;
+							rolePickState    = null;
 							container.style.display       = 'none';
 							container.style.pointerEvents = 'none';
 							root.render(null);
 							latestCommand    = null;
 							latestClientRect = null;
+							latestRange      = null;
+
+							// If the user dismissed without selecting (tap away, Escape, media
+							// panel, etc.) and the query was empty, remove the bare `@` so it
+							// doesn't accumulate as stray punctuation in the note.
+							if (!commandWasExecuted && props.query === '' && !editor.isDestroyed) {
+								editor.chain().deleteRange(props.range).run();
+							}
+							commandWasExecuted = false;
+							latestQuery        = '';
 						},
 					};
 				},
 			}),
 		];
+	},
+
+	addNodeView() {
+		return ReactNodeViewRenderer(ReferenceChip);
 	},
 });

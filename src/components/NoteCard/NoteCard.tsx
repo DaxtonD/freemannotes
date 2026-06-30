@@ -10,7 +10,11 @@ import {
 	faRotateLeft,
 	faThumbtack,
 	faUserPlus,
+	faNoteSticky,
+	faListCheck,
+	faPencil,
 } from '@fortawesome/free-solid-svg-icons';
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
@@ -447,14 +451,38 @@ function applyMarks(node: JSONContent, content: React.ReactNode, key: string, al
 	return result;
 }
 
+function cardNoteTypeIcon(noteType?: string | null): IconDefinition {
+	switch (noteType) {
+		case 'checklist': return faListCheck;
+		case 'drawing':   return faPencil;
+		case 'reminder':  return faBell;
+		default:          return faNoteSticky;
+	}
+}
+
 function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string, allowLinkInteraction: boolean): React.ReactNode[] {
 	return nodes.flatMap((node, index) => {
 		const key = `${keyPrefix}:${index}`;
 		if (node.type === 'hardBreak') return [<br key={key} />];
 		if (node.type === 'reference') {
-			const label = String(node.attrs?.label ?? '').trim();
+			const label     = String(node.attrs?.label ?? '').trim();
 			if (!label) return [];
-			return [<span key={key} className={styles.richReferenceChip}>@{label}</span>];
+			const refType   = node.attrs?.type;
+			const noteType  = node.attrs?.noteType ?? null;
+			const avatarUrl = node.attrs?.avatarUrl ?? null;
+			const isNote    = refType === 'note';
+			const isUser    = refType === 'user';
+			return [(
+				<span key={key} className={styles.richReferenceChip}>
+					{isNote && (
+						<FontAwesomeIcon icon={cardNoteTypeIcon(noteType)} className={styles.richReferenceChipIcon} />
+					)}
+					{isUser && avatarUrl && (
+						<img src={avatarUrl} className={styles.richReferenceChipAvatar} alt="" aria-hidden />
+					)}
+					{label}
+				</span>
+			)];
 		}
 		if (node.type !== 'text' || !node.text) return [];
 		return [<React.Fragment key={key}>{applyMarks(node, node.text, key, allowLinkInteraction)}</React.Fragment>];
