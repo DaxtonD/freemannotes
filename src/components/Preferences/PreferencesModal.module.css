@@ -155,6 +155,9 @@
 	flex-direction: column;
 	gap: 12px;
 	box-shadow: 0 20px 40px rgba(0, 0, 0, 0.35);
+	max-height: calc(100dvh - 80px);
+	overflow-y: auto;
+	overscroll-behavior: contain;
 }
 
 .subHeader {
@@ -321,6 +324,10 @@
 	display: flex;
 	align-items: center;
 	padding-top: 4px;
+	position: sticky;
+	bottom: 0;
+	background: var(--color-surface);
+	margin-top: 4px;
 }
 
 .subBackButton {
