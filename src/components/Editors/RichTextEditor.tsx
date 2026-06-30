@@ -39,6 +39,7 @@ import { getCollapsedRichHeadingPrefsSnapshot, getRichHeadingCollapsed, subscrib
 import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { createRichTextExtensions, getMarkdownPasteHtml, type RichTextVariant } from '../../core/richText';
+import { ReferenceSuggestionKey } from '../../core/extensions/ReferenceExtension';
 import { prepareConvertedClipboardPayload, type ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { useI18n } from '../../core/i18n';
 import { useBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
@@ -2102,7 +2103,11 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 						latestHandlersRef.current.onBackspaceWhenEmpty();
 						return true;
 					}
+					// Don't steal arrow keys when the @ mention dropdown is active —
+					// let the Suggestion plugin handle up/down navigation within it.
+					const suggestionActive = ed ? (ReferenceSuggestionKey.getState(ed.state) as { active?: boolean } | null)?.active === true : false;
 					if (
+						!suggestionActive &&
 						event.key === 'ArrowUp' &&
 						!event.shiftKey &&
 						!event.metaKey &&
@@ -2117,6 +2122,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 						return true;
 					}
 					if (
+						!suggestionActive &&
 						event.key === 'ArrowDown' &&
 						!event.shiftKey &&
 						!event.metaKey &&

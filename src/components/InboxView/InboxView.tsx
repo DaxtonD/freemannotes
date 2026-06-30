@@ -43,6 +43,8 @@ interface Props {
 	refreshToken?: number;
 	onOpenNote: (noteId: string, workspaceId: string, roomId?: string) => void;
 	onAllArchived?: () => void;
+	/** Called whenever an activity is read or archived so the badge count re-fetches. */
+	onActivityChanged?: () => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -88,7 +90,7 @@ function initials(name: string | null | undefined): string {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived }: Props) {
+export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged }: Props) {
 	const [filter, setFilter] = useState<FilterTab>('all');
 	const [activities, setActivities] = useState<Activity[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -165,33 +167,36 @@ export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived
 
 	const markRead = useCallback(async (id: string) => {
 		setUnreadIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
+		onActivityChanged?.();
 		await fetch('/api/inbox/read', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: [id] }),
 		}).catch(() => {});
-	}, []);
+	}, [onActivityChanged]);
 
 	const archiveActivity = useCallback(async (e: React.MouseEvent, id: string) => {
 		e.stopPropagation();
 		setActivities((prev) => prev.filter((a) => a.id !== id));
+		onActivityChanged?.();
 		await fetch('/api/inbox/archive', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: [id] }),
 		}).catch(() => {});
-	}, []);
+	}, [onActivityChanged]);
 
 	const markAllRead = useCallback(async () => {
 		if (unreadIds.size === 0) return;
 		const ids = [...unreadIds];
 		setUnreadIds(new Set());
+		onActivityChanged?.();
 		await fetch('/api/inbox/read', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: ids }),
 		}).catch(() => {});
-	}, [unreadIds]);
+	}, [unreadIds, onActivityChanged]);
 
 	const archiveAll = useCallback(async () => {
 		setActivities([]);
@@ -204,11 +209,11 @@ export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived
 
 	// Swipe-to-dismiss state: maps activityId → current swipe offset (px)
 	const [swipeOffsets, setSwipeOffsets] = useState<Record<string, number>>({});
-	const swipeTouchRef = useRef<{ id: string; startX: number; startY: number; moved: boolean } | null>(null);
+	const swipeTouchRef = useRef<{ id: string; startX: number; startY: number; startTime: number; moved: boolean } | null>(null);
 
 	const handleSwipeTouchStart = useCallback((e: React.TouchEvent, activityId: string) => {
 		const t = e.touches[0];
-		swipeTouchRef.current = { id: activityId, startX: t.clientX, startY: t.clientY, moved: false };
+		swipeTouchRef.current = { id: activityId, startX: t.clientX, startY: t.clientY, startTime: Date.now(), moved: false };
 	}, []);
 
 	const handleSwipeTouchMove = useCallback((e: React.TouchEvent, activityId: string) => {
@@ -232,13 +237,18 @@ export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived
 		swipeTouchRef.current = null;
 		if (!touch || touch.id !== activity.id || !touch.moved) return;
 		const offset = swipeOffsets[activity.id] ?? 0;
-		if (Math.abs(offset) > 80) {
+		const elapsed = Date.now() - touch.startTime;
+		const velocity = elapsed > 0 ? Math.abs(offset) / elapsed : 0;
+		// Require a meaningful displacement AND velocity so accidental grazes don't dismiss.
+		// 120 px threshold + 0.25 px/ms minimum velocity (a deliberate swipe is ~0.5–2 px/ms).
+		if (Math.abs(offset) > 120 && velocity > 0.25) {
 			// Dismissed — animate fully out in the swipe direction then archive
 			const exitX = offset > 0 ? 9999 : -9999;
 			setSwipeOffsets((prev) => ({ ...prev, [activity.id]: exitX }));
 			setTimeout(() => {
 				setActivities((prev) => prev.filter((a) => a.id !== activity.id));
 				setSwipeOffsets((prev) => { const n = { ...prev }; delete n[activity.id]; return n; });
+				onActivityChanged?.();
 				fetch('/api/inbox/archive', {
 					method: 'POST',
 					headers: { 'content-type': 'application/json' },
@@ -249,7 +259,7 @@ export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived
 			// Snap back
 			setSwipeOffsets((prev) => { const n = { ...prev }; delete n[activity.id]; return n; });
 		}
-	}, [swipeOffsets]);
+	}, [swipeOffsets, onActivityChanged]);
 
 	const handleActivityClick = useCallback((activity: Activity) => {
 		// Don't navigate if the placement picker is open on this card.
