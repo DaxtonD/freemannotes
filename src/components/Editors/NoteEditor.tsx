@@ -17,7 +17,11 @@ import {
 	faGripVertical,
 	faPalette,
 	faUserPlus,
+	faNoteSticky,
+	faListCheck,
+	faPencil,
 } from '@fortawesome/free-solid-svg-icons';
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import * as Y from 'yjs';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
@@ -79,6 +83,7 @@ import styles from './Editors.module.css';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { assignNoteBannerFile } from '../../services/noteService';
 import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
+import { closeReferenceSuggestion } from '../../core/extensions/ReferenceExtension';
 
 export type NoteEditorProps = {
 	noteId: string;
@@ -157,6 +162,15 @@ function suppressNextDocumentCompatibilityMouseEvents(): void {
 	timeoutId = window.setTimeout(() => cleanup(), 500);
 }
 
+function previewNoteTypeIcon(noteType?: string | null): IconDefinition {
+	switch (noteType) {
+		case 'checklist': return faListCheck;
+		case 'drawing':   return faPencil;
+		case 'reminder':  return faBell;
+		default:          return faNoteSticky;
+	}
+}
+
 /**
  * Lightweight renderer for ProseMirror JSON content in non-active rows.
  * Handles bold, italic, underline, and hard breaks — no TipTap instance needed.
@@ -204,17 +218,28 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 				{block.content.map((node, ni) => {
 					if (node.type === 'hardBreak') return <br key={ni} />;
 					if (node.type === 'reference') {
-						const label = typeof node.attrs?.label === 'string' ? node.attrs.label : '';
-						const id = typeof node.attrs?.id === 'string' ? node.attrs.id : '';
-						const isNote = node.attrs?.type === 'note';
+						const label    = typeof node.attrs?.label    === 'string' ? node.attrs.label    : '';
+						const id       = typeof node.attrs?.id       === 'string' ? node.attrs.id       : '';
+						const refType  = node.attrs?.type;
+						const noteType = node.attrs?.noteType ?? null;
+						const isNote   = refType === 'note';
+						const icon     = isNote
+							? previewNoteTypeIcon(noteType)
+							: null;
+						const chipContent = (
+							<>
+								{icon && <FontAwesomeIcon icon={icon} className={styles.referenceChipPreviewIcon} />}
+								{label}
+							</>
+						);
 						if (isNote && id && onNoteClick) {
 							return (
 								<span key={ni} className={styles.referenceChipPreview} role="button" onClick={(e) => { e.stopPropagation(); onNoteClick(id); }}>
-									@{label}
+									{chipContent}
 								</span>
 							);
 						}
-						return <span key={ni} className={styles.referenceChipPreview}>@{label}</span>;
+						return <span key={ni} className={styles.referenceChipPreview}>{chipContent}</span>;
 					}
 					if (node.type !== 'text' || !node.text) return null;
 					return <React.Fragment key={ni}>{applyMarks(node, node.text, `${bi}-${ni}`)}</React.Fragment>;
@@ -1384,13 +1409,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
 
 	// Close the @ mention dropdown when the media panel opens so it doesn't
-	// float over the panel. Blurring the editor triggers onExit in the
-	// ReferenceExtension Suggestion plugin.
+	// float over the panel. Uses closeReferenceSuggestion (synchronous hide +
+	// view.dom.blur) instead of editor.commands.blur (rAF-deferred, unreliable
+	// on iOS Safari where the browser can undo the blur before it executes).
 	React.useEffect(() => {
 		if (!mediaDockOpen) return;
-		if (textEditor && !textEditor.isDestroyed) textEditor.commands.blur();
-		if (activeChecklistRowEditor && !activeChecklistRowEditor.isDestroyed) activeChecklistRowEditor.commands.blur();
-	}, [mediaDockOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+		if (textEditor && !textEditor.isDestroyed) closeReferenceSuggestion(textEditor);
+		if (activeChecklistRowEditor && !activeChecklistRowEditor.isDestroyed) closeReferenceSuggestion(activeChecklistRowEditor);
+	}, [mediaDockOpen, textEditor, activeChecklistRowEditor]);
 
 	const focusTextEditorBody = React.useCallback((): void => {
 		if (textEditor && !textEditor.isDestroyed) {
