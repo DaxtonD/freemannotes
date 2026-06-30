@@ -2057,6 +2057,54 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return true;
 		}
 
+		// ── POST /api/dev/clear-inbox — archive all inbox activity rows for the current user ──
+		// Developer tool: hard-resets the bell badge to 0 by marking every activity row as
+		// archived, clearing stale counts that persist after normal archive-all operations.
+		if (pathname === '/api/dev/clear-inbox' && method === 'POST') {
+			(async () => {
+				const userId = requireAuthUserId();
+				if (!userId) return;
+				try {
+					// Find all activity IDs targeting this user that aren't already archived
+					const targets = await prisma.activityTarget.findMany({
+						where: { userId },
+						select: { activityId: true },
+					});
+					const activityIds = targets.map((t) => t.activityId);
+					let archived = 0;
+					if (activityIds.length > 0) {
+						const result = await prisma.activityRead.updateMany({
+							where: { userId, activityId: { in: activityIds } },
+							data: { archived: true, archivedAt: new Date() },
+						});
+						// Upsert for any that have no read row yet
+						const existingReadIds = (await prisma.activityRead.findMany({
+							where: { userId, activityId: { in: activityIds } },
+							select: { activityId: true },
+						})).map((r) => r.activityId);
+						const missing = activityIds.filter((id) => !existingReadIds.includes(id));
+						if (missing.length > 0) {
+							await prisma.activityRead.createMany({
+								data: missing.map((activityId) => ({
+									userId,
+									activityId,
+									archived: true,
+									archivedAt: new Date(),
+								})),
+								skipDuplicates: true,
+							});
+						}
+						archived = activityIds.length;
+					}
+					jsonResponse(res, 200, { ok: true, archived });
+				} catch (err) {
+					console.error('[api] POST /api/dev/clear-inbox error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		// ── POST /api/dev/reset-note-order — rebuild noteOrder from notesList ──
 		// Developer tool: de-duplicates noteOrder, removes stale IDs not present in
 		// notesList, and appends any orphaned notesList entries. Preserves existing

@@ -10453,6 +10453,7 @@ export function App(): React.JSX.Element {
 				isSupporter={authIsSupporter}
 				supporterShowPublic={authSupporterShowPublic}
 				onSupporterVisibilityChange={(showPublic) => setAuthSupporterShowPublic(showPublic)}
+				onInboxCleared={bumpInboxRefreshToken}
 			/>
 
 			<CollectionManagementModal

@@ -1,7 +1,7 @@
 import React from 'react';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
-import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devResetNoteOrder } from '../../core/noteManagementApi';
+import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devResetNoteOrder, devClearInbox } from '../../core/noteManagementApi';
 import { readPwaDebugLog, clearPwaDebugLog, getPwaDebugEnabled, setPwaDebugEnabled } from '../../core/pwa';
 import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
@@ -77,6 +77,7 @@ export type PreferencesModalProps = {
 	isSupporter?: boolean;
 	supporterShowPublic?: boolean;
 	onSupporterVisibilityChange?: (showPublic: boolean) => void;
+	onInboxCleared?: () => void;
 };
 
 type SectionModalProps = {
@@ -107,6 +108,7 @@ type SectionModalProps = {
 	isSupporter?: boolean;
 	supporterShowPublic?: boolean;
 	onSupporterVisibilityChange?: (showPublic: boolean) => void;
+	onInboxCleared?: () => void;
 };
 
 const ABOUT_ICON_LIGHT = '/icons/app-header-light.png';
@@ -153,6 +155,7 @@ function AboutSectionContent(props: {
 	isLightTheme: boolean;
 	connectionState: ConnectionState;
 	deviceId: string;
+	onInboxCleared?: () => void;
 }): React.JSX.Element {
 	const [hud, setHud] = React.useState<AboutHudStatsResponse | null>(null);
 	const [hudLoading, setHudLoading] = React.useState(true);
@@ -213,6 +216,21 @@ function AboutSectionContent(props: {
 			setDevToolsRunning(false);
 		}
 	}, [devToolsRunning]);
+
+	const handleClearInbox = React.useCallback(async () => {
+		if (devToolsRunning) return;
+		setDevToolsRunning(true);
+		setDevToolsResult(null);
+		try {
+			const result = await devClearInbox();
+			props.onInboxCleared?.();
+			setDevToolsResult(`Done — archived ${result.archived} inbox activit${result.archived === 1 ? 'y' : 'ies'}. Badge will reset.`);
+		} catch (err) {
+			setDevToolsResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
+		} finally {
+			setDevToolsRunning(false);
+		}
+	}, [devToolsRunning, props.onInboxCleared]);
 
 	// De-duplicates and repairs the canonical noteOrder in the workspace registry
 	// Yjs doc, fixing uneven masonry caused by stale or duplicate ordering entries.
@@ -433,6 +451,14 @@ function AboutSectionContent(props: {
 							onClick={() => { void handleClearAllNotifications(); }}
 						>
 							{props.t('prefs.devToolsForceClearNotifications')}
+						</button>
+						<button
+							type="button"
+							className={styles.footerButton}
+							disabled={devToolsRunning || props.connectionState !== 'connected'}
+							onClick={() => { void handleClearInbox(); }}
+						>
+							{props.t('prefs.devToolsClearInbox')}
 						</button>
 						<button
 							type="button"
@@ -692,6 +718,7 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 							isLightTheme={props.isLightTheme}
 							connectionState={props.connectionState}
 							deviceId={props.deviceId}
+							onInboxCleared={props.onInboxCleared}
 						/>
 					) : props.section === 'notifications' ? (
 						<NotificationsSection
@@ -833,6 +860,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					isSupporter={props.isSupporter}
 					supporterShowPublic={props.supporterShowPublic}
 					onSupporterVisibilityChange={props.onSupporterVisibilityChange}
+					onInboxCleared={props.onInboxCleared}
 				/>
 			) : null}
 		</div>
