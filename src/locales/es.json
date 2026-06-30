@@ -127,6 +127,7 @@
     "devToolsSection": "Herramientas de desarrollador",
     "devToolsClearOrphanedPreviews": "Limpiar vistas previas de URL huérfanas",
     "devToolsForceClearNotifications": "Forzar limpieza de notificaciones",
+    "devToolsClearInbox": "Forzar limpieza del contador de bandeja (archivar todo)",
     "devToolsResetNoteOrder": "Restablecer orden canónico de notas",
     "devToolsRemeasureCardHeights": "Volver a medir alturas de tarjetas",
     "devToolsEnableSwDebug": "Activar registro de depuración SW",
