@@ -9,7 +9,7 @@ import type { ReferenceGroup, ReferenceResult } from '../references/ReferencePro
 import { searchReferenceProviders } from '../references/ReferenceProvider';
 import ReferenceDropdown, { type RolePickState } from '../../components/References/ReferenceDropdown';
 
-const ReferenceSuggestionKey = new PluginKey('referenceSuggestion');
+export const ReferenceSuggestionKey = new PluginKey('referenceSuggestion');
 
 type SuggestionItem = ReferenceGroup;
 type SelectedItem = ReferenceResult;
@@ -101,6 +101,7 @@ export const ReferenceExtension = Reference.extend({
 		let latestClientRect: (() => DOMRect | null) | null       = null;
 		let currentMaxHeight                                       = 220;
 		let vpResizeHandler: (() => void) | null                  = null;
+		let outsidePointerHandler: ((e: PointerEvent) => void) | null = null;
 
 		// Role picker state — set when user selects a user-type item
 		let rolePickState: RolePickState | null                    = null;
@@ -242,6 +243,17 @@ export const ReferenceExtension = Reference.extend({
 								vpResizeHandler = () => { reposition(); rerender(); };
 								window.visualViewport.addEventListener('resize', vpResizeHandler);
 							}
+
+							// Close when the user taps/clicks outside both the editor and
+							// the dropdown. Handles mobile taps that don't reliably blur
+							// the editor, and desktop clicks away from the editor shell.
+							outsidePointerHandler = (e: PointerEvent) => {
+								const target = e.target as Node;
+								if (!container.contains(target) && !editor.view.dom.contains(target)) {
+									editor.commands.blur();
+								}
+							};
+							document.addEventListener('pointerdown', outsidePointerHandler, { capture: true });
 						},
 
 						onUpdate(props: SuggestionProps<SuggestionItem, SelectedItem>) {
@@ -311,6 +323,10 @@ export const ReferenceExtension = Reference.extend({
 							if (vpResizeHandler && window.visualViewport) {
 								window.visualViewport.removeEventListener('resize', vpResizeHandler);
 								vpResizeHandler = null;
+							}
+							if (outsidePointerHandler) {
+								document.removeEventListener('pointerdown', outsidePointerHandler, { capture: true });
+								outsidePointerHandler = null;
 							}
 							rolePickState = null;
 							container.style.display       = 'none';

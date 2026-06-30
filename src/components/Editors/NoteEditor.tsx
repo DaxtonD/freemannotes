@@ -1382,6 +1382,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// Tracks keyboard open->closed transitions for de-selection.
 	const lastMobileKeyboardOpenRef = React.useRef(mobileKeyboardOpen);
 	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
+
+	// Close the @ mention dropdown when the media panel opens so it doesn't
+	// float over the panel. Blurring the editor triggers onExit in the
+	// ReferenceExtension Suggestion plugin.
+	React.useEffect(() => {
+		if (!mediaDockOpen) return;
+		if (textEditor && !textEditor.isDestroyed) textEditor.commands.blur();
+		if (activeChecklistRowEditor && !activeChecklistRowEditor.isDestroyed) activeChecklistRowEditor.commands.blur();
+	}, [mediaDockOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
 	const focusTextEditorBody = React.useCallback((): void => {
 		if (textEditor && !textEditor.isDestroyed) {
 			textEditor.commands.focus('start');

@@ -10111,6 +10111,7 @@ export function App(): React.JSX.Element {
 							openNoteEditor(noteId);
 						}}
 						onAllArchived={bumpInboxRefreshToken}
+						onActivityChanged={bumpInboxRefreshToken}
 					/>
 				) : null}
 
