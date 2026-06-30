@@ -2413,6 +2413,18 @@
 	text-overflow: ellipsis;
 }
 
+/* Locked state: note the current user cannot access */
+:global(.fn-reference-chip--denied) {
+	opacity: 0.45;
+	cursor: default;
+	filter: grayscale(60%);
+	pointer-events: auto; /* keep title tooltip active */
+}
+
+:global(.fn-reference-chip--denied):hover {
+	background: color-mix(in srgb, var(--color-accent) 13%, transparent);
+}
+
 /* Reference chip in checklist row card previews (React-rendered, outside ProseMirror) */
 .referenceChipPreview {
 	display: inline-flex;

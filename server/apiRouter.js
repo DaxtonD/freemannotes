@@ -2179,6 +2179,64 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return true;
 		}
 
+		// ── GET /api/notes/:noteId/access-check ──────────────────────────
+		// Returns 200 if the current user can read the note, 403 if not.
+		// Used by RichTextEditor to gate navigation on note mention chips.
+		const noteAccessMatch = pathname.match(/^\/api\/notes\/([^/]+)\/access-check$/);
+		if (noteAccessMatch && method === 'GET') {
+			(async () => {
+				try {
+					const userId = requireAuthUserId();
+					if (!userId) return;
+
+					const noteId = noteAccessMatch[1];
+					if (!/^[0-9a-f-]{36}$/i.test(noteId)) {
+						jsonResponse(res, 400, { error: 'Invalid noteId' });
+						return;
+					}
+
+					// Find the document — docId format is `${workspaceId}:${noteId}`
+					const doc = await prisma.document.findFirst({
+						where: { docId: { endsWith: `:${noteId}` } },
+						select: { docId: true },
+					});
+
+					if (!doc) {
+						jsonResponse(res, 404, { access: false });
+						return;
+					}
+
+					const ownerWorkspaceId = doc.docId.split(':')[0];
+
+					// Check workspace membership
+					const member = await prisma.workspaceMember.findUnique({
+						where: { userId_workspaceId: { userId, workspaceId: ownerWorkspaceId } },
+						select: { workspaceId: true },
+					});
+					if (member) {
+						jsonResponse(res, 200, { access: true });
+						return;
+					}
+
+					// Check accepted note collaboration (share)
+					const collab = await prisma.noteCollaborator.findFirst({
+						where: { docId: doc.docId, userId },
+						select: { docId: true },
+					});
+					if (collab) {
+						jsonResponse(res, 200, { access: true });
+						return;
+					}
+
+					jsonResponse(res, 403, { access: false });
+				} catch (err) {
+					console.error('[api] GET /api/notes/access-check error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		// ── Not handled by this router → fall through ────────────────────
 		return false;
 	}
