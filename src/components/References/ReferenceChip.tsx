@@ -12,8 +12,9 @@ import React from 'react';
 import { NodeViewWrapper } from '@tiptap/react';
 import type { NodeViewProps } from '@tiptap/core';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faNoteSticky, faListCheck, faPencil, faBell } from '@fortawesome/free-solid-svg-icons';
+import { faNoteSticky, faListCheck, faPencil, faBell, faLock } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
+import { useIsNoteDenied } from '../../core/references/noteAccessCache';
 
 function noteTypeIcon(noteType?: string | null): IconDefinition {
 	switch (noteType) {
@@ -51,6 +52,9 @@ export function ReferenceChip({ node }: NodeViewProps) {
 		avatarUrl?: string | null;
 	};
 
+	// Empty string never matches a real noteId, so user chips are always non-denied.
+	const isDenied = useIsNoteDenied(type === 'note' ? id : '');
+
 	if (type === 'user') {
 		const bg = avatarColor(id || label);
 		return (
@@ -86,15 +90,17 @@ export function ReferenceChip({ node }: NodeViewProps) {
 	return (
 		<NodeViewWrapper
 			as="span"
-			className="fn-reference-chip fn-reference-chip--note"
+			className={`fn-reference-chip fn-reference-chip--note${isDenied ? ' fn-reference-chip--denied' : ''}`}
 			data-reference="true"
 			data-type="note"
 			data-id={id}
 			data-note-type={noteType ?? 'note'}
+			data-access={isDenied ? 'denied' : undefined}
+			title={isDenied ? "You don't have access to this note" : undefined}
 			contentEditable={false}
 		>
 			<span className="fn-reference-chip__icon" aria-hidden="true">
-				<FontAwesomeIcon icon={noteTypeIcon(noteType)} />
+				<FontAwesomeIcon icon={isDenied ? faLock : noteTypeIcon(noteType)} />
 			</span>
 			<span className="fn-reference-chip__label">{label}</span>
 		</NodeViewWrapper>

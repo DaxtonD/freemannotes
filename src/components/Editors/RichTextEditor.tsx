@@ -40,6 +40,7 @@ import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollaps
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { createRichTextExtensions, getMarkdownPasteHtml, type RichTextVariant } from '../../core/richText';
 import { ReferenceSuggestionKey } from '../../core/extensions/ReferenceExtension';
+import { isNoteDenied, markNoteDenied } from '../../core/references/noteAccessCache';
 import { prepareConvertedClipboardPayload, type ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { useI18n } from '../../core/i18n';
 import { useBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
@@ -2235,14 +2236,30 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 
 	const handleReferenceClick = React.useCallback((e: React.MouseEvent<HTMLDivElement>): void => {
 		if (!props.onNoteClick) return;
-		const target = (e.target as HTMLElement).closest('[data-reference="true"][data-type="note"]');
-		if (!target) return;
-		const noteId = target.getAttribute('data-id');
-		if (noteId) {
-			e.preventDefault();
-			e.stopPropagation();
-			props.onNoteClick(noteId);
-		}
+		const chipEl = (e.target as HTMLElement).closest('[data-reference="true"][data-type="note"]') as HTMLElement | null;
+		if (!chipEl) return;
+		const noteId = chipEl.getAttribute('data-id');
+		if (!noteId) return;
+
+		e.preventDefault();
+		e.stopPropagation();
+
+		// Fast path: already confirmed denied this session
+		if (isNoteDenied(noteId)) return;
+
+		// Pre-flight access check before opening the note editor
+		fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`)
+			.then((res) => {
+				if (!res.ok) {
+					markNoteDenied(noteId);
+					return;
+				}
+				props.onNoteClick!(noteId);
+			})
+			.catch(() => {
+				// Network error — attempt navigation; server auth will gate it
+				props.onNoteClick!(noteId);
+			});
 	}, [props.onNoteClick]);
 
 	return (
