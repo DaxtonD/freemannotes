@@ -120,6 +120,9 @@ export const ReferenceExtension = Reference.extend({
 		// True when the user selected an item via command(); prevents onExit from
 		// deleting the range that the command already replaced with a reference node.
 		let commandWasExecuted = false;
+		// True while the suggestion is open and we've pushed a history entry.
+		// Lets the Android back button close the dropdown, and cleaned up in onExit.
+		let didPushHistory = false;
 
 		// Synchronously close the dropdown by moving the cursor just before the `@`
 		// trigger. This dispatches a ProseMirror selection-change transaction which
@@ -145,8 +148,19 @@ export const ReferenceExtension = Reference.extend({
 		};
 		editorForceCloseMap.set(editor, forceClose);
 
+		// Android back button: close the dropdown instead of navigating back.
+		// Reset didPushHistory before calling forceClose so onExit won't call
+		// history.back() a second time and create a loop.
+		const popstateHandler = () => {
+			if (container.style.display === 'none') return;
+			didPushHistory = false;
+			forceClose();
+		};
+		window.addEventListener('popstate', popstateHandler);
+
 		editor.on('destroy', () => {
 			editorForceCloseMap.delete(editor);
+			window.removeEventListener('popstate', popstateHandler);
 			root.unmount();
 			container.remove();
 		});
@@ -166,6 +180,7 @@ export const ReferenceExtension = Reference.extend({
 					maxHeight: currentMaxHeight,
 					rolePick: rolePickState,
 					onRoleConfirm: confirmWithRole,
+					onDismiss: forceClose,
 					onSelect: (result: SelectedItem) => {
 						if (result.type === 'user') {
 							// Intercept user selections and show the role picker
@@ -287,6 +302,13 @@ export const ReferenceExtension = Reference.extend({
 							reposition();
 							rerender();
 
+							// Push a history entry so Android's back button closes the
+							// dropdown instead of navigating back in the app.
+							try {
+								window.history.pushState({ __referenceSuggestion: true }, '');
+								didPushHistory = true;
+							} catch { /* ignore in restricted environments */ }
+
 							// Reposition when the keyboard opens/closes (visualViewport
 							// resize). Handles the case where the user places the caret on
 							// an existing '@' and THEN the keyboard appears.
@@ -392,14 +414,28 @@ export const ReferenceExtension = Reference.extend({
 							latestClientRect = null;
 							latestRange      = null;
 
-							// If the user dismissed without selecting (tap away, Escape, media
-							// panel, etc.) and the query was empty, remove the bare `@` so it
-							// doesn't accumulate as stray punctuation in the note.
+							// If the user dismissed without selecting and the query was empty,
+							// remove the bare `@` — but only when it is NOT followed by
+							// whitespace. "@ 7pm" means the user typed a literal @ so we
+							// leave it in place.
 							if (!commandWasExecuted && props.query === '' && !editor.isDestroyed) {
-								editor.chain().deleteRange(props.range).run();
+								let trailingChar = '';
+								try {
+									trailingChar = editor.state.doc.textBetween(props.range.to, props.range.to + 1);
+								} catch { /* ignore document boundary */ }
+								if (!/\s/.test(trailingChar)) {
+									editor.chain().deleteRange(props.range).run();
+								}
 							}
 							commandWasExecuted = false;
 							latestQuery        = '';
+
+							// Pop the history entry pushed in onStart so the browser
+							// back-button stack stays balanced.
+							if (didPushHistory) {
+								didPushHistory = false;
+								try { window.history.back(); } catch { /* ignore */ }
+							}
 						},
 					};
 				},

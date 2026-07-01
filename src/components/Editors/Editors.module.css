@@ -2454,6 +2454,15 @@
 	flex-shrink: 0;
 }
 
+.referenceChipPreviewAvatar {
+	width: 1.35em;
+	height: 1.35em;
+	border-radius: 50%;
+	object-fit: cover;
+	flex-shrink: 0;
+	vertical-align: middle;
+}
+
 .richEditorContent:global(.ProseMirror) table {
 	width: 100%;
 	border-collapse: collapse;

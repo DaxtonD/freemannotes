@@ -218,17 +218,18 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 				{block.content.map((node, ni) => {
 					if (node.type === 'hardBreak') return <br key={ni} />;
 					if (node.type === 'reference') {
-						const label    = typeof node.attrs?.label    === 'string' ? node.attrs.label    : '';
-						const id       = typeof node.attrs?.id       === 'string' ? node.attrs.id       : '';
-						const refType  = node.attrs?.type;
-						const noteType = node.attrs?.noteType ?? null;
-						const isNote   = refType === 'note';
-						const icon     = isNote
-							? previewNoteTypeIcon(noteType)
-							: null;
+						const label     = typeof node.attrs?.label     === 'string' ? node.attrs.label     : '';
+						const id        = typeof node.attrs?.id        === 'string' ? node.attrs.id        : '';
+						const refType   = node.attrs?.type;
+						const noteType  = node.attrs?.noteType ?? null;
+						const avatarUrl = typeof node.attrs?.avatarUrl === 'string' ? node.attrs.avatarUrl : null;
+						const isNote    = refType === 'note';
+						const isUser    = refType === 'user';
+						const icon      = isNote ? previewNoteTypeIcon(noteType) : null;
 						const chipContent = (
 							<>
 								{icon && <FontAwesomeIcon icon={icon} className={styles.referenceChipPreviewIcon} />}
+								{isUser && avatarUrl && <img src={avatarUrl} className={styles.referenceChipPreviewAvatar} alt="" aria-hidden />}
 								{label}
 							</>
 						);
