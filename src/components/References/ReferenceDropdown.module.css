@@ -121,6 +121,39 @@
 	font-size: 0.88rem;
 }
 
+/* ── Mobile close bar (hidden on fine-pointer / desktop) ────────────────── */
+
+.mobileBar {
+	display: none;
+	justify-content: flex-end;
+	padding: 4px 6px 2px;
+}
+
+@media (pointer: coarse) {
+	.mobileBar {
+		display: flex;
+	}
+}
+
+.dismissBtn {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	border: none;
+	background: none;
+	color: var(--note-editor-muted, var(--color-text-muted));
+	cursor: pointer;
+	border-radius: var(--radius-sm, 6px);
+	font-size: 0.9rem;
+	transition: background 80ms;
+}
+
+.dismissBtn:hover {
+	background: color-mix(in srgb, var(--note-editor-text, var(--color-text)) 8%, transparent);
+}
+
 /* ── Role picker ─────────────────────────────────────────────────────────── */
 
 .rolePickHeader {

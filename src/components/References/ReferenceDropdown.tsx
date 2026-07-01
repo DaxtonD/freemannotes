@@ -1,6 +1,6 @@
 import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faUser, faNoteSticky, faListCheck, faPencil, faBell, faEye, faPenToSquare } from '@fortawesome/free-solid-svg-icons';
+import { faUser, faNoteSticky, faListCheck, faPencil, faBell, faEye, faPenToSquare, faXmark } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import type { ReferenceGroup, ReferenceResult } from '../../core/references/ReferenceProvider';
 import styles from './ReferenceDropdown.module.css';
@@ -26,15 +26,23 @@ interface Props {
 	maxHeight?: number;
 	rolePick?: RolePickState | null;
 	onRoleConfirm?: (idx: 0 | 1) => void;
+	onDismiss?: () => void;
 }
 
-export default function ReferenceDropdown({ groups, selectedIndex, onSelect, maxHeight, rolePick, onRoleConfirm }: Props) {
+export default function ReferenceDropdown({ groups, selectedIndex, onSelect, maxHeight, rolePick, onRoleConfirm, onDismiss }: Props) {
 	const dropdownStyle = maxHeight ? { maxHeight: `${maxHeight}px` } : undefined;
 
 	if (rolePick) {
 		const { result, roleIndex } = rolePick;
 		return (
 			<div className={styles.dropdown} style={dropdownStyle}>
+				{onDismiss && (
+					<div className={styles.mobileBar}>
+						<button type="button" className={styles.dismissBtn} onMouseDown={(e) => { e.preventDefault(); onDismiss(); }}>
+							<FontAwesomeIcon icon={faXmark} />
+						</button>
+					</div>
+				)}
 				<div className={styles.rolePickHeader}>
 					{result.avatarUrl ? (
 						<img src={result.avatarUrl} className={styles.avatar} alt="" />
@@ -69,9 +77,18 @@ export default function ReferenceDropdown({ groups, selectedIndex, onSelect, max
 
 	let absoluteIndex = 0;
 
+	const mobileBar = onDismiss ? (
+		<div className={styles.mobileBar}>
+			<button type="button" className={styles.dismissBtn} onMouseDown={(e) => { e.preventDefault(); onDismiss(); }}>
+				<FontAwesomeIcon icon={faXmark} />
+			</button>
+		</div>
+	) : null;
+
 	if (groups.length === 0) {
 		return (
 			<div className={styles.dropdown} style={dropdownStyle}>
+				{mobileBar}
 				<div className={styles.empty}>No results</div>
 			</div>
 		);
@@ -79,6 +96,7 @@ export default function ReferenceDropdown({ groups, selectedIndex, onSelect, max
 
 	return (
 		<div className={styles.dropdown} style={dropdownStyle}>
+			{mobileBar}
 			{groups.map((group) => (
 				<div key={group.type} className={styles.group}>
 					<div className={styles.groupLabel}>{group.groupLabel}</div>
