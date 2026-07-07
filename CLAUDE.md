@@ -295,6 +295,8 @@ Do NOT apply `overflow:hidden` to `.app-main`, `.app-shell`, `.test-harness-root
 | `freemannotes.deviceAppearancePreferences.v2` | Device UI prefs (`userId::deviceId`) |
 | `freemannotes.collapsibleHeadingPrefs.v1:${userId}::${deviceId}` | Collapsed heading IDs |
 | `freemannotes.priorCollaborators.v1` | Privacy-scoped collaborator suggestions |
+| `freemannotes.workspaceMembersCache.v1:<userId>` | Workspace members for @ dropdown; offline fallback |
+| `freemannotes.pendingSelfMentions.v1:<userId>` | Optimistic self-mention inbox notifications (cleared on server match) |
 | `freemannotes.reminderStates.v1.<userId>` | Reminder state cache |
 | `fn_banner_warm_v1` | Banner warm cache (`noteId → bannerFile\|null`) |
 | `freemannotes.overlay.history.v1` | App-managed overlay history |

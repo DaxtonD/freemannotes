@@ -182,6 +182,11 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 							decoding.readVarUint8Array(decoder);
 						} else {
 							syncProtocol.readSyncStep2(decoder, doc, conn);
+							// Record actor for offline sync-back: SyncStep2 carries the accumulated
+							// IDB state from the reconnecting client, so the connection's userId IS
+							// the author of those changes. Without this, actorId stays null and
+							// activities created during _syncEntityReferences have no actor.
+							if (userId) persistAdapter?.recordDocUpdate(docName, userId);
 						}
 					} else if (syncMessageType === syncProtocol.messageYjsUpdate) {
 						syncProtocol.readUpdate(decoder, doc, conn);

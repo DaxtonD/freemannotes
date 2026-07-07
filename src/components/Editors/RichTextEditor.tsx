@@ -81,6 +81,7 @@ type RichTextEditorProps = {
 	onNoteClick?: (noteId: string) => void;
 	scrollToMentionNodeId?: string | null;
 	authUserId?: string | null;
+	onSelfMentionInserted?: (nodeId: string) => void;
 };
 
 type RichTextToolbarProps = {
@@ -2167,6 +2168,16 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		if (event.cancelable) event.preventDefault();
 		return toggleMobileTaskCheckboxFromTarget(view, event.target);
 	}, [suppressMobileTaskCheckboxFocus, toggleMobileTaskCheckboxFromTarget]);
+
+	// Stable wrapper so `onSelfMentionInserted` prop changes never trigger editor
+	// recreation (it's not in the useEditor deps array) while still always calling
+	// the current version of the callback.
+	const onSelfMentionInsertedRef = React.useRef(props.onSelfMentionInserted);
+	onSelfMentionInsertedRef.current = props.onSelfMentionInserted;
+	const stableSelfMentionCb = React.useRef<(nodeId: string) => void>(
+		(nodeId) => onSelfMentionInsertedRef.current?.(nodeId),
+	).current;
+
 	const editor = useEditor(
 		{
 			immediatelyRender: false,
@@ -2177,6 +2188,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				fragment: props.fragment ?? null,
 				collapsibleHeadingNoteId: props.collapsibleHeadingNoteId ?? null,
 				authUserId: props.authUserId ?? null,
+				onSelfMentionInserted: stableSelfMentionCb,
 			}),
 			editable: props.editable !== false,
 			content: props.fragment ? undefined : props.content ?? undefined,

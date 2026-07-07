@@ -121,6 +121,9 @@ export type NoteEditorProps = {
 	/** When true, suppresses the floating keyboard toolbar (e.g. while the image upload modal is open). */
 	hideFormattingToolbar?: boolean;
 	scrollToMentionNodeId?: string | null;
+	/** Called when the current user inserts an @mention to themselves so the
+	 *  caller can create an optimistic inbox notification. */
+	onSelfMentionInserted?: (noteId: string, workspaceId: string, nodeId: string, noteTitle: string | null) => void;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -3072,6 +3075,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							onNoteClick={props.onOpenNote}
 						scrollToMentionNodeId={props.scrollToMentionNodeId}
 						authUserId={props.authUserId}
+						onSelfMentionInserted={(nodeId) => {
+							const workspaceId = props.docId.split(':')[0] ?? '';
+							const noteTitle = props.doc.getText('title').toString() || null;
+							props.onSelfMentionInserted?.(props.noteId, workspaceId, nodeId, noteTitle);
+						}}
 						/>
 					</div>
 				) : null}

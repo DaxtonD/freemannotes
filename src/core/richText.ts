@@ -1413,6 +1413,7 @@ export function createRichTextExtensions(args: {
 	fragment?: Y.XmlFragment | null;
 	collapsibleHeadingNoteId?: string | null;
 	authUserId?: string | null;
+	onSelfMentionInserted?: ((nodeId: string) => void) | null;
 }): Extensions {
 	const enableUndoRedo = args.includeCollaboration !== true;
 	const extensions: Extensions = [
@@ -1444,7 +1445,10 @@ export function createRichTextExtensions(args: {
 	}
 
 	// ReferenceExtension enabled for both variants so @mention works in checklist items
-	extensions.push(ReferenceExtension.configure({ authUserId: args.authUserId ?? null }));
+	extensions.push(ReferenceExtension.configure({
+		authUserId: args.authUserId ?? null,
+		onSelfMentionInserted: args.onSelfMentionInserted ?? null,
+	}));
 
 	if (args.placeholder) {
 		extensions.push(

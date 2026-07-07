@@ -89,12 +89,16 @@ function getKeyboardVisibleBottom(): number {
  */
 export const ReferenceExtension = Reference.extend({
 	addOptions() {
-		return { authUserId: null as string | null };
+		return {
+			authUserId: null as string | null,
+			onSelfMentionInserted: null as ((nodeId: string) => void) | null,
+		};
 	},
 
 	addProseMirrorPlugins() {
 		const editor = (this as unknown as { editor: Editor }).editor;
-		const authUserId = (this as unknown as { options: { authUserId: string | null } }).options.authUserId ?? null;
+		type ExtOpts = { authUserId: string | null; onSelfMentionInserted: ((nodeId: string) => void) | null };
+		const { authUserId, onSelfMentionInserted } = (this as unknown as { options: ExtOpts }).options;
 
 		// ── Container created at editor mount, NOT at first suggestion activation ──
 		// iOS Safari and Android Chrome collapse the soft keyboard when a
@@ -256,6 +260,7 @@ export const ReferenceExtension = Reference.extend({
 					props: SelectedItem;
 				}) => {
 					commandWasExecuted = true;
+					const insertedNodeId = uuidv4();
 					(cmdEditor as any)
 						.chain()
 						.focus()
@@ -266,7 +271,7 @@ export const ReferenceExtension = Reference.extend({
 								type: result.type,
 								id: result.id,
 								label: result.label,
-								nodeId: uuidv4(),
+								nodeId: insertedNodeId,
 								editRole: result.editRole ?? 'EDITOR',
 								noteType: result.noteType ?? null,
 								avatarUrl: result.avatarUrl ?? null,
@@ -274,6 +279,10 @@ export const ReferenceExtension = Reference.extend({
 						})
 						.insertContent(' ')
 						.run();
+
+					if (result.type === 'user' && authUserId && result.id === authUserId) {
+						onSelfMentionInserted?.(insertedNodeId);
+					}
 
 					// When @mentioning a user inside a bullet or numbered list item,
 					// convert it to a task list item (taskify). This mirrors the UX
