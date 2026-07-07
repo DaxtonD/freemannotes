@@ -216,8 +216,9 @@ import { type ViewMode, loadViewMode, saveViewMode } from './core/viewMode';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from './core/bubbleZoom';
 import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle, WORKSPACE_COLOR_TOKENS } from './core/bubbleWorkspaceColors';
 import { setLiveUserAvatar } from './core/liveUserAvatarCache';
-import { refreshUserAvatarsCache, invalidateWorkspaceMembersCache } from './core/references/providers/UserReferenceProvider';
+import { refreshUserAvatarsCache, invalidateWorkspaceMembersCache, initWorkspaceMembersCacheForUser } from './core/references/providers/UserReferenceProvider';
 import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache } from './core/priorCollaboratorsApi';
+import { addPendingSelfMention, clearMatchedPendingSelfMentions, clearPendingSelfMentionsStore, dismissPendingSelfMention, getPendingSelfMentions, initPendingSelfMentionsForUser, type PendingSelfMention } from './core/pendingSelfMentions';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
 import { InboxView } from './components/InboxView/InboxView';
 import { CrossWorkspaceNoteModal } from './components/BubbleView/CrossWorkspaceNoteModal';
@@ -1102,6 +1103,7 @@ export function App(): React.JSX.Element {
 	const [authUserId, setAuthUserId] = React.useState<string | null>(() => cachedAuth?.userId ?? null);
 	const [authUserRole, setAuthUserRole] = React.useState<GlobalUserRole | null>(() => cachedAuth?.role ?? null);
 	const [authProfileImage, setAuthProfileImage] = React.useState<string | null>(() => cachedAuth?.profileImage ?? null);
+	const [pendingSelfMentions, setPendingSelfMentions] = React.useState<PendingSelfMention[]>([]);
 	const [authIsSupporter, setAuthIsSupporter] = React.useState(false);
 	const [authSupporterShowPublic, setAuthSupporterShowPublic] = React.useState(false);
 	const [registrationInviteToken, setRegistrationInviteToken] = React.useState<string | null>(initialRegistrationInvite.token);
@@ -2532,7 +2534,7 @@ export function App(): React.JSX.Element {
 		Boolean(noteImageModalState) ||
 		Boolean(noteAttachmentBrowserState) ||
 		userModalBusy;
-	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + inboxUnreadCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0) + (importCompletedNotification ? 1 : 0);
+	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + inboxUnreadCount + pendingSelfMentions.length + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0) + (importCompletedNotification ? 1 : 0);
 
 	React.useEffect(() => {
 		setPwaUpdateBlocked(isPwaUpdateBlocked);
@@ -3518,7 +3520,11 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (!authUserId) return;
 		initPriorCollaboratorsForUser(authUserId);
-		invalidateWorkspaceMembersCache();
+		initPendingSelfMentionsForUser(authUserId);
+		setPendingSelfMentions(getPendingSelfMentions());
+		initWorkspaceMembersCacheForUser(authUserId);
+		// Proactively refresh in the background so the @ dropdown is ready before the user types.
+		void refreshUserAvatarsCache();
 	}, [authUserId]);
 
 	const restoreCachedAuthSession = React.useCallback((): boolean => {
@@ -4240,6 +4246,8 @@ export function App(): React.JSX.Element {
 		clearWorkspaceListLocalCache(authUserId ?? '');
 		clearCachedReminderStates(authUserId ?? '');
 		clearPriorCollaboratorsCache();
+		clearPendingSelfMentionsStore();
+		setPendingSelfMentions([]);
 		invalidateWorkspaceMembersCache();
 		clearSessionRestoreNote();
 		setSharedPlacements([]);
@@ -10215,6 +10223,15 @@ export function App(): React.JSX.Element {
 						}}
 						onAllArchived={bumpInboxRefreshToken}
 						onActivityChanged={bumpInboxRefreshToken}
+						pendingSelfMentions={pendingSelfMentions}
+						onPendingDismissed={(id) => {
+							dismissPendingSelfMention(id);
+							setPendingSelfMentions(getPendingSelfMentions());
+						}}
+						onServerNodeIdsLoaded={(nodeIds) => {
+							clearMatchedPendingSelfMentions(nodeIds);
+							setPendingSelfMentions(getPendingSelfMentions());
+						}}
 					/>
 				) : null}
 
@@ -10489,6 +10506,19 @@ export function App(): React.JSX.Element {
 						hideFormattingToolbar={Boolean(noteImageModalState)}
 						onShowCompletedChange={(next) => {
 							commitChecklistShowCompletedPref(next);
+						}}
+						onSelfMentionInserted={selectedNoteReadOnly ? undefined : (noteId, workspaceId, nodeId, noteTitle) => {
+							const entry = addPendingSelfMention({
+								noteId,
+								workspaceId,
+								nodeId,
+								noteTitle,
+								insertedAt: new Date().toISOString(),
+								actorId: authUserId ?? '',
+								actorName: null,
+								actorAvatarUrl: authProfileImage,
+							});
+							setPendingSelfMentions((prev) => [entry, ...prev.filter((p) => p.id !== entry.id)]);
 						}}
 					/>
 				)
@@ -10821,7 +10851,7 @@ export function App(): React.JSX.Element {
 					bumpCollaborationRefreshToken();
 					void refreshNoteShareState();
 				}}
-				inboxUnreadCount={inboxUnreadCount}
+				inboxUnreadCount={inboxUnreadCount + pendingSelfMentions.length}
 				onOpenInbox={() => {
 					setIsShareNotificationsOpen(false);
 					setViewMode('inbox');

@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.6 - 2026-07-07
+
+### Fixed
+- **Offline self-mention: broken avatar on reconnect.** When a user mentions themselves while offline, the Yjs state syncs back to the server on reconnect via `messageYjsSyncStep2`. The server only called `recordDocUpdate` (which sets the activity's actor ID) for `messageYjsUpdate` messages, leaving `actorId = null` for sync-back updates. The Activity row was created with a null actor, so the inbox card showed initials instead of the user's avatar. Fix: also call `recordDocUpdate` for `messageYjsSyncStep2`, since the authenticated WS connection's userId is definitively the author of those accumulated changes.
+- **Offline self-mention: no notification while offline.** Self-mentions created while offline produced no inbox notification (the server-side activity pipeline only runs on WS sync). An optimistic pending notification is now created client-side immediately when a user inserts an @self chip. The pending card appears at the top of the Inbox feed with the user's current avatar and note title. When the server creates the real Activity on reconnect, the pending card is replaced automatically (matched by the reference node's UUID). Clicking or swiping a pending card opens the note / dismisses the notification. Pending entries are persisted to localStorage (userId-scoped) so they survive page reloads while offline.
+- **Bell notification panel hides inbox section while offline with pending self-mentions.** `ShareNotificationsModal` received `inboxUnreadCount` from the server (always 0 while offline), so the inbox preview section was hidden even when pending self-mention badges were showing. The prop now includes pending self-mention count so the inbox section appears while offline.
+- **@ mention dropdown empty after cache-clear + going offline.** `UserReferenceProvider` held workspace members only in an in-memory module cache that was lost on page reload and was never populated proactively. After a cache clear, typing `@` while offline returned an empty list until the user had typed `@` at least once while online. Fix: workspace members are now persisted to userId-scoped localStorage (`freemannotes.workspaceMembersCache.v1:<userId>`) and restored into the in-memory cache on login (`initWorkspaceMembersCacheForUser`). A proactive background fetch runs on every login so the cache is current before the user types `@`. `refreshUserAvatarsCache` no longer pre-clears the cache before fetching — it updates in-place so the dropdown is never empty during a mid-session refresh.
+
 ## 1.6.5 - 2026-07-05
 
 ### Added

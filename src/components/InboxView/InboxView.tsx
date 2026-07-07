@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faAt, faListCheck, faCheckDouble, faBoxArchive, faInbox, faCircleCheck, faTrashCan } from '@fortawesome/free-solid-svg-icons';
 import { acceptNoteShareInvitation } from '../../core/noteShareApi';
+import type { PendingSelfMention } from '../../core/pendingSelfMentions';
 import styles from './InboxView.module.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -45,6 +46,14 @@ interface Props {
 	onAllArchived?: () => void;
 	/** Called whenever an activity is read or archived so the badge count re-fetches. */
 	onActivityChanged?: () => void;
+	/** Optimistic self-mention notifications created while offline. Displayed at the
+	 *  top of the feed and filtered out when a matching real server activity arrives. */
+	pendingSelfMentions?: PendingSelfMention[];
+	/** Called when the user dismisses (swipe or archive) a pending notification. */
+	onPendingDismissed?: (id: string) => void;
+	/** Called after each successful server fetch with the nodeIds found in deepLinks.
+	 *  The caller uses this to clear pending entries that now have a real counterpart. */
+	onServerNodeIdsLoaded?: (nodeIds: string[]) => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -93,7 +102,7 @@ function initials(name: string | null | undefined): string {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged }: Props) {
+export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded }: Props) {
 	const [filter, setFilter] = useState<FilterTab>('all');
 	const [activities, setActivities] = useState<Activity[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -140,10 +149,21 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			} else {
 				setUnreadIds((prev) => new Set([...prev, ...newUnread]));
 			}
+
+			// Notify caller of nodeIds present in server activities so it can clear
+			// any pending entries that now have a real server-side counterpart.
+			if (onServerNodeIdsLoaded) {
+				const nodeIds = data.items.flatMap((a) =>
+					a.deepLink?.kind === 'prosemirror_node' && typeof a.deepLink.nodeId === 'string'
+						? [a.deepLink.nodeId as string]
+						: []
+				);
+				if (nodeIds.length > 0) onServerNodeIdsLoaded(nodeIds);
+			}
 		} catch (e: unknown) {
 			if (e instanceof Error && e.name === 'AbortError') return;
 		}
-	}, [filter, kindForFilter]);
+	}, [filter, kindForFilter, onServerNodeIdsLoaded]);
 
 	// Initial load + filter changes: blank the list and show spinner.
 	useEffect(() => {
@@ -180,6 +200,11 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 
 	const archiveActivity = useCallback(async (e: React.MouseEvent, id: string) => {
 		e.stopPropagation();
+		if (id.startsWith('pending-')) {
+			onPendingDismissed?.(id);
+			onActivityChanged?.();
+			return;
+		}
 		setActivities((prev) => prev.filter((a) => a.id !== id));
 		onActivityChanged?.();
 		await fetch('/api/inbox/archive', {
@@ -187,7 +212,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: [id] }),
 		}).catch(() => {});
-	}, [onActivityChanged]);
+	}, [onActivityChanged, onPendingDismissed]);
 
 	const markAllRead = useCallback(async () => {
 		if (unreadIds.size === 0) return;
@@ -249,31 +274,42 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			const exitX = offset > 0 ? 9999 : -9999;
 			setSwipeOffsets((prev) => ({ ...prev, [activity.id]: exitX }));
 			setTimeout(() => {
-				setActivities((prev) => prev.filter((a) => a.id !== activity.id));
 				setSwipeOffsets((prev) => { const n = { ...prev }; delete n[activity.id]; return n; });
 				onActivityChanged?.();
-				fetch('/api/inbox/archive', {
-					method: 'POST',
-					headers: { 'content-type': 'application/json' },
-					body: JSON.stringify({ activityIds: [activity.id] }),
-				}).catch(() => {});
+				if (activity.id.startsWith('pending-')) {
+					onPendingDismissed?.(activity.id);
+				} else {
+					setActivities((prev) => prev.filter((a) => a.id !== activity.id));
+					fetch('/api/inbox/archive', {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ activityIds: [activity.id] }),
+					}).catch(() => {});
+				}
 			}, 200);
 		} else {
 			// Snap back
 			setSwipeOffsets((prev) => { const n = { ...prev }; delete n[activity.id]; return n; });
 		}
-	}, [swipeOffsets, onActivityChanged]);
+	}, [swipeOffsets, onActivityChanged, onPendingDismissed]);
 
 	const handleActivityClick = useCallback((activity: Activity) => {
 		// Don't navigate if the placement picker is open on this card.
 		if (placementPickerActivityId === activity.id) return;
-		markRead(activity.id);
 		const scrollToNodeId =
 			activity.deepLink?.kind === 'prosemirror_node' && typeof activity.deepLink.nodeId === 'string'
 				? activity.deepLink.nodeId
 				: undefined;
+		if (activity.id.startsWith('pending-')) {
+			// Clicking a pending self-mention: open the note and dismiss the pending entry.
+			onPendingDismissed?.(activity.id);
+			onActivityChanged?.();
+			onOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId);
+			return;
+		}
+		markRead(activity.id);
 		onOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId);
-	}, [markRead, onOpenNote, placementPickerActivityId]);
+	}, [markRead, onOpenNote, placementPickerActivityId, onPendingDismissed, onActivityChanged]);
 
 	const openPlacementPicker = useCallback((e: React.MouseEvent, activity: Activity) => {
 		e.stopPropagation();
@@ -320,6 +356,44 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		{ key: 'assigned', label: 'Assigned to me' },
 	];
 
+	// Build a merged display list: pending self-mentions shown above real activities.
+	// Pending entries whose nodeId already has a real server Activity are suppressed
+	// (they've been synced and the real one is now in the list).
+	const serverNodeIds = React.useMemo(() => {
+		const ids = new Set<string>();
+		for (const a of activities) {
+			if (a.deepLink?.kind === 'prosemirror_node' && typeof a.deepLink.nodeId === 'string') {
+				ids.add(a.deepLink.nodeId as string);
+			}
+		}
+		return ids;
+	}, [activities]);
+
+	const pendingAsActivities = React.useMemo((): Activity[] => {
+		if (!pendingSelfMentions || pendingSelfMentions.length === 0) return [];
+		// Show only if filter is 'all' or 'mentions' (self-mentions are always 'mention' kind)
+		if (filter === 'assigned') return [];
+		return pendingSelfMentions
+			.filter((p) => !serverNodeIds.has(p.nodeId))
+			.map((p) => ({
+				id: p.id,
+				kind: 'mention' as const,
+				createdAt: p.insertedAt,
+				read: false,
+				archived: false,
+				actor: { id: p.actorId, name: p.actorName, avatarUrl: p.actorAvatarUrl },
+				subject: { noteId: p.noteId, workspaceId: p.workspaceId, subjectType: 'note', subjectId: p.noteId },
+				deepLink: { kind: 'prosemirror_node', nodeId: p.nodeId },
+				snapshot: { noteTitle: p.noteTitle },
+				invitationStatus: null,
+			}));
+	}, [pendingSelfMentions, serverNodeIds, filter]);
+
+	const displayActivities = React.useMemo(
+		() => [...pendingAsActivities, ...activities],
+		[pendingAsActivities, activities],
+	);
+
 	return (
 		<div className={styles.root}>
 			<div className={styles.header}>
@@ -336,7 +410,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 							Mark all read
 						</button>
 					)}
-					{activities.length > 0 && (
+					{displayActivities.length > 0 && (
 						<button className={styles.clearAllBtn} onClick={archiveAll} type="button">
 							<FontAwesomeIcon icon={faTrashCan} />
 							Clear all
@@ -368,7 +442,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 						</div>
 						<span>Loading…</span>
 					</div>
-				) : activities.length === 0 ? (
+				) : displayActivities.length === 0 ? (
 					<div className={styles.empty}>
 						<div className={styles.emptyIcon}>
 							{iconSrc
@@ -380,8 +454,9 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 					</div>
 				) : (
 					<>
-						{activities.map((activity) => {
-							const isUnread = unreadIds.has(activity.id);
+						{displayActivities.map((activity) => {
+							// Pending activities are always unread; real ones check the server-driven set.
+							const isUnread = activity.id.startsWith('pending-') || unreadIds.has(activity.id);
 							const isPickerOpen = placementPickerActivityId === activity.id;
 							const isBusy = acceptingIds.has(activity.id);
 							const invitationId = activity.snapshot?.invitationId;
