@@ -15,6 +15,7 @@ import {
 	faSquareCheck,
 	faSquare,
 	faXmark,
+	faFileExport,
 } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
@@ -41,6 +42,7 @@ export type NoteCardMoreMenuProps = {
 	onMoveToWorkspace?: (() => void) | undefined;
 	onCheckAll?: (() => void) | undefined;
 	onUncheckAll?: (() => void) | undefined;
+	onExportNote?: (() => void) | undefined;
 	isTrashView?: boolean;
 	showAddImage?: boolean;
 	showAddDocument?: boolean;
@@ -434,6 +436,17 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 					closeForChildOverlay(() => {
 						props.onMoveToWorkspace?.();
 					});
+				},
+			}]
+			: []),
+		...(props.onExportNote
+			? [{
+				key: 'export',
+				labelKey: 'importExport.exportNote',
+				icon: faFileExport,
+				action: () => {
+					props.onClose();
+					props.onExportNote?.();
 				},
 			}]
 			: []),

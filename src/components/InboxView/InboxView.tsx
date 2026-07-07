@@ -41,7 +41,7 @@ interface Props {
 	themeId: string;
 	iconSrc?: string;
 	refreshToken?: number;
-	onOpenNote: (noteId: string, workspaceId: string, roomId?: string) => void;
+	onOpenNote: (noteId: string, workspaceId: string, roomId?: string, scrollToNodeId?: string) => void;
 	onAllArchived?: () => void;
 	/** Called whenever an activity is read or archived so the badge count re-fetches. */
 	onActivityChanged?: () => void;
@@ -62,13 +62,16 @@ function formatRelativeTime(iso: string): string {
 	return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function activityMessage(activity: Activity): string {
+function activityMessage(activity: Activity, authUserId: string | null): string {
+	const isSelf = authUserId != null && activity.actor?.id === authUserId;
 	const actorName = activity.actor?.name ?? 'Someone';
 	const noteTitle = activity.snapshot?.noteTitle;
 	const inNote = noteTitle ? `in "${noteTitle}"` : 'in a note';
 	switch (activity.kind) {
-		case 'mention':          return `${actorName} mentioned you ${inNote}`;
-		case 'assignment_created': return `${actorName} assigned you a task ${inNote}`;
+		case 'mention':
+			return isSelf ? `You mentioned yourself ${inNote}` : `${actorName} mentioned you ${inNote}`;
+		case 'assignment_created':
+			return isSelf ? `You assigned yourself a task ${inNote}` : `${actorName} assigned you a task ${inNote}`;
 		case 'note_shared':      return `${actorName} shared a note with you`;
 		case 'note_share_accepted': return `${actorName} accepted your note share`;
 		default:                 return `${actorName} sent you an activity`;
@@ -90,7 +93,7 @@ function initials(name: string | null | undefined): string {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged }: Props) {
+export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged }: Props) {
 	const [filter, setFilter] = useState<FilterTab>('all');
 	const [activities, setActivities] = useState<Activity[]>([]);
 	const [loading, setLoading] = useState(true);
@@ -265,7 +268,11 @@ export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived
 		// Don't navigate if the placement picker is open on this card.
 		if (placementPickerActivityId === activity.id) return;
 		markRead(activity.id);
-		onOpenNote(activity.subject.noteId, activity.subject.workspaceId);
+		const scrollToNodeId =
+			activity.deepLink?.kind === 'prosemirror_node' && typeof activity.deepLink.nodeId === 'string'
+				? activity.deepLink.nodeId
+				: undefined;
+		onOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId);
 	}, [markRead, onOpenNote, placementPickerActivityId]);
 
 	const openPlacementPicker = useCallback((e: React.MouseEvent, activity: Activity) => {
@@ -426,7 +433,7 @@ export function InboxView({ onOpenNote, iconSrc, refreshToken = 0, onAllArchived
 									</div>
 
 									<div className={styles.cardBody}>
-										<p className={styles.message}>{activityMessage(activity)}</p>
+										<p className={styles.message}>{activityMessage(activity, authUserId)}</p>
 										{activity.snapshot?.mentionExcerpt && (
 											<p className={styles.snippet}>"{activity.snapshot.mentionExcerpt}"</p>
 										)}

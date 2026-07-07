@@ -15,6 +15,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faNoteSticky, faListCheck, faPencil, faBell, faLock } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { useIsNoteDenied } from '../../core/references/noteAccessCache';
+import { useLiveUserAvatar } from '../../core/liveUserAvatarCache';
 
 function noteTypeIcon(noteType?: string | null): IconDefinition {
 	switch (noteType) {
@@ -44,16 +45,18 @@ function initials(label: string): string {
 }
 
 export function ReferenceChip({ node }: NodeViewProps) {
-	const { type, label, noteType, id, avatarUrl } = node.attrs as {
+	const { type, label, noteType, id, nodeId, avatarUrl } = node.attrs as {
 		type: string;
 		label: string;
 		noteType?: string | null;
 		id: string;
+		nodeId?: string | null;
 		avatarUrl?: string | null;
 	};
 
 	// Empty string never matches a real noteId, so user chips are always non-denied.
 	const isDenied = useIsNoteDenied(type === 'note' ? id : '');
+	const liveAvatarUrl = useLiveUserAvatar(id, avatarUrl);
 
 	if (type === 'user') {
 		const bg = avatarColor(id || label);
@@ -64,11 +67,12 @@ export function ReferenceChip({ node }: NodeViewProps) {
 				data-reference="true"
 				data-type="user"
 				data-id={id}
+				data-node-id={nodeId ?? undefined}
 				contentEditable={false}
 			>
-				{avatarUrl ? (
+				{liveAvatarUrl ? (
 					<img
-						src={avatarUrl}
+						src={liveAvatarUrl}
 						className="fn-reference-chip__avatar-img"
 						alt=""
 						aria-hidden="true"

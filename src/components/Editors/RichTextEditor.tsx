@@ -2,6 +2,7 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import type { Editor, JSONContent } from '@tiptap/core';
 import { DOMSerializer } from '@tiptap/pm/model';
+import type { EditorView } from '@tiptap/pm/view';
 import { EditorContent, useEditor, useEditorState } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
@@ -78,6 +79,8 @@ type RichTextEditorProps = {
 	onClipboardStatusChange?: (message: string) => void;
 	collapsibleHeadingNoteId?: string | null;
 	onNoteClick?: (noteId: string) => void;
+	scrollToMentionNodeId?: string | null;
+	authUserId?: string | null;
 };
 
 type RichTextToolbarProps = {
@@ -120,6 +123,40 @@ function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
 		current = current.parentElement;
 	}
 	return null;
+}
+
+// Converts heading text to a URL fragment ID using the same algorithm GitHub uses:
+// lowercase, spaces → hyphens, strip everything except word chars and hyphens.
+function slugifyHeadingText(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/\s+/g, '-')
+		.replace(/[^\w-]/g, '');
+}
+
+// Searches the ProseMirror document for the first heading whose slugified text
+// matches `slug`, then scrolls its DOM element into view.  Using nodeDOM(pos)
+// instead of querying by id attribute avoids any timing dependency on the
+// MutationObserver having run.
+function scrollToSluggedHeading(view: EditorView, slug: string): void {
+	let found: number | null = null;
+	view.state.doc.descendants((node, pos) => {
+		if (found !== null) return false;
+		if (node.type.name === 'heading' && slugifyHeadingText(node.textContent) === slug) {
+			found = pos;
+			return false;
+		}
+	});
+	if (found === null) return;
+	const dom = view.nodeDOM(found);
+	if (dom instanceof HTMLElement) {
+		// Blur the editor before scrolling. On mobile, if the editor has an active
+		// cursor the browser scrolls to make that cursor visible on any touch — which
+		// overrides the programmatic scrollIntoView regardless of where the cursor is.
+		// Blurring removes the selection so the browser has no cursor to chase.
+		(document.activeElement as HTMLElement | null)?.blur();
+		dom.scrollIntoView({ behavior: 'smooth', block: 'start' });
+	}
 }
 
 export function ensureEditorSelectionVisible(editor: Editor | null, bottomInset: number): void {
@@ -651,6 +688,12 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const [highlightMenuPosition, setHighlightMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
 	const [emojiMenuOpen, setEmojiMenuOpen] = React.useState(false);
 	const [emojiMenuPosition, setEmojiMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
+	const [linkMenuOpen, setLinkMenuOpen] = React.useState(false);
+	const [linkMenuPosition, setLinkMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
+	const [linkUrlInput, setLinkUrlInput] = React.useState('');
+	const [linkHeadings, setLinkHeadings] = React.useState<Array<{ text: string; slug: string; level: number }>>([]);
+	const linkMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const linkUrlInputRef = React.useRef<HTMLInputElement | null>(null);
 	const [canScrollToolbarLeft, setCanScrollToolbarLeft] = React.useState(false);
 	const [canScrollToolbarRight, setCanScrollToolbarRight] = React.useState(false);
 	const updateToolbarScrollState = React.useCallback((): void => {
@@ -734,19 +777,84 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		});
 	}, [props.applyInlineFormattingToWholeEditor, props.editor]);
 
-	const setLink = React.useCallback(() => {
+	const openLinkMenu = React.useCallback((button: HTMLElement): void => {
 		if (!props.editor) return;
-		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
-			if (editor.isActive('link')) {
-				editor.chain().focus().unsetLink().run();
-				return;
+		const currentHref = props.editor.getAttributes('link').href as string | undefined;
+		setLinkUrlInput(currentHref ?? '');
+		// Snapshot headings from the live doc so the list is always current.
+		const headings: Array<{ text: string; slug: string; level: number }> = [];
+		props.editor.state.doc.descendants((node) => {
+			if (node.type.name === 'heading') {
+				const text = node.textContent;
+				const slug = slugifyHeadingText(text);
+				if (slug) headings.push({ text, slug, level: Number(node.attrs.level) });
 			}
-			const current = editor.getAttributes('link').href as string | undefined;
-			const next = window.prompt(t('editors.linkPrompt'), current ?? 'https://');
-			if (!next) return;
-			editor.chain().focus().extendMarkRange('link').setLink({ href: next }).run();
 		});
-	}, [props.applyInlineFormattingToWholeEditor, props.editor, t]);
+		setLinkHeadings(headings);
+		// Compute position from the trigger button.
+		if (typeof window !== 'undefined') {
+			const vv = window.visualViewport;
+			const vLeft = vv ? Math.round(vv.offsetLeft) : 0;
+			const vTop = vv ? Math.round(vv.offsetTop) : 0;
+			const vWidth = vv ? Math.round(vv.width) : window.innerWidth;
+			// Use the visual viewport height (excludes soft keyboard on mobile) so
+			// we can detect when the button is near the bottom of the visible area.
+			const vHeight = vv ? Math.round(vv.height) : window.innerHeight;
+			const rect = button.getBoundingClientRect();
+			const menuWidth = 304;
+			const menuEstimatedHeight = 310;
+			const left = Math.min(Math.max(vLeft + 8, rect.left), vLeft + vWidth - menuWidth - 8);
+			// On mobile the floating toolbar sits just above the keyboard, so
+			// there is no room below the button.  Flip the menu upward instead.
+			const spaceBelow = vHeight - rect.bottom;
+			const top = spaceBelow >= menuEstimatedHeight + 8
+				? vTop + rect.bottom + 8
+				: Math.max(vTop + 8, vTop + rect.top - menuEstimatedHeight - 8);
+			setLinkMenuPosition({ top, left });
+		}
+		setLinkMenuOpen(true);
+		requestAnimationFrame(() => linkUrlInputRef.current?.select());
+	}, [props.editor]);
+
+	const applyLinkUrl = React.useCallback((): void => {
+		if (!props.editor) return;
+		const url = linkUrlInput.trim();
+		if (!url) return;
+		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
+			editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
+		});
+		setLinkMenuOpen(false);
+	}, [props.editor, props.applyInlineFormattingToWholeEditor, linkUrlInput]);
+
+	const applyHeadingAnchor = React.useCallback((slug: string, headingText: string): void => {
+		if (!props.editor) return;
+		const href = `#${slug}`;
+		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
+			const { from, to } = editor.state.selection;
+			if (from === to) {
+				// No text selected — insert the heading text as linked text.
+				editor.chain().focus().insertContent([{
+					type: 'text',
+					text: headingText,
+					marks: [{ type: 'link', attrs: { href, target: null, rel: 'noopener noreferrer nofollow', class: null } }],
+				}]).run();
+			} else {
+				editor.chain().focus().extendMarkRange('link').setLink({ href }).run();
+			}
+		});
+		setLinkMenuOpen(false);
+	}, [props.editor, props.applyInlineFormattingToWholeEditor]);
+
+	const setLink = React.useCallback((e: React.MouseEvent<HTMLButtonElement>): void => {
+		if (!props.editor) return;
+		if (props.editor.isActive('link')) {
+			applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
+				editor.chain().focus().unsetLink().run();
+			});
+			return;
+		}
+		openLinkMenu(e.currentTarget);
+	}, [props.applyInlineFormattingToWholeEditor, props.editor, openLinkMenu]);
 
 	const applyHighlightColor = React.useCallback((cssVar: string | null): void => {
 		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
@@ -882,7 +990,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		runRichTextCommand(props.editor, commandName, ...args);
 		setTableMenuOpen(false);
 	}, [props.editor]);
-	const runHeadingCommand = React.useCallback((level: number): void => {
+	const runHeadingCommand = React.useCallback((level: 1 | 2 | 3 | 4 | 5 | 6): void => {
 		props.editor?.chain().focus().toggleHeading({ level }).run();
 		setHeadingMenuOpen(false);
 		if (props.variant === 'full' && props.toolbarMode === 'condensed') {
@@ -1002,6 +1110,23 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			visualViewport?.removeEventListener('scroll', handleViewportChange);
 		};
 	}, [emojiMenuOpen, updateEmojiMenuPosition]);
+	React.useEffect(() => {
+		if (!linkMenuOpen) return;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const target = event.target as Node | null;
+			if (!target || linkMenuRef.current?.contains(target)) return;
+			setLinkMenuOpen(false);
+		};
+		const handleKeyDown = (event: KeyboardEvent): void => {
+			if (event.key === 'Escape') setLinkMenuOpen(false);
+		};
+		document.addEventListener('pointerdown', handlePointerDown);
+		document.addEventListener('keydown', handleKeyDown);
+		return () => {
+			document.removeEventListener('pointerdown', handlePointerDown);
+			document.removeEventListener('keydown', handleKeyDown);
+		};
+	}, [linkMenuOpen]);
 
 	const noEditor = !props.editor;
 	const compactButtonClass = props.compact ? ` ${styles.formatButtonCompact}` : '';
@@ -1866,6 +1991,65 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					document.body,
 				)
 				: null}
+			{/* Link picker portal */}
+			{linkMenuOpen && linkMenuPosition && typeof document !== 'undefined'
+				? createPortal(
+					<div
+						ref={linkMenuRef}
+						className={styles.linkMenu}
+						style={{ position: 'fixed', top: `${linkMenuPosition.top}px`, left: `${linkMenuPosition.left}px` }}
+						onPointerDown={stopToolbarPropagation}
+						onMouseDown={stopToolbarPropagation}
+						onClick={stopToolbarPropagation}
+					>
+						<div className={styles.linkMenuUrlRow}>
+							<input
+								ref={linkUrlInputRef}
+								type="url"
+								className={styles.linkMenuInput}
+								placeholder="https://..."
+								value={linkUrlInput}
+								onChange={(e) => setLinkUrlInput(e.target.value)}
+								onKeyDown={(e) => { if (e.key === 'Enter') applyLinkUrl(); }}
+							/>
+							<button
+								type="button"
+								className={styles.linkMenuApply}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={applyLinkUrl}
+								disabled={!linkUrlInput.trim()}
+							>
+								{t('editors.linkApply')}
+							</button>
+						</div>
+						{linkHeadings.length > 0 ? (
+							<>
+								<div className={styles.linkMenuSeparator}>
+									<span className={styles.linkMenuSeparatorLabel}>{t('editors.linkHeadingsSection')}</span>
+								</div>
+								<div className={styles.linkMenuHeadingsList}>
+									{linkHeadings.map((h, i) => (
+										<button
+											key={i}
+											type="button"
+											className={styles.linkMenuHeadingItem}
+											style={{ paddingLeft: `${(h.level - 1) * 14 + 10}px` }}
+											onMouseDown={preventToolbarFocusSteal}
+											onPointerDown={preventToolbarFocusSteal}
+											onClick={() => applyHeadingAnchor(h.slug, h.text)}
+											title={h.text}
+										>
+											{h.text}
+										</button>
+									))}
+								</div>
+							</>
+						) : null}
+					</div>,
+					document.body,
+				)
+				: null}
 		</div>
 	);
 }
@@ -1992,6 +2176,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				includeCollaboration: Boolean(props.fragment),
 				fragment: props.fragment ?? null,
 				collapsibleHeadingNoteId: props.collapsibleHeadingNoteId ?? null,
+				authUserId: props.authUserId ?? null,
 			}),
 			editable: props.editable !== false,
 			content: props.fragment ? undefined : props.content ?? undefined,
@@ -2010,8 +2195,36 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 					pointerup: (view, event) => handleTaskCheckboxInteractionEnd(view, event),
 					mousedown: (_view, event) => handleTaskCheckboxInteractionStart(event),
 					mouseup: (view, event) => handleTaskCheckboxInteractionEnd(view, event),
-					touchstart: (_view, event) => handleTaskCheckboxInteractionStart(event),
-					touchend: (view, event) => handleTaskCheckboxInteractionEnd(view, event),
+					touchstart: (_view, event) => {
+						// Hash-anchor (TOC) links: prevent default on touchstart so the
+						// browser does not generate a synthetic mousedown for the touch.
+						// Without this, ProseMirror moves the cursor to the link text,
+						// which triggers the mobile keyboard and then interrupts the
+						// scrollIntoView call in the touchend handler below.
+						const anchor = (event.target as Element).closest?.('a');
+						if (anchor && anchor.getAttribute('href')?.startsWith('#')) {
+							if (event.cancelable) event.preventDefault();
+							return true;
+						}
+						return handleTaskCheckboxInteractionStart(event);
+					},
+					touchend: (view, event) => {
+						// Hash-anchor links: intercept touchend so we scroll to the heading
+						// before the synthetic click fires.  touchend fires before any
+						// ProseMirror / TipTap Link openOnClick handling, and calling
+						// preventDefault() here suppresses the subsequent synthetic click so
+						// the link cannot navigate the PWA to the hash URL.
+						const anchor = (event.target as Element).closest?.('a');
+						if (anchor) {
+							const href = anchor.getAttribute('href') ?? '';
+							if (href.startsWith('#')) {
+								event.preventDefault();
+								try { scrollToSluggedHeading(view, decodeURIComponent(href.slice(1))); } catch { /* ignore */ }
+								return true;
+							}
+						}
+						return handleTaskCheckboxInteractionEnd(view, event);
+					},
 					copy: (_view, event) => {
 						const ed = editorRef.current;
 						if (!ed || variant !== 'full') return false;
@@ -2032,6 +2245,18 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 						}
 					},
 					click: (view, event) => {
+						// Hash-anchor interception: scroll to the heading instead of letting
+						// TipTap's Link openOnClick call window.open (which navigates in PWA).
+						// Returning true prevents ProseMirror from dispatching handleClick plugins.
+						const anchor = (event.target as Element).closest?.('a');
+						if (anchor) {
+							const href = anchor.getAttribute('href') ?? '';
+							if (href.startsWith('#')) {
+								event.preventDefault();
+								try { scrollToSluggedHeading(view, decodeURIComponent(href.slice(1))); } catch { /* ignore */ }
+								return true;
+							}
+						}
 						if (!suppressMobileTaskCheckboxFocus) return false;
 						const checkbox = getTaskListCheckboxTarget(event.target);
 						if (!checkbox) return false;
@@ -2042,6 +2267,32 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 						}
 						return toggleMobileTaskCheckboxFromTarget(view, event.target);
 					},
+				},
+				// handleClick fires via the mouseup dispatch path (separate from the raw
+				// DOM click event) and is checked as a direct view prop before any plugin
+				// handleClick handlers — including TipTap Link's openOnClick, which calls
+				// window.open. Returning true here short-circuits the plugin chain so the
+				// link is scrolled to instead of opened in a new window/tab.
+				handleClick: (view, _pos, event: MouseEvent) => {
+					const anchor = (event.target as Element).closest?.('a');
+					if (!anchor) return false;
+					const rawHref = anchor.getAttribute('href') ?? '';
+					let slug: string | null = null;
+					if (rawHref.startsWith('#')) {
+						slug = decodeURIComponent(rawHref.slice(1));
+					} else if (rawHref) {
+						// TipTap may resolve relative hrefs to absolute before storing them
+						try {
+							const url = new URL(rawHref, location.href);
+							if (url.origin === location.origin && url.pathname === location.pathname && url.hash) {
+								slug = decodeURIComponent(url.hash.slice(1));
+							}
+						} catch { /* ignore malformed URLs */ }
+					}
+					if (!slug) return false;
+					event.preventDefault();
+					try { scrollToSluggedHeading(view, slug); } catch { /* ignore */ }
+					return true;
 				},
 				handleClickOn: (view, nodePos, node, _directPos, event, direct) => {
 					if (!suppressMobileTaskCheckboxFocus || !direct || node.type.name !== 'taskItem') return false;
@@ -2207,6 +2458,25 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	}, [editor, props.onEditorChange]);
 
 	React.useEffect(() => {
+		if (!props.scrollToMentionNodeId || !editor) return;
+		const nodeId = props.scrollToMentionNodeId;
+		let tries = 0;
+		let timerId: ReturnType<typeof setTimeout>;
+		const attempt = () => {
+			const el = editor.view.dom.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`);
+			if (el instanceof HTMLElement) {
+				el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+				el.classList.add(styles.mentionScrollHighlight);
+				el.addEventListener('animationend', () => el.classList.remove(styles.mentionScrollHighlight), { once: true });
+				return;
+			}
+			if (++tries < 8) timerId = setTimeout(attempt, 250);
+		};
+		timerId = setTimeout(attempt, 300);
+		return () => clearTimeout(timerId);
+	}, [props.scrollToMentionNodeId, editor]);
+
+	React.useEffect(() => {
 		if (!editor) return;
 		const handleSelectionChange = (): void => {
 			ensureSelectionVisible();
@@ -2229,6 +2499,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		});
 		return () => window.cancelAnimationFrame(rafId);
 	}, [editor, ensureSelectionVisible, props.autoFocus]);
+
 
 	const stopToolbarPropagation = React.useCallback((event: React.SyntheticEvent): void => {
 		event.stopPropagation();

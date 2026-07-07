@@ -67,6 +67,9 @@ import { NoteLabelsModal } from './components/Workspaces/NoteLabelsModal';
 import { QuickReminderModal } from './components/Workspaces/QuickReminderModal';
 import { ReminderModal } from './components/Workspaces/ReminderModal';
 import { WorkspaceSwitcherModal } from './components/Workspaces/WorkspaceSwitcherModal';
+import { ImportSection } from './components/Import/ImportModal';
+import { ImportVerificationModal } from './components/Import/ImportVerificationModal';
+import { exportNote, exportWorkspace } from './core/export/exportNote';
 import { TextEditor } from './components/Editors/TextEditor';
 import { NoteGrid, type NoteGridCollaboratorFilter } from './components/NoteGrid/NoteGrid';
 import { captureTopVisibleListScrollAnchor, type ListScrollAnchor } from './components/NoteGrid/listScrollAnchor';
@@ -212,6 +215,9 @@ import { clearWorkspaceSelectionCache, readWorkspaceSelectionCache, writeWorkspa
 import { type ViewMode, loadViewMode, saveViewMode } from './core/viewMode';
 import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from './core/bubbleZoom';
 import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle, WORKSPACE_COLOR_TOKENS } from './core/bubbleWorkspaceColors';
+import { setLiveUserAvatar } from './core/liveUserAvatarCache';
+import { refreshUserAvatarsCache, invalidateWorkspaceMembersCache } from './core/references/providers/UserReferenceProvider';
+import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache } from './core/priorCollaboratorsApi';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
 import { InboxView } from './components/InboxView/InboxView';
 import { CrossWorkspaceNoteModal } from './components/BubbleView/CrossWorkspaceNoteModal';
@@ -1000,6 +1006,10 @@ function clearAuthCache(): void {
 
 export function App(): React.JSX.Element {
 	const manager = useDocumentManager();
+	// Stable ref so the popstate handler (a long-lived effect closure) always has
+	// the current manager without needing it in the effect's dependency array.
+	const managerRef = React.useRef(manager);
+	managerRef.current = manager;
 	const connection = useConnectionStatus();
 	const startupHydration = useStartupHydration();
 	const { t, locale, locales, setLocale } = useI18n();
@@ -1241,6 +1251,8 @@ export function App(): React.JSX.Element {
 	const [isSendInviteOpen, setIsSendInviteOpen] = React.useState(_restoredOverlay?.isSendInviteOpen ?? false);
 	const [sendInviteContext, setSendInviteContext] = React.useState<SendInviteContext | null>(null);
 	const [isShareNotificationsOpen, setIsShareNotificationsOpen] = React.useState(false);
+	const [isImportFlowOpen, setIsImportFlowOpen] = React.useState(false);
+	const [importParseResult, setImportParseResult] = React.useState<import('./core/import/ImportTypes').ParseResult | null>(null);
 	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(_restoredOverlay?.isWorkspaceSwitcherOpen ?? false);
 	const [activeWorkspaceName, setActiveWorkspaceName] = React.useState<string | null>(null);
 	const [activeWorkspaceSystemKind, setActiveWorkspaceSystemKind] = React.useState<string | null>(null);
@@ -1337,6 +1349,13 @@ export function App(): React.JSX.Element {
 	const [pendingReminderNotificationCount, setPendingReminderNotificationCount] = React.useState(0);
 	const [inboxUnreadCount, setInboxUnreadCount] = React.useState(0);
 	const [firedReminders, setFiredReminders] = React.useState<FiredReminder[]>([]);
+	// Post-import sync tracking: the workspace that was just imported into.
+	// While the active workspace matches this ID, NoteGrid uses an extended shimmer
+	// timeout and we overlay a "Syncing notes…" screen above the grid.
+	const [pendingImportWorkspaceId, setPendingImportWorkspaceId] = React.useState<string | null>(null);
+	const [pendingImportNoteCount, setPendingImportNoteCount] = React.useState(0);
+	const [importSyncPending, setImportSyncPending] = React.useState(0);
+	const [importCompletedNotification, setImportCompletedNotification] = React.useState<{ count: number } | null>(null);
 	const [failedLinkNotifications, setFailedLinkNotifications] = React.useState<FailedNoteLinkRecord[]>([]);
 	// Tracks failed-link notification IDs the user has explicitly dismissed so
 	// they don't re-appear on the next refreshNoteShareState call. Stored per
@@ -1400,6 +1419,7 @@ export function App(): React.JSX.Element {
 	// The currently selected note in the grid/editor area.
 	const [selectedNoteId, setSelectedNoteId] = React.useState<string | null>(_restoredOverlay?.selectedNoteId ?? null);
 	const selectedNoteIdRef = React.useRef(selectedNoteId);
+	const [pendingMentionScrollNodeId, setPendingMentionScrollNodeId] = React.useState<string | null>(null);
 	selectedNoteIdRef.current = selectedNoteId;
 	// Mirror the open note to localStorage so it can be restored if the OS kills the PWA process.
 	React.useEffect(() => {
@@ -2512,7 +2532,7 @@ export function App(): React.JSX.Element {
 		Boolean(noteImageModalState) ||
 		Boolean(noteAttachmentBrowserState) ||
 		userModalBusy;
-	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + inboxUnreadCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0);
+	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + inboxUnreadCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0) + (importCompletedNotification ? 1 : 0);
 
 	React.useEffect(() => {
 		setPwaUpdateBlocked(isPwaUpdateBlocked);
@@ -2890,6 +2910,7 @@ export function App(): React.JSX.Element {
 		}
 		setSelectedNoteId(null);
 		setEditorMode('none');
+		setPendingMentionScrollNodeId(null);
 		if (closingNoteId) {
 			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
 		}
@@ -3490,6 +3511,15 @@ export function App(): React.JSX.Element {
 		if (authStatus !== 'authed') return;
 		void refreshActiveWorkspace();
 	}, [authStatus, authWorkspaceId, refreshActiveWorkspace]);
+
+	// Reset user-scoped suggestion caches whenever the authenticated identity changes.
+	// This prevents a logged-out user's cached workspace members and prior collaborators
+	// from appearing in the @ mention dropdown for the next user who logs in on the same device.
+	React.useEffect(() => {
+		if (!authUserId) return;
+		initPriorCollaboratorsForUser(authUserId);
+		invalidateWorkspaceMembersCache();
+	}, [authUserId]);
 
 	const restoreCachedAuthSession = React.useCallback((): boolean => {
 		// Offline-auth branch: reuse the last authenticated user/workspace so IndexedDB
@@ -4209,6 +4239,8 @@ export function App(): React.JSX.Element {
 		// on this device starts with a clean sidebar (no stale entries from previous session).
 		clearWorkspaceListLocalCache(authUserId ?? '');
 		clearCachedReminderStates(authUserId ?? '');
+		clearPriorCollaboratorsCache();
+		invalidateWorkspaceMembersCache();
 		clearSessionRestoreNote();
 		setSharedPlacements([]);
 		setActiveWorkspaceSharedPlacements([]);
@@ -4967,7 +4999,7 @@ export function App(): React.JSX.Element {
 		if (sidebarView === 'trash') {
 			return `${t('app.sidebarTrash')} / ${activeWorkspaceSidebarPath}`;
 		}
-		return `${t('app.sidebarNotes')} / ${activeWorkspaceSidebarPath}`;
+		return activeWorkspaceSidebarPath;
 	}, [activeWorkspaceSidebarPath, sidebarView, t, viewMode]);
 
 	const exitSpecialSidebarView = React.useCallback(() => {
@@ -5810,7 +5842,9 @@ export function App(): React.JSX.Element {
 						type?: string;
 						reason?: string;
 						workspaceId?: string | null;
-							docId?: string | null;
+						docId?: string | null;
+						changedUserId?: string | null;
+						profileImageUrl?: string | null;
 					};
 					// ── DEBUG: rate-track incoming metadata WS messages ──
 					if (process.env.NODE_ENV !== 'production') {
@@ -5965,6 +5999,16 @@ export function App(): React.JSX.Element {
 							void loadSidebarWorkspacesRef.current();
 							void refreshActiveWorkspaceRef.current();
 							void refreshNoteShareStateRef.current();
+							// Apply the avatar update immediately from the event payload —
+							// refreshUserAvatarsCache only covers workspace members, not
+							// cross-workspace collaborators who share notes.
+							if (typeof payload.changedUserId === 'string' && payload.changedUserId) {
+								setLiveUserAvatar(
+									payload.changedUserId,
+									typeof payload.profileImageUrl === 'string' ? payload.profileImageUrl : null,
+								);
+							}
+							void refreshUserAvatarsCache();
 							bumpCollaborationRefreshToken();
 							return;
 						}
@@ -6111,7 +6155,7 @@ export function App(): React.JSX.Element {
 				// Re-enable WS now that the server session points at the new workspace.
 				manager.setWebsocketEnabled(true);
 				void loadSidebarWorkspacesRef.current();
-			} catch {
+			} catch (activateErr) {
 				// Network failed or server rejected — keep WS disabled (offline-like
 				// for this workspace) so the user can still browse IDB data.
 			}
@@ -6610,6 +6654,7 @@ export function App(): React.JSX.Element {
 				const uploadedProfileImage = uploadBody?.profileImage ? String(uploadBody.profileImage) : null;
 				if (uploadedProfileImage) {
 					setAuthProfileImage(uploadedProfileImage);
+					setLiveUserAvatar(authUserId, uploadedProfileImage);
 					writeAuthCache({
 						v: 1,
 						userId: authUserId,
@@ -7132,6 +7177,7 @@ export function App(): React.JSX.Element {
 	type SidebarEntry = {
 		id: string;
 		label: string;
+		sublabel?: string;
 		icon: unknown;
 		kind: 'link' | 'group';
 	};
@@ -7154,8 +7200,8 @@ export function App(): React.JSX.Element {
 	// the same ordering, labels, and nested disclosure behavior.
 
 	const sidebarEntries: SidebarEntry[] = React.useMemo(
-		() => [
-			{ id: 'notes', label: viewMode === 'bubble' ? 'All Notes' : t('app.sidebarNotes'), icon: faFileLines, kind: 'link' },
+		() => ([
+			{ id: 'notes', label: viewMode === 'bubble' ? 'All Notes' : (resolvedActiveWorkspaceName || t('workspace.unnamed')), sublabel: viewMode === 'bubble' ? undefined : t('workspace.sidebarTitle'), icon: faFileLines, kind: 'link' },
 			{ id: 'workspaces', label: viewMode === 'bubble' ? 'Workspaces' : t('workspace.sidebarTitle'), icon: faGrip, kind: 'group' },
 			{ id: 'collections', label: viewMode === 'bubble' ? 'All Collections' : t('app.sidebarCollections'), icon: faFolder, kind: 'group' },
 			{ id: 'labels', label: viewMode === 'bubble' ? 'All Labels' : t('app.sidebarLabels'), icon: faTag, kind: 'group' },
@@ -7164,7 +7210,7 @@ export function App(): React.JSX.Element {
 			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
 			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
 			{ id: 'trash', label: t('app.sidebarTrash'), icon: faTrash, kind: 'link' },
-		].filter((entry) => {
+		] as SidebarEntry[]).filter((entry) => {
 			if (viewMode !== 'bubble') return true;
 			return entry.id !== 'collections'
 				&& entry.id !== 'labels'
@@ -7173,7 +7219,7 @@ export function App(): React.JSX.Element {
 				&& entry.id !== 'images'
 				&& entry.id !== 'trash';
 		}),
-		[sidebarView, t, viewMode]
+		[resolvedActiveWorkspaceName, sidebarView, t, viewMode]
 	);
 	const sidebarUsesBubbleSummaryMenus = viewMode === 'bubble';
 	const filterSidebarView = sidebarView === 'images' ? 'images' : 'notes';
@@ -7914,6 +7960,32 @@ export function App(): React.JSX.Element {
 			const state = event.state as unknown;
 			const hadActiveOverlay = hasOverlaySnapshotContent(currentOverlaySnapshotRef.current);
 			if (isOverlayHistoryState(state)) {
+				// On coarse-pointer (mobile/touchscreen) devices, NoteCardMoreMenu pushes
+				// a {__moreMenu} dismiss-layer entry. When a terminal action like "Move to
+				// Trash" is triggered, the menu unmounts and its cleanup calls history.back(),
+				// which pops {__moreMenu} and fires this popstate with the editor's overlay
+				// entry. If the note was just trashed, applying that snapshot would reopen the
+				// editor. Guard against this: skip restoring a note that is already trashed.
+				const restoredNoteId = state.snapshot.selectedNoteId;
+				if (restoredNoteId) {
+					const restoredDoc = managerRef.current.getDoc(restoredNoteId);
+					if (restoredDoc?.getMap<any>('metadata').get('trashed') === true) {
+						const gridSnapshot: OverlaySnapshot = {
+							...state.snapshot,
+							selectedNoteId: null,
+							editorMode: 'none',
+						};
+						// Replace the stale overlay entry so forward/back navigation stays clean.
+						try {
+							window.history.replaceState(
+								{ [OVERLAY_HISTORY_KEY]: true, snapshot: gridSnapshot, kind: 'overlay' } satisfies OverlayHistoryState,
+								''
+							);
+						} catch { /* ignore */ }
+						applyOverlaySnapshot(gridSnapshot);
+						return;
+					}
+				}
 				applyOverlaySnapshot(state.snapshot);
 				return;
 			}
@@ -8083,14 +8155,13 @@ export function App(): React.JSX.Element {
 					reminderAt: null,
 				});
 			}
-			setSelectedNoteId((prev) => (prev === noteId ? null : prev));
-			setOpenDocId((prevId) => {
-				if (prevId !== noteId) return prevId;
-				setOpenDoc(null);
-				return null;
-			});
+			if (selectedNoteIdRef.current === noteId) {
+				// The editor is open on this note — use the full close path so the
+				// mobile history entry is popped and all overlay state is cleared.
+				await closeNoteEditor();
+			}
 		},
-		[authWorkspaceId, canEditActiveWorkspace, manager, persistNoteReminderState, sharedPlacements, showBriefDialog, t]
+		[authWorkspaceId, canEditActiveWorkspace, closeNoteEditor, manager, persistNoteReminderState, sharedPlacements, showBriefDialog, t]
 	);
 
 	const closeMoveNoteModal = React.useCallback(() => {
@@ -8918,6 +8989,21 @@ export function App(): React.JSX.Element {
 
 	return (
 		<>
+		{authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId && (
+			<div aria-live="polite" className="import-sync-overlay" style={{ left: isMobileViewport ? 0 : sidebarIsCollapsed ? 72 : 320 }}>
+				<div className="import-sync-content">
+					<div className="import-sync-spinner" />
+					<p className="import-sync-title">{t('importExport.importSyncing')}</p>
+					{pendingImportNoteCount > 0 && (
+						<p className="import-sync-progress">
+							{t('importExport.importSyncProgress')
+								.replace('{synced}', String(Math.max(0, pendingImportNoteCount - importSyncPending)))
+								.replace('{total}', String(pendingImportNoteCount))}
+						</p>
+					)}
+				</div>
+			</div>
+		)}
 		{!splashGone && (
 			<div
 				aria-hidden="true"
@@ -9295,7 +9381,10 @@ export function App(): React.JSX.Element {
 										<span className="sidebar-icon" aria-hidden="true">
 											<FontAwesomeIcon icon={entry.icon as never} />
 										</span>
-										<span className="sidebar-label">{label}</span>
+										<span className={`sidebar-label${entry.sublabel ? ' has-sublabel' : ''}`}>
+											{entry.sublabel ? <span className="sidebar-label-sublabel">{entry.sublabel}</span> : null}
+											{label}
+										</span>
 									</button>
 
 									{entry.id === 'workspaces' && !sidebarIsCollapsed ? (
@@ -9956,7 +10045,7 @@ export function App(): React.JSX.Element {
 					</section>
 
 				{/* NoteGrid stays mounted in bubble/inbox mode (display:none) so DocumentManager keeps docs loaded. */}
-				<div style={{ display: viewMode === 'bubble' || viewMode === 'inbox' || sidebarView === 'images' ? 'none' : undefined }}>
+				<div style={{ display: viewMode === 'bubble' || viewMode === 'inbox' || sidebarView === 'images' ? 'none' : undefined, position: 'relative' }}>
 					<NoteGrid
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
@@ -9997,6 +10086,7 @@ export function App(): React.JSX.Element {
 							void onDeleteSelectedNote(noteId);
 						}}
 						onMoveToWorkspace={(noteId, title) => openMoveNoteModal(noteId, title)}
+						onExportNote={(noteId) => void exportNote(manager, noteId)}
 						onOpenAttachmentBrowser={openNoteAttachmentBrowser}
 						onSelectCollaboratorFilter={setNoteGridCollaboratorFilter}
 						onSelectCollectionFilter={(collectionId) => {
@@ -10057,6 +10147,18 @@ export function App(): React.JSX.Element {
 						listScrollAnchor={listScrollAnchor}
 						onListScrollAnchorApplied={handleListScrollAnchorApplied}
 						loadDrawingDoc={loadDrawingDoc}
+						isPostImportSync={authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId}
+						onAllDocsLoaded={() => {
+							if (authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId) {
+								setPendingImportWorkspaceId(null);
+								setImportCompletedNotification({ count: pendingImportNoteCount });
+							}
+						}}
+						onSyncProgress={(pending) => {
+							if (authWorkspaceId != null && authWorkspaceId === pendingImportWorkspaceId) {
+								setImportSyncPending(pending);
+							}
+						}}
 				/>
 				</div>
 				{sidebarView === 'images' ? (
@@ -10084,8 +10186,9 @@ export function App(): React.JSX.Element {
 						themeId={themeId}
 						iconSrc={inboxIconSrc}
 						refreshToken={inboxRefreshToken}
-						onOpenNote={async (noteId, workspaceId, roomId) => {
-							console.debug('[InboxView.onOpenNote]', { noteId, workspaceId, roomId });
+						onOpenNote={async (noteId, workspaceId, roomId, scrollToNodeId) => {
+							console.debug('[InboxView.onOpenNote]', { noteId, workspaceId, roomId, scrollToNodeId });
+							setPendingMentionScrollNodeId(scrollToNodeId ?? null);
 							if (noteId.startsWith('shared-placement:')) {
 								// Pre-register the alias so DocumentManager can route before
 								// refreshNoteShareState completes its API calls.
@@ -10354,6 +10457,7 @@ export function App(): React.JSX.Element {
 						authUserId={authUserId}
 						themeId={themeId}
 						doc={openDoc}
+						scrollToMentionNodeId={pendingMentionScrollNodeId}
 						quickCreateCollectionOption={selectedQuickCreateCollectionOption}
 						onClose={closeNoteEditor}
 						onSavePendingNew={selectedNoteIsPendingNew ? savePendingNewNoteAndClose : undefined}
@@ -10454,7 +10558,41 @@ export function App(): React.JSX.Element {
 				supporterShowPublic={authSupporterShowPublic}
 				onSupporterVisibilityChange={(showPublic) => setAuthSupporterShowPublic(showPublic)}
 				onInboxCleared={bumpInboxRefreshToken}
+				onImportRequested={import.meta.env.DEV ? () => setIsImportFlowOpen(true) : undefined}
 			/>
+
+			{isImportFlowOpen && !importParseResult && (
+				<div
+					style={{ position: 'fixed', inset: 0, background: 'var(--color-overlay)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 260 }}
+					role="presentation"
+				>
+					<div style={{ width: 'min(520px, 100%)', background: 'var(--color-surface)', border: '1px solid var(--color-border)', borderRadius: 12, padding: 24, boxShadow: '0 24px 50px rgba(0,0,0,0.35)' }}>
+						<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+							<h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 700 }}>{t('importExport.importSectionTitle')}</h3>
+							<button type="button" style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: '1rem', color: 'var(--color-text-muted)' }} onClick={() => setIsImportFlowOpen(false)} aria-label={t('common.close')}>✕</button>
+						</div>
+						<ImportSection onReview={(result) => setImportParseResult(result)} />
+					</div>
+				</div>
+			)}
+
+			{importParseResult && (
+				<ImportVerificationModal
+					result={importParseResult}
+					existingWorkspaces={sidebarWorkspaces as import('./components/Workspaces/WorkspaceSwitcherModal').WorkspaceListItem[]}
+					activeWorkspaceId={authWorkspaceId ?? ''}
+					onClose={() => { setImportParseResult(null); setIsImportFlowOpen(false); }}
+					onImported={(count, targetWorkspaceId) => {
+						setImportParseResult(null);
+						setIsImportFlowOpen(false);
+						if (count > 0 && targetWorkspaceId) {
+							setPendingImportWorkspaceId(targetWorkspaceId);
+							setPendingImportNoteCount(count);
+							setImportSyncPending(count);
+						}
+					}}
+				/>
+			)}
 
 			<CollectionManagementModal
 				isOpen={isCollectionManagementOpen}
@@ -10689,6 +10827,8 @@ export function App(): React.JSX.Element {
 					setViewMode('inbox');
 					saveViewMode('inbox');
 				}}
+				importCompletedNotification={importCompletedNotification}
+				onDismissImportCompleted={() => setImportCompletedNotification(null)}
 			/>
 
 			<CollaboratorModal
@@ -10729,6 +10869,7 @@ export function App(): React.JSX.Element {
 						manager.setWebsocketEnabled(true);
 					}
 				}}
+				onExportWorkspace={(wsId, wsName) => void exportWorkspace(wsId, wsName)}
 			/>
 
 			<UserManagementModal

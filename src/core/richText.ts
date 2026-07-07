@@ -1412,6 +1412,7 @@ export function createRichTextExtensions(args: {
 	includeCollaboration?: boolean;
 	fragment?: Y.XmlFragment | null;
 	collapsibleHeadingNoteId?: string | null;
+	authUserId?: string | null;
 }): Extensions {
 	const enableUndoRedo = args.includeCollaboration !== true;
 	const extensions: Extensions = [
@@ -1443,7 +1444,7 @@ export function createRichTextExtensions(args: {
 	}
 
 	// ReferenceExtension enabled for both variants so @mention works in checklist items
-	extensions.push(ReferenceExtension);
+	extensions.push(ReferenceExtension.configure({ authUserId: args.authUserId ?? null }));
 
 	if (args.placeholder) {
 		extensions.push(

@@ -176,16 +176,17 @@ async function compressImage(buffer) {
 			if (candidate.length <= MAX_COMPRESSED_FILE_BYTES) {
 				const metadata = await sharp(candidate).metadata();
 				const thumbnail = await sharp(candidate)
-					.resize(THUMB_SIZE_PX, THUMB_SIZE_PX, { fit: 'cover' })
+					.resize(THUMB_SIZE_PX, THUMB_SIZE_PX, { fit: 'inside', withoutEnlargement: true })
 					.webp({ quality: 72 })
 					.toBuffer();
+				const thumbMetadata = await sharp(thumbnail).metadata();
 				return {
 					original: candidate,
 					thumbnail,
 					width: Number(metadata.width || 0) || null,
 					height: Number(metadata.height || 0) || null,
-					thumbnailWidth: THUMB_SIZE_PX,
-					thumbnailHeight: THUMB_SIZE_PX,
+					thumbnailWidth: Number(thumbMetadata.width || 0) || null,
+					thumbnailHeight: Number(thumbMetadata.height || 0) || null,
 				};
 			}
 		}

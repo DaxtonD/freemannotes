@@ -120,6 +120,7 @@ export type NoteEditorProps = {
 	isPendingNew?: boolean;
 	/** When true, suppresses the floating keyboard toolbar (e.g. while the image upload modal is open). */
 	hideFormattingToolbar?: boolean;
+	scrollToMentionNodeId?: string | null;
 };
 
 type NoteType = 'text' | 'checklist';
@@ -3069,6 +3070,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								syncTextNotePlainText(props.doc, richContentFragment);
 							}}
 							onNoteClick={props.onOpenNote}
+						scrollToMentionNodeId={props.scrollToMentionNodeId}
+						authUserId={props.authUserId}
 						/>
 					</div>
 				) : null}

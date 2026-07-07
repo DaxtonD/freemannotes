@@ -28,11 +28,36 @@ CURSOR_CONTEXT.md
 *.cursorrules
 memory/
 
+# Windsurf
+.windsurf/
+.windsurfrules
+
+# Copilot
+.github/copilot-instructions.md
+
+# Gemini / Google AI
+.gemini/
+
+# Continue (VS Code extension)
+.continue/
+
+# Codeium / Windsurf
+.codeium/
+
+# Tabnine
+.tabnine/
+
+# Generic AI context files
+AGENTS.md
+.ai/
+.aiexclude
+
 # Local Yjs persistence artifacts
 .yjs-data/
 
 # Local troubleshooting captures
 screenjitter.mp4
+unraid.xml
 
 # Prisma generated client (regenerated on npm install / prisma generate)
 # The schema.prisma file IS tracked; the generated output is NOT.

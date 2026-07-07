@@ -137,6 +137,7 @@ export type NoteGridProps = {
 	onAddImage?: (noteId: string, docId: string, title?: string, noteType?: 'text' | 'checklist' | 'drawing') => void;
 	onAddDocument?: (noteId: string, docId: string, title?: string) => void;
 	onMoveToWorkspace?: (noteId: string, title?: string) => void;
+	onExportNote?: (noteId: string) => void;
 	onOpenAttachmentBrowser?: (
 		kind: NoteAttachmentBrowserKind,
 		noteId: string,
@@ -201,6 +202,17 @@ export type NoteGridProps = {
 	listScrollAnchor?: ListScrollAnchor | null;
 	onListScrollAnchorApplied?: () => void;
 	loadDrawingDoc?: (noteId: string, drawingId: string) => Promise<Y.Doc | null>;
+	/**
+	 * When true the workspace was just freshly imported and all note docs need
+	 * to arrive via WS before the grid is usable. Extends the shimmer stall
+	 * timeout so the grid stays behind the shimmer until all docs have synced,
+	 * rather than exposing a chaotic half-loaded grid after the normal 5 s cap.
+	 */
+	isPostImportSync?: boolean;
+	/** Fires the first time allDocsLoaded becomes true (per mount). */
+	onAllDocsLoaded?: () => void;
+	/** Fires whenever pendingNoteWsSync changes value. */
+	onSyncProgress?: (pendingCount: number) => void;
 };
 
 type YArrayWithDoc<T> = Y.Array<T> & { doc: Y.Doc };
@@ -1191,6 +1203,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Prevents allDocsLoaded from reverting to false after the initial load completes
 	// (e.g. creating a new note later should not restart the startup gate).
 	const initialLoadCompleteRef = React.useRef(false);
+	// Post-import guard: tracks whether pendingNoteWsSync has risen above 0 at
+	// least once. In post-import mode all note docs start with empty IDB, but
+	// there's a race where registryWsSynced fires before the async getDocWithSync
+	// calls finish adding rooms to noIdbContentRooms — so pendingNoteWsSync is
+	// briefly 0 even though sync hasn't started. We wait for it to go > 0 first.
+	const postImportWsSyncSeenRef = React.useRef(false);
 	// On fresh login, IDB docs hydrate almost instantly (empty IDB), but content
 	// arrives later over WebSocket. Keep the shimmer up until the registry room
 	// has completed its first WS sync so cards render with real content heights.
@@ -1239,7 +1257,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// If the shimmer has been up for more than 5 s without resolving (e.g.
 	// WS sync stalls on a flaky connection), force-clear it so the user
 	// never sees an infinite spinner. 5 s covers even very slow connections.
-	const SHIMMER_STALL_TIMEOUT_MS = 5000;
+	// For freshly imported workspaces (isPostImportSync) all note docs must
+	// arrive via WS before the grid is safe to show, so we extend the stall
+	// timeout to 3 minutes — the shimmer overlay already communicates progress.
+	const SHIMMER_STALL_TIMEOUT_MS = props.isPostImportSync ? 3 * 60 * 1000 : 5000;
 	const [shimmerStalled, setShimmerStalled] = React.useState(false);
 	React.useEffect(() => {
 		if (allDocsLoaded) {
@@ -1248,7 +1269,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		}
 		const id = setTimeout(() => setShimmerStalled(true), SHIMMER_STALL_TIMEOUT_MS);
 		return () => clearTimeout(id);
-	}, [allDocsLoaded]);
+	}, [allDocsLoaded, SHIMMER_STALL_TIMEOUT_MS]);
 	React.useEffect(() => {
 		if (!props.enableLayoutAnimations) return;
 		if (!allDocsLoaded) return; // wait for shimmer to finish before enabling springs
@@ -1502,9 +1523,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (wsChanged) {
 			// NoteGrid stays mounted across workspace switches, so every startup gate
 			// has to be rearmed here before App waits for the next viewport-ready paint.
+			const snapIds = readNoteOrderSnapshot(props.activeWorkspaceId ?? '');
 			readyNotifiedRef.current = false;
 			viewportReadyNotifiedRef.current = false;
 			initialLoadCompleteRef.current = false;
+			onAllDocsLoadedFiredRef.current = false;
+			postImportWsSyncSeenRef.current = false;
 			setAllDocsLoaded(false);
 			setInitialDataSettled(false);
 			setInitialLayoutSettled(false);
@@ -1942,12 +1966,24 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			// Once the real Yjs data arrives (noteOrder becomes non-null) this branch
 			// is never entered again and the actual registry order takes over.
 			const snapshotIds = readNoteOrderSnapshot(props.activeWorkspaceId ?? '');
-			return uniqueIds([...snapshotIds, ...(workspaceRenderSnapshot?.orderedIds ?? []), ...sharedNoteIds]);
+			const ids = uniqueIds([...snapshotIds, ...(workspaceRenderSnapshot?.orderedIds ?? []), ...sharedNoteIds]);
+			return ids;
+		}
+		// If the live Y.Array is empty and the WS registry hasn't synced yet, the IDB
+		// cache is empty (e.g. first visit to a freshly-imported workspace). Keep showing
+		// the localStorage snapshot to avoid a blank flash while the WS sync catches up.
+		if (noteOrder.length === 0 && !connection.registryWsSynced) {
+			const snapshotIds = readNoteOrderSnapshot(props.activeWorkspaceId ?? '');
+			const ids = uniqueIds([...snapshotIds, ...(workspaceRenderSnapshot?.orderedIds ?? []), ...sharedNoteIds]);
+			if (ids.length > 0) {
+				return ids;
+			}
 		}
 		// Local workspace order still comes from Yjs. Shared aliases are appended so
 		// they render in the grid without mutating the source workspace's note order.
-		return uniqueIds([...readOrderIds(noteOrder), ...sharedNoteIds]);
-	}, [noteOrder, sharedNoteIds, storeVersion, props.activeWorkspaceId, workspaceRenderSnapshot]);
+		const ids = uniqueIds([...readOrderIds(noteOrder), ...sharedNoteIds]);
+		return ids;
+	}, [noteOrder, sharedNoteIds, storeVersion, props.activeWorkspaceId, workspaceRenderSnapshot, connection.registryWsSynced]);
 	const sharedPlacementByAlias = React.useMemo(
 		() => new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement] as const)),
 		[props.sharedNotes]
@@ -2528,6 +2564,28 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			setAllDocsLoaded(false);
 			return;
 		}
+		// Post-import race guard: in post-import mode all 1300+ note docs have empty
+		// IDB. The async getDocWithSync calls register them in noIdbContentRooms
+		// (raising pendingNoteWsSync) but that's async — registryWsSynced can fire
+		// while pendingNoteWsSync is still 0. Track whether it has ever gone > 0;
+		// until it does, hold the shimmer so the race window doesn't prematurely
+		// clear it.
+		if (connection.pendingNoteWsSync > 0) {
+			if (!postImportWsSyncSeenRef.current) {
+			}
+			postImportWsSyncSeenRef.current = true;
+		}
+		if (
+			props.isPostImportSync &&
+			!initialLoadCompleteRef.current &&
+			noteOrder != null &&
+			connection.registryWsSynced &&
+			orderedIds.length > 0 &&
+			!postImportWsSyncSeenRef.current
+		) {
+			setAllDocsLoaded(false);
+			return;
+		}
 		// Fresh-login guard: hold the shimmer while note rooms that had empty IDB are
 		// still waiting for their first WS sync. On a fresh install every note doc is
 		// a stub Y.Doc (no IDB data); getDocWithSync resolves immediately and adds the
@@ -2556,6 +2614,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			setAllDocsLoaded(true);
 		}
 	}, [noteOrder, orderedIds, unresolvedOrderedIds.length, allDocsLoaded, connection.registryWsSynced, connection.state, wsSyncJustFired, shimmerStalled, connection.pendingNoteWsSync]);
+
+	const onAllDocsLoadedFiredRef = React.useRef(false);
+	React.useEffect(() => {
+		if (!allDocsLoaded || onAllDocsLoadedFiredRef.current) return;
+		onAllDocsLoadedFiredRef.current = true;
+		props.onAllDocsLoaded?.();
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [allDocsLoaded]);
+
+	React.useEffect(() => {
+		props.onSyncProgress?.(connection.pendingNoteWsSync);
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [connection.pendingNoteWsSync]);
 
 	React.useEffect(() => {
 		if (!allDocsLoaded) {
@@ -4586,6 +4657,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							docId: moreMenuDocId,
 							links: extractNoteLinksFromDoc(moreMenuDoc),
 						});
+					} : undefined}
+					onExportNote={props.onExportNote ? () => {
+						const noteId = moreMenuNoteId;
+						setMoreMenuNoteId(null);
+						setMoreMenuAnchorRect(null);
+						props.onExportNote?.(noteId);
 					} : undefined}
 					onTrash={sharedNoteIdSet.has(moreMenuNoteId) ? undefined : () => {
 						// Shared aliases are projections of another workspace's document, so the

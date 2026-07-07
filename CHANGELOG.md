@@ -4,6 +4,28 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.5 - 2026-07-05
+
+### Added
+- **Import system.** Notes can now be imported from Google Keep Takeout ZIPs, plain Markdown files, and other supported formats. A new import UI (`ImportModal` → `ImportVerificationModal`) parses the archive, previews the notes, and writes them as Yjs documents. After import a full-screen "Syncing notes…" overlay (with live progress counter) covers the grid until all WS docs are confirmed received — the shimmer stall timeout is extended to 3 minutes for freshly-imported workspaces so the grid never shows a half-loaded state.
+- **Export note.** "Export note" action added to the note card more-menu. Exports the current note as Markdown (rich-text and checklist) or native Excalidraw JSON (drawing notes).
+- **Welcome note for new users.** When a new account is created, `server/seedWelcomeNote.js` inserts a pre-written rich-text note into the workspace so first-time users land on a non-empty grid. Non-fatal: if seeding fails the registration still succeeds.
+- **Freeman theme family.** Six new Half-Life–inspired themes added to Appearance preferences under a "Freeman" category: Black Mesa, Xen, City 17, G-Man, Combine, and Freeman. Theme category selector updated with a "Freeman" group. Labels strip the redundant "Freeman:" prefix in the picker list.
+- **Live avatar updates.** Profile picture changes now propagate in real-time to every @mention chip and note card preview without a page reload. `liveUserAvatarCache.ts` is a reactive module-level store; `useLiveUserAvatar` (per-user, used in `ReferenceChip`) and `useLiveAvatarUrlLookup` (global, used in `NoteCard`) subscribe at different granularities to minimise re-renders. `profileRouter.js` now emits `changedUserId` + `profileImageUrl` in the workspace metadata event so all connected clients update immediately.
+- **Rich-text link menu with heading anchors.** The toolbar's link button now opens a floating menu that shows the current href and a list of all headings in the document as anchor targets. Clicking a heading entry sets the link to `#slug` (GitHub-style slugification). The menu positions itself above the keyboard on mobile. Heading slugs are resolved against the live ProseMirror doc rather than DOM IDs to avoid timing dependencies on the MutationObserver.
+- **In-editor TOC navigation.** When an editor opens with a pending mention scroll (`scrollToMentionNodeId`), or when a `#slug` link is activated inside the editor, `scrollToSluggedHeading` walks the ProseMirror tree, finds the matching heading by slug, and calls `scrollIntoView`. The editor is blurred before scrolling on mobile to prevent the browser cursor-chase from fighting the programmatic scroll.
+- **Inbox scroll-to-mention.** Clicking "View" on an inbox activity card that contains a `deepLink.nodeId` now passes `scrollToMentionNodeId` into the editor, which scrolls and highlights the @mention node automatically.
+- **Self-mention shortcut.** Mentioning yourself in the @ dropdown skips the role-picker step and inserts the chip directly as EDITOR.
+
+### Changed
+- **Sidebar "Notes" entry shows workspace name.** The generic "All Notes" sidebar entry now displays the active workspace name with a small "WORKSPACE" eyebrow label above it. Bubble view keeps "All Notes" since it spans all workspaces.
+- **Scope chip label simplified.** The top-of-grid scope chip no longer shows "All Notes / Workspace Name" — it shows just the workspace/path string, matching the sidebar change.
+
+### Fixed
+- **"Move to Trash" reopens the note editor on mobile (touch devices).** On coarse-pointer devices `NoteCardMoreMenu` pushes a `{__moreMenu}` entry to browser history; its cleanup calls `history.back()` which fires a `popstate` that races with `closeNoteEditor()`. The popstate handler now checks whether the note being restored is already trashed in its Yjs doc; if so, it applies a grid snapshot instead and `replaceState`s the stale overlay entry so forward/back navigation stays clean.
+- **TOC fragment links in note card previews cause navigation.** Clicking a `#heading-id` link in a card's rich-text preview caused the app to reload (the fragment resolved against the outer document). `getSafeHref` now blocks any href beginning with `#`; these links render as non-interactive styled text. Navigation to headings is handled exclusively by the in-editor link menu.
+- **Shared-device privacy leak: @ mention suggestions.** `priorCollaboratorsApi.ts` stored collaborators under a flat unscoped key (`freemannotes.priorCollaborators.v1`) that persisted across user sessions. A new user logging in on the same device saw the previous user's contacts in the @ dropdown — both from localStorage on cold load and from the module-level in-memory cache within the same tab session. Fix: the localStorage key is now user-scoped (`freemannotes.priorCollaborators.v1:<userId>`); `initPriorCollaboratorsForUser(userId)` is called on every login, and `clearPriorCollaboratorsCache()` + `invalidateWorkspaceMembersCache()` are called on logout. The old unscoped key is deleted on first login to clean up any existing leaked data.
+
 ## 1.6.4 - 2026-06-28
 
 ### Added

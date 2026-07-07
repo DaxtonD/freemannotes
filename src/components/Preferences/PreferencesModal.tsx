@@ -19,6 +19,7 @@ type PreferencesSection =
 	| 'editor'
 	| 'notifications'
 	| 'note-management'
+	| 'import'
 	| 'support';
 
 type SectionConfig = {
@@ -34,6 +35,7 @@ const sections: readonly SectionConfig[] = [
 	{ id: 'editor', labelKey: 'prefs.editor' },
 	{ id: 'notifications', labelKey: 'prefs.notifications' },
 	{ id: 'note-management', labelKey: 'prefs.noteManagement' },
+	{ id: 'import', labelKey: 'importExport.prefsTitle' },
 	{ id: 'support', labelKey: 'prefs.support' },
 ];
 
@@ -78,6 +80,7 @@ export type PreferencesModalProps = {
 	supporterShowPublic?: boolean;
 	onSupporterVisibilityChange?: (showPublic: boolean) => void;
 	onInboxCleared?: () => void;
+	onImportRequested?: () => void;
 };
 
 type SectionModalProps = {
@@ -109,6 +112,7 @@ type SectionModalProps = {
 	supporterShowPublic?: boolean;
 	onSupporterVisibilityChange?: (showPublic: boolean) => void;
 	onInboxCleared?: () => void;
+	onImportRequested?: () => void;
 };
 
 const ABOUT_ICON_LIGHT = '/icons/app-header-light.png';
@@ -508,8 +512,12 @@ function AboutSectionContent(props: {
 	);
 }
 
-function getVisibleSections(installAvailable: boolean): readonly SectionConfig[] {
-	return installAvailable ? sections : sections.filter((section) => section.id !== 'install');
+function getVisibleSections(installAvailable: boolean, importAvailable: boolean): readonly SectionConfig[] {
+	return sections.filter((section) => {
+		if (section.id === 'install' && !installAvailable) return false;
+		if (section.id === 'import' && !importAvailable) return false;
+		return true;
+	});
 }
 
 function EditorSectionContent(props: {
@@ -670,8 +678,25 @@ function InstallSectionContent(props: {
 	);
 }
 
+function ImportSectionContent(props: { t: (key: string) => string; onImportRequested?: () => void }): React.JSX.Element {
+	return (
+		<div>
+			<p style={{ fontSize: '0.88rem', color: 'var(--color-text-muted)', lineHeight: 1.5, marginBottom: 12 }}>
+				{props.t('importExport.importDescription')}
+			</p>
+			<button
+				type="button"
+				style={{ padding: '9px 18px', borderRadius: 8, border: 'none', background: 'var(--color-accent)', color: 'var(--color-on-accent, #fff)', fontWeight: 600, fontSize: '0.88rem', cursor: 'pointer' }}
+				onClick={() => props.onImportRequested?.()}
+			>
+				{props.t('importExport.importSectionTitle')}
+			</button>
+		</div>
+	);
+}
+
 function SectionModal(props: SectionModalProps): React.JSX.Element {
-	const sectionConfig = getVisibleSections(Boolean(props.installAvailable)).find((item) => item.id === props.section);
+	const sectionConfig = getVisibleSections(Boolean(props.installAvailable), Boolean(props.onImportRequested)).find((item) => item.id === props.section);
 	const sectionTitle = sectionConfig ? props.t(sectionConfig.labelKey) : props.t('prefs.title');
 
 	return (
@@ -726,6 +751,11 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 							deviceId={props.deviceId}
 							connectionState={props.connectionState}
 						/>
+					) : props.section === 'import' ? (
+						<ImportSectionContent
+							t={props.t}
+							onImportRequested={props.onImportRequested}
+						/>
 					) : props.section === 'support' ? (
 						<SupportSection
 							t={props.t}
@@ -750,7 +780,7 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 
 export function PreferencesModal(props: PreferencesModalProps): React.JSX.Element | null {
 	const [activeSection, setActiveSection] = React.useState<PreferencesSection | null>(null);
-	const visibleSections = React.useMemo(() => getVisibleSections(Boolean(props.installAvailable)), [props.installAvailable]);
+	const visibleSections = React.useMemo(() => getVisibleSections(Boolean(props.installAvailable), Boolean(props.onImportRequested)), [props.installAvailable, props.onImportRequested]);
 
 	useBodyScrollLock(props.isOpen, { disableTouchAction: false });
 
@@ -861,6 +891,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					supporterShowPublic={props.supporterShowPublic}
 					onSupporterVisibilityChange={props.onSupporterVisibilityChange}
 					onInboxCleared={props.onInboxCleared}
+					onImportRequested={props.onImportRequested}
 				/>
 			) : null}
 		</div>

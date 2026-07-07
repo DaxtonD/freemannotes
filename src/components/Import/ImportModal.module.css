@@ -1,0 +1,85 @@
+/* ── Import Section (inside PreferencesModal sub-section) ─────────────────── */
+
+.section {
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.description {
+	font-size: 0.88rem;
+	color: var(--color-text-muted);
+	line-height: 1.5;
+}
+
+.dropZone {
+	border: 2px dashed var(--color-border);
+	border-radius: var(--radius-md, 10px);
+	padding: 28px 20px;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	cursor: pointer;
+	transition: border-color 80ms, background 80ms;
+	text-align: center;
+	background: var(--color-surface-2);
+}
+
+.dropZone:hover,
+.dropZoneActive {
+	border-color: var(--color-accent);
+	background: color-mix(in srgb, var(--color-accent) 6%, var(--color-surface-2));
+}
+
+.dropZoneIcon {
+	font-size: 1.8rem;
+	color: var(--color-text-muted);
+	margin-bottom: 4px;
+}
+
+.dropZoneLabel {
+	font-size: 0.92rem;
+	font-weight: 600;
+	color: var(--color-text);
+}
+
+.dropZoneHint {
+	font-size: 0.8rem;
+	color: var(--color-text-muted);
+}
+
+.fileInput {
+	display: none;
+}
+
+.status {
+	font-size: 0.85rem;
+	color: var(--color-text-muted);
+	text-align: center;
+	padding: 4px 0;
+}
+
+.detectedBadge {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 0.8rem;
+	font-weight: 500;
+	padding: 4px 10px;
+	border-radius: 100px;
+	background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+	color: var(--color-accent);
+	align-self: center;
+}
+
+.offlineNotice {
+	font-size: 0.85rem;
+	color: var(--color-text-muted);
+	text-align: center;
+	padding: 12px;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-md, 8px);
+	background: var(--color-surface-2);
+}

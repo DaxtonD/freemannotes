@@ -59,6 +59,7 @@ type Props = {
 	 * can re-enable WebSocket sync once the session cookie is up-to-date.
 	 */
 	onWorkspaceActivationComplete?: (workspaceId: string) => void;
+	onExportWorkspace?: (workspaceId: string, workspaceName: string) => void;
 };
 
 function mapWorkspaces(value: unknown): WorkspaceListItem[] {
@@ -678,7 +679,16 @@ export function WorkspaceSwitcherModal(props: Props): React.JSX.Element | null {
 														{props.t('workspace.rename')}
 													</button>
 												) : null}
-													{canDelete ? (
+												{props.onExportWorkspace ? (
+													<button
+														type="button"
+														disabled={busy}
+														onClick={() => props.onExportWorkspace!(ws.id, getWorkspaceDisplayName(ws, props.t))}
+													>
+														{props.t('importExport.exportWorkspace')}
+													</button>
+												) : null}
+												{canDelete ? (
 														<button
 															type="button"
 															className={styles.dangerButton}

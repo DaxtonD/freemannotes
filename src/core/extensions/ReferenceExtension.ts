@@ -88,8 +88,13 @@ function getKeyboardVisibleBottom(): number {
  *    onStart so the dropdown matches the note's custom color scheme.
  */
 export const ReferenceExtension = Reference.extend({
+	addOptions() {
+		return { authUserId: null as string | null };
+	},
+
 	addProseMirrorPlugins() {
 		const editor = (this as unknown as { editor: Editor }).editor;
+		const authUserId = (this as unknown as { options: { authUserId: string | null } }).options.authUserId ?? null;
 
 		// ── Container created at editor mount, NOT at first suggestion activation ──
 		// iOS Safari and Android Chrome collapse the soft keyboard when a
@@ -183,9 +188,13 @@ export const ReferenceExtension = Reference.extend({
 					onDismiss: forceClose,
 					onSelect: (result: SelectedItem) => {
 						if (result.type === 'user') {
-							// Intercept user selections and show the role picker
-							rolePickState = { result, roleIndex: 1 }; // default: EDITOR
-							rerender();
+							if (authUserId && result.id === authUserId) {
+								// Self-mention: skip the role picker and insert directly as EDITOR
+								latestCommand?.({ ...result, editRole: 'EDITOR' });
+							} else {
+								rolePickState = { result, roleIndex: 1 }; // default: EDITOR
+								rerender();
+							}
 						} else {
 							latestCommand?.(result);
 						}

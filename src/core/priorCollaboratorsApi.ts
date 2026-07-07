@@ -1,7 +1,9 @@
 import { updateAvatarCache } from './userAvatarCache';
 import { updateKnownUserCache } from './userIdentityCache';
 
-const CACHE_KEY = 'freemannotes.priorCollaborators.v1';
+const CACHE_KEY_PREFIX = 'freemannotes.priorCollaborators.v1:';
+// Legacy unscoped key written by older versions — removed on first login to stop cross-user leakage.
+const LEGACY_CACHE_KEY = 'freemannotes.priorCollaborators.v1';
 
 export type PriorCollaboratorUser = {
 	id: string | null;
@@ -14,15 +16,22 @@ type ListResponse = {
 	users?: PriorCollaboratorUser[];
 };
 
+let _currentUserId: string | null = null;
 let cachedUsers: PriorCollaboratorUser[] | null = null;
 let inflightRequest: Promise<PriorCollaboratorUser[]> | null = null;
 let cacheHydrated = false;
 let remoteLoaded = false;
 
+function getCacheKey(): string | null {
+	return _currentUserId ? `${CACHE_KEY_PREFIX}${_currentUserId}` : null;
+}
+
 function loadCachedUsers(): PriorCollaboratorUser[] {
 	if (typeof window === 'undefined') return [];
+	const key = getCacheKey();
+	if (!key) return [];
 	try {
-		const raw = window.localStorage.getItem(CACHE_KEY);
+		const raw = window.localStorage.getItem(key);
 		if (!raw) return [];
 		const parsed = JSON.parse(raw) as ListResponse | PriorCollaboratorUser[] | null;
 		if (Array.isArray(parsed)) return normalizeUsers(parsed);
@@ -34,8 +43,10 @@ function loadCachedUsers(): PriorCollaboratorUser[] {
 
 function writeCachedUsers(users: readonly PriorCollaboratorUser[]): void {
 	if (typeof window === 'undefined') return;
+	const key = getCacheKey();
+	if (!key) return;
 	try {
-		window.localStorage.setItem(CACHE_KEY, JSON.stringify({ users }));
+		window.localStorage.setItem(key, JSON.stringify({ users }));
 	} catch {
 		// Best effort only.
 	}
@@ -60,6 +71,38 @@ function normalizeUsers(users: readonly PriorCollaboratorUser[]): PriorCollabora
 			profileImage: typeof user?.profileImage === 'string' && user.profileImage.trim() ? user.profileImage : null,
 		}))
 		.filter((user) => Boolean(user.id || user.email || user.name));
+}
+
+/**
+ * Must be called once after a successful login. Removes the old unscoped legacy key
+ * (which leaks one user's collaborators to the next), then resets in-memory state so
+ * the new user reads only from their own userId-scoped localStorage key.
+ */
+export function initPriorCollaboratorsForUser(userId: string): void {
+	if (typeof window !== 'undefined') {
+		try { window.localStorage.removeItem(LEGACY_CACHE_KEY); } catch { /* best effort */ }
+	}
+	if (_currentUserId !== userId) {
+		_currentUserId = userId;
+		cachedUsers = null;
+		cacheHydrated = false;
+		remoteLoaded = false;
+		inflightRequest = null;
+	}
+}
+
+/**
+ * Must be called on logout. Resets all in-memory state so a subsequent login by a
+ * different user on the same tab cannot read the previous user's cached data.
+ * The userId-scoped localStorage key is preserved so the user gets their own cache
+ * back on next login without a server round-trip.
+ */
+export function clearPriorCollaboratorsCache(): void {
+	_currentUserId = null;
+	cachedUsers = null;
+	cacheHydrated = false;
+	remoteLoaded = false;
+	inflightRequest = null;
 }
 
 export async function listPriorCollaborators(forceRefresh = false): Promise<PriorCollaboratorUser[]> {
