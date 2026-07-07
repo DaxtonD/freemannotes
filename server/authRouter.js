@@ -52,6 +52,7 @@ const {
 } = require('./workspaceAccess');
 const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
 const { validatePassword } = require('./passwordPolicy');
+const { seedWelcomeNote } = require('./seedWelcomeNote');
 
 const BCRYPT_ROUNDS = Number(process.env.AUTH_BCRYPT_ROUNDS || 12);
 const ALLOW_REGISTER = String(process.env.AUTH_ALLOW_REGISTER || 'true').trim().toLowerCase() !== 'false';
@@ -292,6 +293,13 @@ function createApiAuthRouter({ prisma }) {
 
 						return { user, workspace };
 					});
+
+					// Seed welcome note — non-fatal if it fails
+					try {
+						await seedWelcomeNote(prisma, result.workspace.id);
+					} catch (seedErr) {
+						console.warn('[auth] welcome note seeding failed (non-fatal):', seedErr?.message);
+					}
 
 					const secure = isSecureRequest(req);
 					const sessionJwt = signSession({

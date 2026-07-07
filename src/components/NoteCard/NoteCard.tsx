@@ -65,6 +65,7 @@ import {
 	setNoteCardCompletedExpanded,
 } from '../../core/noteCardCompletedExpansion';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
+import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { resolveNoteBannerReadableColors, useNoteBannerReadableColors } from '../../core/noteBannerReadability';
 import { getNoteBannerPresentationStyle, transformNoteBannerSampleColor, useThemedNoteBannerImageUrl } from '../../core/noteBannerTheme';
@@ -310,7 +311,7 @@ function useTextNoteRichPreview(doc: Y.Doc, plainText: string): JSONContent {
 function getSafeHref(value: unknown): string | undefined {
 	if (typeof value !== 'string') return undefined;
 	const href = value.trim();
-	if (!href || /^javascript:/i.test(href)) return undefined;
+	if (!href || /^javascript:/i.test(href) || href.startsWith('#')) return undefined;
 	return href;
 }
 
@@ -462,7 +463,7 @@ function cardNoteTypeIcon(noteType?: string | null): IconDefinition {
 	}
 }
 
-function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string, allowLinkInteraction: boolean, deniedNoteIds?: Set<string>): React.ReactNode[] {
+function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string, allowLinkInteraction: boolean, deniedNoteIds?: Set<string>, liveAvatarLookup?: ReadonlyMap<string, string | null>): React.ReactNode[] {
 	return nodes.flatMap((node, index) => {
 		const key = `${keyPrefix}:${index}`;
 		if (node.type === 'hardBreak') return [<br key={key} />];
@@ -471,7 +472,9 @@ function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string, all
 			if (!label) return [];
 			const refType   = node.attrs?.type;
 			const noteType  = node.attrs?.noteType ?? null;
-			const avatarUrl = node.attrs?.avatarUrl ?? null;
+			const userId    = node.attrs?.id ?? null;
+			const storedUrl = node.attrs?.avatarUrl ?? null;
+			const avatarUrl = (liveAvatarLookup && userId ? (liveAvatarLookup.get(userId) ?? storedUrl) : storedUrl);
 			const isNote    = refType === 'note';
 			const isUser    = refType === 'user';
 			const noteId    = node.attrs?.id ?? null;
@@ -500,14 +503,14 @@ function renderInlineNodes(nodes: readonly JSONContent[], keyPrefix: string, all
 	});
 }
 
-function renderTableCellContent(nodes: readonly JSONContent[], keyPrefix: string, allowLinkInteraction: boolean, deniedNoteIds?: Set<string>): React.ReactNode {
+function renderTableCellContent(nodes: readonly JSONContent[], keyPrefix: string, allowLinkInteraction: boolean, deniedNoteIds?: Set<string>, liveAvatarLookup?: ReadonlyMap<string, string | null>): React.ReactNode {
 	const children = nodes
-		.map((child, index) => renderBlockNode(child, `${keyPrefix}:${index}`, { inTableCell: true, allowLinkInteraction, deniedNoteIds }))
+		.map((child, index) => renderBlockNode(child, `${keyPrefix}:${index}`, { inTableCell: true, allowLinkInteraction, deniedNoteIds, liveAvatarLookup }))
 		.filter(Boolean);
 	return children.length > 0 ? children : <span className={styles.richTableEmpty}>&nbsp;</span>;
 }
 
-function renderTableNode(block: JSONContent, key: string, allowLinkInteraction: boolean, deniedNoteIds?: Set<string>): React.ReactNode {
+function renderTableNode(block: JSONContent, key: string, allowLinkInteraction: boolean, deniedNoteIds?: Set<string>, liveAvatarLookup?: ReadonlyMap<string, string | null>): React.ReactNode {
 	const rows = (block.content ?? [])
 		.filter((row): row is JSONContent => row?.type === 'tableRow')
 		.map((row) => ({
@@ -528,35 +531,25 @@ function renderTableNode(block: JSONContent, key: string, allowLinkInteraction: 
 		: [];
 	const bodyRows = hasHeaderRow && rows.length > 1 ? rows.slice(1) : rows;
 	const displayRows = bodyRows.length > 0 ? bodyRows : rows;
-	const columnCount = Math.max(0, ...displayRows.map((row) => row.cells.length));
-	if (columnCount === 0) return null;
+	if (displayRows.length === 0) return null;
 
 	return (
 		<div key={key} className={styles.richTablePreview}>
 			<section className={styles.richTableCard}>
-				{Array.from({ length: columnCount }, (_, columnIndex) => {
-					const label = headerLabels[columnIndex] || `Column ${columnIndex + 1}`;
-					const values = displayRows
-						.map((row, rowIndex) => {
-							const cell = row.cells[columnIndex];
-							if (!cell) return null;
-							return (
-								<div key={`${key}:column:${columnIndex}:row:${rowIndex}`} className={styles.richTableValueRow}>
-									{renderTableCellContent(cell.content, `${key}:column:${columnIndex}:row:${rowIndex}`, allowLinkInteraction, deniedNoteIds)}
+				{hasHeaderRow && headerLabels.length > 0 && (
+					<div className={styles.richTableHeaderBar}>{headerLabels.join(' · ')}</div>
+				)}
+				{displayRows.map((row, rowIndex) => (
+					<div key={`${key}:row:${rowIndex}`} className={styles.richTableField}>
+						<div className={styles.richTableValue}>
+							{row.cells.map((cell, cellIndex) => (
+								<div key={`${key}:row:${rowIndex}:cell:${cellIndex}`} className={styles.richTableValueRow}>
+									{renderTableCellContent(cell.content, `${key}:row:${rowIndex}:cell:${cellIndex}`, allowLinkInteraction, deniedNoteIds, liveAvatarLookup)}
 								</div>
-							);
-						})
-						.filter(Boolean);
-
-					return (
-						<div key={`${key}:column:${columnIndex}`} className={styles.richTableField}>
-							<div className={styles.richTableLabel}>{label}</div>
-							<div className={styles.richTableValue}>
-								{values.length > 0 ? values : <span className={styles.richTableEmpty}>&nbsp;</span>}
-							</div>
+							))}
 						</div>
-					);
-				})}
+					</div>
+				))}
 			</section>
 		</div>
 	);
@@ -569,6 +562,7 @@ type RichPreviewRenderOptions = {
 	onToggleTaskItem?: (indexPath: number[]) => void;
 	noteId?: string;
 	deniedNoteIds?: Set<string>;
+	liveAvatarLookup?: ReadonlyMap<string, string | null>;
 };
 
 function renderBlockNode(block: JSONContent, key: string, options: RichPreviewRenderOptions = {}): React.ReactNode {
@@ -579,11 +573,12 @@ function renderBlockNode(block: JSONContent, key: string, options: RichPreviewRe
 		onToggleTaskItem,
 		noteId,
 		deniedNoteIds,
+		liveAvatarLookup,
 	} = options;
 	const style = getTextAlignStyle(block);
 
 	if (block.type === 'paragraph' || block.type === 'heading') {
-		const children = renderInlineNodes(block.content ?? [], key, allowLinkInteraction, deniedNoteIds);
+		const children = renderInlineNodes(block.content ?? [], key, allowLinkInteraction, deniedNoteIds, liveAvatarLookup);
 		if (block.type === 'heading') {
 			const level = getHeadingLevel(block);
 			const headingClassName = [styles.richHeading, styles[`richHeading${level}` as keyof typeof styles]].filter(Boolean).join(' ');
@@ -601,27 +596,27 @@ function renderBlockNode(block: JSONContent, key: string, options: RichPreviewRe
 	}
 
 	if (block.type === 'bulletList' || block.type === 'orderedList') {
-		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds })).filter(Boolean);
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup })).filter(Boolean);
 		if (items.length === 0) return null;
 		const ListTag = block.type === 'orderedList' ? 'ol' : 'ul';
 		return <ListTag key={key} className={block.type === 'orderedList' ? styles.richOrderedList : styles.richList}>{items}</ListTag>;
 	}
 
 	if (block.type === 'taskList') {
-		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds })).filter(Boolean);
+		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup })).filter(Boolean);
 		if (items.length === 0) return null;
 		return <ul key={key} className={styles.richTaskList}>{items}</ul>;
 	}
 
 	if (block.type === 'listItem') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem: true, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds })).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem: true, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup })).filter(Boolean);
 		if (children.length === 0) return null;
 		return <li key={key} className={styles.richListItem}>{children}</li>;
 	}
 
 	if (block.type === 'taskItem') {
 		const checked = getTaskItemChecked(block);
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem: true, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds })).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem: true, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup })).filter(Boolean);
 		if (children.length === 0) return null;
 		const indexPath = onToggleTaskItem ? key.split(':').slice(1).map(Number) : null;
 		return (
@@ -652,7 +647,7 @@ function renderBlockNode(block: JSONContent, key: string, options: RichPreviewRe
 	}
 
 	if (block.type === 'blockquote') {
-		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds })).filter(Boolean);
+		const children = (block.content ?? []).map((child, index) => renderBlockNode(child, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup })).filter(Boolean);
 		if (children.length === 0) return null;
 		return <blockquote key={key} className={styles.richBlockquote}>{children}</blockquote>;
 	}
@@ -671,11 +666,11 @@ function renderBlockNode(block: JSONContent, key: string, options: RichPreviewRe
 	}
 
 	if (block.type === 'table') {
-		return renderTableNode(block, key, allowLinkInteraction, deniedNoteIds);
+		return renderTableNode(block, key, allowLinkInteraction, deniedNoteIds, liveAvatarLookup);
 	}
 
 	if (Array.isArray(block.content) && block.content.length > 0) {
-		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds })).filter(Boolean);
+		const children = block.content.map((child, index) => renderBlockNode(child, `${key}:${index}`, { inListItem, inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup })).filter(Boolean);
 		if (children.length === 0) return null;
 		return <React.Fragment key={key}>{children}</React.Fragment>;
 	}
@@ -689,6 +684,7 @@ function renderRichPreview(
 	onToggleTaskItem?: (indexPath: number[]) => void,
 	noteId?: string,
 	deniedNoteIds?: Set<string>,
+	liveAvatarLookup?: ReadonlyMap<string, string | null>,
 ): React.ReactNode {
 	if (!json?.content) return null;
 	const visibleBlocks = noteId
@@ -697,7 +693,7 @@ function renderRichPreview(
 			.map((item) => item.block)
 		: json.content;
 	const blocks = visibleBlocks
-		.map((block, index) => renderBlockNode(block, `block:${index}`, { allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds }))
+		.map((block, index) => renderBlockNode(block, `block:${index}`, { allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup }))
 		.filter(Boolean);
 	return blocks.length > 0 ? blocks : null;
 }
@@ -1229,6 +1225,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const noteImages = useNoteCardImages(props.docId, props.noteId, props.authUserId);
 	const reminderAt = props.reminderAt ?? '';
 	const richContent = useTextNoteRichPreview(props.doc, content);
+	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	const checklistArray = React.useMemo(() => props.doc.getArray<Y.Map<any>>('checklist'), [props.doc]);
 
 	const handleToggleRichTaskItem = React.useCallback((indexPath: number[]) => {
@@ -2296,7 +2293,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					</div>
 				) : type === 'text' ? (
 					<div ref={bodyRef} className={`${styles.body}${hasMenuButton ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
-						<div ref={contentPreviewRef} className={`${styles.contentPreview}${textPreviewLayout.isOverflowing ? ` ${styles.contentPreviewOverflowing}` : ''}`} style={textPreviewStyle}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined, props.noteId, deniedNoteIds) ?? content}</div>
+						<div ref={contentPreviewRef} className={`${styles.contentPreview}${textPreviewLayout.isOverflowing ? ` ${styles.contentPreviewOverflowing}` : ''}`} style={textPreviewStyle}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined, props.noteId, deniedNoteIds, liveAvatarLookup) ?? content}</div>
 					</div>
 				) : (
 					<>
@@ -2323,7 +2320,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 											/>
 										</span>
 										<div className={`${styles.checklistText}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
-											{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions, undefined, undefined, deniedNoteIds) ?? item.text)}
+											{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions, undefined, undefined, deniedNoteIds, liveAvatarLookup) ?? item.text)}
 										</div>
 									</li>
 								))}
@@ -2369,7 +2366,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 													<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 												</span>
 												<div className={styles.checklistText}>
-													{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false, undefined, undefined, deniedNoteIds) ?? item.text)}
+													{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), false, undefined, undefined, deniedNoteIds, liveAvatarLookup) ?? item.text)}
 												</div>
 											</li>
 										) : (
@@ -2393,7 +2390,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 													/>
 												</span>
 												<div className={`${styles.checklistText} ${styles.checklistTextCompleted}${clampedById[item.id] ? ` ${styles.checklistTextClamped}` : ''}`} data-checklist-text-id={item.id}>
-													{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions, undefined, undefined, deniedNoteIds) ?? item.text)}
+													{renderChecklistCardContent(item, renderRichPreview(item.richContent ?? createRichTextDocFromPlainText(item.text), allowLinkInteractions, undefined, undefined, deniedNoteIds, liveAvatarLookup) ?? item.text)}
 												</div>
 											</li>
 										))}

@@ -44,7 +44,7 @@ function jsonResponse(res, status, body) {
 	res.end(json);
 }
 
-async function publishProfileImageChange(prisma, userId, onWorkspaceMetadataChanged) {
+async function publishProfileImageChange(prisma, userId, profileImageUrl, onWorkspaceMetadataChanged) {
 	if (!prisma || !userId || typeof onWorkspaceMetadataChanged !== 'function') return;
 	try {
 		const memberships = await prisma.workspaceMember.findMany({
@@ -85,6 +85,8 @@ async function publishProfileImageChange(prisma, userId, onWorkspaceMetadataChan
 
 		await onWorkspaceMetadataChanged({
 			reason: 'user-profile-updated',
+			changedUserId: userId,
+			profileImageUrl: typeof profileImageUrl === 'string' ? profileImageUrl : null,
 			userIds: Array.from(userIds),
 		});
 	} catch (error) {
@@ -184,7 +186,7 @@ function createProfileRouter({ prisma, uploadDir, onWorkspaceMetadataChanged = n
 						where: { id: userId },
 						data: { profileImage: publicPath },
 					});
-					await publishProfileImageChange(prisma, userId, onWorkspaceMetadataChanged);
+					await publishProfileImageChange(prisma, userId, publicPath, onWorkspaceMetadataChanged);
 
 					jsonResponse(res, 200, { profileImage: publicPath });
 				} catch (err) {

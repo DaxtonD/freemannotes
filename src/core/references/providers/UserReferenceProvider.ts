@@ -1,5 +1,6 @@
 import type { ReferenceProvider, ReferenceResult } from '../ReferenceProvider';
 import { listPriorCollaborators } from '../../priorCollaboratorsApi';
+import { setLiveUserAvatar } from '../../liveUserAvatarCache';
 
 let _workspaceMembersCache: ReferenceResult[] | null = null;
 let _loading = false;
@@ -22,6 +23,9 @@ async function fetchWorkspaceMembers(): Promise<ReferenceResult[]> {
 				avatarUrl: m.avatarUrl ?? null,
 			}));
 		_workspaceMembersCache = members;
+		for (const m of members) {
+			if (m.id) setLiveUserAvatar(m.id, m.avatarUrl);
+		}
 		return members;
 	} catch {
 		return [];
@@ -32,6 +36,12 @@ async function fetchWorkspaceMembers(): Promise<ReferenceResult[]> {
 
 export function invalidateWorkspaceMembersCache(): void {
 	_workspaceMembersCache = null;
+}
+
+/** Force-refresh workspace members from the server and update the live avatar cache. */
+export async function refreshUserAvatarsCache(): Promise<void> {
+	_workspaceMembersCache = null;
+	await fetchWorkspaceMembers();
 }
 
 export const UserReferenceProvider: ReferenceProvider = {

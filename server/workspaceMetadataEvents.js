@@ -14,6 +14,8 @@ function normalizeWorkspaceMetadataEvent(raw) {
 		reason: typeof raw.reason === 'string' ? raw.reason : 'workspace-updated',
 		workspaceId: typeof raw.workspaceId === 'string' ? raw.workspaceId : null,
 		docId: typeof raw.docId === 'string' ? raw.docId : null,
+		changedUserId: typeof raw.changedUserId === 'string' ? raw.changedUserId : null,
+		profileImageUrl: typeof raw.profileImageUrl === 'string' ? raw.profileImageUrl : null,
 		userIds: Array.isArray(raw.userIds)
 			? raw.userIds.filter((value) => typeof value === 'string' && value.length > 0)
 			: [],

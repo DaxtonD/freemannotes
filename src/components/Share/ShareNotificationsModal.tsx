@@ -35,6 +35,8 @@ type Props = {
 	onApplyAppUpdate?: () => void;
 	onDismissAppUpdate?: () => void;
 	onDismissAppUpdated?: () => void;
+	importCompletedNotification?: { count: number } | null;
+	onDismissImportCompleted?: () => void;
 	onChanged?: () => void;
 	onAcceptedPlacement?: (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => void;
 	onAcceptedWorkspaceInvite?: (workspaceId: string) => void;
@@ -204,8 +206,9 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	// Use the authoritative pending count too, because reminder rows can be stale
 	// on mobile/PWA while the badge count is already non-zero.
 	const hasPendingReminderNotifications = (props.pendingReminderCount ?? 0) > 0;
+	const hasImportCompleted = Boolean(props.importCompletedNotification);
 	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders || hasPendingReminderNotifications || hasInboxUnread;
-	const hasAppNotification = hasAppUpdate || hasAppUpdated;
+	const hasAppNotification = hasAppUpdate || hasAppUpdated || hasImportCompleted;
 	const modalTitle = t('share.notifications');
 	const modalSubtitle = hasAppNotification ? t('prefs.notificationsSubtitle') : t('share.notificationsSubtitle');
 	const emptyStateLabel = t('share.noNotifications');
@@ -490,6 +493,36 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 								</div>
 								<div className={styles.actionRow}>
 									<button type="button" className={styles.primaryButton} onClick={props.onDismissAppUpdated}>
+										{t('common.close')}
+									</button>
+								</div>
+							</div>
+						</div>
+					) : null}
+
+					{hasImportCompleted ? (
+						<div className={`${styles.section} ${styles.notificationList}`}>
+							<div className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
+								<div className={styles.notificationHeader}>
+									<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
+										✓
+									</div>
+									<div className={styles.notificationCopy}>
+										<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
+											<strong>{t('importExport.importNotificationTitle')}</strong>
+										</div>
+										<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
+											{props.importCompletedNotification!.count === 1
+												? t('importExport.importSuccessSingular').replace('{count}', '1')
+												: t('importExport.importSuccessPlural').replace('{count}', String(props.importCompletedNotification!.count))}
+										</div>
+									</div>
+									<div className={styles.notificationStatusWrap}>
+										<span className={`${styles.badge} ${styles.badgeAccepted}`}>{t('importExport.importCompleteBadge')}</span>
+									</div>
+								</div>
+								<div className={styles.actionRow}>
+									<button type="button" className={styles.primaryButton} onClick={props.onDismissImportCompleted}>
 										{t('common.close')}
 									</button>
 								</div>

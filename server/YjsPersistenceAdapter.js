@@ -419,7 +419,7 @@ class YjsPersistenceAdapter {
 
 		if (!loaded) {
 			logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'hydrate-miss' });
-			console.info(`[persist] no stored state for room=${docName} — starting fresh`);
+			console.info(`[persist] no stored state for room=${docName} workspaceId=${workspaceId} — starting fresh`);
 		}
 
 		logEvent('YJS_BIND_STATE', { ...getRoomDebugContext(docName), event: 'bind-end', loaded });
@@ -773,8 +773,7 @@ class YjsPersistenceAdapter {
 			]);
 
 			for (const ref of newUserRefs) {
-				if (actorId && actorId === ref.targetId) continue; // skip self-mention
-
+				const isSelfMention = actorId && actorId === ref.targetId;
 				const isAssignment = ref.listContext === 'taskItem' || ref.listContext === 'listItem';
 				let invitationId = null;
 
@@ -894,6 +893,49 @@ class YjsPersistenceAdapter {
 		}, this._debounceMs);
 
 		this._debounceTimers.set(docName, timer);
+	}
+
+	/**
+	 * Apply a Yjs binary update to the in-memory doc for docName, if it is
+	 * currently active (i.e. has at least one connected WebSocket client).
+	 *
+	 * Used by the import router to push imported notes into the live Yjs room so
+	 * connected clients see the new content immediately without reconnecting.
+	 * The existing 'update' listener fires, scheduling the normal debounced DB
+	 * write that will persist the change.
+	 *
+	 * @param {string} docName — Yjs room name (e.g. "workspaceId:__notes_registry__").
+	 * @param {Uint8Array} updateBytes — Yjs binary update (delta, not full state).
+	 * @returns {boolean} true if the update was applied to an active in-memory doc.
+	 */
+	applyExternalUpdate(docName, updateBytes) {
+		const doc = this._activeDocs.get(docName);
+		if (!doc) return false;
+		try {
+			Y.applyUpdate(doc, updateBytes, 'import');
+		} catch (err) {
+			console.warn(`[persist] applyExternalUpdate failed for ${docName}:`, err?.message);
+			return false;
+		}
+		return true;
+	}
+
+	/**
+	 * Write a doc state blob directly to the Redis cache for a given room.
+	 * Used by the import router to keep the cache consistent after writing
+	 * directly to PostgreSQL, so the next WS bindState serves fresh data
+	 * instead of a stale entry.
+	 *
+	 * No-op when Redis is not configured.
+	 *
+	 * @param {string} docName — Yjs room name.
+	 * @param {string} workspaceId — Workspace that owns this room.
+	 * @param {Buffer | Uint8Array} state — Full Yjs state blob (encodeStateAsUpdate).
+	 * @returns {Promise<void>}
+	 */
+	async writeDocToCache(docName, workspaceId, state) {
+		if (!this._redis) return;
+		await this._cacheToRedis(docName, workspaceId, state);
 	}
 
 	/**

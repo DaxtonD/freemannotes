@@ -378,7 +378,7 @@ export class DocumentManager {
 			this.onlineReconnectTimer = null;
 		}
 
-		for (const provider of this.websocketProviders.values()) {
+		for (const [rName, provider] of this.websocketProviders.entries()) {
 			try {
 				if (next) {
 					// Reset internal reconnect counters so a previously-disconnected
@@ -391,6 +391,8 @@ export class DocumentManager {
 				}
 			} catch {
 				// ignore
+			}
+			if (rName.includes('__notes_registry__')) {
 			}
 		}
 
@@ -1276,6 +1278,8 @@ export class DocumentManager {
 		//     tower switch without making the user wait too long.
 		//   disableBc: false (default) — BroadcastChannel remains enabled
 		//     for same-origin same-browser cross-tab sync (instant, no WS).
+		if (roomName.includes('__notes_registry__')) {
+		}
 		const wsProvider = new WebsocketProvider(this.websocketUrl, roomName, doc, {
 			connect: this.websocketEnabled,
 			resyncInterval: 30_000,

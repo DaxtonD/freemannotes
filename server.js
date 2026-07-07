@@ -297,6 +297,9 @@ let noteMediaRouter = null;
 /** @type {ReturnType<import('./server/activityRouter').createActivityRouter> | null} */
 let activityRouter = null;
 
+/** @type {ReturnType<import('./server/importRouter').createImportRouter> | null} */
+let importRouter = null;
+
 /** @type {ReturnType<import('./server/supporterRouter').createSupporterRouter> | null} */
 let supporterRouter = null;
 
@@ -641,6 +644,15 @@ if (DATABASE_URL.length > 0) {
 		}
 
 		try {
+			const { createImportRouter } = require('./server/importRouter');
+			importRouter = createImportRouter(prisma, persistAdapter);
+			console.info('[server] Import / Export API router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Import/Export router:', err.message);
+			importRouter = null;
+		}
+
+		try {
 			const { createSupporterRouter } = require('./server/supporterRouter');
 			supporterRouter = createSupporterRouter({ prisma });
 			console.info('[server] Supporter API router initialized');
@@ -880,6 +892,11 @@ const server = http.createServer((req, res) => {
 			return;
 		}
 
+		// ── Import / Export router ───────────────────────────────────────
+		if (importRouter && importRouter(req, res)) {
+			return;
+		}
+
 		// ── Supporter router ─────────────────────────────────────────────
 		if (supporterRouter && supporterRouter(req, res)) {
 			return;
@@ -1108,6 +1125,8 @@ function broadcastWorkspaceMetadataChanged(rawEvent) {
 		reason: event.reason,
 		workspaceId: event.workspaceId,
 		docId: event.docId,
+		changedUserId: event.changedUserId,
+		profileImageUrl: event.profileImageUrl,
 		occurredAt: event.occurredAt,
 	});
 	for (const ws of metadataWss.clients) {
