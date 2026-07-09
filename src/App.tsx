@@ -1423,6 +1423,13 @@ export function App(): React.JSX.Element {
 	const selectedNoteIdRef = React.useRef(selectedNoteId);
 	const [pendingMentionScrollNodeId, setPendingMentionScrollNodeId] = React.useState<string | null>(null);
 	selectedNoteIdRef.current = selectedNoteId;
+	// Clear the pending mention scroll whenever the editor closes, regardless of
+	// how it closes (back button, swipe, explicit close). Without this, the scroll
+	// nodeId persists through the popstate path (applyOverlaySnapshot) and pulses
+	// the chip again the next time any note is opened.
+	React.useEffect(() => {
+		if (selectedNoteId === null) setPendingMentionScrollNodeId(null);
+	}, [selectedNoteId]);
 	// Mirror the open note to localStorage so it can be restored if the OS kills the PWA process.
 	React.useEffect(() => {
 		setSessionRestoreNote(selectedNoteId, authWorkspaceId);
