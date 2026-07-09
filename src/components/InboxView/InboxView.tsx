@@ -58,6 +58,8 @@ interface Props {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const FETCH_TIMEOUT_MS = 5_000;
+
 function formatRelativeTime(iso: string): string {
 	const diff = Date.now() - new Date(iso).getTime();
 	const mins = Math.floor(diff / 60_000);
@@ -100,11 +102,20 @@ function initials(name: string | null | undefined): string {
 	return name.split(/\s+/).map((w) => w[0] ?? '').join('').slice(0, 2).toUpperCase();
 }
 
+// Per-filter cache stored in a ref so it persists across renders without
+// causing re-renders when updated. Keyed by FilterTab.
+interface FilterCache {
+	items: Activity[];
+	unreadIds: Set<string>;
+	nextCursor: string | null;
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded }: Props) {
 	const [filter, setFilter] = useState<FilterTab>('all');
 	const [activities, setActivities] = useState<Activity[]>([]);
+	// True only when fetching for a filter that has no cached data yet.
 	const [loading, setLoading] = useState(true);
 	const [nextCursor, setNextCursor] = useState<string | null>(null);
 	const [loadingMore, setLoadingMore] = useState(false);
@@ -118,6 +129,9 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	const [folderName, setFolderName] = useState('');
 
 	const abortRef = useRef<AbortController | null>(null);
+	// Per-filter in-memory cache. Populated on each successful fetch so that
+	// switching tabs offline shows the last-known data rather than a blank list.
+	const cacheRef = useRef<Partial<Record<FilterTab, FilterCache>>>({});
 
 	const kindForFilter = useCallback((f: FilterTab): string | null => {
 		if (f === 'mentions')  return 'mention';
@@ -125,33 +139,48 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		return null;
 	}, []);
 
-	const fetchPage = useCallback(async (cursor: string | null, replace: boolean) => {
+	// Apply a cached entry to the live display state (no network needed).
+	const applyCache = useCallback((entry: FilterCache) => {
+		setActivities(entry.items);
+		setUnreadIds(entry.unreadIds);
+		setNextCursor(entry.nextCursor);
+	}, []);
+
+	// Update the cache ref AND live display state together so they stay in sync.
+	const commitToCache = useCallback((f: FilterTab, items: Activity[], unread: Set<string>, cursor: string | null) => {
+		cacheRef.current = { ...cacheRef.current, [f]: { items, unreadIds: unread, nextCursor: cursor } };
+		setActivities(items);
+		setUnreadIds(unread);
+		setNextCursor(cursor);
+	}, []);
+
+	const fetchPage = useCallback(async (cursor: string | null, replace: boolean, targetFilter: FilterTab): Promise<boolean> => {
 		abortRef.current?.abort();
 		const ctrl = new AbortController();
 		abortRef.current = ctrl;
 
+		// Abort if the network hasn't responded in FETCH_TIMEOUT_MS (prevents infinite
+		// "Loading" when the device goes offline mid-request).
+		const timeoutId = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+
 		const params = new URLSearchParams({ limit: '30' });
 		if (cursor) params.set('cursor', cursor);
-		const kindFilter = kindForFilter(filter);
+		const kindFilter = kindForFilter(targetFilter);
 		if (kindFilter) params.set('kind', kindFilter);
 
 		try {
 			const res = await fetch(`/api/inbox?${params}`, { signal: ctrl.signal });
-			if (!res.ok) return;
+			clearTimeout(timeoutId);
+			if (!res.ok) return false;
 			const data: { items: Activity[]; nextCursor: string | null } = await res.json();
 
-			setActivities((prev) => replace ? data.items : [...prev, ...data.items]);
-			setNextCursor(data.nextCursor);
+			const prevItems = replace ? [] : (cacheRef.current[targetFilter]?.items ?? []);
+			const prevUnread = replace ? new Set<string>() : (cacheRef.current[targetFilter]?.unreadIds ?? new Set<string>());
+			const newItems = replace ? data.items : [...prevItems, ...data.items];
+			const newUnread = new Set([...prevUnread, ...data.items.filter((a) => !a.read).map((a) => a.id)]);
 
-			const newUnread = new Set(data.items.filter((a) => !a.read).map((a) => a.id));
-			if (replace) {
-				setUnreadIds(newUnread);
-			} else {
-				setUnreadIds((prev) => new Set([...prev, ...newUnread]));
-			}
+			commitToCache(targetFilter, newItems, newUnread, data.nextCursor);
 
-			// Notify caller of nodeIds present in server activities so it can clear
-			// any pending entries that now have a real server-side counterpart.
 			if (onServerNodeIdsLoaded) {
 				const nodeIds = data.items.flatMap((a) =>
 					a.deepLink?.kind === 'prosemirror_node' && typeof a.deepLink.nodeId === 'string'
@@ -160,17 +189,27 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 				);
 				if (nodeIds.length > 0) onServerNodeIdsLoaded(nodeIds);
 			}
+			return true;
 		} catch (e: unknown) {
-			if (e instanceof Error && e.name === 'AbortError') return;
+			clearTimeout(timeoutId);
+			if (e instanceof Error && e.name === 'AbortError') return false;
+			return false;
 		}
-	}, [filter, kindForFilter, onServerNodeIdsLoaded]);
+	}, [kindForFilter, onServerNodeIdsLoaded, commitToCache]);
 
-	// Initial load + filter changes: blank the list and show spinner.
+	// On filter change: show cached data immediately (no flash) and fetch to refresh.
+	// Only show the loading spinner when there is no cached data for this filter yet.
 	useEffect(() => {
-		setLoading(true);
-		setActivities([]);
-		setNextCursor(null);
-		fetchPage(null, true).finally(() => setLoading(false));
+		const cached = cacheRef.current[filter];
+		if (cached) {
+			applyCache(cached);
+			setLoading(false);
+			// Background refresh — don't show spinner
+			void fetchPage(null, true, filter);
+		} else {
+			setLoading(true);
+			fetchPage(null, true, filter).finally(() => setLoading(false));
+		}
 	}, [filter]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	// Server-push refresh: re-fetch quietly without blanking the list.
@@ -178,25 +217,44 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	useEffect(() => {
 		if (prevRefreshTokenRef.current === refreshToken) return;
 		prevRefreshTokenRef.current = refreshToken;
-		fetchPage(null, true).catch(() => {});
-	}, [refreshToken, fetchPage]);
+		void fetchPage(null, true, filter).catch(() => {});
+	}, [refreshToken, fetchPage, filter]);
 
 	const handleLoadMore = useCallback(async () => {
 		if (!nextCursor || loadingMore) return;
 		setLoadingMore(true);
-		await fetchPage(nextCursor, false);
+		await fetchPage(nextCursor, false, filter);
 		setLoadingMore(false);
-	}, [nextCursor, loadingMore, fetchPage]);
+	}, [nextCursor, loadingMore, fetchPage, filter]);
 
 	const markRead = useCallback(async (id: string) => {
 		setUnreadIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
+		// Keep cache in sync
+		const cached = cacheRef.current[filter];
+		if (cached) {
+			const updatedUnread = new Set(cached.unreadIds);
+			updatedUnread.delete(id);
+			cacheRef.current = { ...cacheRef.current, [filter]: { ...cached, unreadIds: updatedUnread } };
+		}
 		onActivityChanged?.();
 		await fetch('/api/inbox/read', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: [id] }),
 		}).catch(() => {});
-	}, [onActivityChanged]);
+	}, [onActivityChanged, filter]);
+
+	const removeFromCache = useCallback((id: string) => {
+		// Remove an item from every filter cache so it stays gone on tab switches.
+		const updated: Partial<Record<FilterTab, FilterCache>> = {};
+		for (const [k, entry] of Object.entries(cacheRef.current) as [FilterTab, FilterCache][]) {
+			const items = entry.items.filter((a) => a.id !== id);
+			const unreadIds = new Set(entry.unreadIds);
+			unreadIds.delete(id);
+			updated[k] = { ...entry, items, unreadIds };
+		}
+		cacheRef.current = updated;
+	}, []);
 
 	const archiveActivity = useCallback(async (e: React.MouseEvent, id: string) => {
 		e.stopPropagation();
@@ -206,18 +264,27 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			return;
 		}
 		setActivities((prev) => prev.filter((a) => a.id !== id));
+		removeFromCache(id);
 		onActivityChanged?.();
 		await fetch('/api/inbox/archive', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: [id] }),
 		}).catch(() => {});
-	}, [onActivityChanged, onPendingDismissed]);
+	}, [onActivityChanged, onPendingDismissed, removeFromCache]);
 
 	const markAllRead = useCallback(async () => {
 		if (unreadIds.size === 0) return;
 		const ids = [...unreadIds];
 		setUnreadIds(new Set());
+		// Clear unread from all filter caches
+		const updated: Partial<Record<FilterTab, FilterCache>> = {};
+		for (const [k, entry] of Object.entries(cacheRef.current) as [FilterTab, FilterCache][]) {
+			const updatedUnread = new Set(entry.unreadIds);
+			ids.forEach((id) => updatedUnread.delete(id));
+			updated[k] = { ...entry, unreadIds: updatedUnread };
+		}
+		cacheRef.current = updated;
 		onActivityChanged?.();
 		await fetch('/api/inbox/read', {
 			method: 'POST',
@@ -229,6 +296,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	const archiveAll = useCallback(async () => {
 		setActivities([]);
 		setUnreadIds(new Set());
+		cacheRef.current = {};
 		await fetch('/api/inbox/archive-all', {
 			method: 'POST',
 		}).catch(() => {});
@@ -280,6 +348,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 					onPendingDismissed?.(activity.id);
 				} else {
 					setActivities((prev) => prev.filter((a) => a.id !== activity.id));
+					removeFromCache(activity.id);
 					fetch('/api/inbox/archive', {
 						method: 'POST',
 						headers: { 'content-type': 'application/json' },
@@ -291,7 +360,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			// Snap back
 			setSwipeOffsets((prev) => { const n = { ...prev }; delete n[activity.id]; return n; });
 		}
-	}, [swipeOffsets, onActivityChanged, onPendingDismissed]);
+	}, [swipeOffsets, onActivityChanged, onPendingDismissed, removeFromCache]);
 
 	const handleActivityClick = useCallback((activity: Activity) => {
 		// Don't navigate if the placement picker is open on this card.

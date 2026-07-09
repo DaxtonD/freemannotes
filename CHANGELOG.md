@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.7 - 2026-07-08
+
+### Fixed
+- **Inbox cards disappear offline.** When the device went offline, the Inbox feed blanked (showed "Sector clear") even when the user had existing unread cards. The filter-change effect cleared `activities` before fetching, and the offline fetch returned nothing — leaving the list empty. Fix: InboxView now maintains a per-filter in-memory cache (`cacheRef`). On tab switch, cached activities are displayed immediately. A background fetch refreshes the cache when online; if offline, the last-known activities remain visible.
+- **Inbox tab switching caused "Loading" flash + freeze.** Every tab press blanked the list and showed a spinner for the duration of the network round-trip. Offline, the spinner persisted indefinitely (browser-level request timeout). Fix: loading spinner is now suppressed whenever the filter has cached data; a 5-second `AbortController` timeout is applied to every fetch so the UI always resolves promptly.
+- **@mention chip pulses every time a note is opened after inbox navigation.** Clicking an inbox activity card sets `pendingMentionScrollNodeId` in App state to scroll the editor to the mentioned chip. This value was only cleared by the explicit close-note path, not the mobile back-button path (`applyOverlaySnapshot`), so it persisted across subsequent note opens and pulsed the chip again each time. Fix: a `useEffect` watching `selectedNoteId === null` clears the scroll nodeId whenever the editor closes, regardless of how it closes.
+
 ## 1.6.6 - 2026-07-07
 
 ### Fixed
