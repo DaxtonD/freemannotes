@@ -1,6 +1,7 @@
 import type { ReferenceProvider, ReferenceResult } from '../ReferenceProvider';
 import { listPriorCollaborators } from '../../priorCollaboratorsApi';
 import { setLiveUserAvatar } from '../../liveUserAvatarCache';
+import { readWorkspaceListLocalCache } from '../../workspaceListLocalCache';
 
 const LS_KEY_PREFIX = 'freemannotes.workspaceMembersCache.v1:';
 
@@ -16,6 +17,9 @@ export function initWorkspaceMembersCacheForUser(userId: string): void {
 	}
 	_lsKey = newKey;
 	if (_workspaceMembersCache) return;
+
+	// Primary: try the dedicated workspace members LS cache (written after every
+	// successful /api/workspace/members fetch).
 	try {
 		const raw = localStorage.getItem(_lsKey);
 		if (raw) {
@@ -25,6 +29,38 @@ export function initWorkspaceMembersCacheForUser(userId: string): void {
 				for (const m of parsed) {
 					if (m.id) setLiveUserAvatar(m.id, m.avatarUrl ?? null);
 				}
+				return;
+			}
+		}
+	} catch {
+		// ignore
+	}
+
+	// Fallback: extract collaborator identities from the workspace list cache
+	// (freemannotes.workspaceListCache.v1.<userId>).  This cache is always
+	// populated by the sidebar's startup hydration, so workspace owners are
+	// available even on a cold start with the device offline.  The full members
+	// list (fetched in the background on login) overwrites this once online.
+	try {
+		const workspaces = readWorkspaceListLocalCache(userId);
+		const seen = new Set<string>();
+		const members: ReferenceResult[] = [];
+		for (const ws of workspaces) {
+			if (ws.ownerUserId && !seen.has(ws.ownerUserId) && ws.ownerName) {
+				seen.add(ws.ownerUserId);
+				members.push({
+					id: ws.ownerUserId,
+					type: 'user' as const,
+					label: ws.ownerName,
+					sublabel: ws.ownerEmail ?? undefined,
+					avatarUrl: ws.ownerProfileImage ?? null,
+				});
+			}
+		}
+		if (members.length > 0) {
+			_workspaceMembersCache = members;
+			for (const m of members) {
+				if (m.id) setLiveUserAvatar(m.id, m.avatarUrl ?? null);
 			}
 		}
 	} catch {
