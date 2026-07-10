@@ -159,7 +159,7 @@ import {
 	readStoredRemoteNoteDocuments,
 	scheduleQueuedNoteDocumentFlush,
 } from './core/noteDocumentStore';
-import { searchOfflineNotes } from './core/offlineSearch';
+import { searchOfflineNotes, searchLoadedNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { clearSessionRestoreNote, readSessionRestoreNote, setSessionRestoreNote } from './core/sessionRestore';
 import { onPushReceived } from './core/pushManager';
@@ -217,7 +217,7 @@ import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from
 import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle, WORKSPACE_COLOR_TOKENS } from './core/bubbleWorkspaceColors';
 import { setLiveUserAvatar } from './core/liveUserAvatarCache';
 import { refreshUserAvatarsCache, invalidateWorkspaceMembersCache, initWorkspaceMembersCacheForUser } from './core/references/providers/UserReferenceProvider';
-import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache } from './core/priorCollaboratorsApi';
+import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache, refreshPriorCollaboratorsCache } from './core/priorCollaboratorsApi';
 import { addPendingSelfMention, clearMatchedPendingSelfMentions, clearPendingSelfMentionsStore, dismissPendingSelfMention, getPendingSelfMentions, initPendingSelfMentionsForUser, type PendingSelfMention } from './core/pendingSelfMentions';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
 import { InboxView } from './components/InboxView/InboxView';
@@ -2524,7 +2524,6 @@ export function App(): React.JSX.Element {
 	const showMobileFab =
 		isMobileViewport &&
 		viewMode !== 'bubble' &&
-		viewMode !== 'inbox' &&
 		sidebarView === 'notes' &&
 		Boolean(authWorkspaceId && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' && canEditActiveWorkspace) &&
 		!isFabBlockedByOverlay;
@@ -3532,6 +3531,9 @@ export function App(): React.JSX.Element {
 		initWorkspaceMembersCacheForUser(authUserId);
 		// Proactively refresh in the background so the @ dropdown is ready before the user types.
 		void refreshUserAvatarsCache();
+		// Refresh the prior collaborators cache so note-share collaborators are available
+		// offline even if the user has never opened the @ dropdown in the current session.
+		void refreshPriorCollaboratorsCache();
 	}, [authUserId]);
 
 	const restoreCachedAuthSession = React.useCallback((): boolean => {
@@ -8618,20 +8620,33 @@ export function App(): React.JSX.Element {
 		}
 
 		let cancelled = false;
+		const searchArgs = {
+			manager,
+			query: deferredSearchQuery,
+			authUserId,
+			activeWorkspaceId: authWorkspaceId,
+			activeWorkspaceName,
+			collections,
+			labels,
+			sharedPlacements,
+		};
+
+		// Phase 1: search already-loaded in-memory Yjs docs synchronously (no IDB
+		// reads). Produces near-instant first results for title/content matches in
+		// the warm case (user has been using the app and docs are resident).
+		void searchLoadedNotes(searchArgs).then((fastResults) => {
+			if (!cancelled && fastResults.length > 0) {
+				setSearchResults(fastResults);
+			}
+		});
+
+		// Phase 2: full search (server + IDB auxiliary data) with a short debounce
+		// so rapid keystrokes don't fan out unnecessary work.
 		const timer = window.setTimeout(() => {
 			setSearchResultsBusy(true);
 			setSearchResultsError(null);
 			const isOfflineSearch = authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false);
-			const offlineRequest = searchOfflineNotes({
-				manager,
-				query: deferredSearchQuery,
-				authUserId,
-				activeWorkspaceId: authWorkspaceId,
-				activeWorkspaceName,
-				collections,
-				labels,
-				sharedPlacements,
-			});
+			const offlineRequest = searchOfflineNotes(searchArgs);
 			const request = isOfflineSearch
 				? offlineRequest.then((results) => ({ results }))
 				: Promise.all([searchNotes(deferredSearchQuery), offlineRequest]).then(([remoteResponse, offlineResults]) => {
@@ -8676,7 +8691,7 @@ export function App(): React.JSX.Element {
 					if (cancelled) return;
 					setSearchResultsBusy(false);
 				});
-		}, 180);
+		}, 50);
 
 		return () => {
 			cancelled = true;
@@ -8977,6 +8992,23 @@ export function App(): React.JSX.Element {
 			deviceId,
 			pinned: !isPinned,
 		});
+		// When unpinning, commit the visual position (top of grid) into noteOrder
+		// so the card stays put rather than flying back to its old canonical slot.
+		if (isPinned) {
+			const noteIdToMove = selectedNoteId;
+			void manager.getNoteOrder().then((order) => {
+				const normalized = noteIdToMove.trim();
+				if (!normalized) return;
+				const arr = order.toArray();
+				const idx = arr.findIndex((id) => id.trim() === normalized);
+				if (idx <= 0) return;
+				const ydoc = (order as unknown as { doc: import('yjs').Doc }).doc;
+				ydoc.transact(() => {
+					order.delete(idx, 1);
+					order.insert(0, [normalized]);
+				});
+			});
+		}
 	};
 	const selectedQuickCreateCollectionOption = selectedNoteId && openDoc && selectedNewNoteCollectionSeed && !selectedNoteReadOnly
 		? {
@@ -9896,8 +9928,8 @@ export function App(): React.JSX.Element {
 				</aside>
 
 				<main className="app-main">
-					{/* Bubble/Inbox views are read-only; quick-create stays in the grid/list views only. */}
-					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') && viewMode !== 'inbox' ? (
+					{/* Inbox now supports quick-create via the same sticky bar; bubble view keeps its scope/zoom chip but hides create buttons via the inner condition. */}
+					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') ? (
 						<div ref={topControlsRef} className="app-main-sticky">
 							{sidebarView === 'notes' && viewMode !== 'bubble' && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' ? (
 						// Reserve the button-row height unconditionally so the grid
@@ -10055,6 +10087,7 @@ export function App(): React.JSX.Element {
 								onShowCompletedChange={(next) => {
 									commitChecklistShowCompletedPref(next);
 								}}
+								authUserId={authUserId}
 							/>
 						) : null}
 					</section>
@@ -10420,8 +10453,8 @@ export function App(): React.JSX.Element {
 			   Mutual exclusion: suppress when a create editor is active to prevent
 			   stacked overlays (both at z-index 220). */}
 			{editorMode === 'none' && selectedNoteId && (!openDoc || openDocId !== selectedNoteId) ? (
-				<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-overlay)' }}>
-					<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>
+				<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-surface)' }}>
+					<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.35 }}>
 						{t('app.loadingEditor')}
 					</div>
 				</div>
@@ -10432,8 +10465,8 @@ export function App(): React.JSX.Element {
 				String(openDoc.getMap<any>('metadata').get('type') ?? 'text') === 'drawing' ? (
 					<DrawingEditorErrorBoundary
 						fallback={
-							<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-overlay)' }}>
-								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>
+							<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-surface)' }}>
+								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.35 }}>
 									{t('app.loadingEditor')}
 								</div>
 							</div>
@@ -10441,8 +10474,8 @@ export function App(): React.JSX.Element {
 					>
 					<React.Suspense
 						fallback={
-							<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-overlay)' }}>
-								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.5 }}>
+							<div role="presentation" style={{ position: 'fixed', inset: 0, zIndex: 220, background: 'var(--color-surface)' }}>
+								<div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', opacity: 0.35 }}>
 									{t('app.loadingEditor')}
 								</div>
 							</div>

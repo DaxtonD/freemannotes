@@ -3,6 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faAt, faListCheck, faCheckDouble, faBoxArchive, faInbox, faCircleCheck, faTrashCan } from '@fortawesome/free-solid-svg-icons';
 import { acceptNoteShareInvitation } from '../../core/noteShareApi';
 import type { PendingSelfMention } from '../../core/pendingSelfMentions';
+import { useI18n } from '../../core/i18n';
 import styles from './InboxView.module.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -60,32 +61,41 @@ interface Props {
 
 const FETCH_TIMEOUT_MS = 5_000;
 
-function formatRelativeTime(iso: string): string {
+function formatRelativeTime(iso: string, t: (key: string) => string): string {
 	const diff = Date.now() - new Date(iso).getTime();
 	const mins = Math.floor(diff / 60_000);
-	if (mins < 1) return 'Just now';
-	if (mins < 60) return `${mins}m ago`;
+	if (mins < 1) return t('inbox.justNow');
+	if (mins < 60) return t('inbox.minsAgo').replace('{mins}', String(mins));
 	const hrs = Math.floor(mins / 60);
-	if (hrs < 24) return `${hrs}h ago`;
+	if (hrs < 24) return t('inbox.hoursAgo').replace('{hrs}', String(hrs));
 	const days = Math.floor(hrs / 24);
-	if (days === 1) return 'Yesterday';
-	if (days < 7) return `${days}d ago`;
+	if (days === 1) return t('inbox.yesterday');
+	if (days < 7) return t('inbox.daysAgo').replace('{days}', String(days));
 	return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function activityMessage(activity: Activity, authUserId: string | null): string {
+function activityMessage(activity: Activity, authUserId: string | null, t: (key: string) => string): string {
 	const isSelf = authUserId != null && activity.actor?.id === authUserId;
-	const actorName = activity.actor?.name ?? 'Someone';
+	const actorName = activity.actor?.name ?? t('inbox.fallbackActor');
 	const noteTitle = activity.snapshot?.noteTitle;
-	const inNote = noteTitle ? `in "${noteTitle}"` : 'in a note';
+	const inNote = noteTitle
+		? t('inbox.inNoteTitle').replace('{title}', noteTitle)
+		: t('inbox.inNote');
 	switch (activity.kind) {
 		case 'mention':
-			return isSelf ? `You mentioned yourself ${inNote}` : `${actorName} mentioned you ${inNote}`;
+			return isSelf
+				? t('inbox.mentionSelf').replace('{inNote}', inNote)
+				: t('inbox.mentionOther').replace('{actorName}', actorName).replace('{inNote}', inNote);
 		case 'assignment_created':
-			return isSelf ? `You assigned yourself a task ${inNote}` : `${actorName} assigned you a task ${inNote}`;
-		case 'note_shared':      return `${actorName} shared a note with you`;
-		case 'note_share_accepted': return `${actorName} accepted your note share`;
-		default:                 return `${actorName} sent you an activity`;
+			return isSelf
+				? t('inbox.assignSelf').replace('{inNote}', inNote)
+				: t('inbox.assignOther').replace('{actorName}', actorName).replace('{inNote}', inNote);
+		case 'note_shared':
+			return t('inbox.sharedNote').replace('{actorName}', actorName);
+		case 'note_share_accepted':
+			return t('inbox.shareAccepted').replace('{actorName}', actorName);
+		default:
+			return t('inbox.unknownActivity').replace('{actorName}', actorName);
 	}
 }
 
@@ -113,6 +123,7 @@ interface FilterCache {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded }: Props) {
+	const { t } = useI18n();
 	const [filter, setFilter] = useState<FilterTab>('all');
 	const [activities, setActivities] = useState<Activity[]>([]);
 	// True only when fetching for a filter that has no cached data yet.
@@ -420,9 +431,9 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	}, [folderName, markRead, onOpenNote, placementChoice]);
 
 	const tabs: { key: FilterTab; label: string }[] = [
-		{ key: 'all',      label: 'All' },
-		{ key: 'mentions', label: 'Mentions' },
-		{ key: 'assigned', label: 'Assigned to me' },
+		{ key: 'all',      label: t('inbox.tabAll') },
+		{ key: 'mentions', label: t('inbox.tabMentions') },
+		{ key: 'assigned', label: t('inbox.tabAssigned') },
 	];
 
 	// Build a merged display list: pending self-mentions shown above real activities.
@@ -470,19 +481,19 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 					{iconSrc
 						? <img src={iconSrc} alt="" aria-hidden="true" className={styles.titleIcon} style={{ width: 22, height: 22, objectFit: 'contain' }} />
 						: <FontAwesomeIcon icon={faInbox} className={styles.titleIcon} />}
-					Inbox
+					{t('inbox.title')}
 				</h1>
 				<div style={{ display: 'flex', gap: 8 }}>
 					{unreadIds.size > 0 && (
 						<button className={styles.markAllBtn} onClick={markAllRead} type="button">
 							<FontAwesomeIcon icon={faCheckDouble} />
-							Mark all read
+							{t('inbox.markAllRead')}
 						</button>
 					)}
 					{displayActivities.length > 0 && (
 						<button className={styles.clearAllBtn} onClick={archiveAll} type="button">
 							<FontAwesomeIcon icon={faTrashCan} />
-							Clear all
+							{t('inbox.clearAll')}
 						</button>
 					)}
 				</div>
@@ -509,7 +520,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 								? <img src={iconSrc} alt="" aria-hidden="true" style={{ width: '2.5rem', height: '2.5rem', objectFit: 'contain' }} />
 								: <FontAwesomeIcon icon={faInbox} />}
 						</div>
-						<span>Loading…</span>
+						<span>{t('common.loading')}</span>
 					</div>
 				) : displayActivities.length === 0 ? (
 					<div className={styles.empty}>
@@ -518,8 +529,8 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 								? <img src={iconSrc} alt="" aria-hidden="true" style={{ width: '2.5rem', height: '2.5rem', objectFit: 'contain' }} />
 								: <FontAwesomeIcon icon={faInbox} />}
 						</div>
-						<span className={styles.emptyTitle}>Sector clear.</span>
-						<span className={styles.emptySubtext}>No incoming transmissions. Mentions and assignments will appear here.</span>
+						<span className={styles.emptyTitle}>{t('inbox.emptyTitle')}</span>
+						<span className={styles.emptySubtext}>{t('inbox.emptySubtext')}</span>
 					</div>
 				) : (
 					<>
@@ -561,7 +572,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 										onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleActivityClick(activity); }}
 								>
 									<div className={styles.cardLeft}>
-										{isUnread && <span className={styles.unreadDot} aria-label="Unread" />}
+										{isUnread && <span className={styles.unreadDot} aria-label={t('inbox.unread')} />}
 										<div className={styles.avatar}>
 											{activity.actor?.avatarUrl ? (
 												<img src={activity.actor.avatarUrl} alt="" className={styles.avatarImg} />
@@ -577,7 +588,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 									</div>
 
 									<div className={styles.cardBody}>
-										<p className={styles.message}>{activityMessage(activity, authUserId)}</p>
+										<p className={styles.message}>{activityMessage(activity, authUserId, t)}</p>
 										{activity.snapshot?.mentionExcerpt && (
 											<p className={styles.snippet}>"{activity.snapshot.mentionExcerpt}"</p>
 										)}
@@ -593,13 +604,13 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 												onClick={(e) => openPlacementPicker(e, activity)}
 											>
 												<FontAwesomeIcon icon={faCircleCheck} />
-												Accept &amp; View
+												{t('inbox.acceptAndView')}
 											</button>
 										)}
 
 										{showAcceptBtn && isPickerOpen && (
 											<div className={styles.placementPicker} onClick={(e) => e.stopPropagation()}>
-												<p className={styles.placementLabel}>Where should this note appear?</p>
+												<p className={styles.placementLabel}>{t('inbox.placementLabel')}</p>
 												<label className={styles.radioLabel}>
 													<input
 														type="radio"
@@ -607,7 +618,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 														checked={placementChoice === 'shared-root'}
 														onChange={() => setPlacementChoice('shared-root')}
 													/>
-													Shared With Me
+													{t('inbox.placementSharedRoot')}
 												</label>
 												<label className={styles.radioLabel}>
 													<input
@@ -616,7 +627,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 														checked={placementChoice === 'shared-folder'}
 														onChange={() => setPlacementChoice('shared-folder')}
 													/>
-													A subfolder within Shared With Me
+													{t('inbox.placementSharedFolder')}
 												</label>
 												{placementChoice === 'shared-folder' && (
 													<input
@@ -624,7 +635,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 														type="text"
 														value={folderName}
 														onChange={(e) => setFolderName(e.target.value)}
-														placeholder="Folder name (optional)"
+														placeholder={t('inbox.folderNamePlaceholder')}
 														autoFocus
 													/>
 												)}
@@ -635,7 +646,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 														checked={placementChoice === 'personal'}
 														onChange={() => setPlacementChoice('personal')}
 													/>
-													Personal workspace
+													{t('inbox.placementPersonal')}
 												</label>
 												<div className={styles.placementActions}>
 													<button
@@ -644,7 +655,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 														disabled={isBusy}
 														onClick={(e) => handleConfirmPlacement(e, activity)}
 													>
-														{isBusy ? 'Opening…' : 'Confirm & Open'}
+														{isBusy ? t('inbox.opening') : t('inbox.confirmAndOpen')}
 													</button>
 													<button
 														type="button"
@@ -652,23 +663,23 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 														disabled={isBusy}
 														onClick={closePlacementPicker}
 													>
-														Cancel
+														{t('common.cancel')}
 													</button>
 												</div>
 											</div>
 										)}
 
 										<time className={styles.time} dateTime={activity.createdAt}>
-											{formatRelativeTime(activity.createdAt)}
+											{formatRelativeTime(activity.createdAt, t)}
 										</time>
 									</div>
 
 									<button
 										type="button"
 										className={styles.archiveBtn}
-										title="Archive"
+										title={t('inbox.archive')}
 										onClick={(e) => { e.stopPropagation(); archiveActivity(e, activity.id); }}
-										aria-label="Archive"
+										aria-label={t('inbox.archive')}
 									>
 										<FontAwesomeIcon icon={faBoxArchive} />
 									</button>
@@ -685,7 +696,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 								onClick={handleLoadMore}
 								disabled={loadingMore}
 							>
-								{loadingMore ? 'Loading…' : 'Load more'}
+								{loadingMore ? t('common.loading') : t('inbox.loadMore')}
 							</button>
 						)}
 					</>

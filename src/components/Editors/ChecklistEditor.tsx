@@ -48,6 +48,7 @@ export type ChecklistEditorProps = {
 	onShowCompletedChange?: (next: boolean) => void;
 	allowQuickDelete?: boolean;
 	toolbarMode?: EditorToolbarMode;
+	authUserId?: string | null;
 };
 
 type DraftChecklistItem = ChecklistItem & { richContent: JSONContent };
@@ -1638,6 +1639,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	}}
 																	onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
 																	onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
+																	authUserId={props.authUserId}
 																/>
 																{activeRowId === item.id && activeRowAutocompleteSuffix ? (
 																	<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
@@ -1785,6 +1787,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																			}}
 																			onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
 																			onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
+																			authUserId={props.authUserId}
 																		/>
 																		{activeRowId === item.id && activeRowAutocompleteSuffix ? (
 																			<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">

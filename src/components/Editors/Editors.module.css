@@ -265,6 +265,11 @@
 		   inside the editor was double-counting it, leaving the dock ~68px too
 		   high and exposing a gap at the bottom of the screen. */
 		padding-top: env(safe-area-inset-top, 0px);
+		/* On mobile the editor card fills the full viewport, so the overlay
+		   background is never visible during steady-state editing. Making it
+		   opaque prevents the notes grid from bleeding through on the first
+		   paint frame before the editor card has measured its height. */
+		background: var(--color-surface);
 	}
 
 	.fullscreenEditor {

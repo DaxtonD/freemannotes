@@ -105,6 +105,25 @@ export function clearPriorCollaboratorsCache(): void {
 	inflightRequest = null;
 }
 
+/** Refresh the prior collaborators cache from the server without clearing
+ *  existing cached data first. Safe to call proactively at login — if the
+ *  fetch fails (e.g. offline), the existing localStorage cache is untouched. */
+export async function refreshPriorCollaboratorsCache(): Promise<void> {
+	if (!_currentUserId) return;
+	try {
+		const body = await fetchJson<ListResponse>('/api/collaborators/history');
+		const users = normalizeUsers(Array.isArray(body?.users) ? body.users : []);
+		cachedUsers = users;
+		remoteLoaded = true;
+		cacheHydrated = true;
+		writeCachedUsers(users);
+		updateKnownUserCache(users);
+		updateAvatarCache(users);
+	} catch {
+		// Offline or error — keep existing cache intact
+	}
+}
+
 export async function listPriorCollaborators(forceRefresh = false): Promise<PriorCollaboratorUser[]> {
 	if (!cacheHydrated) {
 		cacheHydrated = true;
