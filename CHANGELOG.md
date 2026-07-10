@@ -4,6 +4,16 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.6.9 - 2026-07-09
+
+### Added
+- **Draggable mobile FAB.** Long-press the floating action button (500 ms) to enter drag mode; release to drop it anywhere on screen. Position is saved per user + device to `freemannotes.fabPosition.v1` in localStorage using viewport-relative fractions so it survives screen rotation and different device sizes. The action pill stack adapts automatically — it opens downward when the FAB is in the top half of the screen and extends rightward when the FAB is on the left side. The button is extracted from the `mobileFabOverlay` useMemo in `App.tsx` into a dedicated `MobileFab` component (`src/components/MobileFab/MobileFab.tsx`).
+- **Long-press ring animation.** A two-layer SVG ring traces clockwise from 12 o'clock as the user holds the FAB. A wide glow layer (lagged by 40 ms) gives a trailing-comet look behind the sharp ring. The FAB button compresses to `scale(0.9)` during the hold, then spring-pops to `scale(1.12)` at the 500 ms threshold with a haptic pulse and a ring-explosion exit (expands + flashes white + fades). The animation is purely CSS (`@keyframes fab-ring-charge`, `fab-ring-fire-exit`, `fab-ring-fire-stroke`).
+
+### Fixed
+- **First tap after FAB drag was silently suppressed.** After a drag that moved the pointer significantly, the browser does not fire a `click` event following `pointerup` — so `wasJustDraggingRef` was never cleared and ate the next legitimate tap. Fix: the stale flag is reset at the start of every `pointerdown`.
+- **Sidebar swipe opens while dragging FAB near the left screen edge.** The app-level sidebar swipe detector listens to `touchmove` on `document`. Even with pointer capture active, the document listener still fired during FAB drag. `MobileFab` now adds a capture-phase `touchmove` listener with `preventDefault()` for the full duration of both the long-press charge phase and the active drag, blocking any competing gesture handlers.
+
 ## 1.6.8 - 2026-07-09
 
 ### Fixed
