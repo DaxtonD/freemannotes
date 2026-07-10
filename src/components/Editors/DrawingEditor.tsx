@@ -42,6 +42,7 @@ type DrawingEditorProps = {
 	onTogglePin?: (() => void) | undefined;
 	readOnly?: boolean;
 	isPendingNew?: boolean;
+	userId?: string | null;
 };
 
 function useYTextValue(ytext: Y.Text): string {
@@ -67,7 +68,13 @@ function setYTextValue(ytext: Y.Text, value: string): void {
 	});
 }
 
-const DRAWING_LIBRARY_STORAGE_KEY = 'freemannotes:excalidraw-library';
+// Base key — scoped per-user as `${BASE}:<userId>` to prevent cross-user library leakage.
+// Legacy unscoped key (pre-1.6.10) is migrated on first read and then deleted.
+const DRAWING_LIBRARY_STORAGE_KEY_BASE = 'freemannotes:excalidraw-library';
+
+function getDrawingLibraryKey(userId: string | null | undefined): string {
+	return userId ? `${DRAWING_LIBRARY_STORAGE_KEY_BASE}:${userId}` : DRAWING_LIBRARY_STORAGE_KEY_BASE;
+}
 
 type DrawingLibraryDefinition = {
 	id: string;
@@ -76,30 +83,37 @@ type DrawingLibraryDefinition = {
 	description: string;
 };
 
-function readPersistedDrawingLibrary(): LibraryItems {
-	if (typeof window === 'undefined') {
-		return [];
-	}
-
+function readPersistedDrawingLibrary(userId: string | null | undefined): LibraryItems {
+	if (typeof window === 'undefined') return [];
 	try {
-		const raw = window.localStorage.getItem(DRAWING_LIBRARY_STORAGE_KEY);
-		if (!raw) {
-			return [];
+		const key = getDrawingLibraryKey(userId);
+		const raw = window.localStorage.getItem(key);
+		if (raw) {
+			const parsed = JSON.parse(raw);
+			return Array.isArray(parsed) ? (parsed as LibraryItems) : [];
 		}
-		const parsed = JSON.parse(raw);
-		return Array.isArray(parsed) ? (parsed as LibraryItems) : [];
+		// One-time migration from unscoped legacy key (pre-1.6.10).
+		if (userId) {
+			const legacyRaw = window.localStorage.getItem(DRAWING_LIBRARY_STORAGE_KEY_BASE);
+			if (legacyRaw) {
+				const legacyItems = JSON.parse(legacyRaw);
+				if (Array.isArray(legacyItems)) {
+					persistDrawingLibrary(userId, legacyItems as LibraryItems);
+					try { window.localStorage.removeItem(DRAWING_LIBRARY_STORAGE_KEY_BASE); } catch { /* ignore */ }
+					return legacyItems as LibraryItems;
+				}
+			}
+		}
+		return [];
 	} catch {
 		return [];
 	}
 }
 
-function persistDrawingLibrary(libraryItems: LibraryItems): void {
-	if (typeof window === 'undefined') {
-		return;
-	}
-
+function persistDrawingLibrary(userId: string | null | undefined, libraryItems: LibraryItems): void {
+	if (typeof window === 'undefined') return;
 	try {
-		window.localStorage.setItem(DRAWING_LIBRARY_STORAGE_KEY, JSON.stringify(libraryItems));
+		window.localStorage.setItem(getDrawingLibraryKey(userId), JSON.stringify(libraryItems));
 	} catch {
 		// Ignore storage failures. Excalidraw can still function in-memory.
 	}
@@ -963,8 +977,8 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	}, [api, props.doc]);
 
 	const handleLibraryChange = React.useCallback((libraryItems: LibraryItems): void => {
-		persistDrawingLibrary(libraryItems);
-	}, []);
+		persistDrawingLibrary(props.userId, libraryItems);
+	}, [props.userId]);
 
 	const content = (
 		<div className={styles.fullscreenOverlay} role="presentation">
@@ -1063,7 +1077,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 				>
 					<Excalidraw
 						initialData={initialData}
-						getInitialLibraryItems={readPersistedDrawingLibrary}
+						getInitialLibraryItems={() => readPersistedDrawingLibrary(props.userId)}
 						excalidrawAPI={setApi}
 						langCode={excalidrawLangCode}
 						onChange={handleDrawingSceneChange}

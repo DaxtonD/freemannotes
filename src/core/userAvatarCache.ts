@@ -78,3 +78,10 @@ export function updateAvatarCache(users: ReadonlyArray<{ id?: string | null; use
 		}
 	}
 }
+
+/** Must be called on logout. Prevents a subsequent user on the same device from
+ *  seeing the previous user's collaborators' avatar URLs. */
+export function clearUserAvatarCache(): void {
+	_cache = null;
+	try { localStorage.removeItem(CACHE_KEY); } catch { /* ignore */ }
+}

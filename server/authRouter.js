@@ -205,6 +205,9 @@ function createApiAuthRouter({ prisma }) {
 					const name = String(body.name || '').trim();
 					const password = String(body.password || '');
 					const inviteToken = String(body.inviteToken || '').trim();
+					// BCP-47 locale selected by the user on the register screen.
+					// Used to seed the welcome note in the user's language.
+					const registerLocale = String(body.locale || 'en').trim() || 'en';
 
 					if (!email || !isValidEmail(email)) {
 						jsonResponse(res, 400, { error: 'Invalid email' });
@@ -296,7 +299,7 @@ function createApiAuthRouter({ prisma }) {
 
 					// Seed welcome note — non-fatal if it fails
 					try {
-						await seedWelcomeNote(prisma, result.workspace.id);
+						await seedWelcomeNote(prisma, result.workspace.id, registerLocale);
 					} catch (seedErr) {
 						console.warn('[auth] welcome note seeding failed (non-fatal):', seedErr?.message);
 					}

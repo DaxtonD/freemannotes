@@ -169,6 +169,16 @@
     "updatedNotificationTitle": "Aplicación actualizada",
     "updatedNotificationBody": "FreemanNotes se ha actualizado correctamente y la versión más reciente ya está activa."
   },
+  "auth": {
+    "language": "Idioma",
+    "languageHint": "Tu nota de bienvenida se creará en el idioma seleccionado."
+  },
+  "pwa": {
+    "installTitle": "Instalar Freeman Notes",
+    "installBody": "Instala la aplicación para carga instantánea, acceso sin conexión y pantalla completa.",
+    "installNow": "Instalar ahora",
+    "installLater": "Ahora no"
+  },
   "adminInvite": {
     "title": "Enviar invitación",
     "description": "Envía por correo una invitación de registro de un solo uso para que un usuario pueda crear una cuenta sin volver a habilitar el registro público.",
