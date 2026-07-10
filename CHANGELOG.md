@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.7.0 - 2026-07-09
+
+### Added
+- **Language picker on the register screen.** A language selector now appears in the Create Account form. Changing the language immediately translates the full UI so users can create their account in their preferred language. The selected locale is sent with the registration request.
+- **Localized welcome note.** The feature-guide note seeded for every new account is now created in the user's selected language. Supported: English and Spanish.
+- **PWA install prompt after first login.** When a browser that supports app installation detects the user has authenticated and the PWA is installable, a one-time dialog appears with an "Install Now" button (triggers the native install flow) and "Not Now" to dismiss. The prompt is shown only once per user per device and is never repeated once acknowledged.
+
+### Changed
+- **Welcome note — Markdown support.** The Note Types section now explains that Markdown syntax converts as you type, and that pasting Markdown from any source converts automatically.
+- **Welcome note — Copy format options.** Explains that selected text can be copied as Markdown or as Rich Text for pasting outside Freeman Notes.
+- **Welcome note — Collapsible Headings.** The "Collapsible Headings" section heading is now itself collapsible — users can click the arrow to try the feature immediately. Explains that a higher-level heading collapses all lower-level headings and content below it.
+- **Welcome note — Auto-Scroll fix.** Corrected description: the feature scrolls to the bottom of the note when it is opened, not after checking items off.
+- **Welcome note — Checklist Counts fix.** Rewritten for accuracy: click +1 to make an item a count item; use +/− to increment/decrement; click the checkbox to return it to a standard list item.
+- **Welcome note — User Preferences section.** Added detail on text size, user avatar upload, toolbar size, and card height/click behavior preferences.
+- **Welcome note — Mobile FAB section.** Explains how to long-press the floating + button on mobile to drag it to any position on screen.
+
+### Fixed
+- **Shared-device privacy: user identity cache leaks PII across logins.** `userIdentityCache.ts` stored collaborator names, emails, and profile image URLs in `freemannotes.userIdentityCache.v1` with no user scope. A subsequent user on the same device could see the previous user's contacts in localStorage. `clearUserIdentityCache()` now wipes the cache (localStorage + in-memory) on logout.
+- **Shared-device privacy: avatar URL cache leaks contacts across logins.** `userAvatarCache.ts` stored userId → profile image URL in `freemannotes.userAvatarCache.v1` (unscoped). `clearUserAvatarCache()` now wipes it on logout.
+- **Shared-device privacy: drawing thumbnail cache leaks note images across logins.** `drawingThumbnailStore.ts` stored base64 drawing thumbnails from the previous user's notes in `freemannotes.latest-drawing-thumbnails.v1` (unscoped). `clearDrawingThumbnailLocalCache()` now clears the localStorage warm-start snapshot on logout. (IndexedDB is left intact; server access is gated by workspaceId.)
+- **Shared-device privacy: Excalidraw shape library leaks across logins.** `DrawingEditor.tsx` stored custom shapes in `freemannotes:excalidraw-library` (unscoped). The key is now scoped per-user as `freemannotes:excalidraw-library:<userId>`. A one-time migration reads any existing data from the legacy unscoped key and moves it to the user-scoped key on first open.
+- **Shared-device privacy: admin user cache leaks all registered users' PII.** `UserManagementModal.tsx` cached the full admin user list (names, emails, roles) in `freemannotes.adminUserCache.v1` with no user scope. `clearAdminUserCache()` now wipes it on logout.
+- **FAB ghost-click: hidden action buttons were still receiving pointer events.** When the FAB was collapsed, the four action buttons were invisible but remained interactive. Tapping in the area where they were hidden would silently trigger note creation or other actions. Fixed by scoping the `pointer-events: auto` CSS rule so it only applies when `.mobile-fab-stack.is-open`.
+
 ## 1.6.9 - 2026-07-09
 
 ### Added

@@ -220,6 +220,10 @@ import { setLiveUserAvatar } from './core/liveUserAvatarCache';
 import { refreshUserAvatarsCache, invalidateWorkspaceMembersCache, initWorkspaceMembersCacheForUser } from './core/references/providers/UserReferenceProvider';
 import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache, refreshPriorCollaboratorsCache } from './core/priorCollaboratorsApi';
 import { addPendingSelfMention, clearMatchedPendingSelfMentions, clearPendingSelfMentionsStore, dismissPendingSelfMention, getPendingSelfMentions, initPendingSelfMentionsForUser, type PendingSelfMention } from './core/pendingSelfMentions';
+import { clearUserIdentityCache } from './core/userIdentityCache';
+import { clearUserAvatarCache } from './core/userAvatarCache';
+import { clearDrawingThumbnailLocalCache } from './core/drawingThumbnailStore';
+import { clearAdminUserCache } from './components/Admin/UserManagementModal';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
 import { InboxView } from './components/InboxView/InboxView';
 import { CrossWorkspaceNoteModal } from './components/BubbleView/CrossWorkspaceNoteModal';
@@ -1176,6 +1180,17 @@ export function App(): React.JSX.Element {
 			setPwaUpdateDismissed(false);
 		}
 	}, [pwaState.updateAvailable]);
+	// Show a one-time install prompt when: the user is authenticated, the browser
+	// supports install (beforeinstallprompt fired), and we haven't shown it yet for
+	// this user. Uses a session ref so rapid canInstall toggles don't re-show it.
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId || !pwaState.canInstall) return;
+		if (pwaInstallShownThisSessionRef.current) return;
+		const promptKey = `freemannotes.pwaInstallPrompted.v1:${authUserId}`;
+		if (typeof localStorage !== 'undefined' && localStorage.getItem(promptKey)) return;
+		pwaInstallShownThisSessionRef.current = true;
+		setShowPwaInstallPrompt(true);
+	}, [authStatus, authUserId, pwaState.canInstall]);
 	// When the user is not yet authenticated and no cached auth exists, show a
 	// minimal blank shell while the auth check completes (typically <200 ms).
 	// No spinner or icon — the grid skeleton makes the startup feel instant.
@@ -1254,6 +1269,10 @@ export function App(): React.JSX.Element {
 	const [isSendInviteOpen, setIsSendInviteOpen] = React.useState(_restoredOverlay?.isSendInviteOpen ?? false);
 	const [sendInviteContext, setSendInviteContext] = React.useState<SendInviteContext | null>(null);
 	const [isShareNotificationsOpen, setIsShareNotificationsOpen] = React.useState(false);
+	const [showPwaInstallPrompt, setShowPwaInstallPrompt] = React.useState(false);
+	// Guards against showing the PWA prompt more than once per session (even if canInstall
+	// flickers or re-triggers). The localStorage key prevents re-showing across sessions.
+	const pwaInstallShownThisSessionRef = React.useRef(false);
 	const [isImportFlowOpen, setIsImportFlowOpen] = React.useState(false);
 	const [importParseResult, setImportParseResult] = React.useState<import('./core/import/ImportTypes').ParseResult | null>(null);
 	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(_restoredOverlay?.isWorkspaceSwitcherOpen ?? false);
@@ -4220,6 +4239,25 @@ export function App(): React.JSX.Element {
 		};
 	}, [showBriefDialog]);
 
+	const dismissPwaInstallPrompt = React.useCallback((accepted: boolean) => {
+		if (authUserId && typeof localStorage !== 'undefined') {
+			try {
+				localStorage.setItem(`freemannotes.pwaInstallPrompted.v1:${authUserId}`, accepted ? 'accepted' : 'dismissed');
+			} catch { /* ignore */ }
+		}
+		setShowPwaInstallPrompt(false);
+	}, [authUserId]);
+
+	const handlePwaInstallNow = React.useCallback(async () => {
+		dismissPwaInstallPrompt(true);
+		try {
+			const outcome = await promptInstallApp();
+			if (outcome === 'accepted') {
+				showBriefDialog(t('prefs.installAcceptedToast'));
+			}
+		} catch { /* ignore */ }
+	}, [dismissPwaInstallPrompt, showBriefDialog, t]);
+
 	const signOut = React.useCallback(async () => {
 		// Logout is best-effort: even if the request fails (offline), we clear local
 		// auth state and disable websocket sync.
@@ -4260,6 +4298,10 @@ export function App(): React.JSX.Element {
 		setPendingSelfMentions([]);
 		invalidateWorkspaceMembersCache();
 		clearSessionRestoreNote();
+		clearUserIdentityCache();
+		clearUserAvatarCache();
+		clearDrawingThumbnailLocalCache();
+		clearAdminUserCache();
 		setSharedPlacements([]);
 		setActiveWorkspaceSharedPlacements([]);
 		setActiveSharedFolder(null);
@@ -6453,6 +6495,7 @@ export function App(): React.JSX.Element {
 				password: authPassword,
 			};
 			if (authMode === 'register') payload.name = authName;
+			if (authMode === 'register') payload.locale = locale;
 			if (authMode === 'register' && registrationInviteToken) payload.inviteToken = registrationInviteToken;
 
 			const res = await fetch(endpoint, {
@@ -6749,6 +6792,21 @@ export function App(): React.JSX.Element {
 								disabled={authBusy || authStatus === 'loading'}
 								required
 							/>
+						</label>
+					) : null}
+					{authMode === 'register' ? (
+						<label className="auth-label">
+							{t('auth.language')}
+							<select
+								value={locale}
+								onChange={(e) => setLocale(e.target.value as typeof locale)}
+								disabled={authBusy || authStatus === 'loading'}
+							>
+								{locales.map((opt) => (
+									<option key={opt.code} value={opt.code}>{opt.label}</option>
+								))}
+							</select>
+							<span className="auth-field-hint">{t('auth.languageHint')}</span>
 						</label>
 					) : null}
 					{authMode === 'register' ? (
@@ -10447,6 +10505,7 @@ export function App(): React.JSX.Element {
 							onTogglePin={selectedNoteReadOnly ? undefined : toggleSelectedNotePin}
 							isPendingNew={selectedNoteIsPendingNew}
 							readOnly={selectedNoteReadOnly}
+							userId={authUserId}
 						/>
 					</React.Suspense>
 					</DrawingEditorErrorBoundary>
@@ -10843,6 +10902,42 @@ export function App(): React.JSX.Element {
 				importCompletedNotification={importCompletedNotification}
 				onDismissImportCompleted={() => setImportCompletedNotification(null)}
 			/>
+
+			{showPwaInstallPrompt ? (
+				<div
+					className="pwa-install-backdrop"
+					role="presentation"
+					onClick={() => dismissPwaInstallPrompt(false)}
+				>
+					<div
+						className="pwa-install-dialog"
+						role="dialog"
+						aria-modal="true"
+						aria-label={t('pwa.installTitle')}
+						onClick={(e) => e.stopPropagation()}
+					>
+						<div className="pwa-install-icon" aria-hidden="true">📱</div>
+						<div className="pwa-install-title">{t('pwa.installTitle')}</div>
+						<p className="pwa-install-body">{t('pwa.installBody')}</p>
+						<div className="pwa-install-actions">
+							<button
+								type="button"
+								className="pwa-install-btn-primary"
+								onClick={() => void handlePwaInstallNow()}
+							>
+								{t('pwa.installNow')}
+							</button>
+							<button
+								type="button"
+								className="pwa-install-btn-secondary"
+								onClick={() => dismissPwaInstallPrompt(false)}
+							>
+								{t('pwa.installLater')}
+							</button>
+						</div>
+					</div>
+				</div>
+			) : null}
 
 			<CollaboratorModal
 				isOpen={Boolean(collaboratorModalState)}

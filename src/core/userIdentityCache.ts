@@ -118,3 +118,10 @@ export function resolveKnownUserProfileImage(identifier: string | null | undefin
 	if (!knownUser) return null;
 	return knownUser.profileImage ?? getCachedAvatarUrl(knownUser.userId);
 }
+
+/** Must be called on logout. Prevents a subsequent user on the same device from
+ *  seeing the previous user's collaborator names, emails, and profile images. */
+export function clearUserIdentityCache(): void {
+	cache = null;
+	try { localStorage.removeItem(CACHE_KEY); } catch { /* ignore */ }
+}

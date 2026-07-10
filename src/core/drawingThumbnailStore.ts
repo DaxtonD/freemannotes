@@ -144,3 +144,12 @@ export async function writeStoredDrawingThumbnail(row: StoredDrawingThumbnailRow
 		// Best-effort local cache only.
 	}
 }
+
+/** Must be called on logout. Clears the localStorage warm-start snapshot so the
+ *  next user on the same device cannot see drawing thumbnails from the previous
+ *  user's notes. The IndexedDB store is left intact: access is gated by
+ *  workspaceId on the server, so cross-user IDB leakage is not a concern. */
+export function clearDrawingThumbnailLocalCache(): void {
+	latestThumbnailSnapshotCache = null;
+	try { window.localStorage.removeItem(LATEST_DRAWING_THUMBNAILS_STORAGE_KEY); } catch { /* ignore */ }
+}

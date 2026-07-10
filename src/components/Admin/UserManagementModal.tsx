@@ -67,6 +67,12 @@ function writeCachedAdminUsers(users: readonly AdminUserRow[]): void {
 	}
 }
 
+/** Must be called on logout. Prevents the next user on the same device from
+ *  reading any user's name, email, or role from the admin cache. */
+export function clearAdminUserCache(): void {
+	try { window.localStorage.removeItem(ADMIN_USER_CACHE_KEY); } catch { /* ignore */ }
+}
+
 type Props = {
 	isOpen: boolean;
 	onClose: () => void;

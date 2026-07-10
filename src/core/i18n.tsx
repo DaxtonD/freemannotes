@@ -231,6 +231,16 @@ const FALLBACK_MESSAGES: Dictionary = {
 		themeCategoryTokyoNight: 'Tokyo Night',
 		themeCategoryFreeman: 'Freeman',
 	},
+	auth: {
+		language: 'Language',
+		languageHint: 'Your welcome note will be created in the selected language.',
+	},
+	pwa: {
+		installTitle: 'Install Freeman Notes',
+		installBody: 'Install the app for instant load times, offline access, and a full-screen experience.',
+		installNow: 'Install Now',
+		installLater: 'Not Now',
+	},
 	adminInvite: {
 		title: 'Send invite',
 		description: 'Email a one-time registration invite to a user so they can create an account without reopening public registration.',
