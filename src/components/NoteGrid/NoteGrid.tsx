@@ -640,6 +640,22 @@ function readOrderIds(noteOrder: Y.Array<string>): string[] {
 	return uniqueIds(noteOrder.toArray().map((value) => normalizeId(value)).filter(Boolean));
 }
 
+// Called when a note is unpinned to commit its current visual position (top of grid)
+// into the canonical noteOrder. Without this, the card would animate back to wherever
+// it sat before being pinned — which looks like the note is disappearing.
+function moveNoteToFrontOfOrder(noteOrder: Y.Array<string>, noteId: string): void {
+	const normalized = normalizeId(noteId);
+	if (!normalized) return;
+	const arr = noteOrder.toArray();
+	const idx = arr.findIndex((id) => normalizeId(id) === normalized);
+	if (idx <= 0) return; // already at front or not found — nothing to do
+	const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
+	ydoc.transact(() => {
+		noteOrder.delete(idx, 1);
+		noteOrder.insert(0, [normalized]);
+	});
+}
+
 function ensureOrderContainsAllRegistryIds(noteOrder: Y.Array<string>, registryIds: readonly string[]): void {
 	const current = new Set(readOrderIds(noteOrder));
 	const missing = registryIds.filter((id) => !current.has(id));
@@ -4565,14 +4581,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					onTogglePin={(moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;
 						if (!moreMenuDocId) return;
+						const currentlyPinned = noteSnapshotById.get(moreMenuNoteId)?.isPinned === true;
 						setUserNotePinnedOnDoc({
 							doc: moreMenuDoc,
 							docId: moreMenuDocId,
 							noteId: moreMenuNoteId,
 							userId: props.authUserId,
 							deviceId: props.deviceId,
-							pinned: !(noteSnapshotById.get(moreMenuNoteId)?.isPinned === true),
+							pinned: !currentlyPinned,
 						});
+						// When unpinning, commit the visual position (top of grid) into the
+						// canonical noteOrder so the card stays put rather than flying back.
+						if (currentlyPinned && noteOrder) {
+							moveNoteToFrontOfOrder(noteOrder, moreMenuNoteId);
+						}
 					} : undefined}
 					onCheckAll={(moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;

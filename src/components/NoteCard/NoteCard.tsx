@@ -184,7 +184,7 @@ function isCoarsePointerDevice(): boolean {
 	return window.matchMedia('(pointer: coarse)').matches;
 }
 
-function isElementLayoutMeasurable(element: HTMLElement | null): boolean {
+function isElementLayoutMeasurable(element: HTMLElement | null): element is HTMLElement {
 	if (!element) return false;
 	if (element.getClientRects().length === 0) return false;
 	const rect = element.getBoundingClientRect();
@@ -281,9 +281,19 @@ function useTextNoteRichPreview(doc: Y.Doc, plainText: string): JSONContent {
 
 	return React.useSyncExternalStore(
 		(onStoreChange) => {
-			const observer = (): void => onStoreChange();
+			// RAF-throttle: coalesce rapid Yjs transactions (e.g. held backspace) into
+			// at most one React re-render per frame, preventing "Maximum update depth
+			// exceeded" from N×onStoreChange calls within a single synchronous flush.
+			let rafId = 0;
+			const observer = (): void => {
+				cancelAnimationFrame(rafId);
+				rafId = requestAnimationFrame(() => onStoreChange());
+			};
 			doc.on('afterTransaction', observer);
-			return () => doc.off('afterTransaction', observer);
+			return () => {
+				doc.off('afterTransaction', observer);
+				cancelAnimationFrame(rafId);
+			};
 		},
 		() => {
 			const nextValue = getTextNoteRichPreviewJson(doc) ?? createRichTextDocFromPlainText(plainText, 'full');
@@ -746,12 +756,19 @@ function useChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCardCheckl
 			if (!cacheRef.current || cacheRef.current.yarray !== yarray) {
 				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
 			}
+			let rafId = 0;
 			const observer = (): void => {
+				// Eagerly materialize so the snapshot is always fresh, but defer the
+				// React re-render to avoid cascading updates on rapid keystrokes.
 				cacheRef.current = { yarray, items: materializeChecklistItems(yarray) };
-				onStoreChange();
+				cancelAnimationFrame(rafId);
+				rafId = requestAnimationFrame(() => onStoreChange());
 			};
 			yarray.observeDeep(observer);
-			return () => yarray.unobserveDeep(observer);
+			return () => {
+				yarray.unobserveDeep(observer);
+				cancelAnimationFrame(rafId);
+			};
 		},
 		() => {
 			if (!cacheRef.current || cacheRef.current.yarray !== yarray) {
@@ -997,9 +1014,16 @@ function useDrawingThumbnail(
 ): string | null {
 	const snapshotKey = React.useSyncExternalStore(
 		(onStoreChange) => {
-			const observer = (): void => onStoreChange();
+			let rafId = 0;
+			const observer = (): void => {
+				cancelAnimationFrame(rafId);
+				rafId = requestAnimationFrame(() => onStoreChange());
+			};
 			doc.on('afterTransaction', observer);
-			return () => doc.off('afterTransaction', observer);
+			return () => {
+				doc.off('afterTransaction', observer);
+				cancelAnimationFrame(rafId);
+			};
 		},
 		() => noteType === 'drawing' ? getDrawingThumbnailVersion(doc) : '',
 		() => noteType === 'drawing' ? getDrawingThumbnailVersion(doc) : ''
@@ -1270,9 +1294,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const showImageGridPreview = showMediaPreview;
 	const extractedLinks = React.useSyncExternalStore(
 		(onStoreChange) => {
-			const observer = (): void => onStoreChange();
+			let rafId = 0;
+			const observer = (): void => {
+				cancelAnimationFrame(rafId);
+				rafId = requestAnimationFrame(() => onStoreChange());
+			};
 			props.doc.on('afterTransaction', observer);
-			return () => props.doc.off('afterTransaction', observer);
+			return () => {
+				props.doc.off('afterTransaction', observer);
+				cancelAnimationFrame(rafId);
+			};
 		},
 		() => extractNoteLinksFromDoc(props.doc),
 		() => extractNoteLinksFromDoc(props.doc)
@@ -1372,7 +1403,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			return merged;
 		};
 		const textNodes = card.querySelectorAll<HTMLElement>('[data-checklist-text-id]');
-		for (const node of textNodes) {
+		for (const node of Array.from(textNodes)) {
 			const id = String(node.dataset.checklistTextId ?? '').trim();
 			if (!id) continue;
 			const style = window.getComputedStyle(node);

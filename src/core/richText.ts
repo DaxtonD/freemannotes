@@ -1661,7 +1661,8 @@ export function getChecklistItemPlainText(itemMap: Y.Map<any>): string {
  * Read-only accessor for an existing rich-content fragment.
  * Returns null if the item has no contentRich yet — never mutates Y.js.
  */
-export function getChecklistItemRichPreviewJson(itemMap: Y.Map<any>): JSONContent | null {
+export function getChecklistItemRichPreviewJson(itemMap: Y.Map<any> | null): JSONContent | null {
+	if (!itemMap) return null;
 	const fragment = itemMap.get(CHECKLIST_ITEM_RICH_FIELD);
 	if (!(fragment instanceof Y.XmlFragment) || fragment.length === 0) return null;
 	try {

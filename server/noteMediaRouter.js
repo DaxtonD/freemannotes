@@ -1263,75 +1263,80 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						select: { docId: true, workspaceId: true, updatedAt: true, state: true },
 						orderBy: { updatedAt: 'desc' },
 					});
-					const noteImages = await prisma.noteImage.findMany({
-						where: {
-							docId: { in: docs.map((doc) => doc.docId) },
-							deletedAt: null,
-							assetStatus: 'READY',
-						},
-						select: {
-							docId: true,
-							ocrText: true,
-							thumbnailPath: true,
-						},
-					});
-					const noteCollaborators = await prisma.noteCollaborator.findMany({
-						where: {
-							docId: { in: docs.map((doc) => doc.docId) },
-							revokedAt: null,
-						},
-						select: {
-							docId: true,
-							user: {
-								select: {
-									name: true,
-									email: true,
+					const docIds = docs.map((doc) => doc.docId);
+					// Run all auxiliary queries in parallel — they are independent of each
+					// other and only depend on the docIds list resolved above.
+					const [noteImages, noteCollaborators, noteLinks, noteDocuments, pendingInvitations] = await Promise.all([
+						prisma.noteImage.findMany({
+							where: {
+								docId: { in: docIds },
+								deletedAt: null,
+								assetStatus: 'READY',
+							},
+							select: {
+								docId: true,
+								ocrText: true,
+								thumbnailPath: true,
+							},
+						}),
+						prisma.noteCollaborator.findMany({
+							where: {
+								docId: { in: docIds },
+								revokedAt: null,
+							},
+							select: {
+								docId: true,
+								user: {
+									select: {
+										name: true,
+										email: true,
+									},
 								},
 							},
-						},
-					});
-					const noteLinks = await prisma.noteLink.findMany({
-						where: {
-							docId: { in: docs.map((doc) => doc.docId) },
-							deletedAt: null,
-						},
-						select: {
-							docId: true,
-							originalUrl: true,
-							rootDomain: true,
-							hostname: true,
-							siteName: true,
-							title: true,
-							description: true,
-							mainContent: true,
-							imageUrl: true,
-						},
-					});
-					const noteDocuments = await prisma.noteDocument.findMany({
-						where: {
-							docId: { in: docs.map((doc) => doc.docId) },
-							deletedAt: null,
-						},
-						select: {
-							docId: true,
-							fileName: true,
-							fileExtension: true,
-							ocrText: true,
-							thumbnailPath: true,
-						},
-					});
-					const pendingInvitations = await prisma.noteShareInvitation.findMany({
-						where: {
-							docId: { in: docs.map((doc) => doc.docId) },
-							status: 'PENDING',
-							revokedAt: null,
-						},
-						select: {
-							docId: true,
-							inviteeName: true,
-							inviteeEmail: true,
-						},
-					});
+						}),
+						prisma.noteLink.findMany({
+							where: {
+								docId: { in: docIds },
+								deletedAt: null,
+							},
+							select: {
+								docId: true,
+								originalUrl: true,
+								rootDomain: true,
+								hostname: true,
+								siteName: true,
+								title: true,
+								description: true,
+								mainContent: true,
+								imageUrl: true,
+							},
+						}),
+						prisma.noteDocument.findMany({
+							where: {
+								docId: { in: docIds },
+								deletedAt: null,
+							},
+							select: {
+								docId: true,
+								fileName: true,
+								fileExtension: true,
+								ocrText: true,
+								thumbnailPath: true,
+							},
+						}),
+						prisma.noteShareInvitation.findMany({
+							where: {
+								docId: { in: docIds },
+								status: 'PENDING',
+								revokedAt: null,
+							},
+							select: {
+								docId: true,
+								inviteeName: true,
+								inviteeEmail: true,
+							},
+						}),
+					]);
 					const imagesByDocId = new Map();
 					for (const image of noteImages) {
 						const next = imagesByDocId.get(image.docId) || [];

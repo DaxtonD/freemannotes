@@ -2527,6 +2527,12 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		e.preventDefault();
 		e.stopPropagation();
 
+		// Dismiss the keyboard immediately — the TipTap editor may have been focused
+		// on pointerdown before this click handler fires, causing a keyboard flash.
+		if (document.activeElement instanceof HTMLElement) {
+			document.activeElement.blur();
+		}
+
 		// Fast path: already confirmed denied this session
 		if (isNoteDenied(noteId)) return;
 

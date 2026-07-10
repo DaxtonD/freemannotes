@@ -516,3 +516,11 @@
 		opacity: 1;
 	}
 }
+
+@media (pointer: coarse) {
+	.root {
+		/* Ensure the last card can scroll fully above the fixed FAB,
+		   mirroring the list-view spacer: space-3 (12px) + FAB (56px) + slack. */
+		padding-bottom: calc(104px + var(--app-fab-offset-bottom, 0px));
+	}
+}

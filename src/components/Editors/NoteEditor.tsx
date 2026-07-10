@@ -511,6 +511,7 @@ type ChecklistRowContentProps = {
 	onArrowUpAtBoundary?: () => void;
 	onArrowDownAtBoundary?: () => void;
 	onNoteClick?: (noteId: string) => void;
+	authUserId?: string | null;
 };
 
 const ChecklistRowContent = React.memo(function ChecklistRowContent(props: ChecklistRowContentProps): React.JSX.Element {
@@ -658,6 +659,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 							onArrowUpAtBoundary={onArrowUpAtBoundary}
 							onArrowDownAtBoundary={onArrowDownAtBoundary}
 							onNoteClick={props.onNoteClick}
+							authUserId={props.authUserId}
 						/>
 						{autocompleteSuffix ? (
 							<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
@@ -753,7 +755,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// The touch that tapped the card to open the editor can carry into the handle
 	// area and start an unintended drag if not blocked.
 	const mediaSheetGestureSuppressUntilRef = React.useRef(0);
-	const titleFieldRef = React.useRef<HTMLTextAreaElement | null>(null);
+	const titleFieldRef = React.useRef<(HTMLTextAreaElement & HTMLInputElement) | null>(null);
 	const textBodyFieldRef = React.useRef<HTMLDivElement | null>(null);
 	const resizeTitleField = React.useCallback((): void => {
 		const field = titleFieldRef.current;
@@ -1789,12 +1791,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const mediaSheetVisualProgress = clampMediaSheetProgress(mediaSheetProgress);
 	const isMediaSheetActive = mediaSheetVisualProgress > 0.001 || isMediaSheetClosing;
 	const mediaSheetStyle = useMemo(() => {
-		const style: React.CSSProperties & Record<string, string> = {
+		return {
 			...(mediaDockThemeStyle ?? {}),
 			'--media-sheet-open-progress': mediaSheetVisualProgress.toFixed(4),
-		};
-		style.pointerEvents = 'auto';
-		return style;
+			pointerEvents: 'auto' as const,
+		} as React.CSSProperties;
 	}, [mediaDockThemeStyle, mediaSheetVisualProgress]);
 	const editorShellStyle = useMemo(() => {
 		const style: React.CSSProperties & Record<string, string> = { ...(editorColorStyle ?? {}) };
@@ -2117,7 +2118,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	replaceChecklistItemsRef.current = replaceChecklistItems;
 
 	const pushChecklistUndoSnapshot = React.useCallback((snapshot: readonly ChecklistItem[]): void => {
-		checkboxUndoStack.current = [...checkboxUndoStack.current.slice(-39), snapshot];
+		checkboxUndoStack.current = [...checkboxUndoStack.current.slice(-39), snapshot as ChecklistItem[]];
 		checkboxRedoStack.current = [];
 		setCheckboxUndoAvail(true);
 		setCheckboxRedoAvail(false);

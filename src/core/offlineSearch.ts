@@ -70,6 +70,98 @@ function metadataUpdatedAtIso(doc: Y.Doc): string {
 	return Number.isFinite(updatedAt) && updatedAt > 0 ? new Date(updatedAt).toISOString() : new Date(0).toISOString();
 }
 
+/**
+ * Fast in-memory search: only searches docs already loaded into the Yjs runtime
+ * (no IDB reads, no network). Returns instantly for the "warm" case where the
+ * user has been using the app and most docs are resident.
+ *
+ * Matches title, note text, collections, and labels — not OCR / links /
+ * documents / collaborators (those require IDB and are covered by the full
+ * searchOfflineNotes pass that runs in the background).
+ */
+export async function searchLoadedNotes(args: SearchOfflineNotesArgs): Promise<readonly NoteSearchResult[]> {
+	const normalizedQuery = normalizeText(args.query).toLowerCase();
+	if (!normalizedQuery) return [];
+
+	const noteOrder = await args.manager.getNoteOrder();
+	const sharedPlacementByAlias = new Map((args.sharedPlacements ?? []).map((placement) => [placement.aliasId, placement] as const));
+	const noteIds = uniqueIds([
+		...noteOrder.toArray().map((value) => String(value || '').trim()),
+		...(args.sharedPlacements ?? []).map((placement) => String(placement.aliasId || '').trim()),
+	]);
+	const workspaceId = String(args.activeWorkspaceId || '').trim() || null;
+	const workspaceLabel = String(args.activeWorkspaceName || '').trim() || workspaceId || 'Workspace';
+	const collectionPathById = buildCollectionPathMap(args.collections ?? []);
+	const labelById = new Map((args.labels ?? []).map((label) => [label.id, label] as const));
+
+	const results: NoteSearchResult[] = [];
+
+	for (const noteId of noteIds) {
+		if (!noteId || !args.manager.hasDoc(noteId)) continue;
+		const placement = sharedPlacementByAlias.get(noteId) ?? null;
+		const roomId = placement?.roomId || (workspaceId ? `${workspaceId}:${noteId}` : noteId);
+
+		let doc: Y.Doc;
+		try {
+			doc = args.manager.getDoc(noteId);
+		} catch {
+			continue;
+		}
+
+		if (readTrashState(doc).trashed) continue;
+
+		const title = normalizeText(doc.getText('title').toString());
+		const metadata = doc.getMap<any>('metadata');
+		const type = metadata.get('type') === 'checklist' ? 'checklist' : 'text';
+		const collectionPath = typeof metadata.get('collectionId') === 'string'
+			? collectionPathById.get(String(metadata.get('collectionId')).trim()) ?? ''
+			: '';
+		const labelMatches = Array.isArray(metadata.get('labelIds'))
+			? metadata.get('labelIds')
+				.map((labelId: unknown) => (typeof labelId === 'string' ? labelById.get(labelId.trim())?.name ?? '' : ''))
+				.filter((labelName: string) => Boolean(labelName) && includesQuery(labelName, normalizedQuery))
+			: [];
+		const noteText = normalizeText(type === 'checklist' ? getChecklistText(doc) : doc.getText('content').toString());
+
+		const matchKinds: NoteSearchMatchKind[] = [];
+		if (includesQuery(`${title} ${noteText}`, normalizedQuery)) matchKinds.push('note');
+		if (includesQuery(collectionPath, normalizedQuery)) matchKinds.push('collection');
+		if (labelMatches.length > 0) matchKinds.push('label');
+		if (matchKinds.length === 0) continue;
+
+		const snippetSource = matchKinds.includes('note')
+			? `${title} ${noteText}`
+			: matchKinds.includes('collection')
+				? collectionPath
+				: labelMatches.join(' ');
+
+		const group: NoteSearchGroup = placement
+			? { kind: 'shared', label: workspaceLabel, workspaceId }
+			: { kind: 'workspace', label: workspaceLabel, workspaceId };
+
+		results.push({
+			docId: roomId,
+			noteId,
+			title: title || 'Untitled',
+			archived: readArchiveState(doc).archived,
+			group,
+			matchKinds,
+			collaboratorMatches: [],
+			collectionMatches: collectionPath && includesQuery(collectionPath, normalizedQuery) ? [collectionPath] : [],
+			labelMatches: labelMatches.slice(0, 4),
+			snippet: buildSearchSnippet(snippetSource, normalizedQuery),
+			imageCount: 0,
+			thumbnailUrl: null,
+			updatedAt: metadataUpdatedAtIso(doc),
+			openWorkspaceId: workspaceId,
+			openNoteId: noteId,
+			folderName: placement?.folderName ?? null,
+		});
+	}
+
+	return results.sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+}
+
 export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<readonly NoteSearchResult[]> {
 	const normalizedQuery = normalizeText(args.query).toLowerCase();
 	if (!normalizedQuery) return [];
