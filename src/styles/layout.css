@@ -2844,6 +2844,15 @@
 	height: 56px;
 	pointer-events: none;
 	z-index: 982;
+	/* Default position matches the standalone .mobile-fab CSS */
+	right: calc(var(--space-3) + var(--app-fab-offset-right));
+	bottom: calc(var(--space-3) + var(--app-fab-offset-bottom));
+}
+
+/* Switch to left/top coordinates when the user has set a custom position */
+.mobile-fab-anchor.has-custom-position {
+	right: auto;
+	bottom: auto;
 }
 
 .mobile-fab-stack-anchored,
@@ -2865,6 +2874,172 @@
 .mobile-fab-anchor > .mobile-fab,
 .mobile-fab-anchor > .mobile-fab-stack {
 	pointer-events: auto;
+}
+
+/* Override the standalone position:fixed/right/bottom rules for the FAB and
+   stack when they live inside the anchor — the anchor provides positioning. */
+.mobile-fab-anchor .mobile-fab {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	/* Allow long-press drag without the browser treating it as a scroll gesture */
+	touch-action: none;
+}
+
+.mobile-fab-anchor .mobile-fab-stack {
+	position: absolute;
+	right: 0;
+	bottom: 72px;
+}
+
+/* Visual feedback while dragging */
+.mobile-fab-anchor.is-dragging .mobile-fab {
+	transform: scale(1.12);
+	box-shadow: 0 6px 24px rgba(0, 0, 0, 0.2);
+	transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+/* Keep icon un-rotated during drag (it normally rotates when the stack is open) */
+.mobile-fab-anchor.is-dragging .mobile-fab-icon {
+	transform: rotate(0deg) !important;
+}
+
+/* Stack opens downward when FAB is in the top half of the viewport */
+.mobile-fab-anchor.opens-down .mobile-fab-stack {
+	bottom: auto;
+	top: 72px;
+}
+
+/* Correct slide-in direction for the downward-opening stack */
+.mobile-fab-anchor.opens-down .mobile-fab-action {
+	transform: translateY(-10px);
+}
+
+.mobile-fab-anchor.opens-down .mobile-fab-stack.is-open .mobile-fab-action {
+	transform: translateY(0);
+}
+
+/* Pill stack extends rightward when FAB is on the left side of the screen */
+.mobile-fab-anchor.aligns-left .mobile-fab-stack {
+	right: auto;
+	left: 0;
+}
+
+/* ── Long-press ring indicator ───────────────────────────────────────
+   The SVG sits 8px outside the 56×56 anchor on all sides (72×72 total).
+   Circles: cx=36 cy=36 r=30 → circumference ≈ 188.5px.
+   ─────────────────────────────────────────────────────────────────── */
+.fab-press-ring {
+	position: absolute;
+	top: -8px;
+	left: -8px;
+	width: 72px;
+	height: 72px;
+	pointer-events: none;
+	overflow: visible;
+	opacity: 0;
+	transition: opacity 160ms ease;
+}
+
+.fab-press-glow {
+	fill: none;
+	stroke: var(--color-accent);
+	stroke-width: 9;
+	stroke-linecap: round;
+	stroke-dasharray: 188.5 188.5;
+	stroke-dashoffset: 188.5;
+	transform: rotate(-90deg);
+	transform-origin: center;
+	opacity: 0.2;
+}
+
+.fab-press-circle {
+	fill: none;
+	stroke: var(--color-accent);
+	stroke-width: 2.5;
+	stroke-linecap: round;
+	stroke-dasharray: 188.5 188.5;
+	stroke-dashoffset: 188.5;
+	transform: rotate(-90deg);
+	transform-origin: center;
+	filter: drop-shadow(0 0 3px var(--color-accent));
+}
+
+/* ── Charging phase (long-press in progress) ── */
+.mobile-fab-anchor.is-charging .fab-press-ring {
+	opacity: 1;
+	transition: none;
+}
+
+.mobile-fab-anchor.is-charging .fab-press-glow {
+	animation: fab-ring-charge 540ms linear forwards;
+}
+
+.mobile-fab-anchor.is-charging .fab-press-circle {
+	animation: fab-ring-charge 500ms linear forwards;
+}
+
+/* FAB compresses slightly — "held-down" tactile feel */
+.mobile-fab-anchor.is-charging .mobile-fab {
+	transform: scale(0.9);
+	transition: transform 480ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ── Firing phase (long-press threshold reached) ── */
+.mobile-fab-anchor.is-firing .fab-press-ring {
+	opacity: 1;
+	transition: none;
+	animation: fab-ring-fire-exit 220ms cubic-bezier(0.2, 0, 0.8, 1) forwards;
+}
+
+.mobile-fab-anchor.is-firing .fab-press-glow {
+	stroke-dashoffset: 0;
+	animation: none;
+}
+
+.mobile-fab-anchor.is-firing .fab-press-circle {
+	stroke-dashoffset: 0;
+	animation: fab-ring-fire-stroke 220ms cubic-bezier(0.2, 0, 0.8, 1) forwards;
+}
+
+/* FAB spring-pops on activation — is-firing appears after is-dragging in
+   source order so it takes precedence on transform during the exit flash. */
+.mobile-fab-anchor.is-firing .mobile-fab {
+	transform: scale(1.12);
+	box-shadow: 0 8px 28px rgba(0, 0, 0, 0.24);
+	transition: transform 80ms ease-out, box-shadow 80ms ease-out;
+}
+
+/* Ring draws clockwise from 12 o'clock position */
+@keyframes fab-ring-charge {
+	0% { stroke-dashoffset: 188.5; }
+	100% { stroke-dashoffset: 0; }
+}
+
+/* Ring expands outward and fades — energy-release effect */
+@keyframes fab-ring-fire-exit {
+	0% { transform: scale(1); opacity: 1; }
+	30% { transform: scale(1.14); opacity: 0.95; }
+	100% { transform: scale(1.55); opacity: 0; }
+}
+
+/* Ring stroke flashes white at completion, then dims out */
+@keyframes fab-ring-fire-stroke {
+	0% {
+		stroke: var(--color-accent);
+		stroke-width: 2.5;
+		filter: drop-shadow(0 0 3px var(--color-accent));
+	}
+	22% {
+		stroke: #fff;
+		stroke-width: 4;
+		filter: drop-shadow(0 0 10px #fff) drop-shadow(0 0 6px var(--color-accent));
+	}
+	100% {
+		stroke: var(--color-accent);
+		stroke-width: 1;
+		filter: drop-shadow(0 0 2px var(--color-accent));
+	}
 }
 
 .mobile-fab-action {

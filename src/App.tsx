@@ -58,6 +58,7 @@ import { ShareNotificationsModal } from './components/Share/ShareNotificationsMo
 import { NoteDrawingBrowserModal } from './components/NoteAttachments/NoteDrawingBrowserModal';
 import { NoteLinkBrowserModal } from './components/NoteAttachments/NoteLinkBrowserModal';
 import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModal';
+import { MobileFab } from './components/MobileFab/MobileFab';
 import { NoteMediaBrowserModal } from './components/NoteMedia/NoteMediaBrowserModal';
 import { WorkspaceImagesGallery } from './components/NoteMedia/WorkspaceImagesGallery';
 import { MoveNoteModal } from './components/Workspaces/MoveNoteModal';
@@ -3038,7 +3039,7 @@ export function App(): React.JSX.Element {
 		if (!isFabOpen || !showMobileFab || !isMobileViewport || typeof document === 'undefined') return;
 		const allowTouchTarget = (target: EventTarget | null): boolean => {
 			if (!(target instanceof Element)) return false;
-			return Boolean(target.closest('.mobile-fab-backdrop, .mobile-fab-stack, .mobile-fab'));
+			return Boolean(target.closest('.mobile-fab-backdrop, .mobile-fab-stack, .mobile-fab, .mobile-fab-anchor'));
 		};
 		const onTouchMove = (event: TouchEvent): void => {
 			if (allowTouchTarget(event.target)) return;
@@ -7074,94 +7075,23 @@ export function App(): React.JSX.Element {
 	const isIosStandalonePwa = isMobileViewport && detectIosStandaloneDisplayMode();
 	const isAndroidStandalonePwa = isMobileViewport && detectAndroidStandaloneDisplayMode();
 
-	// Keep the FAB trigger, action stack, and backdrop in one overlay block so
-	// iOS standalone scrolling cannot split their stacking or anchoring contexts.
-	const mobileFabOverlay = React.useMemo(() => {
-		if (!showMobileFab) return null;
-		const fabButton = (
-			<button
-				type="button"
-				className={`mobile-fab${isFabOpen ? ' is-open' : ''}`}
-				onClick={toggleFab}
-				aria-label={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
-				title={isFabOpen ? t('app.closeQuickCreate') : t('app.openQuickCreate')}
-			>
-				<img
-					aria-hidden="true"
-					className="mobile-fab-icon"
-					src={fabIconSrc}
-					alt=""
-				/>
-			</button>
-		);
-		const fabStack = (
-			<div className={`mobile-fab-stack${isFabOpen ? ' is-open' : ''}`}>
-				<button
-					type="button"
-					className="mobile-fab-action"
-					onClick={() => {
-						replaceActiveOverlaySnapshot({
-							...getOverlaySnapshot(),
-							isFabOpen: false,
-						});
-						setIsQuickReminderOpen(true);
-					}}
-				>
-					<FontAwesomeIcon icon={faBell} />
-					{t('app.createQuickReminder')}
-				</button>
-				<button
-					type="button"
-					className="mobile-fab-action"
-					onClick={() => {
-						void openCreateEditorForCurrentContext('text', { replaceTop: true });
-					}}
-				>
-					<FontAwesomeIcon icon={faFileLines} />
-					{t('app.createNote')}
-				</button>
-				<button
-					type="button"
-					className="mobile-fab-action"
-					onClick={() => {
-						void openCreateEditorForCurrentContext('checklist', { replaceTop: true });
-					}}
-				>
-					<FontAwesomeIcon icon={faListCheck} />
-					{t('app.createChecklist')}
-				</button>
-				<button
-					type="button"
-					className="mobile-fab-action"
-					onClick={() => {
-						void openCreateEditorForCurrentContext('drawing', { replaceTop: true });
-					}}
-				>
-					<FontAwesomeIcon icon={faPenNib} />
-					{t('app.createDrawing')}
-				</button>
-			</div>
-		);
-		const content = (
-			<>
-				{isFabOpen ? (
-					<button
-						type="button"
-						className="mobile-fab-backdrop"
-						onPointerUp={(event) => closeBackdropFromPointerEvent(event, toggleFab)}
-						onClick={(event) => {
-							if (event.defaultPrevented) return;
-							toggleFab();
-						}}
-						aria-label={t('app.closeQuickCreate')}
-					/>
-				) : null}
-				{fabStack}
-				{fabButton}
-			</>
-		);
-		return content;
-	}, [fabIconSrc, getOverlaySnapshot, isFabOpen, openCreateEditorForCurrentContext, replaceActiveOverlaySnapshot, showMobileFab, t, toggleFab]);
+	// Stable action callbacks passed to MobileFab to avoid closure recreation
+	const handleFabCreateReminder = React.useCallback(() => {
+		replaceActiveOverlaySnapshot({ ...getOverlaySnapshot(), isFabOpen: false });
+		setIsQuickReminderOpen(true);
+	}, [getOverlaySnapshot, replaceActiveOverlaySnapshot]);
+
+	const handleFabCreateText = React.useCallback(() => {
+		void openCreateEditorForCurrentContext('text', { replaceTop: true });
+	}, [openCreateEditorForCurrentContext]);
+
+	const handleFabCreateChecklist = React.useCallback(() => {
+		void openCreateEditorForCurrentContext('checklist', { replaceTop: true });
+	}, [openCreateEditorForCurrentContext]);
+
+	const handleFabCreateDrawing = React.useCallback(() => {
+		void openCreateEditorForCurrentContext('drawing', { replaceTop: true });
+	}, [openCreateEditorForCurrentContext]);
 
 	const headerIconSrc = React.useMemo(() => {
 		return isLightTheme(themeId) ? APP_HEADER_LIGHT_ICON_SRC : APP_HEADER_DARK_ICON_SRC;
@@ -10447,7 +10377,20 @@ export function App(): React.JSX.Element {
 				</div>
 			) : null}
 
-			{mobileFabOverlay}
+			{showMobileFab ? (
+				<MobileFab
+					isOpen={isFabOpen}
+					onToggle={toggleFab}
+					onCreateReminder={handleFabCreateReminder}
+					onCreateText={handleFabCreateText}
+					onCreateChecklist={handleFabCreateChecklist}
+					onCreateDrawing={handleFabCreateDrawing}
+					fabIconSrc={fabIconSrc}
+					userId={authUserId}
+					deviceId={deviceId}
+					t={t}
+				/>
+			) : null}
 
 			{/* Branch: selection exists but doc not yet loaded.
 			   Mutual exclusion: suppress when a create editor is active to prevent
