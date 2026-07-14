@@ -732,7 +732,6 @@ export function WorkspaceImagesGallery(props: WorkspaceImagesGalleryProps): Reac
 					<div className={styles.statRow}><span className={styles.statLabel}>{t('media.imagePlural')}</span><span className={styles.statValue}>{summaryCounts.imageCount}</span></div>
 					<div className={styles.statRow}><span className={styles.statLabel}>Visible notes</span><span className={styles.statValue}>{summaryCounts.noteCount}</span></div>
 					<div className={styles.statRow}><span className={styles.statLabel}>Collections</span><span className={styles.statValue}>{summaryCounts.collectionCount}</span></div>
-					<div className={styles.statRow}><span className={styles.statLabel}>Status</span><span className={styles.statValue}>{mediaLoading ? t('common.loading') : 'Ready'}</span></div>
 				</div>
 				{props.searchQuery ? <div className={styles.searchBadge}><FontAwesomeIcon icon={faMagnifyingGlass} /> {props.searchQuery}</div> : null}
 			</div>

@@ -582,6 +582,12 @@ function createApiAuthRouter({ prisma }) {
 						select: { id: true, email: true, name: true, role: true, disabled: true, profileImage: true, lastLogin: true, createdAt: true, isSupporter: true, supporterShowPublic: true },
 					});
 					if (!user || user.disabled) {
+						// Clear the stale cookie so subsequent requests don't keep referencing
+						// a userId that no longer exists (e.g. after a database wipe).
+						if (!user) {
+							const secure = isSecureRequest(req);
+							appendSetCookie(res, makeClearSessionCookie({ secure }));
+						}
 						jsonResponse(res, 200, { authenticated: false, user: null, workspaceId: null });
 						return;
 					}
@@ -613,9 +619,10 @@ function createApiAuthRouter({ prisma }) {
 									userId: user.id,
 									deviceId,
 									activeWorkspaceId: preferredWorkspaceId,
-									noteCardFontScale: 1,
-									noteEditorFontScale: 1,
-									editorToolbarMode: 'full',
+									noteCardFontScale: 0.85,
+									noteEditorFontScale: 0.85,
+									noteCardMaxHeightPx: 400,
+									editorToolbarMode: 'condensed',
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
 									noteCardCompletedExpandedByNoteId: {},
@@ -643,9 +650,10 @@ function createApiAuthRouter({ prisma }) {
 									userId: user.id,
 									deviceId,
 									activeWorkspaceId: effectiveWorkspaceId,
-									noteCardFontScale: 1,
-									noteEditorFontScale: 1,
-									editorToolbarMode: 'full',
+									noteCardFontScale: 0.85,
+									noteEditorFontScale: 0.85,
+									noteCardMaxHeightPx: 400,
+									editorToolbarMode: 'condensed',
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
 									noteCardCompletedExpandedByNoteId: {},

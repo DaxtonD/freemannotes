@@ -622,6 +622,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const focusProxyRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const isDraggingWithKeyboardRef = React.useRef(false);
 	const allowAutomaticRowFocusRef = React.useRef(false);
+	// Set true on title Enter-key press; cleared by the activeRowEditor effect below
+	// so that the first available TipTap editor instance is focused directly via
+	// commands.focus() rather than the DOM-level focusRichTextEditable fallback.
+	const needsFocusAfterTitleEnterRef = React.useRef(false);
 	// Quick-delete branch intentionally leaves no active row selected after delete.
 	// This ref suppresses the usual "always keep one row active" effect on the next render.
 	const suppressAutoActivateAfterDeleteRef = React.useRef(false);
@@ -683,6 +687,16 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		activateRow(firstItemId);
 		focusChecklistRowEditor(firstItemId);
 	}, [activateRow, focusChecklistRowEditor]);
+	// When the title Enter key sets needsFocusAfterTitleEnterRef, this effect fires
+	// as soon as the target row's TipTap editor instance becomes available and calls
+	// focus via the editor API (commands.focus) rather than raw DOM selection, which
+	// is the only reliable path for an empty ProseMirror document.
+	React.useEffect(() => {
+		if (!needsFocusAfterTitleEnterRef.current) return;
+		if (!activeRowEditor || activeRowEditor.isDestroyed) return;
+		needsFocusAfterTitleEnterRef.current = false;
+		activeRowEditor.commands.focus('end');
+	}, [activeRowEditor]);
 	const moveFocusToAdjacentRow = React.useCallback((rowId: string, direction: 'previous' | 'next'): void => {
 		const currentIndex = visibleChecklistRowIds.indexOf(rowId);
 		if (currentIndex === -1) return;
@@ -1468,7 +1482,17 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					onKeyDown={(event) => {
 						if (event.key !== 'Enter') return;
 						event.preventDefault();
-						focusFirstChecklistItem();
+						// Arm the activeRowEditor effect so focus transfers via
+						// editor.commands.focus() once TipTap is ready.
+						needsFocusAfterTitleEnterRef.current = true;
+						// Explicit blur before activation so the title textarea doesn't
+						// compete with the contenteditable for focus.
+						titleInputRef.current?.blur();
+						if (latestItemsRef.current.length === 0) {
+							addItem();
+						} else {
+							focusFirstChecklistItem();
+						}
 					}}
 					placeholder={t('editors.titlePlaceholder')}
 				/>

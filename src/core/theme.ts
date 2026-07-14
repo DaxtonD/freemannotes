@@ -1306,7 +1306,7 @@ export const THEMES: readonly ThemeDefinition[] = [
 
 export type ThemeId = (typeof THEMES)[number]['id'];
 
-const fallbackThemeId: ThemeId = 'dark';
+const fallbackThemeId: ThemeId = 'freeman-bmrf-lab';
 
 /** IDs of themes that use a light background (need dark icons/text). */
 const LIGHT_THEME_IDS: ReadonlySet<string> = new Set([
