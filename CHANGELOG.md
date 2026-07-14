@@ -4,6 +4,12 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.7.2 - 2026-07-13
+
+### Fixed
+- **PWA always shows version 1 in Android app info.** The `version` and `version_name` fields are now injected into the web app manifest from `package.json` at build time, so Android's "App info" screen shows the correct semver.
+- **Inbox badge double-counts pending self-mentions when online.** When `inbox_updated` fires and a fresh server unread count is fetched, the count endpoint now also returns the `nodeId` values of all unread mention activities. The client immediately reconciles these against the optimistic `pendingSelfMentions` store, clearing any entries that the server has already processed. The badge no longer inflates until the user opens the inbox.
+
 ## 1.7.1 - 2026-07-13
 
 ### Added

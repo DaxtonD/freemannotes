@@ -167,44 +167,32 @@ function createActivityRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 		}
 
 		// ── GET /api/inbox/count ──────────────────────────────────────────────
-		// Returns the unread, non-archived activity count for the badge.
+		// Returns the unread activity count for the badge, plus nodeIds of unread
+		// prosemirror_node activities so the client can clear matching optimistic
+		// pending-self-mention entries without waiting for InboxView to open.
 		if (pathname === '/api/inbox/count' && method === 'GET') {
 			(async () => {
 				try {
 					const userId = requireAuth();
 					if (!userId) return;
 
-					const count = await prisma.activityTarget.count({
-						where: {
-							userId,
-							activity: {
-								reads: {
-									none: { userId },
-								},
-							},
-						},
-					});
+					const [unread, unreadTargets] = await Promise.all([
+						prisma.activityTarget.count({
+							where: { userId, activity: { reads: { none: { userId } } } },
+						}),
+						prisma.activityTarget.findMany({
+							where: { userId, activity: { reads: { none: { userId } } } },
+							select: { activity: { select: { deepLink: true } } },
+							take: 200,
+						}),
+					]);
 
-					// Also exclude archived from unread count
-					const archivedCount = await prisma.activityRead.count({
-						where: { userId, archived: true },
-					});
+					const nodeIds = unreadTargets
+						.map((t) => t.activity?.deepLink)
+						.filter((dl) => dl && typeof dl === 'object' && dl.kind === 'prosemirror_node' && typeof dl.nodeId === 'string')
+						.map((dl) => dl.nodeId);
 
-					// Unread = targeted but no read row yet. We subtract archived
-					// separately since archived implies a read row exists.
-					// Simpler: count targets with no read row at all, then subtract
-					// any that have an archived read row.
-					// Actually cleaner to do a single query:
-					const unread = await prisma.activityTarget.count({
-						where: {
-							userId,
-							activity: {
-								reads: { none: { userId } },
-							},
-						},
-					});
-
-					jsonResponse(res, 200, { unread });
+					jsonResponse(res, 200, { unread, nodeIds });
 				} catch (err) {
 					console.error('[activity] GET /api/inbox/count error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
