@@ -1,6 +1,7 @@
 {
   "common": {
     "back": "Atrás",
+    "forward": "Adelante",
     "previous": "Anterior",
     "next": "Siguiente",
     "close": "Cerrar",

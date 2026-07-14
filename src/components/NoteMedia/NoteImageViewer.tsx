@@ -317,14 +317,11 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 				if (dx < 0 && atLeftEdge) handleNext();
 				if (dx > 0 && atRightEdge) handlePrevious();
 			}
-			if (dy > 96 && Math.abs(dy) > Math.abs(dx) * 1.2) {
-				requestClose();
-			}
 		}
 		swipeStartRef.current = null;
 		dragStartRef.current = null;
 		setDragging(false);
-	}, [clampOffsetToBounds, getPanBounds, handleNext, handlePrevious, offset, requestClose, scale]);
+	}, [clampOffsetToBounds, getPanBounds, handleNext, handlePrevious, offset, scale]);
 
 	const handleWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>) => {
 		const direction = event.deltaY < 0 ? 0.12 : -0.12;
@@ -339,27 +336,6 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 	const content = (
 		<div className={styles.backdrop} role="presentation" onClick={handleBackdropClick}>
 			<section className={styles.viewer} role="dialog" aria-modal="true" aria-label={props.title} onClick={(event) => event.stopPropagation()}>
-				<header className={styles.header}>
-					<div className={styles.headerGroup}>
-						<button type="button" className={styles.button} onClick={requestClose}>
-							<FontAwesomeIcon icon={faArrowLeft} />
-							<span>{t('common.back')}</span>
-						</button>
-						<div className={styles.titleWrap}>
-							<h2 className={styles.title}>{props.title}</h2>
-							{props.subtitle || resolvedImage.isOfflinePreview ? <p className={styles.subtitle}>{[props.subtitle, resolvedImage.isOfflinePreview ? t('media.offlinePreviewHint') : ''].filter(Boolean).join(' · ')}</p> : null}
-						</div>
-					</div>
-					<div className={styles.toolbar}>
-						{props.onDelete ? (
-							<button type="button" className={styles.dangerButton} onClick={props.onDelete} disabled={props.deleteDisabled}>
-								<FontAwesomeIcon icon={faTrash} />
-								<span>{t('editors.delete')}</span>
-							</button>
-						) : null}
-					</div>
-				</header>
-
 				<div
 					ref={stageRef}
 					className={`${styles.stage}${dragging ? ` ${styles.stageDragging}` : ''}`}
@@ -369,6 +345,27 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 					onPointerCancel={(event) => endDrag(event)}
 					onWheel={handleWheel}
 				>
+					<div className={styles.overlay}>
+						<div className={styles.headerGroup}>
+							<button type="button" className={styles.button} onClick={requestClose}>
+								<FontAwesomeIcon icon={faArrowLeft} />
+								<span>{t('common.back')}</span>
+							</button>
+							<div className={styles.titleWrap}>
+								<h2 className={styles.title}>{props.title}</h2>
+								{props.subtitle || resolvedImage.isOfflinePreview ? <p className={styles.subtitle}>{[props.subtitle, resolvedImage.isOfflinePreview ? t('media.offlinePreviewHint') : ''].filter(Boolean).join(' · ')}</p> : null}
+							</div>
+						</div>
+						{props.onDelete ? (
+							<div className={styles.toolbar}>
+								<button type="button" className={styles.dangerButton} onClick={props.onDelete} disabled={props.deleteDisabled}>
+									<FontAwesomeIcon icon={faTrash} />
+									<span>{t('editors.delete')}</span>
+								</button>
+							</div>
+						) : null}
+					</div>
+
 					<div
 						key={props.src}
 						className={`${styles.imageFrame}${transitionDirection === 'next' ? ` ${styles.imageFrameSwapNext}` : transitionDirection === 'previous' ? ` ${styles.imageFrameSwapPrevious}` : ''}`}

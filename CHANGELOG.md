@@ -4,6 +4,17 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.7.3 - 2026-07-13
+
+### Added
+- **Note-link navigation — full back/forward history stack across all platforms.** Tapping a note chip (@reference, backlink) now appends to an in-session note chain rather than replacing the current note. Android: system Back unwinds the chain one note at a time; the close/save button exits the entire chain in one step (`history.go(-N)`). iOS/mobile: an explicit **← Back** button appears above the note title when there is history to unwind. Desktop/browser: **← Back** and **Forward →** buttons appear in the editor header; `Alt+Left` / `Alt+Right` keyboard shortcuts mirror browser back/forward conventions. Opening a note from the grid, inbox, search, or bubble view always starts a fresh navigation session.
+
+### Fixed
+- **Moving a note to another workspace duplicates inbox cards.** The note-move transaction in `server/apiRouter.js` now migrates `EntityReference` and `Activity` rows (which back inbox mentions) to the new `sourceDocId`/`sourceWorkspaceId`. Without this, `_syncEntityReferences` found no existing records after a move and treated every @mention as a new insertion, producing a duplicate inbox card for each collaborator.
+- **Moving a note to another workspace loses its reminders.** The move transaction now also migrates `NoteReminder` rows to the new `docId`/`workspaceId`, so scheduled reminder push notifications continue to fire correctly after the move.
+- **Heading portal collapses content and misaligns toolbar dropdown** (welcome note / rich text editor). Clicking a heading node in the editor now highlights the correct heading level in the toolbar dropdown, and the heading type picker no longer collapses content below the selection.
+- **Image viewer closes unexpectedly on downward swipe.** The swipe-down gesture that previously dismissed the full-screen image viewer has been removed. Navigation controls (back, title, delete) now overlay the image via a dark-to-transparent gradient header, the image fits the full viewport on mobile, and the maximum height on desktop is raised to `min(88dvh, 960px)`.
+
 ## 1.7.2 - 2026-07-13
 
 ### Fixed

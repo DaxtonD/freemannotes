@@ -682,6 +682,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const emojiMenuButtonRef = React.useRef<HTMLButtonElement | null>(null);
 	const emojiMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const [headingMenuOpen, setHeadingMenuOpen] = React.useState(false);
+	const [headingMenuPosition, setHeadingMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
 	const [condensedSection, setCondensedSection] = React.useState<CondensedToolbarSection>(null);
 	const [tableMenuOpen, setTableMenuOpen] = React.useState(false);
 	const [tableMenuPosition, setTableMenuPosition] = React.useState<{ top: number; left: number } | null>(null);
@@ -929,6 +930,34 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			left,
 		});
 	}, []);
+	const updateHeadingMenuPosition = React.useCallback((): void => {
+		const button = headingMenuButtonRef.current;
+		if (!button || typeof window === 'undefined') {
+			setHeadingMenuPosition(null);
+			return;
+		}
+		const visualViewport = window.visualViewport;
+		const viewportLeft = visualViewport ? Math.round(visualViewport.offsetLeft) : 0;
+		const viewportTop = visualViewport ? Math.round(visualViewport.offsetTop) : 0;
+		const viewportWidth = visualViewport ? Math.round(visualViewport.width) : window.innerWidth;
+		const viewportHeight = visualViewport ? Math.round(visualViewport.height) : window.innerHeight;
+		const viewportRight = viewportLeft + viewportWidth;
+		const viewportBottom = viewportTop + viewportHeight;
+		const rect = button.getBoundingClientRect();
+		const menuWidth = 308;
+		const menuHeight = 52;
+		const viewportPadding = 8;
+		const left = Math.min(
+			Math.max(viewportLeft + viewportPadding, rect.left),
+			viewportRight - menuWidth - viewportPadding,
+		);
+		const preferredTop = rect.bottom + 8;
+		const fitsBelow = preferredTop + menuHeight <= viewportBottom - viewportPadding;
+		const top = fitsBelow
+			? preferredTop
+			: Math.max(viewportTop + viewportPadding, rect.top - menuHeight - 8);
+		setHeadingMenuPosition({ top, left });
+	}, []);
 	const updateHighlightMenuPosition = React.useCallback((): void => {
 		const button = highlightMenuButtonRef.current;
 		if (!button || typeof window === 'undefined') {
@@ -1014,6 +1043,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	}, [updateToolbarScrollState, props.variant, props.compact]);
 	React.useEffect(() => {
 		if (!headingMenuOpen) return;
+		updateHeadingMenuPosition();
 		const handlePointerDown = (event: PointerEvent): void => {
 			const target = event.target as Node | null;
 			if (!target) return;
@@ -1030,7 +1060,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			document.removeEventListener('pointerdown', handlePointerDown);
 			document.removeEventListener('keydown', handleKeyDown);
 		};
-	}, [headingMenuOpen]);
+	}, [headingMenuOpen, updateHeadingMenuPosition]);
 	React.useEffect(() => {
 		if (!tableMenuOpen) return;
 		updateTableMenuPosition();
@@ -1132,12 +1162,8 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const noEditor = !props.editor;
 	const compactButtonClass = props.compact ? ` ${styles.formatButtonCompact}` : '';
 	const primaryToolbarButtonClass = props.variant === 'minimal' ? ` ${styles.formatButtonCondensed}` : compactButtonClass;
-	const activeHeadingLabel = resolvedToolbarState.isHeading1 ? 'H1'
-		: resolvedToolbarState.isHeading2 ? 'H2'
-		: resolvedToolbarState.isHeading3 ? 'H3'
-		: resolvedToolbarState.isHeading4 ? 'H4'
-		: resolvedToolbarState.isHeading5 ? 'H5'
-		: resolvedToolbarState.isHeading6 ? 'H6'
+	const activeHeadingLabel = resolvedToolbarState.activeHeadingLevel != null
+		? `H${resolvedToolbarState.activeHeadingLevel}`
 		: t('editors.headingMenu');
 	const noteAutoScrollLabel = props.noteAutoScrollEnabled
 		? t('editors.disableNoteAutoScroll')
@@ -1161,17 +1187,8 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		|| resolvedToolbarState.isStrike
 		|| resolvedToolbarState.isLink
 		|| resolvedToolbarState.isHighlight;
-	const hasActiveHeadingSection = resolvedToolbarState.isHeading1
-		|| resolvedToolbarState.isHeading2
-		|| resolvedToolbarState.isHeading3
-		|| resolvedToolbarState.isHeading4
-		|| resolvedToolbarState.isHeading5
-		|| resolvedToolbarState.isHeading6;
-	const hasActiveCollapsibleHeadingSection = resolvedToolbarState.isHeading1
-		|| resolvedToolbarState.isHeading2
-		|| resolvedToolbarState.isHeading3
-		|| resolvedToolbarState.isHeading4
-		|| resolvedToolbarState.isHeading5;
+	const hasActiveHeadingSection = resolvedToolbarState.activeHeadingLevel != null;
+	const hasActiveCollapsibleHeadingSection = resolvedToolbarState.activeHeadingLevel != null && resolvedToolbarState.activeHeadingLevel <= 5;
 	const showHeadingCollapseToggle = props.variant === 'full' && (
 		(resolvedToolbarState.activeHeadingLevel != null && resolvedToolbarState.activeHeadingLevel <= 5)
 		|| (isCondensedToolbar && condensedSection === 'headings')
@@ -1244,12 +1261,12 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				case 'headings':
 					return (
 						<>
-							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading1 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(1)}>H1</button>
-							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading2 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(2)}>H2</button>
-							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading3 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(3)}>H3</button>
-							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading4 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(4)}>H4</button>
-							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading5 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(5)}>H5</button>
-							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading6 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(6)}>H6</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 1 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(1)}>H1</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 2 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(2)}>H2</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 3 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(3)}>H3</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 4 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(4)}>H4</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 5 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(5)}>H5</button>
+							<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 6 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(6)}>H6</button>
 							{showHeadingCollapseToggle ? (
 								<button
 									type="button"
@@ -1602,13 +1619,13 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<button
 							ref={headingMenuButtonRef}
 							type="button"
-							className={`${styles.formatButton}${compactButtonClass}${headingMenuOpen || resolvedToolbarState.isHeading1 || resolvedToolbarState.isHeading2 || resolvedToolbarState.isHeading3 || resolvedToolbarState.isHeading4 || resolvedToolbarState.isHeading5 || resolvedToolbarState.isHeading6 ? ` ${styles.formatButtonActive}` : ''}`}
+							className={`${styles.formatButton}${compactButtonClass}${headingMenuOpen || resolvedToolbarState.activeHeadingLevel != null ? ` ${styles.formatButtonActive}` : ''}`}
 							aria-label={t('editors.headingMenu')}
 							title={t('editors.headingMenu')}
 							aria-expanded={headingMenuOpen}
 							onMouseDown={preventToolbarFocusSteal}
 							onPointerDown={preventToolbarFocusSteal}
-							onClick={() => setHeadingMenuOpen((open) => !open)}
+							onClick={() => { updateHeadingMenuPosition(); setHeadingMenuOpen((open) => !open); }}
 						>
 							<span className={styles.headingMenuButtonLabel}>{activeHeadingLabel}</span>
 						</button>
@@ -1845,38 +1862,42 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					{condensedSectionContent}
 				</div>
 			) : null}
-			{props.variant === 'full' && headingMenuOpen ? (
-				<div
-					ref={headingMenuRef}
-					className={`${styles.headingToolbar}${props.compact ? ` ${styles.headingToolbarCompact}` : ''}`}
-					role="toolbar"
-					aria-label={t('editors.headingMenu')}
-					onPointerDown={stopToolbarPropagation}
-					onMouseDown={stopToolbarPropagation}
-					onClick={stopToolbarPropagation}
-				>
-					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading1 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(1)}>H1</button>
-					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading2 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(2)}>H2</button>
-					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading3 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(3)}>H3</button>
-					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading4 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(4)}>H4</button>
-					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading5 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(5)}>H5</button>
-					<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isHeading6 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(6)}>H6</button>
-					{showHeadingCollapseToggle ? (
-						<button
-							type="button"
-							className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isCollapsibleHeading ? ` ${styles.headingToolbarButtonActive}` : ''}`}
-							aria-label={headingCollapseToggleLabel}
-							title={headingCollapseToggleLabel}
-							onMouseDown={preventToolbarFocusSteal}
-							onPointerDown={preventToolbarFocusSteal}
-							onClick={handleToggleHeadingCollapsible}
-							disabled={!resolvedToolbarState.canToggleHeadingCollapsible}
-						>
-							<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconHeadingCollapse}`} aria-hidden="true" />
-						</button>
-					) : null}
-				</div>
-			) : null}
+			{props.variant === 'full' && headingMenuOpen && headingMenuPosition && typeof document !== 'undefined'
+				? createPortal(
+					<div
+						ref={headingMenuRef}
+						className={`${styles.headingToolbar}${props.compact ? ` ${styles.headingToolbarCompact}` : ''}`}
+						role="toolbar"
+						aria-label={t('editors.headingMenu')}
+						style={{ position: 'fixed', top: `${headingMenuPosition.top}px`, left: `${headingMenuPosition.left}px` }}
+						onPointerDown={stopToolbarPropagation}
+						onMouseDown={stopToolbarPropagation}
+						onClick={stopToolbarPropagation}
+					>
+						<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 1 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading1')} title={t('editors.heading1')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(1)}>H1</button>
+						<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 2 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading2')} title={t('editors.heading2')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(2)}>H2</button>
+						<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 3 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading3')} title={t('editors.heading3')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(3)}>H3</button>
+						<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 4 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading4')} title={t('editors.heading4')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(4)}>H4</button>
+						<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 5 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading5')} title={t('editors.heading5')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(5)}>H5</button>
+						<button type="button" className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.activeHeadingLevel === 6 ? ` ${styles.headingToolbarButtonActive}` : ''}`} aria-label={t('editors.heading6')} title={t('editors.heading6')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runHeadingCommand(6)}>H6</button>
+						{showHeadingCollapseToggle ? (
+							<button
+								type="button"
+								className={`${styles.headingToolbarButton}${props.compact ? ` ${styles.headingToolbarButtonCompact}` : ''}${resolvedToolbarState.isCollapsibleHeading ? ` ${styles.headingToolbarButtonActive}` : ''}`}
+								aria-label={headingCollapseToggleLabel}
+								title={headingCollapseToggleLabel}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={handleToggleHeadingCollapsible}
+								disabled={!resolvedToolbarState.canToggleHeadingCollapsible}
+							>
+								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconHeadingCollapse}`} aria-hidden="true" />
+							</button>
+						) : null}
+					</div>,
+					document.body,
+				)
+				: null}
 			{tableMenuOpen && tableMenuPosition && typeof document !== 'undefined'
 				? createPortal(
 					<div

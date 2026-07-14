@@ -32,6 +32,18 @@ function b(content) {
 	return node;
 }
 
+/** Link text node — href is a URL or a #hash fragment */
+function lnk(text, href) {
+	const node = new Y.XmlText();
+	node.insert(0, text, { link: { href, target: null, rel: null, class: null } });
+	return node;
+}
+
+/** Mirrors slugifyHeadingText() in richText.ts */
+function slugify(text) {
+	return text.toLowerCase().replace(/\s+/g, '-').replace(/[^\w-]/g, '');
+}
+
 /** <paragraph> with inline children (Y.XmlText or arrays of them) */
 function para(...children) {
 	const el = new Y.XmlElement('paragraph');
@@ -40,14 +52,7 @@ function para(...children) {
 	return el;
 }
 
-/** <heading level="N"> with plain text */
-function h2(text) {
-	const el = new Y.XmlElement('heading');
-	el.setAttribute('level', '2');
-	el.insert(0, [t(text)]);
-	return el;
-}
-
+/** <heading level="3"> with plain text */
 function h3(text) {
 	const el = new Y.XmlElement('heading');
 	el.setAttribute('level', '3');
@@ -56,13 +61,9 @@ function h3(text) {
 }
 
 /**
- * <heading level="2"> that is marked collapsible. The collapseId is a stable
- * UUID written into the Yjs attributes so TipTap's CollapsibleHeading extension
- * can track collapsed/expanded state per device.
- *
- * Attribute encoding matches y-prosemirror's raw-string storage:
- *   'collapsible' = 'true'  → Boolean('true') = true  ✓
- *   'collapseId'  = '<uuid>' → typeof === 'string'     ✓
+ * <heading level="2"> marked collapsible. The collapseId is a stable UUID
+ * written into Yjs attributes so TipTap's CollapsibleHeading extension can
+ * track collapsed/expanded state per device.
  */
 function h2Collapsible(text) {
 	const el = new Y.XmlElement('heading');
@@ -94,8 +95,8 @@ function li(children) {
 }
 
 /**
- * <bulletList> where each argument is either a plain string or an array of
- * Y.XmlText nodes (for mixed bold/plain content).
+ * <bulletList> where each argument is a string, Y.XmlText, or array of
+ * Y.XmlText nodes (for mixed bold/plain/link content).
  */
 function ul(...items) {
 	const list = new Y.XmlElement('bulletList');
@@ -107,114 +108,91 @@ function ul(...items) {
 /* ── Feature guide content (English) ────────────────────────────────────── */
 
 function buildWelcomeContentEn(fragment) {
+	const EN_SECTIONS = [
+		'🗂️ Workspaces',
+		'📁 Collections & Labels',
+		'📝 Note Types',
+		'📖 Rich Text Features',
+		'📌 Collapsible Headings',
+		'💬 @Mentions & Inbox',
+		'🤝 Sharing & Collaboration',
+		'🫧 Bubble View',
+		'⏰ Reminders',
+		'🎨 Customization',
+		'⚡ Offline First',
+		'📱 Mobile FAB',
+	];
+
 	const nodes = [
-		h2('🗂️ Workspaces'),
-		para(t('Think of workspaces as separate notebooks for different areas of your life.')),
-		ul(
-			'Work, Home, Projects — each stays clean and focused',
-			'Switch between workspaces from the sidebar',
-		),
+		para(t('What\'s in this note:')),
+		ul(...EN_SECTIONS.map(s => lnk(s, `#${slugify(s)}`))),
 		hr(),
 
-		h2('📁 Collections & Labels'),
-		para(t('Collections are folders within a workspace. Labels are cross-collection tags.')),
-		ul(
-			'Group related notes into collections',
-			'Apply multiple labels to a note for flexible filtering',
-		),
+		h2Collapsible('🗂️ Workspaces'),
+		para(t('Separate notebooks for separate contexts, so work doesn\'t bleed into home projects and hobby stuff stays out of personal notes. Create as many as you need — Work, Home, Side Projects, whatever makes sense for how you actually split your life up. You can switch between them from the sidebar, and each device remembers whichever one you had open last.')),
 		hr(),
 
-		h2('📝 Note Types'),
+		h2Collapsible('📁 Collections & Labels'),
+		para(t('Collections are basically folders inside a workspace. Labels are more like tags and they work across collections instead of being locked to one. Assign a collection to a note to keep it organized, or slap a few labels on it and use the filter sidebar to combine them however you want.')),
+		hr(),
+
+		h2Collapsible('📝 Note Types'),
 		h3('Text Notes'),
-		para(t('Full rich text editor — headings, bullet lists, bold/italic, tables, links, and more.')),
-		ul(
-			[b('Markdown support'), t(' — Type Markdown syntax directly and it converts as you type. Paste Markdown from any source and it converts automatically.')],
-			[b('Copy as Markdown / Copy as Rich Text'), t(' — Select any text, right-click (or use the toolbar), and choose your preferred copy format for pasting outside of Freeman Notes.')],
-		),
+		para(t('These are full rich text: headings, bullet lists, tables, code blocks, links, highlights, images, all of it. Type ## heading and it converts as you go, Markdown-style. You can also just paste in an entire Markdown document and it\'ll parse correctly without any problems (hopefully). When you need to get text out, select it and use the toolbar (or right-click) to copy as either Markdown or rich text, depending on where it\'s headed.')),
 
 		h3('Checklists'),
-		para(t('Task lists with powerful built-in features:')),
-		ul(
-			[b('Checklist Counts'), t(' — Click '), b('+1'), t(' on any list item to make it a count item. Use '), b('+/−'), t(' to increment or decrement the quantity. Click the checkbox to return it to a standard list item.')],
-			[b('Auto-Scroll'), t(' — When a note is opened, the view automatically scrolls to the bottom so your most recent entries are visible. Toggle it with the auto-scroll icon in the toolbar.')],
-		),
+		para(t('Running lists with a couple of features I actually use every day. Tap '), b('+1'), t(' on any item and it turns into a counter. Hit '), b('+'), t(' or '), b('−'), t(' to adjust it, tap the checkbox again to turn it back into a normal item. There\'s also auto-scroll, which scrolls you to the bottom of the note when you open it. Handy for logs or anything you\'re treating like a running journal. Toggle it with the '), b('≡↓'), t(' button in the toolbar.')),
 
 		h3('✏️ Drawing Notes'),
-		para(t('Whiteboard canvas powered by Excalidraw — shapes, freehand drawing, text, and more. Syncs in real-time.')),
+		para(t('A full Excalidraw canvas is built in: shapes, freehand drawing, text, arrows. If you\'ve got collaborators in the note, it syncs live while you draw.')),
 		hr(),
 
-		h2('📖 Rich Text Features'),
-		h3('Table of Contents (TOC)'),
-		para(t('Open the TOC panel to see all headings in your note. Click any entry to jump directly to that section.')),
+		h2Collapsible('📖 Rich Text Features'),
+		h3('Heading Anchors'),
+		para(t('Click the link icon in the toolbar and scroll down. Every heading in the note shows up as a jump target. Genuinely useful once a note gets long and you want section navigation instead of scrolling forever.')),
 
-		// This heading is intentionally collapsible — try clicking the arrow to collapse it.
+		h3('URL Previews'),
+		para(t('There\'s a separate button for this in the toolbar — it looks like an image frame with a chain link (🖼️🔗). It\'s not the same as just pasting a URL. It actually pulls the page title, description, and a thumbnail and renders the whole thing as a card inline in the note. I mostly use it for bookmarks and reference material I want to actually see again later, not just click through to.')),
+		hr(),
+
 		h2Collapsible('📌 Collapsible Headings'),
-		para(t('Click the arrow next to any heading to collapse everything beneath it. A higher-level heading collapses all lower-level headings and content below it — an H1 collapses all H2, H3, H4, and H5 sections that follow. Collapsed state is saved per device.')),
+		para(t('Click the arrow next to a heading and everything underneath it folds away. An H2 will collapse all the H3s, H4s, and H5s beneath it, right up until the next H2. An H1 folds the whole section. This is per-device too, so folding something on your laptop doesn\'t change what your collaborators see on theirs.')),
+		para(t('(Yes, this heading folds. Try the lambda icon.)')),
 		hr(),
 
-		h2('💬 @Mentions & Inbox'),
+		h2Collapsible('💬 @Mentions & Inbox'),
 		h3('@Mentions'),
-		para(t('Type @ to mention a collaborator in any note or checklist.')),
-		ul(
-			[t('The mentioned user receives an inbox notification with a link to the note')],
-			[t('Clicking the card opens the note and scrolls directly to the '), b('@mention'), t(', which pulses to highlight it')],
-			[t('Mention '), b('yourself'), t(' to self-assign a task — it appears in your inbox as "You assigned yourself a task"')],
-		),
+		para(t('Type @ anywhere in a text note or checklist to mention someone. They\'ll get a notification in their inbox with a direct link straight to the note, and clicking it drops them right at the mention, which pulses briefly so it\'s not easy to miss. You can even mention yourself to self-assign something, and it shows up in your inbox as "you assigned yourself a task," which is a little funny but works. If you mention someone who doesn\'t have access yet, they get invited automatically.')),
 
 		h3('Inbox'),
-		para(t('Your activity feed — click the inbox icon in the sidebar.')),
-		ul(
-			'@mentions directed at you',
-			'Tasks assigned to you in checklists',
-			'Swipe a card left or right to archive it',
-		),
+		para(t('The inbox lives behind the icon in the sidebar and doubles as your activity feed: mentions from other people, tasks you\'ve been handed in checklists, that sort of thing. Swipe a card either direction to archive it.')),
 		hr(),
 
-		h2('🤝 Sharing & Collaboration'),
-		ul(
-			'Share any note — choose View or Edit permissions',
-			'Edit together in real-time across any number of devices',
-			'@mention someone without access — they receive an invitation automatically',
-		),
+		h2Collapsible('🤝 Sharing & Collaboration'),
+		para(t('Any note can be shared with either View or Edit permissions, and editing is real-time across however many devices are in the note at once. Shared notes can be placed in your personal workspace, a "Shared with me" section, or organized into separate folders within it.')),
 		hr(),
 
-		h2('🫧 Bubble View'),
-		para(t('A visual overview of your notes as floating bubbles.')),
-		ul(
-			'More active or important notes rise to the top automatically',
-			'Zoom in/out with the slider to see more or less detail',
-		),
+		h2Collapsible('🫧 Bubble View'),
+		para(t('This one\'s a bit different. Instead of a list, your notes float around as bubbles sized by how recent and active they are. The ones you\'re actually using drift toward the top. There\'s a zoom slider if you want more or less detail at a glance, and tapping a bubble opens the note like normal.')),
 		hr(),
 
-		h2('⏰ Reminders & Notifications'),
-		ul(
-			'Set a reminder on any note',
-			'Receive push notifications across all your devices',
-		),
+		h2Collapsible('⏰ Reminders'),
+		para(t('Set one from the 3-dot menu on any note. Notifications go out to whichever devices you\'ve turned them on for.')),
 		hr(),
 
-		h2('🎨 Customization'),
-		para(t('Make Freeman Notes feel like your own.')),
-		ul(
-			[b('Themes'), t(' — Large library including the Freeman Half-Life themed collection')],
-			[b('Note colors & banners'), t(' — Assign a color or banner image to any note card')],
-			[b('Text size'), t(' — Adjust the note card text size in Preferences → Appearance')],
-			[b('User avatar'), t(' — Upload a profile photo in Preferences → Account')],
-			[b('Toolbar size'), t(' — Resize or reposition the editor toolbar to suit your workflow')],
-			[b('Card height & click behavior'), t(' — Control how note cards expand and what a single click does')],
-		),
+		h2Collapsible('🎨 Customization'),
+		para(t('Preferences → Appearance has a decent theme library, including a Half-Life set if that\'s your thing (it is mine). Beyond themes, you can set note colors and banners from the 3-dot menu, scale card text and editor text separately, change the toolbar size and tweak card height and click behavior — all under Appearance.')),
 		hr(),
 
-		h2('⚡ Offline First'),
-		para(t('All notes load instantly from local storage — no internet needed. Changes sync automatically when you reconnect.')),
+		h2Collapsible('⚡ Offline First'),
+		para(t('Notes load from local storage, so there\'s no network dependency to actually open and read your stuff. Everything syncs back up once you\'re online again. I tested this on a 10-hour flight and it held up the whole way, no weirdness on reconnect.')),
 		hr(),
 
-		h2('📱 Mobile FAB'),
-		para(t('On mobile, long-press the floating + button (bottom-right) to drag it anywhere on screen. Release to drop it in your preferred position — the location is saved per device.')),
+		h2Collapsible('📱 Mobile FAB'),
+		para(t('The floating + button in the bottom-right can be long-pressed and dragged anywhere on screen. Wherever you drop it is saved per device, so it stays put.')),
 		hr(),
 
-		para([b('Workspaces'), t(' = Big categories · '), b('Collections'), t(' = Folders · '), b('Labels'), t(' = Tags · '), b('Inbox'), t(' = Your activity feed')]),
-		para(t('Freeman Notes is built to stay out of your way — so you can write, organize, and get things done.')),
+		para([b('Workspaces'), t(' = top-level contexts · '), b('Collections'), t(' = folders · '), b('Labels'), t(' = tags · '), b('Inbox'), t(' = @mentions and tasks')]),
 	];
 
 	fragment.insert(0, nodes);
@@ -223,113 +201,91 @@ function buildWelcomeContentEn(fragment) {
 /* ── Feature guide content (Spanish) ────────────────────────────────────── */
 
 function buildWelcomeContentEs(fragment) {
+	const ES_SECTIONS = [
+		'🗂️ Espacios de trabajo',
+		'📁 Colecciones y etiquetas',
+		'📝 Tipos de notas',
+		'📖 Funciones de texto enriquecido',
+		'📌 Encabezados contraíbles',
+		'💬 @Menciones e Inbox',
+		'🤝 Compartir y colaborar',
+		'🫧 Vista de burbujas',
+		'⏰ Recordatorios',
+		'🎨 Personalización',
+		'⚡ Sin conexión primero',
+		'📱 FAB móvil',
+	];
+
 	const nodes = [
-		h2('🗂️ Espacios de trabajo'),
-		para(t('Piensa en los espacios de trabajo como cuadernos separados para diferentes áreas de tu vida.')),
-		ul(
-			'Trabajo, Hogar, Proyectos — cada uno ordenado y enfocado',
-			'Cambia entre espacios de trabajo desde la barra lateral',
-		),
+		para(t('Contenido de esta nota:')),
+		ul(...ES_SECTIONS.map(s => lnk(s, `#${slugify(s)}`))),
 		hr(),
 
-		h2('📁 Colecciones y etiquetas'),
-		para(t('Las colecciones son carpetas dentro de un espacio de trabajo. Las etiquetas son marcadores que cruzan colecciones.')),
-		ul(
-			'Agrupa notas relacionadas en colecciones',
-			'Aplica varias etiquetas a una nota para filtrado flexible',
-		),
+		h2Collapsible('🗂️ Espacios de trabajo'),
+		para(t('Cuadernos separados para contextos distintos, para que el trabajo no se mezcle con proyectos personales y las cosas de hobby no aparezcan en notas de clientes. Crea todos los que necesites — Trabajo, Casa, Proyectos personales, lo que tenga sentido según cómo organizas tu vida. Puedes cambiar entre ellos desde la barra lateral, y cada dispositivo recuerda el que tenías abierto la última vez.')),
 		hr(),
 
-		h2('📝 Tipos de notas'),
+		h2Collapsible('📁 Colecciones y etiquetas'),
+		para(t('Las colecciones son básicamente carpetas dentro de un espacio de trabajo. Las etiquetas son más como tags y funcionan entre colecciones en vez de estar atadas a una sola. Asigna una colección a una nota para mantenerla ordenada, o ponle unas etiquetas y usa el panel de filtros para combinarlas como quieras.')),
+		hr(),
+
+		h2Collapsible('📝 Tipos de notas'),
 		h3('Notas de texto'),
-		para(t('Editor de texto enriquecido completo — encabezados, listas, negrita/cursiva, tablas, enlaces y más.')),
-		ul(
-			[b('Compatibilidad con Markdown'), t(' — Escribe sintaxis Markdown directamente y se convierte mientras escribes. Pega Markdown desde cualquier fuente y se convierte automáticamente.')],
-			[b('Copiar como Markdown / Copiar como texto enriquecido'), t(' — Selecciona cualquier texto y elige el formato de copia que prefieras para pegar fuera de Freeman Notes.')],
-		),
+		para(t('Texto enriquecido completo: encabezados, listas, tablas, bloques de código, enlaces, resaltados, imágenes, todo. Escribe ## encabezado y se convierte al momento, estilo Markdown. También puedes pegar un documento Markdown completo y lo parsea correctamente sin problemas (con suerte). Cuando necesites sacar el texto, selecciónalo y usa la barra de herramientas (o clic derecho) para copiar como Markdown o texto enriquecido, según dónde vaya.')),
 
 		h3('Listas de verificación'),
-		para(t('Listas de tareas con funciones integradas avanzadas:')),
-		ul(
-			[b('Contadores de lista'), t(' — Haz clic en '), b('+1'), t(' en cualquier elemento para convertirlo en un elemento de conteo. Usa '), b('+/−'), t(' para incrementar o decrementar la cantidad. Haz clic en la casilla para volver a un elemento de lista estándar.')],
-			[b('Desplazamiento automático'), t(' — Al abrir una nota, la vista se desplaza automáticamente al final para que tus entradas más recientes sean visibles. Actívalo con el ícono en la barra de herramientas.')],
-		),
+		para(t('Listas con un par de funciones que uso todos los días. Toca '), b('+1'), t(' en cualquier elemento y se convierte en un contador. Usa '), b('+'), t(' o '), b('−'), t(' para ajustarlo, toca el checkbox de nuevo para volver a un elemento normal. También hay desplazamiento automático, que te lleva al final de la nota cuando la abres. Útil para registros o cualquier cosa que uses como diario. Actívalo con el botón '), b('≡↓'), t(' en la barra de herramientas.')),
 
 		h3('✏️ Notas de dibujo'),
-		para(t('Lienzo de pizarra con Excalidraw — formas, dibujo a mano alzada, texto y más. Se sincroniza en tiempo real.')),
+		para(t('Un lienzo Excalidraw completo integrado: formas, dibujo a mano alzada, texto, flechas. Si tienes colaboradores en la nota, se sincroniza en tiempo real mientras dibujas.')),
 		hr(),
 
-		h2('📖 Funciones de texto enriquecido'),
-		h3('Tabla de contenido (TOC)'),
-		para(t('Abre el panel TOC para ver todos los encabezados de tu nota. Haz clic en cualquier entrada para saltar directamente a esa sección.')),
+		h2Collapsible('📖 Funciones de texto enriquecido'),
+		h3('Anclas de encabezado'),
+		para(t('Haz clic en el ícono de enlace en la barra de herramientas y desplázate hacia abajo. Todos los encabezados de la nota aparecen como destinos de salto. Muy útil cuando una nota se alarga y quieres navegación por secciones en vez de hacer scroll para siempre.')),
+
+		h3('Vistas previas de URL'),
+		para(t('Hay un botón separado para esto en la barra de herramientas — parece un marco de imagen con un ícono de cadena (🖼️🔗). No es lo mismo que pegar una URL normal. Obtiene el título de la página, la descripción y una miniatura, y renderiza todo como una tarjeta en línea dentro de la nota. Yo lo uso principalmente para marcadores y material de referencia que quiero volver a ver, no solo tener el enlace.')),
+		hr(),
 
 		h2Collapsible('📌 Encabezados contraíbles'),
-		para(t('Haz clic en la flecha junto a cualquier encabezado para contraer todo lo que hay debajo. Un encabezado de nivel superior contrae todos los encabezados y contenido de nivel inferior — un H1 contrae todos los H2, H3, H4 y H5 que siguen. El estado contraído se guarda por dispositivo.')),
+		para(t('Haz clic en la flecha junto a un encabezado y todo lo que hay debajo se pliega. Un H2 colapsa todos los H3, H4 y H5 que tiene debajo, hasta el siguiente H2. Un H1 pliega toda la sección. Esto es por dispositivo, así que plegar algo en tu laptop no cambia lo que ven tus colaboradores en los suyos.')),
+		para(t('(Sí, este encabezado se pliega. Prueba el ícono lambda.)')),
 		hr(),
 
-		h2('💬 @Menciones e Inbox'),
+		h2Collapsible('💬 @Menciones e Inbox'),
 		h3('@Menciones'),
-		para(t('Escribe @ para mencionar a un colaborador en cualquier nota o lista.')),
-		ul(
-			[t('El usuario mencionado recibe una notificación en el inbox con un enlace a la nota')],
-			[t('Al hacer clic en la tarjeta, se abre la nota y se desplaza directamente a la '), b('@mención'), t(', que parpadea para resaltarla')],
-			[t('Menciónate '), b('a ti mismo'), t(' para asignarte una tarea — aparece en tu inbox como "Te asignaste una tarea"')],
-		),
+		para(t('Escribe @ en cualquier lugar de una nota de texto o lista para mencionar a alguien. Recibirán una notificación en su inbox con un enlace directo a la nota, y al hacer clic los lleva justo a la mención, que parpadea brevemente para que no pase desapercibida. Puedes incluso mencionarte a ti mismo para auto-asignarte algo, y aparece en tu inbox como "te asignaste una tarea," lo cual es un poco gracioso pero funciona. Si mencionas a alguien que no tiene acceso todavía, recibe una invitación automáticamente.')),
 
 		h3('Inbox'),
-		para(t('Tu feed de actividad — haz clic en el ícono de inbox en la barra lateral.')),
-		ul(
-			'@menciones dirigidas a ti',
-			'Tareas asignadas a ti en listas de verificación',
-			'Desliza una tarjeta a izquierda o derecha para archivarla',
-		),
+		para(t('El inbox vive detrás del ícono en la barra lateral y funciona como tu feed de actividad: menciones de otras personas, tareas que te han asignado en listas de verificación, ese tipo de cosas. Desliza una tarjeta en cualquier dirección para archivarla.')),
 		hr(),
 
-		h2('🤝 Compartir y colaborar'),
-		ul(
-			'Comparte cualquier nota — elige permisos de Vista o Edición',
-			'Edita junto a otros en tiempo real desde cualquier dispositivo',
-			'@menciona a alguien sin acceso — reciben una invitación automáticamente',
-		),
+		h2Collapsible('🤝 Compartir y colaborar'),
+		para(t('Cualquier nota se puede compartir con permisos de Vista o Edición, y la edición es en tiempo real en cuantos dispositivos haya en la nota a la vez. Las notas compartidas se pueden poner en tu espacio de trabajo personal, en una sección "Compartido conmigo", o organizarlas en carpetas separadas dentro de esa sección.')),
 		hr(),
 
-		h2('🫧 Vista de burbujas'),
-		para(t('Una vista visual de tus notas como burbujas flotantes.')),
-		ul(
-			'Las notas más activas o importantes suben automáticamente',
-			'Acerca o aleja con el deslizador para ver más o menos detalle',
-		),
+		h2Collapsible('🫧 Vista de burbujas'),
+		para(t('Esta es un poco diferente. En vez de una lista, tus notas flotan como burbujas cuyo tamaño depende de qué tan recientes y activas son. Las que realmente estás usando suben hacia arriba. Hay un deslizador de zoom si quieres ver más o menos detalle de un vistazo, y tocar una burbuja abre la nota como normal.')),
 		hr(),
 
-		h2('⏰ Recordatorios y notificaciones'),
-		ul(
-			'Establece un recordatorio en cualquier nota',
-			'Recibe notificaciones push en todos tus dispositivos',
-		),
+		h2Collapsible('⏰ Recordatorios'),
+		para(t('Configura uno desde el menú de tres puntos en cualquier nota. Las notificaciones van a los dispositivos donde las hayas activado.')),
 		hr(),
 
-		h2('🎨 Personalización'),
-		para(t('Haz que Freeman Notes se sienta como tuyo.')),
-		ul(
-			[b('Temas'), t(' — Gran biblioteca que incluye la colección de temas Freeman Half-Life')],
-			[b('Colores y banners de nota'), t(' — Asigna un color o imagen de banner a cualquier tarjeta de nota')],
-			[b('Tamaño de texto'), t(' — Ajusta el tamaño del texto en Preferencias → Apariencia')],
-			[b('Avatar de usuario'), t(' — Sube una foto de perfil en Preferencias → Cuenta')],
-			[b('Tamaño de barra de herramientas'), t(' — Redimensiona o reposiciona la barra de herramientas del editor')],
-			[b('Altura de tarjeta y comportamiento de clic'), t(' — Controla cómo se expanden las tarjetas de notas')],
-		),
+		h2Collapsible('🎨 Personalización'),
+		para(t('Preferencias → Apariencia tiene una buena biblioteca de temas, incluido un set de Half-Life si eso es lo tuyo (lo es para mí). Más allá de los temas, puedes poner colores y banners en las notas desde el menú de tres puntos, escalar el texto de las tarjetas y del editor por separado, cambiar el tamaño de la barra de herramientas y ajustar la altura de las tarjetas y el comportamiento al hacer clic, todo en Apariencia.')),
 		hr(),
 
-		h2('⚡ Sin conexión primero'),
-		para(t('Todas las notas se cargan instantáneamente desde el almacenamiento local — sin internet. Los cambios se sincronizan automáticamente al reconectarte.')),
+		h2Collapsible('⚡ Sin conexión primero'),
+		para(t('Las notas se cargan desde el almacenamiento local, así que no hay dependencia de red para abrirlas y leerlas. Todo se sincroniza de vuelta cuando vuelves a estar en línea. Lo probé en un vuelo de 10 horas y funcionó todo el tiempo, sin rarezas al reconectar.')),
 		hr(),
 
-		h2('📱 FAB móvil'),
-		para(t('En móvil, mantén presionado el botón flotante + (abajo a la derecha) para arrastrarlo a cualquier lugar de la pantalla. Suéltalo para fijarlo en tu posición preferida — se guarda por dispositivo.')),
+		h2Collapsible('📱 FAB móvil'),
+		para(t('El botón flotante + en la esquina inferior derecha se puede mantener presionado y arrastrar a cualquier parte de la pantalla. Donde lo sueltes se guarda por dispositivo, así que se queda donde lo pusiste.')),
 		hr(),
 
-		para([b('Espacios de trabajo'), t(' = Categorías grandes · '), b('Colecciones'), t(' = Carpetas · '), b('Etiquetas'), t(' = Marcadores · '), b('Inbox'), t(' = Tu feed de actividad')]),
-		para(t('Freeman Notes está diseñado para no interponerse en tu camino — para que puedas escribir, organizar y hacer las cosas.')),
+		para([b('Espacios de trabajo'), t(' = contextos principales · '), b('Colecciones'), t(' = carpetas · '), b('Etiquetas'), t(' = tags · '), b('Inbox'), t(' = @menciones y tareas')]),
 	];
 
 	fragment.insert(0, nodes);
@@ -352,8 +308,8 @@ async function seedWelcomeNote(prisma, workspaceId, locale) {
 	const now           = Date.now();
 	const nowIso        = new Date(now).toISOString();
 	const noteTitle     = lang === 'es'
-		? '🧠 Freeman Notes — Guía de características'
-		: '🧠 Freeman Notes — Feature Guide';
+		? '🧠 Freeman Notes — cómo funciona esto'
+		: '🧠 Freeman Notes — how stuff works';
 	const noteDocId     = `${workspaceId}:${noteId}`;
 	const registryDocId = `${workspaceId}:__notes_registry__`;
 

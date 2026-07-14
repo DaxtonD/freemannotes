@@ -20,6 +20,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [4. Masonry Visual Overlay](#4-masonry-visual-overlay)
   - [5. Workspace Move Tracing](#5-workspace-move-tracing)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
+- [PWA Version Changes](#pwa-version-changes)
 - [Native Platform Companions](#native-platform-companions)
   - [Architecture overview](#architecture-overview)
   - [Building the shared JS bundle](#building-the-shared-js-bundle)
@@ -423,6 +424,46 @@ When reporting a masonry layout issue (cards in the wrong column, column imbalan
 2. **Device and viewport** — device type (desktop/tablet/phone), approximate screen width, browser
 3. **Steps to reproduce** — what you did before the issue appeared (e.g., "dragged card A over card B, then expanded the completed items section on card C")
 4. **How reliably it reproduces** — every time, intermittently, or only after a specific sequence
+
+---
+
+## PWA Version Changes
+
+The web app manifest (`public/manifest.json`) and the service worker both embed a version number. This version drives Android's "App info" display and is how the browser detects that a new service worker should be installed.
+
+**How the version is injected**
+
+The `version` field in `package.json` is the single source of truth. At build time, `vite.config.ts` reads it and passes it to `vite-plugin-pwa` as:
+
+```js
+manifest: {
+  version: appVersion,
+  version_name: appVersion,
+  // ...
+}
+```
+
+`appVersion` is defined near the top of `vite.config.ts`:
+
+```js
+const appVersion = JSON.parse(fs.readFileSync('./package.json', 'utf-8')).version;
+```
+
+You do not need to touch `public/manifest.json` by hand — the plugin overwrites those fields every build.
+
+**What to do when releasing a new version**
+
+1. Bump `package.json` `version` (use `npm run release:patch`, `release:minor`, or `release:major` — these bump the version, commit, and create a git tag automatically).
+2. Run `npm run build`. The output `dist/manifest.webmanifest` will contain the new version.
+3. Deploy. On next visit the browser detects a changed service worker, prompts the user to refresh, and Android's "App info" will show the new version after the PWA is updated.
+
+**Dev vs production**
+
+PWA mode is disabled during `npm run dev` (`vite-plugin-pwa` is inert in dev). Version injection only affects production builds (`npm run build` / `npm start`).
+
+**If the Android version still shows the old number**
+
+Android caches the installed PWA manifest aggressively. The user may need to open the installed PWA, wait for the service worker to update, and then restart the app. In stubborn cases: Settings → Apps → Freeman Notes → Uninstall, then reinstall from the browser.
 
 ---
 
