@@ -77,6 +77,7 @@ const SUPPORTED_LOCALES: readonly LocaleOption[] = (() => {
 const FALLBACK_MESSAGES: Dictionary = {
 	common: {
 		back: 'Back',
+		forward: 'Forward',
 		previous: 'Previous',
 		next: 'Next',
 		close: 'Close',

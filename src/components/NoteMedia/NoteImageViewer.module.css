@@ -17,19 +17,29 @@
 	background: color-mix(in srgb, var(--color-surface) 94%, rgba(8, 10, 16, 0.22));
 	border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
 	box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
-	display: grid;
-	grid-template-rows: auto minmax(0, 1fr) auto;
+	display: flex;
+	flex-direction: column;
 	overflow: hidden;
 	min-height: 0;
 }
 
-.header {
+.overlay {
+	position: absolute;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 2;
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
 	gap: 12px;
-	padding: 14px 16px;
-	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+	padding: 14px 16px 52px;
+	background: linear-gradient(to bottom, rgba(0, 0, 0, 0.58) 0%, transparent 100%);
+	pointer-events: none;
+}
+
+.overlay > * {
+	pointer-events: auto;
 }
 
 .headerGroup {
@@ -51,12 +61,15 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+	color: #fff;
+	text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
 }
 
 .subtitle {
-	margin: 4px 0 0;
+	margin: 3px 0 0;
 	font-size: 12px;
-	color: var(--color-text-muted);
+	color: rgba(255, 255, 255, 0.72);
+	text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -72,26 +85,30 @@
 
 .button,
 .dangerButton {
-	border: 0;
+	border: 1px solid rgba(255, 255, 255, 0.14);
 	border-radius: 999px;
 	padding: 9px 12px;
-	background: color-mix(in srgb, var(--color-surface-2) 70%, transparent);
-	color: var(--color-text);
+	background: rgba(0, 0, 0, 0.38);
+	color: #fff;
 	cursor: pointer;
 	font-weight: 700;
 	font-size: 12px;
 	display: inline-flex;
 	align-items: center;
 	gap: 8px;
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
 }
 
 .dangerButton {
-	background: color-mix(in srgb, #991b1b 12%, var(--color-surface-2));
-	color: #991b1b;
+	background: rgba(127, 29, 29, 0.55);
+	border-color: rgba(252, 165, 165, 0.2);
+	color: #fca5a5;
 }
 
 .stage {
 	position: relative;
+	flex: 1;
 	min-height: 0;
 	overflow: hidden;
 	background:
@@ -132,7 +149,7 @@
 .image {
 	display: block;
 	max-width: min(92vw, 1040px);
-	max-height: min(72vh, 820px);
+	max-height: min(88dvh, 960px);
 	transform-origin: center center;
 	user-select: none;
 	-webkit-user-drag: none;
@@ -214,7 +231,7 @@
 		border-radius: 0;
 	}
 
-	.header {
+	.overlay {
 		padding-inline: 12px;
 	}
 
@@ -226,5 +243,10 @@
 		top: auto;
 		bottom: 16px;
 		transform: none;
+	}
+
+	.image {
+		max-width: calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
 	}
 }

@@ -678,6 +678,8 @@ type OverlaySnapshot = {
 	crossWorkspaceNote: { noteId: string; workspaceId: string; workspaceName: string } | null;
 	isMobileSidebarOpen: boolean;
 	isFabOpen: boolean;
+	/** Note-link navigation chain: [rootNoteId, ...linkedNoteIds]. Last entry === selectedNoteId when non-empty. */
+	noteNavHistory: string[];
 };
 
 type SidebarWorkspaceListItem = CachedWorkspaceListItem;
@@ -738,6 +740,7 @@ const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	crossWorkspaceNote: null,
 	isMobileSidebarOpen: false,
 	isFabOpen: false,
+	noteNavHistory: [],
 };
 
 function stripRestoredOverlayToCurrentView(snapshot: OverlaySnapshot): OverlaySnapshot {
@@ -1443,6 +1446,15 @@ export function App(): React.JSX.Element {
 	const selectedNoteIdRef = React.useRef(selectedNoteId);
 	const [pendingMentionScrollNodeId, setPendingMentionScrollNodeId] = React.useState<string | null>(null);
 	selectedNoteIdRef.current = selectedNoteId;
+	// Note-link navigation history for the current editor session. Index 0 = root note opened
+	// from a grid/inbox/search; each subsequent entry is a note followed via an inline chip.
+	// On mobile, each entry corresponds to a browser history push so system Back unwinds the
+	// chain. On desktop we track it in state and expose explicit back/forward controls.
+	const [noteNavHistory, setNoteNavHistory] = React.useState<string[]>(_restoredOverlay?.noteNavHistory ?? []);
+	// Forward stack for desktop (not persisted in browser history; cleared on any root navigation or new link).
+	const [noteNavForwardStack, setNoteNavForwardStack] = React.useState<string[]>([]);
+	const noteNavForwardStackRef = React.useRef<string[]>([]);
+	noteNavForwardStackRef.current = noteNavForwardStack;
 	// Clear the pending mention scroll whenever the editor closes, regardless of
 	// how it closes (back button, swipe, explicit close). Without this, the scroll
 	// nodeId persists through the popstate path (applyOverlaySnapshot) and pulses
@@ -2015,6 +2027,7 @@ export function App(): React.JSX.Element {
 			noteAttachmentBrowserState,
 			isMobileSidebarOpen,
 			isFabOpen,
+			noteNavHistory,
 		};
 	}, [
 		sidebarView,
@@ -2032,6 +2045,7 @@ export function App(): React.JSX.Element {
 		noteAttachmentBrowserState,
 		isMobileSidebarOpen,
 		isFabOpen,
+		noteNavHistory,
 	]);
 
 	React.useEffect(() => {
@@ -2056,6 +2070,7 @@ export function App(): React.JSX.Element {
 		setMobileSidebarProgress(snapshot.isMobileSidebarOpen ? 1 : 0);
 		setIsMobileSidebarDragging(false);
 		setIsFabOpen(snapshot.isFabOpen);
+		setNoteNavHistory(snapshot.noteNavHistory ?? []);
 		// Keep sessionStorage in sync so page-kill restoration stays current.
 		try { sessionStorage.setItem(SS_OVERLAY_KEY, JSON.stringify(snapshot)); } catch { /* quota */ }
 	}, []);
@@ -2671,12 +2686,16 @@ export function App(): React.JSX.Element {
 			const current = getOverlaySnapshot();
 			const mobileOverlay = shouldUseMobileOverlayHistory(isMobileViewport);
 			if (opts?.fromExternalDeepLink && mobileOverlay) {
+				// Root navigation always resets the note chain and clears the desktop forward stack.
+				setNoteNavForwardStack([]);
+				noteNavForwardStackRef.current = [];
 				const editorSnapshot: OverlaySnapshot = {
 					...current,
 					sidebarView: 'notes',
 					isMobileSearchOpen: false,
 					editorMode: 'none',
 					selectedNoteId: noteId,
+					noteNavHistory: [noteId],
 					noteAttachmentBrowserState: opts?.closeAttachmentBrowser ? null : current.noteAttachmentBrowserState,
 					isMobileSidebarOpen: false,
 					isFabOpen: false,
@@ -2711,16 +2730,25 @@ export function App(): React.JSX.Element {
 			const historyState = typeof window !== 'undefined' ? window.history.state : null;
 			// When the editor is reopened from a nested media layer, replace that top
 			// history entry instead of stacking another editor snapshot on top of it.
+			// Also replace when opening a note from the mobile sidebar or FAB so those
+			// transient overlay entries don't become orphaned intermediates that require
+			// extra back-presses to clear (each sidebar/FAB → note transition would
+			// otherwise add 2 entries to the stack instead of 1).
 			const shouldReplaceTop =
 				opts?.replaceTop ||
 				isNoteImageViewerHistoryState(historyState) ||
-				isNoteEditorMediaDockHistoryState(historyState);
+				isNoteEditorMediaDockHistoryState(historyState) ||
+				(isOverlayHistoryState(historyState) && (current.isMobileSidebarOpen || current.isFabOpen));
+			// Root navigation always resets the note chain and clears the desktop forward stack.
+			setNoteNavForwardStack([]);
+			noteNavForwardStackRef.current = [];
 			commitOverlaySnapshot(
 				{
 					...current,
 					isMobileSearchOpen: false,
 					editorMode: 'none',
 					selectedNoteId: noteId,
+					noteNavHistory: [noteId],
 					noteAttachmentBrowserState: opts?.closeAttachmentBrowser ? null : current.noteAttachmentBrowserState,
 					isMobileSidebarOpen: false,
 					isFabOpen: false,
@@ -2730,6 +2758,94 @@ export function App(): React.JSX.Element {
 		},
 		[commitOverlaySnapshot, applyOverlaySnapshot, getOverlaySnapshot, isMobileViewport, manager]
 	);
+
+	// Opens a note via an inline note-link chip (note reference, backlink, etc.).
+	// Distinct from openNoteEditor (root navigation) — this continues the current session
+	// by appending to the note chain rather than starting a new one.
+	// On mobile each call pushes a browser history entry so system Back unwinds the chain.
+	// On desktop we update state only; back/forward is handled by handleNoteNavBack/Forward.
+	const openLinkedNote = React.useCallback((noteId: string) => {
+		const current = getOverlaySnapshot();
+		// If no note is currently open, fall back to root navigation.
+		if (!current.selectedNoteId && current.editorMode === 'none') {
+			openNoteEditor(noteId);
+			return;
+		}
+		// New branch taken — clear the desktop forward stack.
+		setNoteNavForwardStack([]);
+		noteNavForwardStackRef.current = [];
+		const newHistory = [...current.noteNavHistory, noteId];
+		commitOverlaySnapshot(
+			{
+				...current,
+				selectedNoteId: noteId,
+				noteNavHistory: newHistory,
+				isMobileSearchOpen: false,
+				isMobileSidebarOpen: false,
+				isFabOpen: false,
+			},
+			'push',
+		);
+	}, [commitOverlaySnapshot, getOverlaySnapshot, openNoteEditor]);
+
+	// Go back one step in the note navigation chain.
+	// Mobile: delegate to history.back() which unwinds the browser history entry.
+	// Desktop: manually pop the in-memory stack and push the current note to the forward stack.
+	const handleNoteNavBack = React.useCallback(() => {
+		const current = getOverlaySnapshot();
+		if (current.noteNavHistory.length <= 1) return;
+		if (shouldUseMobileOverlayHistory(isMobileViewport)) {
+			goBackIfOverlayHistory();
+		} else {
+			const popped = current.noteNavHistory[current.noteNavHistory.length - 1];
+			const newHistory = current.noteNavHistory.slice(0, -1);
+			const prevNoteId = newHistory[newHistory.length - 1];
+			setNoteNavForwardStack((prev) => [popped, ...prev]);
+			noteNavForwardStackRef.current = [popped, ...noteNavForwardStackRef.current];
+			applyOverlaySnapshot({ ...current, selectedNoteId: prevNoteId, noteNavHistory: newHistory });
+		}
+	}, [applyOverlaySnapshot, getOverlaySnapshot, goBackIfOverlayHistory, isMobileViewport]);
+
+	// Go forward one step in the note chain.
+	// Mobile: delegate to history.forward() which restores the browser's forward entry;
+	// the popstate handler pops from noteNavForwardStack automatically.
+	// Desktop: manually push the next note from the forward stack.
+	const handleNoteNavForward = React.useCallback(() => {
+		if (noteNavForwardStackRef.current.length === 0) return;
+		if (shouldUseMobileOverlayHistory(isMobileViewport)) {
+			window.history.forward();
+		} else {
+			const current = getOverlaySnapshot();
+			const nextNoteId = noteNavForwardStackRef.current[0];
+			const newForwardStack = noteNavForwardStackRef.current.slice(1);
+			setNoteNavForwardStack(newForwardStack);
+			noteNavForwardStackRef.current = newForwardStack;
+			applyOverlaySnapshot({
+				...current,
+				selectedNoteId: nextNoteId,
+				noteNavHistory: [...current.noteNavHistory, nextNoteId],
+			});
+		}
+	}, [applyOverlaySnapshot, getOverlaySnapshot, isMobileViewport]);
+
+	// Desktop keyboard shortcuts for note-link navigation (Alt+Left / Alt+Right).
+	// These mirror browser back/forward conventions. Not wired on mobile — system gestures
+	// and the explicit back button handle navigation there.
+	React.useEffect(() => {
+		if (shouldUseMobileOverlayHistory(isMobileViewport) || typeof window === 'undefined') return;
+		const handleKeyDown = (e: KeyboardEvent) => {
+			if (!e.altKey || e.ctrlKey || e.metaKey) return;
+			if (e.key === 'ArrowLeft') {
+				e.preventDefault();
+				handleNoteNavBack();
+			} else if (e.key === 'ArrowRight') {
+				e.preventDefault();
+				handleNoteNavForward();
+			}
+		};
+		window.addEventListener('keydown', handleKeyDown);
+		return () => window.removeEventListener('keydown', handleKeyDown);
+	}, [handleNoteNavBack, handleNoteNavForward, isMobileViewport]);
 
 	// Restore the last open note after an OS-initiated page discard (Android/iOS kills the
 	// PWA process; sessionStorage is gone but localStorage survives). Fires once per session
@@ -2922,6 +3038,18 @@ export function App(): React.JSX.Element {
 			openNoteEditor(attachedParentNoteId, { replaceTop: true });
 			return;
 		}
+		// When the user is deep in a note-link chain on mobile (noteNavHistory.length > 1),
+		// the close/save button should exit the editor entirely rather than stepping back
+		// one note at a time. history.go(-N) jumps to the root-guard entry in one step,
+		// landing on EMPTY_OVERLAY_SNAPSHOT which collapses the editor via the popstate handler.
+		const navHistoryDepth = currentOverlaySnapshotRef.current.noteNavHistory.length;
+		if (navHistoryDepth > 1 && shouldUseMobileOverlayHistory(isMobileViewport) && typeof window !== 'undefined') {
+			if (closingNoteId) {
+				setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
+			}
+			window.history.go(-navHistoryDepth);
+			return;
+		}
 		if (goBackIfOverlayHistory()) {
 			if (closingNoteId) {
 				setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
@@ -2939,10 +3067,12 @@ export function App(): React.JSX.Element {
 		setSelectedNoteId(null);
 		setEditorMode('none');
 		setPendingMentionScrollNodeId(null);
+		setNoteNavForwardStack([]);
+		noteNavForwardStackRef.current = [];
 		if (closingNoteId) {
 			setDraftNoteId((prev) => prev === closingNoteId ? null : prev);
 		}
-	}, [collapseEditorOverlay, finalizePendingNewNote, goBackIfOverlayHistory, openNoteEditor, selectedNoteId]);
+	}, [collapseEditorOverlay, finalizePendingNewNote, goBackIfOverlayHistory, isMobileViewport, openNoteEditor, selectedNoteId]);
 
 	const saveDrawingEditor = React.useCallback(async () => {
 		const closingNoteId = selectedNoteId;
@@ -7996,6 +8126,27 @@ export function App(): React.JSX.Element {
 						return;
 					}
 				}
+				// Maintain the note-link forward stack so the Forward button stays accurate
+				// even when the user uses the system back button (Android) or the in-app
+				// ← Back button (iOS) rather than our explicit nav controls.
+				const restoredHistory = state.snapshot.noteNavHistory ?? [];
+				const currentHistory = currentOverlaySnapshotRef.current.noteNavHistory ?? [];
+				if (restoredHistory.length < currentHistory.length) {
+					if (restoredHistory.length > 0) {
+						// Going back within note chain — push the note we're leaving to the front of the forward stack.
+						const poppedNoteId = currentHistory[currentHistory.length - 1];
+						setNoteNavForwardStack((prev) => [poppedNoteId, ...prev]);
+						noteNavForwardStackRef.current = [poppedNoteId, ...noteNavForwardStackRef.current];
+					} else {
+						// Editor closing (restored to empty/grid state) — clear forward stack.
+						setNoteNavForwardStack([]);
+						noteNavForwardStackRef.current = [];
+					}
+				} else if (restoredHistory.length > currentHistory.length && noteNavForwardStackRef.current.length > 0) {
+					// Going forward in note chain (via history.forward()) — pop from forward stack.
+					setNoteNavForwardStack((prev) => prev.slice(1));
+					noteNavForwardStackRef.current = noteNavForwardStackRef.current.slice(1);
+				}
 				applyOverlaySnapshot(state.snapshot);
 				return;
 			}
@@ -10544,7 +10695,11 @@ export function App(): React.JSX.Element {
 						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 						onTogglePin={selectedNoteReadOnly ? undefined : toggleSelectedNotePin}
-						onOpenNote={(noteId) => openNoteEditor(noteId)}
+						onOpenNote={openLinkedNote}
+						noteNavDepth={noteNavHistory.length - 1}
+						onNavBack={noteNavHistory.length > 1 ? handleNoteNavBack : undefined}
+						onNavForward={noteNavForwardStack.length > 0 ? handleNoteNavForward : undefined}
+						canNavForward={noteNavForwardStack.length > 0}
 						onShowBriefDialog={showBriefDialog}
 						readOnly={selectedNoteReadOnly}
 						initialShowCompleted={checklistShowCompletedPref}

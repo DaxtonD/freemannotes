@@ -111,6 +111,14 @@ export type NoteEditorProps = {
 	onAddLabels?: () => void;
 	onOpenNote?: (noteId: string) => void;
 	onShowBriefDialog?: (message: string) => void;
+	/** Depth in the note-link navigation chain (0 = root note, >0 = linked note). */
+	noteNavDepth?: number;
+	/** Go back one step in the note chain. Available when noteNavDepth > 0. */
+	onNavBack?: () => void;
+	/** Go forward one step (desktop only). Available when canNavForward is true. */
+	onNavForward?: () => void;
+	/** True when desktop forward navigation is available. */
+	canNavForward?: boolean;
 	readOnly?: boolean;
 	initialShowCompleted?: boolean;
 	onShowCompletedChange?: (next: boolean) => void;
@@ -2997,6 +3005,30 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						zIndex: -1,
 					}}
 				/>
+				{/* Note navigation bar: back (all devices) and forward (desktop) when in a link chain */}
+				{((props.noteNavDepth ?? 0) > 0 || props.canNavForward) ? (
+					<nav className={styles.noteNavBar}>
+						<button
+							type="button"
+							className={styles.noteNavButton}
+							onClick={props.onNavBack}
+							disabled={!props.onNavBack}
+							aria-label={t('common.back')}
+						>
+							← {t('common.back')}
+						</button>
+						{props.canNavForward ? (
+							<button
+								type="button"
+								className={styles.noteNavButton}
+								onClick={props.onNavForward}
+								aria-label={t('common.forward')}
+							>
+								{t('common.forward')} →
+							</button>
+						) : null}
+					</nav>
+				) : null}
 				{type === 'checklist' ? (
 					<textarea
 						name="note-title"
