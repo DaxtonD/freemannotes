@@ -202,6 +202,8 @@ export default defineConfig(({ mode }) => {
 					name: 'Freeman Notes',
 					short_name: 'Freeman Notes',
 					description: 'Offline-first collaborative note taking for personal and shared workspaces.',
+					version: appVersion,
+					version_name: appVersion,
 					start_url: '/',
 					scope: '/',
 					display: 'standalone',

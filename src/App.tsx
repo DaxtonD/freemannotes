@@ -5749,7 +5749,12 @@ export function App(): React.JSX.Element {
 		if (!authUserId) { setInboxUnreadCount(0); return; }
 		let cancelled = false;
 		fetch('/api/inbox/count').then((r) => r.ok ? r.json() : null).then((data) => {
-			if (!cancelled && data?.unread != null) setInboxUnreadCount(data.unread);
+			if (cancelled || data?.unread == null) return;
+			setInboxUnreadCount(data.unread);
+			if (Array.isArray(data.nodeIds) && data.nodeIds.length > 0) {
+				clearMatchedPendingSelfMentions(data.nodeIds);
+				setPendingSelfMentions(getPendingSelfMentions());
+			}
 		}).catch(() => {});
 		return () => { cancelled = true; };
 	}, [authUserId, inboxRefreshToken]);
