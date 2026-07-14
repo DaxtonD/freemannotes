@@ -4,6 +4,24 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.7.1 - 2026-07-13
+
+### Added
+- **Default theme for new accounts: Freeman BMRF Lab.** New registrations and post-cache-clear logins now start with the Freeman BMRF Lab theme instead of the generic dark theme.
+
+### Changed
+- **New-account defaults.** Note card text size (85%), note editor text size (85%), max card height (400 px), and condensed formatting toolbar are now applied server-side when a `UserDevicePreference` row is first created, so they take effect on first login without requiring a UI interaction.
+
+### Fixed
+- **Checklist title Enter key does not focus the first item.** Pressing Enter on the checklist title while editing an existing note or creating a new note now reliably moves the caret to the first checklist item. When the list is empty, a new blank item is created and focused. The fix uses `editor.commands.focus()` via the TipTap API instead of a raw DOM selection, which was unreliable on an empty ProseMirror document.
+- **Note card shrinks after closing checklist with a blank item.** Blank items (added by pressing Enter and not typing) are now filtered out of the card preview. The card height no longer changes when `pruneEmptyChecklistRows` removes them on editor close.
+- **Checklist cards appear too tall then shrink after switching views.** The row-height estimate used for initial card sizing was hardcoded at 26 px (calibrated for font scale 1.0). At 85% scale the actual pitch is ~22 px, causing a visible snap. The estimate is now derived from the live `--note-card-font-scale` CSS variable.
+- **Stale session cookie causes FK constraint error after database wipe.** When the `/api/auth/me` endpoint finds no matching user (e.g. after a DB reset), it now clears the session cookie before returning `{ authenticated: false }`, preventing a stale JWT from triggering foreign-key violations on the next request.
+- **Note card 3-dot menu hitbox too small on mobile.** The `.cardMenuButton` tap target is now 40×40 px (was 24×24 px).
+- **Blue native touch highlight on note list rows.** Added `-webkit-tap-highlight-color: transparent` to list and strip view rows.
+- **PWA install prompt shows a generic icon.** The install dialog now displays the app icon (`/pwa-192x192.png`) instead of a 📱 emoji.
+- **Image sidebar shows "Status: Ready" text.** Removed the redundant status label from the image detail panel.
+
 ## 1.7.0 - 2026-07-09
 
 ### Added

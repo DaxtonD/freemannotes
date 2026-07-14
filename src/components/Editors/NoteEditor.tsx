@@ -1387,6 +1387,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const focusProxyRef = React.useRef<HTMLTextAreaElement | null>(null);
 	const isDraggingWithKeyboardRef = React.useRef(false);
 	const allowAutomaticChecklistRowFocusRef = React.useRef(!props.isPendingNew);
+	// Set true on title Enter-key press; cleared by the activeChecklistRowEditor
+	// effect below so focus transfers via editor.commands.focus() once TipTap is ready.
+	const needsFocusAfterTitleEnterRef = React.useRef(false);
 	// Quick-delete mode clears checklist-row focus entirely, so skip the normal
 	// "auto-activate the first remaining row" behavior on the next render.
 	const suppressAutoActivateAfterDeleteRef = React.useRef(false);
@@ -2529,6 +2532,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		activateChecklistRow(targetId);
 		focusChecklistRowEditor(targetId);
 	}, [activateChecklistRow, activeItems, focusChecklistRowEditor, normalizedItems]);
+	// When the title Enter key arms needsFocusAfterTitleEnterRef, focus via the
+	// TipTap editor API as soon as the row editor instance becomes available —
+	// the same reliable path used by TextEditor.focusBodyEditor.
+	React.useEffect(() => {
+		if (!needsFocusAfterTitleEnterRef.current) return;
+		if (!activeChecklistRowEditor || activeChecklistRowEditor.isDestroyed) return;
+		needsFocusAfterTitleEnterRef.current = false;
+		activeChecklistRowEditor.commands.focus('end');
+	}, [activeChecklistRowEditor]);
 
 	const pruneEmptyChecklistRows = React.useCallback((): void => {
 		if (type !== 'checklist') return;
@@ -3004,7 +3016,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						onKeyDown={(event) => {
 							if (event.key !== 'Enter') return;
 							event.preventDefault();
-							focusChecklistBody();
+							needsFocusAfterTitleEnterRef.current = true;
+							titleFieldRef.current?.blur();
+							const hasItems = Boolean(activeItems[0]?.id ?? normalizedItems[0]?.id);
+							if (hasItems) {
+								focusChecklistBody();
+							} else {
+								addChecklistItem();
+							}
 						}}
 						placeholder={t('editors.titlePlaceholder')}
 					/>

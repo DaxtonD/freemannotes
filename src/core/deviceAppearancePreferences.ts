@@ -37,20 +37,19 @@ export function clampFontScale(value: number): number {
 }
 
 export function getDefaultNoteCardMaxHeightPx(): number {
-	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 920;
-	return window.matchMedia('(pointer: coarse)').matches ? 480 : 920;
+	return 400;
 }
 
 /** Returns the default note-card font scale for this device type. */
 export function getDefaultNoteCardFontScale(): number {
-	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 1;
-	return window.matchMedia('(pointer: coarse)').matches ? 0.75 : 1;
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 0.85;
+	return window.matchMedia('(pointer: coarse)').matches ? 0.75 : 0.85;
 }
 
 /** Returns the default note-editor font scale for this device type. */
 export function getDefaultNoteEditorFontScale(): number {
-	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 1;
-	return window.matchMedia('(pointer: coarse)').matches ? 0.80 : 1;
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 0.85;
+	return window.matchMedia('(pointer: coarse)').matches ? 0.80 : 0.85;
 }
 
 export function clampNoteCardMaxHeightPx(value: number): number {
@@ -64,7 +63,8 @@ function normalizeBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 export function normalizeEditorToolbarMode(value: unknown): EditorToolbarMode {
-	return value === 'condensed' ? 'condensed' : 'full';
+	if (value === 'full' || value === 'condensed') return value;
+	return 'condensed';
 }
 
 export function getDefaultNoteCardBannerTitlePosition(): NoteCardBannerTitlePosition {

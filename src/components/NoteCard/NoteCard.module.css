@@ -1038,10 +1038,11 @@
 
 .cardMenuButton {
 	position: absolute;
-	right: 2px;
-	bottom: 2px;
-	width: 24px;
-	height: 24px;
+	right: 0;
+	bottom: 0;
+	/* Visual size stays small; touch area is 40×40 via padding */
+	width: 40px;
+	height: 40px;
 	border: 0;
 	border-radius: 999px;
 	background: transparent;
@@ -1056,6 +1057,7 @@
 	box-shadow: none;
 	backdrop-filter: none;
 	-webkit-backdrop-filter: none;
+	-webkit-tap-highlight-color: transparent;
 	opacity: 0.62;
 	transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, opacity 160ms ease;
 }

@@ -270,7 +270,7 @@ function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly NoteCa
 					: null,
 			countValue: normalizeChecklistCountValue(m.get('countValue')),
 		}))
-		.filter((item) => item.id.length > 0);
+		.filter((item) => item.id.length > 0 && item.text.trim().length > 0);
 }
 
 function useTextNoteRichPreview(doc: Y.Doc, plainText: string): JSONContent {
@@ -1097,9 +1097,16 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		: true;
 	const initialChecklistCardPaddingBottomPx = hasFinePointer ? 50 : 0;
 	const initialChecklistBodyPaddingVerticalPx = hasFinePointer ? 14 : 18;
-	// Budget checklist preview rows using the rendered row pitch, not just the
-	// text line box, so hidden counts stay accurate as card heights change.
-	const collapsedChecklistLineHeightPx = 26;
+	// Budget checklist preview rows using the rendered row pitch (text line box
+	// + 4 px gap between items).  The pitch scales with --note-card-font-scale,
+	// so read the live CSS value to avoid overestimating at sub-1 scales (which
+	// causes a visible tall→shrink snap when cards first mount after a view switch).
+	const collapsedChecklistLineHeightPx = React.useMemo(() => {
+		const scale = typeof document !== 'undefined'
+			? Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--note-card-font-scale') || '1') || 1
+			: 1;
+		return Math.max(18, Math.round(scale * 16 * 1.35 + 4));
+	}, []);
 	// Let the completed summary move with the visible active rows. The coarse-
 	// pointer path previously reused a stale measured body height, which created
 	// a collapsing gap on mobile as checklist items crossed the preview threshold.

@@ -835,8 +835,10 @@
 }
 
 .pwa-install-icon {
-	font-size: 2.5rem;
-	line-height: 1;
+	width: 64px;
+	height: 64px;
+	border-radius: 14px;
+	object-fit: contain;
 }
 
 .pwa-install-title {

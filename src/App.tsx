@@ -10916,7 +10916,7 @@ export function App(): React.JSX.Element {
 						aria-label={t('pwa.installTitle')}
 						onClick={(e) => e.stopPropagation()}
 					>
-						<div className="pwa-install-icon" aria-hidden="true">📱</div>
+						<img className="pwa-install-icon" src="/pwa-192x192.png" alt="" aria-hidden="true" />
 						<div className="pwa-install-title">{t('pwa.installTitle')}</div>
 						<p className="pwa-install-body">{t('pwa.installBody')}</p>
 						<div className="pwa-install-actions">
