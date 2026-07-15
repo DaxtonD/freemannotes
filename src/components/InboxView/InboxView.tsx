@@ -247,12 +247,14 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			updatedUnread.delete(id);
 			cacheRef.current = { ...cacheRef.current, [filter]: { ...cached, unreadIds: updatedUnread } };
 		}
-		onActivityChanged?.();
+		// Wait for the POST before bumping the refresh token so the count re-fetch
+		// sees the updated read state and doesn't return a stale badge count.
 		await fetch('/api/inbox/read', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: [id] }),
 		}).catch(() => {});
+		onActivityChanged?.();
 	}, [onActivityChanged, filter]);
 
 	const removeFromCache = useCallback((id: string) => {
@@ -276,12 +278,15 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		}
 		setActivities((prev) => prev.filter((a) => a.id !== id));
 		removeFromCache(id);
-		onActivityChanged?.();
+		// Wait for the POST before bumping the refresh token — firing it first caused
+		// the count re-fetch and list re-fetch to race with the in-flight archive and
+		// return stale data (badge stuck at 1, card reappearing after swipe).
 		await fetch('/api/inbox/archive', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: [id] }),
 		}).catch(() => {});
+		onActivityChanged?.();
 	}, [onActivityChanged, onPendingDismissed, removeFromCache]);
 
 	const markAllRead = useCallback(async () => {
@@ -296,12 +301,12 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			updated[k] = { ...entry, unreadIds: updatedUnread };
 		}
 		cacheRef.current = updated;
-		onActivityChanged?.();
 		await fetch('/api/inbox/read', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify({ activityIds: ids }),
 		}).catch(() => {});
+		onActivityChanged?.();
 	}, [unreadIds, onActivityChanged]);
 
 	const archiveAll = useCallback(async () => {
@@ -352,19 +357,23 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			// Dismissed — animate fully out in the swipe direction then archive
 			const exitX = offset > 0 ? 9999 : -9999;
 			setSwipeOffsets((prev) => ({ ...prev, [activity.id]: exitX }));
-			setTimeout(() => {
+			setTimeout(async () => {
 				setSwipeOffsets((prev) => { const n = { ...prev }; delete n[activity.id]; return n; });
-				onActivityChanged?.();
 				if (activity.id.startsWith('pending-')) {
 					onPendingDismissed?.(activity.id);
+					onActivityChanged?.();
 				} else {
 					setActivities((prev) => prev.filter((a) => a.id !== activity.id));
 					removeFromCache(activity.id);
-					fetch('/api/inbox/archive', {
+					// Await the archive POST before bumping the refresh token — firing
+					// it first caused the count and list re-fetch to race with the
+					// in-flight archive, producing a stale badge and card reappearing.
+					await fetch('/api/inbox/archive', {
 						method: 'POST',
 						headers: { 'content-type': 'application/json' },
 						body: JSON.stringify({ activityIds: [activity.id] }),
 					}).catch(() => {});
+					onActivityChanged?.();
 				}
 			}, 200);
 		} else {

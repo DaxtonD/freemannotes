@@ -173,11 +173,26 @@ function createActivityRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const userId = requireAuth();
 					if (!userId) return;
 
-					const unread = await prisma.activityTarget.count({
-						where: { userId, activity: { reads: { none: { userId } } } },
-					});
+					const [unread, unreadTargets] = await Promise.all([
+						prisma.activityTarget.count({
+							where: { userId, activity: { reads: { none: { userId } } } },
+						}),
+						// Fetch nodeIds of unread prosemirror_node activities so the client
+						// can clear matching optimistic pending-self-mention entries as soon
+						// as the server confirms them, without waiting for InboxView to open.
+						prisma.activityTarget.findMany({
+							where: { userId, activity: { reads: { none: { userId } } } },
+							select: { activity: { select: { deepLink: true } } },
+							take: 50,
+						}),
+					]);
 
-					jsonResponse(res, 200, { unread });
+					const nodeIds = unreadTargets
+						.map((t) => t.activity?.deepLink)
+						.filter((dl) => dl && typeof dl === 'object' && dl.kind === 'prosemirror_node' && typeof dl.nodeId === 'string')
+						.map((dl) => dl.nodeId);
+
+					jsonResponse(res, 200, { unread, nodeIds });
 				} catch (err) {
 					console.error('[activity] GET /api/inbox/count error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
