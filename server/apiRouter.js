@@ -1734,30 +1734,6 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 								sourceWorkspaceId: targetWorkspaceId,
 							},
 						});
-						// Migrate inbox-related rows so _syncEntityReferences matches existing
-						// records rather than inserting duplicates after the move.
-						await tx.entityReference.updateMany({
-							where: { sourceDocId: sourceDocId },
-							data: {
-								sourceDocId: targetDocId,
-								sourceWorkspaceId: targetWorkspaceId,
-							},
-						});
-						await tx.activity.updateMany({
-							where: { sourceDocId: sourceDocId },
-							data: {
-								sourceDocId: targetDocId,
-								sourceWorkspaceId: targetWorkspaceId,
-							},
-						});
-						await tx.noteReminder.updateMany({
-							where: { docId: sourceDocId },
-							data: {
-								docId: targetDocId,
-								workspaceId: targetWorkspaceId,
-							},
-						});
-
 						// Migrate drawing sub-documents that belong to this note.
 						// Drawings are stored as separate document rows with docId
 						// = sourceWorkspaceId:drawingId. After a note move the client
