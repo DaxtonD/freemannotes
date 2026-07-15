@@ -167,32 +167,17 @@ function createActivityRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 		}
 
 		// ── GET /api/inbox/count ──────────────────────────────────────────────
-		// Returns the unread activity count for the badge, plus nodeIds of unread
-		// prosemirror_node activities so the client can clear matching optimistic
-		// pending-self-mention entries without waiting for InboxView to open.
 		if (pathname === '/api/inbox/count' && method === 'GET') {
 			(async () => {
 				try {
 					const userId = requireAuth();
 					if (!userId) return;
 
-					const [unread, unreadTargets] = await Promise.all([
-						prisma.activityTarget.count({
-							where: { userId, activity: { reads: { none: { userId } } } },
-						}),
-						prisma.activityTarget.findMany({
-							where: { userId, activity: { reads: { none: { userId } } } },
-							select: { activity: { select: { deepLink: true } } },
-							take: 200,
-						}),
-					]);
+					const unread = await prisma.activityTarget.count({
+						where: { userId, activity: { reads: { none: { userId } } } },
+					});
 
-					const nodeIds = unreadTargets
-						.map((t) => t.activity?.deepLink)
-						.filter((dl) => dl && typeof dl === 'object' && dl.kind === 'prosemirror_node' && typeof dl.nodeId === 'string')
-						.map((dl) => dl.nodeId);
-
-					jsonResponse(res, 200, { unread, nodeIds });
+					jsonResponse(res, 200, { unread });
 				} catch (err) {
 					console.error('[activity] GET /api/inbox/count error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
