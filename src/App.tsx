@@ -5881,6 +5881,12 @@ export function App(): React.JSX.Element {
 		fetch('/api/inbox/count').then((r) => r.ok ? r.json() : null).then((data) => {
 			if (cancelled || data?.unread == null) return;
 			setInboxUnreadCount(data.unread);
+			// Clear any pending self-mentions whose nodeId the server has now confirmed,
+			// so the badge doesn't double-count (server count + optimistic pending).
+			if (Array.isArray(data.nodeIds) && data.nodeIds.length > 0) {
+				clearMatchedPendingSelfMentions(data.nodeIds);
+				setPendingSelfMentions(getPendingSelfMentions());
+			}
 		}).catch(() => {});
 		return () => { cancelled = true; };
 	}, [authUserId, inboxRefreshToken]);
