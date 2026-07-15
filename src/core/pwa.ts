@@ -232,13 +232,16 @@ function removeStorageValue(key: string): void {
 function reconcileVersionNotifications(): void {
 	const previousVersion = readStorageValue(PWA_VERSION_STORAGE_KEY);
 	if (previousVersion && previousVersion !== APP_VERSION) {
+		// First open of a new version — write the notice so the user sees it once.
 		writeStorageValue(PWA_UPDATED_NOTICE_KEY, APP_VERSION);
+	} else if (previousVersion === APP_VERSION) {
+		// Second or later open of the same version. If the user closed the app
+		// without dismissing the notice (e.g. Android force-close), expire it now
+		// so it doesn't keep reappearing on every reopen.
+		removeStorageValue(PWA_UPDATED_NOTICE_KEY);
 	}
 	writeStorageValue(PWA_VERSION_STORAGE_KEY, APP_VERSION);
 	setSnapshot({ updateApplied: readStorageValue(PWA_UPDATED_NOTICE_KEY) === APP_VERSION });
-	if (previousVersion === APP_VERSION) {
-		setSnapshot({ updateApplied: readStorageValue(PWA_UPDATED_NOTICE_KEY) === APP_VERSION });
-	}
 }
 
 function markPwaInteraction(): void {
