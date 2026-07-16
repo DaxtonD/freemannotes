@@ -81,3 +81,8 @@ export function clearMatchedPendingSelfMentions(serverNodeIds: readonly string[]
 	const nodeIdSet = new Set(serverNodeIds);
 	save(load().filter((x) => !nodeIdSet.has(x.nodeId)));
 }
+
+/** Clears all pending self-mention entries for the current user. */
+export function clearAllPendingSelfMentions(): void {
+	save([]);
+}

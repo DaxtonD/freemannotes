@@ -4,6 +4,7 @@ import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devResetNoteOrder, devClearInbox } from '../../core/noteManagementApi';
 import { readPwaDebugLog, clearPwaDebugLog, getPwaDebugEnabled, setPwaDebugEnabled } from '../../core/pwa';
 import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
+import { clearAllPendingSelfMentions } from '../../core/pendingSelfMentions';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { NotificationsSection } from './NotificationsSection';
 import { SupportSection } from './SupportSection';
@@ -205,21 +206,21 @@ function AboutSectionContent(props: {
 		}
 	}, [devToolsRunning]);
 
-	// Deletes all NoteReminder rows for this user so lingering notifications stop
-	// re-firing after dismissal.
 	const handleClearAllNotifications = React.useCallback(async () => {
 		if (devToolsRunning) return;
 		setDevToolsRunning(true);
 		setDevToolsResult(null);
 		try {
-			const result = await devClearAllNotifications();
-			setDevToolsResult(`Done — cleared ${result.deleted} reminder${result.deleted === 1 ? '' : 's'}.`);
+			const [reminders, inbox] = await Promise.all([devClearAllNotifications(), devClearInbox()]);
+			clearAllPendingSelfMentions();
+			props.onInboxCleared?.();
+			setDevToolsResult(`Done — cleared ${reminders.deleted} reminder${reminders.deleted === 1 ? '' : 's'} and archived ${inbox.archived} notification${inbox.archived === 1 ? '' : 's'}. Badge will reset.`);
 		} catch (err) {
 			setDevToolsResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
 		} finally {
 			setDevToolsRunning(false);
 		}
-	}, [devToolsRunning]);
+	}, [devToolsRunning, props.onInboxCleared]);
 
 	const handleClearInbox = React.useCallback(async () => {
 		if (devToolsRunning) return;
