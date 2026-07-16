@@ -1734,6 +1734,48 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 								sourceWorkspaceId: targetWorkspaceId,
 							},
 						});
+						// Migrate EntityReference rows so _syncEntityReferences finds existing
+						// records when it next runs for the target workspace, preventing it
+						// from treating all chips as "new" and emitting duplicate activities.
+						// EntityReference has @@unique([sourceDocId, nodeId]) so we must
+						// delete any conflicting target rows before updating.
+						const sourceEntityRefNodeIds = (await tx.entityReference.findMany({
+							where: { sourceDocId: sourceDocId },
+							select: { nodeId: true },
+						})).map((r) => r.nodeId);
+						if (sourceEntityRefNodeIds.length > 0) {
+							await tx.entityReference.deleteMany({
+								where: { sourceDocId: targetDocId, nodeId: { in: sourceEntityRefNodeIds } },
+							});
+							await tx.entityReference.updateMany({
+								where: { sourceDocId: sourceDocId },
+								data: { sourceDocId: targetDocId, sourceWorkspaceId: targetWorkspaceId },
+							});
+						}
+
+						// Migrate Activity rows so inbox card navigation resolves to the
+						// correct workspace after the move.
+						await tx.activity.updateMany({
+							where: { sourceDocId: sourceDocId },
+							data: { sourceDocId: targetDocId, sourceWorkspaceId: targetWorkspaceId },
+						});
+
+						// Migrate NoteReminder rows. NoteReminder has @@unique([userId, docId])
+						// so delete conflicting target rows first, same as EntityReference.
+						const sourceReminderUserIds = (await tx.noteReminder.findMany({
+							where: { docId: sourceDocId },
+							select: { userId: true },
+						})).map((r) => r.userId);
+						if (sourceReminderUserIds.length > 0) {
+							await tx.noteReminder.deleteMany({
+								where: { docId: targetDocId, userId: { in: sourceReminderUserIds } },
+							});
+							await tx.noteReminder.updateMany({
+								where: { docId: sourceDocId },
+								data: { docId: targetDocId, workspaceId: targetWorkspaceId },
+							});
+						}
+
 						// Migrate drawing sub-documents that belong to this note.
 						// Drawings are stored as separate document rows with docId
 						// = sourceWorkspaceId:drawingId. After a note move the client
