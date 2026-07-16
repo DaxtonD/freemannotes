@@ -1246,22 +1246,27 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						},
 					});
 
-					// Auto-archive the note_shared activity for the acceptor so the card
-					// doesn't reappear after a cache clear, app update, or fresh login.
-					// The card is never archived by the client (markRead is called, not archive),
-					// so unarchived note_shared cards surface again on every fresh fetch.
+					// Auto-archive inbox cards for the acceptor so they don't reappear after a
+					// cache clear, app update, or fresh login. Two kinds need archiving:
+					//   • note_shared — created when a note is shared directly
+					//   • mention — created when an @mention implicitly invites the user;
+					//     these carry snapshot.invitationId and show the same Accept button
+					// The client calls markRead (not archive) on acceptance, so without this
+					// the card resurfaces on every fresh server fetch.
 					try {
-						const sharedActivities = await prisma.activity.findMany({
+						const activitiesToArchive = await prisma.activity.findMany({
 							where: {
-								kind: 'note_shared',
-								sourceDocId: invitation.docId,
 								targets: { some: { userId: user.id } },
+								OR: [
+									{ kind: 'note_shared', sourceDocId: invitation.docId },
+									{ snapshot: { path: ['invitationId'], equals: invitation.id } },
+								],
 							},
 							select: { id: true },
 						});
-						if (sharedActivities.length > 0) {
+						if (activitiesToArchive.length > 0) {
 							const now = new Date();
-							await Promise.all(sharedActivities.map((a) =>
+							await Promise.all(activitiesToArchive.map((a) =>
 								prisma.activityRead.upsert({
 									where: { userId_activityId: { userId: user.id, activityId: a.id } },
 									update: { archived: true, archivedAt: now },
@@ -1270,7 +1275,7 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							));
 						}
 					} catch (archiveErr) {
-						console.warn('[note-share] auto-archive note_shared activity failed:', archiveErr.message);
+						console.warn('[note-share] auto-archive invitation activity failed:', archiveErr.message);
 					}
 
 					try {
