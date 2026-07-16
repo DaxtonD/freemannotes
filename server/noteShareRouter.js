@@ -1246,6 +1246,33 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						},
 					});
 
+					// Auto-archive the note_shared activity for the acceptor so the card
+					// doesn't reappear after a cache clear, app update, or fresh login.
+					// The card is never archived by the client (markRead is called, not archive),
+					// so unarchived note_shared cards surface again on every fresh fetch.
+					try {
+						const sharedActivities = await prisma.activity.findMany({
+							where: {
+								kind: 'note_shared',
+								sourceDocId: invitation.docId,
+								targets: { some: { userId: user.id } },
+							},
+							select: { id: true },
+						});
+						if (sharedActivities.length > 0) {
+							const now = new Date();
+							await Promise.all(sharedActivities.map((a) =>
+								prisma.activityRead.upsert({
+									where: { userId_activityId: { userId: user.id, activityId: a.id } },
+									update: { archived: true, archivedAt: now },
+									create: { userId: user.id, activityId: a.id, archived: true, archivedAt: now },
+								})
+							));
+						}
+					} catch (archiveErr) {
+						console.warn('[note-share] auto-archive note_shared activity failed:', archiveErr.message);
+					}
+
 					try {
 						let acceptedNoteTitle = null;
 						try {

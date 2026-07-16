@@ -430,6 +430,11 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			const noteId: string = (aliasId && typeof aliasId === 'string') ? aliasId : activity.subject.noteId;
 			setAcceptedInvitationIds((prev) => new Set([...prev, invitationId]));
 			setPlacementPickerActivityId(null);
+			// Remove the card immediately and mark as read. The server has already
+			// archived it on the acceptance endpoint, so it won't reappear on
+			// re-login, cache clear, or app update.
+			setActivities((prev) => prev.filter((a) => a.id !== activity.id));
+			removeFromCache(activity.id);
 			markRead(activity.id);
 			onOpenNote(noteId, activity.subject.workspaceId, roomId);
 		} catch {
@@ -437,7 +442,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		} finally {
 			setAcceptingIds((prev) => { const n = new Set(prev); n.delete(activity.id); return n; });
 		}
-	}, [folderName, markRead, onOpenNote, placementChoice]);
+	}, [folderName, markRead, onOpenNote, placementChoice, removeFromCache]);
 
 	const tabs: { key: FilterTab; label: string }[] = [
 		{ key: 'all',      label: t('inbox.tabAll') },
