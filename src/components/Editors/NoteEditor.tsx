@@ -3266,6 +3266,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'previous')}
 																onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
 																onNoteClick={props.onOpenNote}
+																authUserId={props.authUserId}
 															/>
 														</li>
 															);
@@ -3356,6 +3357,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 															onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'previous')}
 															onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
 															onNoteClick={props.onOpenNote}
+															authUserId={props.authUserId}
 													/>
 												</li>
 											))}
