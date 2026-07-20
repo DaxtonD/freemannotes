@@ -80,8 +80,10 @@ type RichTextEditorProps = {
 	collapsibleHeadingNoteId?: string | null;
 	onNoteClick?: (noteId: string) => void;
 	scrollToMentionNodeId?: string | null;
+	onScrollToMentionComplete?: (nodeId: string) => void;
 	authUserId?: string | null;
 	onSelfMentionInserted?: (nodeId: string) => void;
+	mentionRoleCache?: Map<string, 'VIEWER' | 'EDITOR'> | null;
 };
 
 type RichTextToolbarProps = {
@@ -2210,6 +2212,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				collapsibleHeadingNoteId: props.collapsibleHeadingNoteId ?? null,
 				authUserId: props.authUserId ?? null,
 				onSelfMentionInserted: stableSelfMentionCb,
+				mentionRoleCache: props.mentionRoleCache ?? null,
 			}),
 			editable: props.editable !== false,
 			content: props.fragment ? undefined : props.content ?? undefined,
@@ -2501,6 +2504,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				el.scrollIntoView({ behavior: 'smooth', block: 'center' });
 				el.classList.add(styles.mentionScrollHighlight);
 				el.addEventListener('animationend', () => el.classList.remove(styles.mentionScrollHighlight), { once: true });
+				props.onScrollToMentionComplete?.(nodeId);
 				return;
 			}
 			if (++tries < 8) timerId = setTimeout(attempt, 250);

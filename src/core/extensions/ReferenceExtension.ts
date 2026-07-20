@@ -92,13 +92,17 @@ export const ReferenceExtension = Reference.extend({
 		return {
 			authUserId: null as string | null,
 			onSelfMentionInserted: null as ((nodeId: string) => void) | null,
+			// Shared mutable map of userId → role. Pre-seeded from existing collaborators
+			// on note open; updated when a role is picked so subsequent mentions of the
+			// same user in any editor for this note skip the picker automatically.
+			mentionRoleCache: null as Map<string, 'VIEWER' | 'EDITOR'> | null,
 		};
 	},
 
 	addProseMirrorPlugins() {
 		const editor = (this as unknown as { editor: Editor }).editor;
-		type ExtOpts = { authUserId: string | null; onSelfMentionInserted: ((nodeId: string) => void) | null };
-		const { authUserId, onSelfMentionInserted } = (this as unknown as { options: ExtOpts }).options;
+		type ExtOpts = { authUserId: string | null; onSelfMentionInserted: ((nodeId: string) => void) | null; mentionRoleCache: Map<string, 'VIEWER' | 'EDITOR'> | null };
+		const { authUserId, onSelfMentionInserted, mentionRoleCache } = (this as unknown as { options: ExtOpts }).options;
 
 		// ── Container created at editor mount, NOT at first suggestion activation ──
 		// iOS Safari and Android Chrome collapse the soft keyboard when a
@@ -176,7 +180,9 @@ export const ReferenceExtension = Reference.extend({
 
 		const confirmWithRole = (roleIndex: 0 | 1) => {
 			if (!rolePickState) return;
-			const result: SelectedItem = { ...rolePickState.result, editRole: roleIndex === 0 ? 'VIEWER' : 'EDITOR' };
+			const chosenRole: 'VIEWER' | 'EDITOR' = roleIndex === 0 ? 'VIEWER' : 'EDITOR';
+			mentionRoleCache?.set(rolePickState.result.id, chosenRole);
+			const result: SelectedItem = { ...rolePickState.result, editRole: chosenRole };
 			rolePickState = null;
 			latestCommand?.(result);
 		};
@@ -196,8 +202,13 @@ export const ReferenceExtension = Reference.extend({
 								// Self-mention: skip the role picker and insert directly as EDITOR
 								latestCommand?.({ ...result, editRole: 'EDITOR' });
 							} else {
-								rolePickState = { result, roleIndex: 1 }; // default: EDITOR
-								rerender();
+								const cached = mentionRoleCache?.get(result.id);
+								if (cached) {
+									latestCommand?.({ ...result, editRole: cached });
+								} else {
+									rolePickState = { result, roleIndex: 1 }; // default: EDITOR
+									rerender();
+								}
 							}
 						} else {
 							latestCommand?.(result);
@@ -404,9 +415,14 @@ export const ReferenceExtension = Reference.extend({
 								const selected = allItems[selectedIndex];
 								if (!selected) return true;
 								if (selected.type === 'user') {
-									// Enter on a user: open role picker (default EDITOR)
-									rolePickState = { result: selected, roleIndex: 1 };
-									rerender();
+									const cached = mentionRoleCache?.get(selected.id);
+									if (cached) {
+										latestCommand?.({ ...selected, editRole: cached });
+									} else {
+										// Enter on a user: open role picker (default EDITOR)
+										rolePickState = { result: selected, roleIndex: 1 };
+										rerender();
+									}
 								} else {
 									latestCommand?.(selected);
 								}

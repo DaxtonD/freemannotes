@@ -76,15 +76,33 @@ async function trimPrecache(cache) {
 
 async function precacheAppShell() {
 	const cache = await caches.open(APP_SHELL_CACHE);
+
+	// Find any previous-version app shell cache to use as a fallback when the
+	// server is temporarily offline during a SW update.  deleteOutdatedCaches()
+	// only runs on activate (after this install completes), so old caches are
+	// still available here.
+	const allKeys = await caches.keys();
+	const oldShellKey = allKeys.find((k) => k.startsWith('freemannotes-app-shell-') && k !== APP_SHELL_CACHE);
+	const oldShellCache = oldShellKey ? await caches.open(oldShellKey) : null;
+
 	await Promise.all(
 		precacheUrls.map(async (url) => {
 			try {
 				const response = await fetch(new Request(url, { cache: 'reload' }));
 				if (isCacheableResponse(response)) {
 					await cache.put(url, response.clone());
+				} else if (oldShellCache) {
+					// Non-ok response (e.g. server restarting) — preserve from old cache.
+					const old = await oldShellCache.match(url);
+					if (old) await cache.put(url, old);
 				}
 			} catch {
-				// Installation still succeeds if a single asset is temporarily unavailable.
+				// Fetch threw (server offline) — preserve from old cache so a SW
+				// update during a brief online window doesn't lose working assets.
+				if (oldShellCache) {
+					const old = await oldShellCache.match(url);
+					if (old) await cache.put(url, old);
+				}
 			}
 		})
 	);
@@ -108,9 +126,10 @@ async function staleWhileRevalidate(request, cacheName) {
 		.then(async (response) => {
 			if (canStoreResponseInCache(response)) {
 				await cache.put(request, response.clone());
-			} else {
-				await cache.delete(request);
 			}
+			// Non-ok responses are silently ignored — keep the existing cached entry
+			// rather than evicting it.  A transient 502/503 (server restarting) must
+			// not destroy an asset that is correctly served from cache.
 			return response;
 		})
 		.catch(() => null);
@@ -174,9 +193,8 @@ async function precachedBannerFirst(request) {
 		.then(async (response) => {
 			if (canStoreResponseInCache(response)) {
 				await staticCache.put(request, response.clone());
-			} else {
-				await staticCache.delete(request);
 			}
+			// Non-ok responses during revalidation are silently ignored.
 			return response;
 		})
 		.catch(() => null);

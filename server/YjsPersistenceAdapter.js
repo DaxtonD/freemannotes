@@ -267,6 +267,15 @@ class YjsPersistenceAdapter {
 		this._docActors = new Map();
 
 		/**
+		 * Mention notifications deferred until the last client disconnects from the
+		 * room. Keyed by docName → nodeId → mention payload. Mentions that are added
+		 * and then removed before the editor closes never leave this map and therefore
+		 * never produce an activity, inbox card, or push notification.
+		 * @type {Map<string, Map<string, object>>}
+		 */
+		this._pendingMentionNotifications = new Map();
+
+		/**
 		 * Optional callback fired after an activity is successfully emitted. Receives
 		 * the list of target user IDs so the caller can push a real-time notification
 		 * (e.g. via the workspace metadata WS channel).
@@ -277,13 +286,21 @@ class YjsPersistenceAdapter {
 			: null;
 
 		/**
-		 * Optional async callback fired after a mention invitation is created.
-		 * The server.js caller uses this to send the push notification without
-		 * coupling push logic into the adapter.
+		 * Optional async callback fired after a mention invitation is created
+		 * (non-access users only). Kept for legacy compatibility.
 		 * @type {((payload: { targetUserId: string; actorId: string | null; docId: string; noteTitle: string | null; mentionExcerpt: string | null; editRole: string }) => Promise<void>) | null}
 		 */
 		this._onMentionInvitationCreated = typeof options.onMentionInvitationCreated === 'function'
 			? options.onMentionInvitationCreated
+			: null;
+		/**
+		 * Optional async callback fired after any mention activity is emitted,
+		 * regardless of whether the target already has access. Used to send push
+		 * notifications to all mentioned users (including existing collaborators).
+		 * @type {((payload: { targetUserId: string; actorId: string | null; docId: string; noteTitle: string | null; mentionExcerpt: string | null; editRole: string }) => Promise<void>) | null}
+		 */
+		this._onMentionNotification = typeof options.onMentionNotification === 'function'
+			? options.onMentionNotification
 			: null;
 		/** @type {((payload: { revokedUserIds: string[] }) => void) | null} */
 		this._onMentionRevoked = typeof options.onMentionRevoked === 'function'
@@ -465,6 +482,24 @@ class YjsPersistenceAdapter {
 
 		// Flush to durable storage.
 		await this._persistDoc(docName, yDoc);
+
+		// _persistDoc fires _syncEntityReferences fire-and-forget so it never
+		// delays document saves. For the final disconnect write we need the ref
+		// sync fully committed before flushing notifications, so we await it
+		// explicitly here. The call is idempotent — if the debounced write already
+		// ran, added/removed sets are both empty and it returns immediately.
+		const _finalWorkspaceId = this._docWorkspaceId.get(docName);
+		if (_finalWorkspaceId) {
+			await this._syncEntityReferences(docName, yDoc, _finalWorkspaceId).catch((err) => {
+				console.warn('[references] final ref sync failed:', err.message);
+			});
+		}
+
+		// Fire all mention notifications that were deferred during this editing
+		// session. Must run before _docWorkspaceId is cleaned up.
+		await this._flushPendingMentionNotifications(docName, yDoc).catch((err) => {
+			console.warn('[references] flush pending notifications failed:', err.message);
+		});
 
 		// Remove from active tracking.
 		this._activeDocs.delete(docName);
@@ -664,12 +699,9 @@ class YjsPersistenceAdapter {
 
 			// Compute added and removed sets.
 			const added = freshRefs.filter((r) => !storedByNodeId.has(r.nodeId));
-			const removedNodeIds = stored
-				.filter((r) => !freshByNodeId.has(r.nodeId))
-				.map((r) => r.nodeId);
-			const removedUserTargetIds = stored
-				.filter((r) => !freshByNodeId.has(r.nodeId) && r.targetType === 'user')
-				.map((r) => r.targetId);
+			const removedRefs = stored.filter((r) => !freshByNodeId.has(r.nodeId));
+			const removedNodeIds = removedRefs.map((r) => r.nodeId);
+			const removedUserRefs = removedRefs.filter((r) => r.targetType === 'user');
 
 			// Nothing changed — skip all DB writes.
 			if (added.length === 0 && removedNodeIds.length === 0) return;
@@ -680,59 +712,80 @@ class YjsPersistenceAdapter {
 					where: { sourceDocId: docName, nodeId: { in: removedNodeIds } },
 				});
 
-				// Revoke any PENDING mention invitations for users whose reference was removed.
-				if (removedUserTargetIds.length > 0) {
-					await this._prisma.noteShareInvitation.updateMany({
-						where: {
-							docId: docName,
-							inviteeUserId: { in: removedUserTargetIds },
-							source: 'mention',
-							status: 'PENDING',
-						},
-						data: { status: 'REVOKED', revokedAt: new Date() },
-					}).catch((err) => {
-						console.warn(`[references] mention invitation revoke failed for ${docName}:`, err.message);
-					});
-
-					// Archive the inbox activity for removed users so the card disappears
-					// regardless of whether the invitation was already accepted.
-					try {
-						const activitiesToArchive = await this._prisma.activity.findMany({
-							where: {
-								kind: 'mention',
-								sourceDocId: docName,
-								targets: { some: { userId: { in: removedUserTargetIds } } },
-							},
-							include: {
-								targets: {
-									where: { userId: { in: removedUserTargetIds } },
-									select: { userId: true },
-								},
-							},
-						});
-						if (activitiesToArchive.length > 0) {
-							const now = new Date();
-							await this._prisma.$transaction(
-								activitiesToArchive.flatMap((a) =>
-									a.targets.map((t) =>
-										this._prisma.activityRead.upsert({
-											where: { userId_activityId: { userId: t.userId, activityId: a.id } },
-											update: { archived: true, archivedAt: now },
-											create: { userId: t.userId, activityId: a.id, archived: true, archivedAt: now },
-										})
-									)
-								)
-							);
+				if (removedUserRefs.length > 0) {
+					// Cancel any pending (un-emitted) notifications for the removed refs.
+					// These were added and then removed within the same editing session, so
+					// no activity was ever emitted — nothing to revoke or archive.
+					const pendingForDoc = this._pendingMentionNotifications.get(docName);
+					const cancelledNodeIds = new Set();
+					if (pendingForDoc) {
+						for (const r of removedUserRefs) {
+							if (pendingForDoc.has(r.nodeId)) {
+								pendingForDoc.delete(r.nodeId);
+								cancelledNodeIds.add(r.nodeId);
+							}
 						}
-					} catch (err) {
-						console.warn(`[references] mention activity archive failed for ${docName}:`, err.message);
 					}
 
-					this._onMentionRevoked?.({ revokedUserIds: removedUserTargetIds });
+					// Only revoke invitations and archive activities for mentions that were
+					// already emitted in a prior editing session (not pending in this one).
+					const emittedRemovedUserTargetIds = removedUserRefs
+						.filter((r) => !cancelledNodeIds.has(r.nodeId))
+						.map((r) => r.targetId);
+
+					if (emittedRemovedUserTargetIds.length > 0) {
+						await this._prisma.noteShareInvitation.updateMany({
+							where: {
+								docId: docName,
+								inviteeUserId: { in: emittedRemovedUserTargetIds },
+								source: 'mention',
+								status: 'PENDING',
+							},
+							data: { status: 'REVOKED', revokedAt: new Date() },
+						}).catch((err) => {
+							console.warn(`[references] mention invitation revoke failed for ${docName}:`, err.message);
+						});
+
+						// Archive the inbox activity for removed users so the card disappears
+						// regardless of whether the invitation was already accepted.
+						try {
+							const activitiesToArchive = await this._prisma.activity.findMany({
+								where: {
+									kind: 'mention',
+									sourceDocId: docName,
+									targets: { some: { userId: { in: emittedRemovedUserTargetIds } } },
+								},
+								include: {
+									targets: {
+										where: { userId: { in: emittedRemovedUserTargetIds } },
+										select: { userId: true },
+									},
+								},
+							});
+							if (activitiesToArchive.length > 0) {
+								const now = new Date();
+								await this._prisma.$transaction(
+									activitiesToArchive.flatMap((a) =>
+										a.targets.map((t) =>
+											this._prisma.activityRead.upsert({
+												where: { userId_activityId: { userId: t.userId, activityId: a.id } },
+												update: { archived: true, archivedAt: now },
+												create: { userId: t.userId, activityId: a.id, archived: true, archivedAt: now },
+											})
+										)
+									)
+								);
+							}
+						} catch (err) {
+							console.warn(`[references] mention activity archive failed for ${docName}:`, err.message);
+						}
+
+						this._onMentionRevoked?.({ revokedUserIds: emittedRemovedUserTargetIds });
+					}
 				}
 			}
 
-			// Upsert added references.
+			// Upsert added references into EntityReference for deduplication tracking.
 			if (added.length > 0) {
 				await this._prisma.entityReference.createMany({
 					data: added.map((r) => ({
@@ -747,12 +800,14 @@ class YjsPersistenceAdapter {
 				});
 			}
 
-			// Process newly-added user references: emit activities and create invitations.
+			// Queue newly-added user references into the pending map. Activities,
+			// invitations, and push notifications are deferred until the last client
+			// disconnects (writeState) so that mentions typed and immediately removed
+			// within the same editing session never produce a notification.
 			const newUserRefs = added.filter((r) => r.targetType === 'user');
 			if (newUserRefs.length === 0) return;
 
 			const actorId = this._docActors.get(docName) ?? null;
-			const noteTitle = yDoc.getText('title').toString().trim() || null;
 
 			// Determine which new mentions belong to users who already have access
 			// to THIS note (workspace members or direct note collaborators).
@@ -772,100 +827,164 @@ class YjsPersistenceAdapter {
 				...directCollaborators.map((c) => c.userId),
 			]);
 
+			if (!this._pendingMentionNotifications.has(docName)) {
+				this._pendingMentionNotifications.set(docName, new Map());
+			}
+			const pendingForDoc = this._pendingMentionNotifications.get(docName);
+
 			for (const ref of newUserRefs) {
-				const isSelfMention = actorId && actorId === ref.targetId;
-				const isAssignment = ref.listContext === 'taskItem' || ref.listContext === 'listItem';
-				let invitationId = null;
-
-				if (!hasAccessSet.has(ref.targetId)) {
-					// User has no access to this note — create an implicit share invitation.
-					try {
-						const existingPending = await this._prisma.noteShareInvitation.findFirst({
-							where: {
-								docId: docName,
-								inviteeUserId: ref.targetId,
-								source: 'mention',
-								status: 'PENDING',
-							},
-							select: { id: true },
-						});
-
-						if (!existingPending) {
-							if (!actorId) {
-								// Can't create invitation without knowing who did the mention.
-								// Emit the activity without an invitation.
-								invitationId = null;
-							} else {
-								// Look up the invitee's email for the invitation record.
-								const invitee = await this._prisma.user.findUnique({
-									where: { id: ref.targetId },
-									select: { email: true, name: true },
-								});
-								if (invitee) {
-									const invitation = await this._prisma.noteShareInvitation.create({
-										data: {
-											docId: docName,
-											sourceWorkspaceId: workspaceId,
-											sourceNoteId: noteId,
-											inviterUserId: actorId,
-											inviteeUserId: ref.targetId,
-											inviteeEmail: invitee.email,
-											inviteeName: invitee.name,
-											role: ref.editRole === 'VIEWER' ? 'VIEWER' : 'EDITOR',
-											source: 'mention',
-											mentionExcerpt: ref.excerpt,
-											status: 'PENDING',
-										},
-									});
-									invitationId = invitation.id;
-
-									// Notify server.js to send the push (check pref there)
-									this._onMentionInvitationCreated?.({
-										targetUserId: ref.targetId,
-										actorId,
-										docId: docName,
-										noteTitle,
-										mentionExcerpt: ref.excerpt,
-										editRole: ref.editRole || 'EDITOR',
-									}).catch((err) => {
-										console.warn(`[references] mention push failed for ${docName}:`, err?.message);
-									});
-								}
-							}
-						} else {
-							invitationId = existingPending.id;
-						}
-					} catch (err) {
-						console.warn(`[references] mention invitation create failed for ${docName}:`, err.message);
-					}
-				}
-
-				// Emit the activity (mention or assignment). Include invitationId in
-				// the snapshot so InboxView can show Accept & View.
-				await emitActivity(this._prisma, {
-					kind: isAssignment ? 'assignment_created' : 'mention',
-					actorId,
-					sourceDocId: docName,
-					sourceWorkspaceId: workspaceId,
-					sourceNoteId: noteId,
-					subjectType: isAssignment ? 'checklist_item' : 'note',
-					subjectId: noteId,
-					deepLink: { kind: 'prosemirror_node', nodeId: ref.nodeId },
-					snapshot: {
-						noteTitle,
-						mentionExcerpt: ref.excerpt,
-						assigneeLabel: ref.label,
-						invitationId,
-					},
-					targetUserIds: [ref.targetId],
-				}).then(() => {
-					this._onActivityEmitted?.({ targetUserIds: [ref.targetId] });
-				}).catch((err) => {
-					console.warn(`[references] activity emit failed for ${docName}:`, err.message);
-				});
+				// Don't overwrite a pending entry — the first actor attribution wins.
+				if (pendingForDoc.has(ref.nodeId)) continue;
+				pendingForDoc.set(ref.nodeId, { ref, actorId, hasAccess: hasAccessSet.has(ref.targetId) });
 			}
 		} catch (err) {
 			console.warn(`[references] _syncEntityReferences failed for ${docName}:`, err.message);
+		}
+	}
+
+	/**
+	 * Runs when the last WS client disconnects from a note room. Fires all
+	 * deferred mention/assignment activities and creates implicit share
+	 * invitations for users who don't already have access.
+	 *
+	 * @param {string} docName
+	 * @param {import('yjs').Doc} yDoc
+	 */
+	async _flushPendingMentionNotifications(docName, yDoc) {
+		const pendingForDoc = this._pendingMentionNotifications.get(docName);
+		if (!pendingForDoc || pendingForDoc.size === 0) {
+			this._pendingMentionNotifications.delete(docName);
+			return;
+		}
+		this._pendingMentionNotifications.delete(docName);
+
+		const workspaceId = this._docWorkspaceId.get(docName);
+		if (!workspaceId) return;
+
+		const colonIdx = docName.indexOf(':');
+		const noteId = colonIdx >= 0 ? docName.slice(colonIdx + 1) : docName;
+		const noteTitle = yDoc.getText('title').toString().trim() || null;
+
+		for (const [, { ref, actorId, hasAccess }] of pendingForDoc) {
+			const isAssignment = ref.listContext === 'taskItem' || ref.listContext === 'listItem';
+			let invitationId = null;
+
+			if (!hasAccess) {
+				try {
+					const existingPending = await this._prisma.noteShareInvitation.findFirst({
+						where: {
+							docId: docName,
+							inviteeUserId: ref.targetId,
+							source: 'mention',
+							status: 'PENDING',
+						},
+						select: { id: true },
+					});
+
+					if (!existingPending) {
+						if (actorId) {
+							const invitee = await this._prisma.user.findUnique({
+								where: { id: ref.targetId },
+								select: { email: true, name: true },
+							});
+							if (invitee) {
+								const invitation = await this._prisma.noteShareInvitation.create({
+									data: {
+										docId: docName,
+										sourceWorkspaceId: workspaceId,
+										sourceNoteId: noteId,
+										inviterUserId: actorId,
+										inviteeUserId: ref.targetId,
+										inviteeEmail: invitee.email,
+										inviteeName: invitee.name,
+										role: ref.editRole === 'VIEWER' ? 'VIEWER' : 'EDITOR',
+										source: 'mention',
+										mentionExcerpt: ref.excerpt,
+										status: 'PENDING',
+									},
+								});
+								invitationId = invitation.id;
+
+								this._onMentionInvitationCreated?.({
+									targetUserId: ref.targetId,
+									actorId,
+									docId: docName,
+									noteTitle,
+									mentionExcerpt: ref.excerpt,
+									editRole: ref.editRole || 'EDITOR',
+								}).catch((err) => {
+									console.warn(`[references] mention push failed for ${docName}:`, err?.message);
+								});
+							}
+						}
+					} else {
+						invitationId = existingPending.id;
+					}
+				} catch (err) {
+					console.warn(`[references] mention invitation create failed for ${docName}:`, err.message);
+				}
+			}
+
+			await emitActivity(this._prisma, {
+				kind: isAssignment ? 'assignment_created' : 'mention',
+				actorId,
+				sourceDocId: docName,
+				sourceWorkspaceId: workspaceId,
+				sourceNoteId: noteId,
+				subjectType: isAssignment ? 'checklist_item' : 'note',
+				subjectId: noteId,
+				deepLink: { kind: 'prosemirror_node', nodeId: ref.nodeId },
+				snapshot: {
+					noteTitle,
+					mentionExcerpt: ref.excerpt,
+					assigneeLabel: ref.label,
+					invitationId,
+				},
+				targetUserIds: [ref.targetId],
+			}).then(() => {
+				this._onActivityEmitted?.({ targetUserIds: [ref.targetId] });
+				if (actorId) {
+					this._onMentionNotification?.({
+						targetUserId: ref.targetId,
+						actorId,
+						docId: docName,
+						noteTitle,
+						mentionExcerpt: ref.excerpt,
+						editRole: ref.editRole || 'EDITOR',
+					}).catch((err) => {
+						console.warn(`[references] mention push failed for ${docName}:`, err?.message);
+					});
+				}
+			}).catch((err) => {
+				console.warn(`[references] activity emit failed for ${docName}:`, err.message);
+			});
+		}
+	}
+
+	/**
+	 * Called from the REST endpoint when the client closes a note editor.
+	 * Ensures any recent mention edits are synced and all pending notifications
+	 * for that room are fired immediately, without waiting for WS disconnect.
+	 *
+	 * @param {string} noteId — Just the noteId portion (no workspace prefix).
+	 */
+	async flushMentionsForNote(noteId) {
+		// Find the active room for this noteId. Room names are workspaceId:noteId.
+		for (const [docName, yDoc] of this._activeDocs) {
+			const colonIdx = docName.indexOf(':');
+			if (colonIdx < 0 || docName.slice(colonIdx + 1) !== noteId) continue;
+
+			const workspaceId = this._docWorkspaceId.get(docName);
+			if (!workspaceId) break;
+
+			// Ensure refs from any recent edits are in the pending map before flush.
+			await this._syncEntityReferences(docName, yDoc, workspaceId).catch((err) => {
+				console.warn('[refs] flush-on-close sync failed:', err.message);
+			});
+			await this._flushPendingMentionNotifications(docName, yDoc).catch((err) => {
+				console.warn('[refs] flush-on-close notifications failed:', err.message);
+			});
+			break;
 		}
 	}
 

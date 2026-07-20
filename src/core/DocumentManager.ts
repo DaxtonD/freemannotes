@@ -761,7 +761,7 @@ export class DocumentManager {
 			: await this.openIsolatedRoom(sourceRegistryRoomName, { initializeRegistry: true });
 		const sourceDoc = sourceWorkspaceIsActive
 			? await this.getDocReady(key)
-			: sourceNoteRoom.doc;
+			: sourceNoteRoom!.doc;
 		const noteTitle = String(opts?.title || sourceDoc.getText('title').toString() || key).trim() || key;
 		const noteState = Y.encodeStateAsUpdate(sourceDoc);
 		const drawingIds = readDrawingLinkState(sourceDoc).drawingIds.filter((drawingId) => !drawingId.includes(':'));
@@ -775,7 +775,7 @@ export class DocumentManager {
 		const targetRegistryRoom = cachedTargetRegistryDoc
 			? null
 			: await this.openIsolatedRoom(targetRegistryRoomName, { initializeRegistry: true });
-		const targetRegistryDoc = cachedTargetRegistryDoc ?? targetRegistryRoom.doc;
+		const targetRegistryDoc = cachedTargetRegistryDoc ?? targetRegistryRoom!.doc;
 		const targetDrawingRooms: Array<{
 			sourceRoomName: string;
 			targetRoomName: string;
@@ -795,7 +795,7 @@ export class DocumentManager {
 				}
 				const sourceDrawingDoc = sourceWorkspaceIsActive
 					? await this.getDocReady(drawingId)
-					: sourceDrawingRoom.doc;
+					: sourceDrawingRoom!.doc;
 				const targetRoomName = `${normalizedTargetWorkspaceId}:${drawingId}`;
 				targetDrawingRooms.push({
 					sourceRoomName: sourceDrawingRoomName,
@@ -819,7 +819,7 @@ export class DocumentManager {
 			}
 			const sourceRegistryDoc = sourceWorkspaceIsActive
 				? await this.getNotesRegistryDoc()
-				: sourceRegistryRoom.doc;
+				: sourceRegistryRoom!.doc;
 			this.removeRegistryNoteEntry(sourceRegistryDoc, key);
 			if (sourceWorkspaceIsActive) {
 				await this.waitForPersistenceTurn();

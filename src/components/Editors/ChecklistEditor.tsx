@@ -1,4 +1,4 @@
-import React, { useSyncExternalStore } from 'react';
+﻿import React, { useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import type { Editor, JSONContent } from '@tiptap/core';
 import {
@@ -697,16 +697,6 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		needsFocusAfterTitleEnterRef.current = false;
 		activeRowEditor.commands.focus('end');
 	}, [activeRowEditor]);
-	const moveFocusToAdjacentRow = React.useCallback((rowId: string, direction: 'previous' | 'next'): void => {
-		const currentIndex = visibleChecklistRowIds.indexOf(rowId);
-		if (currentIndex === -1) return;
-		const targetId = direction === 'previous'
-			? visibleChecklistRowIds[currentIndex - 1] ?? null
-			: visibleChecklistRowIds[currentIndex + 1] ?? null;
-		if (!targetId) return;
-		activateRow(targetId);
-		focusChecklistRowEditor(targetId, direction === 'previous' ? 'end' : 'start');
-	}, [activateRow, focusChecklistRowEditor, visibleChecklistRowIds]);
 	// Keyboard-close de-selection:
 	// If the user dismisses the software keyboard, we intentionally de-select
 	// any active checklist row on mobile. This ensures a subsequent drag gesture
@@ -752,6 +742,16 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		],
 		[activeItems, completedRows, showCompleted]
 	);
+	const moveFocusToAdjacentRow = React.useCallback((rowId: string, direction: 'previous' | 'next'): void => {
+		const currentIndex = visibleChecklistRowIds.indexOf(rowId);
+		if (currentIndex === -1) return;
+		const targetId = direction === 'previous'
+			? visibleChecklistRowIds[currentIndex - 1] ?? null
+			: visibleChecklistRowIds[currentIndex + 1] ?? null;
+		if (!targetId) return;
+		activateRow(targetId);
+		focusChecklistRowEditor(targetId, direction === 'previous' ? 'end' : 'start');
+	}, [activateRow, focusChecklistRowEditor, visibleChecklistRowIds]);
 
 	React.useEffect(() => {
 		latestItemsRef.current = items;
@@ -1697,8 +1697,6 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 													</button>
 												</li>
 												);
-														onMouseDown={preventHandleFocusSteal}
-														onPointerDown={preventHandleFocusSteal}
 											}}
 										</Draggable>
 									))}

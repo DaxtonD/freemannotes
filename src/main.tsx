@@ -153,6 +153,13 @@ if (typeof window !== 'undefined' && 'scrollRestoration' in history) {
 // the app origin so exported PWA builds can self-host those files offline.
 (window as any).EXCALIDRAW_ASSET_PATH = '/';
 
+// Give this window a stable name so that Excalidraw's library browser passes
+// target=freemannotes (instead of target=_blank) back to the library-return
+// URL.  When the user clicks "Add to Excalidraw", the library site calls
+// window.open(returnUrl, 'freemannotes') — which navigates our existing window
+// (same browsing-context group) rather than opening a new tab or PWA instance.
+window.name = 'freemannotes';
+
 // Apply the last-used theme before React mounts so Android standalone chrome
 // sees the current app background immediately instead of the HTML fallback.
 const cachedAuthUserId = readCachedAuthUserId();

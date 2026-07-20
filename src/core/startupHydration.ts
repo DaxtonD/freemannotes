@@ -44,6 +44,7 @@ const STARTUP_BANNER_PRELOAD_LIMIT: Record<ViewMode, number> = {
 	card: 8,
 	list: 12,
 	strip: 12,
+	inbox: 0,
 };
 
 function buildStartupHydrationBase(): Omit<StartupHydrationSnapshot, 'workspaceSnapshot' | 'collections' | 'labels' | 'hydratedAt'> {

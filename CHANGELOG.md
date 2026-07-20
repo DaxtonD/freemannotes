@@ -4,6 +4,30 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.7.4 - 2026-07-19
+
+### Added
+- **Excalidraw drawing library persists across devices.** Custom shapes added to the drawing library are saved server-side (`/api/drawing-library`) and loaded on every device for the same account. Libraries still load from the local cache when offline.
+- **Excalidraw library browser works in PWA.** Clicking "Browse Libraries" inside the drawing editor now routes the selected library back to the original editor via BroadcastChannel relay, handling both same-window in-place navigation (browser) and cross-context relay-tab flows (mobile PWA).
+- **Avatar upload works offline.** Cropped profile images are applied immediately as a local data: URL and uploaded to the server in the background. If the device is offline, the pending upload is retried automatically when connectivity returns.
+- **Inbox renders instantly on cold start.** The first page of each inbox filter tab is persisted in localStorage and shown immediately on open, before the server fetch completes.
+- **Mention notifications deferred until editor closes.** @mention activities, invitations, and push notifications are fired only when the last WebSocket client disconnects from a note room (or when the editor explicitly closes). A mention typed and removed before the editor closes never produces an inbox card or push notification.
+- **Mention role cache within a session.** Subsequent @mentions of the same user reuse the role chosen the first time, skipping the role picker automatically.
+- **PostgreSQL startup wait on server reboot.** `dbInit.js` polls PostgreSQL for up to 60 seconds on startup, allowing the app to recover cleanly after a database restart without a manual app restart.
+
+### Fixed
+- **Inbox badge double-count and stale badge after archive.** Two independent bugs: (1) archive/read actions now wait for the server response before re-fetching the badge count, preventing a race where stale data was returned; (2) the server now returns the nodeIds of unread mention activities in the count endpoint so the client can immediately clear matching optimistic pending entries, removing the duplicate badge inflation.
+- **PWA update notice shown on every reopen after an upgrade.** When the installed version already matches the running app version, the update notification is cleared automatically. It now shows at most once per upgrade cycle.
+- **Duplicate inbox cards after moving a note between workspaces.** The move transaction now uses a delete-then-insert pattern for `EntityReference`, `Activity`, and `NoteReminder` rows to avoid unique-constraint violations when the target rows already exist (e.g. note moved back, or a prior workspace visit created them first).
+- **`note_shared` inbox card reappears after cache clear or app update.** On share acceptance, the server immediately archives all `note_shared` activities for the acceptor, so the card never resurfaces on any subsequent fresh fetch.
+- **"Force clear all notifications" does not reset the inbox badge.** The optimistic `pendingSelfMentions` list is now cleared alongside the in-memory activity list so the badge drops to 0 immediately.
+- **Mention activity not archived when a share is accepted.** The acceptance endpoint now archives all `note_shared` and related activities targeting the acceptor, not only the initial `note_shared` kind.
+- **Self-mentions show the role picker.** `authUserId` is now forwarded to `ChecklistRowContent` and the TipTap reference extension so the picker is skipped automatically when a user @mentions themselves.
+- **Offline icon breakage after server restart.** Two fixes: (1) the service worker's stale-while-revalidate strategy no longer evicts a cached asset when a background revalidation returns a non-ok response (e.g. 502 during restart); (2) when a SW update installs while the server is temporarily offline, assets that can't be fetched are copied from the previous version's cache rather than silently dropped.
+- **Drawing anchor point jumps on first stroke.** `scheduleInitialViewportFit` now marks an empty canvas as already fitted on open, preventing the first `onChange` event from triggering `scrollToContent` and repositioning the newly drawn element.
+- **Task list items overflow their container.** `min-width: max-content` on checklist rich-editor content divs changed to `min-width: 0`, allowing long text to wrap correctly.
+- **Inbox avatar doesn't update when a collaborator changes their profile picture.** Inbox activity cards now pull the actor avatar from the live avatar cache so profile-image changes are reflected immediately.
+
 ## 1.7.3 - 2026-07-13
 
 ### Added

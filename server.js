@@ -314,6 +314,9 @@ let adminRouter = null;
 /** @type {ReturnType<import('./server/preferencesRouter').createPreferencesRouter> | null} */
 let preferencesRouter = null;
 
+/** @type {ReturnType<import('./server/drawingLibraryRouter').createDrawingLibraryRouter> | null} */
+let drawingLibraryRouter = null;
+
 /** @type {ReturnType<import('./server/pushRouter').createPushRouter> | null} */
 let pushRouter = null;
 
@@ -424,7 +427,7 @@ if (DATABASE_URL.length > 0) {
 						userIds: revokedUserIds,
 					});
 				},
-				onMentionInvitationCreated: async ({ targetUserId, actorId, docId, noteTitle, mentionExcerpt }) => {
+				onMentionNotification: async ({ targetUserId, actorId, docId, noteTitle, mentionExcerpt }) => {
 					try {
 						// Check if the user has opted out of mention push notifications.
 						const pref = await prisma.userPreference.findUnique({
@@ -701,6 +704,15 @@ if (DATABASE_URL.length > 0) {
 		}
 
 		try {
+			const { createDrawingLibraryRouter } = require('./server/drawingLibraryRouter');
+			drawingLibraryRouter = createDrawingLibraryRouter({ prisma });
+			console.info('[server] Drawing library router initialized');
+		} catch (err) {
+			console.error('[server] Failed to initialize Drawing library router:', err.message);
+			drawingLibraryRouter = null;
+		}
+
+		try {
 			const { createPushRouter } = require('./server/pushRouter');
 			pushRouter = createPushRouter({ prisma, redis });
 			console.info('[server] Push notification router initialized');
@@ -930,6 +942,12 @@ const server = http.createServer((req, res) => {
 		// ── Preferences API router ───────────────────────────────────────
 		// Handles /api/user/preferences GET and POST endpoints.
 		if (preferencesRouter && preferencesRouter(req, res)) {
+			return;
+		}
+
+		// ── Drawing library router ───────────────────────────────────────
+		// Handles /api/drawing-library GET and PUT endpoints.
+		if (drawingLibraryRouter && drawingLibraryRouter(req, res)) {
 			return;
 		}
 

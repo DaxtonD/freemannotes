@@ -52,6 +52,8 @@ import { PreferencesModal } from './components/Preferences/PreferencesModal';
 import { AppearanceModal } from './components/Preferences/AppearanceModal';
 import { UserModal } from './components/Preferences/UserModal';
 import { type CropAreaPixels, getAvatarUploadBlob } from './core/avatarProfileImage';
+import { attemptPendingAvatarUpload } from './core/pendingAvatarUpload';
+import { broadcastLibraryImport, parseLibraryImportFromHash, storeLibraryImport } from './core/excalidrawLibraryImport';
 import { SendInviteModal } from './components/Invites/SendInviteModal';
 import { CollaboratorModal } from './components/Share/CollaboratorModal';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
@@ -1085,6 +1087,47 @@ export function App(): React.JSX.Element {
 			clearTimeout(splashTimerRef.current);
 		};
 	}, []);
+
+	// Detect #addLibrary= in the URL.  Two paths reach here:
+	//
+	// A) Same-context (desktop/browser): the library browser calls
+	//    window.open(returnUrl, 'freemannotes') and our existing window is navigated
+	//    in-place via a hash change.  The hashchange listener below catches this.
+	//    We undo the extra history entry with history.back() so overlay state
+	//    (e.g. drawing editor) is restored and the back-button count stays correct.
+	//
+	// B) Cross-context relay (mobile PWA / different browsing-context group):
+	//    A new browser tab opens instead of targeting our window.  App.tsx detects
+	//    the hash on mount and closes the relay tab.
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+
+		const handle = (fromHashChange: boolean): void => {
+			const msg = parseLibraryImportFromHash();
+			if (!msg) return;
+			storeLibraryImport(msg);
+			broadcastLibraryImport(msg);
+			// Clear the hash so useHandleLibrary — which reads window.location.hash
+			// synchronously inside its own hashchange listener — sees an empty hash
+			// and skips its dialog-showing processing.
+			window.history.replaceState(null, '', window.location.pathname + window.location.search);
+			if (fromHashChange && window.history.length > 1) {
+				// Path A: in-place navigation added an extra history entry.  Go back
+				// to remove it; the popstate handler will reapply the previous overlay
+				// state so the user stays in the drawing editor.
+				setTimeout(() => window.history.back(), 0);
+			} else {
+				// Path B: this is a relay tab opened just for this import.  Close it.
+				setTimeout(() => window.close(), 150);
+			}
+		};
+
+		const onHashChange = (): void => handle(true);
+		handle(false); // path B: relay tab already has #addLibrary= at mount
+		window.addEventListener('hashchange', onHashChange); // path A: in-place nav
+		return () => window.removeEventListener('hashchange', onHashChange);
+	}, []);
+
 	const initialRegistrationInviteRef = React.useRef(readRegistrationInviteFromUrl());
 	const initialRegistrationInvite = initialRegistrationInviteRef.current;
 	const [authMode, setAuthMode] = React.useState<'login' | 'register'>(initialRegistrationInvite.token ? 'register' : 'login');
@@ -3034,6 +3077,9 @@ export function App(): React.JSX.Element {
 		if (selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)) {
 			await finalizePendingNewNote(selectedNoteId, 'cancel');
 		}
+		if (closingNoteId) {
+			void fetch(`/api/notes/${closingNoteId}/flush-mentions`, { method: 'POST' }).catch(() => {});
+		}
 		if (attachedParentNoteId) {
 			openNoteEditor(attachedParentNoteId, { replaceTop: true });
 			return;
@@ -4251,6 +4297,20 @@ export function App(): React.JSX.Element {
 			running = true;
 			void (async () => {
 				try {
+					// Flush a pending avatar upload queued while offline.
+					const pendingAvatarUrl = await attemptPendingAvatarUpload(authUserId);
+					if (pendingAvatarUrl) {
+						setAuthProfileImage(pendingAvatarUrl);
+						setLiveUserAvatar(authUserId, pendingAvatarUrl);
+						const cached = readAuthCache();
+						writeAuthCache({
+							v: 1,
+							userId: authUserId,
+							workspaceId: cached?.workspaceId ?? null,
+							profileImage: pendingAvatarUrl,
+							role: cached?.role ?? null,
+						});
+					}
 					await syncPendingWorkspaceMutationsRef.current();
 					await flushPendingShareLinkRequests(authUserId);
 					await loadSidebarWorkspacesRef.current();
@@ -6830,54 +6890,65 @@ export function App(): React.JSX.Element {
 
 			setUserModalBusy(true);
 			setUserModalError(null);
+
+			// Crop and encode client-side first so we can apply the update immediately.
+			let dataUrl: string;
 			try {
 				const blob = await getAvatarUploadBlob(imageUrl, crop, 256);
-				const form = new FormData();
-				form.append('file', blob, 'avatar.png');
-
-				const uploadRes = await fetch('/api/user/profile-image', {
-					method: 'POST',
-					credentials: 'include',
-					body: form,
+				dataUrl = await new Promise<string>((resolve, reject) => {
+					const reader = new FileReader();
+					reader.onload = () => resolve(reader.result as string);
+					reader.onerror = () => reject(new Error(t('prefs.avatarUploadFailed')));
+					reader.readAsDataURL(blob);
 				});
-				const uploadBody = await uploadRes.json().catch(() => null);
-				if (!uploadRes.ok) {
-					throw new Error(
-						typeof uploadBody?.error === 'string' && uploadBody.error.trim()
-							? uploadBody.error
-							: t('prefs.avatarUploadFailed')
-					);
-				}
+			} catch (error) {
+				setUserModalError(error instanceof Error && error.message ? error.message : t('prefs.avatarUploadFailed'));
+				setUserModalBusy(false);
+				return;
+			}
 
-				const uploadedProfileImage = uploadBody?.profileImage ? String(uploadBody.profileImage) : null;
-				if (uploadedProfileImage) {
-					setAuthProfileImage(uploadedProfileImage);
-					setLiveUserAvatar(authUserId, uploadedProfileImage);
-					writeAuthCache({
-						v: 1,
-						userId: authUserId,
-						workspaceId: authWorkspaceId,
-						profileImage: uploadedProfileImage,
-						role: authUserRole,
-					});
-				}
+			// Apply optimistically — visible immediately even when offline.
+			// Writing the data: URL to the auth cache doubles as the pending-upload
+			// record; attemptPendingAvatarUpload detects it by the data: prefix.
+			setAuthProfileImage(dataUrl);
+			setLiveUserAvatar(authUserId, dataUrl);
+			writeAuthCache({
+				v: 1,
+				userId: authUserId,
+				workspaceId: authWorkspaceId,
+				profileImage: dataUrl,
+				role: authUserRole,
+			});
+			setUserModalBusy(false);
+			setIsUserOpen(false);
+			setIsPreferencesOpen(true);
+			setUserModalError(null);
+			showBriefDialog(t('prefs.avatarUpdated'));
 
-				await Promise.allSettled([
+			// Upload in the background — succeeds immediately when online, retried via
+			// the online event listener if the device is currently offline.
+			void attemptPendingAvatarUpload(authUserId).then((serverUrl) => {
+				if (!serverUrl) return;
+				setAuthProfileImage(serverUrl);
+				setLiveUserAvatar(authUserId, serverUrl);
+				// Use the live auth cache for workspaceId / role so this closure can
+				// never write a stale workspace into the cache.
+				const cached = readAuthCache();
+				writeAuthCache({
+					v: 1,
+					userId: authUserId,
+					workspaceId: cached?.workspaceId ?? authWorkspaceId,
+					profileImage: serverUrl,
+					role: cached?.role ?? authUserRole,
+				});
+				void Promise.allSettled([
 					refreshAuthenticatedProfileRef.current(),
 					loadSidebarWorkspacesRef.current(),
 					refreshActiveWorkspaceRef.current(),
 					refreshNoteShareStateRef.current(),
 				]);
 				bumpCollaborationRefreshToken();
-				setIsUserOpen(false);
-				setIsPreferencesOpen(true);
-				setUserModalError(null);
-				showBriefDialog(t('prefs.avatarUpdated'));
-			} catch (error) {
-				setUserModalError(error instanceof Error && error.message ? error.message : t('prefs.avatarUploadFailed'));
-			} finally {
-				setUserModalBusy(false);
-			}
+			});
 		},
 		[authStatus, authUserId, authUserRole, authWorkspaceId, bumpCollaborationRefreshToken, showBriefDialog, t, userModalBusy]
 	);

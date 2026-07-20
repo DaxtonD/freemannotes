@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import { CaptureUpdateAction, FONT_FAMILY, Excalidraw, MainMenu, defaultLang, languages, loadLibraryFromBlob } from '@excalidraw/excalidraw';
+import { CaptureUpdateAction, FONT_FAMILY, Excalidraw, MainMenu, defaultLang, languages, useHandleLibrary } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBell, faEllipsisVertical, faUserPlus } from '@fortawesome/free-solid-svg-icons';
@@ -17,6 +17,7 @@ import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../c
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { isLightTheme, type ThemeId } from '../../core/theme';
+import { consumeStoredLibraryImport, subscribeLibraryImport } from '../../core/excalidrawLibraryImport';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { assignDrawingBackgroundColor, assignNoteBannerFile, readNoteMetadataState } from '../../services/noteService';
 import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
@@ -68,6 +69,9 @@ function setYTextValue(ytext: Y.Text, value: string): void {
 	});
 }
 
+// Allow any library URL — we trust users to import from wherever they choose.
+const allowAllLibraryUrls = (): boolean => true;
+
 // Base key — scoped per-user as `${BASE}:<userId>` to prevent cross-user library leakage.
 // Legacy unscoped key (pre-1.6.10) is migrated on first read and then deleted.
 const DRAWING_LIBRARY_STORAGE_KEY_BASE = 'freemannotes:excalidraw-library';
@@ -75,13 +79,6 @@ const DRAWING_LIBRARY_STORAGE_KEY_BASE = 'freemannotes:excalidraw-library';
 function getDrawingLibraryKey(userId: string | null | undefined): string {
 	return userId ? `${DRAWING_LIBRARY_STORAGE_KEY_BASE}:${userId}` : DRAWING_LIBRARY_STORAGE_KEY_BASE;
 }
-
-type DrawingLibraryDefinition = {
-	id: string;
-	name: string;
-	author: string;
-	description: string;
-};
 
 function readPersistedDrawingLibrary(userId: string | null | undefined): LibraryItems {
 	if (typeof window === 'undefined') return [];
@@ -129,36 +126,6 @@ function resolveExcalidrawLangCode(locale: string): string {
 	if (baseMatch) return baseMatch.code;
 	const prefixedMatch = languages.find((language) => language.code.toLowerCase().startsWith(`${baseLanguage}-`));
 	return prefixedMatch?.code ?? defaultLang.code;
-}
-
-async function fetchBundledDrawingLibraryDefinitions(): Promise<DrawingLibraryDefinition[]> {
-	const response = await fetch('/api/excalidraw-libraries', {
-		credentials: 'same-origin',
-	});
-	if (!response.ok) {
-		throw new Error('Unable to load drawing libraries.');
-	}
-	const payload = await response.json() as { libraries?: DrawingLibraryDefinition[] };
-	return Array.isArray(payload.libraries) ? payload.libraries : [];
-}
-
-async function fetchBundledDrawingLibraryItems(): Promise<LibraryItems> {
-	const libraries = await fetchBundledDrawingLibraryDefinitions();
-	if (libraries.length === 0) {
-		return [];
-	}
-
-	const importedLibraries = await Promise.all(libraries.map(async (library) => {
-		const response = await fetch(`/api/excalidraw-libraries/${encodeURIComponent(library.id)}`, {
-			credentials: 'same-origin',
-		});
-		if (!response.ok) {
-			throw new Error(`Unable to import ${library.name}.`);
-		}
-		return loadLibraryFromBlob(await response.blob(), 'published');
-	}));
-
-	return importedLibraries.flat();
 }
 
 type BindingSnapshot = {
@@ -270,7 +237,6 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const hostRef = useRef<HTMLDivElement | null>(null);
 	const bindingRef = useRef<ExcalidrawBinding | null>(null);
 	const initialViewportFitNoteIdRef = useRef<string | null>(null);
-	const bundledLibrariesSeededRef = useRef(false);
 	const initialSceneElements = React.useMemo(() => yjsToExcalidraw(yElements), [yElements]);
 	const [api, setApi] = React.useState<ExcalidrawImperativeAPI | null>(null);
 	const [isInitialViewportReady, setIsInitialViewportReady] = React.useState(initialSceneElements.length === 0);
@@ -279,6 +245,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
 	const [isBannerPickerOpen, setIsBannerPickerOpen] = React.useState(false);
+	const [isHamburgerOpen, setIsHamburgerOpen] = React.useState(false);
 	const colorToken = useSyncExternalStore(
 		(onStoreChange) => {
 			const metadataObserver = (): void => onStoreChange();
@@ -320,6 +287,8 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	);
 	const persistedDrawingBackgroundRef = useRef(drawingBackgroundColor);
 	const autoStrokeColorRef = useRef(getDrawingRecommendedInkColor(drawingBackgroundColor));
+	const latestLibraryItemsRef = React.useRef<LibraryItems>([]);
+	const libraryServerSaveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 	const isPinned = React.useMemo(() => readNoteMetadataState(props.doc).isPinned, [props.doc, metadata, colorToken]);
 
 	React.useEffect(() => {
@@ -331,6 +300,32 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const excalidrawLangCode = React.useMemo(() => resolveExcalidrawLangCode(locale), [locale]);
 
 	useBodyScrollLock(true, { disableTouchAction: false });
+
+	// When a library is imported from the Excalidraw library browser it opens a new
+	// tab/window of our app with #addLibrary= in the URL.  App.tsx detects the hash,
+	// stores the library URL in localStorage, broadcasts it, then closes that relay
+	// tab.  We subscribe here and call api.updateLibrary directly — no hash
+	// manipulation, no dialogs, no hashchange loops.  localStorage is the fallback
+	// for the case where the drawing was closed when the relay fired.
+	React.useEffect(() => {
+		if (!api || typeof window === 'undefined') return;
+
+		const importLibrary = (libraryUrl: string): void => {
+			const blob = fetch(libraryUrl, { mode: 'cors' }).then((r) => {
+				if (!r.ok) throw new Error(`HTTP ${r.status}`);
+				return r.blob();
+			});
+			void api.updateLibrary({ libraryItems: blob, merge: true, prompt: false, openLibraryMenu: true });
+		};
+
+		const stored = consumeStoredLibraryImport();
+		if (stored) importLibrary(stored.libraryUrl);
+
+		return subscribeLibraryImport(({ libraryUrl }) => {
+			consumeStoredLibraryImport(); // clean up the key App.tsx stored alongside the broadcast
+			importLibrary(libraryUrl);
+		});
+	}, [api]);
 
 	const syncCanvasContrastState = React.useCallback((
 		backgroundColor: string,
@@ -411,6 +406,9 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		const scheduleInitialViewportFit = (elements: readonly ReturnType<ExcalidrawImperativeAPI['getSceneElements']>[number][]): void => {
 			if (elements.length === 0) {
 				setIsInitialViewportReady(true);
+				// Mark initial fit as done so onChange callbacks from the user's first
+				// draw don't trigger scrollToContent and jump the new element.
+				initialViewportFitNoteIdRef.current = props.noteId;
 				return;
 			}
 
@@ -684,38 +682,6 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		syncCanvasContrastState(nextBackground, true, false, CaptureUpdateAction.NEVER);
 	}, [api, drawingBackgroundColor, syncCanvasContrastState]);
 
-	React.useEffect(() => {
-		if (!api || bundledLibrariesSeededRef.current) {
-			return;
-		}
-
-		let cancelled = false;
-		bundledLibrariesSeededRef.current = true;
-
-		void fetchBundledDrawingLibraryItems()
-			.then(async (libraryItems) => {
-				if (cancelled || libraryItems.length === 0) {
-					return;
-				}
-
-				await api.updateLibrary({
-					libraryItems,
-					merge: true,
-					prompt: false,
-					openLibraryMenu: false,
-					defaultStatus: 'published',
-				});
-			})
-			.catch((error) => {
-				bundledLibrariesSeededRef.current = false;
-				console.error('[drawing] unable to seed bundled libraries:', error);
-			});
-
-		return () => {
-			cancelled = true;
-		};
-	}, [api]);
-
 	// Sync Excalidraw's offsetTop/offsetLeft with the canvas element's actual
 	// position in the viewport. Without this, pointer events are miscalculated
 	// and first-click anchors land at the wrong scene position. Previously
@@ -730,7 +696,12 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 			const host = hostRef.current;
 			if (!host) return;
 
-			const rect = host.getBoundingClientRect();
+			// Measure Excalidraw's own root element when available — it's the element
+			// Excalidraw uses for its own internal offset computations, so this is
+			// more accurate than the host wrapper div (which may be a scroll container
+			// with overflow-x:auto on desktop, adding scroll offset ambiguity).
+			const excalidrawRoot = host.querySelector<HTMLElement>('.excalidraw') ?? host;
+			const rect = excalidrawRoot.getBoundingClientRect();
 			const nextOffsetTop = Math.max(0, Math.round(rect.top));
 			const nextOffsetLeft = Math.max(0, Math.round(rect.left));
 			const currentAppState = api.getAppState();
@@ -760,6 +731,14 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 
 		scheduleSync();
 
+		// The editor may animate open (slide/fade). ResizeObserver only fires on
+		// SIZE changes, so it misses position changes from CSS transforms. Schedule
+		// additional syncs after the api first becomes available to catch the final
+		// settled position after any open animation completes.
+		const t1 = setTimeout(scheduleSync, 100);
+		const t2 = setTimeout(scheduleSync, 350);
+		const t3 = setTimeout(scheduleSync, 700);
+
 		const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => scheduleSync()) : null;
 		if (resizeObserver && hostRef.current) {
 			resizeObserver.observe(hostRef.current);
@@ -773,6 +752,9 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		window.visualViewport?.addEventListener('scroll', scheduleSync);
 
 		return () => {
+			clearTimeout(t1);
+			clearTimeout(t2);
+			clearTimeout(t3);
 			if (frameId !== 0) {
 				window.cancelAnimationFrame(frameId);
 			}
@@ -951,6 +933,64 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		};
 	}, [usesMobileEditorLayout]);
 
+	// Track whether the Excalidraw hamburger (main) menu is open so we can hide
+	// the "Done" button on mobile — users were accidentally closing the editor
+	// by tapping "Done" instead of the hamburger icon to close the menu.
+	React.useEffect(() => {
+		if (!usesMobileEditorLayout || typeof MutationObserver === 'undefined') {
+			setIsHamburgerOpen(false);
+			return;
+		}
+		const host = hostRef.current;
+		if (!host) return;
+
+		const update = (): void => {
+			// The hamburger dropdown renders as .dropdown-menu--mobile.
+			// The "More tools" dropdown also uses dropdown-menu--mobile but adds
+			// the App-toolbar__extra-tools-dropdown class — exclude it.
+			const hamburger = host.querySelector('.dropdown-menu--mobile:not(.App-toolbar__extra-tools-dropdown)');
+			setIsHamburgerOpen(!!hamburger);
+		};
+
+		update();
+		const observer = new MutationObserver(update);
+		observer.observe(host, { childList: true, subtree: true });
+		return () => { observer.disconnect(); setIsHamburgerOpen(false); };
+	}, [usesMobileEditorLayout]);
+
+	// Reposition the "More tools" dropdown with position:fixed so it escapes
+	// the overflow:hidden scroll container that would otherwise clip it.
+	React.useEffect(() => {
+		if (typeof MutationObserver === 'undefined') return;
+		const host = hostRef.current;
+		if (!host) return;
+
+		let lastDropdown: HTMLElement | null = null;
+
+		const reposition = (): void => {
+			const dropdown = host.querySelector<HTMLElement>('.App-toolbar__extra-tools-dropdown');
+			if (!dropdown) { lastDropdown = null; return; }
+			if (dropdown === lastDropdown) return;
+			lastDropdown = dropdown;
+
+			const trigger = host.querySelector<HTMLElement>('.App-toolbar__extra-tools-trigger');
+			if (!trigger) return;
+			const tr = trigger.getBoundingClientRect();
+			dropdown.style.setProperty('position', 'fixed', 'important');
+			dropdown.style.setProperty('bottom', 'auto', 'important');
+			dropdown.style.setProperty('top', `${tr.bottom + 4}px`, 'important');
+			// Right-align the dropdown to the trigger button's right edge so it
+			// doesn't overflow the screen (the trigger is near the right of the toolbar).
+			dropdown.style.setProperty('left', 'auto', 'important');
+			dropdown.style.setProperty('right', `${Math.max(8, window.innerWidth - tr.right)}px`, 'important');
+			dropdown.style.setProperty('z-index', '99999', 'important');
+		};
+
+		const observer = new MutationObserver(reposition);
+		observer.observe(host, { childList: true, subtree: true });
+		return () => observer.disconnect();
+	}, []);
+
 	const handleSelectNoteColor = React.useCallback((token: Parameters<typeof saveUserNoteColorToken>[2]): void => {
 		saveUserNoteColorToken(getDeviceId(), props.noteId, token);
 		setIsColorPickerOpen(false);
@@ -976,9 +1016,50 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		assignDrawingBackgroundColor(props.doc, nextBackground);
 	}, [api, props.doc]);
 
-	const handleLibraryChange = React.useCallback((libraryItems: LibraryItems): void => {
-		persistDrawingLibrary(props.userId, libraryItems);
-	}, [props.userId]);
+	// useHandleLibrary wires up:
+	// 1. Initial library load (server as source of truth, localStorage as offline cache)
+	// 2. Auto-save on modification (localStorage immediately, server debounced 2 s)
+	// Library imports are handled above via api.updateLibrary — no hash manipulation.
+	const libraryAdapter = React.useMemo(() => ({
+		load: async (): Promise<{ libraryItems: LibraryItems }> => {
+			const localItems = readPersistedDrawingLibrary(props.userId);
+			if (!props.userId) return { libraryItems: localItems };
+			try {
+				const res = await fetch('/api/drawing-library', { credentials: 'include' });
+				if (res.ok) {
+					const data = await res.json() as { libraryItems?: unknown };
+					const serverItems = Array.isArray(data?.libraryItems) ? (data.libraryItems as LibraryItems) : [];
+					persistDrawingLibrary(props.userId, serverItems);
+					return { libraryItems: serverItems };
+				}
+			} catch {
+				// Offline or unauthenticated — fall through to local cache
+			}
+			return { libraryItems: localItems };
+		},
+		save: async (data: { libraryItems: LibraryItems }): Promise<void> => {
+			persistDrawingLibrary(props.userId, data.libraryItems);
+			if (!props.userId) return;
+			latestLibraryItemsRef.current = data.libraryItems;
+			if (libraryServerSaveTimerRef.current !== null) clearTimeout(libraryServerSaveTimerRef.current);
+			libraryServerSaveTimerRef.current = setTimeout(() => {
+				libraryServerSaveTimerRef.current = null;
+				const items = latestLibraryItemsRef.current;
+				void fetch('/api/drawing-library', {
+					method: 'PUT',
+					credentials: 'include',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ libraryItems: items }),
+				});
+			}, 2000);
+		},
+	}), [props.userId]);
+
+	useHandleLibrary({ excalidrawAPI: api, adapter: libraryAdapter, validateLibraryUrl: allowAllLibraryUrls });
+
+	const handleExcalidrawAPI = React.useCallback((excalidrawApi: ExcalidrawImperativeAPI): void => {
+		setApi(excalidrawApi);
+	}, []);
 
 	const content = (
 		<div className={styles.fullscreenOverlay} role="presentation">
@@ -1046,27 +1127,31 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 								{t('common.cancel')}
 							</button>
 						) : null}
-						<button
-							type="button"
-							onClick={props.onSave}
-							style={{
-								border: 0,
-								borderRadius: 999,
-								padding: '8px 12px',
-								font: 'inherit',
-								fontWeight: 700,
-								cursor: 'pointer',
-								background: 'var(--color-accent, #1d4ed8)',
-								color: 'white',
-							}}
-						>
-							{primaryHeaderActionLabel}
-						</button>
+						{/* Hide "Done" when the hamburger menu is open on mobile so users
+						    don't accidentally close the editor instead of closing the menu. */}
+						{(!usesMobileEditorLayout || !isHamburgerOpen) ? (
+							<button
+								type="button"
+								onClick={props.onSave}
+								style={{
+									border: 0,
+									borderRadius: 999,
+									padding: '8px 12px',
+									font: 'inherit',
+									fontWeight: 700,
+									cursor: 'pointer',
+									background: 'var(--color-accent, #1d4ed8)',
+									color: 'white',
+								}}
+							>
+								{primaryHeaderActionLabel}
+							</button>
+						) : null}
 					</div>
 				</div>
 				<div
 					ref={hostRef}
-					className={`${styles.drawingCanvasHost} ${isCoarsePointer ? styles.drawingCanvasHostTouch : ''}`}
+					className={`${styles.drawingCanvasHost} ${isCoarsePointer ? styles.drawingCanvasHostTouch : ''}${isHamburgerOpen ? ` ${styles.drawingHamburgerOpen}` : ''}`}
 					style={{
 						position: 'relative',
 						minHeight: 0,
@@ -1077,11 +1162,9 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 				>
 					<Excalidraw
 						initialData={initialData}
-						getInitialLibraryItems={() => readPersistedDrawingLibrary(props.userId)}
-						excalidrawAPI={setApi}
+						excalidrawAPI={handleExcalidrawAPI}
 						langCode={excalidrawLangCode}
 						onChange={handleDrawingSceneChange}
-						onLibraryChange={handleLibraryChange}
 						onPointerUpdate={(payload) => bindingRef.current?.onPointerUpdate(payload)}
 						viewModeEnabled={readOnly}
 						handleKeyboardGlobally
