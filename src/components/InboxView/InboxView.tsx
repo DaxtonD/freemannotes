@@ -4,6 +4,7 @@ import { faAt, faListCheck, faCheckDouble, faBoxArchive, faInbox, faCircleCheck,
 import { acceptNoteShareInvitation } from '../../core/noteShareApi';
 import type { PendingSelfMention } from '../../core/pendingSelfMentions';
 import { useI18n } from '../../core/i18n';
+import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
 import styles from './InboxView.module.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -59,7 +60,61 @@ interface Props {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-const FETCH_TIMEOUT_MS = 5_000;
+// Background refreshes on slow networks need more time than the original 5 s.
+// The UI is never blocked (we always show cached data first), so a generous
+// timeout is fine here — it only affects how long we wait for the silent update.
+const FETCH_TIMEOUT_MS = 30_000;
+
+// ── Persistent inbox cache (localStorage) ────────────────────────────────────
+// Persists the first page of each filter tab across reloads so the inbox
+// renders immediately without waiting for the network on slow connections.
+
+const INBOX_CACHE_LS_KEY = 'freemannotes.inbox.cache.v1:';
+
+interface PersistedFilterEntry {
+	items: Activity[];
+	nextCursor: string | null;
+}
+type PersistedInboxCache = Partial<Record<FilterTab, PersistedFilterEntry>>;
+
+function readPersistedInboxCache(userId: string): PersistedInboxCache {
+	try {
+		const raw = localStorage.getItem(INBOX_CACHE_LS_KEY + userId);
+		return raw ? (JSON.parse(raw) as PersistedInboxCache) : {};
+	} catch {
+		return {};
+	}
+}
+
+function writePersistedFilterEntry(userId: string, tab: FilterTab, entry: PersistedFilterEntry): void {
+	try {
+		const existing = readPersistedInboxCache(userId);
+		localStorage.setItem(INBOX_CACHE_LS_KEY + userId, JSON.stringify({ ...existing, [tab]: entry }));
+	} catch {
+		// Storage full or private browsing — silently ignore.
+	}
+}
+
+function removeIdFromPersistedCache(userId: string, activityId: string): void {
+	try {
+		const existing = readPersistedInboxCache(userId);
+		const updated: PersistedInboxCache = {};
+		for (const [k, entry] of Object.entries(existing) as [FilterTab, PersistedFilterEntry][]) {
+			updated[k] = { ...entry, items: entry.items.filter((a) => a.id !== activityId) };
+		}
+		localStorage.setItem(INBOX_CACHE_LS_KEY + userId, JSON.stringify(updated));
+	} catch {
+		// ignore
+	}
+}
+
+function clearPersistedInboxCache(userId: string): void {
+	try {
+		localStorage.removeItem(INBOX_CACHE_LS_KEY + userId);
+	} catch {
+		// ignore
+	}
+}
 
 function formatRelativeTime(iso: string, t: (key: string) => string): string {
 	const diff = Date.now() - new Date(iso).getTime();
@@ -124,6 +179,7 @@ interface FilterCache {
 
 export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded }: Props) {
 	const { t } = useI18n();
+	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	const [filter, setFilter] = useState<FilterTab>('all');
 	const [activities, setActivities] = useState<Activity[]>([]);
 	// True only when fetching for a filter that has no cached data yet.
@@ -140,9 +196,24 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	const [folderName, setFolderName] = useState('');
 
 	const abortRef = useRef<AbortController | null>(null);
-	// Per-filter in-memory cache. Populated on each successful fetch so that
-	// switching tabs offline shows the last-known data rather than a blank list.
-	const cacheRef = useRef<Partial<Record<FilterTab, FilterCache>>>({});
+	// Per-filter in-memory cache. Pre-seeded from localStorage so the inbox
+	// renders immediately on cold start without waiting for the network.
+	const cacheRef = useRef<Partial<Record<FilterTab, FilterCache>>>(
+		(() => {
+			if (!authUserId) return {};
+			const persisted = readPersistedInboxCache(authUserId);
+			const result: Partial<Record<FilterTab, FilterCache>> = {};
+			for (const [tab, entry] of Object.entries(persisted) as [FilterTab, PersistedFilterEntry][]) {
+				result[tab] = {
+					items: entry.items,
+					// Derive unreadIds from the persisted read state on the items themselves.
+					unreadIds: new Set(entry.items.filter((a) => !a.read).map((a) => a.id)),
+					nextCursor: entry.nextCursor,
+				};
+			}
+			return result;
+		})()
+	);
 
 	const kindForFilter = useCallback((f: FilterTab): string | null => {
 		if (f === 'mentions')  return 'mention';
@@ -192,6 +263,12 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 
 			commitToCache(targetFilter, newItems, newUnread, data.nextCursor);
 
+			// Persist only the first page (replace=true) so we never overflow storage
+			// with paginated history and always cold-start from the freshest known page.
+			if (replace && authUserId) {
+				writePersistedFilterEntry(authUserId, targetFilter, { items: data.items, nextCursor: data.nextCursor });
+			}
+
 			if (onServerNodeIdsLoaded) {
 				const nodeIds = data.items.flatMap((a) =>
 					a.deepLink?.kind === 'prosemirror_node' && typeof a.deepLink.nodeId === 'string'
@@ -206,7 +283,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			if (e instanceof Error && e.name === 'AbortError') return false;
 			return false;
 		}
-	}, [kindForFilter, onServerNodeIdsLoaded, commitToCache]);
+	}, [authUserId, kindForFilter, onServerNodeIdsLoaded, commitToCache]);
 
 	// On filter change: show cached data immediately (no flash) and fetch to refresh.
 	// Only show the loading spinner when there is no cached data for this filter yet.
@@ -267,7 +344,8 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			updated[k] = { ...entry, items, unreadIds };
 		}
 		cacheRef.current = updated;
-	}, []);
+		if (authUserId) removeIdFromPersistedCache(authUserId, id);
+	}, [authUserId]);
 
 	const archiveActivity = useCallback(async (e: React.MouseEvent, id: string) => {
 		e.stopPropagation();
@@ -313,11 +391,12 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		setActivities([]);
 		setUnreadIds(new Set());
 		cacheRef.current = {};
+		if (authUserId) clearPersistedInboxCache(authUserId);
 		await fetch('/api/inbox/archive-all', {
 			method: 'POST',
 		}).catch(() => {});
 		onAllArchived?.();
-	}, [onAllArchived]);
+	}, [authUserId, onAllArchived]);
 
 	// Swipe-to-dismiss state: maps activityId → current swipe offset (px)
 	const [swipeOffsets, setSwipeOffsets] = useState<Record<string, number>>({});
@@ -554,6 +633,10 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 							const isPickerOpen = placementPickerActivityId === activity.id;
 							const isBusy = acceptingIds.has(activity.id);
 							const invitationId = activity.snapshot?.invitationId;
+							const actorId = activity.actor?.id;
+							const actorAvatarUrl = actorId
+								? (liveAvatarLookup.has(actorId) ? liveAvatarLookup.get(actorId) ?? null : activity.actor!.avatarUrl)
+								: null;
 							// Show Accept & View only when a pending invitation exists.
 							// Both mention and assignment_created can carry an invitation —
 							// the button is suppressed if the user already has access (no
@@ -588,8 +671,8 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 									<div className={styles.cardLeft}>
 										{isUnread && <span className={styles.unreadDot} aria-label={t('inbox.unread')} />}
 										<div className={styles.avatar}>
-											{activity.actor?.avatarUrl ? (
-												<img src={activity.actor.avatarUrl} alt="" className={styles.avatarImg} />
+											{actorAvatarUrl ? (
+												<img src={actorAvatarUrl} alt="" className={styles.avatarImg} />
 											) : (
 												<span className={styles.avatarInitials}>
 													{initials(activity.actor?.name)}

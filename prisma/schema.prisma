@@ -700,6 +700,10 @@ model UserPreference {
   /// User-scoped; not visible to collaborators on shared notes.
   notePinsByDocId Json @default("{}") @map("note_pins_by_doc_id") @db.JsonB
 
+  /// Excalidraw library items shared across all devices for this user.
+  /// Shape: LibraryItem[] — the full Excalidraw library serialisation.
+  drawingLibrary Json @default("[]") @map("drawing_library") @db.JsonB
+
   /// Whether to receive push notifications for @mentions (default: true).
   mentionNotifications Boolean @default(true) @map("mention_notifications")
 

@@ -360,6 +360,56 @@ function syncSchema(databaseUrl) {
 }
 
 /**
+ * Returns true when an error message indicates PostgreSQL is still warming up
+ * after a restart — a transient state that resolves on its own.
+ */
+function isPostgresStartingUp(message) {
+	const text = String(message || '').toLowerCase();
+	return (
+		text.includes('the database system is starting up') ||
+		text.includes('database system is starting up') ||
+		text.includes('starting up') && text.includes('econnrefused') ||
+		text.includes('econnrefused') ||
+		text.includes('enotfound') ||
+		text.includes('connection refused') ||
+		text.includes('connect etimedout') ||
+		text.includes('could not connect to the server')
+	);
+}
+
+/**
+ * Waits up to `timeoutMs` for PostgreSQL to accept connections, polling every
+ * `intervalMs`. Used after a server reboot when the database is still
+ * recovering before accepting queries.
+ */
+async function waitForPostgres(adminUrl, timeoutMs = 60000, intervalMs = 2000) {
+	const { Client } = require('pg');
+	const deadline = Date.now() + timeoutMs;
+	let attempt = 0;
+
+	while (Date.now() < deadline) {
+		attempt++;
+		const client = new Client({ connectionString: adminUrl, connectionTimeoutMillis: 3000 });
+		try {
+			await client.connect();
+			await client.end();
+			if (attempt > 1) {
+				console.info('[dbInit] PostgreSQL is now accepting connections');
+			}
+			return;
+		} catch (err) {
+			const remaining = Math.ceil((deadline - Date.now()) / 1000);
+			if (remaining <= 0) break;
+			console.info(`[dbInit] PostgreSQL not ready yet (${err.message.split('\n')[0]}); retrying in ${intervalMs / 1000}s (${remaining}s remaining)...`);
+			try { await client.end(); } catch { /* ignore */ }
+			await new Promise((resolve) => setTimeout(resolve, intervalMs));
+		}
+	}
+
+	throw new Error(`PostgreSQL did not become ready within ${timeoutMs / 1000}s`);
+}
+
+/**
  * Main entrypoint — ensures the database exists and the schema is current.
  *
  * This function is safe to call on every server startup. All operations are
@@ -380,7 +430,18 @@ async function ensureDatabase(databaseUrl) {
 	const { adminUrl, dbName } = parseAdminUrl(databaseUrl);
 	console.info(`[dbInit] Target database: "${dbName}"`);
 
-	// ── Step 2: Ensure the database exists (create if missing) ──────────
+	// ── Step 2: Wait for PostgreSQL to finish starting up ────────────────
+	// After a server reboot the database may still be recovering. We probe the
+	// admin connection and wait up to 60 seconds before giving up.
+	try {
+		await waitForPostgres(adminUrl);
+	} catch (err) {
+		console.error(`[dbInit] ${err.message}`);
+		console.error('[dbInit] Ensure PostgreSQL is running and reachable, then restart the app.');
+		throw err;
+	}
+
+	// ── Step 3: Ensure the database exists (create if missing) ──────────
 	try {
 		await ensureDatabaseExists(adminUrl, dbName);
 	} catch (err) {
@@ -393,7 +454,7 @@ async function ensureDatabase(databaseUrl) {
 		// to query pg_database, but the DB was already created by someone else).
 	}
 
-	// ── Step 3: Sync the Prisma schema (apply pending changes) ──────────
+	// ── Step 4: Sync the Prisma schema (apply pending changes) ──────────
 	syncSchema(databaseUrl);
 
 	console.info('[dbInit] ─── Database Initialization Complete ──────────────────');

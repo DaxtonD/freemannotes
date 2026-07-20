@@ -1414,6 +1414,7 @@ export function createRichTextExtensions(args: {
 	collapsibleHeadingNoteId?: string | null;
 	authUserId?: string | null;
 	onSelfMentionInserted?: ((nodeId: string) => void) | null;
+	mentionRoleCache?: Map<string, 'VIEWER' | 'EDITOR'> | null;
 }): Extensions {
 	const enableUndoRedo = args.includeCollaboration !== true;
 	const extensions: Extensions = [
@@ -1448,6 +1449,7 @@ export function createRichTextExtensions(args: {
 	extensions.push(ReferenceExtension.configure({
 		authUserId: args.authUserId ?? null,
 		onSelfMentionInserted: args.onSelfMentionInserted ?? null,
+		mentionRoleCache: args.mentionRoleCache ?? null,
 	}));
 
 	if (args.placeholder) {

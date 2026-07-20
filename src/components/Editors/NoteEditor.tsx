@@ -1,4 +1,4 @@
-import React, { useMemo, useSyncExternalStore } from 'react';
+﻿import React, { useMemo, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import type { Editor } from '@tiptap/core';
 import {
@@ -52,6 +52,7 @@ import {
 	snapshotChecklistRichContent,
 	syncChecklistItemPlainText,
 	TEXT_NOTE_RICH_FIELD,
+	CHECKLIST_ITEM_RICH_FIELD,
 	RICHTEXT_INTERNAL_ORIGIN,
 	syncTextNotePlainText,
 } from '../../core/richText';
@@ -84,6 +85,7 @@ import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { assignNoteBannerFile } from '../../services/noteService';
 import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
 import { closeReferenceSuggestion } from '../../core/extensions/ReferenceExtension';
+import { syncNoteShareCollaborators } from '../../core/noteShareApi';
 
 export type NoteEditorProps = {
 	noteId: string;
@@ -362,6 +364,11 @@ function findChecklistItemMapById(yarray: Y.Array<Y.Map<any>>, id: string): Y.Ma
 	return null;
 }
 
+function yFragmentContainsNodeId(fragment: Y.XmlFragment | null | undefined, nodeId: string): boolean {
+	if (!fragment || !(fragment instanceof Y.XmlFragment) || fragment.length === 0) return false;
+	return fragment.toString().includes(nodeId);
+}
+
 function useYTextValue(ytext: Y.Text): string {
 	return useSyncExternalStore(
 		(onStoreChange) => {
@@ -520,6 +527,9 @@ type ChecklistRowContentProps = {
 	onArrowDownAtBoundary?: () => void;
 	onNoteClick?: (noteId: string) => void;
 	authUserId?: string | null;
+	scrollToMentionNodeId?: string | null;
+	onScrollToMentionComplete?: (nodeId: string) => void;
+	mentionRoleCache?: Map<string, 'VIEWER' | 'EDITOR'> | null;
 };
 
 const ChecklistRowContent = React.memo(function ChecklistRowContent(props: ChecklistRowContentProps): React.JSX.Element {
@@ -668,6 +678,9 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 							onArrowDownAtBoundary={onArrowDownAtBoundary}
 							onNoteClick={props.onNoteClick}
 							authUserId={props.authUserId}
+							scrollToMentionNodeId={props.scrollToMentionNodeId}
+							onScrollToMentionComplete={props.onScrollToMentionComplete}
+							mentionRoleCache={props.mentionRoleCache}
 						/>
 						{autocompleteSuffix ? (
 							<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
@@ -718,7 +731,9 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	prev.autocompleteSuggestion === next.autocompleteSuggestion &&
 	prev.setActiveEditor === next.setActiveEditor &&
 	prev.onArrowUpAtBoundary === next.onArrowUpAtBoundary &&
-	prev.onArrowDownAtBoundary === next.onArrowDownAtBoundary
+	prev.onArrowDownAtBoundary === next.onArrowDownAtBoundary &&
+	prev.scrollToMentionNodeId === next.scrollToMentionNodeId &&
+	prev.onScrollToMentionComplete === next.onScrollToMentionComplete
 ));
 
 export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
@@ -774,6 +789,27 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [interactionGuardActive, setInteractionGuardActive] = React.useState<boolean>(getInitialInteractionGuardState);
 	const isCoarsePointer = useIsCoarsePointer();
 	const quickDeleteVisible = Boolean(props.allowQuickDelete) && isCoarsePointer;
+
+	const [mentionRoleCache] = React.useState(() => new Map<string, 'VIEWER' | 'EDITOR'>());
+	React.useEffect(() => {
+		const { authUserId, docId } = props;
+		if (!authUserId) return;
+		const seedCache = (snapshot: import('../../core/noteShareApi').NoteShareCollaboratorSnapshot | null): void => {
+			if (!snapshot) return;
+			for (const c of snapshot.collaborators) {
+				if (!c.revokedAt && c.userId !== authUserId) {
+					mentionRoleCache.set(c.userId, c.role === 'VIEWER' ? 'VIEWER' : 'EDITOR');
+				}
+			}
+			for (const inv of snapshot.pendingInvitations) {
+				if (inv.inviteeId && inv.status === 'PENDING' && inv.inviteeId !== authUserId) {
+					mentionRoleCache.set(inv.inviteeId, inv.role === 'VIEWER' ? 'VIEWER' : 'EDITOR');
+				}
+			}
+		};
+		syncNoteShareCollaborators(authUserId, docId, { suppressError: true }).then(seedCache).catch(() => {});
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [props.docId, props.authUserId]);
 
 	const isMediaSheetGestureSuppressed = React.useCallback((): boolean => {
 		return typeof performance !== 'undefined'
@@ -1972,11 +2008,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		// When the keyboard is closed, allow "no active row" as a stable state.
 		// (See the keyboard-close de-selection effect above.)
 		if (isCoarsePointer && !mobileKeyboardOpen) return;
+		// When opened from an inbox mention, the mention-activation effect handles which
+		// row becomes active. Suppress desktop auto-activation so we don't race against it
+		// and land on the wrong row before the scroll can fire.
+		if (props.scrollToMentionNodeId) return;
 		if (!allowAutomaticChecklistRowFocusRef.current) return;
 		if (activeChecklistRowId && normalizedItems.some((item) => item.id === activeChecklistRowId)) return;
 		if (suppressAutoActivateAfterDeleteRef.current) return;
 		setActiveChecklistRowId(normalizedItems[0]?.id ?? null);
-	}, [activeChecklistRowId, isCoarsePointer, mobileKeyboardOpen, normalizedItems, type]);
+	}, [activeChecklistRowId, isCoarsePointer, mobileKeyboardOpen, normalizedItems, props.scrollToMentionNodeId, type]);
 
 	// Horizontal snap handler — bypass the drag library entirely for indent/unindent:
 	// We detect a deliberate horizontal gesture (see `dndSensors.ts`) and then perform
@@ -2549,6 +2589,42 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		needsFocusAfterTitleEnterRef.current = false;
 		activeChecklistRowEditor.commands.focus('end');
 	}, [activeChecklistRowEditor]);
+
+	// mentionScrollHandledRef: prevents the scan from re-activating a row it already targeted.
+	// mentionScrollFiredRef: set when RichTextEditor actually fires the pulse; prevents re-pulse
+	//   on subsequent manual activations of the same row.
+	const mentionScrollHandledRef = React.useRef<string | null>(null);
+	const mentionScrollFiredRef = React.useRef<string | null>(null);
+	const handleMentionScrollComplete = React.useCallback((nodeId: string) => {
+		mentionScrollFiredRef.current = nodeId;
+	}, []);
+	// Only forward the scroll prop to the active row when the pulse hasn't fired yet for this nodeId.
+	const shouldForwardMentionScroll = props.scrollToMentionNodeId != null && mentionScrollFiredRef.current !== props.scrollToMentionNodeId;
+	const activateChecklistRowRef = React.useRef(activateChecklistRow);
+	activateChecklistRowRef.current = activateChecklistRow;
+	React.useEffect(() => {
+		if (type !== 'checklist' || !props.scrollToMentionNodeId) {
+			mentionScrollHandledRef.current = null;
+			mentionScrollFiredRef.current = null;
+			return;
+		}
+		if (mentionScrollHandledRef.current === props.scrollToMentionNodeId) return;
+		const nodeId = props.scrollToMentionNodeId;
+		for (const [id, itemMap] of checklistMapsById) {
+			const fragment = itemMap.get(CHECKLIST_ITEM_RICH_FIELD) as Y.XmlFragment | undefined;
+			if (yFragmentContainsNodeId(fragment, nodeId)) {
+				const isCompleted = completedItems.some((item) => item.id === id);
+				if (isCompleted) setShowCompleted(true);
+				// Activate the row without calling setFocusRowId so that autoFocus stays
+				// false and the mobile keyboard does not open. The user can tap to focus.
+				allowAutomaticChecklistRowFocusRef.current = true;
+				suppressAutoActivateAfterDeleteRef.current = false;
+				setActiveChecklistRowId(id);
+				mentionScrollHandledRef.current = nodeId;
+				return;
+			}
+		}
+	}, [checklistMapsById, completedItems, props.scrollToMentionNodeId, setShowCompleted, type]);
 
 	const pruneEmptyChecklistRows = React.useCallback((): void => {
 		if (type !== 'checklist') return;
@@ -3132,6 +3208,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							const noteTitle = props.doc.getText('title').toString() || null;
 							props.onSelfMentionInserted?.(props.noteId, workspaceId, nodeId, noteTitle);
 						}}
+						mentionRoleCache={mentionRoleCache}
 						/>
 					</div>
 				) : null}
@@ -3267,6 +3344,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
 																onNoteClick={props.onOpenNote}
 																authUserId={props.authUserId}
+																scrollToMentionNodeId={activeChecklistRowId === item.id && shouldForwardMentionScroll ? props.scrollToMentionNodeId : null}
+																onScrollToMentionComplete={handleMentionScrollComplete}
+																mentionRoleCache={mentionRoleCache}
 															/>
 														</li>
 															);
@@ -3358,6 +3438,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 															onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentChecklistRow(item.id, 'next')}
 															onNoteClick={props.onOpenNote}
 															authUserId={props.authUserId}
+															scrollToMentionNodeId={activeChecklistRowId === item.id && shouldForwardMentionScroll ? props.scrollToMentionNodeId : null}
+															onScrollToMentionComplete={handleMentionScrollComplete}
+															mentionRoleCache={mentionRoleCache}
 													/>
 												</li>
 											))}

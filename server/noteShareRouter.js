@@ -112,25 +112,20 @@ async function resolveTargetWorkspaceId(prisma, userId, targetKind) {
 		return shared ? String(shared.id) : null;
 	}
 
-	const personalMembership = await prisma.workspaceMember.findFirst({
+	// The PERSONAL workspace cannot be deleted (only renamed), so this query always
+	// finds exactly one result. The schema also enforces @@unique([systemKind, ownerUserId])
+	// so there is no ambiguity and no ordering is needed.
+	const systemPersonal = await prisma.workspaceMember.findFirst({
 		where: {
 			userId,
 			role: 'OWNER',
-			workspace: {
-				is: {
-					deletedAt: null,
-					ownerUserId: userId,
-					OR: [{ systemKind: null }, { systemKind: 'PERSONAL' }],
-				},
-			},
+			workspace: { is: { deletedAt: null, ownerUserId: userId, systemKind: 'PERSONAL' } },
 		},
-		orderBy: { workspaceId: 'asc' },
 		select: { workspaceId: true },
 	});
-	if (personalMembership && personalMembership.workspaceId) {
-		return String(personalMembership.workspaceId);
-	}
+	if (systemPersonal) return String(systemPersonal.workspaceId);
 
+	// Should never be reached, but guard against unexpected data corruption.
 	return resolveLiveWorkspaceId(prisma, userId, null);
 }
 

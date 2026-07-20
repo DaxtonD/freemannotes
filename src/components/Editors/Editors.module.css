@@ -645,6 +645,15 @@
 	display: none !important;
 }
 
+/* When the hamburger menu is open on mobile, make the trigger button visually
+   prominent so users understand tapping it again will close the menu. */
+.drawingHamburgerOpen :global(.main-menu-trigger) {
+	background: color-mix(in srgb, var(--color-primary, #1d4ed8) 20%, transparent) !important;
+	border-radius: 6px !important;
+	outline: 2px solid var(--color-primary, #1d4ed8) !important;
+	outline-offset: -1px !important;
+}
+
 .drawingMainMenuSection {
 	display: flex;
 	flex-direction: column;
@@ -2671,7 +2680,7 @@
 
 .richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > div {
 	flex: 1 1 auto;
-	min-width: max-content;
+	min-width: 0;
 }
 
 .richEditorContent:global(.ProseMirror) ul[data-type='taskList'] li > div > p {

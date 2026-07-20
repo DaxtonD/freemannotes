@@ -2278,6 +2278,30 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 			return true;
 		}
 
+		// ── Flush deferred mention notifications for a note ────────────
+		// Called by the client when the note editor closes. Fires any pending
+		// mention notifications for that room without waiting for WS disconnect.
+		if (pathname.startsWith('/api/notes/') && pathname.endsWith('/flush-mentions') && method === 'POST') {
+			if (!req.auth || !req.auth.userId) {
+				jsonResponse(res, 401, { error: 'Not authenticated' });
+				return true;
+			}
+			const noteId = pathname.slice('/api/notes/'.length, -'/flush-mentions'.length);
+			if (!noteId || noteId.includes('/') || noteId.includes(':')) {
+				jsonResponse(res, 400, { error: 'Invalid noteId' });
+				return true;
+			}
+			(async () => {
+				try {
+					await adapter?.flushMentionsForNote(noteId);
+				} catch (err) {
+					console.warn('[api] flush-mentions error:', err.message);
+				}
+				jsonResponse(res, 200, { ok: true });
+			})();
+			return true;
+		}
+
 		// ── Not handled by this router → fall through ────────────────────
 		return false;
 	}
