@@ -2498,19 +2498,33 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		const nodeId = props.scrollToMentionNodeId;
 		let tries = 0;
 		let timerId: ReturnType<typeof setTimeout>;
+		let pulseTimerId: ReturnType<typeof setTimeout>;
 		const attempt = () => {
 			const el = editor.view.dom.querySelector(`[data-node-id="${CSS.escape(nodeId)}"]`);
 			if (el instanceof HTMLElement) {
+				const rect = el.getBoundingClientRect();
+				const alreadyVisible =
+					rect.top >= 0 &&
+					rect.bottom <= window.innerHeight &&
+					rect.left >= 0 &&
+					rect.right <= window.innerWidth;
 				el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-				el.classList.add(styles.mentionScrollHighlight);
-				el.addEventListener('animationend', () => el.classList.remove(styles.mentionScrollHighlight), { once: true });
 				props.onScrollToMentionComplete?.(nodeId);
+				// Delay the pulse until after the smooth scroll settles so the
+				// animation isn't already fading by the time the chip is in view.
+				pulseTimerId = setTimeout(() => {
+					el.classList.add(styles.mentionScrollHighlight);
+					el.addEventListener('animationend', () => el.classList.remove(styles.mentionScrollHighlight), { once: true });
+				}, alreadyVisible ? 0 : 500);
 				return;
 			}
 			if (++tries < 8) timerId = setTimeout(attempt, 250);
 		};
 		timerId = setTimeout(attempt, 300);
-		return () => clearTimeout(timerId);
+		return () => {
+			clearTimeout(timerId);
+			clearTimeout(pulseTimerId);
+		};
 	}, [props.scrollToMentionNodeId, editor]);
 
 	React.useEffect(() => {

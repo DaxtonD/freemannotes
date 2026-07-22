@@ -459,59 +459,92 @@
 	align-items: center;
 }
 
+/* FixedSideContainer_side_top is already position:absolute with top:0;bottom:0
+   (confirmed from native CSS), so it covers the full canvas and acts as the
+   containing block for any absolute children. Do NOT add position:relative to
+   App-top-bar — that would break height resolution.
+   Just switch App-top-bar to block so the absolute App-toolbar-container
+   positions against FixedSideContainer_side_top directly. */
 .drawingCanvasHostTouch :global(.App-top-bar) {
-	align-items: stretch;
+	display: block !important;
+	pointer-events: none;
 }
 
-.drawingCanvasHostCompactDesktop :global(.App-top-bar) {
-	align-items: stretch;
-}
-
-.drawingCanvasHostTouch :global(.App-top-bar > section),
-.drawingCanvasHostTouch :global(.App-top-bar .Stack.Stack_vertical),
-.drawingCanvasHostTouch :global(.App-toolbar-container),
-.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile) {
-	width: 100%;
-	max-width: 100%;
-	margin: 0;
-}
-
+/* Move shapes toolbar to the bottom of the canvas, sitting above
+   the App-bottom-bar footer (~52px tall). FixedSideContainer_side_top is
+   the positioned ancestor; bottom:52px = 52px from the bottom of the canvas. */
 .drawingCanvasHostTouch :global(.App-toolbar-container) {
-	display: block;
+	position: absolute !important;
+	left: 0 !important;
+	right: 0 !important;
+	bottom: calc(var(--default-button-size, 2rem) + 16px) !important;
+	pointer-events: auto;
+	display: flex !important;
+	align-items: stretch !important;
 }
 
 .drawingCanvasHost :global(.App-bottom-bar > .Island),
-.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile),
 .drawingCanvasHostTouch :global(.App-bottom-bar > .Island) {
 	border-radius: 0;
 	box-shadow: none;
 	margin: 0;
+	padding: 0;
+	min-width: 100%;
 }
 
+/* Shapes toolbar Island: grows to fill remaining space after misc-tools,
+   scrolls internally so all tool buttons are reachable. min-width:0 lets it
+   shrink to leave room for mobile-misc-tools-container at the right.
+   position:static overrides the native position:relative so the Island is NOT
+   a containing block for the extra-tools dropdown — the dropdown anchors to
+   App-toolbar-container instead, which has no overflow clipping, allowing it
+   to open upward without being cut off by overflow-y:hidden on this Island. */
 .drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile) {
 	--padding: 0;
-	width: 100% !important;
+	flex: 1 1 0 !important;
+	min-width: 0 !important;
+	width: auto !important;
 	max-width: none;
-	min-width: 100%;
-	flex: 1 1 100%;
+	margin: 0;
+	border-radius: 0;
+	box-shadow: none;
+	position: static !important;
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
 }
 
-.drawingCanvasHost :global(.App-bottom-bar > .Island),
-.drawingCanvasHostTouch :global(.App-toolbar-container),
-.drawingCanvasHostTouch :global(.App-bottom-bar > .Island) {
-	padding: 0;
+.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile::-webkit-scrollbar) {
+	display: none;
 }
 
-.drawingCanvasHost :global(.App-bottom-bar > .Island),
-.drawingCanvasHostTouch :global(.App-toolbar-container),
-.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile),
-.drawingCanvasHostTouch :global(.App-bottom-bar > .Island) {
-	min-width: 100%;
+/* Scroll position fade — applied via data-toolbar-scroll attribute set by DrawingEditor.tsx.
+   "start": fade right edge only (more content to the right).
+   "middle": fade both edges (content in both directions).
+   "end": fade left edge only (content scrolled; nothing more to the right). */
+[data-toolbar-scroll="start"] :global(.App-toolbar.App-toolbar--mobile) {
+	-webkit-mask-image: linear-gradient(to right, black calc(100% - 10px), transparent 100%);
+	mask-image: linear-gradient(to right, black calc(100% - 10px), transparent 100%);
+}
+
+[data-toolbar-scroll="middle"] :global(.App-toolbar.App-toolbar--mobile) {
+	-webkit-mask-image: linear-gradient(to right, transparent 0%, black 10px, black calc(100% - 10px), transparent 100%);
+	mask-image: linear-gradient(to right, transparent 0%, black 10px, black calc(100% - 10px), transparent 100%);
+}
+
+[data-toolbar-scroll="end"] :global(.App-toolbar.App-toolbar--mobile) {
+	-webkit-mask-image: linear-gradient(to right, transparent 0%, black 10px, black 100%);
+	mask-image: linear-gradient(to right, transparent 0%, black 10px, black 100%);
 }
 
 .drawingCanvasHost :global(.App-bottom-bar),
 .drawingCanvasHostTouch :global(.App-bottom-bar) {
-	top: auto;
+	/* Removed `top: auto` — Excalidraw's native `top: 0; bottom: 0` makes this
+	   a full-canvas transparent overlay (pointer-events: none on the bar itself).
+	   Content (Island) aligns to flex-end (bottom). Without top: 0, the Island
+	   had no room above the toolbar for .App-mobile-menu (the properties panel
+	   shown when an element is selected), so properties were invisible. */
 	left: 0;
 	right: 0;
 	bottom: 0;
@@ -521,7 +554,6 @@
 	margin-left: 0 !important;
 	margin-right: 0 !important;
 	margin-bottom: 0 !important;
-	padding-top: 0;
 	padding-left: 0;
 }
 
@@ -545,51 +577,28 @@
 	}
 }
 
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-container),
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar.App-toolbar--mobile) {
-	min-width: 0;
-}
-
-.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar-container),
-.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar.App-toolbar--mobile) {
-	min-width: 0;
-}
-
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar.App-toolbar--mobile),
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-content) {
-	overflow-x: auto;
-	overflow-y: hidden;
-	scrollbar-width: none;
-	-webkit-overflow-scrolling: touch;
-}
-
-.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar.App-toolbar--mobile),
-.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar-content) {
-	overflow-x: auto;
-	overflow-y: hidden;
-	scrollbar-width: none;
-	-webkit-overflow-scrolling: touch;
-}
-
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar.App-toolbar--mobile::-webkit-scrollbar),
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-content::-webkit-scrollbar) {
-	display: none;
-}
-
-.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar.App-toolbar--mobile::-webkit-scrollbar),
-.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar-content::-webkit-scrollbar) {
-	display: none;
-}
-
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar.App-toolbar--mobile .Stack.Stack_horizontal),
-.drawingCanvasHostTouch :global(.App-top-bar .App-toolbar-content > .Stack.Stack_horizontal) {
-	width: max-content;
-	min-width: max-content;
+/* Tool button row inside the shapes Island: don't wrap, max-content width so all
+   buttons exist in DOM; the Island above is the scroll container. */
+.drawingCanvasHostTouch :global(.App-toolbar.App-toolbar--mobile .Stack.Stack_horizontal) {
 	flex-wrap: nowrap;
+	width: max-content;
+	min-width: unset;
 }
 
-.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar.App-toolbar--mobile .Stack.Stack_horizontal),
-.drawingCanvasHostCompactDesktop :global(.App-top-bar .App-toolbar-content > .Stack.Stack_horizontal) {
+/* App-bottom-bar footer toolbar (hamburger, undo, redo + our dock) — scrollable
+   so all our appended buttons (⋮ 🎨 🔔 👤+) are reachable. */
+.drawingCanvasHostTouch :global(.App-toolbar-content) {
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
+}
+
+.drawingCanvasHostTouch :global(.App-toolbar-content::-webkit-scrollbar) {
+	display: none;
+}
+
+.drawingCanvasHostTouch :global(.App-toolbar-content > .Stack.Stack_horizontal) {
 	width: max-content;
 	min-width: max-content;
 	flex-wrap: nowrap;
@@ -603,40 +612,77 @@
 	display: none !important;
 }
 
+/* mobile-misc-tools-container is a sibling of the Island inside App-toolbar-container.
+   Its native position:absolute; top:5rem would push it outside the repositioned toolbar.
+   position:relative keeps it in flex flow (a static/relative value is needed to
+   override native absolute so it participates in the flex layout). */
 .drawingCanvasHostTouch :global(.mobile-misc-tools-container) {
-	position: static !important;
+	position: relative !important;
 	inset: auto !important;
 	display: inline-flex !important;
 	align-items: center !important;
 	align-self: stretch !important;
-	margin-left: auto !important;
+	flex: 0 0 auto !important;
 	border: 0 !important;
 	background: transparent !important;
 	overflow: visible !important;
 }
 
-.drawingCanvasHostCompactDesktop :global(.mobile-misc-tools-container) {
-	position: static !important;
-	inset: auto !important;
-	display: inline-flex !important;
-	align-items: center !important;
-	align-self: stretch !important;
-	margin-left: auto !important;
-	border: 0 !important;
-	background: transparent !important;
-	overflow: visible !important;
+/* Hide the native Excalidraw extra-tools dropdown — replaced by a React portal
+   (DrawingEditor.tsx moreToolsOpen) rendered directly to document.body so it
+   sits above .fullscreenOverlay's stacking context (z-index:220) entirely. */
+.drawingCanvasHostTouch :global(.App-toolbar__extra-tools-dropdown) {
+	display: none !important;
 }
 
-.drawingCanvasHostTouch :global(.mobile-misc-tools-container > :first-child) {
-	display: inline-flex !important;
+/* Hide selected-shape-actions from the non-mobile (desktop) sidebar column.
+   In non-mobile mode Excalidraw renders shape property controls in
+   App-menu_top__left whenever an element is selected. We auto-open
+   App-mobile-menu instead via the onChange handler, so the desktop
+   sidebar panel is redundant and would clutter the top-left area. */
+.drawingCanvasHostTouch :global(.App-menu_top__left .selected-shape-actions) {
+	display: none !important;
 }
 
-.drawingCanvasHostCompactDesktop :global(.mobile-misc-tools-container > :first-child) {
-	display: inline-flex !important;
+
+/* Cap the properties panel height so it doesn't consume the whole canvas when
+   an element is selected — user can scroll within the panel. */
+.drawingCanvasHostTouch :global(.App-mobile-menu) {
+	max-height: 40vh;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
 }
 
 .drawingCanvasHost :global(.ToolIcon.ToolIcon__lock) {
 	display: none !important;
+}
+
+/* Replace the palette SVG on the shape-properties toggle button with a sliders/adjustments icon.
+   The .ToolIcon__icon needs position:relative so the ::after pseudo-element can be absolutely
+   placed over the native SVG. The SVG is hidden with visibility:hidden (keeps layout).
+   mask-image uses the SVG shape as a stencil; background-color applies the theme icon color. */
+.drawingCanvasHostTouch :global(.App-toolbar-content .ToolIcon[aria-label="Edit"] .ToolIcon__icon) {
+	position: relative;
+}
+.drawingCanvasHostTouch :global(.App-toolbar-content .ToolIcon[aria-label="Edit"] .ToolIcon__icon svg) {
+	visibility: hidden;
+}
+.drawingCanvasHostTouch :global(.App-toolbar-content .ToolIcon[aria-label="Edit"] .ToolIcon__icon::after) {
+	content: '';
+	position: absolute;
+	inset: 0;
+	background-color: var(--icon-fill-color);
+	/* Thin-stroke sliders icon matching Excalidraw's line-art icon style.
+	   Three horizontal lines with small filled knobs at staggered positions. */
+	-webkit-mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' xmlns='http://www.w3.org/2000/svg'%3E%3Cline x1='3' y1='6' x2='21' y2='6'/%3E%3Cline x1='3' y1='12' x2='21' y2='12'/%3E%3Cline x1='3' y1='18' x2='21' y2='18'/%3E%3Ccircle cx='8' cy='6' r='2.25' fill='black' stroke='none'/%3E%3Ccircle cx='16' cy='12' r='2.25' fill='black' stroke='none'/%3E%3Ccircle cx='10' cy='18' r='2.25' fill='black' stroke='none'/%3E%3C/svg%3E");
+	mask-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.75' stroke-linecap='round' xmlns='http://www.w3.org/2000/svg'%3E%3Cline x1='3' y1='6' x2='21' y2='6'/%3E%3Cline x1='3' y1='12' x2='21' y2='12'/%3E%3Cline x1='3' y1='18' x2='21' y2='18'/%3E%3Ccircle cx='8' cy='6' r='2.25' fill='black' stroke='none'/%3E%3Ccircle cx='16' cy='12' r='2.25' fill='black' stroke='none'/%3E%3Ccircle cx='10' cy='18' r='2.25' fill='black' stroke='none'/%3E%3C/svg%3E");
+	-webkit-mask-size: 68%;
+	mask-size: 68%;
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	mask-position: center;
 }
 
 .drawingCanvasHost :global(.App-mobile-menu [data-testid="collab-button"]),
@@ -3484,17 +3530,26 @@ Drag ghost:
 }
 
 @keyframes mentionScrollHighlightPulse {
-	0%, 12% {
-		background-color: color-mix(in srgb, var(--color-accent) 70%, transparent);
-		box-shadow: 0 0 0 3px var(--color-accent), 0 0 18px 6px color-mix(in srgb, var(--color-accent) 45%, transparent);
+	/* Ring appears tight around the chip, chip fully lit */
+	0% {
+		background-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+		box-shadow:
+			0 0 0 2px var(--color-accent),
+			0 0 12px 5px color-mix(in srgb, var(--color-accent) 55%, transparent);
 	}
-	42% {
-		background-color: color-mix(in srgb, var(--color-accent) 18%, transparent);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 35%, transparent), 0 0 6px 2px color-mix(in srgb, var(--color-accent) 15%, transparent);
+	/* White flash — the firing threshold */
+	10% {
+		background-color: color-mix(in srgb, var(--color-accent) 30%, transparent);
+		box-shadow:
+			0 0 0 2.5px #fff,
+			0 0 16px 7px color-mix(in srgb, var(--color-accent) 70%, transparent);
 	}
-	58% {
-		background-color: color-mix(in srgb, var(--color-accent) 60%, transparent);
-		box-shadow: 0 0 0 3px var(--color-accent), 0 0 18px 6px color-mix(in srgb, var(--color-accent) 40%, transparent);
+	/* Ring fires outward */
+	32% {
+		background-color: color-mix(in srgb, var(--color-accent) 6%, transparent);
+		box-shadow:
+			0 0 0 8px color-mix(in srgb, var(--color-accent) 20%, transparent),
+			0 0 24px 10px color-mix(in srgb, var(--color-accent) 14%, transparent);
 	}
 	100% {
 		background-color: transparent;
@@ -3503,6 +3558,37 @@ Drag ghost:
 }
 
 .mentionScrollHighlight {
-	animation: mentionScrollHighlightPulse 2.4s ease-out forwards;
-	border-radius: 3px;
+	animation: mentionScrollHighlightPulse 1s cubic-bezier(0.2, 0, 0.8, 1) forwards;
+}
+
+/* Custom "more tools" dropdown rendered as a portal to document.body.
+   Matches the note editor surface for theming; sits above .fullscreenOverlay (z-index:220). */
+.moreToolsDropdown {
+	background: var(--color-surface-2, var(--color-surface, #ffffff));
+	border: 1px solid var(--color-border, rgba(0, 0, 0, 0.15));
+	border-radius: 8px;
+	box-shadow: 0 4px 20px rgba(0, 0, 0, 0.18);
+	min-width: 140px;
+	padding: 4px 0;
+	overflow: hidden;
+}
+
+.moreToolsDropdownItem {
+	display: block;
+	width: 100%;
+	padding: 10px 16px;
+	background: none;
+	border: none;
+	color: var(--color-text, #1e1e2e);
+	font-family: inherit;
+	font-size: 14px;
+	text-align: left;
+	cursor: pointer;
+	touch-action: manipulation;
+	-webkit-tap-highlight-color: transparent;
+}
+
+.moreToolsDropdownItem:hover,
+.moreToolsDropdownItem:active {
+	background: color-mix(in srgb, var(--color-primary, #1d4ed8) 10%, transparent);
 }
