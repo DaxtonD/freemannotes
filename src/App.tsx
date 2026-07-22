@@ -5419,6 +5419,10 @@ export function App(): React.JSX.Element {
 	const collectionIds = React.useMemo(() => new Set(collections.map((c) => c.id)), [collections]);
 	React.useEffect(() => {
 		if (!openDoc) return;
+		// Skip shared notes (cross-workspace docs). The labelIds / collectionId in a
+		// shared Yjs doc belong to the owner's registries, not the current user's.
+		// Pruning them would permanently clear the owner's metadata for all collaborators.
+		if (!openDocId || !authWorkspaceId || !openDocId.startsWith(`${authWorkspaceId}:`)) return;
 		const meta = readNoteMetadataState(openDoc);
 		const nextLabelIds = meta.labelIds.filter((id) => labelIds.has(id));
 		if (nextLabelIds.length !== meta.labelIds.length) {
@@ -5427,7 +5431,7 @@ export function App(): React.JSX.Element {
 		if (meta.collectionId && !collectionIds.has(meta.collectionId)) {
 			assignNoteToCollection(openDoc, null);
 		}
-	}, [openDoc, labelIds, collectionIds]);
+	}, [openDoc, openDocId, authWorkspaceId, labelIds, collectionIds]);
 
 	const handleToggleNoteLabel = React.useCallback((labelId: string) => {
 		const current = noteLabelsMetadata.labelIds;

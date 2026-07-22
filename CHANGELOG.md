@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.7.5 - 2026-07-22
+
+### Changed
+- **@mention scroll highlight redesigned to match the mobile FAB long-press pulse.** The animation now uses the same `cubic-bezier(0.2, 0, 0.8, 1)` easing and fires a white flash at 100 ms, then the accent ring expands outward and dissipates — total duration 1 s (was 2.4 s). The highlight also now waits for the smooth scroll to settle (500 ms delay) before playing, so the burst is visible at the chip's final position rather than fading before the view finishes scrolling.
+- **Drawing editor mobile toolbar scrolls horizontally.** The shapes toolbar on mobile now overflows and scrolls so all tool buttons are reachable. Fade masks on the leading and trailing edges indicate when there is more content in each direction. Custom action buttons (palette, reminder, collaborators) are appended at the end of the toolbar and reached by scrolling.
+- **Drawing editor "More tools" dropdown renders above the overlay.** The Frame / Embed / Laser picker is now a React portal rendered to `document.body`, ensuring it always appears above the full-screen editor overlay instead of being clipped by the toolbar's `overflow: hidden` scroll container.
+
+### Fixed
+- **Labels assigned to a shared note permanently disappear.** The lazy cleanup effect that prunes stale label IDs (applied when a note is opened) was running on shared Yjs docs. When a collaborator opened the note, their empty label registry caused all label IDs — belonging to the owner's workspace — to be filtered out and written back as `[]`. The effect now skips any doc whose room ID does not belong to the current user's workspace.
+- **React error #185 crash when dragging shapes on a collaborative drawing.** The y-excalidraw binding calls `awareness.setLocalStateField("selectedElementIds", …)` on every Excalidraw `onChange`. Yjs awareness fires a `change` event even when the value is identical, which triggered `_remoteAwarenessChangeHandler` → `updateScene({collaborators})` → `onChange` → infinite loop. The awareness object is now wrapped in a Proxy that de-duplicates `setLocalStateField` calls for `selectedElementIds`, breaking the cycle.
+- **Note card 3-dot menu icon sits too high on mobile.** After the 40×40 touch-target expansion in 1.7.1, the icon was centered in the full button box (20 px from the bottom edge) rather than near the card corner (~14 px). The icon is now anchored to the bottom-right of the button with `align-items: flex-end` and padding on mobile; desktop restores centered alignment inside the 50 px hover-dock footer.
+
 ## 1.7.4 - 2026-07-19
 
 ### Added

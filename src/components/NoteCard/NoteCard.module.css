@@ -1040,7 +1040,8 @@
 	position: absolute;
 	right: 0;
 	bottom: 0;
-	/* Visual size stays small; touch area is 40×40 via padding */
+	/* 40×40 touch target; icon anchored to bottom-right corner on mobile
+	   (no footer element there, so centering would lift it into card content) */
 	width: 40px;
 	height: 40px;
 	border: 0;
@@ -1048,8 +1049,9 @@
 	background: transparent;
 	color: color-mix(in srgb, var(--note-color-text, var(--color-text)) 30%, var(--note-color-muted, var(--color-text-muted)) 70%);
 	display: inline-flex;
-	align-items: center;
-	justify-content: center;
+	align-items: flex-end;
+	justify-content: flex-end;
+	padding: 0 8px 8px 0;
 	font-size: 11px;
 	line-height: 1;
 	cursor: pointer;
@@ -1121,6 +1123,12 @@
 		box-shadow:
 			0 0 0 1px color-mix(in srgb, var(--color-accent) 22%, transparent),
 			0 0 0 2px color-mix(in srgb, var(--color-accent) 8%, transparent);
+	}
+
+	.cardMenuButton {
+		align-items: center;
+		justify-content: center;
+		padding: 0;
 	}
 
 	.card {

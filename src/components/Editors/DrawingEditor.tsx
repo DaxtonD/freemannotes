@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { CaptureUpdateAction, FONT_FAMILY, Excalidraw, MainMenu, defaultLang, languages, useHandleLibrary } from '@excalidraw/excalidraw';
 import type { ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faBell, faEllipsisVertical, faUserPlus } from '@fortawesome/free-solid-svg-icons';
+import { faBell, faEllipsisVertical, faPalette, faUserPlus } from '@fortawesome/free-solid-svg-icons';
 import { generateKeyBetween } from 'fractional-indexing';
 import { ExcalidrawBinding, yjsToExcalidraw } from 'y-excalidraw';
 import type { Awareness } from 'y-protocols/awareness';
@@ -225,6 +225,13 @@ function syncActiveWysiwygInk(host: HTMLDivElement | null, strokeColor: string):
 	editable.style.opacity = '1';
 }
 
+// Returns a stable key for a selectedElementIds map: sorted truthy keys joined by comma.
+// Used to compare values without JSON.stringify ordering ambiguity.
+function selectedElementIdsKey(ids: Record<string, boolean | undefined> | null | undefined): string {
+	if (!ids) return '';
+	return Object.keys(ids).filter((k) => ids[k]).sort().join(',');
+}
+
 export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const { locale, t } = useI18n();
 	const isCoarsePointer = useIsCoarsePointer();
@@ -239,6 +246,38 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const initialViewportFitNoteIdRef = useRef<string | null>(null);
 	const initialSceneElements = React.useMemo(() => yjsToExcalidraw(yElements), [yElements]);
 	const [api, setApi] = React.useState<ExcalidrawImperativeAPI | null>(null);
+
+	// Wrap props.awareness in a Proxy that de-duplicates setLocalStateField("selectedElementIds")
+	// calls when the selection hasn't actually changed. y-excalidraw's binding calls this on
+	// every onChange, and Yjs awareness always fires a change event even for identical values.
+	// Without this guard the cycle is: onChange → setLocalStateField → awareness.change →
+	// updateScene({collaborators}) → onChange → … which triggers React error #185 during
+	// a collaborative drawing drag (the only scenario where props.awareness is non-null).
+	const stableAwareness = React.useMemo((): Awareness | null | undefined => {
+		const awareness = props.awareness;
+		if (!awareness) return awareness;
+		let lastKey = '';
+		return new Proxy(awareness, {
+			get(target, prop) {
+				if (prop === 'setLocalStateField') {
+					return (field: string, value: unknown): void => {
+						if (field === 'selectedElementIds') {
+							const next = selectedElementIdsKey(value as Record<string, boolean | undefined> | null | undefined);
+							if (next === lastKey) return;
+							lastKey = next;
+						}
+						target.setLocalStateField(field, value as Parameters<typeof target.setLocalStateField>[1]);
+					};
+				}
+				const val = (target as unknown as Record<string | symbol, unknown>)[prop];
+				if (typeof val === 'function') {
+					return (val as (...args: unknown[]) => unknown).bind(target);
+				}
+				return val;
+			},
+		});
+	}, [props.awareness]);
+
 	const [isInitialViewportReady, setIsInitialViewportReady] = React.useState(initialSceneElements.length === 0);
 	const [dockPortalHost, setDockPortalHost] = React.useState<HTMLDivElement | null>(null);
 	const [isMoreMenuOpen, setIsMoreMenuOpen] = React.useState(false);
@@ -246,6 +285,8 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const [isColorPickerOpen, setIsColorPickerOpen] = React.useState(false);
 	const [isBannerPickerOpen, setIsBannerPickerOpen] = React.useState(false);
 	const [isHamburgerOpen, setIsHamburgerOpen] = React.useState(false);
+	const [moreToolsOpen, setMoreToolsOpen] = React.useState(false);
+	const moreToolsTriggerRectRef = React.useRef<DOMRect | null>(null);
 	const colorToken = useSyncExternalStore(
 		(onStoreChange) => {
 			const metadataObserver = (): void => onStoreChange();
@@ -291,9 +332,26 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const libraryServerSaveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 	const isPinned = React.useMemo(() => readNoteMetadataState(props.doc).isPinned, [props.doc, metadata, colorToken]);
 
+	const [toolbarScrollPos, setToolbarScrollPos] = React.useState<'start' | 'middle' | 'end'>('start');
+
 	React.useEffect(() => {
 		persistedDrawingBackgroundRef.current = drawingBackgroundColor;
 	}, [drawingBackgroundColor]);
+
+	React.useEffect(() => {
+		if (!isCoarsePointer || !api) return;
+		const toolbar = hostRef.current?.querySelector<HTMLElement>('.App-toolbar.App-toolbar--mobile');
+		if (!toolbar) return;
+		const update = () => {
+			const { scrollLeft, scrollWidth, clientWidth } = toolbar;
+			if (scrollLeft <= 1) setToolbarScrollPos('start');
+			else if (scrollLeft >= scrollWidth - clientWidth - 1) setToolbarScrollPos('end');
+			else setToolbarScrollPos('middle');
+		};
+		toolbar.addEventListener('scroll', update, { passive: true });
+		update();
+		return () => toolbar.removeEventListener('scroll', update);
+	}, [api, isCoarsePointer]);
 
 	const usesMobileEditorLayout = isCoarsePointer;
 	const primaryHeaderActionLabel = props.isPendingNew ? t('common.save') : t('common.done');
@@ -544,14 +602,14 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		// Defer binding creation until the WebSocket provider's awareness object is
 		// available. ExcalidrawBinding immediately calls awareness.getStates() in its
 		// constructor — passing undefined crashes with "this.awareness is undefined".
-		// props.awareness is in the dependency array, so this effect re-runs once the
-		// WS provider connects and App passes a real Awareness instance.
-		if (props.awareness == null) return;
+		// stableAwareness (derived from props.awareness) is in the dependency array,
+		// so this effect re-runs once the WS provider connects.
+		if (stableAwareness == null) return;
 		const binding = new ExcalidrawBinding(
 			yElements,
 			yAssets,
 			api,
-			props.awareness
+			stableAwareness as Awareness
 		);
 		bindingRef.current = binding;
 		const bindingWithSnapshot = binding as ExcalidrawBinding & Partial<BindingSnapshot>;
@@ -561,7 +619,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 			bindingRef.current = null;
 			binding.destroy();
 		};
-	}, [api, props.awareness, yAssets, yElements]);
+	}, [api, stableAwareness, yAssets, yElements]);
 
 	React.useEffect(() => {
 		const binding = bindingRef.current;
@@ -813,8 +871,9 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 				const nextAnchor = document.createElement('div');
 				nextAnchor.dataset.drawingDockAnchor = 'true';
 				nextAnchor.className = styles.drawingBottomDockInline;
-				const insertBeforeNode = toolbarContent.children.length > 1 ? toolbarContent.children[1] : null;
-				toolbarContent.insertBefore(nextAnchor, insertBeforeNode);
+				// Append at end so our buttons (⋮ 🎨 🔔 👤+) come after all native
+				// tool buttons; the toolbar scrolls horizontally to reach them.
+				toolbarContent.appendChild(nextAnchor);
 				anchor = nextAnchor;
 			}
 			if (!(anchor instanceof HTMLDivElement)) return false;
@@ -958,38 +1017,58 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		return () => { observer.disconnect(); setIsHamburgerOpen(false); };
 	}, [usesMobileEditorLayout]);
 
-	// Reposition the "More tools" dropdown with position:fixed so it escapes
-	// the overflow:hidden scroll container that would otherwise clip it.
+	// Mirror the native Excalidraw extra-tools dropdown state into moreToolsOpen.
+	// The native dropdown is hidden via CSS (display:none); we render our own portal
+	// to document.body so it's guaranteed above .fullscreenOverlay's stacking context.
 	React.useEffect(() => {
-		if (typeof MutationObserver === 'undefined') return;
+		if (!usesMobileEditorLayout || typeof MutationObserver === 'undefined') return;
 		const host = hostRef.current;
 		if (!host) return;
 
-		let lastDropdown: HTMLElement | null = null;
+		let prevHasDropdown = false;
+		let frameId = 0;
+		let closeTimeoutId: ReturnType<typeof setTimeout> | null = null;
 
-		const reposition = (): void => {
-			const dropdown = host.querySelector<HTMLElement>('.App-toolbar__extra-tools-dropdown');
-			if (!dropdown) { lastDropdown = null; return; }
-			if (dropdown === lastDropdown) return;
-			lastDropdown = dropdown;
+		const sync = (): void => {
+			const hasDropdown = !!host.querySelector('.App-toolbar__extra-tools-dropdown');
+			if (hasDropdown === prevHasDropdown) return;
+			prevHasDropdown = hasDropdown;
 
-			const trigger = host.querySelector<HTMLElement>('.App-toolbar__extra-tools-trigger');
-			if (!trigger) return;
-			const tr = trigger.getBoundingClientRect();
-			dropdown.style.setProperty('position', 'fixed', 'important');
-			dropdown.style.setProperty('bottom', 'auto', 'important');
-			dropdown.style.setProperty('top', `${tr.bottom + 4}px`, 'important');
-			// Right-align the dropdown to the trigger button's right edge so it
-			// doesn't overflow the screen (the trigger is near the right of the toolbar).
-			dropdown.style.setProperty('left', 'auto', 'important');
-			dropdown.style.setProperty('right', `${Math.max(8, window.innerWidth - tr.right)}px`, 'important');
-			dropdown.style.setProperty('z-index', '99999', 'important');
+			if (!hasDropdown) {
+				if (frameId) { window.cancelAnimationFrame(frameId); frameId = 0; }
+				// Defer by one macrotask: Excalidraw's useOutsideClick fires on
+				// pointerdown (which precedes click). Without this delay the portal
+				// unmounts before the item's click handler can execute.
+				if (closeTimeoutId !== null) clearTimeout(closeTimeoutId);
+				closeTimeoutId = setTimeout(() => {
+					closeTimeoutId = null;
+					setMoreToolsOpen(false);
+				}, 0);
+				return;
+			}
+			if (closeTimeoutId !== null) { clearTimeout(closeTimeoutId); closeTimeoutId = null; }
+			// Measure trigger position after layout settles (MutationObserver fires
+			// before paint, so getBoundingClientRect may return 0 immediately).
+			frameId = window.requestAnimationFrame(() => {
+				frameId = 0;
+				const trigger = host.querySelector<HTMLElement>('.App-toolbar__extra-tools-trigger');
+				if (!trigger) return;
+				moreToolsTriggerRectRef.current = trigger.getBoundingClientRect();
+				setMoreToolsOpen(true);
+			});
 		};
 
-		const observer = new MutationObserver(reposition);
+		const observer = new MutationObserver(sync);
 		observer.observe(host, { childList: true, subtree: true });
-		return () => observer.disconnect();
-	}, []);
+		sync();
+
+		return () => {
+			observer.disconnect();
+			if (frameId) window.cancelAnimationFrame(frameId);
+			if (closeTimeoutId !== null) clearTimeout(closeTimeoutId);
+			setMoreToolsOpen(false);
+		};
+	}, [usesMobileEditorLayout]);
 
 	const handleSelectNoteColor = React.useCallback((token: Parameters<typeof saveUserNoteColorToken>[2]): void => {
 		saveUserNoteColorToken(getDeviceId(), props.noteId, token);
@@ -1004,17 +1083,31 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		syncCanvasContrastState(normalizedColor, true, true, CaptureUpdateAction.IMMEDIATELY);
 	}, [props.doc, syncCanvasContrastState]);
 
-	const handleDrawingSceneChange = React.useCallback((_elements: readonly unknown[], appState: { viewBackgroundColor: string; currentItemStrokeColor?: string }): void => {
+	const handleDrawingSceneChange = React.useCallback((
+		_elements: readonly unknown[],
+		appState: { viewBackgroundColor: string; currentItemStrokeColor?: string; selectedElementIds?: Record<string, boolean | undefined> }
+	): void => {
 		const liveStrokeColor = normalizeExcalidrawColor(appState.currentItemStrokeColor) ?? normalizeExcalidrawColor(api?.getAppState().currentItemStrokeColor) ?? autoStrokeColorRef.current;
 		if (liveStrokeColor) {
 			syncActiveWysiwygInk(hostRef.current, liveStrokeColor);
 		}
 		const nextBackground = normalizeDrawingBackgroundColor(appState.viewBackgroundColor);
-		if (!nextBackground) return;
-		if (nextBackground === persistedDrawingBackgroundRef.current) return;
-		persistedDrawingBackgroundRef.current = nextBackground;
-		assignDrawingBackgroundColor(props.doc, nextBackground);
+		if (nextBackground && nextBackground !== persistedDrawingBackgroundRef.current) {
+			persistedDrawingBackgroundRef.current = nextBackground;
+			assignDrawingBackgroundColor(props.doc, nextBackground);
+		}
 	}, [api, props.doc]);
+
+	// Close the custom more-tools dropdown AND sync the native Excalidraw state.
+	// Without the trigger click, Excalidraw still thinks the dropdown is open;
+	// the next DOM mutation would re-trigger our observer and reopen the custom dropdown.
+	const closeMoreTools = React.useCallback((): void => {
+		setMoreToolsOpen(false);
+		const host = hostRef.current;
+		if (host?.querySelector('.App-toolbar__extra-tools-dropdown')) {
+			host.querySelector<HTMLElement>('.App-toolbar__extra-tools-trigger')?.click();
+		}
+	}, []);
 
 	// useHandleLibrary wires up:
 	// 1. Initial library load (server as source of truth, localStorage as offline cache)
@@ -1151,6 +1244,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 				</div>
 				<div
 					ref={hostRef}
+					data-toolbar-scroll={isCoarsePointer ? toolbarScrollPos : undefined}
 					className={`${styles.drawingCanvasHost} ${isCoarsePointer ? styles.drawingCanvasHostTouch : ''}${isHamburgerOpen ? ` ${styles.drawingHamburgerOpen}` : ''}`}
 					style={{
 						position: 'relative',
@@ -1296,14 +1390,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 						onClick={() => setIsColorPickerOpen(true)}
 						disabled={readOnly}
 					>
-						<span
-							className={styles.drawingBottomDockColorSwatch}
-							aria-hidden="true"
-							style={resolvedNoteColor ? {
-								background: `linear-gradient(180deg, ${resolvedNoteColor.headerBackground}, ${resolvedNoteColor.cardBackground})`,
-								borderColor: resolvedNoteColor.borderColor,
-							} : undefined}
-						/>
+						<FontAwesomeIcon icon={faPalette} />
 					</button>
 					<button
 						type="button"
@@ -1397,6 +1484,49 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 					setIsBannerPickerOpen(false);
 				}}
 			/>
+			{(() => {
+				const triggerRect = moreToolsOpen ? moreToolsTriggerRectRef.current : null;
+				if (!triggerRect || typeof document === 'undefined') return null;
+				return createPortal(
+					<>
+						{/* Backdrop: closes on tap outside without blocking Excalidraw's own useOutsideClick */}
+						<div
+							style={{ position: 'fixed', inset: 0, zIndex: 99998 }}
+							aria-hidden="true"
+							onPointerDown={() => setMoreToolsOpen(false)}
+						/>
+						<div
+							className={styles.moreToolsDropdown}
+							style={{
+								position: 'fixed',
+								bottom: window.innerHeight - triggerRect.top + 4,
+								right: Math.max(8, window.innerWidth - triggerRect.right),
+								zIndex: 99999,
+							}}
+						>
+							<button
+								className={styles.moreToolsDropdownItem}
+								onClick={() => { api?.setActiveTool({ type: 'frame' }); closeMoreTools(); }}
+							>
+								Frame
+							</button>
+							<button
+								className={styles.moreToolsDropdownItem}
+								onClick={() => { api?.setActiveTool({ type: 'embeddable' }); closeMoreTools(); }}
+							>
+								Embed
+							</button>
+							<button
+								className={styles.moreToolsDropdownItem}
+								onClick={() => { api?.setActiveTool({ type: 'laser' }); closeMoreTools(); }}
+							>
+								Laser
+							</button>
+						</div>
+					</>,
+					document.body
+				);
+			})()}
 		</div>
 	);
 
