@@ -4551,6 +4551,13 @@ export function App(): React.JSX.Element {
 			setOpenDocId(null);
 			setEditorMode('none');
 			setActiveSharedFolder(null);
+			// Clear stale shared placements from the previous workspace so the new
+			// NoteGrid instance doesn't inherit them as phantom skeleton cards. Without
+			// this, the offline fallback in refreshNoteShareState can restore the old
+			// workspace's placements (since lastKnownActiveWorkspacePlacements still
+			// holds them when the fallback runs), causing a blank rectangle in the grid
+			// that only disappears when the registry WebSocket syncs online.
+			setActiveWorkspaceSharedPlacements([]);
 			// Cancel any in-progress background preload so it cannot re-activate a
 			// previous workspace and clobber the user's intentional switch.
 			backgroundPreloadAbortRef.current++;

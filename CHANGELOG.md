@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## 1.7.6 - 2026-07-23
+
+### Fixed
+- **Blank rectangle blocks the note grid after creating a new workspace offline.** Switching to a brand new offline workspace left stale shared-note placements from the previous workspace in the grid's `orderedIds` snapshot branch. The offline fallback in `refreshNoteShareState` then restored those stale placements instead of clearing them, so the skeleton card (blank rectangle) persisted until the registry WebSocket synced online. The fix resets `activeWorkspaceSharedPlacements` to `[]` in `handleWorkspaceActivated` so the new NoteGrid instance never inherits stale shared notes from a prior workspace.
+- **Banner picker shows "Failed to fetch" when offline.** The banner picker now shows "You are offline." instead of a raw network error when the fetch fails due to no connectivity. If the banner list was previously cached (either in localStorage or via the service worker), banners still load normally when offline.
+- **Notifications section shows `common.offline` i18n key string.** The `common.offline` locale key was missing from `en.json`, `es.json`, and `FALLBACK_MESSAGES`, causing `t('common.offline')` to return the key name as a visible string. The key is now defined and the notifications section and banner picker both display the correct "You are offline." message.
+
 ## 1.7.5 - 2026-07-22
 
 ### Changed

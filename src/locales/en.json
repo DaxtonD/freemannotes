@@ -11,7 +11,8 @@
     "loading": "Loading…",
     "refresh": "Refresh",
     "chooseFiles": "Choose Files",
-    "noFilesChosen": "No file chosen"
+    "noFilesChosen": "No file chosen",
+    "offline": "You are offline."
   },
   "app": {
     "newTextNote": "New Text Note",

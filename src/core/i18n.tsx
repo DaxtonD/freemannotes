@@ -88,6 +88,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		refresh: 'Refresh',
 		chooseFiles: 'Choose Files',
 		noFilesChosen: 'No file chosen',
+		offline: 'You are offline.',
 	},
 	app: {
 		newTextNote: 'New Text Note',
