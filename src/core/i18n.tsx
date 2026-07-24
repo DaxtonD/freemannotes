@@ -495,6 +495,8 @@ const FALLBACK_MESSAGES: Dictionary = {
 		notificationsSubtitle: 'Review link previews that failed to resolve and reopen the note to fix the URL.',
 		notificationMessage: 'has a link preview that needs attention.',
 		openNote: 'Open note',
+		noteTrashedToast: 'This note is in the trash.',
+		noteMissingToast: 'This note no longer exists.',
 	},
 	attachments: {
 		chipLabel: 'Attachments',

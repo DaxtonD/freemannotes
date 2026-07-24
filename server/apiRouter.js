@@ -2223,6 +2223,8 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		// ── GET /api/notes/:noteId/access-check ──────────────────────────
 		// Returns 200 if the current user can read the note, 403 if not.
 		// Used by RichTextEditor to gate navigation on note mention chips.
+		// Also reports `trashed` so the client can offer a "Restore" prompt
+		// instead of silently opening a note the user just deleted.
 		const noteAccessMatch = pathname.match(/^\/api\/notes\/([^/]+)\/access-check$/);
 		if (noteAccessMatch && method === 'GET') {
 			(async () => {
@@ -2239,7 +2241,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 					// Find the document — docId format is `${workspaceId}:${noteId}`
 					const doc = await prisma.document.findFirst({
 						where: { docId: { endsWith: `:${noteId}` } },
-						select: { docId: true },
+						select: { docId: true, state: true },
 					});
 
 					if (!doc) {
@@ -2249,13 +2251,34 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 
 					const ownerWorkspaceId = doc.docId.split(':')[0];
 
+					// Note metadata (including trashed status) lives inside the Yjs doc, not
+					// a SQL column. Prefer the in-memory live doc (most current) and fall
+					// back to decoding the persisted state — same pattern used by the trash
+					// empty endpoint and pushService's reminder trash guard.
+					const isTrashed = () => {
+						try {
+							const liveDoc = liveDocs.get(doc.docId) || null;
+							if (liveDoc) {
+								return Boolean(liveDoc.getMap('metadata').get('trashed'));
+							}
+							if (!doc.state || doc.state.length === 0) return false;
+							const tempDoc = new Y.Doc();
+							Y.applyUpdate(tempDoc, new Uint8Array(doc.state));
+							const trashed = Boolean(tempDoc.getMap('metadata').get('trashed'));
+							tempDoc.destroy();
+							return trashed;
+						} catch {
+							return false;
+						}
+					};
+
 					// Check workspace membership
 					const member = await prisma.workspaceMember.findUnique({
 						where: { userId_workspaceId: { userId, workspaceId: ownerWorkspaceId } },
 						select: { workspaceId: true },
 					});
 					if (member) {
-						jsonResponse(res, 200, { access: true });
+						jsonResponse(res, 200, { access: true, trashed: isTrashed() });
 						return;
 					}
 
@@ -2265,7 +2288,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						select: { docId: true },
 					});
 					if (collab) {
-						jsonResponse(res, 200, { access: true });
+						jsonResponse(res, 200, { access: true, trashed: isTrashed() });
 						return;
 					}
 

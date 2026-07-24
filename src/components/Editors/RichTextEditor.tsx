@@ -41,7 +41,6 @@ import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollaps
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { createRichTextExtensions, getMarkdownPasteHtml, type RichTextVariant } from '../../core/richText';
 import { ReferenceSuggestionKey } from '../../core/extensions/ReferenceExtension';
-import { isNoteDenied, markNoteDenied } from '../../core/references/noteAccessCache';
 import { prepareConvertedClipboardPayload, type ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { useI18n } from '../../core/i18n';
 import { useBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
@@ -2572,22 +2571,11 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 			document.activeElement.blur();
 		}
 
-		// Fast path: already confirmed denied this session
-		if (isNoteDenied(noteId)) return;
-
-		// Pre-flight access check before opening the note editor
-		fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`)
-			.then((res) => {
-				if (!res.ok) {
-					markNoteDenied(noteId);
-					return;
-				}
-				props.onNoteClick!(noteId);
-			})
-			.catch(() => {
-				// Network error — attempt navigation; server auth will gate it
-				props.onNoteClick!(noteId);
-			});
+		// Access-check + trashed/missing gating happens centrally inside onNoteClick
+		// (App.tsx openLinkedNote) so every note-link entry point — this editor,
+		// checklist-item previews, etc. — shares the same guard against opening a
+		// note that's been trashed or permanently deleted.
+		props.onNoteClick(noteId);
 	}, [props.onNoteClick]);
 
 	return (

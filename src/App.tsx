@@ -221,6 +221,7 @@ import { BUBBLE_ZOOM_MAX, BUBBLE_ZOOM_MIN, loadBubbleZoom, saveBubbleZoom } from
 import { getWorkspaceBubbleColorSchemeOverridden, toWorkspaceBubbleColorStyle, WORKSPACE_COLOR_TOKENS } from './core/bubbleWorkspaceColors';
 import { setLiveUserAvatar } from './core/liveUserAvatarCache';
 import { refreshUserAvatarsCache, invalidateWorkspaceMembersCache, initWorkspaceMembersCacheForUser } from './core/references/providers/UserReferenceProvider';
+import { isNoteDenied, markNoteDenied } from './core/references/noteAccessCache';
 import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache, refreshPriorCollaboratorsCache } from './core/priorCollaboratorsApi';
 import { addPendingSelfMention, clearMatchedPendingSelfMentions, clearPendingSelfMentionsStore, dismissPendingSelfMention, getPendingSelfMentions, initPendingSelfMentionsForUser, type PendingSelfMention } from './core/pendingSelfMentions';
 import { clearUserIdentityCache } from './core/userIdentityCache';
@@ -1214,11 +1215,38 @@ export function App(): React.JSX.Element {
 			url: typeof window !== 'undefined' ? window.location.href : null,
 		});
 	}, []);
+	// Shown when a note-link/mention chip is clicked and its target has been
+	// moved to trash. Unlike briefDialogMessage this carries an actionable
+	// "Restore" button, so it gets a dedicated (longer-lived) toast rather than
+	// reusing the plain-text brief dialog.
+	const [trashedNoteLinkToast, setTrashedNoteLinkToast] = React.useState<string | null>(null);
+	const trashedNoteLinkToastTimeoutRef = React.useRef<number | null>(null);
+	const dismissTrashedNoteLinkToast = React.useCallback((): void => {
+		if (trashedNoteLinkToastTimeoutRef.current !== null) {
+			window.clearTimeout(trashedNoteLinkToastTimeoutRef.current);
+			trashedNoteLinkToastTimeoutRef.current = null;
+		}
+		setTrashedNoteLinkToast(null);
+	}, []);
+	const showTrashedNoteLinkToast = React.useCallback((noteId: string): void => {
+		setTrashedNoteLinkToast(noteId);
+		if (trashedNoteLinkToastTimeoutRef.current !== null) {
+			window.clearTimeout(trashedNoteLinkToastTimeoutRef.current);
+		}
+		trashedNoteLinkToastTimeoutRef.current = window.setTimeout(() => {
+			trashedNoteLinkToastTimeoutRef.current = null;
+			setTrashedNoteLinkToast(null);
+		}, 6000);
+	}, []);
 	React.useEffect(() => {
 		return () => {
 			if (briefDialogTimeoutRef.current !== null) {
 				window.clearTimeout(briefDialogTimeoutRef.current);
 				briefDialogTimeoutRef.current = null;
+			}
+			if (trashedNoteLinkToastTimeoutRef.current !== null) {
+				window.clearTimeout(trashedNoteLinkToastTimeoutRef.current);
+				trashedNoteLinkToastTimeoutRef.current = null;
 			}
 		};
 	}, []);
@@ -2808,7 +2836,11 @@ export function App(): React.JSX.Element {
 	// by appending to the note chain rather than starting a new one.
 	// On mobile each call pushes a browser history entry so system Back unwinds the chain.
 	// On desktop we update state only; back/forward is handled by handleNoteNavBack/Forward.
-	const openLinkedNote = React.useCallback((noteId: string) => {
+	//
+	// This is the actual navigation step — only call it once the target note has been
+	// confirmed safe to open (not trashed, not deleted). openLinkedNote below is the
+	// gated entry point every note-link click site should call instead.
+	const navigateToLinkedNote = React.useCallback((noteId: string) => {
 		const current = getOverlaySnapshot();
 		// If no note is currently open, fall back to root navigation.
 		if (!current.selectedNoteId && current.editorMode === 'none') {
@@ -2831,6 +2863,63 @@ export function App(): React.JSX.Element {
 			'push',
 		);
 	}, [commitOverlaySnapshot, getOverlaySnapshot, openNoteEditor]);
+
+	// Gated entry point for every note-link/mention chip click (rich-text editor
+	// chips and checklist-item preview chips both funnel through the onOpenNote
+	// prop wired to this function). Confirms the target note is still accessible
+	// and not trashed/deleted before navigating — closes three related bugs:
+	//   - Clicking a link to a trashed note silently opened it instead of
+	//     surfacing that it's in the trash.
+	//   - Clicking a link to a permanently-deleted note could open stale/garbage
+	//     content (or crash) instead of reporting the note no longer exists.
+	//   - A browser-history entry was pushed even when navigation didn't
+	//     actually happen, corrupting the forward/back stack.
+	const openLinkedNote = React.useCallback((noteId: string) => {
+		if (isNoteDenied(noteId)) return;
+
+		fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`)
+			.then((res) => {
+				if (res.status === 404) {
+					showBriefDialog(t('links.noteMissingToast'));
+					return;
+				}
+				if (!res.ok) {
+					markNoteDenied(noteId);
+					return;
+				}
+				return res.json().then((body: { access?: boolean; trashed?: boolean }) => {
+					if (body?.trashed) {
+						showTrashedNoteLinkToast(noteId);
+						return;
+					}
+					navigateToLinkedNote(noteId);
+				});
+			})
+			.catch(() => {
+				// Offline / network error. Fall back to the local Yjs doc when it's
+				// already loaded this session — it reflects the live trashed flag
+				// without needing a round trip. If it isn't loaded yet we can't tell
+				// "not yet synced to this device" apart from "deleted" offline, so we
+				// optimistically navigate — consistent with offline-first elsewhere.
+				const localDoc = manager.peekDoc(noteId);
+				if (localDoc && Boolean(localDoc.getMap('metadata').get('trashed'))) {
+					showTrashedNoteLinkToast(noteId);
+					return;
+				}
+				navigateToLinkedNote(noteId);
+			});
+	}, [manager, navigateToLinkedNote, showBriefDialog, showTrashedNoteLinkToast, t]);
+
+	// Restores the note targeted by the currently-shown trashed-note-link toast,
+	// then continues the navigation the user originally clicked for.
+	const handleRestoreTrashedNoteLink = React.useCallback(() => {
+		if (!trashedNoteLinkToast) return;
+		const noteId = trashedNoteLinkToast;
+		dismissTrashedNoteLinkToast();
+		void manager.restoreNote(noteId).then(() => {
+			navigateToLinkedNote(noteId);
+		});
+	}, [dismissTrashedNoteLinkToast, manager, navigateToLinkedNote, trashedNoteLinkToast]);
 
 	// Go back one step in the note navigation chain.
 	// Mobile: delegate to history.back() which unwinds the browser history entry.
@@ -10646,6 +10735,18 @@ export function App(): React.JSX.Element {
 			{briefDialogMessage ? (
 				<div className="brief-dialog" role="status" aria-live="polite">
 					{briefDialogMessage}
+				</div>
+			) : null}
+
+			{trashedNoteLinkToast ? (
+				<div className="trashed-note-link-toast" role="status" aria-live="polite">
+					<span className="trashed-note-link-toast-message">{t('links.noteTrashedToast')}</span>
+					<button type="button" className="trashed-note-link-toast-restore" onClick={handleRestoreTrashedNoteLink}>
+						{t('noteMenu.restoreNote')}
+					</button>
+					<button type="button" className="trashed-note-link-toast-dismiss" onClick={dismissTrashedNoteLinkToast} aria-label={t('common.close')}>
+						✕
+					</button>
 				</div>
 			) : null}
 
