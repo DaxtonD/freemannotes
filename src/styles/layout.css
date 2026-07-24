@@ -499,6 +499,61 @@
 	pointer-events: none;
 }
 
+/* Like .brief-dialog but actionable (Restore button), so it needs
+   pointer-events and a row layout rather than the plain centered pill. */
+.trashed-note-link-toast {
+	position: fixed;
+	left: 50%;
+	bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+	transform: translateX(-50%);
+	z-index: 20000;
+	display: flex;
+	align-items: center;
+	gap: var(--space-3);
+	padding: 10px 12px 10px 16px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-surface) 86%, rgba(8, 12, 16, 0.88));
+	color: var(--color-text);
+	font-size: var(--font-size-sm);
+	max-width: min(560px, calc(100vw - 2 * var(--space-4)));
+	box-shadow: 0 20px 44px rgba(0, 0, 0, 0.28);
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+}
+
+.trashed-note-link-toast-message {
+	white-space: nowrap;
+}
+
+.trashed-note-link-toast-restore {
+	flex-shrink: 0;
+	padding: 6px 12px;
+	border: 1px solid var(--color-border);
+	border-radius: 999px;
+	background: var(--color-accent, var(--color-text));
+	color: var(--color-surface);
+	font-size: var(--font-size-sm);
+	font-weight: 600;
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.trashed-note-link-toast-dismiss {
+	flex-shrink: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	border: none;
+	border-radius: 50%;
+	background: transparent;
+	color: var(--color-text-muted);
+	font-size: var(--font-size-sm);
+	cursor: pointer;
+}
+
 .pwa-update-banner {
 	position: fixed;
 	left: 50%;

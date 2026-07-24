@@ -477,6 +477,8 @@
     "prompt": "Introduce una URL para la vista previa",
     "addedToast": "Vista previa de URL añadida",
     "deletePreview": "Eliminar vista previa de URL",
+    "noteTrashedToast": "Esta nota esta en la papelera.",
+    "noteMissingToast": "Esta nota ya no existe.",
     "notificationsSubtitle": "Revisa las vistas previas de enlaces que fallaron y vuelve a abrir la nota para corregir la URL.",
     "notificationMessage": "tiene una vista previa de enlace que requiere atencion.",
     "openNote": "Abrir nota"
