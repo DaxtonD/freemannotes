@@ -91,9 +91,7 @@ export function NoteBannerPickerModal(props: NoteBannerPickerModalProps): React.
 			setOptions(nextOptions);
 		}).catch((nextError) => {
 			if (cancelled) return;
-			// "Failed to fetch" = network error; check navigator.onLine to give a better message.
-			const isNetworkError = typeof navigator !== 'undefined' && !navigator.onLine;
-			setError(isNetworkError ? t('common.offline') : (nextError instanceof Error ? nextError.message : t('noteBanners.failed')));
+			setError(nextError instanceof Error ? nextError.message : t('noteBanners.failed'));
 		}).finally(() => {
 			if (cancelled) return;
 			setLoading(false);

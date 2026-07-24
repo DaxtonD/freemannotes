@@ -188,6 +188,7 @@ import { clearCachedReminderStates, moveCachedReminderStates, readCachedReminder
 import { moveNoteOrderSnapshotEntry, readNoteOrderSnapshot, writeNoteOrderSnapshot } from './core/noteOrderSnapshot';
 import { getUserNoteColorPrefsSnapshot, replaceUserNoteColorPrefs, setUserNoteColorPreferenceScope } from './core/noteColorPreferences';
 import { getUserNoteBannerPrefsSnapshot, replaceUserNoteBannerPrefs, setUserNoteBannerPreferenceScope } from './core/noteBannerPreferences';
+import { warmNoteBannerCache } from './core/noteBannerApi';
 import { replaceCollapsedRichHeadingPrefs, setCollapsibleHeadingPreferenceScope } from './core/collapsibleHeadingPreferences';
 import { useStartupHydration } from './core/StartupHydrationContext';
 import { cancelSyncOutboxWorker, flushSyncOutbox, getWorkspaceInviteConflictEventName, getWorkspaceInviteStateEventName, scheduleSyncOutboxFlush } from './core/syncOutbox';
@@ -4329,6 +4330,9 @@ export function App(): React.JSX.Element {
 					// into IndexedDB and available offline. Fire-and-forget — errors are
 					// swallowed inside the callback.
 					void backgroundPreloadAllWorkspacesRef.current();
+					// Populate the banner list cache so the picker works offline even when
+					// it has never been opened on this device/browser profile before.
+					warmNoteBannerCache();
 				} finally {
 					running = false;
 				}
