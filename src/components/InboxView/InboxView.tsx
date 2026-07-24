@@ -44,7 +44,13 @@ interface Props {
 	themeId: string;
 	iconSrc?: string;
 	refreshToken?: number;
-	onOpenNote: (noteId: string, workspaceId: string, roomId?: string, scrollToNodeId?: string) => void;
+	/**
+	 * May resolve `{ noteMissing: true }` when the target note has been
+	 * permanently deleted — the caller has already shown a "no longer exists"
+	 * toast and skipped navigation. InboxView responds by auto-archiving the
+	 * card so it doesn't keep coming back for a note that no longer exists.
+	 */
+	onOpenNote: (noteId: string, workspaceId: string, roomId?: string, scrollToNodeId?: string) => void | Promise<{ noteMissing?: boolean } | void>;
 	onAllArchived?: () => void;
 	/** Called whenever an activity is read or archived so the badge count re-fetches. */
 	onActivityChanged?: () => void;
@@ -347,6 +353,20 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		if (authUserId) removeIdFromPersistedCache(authUserId, id);
 	}, [authUserId]);
 
+	// Wait for the POST before bumping the refresh token — firing it first caused
+	// the count re-fetch and list re-fetch to race with the in-flight archive and
+	// return stale data (badge stuck at 1, card reappearing after swipe).
+	const archiveActivityById = useCallback(async (id: string) => {
+		setActivities((prev) => prev.filter((a) => a.id !== id));
+		removeFromCache(id);
+		await fetch('/api/inbox/archive', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ activityIds: [id] }),
+		}).catch(() => {});
+		onActivityChanged?.();
+	}, [onActivityChanged, removeFromCache]);
+
 	const archiveActivity = useCallback(async (e: React.MouseEvent, id: string) => {
 		e.stopPropagation();
 		if (id.startsWith('pending-')) {
@@ -354,18 +374,8 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			onActivityChanged?.();
 			return;
 		}
-		setActivities((prev) => prev.filter((a) => a.id !== id));
-		removeFromCache(id);
-		// Wait for the POST before bumping the refresh token — firing it first caused
-		// the count re-fetch and list re-fetch to race with the in-flight archive and
-		// return stale data (badge stuck at 1, card reappearing after swipe).
-		await fetch('/api/inbox/archive', {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ activityIds: [id] }),
-		}).catch(() => {});
-		onActivityChanged?.();
-	}, [onActivityChanged, onPendingDismissed, removeFromCache]);
+		await archiveActivityById(id);
+	}, [archiveActivityById, onPendingDismissed, onActivityChanged]);
 
 	const markAllRead = useCallback(async () => {
 		if (unreadIds.size === 0) return;
@@ -442,24 +452,14 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 					onPendingDismissed?.(activity.id);
 					onActivityChanged?.();
 				} else {
-					setActivities((prev) => prev.filter((a) => a.id !== activity.id));
-					removeFromCache(activity.id);
-					// Await the archive POST before bumping the refresh token — firing
-					// it first caused the count and list re-fetch to race with the
-					// in-flight archive, producing a stale badge and card reappearing.
-					await fetch('/api/inbox/archive', {
-						method: 'POST',
-						headers: { 'content-type': 'application/json' },
-						body: JSON.stringify({ activityIds: [activity.id] }),
-					}).catch(() => {});
-					onActivityChanged?.();
+					await archiveActivityById(activity.id);
 				}
 			}, 200);
 		} else {
 			// Snap back
 			setSwipeOffsets((prev) => { const n = { ...prev }; delete n[activity.id]; return n; });
 		}
-	}, [swipeOffsets, onActivityChanged, onPendingDismissed, removeFromCache]);
+	}, [swipeOffsets, archiveActivityById, onActivityChanged, onPendingDismissed]);
 
 	const handleActivityClick = useCallback((activity: Activity) => {
 		// Don't navigate if the placement picker is open on this card.
@@ -476,8 +476,16 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			return;
 		}
 		markRead(activity.id);
-		onOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId);
-	}, [markRead, onOpenNote, placementPickerActivityId, onPendingDismissed, onActivityChanged]);
+		// The target note may have been trashed or permanently deleted since the
+		// mention was created. onOpenNote resolves { noteMissing: true } when it
+		// found the note is gone for good (as opposed to just trashed) — in that
+		// case there's nothing useful left for this card to point at, so archive
+		// it automatically instead of leaving a permanently-dead notification.
+		void Promise.resolve(onOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId))
+			.then((outcome) => {
+				if (outcome?.noteMissing) void archiveActivityById(activity.id);
+			});
+	}, [markRead, onOpenNote, placementPickerActivityId, onPendingDismissed, onActivityChanged, archiveActivityById]);
 
 	const openPlacementPicker = useCallback((e: React.MouseEvent, activity: Activity) => {
 		e.stopPropagation();
