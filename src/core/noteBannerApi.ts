@@ -151,5 +151,18 @@ export async function listNoteBanners(force = false): Promise<readonly NoteBanne
 			}
 		});
 	cachedPromise = request;
+	// Stale-while-revalidate: when the picker forces a refresh but localStorage already
+	// has banner entries, return them immediately (works offline too) and let the network
+	// request update the cache in the background for the next open.
+	if (force && fallbackOptions.length > 0) return fallbackOptions;
 	return request;
+}
+
+/**
+ * Warm the banner list cache in the background. Call once after authentication
+ * while online so the localStorage cache is populated before the user ever opens
+ * the picker — ensuring banners are available offline on first use.
+ */
+export function warmNoteBannerCache(): void {
+	void listNoteBanners().catch(() => {});
 }
