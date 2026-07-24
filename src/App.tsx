@@ -10580,6 +10580,37 @@ export function App(): React.JSX.Element {
 									return;
 								}
 							}
+							// Same-workspace mention (the common case): the target note may have
+							// been trashed or permanently deleted since the mention was created.
+							// Gate on the same access-check openLinkedNote uses for note-link chip
+							// clicks so a stale inbox card behaves the same way — trashed shows a
+							// restore toast, permanently-deleted reports back to InboxView so the
+							// dead card can be auto-archived instead of opening stale content.
+							if (isNoteDenied(noteId)) return;
+							try {
+								const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`);
+								if (res.status === 404) {
+									showBriefDialog(t('links.noteMissingToast'));
+									return { noteMissing: true };
+								}
+								if (!res.ok) {
+									markNoteDenied(noteId);
+									return;
+								}
+								const body: { access?: boolean; trashed?: boolean } = await res.json();
+								if (body?.trashed) {
+									showTrashedNoteLinkToast(noteId);
+									return;
+								}
+							} catch {
+								// Offline / network error: fall back to the local Yjs doc when
+								// it's already loaded this session, same as openLinkedNote.
+								const localDoc = manager.peekDoc(noteId);
+								if (localDoc && Boolean(localDoc.getMap('metadata').get('trashed'))) {
+									showTrashedNoteLinkToast(noteId);
+									return;
+								}
+							}
 							openNoteEditor(noteId);
 						}}
 						onAllArchived={bumpInboxRefreshToken}
