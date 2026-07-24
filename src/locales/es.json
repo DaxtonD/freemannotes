@@ -11,7 +11,8 @@
     "loading": "Cargando…",
     "refresh": "Actualizar",
     "chooseFiles": "Elegir archivos",
-    "noFilesChosen": "Ningún archivo seleccionado"
+    "noFilesChosen": "Ningún archivo seleccionado",
+    "offline": "Estás sin conexión."
   },
   "app": {
     "newTextNote": "Nueva nota de texto",
