@@ -71,6 +71,14 @@ interface Props {
 // timeout is fine here — it only affects how long we wait for the silent update.
 const FETCH_TIMEOUT_MS = 30_000;
 
+// Touches starting within this many px of the left edge are reserved for
+// App.tsx's mobile-sidebar edge-swipe-to-open gesture (MAX_START_X in the
+// mobile-sidebar-open touch effect, src/App.tsx). Keep this in sync with
+// that value: a card swipe starting in this zone is left completely alone
+// (no preventDefault/stopPropagation) so the touch passes through to the
+// sidebar gesture untouched; a swipe starting past it belongs to the card.
+const SIDEBAR_EDGE_RESERVED_PX = 36;
+
 // ── Persistent inbox cache (localStorage) ────────────────────────────────────
 // Persists the first page of each filter tab across reloads so the inbox
 // renders immediately without waiting for the network on slow connections.
@@ -414,6 +422,10 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 
 	const handleSwipeTouchStart = useCallback((e: React.TouchEvent, activityId: string) => {
 		const t = e.touches[0];
+		if (t.clientX <= SIDEBAR_EDGE_RESERVED_PX) {
+			swipeTouchRef.current = null;
+			return;
+		}
 		swipeTouchRef.current = { id: activityId, startX: t.clientX, startY: t.clientY, startTime: Date.now(), moved: false };
 	}, []);
 
