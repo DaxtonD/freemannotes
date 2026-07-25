@@ -10586,7 +10586,9 @@ export function App(): React.JSX.Element {
 								return;
 							}
 							if (workspaceId && workspaceId !== authWorkspaceId) {
-								// Previously accepted cross-workspace note: find the alias.
+								// Previously accepted cross-workspace note: find the alias. Alias
+								// notes live in the recipient's OWN (currently active) workspace,
+								// so no workspace switch is needed to open them.
 								const placement = sharedPlacements.find(
 									(p) => p.sourceNoteId === noteId && p.sourceWorkspaceId === workspaceId
 								);
@@ -10595,6 +10597,50 @@ export function App(): React.JSX.Element {
 									openNoteEditor(placement.aliasId);
 									return;
 								}
+								// Direct cross-workspace mention (the user is a member of both
+								// workspaces, not accessing this note through the share system) —
+								// no alias exists. The note's Yjs room lives under
+								// `${workspaceId}:${noteId}`, a different workspace than the one
+								// currently active. Opening it by noteId alone while the wrong
+								// workspace is active resolves to the wrong room — at best an
+								// empty stub doc, at worst the server rejects the WS room as
+								// "forbidden namespace" since sessions are authorized per
+								// activated workspace (see DocumentManager / server.js Yjs WS
+								// handler Do-Not-Touch notes), which crashed the app entirely.
+								// Confirm access first when online (also catches trashed/deleted),
+								// then switch the active workspace to the note's owner before
+								// opening it — mirrors clicking that workspace in the sidebar.
+								if (isNoteDenied(noteId)) return;
+								let trashed = false;
+								try {
+									const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`);
+									if (res.status === 404) {
+										showBriefDialog(t('links.noteMissingToast'));
+										return { noteMissing: true };
+									}
+									if (!res.ok) {
+										markNoteDenied(noteId);
+										return;
+									}
+									const body: { access?: boolean; trashed?: boolean } = await res.json();
+									trashed = Boolean(body?.trashed);
+								} catch {
+									// Offline / network error: no reliable local signal exists for a
+									// note whose room lives under a workspace that isn't currently
+									// active (a cached doc, if any, would be keyed to whichever
+									// workspace was active when it was last loaded — not necessarily
+									// this one). Fall through and attempt the switch+open
+									// optimistically; activateWorkspaceFromSidebar itself is
+									// offline-safe (switches locally first).
+								}
+								await activateWorkspaceFromSidebar(workspaceId);
+								if (trashed) {
+									showTrashedNoteLinkToast(noteId);
+									return;
+								}
+								try { await manager.getDocWithSync(noteId); } catch {}
+								openNoteEditor(noteId);
+								return;
 							}
 							// Same-workspace mention (the common case): the target note may have
 							// been trashed or permanently deleted since the mention was created.
