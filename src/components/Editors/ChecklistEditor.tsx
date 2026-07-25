@@ -11,15 +11,20 @@ import {
 	type DropResult,
 } from '@hello-pangea/dnd';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import {
 	faBell,
 	faImage,
 	faEllipsisVertical,
 	faGripVertical,
+	faListCheck,
+	faNoteSticky,
 	faPalette,
+	faPencil,
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
+import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem } from '../../core/checklistCounts';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
@@ -90,11 +95,24 @@ function animateFastScrollToBottom(container: HTMLElement, targetScrollTop?: num
 	return () => window.cancelAnimationFrame(frameId);
 }
 
+function previewNoteTypeIcon(noteType?: string | null): IconDefinition {
+	switch (noteType) {
+		case 'checklist': return faListCheck;
+		case 'drawing':   return faPencil;
+		case 'reminder':  return faBell;
+		default:          return faNoteSticky;
+	}
+}
+
 /**
  * Lightweight renderer for ProseMirror JSON content in non-active rows.
- * Handles bold, italic, underline, and hard breaks — no TipTap instance needed.
+ * Handles bold, italic, underline, hard breaks, and @mention/[[note]] reference
+ * chips — no TipTap instance needed. Mirrors NoteEditor.tsx's renderRichPreview;
+ * note-type references render as static (non-clickable) chips here since the
+ * draft checklist flow has no note-navigation callback to wire up (the note
+ * doesn't exist yet — clicking away would abandon the draft).
  */
-function renderRichPreview(json: JSONContent | null | undefined): React.ReactNode {
+function renderRichPreview(json: JSONContent | null | undefined, liveAvatarLookup?: ReadonlyMap<string, string | null>): React.ReactNode {
 	if (!json?.content) return null;
 	const applyMarks = (node: JSONContent, content: React.ReactNode, key: React.Key): React.ReactNode => {
 		let element = content;
@@ -136,6 +154,28 @@ function renderRichPreview(json: JSONContent | null | undefined): React.ReactNod
 				{bi > 0 ? <br /> : null}
 				{block.content.map((node: JSONContent, ni: number) => {
 					if (node.type === 'hardBreak') return <br key={ni} />;
+					if (node.type === 'reference') {
+						const label     = typeof node.attrs?.label     === 'string' ? node.attrs.label     : '';
+						const id        = typeof node.attrs?.id        === 'string' ? node.attrs.id        : '';
+						const refType   = node.attrs?.type;
+						const noteType  = node.attrs?.noteType ?? null;
+						// See NoteEditor.tsx's renderRichPreview for why the live cache is
+						// preferred over the stored (insertion-time) avatarUrl attribute.
+						const storedAvatarUrl = typeof node.attrs?.avatarUrl === 'string' ? node.attrs.avatarUrl : null;
+						const avatarUrl = liveAvatarLookup && refType === 'user' && id
+							? (liveAvatarLookup.get(id) ?? storedAvatarUrl)
+							: storedAvatarUrl;
+						const isNote    = refType === 'note';
+						const isUser    = refType === 'user';
+						const icon      = isNote ? previewNoteTypeIcon(noteType) : null;
+						return (
+							<span key={ni} className={styles.referenceChipPreview}>
+								{icon && <FontAwesomeIcon icon={icon} className={styles.referenceChipPreviewIcon} />}
+								{isUser && avatarUrl && <img src={avatarUrl} className={styles.referenceChipPreviewAvatar} alt="" aria-hidden />}
+								{label}
+							</span>
+						);
+					}
 					if (node.type !== 'text' || !node.text) return null;
 					return <React.Fragment key={ni}>{applyMarks(node, node.text, `${bi}-${ni}`)}</React.Fragment>;
 				})}
@@ -225,6 +265,9 @@ function getChecklistAutocompleteSuggestion(
 export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element {
 	const { t } = useI18n();
 	const keyboardVisibilityPaddingPx = 88;
+	// Feeds renderRichPreview's mention-chip avatar so it reflects profile
+	// changes instead of the stale value captured at mention-insertion time.
+	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	// Local draft state until user presses Save.
 	const [title, setTitle] = React.useState('');
 	const [items, setItems] = React.useState<DraftChecklistItem[]>(() => [
@@ -1292,7 +1335,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		): React.JSX.Element => {
 			const dragged = activeItems.find((item) => item.id === rubric.draggableId) ?? null;
 			const { rowWidth, rowHeight, textHeight, textWidth } = dragGhostMetricsRef.current;
-			const richPreview = dragged ? renderRichPreview(dragged.richContent) : null;
+			const richPreview = dragged ? renderRichPreview(dragged.richContent, liveAvatarLookup) : null;
 			const isActiveClone = dragged !== null && activeRowId === dragged.id;
 			const previewContent = richPreview || dragged?.text || '\u00A0';
 			const dragStyle = dragProvided.draggableProps.style ?? {};
@@ -1345,7 +1388,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 				</li>
 			);
 		},
-		[activeItems, activeRowId, isCoarsePointer, t]
+		[activeItems, activeRowId, isCoarsePointer, liveAvatarLookup, t]
 	);
 	const addItemLabel = t('editors.addItem');
 
@@ -1681,7 +1724,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 														</div>
 													) : (
 														<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowPreview} onClick={() => activateRow(item.id)}>
-															{renderChecklistPreviewContent(item, renderRichPreview(item.richContent) || item.text || '\u00A0')}
+															{renderChecklistPreviewContent(item, renderRichPreview(item.richContent, liveAvatarLookup) || item.text || '\u00A0')}
 														</div>
 													)}
 													<button
@@ -1759,7 +1802,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 											<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 										</label>
 										<div className={styles.checklistRowPreview}>
-											{renderChecklistPreviewContent(item, renderRichPreview(item.richContent) || item.text || '\u00A0')}
+											{renderChecklistPreviewContent(item, renderRichPreview(item.richContent, liveAvatarLookup) || item.text || '\u00A0')}
 										</div>
 									</li>
 								) : (
@@ -1827,7 +1870,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 												</div>
 													) : (
 														<div ref={(node) => { rowInputsRef.current.set(item.id, node); }} className={styles.checklistRowPreview} onClick={() => activateRow(item.id)}>
-															{renderChecklistPreviewContent(item, renderRichPreview(item.richContent) || item.text || '\u00A0')}
+															{renderChecklistPreviewContent(item, renderRichPreview(item.richContent, liveAvatarLookup) || item.text || '\u00A0')}
 														</div>
 											)}
 										<button
