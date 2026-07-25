@@ -1404,6 +1404,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Tracks which checklist cards currently have their completed section open.
 	// Used to apply padding-bottom to the section only while any card is expanded.
 	const expandedChecklistNoteIdsRef = React.useRef<Set<string>>(new Set());
+	// Kept current on every render (read inside a mount-once effect closure) so the
+	// checklist-expand padding reservation below always uses the live card-height
+	// ceiling, including if the user changes it mid-session via Appearance settings.
+	const maxCardHeightPxRef = React.useRef(props.maxCardHeightPx);
+	maxCardHeightPxRef.current = props.maxCardHeightPx;
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
 	const viewportAnchorColumnsRef = React.useRef<Map<string, number>>(new Map());
@@ -1672,7 +1677,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			debugChecklistToggle(detail.noteId, Boolean(detail.expanded));
 			// Apply bottom padding while any checklist has its completed section
 			// open so expanding cards at the bottom of a column have room to grow
-			// downward without jumping the viewport.
+			// downward without jumping the viewport. Reserve one card's worth of
+			// the user's own max-card-height setting (not a fixed 50vh) — 50vh let
+			// the grid scroll far past its actual content on top of what the repack
+			// itself already needs, and didn't scale with the user's card-height
+			// preference. maxCardHeightPx is the same ceiling NoteCard itself uses
+			// for a checklist card's expanded height, so it's a tight, correctly
+			// proportioned bound rather than a viewport-relative guess.
 			if (detail.expanded) {
 				expandedChecklistNoteIdsRef.current.add(detail.noteId);
 			} else {
@@ -1680,7 +1691,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			}
 			const section = sectionRef.current;
 			if (section) {
-				section.style.paddingBottom = expandedChecklistNoteIdsRef.current.size > 0 ? '50vh' : '';
+				section.style.paddingBottom = expandedChecklistNoteIdsRef.current.size > 0
+					? `${maxCardHeightPxRef.current}px`
+					: '';
 			}
 		};
 		const handleRichHeadingToggle = (event: Event): void => {
