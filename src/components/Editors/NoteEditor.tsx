@@ -489,6 +489,29 @@ function getChecklistAutoScrollTarget(container: HTMLElement, completedSection: 
 	return Math.max(0, Math.min(maxScrollTop, completedTop - container.clientHeight + 12));
 }
 
+/**
+ * While an active (unchecked) row is being dragged, @hello-pangea/dnd's own
+ * auto-scroll only knows about the scroll container's edges — not that the
+ * completed-items section below the active Droppable is never a valid drop
+ * target. Left alone, dragging near the bottom of the visible area scrolls
+ * the completed section into view for no reason (it's outside the Droppable,
+ * so nothing can actually be dropped there). Clamping scrollTop to the same
+ * boundary getChecklistAutoScrollTarget already computes for the "scroll to
+ * reveal a new item" feature keeps the completed section off-screen for the
+ * duration of the drag. Returns a cleanup function to call on drag end.
+ */
+function installChecklistDragScrollClamp(container: HTMLElement, completedSection: HTMLElement | null): () => void {
+	const maxAllowedScrollTop = getChecklistAutoScrollTarget(container, completedSection);
+	const clamp = (): void => {
+		if (container.scrollTop > maxAllowedScrollTop) {
+			container.scrollTop = maxAllowedScrollTop;
+		}
+	};
+	clamp();
+	container.addEventListener('scroll', clamp, { passive: true });
+	return () => container.removeEventListener('scroll', clamp);
+}
+
 function animateFastScrollToBottom(container: HTMLElement, targetScrollTop?: number): () => void {
 	const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
 	const boundedTarget = typeof targetScrollTop === 'number'
@@ -1423,6 +1446,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
 	const completedSectionRef = React.useRef<HTMLElement | null>(null);
+	const dragScrollClampCleanupRef = React.useRef<(() => void) | null>(null);
+	React.useEffect(() => {
+		// Defensive: if the editor unmounts mid-drag (e.g. navigating away)
+		// without onDragEnd firing, don't leak the scroll listener.
+		return () => dragScrollClampCleanupRef.current?.();
+	}, []);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
 	const [activeChecklistAutocompleteText, setActiveChecklistAutocompleteText] = React.useState('');
@@ -3258,8 +3287,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								enableDefaultSensors={false}
 								sensors={immediateChecklistSensors}
 								onBeforeCapture={onChecklistBeforeCapture}
-								onDragStart={onChecklistDragStart}
+								onDragStart={(event) => {
+									onChecklistDragStart(event);
+									const scrollEl = checklistScrollRef.current;
+									if (scrollEl) {
+										dragScrollClampCleanupRef.current?.();
+										dragScrollClampCleanupRef.current = installChecklistDragScrollClamp(scrollEl, completedSectionRef.current);
+									}
+								}}
 								onDragEnd={(event) => {
+									dragScrollClampCleanupRef.current?.();
+									dragScrollClampCleanupRef.current = null;
 									const scrollEl = checklistScrollRef.current;
 									const savedScroll = scrollEl ? scrollEl.scrollTop : null;
 									const scrollGuard = (): void => {
