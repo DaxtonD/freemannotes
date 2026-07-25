@@ -738,79 +738,6 @@ type GridNoteCardProps = {
 const GRID_LAYOUT_TRANSITION = { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 } as const;
 const GRID_DROP_SETTLE_TRANSITION = { type: 'spring', stiffness: 430, damping: 36, mass: 1 } as const;
 
-// How long the checklist-toggle scroll buffer (see handleChecklistToggle)
-// stays reserved before being force-cleared, and how long its removal takes
-// to animate. Buffer duration comfortably exceeds the couple of frames the
-// ResizeObserver -> freemannotes:note-card-layout-change -> rAF chain
-// normally takes to settle after a toggle.
-const CHECKLIST_SCROLL_BUFFER_MS = 400;
-const CHECKLIST_SCROLL_BUFFER_SHRINK_MS = 220;
-
-/**
- * Clears the transient checklist-toggle scroll buffer with a short CSS
- * transition instead of removing it instantly. Removing a large
- * padding-bottom instantly while the user is scrolled into the space it
- * reserved makes the browser clamp scrollTop down in the same frame,
- * snapping every visible card down the screen. Animating the shrink lets
- * the browser adjust scroll position gradually over the same transition.
- */
-function clearChecklistScrollBuffer(section: HTMLElement): void {
-	section.style.transition = `padding-bottom ${CHECKLIST_SCROLL_BUFFER_SHRINK_MS}ms ease`;
-	section.style.paddingBottom = '';
-}
-
-// ── Scroll host abstraction ────────────────────────────────────────────────
-// The notes grid usually scrolls the page (window/document.documentElement),
-// but on an installed iOS PWA (.test-harness-root.ios-standalone-pwa) the
-// root shell itself is the overflow:auto container instead -- window.scrollY
-// never changes there, so a clamp hardcoded to window silently does nothing.
-// Walking up from the grid section (mirrors findScrollableAncestor in
-// NoteEditor.tsx) finds whichever ancestor is actually scrollable so the
-// checklist-toggle scroll clamp targets the right element regardless of
-// platform/display mode.
-type ScrollHost = { element: HTMLElement } | { element: null };
-
-function findChecklistScrollHost(startNode: HTMLElement | null): ScrollHost {
-	let current = startNode?.parentElement ?? null;
-	while (current) {
-		const style = window.getComputedStyle(current);
-		const overflowY = style.overflowY;
-		const isScrollable = (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
-			&& current.scrollHeight > current.clientHeight + 1;
-		if (isScrollable) return { element: current };
-		current = current.parentElement;
-	}
-	return { element: null };
-}
-
-function getScrollHostY(host: ScrollHost): number {
-	return host.element ? host.element.scrollTop : window.scrollY;
-}
-
-function getScrollHostHeight(host: ScrollHost): number {
-	return host.element ? host.element.scrollHeight : document.documentElement.scrollHeight;
-}
-
-function getScrollHostClientHeight(host: ScrollHost): number {
-	return host.element ? host.element.clientHeight : window.innerHeight;
-}
-
-function scrollHostTo(host: ScrollHost, top: number): void {
-	if (host.element) {
-		host.element.scrollTop = top;
-	} else {
-		window.scrollTo({ top, behavior: 'auto' });
-	}
-}
-
-function addScrollHostListener(host: ScrollHost, handler: () => void): void {
-	(host.element ?? window).addEventListener('scroll', handler, { passive: true });
-}
-
-function removeScrollHostListener(host: ScrollHost, handler: () => void): void {
-	(host.element ?? window).removeEventListener('scroll', handler);
-}
-
 const DragPreviewMarkup = React.memo(function DragPreviewMarkup(props: { markup: string }): React.JSX.Element {
 	return <div className={styles.dragPreviewMarkup} aria-hidden="true" dangerouslySetInnerHTML={{ __html: props.markup }} />;
 });
@@ -1474,73 +1401,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const pendingCommittedVisibleOrderRef = React.useRef<string[] | null>(null);
 	const appliedLayoutCacheKeyRef = React.useRef<string | null>(null);
 	const sectionRef = React.useRef<HTMLElement | null>(null);
-	// Kept current on every render (read inside a mount-once effect closure) so the
-	// checklist-expand padding reservation below always uses the live card-height
-	// ceiling, including if the user changes it mid-session via Appearance settings.
-	const maxCardHeightPxRef = React.useRef(props.maxCardHeightPx);
-	maxCardHeightPxRef.current = props.maxCardHeightPx;
-	// Guarantees the transient checklist-toggle scroll buffer (see
-	// handleChecklistToggle) always gets cleared, regardless of whether a
-	// masonry repack happens to run in response to the height change.
-	const checklistPaddingClearTimeoutRef = React.useRef<number>(0);
-	// Holds the active scroll listener (if any) that clamps the user's scroll
-	// position to the section's real content bounds while the transient
-	// checklist-toggle padding-bottom buffer is reserved. Without this, a user
-	// who scrolls immediately after toggling (before the buffer clears) can
-	// scroll into the reserved dead zone, which then visibly slides back once
-	// the buffer is removed -- the buffer is real scrollable space, so nothing
-	// else stops the user from reaching it in the meantime.
-	const checklistScrollClampHandlerRef = React.useRef<(() => void) | null>(null);
-	// The element the above listener is attached to (or null for window),
-	// resolved fresh on each install via findChecklistScrollHost -- kept so
-	// remove can target the exact same host it was added to.
-	const checklistScrollClampHostRef = React.useRef<ScrollHost>({ element: null });
-	// rAF handle for the throttle below; also doubles as the "a correction is
-	// in flight" guard.
-	const checklistScrollClampRafRef = React.useRef<number>(0);
-	const removeChecklistScrollClamp = React.useCallback((): void => {
-		if (typeof window === 'undefined') return;
-		if (checklistScrollClampRafRef.current) {
-			window.cancelAnimationFrame(checklistScrollClampRafRef.current);
-			checklistScrollClampRafRef.current = 0;
-		}
-		if (!checklistScrollClampHandlerRef.current) return;
-		removeScrollHostListener(checklistScrollClampHostRef.current, checklistScrollClampHandlerRef.current);
-		checklistScrollClampHandlerRef.current = null;
-	}, []);
-	const installChecklistScrollClamp = React.useCallback((): void => {
-		if (typeof window === 'undefined') return;
-		removeChecklistScrollClamp();
-		const host = findChecklistScrollHost(sectionRef.current);
-		checklistScrollClampHostRef.current = host;
-		const handleScroll = (): void => {
-			// Batch to at most one correction check per animation frame. Calling
-			// scrollTo() below dispatches its own 'scroll' event (in most
-			// browsers, asynchronously), which would otherwise re-enter this same
-			// handler and re-correct against its own prior correction -- with any
-			// sub-pixel rounding difference between our computed target and what
-			// the browser actually applies, that self-triggering loop oscillates
-			// rather than settling. rAF coalescing plus the 1px tolerance below
-			// break the loop instead of just reacting to it after the fact.
-			if (checklistScrollClampRafRef.current) return;
-			checklistScrollClampRafRef.current = window.requestAnimationFrame(() => {
-				checklistScrollClampRafRef.current = 0;
-				// The buffer we reserved is exactly maxCardHeightPxRef.current px, so
-				// subtracting it from the current (buffer-inflated) scroll height
-				// always yields the real content's scroll bound, even as the real
-				// content height itself keeps changing while the repack catches up.
-				const maxAllowedScrollY = Math.max(
-					0,
-					getScrollHostHeight(host) - maxCardHeightPxRef.current - getScrollHostClientHeight(host)
-				);
-				if (getScrollHostY(host) > maxAllowedScrollY + 1) {
-					scrollHostTo(host, maxAllowedScrollY);
-				}
-			});
-		};
-		checklistScrollClampHandlerRef.current = handleScroll;
-		addScrollHostListener(host, handleScroll);
-	}, [removeChecklistScrollClamp]);
+	// Tracks which checklist cards currently have their completed section open.
+	// Used to apply padding-bottom to the section only while any card is expanded.
+	const expandedChecklistNoteIdsRef = React.useRef<Set<string>>(new Set());
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
 	const viewportAnchorColumnsRef = React.useRef<Map<string, number>>(new Map());
@@ -1807,48 +1670,17 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			expansionAffectedNoteIdsRef.current.add(detail.noteId);
 			invalidatedNoteReasonsRef.current.set(detail.noteId, repackReasonRef.current);
 			debugChecklistToggle(detail.noteId, Boolean(detail.expanded));
-			// Reserve a brief, transient scroll buffer so the card expanding or
-			// collapsing (if near the bottom of a column) has room to grow/shrink
-			// without other cards visually jumping before the masonry repack
-			// catches up and recomputes real positions from the new DOM height.
-			// Applied instantly (transition disabled) so the safety margin is
-			// available immediately, before the card has even visually resized.
-			//
-			// Cleared by a fixed timeout rather than by waiting for that repack to
-			// "settle" (tried previously) -- packedLayout's useMemo deps
-			// (columnCount, mobileGridGapPx, packedHeightLookup, maxCardHeightPx,
-			// renderedIds) do not include noteHeightsVersion, so a pure card-height
-			// change frequently does not invalidate it and the repack effect below
-			// never re-runs to reach its "settled" line. Waiting on that meant the
-			// padding got stuck applied indefinitely after a toggle (especially on
-			// collapse, since nothing else was re-triggering a repack) until some
-			// unrelated structural change (or a manual refresh) happened to run the
-			// effect. A timeout guarantees clearing regardless of whether repack
-			// fires at all -- but unlike applying it, clearing it is animated
-			// (clearChecklistScrollBuffer): if the user is scrolled to the bottom
-			// when the buffer disappears, an instant removal makes the browser
-			// clamp scrollTop down in the same frame, snapping every visible card
-			// down the screen. Animating the shrink spreads that adjustment out.
-			//
-			// The buffer is real scrollable space, though, so a user who scrolls
-			// immediately after toggling (before the timeout below clears it) can
-			// scroll into that dead zone -- which then visibly slides back once
-			// the buffer is removed. installChecklistScrollClamp prevents that by
-			// capping scrollY to the section's real (buffer-excluded) bounds for
-			// as long as the buffer is reserved.
+			// Apply bottom padding while any checklist has its completed section
+			// open so expanding cards at the bottom of a column have room to grow
+			// downward without jumping the viewport.
+			if (detail.expanded) {
+				expandedChecklistNoteIdsRef.current.add(detail.noteId);
+			} else {
+				expandedChecklistNoteIdsRef.current.delete(detail.noteId);
+			}
 			const section = sectionRef.current;
 			if (section) {
-				section.style.transition = 'none';
-				section.style.paddingBottom = `${maxCardHeightPxRef.current}px`;
-				installChecklistScrollClamp();
-				if (checklistPaddingClearTimeoutRef.current) {
-					window.clearTimeout(checklistPaddingClearTimeoutRef.current);
-				}
-				checklistPaddingClearTimeoutRef.current = window.setTimeout(() => {
-					checklistPaddingClearTimeoutRef.current = 0;
-					removeChecklistScrollClamp();
-					if (sectionRef.current) clearChecklistScrollBuffer(sectionRef.current);
-				}, CHECKLIST_SCROLL_BUFFER_MS);
+				section.style.paddingBottom = expandedChecklistNoteIdsRef.current.size > 0 ? '50vh' : '';
 			}
 		};
 		const handleRichHeadingToggle = (event: Event): void => {
@@ -1878,13 +1710,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
 				noteCardLayoutRefreshRafRef.current = 0;
 			}
-			if (checklistPaddingClearTimeoutRef.current) {
-				window.clearTimeout(checklistPaddingClearTimeoutRef.current);
-				checklistPaddingClearTimeoutRef.current = 0;
-			}
-			removeChecklistScrollClamp();
 		};
-	}, [installChecklistScrollClamp, removeChecklistScrollClamp]);
+	}, []);
 
 	React.useEffect(() => {
 		docsByIdRef.current = docsById;
@@ -3469,17 +3296,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		expansionAffectedNoteIdsRef.current.clear();
 		recentlyMovedNoteIdsRef.current.clear();
 		repackReasonRef.current = 'settled';
-		// Opportunistic early clear of the transient checklist-toggle scroll
-		// buffer (see handleChecklistToggle) if a repack happens to run and
-		// settle before its own timeout fires. Not the primary mechanism --
-		// this effect's deps do not reliably re-run from a pure card-height
-		// change (packedLayout is not keyed on noteHeightsVersion), so the
-		// timeout in handleChecklistToggle is what actually guarantees clearing.
-		// Uses the same animated clear (not an instant reset) since this can
-		// fire while the user is still scrolled into the reserved space.
-		removeChecklistScrollClamp();
-		if (sectionRef.current) clearChecklistScrollBuffer(sectionRef.current);
-	}, [columnCount, dragManager.activeDragId, isListLikeView, mobileCardWidthPx, mobileGridGapPx, packedLayout.placementDecisions, props.maxCardHeightPx, props.viewMode, removeChecklistScrollClamp, renderedIds.length, resolvedBaseColumns, shouldTemporarilyOverrideGridPlacement, visibleIds]);
+	}, [columnCount, dragManager.activeDragId, isListLikeView, mobileCardWidthPx, mobileGridGapPx, packedLayout.placementDecisions, props.maxCardHeightPx, props.viewMode, renderedIds.length, resolvedBaseColumns, shouldTemporarilyOverrideGridPlacement, visibleIds]);
 
 	// ── Active columns for rendering ──────────────────────────────────────
 	// During drag, use previewColumns (with the card at the insertion point
