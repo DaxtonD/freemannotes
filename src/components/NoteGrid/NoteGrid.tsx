@@ -738,6 +738,27 @@ type GridNoteCardProps = {
 const GRID_LAYOUT_TRANSITION = { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 } as const;
 const GRID_DROP_SETTLE_TRANSITION = { type: 'spring', stiffness: 430, damping: 36, mass: 1 } as const;
 
+// How long the checklist-toggle scroll buffer (see handleChecklistToggle)
+// stays reserved before being force-cleared, and how long its removal takes
+// to animate. Buffer duration comfortably exceeds the couple of frames the
+// ResizeObserver -> freemannotes:note-card-layout-change -> rAF chain
+// normally takes to settle after a toggle.
+const CHECKLIST_SCROLL_BUFFER_MS = 400;
+const CHECKLIST_SCROLL_BUFFER_SHRINK_MS = 220;
+
+/**
+ * Clears the transient checklist-toggle scroll buffer with a short CSS
+ * transition instead of removing it instantly. Removing a large
+ * padding-bottom instantly while the user is scrolled into the space it
+ * reserved makes the browser clamp scrollTop down in the same frame,
+ * snapping every visible card down the screen. Animating the shrink lets
+ * the browser adjust scroll position gradually over the same transition.
+ */
+function clearChecklistScrollBuffer(section: HTMLElement): void {
+	section.style.transition = `padding-bottom ${CHECKLIST_SCROLL_BUFFER_SHRINK_MS}ms ease`;
+	section.style.paddingBottom = '';
+}
+
 const DragPreviewMarkup = React.memo(function DragPreviewMarkup(props: { markup: string }): React.JSX.Element {
 	return <div className={styles.dragPreviewMarkup} aria-hidden="true" dangerouslySetInnerHTML={{ __html: props.markup }} />;
 });
@@ -1680,6 +1701,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			// collapsing (if near the bottom of a column) has room to grow/shrink
 			// without other cards visually jumping before the masonry repack
 			// catches up and recomputes real positions from the new DOM height.
+			// Applied instantly (transition disabled) so the safety margin is
+			// available immediately, before the card has even visually resized.
 			//
 			// Cleared by a fixed timeout rather than by waiting for that repack to
 			// "settle" (tried previously) -- packedLayout's useMemo deps
@@ -1691,19 +1714,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			// collapse, since nothing else was re-triggering a repack) until some
 			// unrelated structural change (or a manual refresh) happened to run the
 			// effect. A timeout guarantees clearing regardless of whether repack
-			// fires at all. 400ms comfortably exceeds the couple of frames the
-			// ResizeObserver -> freemannotes:note-card-layout-change -> rAF chain
-			// normally takes.
+			// fires at all -- but unlike applying it, clearing it is animated
+			// (clearChecklistScrollBuffer): if the user is scrolled to the bottom
+			// when the buffer disappears, an instant removal makes the browser
+			// clamp scrollTop down in the same frame, snapping every visible card
+			// down the screen. Animating the shrink spreads that adjustment out.
 			const section = sectionRef.current;
 			if (section) {
+				section.style.transition = 'none';
 				section.style.paddingBottom = `${maxCardHeightPxRef.current}px`;
 				if (checklistPaddingClearTimeoutRef.current) {
 					window.clearTimeout(checklistPaddingClearTimeoutRef.current);
 				}
 				checklistPaddingClearTimeoutRef.current = window.setTimeout(() => {
 					checklistPaddingClearTimeoutRef.current = 0;
-					if (sectionRef.current) sectionRef.current.style.paddingBottom = '';
-				}, 400);
+					if (sectionRef.current) clearChecklistScrollBuffer(sectionRef.current);
+				}, CHECKLIST_SCROLL_BUFFER_MS);
 			}
 		};
 		const handleRichHeadingToggle = (event: Event): void => {
@@ -3329,7 +3355,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// this effect's deps do not reliably re-run from a pure card-height
 		// change (packedLayout is not keyed on noteHeightsVersion), so the
 		// timeout in handleChecklistToggle is what actually guarantees clearing.
-		if (sectionRef.current) sectionRef.current.style.paddingBottom = '';
+		// Uses the same animated clear (not an instant reset) since this can
+		// fire while the user is still scrolled into the reserved space.
+		if (sectionRef.current) clearChecklistScrollBuffer(sectionRef.current);
 	}, [columnCount, dragManager.activeDragId, isListLikeView, mobileCardWidthPx, mobileGridGapPx, packedLayout.placementDecisions, props.maxCardHeightPx, props.viewMode, renderedIds.length, resolvedBaseColumns, shouldTemporarilyOverrideGridPlacement, visibleIds]);
 
 	// ── Active columns for rendering ──────────────────────────────────────
