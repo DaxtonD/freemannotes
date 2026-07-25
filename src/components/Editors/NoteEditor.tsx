@@ -39,6 +39,7 @@ import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../c
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import { getUserNoteBannerFile, saveUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
+import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
 import {
 	createRichTextDocFromPlainText,
 	ensureChecklistItemRichContent,
@@ -189,7 +190,11 @@ function previewNoteTypeIcon(noteType?: string | null): IconDefinition {
  * Lightweight renderer for ProseMirror JSON content in non-active rows.
  * Handles bold, italic, underline, and hard breaks — no TipTap instance needed.
  */
-function renderRichPreview(json: import('@tiptap/core').JSONContent | null | undefined, onNoteClick?: (noteId: string) => void): React.ReactNode {
+function renderRichPreview(
+	json: import('@tiptap/core').JSONContent | null | undefined,
+	onNoteClick?: (noteId: string) => void,
+	liveAvatarLookup?: ReadonlyMap<string, string | null>
+): React.ReactNode {
 	if (!json?.content) return null;
 	const applyMarks = (node: import('@tiptap/core').JSONContent, content: React.ReactNode, key: React.Key): React.ReactNode => {
 		let element = content;
@@ -236,7 +241,16 @@ function renderRichPreview(json: import('@tiptap/core').JSONContent | null | und
 						const id        = typeof node.attrs?.id        === 'string' ? node.attrs.id        : '';
 						const refType   = node.attrs?.type;
 						const noteType  = node.attrs?.noteType ?? null;
-						const avatarUrl = typeof node.attrs?.avatarUrl === 'string' ? node.attrs.avatarUrl : null;
+						// node.attrs.avatarUrl is captured once at mention-insertion time and
+						// never updated — prefer the live cache (kept current by profile
+						// changes elsewhere in the app) when available, same as NoteCard's
+						// renderInlineNodes. Without this, non-active-row previews and the
+						// drag-clone preview (which never mount the live ReferenceChip node
+						// view) show whichever avatar was current when the mention was made.
+						const storedAvatarUrl = typeof node.attrs?.avatarUrl === 'string' ? node.attrs.avatarUrl : null;
+						const avatarUrl = liveAvatarLookup && refType === 'user' && id
+							? (liveAvatarLookup.get(id) ?? storedAvatarUrl)
+							: storedAvatarUrl;
 						const isNote    = refType === 'note';
 						const isUser    = refType === 'user';
 						const icon      = isNote ? previewNoteTypeIcon(noteType) : null;
@@ -559,6 +573,11 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 		onArrowDownAtBoundary,
 	} = props;
 
+	// Feeds renderRichPreview's non-active-row mention avatar so it reflects
+	// profile changes without needing to reactivate the row (see the comment
+	// on renderRichPreview's storedAvatarUrl/avatarUrl resolution above).
+	const liveAvatarLookup = useLiveAvatarUrlLookup();
+
 	const handleActivate = React.useCallback((): void => {
 		activate(item.id);
 	}, [activate, item.id]);
@@ -589,7 +608,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 
 	if (!isActive) {
 		const previewMap = itemMap ?? findChecklistItemMapById(checklistArray, item.id);
-		const richPreview = renderRichPreview(previewMap ? getChecklistItemRichPreviewJson(previewMap) : null, props.onNoteClick);
+		const richPreview = renderRichPreview(previewMap ? getChecklistItemRichPreviewJson(previewMap) : null, props.onNoteClick, liveAvatarLookup);
 
 		return (
 			<>
@@ -743,6 +762,12 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const { t } = useI18n();
 	const readOnly = props.readOnly === true;
 	const keyboardVisibilityPaddingPx = 88;
+	// Feeds renderRichPreview's mention-chip avatar for the checklist drag clone
+	// and collapsed/completed-section ghost rows — the same reasoning as
+	// ChecklistRowContent's own subscription above (those render paths never
+	// mount the live ReferenceChip node view, so they'd otherwise show
+	// whichever avatar was current at mention-insertion time).
+	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	const [isModified, setIsModified] = React.useState(false);
 	const [mediaDockOpen, setMediaDockOpen] = React.useState(false);
 	const [mediaSheetProgress, setMediaSheetProgress] = React.useState(0);
@@ -2726,7 +2751,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			const { rowWidth, rowHeight, textHeight, textWidth } = dragGhostMetricsRef.current;
 			const draggedMap = dragged ? checklistMapsById.get(dragged.id) : undefined;
 			const draggedRichJson = draggedMap ? getChecklistItemRichPreviewJson(draggedMap) : null;
-			const richPreview = renderRichPreview(draggedRichJson);
+			const richPreview = renderRichPreview(draggedRichJson, undefined, liveAvatarLookup);
 			const isActiveClone = dragged !== null && activeChecklistRowId === dragged.id;
 			const previewContent = richPreview || dragged?.text || '\u00A0';
 			const dragStyle = dragProvided.draggableProps.style ?? {};
@@ -2751,7 +2776,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					<button type="button" className={styles.dragHandle} aria-label={t('editors.dragHandle')} {...dragProvided.dragHandleProps}>
 						<FontAwesomeIcon icon={faGripVertical} />
 					</button>
-					<input type="checkbox" className={styles.checklistCheckbox} checked={Boolean(dragged?.completed)} readOnly />
+					{/* Wrapped in the same .checklistCheckboxHitArea label as the live row —
+					    the CSS positions the checkbox differently depending on whether that
+					    wrapper is present, so a bare <input> here shifted position vs. the
+					    live row and snapped back on drop. */}
+					<label className={styles.checklistCheckboxHitArea} aria-hidden="true">
+						<input type="checkbox" className={styles.checklistCheckbox} checked={Boolean(dragged?.completed)} readOnly />
+					</label>
 					{isActiveClone ? (
 						<div className={styles.checklistRowRichShell}>
 							{dragged ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(dragged)}</span> : null}
@@ -2774,7 +2805,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				</li>
 			);
 		},
-		[activeChecklistRowId, activeItems, checklistMapsById, editorColorStyle, isCoarsePointer, t]
+		[activeChecklistRowId, activeItems, checklistMapsById, editorColorStyle, isCoarsePointer, liveAvatarLookup, t]
 	);
 
 	if (readOnly) {
@@ -3404,7 +3435,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 														<input type="checkbox" className={styles.checklistCheckbox} checked={false} disabled readOnly tabIndex={-1} />
 													</label>
 													<div className={styles.checklistRowPreview}>
-														{renderChecklistPreviewContent(item, renderRichPreview(getChecklistItemRichPreviewJson(checklistMapsById.get(item.id) ?? null), props.onOpenNote) || item.text || '\u00A0')}
+														{renderChecklistPreviewContent(item, renderRichPreview(getChecklistItemRichPreviewJson(checklistMapsById.get(item.id) ?? null), props.onOpenNote, liveAvatarLookup) || item.text || '\u00A0')}
 													</div>
 												</li>
 											) : (

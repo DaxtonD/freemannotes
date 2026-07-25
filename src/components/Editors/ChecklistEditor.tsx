@@ -1316,7 +1316,13 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 					<button type="button" className={styles.dragHandle} aria-label={t('editors.dragHandle')} {...dragProvided.dragHandleProps}>
 						<FontAwesomeIcon icon={faGripVertical} />
 					</button>
-					<input type="checkbox" className={styles.checklistCheckbox} checked={Boolean(dragged?.completed)} readOnly />
+					{/* Wrapped in the same .checklistCheckboxHitArea label as the live row —
+					    the CSS positions the checkbox differently depending on whether that
+					    wrapper is present, so a bare <input> here shifted position vs. the
+					    live row and snapped back on drop. */}
+					<label className={styles.checklistCheckboxHitArea} aria-hidden="true">
+						<input type="checkbox" className={styles.checklistCheckbox} checked={Boolean(dragged?.completed)} readOnly />
+					</label>
 					{isActiveClone ? (
 						<div className={styles.checklistRowRichShell}>
 							{dragged ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(dragged)}</span> : null}
