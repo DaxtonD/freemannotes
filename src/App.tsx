@@ -3221,6 +3221,14 @@ export function App(): React.JSX.Element {
 				showBriefDialog('failed to save note');
 				return;
 			}
+			// Mirrors closeNoteEditor's flush-mentions call. Without this, self-mentions
+			// added during a brand-new note's first save session queue server-side but
+			// are never flushed into a real inbox notification — nothing else prompts
+			// the server to flush until the note's WS room disconnects (which normal
+			// editor open/close never does).
+			if (closingNoteId) {
+				void fetch(`/api/notes/${closingNoteId}/flush-mentions`, { method: 'POST' }).catch(() => {});
+			}
 		}
 		if (attachedParentNoteId) {
 			openNoteEditor(attachedParentNoteId, { replaceTop: true });
@@ -3255,6 +3263,14 @@ export function App(): React.JSX.Element {
 				console.error('Failed to save pending note draft', error);
 				showBriefDialog('failed to save note');
 				return;
+			}
+			// Mirrors closeNoteEditor's flush-mentions call. Without this, self-mentions
+			// added during a brand-new note's first save session queue server-side but
+			// are never flushed into a real inbox notification — nothing else prompts
+			// the server to flush until the note's WS room disconnects (which normal
+			// editor open/close never does).
+			if (closingNoteId) {
+				void fetch(`/api/notes/${closingNoteId}/flush-mentions`, { method: 'POST' }).catch(() => {});
 			}
 		}
 		if (goBackIfOverlayHistory()) {
