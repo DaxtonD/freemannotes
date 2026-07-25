@@ -1439,8 +1439,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// the buffer is removed -- the buffer is real scrollable space, so nothing
 	// else stops the user from reaching it in the meantime.
 	const checklistScrollClampHandlerRef = React.useRef<(() => void) | null>(null);
+	// rAF handle for the throttle below; also doubles as the "a correction is
+	// in flight" guard.
+	const checklistScrollClampRafRef = React.useRef<number>(0);
 	const removeChecklistScrollClamp = React.useCallback((): void => {
-		if (typeof window === 'undefined' || !checklistScrollClampHandlerRef.current) return;
+		if (typeof window === 'undefined') return;
+		if (checklistScrollClampRafRef.current) {
+			window.cancelAnimationFrame(checklistScrollClampRafRef.current);
+			checklistScrollClampRafRef.current = 0;
+		}
+		if (!checklistScrollClampHandlerRef.current) return;
 		window.removeEventListener('scroll', checklistScrollClampHandlerRef.current);
 		checklistScrollClampHandlerRef.current = null;
 	}, []);
@@ -1448,17 +1456,29 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (typeof window === 'undefined') return;
 		removeChecklistScrollClamp();
 		const handleScroll = (): void => {
-			// The buffer we reserved is exactly maxCardHeightPxRef.current px, so
-			// subtracting it from the current (buffer-inflated) scrollHeight always
-			// yields the real content's scroll bound, even as the real content
-			// height itself keeps changing while the repack catches up.
-			const maxAllowedScrollY = Math.max(
-				0,
-				document.documentElement.scrollHeight - maxCardHeightPxRef.current - window.innerHeight
-			);
-			if (window.scrollY > maxAllowedScrollY) {
-				window.scrollTo({ top: maxAllowedScrollY, behavior: 'auto' });
-			}
+			// Batch to at most one correction check per animation frame. Calling
+			// scrollTo() below dispatches its own 'scroll' event (in most
+			// browsers, asynchronously), which would otherwise re-enter this same
+			// handler and re-correct against its own prior correction -- with any
+			// sub-pixel rounding difference between our computed target and what
+			// the browser actually applies, that self-triggering loop oscillates
+			// rather than settling. rAF coalescing plus the 1px tolerance below
+			// break the loop instead of just reacting to it after the fact.
+			if (checklistScrollClampRafRef.current) return;
+			checklistScrollClampRafRef.current = window.requestAnimationFrame(() => {
+				checklistScrollClampRafRef.current = 0;
+				// The buffer we reserved is exactly maxCardHeightPxRef.current px, so
+				// subtracting it from the current (buffer-inflated) scrollHeight
+				// always yields the real content's scroll bound, even as the real
+				// content height itself keeps changing while the repack catches up.
+				const maxAllowedScrollY = Math.max(
+					0,
+					document.documentElement.scrollHeight - maxCardHeightPxRef.current - window.innerHeight
+				);
+				if (window.scrollY > maxAllowedScrollY + 1) {
+					window.scrollTo({ top: maxAllowedScrollY, behavior: 'auto' });
+				}
+			});
 		};
 		checklistScrollClampHandlerRef.current = handleScroll;
 		window.addEventListener('scroll', handleScroll, { passive: true });
