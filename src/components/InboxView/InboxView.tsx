@@ -430,6 +430,12 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		}
 		touch.moved = true;
 		e.preventDefault();
+		// App.tsx has a document-level touchmove listener (bubble phase, not capture)
+		// that opens the mobile sidebar on a left-edge right-swipe. preventDefault()
+		// alone doesn't stop the native event from continuing to bubble to it, so a
+		// card swipe starting near the screen edge dragged the sidebar open in sync
+		// with the card. stopPropagation() keeps this gesture from reaching document.
+		e.stopPropagation();
 		setSwipeOffsets((prev) => ({ ...prev, [activityId]: dx }));
 	}, []);
 
