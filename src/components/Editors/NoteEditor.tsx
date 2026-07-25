@@ -27,7 +27,7 @@ import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
-import { getChecklistDragAxis, getChecklistHorizontalDirection, registerChecklistDragMaxY, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
+import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { getDeviceId } from '../../core/deviceId';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { immediateChecklistSensors } from '../../core/dndSensors';
@@ -1423,12 +1423,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
 	const completedSectionRef = React.useRef<HTMLElement | null>(null);
-	const dragMaxYUnregisterRef = React.useRef<(() => void) | null>(null);
-	React.useEffect(() => {
-		// Defensive: if the editor unmounts mid-drag (e.g. navigating away)
-		// without onDragEnd firing, don't leave a stale getter registered.
-		return () => dragMaxYUnregisterRef.current?.();
-	}, []);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
 	const [activeChecklistAutocompleteText, setActiveChecklistAutocompleteText] = React.useState('');
@@ -3264,16 +3258,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								enableDefaultSensors={false}
 								sensors={immediateChecklistSensors}
 								onBeforeCapture={onChecklistBeforeCapture}
-								onDragStart={(event) => {
-									onChecklistDragStart(event);
-									dragMaxYUnregisterRef.current?.();
-									dragMaxYUnregisterRef.current = registerChecklistDragMaxY(
-										() => completedSectionRef.current?.getBoundingClientRect().top ?? null
-									);
-								}}
+								onDragStart={onChecklistDragStart}
 								onDragEnd={(event) => {
-									dragMaxYUnregisterRef.current?.();
-									dragMaxYUnregisterRef.current = null;
 									const scrollEl = checklistScrollRef.current;
 									const savedScroll = scrollEl ? scrollEl.scrollTop : null;
 									const scrollGuard = (): void => {

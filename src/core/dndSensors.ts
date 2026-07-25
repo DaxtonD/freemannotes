@@ -7,7 +7,7 @@ import {
 	type Sensor,
 	type SensorAPI,
 } from '@hello-pangea/dnd';
-import { clampChecklistDragY, fireHorizontalSnap } from './checklistDragState';
+import { fireHorizontalSnap } from './checklistDragState';
 
 // ── State machine ─────────────────────────────────────────────────────────
 // idle     → pointer down → pending (PreDragActions held, NO visual drag)
@@ -495,13 +495,13 @@ function useImmediatePointerSensor(api: SensorAPI): void {
 							pointerType: phase.pointerType,
 						});
 					}
-					fluidActions.move({ x: phase.startPoint.x, y: clampChecklistDragY(pointNow.y) });
+					fluidActions.move({ x: phase.startPoint.x, y: pointNow.y });
 					return;
 				}
 
 				if (phase.type === 'dragging') {
 					event.preventDefault();
-					phase.actions.move({ x: phase.startPoint.x, y: clampChecklistDragY(event.clientY) });
+					phase.actions.move({ x: phase.startPoint.x, y: event.clientY });
 				}
 			};
 
