@@ -43,29 +43,3 @@ export function registerHorizontalSnapHandler(handler: HorizontalSnapHandler): (
 export function fireHorizontalSnap(draggableId: string, direction: 'left' | 'right'): void {
 	if (horizontalSnapHandler) horizontalSnapHandler(draggableId, direction);
 }
-
-// ── Vertical drag Y clamp ──────────────────────────────────────────────────
-// The active checklist editor registers a getter returning the maximum
-// clientY the drag sensor should report to @hello-pangea/dnd — the top edge
-// of the completed-items section, which an active (unchecked) row can never
-// actually be dropped into. Clamping at the sensor (the source of the
-// coordinates fed into the library) rather than reacting to the library's
-// own auto-scroll/clone position afterward freezes the dragged clone at that
-// boundary and keeps auto-scroll (driven by this same reported position)
-// from ever requesting a scroll past it — no fighting the library's own
-// scroll loop, no oscillation.
-
-type ChecklistDragMaxYGetter = () => number | null;
-let checklistDragMaxYGetter: ChecklistDragMaxYGetter | null = null;
-
-export function registerChecklistDragMaxY(getter: ChecklistDragMaxYGetter): () => void {
-	checklistDragMaxYGetter = getter;
-	return () => {
-		if (checklistDragMaxYGetter === getter) checklistDragMaxYGetter = null;
-	};
-}
-
-export function clampChecklistDragY(y: number): number {
-	const maxY = checklistDragMaxYGetter?.();
-	return typeof maxY === 'number' ? Math.min(y, maxY) : y;
-}

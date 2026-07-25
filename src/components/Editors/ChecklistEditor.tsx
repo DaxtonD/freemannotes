@@ -32,7 +32,7 @@ import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { createRichTextDocFromPlainText, getPlainTextFromRichJson, splitMinimalRichTextAtSelection } from '../../core/richText';
 import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, removeChecklistItemWithChildren, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
-import { getChecklistDragAxis, getChecklistHorizontalDirection, registerChecklistDragMaxY, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
+import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
@@ -638,12 +638,6 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	});
 	const completedSectionRef = React.useRef<HTMLElement | null>(null);
 	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
-	const dragMaxYUnregisterRef = React.useRef<(() => void) | null>(null);
-	React.useEffect(() => {
-		// Defensive: if the editor unmounts mid-drag (e.g. navigating away)
-		// without onDragEnd firing, don't leave a stale getter registered.
-		return () => dragMaxYUnregisterRef.current?.();
-	}, []);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeRowId, setActiveRowId] = React.useState<string | null>(null);
 	const [activeRowAutocompleteText, setActiveRowAutocompleteText] = React.useState('');
@@ -1565,17 +1559,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						enableDefaultSensors={false}
 						sensors={immediateChecklistSensors}
 						onBeforeCapture={onBeforeCapture}
-						onDragStart={(event) => {
-							onDragStart(event);
-							dragMaxYUnregisterRef.current?.();
-							dragMaxYUnregisterRef.current = registerChecklistDragMaxY(
-								() => completedSectionRef.current?.getBoundingClientRect().top ?? null
-							);
-						}}
+						onDragStart={onDragStart}
 						onDragUpdate={onDragUpdate}
 						onDragEnd={(event) => {
-							dragMaxYUnregisterRef.current?.();
-							dragMaxYUnregisterRef.current = null;
 							const scrollEl = checklistScrollRef.current;
 							const savedScroll = scrollEl ? scrollEl.scrollTop : null;
 							// Scroll guard: intercept any scroll event and snap back to
