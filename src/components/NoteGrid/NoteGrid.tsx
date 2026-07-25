@@ -1401,9 +1401,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const pendingCommittedVisibleOrderRef = React.useRef<string[] | null>(null);
 	const appliedLayoutCacheKeyRef = React.useRef<string | null>(null);
 	const sectionRef = React.useRef<HTMLElement | null>(null);
-	// Tracks which checklist cards currently have their completed section open.
-	// Used to apply padding-bottom to the section only while any card is expanded.
-	const expandedChecklistNoteIdsRef = React.useRef<Set<string>>(new Set());
 	// Kept current on every render (read inside a mount-once effect closure) so the
 	// checklist-expand padding reservation below always uses the live card-height
 	// ceiling, including if the user changes it mid-session via Appearance settings.
@@ -1675,25 +1672,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			expansionAffectedNoteIdsRef.current.add(detail.noteId);
 			invalidatedNoteReasonsRef.current.set(detail.noteId, repackReasonRef.current);
 			debugChecklistToggle(detail.noteId, Boolean(detail.expanded));
-			// Apply bottom padding while any checklist has its completed section
-			// open so expanding cards at the bottom of a column have room to grow
-			// downward without jumping the viewport. Reserve one card's worth of
-			// the user's own max-card-height setting (not a fixed 50vh) — 50vh let
-			// the grid scroll far past its actual content on top of what the repack
-			// itself already needs, and didn't scale with the user's card-height
-			// preference. maxCardHeightPx is the same ceiling NoteCard itself uses
-			// for a checklist card's expanded height, so it's a tight, correctly
-			// proportioned bound rather than a viewport-relative guess.
-			if (detail.expanded) {
-				expandedChecklistNoteIdsRef.current.add(detail.noteId);
-			} else {
-				expandedChecklistNoteIdsRef.current.delete(detail.noteId);
-			}
+			// Reserve a brief, transient scroll buffer so the card expanding or
+			// collapsing (if near the bottom of a column) has room to grow/shrink
+			// without other cards visually jumping before the masonry repack --
+			// triggered a few frames later via NoteCard's own ResizeObserver ->
+			// freemannotes:note-card-layout-change -> noteHeightsVersion bump --
+			// catches up and recomputes real positions. Cleared unconditionally
+			// the moment that repack settles (see the "repackReasonRef.current =
+			// 'settled'" repack effect below), NOT kept alive for as long as a
+			// dropdown happens to stay open. The previous version tied this to
+			// "is any checklist still expanded" and only cleared it when the user
+			// explicitly collapsed one, which is why it kept letting the grid
+			// scroll well past its real content for the entire time a card was
+			// left expanded, on both desktop and mobile.
 			const section = sectionRef.current;
 			if (section) {
-				section.style.paddingBottom = expandedChecklistNoteIdsRef.current.size > 0
-					? `${maxCardHeightPxRef.current}px`
-					: '';
+				section.style.paddingBottom = `${maxCardHeightPxRef.current}px`;
 			}
 		};
 		const handleRichHeadingToggle = (event: Event): void => {
@@ -3309,6 +3303,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		expansionAffectedNoteIdsRef.current.clear();
 		recentlyMovedNoteIdsRef.current.clear();
 		repackReasonRef.current = 'settled';
+		// The repack above has just recomputed real positions/heights from the
+		// current DOM, so any transient scroll buffer reserved by a checklist
+		// toggle (handleChecklistToggle) is no longer needed -- clear it here
+		// rather than leaving it applied for as long as a dropdown stays open.
+		if (sectionRef.current) sectionRef.current.style.paddingBottom = '';
 	}, [columnCount, dragManager.activeDragId, isListLikeView, mobileCardWidthPx, mobileGridGapPx, packedLayout.placementDecisions, props.maxCardHeightPx, props.viewMode, renderedIds.length, resolvedBaseColumns, shouldTemporarilyOverrideGridPlacement, visibleIds]);
 
 	// ── Active columns for rendering ──────────────────────────────────────
