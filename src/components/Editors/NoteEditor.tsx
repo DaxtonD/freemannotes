@@ -27,7 +27,7 @@ import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
-import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
+import { getChecklistDragAxis, getChecklistHorizontalDirection, registerChecklistDragMaxY, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { getDeviceId } from '../../core/deviceId';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { immediateChecklistSensors } from '../../core/dndSensors';
@@ -487,29 +487,6 @@ function getChecklistAutoScrollTarget(container: HTMLElement, completedSection: 
 	const completedRect = completedSection.getBoundingClientRect();
 	const completedTop = container.scrollTop + (completedRect.top - containerRect.top);
 	return Math.max(0, Math.min(maxScrollTop, completedTop - container.clientHeight + 12));
-}
-
-/**
- * While an active (unchecked) row is being dragged, @hello-pangea/dnd's own
- * auto-scroll only knows about the scroll container's edges — not that the
- * completed-items section below the active Droppable is never a valid drop
- * target. Left alone, dragging near the bottom of the visible area scrolls
- * the completed section into view for no reason (it's outside the Droppable,
- * so nothing can actually be dropped there). Clamping scrollTop to the same
- * boundary getChecklistAutoScrollTarget already computes for the "scroll to
- * reveal a new item" feature keeps the completed section off-screen for the
- * duration of the drag. Returns a cleanup function to call on drag end.
- */
-function installChecklistDragScrollClamp(container: HTMLElement, completedSection: HTMLElement | null): () => void {
-	const maxAllowedScrollTop = getChecklistAutoScrollTarget(container, completedSection);
-	const clamp = (): void => {
-		if (container.scrollTop > maxAllowedScrollTop) {
-			container.scrollTop = maxAllowedScrollTop;
-		}
-	};
-	clamp();
-	container.addEventListener('scroll', clamp, { passive: true });
-	return () => container.removeEventListener('scroll', clamp);
 }
 
 function animateFastScrollToBottom(container: HTMLElement, targetScrollTop?: number): () => void {
@@ -1446,11 +1423,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	);
 	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
 	const completedSectionRef = React.useRef<HTMLElement | null>(null);
-	const dragScrollClampCleanupRef = React.useRef<(() => void) | null>(null);
+	const dragMaxYUnregisterRef = React.useRef<(() => void) | null>(null);
 	React.useEffect(() => {
 		// Defensive: if the editor unmounts mid-drag (e.g. navigating away)
-		// without onDragEnd firing, don't leak the scroll listener.
-		return () => dragScrollClampCleanupRef.current?.();
+		// without onDragEnd firing, don't leave a stale getter registered.
+		return () => dragMaxYUnregisterRef.current?.();
 	}, []);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeChecklistRowId, setActiveChecklistRowId] = React.useState<string | null>(null);
@@ -3289,15 +3266,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								onBeforeCapture={onChecklistBeforeCapture}
 								onDragStart={(event) => {
 									onChecklistDragStart(event);
-									const scrollEl = checklistScrollRef.current;
-									if (scrollEl) {
-										dragScrollClampCleanupRef.current?.();
-										dragScrollClampCleanupRef.current = installChecklistDragScrollClamp(scrollEl, completedSectionRef.current);
-									}
+									dragMaxYUnregisterRef.current?.();
+									dragMaxYUnregisterRef.current = registerChecklistDragMaxY(
+										() => completedSectionRef.current?.getBoundingClientRect().top ?? null
+									);
 								}}
 								onDragEnd={(event) => {
-									dragScrollClampCleanupRef.current?.();
-									dragScrollClampCleanupRef.current = null;
+									dragMaxYUnregisterRef.current?.();
+									dragMaxYUnregisterRef.current = null;
 									const scrollEl = checklistScrollRef.current;
 									const savedScroll = scrollEl ? scrollEl.scrollTop : null;
 									const scrollGuard = (): void => {
