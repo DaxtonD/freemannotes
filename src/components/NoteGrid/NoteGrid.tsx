@@ -1406,6 +1406,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// ceiling, including if the user changes it mid-session via Appearance settings.
 	const maxCardHeightPxRef = React.useRef(props.maxCardHeightPx);
 	maxCardHeightPxRef.current = props.maxCardHeightPx;
+	// Guarantees the transient checklist-toggle scroll buffer (see
+	// handleChecklistToggle) always gets cleared, regardless of whether a
+	// masonry repack happens to run in response to the height change.
+	const checklistPaddingClearTimeoutRef = React.useRef<number>(0);
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
 	const viewportAnchorColumnsRef = React.useRef<Map<string, number>>(new Map());
@@ -1674,20 +1678,32 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			debugChecklistToggle(detail.noteId, Boolean(detail.expanded));
 			// Reserve a brief, transient scroll buffer so the card expanding or
 			// collapsing (if near the bottom of a column) has room to grow/shrink
-			// without other cards visually jumping before the masonry repack --
-			// triggered a few frames later via NoteCard's own ResizeObserver ->
-			// freemannotes:note-card-layout-change -> noteHeightsVersion bump --
-			// catches up and recomputes real positions. Cleared unconditionally
-			// the moment that repack settles (see the "repackReasonRef.current =
-			// 'settled'" repack effect below), NOT kept alive for as long as a
-			// dropdown happens to stay open. The previous version tied this to
-			// "is any checklist still expanded" and only cleared it when the user
-			// explicitly collapsed one, which is why it kept letting the grid
-			// scroll well past its real content for the entire time a card was
-			// left expanded, on both desktop and mobile.
+			// without other cards visually jumping before the masonry repack
+			// catches up and recomputes real positions from the new DOM height.
+			//
+			// Cleared by a fixed timeout rather than by waiting for that repack to
+			// "settle" (tried previously) -- packedLayout's useMemo deps
+			// (columnCount, mobileGridGapPx, packedHeightLookup, maxCardHeightPx,
+			// renderedIds) do not include noteHeightsVersion, so a pure card-height
+			// change frequently does not invalidate it and the repack effect below
+			// never re-runs to reach its "settled" line. Waiting on that meant the
+			// padding got stuck applied indefinitely after a toggle (especially on
+			// collapse, since nothing else was re-triggering a repack) until some
+			// unrelated structural change (or a manual refresh) happened to run the
+			// effect. A timeout guarantees clearing regardless of whether repack
+			// fires at all. 400ms comfortably exceeds the couple of frames the
+			// ResizeObserver -> freemannotes:note-card-layout-change -> rAF chain
+			// normally takes.
 			const section = sectionRef.current;
 			if (section) {
 				section.style.paddingBottom = `${maxCardHeightPxRef.current}px`;
+				if (checklistPaddingClearTimeoutRef.current) {
+					window.clearTimeout(checklistPaddingClearTimeoutRef.current);
+				}
+				checklistPaddingClearTimeoutRef.current = window.setTimeout(() => {
+					checklistPaddingClearTimeoutRef.current = 0;
+					if (sectionRef.current) sectionRef.current.style.paddingBottom = '';
+				}, 400);
 			}
 		};
 		const handleRichHeadingToggle = (event: Event): void => {
@@ -1716,6 +1732,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			if (noteCardLayoutRefreshRafRef.current) {
 				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
 				noteCardLayoutRefreshRafRef.current = 0;
+			}
+			if (checklistPaddingClearTimeoutRef.current) {
+				window.clearTimeout(checklistPaddingClearTimeoutRef.current);
+				checklistPaddingClearTimeoutRef.current = 0;
 			}
 		};
 	}, []);
@@ -3303,10 +3323,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		expansionAffectedNoteIdsRef.current.clear();
 		recentlyMovedNoteIdsRef.current.clear();
 		repackReasonRef.current = 'settled';
-		// The repack above has just recomputed real positions/heights from the
-		// current DOM, so any transient scroll buffer reserved by a checklist
-		// toggle (handleChecklistToggle) is no longer needed -- clear it here
-		// rather than leaving it applied for as long as a dropdown stays open.
+		// Opportunistic early clear of the transient checklist-toggle scroll
+		// buffer (see handleChecklistToggle) if a repack happens to run and
+		// settle before its own timeout fires. Not the primary mechanism --
+		// this effect's deps do not reliably re-run from a pure card-height
+		// change (packedLayout is not keyed on noteHeightsVersion), so the
+		// timeout in handleChecklistToggle is what actually guarantees clearing.
 		if (sectionRef.current) sectionRef.current.style.paddingBottom = '';
 	}, [columnCount, dragManager.activeDragId, isListLikeView, mobileCardWidthPx, mobileGridGapPx, packedLayout.placementDecisions, props.maxCardHeightPx, props.viewMode, renderedIds.length, resolvedBaseColumns, shouldTemporarilyOverrideGridPlacement, visibleIds]);
 
