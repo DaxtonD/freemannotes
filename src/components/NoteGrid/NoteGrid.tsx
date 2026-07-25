@@ -759,6 +759,58 @@ function clearChecklistScrollBuffer(section: HTMLElement): void {
 	section.style.paddingBottom = '';
 }
 
+// ── Scroll host abstraction ────────────────────────────────────────────────
+// The notes grid usually scrolls the page (window/document.documentElement),
+// but on an installed iOS PWA (.test-harness-root.ios-standalone-pwa) the
+// root shell itself is the overflow:auto container instead -- window.scrollY
+// never changes there, so a clamp hardcoded to window silently does nothing.
+// Walking up from the grid section (mirrors findScrollableAncestor in
+// NoteEditor.tsx) finds whichever ancestor is actually scrollable so the
+// checklist-toggle scroll clamp targets the right element regardless of
+// platform/display mode.
+type ScrollHost = { element: HTMLElement } | { element: null };
+
+function findChecklistScrollHost(startNode: HTMLElement | null): ScrollHost {
+	let current = startNode?.parentElement ?? null;
+	while (current) {
+		const style = window.getComputedStyle(current);
+		const overflowY = style.overflowY;
+		const isScrollable = (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
+			&& current.scrollHeight > current.clientHeight + 1;
+		if (isScrollable) return { element: current };
+		current = current.parentElement;
+	}
+	return { element: null };
+}
+
+function getScrollHostY(host: ScrollHost): number {
+	return host.element ? host.element.scrollTop : window.scrollY;
+}
+
+function getScrollHostHeight(host: ScrollHost): number {
+	return host.element ? host.element.scrollHeight : document.documentElement.scrollHeight;
+}
+
+function getScrollHostClientHeight(host: ScrollHost): number {
+	return host.element ? host.element.clientHeight : window.innerHeight;
+}
+
+function scrollHostTo(host: ScrollHost, top: number): void {
+	if (host.element) {
+		host.element.scrollTop = top;
+	} else {
+		window.scrollTo({ top, behavior: 'auto' });
+	}
+}
+
+function addScrollHostListener(host: ScrollHost, handler: () => void): void {
+	(host.element ?? window).addEventListener('scroll', handler, { passive: true });
+}
+
+function removeScrollHostListener(host: ScrollHost, handler: () => void): void {
+	(host.element ?? window).removeEventListener('scroll', handler);
+}
+
 const DragPreviewMarkup = React.memo(function DragPreviewMarkup(props: { markup: string }): React.JSX.Element {
 	return <div className={styles.dragPreviewMarkup} aria-hidden="true" dangerouslySetInnerHTML={{ __html: props.markup }} />;
 });
@@ -1431,14 +1483,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// handleChecklistToggle) always gets cleared, regardless of whether a
 	// masonry repack happens to run in response to the height change.
 	const checklistPaddingClearTimeoutRef = React.useRef<number>(0);
-	// Holds the active window 'scroll' listener (if any) that clamps the user's
-	// scroll position to the section's real content bounds while the transient
+	// Holds the active scroll listener (if any) that clamps the user's scroll
+	// position to the section's real content bounds while the transient
 	// checklist-toggle padding-bottom buffer is reserved. Without this, a user
 	// who scrolls immediately after toggling (before the buffer clears) can
 	// scroll into the reserved dead zone, which then visibly slides back once
 	// the buffer is removed -- the buffer is real scrollable space, so nothing
 	// else stops the user from reaching it in the meantime.
 	const checklistScrollClampHandlerRef = React.useRef<(() => void) | null>(null);
+	// The element the above listener is attached to (or null for window),
+	// resolved fresh on each install via findChecklistScrollHost -- kept so
+	// remove can target the exact same host it was added to.
+	const checklistScrollClampHostRef = React.useRef<ScrollHost>({ element: null });
 	// rAF handle for the throttle below; also doubles as the "a correction is
 	// in flight" guard.
 	const checklistScrollClampRafRef = React.useRef<number>(0);
@@ -1449,12 +1505,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			checklistScrollClampRafRef.current = 0;
 		}
 		if (!checklistScrollClampHandlerRef.current) return;
-		window.removeEventListener('scroll', checklistScrollClampHandlerRef.current);
+		removeScrollHostListener(checklistScrollClampHostRef.current, checklistScrollClampHandlerRef.current);
 		checklistScrollClampHandlerRef.current = null;
 	}, []);
 	const installChecklistScrollClamp = React.useCallback((): void => {
 		if (typeof window === 'undefined') return;
 		removeChecklistScrollClamp();
+		const host = findChecklistScrollHost(sectionRef.current);
+		checklistScrollClampHostRef.current = host;
 		const handleScroll = (): void => {
 			// Batch to at most one correction check per animation frame. Calling
 			// scrollTo() below dispatches its own 'scroll' event (in most
@@ -1468,20 +1526,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			checklistScrollClampRafRef.current = window.requestAnimationFrame(() => {
 				checklistScrollClampRafRef.current = 0;
 				// The buffer we reserved is exactly maxCardHeightPxRef.current px, so
-				// subtracting it from the current (buffer-inflated) scrollHeight
+				// subtracting it from the current (buffer-inflated) scroll height
 				// always yields the real content's scroll bound, even as the real
 				// content height itself keeps changing while the repack catches up.
 				const maxAllowedScrollY = Math.max(
 					0,
-					document.documentElement.scrollHeight - maxCardHeightPxRef.current - window.innerHeight
+					getScrollHostHeight(host) - maxCardHeightPxRef.current - getScrollHostClientHeight(host)
 				);
-				if (window.scrollY > maxAllowedScrollY + 1) {
-					window.scrollTo({ top: maxAllowedScrollY, behavior: 'auto' });
+				if (getScrollHostY(host) > maxAllowedScrollY + 1) {
+					scrollHostTo(host, maxAllowedScrollY);
 				}
 			});
 		};
 		checklistScrollClampHandlerRef.current = handleScroll;
-		window.addEventListener('scroll', handleScroll, { passive: true });
+		addScrollHostListener(host, handleScroll);
 	}, [removeChecklistScrollClamp]);
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
