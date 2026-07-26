@@ -1,17 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="520" height="240" viewBox="0 0 520 240">
   <defs>
-    <filter id="tex" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="linearRGB">
+    <filter id="tex_journal_dark" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="linearRGB">
       <feTurbulence type="fractalNoise" baseFrequency="0.60" numOctaves="4" seed="12" stitchTiles="stitch" result="n"/>
       <feColorMatrix in="n" type="saturate" values="0" result="gn"/>
       <feBlend in="SourceGraphic" in2="gn" mode="overlay"/>
     </filter>
-    <linearGradient id="hfade_journal" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="hfade_journal_dark" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%"  stop-color="#0E180A" stop-opacity="0"/>
       <stop offset="50%" stop-color="#0E180A" stop-opacity="0"/>
       <stop offset="82%" stop-color="#0E180A" stop-opacity="0.92"/>
       <stop offset="100%" stop-color="#0E180A" stop-opacity="1"/>
     </linearGradient>
-    <linearGradient id="vign_journal" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="vign_journal_dark" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%"   stop-color="#80B860" stop-opacity="0.04"/>
       <stop offset="100%" stop-color="#80B860" stop-opacity="0.09"/>
     </linearGradient>
@@ -19,88 +19,82 @@
 
   <!-- base -->
   <rect width="520" height="240" fill="#0E180A"/>
-  <rect width="520" height="240" fill="url(#vign_journal)"/>
+  <rect width="520" height="240" fill="url(#vign_journal_dark)"/>
 
   <!-- diagonal hatch -->
   <g>
-    <line x1="-144" y1="0" x2="96" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="-126" y1="0" x2="114" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="-108" y1="0" x2="132" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="-90" y1="0" x2="150" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="-72" y1="0" x2="168" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="-54" y1="0" x2="186" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="-36" y1="0" x2="204" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="-18" y1="0" x2="222" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="0" y1="0" x2="240" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="18" y1="0" x2="258" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="36" y1="0" x2="276" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="54" y1="0" x2="294" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="72" y1="0" x2="312" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="90" y1="0" x2="330" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="108" y1="0" x2="348" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="126" y1="0" x2="366" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="144" y1="0" x2="384" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="162" y1="0" x2="402" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="180" y1="0" x2="420" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="198" y1="0" x2="438" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="216" y1="0" x2="456" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="234" y1="0" x2="474" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="252" y1="0" x2="492" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="270" y1="0" x2="510" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="288" y1="0" x2="528" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="306" y1="0" x2="546" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="324" y1="0" x2="564" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="342" y1="0" x2="582" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="360" y1="0" x2="600" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="378" y1="0" x2="618" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="396" y1="0" x2="636" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="414" y1="0" x2="654" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="432" y1="0" x2="672" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="450" y1="0" x2="690" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="468" y1="0" x2="708" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="486" y1="0" x2="726" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="504" y1="0" x2="744" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="522" y1="0" x2="762" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-      <line x1="540" y1="0" x2="780" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
-    <rect width="520" height="240" fill="url(#hfade_journal)"/>
+    <line x1="-240" y1="0" x2="0" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-222" y1="0" x2="18" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-204" y1="0" x2="36" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-186" y1="0" x2="54" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-168" y1="0" x2="72" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-150" y1="0" x2="90" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-132" y1="0" x2="108" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-114" y1="0" x2="126" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-96" y1="0" x2="144" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-78" y1="0" x2="162" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-60" y1="0" x2="180" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-42" y1="0" x2="198" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-24" y1="0" x2="216" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="-6" y1="0" x2="234" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="12" y1="0" x2="252" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="30" y1="0" x2="270" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="48" y1="0" x2="288" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="66" y1="0" x2="306" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="84" y1="0" x2="324" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="102" y1="0" x2="342" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="120" y1="0" x2="360" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="138" y1="0" x2="378" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="156" y1="0" x2="396" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="174" y1="0" x2="414" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="192" y1="0" x2="432" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="210" y1="0" x2="450" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="228" y1="0" x2="468" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="246" y1="0" x2="486" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="264" y1="0" x2="504" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="282" y1="0" x2="522" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="300" y1="0" x2="540" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="318" y1="0" x2="558" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="336" y1="0" x2="576" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="354" y1="0" x2="594" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="372" y1="0" x2="612" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="390" y1="0" x2="630" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="408" y1="0" x2="648" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="426" y1="0" x2="666" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="444" y1="0" x2="684" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="462" y1="0" x2="702" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="480" y1="0" x2="720" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="498" y1="0" x2="738" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+      <line x1="516" y1="0" x2="756" y2="240" stroke="#182C0E" stroke-width="2.2" opacity="0.4"/>
+    <rect width="520" height="240" fill="url(#hfade_journal_dark)"/>
   </g>
 
   <!-- paper texture -->
-  <rect width="520" height="240" fill="#0E180A" filter="url(#tex)" opacity="0.06"/>
+  <rect width="520" height="240" fill="#0E180A" filter="url(#tex_journal_dark)" opacity="0.06"/>
 
   <!-- icon -->
   <g transform="translate(420,120)">
-  <!-- left page -->
-  <path d="M-4,-52 L-44,-52 Q-48,-52 -48,-48 L-48,48 Q-48,52 -44,52 L-4,52 Z" fill="#182C0E" opacity="0.3"/>
-  <path d="M-4,-52 L-44,-52 Q-48,-52 -48,-48 L-48,48 Q-48,52 -44,52 L-4,52 Z" fill="none" stroke="#80B860" stroke-width="3"/>
-  <!-- right page -->
-  <path d="M-4,-52 L36,-52 Q40,-52 40,-48 L40,48 Q40,52 36,52 L-4,52 Z" fill="#182C0E" opacity="0.22"/>
-  <path d="M-4,-52 L36,-52 Q40,-52 40,-48 L40,48 Q40,52 36,52 L-4,52 Z" fill="none" stroke="#80B860" stroke-width="3"/>
-  <!-- spine -->
-  <line x1="-4" y1="-52" x2="-4" y2="52" stroke="#80B860" stroke-width="4"/>
-  <!-- spine rings -->
-  <circle cx="-4" cy="-32" r="5" fill="none" stroke="#80B860" stroke-width="2.5"/>
-  <circle cx="-4" cy="-12" r="5" fill="none" stroke="#80B860" stroke-width="2.5"/>
-  <circle cx="-4" cy="8" r="5" fill="none" stroke="#80B860" stroke-width="2.5"/>
-  <circle cx="-4" cy="28" r="5" fill="none" stroke="#80B860" stroke-width="2.5"/>
-  <!-- left page lines -->
-  <line x1="-38" y1="-30" x2="-10" y2="-30" stroke="#80B860" stroke-width="2" opacity="0.45"/>
-  <line x1="-38" y1="-16" x2="-10" y2="-16" stroke="#80B860" stroke-width="2" opacity="0.45"/>
-  <line x1="-38" y1="-2" x2="-10" y2="-2" stroke="#80B860" stroke-width="2" opacity="0.45"/>
-  <line x1="-38" y1="12" x2="-10" y2="12" stroke="#80B860" stroke-width="2" opacity="0.45"/>
-  <line x1="-38" y1="26" x2="-10" y2="26" stroke="#80B860" stroke-width="2" opacity="0.45"/>
-  <!-- right page - handwriting squiggles -->
-  <path d="M6,-32 Q12,-36 18,-32 Q24,-28 30,-32" fill="none" stroke="#80B860" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
-  <path d="M6,-18 Q12,-22 18,-18 Q24,-14 30,-18" fill="none" stroke="#80B860" stroke-width="2" stroke-linecap="round" opacity="0.5"/>
-  <line x1="6" y1="-4" x2="30" y2="-4" stroke="#80B860" stroke-width="2" opacity="0.4"/>
-  <line x1="6" y1="10" x2="26" y2="10" stroke="#80B860" stroke-width="2" opacity="0.4"/>
-  <!-- pen on right page -->
-  <line x1="10" y1="22" x2="32" y2="44" stroke="#80B860" stroke-width="3" stroke-linecap="round"/>
-  <path d="M10,22 L6,18 L13,12 L17,16Z" fill="#80B860" opacity="0.7"/>
-  <path d="M32,44 L28,48 L34,46Z" fill="#80B860" opacity="0.7"/>
-  <!-- bookmark -->
-  <path d="M32,-52 L32,-32 L26,-26 L20,-32 L20,-52 Z" fill="#80B860" opacity="0.6"/>
-</g>
+  <!-- notebook body -->
+  <rect x="-36" y="-42" width="62" height="86" rx="6" fill="#182C0E" opacity="0.3"/>
+  <rect x="-36" y="-42" width="62" height="86" rx="6" fill="none" stroke="#80B860" stroke-width="3.5"/>
+  <!-- spiral rings -->
+  <circle cx="-36" cy="-30" r="4" fill="none" stroke="#80B860" stroke-width="2.5"/>
+  <circle cx="-36" cy="-14" r="4" fill="none" stroke="#80B860" stroke-width="2.5"/>
+  <circle cx="-36" cy="2" r="4" fill="none" stroke="#80B860" stroke-width="2.5"/>
+  <circle cx="-36" cy="18" r="4" fill="none" stroke="#80B860" stroke-width="2.5"/>
+  <circle cx="-36" cy="34" r="4" fill="none" stroke="#80B860" stroke-width="2.5"/>
+  <!-- text lines -->
+  <line x1="-24" y1="-26" x2="14" y2="-26" stroke="#80B860" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+  <line x1="-24" y1="-13" x2="14" y2="-13" stroke="#80B860" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+  <line x1="-24" y1="0" x2="8" y2="0" stroke="#80B860" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+  <line x1="-24" y1="13" x2="2" y2="13" stroke="#80B860" stroke-width="3" stroke-linecap="round" opacity="0.5"/>
+  <!-- pen -->
+  <g transform="translate(34,2) rotate(20)">
+    <rect x="-4.5" y="-30" width="9" height="48" rx="4" fill="#80B860" opacity="0.9"/>
+    <path d="M-4.5,18 L0,30 L4.5,18 Z" fill="#80B860" opacity="0.9"/>
+    <line x1="-4.5" y1="10" x2="4.5" y2="10" stroke="#182C0E" stroke-width="2"/>
+  </g>
+  </g>
 
   <!-- border -->
   <rect width="520" height="240" fill="none" stroke="#182C0E" stroke-width="1" opacity="0.3"/>

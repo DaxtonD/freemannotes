@@ -1,17 +1,17 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="520" height="240" viewBox="0 0 520 240">
   <defs>
-    <filter id="tex" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="linearRGB">
+    <filter id="tex_finance_light" x="0%" y="0%" width="100%" height="100%" color-interpolation-filters="linearRGB">
       <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="4" seed="12" stitchTiles="stitch" result="n"/>
       <feColorMatrix in="n" type="saturate" values="0" result="gn"/>
       <feBlend in="SourceGraphic" in2="gn" mode="overlay"/>
     </filter>
-    <linearGradient id="hfade_finance" x1="0" y1="0" x2="1" y2="0">
+    <linearGradient id="hfade_finance_light" x1="0" y1="0" x2="1" y2="0">
       <stop offset="0%"  stop-color="#EEF0E5" stop-opacity="0"/>
       <stop offset="50%" stop-color="#EEF0E5" stop-opacity="0"/>
       <stop offset="82%" stop-color="#EEF0E5" stop-opacity="0.92"/>
       <stop offset="100%" stop-color="#EEF0E5" stop-opacity="1"/>
     </linearGradient>
-    <linearGradient id="vign_finance" x1="0" y1="0" x2="0" y2="1">
+    <linearGradient id="vign_finance_light" x1="0" y1="0" x2="0" y2="1">
       <stop offset="0%"   stop-color="#6A7A30" stop-opacity="0.04"/>
       <stop offset="100%" stop-color="#6A7A30" stop-opacity="0.09"/>
     </linearGradient>
@@ -19,72 +19,72 @@
 
   <!-- base -->
   <rect width="520" height="240" fill="#EEF0E5"/>
-  <rect width="520" height="240" fill="url(#vign_finance)"/>
+  <rect width="520" height="240" fill="url(#vign_finance_light)"/>
 
   <!-- diagonal hatch -->
   <g>
-    <line x1="-144" y1="0" x2="96" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="-126" y1="0" x2="114" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="-108" y1="0" x2="132" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="-90" y1="0" x2="150" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="-72" y1="0" x2="168" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="-54" y1="0" x2="186" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="-36" y1="0" x2="204" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="-18" y1="0" x2="222" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="0" y1="0" x2="240" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="18" y1="0" x2="258" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="36" y1="0" x2="276" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="54" y1="0" x2="294" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="72" y1="0" x2="312" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="90" y1="0" x2="330" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="108" y1="0" x2="348" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="126" y1="0" x2="366" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="144" y1="0" x2="384" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="162" y1="0" x2="402" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="180" y1="0" x2="420" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="198" y1="0" x2="438" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="216" y1="0" x2="456" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="234" y1="0" x2="474" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="252" y1="0" x2="492" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="270" y1="0" x2="510" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="288" y1="0" x2="528" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="306" y1="0" x2="546" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="324" y1="0" x2="564" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="342" y1="0" x2="582" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="360" y1="0" x2="600" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="378" y1="0" x2="618" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="396" y1="0" x2="636" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="414" y1="0" x2="654" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="432" y1="0" x2="672" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="450" y1="0" x2="690" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="468" y1="0" x2="708" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="486" y1="0" x2="726" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="504" y1="0" x2="744" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="522" y1="0" x2="762" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-      <line x1="540" y1="0" x2="780" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
-    <rect width="520" height="240" fill="url(#hfade_finance)"/>
+    <line x1="-240" y1="0" x2="0" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-222" y1="0" x2="18" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-204" y1="0" x2="36" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-186" y1="0" x2="54" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-168" y1="0" x2="72" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-150" y1="0" x2="90" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-132" y1="0" x2="108" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-114" y1="0" x2="126" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-96" y1="0" x2="144" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-78" y1="0" x2="162" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-60" y1="0" x2="180" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-42" y1="0" x2="198" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-24" y1="0" x2="216" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="-6" y1="0" x2="234" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="12" y1="0" x2="252" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="30" y1="0" x2="270" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="48" y1="0" x2="288" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="66" y1="0" x2="306" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="84" y1="0" x2="324" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="102" y1="0" x2="342" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="120" y1="0" x2="360" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="138" y1="0" x2="378" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="156" y1="0" x2="396" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="174" y1="0" x2="414" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="192" y1="0" x2="432" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="210" y1="0" x2="450" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="228" y1="0" x2="468" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="246" y1="0" x2="486" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="264" y1="0" x2="504" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="282" y1="0" x2="522" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="300" y1="0" x2="540" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="318" y1="0" x2="558" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="336" y1="0" x2="576" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="354" y1="0" x2="594" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="372" y1="0" x2="612" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="390" y1="0" x2="630" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="408" y1="0" x2="648" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="426" y1="0" x2="666" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="444" y1="0" x2="684" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="462" y1="0" x2="702" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="480" y1="0" x2="720" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="498" y1="0" x2="738" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+      <line x1="516" y1="0" x2="756" y2="240" stroke="#96AA54" stroke-width="2.2" opacity="0.3"/>
+    <rect width="520" height="240" fill="url(#hfade_finance_light)"/>
   </g>
 
   <!-- paper texture -->
-  <rect width="520" height="240" fill="#EEF0E5" filter="url(#tex)" opacity="0.04"/>
+  <rect width="520" height="240" fill="#EEF0E5" filter="url(#tex_finance_light)" opacity="0.06"/>
 
   <!-- icon -->
   <g transform="translate(420,120)">
-  <!-- wallet body -->
-  <rect x="-38" y="-24" width="76" height="52" rx="7" fill="#96AA54" opacity="0.3"/>
-  <rect x="-38" y="-24" width="76" height="52" rx="7" fill="none" stroke="#6A7A30" stroke-width="3.5"/>
-  <!-- wallet flap top -->
-  <path d="M-38,-24 L38,-24 L38,-8 Q38,4 24,4 L-38,4 Z" fill="#6A7A30" opacity="0.18"/>
-  <line x1="-38" y1="4" x2="38" y2="4" stroke="#6A7A30" stroke-width="2.5"/>
-  <!-- coin pocket -->
-  <rect x="14" y="-18" width="22" height="34" rx="11" fill="none" stroke="#6A7A30" stroke-width="2.5"/>
-  <circle cx="25" cy="-1" r="8" fill="#6A7A30" opacity="0.45"/>
-  <text x="21" y="3" font-family="Georgia,serif" font-size="11" fill="#6A7A30" font-weight="bold" opacity="0.9">$</text>
-  <!-- chart bars left -->
-  <rect x="-34" y="0" width="8" height="20" rx="2" fill="#6A7A30" opacity="0.55"/>
-  <rect x="-22" y="-8" width="8" height="28" rx="2" fill="#6A7A30" opacity="0.55"/>
-  <rect x="-10" y="-4" width="8" height="24" rx="2" fill="#6A7A30" opacity="0.55"/>
-</g>
+  <!-- axes -->
+  <path d="M-42,-38 V36 H44" fill="none" stroke="#6A7A30" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- rising bars -->
+  <rect x="-33" y="16" width="13" height="20" rx="3" fill="#6A7A30" opacity="0.4"/>
+  <rect x="-13" y="4" width="13" height="32" rx="3" fill="#6A7A30" opacity="0.5"/>
+  <rect x="7" y="-9" width="13" height="45" rx="3" fill="#6A7A30" opacity="0.6"/>
+  <rect x="27" y="-22" width="13" height="58" rx="3" fill="#6A7A30" opacity="0.8"/>
+  <!-- trend arrow -->
+  <path d="M-33,-2 L-13,-14 L1,-6 L27,-25" fill="none" stroke="#6A7A30" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M38,-33 L23,-32 L32,-20 Z" fill="#6A7A30"/>
+  </g>
 
   <!-- border -->
   <rect width="520" height="240" fill="none" stroke="#96AA54" stroke-width="1" opacity="0.3"/>
