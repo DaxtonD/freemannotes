@@ -68,6 +68,12 @@ type RichTextEditorProps = {
 	onBackspaceWhenEmpty?: () => void;
 	onArrowUpAtBoundary?: () => void;
 	onArrowDownAtBoundary?: () => void;
+	/** Plain Tab pressed while an inline autocomplete suggestion is showing. Return true
+	 *  to consume the key (accepted the suggestion); return false/undefined to fall
+	 *  through to the normal Tab behavior (list/quote indent). Checked before indent so
+	 *  an active suggestion always takes priority — matches VS Code/Copilot-style inline
+	 *  suggestion conventions. */
+	onTabAcceptSuggestion?: () => boolean | void;
 	editable?: boolean;
 	suppressMobileTaskCheckboxFocus?: boolean;
 	onCreateUrlPreview?: () => void;
@@ -1490,6 +1496,9 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<FontAwesomeIcon icon={faMinus} />
 							</button>
 						) : null}
+						{(props.onRemoveChecklistCount || props.onMakeChecklistCount || props.onIncrementChecklistCount || props.onDecrementChecklistCount) ? (
+							<div className={styles.formatDivider} aria-hidden="true" />
+						) : null}
 						<button type="button" className={`${styles.formatButton}${primaryToolbarButtonClass}${resolvedToolbarState.isBold ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bold')} title={t('editors.bold')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runInlineMarkCommand('toggleBold')}>
 							<FontAwesomeIcon icon={faBold} />
 						</button>
@@ -1527,6 +1536,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								</button>
 							</div>
 						) : null}
+						<div className={styles.formatDivider} aria-hidden="true" />
 						{/* Emoji quick-insert — available in all toolbar variants */}
 						<div className={styles.formatMenuAnchor}>
 							<button
@@ -1644,6 +1654,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconHeadingCollapse}`} aria-hidden="true" />
 							</button>
 						) : null}
+						<div className={styles.formatDivider} aria-hidden="true" />
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isBulletList ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.bulletedList')} title={t('editors.bulletedList')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().toggleBulletList().run()}>
 							<FontAwesomeIcon icon={faListUl} />
 						</button>
@@ -1684,6 +1695,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								</button>
 							</>
 						) : null}
+						<div className={styles.formatDivider} aria-hidden="true" />
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isCodeBlock ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.codeBlock')} title={t('editors.codeBlock')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => runRichTextCommand(props.editor, 'toggleCodeBlock')}>
 							<FontAwesomeIcon icon={faCode} />
 						</button>
@@ -1708,6 +1720,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<FontAwesomeIcon icon={faTable} />
 							</button>
 						</div>
+						<div className={styles.formatDivider} aria-hidden="true" />
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignLeft ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignLeft')} title={t('editors.alignLeft')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('left').run()}>
 							<FontAwesomeIcon icon={faAlignLeft} />
 						</button>
@@ -1821,6 +1834,8 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							<FontAwesomeIcon icon={faCopy} />
 						</button>
 						{props.onToggleNoteAutoScroll ? (
+							<>
+							<div className={styles.formatDivider} aria-hidden="true" />
 							<button
 								type="button"
 								className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${props.noteAutoScrollEnabled ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
@@ -1833,6 +1848,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							>
 								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
 							</button>
+							</>
 						) : null}
 					</>
 				) : null}
@@ -2095,6 +2111,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		onBackspaceWhenEmpty: props.onBackspaceWhenEmpty,
 		onArrowUpAtBoundary: props.onArrowUpAtBoundary,
 		onArrowDownAtBoundary: props.onArrowDownAtBoundary,
+		onTabAcceptSuggestion: props.onTabAcceptSuggestion,
 	});
 	latestHandlersRef.current = {
 		onChange: props.onChange,
@@ -2103,6 +2120,7 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		onBackspaceWhenEmpty: props.onBackspaceWhenEmpty,
 		onArrowUpAtBoundary: props.onArrowUpAtBoundary,
 		onArrowDownAtBoundary: props.onArrowDownAtBoundary,
+		onTabAcceptSuggestion: props.onTabAcceptSuggestion,
 	};
 	const editorRef = React.useRef<Editor | null>(null);
 	const [hasSelection, setHasSelection] = React.useState(false);
@@ -2358,6 +2376,16 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 				handleKeyDown: (_view, event) => {
 					const ed = editorRef.current;
 					if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+						// An active inline autocomplete suggestion always wins over indent —
+						// same priority VS Code/Copilot-style inline suggestions use. Only plain
+						// Tab accepts; Shift+Tab keeps its existing outdent meaning untouched.
+						if (!event.shiftKey && latestHandlersRef.current.onTabAcceptSuggestion) {
+							const accepted = latestHandlersRef.current.onTabAcceptSuggestion();
+							if (accepted) {
+								event.preventDefault();
+								return true;
+							}
+						}
 						// Keep keyboard nesting aligned with the toolbar: Tab deepens the current
 						// list/quote context, Shift+Tab backs it out, and unsupported contexts
 						// fall through so native focus navigation still works.

@@ -629,6 +629,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	}, []);
 	const rowInputsRef = React.useRef<Map<string, HTMLDivElement | null>>(new Map());
 	const rowContainersRef = React.useRef<Map<string, HTMLLIElement | null>>(new Map());
+	// Only one row is ever active (and therefore ever shows a suggestion) at a
+	// time, so a single ref is enough — see handleRowShellClick below.
+	const activeAutocompleteSuffixRef = React.useRef<HTMLSpanElement | null>(null);
 	// Drag “ghost” sizing:
 	const dragGhostMetricsRef = React.useRef<{ rowWidth: number | null; rowHeight: number | null; textHeight: number | null; textWidth: number | null }>({
 		rowWidth: null,
@@ -1114,17 +1117,6 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			setFocusRowId(rowId);
 		}
 	}, [activeRowId, focusRowId, items, updateItem]);
-	const acceptAutocompleteSuggestionAndInsert = React.useCallback((rowId: string, suggestion: string): void => {
-		const currentRow = items.find((row) => row.id === rowId) ?? null;
-		acceptAutocompleteSuggestion(rowId, suggestion);
-		addItem(items.findIndex((row) => row.id === rowId), {
-			text: '',
-			completed: false,
-			parentId: currentRow?.parentId ?? null,
-			countValue: currentRow?.countValue != null ? 1 : null,
-			richContent: createRichTextDocFromPlainText(''),
-		});
-	}, [acceptAutocompleteSuggestion, addItem, items]);
 
 	const activeRowItem = React.useMemo(
 		() => items.find((item) => item.id === activeRowId) ?? null,
@@ -1143,9 +1135,18 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 				: ''
 		);
 	}, [activeRowId, activeRowItem]);
+	// Suggestions must only ever appear because the user typed something this focus
+	// session — never merely from placing the caret in a row that already happens to
+	// be a prefix of another item. Reset on its own effect keyed only on `activeRowId`
+	// (not `activeRowItem`, which gets a new reference on every keystroke and would
+	// otherwise immediately re-flip this back to false right after typing sets it true).
+	const [hasTypedSinceFocus, setHasTypedSinceFocus] = React.useState(false);
+	React.useEffect(() => {
+		setHasTypedSinceFocus(false);
+	}, [activeRowId]);
 	const activeRowAutocompleteSuggestion = React.useMemo(
-		() => getChecklistAutocompleteSuggestion(items, activeRowId, activeRowAutocompleteText),
-		[activeRowAutocompleteText, activeRowId, items]
+		() => hasTypedSinceFocus ? getChecklistAutocompleteSuggestion(items, activeRowId, activeRowAutocompleteText) : '',
+		[hasTypedSinceFocus, activeRowAutocompleteText, activeRowId, items]
 	);
 	const activeRowAutocompleteSuffix = React.useMemo(() => {
 		if (!activeRowAutocompleteSuggestion) return '';
@@ -1155,15 +1156,40 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			? activeRowAutocompleteSuggestion.slice(typed.length)
 			: '';
 	}, [activeRowAutocompleteSuggestion, activeRowAutocompleteText]);
+	// Enter always creates the next item — it no longer doubles as an autocomplete
+	// accept gesture. Overloading it meant Enter's behavior silently depended on
+	// whether a suggestion happened to be showing, which wasn't predictable.
 	const handleChecklistRowEnter = React.useCallback((rowId: string, editor: Editor): void => {
-		if (rowId === activeRowId && activeRowAutocompleteSuggestion) {
-			acceptAutocompleteSuggestionAndInsert(rowId, activeRowAutocompleteSuggestion);
-			return;
-		}
 		insertItemAfter(rowId, editor);
-	}, [acceptAutocompleteSuggestionAndInsert, activeRowAutocompleteSuggestion, activeRowId, insertItemAfter]);
-	const handleActiveAutocompletePress = React.useCallback((event: React.SyntheticEvent, rowId: string): void => {
+	}, [insertItemAfter]);
+	// Accept gestures: Tab (desktop — takes priority over the existing indent
+	// behavior only while a suggestion is showing) and tapping/clicking the ghost
+	// suggestion text itself (both platforms; the primary path on mobile, where
+	// there's no Tab key). A plain click/tap anywhere else in the row no longer
+	// accepts anything — that used to mean just repositioning the caret could
+	// silently rewrite the row's text.
+	const handleAcceptActiveAutocomplete = React.useCallback((rowId: string): boolean => {
+		if (rowId !== activeRowId || !activeRowAutocompleteSuggestion) return false;
+		acceptAutocompleteSuggestion(rowId, activeRowAutocompleteSuggestion);
+		return true;
+	}, [acceptAutocompleteSuggestion, activeRowAutocompleteSuggestion, activeRowId]);
+	// Geometric hit-test instead of relying on CSS pointer-events to carve a
+	// clickable hole out of the (pointer-events:none, -webkit-line-clamp'd) ghost
+	// overlay — that didn't reliably receive clicks/taps in practice across
+	// browsers. The row shell always receives the click normally; we just check
+	// whether it landed at or past where the suggestion begins.
+	// The target is deliberately generous — from the suggestion's left edge to the
+	// end of the row, across the row's full height — rather than the suggestion
+	// text's own tight glyph bounds. A one- or two-character suggestion is a
+	// hopeless tap target otherwise; nothing meaningful sits in that trailing
+	// space anyway, so widening the zone costs nothing.
+	const handleRowShellClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>, rowId: string): void => {
 		if (rowId !== activeRowId || !activeRowAutocompleteSuggestion) return;
+		const suffixEl = activeAutocompleteSuffixRef.current;
+		if (!suffixEl) return;
+		const suffixRect = suffixEl.getBoundingClientRect();
+		const shellRect = event.currentTarget.getBoundingClientRect();
+		if (event.clientX < suffixRect.left || event.clientY < shellRect.top || event.clientY > shellRect.bottom) return;
 		event.preventDefault();
 		acceptAutocompleteSuggestion(rowId, activeRowAutocompleteSuggestion);
 	}, [acceptAutocompleteSuggestion, activeRowAutocompleteSuggestion, activeRowId]);
@@ -1676,9 +1702,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 														<div
 															ref={(node) => { rowInputsRef.current.set(item.id, node); }}
 															className={styles.checklistRowRichShell}
-															onMouseDown={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
-															onPointerDown={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
-															onClick={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
+															onClick={(event) => handleRowShellClick(event, item.id)}
 														>
 															{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}
 															<div className={styles.checklistRowRichStack}>
@@ -1702,6 +1726,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																		const plainText = getPlainTextFromRichJson(payload.json, 'minimal');
 																		latestRowPayloadRef.current = { id: item.id, text: plainText, richContent: payload.json };
 																		setActiveRowAutocompleteText(plainText);
+																		setHasTypedSinceFocus(true);
 																		updateItem(item.id, { text: plainText, richContent: payload.json });
 																	}}
 																	onEnter={(editor) => handleChecklistRowEnter(item.id, editor)}
@@ -1712,12 +1737,20 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	}}
 																	onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
 																	onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
+																	onTabAcceptSuggestion={() => handleAcceptActiveAutocomplete(item.id)}
 																	authUserId={props.authUserId}
 																/>
 																{activeRowId === item.id && activeRowAutocompleteSuffix ? (
-																	<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
-																		<span className={styles.checklistAutocompletePrefix}>{activeRowAutocompleteText}</span>
-																		<span className={styles.checklistAutocompleteSuffix}>{activeRowAutocompleteSuffix}</span>
+																	<div className={styles.checklistAutocompleteOverlay}>
+																		<span className={styles.checklistAutocompletePrefix} aria-hidden="true">{activeRowAutocompleteText}</span>
+																		<span
+																			ref={activeAutocompleteSuffixRef}
+																			className={styles.checklistAutocompleteSuffix}
+																			title={t('editors.acceptAutocompleteSuggestion')}
+																			aria-hidden="true"
+																		>
+																			{activeRowAutocompleteSuffix}
+																		</span>
 																	</div>
 																) : null}
 															</div>
@@ -1824,9 +1857,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	<div
 																		ref={(node) => { rowInputsRef.current.set(item.id, node); }}
 																		className={styles.checklistRowRichShell}
-																		onMouseDown={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
-																		onPointerDown={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
-																		onClick={activeRowId === item.id && activeRowAutocompleteSuggestion ? (event) => handleActiveAutocompletePress(event, item.id) : undefined}
+																		onClick={(event) => handleRowShellClick(event, item.id)}
 																	>
 																		{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}
 																	<div className={styles.checklistRowRichStack}>
@@ -1848,6 +1879,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																				const plainText = getPlainTextFromRichJson(payload.json, 'minimal');
 																				latestRowPayloadRef.current = { id: item.id, text: plainText, richContent: payload.json };
 																				setActiveRowAutocompleteText(plainText);
+																				setHasTypedSinceFocus(true);
 																				updateItem(item.id, { text: plainText, richContent: payload.json });
 																			}}
 																			onEnter={(editor) => handleChecklistRowEnter(item.id, editor)}
@@ -1858,12 +1890,20 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																			}}
 																			onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
 																			onArrowDownAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'next')}
+																			onTabAcceptSuggestion={() => handleAcceptActiveAutocomplete(item.id)}
 																			authUserId={props.authUserId}
 																		/>
 																		{activeRowId === item.id && activeRowAutocompleteSuffix ? (
-																			<div className={styles.checklistAutocompleteOverlay} aria-hidden="true">
-																				<span className={styles.checklistAutocompletePrefix}>{activeRowAutocompleteText}</span>
-																				<span className={styles.checklistAutocompleteSuffix}>{activeRowAutocompleteSuffix}</span>
+																			<div className={styles.checklistAutocompleteOverlay}>
+																				<span className={styles.checklistAutocompletePrefix} aria-hidden="true">{activeRowAutocompleteText}</span>
+																				<span
+																					ref={activeAutocompleteSuffixRef}
+																					className={styles.checklistAutocompleteSuffix}
+																					title={t('editors.acceptAutocompleteSuggestion')}
+																					aria-hidden="true"
+																				>
+																					{activeRowAutocompleteSuffix}
+																				</span>
 																			</div>
 																		) : null}
 																	</div>
