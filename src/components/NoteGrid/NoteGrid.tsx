@@ -1401,9 +1401,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const pendingCommittedVisibleOrderRef = React.useRef<string[] | null>(null);
 	const appliedLayoutCacheKeyRef = React.useRef<string | null>(null);
 	const sectionRef = React.useRef<HTMLElement | null>(null);
-	// Tracks which checklist cards currently have their completed section open.
-	// Used to apply padding-bottom to the section only while any card is expanded.
-	const expandedChecklistNoteIdsRef = React.useRef<Set<string>>(new Set());
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
 	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
 	const viewportAnchorColumnsRef = React.useRef<Map<string, number>>(new Map());
@@ -1648,6 +1645,116 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
+		// ── Checklist collapse scroll compensation ─────────────────────────
+		// Collapsing a completed-items dropdown shrinks the grid in a single
+		// layout pass. If the user is scrolled deep enough that the new max
+		// scroll falls above their current position, the browser clamps the
+		// scroll offset and every visible card jumps. The buffer below must
+		// already exist at the moment the DOM shrinks — it cannot be added
+		// reactively — so it is reserved synchronously on the collapse event
+		// (sized by the collapsing card, which always covers the shrink),
+		// trimmed to the exact viewport overhang once the collapse has
+		// painted, and ratcheted down to zero as the user scrolls away. The
+		// buffer only ever shrinks and the scroll position is never written:
+		// writing scrollTop to police a buffer fights platform momentum
+		// scrolling and oscillates.
+		let checklistScrollHost: HTMLElement | null = null;
+		let checklistTrimTarget: EventTarget | null = null;
+		let checklistTrimRaf = 0;
+		let checklistSettleRaf = 0;
+		const checklistSettleTimeouts: number[] = [];
+
+		const readChecklistBufferPx = (section: HTMLElement): number => {
+			const parsed = Number.parseFloat(section.style.paddingBottom || '');
+			return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+		};
+
+		// Mirrors findScrollableAncestor in NoteEditor.tsx. The grid usually
+		// scrolls the page, but on the installed iOS PWA .test-harness-root is
+		// its own overflow-y:auto container and window.scrollY never moves.
+		const findChecklistScrollHost = (node: HTMLElement): HTMLElement | null => {
+			let current = node.parentElement;
+			while (current) {
+				const overflowY = window.getComputedStyle(current).overflowY;
+				const isScrollable = (overflowY === 'auto' || overflowY === 'scroll' || overflowY === 'overlay')
+					&& current.scrollHeight > current.clientHeight + 1;
+				if (isScrollable) return current;
+				current = current.parentElement;
+			}
+			return null;
+		};
+
+		const readChecklistScrollMetrics = (): { scrollTop: number; clientHeight: number; scrollHeight: number } => {
+			// checklistScrollHost is only resolved inside the collapse branch below;
+			// fall back to the page scroller for any trim call that fires before a
+			// collapse has ever set it (e.g. an expand-triggered trim on first use).
+			const host = checklistScrollHost
+				?? (document.scrollingElement as HTMLElement | null)
+				?? document.documentElement;
+			return { scrollTop: host.scrollTop, clientHeight: host.clientHeight, scrollHeight: host.scrollHeight };
+		};
+
+		const detachChecklistTrimListeners = (): void => {
+			if (!checklistTrimTarget) return;
+			checklistTrimTarget.removeEventListener('scroll', scheduleChecklistTrim);
+			window.removeEventListener('resize', scheduleChecklistTrim);
+			checklistTrimTarget = null;
+		};
+
+		const trimChecklistCollapseBuffer = (): void => {
+			const section = sectionRef.current;
+			if (!section) return;
+			const currentBuffer = readChecklistBufferPx(section);
+			if (currentBuffer <= 0) {
+				detachChecklistTrimListeners();
+				return;
+			}
+			const { scrollTop, clientHeight, scrollHeight } = readChecklistScrollMetrics();
+			// How far the viewport bottom overhangs the real (buffer-excluded)
+			// content — the exact buffer that keeps the current scroll position
+			// valid without leaving any room to scroll further into it.
+			const overhangPx = Math.max(0, Math.ceil(scrollTop + clientHeight - (scrollHeight - currentBuffer)));
+			if (overhangPx >= currentBuffer) return; // only ever shrink the buffer
+			section.style.paddingBottom = overhangPx > 0 ? `${overhangPx}px` : '';
+			if (overhangPx <= 0) detachChecklistTrimListeners();
+		};
+
+		const scheduleChecklistTrim = (): void => {
+			if (checklistTrimRaf) return;
+			checklistTrimRaf = window.requestAnimationFrame(() => {
+				checklistTrimRaf = 0;
+				trimChecklistCollapseBuffer();
+			});
+		};
+
+		const attachChecklistTrimListeners = (): void => {
+			const target: EventTarget = checklistScrollHost ?? window;
+			if (checklistTrimTarget === target) return;
+			detachChecklistTrimListeners();
+			checklistTrimTarget = target;
+			target.addEventListener('scroll', scheduleChecklistTrim, { passive: true });
+			window.addEventListener('resize', scheduleChecklistTrim);
+		};
+
+		const scheduleChecklistSettleTrims = (): void => {
+			if (checklistSettleRaf) window.cancelAnimationFrame(checklistSettleRaf);
+			// Double rAF so the collapse has committed and painted before the
+			// first trim — trimming earlier would measure the pre-collapse height.
+			checklistSettleRaf = window.requestAnimationFrame(() => {
+				checklistSettleRaf = window.requestAnimationFrame(() => {
+					checklistSettleRaf = 0;
+					trimChecklistCollapseBuffer();
+				});
+			});
+			for (const timeoutId of checklistSettleTimeouts) window.clearTimeout(timeoutId);
+			checklistSettleTimeouts.length = 0;
+			// Late passes: virtualized columns can adjust their trailing padding
+			// a few frames after the collapse commit.
+			for (const delayMs of [300, 1200]) {
+				checklistSettleTimeouts.push(window.setTimeout(trimChecklistCollapseBuffer, delayMs));
+			}
+		};
+
 		const handleNoteCardLayoutChange = (): void => {
 			if (!repackReasonRef.current.startsWith('checklist-')) {
 				repackReasonRef.current = 'note-card-layout-change';
@@ -1660,6 +1767,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			}
 			noteCardLayoutRefreshRafRef.current = window.requestAnimationFrame(() => {
 				noteCardLayoutRefreshRafRef.current = 0;
+				// Card resizes change the grid's real height, so any active
+				// collapse buffer may have become larger than needed.
+				trimChecklistCollapseBuffer();
 				setNoteHeightsVersion((version) => version + 1);
 			});
 		};
@@ -1670,18 +1780,28 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			expansionAffectedNoteIdsRef.current.add(detail.noteId);
 			invalidatedNoteReasonsRef.current.set(detail.noteId, repackReasonRef.current);
 			debugChecklistToggle(detail.noteId, Boolean(detail.expanded));
-			// Apply bottom padding while any checklist has its completed section
-			// open so expanding cards at the bottom of a column have room to grow
-			// downward without jumping the viewport.
-			if (detail.expanded) {
-				expandedChecklistNoteIdsRef.current.add(detail.noteId);
-			} else {
-				expandedChecklistNoteIdsRef.current.delete(detail.noteId);
-			}
 			const section = sectionRef.current;
-			if (section) {
-				section.style.paddingBottom = expandedChecklistNoteIdsRef.current.size > 0 ? '50vh' : '';
+			if (!section) return;
+			if (detail.expanded) {
+				// Expansion only grows the grid, and growth below the viewport
+				// cannot move it — no buffer is needed. The added content also
+				// shrinks the overhang of any buffer left from a prior collapse.
+				scheduleChecklistTrim();
+				return;
 			}
+			// Reserve the buffer before React commits the collapse: the space
+			// must already exist when the DOM shrinks or the browser clamps the
+			// scroll position first. The dropdown cannot be taller than its own
+			// card, so the card's current height always covers the shrink.
+			checklistScrollHost = findChecklistScrollHost(section);
+			const card = section.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(detail.noteId)}"]`);
+			const bufferPx = Math.max(
+				readChecklistBufferPx(section),
+				Math.ceil(card && card.offsetHeight > 0 ? card.offsetHeight : window.innerHeight / 2),
+			);
+			section.style.paddingBottom = `${bufferPx}px`;
+			attachChecklistTrimListeners();
+			scheduleChecklistSettleTrims();
 		};
 		const handleRichHeadingToggle = (event: Event): void => {
 			const detail = (event as CustomEvent<{ noteId?: string; collapsed?: boolean }>).detail;
@@ -1710,6 +1830,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				window.cancelAnimationFrame(noteCardLayoutRefreshRafRef.current);
 				noteCardLayoutRefreshRafRef.current = 0;
 			}
+			if (checklistTrimRaf) window.cancelAnimationFrame(checklistTrimRaf);
+			if (checklistSettleRaf) window.cancelAnimationFrame(checklistSettleRaf);
+			for (const timeoutId of checklistSettleTimeouts) window.clearTimeout(timeoutId);
+			detachChecklistTrimListeners();
 		};
 	}, []);
 
