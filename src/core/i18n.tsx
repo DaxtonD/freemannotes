@@ -316,6 +316,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		titlePlaceholder: 'Title',
 		bodyPlaceholder: 'Body',
 		checklistItemPlaceholder: 'Checklist item',
+		acceptAutocompleteSuggestion: 'Accept suggestion',
 		addItem: 'Add Item',
 		addCountItem: 'Add count item',
 		makeCountItem: 'Make count item',

@@ -1544,6 +1544,93 @@
 	flex: 0 0 auto;
 }
 
+/* ── Desktop toolbar refinement ──────────────────────────────────────────
+   Mobile's toolbar (touch-sized buttons, native horizontal scroll, minimal
+   chrome) is intentionally left untouched below. Fine-pointer devices get
+   tighter in-group spacing and more visible dividers between logical
+   clusters (marks / block type / lists / insert / align), matching the
+   group boundaries already threaded through the toolbar JSX. The container
+   itself stays flat and borderless — no rounded card, no shadow — so it
+   reads as an attached header strip on top of the editor content rather
+   than a floating panel sitting apart from it. A single hairline
+   border-bottom is the only separation from the text below. */
+@media (pointer: fine) {
+	.formatToolbar {
+		gap: 4px;
+		padding: 4px 2px 8px;
+		border: 0;
+		border-bottom: 1px solid color-mix(in srgb, var(--color-text) 10%, var(--color-border));
+		border-radius: 0;
+		background: transparent;
+		box-shadow: none;
+	}
+
+	.formatToolbarRow {
+		gap: 2px;
+	}
+
+	.formatButton {
+		border-radius: 7px;
+		transition: background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+	}
+
+	.formatButton:hover,
+	.formatButton:focus-visible {
+		background: color-mix(in srgb, var(--color-surface-2) 92%, transparent);
+	}
+
+	.formatButtonActive {
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent);
+	}
+
+	.formatDivider {
+		height: 20px;
+		margin: 0 6px;
+		background: color-mix(in srgb, var(--color-text) 13%, transparent);
+	}
+
+	.condensedToolbarToggle {
+		border-color: color-mix(in srgb, var(--color-text) 15%, transparent);
+		background: var(--color-surface);
+		border-radius: 8px;
+	}
+
+	.condensedToolbarToggle:hover,
+	.condensedToolbarToggle:focus-visible {
+		border-color: color-mix(in srgb, var(--color-text) 24%, transparent);
+	}
+
+	.condensedToolbarToggleActive {
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent);
+	}
+
+	.formatToolbarScrollButton {
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-text) 10%, transparent);
+	}
+
+	.copyModeToggleGroup {
+		border-radius: 8px;
+	}
+
+	.copyModeToggleButtonActive {
+		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent);
+	}
+
+	/* Small caret so the "Headings" label reads as a dropdown trigger rather
+	   than a plain text button. */
+	.headingMenuButtonLabel::after {
+		content: '';
+		width: 0;
+		height: 0;
+		margin-left: 5px;
+		border-left: 4px solid transparent;
+		border-right: 4px solid transparent;
+		border-top: 4px solid currentColor;
+		opacity: 0.55;
+		flex: 0 0 auto;
+	}
+}
+
 .editorBottomArea {
 	display: flex;
 	flex-direction: column;
@@ -2842,7 +2929,17 @@
 }
 
 .checklistAutocompleteSuffix {
-	color: color-mix(in srgb, var(--color-text-muted) 90%, transparent);
+	/* Ghost-suggestion text — deliberately faint so it never reads as content
+	   that's actually there yet. The previous 90% mix was barely distinguishable
+	   from real muted text in some themes. */
+	color: color-mix(in srgb, var(--color-text-muted) 40%, transparent);
+	/* The suggestion text itself is the tap/click accept target — everything else
+	   in the overlay (including the prefix, which just tracks already-typed text)
+	   stays pointer-events:none so the real caret/selection underneath still works
+	   normally. This is the primary accept gesture on mobile (no Tab key); Tab is
+	   the equivalent on desktop. */
+	pointer-events: auto;
+	cursor: pointer;
 }
 
 .checklistRowPreview {

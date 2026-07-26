@@ -263,6 +263,7 @@
     "titlePlaceholder": "Title",
     "bodyPlaceholder": "Body",
     "checklistItemPlaceholder": "Checklist item",
+    "acceptAutocompleteSuggestion": "Accept suggestion",
     "addItem": "Add item",
     "remove": "Remove",
     "saving": "Saving…",

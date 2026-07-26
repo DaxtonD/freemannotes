@@ -4,6 +4,16 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.7.7 - 2026-07-25
+
+### Changed
+- **The desktop TipTap toolbar (note editor, condensed mode, and checklist editor) got a real design pass instead of looking like a pile of icons someone forgot to finish styling.** Buttons are now grouped into logical clusters — marks, block type, lists, insert, align — separated by dividers that are actually visible, instead of one undifferentiated row where everything blurred together. The whole container went through two iterations: first an "elevated card" treatment with a shadow and rounded corners, which on review looked like a floating panel disconnected from the editor underneath it; then flattened to a borderless strip with just a single hairline border-bottom, so it reads as an attached header on top of the content instead of something hovering apart from it. The "Headings" button got a small dropdown chevron so it actually looks clickable. Mobile's toolbar was already fine and is untouched — all of this is scoped behind `@media (pointer: fine)`.
+
+### Fixed
+- **Checklist autocomplete suggested a completion the instant you clicked into an existing item, before you'd typed anything — and a stray click anywhere in the row could silently accept it, overwriting real content.** Example: items "AAA Beef" and "AAA" existed side by side; clicking into "AAA" alone (no typing) showed "AAA Beef" as a ghost suggestion, and a second, unrelated click submitted it. Suggestions now require actual typing in the current focus session — merely placing the caret in a row that happens to be a prefix of another item no longer counts. Both places this logic lives (`ChecklistEditor.tsx` for new/draft checklists, `NoteEditor.tsx` for existing ones) got the same fix.
+- **Accepting a checklist autocomplete suggestion had no predictable, deliberate gesture.** Enter used to double as "accept the suggestion" whenever one happened to be showing, which meant Enter's behavior silently depended on hidden state. Enter now always just creates the next item. Accepting is now Tab on desktop (matching VS Code/Copilot-style inline-suggestion conventions — takes priority over the existing indent/outdent behavior only while a suggestion is actually showing, so it doesn't fight with checklist nesting) or tapping/clicking the ghost suggestion text on either platform. That click target is intentionally generous — anywhere from where the suggestion begins to the end of the row, across the row's full height — rather than the suggestion text's own tight glyph bounds, since a one- or two-character suggestion is nearly impossible to tap precisely otherwise.
+- **Ghost suggestion text was too dark to read as a suggestion, especially in some themes.** Dropped from 90% to 40% opacity of the muted-text color so it reads as a faint, unconfirmed ghost instead of nearly-real text.
+
 ## 1.7.6 - 2026-07-23
 
 ### Fixed
