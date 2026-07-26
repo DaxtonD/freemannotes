@@ -44,7 +44,7 @@ If you wish to redistribute Freeman Notes, build a competing product, or use the
 
 ## Conversion to open source
 
-On **Augist 1, 2031** — or upon a change of ownership of Freeman Notes, whichever comes first — this license automatically converts to the [MIT License](https://opensource.org/licenses/MIT), as reproduced below. This is a binding commitment made at the time of publication and applies to all versions of Freeman Notes released under this license.
+On **August 1, 2031** — or upon a change of ownership of Freeman Notes, whichever comes first — this license automatically converts to the [MIT License](https://opensource.org/licenses/MIT), as reproduced below. This is a binding commitment made at the time of publication and applies to all versions of Freeman Notes released under this license.
 
 > MIT License
 >
