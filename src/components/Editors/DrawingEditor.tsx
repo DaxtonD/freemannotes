@@ -253,10 +253,44 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	// Without this guard the cycle is: onChange → setLocalStateField → awareness.change →
 	// updateScene({collaborators}) → onChange → … which triggers React error #185 during
 	// a collaborative drawing drag (the only scenario where props.awareness is non-null).
+	//
+	// That 1.7.5 fix only covered "selectedElementIds" — dragging/rotating an element still
+	// crashed the same way, because y-excalidraw's onPointerUpdate calls
+	// setLocalStateField("pointer", …) and setLocalStateField("button", …) straight from the
+	// raw, unthrottled native pointermove handler (dozens of calls/sec during a fast drag).
+	// Unlike selection, those values are genuinely different on every call, so a same-value
+	// dedup wouldn't help — and y-excalidraw's remote-awareness handler calls
+	// updateScene({collaborators}) unconditionally on *every* awareness change, including the
+	// local client's own (it only removes the local id from the map afterwards, it never skips
+	// calling updateScene for a local-only change). Each real setLocalStateField call re-enters
+	// the same onChange → setLocalStateField cascade synchronously, and at pointermove frequency
+	// that recurses deep enough within one flush to trip React's nested-update ceiling. Fix:
+	// coalesce pointer/button writes to at most one real awareness write per animation frame —
+	// same approach real-time multiplayer cursors use everywhere, no visible fidelity loss, and
+	// each flush lands in its own task instead of nested inside the triggering pointermove.
+	const pointerRafCancelRef = React.useRef<(() => void) | null>(null);
 	const stableAwareness = React.useMemo((): Awareness | null | undefined => {
 		const awareness = props.awareness;
 		if (!awareness) return awareness;
 		let lastKey = '';
+		let pendingFields: Map<string, unknown> | null = null;
+		let rafId: number | null = null;
+		const flushPending = (): void => {
+			rafId = null;
+			if (!pendingFields) return;
+			const toFlush = pendingFields;
+			pendingFields = null;
+			toFlush.forEach((value, field) => {
+				awareness.setLocalStateField(field, value as Parameters<typeof awareness.setLocalStateField>[1]);
+			});
+		};
+		pointerRafCancelRef.current = (): void => {
+			if (rafId !== null) {
+				cancelAnimationFrame(rafId);
+				rafId = null;
+			}
+			pendingFields = null;
+		};
 		return new Proxy(awareness, {
 			get(target, prop) {
 				if (prop === 'setLocalStateField') {
@@ -265,6 +299,16 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 							const next = selectedElementIdsKey(value as Record<string, boolean | undefined> | null | undefined);
 							if (next === lastKey) return;
 							lastKey = next;
+							target.setLocalStateField(field, value as Parameters<typeof target.setLocalStateField>[1]);
+							return;
+						}
+						if (field === 'pointer' || field === 'button') {
+							pendingFields ??= new Map();
+							pendingFields.set(field, value);
+							if (rafId === null) {
+								rafId = requestAnimationFrame(flushPending);
+							}
+							return;
 						}
 						target.setLocalStateField(field, value as Parameters<typeof target.setLocalStateField>[1]);
 					};
@@ -277,6 +321,15 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 			},
 		});
 	}, [props.awareness]);
+
+	// Drop any pointer/button write still queued for the next animation frame when the
+	// awareness object is swapped or the editor unmounts, so it can't fire against a stale
+	// Proxy/closure after the thing it was scheduled for is already gone.
+	React.useEffect(() => {
+		return () => {
+			pointerRafCancelRef.current?.();
+		};
+	}, [stableAwareness]);
 
 	const [isInitialViewportReady, setIsInitialViewportReady] = React.useState(initialSceneElements.length === 0);
 	const [dockPortalHost, setDockPortalHost] = React.useState<HTMLDivElement | null>(null);
