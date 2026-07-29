@@ -3041,6 +3041,20 @@
 	touch-action: none;
 }
 
+@media (pointer: coarse) {
+	/* Long-pressing the FAB to start a reposition drag was also arming the
+	   browser's own long-press gesture recognizer (text-selection loupe /
+	   touch callout) since nothing told it this content isn't selectable —
+	   same class of conflict already solved for the note card's long-press
+	   menu (see NoteCard.module.css). */
+	.mobile-fab-anchor .mobile-fab,
+	.mobile-fab-icon {
+		-webkit-user-select: none;
+		user-select: none;
+		-webkit-touch-callout: none;
+	}
+}
+
 .mobile-fab-anchor .mobile-fab-stack {
 	position: absolute;
 	right: 0;

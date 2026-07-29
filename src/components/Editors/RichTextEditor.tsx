@@ -39,7 +39,7 @@ import * as Y from 'yjs';
 import { getCollapsedRichHeadingPrefsSnapshot, getRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefs } from '../../core/collapsibleHeadingPreferences';
 import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
-import { createRichTextExtensions, getMarkdownPasteHtml, type RichTextVariant } from '../../core/richText';
+import { createRichTextExtensions, getMarkdownPasteHtml, TASK_ITEM_CHECKBOX_TOGGLE_META, type RichTextVariant } from '../../core/richText';
 import { ReferenceSuggestionKey } from '../../core/extensions/ReferenceExtension';
 import { prepareConvertedClipboardPayload, type ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { useI18n } from '../../core/i18n';
@@ -2160,10 +2160,30 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	const handleMobileTaskCheckboxToggle = React.useCallback((view: Editor['view'], nodePos: number, checked: boolean): boolean => {
 		const node = view.state.doc.nodeAt(nodePos);
 		if (!node || node.type.name !== 'taskItem') return false;
-		view.dispatch(view.state.tr.setNodeMarkup(nodePos, undefined, { ...node.attrs, checked }));
 		const root = view.dom as HTMLElement | null;
+		// Snapshot the real scroll container's position right before the mutation
+		// and restore it right after — a one-shot correction bracketing a single,
+		// deterministic trigger (this toggle), not a continuous listener fighting
+		// an ongoing scroll/momentum source. That distinction matters: a persistent
+		// scroll-event-driven clamp fighting iOS's momentum physics is what caused
+		// the oscillation bug elsewhere in this app; restoring a snapshot once,
+		// synchronously, has nothing ongoing to fight.
+		const scrollContainer = getScrollContainer(root);
+		const preservedScrollTop = scrollContainer?.scrollTop;
 		if (root && document.activeElement === root) {
 			root.blur();
+		}
+		view.dispatch(view.state.tr.setNodeMarkup(nodePos, undefined, { ...node.attrs, checked }).setMeta(TASK_ITEM_CHECKBOX_TOGGLE_META, true));
+		if (scrollContainer && preservedScrollTop != null) {
+			scrollContainer.scrollTop = preservedScrollTop;
+			// Some browsers apply the native "scroll caret into view" adjustment a
+			// frame after the mutation rather than synchronously within it — catch
+			// that delayed case too.
+			requestAnimationFrame(() => {
+				if (scrollContainer.scrollTop !== preservedScrollTop) {
+					scrollContainer.scrollTop = preservedScrollTop;
+				}
+			});
 		}
 		return true;
 	}, []);
@@ -2556,8 +2576,15 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (!editor) return;
-		const handleSelectionChange = (): void => {
-			ensureSelectionVisible();
+		const handleSelectionChange = (payload?: { transaction?: { getMeta: (key: string) => unknown } }): void => {
+			// selectionUpdate fires on any doc-changing transaction, not just ones
+			// that actually move the selection — a checkbox toggle counts. Skip the
+			// scroll-into-view for those so checking a box you scrolled to reach
+			// doesn't yank the viewport back to an unrelated, off-screen caret.
+			const isCheckboxToggle = payload?.transaction?.getMeta(TASK_ITEM_CHECKBOX_TOGGLE_META) === true;
+			if (!isCheckboxToggle) {
+				ensureSelectionVisible();
+			}
 			setHasSelection(!editor.state.selection.empty);
 		};
 		editor.on('selectionUpdate', handleSelectionChange);

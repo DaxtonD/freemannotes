@@ -24,6 +24,64 @@ export type NoteBannerSampleWindow = {
 
 const readableColorCache = new Map<string, NoteBannerReadableColors>();
 
+// ── Cross-reload persistence ────────────────────────────────────────────────
+// The in-memory cache above is wiped on every full page load, so a warm PWA
+// reopen has to re-fetch + decode + sample every banner image from scratch
+// before the correct card colors are available — during that window cards
+// fall back to unstyled defaults, which is the pop-in this cache prevents.
+// The banner catalog is a small, fixed set of shipped assets (not
+// user-uploaded), so persisting every sampled color is cheap and bounded.
+// TTL exists so that a future banner-art regeneration (same filenames, new
+// pixels) self-heals within a couple of weeks instead of serving stale
+// sampled colors indefinitely — this is exactly the class of staleness the
+// banner images themselves just got bitten by.
+const PERSISTENT_COLOR_CACHE_KEY = 'fn_banner_readable_colors_v1';
+const PERSISTENT_COLOR_CACHE_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const PERSISTENT_COLOR_CACHE_MAX_ENTRIES = 200;
+
+type PersistedColorCacheEntry = { color: NoteBannerReadableColors; cachedAt: number };
+type PersistedColorCacheStore = Record<string, PersistedColorCacheEntry>;
+
+function readPersistedColorCacheStore(): PersistedColorCacheStore {
+	try {
+		if (typeof localStorage === 'undefined') return {};
+		const raw = localStorage.getItem(PERSISTENT_COLOR_CACHE_KEY);
+		if (!raw) return {};
+		const parsed: unknown = JSON.parse(raw);
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+		return parsed as PersistedColorCacheStore;
+	} catch {
+		return {};
+	}
+}
+
+function readPersistedColor(cacheKey: string): NoteBannerReadableColors | null {
+	const entry = readPersistedColorCacheStore()[cacheKey];
+	if (!entry || typeof entry.cachedAt !== 'number') return null;
+	if (Date.now() - entry.cachedAt > PERSISTENT_COLOR_CACHE_TTL_MS) return null;
+	return entry.color ?? null;
+}
+
+function writePersistedColor(cacheKey: string, color: NoteBannerReadableColors): void {
+	try {
+		if (typeof localStorage === 'undefined') return;
+		const store = readPersistedColorCacheStore();
+		store[cacheKey] = { color, cachedAt: Date.now() };
+		const keys = Object.keys(store);
+		if (keys.length > PERSISTENT_COLOR_CACHE_MAX_ENTRIES) {
+			// Simple oldest-first trim. The catalog is small and fixed, so this
+			// should rarely if ever actually trigger.
+			const sortedByAge = keys.sort((a, b) => store[a].cachedAt - store[b].cachedAt);
+			for (const key of sortedByAge.slice(0, keys.length - PERSISTENT_COLOR_CACHE_MAX_ENTRIES)) {
+				delete store[key];
+			}
+		}
+		localStorage.setItem(PERSISTENT_COLOR_CACHE_KEY, JSON.stringify(store));
+	} catch {
+		// Quota/security errors are non-fatal — the cache just won't persist.
+	}
+}
+
 function clampChannel(value: number): number {
 	return Math.max(0, Math.min(255, Math.round(value)));
 }
@@ -157,7 +215,18 @@ export function useNoteBannerReadableColors(
 	}, [bannerUrl, sampleWindow?.endY, sampleWindow?.startY]);
 	const [color, setColor] = React.useState<NoteBannerReadableColors | null>(() => {
 		if (!cacheKey) return null;
-		return readableColorCache.get(cacheKey) ?? null;
+		const inMemory = readableColorCache.get(cacheKey);
+		if (inMemory) return inMemory;
+		// Warm-start fallback: nothing sampled yet this page load, but a previous
+		// session may already have this exact banner+window sampled. Promote it
+		// into the in-memory cache too so every other consumer of this cacheKey
+		// (other mounted cards, remounts from a view switch) hits it instantly.
+		const persisted = readPersistedColor(cacheKey);
+		if (persisted) {
+			readableColorCache.set(cacheKey, persisted);
+			return persisted;
+		}
+		return null;
 	});
 
 	React.useEffect(() => {
@@ -176,14 +245,19 @@ export function useNoteBannerReadableColors(
 		(async () => {
 			try {
 				const image = await loadImage(bannerUrl);
-				if (cancelled) return;
 				const nextColor = sampleNoteBannerReadableColors(image, sampleWindow);
 				if (!nextColor) {
-					setColor(null);
+					if (!cancelled) setColor(null);
 					return;
 				}
+				// Populate the shared caches unconditionally, even if this particular
+				// consumer has already unmounted (e.g. a fast view switch). The cache
+				// is keyed by banner+window, not by component instance — an abandoned
+				// fetch finishing in the background still warms it for whichever card
+				// asks next. Only the local setColor call needs the cancellation guard.
 				readableColorCache.set(cacheKey, nextColor);
-				setColor(nextColor);
+				writePersistedColor(cacheKey, nextColor);
+				if (!cancelled) setColor(nextColor);
 			} catch {
 				if (!cancelled) setColor(null);
 			}

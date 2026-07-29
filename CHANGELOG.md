@@ -4,6 +4,14 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.7.8 - 2026-07-28
+
+### Fixed
+- **Toggling a checkbox in the rich-text editor while scrolled away from the caret snapped the view right back to it — Android PWA only, not desktop, not even Android Chrome as a regular tab.** Took three wrong guesses (a transaction-meta skip for `selectionUpdate`, reordering a blur, snapshotting/restoring `scrollTop`) before we stopped guessing and got real device console logs. Turns out none of it was a JS scroll write at all: Android lets you dismiss the on-screen keyboard via gesture without ever blurring the still-focused editor, and toggling the checkbox gave it a reason to pop the keyboard back up — which shrinks the viewport around an off-screen caret and *looks* exactly like a violent scroll jump. Fix: blur the editor DOM right after a checkbox toggle, but only on coarse-pointer devices — desktop never had this problem and blurring there would just be annoying.
+- **Note card banners flashed the wrong color scheme for a beat before snapping to the right one** on a warm PWA reopen, or switching Grid → List → Grid. The async canvas-based color sampling had no cache that survived a page reload, so every mount re-sampled every visible banner from scratch — plus a separate bug where the sampled color never got cached at all if the component happened to unmount mid-sample (a fast view switch). Sampled colors now persist to `localStorage` with a 14-day TTL (so a future banner-art regen self-heals instead of serving stale colors forever), and the cache write no longer depends on the component still being around to receive it.
+- **The collapsible-heading toggle icon — the little arrow next to a heading — was next to unusable on iOS, working roughly 1 tap in 20.** iOS Safari can suppress the synthetic `click` event that would normally follow a touch once `preventDefault()` runs on an earlier event in that same gesture (`pointerdown`/`touchstart`), and the toggle only ever lived inside that `click` handler — which iOS was routinely eating before it got there. It now fires immediately from whichever touch event arrives first, with a short-lived guard so the same tap can't double-fire it if a `click` does still sneak through afterward.
+- **Long-pressing the FAB to drag it to a new spot could pop up the phone's native text-selection tool right on top of it**, like it thought you were trying to select a word. Nothing told iOS this content wasn't selectable — the FAB never got the same `-webkit-touch-callout`/`user-select: none` treatment the note card's own long-press menu already has. Now it does.
+
 ## 1.7.7 - 2026-07-25
 
 ### Changed

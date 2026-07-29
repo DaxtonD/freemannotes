@@ -57,6 +57,20 @@ const MARKDOWN_MARK_PATTERN = /==(?=\S)([\s\S]*?\S)==/g;
 // Meta key used to mark internally-generated regeneration transactions so the
 // plugin does not re-process its own output and loop indefinitely.
 const TASK_ITEM_REGEN_META = 'taskItemCrdt';
+// Meta key marking a checkbox-toggle transaction. TipTap fires `selectionUpdate`
+// on any doc-changing transaction, not just ones that actually move the
+// selection — a checkbox's setNodeMarkup counts. Callers that scroll the
+// editor to keep the selection visible on real selection changes (see
+// RichTextEditor.tsx's handleSelectionChange) check for this meta to skip
+// that scroll for toggles, so checking a box you scrolled to reach doesn't
+// yank the viewport back to an unrelated, off-screen caret position.
+export const TASK_ITEM_CHECKBOX_TOGGLE_META = 'taskItemCheckboxToggle';
+
+function isCoarsePointerDevice(): boolean {
+	if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+	return window.matchMedia('(pointer: coarse)').matches;
+}
+
 const COLLAPSIBLE_HEADING_REFRESH_META = 'collapsibleHeadingRefresh';
 const COLLAPSIBLE_HEADING_ID_REPAIR_META = 'collapsibleHeadingRepair';
 const COLLAPSIBLE_HEADING_FADE_MS = 180;
@@ -804,6 +818,50 @@ function buildCollapsibleHeadingDecorations(doc: ProseMirrorNode, noteId: string
 function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 	const pluginKey = new PluginKey<DecorationSet>('freemannotes-collapsible-headings');
 	let hoveredHeadingElement: HTMLElement | null = null;
+	// iOS Safari can suppress the synthetic click that would normally follow a
+	// touch once preventDefault() is called on an earlier event in that same
+	// touch sequence (pointerdown/touchstart) — which is exactly what this
+	// plugin does on a toggle hit. Since the actual toggle used to live only in
+	// the click handler, that meant it frequently never fired on iOS even when
+	// the tap landed squarely on the icon. The toggle now runs eagerly from
+	// whichever touch-originated handler fires first; this flag stops the
+	// later handlers in the same gesture (touchstart/mousedown/click, whichever
+	// the browser still ends up dispatching) from toggling it a second time.
+	let suppressNextToggleClick = false;
+	let suppressNextToggleTimeoutId: number | null = null;
+	const armToggleSuppression = (): void => {
+		suppressNextToggleClick = true;
+		if (suppressNextToggleTimeoutId != null) window.clearTimeout(suppressNextToggleTimeoutId);
+		suppressNextToggleTimeoutId = window.setTimeout(() => {
+			suppressNextToggleClick = false;
+			suppressNextToggleTimeoutId = null;
+		}, 500);
+	};
+	const clearToggleSuppression = (): void => {
+		suppressNextToggleClick = false;
+		if (suppressNextToggleTimeoutId != null) {
+			window.clearTimeout(suppressNextToggleTimeoutId);
+			suppressNextToggleTimeoutId = null;
+		}
+	};
+	const performToggle = (view: EditorView, headingElement: HTMLElement): boolean => {
+		const heading = findCollapsibleHeadingFromToggleElement(view, noteId, headingElement);
+		if (!heading) return false;
+		const { blocks, positions } = getTopLevelBlocks(view.state.doc);
+		toggleCollapsibleHeadingSection(
+			view,
+			noteId,
+			heading.pos,
+			heading.node,
+			heading.level,
+			heading.index,
+			blocks,
+			positions,
+			heading.collapseId,
+			heading.collapsed,
+		);
+		return true;
+	};
 	return new Plugin({
 		key: pluginKey,
 		appendTransaction: (transactions, _oldState, newState) => {
@@ -879,6 +937,7 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 					view.dom.removeEventListener('mousemove', handlePointerHover);
 					view.dom.removeEventListener('mouseleave', clearHoveredHeading);
 					clearHoveredHeading();
+					clearToggleSuppression();
 					unsubscribe();
 					window.removeEventListener('freemannotes:rich-heading-toggle', handleHeadingToggle as EventListener);
 					window.removeEventListener(COLLAPSIBLE_HEADING_ANIMATION_REFRESH_EVENT, handleAnimationRefresh as EventListener);
@@ -917,9 +976,18 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 					suppressCoarsePointerEditorFocus(view);
 					event.preventDefault();
 					event.stopPropagation();
+					// Toggle immediately rather than waiting for the click event that
+					// normally follows — see the comment above suppressNextToggleClick.
+					armToggleSuppression();
+					performToggle(view, headingElement);
 					return true;
 				},
 				mousedown(view, event) {
+					if (suppressNextToggleClick) {
+						event.preventDefault();
+						event.stopPropagation();
+						return true;
+					}
 					if (!(event instanceof MouseEvent) || event.button !== 0) return false;
 					const headingElement = findCollapsibleHeadingElement(event.target);
 					if (!headingElement || !isCollapsibleHeadingToggleHit(headingElement, event)) return false;
@@ -929,6 +997,11 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 					return true;
 				},
 				touchstart(view, event) {
+					if (suppressNextToggleClick) {
+						if (event.cancelable) event.preventDefault();
+						event.stopPropagation();
+						return true;
+					}
 					const touch = event.touches[0];
 					if (!touch) return false;
 					const headingElement = findCollapsibleHeadingElement(touch.target);
@@ -941,9 +1014,18 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 					suppressCoarsePointerEditorFocus(view);
 					if (event.cancelable) event.preventDefault();
 					event.stopPropagation();
+					// Fallback for browsers that dispatch touchstart without a
+					// preceding pointerdown (or don't support Pointer Events at all) —
+					// same eager-toggle reasoning as the pointerdown handler above.
+					armToggleSuppression();
+					performToggle(view, headingElement);
 					return true;
 				},
 				click(view, event) {
+					if (suppressNextToggleClick) {
+						clearToggleSuppression();
+						return true;
+					}
 					if (!(event instanceof MouseEvent) || event.button !== 0) return false;
 					const headingElement = findCollapsibleHeadingElement(event.target);
 					if (!headingElement || !isCollapsibleHeadingToggleHit(headingElement, event)) return false;
@@ -951,22 +1033,7 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 					event.preventDefault();
 					event.stopPropagation();
 					if (event.detail !== 1) return true;
-					const heading = findCollapsibleHeadingFromToggleElement(view, noteId, headingElement);
-					if (!heading) return false;
-					const { blocks, positions } = getTopLevelBlocks(view.state.doc);
-					toggleCollapsibleHeadingSection(
-						view,
-						noteId,
-						heading.pos,
-						heading.node,
-						heading.level,
-						heading.index,
-						blocks,
-						positions,
-						heading.collapseId,
-						heading.collapsed,
-					);
-					return true;
+					return performToggle(view, headingElement);
 				},
 			},
 			handleKeyDown(view, event) {
@@ -1312,7 +1379,21 @@ const MobileSafeTaskItem = TaskItem.extend({
 						...currentNode.attrs,
 						checked,
 					});
+					transaction.setMeta(TASK_ITEM_CHECKBOX_TOGGLE_META, true);
 					editor.view.dispatch(transaction);
+
+					// On touch devices, dismissing the on-screen keyboard (e.g. the user's
+					// own back-gesture/minimize) does not blur the underlying contentEditable
+					// — it stays logically focused. Toggling a checkbox while that stale
+					// focus lingers can make the OS decide to reopen the keyboard for the
+					// still-focused field, which is what actually produces the "scrolls back
+					// to the caret" symptom (confirmed via device logging — it's the keyboard
+					// reopening and shrinking the viewport around the caret, not a JS
+					// scrollTop write). Only applies on coarse-pointer devices; desktop never
+					// had this problem and losing focus there would just be an annoyance.
+					if (isCoarsePointerDevice() && document.activeElement === editor.view.dom) {
+						(editor.view.dom as HTMLElement).blur();
+					}
 				}
 
 				if (!editor.isEditable && this.options.onReadOnlyChecked) {
