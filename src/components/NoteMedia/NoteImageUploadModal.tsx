@@ -2,6 +2,7 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faCamera, faChevronDown, faChevronUp, faFileLines, faImage, faListCheck, faMinus, faPen, faPenNib, faPlus, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
+import { getImageCaptureJpegQuality, getImageCaptureMaxDimensionPx } from '../../core/instanceConfig';
 import { queueNoteImageUrlForImport, queueNoteImagesForUpload, readQueuedNoteImages, readStoredRemoteNoteImages } from '../../core/noteMediaStore';
 import { applyTheme, getStoredThemeId } from '../../core/theme';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
@@ -9,8 +10,6 @@ import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import styles from './NoteImageUploadModal.module.css';
 
-const CAPTURE_MAX_DIMENSION_PX = 1920;
-const CAPTURE_JPEG_QUALITY = 0.7;
 const CAMERA_ASPECT_RATIO = 4 / 3;
 const IMAGE_UPLOAD_BODY_FLAG = 'freemannotesNoteImageUploadOpen';
 
@@ -362,7 +361,8 @@ async function createOptimizedImageFile(file: File): Promise<File> {
 	const decoded = await decodeImageSource(file);
 	let canvas: HTMLCanvasElement | null = null;
 	try {
-		const scale = Math.min(1, CAPTURE_MAX_DIMENSION_PX / Math.max(decoded.width, decoded.height, 1));
+		const maxDimensionPx = getImageCaptureMaxDimensionPx();
+		const scale = Math.min(1, maxDimensionPx / Math.max(decoded.width, decoded.height, 1));
 		const targetWidth = Math.max(1, Math.round(decoded.width * scale));
 		const targetHeight = Math.max(1, Math.round(decoded.height * scale));
 		canvas = document.createElement('canvas');
@@ -378,7 +378,7 @@ async function createOptimizedImageFile(file: File): Promise<File> {
 		context.fillRect(0, 0, targetWidth, targetHeight);
 		decoded.draw(context, targetWidth, targetHeight);
 		const compressedBlob = await new Promise<Blob | null>((resolve) => {
-			canvas?.toBlob(resolve, 'image/jpeg', CAPTURE_JPEG_QUALITY);
+			canvas?.toBlob(resolve, 'image/jpeg', getImageCaptureJpegQuality());
 		});
 		if (!compressedBlob) {
 			throw new Error('Image compression failed');
@@ -396,13 +396,49 @@ async function createOptimizedImageFile(file: File): Promise<File> {
 	}
 }
 
-async function createCapturedPhotoFile(video: HTMLVideoElement, photoIndex: number): Promise<File> {
+// Grabbing a frame from the live <video> preview (the fallback below) is
+// noticeably softer than a real photo taken with the same camera outside the
+// app: getUserMedia's preview stream is capped well below the sensor's native
+// still-photo resolution and is encoded for smooth real-time playback, not
+// photographic detail — there's no autofocus-lock-then-capture, HDR, or
+// multi-frame noise reduction the way a dedicated still-capture pipeline has.
+// ImageCapture.takePhoto() asks the camera hardware for an actual still photo
+// (the same pipeline the OS camera app uses) instead of sampling the preview,
+// which is why this is tried first. It's Chromium-only for now (unsupported
+// in Safari/iOS) — falls straight through to the existing frame-grab there.
+async function createCapturedPhotoFileViaImageCapture(stream: MediaStream | null, photoIndex: number): Promise<File | null> {
+	if (!stream || typeof window.ImageCapture !== 'function') return null;
+	const track = getPrimaryVideoTrack(stream);
+	if (!track) return null;
+	try {
+		const imageCapture = new window.ImageCapture(track);
+		const photoBlob = await imageCapture.takePhoto();
+		const sourceFile = new File([photoBlob], `photo-${photoIndex}-source`, {
+			type: photoBlob.type || 'image/jpeg',
+			lastModified: Date.now(),
+		});
+		// Route through the same downscale/re-encode pipeline as every other
+		// image path so capture size/quality stays consistent regardless of how
+		// wildly the sensor's native still-photo resolution varies by device.
+		const optimized = await createOptimizedImageFile(sourceFile);
+		return new File([optimized], `photo-${photoIndex}.jpg`, {
+			type: optimized.type || 'image/jpeg',
+			lastModified: Date.now(),
+		});
+	} catch {
+		// Some devices advertise ImageCapture but throw on takePhoto() for a
+		// given track (known Android Chrome inconsistency) — fall back below.
+		return null;
+	}
+}
+
+async function createCapturedPhotoFileFromVideoFrame(video: HTMLVideoElement, photoIndex: number): Promise<File> {
 	const sourceWidth = Math.max(1, video.videoWidth || 0);
 	const sourceHeight = Math.max(1, video.videoHeight || 0);
 	if (sourceWidth <= 1 && sourceHeight <= 1) {
 		throw new Error('Camera frame unavailable');
 	}
-	const scale = Math.min(1, CAPTURE_MAX_DIMENSION_PX / Math.max(sourceWidth, sourceHeight, 1));
+	const scale = Math.min(1, getImageCaptureMaxDimensionPx() / Math.max(sourceWidth, sourceHeight, 1));
 	const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
 	const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
 	const canvas = document.createElement('canvas');
@@ -419,7 +455,7 @@ async function createCapturedPhotoFile(video: HTMLVideoElement, photoIndex: numb
 		context.fillRect(0, 0, targetWidth, targetHeight);
 		context.drawImage(video, 0, 0, targetWidth, targetHeight);
 		const blob = await new Promise<Blob | null>((resolve) => {
-			canvas.toBlob(resolve, 'image/jpeg', CAPTURE_JPEG_QUALITY);
+			canvas.toBlob(resolve, 'image/jpeg', getImageCaptureJpegQuality());
 		});
 		if (!blob) {
 			throw new Error('Capture encoding failed');
@@ -432,6 +468,12 @@ async function createCapturedPhotoFile(video: HTMLVideoElement, photoIndex: numb
 		canvas.width = 0;
 		canvas.height = 0;
 	}
+}
+
+async function createCapturedPhotoFile(video: HTMLVideoElement, photoIndex: number, stream: MediaStream | null): Promise<File> {
+	const viaImageCapture = await createCapturedPhotoFileViaImageCapture(stream, photoIndex);
+	if (viaImageCapture) return viaImageCapture;
+	return createCapturedPhotoFileFromVideoFrame(video, photoIndex);
 }
 
 async function requestCameraStream(preferredDeviceId?: string | null): Promise<MediaStream> {
@@ -975,7 +1017,7 @@ export function NoteImageUploadModal(props: NoteImageUploadModalProps): React.JS
 			try {
 				const usedNames = await buildUsedImageNames();
 				photoCounterRef.current += 1;
-				const capturedFile = await createCapturedPhotoFile(video, photoCounterRef.current);
+				const capturedFile = await createCapturedPhotoFile(video, photoCounterRef.current, cameraStreamRef.current);
 				const id = createSelectionId();
 				const defaultName = getNextImageDefaultName(usedNames);
 				const previewUrl = URL.createObjectURL(capturedFile);

@@ -35,6 +35,21 @@ const LEGACY_SHARED_WITH_ME_NAME_RE = /^Shared With Me \([0-9a-f-]{36}\)$/i;
 const COLLECTIONS_REGISTRY_DOC_ID = '__collections_registry__';
 const LABELS_REGISTRY_DOC_ID = '__labels_registry__';
 
+// Client-side upload/capture compression ceiling — clients fetch this via
+// GET /api/config rather than hardcoding it, so a self-hosted instance's
+// admin can trade image quality against storage/bandwidth for their user
+// count via env vars alone (no DB row, no admin UI — see IMAGE_CAPTURE_* in
+// unraid.xml / docker-compose.yml / .env.example for the sizing guidance).
+// Clamped defensively so a malformed env value can't produce a 0px canvas or
+// a fully-degenerate JPEG quality.
+function clampNumber(value, min, max, fallback) {
+	const num = Number(value);
+	if (!Number.isFinite(num)) return fallback;
+	return Math.min(max, Math.max(min, num));
+}
+const IMAGE_CAPTURE_MAX_DIMENSION_PX = clampNumber(process.env.IMAGE_CAPTURE_MAX_DIMENSION_PX, 320, 6000, 2560);
+const IMAGE_CAPTURE_JPEG_QUALITY = clampNumber(process.env.IMAGE_CAPTURE_JPEG_QUALITY, 0.1, 1, 0.82);
+
 function jsonResponse(res, status, body) {
 	const json = JSON.stringify(body);
 	res.writeHead(status, {
@@ -1238,6 +1253,16 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 			return true;
 		}
 
+		if (pathname === '/api/config' && method === 'GET') {
+			const session = requireAuth(req, res);
+			if (!session) return true;
+			jsonResponse(res, 200, {
+				imageCaptureMaxDimensionPx: IMAGE_CAPTURE_MAX_DIMENSION_PX,
+				imageCaptureJpegQuality: IMAGE_CAPTURE_JPEG_QUALITY,
+			});
+			return true;
+		}
+
 		if (pathname === '/api/search' && method === 'GET') {
 			(async () => {
 				try {
@@ -1275,6 +1300,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							},
 							select: {
 								docId: true,
+								fileName: true,
 								ocrText: true,
 								thumbnailPath: true,
 							},
@@ -1416,6 +1442,11 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						const linkRows = linksByDocId.get(row.docId) || [];
 						const documentRows = documentsByDocId.get(row.docId) || [];
 						const ocrText = normalizeText(imageRows.map((image) => image.ocrText || '').join(' '));
+						// The name the user gave an image in the upload dialog (defaults to
+						// "image 1" etc., but the whole point of letting them rename it there
+						// is so they can find it again by that name) — kept separate from OCR
+						// text so a filename match doesn't show a misleading "OCR" badge.
+						const imageNameText = normalizeText(imageRows.map((image) => image.fileName || '').join(' '));
 						const collaboratorText = normalizeText(collaboratorLabels.join(' '));
 						const linkText = normalizeText(linkRows.map((link) => [
 							link.originalUrl,
@@ -1429,13 +1460,14 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						const documentText = normalizeText(documentRows.map((document) => [document.fileName, document.fileExtension, document.ocrText].filter(Boolean).join(' ')).join(' '));
 						const noteMatch = snapshot.plainText.toLowerCase().includes(normalizedQuery);
 						const ocrMatch = ocrText.toLowerCase().includes(normalizedQuery);
+						const imageNameMatch = imageNameText.toLowerCase().includes(normalizedQuery);
 						const collaboratorMatches = collaboratorLabels.filter((label) => label.toLowerCase().includes(normalizedQuery));
 						const collaboratorMatch = collaboratorMatches.length > 0;
 						const linkMatch = linkText.toLowerCase().includes(normalizedQuery);
 						const documentMatch = documentText.toLowerCase().includes(normalizedQuery);
 						const collectionMatch = collectionPath.toLowerCase().includes(normalizedQuery);
 						const labelMatch = labelMatches.length > 0;
-						if (!noteMatch && !ocrMatch && !collaboratorMatch && !linkMatch && !documentMatch && !collectionMatch && !labelMatch) continue;
+						if (!noteMatch && !ocrMatch && !imageNameMatch && !collaboratorMatch && !linkMatch && !documentMatch && !collectionMatch && !labelMatch) continue;
 						const context = docContext.get(row.docId) || docContext.get(`workspace:${row.workspaceId}`) || {
 							kind: 'workspace',
 							label: 'Workspace',
@@ -1448,6 +1480,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						const matchKinds = [];
 						if (noteMatch) matchKinds.push('note');
 						if (ocrMatch) matchKinds.push('ocr');
+						if (imageNameMatch) matchKinds.push('imageName');
 						if (collaboratorMatch) matchKinds.push('collaborator');
 						if (linkMatch) matchKinds.push('link');
 						if (documentMatch) matchKinds.push('document');
@@ -1482,15 +1515,17 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 								? buildSearchSnippet(snapshot.plainText, query)
 								: ocrMatch
 									? buildSearchSnippet(ocrText, query)
-									: collaboratorMatch
-										? buildSearchSnippet(collaboratorText, query)
-										: linkMatch
-											? buildSearchSnippet(linkSnippetSource, query)
-											: collectionMatch
-												? buildSearchSnippet(collectionPath, query)
-												: labelMatch
-													? buildSearchSnippet(labelMatches.join(' '), query)
-											: buildSearchSnippet(documentSnippetSource, query),
+									: imageNameMatch
+										? buildSearchSnippet(imageNameText, query)
+										: collaboratorMatch
+											? buildSearchSnippet(collaboratorText, query)
+											: linkMatch
+												? buildSearchSnippet(linkSnippetSource, query)
+												: collectionMatch
+													? buildSearchSnippet(collectionPath, query)
+													: labelMatch
+														? buildSearchSnippet(labelMatches.join(' '), query)
+												: buildSearchSnippet(documentSnippetSource, query),
 							imageCount: imageRows.length,
 							thumbnailUrl: imageRows[0]
 								? toPublicUploadPath(imageRows[0].thumbnailPath)

@@ -115,6 +115,7 @@ server.js (HTTP, default port 27015)
 | `AUTH_SESSION_DAYS` | Rolling session expiry (defaults to non-expiring) |
 | `AUTH_ALLOW_REGISTER` | Open registration |
 | `UPLOAD_DIR` | Media storage path |
+| `IMAGE_CAPTURE_MAX_DIMENSION_PX` / `IMAGE_CAPTURE_JPEG_QUALITY` | Upload/capture image quality ceiling. Default 2560px / 0.82 (~0.5MB/photo — budget that × images-per-user × user-count). Client fetches via `GET /api/config`; see `src/core/instanceConfig.ts`. New uploads only. |
 | `OCR_DISABLED` | `1` to disable OCR |
 | `OCR_PYTHON_BIN` | Python executable for OCR |
 | `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` | Web Push |

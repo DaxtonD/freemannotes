@@ -31,6 +31,11 @@ services:
       PGTIMEZONE: ${PGTIMEZONE:-}
       YPERSISTENCE: ${YPERSISTENCE:-}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+      # Image quality ceiling for uploads and in-app camera capture. See
+      # .env.example for the storage-sizing estimate (roughly 0.5MB/photo at
+      # the defaults below — budget that x images-per-user x user-count).
+      IMAGE_CAPTURE_MAX_DIMENSION_PX: ${IMAGE_CAPTURE_MAX_DIMENSION_PX:-2560}
+      IMAGE_CAPTURE_JPEG_QUALITY: ${IMAGE_CAPTURE_JPEG_QUALITY:-0.82}
 
       # Authentication
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-change-me-before-beta}

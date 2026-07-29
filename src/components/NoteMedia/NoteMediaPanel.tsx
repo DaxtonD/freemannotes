@@ -59,7 +59,6 @@ type RemoteImageThumbProps = {
 };
 
 function RemoteImageThumb(props: RemoteImageThumbProps): React.JSX.Element {
-	const { t } = useI18n();
 	const resolvedImage = useResolvedNoteImageSource({
 		fullUrl: props.image.originalUrl,
 		thumbnailUrl: props.image.thumbnailUrl,
@@ -76,10 +75,7 @@ function RemoteImageThumb(props: RemoteImageThumbProps): React.JSX.Element {
 	}
 
 	return (
-		<>
-			{resolvedImage.isOfflinePreview ? <span className={`${styles.badge} ${styles.offlineBadge}`}>{t('media.offlinePreviewBadge')}</span> : null}
-			<img className={styles.thumb} src={resolvedImage.src} alt={props.alt} onError={resolvedImage.fallbackToOfflinePreview} />
-		</>
+		<img className={styles.thumb} src={resolvedImage.src} alt={props.alt} onError={resolvedImage.fallbackToOfflinePreview} />
 	);
 }
 

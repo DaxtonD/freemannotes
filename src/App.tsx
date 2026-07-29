@@ -9065,6 +9065,7 @@ export function App(): React.JSX.Element {
 	}, [t]);
 	const formatSearchMatchLabel = React.useCallback((kind: NoteSearchMatchKind): string => {
 		if (kind === 'ocr') return t('search.matchOcr');
+		if (kind === 'imageName') return t('search.matchImageName');
 		if (kind === 'collaborator') return t('search.matchCollaborator');
 		if (kind === 'link') return t('search.matchLink');
 		if (kind === 'document') return t('search.matchDocument');

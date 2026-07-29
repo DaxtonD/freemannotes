@@ -28,7 +28,13 @@ const DB_VERSION = 4;
 const NOTE_MEDIA_QUEUE_STORE = 'note_media_queue';
 const NOTE_MEDIA_PREVIEW_STORE = 'note_media_preview';
 const NOTE_MEDIA_CHANGED_EVENT = 'freemannotes:note-media-changed';
-const NOTE_MEDIA_PREVIEW_VERSION = 2;
+// Bump whenever createProgressiveNoteImageThumbnail's output changes (size,
+// quality, dimensions) — syncRemotePreviewRows compares this against each
+// cached row's stored previewVersion and regenerates on mismatch. Without a
+// bump, previously-cached offline thumbnails sit at their old quality forever;
+// they were generated once and are never touched again just because the
+// generation code changed.
+const NOTE_MEDIA_PREVIEW_VERSION = 3;
 
 // Upload retry / backoff constants
 const FLUSH_DEBOUNCE_MS = 400;
@@ -355,7 +361,19 @@ export async function createProgressiveNoteImageThumbnail(blob: Blob): Promise<B
 		const image = await loadImageElementFromBlob(blob);
 		// Keep source proportions while downscaling so offline previews preserve
 		// the original composition instead of stretching/cropping unexpectedly.
-		const maxDimension = 400;
+		//
+		// 400px/50KB (the previous ceiling here) kept thousands of these cheap to
+		// store, but made text in any photographed document/label/whiteboard
+		// illegible — the exact case this offline cache exists for, since search
+		// itself doesn't depend on this blob at all (OCR runs server-side against
+		// the full-resolution original and is indexed separately; this is purely
+		// what you *see* while offline). 1024px/~200KB is a deliberate step up in
+		// per-image budget (roughly 4x worst case) to make that text readable,
+		// while still being small enough that a genuinely large library — low
+		// thousands of images — stays in the hundreds-of-MB range rather than GBs.
+		// If a user's library grows large enough for that to matter in practice,
+		// the next lever is a storage-aware eviction policy, not a smaller image.
+		const maxDimension = 1024;
 		const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
 		const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
 		const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
@@ -368,13 +386,13 @@ export async function createProgressiveNoteImageThumbnail(blob: Blob): Promise<B
 
 		// Progressive quality fallback keeps tiles sharp enough for note scanning
 		// while staying small enough for reliable offline cache + sync behavior.
-		const qualities = [0.55, 0.48, 0.4];
+		const qualities = [0.72, 0.6, 0.48, 0.36];
 		let fallbackBlob: Blob | null = null;
 		for (const quality of qualities) {
 			const nextBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
 			if (!nextBlob) continue;
 			fallbackBlob = nextBlob;
-			if (nextBlob.size <= 50 * 1024) return nextBlob;
+			if (nextBlob.size <= 200 * 1024) return nextBlob;
 		}
 		return fallbackBlob;
 	} catch {

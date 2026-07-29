@@ -190,10 +190,6 @@
 	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface));
 }
 
-.offlineBadge {
-	background: color-mix(in srgb, #0f766e 18%, var(--color-surface));
-}
-
 .deleteButton {
 	right: 10px;
 	width: 30px;

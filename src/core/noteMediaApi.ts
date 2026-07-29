@@ -48,7 +48,7 @@ export type NoteSearchGroup = {
 	workspaceId: string | null;
 };
 
-export type NoteSearchMatchKind = 'note' | 'ocr' | 'collaborator' | 'link' | 'document' | 'collection' | 'label';
+export type NoteSearchMatchKind = 'note' | 'ocr' | 'imageName' | 'collaborator' | 'link' | 'document' | 'collection' | 'label';
 
 export type NoteSearchResult = {
 	docId: string;

@@ -353,7 +353,7 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 							</button>
 							<div className={styles.titleWrap}>
 								<h2 className={styles.title}>{props.title}</h2>
-								{props.subtitle || resolvedImage.isOfflinePreview ? <p className={styles.subtitle}>{[props.subtitle, resolvedImage.isOfflinePreview ? t('media.offlinePreviewHint') : ''].filter(Boolean).join(' · ')}</p> : null}
+								{props.subtitle ? <p className={styles.subtitle}>{props.subtitle}</p> : null}
 							</div>
 						</div>
 						{props.onDelete ? (

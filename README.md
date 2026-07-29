@@ -220,6 +220,7 @@ Optional:
 * `REDIS_URL` (recommended)
 * `SMTP_*` settings
 * `OCR_DISABLED=1`
+* `IMAGE_CAPTURE_MAX_DIMENSION_PX` / `IMAGE_CAPTURE_JPEG_QUALITY` — image quality ceiling for uploads and in-app camera capture. Defaults to 2560px / 0.82 (~0.5MB per photo — budget that × images-per-user × user-count for your uploads volume). Raise or lower to trade image sharpness against storage/bandwidth for your deployment's size. Only affects new uploads.
 
 ---
 

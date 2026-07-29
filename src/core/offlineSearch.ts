@@ -220,11 +220,16 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 			.map((link) => [link.title, link.description, link.mainContent, link.rootDomain, link.originalUrl].filter(Boolean).join(' '))
 			.join(' ');
 		const imageOcrText = imageRows.map((image) => image.ocrText || '').join(' ');
+		// The name the user gave an image in the upload dialog — kept separate from
+		// OCR text (see server /api/search) so a filename match doesn't show a
+		// misleading "OCR" badge.
+		const imageNameText = imageRows.map((image) => image.fileName || '').join(' ');
 		const documentText = documentRows.map((document) => [document.fileName, document.ocrText].filter(Boolean).join(' ')).join(' ');
 
 		const matchKinds: NoteSearchMatchKind[] = [];
 		if (includesQuery(`${title} ${noteText}`, normalizedQuery)) matchKinds.push('note');
 		if (includesQuery(imageOcrText, normalizedQuery)) matchKinds.push('ocr');
+		if (includesQuery(imageNameText, normalizedQuery)) matchKinds.push('imageName');
 		if (includesQuery(documentText, normalizedQuery)) matchKinds.push('document');
 		if (includesQuery(linkText, normalizedQuery)) matchKinds.push('link');
 		if (collaboratorMatches.length > 0) matchKinds.push('collaborator');
@@ -236,15 +241,17 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 			? `${title} ${noteText}`
 			: matchKinds.includes('ocr')
 				? imageOcrText
-				: matchKinds.includes('document')
-					? documentText
-					: matchKinds.includes('link')
-						? linkText
-						: matchKinds.includes('collection')
-							? collectionPath
-							: matchKinds.includes('label')
-								? labelMatches.join(' ')
-						: collaboratorMatches.join(' ');
+				: matchKinds.includes('imageName')
+					? imageNameText
+					: matchKinds.includes('document')
+						? documentText
+						: matchKinds.includes('link')
+							? linkText
+							: matchKinds.includes('collection')
+								? collectionPath
+								: matchKinds.includes('label')
+									? labelMatches.join(' ')
+							: collaboratorMatches.join(' ');
 
 		const group: NoteSearchGroup = placement
 			? { kind: 'shared', label: workspaceLabel, workspaceId }

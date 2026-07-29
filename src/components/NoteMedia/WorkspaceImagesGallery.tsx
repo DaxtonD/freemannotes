@@ -210,7 +210,6 @@ function buildSearchableNoteBody(doc: Y.Doc | null, noteId: string): { title: st
 }
 
 function TileImage(props: { item: GalleryItem; onOpen: () => void }): React.JSX.Element {
-	const { t } = useI18n();
 	const resolvedImage = useResolvedNoteImageSource({
 		fullUrl: props.item.originalUrl,
 		thumbnailUrl: props.item.thumbnailUrl,
@@ -223,7 +222,6 @@ function TileImage(props: { item: GalleryItem; onOpen: () => void }): React.JSX.
 		<article className={styles.tile}>
 			<button type="button" className={styles.tileButton} onClick={props.onOpen}>
 				<div className={styles.thumbWrap}>
-					{resolvedImage.isOfflinePreview ? <span className={styles.thumbBadge}>{t('media.offlinePreviewBadge')}</span> : null}
 					{resolvedImage.showPlaceholder || !resolvedImage.src ? (
 						<div className={styles.thumbPlaceholder} aria-hidden="true">
 							<FontAwesomeIcon icon={faImage} />
