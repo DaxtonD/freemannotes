@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#F0EBE0" filter="url(#tex_calendar_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- calendar body -->
   <rect x="-44" y="-30" width="88" height="74" rx="8" fill="#BF8A50" opacity="0.28"/>
   <rect x="-44" y="-30" width="88" height="74" rx="8" fill="none" stroke="#985A28" stroke-width="3.5"/>

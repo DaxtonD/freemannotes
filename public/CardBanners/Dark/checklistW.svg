@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#141626" filter="url(#tex_checklist_dark_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- clipboard body -->
   <rect x="-34" y="-42" width="68" height="86" rx="8" fill="#222848" opacity="0.3"/>
   <rect x="-34" y="-42" width="68" height="86" rx="8" fill="none" stroke="#8090D4" stroke-width="3.5"/>

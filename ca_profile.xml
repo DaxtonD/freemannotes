@@ -1,0 +1,9 @@
+<CommunityApplications>
+  <Profile>
+    Freeman Notes — a self-hosted, offline-first, real-time collaborative notes PWA. Rich text notes, checklists, drawings (Excalidraw), image uploads with OCR search, document attachments, and multi-device sync via Yjs CRDT, all running on your own hardware. This repository hosts the Unraid Community Applications template for Freeman Notes. For support, please open an issue on GitHub.
+  </Profile>
+  <Icon>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/lighticon.png</Icon>
+  <WebPage>https://github.com/DaxtonD/freemannotes</WebPage>
+  <DonateLink>https://buymeacoffee.com/DaxtonD</DonateLink>
+  <DonateText>If Freeman Notes is useful to you, a coffee is always appreciated!</DonateText>
+</CommunityApplications>

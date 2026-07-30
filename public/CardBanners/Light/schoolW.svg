@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#E8F2EA" filter="url(#tex_school_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- cap base -->
   <path d="M-22,-8 L-22,10 C-22,17 -11,21 0,21 C11,21 22,17 22,10 L22,-8" fill="#72B082" opacity="0.28"/>
   <path d="M-22,-8 L-22,10 C-22,17 -11,21 0,21 C11,21 22,17 22,10 L22,-8" fill="none" stroke="#4A8A5A" stroke-width="3.5"/>

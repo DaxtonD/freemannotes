@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#E8E8F2" filter="url(#tex_media_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- clapper top (angled) -->
   <g transform="rotate(-10,-42,-14)">
     <rect x="-42" y="-32" width="84" height="18" rx="4" fill="#8880B0" opacity="0.28"/>

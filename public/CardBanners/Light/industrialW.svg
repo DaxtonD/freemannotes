@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#EAEAEA" filter="url(#tex_industrial_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- factory body (sawtooth roof) -->
   <path d="M-46,44 L-46,10 L-20,-10 L-20,10 L6,-10 L6,10 L32,-10 L32,10 L46,10 L46,44 Z" fill="#7A8890" opacity="0.28"/>
   <path d="M-46,44 L-46,10 L-20,-10 L-20,10 L6,-10 L6,10 L32,-10 L32,10 L46,10 L46,44 Z" fill="none" stroke="#505A60" stroke-width="3.5" stroke-linejoin="round"/>

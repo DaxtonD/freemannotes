@@ -4,6 +4,15 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.7.10 - 2026-07-29
+
+### Fixed
+- **Card banner icons were getting clipped in List view and Detailed List view on desktop** — the household icon's roof peak and a couple others were flat-cut at the top. The regenerated banner SVGs (new artwork, same canvas/position as before) turned out to be drawn slightly larger than the old hand-drawn ones, so they no longer fit inside the same crop window at 44px/64px row heights. Scaled the icon down uniformly across all 40 wide banner assets (light + dark, every category) rather than touching the crop logic itself, which was already correct.
+- **The image viewer's top-right button was Delete, right where every other modal in the app puts Close** — easy to hit by habit and lose an image you didn't mean to. Replaced it with a Close button; deleting is still available (and always was) from the media panel itself, so nothing was actually lost, just moved out of the one spot muscle memory says is safe to tap.
+
+### Changed
+- Unraid Community Applications template polish: added the repository-level `ca_profile.xml` profile file CA submission requires (was missing entirely), removed a trailing slash from `<WebUI>`, added a Buy Me a Coffee donation link/message, and switched the template icon to a transparent-background mark that reads cleanly on both Unraid's light and dark themes.
+
 ## 1.7.9 - 2026-07-29
 
 ### Fixed

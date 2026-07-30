@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#EAF0F2" filter="url(#tex_work_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- handle -->
   <path d="M-13,-18 v-5 a7,7 0 0 1 7,-7 h12 a7,7 0 0 1 7,7 v5" fill="none" stroke="#4A7A8A" stroke-width="3.5"/>
   <!-- briefcase body -->

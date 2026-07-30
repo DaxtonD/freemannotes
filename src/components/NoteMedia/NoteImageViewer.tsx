@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faChevronLeft, faChevronRight, faImage, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faChevronLeft, faChevronRight, faImage, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { useResolvedNoteImageSource } from './useResolvedNoteImageSource';
@@ -14,8 +14,6 @@ type NoteImageViewerProps = {
 	title: string;
 	subtitle?: string | null;
 	onClose: () => void;
-	onDelete?: (() => void) | undefined;
-	deleteDisabled?: boolean;
 	hasPrevious?: boolean;
 	hasNext?: boolean;
 	onPrevious?: (() => void) | undefined;
@@ -356,14 +354,16 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 								{props.subtitle ? <p className={styles.subtitle}>{props.subtitle}</p> : null}
 							</div>
 						</div>
-						{props.onDelete ? (
-							<div className={styles.toolbar}>
-								<button type="button" className={styles.dangerButton} onClick={props.onDelete} disabled={props.deleteDisabled}>
-									<FontAwesomeIcon icon={faTrash} />
-									<span>{t('editors.delete')}</span>
-								</button>
-							</div>
-						) : null}
+						{/* Top-right slot: a plain Close button, matching where every other
+						    modal in the app puts its "X" — this used to be a Delete button
+						    here, and users kept hitting it by habit reaching for close.
+						    Deleting an image is still available from the media panel;
+						    it doesn't need a second, easy-to-misclick entry point here. */}
+						<div className={styles.toolbar}>
+							<button type="button" className={styles.button} onClick={requestClose} aria-label={t('common.close')} title={t('common.close')}>
+								<FontAwesomeIcon icon={faXmark} />
+							</button>
+						</div>
 					</div>
 
 					<div

@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#220A08" filter="url(#tex_important_dark_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- warning triangle -->
   <path d="M0,-38 L42,34 L-42,34 Z" fill="#3C0E0C" opacity="0.3"/>
   <path d="M0,-38 L42,34 L-42,34 Z" fill="none" stroke="#D85050" stroke-width="7" stroke-linejoin="round"/>

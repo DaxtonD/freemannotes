@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#0E1610" filter="url(#tex_maintenance_dark_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- hex nut -->
   <g transform="translate(30,-30)">
     <path d="M0,-12 L10.4,-6 L10.4,6 L0,12 L-10.4,6 L-10.4,-6 Z" fill="none" stroke="#70B070" stroke-width="3" stroke-linejoin="round" opacity="0.6"/>

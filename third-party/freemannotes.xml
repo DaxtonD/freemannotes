@@ -25,16 +25,16 @@
   <Project>https://github.com/DaxtonD/freemannotes</Project>
   <Overview>Freeman Notes is a self-hosted, offline-first, real-time collaborative note-taking PWA. Features include rich text notes, checklists with counts, drawings (Excalidraw), @mentions, inbox activity feed, push notifications, themes, and full offline support via IndexedDB + Yjs CRDT sync.[br][br]Requires a PostgreSQL 16 database. Redis 7 is strongly recommended for real-time multi-tab sync.</Overview>
   <Category>Productivity: Tools:</Category>
-  <WebUI>http://[IP]:[PORT:27015]/</WebUI>
+  <WebUI>http://[IP]:[PORT:27015]</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/third-party/freemannotes.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/public/apple-touch-icon.png</Icon>
+  <Icon>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/lighticon.png</Icon>
   <!-- The init flag below ensures signals (SIGTERM) are forwarded correctly to Node.js -->
   <ExtraParams>--init</ExtraParams>
   <PostArgs/>
   <CPUset/>
   <DateInstalled/>
-  <DonateText/>
-  <DonateLink/>
+  <DonateText>If Freeman Notes is useful to you, a coffee is always appreciated!</DonateText>
+  <DonateLink>https://buymeacoffee.com/DaxtonD</DonateLink>
   <Requires>PostgreSQL 16 | Redis 7 (recommended)</Requires>
 
   <!-- ═══════════════════════════════════════════════════════════════════════

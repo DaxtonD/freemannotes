@@ -47,8 +47,6 @@ type ViewerState = {
 		thumbnailUrl?: string | null;
 		title: string;
 		subtitle?: string | null;
-		onDelete?: (() => void) | undefined;
-		deleteDisabled?: boolean;
 	}>;
 	index: number;
 };
@@ -404,8 +402,6 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			thumbnailUrl: image.thumbnailUrl,
 			title: image.fileName ? image.fileName.replace(/\.[^.]+$/, '') : `${t('media.imageLabel')} ${index + 1}`,
 			subtitle: image.ocrStatus === 'READY' ? t('media.ocrReady') : `${image.width || '?'} × ${image.height || '?'}`,
-			onDelete: props.canEdit ? () => void handleDeleteRemote(image) : undefined,
-			deleteDisabled: deletingId === image.id,
 		})),
 		...localPreviewItems.map((item, index) => ({
 			src: item.previewUrl || item.sourceUrl || '',
@@ -421,9 +417,8 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 					? item.sourceUrl.replace(/^https?:\/\//i, '')
 					: `${t('media.queuedImageLabel')} ${index + 1}`,
 			subtitle: item.lastError || `${t('media.queuedState')} ${formatRelativeDate(item.createdAt, locale)}`,
-			onDelete: props.canEdit ? () => void handleDeleteQueued(item) : undefined,
 		})),
-	]), [deletingId, handleDeleteQueued, handleDeleteRemote, locale, localPreviewItems, props.canEdit, storedPreviewByQueuedId, storedPreviewByRemoteId, t, visibleRemoteImages]);
+	]), [locale, localPreviewItems, storedPreviewByQueuedId, storedPreviewByRemoteId, t, visibleRemoteImages]);
 	React.useEffect(() => {
 		setViewerState((current) => {
 			if (!current) return null;
@@ -620,8 +615,6 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 					title={viewerState.items[viewerState.index]?.title || ''}
 					subtitle={viewerState.items[viewerState.index]?.subtitle}
 					onClose={closeViewer}
-					onDelete={viewerState.items[viewerState.index]?.onDelete}
-					deleteDisabled={viewerState.items[viewerState.index]?.deleteDisabled}
 					hasPrevious={viewerState.index > 0}
 					hasNext={viewerState.index < viewerState.items.length - 1}
 					onPrevious={showPreviousViewerItem}

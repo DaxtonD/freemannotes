@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#2C1E0A" filter="url(#tex_grocery_dark_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- celery stalks -->
   <g transform="rotate(-10,-16,-30)">
     <rect x="-19" y="-42" width="6" height="22" rx="3" fill="#D4924E" opacity="0.5"/>

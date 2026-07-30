@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#F5EAEC" filter="url(#tex_health_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- heart -->
   <path d="M0,36 C-8,28 -42,8 -42,-14 C-42,-32 -28,-42 -14,-40 C-6,-39 -2,-34 0,-30 C2,-34 6,-39 14,-40 C28,-42 42,-32 42,-14 C42,8 8,28 0,36 Z" fill="#C87888" opacity="0.28"/>
   <path d="M0,36 C-8,28 -42,8 -42,-14 C-42,-32 -28,-42 -14,-40 C-6,-39 -2,-34 0,-30 C2,-34 6,-39 14,-40 C28,-42 42,-32 42,-14 C42,8 8,28 0,36 Z" fill="none" stroke="#A04858" stroke-width="3.5" stroke-linejoin="round"/>

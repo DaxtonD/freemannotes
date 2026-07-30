@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#E5EAF5" filter="url(#tex_travel_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- flight path -->
   <path d="M-44,40 Q-16,44 8,28" fill="none" stroke="#486898" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="1,9" opacity="0.8"/>
   <!-- airplane -->

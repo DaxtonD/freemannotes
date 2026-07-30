@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#F0EBDA" filter="url(#tex_household_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- house body -->
   <rect x="-34" y="4" width="68" height="40" fill="#B88858" opacity="0.28"/>
   <rect x="-34" y="4" width="68" height="40" fill="none" stroke="#906030" stroke-width="3.5"/>

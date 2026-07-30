@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#0A1220" filter="url(#tex_coding_dark_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- editor window -->
   <rect x="-46" y="-34" width="92" height="68" rx="8" fill="#102038" opacity="0.3"/>
   <rect x="-46" y="-34" width="92" height="68" rx="8" fill="none" stroke="#5090C8" stroke-width="3.5"/>

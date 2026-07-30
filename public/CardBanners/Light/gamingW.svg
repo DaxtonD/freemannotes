@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#EDE8F5" filter="url(#tex_gaming_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- controller body -->
   <rect x="-46" y="-25" width="92" height="52" rx="26" fill="#A882C8" opacity="0.28"/>
   <rect x="-46" y="-25" width="92" height="52" rx="26" fill="none" stroke="#785898" stroke-width="3.5"/>

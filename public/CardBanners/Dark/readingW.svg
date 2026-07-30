@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#0A1814" filter="url(#tex_reading_dark_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- open book left page -->
   <path d="M0,-26 C-10,-35 -26,-38 -42,-35 L-42,30 C-26,27 -10,30 0,38 Z" fill="#102820" opacity="0.3"/>
   <path d="M0,-26 C-10,-35 -26,-38 -42,-35 L-42,30 C-26,27 -10,30 0,38 Z" fill="none" stroke="#50B888" stroke-width="3.5" stroke-linejoin="round"/>

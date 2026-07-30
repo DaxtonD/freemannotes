@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#F5F0D8" filter="url(#tex_ideas_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- glow rays -->
   <line x1="0" y1="-36" x2="0" y2="-46" stroke="#A08828" stroke-width="3" stroke-linecap="round" opacity="0.8"/>
   <line x1="-18" y1="-37.5" x2="-24.4" y2="-45.2" stroke="#A08828" stroke-width="3" stroke-linecap="round" opacity="0.8"/>

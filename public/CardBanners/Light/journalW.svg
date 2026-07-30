@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#EBF0E8" filter="url(#tex_journal_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- notebook body -->
   <rect x="-36" y="-42" width="62" height="86" rx="6" fill="#88A870" opacity="0.28"/>
   <rect x="-36" y="-42" width="62" height="86" rx="6" fill="none" stroke="#5A7848" stroke-width="3.5"/>

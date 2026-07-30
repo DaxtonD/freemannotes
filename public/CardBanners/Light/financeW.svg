@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#EEF0E5" filter="url(#tex_finance_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- axes -->
   <path d="M-42,-38 V36 H44" fill="none" stroke="#6A7A30" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
   <!-- rising bars -->

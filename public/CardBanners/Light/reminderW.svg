@@ -99,7 +99,7 @@
   <rect width="1000" height="240" fill="#F5EAE8" filter="url(#tex_reminder_light_w)" opacity="0.06"/>
 
   <!-- icon -->
-  <g transform="translate(880,120)">
+  <g transform="translate(880,120) scale(0.6)">
   <!-- ringing arcs -->
   <path d="M-34,-28 a24,24 0 0 1 9,-13" fill="none" stroke="#A04838" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
   <path d="M34,-28 a24,24 0 0 0 -9,-13" fill="none" stroke="#A04838" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
