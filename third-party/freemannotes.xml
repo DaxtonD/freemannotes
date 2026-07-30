@@ -1,219 +1,576 @@
 <?xml version="1.0"?>
+<!--
+  Unraid Community Applications template for Freeman Notes.
+  Freeman Notes — self-hosted, offline-first, real-time collaborative notes PWA.
+
+  PREREQUISITES:
+    - A running PostgreSQL 16 container (e.g. Unraid's MariaDB or a postgres container).
+      Create a database + user for Freeman Notes before starting this container.
+    - Redis 7 container is strongly recommended for multi-tab real-time sync and reminders.
+      Set REDIS_URL="" to run without Redis (single-instance only).
+
+  FIRST-RUN NOTE:
+    Freeman Notes automatically runs `prisma migrate deploy` on startup.
+    No manual database migration step is needed — just start the container.
+-->
 <Container version="2">
   <Name>Freeman Notes</Name>
   <Repository>ghcr.io/daxtond/freemannotes:latest</Repository>
-  <Registry>https://ghcr.io/daxtond/freemannotes</Registry>
-  <Branch>
-    <Tag>latest</Tag>
-    <TagDescription>Latest stable release</TagDescription>
-  </Branch>
+  <Registry>https://github.com/daxtond/freemannotes/pkgs/container/freemannotes</Registry>
   <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
   <Privileged>false</Privileged>
   <Support>https://github.com/DaxtonD/freemannotes/issues</Support>
   <Project>https://github.com/DaxtonD/freemannotes</Project>
-  <Overview>Freeman Notes is a self-hosted, offline-first notes app inspired by Google Keep — but with real workspaces, collections, rich-text editing, image uploads with OCR search, document attachments, real-time collaboration via Yjs, workspace invites, and a note app that stays useful when the network disappears. Requires an external PostgreSQL instance (bring your own or use a separate Unraid PostgreSQL container).</Overview>
-  <Category>Productivity: Tools: Other:</Category>
-  <WebUI>http://[IP]:[PORT:27015]</WebUI>
+  <Overview>Freeman Notes is a self-hosted, offline-first, real-time collaborative note-taking PWA. Features include rich text notes, checklists with counts, drawings (Excalidraw), @mentions, inbox activity feed, push notifications, themes, and full offline support via IndexedDB + Yjs CRDT sync.[br][br]Requires a PostgreSQL 16 database. Redis 7 is strongly recommended for real-time multi-tab sync.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:27015]/</WebUI>
   <TemplateURL>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/third-party/freemannotes.xml</TemplateURL>
   <Icon>https://raw.githubusercontent.com/DaxtonD/freemannotes/main/public/apple-touch-icon.png</Icon>
-  <ExtraParams></ExtraParams>
+  <!-- The init flag below ensures signals (SIGTERM) are forwarded correctly to Node.js -->
+  <ExtraParams>--init</ExtraParams>
   <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
   <DonateText/>
   <DonateLink/>
+  <Requires>PostgreSQL 16 | Redis 7 (recommended)</Requires>
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       PORT
-  ═══════════════════════════════════════════════════════════════ -->
-  <Config Name="WebUI Port" Target="27015" Default="27015" Mode="tcp"
-    Description="Host port that maps to the FreemanNotes web server. Change the left-hand value if 27015 is already in use on your server."
-    Type="Port" Display="always" Required="true" Mask="false">27015</Config>
-
-  <!-- ═══════════════════════════════════════════════════════════════
+  <!-- ═══════════════════════════════════════════════════════════════════════
        VOLUMES
-  ═══════════════════════════════════════════════════════════════ -->
-  <Config Name="Uploads" Target="/app/uploads" Default="/mnt/user/appdata/freemannotes/uploads" Mode="rw"
-    Description="Persistent storage for user-uploaded images and document attachments. Map this to a path on your Unraid array or cache drive."
-    Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/freemannotes/uploads</Config>
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       REQUIRED VARIABLES
-  ═══════════════════════════════════════════════════════════════ -->
-  <Config Name="DATABASE_URL" Target="DATABASE_URL" Default="" Mode=""
-    Description="PostgreSQL connection string. Example: postgresql://freemannotes:yourpassword@192.168.1.100:5432/freemannotes?schema=public — Point this at your existing PostgreSQL container or server. A separate postgres:16 Unraid container works great."
-    Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <!-- Persists uploaded images, OCR results, and attached documents. -->
+  <Config
+    Name="Uploads / Media Storage"
+    Target="/app/uploads"
+    Default="/mnt/user/appdata/freemannotes/uploads"
+    Mode="rw"
+    Description="Where uploaded images and documents are stored. Must persist across container restarts."
+    Type="Path"
+    Display="always"
+    Required="true"
+    Mask="false">/mnt/user/appdata/freemannotes/uploads</Config>
 
-  <Config Name="AUTH_JWT_SECRET" Target="AUTH_JWT_SECRET" Default="" Mode=""
-    Description="Long random secret used to sign session tokens. Generate one with: openssl rand -hex 32. Keep this private and consistent — changing it will log everyone out."
-    Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <!-- PaddleOCR model cache — avoids re-downloading ~300 MB on every container recreate. -->
+  <Config
+    Name="OCR Model Cache"
+    Target="/app/.paddleocr"
+    Default="/mnt/user/appdata/freemannotes/paddleocr"
+    Mode="rw"
+    Description="Caches the PaddleOCR model (~300 MB). Strongly recommended to avoid re-downloading on every container recreate. Leave empty to use a Docker anonymous volume."
+    Type="Path"
+    Display="advanced"
+    Required="false"
+    Mask="false">/mnt/user/appdata/freemannotes/paddleocr</Config>
 
-  <Config Name="APP_URL" Target="APP_URL" Default="" Mode=""
-    Description="Public base URL of your FreemanNotes instance. Examples: http://192.168.1.100:27015 or https://notes.yourdomain.com. Required for invite emails and secure cookie settings."
-    Type="Variable" Display="always" Required="true" Mask="false"></Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PORTS
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       COMMON OPTIONAL VARIABLES
-  ═══════════════════════════════════════════════════════════════ -->
-  <Config Name="AUTH_ALLOW_REGISTER" Target="AUTH_ALLOW_REGISTER" Default="true" Mode=""
-    Description="Allow new users to register accounts. Set to false to lock down registration after initial setup."
-    Type="Variable" Display="always" Required="false" Mask="false">true</Config>
+  <Config
+    Name="Web UI Port"
+    Target="27015"
+    Default="27015"
+    Mode="tcp"
+    Description="The port Freeman Notes is served on. Change the left value to use a different host port (e.g. 8080:27015)."
+    Type="Port"
+    Display="always"
+    Required="true"
+    Mask="false">27015</Config>
 
-  <Config Name="AUTH_SESSION_DAYS" Target="AUTH_SESSION_DAYS" Default="14" Mode=""
-    Description="How many days a login session stays valid before requiring re-authentication."
-    Type="Variable" Display="always" Required="false" Mask="false">14</Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       CORE
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <Config Name="AUTH_COOKIE_SECURE" Target="AUTH_COOKIE_SECURE" Default="" Mode=""
-    Description="Set to true when serving FreemanNotes over HTTPS. Causes session cookies to be sent only over secure connections. Leave blank for plain HTTP."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- Public-facing URL — required for invite links, PWA install, and push notifications.
+       Must match what users type in their browser (include https:// and no trailing slash).
+       Example: https://notes.yourdomain.com -->
+  <Config
+    Name="App URL"
+    Target="APP_URL"
+    Default=""
+    Description="Your public-facing URL. Required for invitation links, PWA deep links, and push notification payloads. Example: https://notes.yourdomain.com (no trailing slash)."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="PGTIMEZONE" Target="PGTIMEZONE" Default="" Mode=""
-    Description="IANA timezone name used when displaying timestamps from PostgreSQL. Storage remains UTC. Example: America/New_York. Leave blank to use UTC."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- Upload directory inside the container — should match the Target of the Uploads path above. -->
+  <Config
+    Name="Upload Directory (container path)"
+    Target="UPLOAD_DIR"
+    Default="/app/uploads"
+    Description="Container-side path for uploaded media. Must match the Target of the Uploads volume mount above."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">/app/uploads</Config>
 
-  <Config Name="REDIS_URL" Target="REDIS_URL" Default="" Mode=""
-    Description="Redis connection string. Recommended for push notification bell badge reliability — ensures the in-app bell updates immediately when a reminder fires. Required for multi-instance/load-balanced deployments (workspace pub/sub). Example: redis://192.168.1.100:6379. Leave blank to run without Redis."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- Max long-edge pixel dimension for uploaded/captured images. Higher = sharper
+       but more storage per image. At the default (2560px @ 0.82 quality below),
+       a typical photo is roughly 300-600 KB (less for flat/high-contrast content
+       like document scans, more for busy detailed photos) — budget approximately
+       0.5 MB x (images per user) x (number of users) when sizing the Uploads
+       volume. Does not affect already-uploaded images, only new ones. -->
+  <Config
+    Name="Image Max Dimension (px)"
+    Target="IMAGE_CAPTURE_MAX_DIMENSION_PX"
+    Default="2560"
+    Description="Max long-edge pixel size for uploaded/captured images. Higher = sharper images, more storage. ~0.5MB/photo at the default 2560px/0.82 quality — budget that x images-per-user x user-count. Only affects new uploads."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">2560</Config>
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       SMTP (INVITE EMAILS)
-  ═══════════════════════════════════════════════════════════════ -->
-  <Config Name="SMTP_HOST" Target="SMTP_HOST" Default="" Mode=""
-    Description="Hostname of your SMTP server for sending workspace invitation emails. Leave blank to disable email sending."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- JPEG quality (0.1-1.0) paired with the dimension setting above. -->
+  <Config
+    Name="Image JPEG Quality"
+    Target="IMAGE_CAPTURE_JPEG_QUALITY"
+    Default="0.82"
+    Description="JPEG quality (0.1-1.0) for uploaded/captured images. Higher = sharper but larger files. Paired with Image Max Dimension above for the storage estimate."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">0.82</Config>
 
-  <Config Name="SMTP_PORT" Target="SMTP_PORT" Default="587" Mode=""
-    Description="SMTP server port. Common values: 587 (STARTTLS), 465 (SSL), 25 (plain)."
-    Type="Variable" Display="always" Required="false" Mask="false">587</Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       DATABASE
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <Config Name="SMTP_SECURE" Target="SMTP_SECURE" Default="false" Mode=""
-    Description="Set to true to use SSL/TLS from the start of the connection (port 465). Leave false for STARTTLS (port 587)."
-    Type="Variable" Display="always" Required="false" Mask="false">false</Config>
+  <!-- Full PostgreSQL DSN. The database, user, and password must exist before starting.
+       Format: postgresql://USER:PASS@HOST:PORT/DBNAME?schema=public
+       If using Unraid's built-in PostgreSQL or another container, replace HOST with
+       the container name (if on the same Docker network) or the Unraid IP. -->
+  <Config
+    Name="Database URL"
+    Target="DATABASE_URL"
+    Default="postgresql://freemannotes:changeme@postgres:5432/freemannotes?schema=public"
+    Description="PostgreSQL 16 connection string. Create the database and user first. Replace HOST with your Postgres container name or IP. Format: postgresql://USER:PASS@HOST:PORT/DBNAME?schema=public"
+    Type="Variable"
+    Display="always"
+    Required="true"
+    Mask="false">postgresql://freemannotes:changeme@postgres:5432/freemannotes?schema=public</Config>
 
-  <Config Name="SMTP_USER" Target="SMTP_USER" Default="" Mode=""
-    Description="SMTP authentication username."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- Schema migration mode.
+       deploy = apply committed migrations (production default — safe, never resets data).
+       push   = sync schema directly (dev/reset only — may drop data!).
+       none   = skip migrations entirely (manage manually). -->
+  <Config
+    Name="DB Schema Sync Mode"
+    Target="DB_SCHEMA_SYNC"
+    Default="deploy"
+    Description="How to apply database schema changes on startup. 'deploy' (default) applies committed migrations safely. 'push' syncs directly (dev only — can drop data). 'none' skips migrations."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">deploy</Config>
 
-  <Config Name="SMTP_PASS" Target="SMTP_PASS" Default="" Mode=""
-    Description="SMTP authentication password."
-    Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <!-- One-time recovery flag. Set to 'true' only if you hit Prisma error P3005
+       on a fresh install with an existing non-empty database. Unset after first run. -->
+  <Config
+    Name="DB Baseline on Non-Empty (recovery)"
+    Target="DB_BASELINE_ON_NON_EMPTY"
+    Default=""
+    Description="Set to 'true' only as a one-time recovery fix for Prisma error P3005 (migration baseline on an existing schema). Leave empty in normal operation."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="SMTP_FROM" Target="SMTP_FROM" Default="Freeman Notes &lt;no-reply@example.com&gt;" Mode=""
-    Description="The From address shown on outgoing invite and reminder emails. Example: Freeman Notes &lt;no-reply@yourdomain.com&gt;"
-    Type="Variable" Display="always" Required="false" Mask="false">Freeman Notes &lt;no-reply@example.com&gt;</Config>
+  <!-- PostgreSQL timezone override (optional). -->
+  <Config
+    Name="Postgres Timezone"
+    Target="PGTIMEZONE"
+    Default=""
+    Description="Optional PostgreSQL timezone string (e.g. America/New_York). Leave empty to use the database server's default timezone."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"></Config>
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       PUSH NOTIFICATIONS — VAPID (WEB / ANDROID PWA)
-  ═══════════════════════════════════════════════════════════════ -->
-  <Config Name="VAPID_PUBLIC_KEY" Target="VAPID_PUBLIC_KEY" Default="" Mode=""
-    Description="VAPID public key for Web Push notifications (Web and Android PWA). Generate a key pair with: npx web-push generate-vapid-keys. Leave blank to disable Web Push."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       REDIS
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <Config Name="VAPID_PRIVATE_KEY" Target="VAPID_PRIVATE_KEY" Default="" Mode=""
-    Description="VAPID private key for Web Push notifications. Keep this secret. Must be the matching pair for VAPID_PUBLIC_KEY."
-    Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <!-- Redis is strongly recommended. It powers:
+       - Real-time reminder badge updates across all open browser tabs
+       - Yjs document cache (reduces Postgres load for active documents)
+       - Workspace metadata pub/sub for multi-instance deployments
+       Set to empty string ("") to disable Redis and run without it. -->
+  <Config
+    Name="Redis URL"
+    Target="REDIS_URL"
+    Default=""
+    Description="Redis 7 connection string. Optional but recommended — enables real-time reminder badge sync across tabs, Yjs doc caching, and multi-instance pub/sub. Leave empty to run without Redis (all core features still work). Format: redis://HOST:PORT or redis://:PASSWORD@HOST:PORT"
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="VAPID_SUBJECT" Target="VAPID_SUBJECT" Default="" Mode=""
-    Description="VAPID subject — a mailto: or https: URI that identifies the push sender. Example: mailto:admin@yourdomain.com. Required when VAPID keys are set."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       AUTHENTICATION
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       PUSH NOTIFICATIONS — FIREBASE CLOUD MESSAGING (IOS / CAPACITOR)
-  ═══════════════════════════════════════════════════════════════ -->
-  <Config Name="FCM_PROJECT_ID" Target="FCM_PROJECT_ID" Default="" Mode=""
-    Description="Firebase project ID for iOS push notifications via FCM. Found in Firebase Console → Project Settings → General. Leave blank to disable FCM."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- IMPORTANT: Change this to a long random string before going live.
+       Generate one with: openssl rand -hex 32 -->
+  <Config
+    Name="JWT Secret"
+    Target="AUTH_JWT_SECRET"
+    Default=""
+    Description="Secret used to sign session cookies. MUST be changed from the default before exposing to the internet. Generate with: openssl rand -hex 32"
+    Type="Variable"
+    Display="always"
+    Required="true"
+    Mask="true"></Config>
 
-  <Config Name="FCM_CLIENT_EMAIL" Target="FCM_CLIENT_EMAIL" Default="" Mode=""
-    Description="Firebase service-account client email. Download the service-account JSON from Firebase Console → Project Settings → Service Accounts → Generate new private key."
-    Type="Variable" Display="always" Required="false" Mask="false"></Config>
+  <!-- Allow new users to self-register on the login page.
+       Set to 'false' once you have registered your accounts to lock the instance. -->
+  <Config
+    Name="Allow Registration"
+    Target="AUTH_ALLOW_REGISTER"
+    Default="true"
+    Description="Set to 'true' to allow anyone with the URL to create an account. Set to 'false' to disable self-registration (admins can still invite users via invite tokens)."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">true</Config>
 
-  <Config Name="FCM_PRIVATE_KEY" Target="FCM_PRIVATE_KEY" Default="" Mode=""
-    Description="Firebase service-account RSA private key (the full PEM string including BEGIN/END markers). Paste the private_key field value from your Firebase service-account JSON."
-    Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <!-- Force HTTPS-only cookies. Set to 'true' when serving over HTTPS (reverse proxy).
+       Leave empty for auto-detection based on the request protocol. -->
+  <Config
+    Name="Cookie Secure (HTTPS)"
+    Target="AUTH_COOKIE_SECURE"
+    Default=""
+    Description="Controls the Secure flag on the session cookie. 'true' = force Secure (HTTPS only). 'false' = force off. Leave empty for auto-detection from request headers (recommended behind a reverse proxy)."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="WEB_NOTIFICATION_MODE" Target="WEB_NOTIFICATION_MODE" Default="auto" Mode=""
-    Description="External reminder/test notification mode for desktop and non-Android browsers. auto = prefer push and fall back to email when SMTP is configured, push = push only, email = email only, off = disable external delivery."
-    Type="Variable" Display="always" Required="false" Mask="false">auto</Config>
+  <!-- Rolling session lifetime in days. Leave empty for non-expiring sessions. -->
+  <Config
+    Name="Session Expiry (days)"
+    Target="AUTH_SESSION_DAYS"
+    Default="14"
+    Description="Rolling session lifetime in days. Each authenticated request refreshes the expiry. Leave empty for non-expiring sessions."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">14</Config>
 
-  <Config Name="ANDROID_NOTIFICATION_MODE" Target="ANDROID_NOTIFICATION_MODE" Default="auto" Mode=""
-    Description="External reminder/test notification mode for Android browsers and installed PWAs. Accepts auto, push, email, or off."
-    Type="Variable" Display="always" Required="false" Mask="false">auto</Config>
+  <!-- bcrypt hashing rounds. Higher = more secure but slower logins.
+       12 is the recommended minimum; increase to 14 on capable hardware. -->
+  <Config
+    Name="bcrypt Rounds"
+    Target="AUTH_BCRYPT_ROUNDS"
+    Default="12"
+    Description="bcrypt password hashing cost factor. Higher values are more secure but increase login time. Recommended: 12 (default). Range: 10–14 for typical hardware."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">12</Config>
 
-  <Config Name="IOS_NOTIFICATION_MODE" Target="IOS_NOTIFICATION_MODE" Default="auto" Mode=""
-    Description="External reminder/test notification mode for iOS. Accepts auto, push, email, or off. iOS push requires the FCM settings below."
-    Type="Variable" Display="always" Required="false" Mask="false">auto</Config>
+  <!-- Custom session cookie name. Useful if running multiple instances on the same domain. -->
+  <Config
+    Name="Cookie Name"
+    Target="AUTH_COOKIE_NAME"
+    Default="freemannotes_session"
+    Description="Name of the HTTP-only session cookie. Only change this if running multiple Freeman Notes instances on the same domain."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">freemannotes_session</Config>
 
-  <!-- ═══════════════════════════════════════════════════════════════
-       ADVANCED / RARELY CHANGED
-  ═══════════════════════════════════════════════════════════════ -->
-  <Config Name="NODE_ENV" Target="NODE_ENV" Default="production" Mode=""
-    Description="Node.js environment. Leave as production."
-    Type="Variable" Display="advanced" Required="true" Mask="false">production</Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       EMAIL (SMTP)
+       Used for: password-reset emails, mention invitation emails (fallback when push is unavailable).
+       All fields are optional — leave blank to disable email delivery.
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <Config Name="PORT" Target="PORT" Default="27015" Mode=""
-    Description="Internal port the Node.js server listens on inside the container. Change only if you have a conflict; also update the WebUI Port mapping above to match."
-    Type="Variable" Display="advanced" Required="false" Mask="false">27015</Config>
+  <Config
+    Name="SMTP Host"
+    Target="SMTP_HOST"
+    Default=""
+    Description="SMTP server hostname for outbound email (password resets, invite notifications). Leave empty to disable email. Example: smtp.gmail.com"
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="HOST" Target="HOST" Default="0.0.0.0" Mode=""
-    Description="Interface the server binds to inside the container. Leave as 0.0.0.0."
-    Type="Variable" Display="advanced" Required="false" Mask="false">0.0.0.0</Config>
+  <Config
+    Name="SMTP Port"
+    Target="SMTP_PORT"
+    Default="587"
+    Description="SMTP server port. 587 = STARTTLS (recommended), 465 = SSL/TLS, 25 = plain (not recommended)."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">587</Config>
 
-  <Config Name="DB_SCHEMA_SYNC" Target="DB_SCHEMA_SYNC" Default="deploy" Mode=""
-    Description="Controls database migration behavior at startup. deploy = apply committed migrations (recommended). push = prisma db push (development only). none = skip automatic sync."
-    Type="Variable" Display="advanced" Required="false" Mask="false">deploy</Config>
+  <!-- Set to 'true' for port 465 (SSL). Leave 'false' for port 587 (STARTTLS). -->
+  <Config
+    Name="SMTP Secure (SSL)"
+    Target="SMTP_SECURE"
+    Default="false"
+    Description="'true' for implicit SSL (port 465). 'false' for STARTTLS (port 587, recommended)."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">false</Config>
 
-  <Config Name="AUTH_BCRYPT_ROUNDS" Target="AUTH_BCRYPT_ROUNDS" Default="12" Mode=""
-    Description="bcrypt cost factor for password hashing. Higher = more secure but slower login. 12 is a good production default."
-    Type="Variable" Display="advanced" Required="false" Mask="false">12</Config>
+  <Config
+    Name="SMTP Username"
+    Target="SMTP_USER"
+    Default=""
+    Description="SMTP authentication username (usually your email address). Leave empty if the server does not require authentication."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="AUTH_COOKIE_NAME" Target="AUTH_COOKIE_NAME" Default="freemannotes_session" Mode=""
-    Description="Name of the session cookie. Change only if running multiple instances on the same domain."
-    Type="Variable" Display="advanced" Required="false" Mask="false">freemannotes_session</Config>
+  <Config
+    Name="SMTP Password"
+    Target="SMTP_PASS"
+    Default=""
+    Description="SMTP authentication password or app-specific password. Stored as a container secret."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="true"></Config>
 
-  <Config Name="UPLOAD_DIR" Target="UPLOAD_DIR" Default="/app/uploads" Mode=""
-    Description="Path inside the container where uploaded files are stored. Should match the container-side target of the Uploads volume mapping above."
-    Type="Variable" Display="advanced" Required="false" Mask="false">/app/uploads</Config>
+  <!-- Sender address shown in outbound emails. -->
+  <Config
+    Name="SMTP From Address"
+    Target="SMTP_FROM"
+    Default="Freeman Notes &lt;no-reply@example.com&gt;"
+    Description="The 'From' address on outbound emails. Example: Freeman Notes &lt;no-reply@yourdomain.com&gt;"
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">Freeman Notes &lt;no-reply@example.com&gt;</Config>
 
-  <Config Name="OCR_DISABLED" Target="OCR_DISABLED" Default="0" Mode=""
-    Description="Set to 1 to disable OCR processing entirely. Useful on low-memory servers. Image and document text will not be indexed for search."
-    Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PUSH NOTIFICATIONS — VAPID (Web / Android PWA)
+       Generate keys once with: npx web-push generate-vapid-keys
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <Config Name="OCR_LOG_OUTPUT" Target="OCR_LOG_OUTPUT" Default="0" Mode=""
-    Description="Set to 1 to stream OCR child-process output and progress into the container logs."
-    Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config
+    Name="VAPID Public Key"
+    Target="VAPID_PUBLIC_KEY"
+    Default=""
+    Description="VAPID public key for Web Push (browser and Android PWA notifications). Generate with: npx web-push generate-vapid-keys. Leave empty to disable Web Push."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="OCR_PYTHON_BIN" Target="OCR_PYTHON_BIN" Default="/opt/ocr-venv/bin/python" Mode=""
-    Description="Python executable used by the bundled OCR worker. Override only if you mount a custom OCR runtime into the container."
-    Type="Variable" Display="advanced" Required="false" Mask="false">/opt/ocr-venv/bin/python</Config>
+  <Config
+    Name="VAPID Private Key"
+    Target="VAPID_PRIVATE_KEY"
+    Default=""
+    Description="VAPID private key — keep secret. Paired with VAPID_PUBLIC_KEY above."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="true"></Config>
 
-  <Config Name="PADDLE_HOME" Target="PADDLE_HOME" Default="/app/.paddleocr" Mode=""
-    Description="Writable cache directory for PaddleOCR model downloads inside the container."
-    Type="Variable" Display="advanced" Required="false" Mask="false">/app/.paddleocr</Config>
+  <!-- Usually 'mailto:you@example.com' or your site URL. -->
+  <Config
+    Name="VAPID Subject"
+    Target="VAPID_SUBJECT"
+    Default=""
+    Description="Contact URI for the VAPID subject claim. Required when VAPID keys are set. Use your email: mailto:you@example.com or your site URL: https://yourdomain.com"
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="PADDLE_PDX_MODEL_SOURCE" Target="PADDLE_PDX_MODEL_SOURCE" Default="BOS" Mode=""
-    Description="Model download source used by PaddleOCR. Leave as BOS unless you have a custom mirror requirement."
-    Type="Variable" Display="advanced" Required="false" Mask="false">BOS</Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       PUSH NOTIFICATIONS — FCM (iOS via Firebase / Capacitor)
+       Download the service-account JSON from Firebase Console → Service Accounts.
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <Config Name="TRASH_CLEANUP_INTERVAL_MS" Target="TRASH_CLEANUP_INTERVAL_MS" Default="3600000" Mode=""
-    Description="How often (in milliseconds) the server scans for trashed notes past their auto-delete threshold. Default is 3600000 (1 hour)."
-    Type="Variable" Display="advanced" Required="false" Mask="false">3600000</Config>
+  <Config
+    Name="FCM Project ID"
+    Target="FCM_PROJECT_ID"
+    Default=""
+    Description="Firebase project ID for iOS push notifications via FCM. Found in Firebase Console → Project Settings. Leave empty if not supporting iOS push."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="WORKSPACE_CLEANUP_INTERVAL_MS" Target="WORKSPACE_CLEANUP_INTERVAL_MS" Default="3600000" Mode=""
-    Description="How often (in milliseconds) the server scans soft-deleted workspaces that are eligible for permanent deletion. Default is 3600000 (1 hour)."
-    Type="Variable" Display="advanced" Required="false" Mask="false">3600000</Config>
+  <Config
+    Name="FCM Client Email"
+    Target="FCM_CLIENT_EMAIL"
+    Default=""
+    Description="Service account email from the Firebase Admin SDK JSON file. Used for iOS FCM push."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"></Config>
 
-  <Config Name="WORKSPACE_CLEANUP_GRACE_MS" Target="WORKSPACE_CLEANUP_GRACE_MS" Default="86400000" Mode=""
-    Description="Grace period (in milliseconds) before a soft-deleted workspace is permanently removed. Default is 86400000 (24 hours)."
-    Type="Variable" Display="advanced" Required="false" Mask="false">86400000</Config>
+  <!-- The private key from the Firebase service-account JSON (the full PEM string). -->
+  <Config
+    Name="FCM Private Key"
+    Target="FCM_PRIVATE_KEY"
+    Default=""
+    Description="Service account private key (PEM) from the Firebase Admin SDK JSON. Include the full -----BEGIN PRIVATE KEY----- block. Keep secret."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="true"></Config>
 
-  <Config Name="YPERSISTENCE" Target="YPERSISTENCE" Default="" Mode=""
-    Description="Optional path inside the container for LevelDB-backed Yjs document persistence. Example: /data/yjs. Leave blank to keep Yjs state in memory and PostgreSQL only."
-    Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       NOTIFICATION DELIVERY MODES
+       Controls whether reminders and @mention alerts are sent as push, email, or both.
+       auto = push if keys are configured, else email if SMTP is configured.
+       push = push only (VAPID/FCM must be configured).
+       email = email only (SMTP must be configured).
+       off = no external notifications.
+       ═══════════════════════════════════════════════════════════════════════ -->
 
-  <Config Name="DEBUG_LOGGING" Target="DEBUG_LOGGING" Default="0" Mode=""
-    Description="Set to 1 to enable structured server-side debug logging for beta diagnostics. Leave disabled during normal operation."
-    Type="Variable" Display="advanced" Required="false" Mask="false">0</Config>
+  <Config
+    Name="Web Notification Mode"
+    Target="WEB_NOTIFICATION_MODE"
+    Default="auto"
+    Description="Delivery mode for browser/desktop push notifications. auto | push | email | off"
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">auto</Config>
 
-  <Config Name="DB_BASELINE_ON_NON_EMPTY" Target="DB_BASELINE_ON_NON_EMPTY" Default="" Mode=""
-    Description="Set to true for a single startup if a prior failed install already created FreemanNotes tables and prisma migrate deploy now exits with P3005. Revert to blank after the first successful start."
-    Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config
+    Name="Android Notification Mode"
+    Target="ANDROID_NOTIFICATION_MODE"
+    Default="auto"
+    Description="Delivery mode for Android PWA push notifications. auto | push | email | off"
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">auto</Config>
+
+  <Config
+    Name="iOS Notification Mode"
+    Target="IOS_NOTIFICATION_MODE"
+    Default="auto"
+    Description="Delivery mode for iOS push notifications (requires FCM). auto | push | email | off"
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">auto</Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       OCR
+       PaddleOCR extracts text from uploaded images. Runs inside the container.
+       Set OCR_DISABLED=1 to skip OCR entirely (faster builds, less CPU on uploads).
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- Set to 1 to disable OCR completely (images still upload, just no text extraction). -->
+  <Config
+    Name="Disable OCR"
+    Target="OCR_DISABLED"
+    Default="0"
+    Description="Set to '1' to disable PaddleOCR text extraction from uploaded images. Images will still upload and display; only text search of image content is disabled. Reduces CPU usage on image uploads."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">0</Config>
+
+  <Config
+    Name="OCR Python Binary"
+    Target="OCR_PYTHON_BIN"
+    Default="/opt/ocr-venv/bin/python"
+    Description="Path to the Python executable used to run PaddleOCR. The default points to the virtual environment bundled in the container image. Only change if mounting a custom OCR environment."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">/opt/ocr-venv/bin/python</Config>
+
+  <Config
+    Name="OCR Log Output"
+    Target="OCR_LOG_OUTPUT"
+    Default="0"
+    Description="Set to '1' to forward PaddleOCR stdout/stderr to the container log. Useful for debugging image extraction failures."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">0</Config>
+
+  <Config
+    Name="PaddleOCR Model Home"
+    Target="PADDLE_HOME"
+    Default="/app/.paddleocr"
+    Description="Directory where PaddleOCR downloads and caches its models (~300 MB). Should match the Target of the 'OCR Model Cache' volume mount above."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">/app/.paddleocr</Config>
+
+  <Config
+    Name="PaddleOCR Model Source"
+    Target="PADDLE_PDX_MODEL_SOURCE"
+    Default="BOS"
+    Description="Where PaddleOCR downloads its model on first run. 'BOS' = Baidu Object Storage (default, fast in Asia). Leave as BOS unless you have network issues reaching it."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">BOS</Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       MAINTENANCE SCHEDULERS
+       Intervals in milliseconds. Defaults: 1 hour (3 600 000 ms).
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- Permanently deletes notes that have been in trash longer than the user's
+       configured deleteAfterDays setting (default: 30 days). -->
+  <Config
+    Name="Trash Cleanup Interval (ms)"
+    Target="TRASH_CLEANUP_INTERVAL_MS"
+    Default="3600000"
+    Description="How often (in milliseconds) the server permanently deletes trashed notes past their retention period. Default: 3600000 (1 hour). Set to 0 to disable."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">3600000</Config>
+
+  <!-- Deletes orphaned workspace documents (e.g. after a workspace is removed). -->
+  <Config
+    Name="Workspace Cleanup Interval (ms)"
+    Target="WORKSPACE_CLEANUP_INTERVAL_MS"
+    Default="3600000"
+    Description="How often (in milliseconds) the server purges orphaned workspace data. Default: 3600000 (1 hour)."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">3600000</Config>
+
+  <!-- Grace period before a deleted workspace's documents are purged.
+       Provides a safety window for accidental deletion recovery. -->
+  <Config
+    Name="Workspace Cleanup Grace Period (ms)"
+    Target="WORKSPACE_CLEANUP_GRACE_MS"
+    Default="86400000"
+    Description="How long (in milliseconds) after workspace deletion before its data is permanently purged. Default: 86400000 (24 hours). Increase for a longer recovery window."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">86400000</Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       DEBUG
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <Config
+    Name="Debug Logging"
+    Target="DEBUG_LOGGING"
+    Default="0"
+    Description="Set to '1' to enable verbose server-side debug logging (Yjs sync events, auth flows, etc.). Leave '0' in production to avoid log noise."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">0</Config>
+
 </Container>

@@ -16,6 +16,7 @@ import {
 	readQueuedNoteImages,
 	readQueuedNoteImageDeletions,
 	refreshRemoteNoteImages,
+	pruneDeletedRemoteNoteImage,
 	queueRemoteNoteImageDeletion,
 	scheduleQueuedNoteImageFlush,
 	type StoredNoteImagePreviewRecord,
@@ -316,6 +317,12 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		setError(null);
 		try {
 			await deleteNoteImage(image.id);
+			// The server confirms deleted, but a pending-new note's refresh() below
+			// deliberately reads from this same local cache instead of the network
+			// (see refresh()'s isPendingNew branch) — without pruning it here first,
+			// the just-deleted image would keep rendering as if nothing happened,
+			// and a second delete attempt on it would 404 with "Image not found".
+			await pruneDeletedRemoteNoteImage(props.docId, image.id);
 			emitNoteMediaChanged(props.docId);
 			setViewerState((current) => {
 				if (!current) return null;

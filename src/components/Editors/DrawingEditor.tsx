@@ -1,7 +1,8 @@
 import React, { useMemo, useRef, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { CaptureUpdateAction, FONT_FAMILY, Excalidraw, MainMenu, defaultLang, languages, useHandleLibrary } from '@excalidraw/excalidraw';
-import type { ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
+import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
+import type { AppState, ExcalidrawImperativeAPI, LibraryItems } from '@excalidraw/excalidraw/types';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBell, faEllipsisVertical, faPalette, faUserPlus } from '@fortawesome/free-solid-svg-icons';
 import { generateKeyBetween } from 'fractional-indexing';
@@ -246,6 +247,16 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	const initialViewportFitNoteIdRef = useRef<string | null>(null);
 	const initialSceneElements = React.useMemo(() => yjsToExcalidraw(yElements), [yElements]);
 	const [api, setApi] = React.useState<ExcalidrawImperativeAPI | null>(null);
+	// Tracks element ids handleDrawingSceneChange has already considered, so a
+	// freshly drawn shape/freedraw stroke is only auto-selected once (see the
+	// comment on handleDrawingSceneChange for why this exists at all). Seeded
+	// with whatever the doc already had — otherwise the first onChange after
+	// opening a note with existing shapes would treat all of them as "new" and
+	// force-select the lot.
+	const knownDrawnElementIdsRef = useRef<Set<string>>(new Set(initialSceneElements.map((element) => element.id)));
+	React.useEffect(() => {
+		knownDrawnElementIdsRef.current = new Set(initialSceneElements.map((element) => element.id));
+	}, [initialSceneElements]);
 
 	// Wrap props.awareness in a Proxy that de-duplicates setLocalStateField("selectedElementIds")
 	// calls when the selection hasn't actually changed. y-excalidraw's binding calls this on
@@ -1137,8 +1148,8 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	}, [props.doc, syncCanvasContrastState]);
 
 	const handleDrawingSceneChange = React.useCallback((
-		_elements: readonly unknown[],
-		appState: { viewBackgroundColor: string; currentItemStrokeColor?: string; selectedElementIds?: Record<string, boolean | undefined> }
+		elements: readonly ExcalidrawElement[],
+		appState: AppState
 	): void => {
 		const liveStrokeColor = normalizeExcalidrawColor(appState.currentItemStrokeColor) ?? normalizeExcalidrawColor(api?.getAppState().currentItemStrokeColor) ?? autoStrokeColorRef.current;
 		if (liveStrokeColor) {
@@ -1148,6 +1159,42 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		if (nextBackground && nextBackground !== persistedDrawingBackgroundRef.current) {
 			persistedDrawingBackgroundRef.current = nextBackground;
 			assignDrawingBackgroundColor(props.doc, nextBackground);
+		}
+
+		// This app pins activeTool.locked=true so the shape/pen tool stays active
+		// across strokes (draw several rectangles in a row without reselecting the
+		// tool each time — see memory/excalidraw-drawing-dock.md). Excalidraw's own
+		// post-draw auto-select is gated on `!activeTool.locked`, so with it always
+		// on, a freshly finished shape/freedraw stroke never lands in
+		// selectedElementIds — the properties panel that opens right after is only
+		// showing "defaults for the next shape", not editing the one just drawn,
+		// which is why changes silently no-op until the user manually reselects it.
+		// Text is unaffected because its own commit path selects unconditionally.
+		// Skip while a stroke is still in progress (appState.newElement is only
+		// null once the pointer-up has finalized it) so this doesn't fight an
+		// active drag, and skip anything already selected or of a different type
+		// than the currently active tool — a cheap guard against ever selecting a
+		// shape a remote collaborator just synced in during the same tick.
+		if (
+			api
+			&& appState.activeTool.locked
+			&& appState.activeTool.type !== 'selection'
+			&& !appState.newElement
+		) {
+			const newlyDrawn = elements.find((element) =>
+				!element.isDeleted
+				&& element.type === appState.activeTool.type
+				&& !appState.selectedElementIds[element.id]
+				&& !knownDrawnElementIdsRef.current.has(element.id));
+			if (newlyDrawn) {
+				api.updateScene({
+					appState: { selectedElementIds: { [newlyDrawn.id]: true } },
+					captureUpdate: CaptureUpdateAction.NEVER,
+				});
+			}
+		}
+		if (!appState.newElement) {
+			knownDrawnElementIdsRef.current = new Set(elements.filter((element) => !element.isDeleted).map((element) => element.id));
 		}
 	}, [api, props.doc]);
 

@@ -39,7 +39,8 @@ const LABELS_REGISTRY_DOC_ID = '__labels_registry__';
 // GET /api/config rather than hardcoding it, so a self-hosted instance's
 // admin can trade image quality against storage/bandwidth for their user
 // count via env vars alone (no DB row, no admin UI — see IMAGE_CAPTURE_* in
-// unraid.xml / docker-compose.yml / .env.example for the sizing guidance).
+// third-party/freemannotes.xml / docker-compose.yml / .env.example for the
+// sizing guidance).
 // Clamped defensively so a malformed env value can't produce a 0px canvas or
 // a fully-degenerate JPEG quality.
 function clampNumber(value, min, max, fallback) {

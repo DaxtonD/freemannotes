@@ -621,16 +621,36 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	// hopeless tap target otherwise; nothing meaningful sits in that trailing
 	// space anyway, so widening the zone costs nothing.
 	const autocompleteSuffixRef = React.useRef<HTMLSpanElement | null>(null);
-	const handleRowShellClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>): void => {
-		if (!autocompleteSuggestion) return;
+	const isAutocompleteAcceptHit = React.useCallback((
+		event: { clientX: number; clientY: number; currentTarget: EventTarget & HTMLDivElement }
+	): boolean => {
+		if (!autocompleteSuggestion) return false;
 		const suffixEl = autocompleteSuffixRef.current;
-		if (!suffixEl) return;
+		if (!suffixEl) return false;
 		const suffixRect = suffixEl.getBoundingClientRect();
 		const shellRect = event.currentTarget.getBoundingClientRect();
-		if (event.clientX < suffixRect.left || event.clientY < shellRect.top || event.clientY > shellRect.bottom) return;
+		return !(event.clientX < suffixRect.left || event.clientY < shellRect.top || event.clientY > shellRect.bottom);
+	}, [autocompleteSuggestion]);
+	const handleRowShellClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>): void => {
+		if (!isAutocompleteAcceptHit(event)) return;
 		event.preventDefault();
 		handleAcceptActiveAutocomplete();
-	}, [autocompleteSuggestion, handleAcceptActiveAutocomplete]);
+	}, [handleAcceptActiveAutocomplete, isAutocompleteAcceptHit]);
+	// Mirrors handleRowShellClick's own hit-test on mousedown/pointerdown — a long
+	// ghost suggestion can wrap across the -webkit-line-clamp:2 overlay (short
+	// single-line suggestions never do), and the browser's default "focus
+	// whatever you just pressed" behavior on that tap can blur the TipTap editor
+	// and dismiss the keyboard before the click handler above ever runs its own
+	// preventDefault() — by then it's too late. Gated on the same geometry check
+	// instead of guarding the whole shell, since a blanket guard would also block
+	// normal caret-placement clicks in the row.
+	const preventSuggestionAcceptFocusSteal = React.useCallback((
+		event: React.SyntheticEvent<HTMLDivElement> & { clientX: number; clientY: number }
+	): void => {
+		if (isAutocompleteAcceptHit(event)) {
+			event.preventDefault();
+		}
+	}, [isAutocompleteAcceptHit]);
 
 	if (!isActive) {
 		const previewMap = itemMap ?? findChecklistItemMapById(checklistArray, item.id);
@@ -683,6 +703,8 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 				<div
 					ref={contentRef}
 					className={styles.checklistRowRichShell}
+					onMouseDown={preventSuggestionAcceptFocusSteal}
+					onPointerDown={preventSuggestionAcceptFocusSteal}
 					onClick={handleRowShellClick}
 				>
 					{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}

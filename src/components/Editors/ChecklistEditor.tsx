@@ -1183,16 +1183,40 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	// text's own tight glyph bounds. A one- or two-character suggestion is a
 	// hopeless tap target otherwise; nothing meaningful sits in that trailing
 	// space anyway, so widening the zone costs nothing.
-	const handleRowShellClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>, rowId: string): void => {
-		if (rowId !== activeRowId || !activeRowAutocompleteSuggestion) return;
+	const isAutocompleteAcceptHit = React.useCallback((
+		event: { clientX: number; clientY: number; currentTarget: EventTarget & HTMLDivElement },
+		rowId: string
+	): boolean => {
+		if (rowId !== activeRowId || !activeRowAutocompleteSuggestion) return false;
 		const suffixEl = activeAutocompleteSuffixRef.current;
-		if (!suffixEl) return;
+		if (!suffixEl) return false;
 		const suffixRect = suffixEl.getBoundingClientRect();
 		const shellRect = event.currentTarget.getBoundingClientRect();
-		if (event.clientX < suffixRect.left || event.clientY < shellRect.top || event.clientY > shellRect.bottom) return;
+		return !(event.clientX < suffixRect.left || event.clientY < shellRect.top || event.clientY > shellRect.bottom);
+	}, [activeRowAutocompleteSuggestion, activeRowId]);
+	const handleRowShellClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>, rowId: string): void => {
+		if (!isAutocompleteAcceptHit(event, rowId) || !activeRowAutocompleteSuggestion) return;
 		event.preventDefault();
 		acceptAutocompleteSuggestion(rowId, activeRowAutocompleteSuggestion);
-	}, [acceptAutocompleteSuggestion, activeRowAutocompleteSuggestion, activeRowId]);
+	}, [acceptAutocompleteSuggestion, activeRowAutocompleteSuggestion, isAutocompleteAcceptHit]);
+	// Mirrors handleRowShellClick's own hit-test on mousedown/pointerdown — a
+	// long ghost suggestion can wrap across the -webkit-line-clamp:2 overlay
+	// (short single-line suggestions never do), and the browser's default
+	// "focus whatever you just pressed" behavior on that tap can blur the
+	// TipTap editor and dismiss the keyboard before the click handler above
+	// ever runs its own preventDefault() — by then it's too late, the keyboard
+	// is already gone. Same fix as the drag handle / checkbox / remove / save
+	// button guards elsewhere in this file, just gated on the same geometry
+	// check instead of covering the whole shell (a blanket guard here would
+	// also block normal caret-placement clicks in the row).
+	const preventSuggestionAcceptFocusSteal = React.useCallback((
+		event: React.SyntheticEvent<HTMLDivElement> & { clientX: number; clientY: number },
+		rowId: string
+	): void => {
+		if (isAutocompleteAcceptHit(event, rowId)) {
+			event.preventDefault();
+		}
+	}, [isAutocompleteAcceptHit]);
 	const activeCountItem = React.useMemo(
 		() => activeRowItem && isChecklistCountItem(activeRowItem) ? activeRowItem : null,
 		[activeRowItem]
@@ -1702,6 +1726,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 														<div
 															ref={(node) => { rowInputsRef.current.set(item.id, node); }}
 															className={styles.checklistRowRichShell}
+															onMouseDown={(event) => preventSuggestionAcceptFocusSteal(event, item.id)}
+															onPointerDown={(event) => preventSuggestionAcceptFocusSteal(event, item.id)}
 															onClick={(event) => handleRowShellClick(event, item.id)}
 														>
 															{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}
@@ -1857,6 +1883,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	<div
 																		ref={(node) => { rowInputsRef.current.set(item.id, node); }}
 																		className={styles.checklistRowRichShell}
+																		onMouseDown={(event) => preventSuggestionAcceptFocusSteal(event, item.id)}
+																		onPointerDown={(event) => preventSuggestionAcceptFocusSteal(event, item.id)}
 																		onClick={(event) => handleRowShellClick(event, item.id)}
 																	>
 																		{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}

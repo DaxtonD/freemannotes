@@ -790,6 +790,18 @@ function removeRemoteImageFromCache(docId: string, imageId: string): void {
 	remoteCache.set(docId, current.filter((image) => image.id !== imageId));
 }
 
+// Prunes an image the caller already confirmed is gone server-side (a
+// synchronous DELETE that returned success) from both local caches this
+// module maintains. Needed on top of that DELETE call — the caller can't
+// just rely on re-fetching afterward, since a pending-new note's media panel
+// intentionally reads from these same caches instead of the network (see
+// NoteMediaPanel.tsx's isPendingNew branch) and would otherwise keep
+// rendering the just-deleted image indefinitely.
+export async function pruneDeletedRemoteNoteImage(docId: string, imageId: string): Promise<void> {
+	removeRemoteImageFromCache(docId, imageId);
+	await deletePreviewRows([imageId]).catch(() => undefined);
+}
+
 export function filterRemoteNoteImagesByPendingDeletes(images: readonly NoteImageRecord[], deleteRows: readonly QueuedNoteImageRow[]): NoteImageRecord[] {
 	if (deleteRows.length === 0) return [...images];
 	const hiddenIds = new Set(deleteRows.map((row) => row.remoteImageId).filter((value): value is string => Boolean(value)));
