@@ -4,7 +4,7 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
-## 1.7.10 - 2026-07-29
+## 1.8.0 - 2026-07-29
 
 ### Fixed
 - **Card banner icons were getting clipped in List view and Detailed List view on desktop** — the household icon's roof peak and a couple others were flat-cut at the top. The regenerated banner SVGs (new artwork, same canvas/position as before) turned out to be drawn slightly larger than the old hand-drawn ones, so they no longer fit inside the same crop window at 44px/64px row heights. Scaled the icon down uniformly across all 40 wide banner assets (light + dark, every category) rather than touching the crop logic itself, which was already correct.
