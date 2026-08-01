@@ -305,6 +305,7 @@ function createPushRouter({ prisma, redis = null }) {
 						noteId: true,
 						workspaceId: true,
 						reminderAt: true,
+						noteTitle: true,
 					},
 				});
 				jsonResponse(res, 200, {
@@ -313,6 +314,7 @@ function createPushRouter({ prisma, redis = null }) {
 						noteId: reminder.noteId,
 						workspaceId: reminder.workspaceId,
 						reminderAt: reminder.reminderAt.toISOString(),
+						noteTitle: reminder.noteTitle ?? null,
 					})),
 				});
 			} catch (err) {

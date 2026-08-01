@@ -2014,7 +2014,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 										aria-label={t('editors.mediaDock')}
 									>
 										<span className={styles.mediaDockPill} aria-hidden="true" />
-										<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+										<span className={styles.mediaDockLabel}>{t('editors.mediaDockLabel')}</span>
 									</button>
 
 									<header className={styles.mediaSheetHeader}>
@@ -2107,7 +2107,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 								}}
 								aria-label={t('editors.mediaDock')}
 							>
-								{t('editors.mediaTabMedia')}
+								{t('editors.mediaDockLabel')}
 							</button>
 						</div>
 						<div className={styles.bottomDockRightActions}>

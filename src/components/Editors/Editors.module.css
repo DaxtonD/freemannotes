@@ -375,6 +375,59 @@
 	cursor: default;
 }
 
+.reminderOverduePrompt {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin: 6px 16px 0;
+	padding: 8px 12px;
+	border-radius: 10px;
+	border: 1px solid color-mix(in srgb, var(--color-danger) 35%, var(--color-border));
+	background: color-mix(in srgb, var(--color-danger) 12%, var(--note-editor-header, var(--color-surface-2)));
+	flex-shrink: 0;
+}
+
+.reminderOverdueLabel {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	color: var(--color-danger);
+	font-size: 13px;
+	font-weight: 600;
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.reminderOverdueActions {
+	display: flex;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.reminderOverdueButton {
+	border: 1px solid color-mix(in srgb, var(--color-danger) 45%, var(--color-border));
+	background: transparent;
+	color: var(--color-danger);
+	font-size: 12px;
+	font-weight: 600;
+	font-family: inherit;
+	cursor: pointer;
+	padding: 5px 10px;
+	border-radius: 999px;
+	touch-action: manipulation;
+}
+
+.reminderOverdueButton:hover,
+.reminderOverdueButton:focus-visible {
+	background: color-mix(in srgb, var(--color-danger) 16%, transparent);
+}
+
+.reminderOverdueButton:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
 .fullscreenTitle {
 	margin: 0;
 	font-size: 24px;

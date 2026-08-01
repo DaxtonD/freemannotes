@@ -62,9 +62,9 @@ function normalizeBoolean(value: unknown, fallback: boolean): boolean {
 	return fallback;
 }
 
-export function normalizeEditorToolbarMode(value: unknown): EditorToolbarMode {
+export function normalizeEditorToolbarMode(value: unknown, isCoarsePointer?: boolean): EditorToolbarMode {
 	if (value === 'full' || value === 'condensed') return value;
-	return 'condensed';
+	return isCoarsePointer ? 'condensed' : 'full';
 }
 
 export function getDefaultNoteCardBannerTitlePosition(): NoteCardBannerTitlePosition {

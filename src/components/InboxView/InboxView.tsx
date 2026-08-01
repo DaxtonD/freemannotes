@@ -1,10 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faAt, faListCheck, faCheckDouble, faBoxArchive, faInbox, faCircleCheck, faTrashCan } from '@fortawesome/free-solid-svg-icons';
+import { faAt, faListCheck, faCheckDouble, faBoxArchive, faInbox, faCircleCheck, faTrashCan, faBell } from '@fortawesome/free-solid-svg-icons';
 import { acceptNoteShareInvitation } from '../../core/noteShareApi';
 import type { PendingSelfMention } from '../../core/pendingSelfMentions';
 import { useI18n } from '../../core/i18n';
 import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
+import { fetchFiredReminders, fetchNoteReminderStates, type FiredReminder, type NoteReminderState } from '../../core/pushApi';
+import { isReminderDueSoon } from '../../core/reminderUrgency';
 import styles from './InboxView.module.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -36,7 +38,7 @@ interface Activity {
 	invitationStatus?: string | null;
 }
 
-type FilterTab = 'all' | 'mentions' | 'assigned';
+type FilterTab = 'all' | 'mentions' | 'assigned' | 'reminders';
 type PlacementChoice = 'shared-root' | 'shared-folder' | 'personal';
 
 interface Props {
@@ -62,6 +64,10 @@ interface Props {
 	/** Called after each successful server fetch with the nodeIds found in deepLinks.
 	 *  The caller uses this to clear pending entries that now have a real counterpart. */
 	onServerNodeIdsLoaded?: (nodeIds: string[]) => void;
+	/** Clears a reminder (Mark done) from the Reminders tab, without opening the note. */
+	onMarkReminderDone?: (noteId: string, docId: string, title: string) => void;
+	/** Opens the reminder date-picker modal for a note, pre-filled with its current value. */
+	onOpenReminderModal?: (noteId: string, docId: string, title: string) => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -191,7 +197,7 @@ interface FilterCache {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded }: Props) {
+export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal }: Props) {
 	const { t } = useI18n();
 	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	const [filter, setFilter] = useState<FilterTab>('all');
@@ -202,6 +208,46 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	const [loadingMore, setLoadingMore] = useState(false);
 	const [unreadIds, setUnreadIds] = useState<Set<string>>(new Set());
 	const [acceptingIds, setAcceptingIds] = useState<Set<string>>(new Set());
+
+	// ── Reminders tab ────────────────────────────────────────────────────────
+	// A separate data source from the Activity feed above (different API
+	// namespace entirely — /api/push/reminders/*, not /api/inbox). Fetched
+	// eagerly (not lazily on tab-select) so the tab's own count badge is
+	// accurate even while viewing a different tab.
+	const [remindersLoading, setRemindersLoading] = useState(true);
+	const [overdueReminders, setOverdueReminders] = useState<FiredReminder[]>([]);
+	const [dueSoonReminders, setDueSoonReminders] = useState<NoteReminderState[]>([]);
+
+	const loadReminders = useCallback(async (): Promise<void> => {
+		if (!authUserId) return;
+		try {
+			const [fired, all] = await Promise.all([
+				fetchFiredReminders().catch(() => ({ reminders: [] as FiredReminder[] })),
+				fetchNoteReminderStates().catch(() => ({ reminders: [] as NoteReminderState[] })),
+			]);
+			setOverdueReminders(fired.reminders);
+			const firedNoteIds = new Set(fired.reminders.map((r) => r.noteId));
+			setDueSoonReminders(all.reminders.filter((r) => !firedNoteIds.has(r.noteId) && isReminderDueSoon(r.reminderAt)));
+		} finally {
+			setRemindersLoading(false);
+		}
+	}, [authUserId]);
+
+	useEffect(() => {
+		void loadReminders();
+	}, [loadReminders, refreshToken]);
+
+	const handleMarkReminderDoneClick = useCallback((noteId: string, workspaceId: string, title: string | null): void => {
+		if (!onMarkReminderDone) return;
+		onMarkReminderDone(noteId, `${workspaceId}:${noteId}`, title || '');
+		// Optimistic removal — the server sync happens fire-and-forget in the caller.
+		setOverdueReminders((prev) => prev.filter((r) => r.noteId !== noteId));
+		setDueSoonReminders((prev) => prev.filter((r) => r.noteId !== noteId));
+	}, [onMarkReminderDone]);
+
+	const handleRescheduleReminderClick = useCallback((noteId: string, workspaceId: string, title: string | null): void => {
+		onOpenReminderModal?.(noteId, `${workspaceId}:${noteId}`, title || '');
+	}, [onOpenReminderModal]);
 	const [acceptedInvitationIds, setAcceptedInvitationIds] = useState<Set<string>>(new Set());
 
 	// Placement picker state
@@ -549,10 +595,12 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		}
 	}, [folderName, markRead, onOpenNote, placementChoice, removeFromCache]);
 
-	const tabs: { key: FilterTab; label: string }[] = [
-		{ key: 'all',      label: t('inbox.tabAll') },
-		{ key: 'mentions', label: t('inbox.tabMentions') },
-		{ key: 'assigned', label: t('inbox.tabAssigned') },
+	const reminderTabCount = overdueReminders.length + dueSoonReminders.length;
+	const tabs: { key: FilterTab; label: string; count?: number }[] = [
+		{ key: 'all',       label: t('inbox.tabAll') },
+		{ key: 'mentions',  label: t('inbox.tabMentions') },
+		{ key: 'assigned',  label: t('inbox.tabAssigned') },
+		{ key: 'reminders', label: t('inbox.tabReminders'), count: reminderTabCount },
 	];
 
 	// Build a merged display list: pending self-mentions shown above real activities.
@@ -603,13 +651,13 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 					{t('inbox.title')}
 				</h1>
 				<div style={{ display: 'flex', gap: 8 }}>
-					{unreadIds.size > 0 && (
+					{filter !== 'reminders' && unreadIds.size > 0 && (
 						<button className={styles.markAllBtn} onClick={markAllRead} type="button">
 							<FontAwesomeIcon icon={faCheckDouble} />
 							{t('inbox.markAllRead')}
 						</button>
 					)}
-					{displayActivities.length > 0 && (
+					{filter !== 'reminders' && displayActivities.length > 0 && (
 						<button className={styles.clearAllBtn} onClick={archiveAll} type="button">
 							<FontAwesomeIcon icon={faTrashCan} />
 							{t('inbox.clearAll')}
@@ -627,12 +675,93 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 						onClick={() => setFilter(tab.key)}
 					>
 						{tab.label}
+						{tab.count ? <span className={styles.tabCount}>{tab.count}</span> : null}
 					</button>
 				))}
 			</div>
 
 			<div className={styles.feed}>
-				{loading ? (
+				{filter === 'reminders' ? (
+					remindersLoading ? (
+						<div className={styles.empty}>
+							<div className={styles.emptyIcon}>
+								<FontAwesomeIcon icon={faBell} />
+							</div>
+							<span>{t('common.loading')}</span>
+						</div>
+					) : reminderTabCount === 0 ? (
+						<div className={styles.empty}>
+							<div className={styles.emptyIcon}>
+								<FontAwesomeIcon icon={faBell} />
+							</div>
+							<span className={styles.emptyTitle}>{t('inbox.remindersEmptyTitle')}</span>
+							<span className={styles.emptySubtext}>{t('inbox.remindersEmptySubtext')}</span>
+						</div>
+					) : (
+						<>
+							{overdueReminders.length > 0 ? (
+								<>
+									<div className={styles.reminderGroupLabel}>{t('inbox.remindersOverdueGroup')}</div>
+									{overdueReminders.map((reminder) => (
+										<div key={reminder.id} className={`${styles.card} ${styles.reminderCard} ${styles.reminderCardOverdue}`}>
+											<div
+												role="button"
+												tabIndex={0}
+												className={styles.reminderCardMain}
+												onClick={() => onOpenNote(reminder.noteId, reminder.workspaceId)}
+												onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpenNote(reminder.noteId, reminder.workspaceId); }}
+											>
+												<FontAwesomeIcon icon={faBell} className={styles.reminderCardIcon} />
+												<div>
+													<div className={styles.reminderCardTitle}>{reminder.noteTitle || t('note.untitled')}</div>
+													<div className={styles.reminderCardMeta}>{new Date(reminder.reminderAt).toLocaleString()}</div>
+												</div>
+											</div>
+											<div className={styles.reminderCardActions}>
+												<button type="button" className={styles.reminderCardButton} onClick={() => handleMarkReminderDoneClick(reminder.noteId, reminder.workspaceId, reminder.noteTitle)}>
+													{t('editors.reminderMarkDone')}
+												</button>
+												<button type="button" className={styles.reminderCardButton} onClick={() => handleRescheduleReminderClick(reminder.noteId, reminder.workspaceId, reminder.noteTitle)}>
+													{t('editors.reminderReschedule')}
+												</button>
+											</div>
+										</div>
+									))}
+								</>
+							) : null}
+							{dueSoonReminders.length > 0 ? (
+								<>
+									<div className={styles.reminderGroupLabel}>{t('inbox.remindersDueSoonGroup')}</div>
+									{dueSoonReminders.map((reminder) => (
+										<div key={reminder.docId} className={`${styles.card} ${styles.reminderCard}`}>
+											<div
+												role="button"
+												tabIndex={0}
+												className={styles.reminderCardMain}
+												onClick={() => onOpenNote(reminder.noteId, reminder.workspaceId)}
+												onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpenNote(reminder.noteId, reminder.workspaceId); }}
+											>
+												<FontAwesomeIcon icon={faBell} className={styles.reminderCardIcon} />
+												<div>
+													<div className={styles.reminderCardTitle}>{reminder.noteTitle || t('note.untitled')}</div>
+													<div className={styles.reminderCardMeta}>{new Date(reminder.reminderAt).toLocaleString()}</div>
+												</div>
+											</div>
+											<div className={styles.reminderCardActions}>
+												<button type="button" className={styles.reminderCardButton} onClick={() => handleMarkReminderDoneClick(reminder.noteId, reminder.workspaceId, reminder.noteTitle)}>
+													{t('editors.reminderMarkDone')}
+												</button>
+												<button type="button" className={styles.reminderCardButton} onClick={() => handleRescheduleReminderClick(reminder.noteId, reminder.workspaceId, reminder.noteTitle)}>
+													{t('editors.reminderReschedule')}
+												</button>
+											</div>
+										</div>
+									))}
+								</>
+							) : null}
+						</>
+					)
+				) : loading ? (
 					<div className={styles.empty}>
 						<div className={styles.emptyIcon}>
 							{iconSrc

@@ -138,10 +138,10 @@ function buildWelcomeContentEn(fragment) {
 
 		h2Collapsible('📝 Note Types'),
 		h3('Text Notes'),
-		para(t('These are full rich text: headings, bullet lists, tables, code blocks, links, highlights, images, all of it. Type ## heading and it converts as you go, Markdown-style. You can also just paste in an entire Markdown document and it\'ll parse correctly without any problems (hopefully). When you need to get text out, select it and use the toolbar (or right-click) to copy as either Markdown or rich text, depending on where it\'s headed.')),
+		para(t('These are full rich text: headings, bullet lists, tables, code blocks, links, highlights, images, all of it. Type ## heading and it converts as you go, Markdown-style. You can also just paste in an entire Markdown document and it\'ll parse correctly without any problems (hopefully). When you need to get text out, select it and use the toolbar to copy as either Markdown or rich text, depending on where it\'s headed.')),
 
 		h3('Checklists'),
-		para(t('Running lists with a couple of features I actually use every day. Tap '), b('+1'), t(' on any item and it turns into a counter. Hit '), b('+'), t(' or '), b('−'), t(' to adjust it, tap the checkbox again to turn it back into a normal item. There\'s also auto-scroll, which scrolls you to the bottom of the note when you open it. Handy for logs or anything you\'re treating like a running journal. Toggle it with the '), b('≡↓'), t(' button in the toolbar.')),
+		para(t('Running lists with a couple of features I actually use every day. Tap '), b('+1'), t(' on any item and it turns into a counter. Hit '), b('+'), t(' or '), b('−'), t(' to adjust it, tap the checkbox again to turn it back into a normal item. There\'s also auto-scroll (not just here — text notes have it too), which scrolls you to the bottom of the note when you open it. Handy for logs or anything you\'re treating like a running journal. Toggle it with the '), b('≡↓'), t(' button in the toolbar.')),
 
 		h3('✏️ Drawing Notes'),
 		para(t('A full Excalidraw canvas is built in: shapes, freehand drawing, text, arrows. If you\'ve got collaborators in the note, it syncs live while you draw.')),
@@ -156,7 +156,7 @@ function buildWelcomeContentEn(fragment) {
 		hr(),
 
 		h2Collapsible('📌 Collapsible Headings'),
-		para(t('Click the arrow next to a heading and everything underneath it folds away. An H2 will collapse all the H3s, H4s, and H5s beneath it, right up until the next H2. An H1 folds the whole section. This is per-device too, so folding something on your laptop doesn\'t change what your collaborators see on theirs.')),
+		para(t('Click the lambda next to a heading and everything underneath it folds away. An H2 will collapse all the H3s, H4s, and H5s beneath it, right up until the next H2. An H1 folds the whole section. This is per-device too, so folding something on your laptop doesn\'t change what your collaborators see on theirs.')),
 		para(t('(Yes, this heading folds. Try the lambda icon.)')),
 		hr(),
 
@@ -185,7 +185,7 @@ function buildWelcomeContentEn(fragment) {
 		hr(),
 
 		h2Collapsible('⚡ Offline First'),
-		para(t('Notes load from local storage, so there\'s no network dependency to actually open and read your stuff. Everything syncs back up once you\'re online again. I tested this on a 10-hour flight and it held up the whole way, no weirdness on reconnect.')),
+		para(t('Notes load right from your device, so there\'s no network dependency to actually open and read your stuff. Everything syncs back up once you\'re online again. I tested this on a 10-hour flight and it held up the whole way, no weirdness on reconnect.')),
 		hr(),
 
 		h2Collapsible('📱 Mobile FAB'),
@@ -231,10 +231,10 @@ function buildWelcomeContentEs(fragment) {
 
 		h2Collapsible('📝 Tipos de notas'),
 		h3('Notas de texto'),
-		para(t('Texto enriquecido completo: encabezados, listas, tablas, bloques de código, enlaces, resaltados, imágenes, todo. Escribe ## encabezado y se convierte al momento, estilo Markdown. También puedes pegar un documento Markdown completo y lo parsea correctamente sin problemas (con suerte). Cuando necesites sacar el texto, selecciónalo y usa la barra de herramientas (o clic derecho) para copiar como Markdown o texto enriquecido, según dónde vaya.')),
+		para(t('Texto enriquecido completo: encabezados, listas, tablas, bloques de código, enlaces, resaltados, imágenes, todo. Escribe ## encabezado y se convierte al momento, estilo Markdown. También puedes pegar un documento Markdown completo y lo parsea correctamente sin problemas (con suerte). Cuando necesites sacar el texto, selecciónalo y usa la barra de herramientas para copiar como Markdown o texto enriquecido, según dónde vaya.')),
 
 		h3('Listas de verificación'),
-		para(t('Listas con un par de funciones que uso todos los días. Toca '), b('+1'), t(' en cualquier elemento y se convierte en un contador. Usa '), b('+'), t(' o '), b('−'), t(' para ajustarlo, toca el checkbox de nuevo para volver a un elemento normal. También hay desplazamiento automático, que te lleva al final de la nota cuando la abres. Útil para registros o cualquier cosa que uses como diario. Actívalo con el botón '), b('≡↓'), t(' en la barra de herramientas.')),
+		para(t('Listas con un par de funciones que uso todos los días. Toca '), b('+1'), t(' en cualquier elemento y se convierte en un contador. Usa '), b('+'), t(' o '), b('−'), t(' para ajustarlo, toca el checkbox de nuevo para volver a un elemento normal. También hay desplazamiento automático (no solo aquí — las notas de texto también lo tienen), que te lleva al final de la nota cuando la abres. Útil para registros o cualquier cosa que uses como diario. Actívalo con el botón '), b('≡↓'), t(' en la barra de herramientas.')),
 
 		h3('✏️ Notas de dibujo'),
 		para(t('Un lienzo Excalidraw completo integrado: formas, dibujo a mano alzada, texto, flechas. Si tienes colaboradores en la nota, se sincroniza en tiempo real mientras dibujas.')),
@@ -249,7 +249,7 @@ function buildWelcomeContentEs(fragment) {
 		hr(),
 
 		h2Collapsible('📌 Encabezados contraíbles'),
-		para(t('Haz clic en la flecha junto a un encabezado y todo lo que hay debajo se pliega. Un H2 colapsa todos los H3, H4 y H5 que tiene debajo, hasta el siguiente H2. Un H1 pliega toda la sección. Esto es por dispositivo, así que plegar algo en tu laptop no cambia lo que ven tus colaboradores en los suyos.')),
+		para(t('Haz clic en el ícono lambda junto a un encabezado y todo lo que hay debajo se pliega. Un H2 colapsa todos los H3, H4 y H5 que tiene debajo, hasta el siguiente H2. Un H1 pliega toda la sección. Esto es por dispositivo, así que plegar algo en tu laptop no cambia lo que ven tus colaboradores en los suyos.')),
 		para(t('(Sí, este encabezado se pliega. Prueba el ícono lambda.)')),
 		hr(),
 
@@ -278,7 +278,7 @@ function buildWelcomeContentEs(fragment) {
 		hr(),
 
 		h2Collapsible('⚡ Sin conexión primero'),
-		para(t('Las notas se cargan desde el almacenamiento local, así que no hay dependencia de red para abrirlas y leerlas. Todo se sincroniza de vuelta cuando vuelves a estar en línea. Lo probé en un vuelo de 10 horas y funcionó todo el tiempo, sin rarezas al reconectar.')),
+		para(t('Las notas se cargan directamente desde tu dispositivo, así que no hay dependencia de red para abrirlas y leerlas. Todo se sincroniza de vuelta cuando vuelves a estar en línea. Lo probé en un vuelo de 10 horas y funcionó todo el tiempo, sin rarezas al reconectar.')),
 		hr(),
 
 		h2Collapsible('📱 FAB móvil'),

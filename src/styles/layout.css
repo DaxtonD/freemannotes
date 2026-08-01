@@ -2851,25 +2851,85 @@
 	font-weight: 600;
 }
 
-.top-action-card {
-	flex: 0 0 auto;
-	width: fit-content;
-	min-height: 42px;
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-md);
-	background: color-mix(in srgb, var(--color-surface-2) 42%, transparent);
-	color: var(--color-text);
-	font-weight: 600;
-	text-align: left;
-	padding: 0 14px;
+.top-actions-cluster {
 	display: inline-flex;
 	align-items: center;
-	gap: 10px;
-	white-space: nowrap;
+	position: relative;
 }
 
-.top-action-card:disabled {
+.top-action-primary {
+	flex: 0 0 auto;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	height: 42px;
+	padding: 0 16px;
+	border: 1px solid color-mix(in srgb, var(--color-accent) 55%, transparent);
+	border-radius: var(--radius-sm);
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-2));
+	color: var(--color-accent);
+	font: inherit;
+	font-weight: 700;
+	white-space: nowrap;
+	cursor: pointer;
+	transition: background 120ms ease, border-color 120ms ease;
+}
+
+.top-action-primary:hover:not(:disabled),
+.top-action-primary:focus-visible {
+	background: color-mix(in srgb, var(--color-accent) 26%, var(--color-surface-2));
+}
+
+.top-action-primary:disabled {
 	opacity: 0.56;
+	cursor: default;
+}
+
+/* Collapsed by default; expands on hover/focus of .top-actions-cluster (see
+   below) so Checklist/Drawing/Quick reminder stay one click away without a
+   permanent row of buttons. */
+.top-actions-expand {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	max-width: 0;
+	opacity: 0;
+	overflow: hidden;
+	margin-left: 0;
+	transition: max-width 220ms ease, opacity 160ms ease, margin-left 220ms ease;
+}
+
+.top-actions-cluster:hover .top-actions-expand,
+.top-actions-cluster:focus-within .top-actions-expand {
+	max-width: 150px;
+	opacity: 1;
+	margin-left: 8px;
+}
+
+.top-action-icon {
+	flex: 0 0 auto;
+	width: 42px;
+	height: 42px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid var(--color-border);
+	border-radius: var(--radius-sm);
+	background: color-mix(in srgb, var(--color-surface-2) 42%, transparent);
+	color: var(--color-text);
+	cursor: pointer;
+	transition: background 120ms ease, border-color 120ms ease;
+}
+
+.top-action-icon:hover:not(:disabled),
+.top-action-icon:focus-visible {
+	background: var(--color-surface-2);
+	border-color: color-mix(in srgb, var(--color-accent) 40%, var(--color-border));
+}
+
+.top-action-icon:disabled {
+	opacity: 0.56;
+	cursor: default;
 }
 
 .editor-panel {

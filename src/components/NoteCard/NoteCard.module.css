@@ -246,6 +246,24 @@
 	flex-shrink: 0;
 }
 
+/* Reminder due today: same accent hue as the default badge, pushed stronger
+   so it reads as "coming up" without introducing a new theme-wide color
+   token (no --color-warning exists, and every theme already defines
+   --color-accent, so this stays safe across all of them). */
+.reminderBadgeDueToday {
+	border-color: var(--color-accent);
+	background: color-mix(in srgb, var(--color-accent) 24%, var(--note-color-header-bg, var(--color-surface-2)));
+	color: var(--color-accent);
+}
+
+/* Reminder overdue: reuses --color-danger (already used app-wide for
+   destructive/urgent actions) rather than introducing a new token. */
+.reminderBadgeOverdue {
+	border-color: var(--color-danger);
+	background: color-mix(in srgb, var(--color-danger) 20%, var(--note-color-header-bg, var(--color-surface-2)));
+	color: var(--color-danger);
+}
+
 .metaChipRow {
 	display: flex;
 	flex-wrap: wrap;

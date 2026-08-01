@@ -61,6 +61,17 @@
 	margin-bottom: 16px;
 	border-bottom: 1px solid var(--color-border);
 	padding-bottom: 0;
+	/* Scroll instead of wrap when tab labels (esp. longer locale translations)
+	   don't all fit at once — avoids any one tab going multi-line and throwing
+	   off the row's height. */
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
+}
+
+.tabs::-webkit-scrollbar {
+	display: none;
 }
 
 .tab {
@@ -75,6 +86,8 @@
 	margin-bottom: -1px;
 	border-radius: var(--radius-sm) var(--radius-sm) 0 0;
 	transition: color 100ms, border-color 100ms, background 100ms;
+	white-space: nowrap;
+	flex-shrink: 0;
 }
 
 .tab:hover {
@@ -85,6 +98,21 @@
 .tabActive {
 	color: var(--color-accent);
 	border-bottom-color: var(--color-accent);
+}
+
+.tabCount {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 18px;
+	height: 18px;
+	margin-left: 6px;
+	padding: 0 5px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--color-danger) 16%, var(--color-surface));
+	color: var(--color-danger);
+	font-size: 0.72rem;
+	font-weight: 700;
 }
 
 /* ── Activity feed ───────────────────────────────────────────────────────── */
@@ -118,6 +146,77 @@
 
 .card:hover .archiveBtn {
 	opacity: 1;
+}
+
+/* ── Reminders tab ───────────────────────────────────────────────────────── */
+
+.reminderGroupLabel {
+	margin: 12px 4px 4px;
+	color: var(--color-text-muted);
+	font-size: 0.78rem;
+	font-weight: 700;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+}
+
+.reminderGroupLabel:first-child {
+	margin-top: 0;
+}
+
+.reminderCard {
+	cursor: default;
+	flex-direction: column;
+	align-items: stretch;
+	gap: 8px;
+}
+
+.reminderCardOverdue {
+	border: 1px solid color-mix(in srgb, var(--color-danger) 30%, transparent);
+}
+
+.reminderCardMain {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	cursor: pointer;
+}
+
+.reminderCardIcon {
+	color: var(--color-danger);
+	flex-shrink: 0;
+}
+
+.reminderCardTitle {
+	font-weight: 600;
+	color: var(--color-text);
+}
+
+.reminderCardMeta {
+	color: var(--color-text-muted);
+	font-size: 0.82rem;
+}
+
+.reminderCardActions {
+	display: flex;
+	gap: 6px;
+}
+
+.reminderCardButton {
+	border: 1px solid var(--color-border);
+	background: transparent;
+	color: var(--color-text);
+	font-size: 0.8rem;
+	font-weight: 600;
+	font-family: inherit;
+	cursor: pointer;
+	padding: 5px 10px;
+	border-radius: 999px;
+	touch-action: manipulation;
+}
+
+.reminderCardButton:hover,
+.reminderCardButton:focus-visible {
+	background: var(--color-surface-2);
 }
 
 .cardUnread {

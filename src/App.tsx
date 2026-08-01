@@ -18,6 +18,7 @@ import {
 	faListCheck,
 	faMagnifyingGlass,
 	faPenNib,
+	faPlus,
 	faShareNodes,
 	faTag,
 	faTrash,
@@ -1579,7 +1580,13 @@ export function App(): React.JSX.Element {
 		() => cachedDeviceAppearancePrefs?.noteEditorFontScale ?? getDefaultNoteEditorFontScale()
 	);
 	const [editorToolbarModePref, setEditorToolbarModePref] = React.useState<EditorToolbarMode>(
-		() => normalizeEditorToolbarMode(cachedDeviceAppearancePrefs?.editorToolbarMode)
+		() => normalizeEditorToolbarMode(
+			cachedDeviceAppearancePrefs?.editorToolbarMode,
+			// One-off synchronous check for the initial default only — isCoarsePointer
+			// (the reactive hook) isn't declared until later in this component and
+			// this initializer only runs once, at mount.
+			typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches
+		)
 	);
 	const [noteCardMaxHeightPref, setNoteCardMaxHeightPref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.noteCardMaxHeightPx ?? getDefaultNoteCardMaxHeightPx()
@@ -1747,6 +1754,7 @@ export function App(): React.JSX.Element {
 				noteId: entry.noteId,
 				workspaceId: entry.workspaceId,
 				reminderAt: entry.reminderAt,
+				noteTitle: null,
 			});
 		}
 		writeCachedReminderStates(authUserId, next);
@@ -4566,11 +4574,17 @@ export function App(): React.JSX.Element {
 			// ignore
 		}
 		setAuthStatus('unauth');
+		setAuthMode('login');
 		setAuthUserId(null);
 		setAuthUserRole(null);
 		setAuthProfileImage(null);
 		setAuthWorkspaceId(null);
 		setAuthOfflineMode(false);
+		// fn_view_mode_v1 is a single device-wide key, not scoped per-user — reset it
+		// on logout so the next account to sign in on this device doesn't inherit
+		// whatever view the previous account left active (e.g. Inbox).
+		setViewMode('card');
+		saveViewMode('card');
 		clearAuthCache();
 		manager.setActiveWorkspaceId(null);
 		manager.setWebsocketEnabled(false);
@@ -5574,6 +5588,20 @@ export function App(): React.JSX.Element {
 		setNoteReminderModalState(null);
 	}, [authWorkspaceId, noteReminderModalState, persistNoteReminderState]);
 
+	// Clears a reminder directly (no modal) — used by the overdue-reminder
+	// prompt in the note editor and by the Inbox Reminders tab's "Mark done"
+	// action. Clearing counts as "done": there's no separate resolved/dismissed
+	// state, just whether reminderAt is still set.
+	const handleMarkReminderDone = React.useCallback((noteId: string, docId: string, title: string) => {
+		persistNoteReminderState({
+			docId,
+			noteId,
+			workspaceId: authWorkspaceId ?? '',
+			reminderAt: null,
+			noteTitle: title || undefined,
+		});
+	}, [authWorkspaceId, persistNoteReminderState]);
+
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) {
 			setNoteReminderByDocId({});
@@ -5809,6 +5837,17 @@ export function App(): React.JSX.Element {
 			return;
 		}
 		const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+		// This closure's own target workspace. refreshNoteShareState is re-invoked
+		// by an effect keyed on authWorkspaceId (so switching workspaces always
+		// triggers a fresh call), but nothing cancels an older call already
+		// in-flight from a previous workspace. Without checking this before each
+		// workspace-scoped state write below, a slow IDB read or network fetch
+		// closured to the OLD workspace can resolve after the switch and silently
+		// overwrite the new workspace's correct placements with stale ones — seen
+		// as notes from the previous workspace flashing in the grid before the
+		// next refresh corrects it. sharedPlacements (ALL placements, user-scoped
+		// rather than workspace-scoped) is unaffected and safe to apply regardless.
+		const requestedWorkspaceId = authWorkspaceId;
 		if (authUserId) {
 			// Seed from IndexedDB first so Shared With Me behaves like the rest of the
 			// offline-first workspace shell, then let the network refresh replace it.
@@ -5819,7 +5858,9 @@ export function App(): React.JSX.Element {
 					: Promise.resolve([] as SharedNotePlacement[]),
 			]);
 			setSharedPlacements(cachedAllPlacements);
-			setActiveWorkspaceSharedPlacements(cachedActivePlacements);
+			if (authWorkspaceIdRef.current === requestedWorkspaceId) {
+				setActiveWorkspaceSharedPlacements(cachedActivePlacements);
+			}
 			manager.setExternalRoomAliases(mergeExternalRoomAliases(cachedAllPlacements));
 		}
 		const lastKnownSharedPlacements = sharedPlacementsRef.current;
@@ -5897,7 +5938,9 @@ export function App(): React.JSX.Element {
 			// so that lookups and alias registration work for bubbles from any workspace.
 			// visibleSharedPlacements filters what the NoteGrid actually displays.
 			setSharedPlacements(resolvedAllPlacements);
-			setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
+			if (authWorkspaceIdRef.current === requestedWorkspaceId) {
+				setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
+			}
 			manager.setExternalRoomAliases(mergeExternalRoomAliases(resolvedAllPlacements));
 			if (authUserId) {
 				const workspacePlacementWrites: Promise<void>[] = [];
@@ -5910,7 +5953,9 @@ export function App(): React.JSX.Element {
 				await Promise.all(workspacePlacementWrites).catch(() => undefined);
 			}
 		} catch {
-			if (!offline) {
+			// A stale call's failure must not wipe out state a newer, already-
+			// resolved call for the current workspace has since populated.
+			if (!offline && authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedPlacements([]);
 				setActiveWorkspaceSharedPlacements([]);
 				setFailedLinkNotifications([]);
@@ -6922,8 +6967,22 @@ export function App(): React.JSX.Element {
 			manager.setActiveWorkspaceId(resolvedWorkspaceId);
 			writeAuthCache({ v: 1, userId: resolvedUserId, workspaceId: resolvedWorkspaceId, profileImage: resolvedProfileImage, role: resolvedUserRole });
 			writeWorkspaceSelectionCache({ userId: resolvedUserId, workspaceId: resolvedWorkspaceId });
-			if (authMode === 'register' && registrationInviteToken) {
-				clearRegistrationInviteFromUrl();
+			if (authMode === 'register') {
+				// New accounts should always land on Card view. fn_view_mode_v1 is a
+				// device-wide (not per-user) key, so without this a brand-new account
+				// could inherit whatever view mode a previous account on this device
+				// last left active (e.g. Inbox).
+				setViewMode('card');
+				saveViewMode('card');
+				// New UserDevicePreference rows are hardcoded to 'condensed' server-side
+				// (the server has no reliable way to detect touch capability from a bare
+				// HTTP request), so explicitly commit the device-appropriate default here
+				// right after registration, using the same pointer-type signal the rest
+				// of the app already uses for full-vs-condensed toolbar decisions.
+				commitEditorToolbarModePref(isCoarsePointer ? 'condensed' : 'full');
+				if (registrationInviteToken) {
+					clearRegistrationInviteFromUrl();
+				}
 			}
 			manager.setWebsocketEnabled(Boolean(resolvedWorkspaceId));
 		} catch {
@@ -10273,45 +10332,55 @@ export function App(): React.JSX.Element {
 						// Reserve the button-row height unconditionally so the grid
 						// doesn't shift down when canCreateNotesInCurrentContext resolves.
 						<div className="top-actions">
-							<button
-								type="button"
-								className="top-action-card"
-								disabled={!canCreateNotesInCurrentContext}
-								onClick={() => {
-									setSidebarView('notes');
-									setIsQuickReminderOpen(true);
-								}}
-							>
-								<FontAwesomeIcon icon={faBell} />
-								{t('app.createQuickReminder')}
-							</button>
-							<button
-								type="button"
-								className="top-action-card"
-								disabled={!canCreateNotesInCurrentContext}
-								onClick={() => void openCreateEditorForCurrentContext('text')}
-							>
-								<FontAwesomeIcon icon={faFileLines} />
-								{t('app.createNewNote')}
-							</button>
-							<button
-								type="button"
-								className="top-action-card"
-								disabled={!canCreateNotesInCurrentContext}
-								onClick={() => void openCreateEditorForCurrentContext('checklist')}
-							>
-								<FontAwesomeIcon icon={faListCheck} />
-										{t('app.createNewChecklist')}
+							<div className="top-actions-cluster">
+								<button
+									type="button"
+									className="top-action-primary"
+									disabled={!canCreateNotesInCurrentContext}
+									onClick={() => void openCreateEditorForCurrentContext('text')}
+								>
+									<FontAwesomeIcon icon={faPlus} />
+									{t('app.createNewNote')}
+								</button>
+								{/* Revealed on hover/focus of the cluster (see .top-actions-expand
+								    in layout.css) so every action stays one click away — no menu
+								    to open first — while collapsing to a single control at rest. */}
+								<div className="top-actions-expand">
+									<button
+										type="button"
+										className="top-action-icon"
+										disabled={!canCreateNotesInCurrentContext}
+										onClick={() => void openCreateEditorForCurrentContext('checklist')}
+										aria-label={t('app.createNewChecklist')}
+										title={t('app.createNewChecklist')}
+									>
+										<FontAwesomeIcon icon={faListCheck} />
 									</button>
-							<button
-								type="button"
-								className="top-action-card"
-								disabled={!canCreateNotesInCurrentContext}
-								onClick={() => void openCreateEditorForCurrentContext('drawing')}
-							>
-								<FontAwesomeIcon icon={faPenNib} />
-								{t('app.addNewDrawing')}
-							</button>
+									<button
+										type="button"
+										className="top-action-icon"
+										disabled={!canCreateNotesInCurrentContext}
+										onClick={() => void openCreateEditorForCurrentContext('drawing')}
+										aria-label={t('app.addNewDrawing')}
+										title={t('app.addNewDrawing')}
+									>
+										<FontAwesomeIcon icon={faPenNib} />
+									</button>
+									<button
+										type="button"
+										className="top-action-icon"
+										disabled={!canCreateNotesInCurrentContext}
+										onClick={() => {
+											setSidebarView('notes');
+											setIsQuickReminderOpen(true);
+										}}
+										aria-label={t('app.createQuickReminder')}
+										title={t('app.createQuickReminder')}
+									>
+										<FontAwesomeIcon icon={faBell} />
+									</button>
+								</div>
+							</div>
 								</div>
 							) : null}
 
@@ -10572,6 +10641,8 @@ export function App(): React.JSX.Element {
 						themeId={themeId}
 						iconSrc={inboxIconSrc}
 						refreshToken={inboxRefreshToken}
+						onMarkReminderDone={handleMarkReminderDone}
+						onOpenReminderModal={openNoteReminderModal}
 						onOpenNote={async (noteId, workspaceId, roomId, scrollToNodeId) => {
 							console.debug('[InboxView.onOpenNote]', { noteId, workspaceId, roomId, scrollToNodeId });
 							setPendingMentionScrollNodeId(scrollToNodeId ?? null);
@@ -10975,6 +11046,8 @@ export function App(): React.JSX.Element {
 						onDeleteDrawing={selectedNoteReadOnly ? undefined : (drawingId) => deleteAttachedDrawing(selectedNoteId, drawingId)}
 						loadDrawingDoc={(drawingId) => loadDrawingDoc(selectedNoteId, drawingId)}
 						onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
+						reminderAt={readReminderLookupValue(noteReminderByDocId, selectedNoteDocId, selectedNoteId)}
+						onMarkReminderDone={selectedNoteReadOnly ? undefined : () => handleMarkReminderDone(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
 						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 						onTogglePin={selectedNoteReadOnly ? undefined : toggleSelectedNotePin}

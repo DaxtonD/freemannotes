@@ -52,6 +52,7 @@ import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLi
 import { useI18n } from '../../core/i18n';
 import { extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
 import { syncNoteLinksForDoc } from '../../core/noteLinkStore';
+import { getReminderCardTier } from '../../core/reminderUrgency';
 import {
 	createRichTextDocFromPlainText,
 	getChecklistItemPlainText,
@@ -1392,6 +1393,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		if (!Number.isFinite(parsed.getTime())) return t('note.addReminder');
 		return parsed.toLocaleString();
 	}, [reminderAt, t]);
+	const reminderTier = React.useMemo(() => {
+		if (!reminderAt) return null;
+		const parsed = new Date(reminderAt);
+		if (!Number.isFinite(parsed.getTime())) return null;
+		return getReminderCardTier(reminderAt);
+	}, [reminderAt]);
+	const reminderBadgeClassName = reminderTier === 'overdue'
+		? `${styles.reminderBadge} ${styles.reminderBadgeOverdue}`
+		: reminderTier === 'dueToday'
+			? `${styles.reminderBadge} ${styles.reminderBadgeDueToday}`
+			: styles.reminderBadge;
 
 	const measureChecklistTextLayout = React.useCallback((): void => {
 		if (type !== 'checklist') return;
@@ -2037,7 +2049,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					</span>
 				) : null}
 				{reminderAt ? (
-					<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={styles.reminderBadge}>
+					<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={reminderBadgeClassName}>
 						<FontAwesomeIcon icon={faBell} />
 					</span>
 				) : null}
@@ -2229,7 +2241,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 								</span>
 							) : null}
 							{reminderAt ? (
-								<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={styles.reminderBadge}>
+								<span aria-label={reminderLabel || t('note.addReminder')} title={reminderLabel || t('note.addReminder')} className={reminderBadgeClassName}>
 									<FontAwesomeIcon icon={faBell} />
 								</span>
 							) : null}

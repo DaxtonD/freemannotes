@@ -378,7 +378,7 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 				{visibleInvitations.length === 0 && workspaceInvites.length === 0 && failedLinkNotifications.length === 0 && firedReminders.length === 0 && !hasAppNotification ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
 
 				{hasInboxUnread ? (
-					<div className={`${styles.section} ${styles.notificationList}`}>
+					<div className={`${styles.section} ${styles.notificationList} ${styles.inboxSummarySection}`}>
 						<div className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
 							<div className={styles.notificationHeader}>
 								<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">

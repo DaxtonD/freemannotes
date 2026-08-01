@@ -44,6 +44,7 @@ export function writeCachedReminderStates(userId: string, reminders: readonly No
 				noteId: String(entry.noteId || ''),
 				workspaceId: String(entry.workspaceId || ''),
 				reminderAt: String(entry.reminderAt || ''),
+				noteTitle: null,
 			})).filter((entry) => entry.docId && entry.noteId && entry.workspaceId && entry.reminderAt),
 		};
 		window.localStorage.setItem(STORAGE_KEY_PREFIX + userId, JSON.stringify(payload));

@@ -74,6 +74,7 @@ import {
 	readStoredRemoteNoteImages,
 } from '../../core/noteMediaStore';
 import { readDrawingLinkState } from '../../core/noteModel';
+import { isReminderOverdue } from '../../core/reminderUrgency';
 import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
@@ -110,6 +111,9 @@ export type NoteEditorProps = {
 	onDeleteDrawing?: (drawingId: string) => Promise<void> | void;
 	loadDrawingDoc?: (drawingId: string) => Promise<Y.Doc | null>;
 	onAddReminder?: () => void;
+	/** Current reminder value for this note, if any (ISO string). Used to show the overdue-reminder prompt. */
+	reminderAt?: string | null;
+	onMarkReminderDone?: () => void;
 	onAddToCollection?: () => void;
 	onAddLabels?: () => void;
 	onOpenNote?: (noteId: string) => void;
@@ -1084,8 +1088,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (typeof document === 'undefined') return false;
 		if (document.body.dataset.freemannotesNoteImageUploadOpen === 'true') return false;
 		const active = document.activeElement;
-		if (!(active instanceof HTMLElement) || !editorOverlayRefCb.current?.contains(active)) return false;
-		return true;
+		if (!(active instanceof HTMLElement)) return false;
+		// The rich text toolbar's own popovers (link/table/highlight/emoji/heading
+		// menus) render via createPortal(..., document.body), so they are never a
+		// DOM descendant of the editor overlay even though they're conceptually
+		// part of it. Without this check, focusing e.g. the link menu's URL input
+		// looks identical to focus leaving the editor entirely, which incorrectly
+		// flips this to false and — via the keyboard-close-blur effect below —
+		// blurs the still-focused input and closes the keyboard out from under it.
+		if (editorOverlayRefCb.current?.contains(active)) return true;
+		if (active.closest('[data-freemannotes-editor-toolbar-overlay="true"]')) return true;
+		return false;
 	}, [isCoarsePointer, keyboard.isOpen, keyboard.visibleBottom, props.hideFormattingToolbar]);
 	const dismissEditorOverlayFocus = React.useCallback((): void => {
 		if (typeof document === 'undefined') return;
@@ -2964,7 +2977,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 										aria-label={t('editors.mediaDock')}
 									>
 										<span className={styles.mediaDockPill} aria-hidden="true" />
-										<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+										<span className={styles.mediaDockLabel}>{t('editors.mediaDockLabel')}</span>
 									</button>
 
 									<header className={styles.mediaSheetHeader}>
@@ -3028,7 +3041,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									onClick={handleToggleMediaDock}
 									aria-label={t('editors.mediaDock')}
 								>
-									{t('editors.mediaTabMedia')}
+									{t('editors.mediaDockLabel')}
 								</button>
 							</div>
 							<button type="button" className={styles.bottomDockClose} onClick={handleClose} aria-label={t('common.close')} title={t('common.close')}>
@@ -3189,6 +3202,32 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							</button>
 						) : null}
 					</nav>
+				) : null}
+				{props.reminderAt && isReminderOverdue(props.reminderAt) ? (
+					<div className={styles.reminderOverduePrompt} role="status">
+						<span className={styles.reminderOverdueLabel}>
+							<FontAwesomeIcon icon={faBell} />
+							{t('editors.reminderOverdueMessage')}
+						</span>
+						<div className={styles.reminderOverdueActions}>
+							<button
+								type="button"
+								className={styles.reminderOverdueButton}
+								onClick={props.onMarkReminderDone}
+								disabled={!props.onMarkReminderDone}
+							>
+								{t('editors.reminderMarkDone')}
+							</button>
+							<button
+								type="button"
+								className={styles.reminderOverdueButton}
+								onClick={props.onAddReminder}
+								disabled={!props.onAddReminder}
+							>
+								{t('editors.reminderReschedule')}
+							</button>
+						</div>
+					</div>
 				) : null}
 				{type === 'checklist' ? (
 					<textarea
@@ -3592,7 +3631,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 										aria-label={t('editors.mediaDock')}
 									>
 										<span className={styles.mediaDockPill} aria-hidden="true" />
-										<span className={styles.mediaDockLabel}>{t('editors.mediaTabMedia')}</span>
+										<span className={styles.mediaDockLabel}>{t('editors.mediaDockLabel')}</span>
 									</button>
 
 									<header className={styles.mediaSheetHeader}>
@@ -3696,7 +3735,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								onClick={handleToggleMediaDock}
 								aria-label={t('editors.mediaDock')}
 							>
-								{t('editors.mediaTabMedia')}
+								{t('editors.mediaDockLabel')}
 							</button>
 						</div>
 						<div className={styles.bottomDockRightActions}>

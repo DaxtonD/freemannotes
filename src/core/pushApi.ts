@@ -194,6 +194,7 @@ export type NoteReminderState = {
 	noteId: string;
 	workspaceId: string;
 	reminderAt: string;
+	noteTitle: string | null;
 };
 
 export async function fetchNoteReminderStates(): Promise<{ reminders: NoteReminderState[] }> {

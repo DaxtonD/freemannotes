@@ -16,6 +16,7 @@ import {
 	faCode,
 	faCopy,
 	faFaceSmile,
+	faFont,
 	faHeading,
 	faHighlighter,
 	faIndent,
@@ -604,6 +605,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 				isAlignRight: Boolean(editor?.isActive({ textAlign: 'right' })),
 				isHighlight,
 				activeHighlightColor: typeof highlightAttrs?.color === 'string' ? highlightAttrs.color : null,
+				hasSelection: Boolean(editor && !editor.state.selection.empty),
 			};
 		},
 	});
@@ -644,6 +646,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		isAlignRight: false,
 		isHighlight: false,
 		activeHighlightColor: null,
+		hasSelection: false,
 	};
 	const canRunPrimaryUndo = props.preferEditorUndoRedo
 		? resolvedToolbarState.canUndo || Boolean(props.checkboxUndoAvail)
@@ -702,6 +705,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 	const [linkUrlInput, setLinkUrlInput] = React.useState('');
 	const [linkHeadings, setLinkHeadings] = React.useState<Array<{ text: string; slug: string; level: number }>>([]);
 	const linkMenuRef = React.useRef<HTMLDivElement | null>(null);
+	const linkMenuButtonRef = React.useRef<HTMLElement | null>(null);
 	const linkUrlInputRef = React.useRef<HTMLInputElement | null>(null);
 	const [canScrollToolbarLeft, setCanScrollToolbarLeft] = React.useState(false);
 	const [canScrollToolbarRight, setCanScrollToolbarRight] = React.useState(false);
@@ -786,6 +790,41 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		});
 	}, [props.applyInlineFormattingToWholeEditor, props.editor]);
 
+	// Compute position from the trigger button. Extracted so it can be re-run on
+	// visualViewport resize/scroll (see effect below) — without this, opening the
+	// mobile on-screen keyboard to type a URL leaves the popover at its stale
+	// pre-keyboard coordinates, which can fall outside the now-shrunk visible
+	// viewport and look like the menu closed.
+	const updateLinkMenuPosition = React.useCallback((): void => {
+		const button = linkMenuButtonRef.current;
+		// isConnected guards against a stale ref pointing at a since-unmounted
+		// button (e.g. the mobile toolbar swapping between its keyboard-open and
+		// keyboard-closed layouts) — getBoundingClientRect() on a detached node
+		// returns an all-zero rect, which would silently reposition the popover
+		// to a nonsense location instead of leaving it where it last was.
+		if (!button || !button.isConnected || typeof window === 'undefined') {
+			return;
+		}
+		const vv = window.visualViewport;
+		const vLeft = vv ? Math.round(vv.offsetLeft) : 0;
+		const vTop = vv ? Math.round(vv.offsetTop) : 0;
+		const vWidth = vv ? Math.round(vv.width) : window.innerWidth;
+		// Use the visual viewport height (excludes soft keyboard on mobile) so
+		// we can detect when the button is near the bottom of the visible area.
+		const vHeight = vv ? Math.round(vv.height) : window.innerHeight;
+		const rect = button.getBoundingClientRect();
+		const menuWidth = 304;
+		const menuEstimatedHeight = 310;
+		const left = Math.min(Math.max(vLeft + 8, rect.left), vLeft + vWidth - menuWidth - 8);
+		// On mobile the floating toolbar sits just above the keyboard, so
+		// there is no room below the button.  Flip the menu upward instead.
+		const spaceBelow = vHeight - rect.bottom;
+		const top = spaceBelow >= menuEstimatedHeight + 8
+			? vTop + rect.bottom + 8
+			: Math.max(vTop + 8, vTop + rect.top - menuEstimatedHeight - 8);
+		setLinkMenuPosition({ top, left });
+	}, []);
+
 	const openLinkMenu = React.useCallback((button: HTMLElement): void => {
 		if (!props.editor) return;
 		const currentHref = props.editor.getAttributes('link').href as string | undefined;
@@ -800,37 +839,30 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			}
 		});
 		setLinkHeadings(headings);
-		// Compute position from the trigger button.
-		if (typeof window !== 'undefined') {
-			const vv = window.visualViewport;
-			const vLeft = vv ? Math.round(vv.offsetLeft) : 0;
-			const vTop = vv ? Math.round(vv.offsetTop) : 0;
-			const vWidth = vv ? Math.round(vv.width) : window.innerWidth;
-			// Use the visual viewport height (excludes soft keyboard on mobile) so
-			// we can detect when the button is near the bottom of the visible area.
-			const vHeight = vv ? Math.round(vv.height) : window.innerHeight;
-			const rect = button.getBoundingClientRect();
-			const menuWidth = 304;
-			const menuEstimatedHeight = 310;
-			const left = Math.min(Math.max(vLeft + 8, rect.left), vLeft + vWidth - menuWidth - 8);
-			// On mobile the floating toolbar sits just above the keyboard, so
-			// there is no room below the button.  Flip the menu upward instead.
-			const spaceBelow = vHeight - rect.bottom;
-			const top = spaceBelow >= menuEstimatedHeight + 8
-				? vTop + rect.bottom + 8
-				: Math.max(vTop + 8, vTop + rect.top - menuEstimatedHeight - 8);
-			setLinkMenuPosition({ top, left });
-		}
+		linkMenuButtonRef.current = button;
+		updateLinkMenuPosition();
 		setLinkMenuOpen(true);
 		requestAnimationFrame(() => linkUrlInputRef.current?.select());
-	}, [props.editor]);
+	}, [props.editor, updateLinkMenuPosition]);
 
 	const applyLinkUrl = React.useCallback((): void => {
 		if (!props.editor) return;
 		const url = linkUrlInput.trim();
 		if (!url) return;
 		applyWholeRowInlineCommand(props.editor, props.applyInlineFormattingToWholeEditor === true, (editor) => {
-			editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
+			const { from, to } = editor.state.selection;
+			if (from === to) {
+				// No text selected — setLink on a collapsed selection has nothing to
+				// mark, so it was a silent no-op. Insert the URL itself as visible
+				// linked text instead, matching applyHeadingAnchor's behavior below.
+				editor.chain().focus().insertContent([{
+					type: 'text',
+					text: url,
+					marks: [{ type: 'link', attrs: { href: url, target: null, rel: 'noopener noreferrer nofollow', class: null } }],
+				}]).run();
+			} else {
+				editor.chain().focus().extendMarkRange('link').setLink({ href: url }).run();
+			}
 		});
 		setLinkMenuOpen(false);
 	}, [props.editor, props.applyInlineFormattingToWholeEditor, linkUrlInput]);
@@ -1158,13 +1190,23 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		const handleKeyDown = (event: KeyboardEvent): void => {
 			if (event.key === 'Escape') setLinkMenuOpen(false);
 		};
+		const handleViewportChange = (): void => updateLinkMenuPosition();
+		const visualViewport = window.visualViewport;
 		document.addEventListener('pointerdown', handlePointerDown);
 		document.addEventListener('keydown', handleKeyDown);
+		window.addEventListener('resize', handleViewportChange);
+		window.addEventListener('scroll', handleViewportChange, true);
+		visualViewport?.addEventListener('resize', handleViewportChange);
+		visualViewport?.addEventListener('scroll', handleViewportChange);
 		return () => {
 			document.removeEventListener('pointerdown', handlePointerDown);
 			document.removeEventListener('keydown', handleKeyDown);
+			window.removeEventListener('resize', handleViewportChange);
+			window.removeEventListener('scroll', handleViewportChange, true);
+			visualViewport?.removeEventListener('resize', handleViewportChange);
+			visualViewport?.removeEventListener('scroll', handleViewportChange);
 		};
-	}, [linkMenuOpen]);
+	}, [linkMenuOpen, updateLinkMenuPosition]);
 
 	const noEditor = !props.editor;
 	const compactButtonClass = props.compact ? ` ${styles.formatButtonCompact}` : '';
@@ -1430,6 +1472,15 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			setHighlightMenuOpen(false);
 		}
 	}, [condensedSection, isCondensedToolbar]);
+	React.useEffect(() => {
+		// The Copy section's toggle button only renders while there's a
+		// selection (see render below) — if the selection is lost while this
+		// section happens to be open, close it too so its expanded content
+		// doesn't linger with no corresponding toggle button.
+		if (condensedSection === 'copy' && !resolvedToolbarState.hasSelection) {
+			setCondensedSection(null);
+		}
+	}, [condensedSection, resolvedToolbarState.hasSelection]);
 
 	return (
 		<div className={styles.formatToolbarStack}>
@@ -1730,33 +1781,37 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignRight ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignRight')} title={t('editors.alignRight')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('right').run()}>
 							<FontAwesomeIcon icon={faAlignRight} />
 						</button>
-						<div className={styles.formatDivider} aria-hidden="true" />
-						<div className={styles.copyModeToggleGroup} role="group" aria-label={t('editors.copyMode')}>
-							<button
-								type="button"
-								className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'markdown' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
-								aria-label={t('editors.copyModeMarkdownToast')}
-								aria-pressed={resolvedCopyMode === 'markdown'}
-								title={t('editors.copyModeMarkdownToast')}
-								onMouseDown={preventToolbarFocusSteal}
-								onPointerDown={preventToolbarFocusSteal}
-								onClick={() => props.onCopyModeChange?.('markdown')}
-							>
-								{t('editors.copyMarkdown')}
-							</button>
-							<button
-								type="button"
-								className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'rich-text' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
-								aria-label={t('editors.copyModeRichTextToast')}
-								aria-pressed={resolvedCopyMode === 'rich-text'}
-								title={t('editors.copyModeRichTextToast')}
-								onMouseDown={preventToolbarFocusSteal}
-								onPointerDown={preventToolbarFocusSteal}
-								onClick={() => props.onCopyModeChange?.('rich-text')}
-							>
-								{t('editors.copyRichText')}
-							</button>
-						</div>
+						{resolvedToolbarState.hasSelection ? (
+							<>
+								<div className={styles.formatDivider} aria-hidden="true" />
+								<div className={styles.copyModeToggleGroup} role="group" aria-label={t('editors.copyMode')}>
+									<button
+										type="button"
+										className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'markdown' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
+										aria-label={t('editors.copyModeMarkdownToast')}
+										aria-pressed={resolvedCopyMode === 'markdown'}
+										title={t('editors.copyModeMarkdownToast')}
+										onMouseDown={preventToolbarFocusSteal}
+										onPointerDown={preventToolbarFocusSteal}
+										onClick={() => props.onCopyModeChange?.('markdown')}
+									>
+										{t('editors.copyMarkdown')}
+									</button>
+									<button
+										type="button"
+										className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'rich-text' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
+										aria-label={t('editors.copyModeRichTextToast')}
+										aria-pressed={resolvedCopyMode === 'rich-text'}
+										title={t('editors.copyModeRichTextToast')}
+										onMouseDown={preventToolbarFocusSteal}
+										onPointerDown={preventToolbarFocusSteal}
+										onClick={() => props.onCopyModeChange?.('rich-text')}
+									>
+										{t('editors.copyRichText')}
+									</button>
+								</div>
+							</>
+						) : null}
 					</>
 				) : null}
 				{isCondensedToolbar ? (
@@ -1771,7 +1826,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							onPointerDown={preventToolbarFocusSteal}
 							onClick={() => toggleCondensedSection('formatting')}
 						>
-							<FontAwesomeIcon icon={faBold} />
+							<FontAwesomeIcon icon={faFont} />
 						</button>
 						<button
 							type="button"
@@ -1821,18 +1876,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						>
 							<FontAwesomeIcon icon={faAlignLeft} />
 						</button>
-						<button
-							type="button"
-							className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'copy' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
-							aria-label={t('editors.condensedCopy')}
-							title={t('editors.condensedCopy')}
-							aria-pressed={condensedSection === 'copy'}
-							onMouseDown={preventToolbarFocusSteal}
-							onPointerDown={preventToolbarFocusSteal}
-							onClick={() => toggleCondensedSection('copy')}
-						>
-							<FontAwesomeIcon icon={faCopy} />
-						</button>
+						{resolvedToolbarState.hasSelection ? (
+							<button
+								type="button"
+								className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'copy' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+								aria-label={t('editors.condensedCopy')}
+								title={t('editors.condensedCopy')}
+								aria-pressed={condensedSection === 'copy'}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={() => toggleCondensedSection('copy')}
+							>
+								<FontAwesomeIcon icon={faCopy} />
+							</button>
+						) : null}
 						{props.onToggleNoteAutoScroll ? (
 							<>
 							<div className={styles.formatDivider} aria-hidden="true" />
@@ -1886,6 +1943,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						className={`${styles.headingToolbar}${props.compact ? ` ${styles.headingToolbarCompact}` : ''}`}
 						role="toolbar"
 						aria-label={t('editors.headingMenu')}
+						data-freemannotes-editor-toolbar-overlay="true"
 						style={{ position: 'fixed', top: `${headingMenuPosition.top}px`, left: `${headingMenuPosition.left}px` }}
 						onPointerDown={stopToolbarPropagation}
 						onMouseDown={stopToolbarPropagation}
@@ -1922,6 +1980,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						className={styles.formatMenu}
 						role="menu"
 						aria-label={t('editors.tableMenu')}
+						data-freemannotes-editor-toolbar-overlay="true"
 						style={{ position: 'fixed', top: `${tableMenuPosition.top}px`, left: `${tableMenuPosition.left}px` }}
 						onPointerDown={stopToolbarPropagation}
 						onMouseDown={stopToolbarPropagation}
@@ -1957,6 +2016,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						className={styles.highlightMenu}
 						role="menu"
 						aria-label={t('editors.highlight')}
+						data-freemannotes-editor-toolbar-overlay="true"
 						style={{ position: 'fixed', top: `${highlightMenuPosition.top}px`, left: `${highlightMenuPosition.left}px` }}
 						onPointerDown={stopToolbarPropagation}
 						onMouseDown={stopToolbarPropagation}
@@ -2004,6 +2064,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						className={styles.emojiMenu}
 						role="menu"
 						aria-label={t('editors.emojiPicker')}
+						data-freemannotes-editor-toolbar-overlay="true"
 						style={{ position: 'fixed', top: `${emojiMenuPosition.top}px`, left: `${emojiMenuPosition.left}px` }}
 						onPointerDown={stopToolbarPropagation}
 						onMouseDown={stopToolbarPropagation}
@@ -2036,6 +2097,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 					<div
 						ref={linkMenuRef}
 						className={styles.linkMenu}
+						data-freemannotes-editor-toolbar-overlay="true"
 						style={{ position: 'fixed', top: `${linkMenuPosition.top}px`, left: `${linkMenuPosition.left}px` }}
 						onPointerDown={stopToolbarPropagation}
 						onMouseDown={stopToolbarPropagation}
