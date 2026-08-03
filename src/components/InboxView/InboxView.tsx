@@ -68,6 +68,10 @@ interface Props {
 	onMarkReminderDone?: (noteId: string, docId: string, title: string) => void;
 	/** Opens the reminder date-picker modal for a note, pre-filled with its current value. */
 	onOpenReminderModal?: (noteId: string, docId: string, title: string) => void;
+	/** Called right after accepting a note share, with the resulting alias ID, so the
+	 *  grid can scroll to and briefly highlight it once the user is back there —
+	 *  otherwise a freshly accepted note is easy to lose in a large workspace. */
+	onNoteAccepted?: (noteId: string) => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -197,7 +201,7 @@ interface FilterCache {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal }: Props) {
+export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal, onNoteAccepted }: Props) {
 	const { t } = useI18n();
 	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	const [filter, setFilter] = useState<FilterTab>('all');
@@ -587,13 +591,14 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			setActivities((prev) => prev.filter((a) => a.id !== activity.id));
 			removeFromCache(activity.id);
 			markRead(activity.id);
+			onNoteAccepted?.(noteId);
 			onOpenNote(noteId, activity.subject.workspaceId, roomId);
 		} catch {
 			// non-fatal — let user retry
 		} finally {
 			setAcceptingIds((prev) => { const n = new Set(prev); n.delete(activity.id); return n; });
 		}
-	}, [folderName, markRead, onOpenNote, placementChoice, removeFromCache]);
+	}, [folderName, markRead, onNoteAccepted, onOpenNote, placementChoice, removeFromCache]);
 
 	const reminderTabCount = overdueReminders.length + dueSoonReminders.length;
 	const tabs: { key: FilterTab; label: string; count?: number }[] = [

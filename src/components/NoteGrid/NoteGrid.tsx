@@ -174,6 +174,10 @@ export type NoteGridProps = {
 	showArchived?: boolean;
 	emptyStateLabel?: string;
 	sharedNotes?: readonly SharedNotePlacement[];
+	/** A note (e.g. one just accepted from a share) to scroll to and briefly pulse
+	 *  once it appears in the grid. Consumed once via onHighlightConsumed. */
+	highlightNoteId?: string | null;
+	onHighlightConsumed?: () => void;
 	/** Fires once the initial docs are loaded and the first layout is settled. */
 	onReady?: () => void;
 	/**
@@ -733,6 +737,7 @@ type GridNoteCardProps = {
 	setItemElement: (id: string, node: HTMLDivElement | null) => void;
 	setHandleElement: (id: string, node: HTMLDivElement | null) => void;
 	useWholeCardDragHandle?: boolean;
+	isHighlighted?: boolean;
 };
 
 const GRID_LAYOUT_TRANSITION = { type: 'spring', stiffness: 700, damping: 50, mass: 0.8 } as const;
@@ -1050,6 +1055,7 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 				props.isOverlayActiveCard ? styles.itemOverlayActive : '',
 				props.hideDuringDropSettle ? styles.itemDropSettlingHidden : '',
 				props.isPlaceholder ? styles.itemPlaceholder : '',
+				props.isHighlighted ? styles.itemHighlighted : '',
 			]
 				.filter(Boolean)
 				.join(' ')}
@@ -2124,6 +2130,56 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const ids = uniqueIds([...readOrderIds(noteOrder), ...sharedNoteIds]);
 		return ids;
 	}, [noteOrder, sharedNoteIds, storeVersion, props.activeWorkspaceId, workspaceRenderSnapshot, connection.registryWsSynced]);
+
+	// Scroll-to-and-pulse for props.highlightNoteId (e.g. a note just accepted from a
+	// share) — a one-time "here it is" nudge instead of permanently reordering the
+	// grid to solve a one-time findability problem. Masonry view renders every card's
+	// DOM node up front (positions come from CSS transforms, not virtualization), so
+	// once the id is in orderedIds and docs have loaded the element should already
+	// exist; the rAF is just a safety margin for layout to settle before measuring.
+	//
+	// Same fix as the @mention scroll-to-pulse (RichTextEditor.tsx): the pulse must
+	// not start until the smooth scroll has actually settled, or it plays (and can
+	// finish fading) while the card is still off-screen mid-scroll. Skip the delay
+	// entirely when the card is already in view, since no scroll will occur.
+	const [pulsingNoteId, setPulsingNoteId] = React.useState<string | null>(null);
+	React.useEffect(() => {
+		const targetId = props.highlightNoteId;
+		if (!targetId) return;
+		if (!allDocsLoaded) return;
+		if (!orderedIds.includes(targetId)) return;
+		let pulseTimerId: ReturnType<typeof setTimeout>;
+		const rafId = requestAnimationFrame(() => {
+			const cardEl = gridRef.current?.querySelector<HTMLElement>(`[data-note-id="${CSS.escape(targetId)}"]`);
+			if (!cardEl) return;
+			const rect = cardEl.getBoundingClientRect();
+			const alreadyVisible = rect.top >= 0 && rect.bottom <= window.innerHeight && rect.left >= 0 && rect.right <= window.innerWidth;
+			if (!alreadyVisible) {
+				cardEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+			}
+			pulseTimerId = setTimeout(() => {
+				setPulsingNoteId(targetId);
+				// Only clear the pending prop now, after the pulse has actually been
+				// set in motion. props.highlightNoteId is this effect's own dependency,
+				// so clearing it earlier (e.g. right away, before this delayed callback
+				// runs) causes the effect to re-run and its cleanup to clearTimeout()
+				// this very timer before it ever fires — the scroll would still work
+				// (it's synchronous, already done above) but the pulse silently never would.
+				props.onHighlightConsumed?.();
+				// Matches noteCardHighlightPulse's 1s duration (NoteGrid.module.css)
+				// plus a small buffer, since animation: forwards holds the final
+				// (box-shadow: none) frame regardless — this just cleans up the class.
+				window.setTimeout(() => {
+					setPulsingNoteId((current) => (current === targetId ? null : current));
+				}, 1050);
+			}, alreadyVisible ? 0 : 500);
+		});
+		return () => {
+			cancelAnimationFrame(rafId);
+			clearTimeout(pulseTimerId);
+		};
+	}, [props.highlightNoteId, allDocsLoaded, orderedIds, props.onHighlightConsumed]);
+
 	const sharedPlacementByAlias = React.useMemo(
 		() => new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement] as const)),
 		[props.sharedNotes]
@@ -4027,9 +4083,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
 				useWholeCardDragHandle={isCoarsePointer}
 				loadDrawingDoc={props.loadDrawingDoc ? (drawingId) => props.loadDrawingDoc!(note.id, drawingId) : undefined}
+				isHighlighted={note.id === pulsingNoteId}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, pulsingNoteId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);

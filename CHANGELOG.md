@@ -4,6 +4,16 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.8.3 - 2026-08-03
+
+### Fixed
+- **Sharing a note with a collaborator before ever saving it (a brand-new, still-draft note) sent the invite immediately** — if you then canceled instead of saving, the collaborator was left with a "note shared with you" notification pointing at a note that no longer existed. Collaborator invites added to an unsaved note are now held locally and only actually sent once you save; canceling discards them along with the note, so nobody gets notified about something that never stuck around.
+- **A "your note was accepted" inbox card stuck around forever, doing nothing, after you revoked the collaborator's access or they left the note themselves.** Now silently archived (removed from the inbox and its unread badge count) the moment access ends — no replacement notification, just gone, since a card that can't do anything shouldn't be sitting there either.
+- **Switching to the Images view from the sidebar, then to Inbox, left the images gallery on screen underneath the inbox cards, overlapping both.** `sidebarView` (Notes/Trash/Images/Archive) and `viewMode` (Card/List/Strip/Bubble/Inbox) turned out to be two entirely independent pieces of state — switching view modes never reset which sidebar section was active. Bubble view already had a guard for this exact case; Inbox never got the same treatment. Both of Inbox's entry points now reset back to Notes when leaving Images.
+- **On mobile, scrolling inside an open note could scroll the note grid behind it instead** — either after hitting the bottom of a long note, or immediately on a short one with nothing to scroll at all. The editor overlay deliberately allows touch scrolling (it needs to, for its own content), but was missing `overscroll-behavior: contain` on the actual scrollable note body outside of one narrow case (keyboard open), so a gesture with nowhere left to go fell through to the grid instead. Contained properly everywhere now.
+- **Round three: the Samsung Copilot Search popup over the hyperlink URL field, again.** Last release's fix (`type="text"` + `inputMode="url"`) turned out not to actually change anything the keyboard could see — Android maps `inputMode="url"` to the exact same native input-type flag as `type="url"`, so Samsung Keyboard still classified the field as a URL field and kept showing the popup. Dropped `inputMode="url"` entirely this time; the field loses its `/` and `.com` quick-keys but should actually stop triggering the overlay.
+- **Round three: the "Shared With Me" flash of personal notes, again.** 1.8.2's fix cleared the right state (`sharedPlacements`) on workspace switch, but the *refresh* that repopulates it afterward wasn't staleness-guarded the way its sibling state already was — a slow request closured to the workspace you'd already switched away from could still silently overwrite the new workspace's correct list with the old one's. Same race, one more unguarded write site. Guarded now.
+
 ## 1.8.2 - 2026-07-31
 
 ### Fixed

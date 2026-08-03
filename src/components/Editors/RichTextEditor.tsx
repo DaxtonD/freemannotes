@@ -2106,14 +2106,17 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<div className={styles.linkMenuUrlRow}>
 							<input
 								ref={linkUrlInputRef}
-								// type="text" + inputMode="url" gives the same URL-optimized mobile
-								// keyboard layout (/ and .com keys) as type="url" without the "this is
-								// a URL/address bar" semantic — some keyboards (confirmed: Samsung
-								// Keyboard on Galaxy devices) attach a web-search-suggestion overlay
-								// (e.g. "Microsoft Copilot Search") to type="url" fields specifically,
-								// which popped up over the keyboard the moment typing started here.
+								// Plain type="text" with NO inputMode hint, deliberately. Some Android
+								// keyboards (confirmed: Samsung Keyboard on Galaxy devices) attach a
+								// web-search-suggestion overlay (e.g. "Microsoft Copilot Search") to
+								// any field the OS classifies as a URL field — and inputMode="url"
+								// triggers the exact same native Android input-type classification
+								// (TYPE_TEXT_VARIATION_URI) as type="url" does, so swapping type for
+								// inputMode alone (tried previously) did not actually change what the
+								// keyboard sees and did not stop the popup. This sacrifices the
+								// URL-optimized "/" and ".com" keyboard keys in exchange for not
+								// triggering the search overlay.
 								type="text"
-								inputMode="url"
 								autoComplete="off"
 								autoCapitalize="none"
 								autoCorrect="off"

@@ -450,6 +450,7 @@
 	max-height: 30vh;
 	overflow-x: hidden;
 	overflow-y: auto;
+	overscroll-behavior: contain;
 	resize: none;
 	display: block;
 	font-size: calc(var(--font-size-md) + 2px);
@@ -2359,7 +2360,15 @@
 	min-height: 0;
 	overflow-y: auto;
 	overflow-x: auto;
-	overscroll-behavior-x: contain;
+	/* Without this, exhausting this viewport's own scroll (or having nothing to
+	   scroll at all, e.g. a short note) lets the gesture chain to the note grid
+	   behind the fullscreen overlay on mobile — the grid scrolls instead of the
+	   overlay just eating the gesture. useBodyScrollLock's touch-action:none is
+	   deliberately not used for the editor overlay (disableTouchAction:false)
+	   since the editor itself needs touch scroll to work, so containment has to
+	   be scoped to this element specifically, previously only applied while the
+	   keyboard was open (.editorViewportKeyboardOpen). */
+	overscroll-behavior: contain;
 	-webkit-overflow-scrolling: touch;
 }
 
@@ -2371,7 +2380,6 @@
 	/* `scroll-padding-bottom` mirrors the visual padding so browser/programmatic scroll
 	   targets stop above the floating toolbar instead of under it. */
 	scroll-padding-bottom: 88px;
-	overscroll-behavior-y: contain;
 }
 
 .richEditorContent {

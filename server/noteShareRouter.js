@@ -1433,6 +1433,47 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 
 					jsonResponse(res, 200, { ok: true, collaboratorId: collaborator.id });
 
+					// Archive the "note share accepted" card the inviter received when this
+					// collaborator first accepted — otherwise it sits in their Inbox forever,
+					// stale and unopenable, after access ends (revoke or the recipient
+					// leaving). Silent removal (no replacement notification), matching how
+					// note_shared/mention invite cards already auto-archive on acceptance.
+					if (collaborator.invitation) {
+						try {
+							const inviterUserId = collaborator.invitation.inviterUserId;
+							const acceptedActivities = await prisma.activity.findMany({
+								where: {
+									kind: 'note_share_accepted',
+									sourceDocId: collaborator.docId,
+									targets: { some: { userId: inviterUserId } },
+								},
+								select: { id: true },
+							});
+							if (acceptedActivities.length > 0) {
+								const now = new Date();
+								await Promise.all(acceptedActivities.map((a) =>
+									prisma.activityRead.upsert({
+										where: { userId_activityId: { userId: inviterUserId, activityId: a.id } },
+										update: { archived: true, archivedAt: now },
+										create: { userId: inviterUserId, activityId: a.id, archived: true, archivedAt: now },
+									})
+								));
+								// Push a real-time inbox refresh so an already-open Inbox on the
+								// inviter's side drops the card immediately, same as the accept
+								// flow's push in the opposite direction.
+								if (typeof onWorkspaceMetadataChanged === 'function') {
+									onWorkspaceMetadataChanged({
+										reason: 'inbox_updated',
+										workspaceId: null,
+										userIds: [inviterUserId],
+									}).catch(() => {});
+								}
+							}
+						} catch (archiveErr) {
+							console.warn('[note-share] auto-archive accepted activity failed:', archiveErr.message);
+						}
+					}
+
 					if (typeof onWorkspaceMetadataChanged === 'function') {
 						try {
 							const sourceWorkspaceMembers = await prisma.workspaceMember.findMany({

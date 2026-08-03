@@ -38,7 +38,7 @@ type Props = {
 	importCompletedNotification?: { count: number } | null;
 	onDismissImportCompleted?: () => void;
 	onChanged?: () => void;
-	onAcceptedPlacement?: (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => void;
+	onAcceptedPlacement?: (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null; aliasId: string }) => void;
 	onAcceptedWorkspaceInvite?: (workspaceId: string) => void;
 	onClearFailedLinks?: () => void;
 	onOpenFailedLink?: (failure: FailedNoteLinkRecord) => void;
@@ -320,6 +320,7 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 				target,
 				targetWorkspaceId: result.placement.targetWorkspaceId,
 				folderName: result.placement.folderName,
+				aliasId: result.placement.aliasId,
 			});
 			props.onChanged?.();
 		} catch (err) {

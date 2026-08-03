@@ -130,6 +130,40 @@
 	pointer-events: none;
 }
 
+/* One-shot "here it is" nudge for a note just scrolled to (e.g. a freshly
+   accepted share) — same ring-pulse language as the @mention scroll highlight
+   in Editors.module.css, scaled up for a card-sized element. Applied via
+   border-radius-matching outline + box-shadow so it doesn't affect layout. */
+@keyframes noteCardHighlightPulse {
+	0% {
+		box-shadow:
+			0 0 0 2px var(--color-accent),
+			0 0 16px 6px color-mix(in srgb, var(--color-accent) 55%, transparent);
+	}
+	10% {
+		box-shadow:
+			0 0 0 2.5px #fff,
+			0 0 22px 9px color-mix(in srgb, var(--color-accent) 70%, transparent);
+	}
+	35% {
+		box-shadow:
+			0 0 0 8px color-mix(in srgb, var(--color-accent) 20%, transparent),
+			0 0 30px 12px color-mix(in srgb, var(--color-accent) 14%, transparent);
+	}
+	100% {
+		box-shadow: none;
+	}
+}
+
+.itemHighlighted {
+	/* Matches .itemOverlayActive's precedent: box-shadow extends past the card's
+	   own bounds, so without a raised z-index it can render behind/get visually
+	   cut off by neighboring cards in the grid. */
+	z-index: 241;
+	border-radius: var(--radius-md, 10px);
+	animation: noteCardHighlightPulse 1s cubic-bezier(0.2, 0, 0.8, 1) forwards;
+}
+
 @media (pointer: coarse) {
 	.section {
 		margin-inline: calc(var(--space-1) * -1);

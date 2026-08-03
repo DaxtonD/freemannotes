@@ -44,6 +44,10 @@ type Props = {
 	onChanged?: () => void;
 	onAccessRemoved?: () => void;
 	onSelfRemoved?: () => void;
+	// True while the note is a not-yet-saved draft. Invites are queued locally
+	// instead of sent, so a collaborator is never notified about a note the
+	// user might still cancel before saving.
+	isPendingNew?: boolean;
 };
 
 const EMPTY_SNAPSHOT: NoteShareCollaboratorSnapshot = {
@@ -389,6 +393,14 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			const normalizedIdentifier = identifier.trim();
 			if (isDuplicateCollaboratorIdentifier(snapshot, normalizedIdentifier)) {
 				setError(t('share.duplicateCollaborator'));
+				return;
+			}
+			if (props.isPendingNew) {
+				await queueNoteShareCollaboratorInviteAction({ userId: props.authUserId, docId: props.docId, identifier: normalizedIdentifier, role });
+				setIdentifier('');
+				setSuccess(t('invite.pendingUntilSave'));
+				await loadCachedState();
+				props.onChanged?.();
 				return;
 			}
 			if (typeof navigator !== 'undefined' && navigator.onLine === false) {

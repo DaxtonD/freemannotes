@@ -596,6 +596,7 @@
     "expiresAt": "Caduca",
     "offlineCached": "Mostrando el último enlace de invitación almacenado mientras no hay conexión",
     "pendingQueued": "La invitación quedó en cola y se enviará cuando vuelvas a tener conexión",
+    "pendingUntilSave": "La invitación se enviará cuando guardes esta nota",
     "copied": "Enlace de invitación copiado",
     "copyFailed": "No se pudo copiar el enlace de invitación",
     "membersTitle": "Miembros del espacio de trabajo",

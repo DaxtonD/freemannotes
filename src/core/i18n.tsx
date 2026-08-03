@@ -695,6 +695,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		expiresAt: 'Expires',
 		offlineCached: 'Showing the last cached invite link while offline',
 		pendingQueued: 'Invite queued and will send when you are back online',
+		pendingUntilSave: 'Invite will send once you save this note',
 		copied: 'Invite link copied',
 		copyFailed: 'Failed to copy invite link',
 		membersTitle: 'Workspace members',

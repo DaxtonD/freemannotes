@@ -654,6 +654,15 @@ export async function enqueuePendingCollaboratorAction(action: PendingCollaborat
 	}
 }
 
+export async function clearPendingCollaboratorActionsForDoc(userId: string, docId: string): Promise<void> {
+	if (!userId || !docId) return;
+	try {
+		await replaceDocActions(userId, docId, []);
+	} catch {
+		// Best-effort queue cleanup only.
+	}
+}
+
 export async function removePendingCollaboratorAction(actionId: string): Promise<void> {
 	if (!actionId) return;
 	try {

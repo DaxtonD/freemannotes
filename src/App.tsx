@@ -111,6 +111,7 @@ import { createLabel, deleteLabel, getLabelsRegistryDoc, readLabelsFromDoc, subs
 import { assignNoteBannerFile, assignNoteLabels, assignNoteToCollection, markNoteAccessed, readNoteMetadataState } from './services/noteService';
 import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode, SortDirection } from './utilities/getVisibleNotes';
 import {
+	clearPendingCollaboratorActions,
 	flushPendingCollaboratorActions,
 	flushPendingNoteShareActions,
 	listNoteShareInvitations,
@@ -124,6 +125,7 @@ import {
 	updateSharedNotePlacementMetadata,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
+import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
 	cacheSharedNotePlacements,
 	patchCachedSharedNotePlacement,
@@ -1443,6 +1445,13 @@ export function App(): React.JSX.Element {
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
+	// Set right after accepting a note share; NoteGrid scrolls to and briefly pulses
+	// this card once it appears in the grid, then clears it via onHighlightConsumed.
+	// A freshly accepted share isn't reordered to the front (that would permanently
+	// change grid order just to solve a one-time findability problem) — instead the
+	// app finds it for you once, the same moment it would otherwise be easy to lose
+	// in a workspace with a lot of existing notes.
+	const [pendingGridHighlightNoteId, setPendingGridHighlightNoteId] = React.useState<string | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
 	const [pendingReminderNotificationCount, setPendingReminderNotificationCount] = React.useState(0);
 	const [inboxUnreadCount, setInboxUnreadCount] = React.useState(0);
@@ -1902,10 +1911,20 @@ export function App(): React.JSX.Element {
 		const anchor = isListVariantSwap ? captureTopVisibleListScrollAnchor() : null;
 		listScrollAnchorRef.current = anchor;
 		setListScrollAnchor(anchor);
+		// Inbox and Bubble replace the main content area outright rather than just
+		// changing how notes are displayed, but WorkspaceImagesGallery renders as
+		// an independent sibling (unlike Trash/Archive, which are just filters
+		// inside NoteGrid, already hidden along with the grid in these modes).
+		// Leaving sidebarView on 'images' either overlaps it with the new view or
+		// silently blocks the new view from ever appearing, depending on render
+		// order — reset back to Notes so the switch actually takes effect.
+		if ((nextMode === 'inbox' || nextMode === 'bubble') && sidebarView === 'images') {
+			setSidebarView('notes');
+		}
 		setViewMode(nextMode);
 		saveViewMode(nextMode);
 		setIsViewModePickerOpen(false);
-	}, [viewMode]);
+	}, [sidebarView, viewMode]);
 
 	React.useEffect(() => {
 		saveBubbleZoom(bubbleZoom);
@@ -3115,6 +3134,10 @@ export function App(): React.JSX.Element {
 								...readNoteOrderSnapshot(authWorkspaceId).filter((id) => id !== noteId),
 							];
 							writeNoteOrderSnapshot(authWorkspaceId, nextSnapshotIds);
+							// The note is now real — release any collaborator invite that was
+							// held while it was still a draft and send it for real.
+							releaseCollaboratorInvitesForDoc(`${authWorkspaceId}:${noteId}`);
+							if (authUserId) void flushPendingCollaboratorActions(authUserId).catch(() => undefined);
 						}
 					}
 					pendingNewNoteIdsRef.current.delete(noteId);
@@ -3130,6 +3153,13 @@ export function App(): React.JSX.Element {
 					return;
 				}
 				await manager.permanentlyDeleteNote(noteId).catch(() => undefined);
+				if (authWorkspaceId) {
+					const discardedDocId = `${authWorkspaceId}:${noteId}`;
+					releaseCollaboratorInvitesForDoc(discardedDocId);
+					// Drop any invite that was queued but never sent — the note it
+					// pointed to no longer exists, so there's nothing left to share.
+					if (authUserId) void clearPendingCollaboratorActions(authUserId, discardedDocId).catch(() => undefined);
+				}
 				pendingNewNoteIdsRef.current.delete(noteId);
 				markPendingNewNotesChanged();
 				pendingNewNoteCollectionSeedRef.current.delete(noteId);
@@ -3150,7 +3180,7 @@ export function App(): React.JSX.Element {
 				pendingNewNoteCleanupIdsRef.current.delete(noteId);
 			}
 		},
-		[authWorkspaceId, getPendingNewNoteDisposition, manager, markPendingNewNotesChanged, noteReminderByDocId, selectedNoteId, showBriefDialog, syncAttachedDrawingAccess]
+		[authUserId, authWorkspaceId, getPendingNewNoteDisposition, manager, markPendingNewNotesChanged, noteReminderByDocId, selectedNoteId, showBriefDialog, syncAttachedDrawingAccess]
 	);
 
 	const collapseEditorOverlay = React.useCallback((): void => {
@@ -5856,8 +5886,13 @@ export function App(): React.JSX.Element {
 		// closured to the OLD workspace can resolve after the switch and silently
 		// overwrite the new workspace's correct placements with stale ones — seen
 		// as notes from the previous workspace flashing in the grid before the
-		// next refresh corrects it. sharedPlacements (ALL placements, user-scoped
-		// rather than workspace-scoped) is unaffected and safe to apply regardless.
+		// next refresh corrects it. sharedPlacements ("all placements") is NOT
+		// actually workspace-independent despite the name: its network-refreshed
+		// value below is built from listSharedNotePlacements(authWorkspaceId), i.e.
+		// the closure's own captured workspace, so it needs the exact same guard as
+		// activeWorkspaceSharedPlacements — a prior version of this comment claimed
+		// otherwise and that was the reason the flash-then-correct bug survived an
+		// earlier fix pass that only guarded activeWorkspaceSharedPlacements.
 		const requestedWorkspaceId = authWorkspaceId;
 		if (authUserId) {
 			// Seed from IndexedDB first so Shared With Me behaves like the rest of the
@@ -5868,8 +5903,8 @@ export function App(): React.JSX.Element {
 					? readCachedSharedNotePlacementsForWorkspace(authUserId, authWorkspaceId).catch(() => [] as SharedNotePlacement[])
 					: Promise.resolve([] as SharedNotePlacement[]),
 			]);
-			setSharedPlacements(cachedAllPlacements);
 			if (authWorkspaceIdRef.current === requestedWorkspaceId) {
+				setSharedPlacements(cachedAllPlacements);
 				setActiveWorkspaceSharedPlacements(cachedActivePlacements);
 			}
 			manager.setExternalRoomAliases(mergeExternalRoomAliases(cachedAllPlacements));
@@ -5948,8 +5983,14 @@ export function App(): React.JSX.Element {
 			// Store ALL placements (active workspace + every other SHARED_WITH_ME workspace)
 			// so that lookups and alias registration work for bubbles from any workspace.
 			// visibleSharedPlacements filters what the NoteGrid actually displays.
-			setSharedPlacements(resolvedAllPlacements);
+			// resolvedAllPlacements includes placementData.placements, which came from
+			// listSharedNotePlacements(authWorkspaceId) above — i.e. it's built from this
+			// closure's captured workspace, not necessarily the one active right now — so
+			// it needs the same staleness guard as activeWorkspaceSharedPlacements, or a
+			// slow request from a workspace the user already switched away from can
+			// silently overwrite the new workspace's correct placements.
 			if (authWorkspaceIdRef.current === requestedWorkspaceId) {
+				setSharedPlacements(resolvedAllPlacements);
 				setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
 			}
 			manager.setExternalRoomAliases(mergeExternalRoomAliases(resolvedAllPlacements));
@@ -6695,6 +6736,12 @@ export function App(): React.JSX.Element {
 			pendingNewNoteIdsRef.current.add(noteId);
 			markPendingNewNotesChanged();
 			setDraftNoteId(noteId);
+			// Hold any collaborator invite added while this draft is still unsaved —
+			// released (and flushed) on Save, cleared on Cancel. See
+			// pendingCollaboratorInviteHold.ts. authWorkspaceId reflects the active
+			// workspace by this point even in bubble view, since the block above
+			// already switched into it before falling through here.
+			if (authWorkspaceId) holdCollaboratorInvitesForDoc(`${authWorkspaceId}:${noteId}`);
 			const doc = await manager.getDocWithSync(noteId);
 			if (mode === 'checklist') {
 				initChecklistNoteDoc(doc, '', [], []);
@@ -6720,11 +6767,12 @@ export function App(): React.JSX.Element {
 		[activateWorkspaceFromSidebar, activeCollection, activeCollectionId, authWorkspaceId, bubbleSelectedWorkspace, canEditActiveWorkspace, collectionPathById, manager, markPendingNewNotesChanged, openNoteEditor, showBriefDialog, sidebarView, t, viewMode]
 	);
 
-	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
+	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null; aliasId: string }) => {
 		// Accepting into Shared With Me can require a workspace switch plus a sidebar
 		// reveal. We stage the reveal first, then let the activation path complete and
 		// the follow-up effect expands the correct folder once placements are loaded.
 		setIsShareNotificationsOpen(false);
+		setPendingGridHighlightNoteId(args.aliasId);
 		if (args.target === 'shared') {
 			if (!args.targetWorkspaceId) return;
 			setPendingSharedFolderReveal({
@@ -9346,6 +9394,10 @@ export function App(): React.JSX.Element {
 		() => Boolean(selectedNoteId && pendingNewNoteIdsRef.current.has(selectedNoteId)),
 		[selectedNoteId, pendingNewNotesRevision],
 	);
+	const collaboratorModalNoteIsPendingNew = React.useMemo(
+		() => Boolean(collaboratorModalState && pendingNewNoteIdsRef.current.has(collaboratorModalState.noteId)),
+		[collaboratorModalState, pendingNewNotesRevision],
+	);
 
 	// ── Auth gate / splash overlay ────────────────────────────────────────
 	// 'unauth'  → show login form (early return)
@@ -10521,6 +10573,8 @@ export function App(): React.JSX.Element {
 						selectedNoteId={selectedNoteId}
 						canEditWorkspaceContent={canEditActiveWorkspace}
 						sharedNotes={sidebarView === 'trash' ? [] : visibleSharedPlacements}
+						highlightNoteId={pendingGridHighlightNoteId}
+						onHighlightConsumed={() => setPendingGridHighlightNoteId(null)}
 						activeCollaboratorFilter={noteGridCollaboratorFilter}
 						activeCollectionId={activeCollectionId}
 						activeLabelIds={activeLabelIds}
@@ -10654,6 +10708,7 @@ export function App(): React.JSX.Element {
 						refreshToken={inboxRefreshToken}
 						onMarkReminderDone={handleMarkReminderDone}
 						onOpenReminderModal={openNoteReminderModal}
+					onNoteAccepted={(noteId) => setPendingGridHighlightNoteId(noteId)}
 						onOpenNote={async (noteId, workspaceId, roomId, scrollToNodeId) => {
 							console.debug('[InboxView.onOpenNote]', { noteId, workspaceId, roomId, scrollToNodeId });
 							setPendingMentionScrollNodeId(scrollToNodeId ?? null);
@@ -11423,8 +11478,7 @@ export function App(): React.JSX.Element {
 				inboxUnreadCount={inboxUnreadCount + pendingSelfMentions.length}
 				onOpenInbox={() => {
 					setIsShareNotificationsOpen(false);
-					setViewMode('inbox');
-					saveViewMode('inbox');
+					selectViewMode('inbox');
 				}}
 				importCompletedNotification={importCompletedNotification}
 				onDismissImportCompleted={() => setImportCompletedNotification(null)}
@@ -11473,6 +11527,7 @@ export function App(): React.JSX.Element {
 				docId={collaboratorModalState?.docId ?? null}
 				offlineCanManageHint={Boolean(collaboratorModalState && !sharedPlacements.some((item) => item.aliasId === collaboratorModalState.noteId))}
 				noteTitle={collaboratorModalState?.title ?? ''}
+				isPendingNew={collaboratorModalNoteIsPendingNew}
 				onAccessRemoved={handleCollaboratorAccessRemoved}
 				onSelfRemoved={handleCollaboratorSelfRemoved}
 				onChanged={() => {

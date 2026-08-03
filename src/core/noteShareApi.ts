@@ -1,6 +1,7 @@
 import {
 	cacheCollaboratorSnapshot,
 	clearCollaboratorSnapshot,
+	clearPendingCollaboratorActionsForDoc,
 	enqueuePendingCollaboratorAction,
 	moveCachedCollaboratorData,
 	readCachedCollaboratorSnapshot,
@@ -9,6 +10,7 @@ import {
 	type CachedCollaboratorSnapshot,
 	type PendingCollaboratorAction,
 } from './noteShareCollaboratorStore';
+import { isCollaboratorInvitesHeldForDoc } from './pendingCollaboratorInviteHold';
 import { appendMoveDebugQuery, getMoveDebugTraceIdForDocId } from './moveDebugTrace';
 import { requestPwaBackgroundSync } from './pwa';
 import { updateKnownUserCache } from './userIdentityCache';
@@ -442,6 +444,10 @@ export async function moveCachedNoteShareCollaborators(userId: string, sourceDoc
 	await moveCachedCollaboratorData(userId, sourceDocId, targetDocId);
 }
 
+export async function clearPendingCollaboratorActions(userId: string, docId: string): Promise<void> {
+	await clearPendingCollaboratorActionsForDoc(userId, docId);
+}
+
 export async function syncNoteShareCollaborators(userId: string, docId: string, opts?: { suppressError?: boolean }): Promise<NoteShareCollaboratorSnapshot | null> {
 	if (!userId || !docId) return null;
 	try {
@@ -520,6 +526,10 @@ export async function flushPendingCollaboratorActions(userId: string): Promise<v
 		const touchedDocIds = new Set<string>();
 
 		for (const action of pending) {
+			// Notes still awaiting Save hold their queued invites here rather than
+			// letting them go out — see pendingCollaboratorInviteHold.ts. Leave them
+			// queued (don't remove, don't send) until the doc is released.
+			if (isCollaboratorInvitesHeldForDoc(action.docId)) continue;
 			try {
 				if (action.kind === 'invite') {
 					if (!action.identifier || !action.role) continue;
