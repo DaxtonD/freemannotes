@@ -2106,7 +2106,21 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<div className={styles.linkMenuUrlRow}>
 							<input
 								ref={linkUrlInputRef}
-								type="url"
+								// type="text" + inputMode="url" gives the same URL-optimized mobile
+								// keyboard layout (/ and .com keys) as type="url" without the "this is
+								// a URL/address bar" semantic — some keyboards (confirmed: Samsung
+								// Keyboard on Galaxy devices) attach a web-search-suggestion overlay
+								// (e.g. "Microsoft Copilot Search") to type="url" fields specifically,
+								// which popped up over the keyboard the moment typing started here.
+								type="text"
+								inputMode="url"
+								autoComplete="off"
+								autoCapitalize="none"
+								autoCorrect="off"
+								spellCheck={false}
+								data-bwignore="true"
+								data-lpignore="true"
+								data-1p-ignore="true"
 								className={styles.linkMenuInput}
 								placeholder="https://..."
 								value={linkUrlInput}

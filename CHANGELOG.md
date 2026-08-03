@@ -4,6 +4,12 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.8.2 - 2026-07-31
+
+### Fixed
+- **The "Shared With Me" flash-of-personal-notes fix in 1.8.1 wasn't actually fixed.** Turned out the previous attempt cleared the wrong state: `visibleSharedPlacements`'s "Shared With Me" branch reads from the global `sharedPlacements` array, not the `activeWorkspaceSharedPlacements` array that got cleared on switch. `SharedNotePlacement` carries no field for which workspace a placement is displayed in for the viewer (only `sourceWorkspaceId`, where the note originated), so there's no way to filter out just the old workspace's entries after the fact — the only fix is clearing the array outright on switch, same as its sibling already did. The notes that were flashing were never stale/corrupted data, either — they're real: notes shared directly into your Personal workspace (not routed through a "Shared With Me" folder) sitting at the root level, briefly shown in the wrong workspace's list until the next refresh corrected it.
+- **Typing a URL into the hyperlink toolbar's input showed a "Microsoft Copilot Search" suggestion overlay on Samsung Galaxy devices, floating right above the keyboard.** Samsung Keyboard apparently attaches its own web-search-suggestion UI specifically to `type="url"` inputs. Switched to `type="text"` with `inputMode="url"` instead, which gives the identical URL-optimized keyboard layout (the `/` and `.com` quick keys) without the "this is an address bar" signal that was triggering it.
+
 ## 1.8.1 - 2026-07-31
 
 ### Added

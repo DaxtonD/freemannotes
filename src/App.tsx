@@ -4681,6 +4681,17 @@ export function App(): React.JSX.Element {
 			// holds them when the fallback runs), causing a blank rectangle in the grid
 			// that only disappears when the registry WebSocket syncs online.
 			setActiveWorkspaceSharedPlacements([]);
+			// Also clear the global placements list. visibleSharedPlacements's
+			// SHARED_WITH_ME branch filters THIS array (not activeWorkspaceSharedPlacements)
+			// by folderName alone — SharedNotePlacement carries no field indicating which
+			// workspace a placement is displayed in for the viewer, only sourceWorkspaceId
+			// (where the note originated), so there's no way to filter out just the old
+			// workspace's entries after the fact. Without this clear, root-level shared
+			// placements that belong to the PREVIOUS workspace (e.g. notes shared directly
+			// into Personal) stay in state and get shown as if they belonged to the newly
+			// active Shared With Me workspace, until the next refresh completes and
+			// re-scopes this array — the flash-then-correct behavior this fixes.
+			setSharedPlacements([]);
 			// Cancel any in-progress background preload so it cannot re-activate a
 			// previous workspace and clobber the user's intentional switch.
 			backgroundPreloadAbortRef.current++;
