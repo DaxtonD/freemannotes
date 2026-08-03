@@ -10,20 +10,14 @@ For years I went down the same rabbit hole:
 * Repeat
 
 One app forced me into split-pane markdown.
-One was secure, but isolated.
+One was secure, but isolated and didn't allow collaboration.
 Another buried the actual *note-taking* behind forms and setup.
 
-And yeah — I liked Google Keep for one reason:
+I loved Google Keep for one reason:
 open it → write → done.
 
-That feeling stuck with me.
-
-Everything else? Didn’t.
-
-So I stopped looking.
-
-And built what I actually wanted.
-
+That feeling stuck with me. Everything else Didn’t, So I stopped looking And built what I actually wanted.
+It started out a making a simple Google Keep clone. Then expanded to include all the features I felt were lacking.
 ---
 
 ## Why "Freeman"?
@@ -44,7 +38,7 @@ You open it.
 You write.
 It works.
 
-No friction up front — but a lot of capability underneath.
+Simple if you want,  but a lot of capability underneath.
 
 Built with:
 
@@ -67,7 +61,6 @@ And a lot of persistence.
 * Collections + labels for actual organization
 * Drag-and-drop note layout
 * Image support with previews and OCR search
-* Document attachments with extracted text
 * Link previews
 * Search across *everything*
 * Fully self-hosted
@@ -89,19 +82,12 @@ For the exact workflow and optional metadata sidecar format, see `third-party/ex
 
 ## Why I’m Sharing This
 
-This started as a personal project.
-
-Then it turned into months of work.
-
-Then it turned into a lot of time.
+This started as a personal project and then it turned into months of work and a lot of time.
 
 Time away from other projects.
 Time away from work.
 Time away from family.
-
-And I’m still going.
-
-Because I think this can be something genuinely solid:
+And I’m still going because I think this can be something genuinely solid:
 
 * simple when you need it
 * powerful when you want it
