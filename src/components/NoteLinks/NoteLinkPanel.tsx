@@ -149,7 +149,6 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 		const cached = getCachedRemoteNoteLinks(props.docId);
 		return cached.length > 0 ? cached : (props.initialLinks ?? []);
 	});
-	const [loading, setLoading] = React.useState(false);
 	const [error, setError] = React.useState<string | null>(null);
 	const retryTimerRef = React.useRef<number | null>(null);
 	const retryAttemptRef = React.useRef(0);
@@ -181,12 +180,9 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 	// Each retry re-attempts the flush so that if the initial sync POST failed
 	// (common when the network has just come back online), subsequent retries
 	// push queued snapshots to the server before the GET that triggers hydration.
-	const flushAndRefresh = React.useCallback(async (options: { force?: boolean; retryIfIncomplete?: boolean; showLoading?: boolean; retryAttempt?: number } = {}) => {
+	const flushAndRefresh = React.useCallback(async (options: { force?: boolean; retryIfIncomplete?: boolean; retryAttempt?: number } = {}) => {
 		if (props.authUserId) {
 			await flushQueuedNoteLinkSync(props.authUserId).catch(() => undefined);
-		}
-		if (options.showLoading) {
-			setLoading(true);
 		}
 		setError(null);
 		try {
@@ -226,10 +222,6 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 		} catch (nextError) {
 			setError(nextError instanceof Error ? nextError.message : t('links.loadFailed'));
 			setLinks(await readStoredNoteLinks(props.docId));
-		} finally {
-			if (options.showLoading) {
-				setLoading(false);
-			}
 		}
 	}, [clearRetryTimer, fallbackCount, props.authUserId, props.docId, t, variant]);
 
@@ -240,7 +232,7 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 
 	// Light-weight refresh (no flush) for events that only need a cache read or
 	// a single GET without re-syncing queued data.
-	const refresh = React.useCallback(async (options: { force?: boolean; retryIfIncomplete?: boolean; showLoading?: boolean } = {}) => {
+	const refresh = React.useCallback(async (options: { force?: boolean; retryIfIncomplete?: boolean } = {}) => {
 		await flushAndRefresh({ ...options, retryAttempt: 0 });
 	}, [flushAndRefresh]);
 
@@ -268,7 +260,10 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 				});
 			return;
 		}
-		void refresh({ showLoading: true });
+		// No loading flash: `links` is already seeded synchronously from cache above,
+		// so this just refreshes in place once the network responds — offline-first,
+		// nothing should visibly wait to load.
+		void refresh();
 	}, [props.disableInitialRemoteRefresh, props.docId, props.fallbackLinks, refresh]);
 
 	React.useEffect(() => {
@@ -361,7 +356,6 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 						</p>
 					</div>
 					<div className={styles.headerActions}>
-						{loading ? <span className={styles.status}>{t('common.loading')}</span> : null}
 						{props.canEdit && props.onAddUrlPreview ? (
 							<button type="button" className={styles.addButton} onClick={props.onAddUrlPreview}>
 								<FontAwesomeIcon icon={faPlus} />

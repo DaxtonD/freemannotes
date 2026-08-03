@@ -4,6 +4,11 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.8.4 - 2026-08-03
+
+### Fixed
+- **Switching between the Images/Links/Drawings tabs in the note editor's Attachments panel flashed a "Loading..." label plus a slide-up-from-bottom animation on every single switch**, even though the data was already sitting in cache. Didn't fit the offline-first feel this app is going for. Root cause was two-fold: the Images and Links tabs already had their content cached synchronously but still flipped on a loading flag the moment the panel mounted (which happens on every tab switch, since switching tabs remounts whichever panel wasn't showing), and the Drawings tab had no cache at all — it started empty and re-awaited every drawing's title and thumbnail render from scratch each time. Images and Links now refresh silently in the background instead of showing a loading state on mount; Drawings gets a small in-session cache so a drawing already rendered once just shows up immediately on the next visit. The slide-in animation (`mediaPanelSlideIn`, applied on every tab-panel remount) is gone entirely — tab content now just appears.
+
 ## 1.8.3 - 2026-08-03
 
 ### Fixed

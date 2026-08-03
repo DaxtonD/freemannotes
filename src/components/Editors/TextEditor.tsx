@@ -613,7 +613,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 								</header>
 
 								<div className={styles.mediaSheetBody} onTouchStart={handleMediaSheetTouchStart} onTouchEnd={handleMediaSheetTouchEnd}>
-									<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
+									<div key={`media-panel-${mediaDockTab}`} className={styles.mediaPanel} role="tabpanel">
 										{renderMediaDockPanel()}
 									</div>
 								</div>
@@ -736,7 +736,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						</button>
 					</header>
 					<div className={styles.mediaFlyoutBody}>
-						<div key={`media-panel-${mediaDockTab}`} className={`${styles.mediaPanel} ${styles.mediaPanelAnimated}`} role="tabpanel">
+						<div key={`media-panel-${mediaDockTab}`} className={styles.mediaPanel} role="tabpanel">
 							{renderMediaDockPanel()}
 						</div>
 					</div>

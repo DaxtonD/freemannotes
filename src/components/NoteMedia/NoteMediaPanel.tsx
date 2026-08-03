@@ -175,7 +175,10 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	}, [props.authUserId, props.docId, props.isPendingNew]);
 
 	React.useEffect(() => {
-		void refresh();
+		// Silent: remoteImages/etc. are already seeded synchronously from cache above,
+		// so mounting (e.g. switching to this tab in the media dock) should never
+		// flash a loading state — offline-first, it should just show what's there.
+		void refresh({ silent: true });
 	}, [refresh]);
 
 	React.useEffect(() => {

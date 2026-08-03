@@ -27,6 +27,13 @@ function formatRelativeDate(value: string, locale: string): string {
 	return rtf.format(dayDelta, 'day');
 }
 
+// Module-level so a summary survives the panel unmounting — switching media dock
+// tabs remounts DrawingsPanel from scratch (different component type at that tree
+// position), and without this every tab switch back to Drawings would re-await
+// the full per-drawing load/render pipeline before showing anything, even for
+// drawings already rendered once this session.
+const drawingSummaryCache = new Map<string, DrawingSummary>();
+
 function readDrawingCreatedAtIso(drawingDoc: Y.Doc | null | undefined): string {
 	if (!drawingDoc) return '';
 	const createdAtMs = Number(drawingDoc.getMap('metadata').get('createdAt') ?? 0);
@@ -70,8 +77,9 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 	const { t, locale } = useI18n();
 	const canEdit = props.canEdit === true;
 	const drawingIds = useDrawingIds(props.doc);
-	const [drawings, setDrawings] = React.useState<readonly DrawingSummary[]>([]);
-	const [loading, setLoading] = React.useState(false);
+	const [drawings, setDrawings] = React.useState<readonly DrawingSummary[]>(
+		() => drawingIds.map((id) => drawingSummaryCache.get(id)).filter((d): d is DrawingSummary => Boolean(d))
+	);
 	const [error, setError] = React.useState<string | null>(null);
 	const [deletingId, setDeletingId] = React.useState<string | null>(null);
 
@@ -79,14 +87,18 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 		let cancelled = false;
 		if (drawingIds.length === 0 || !props.loadDrawingDoc) {
 			setDrawings([]);
-			setLoading(false);
 			setError(null);
 			return () => {
 				cancelled = true;
 			};
 		}
 
-		setLoading(true);
+		// Offline-first: show whatever's already cached immediately (no loading
+		// state), then silently reconcile once the fresh load resolves — including
+		// for drawings not yet cached, so a first-ever visit still shows the others
+		// right away instead of waiting on the whole batch together.
+		const cachedNow = drawingIds.map((id) => drawingSummaryCache.get(id)).filter((d): d is DrawingSummary => Boolean(d));
+		if (cachedNow.length > 0) setDrawings(cachedNow);
 		setError(null);
 		void (async () => {
 			try {
@@ -102,14 +114,13 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 					})
 				);
 				if (cancelled) return;
+				for (const drawing of nextDrawings) {
+					drawingSummaryCache.set(drawing.id, drawing);
+				}
 				setDrawings(nextDrawings);
 			} catch (nextError) {
 				if (cancelled) return;
 				setError(nextError instanceof Error ? nextError.message : t('documents.loadFailed'));
-			} finally {
-				if (!cancelled) {
-					setLoading(false);
-				}
 			}
 		})();
 
@@ -142,7 +153,6 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 					<p className={styles.summary}>{drawings.length === 0 ? t('documents.emptyTitle') : summaryLabel}</p>
 				</div>
 				<div className={styles.toolbar}>
-					{loading ? <span className={styles.status}>{t('common.loading')}</span> : null}
 					{canEdit && props.onAddDrawing ? (
 						<button type="button" className={styles.addButton} onClick={props.onAddDrawing}>
 							<FontAwesomeIcon icon={faPlus} />
