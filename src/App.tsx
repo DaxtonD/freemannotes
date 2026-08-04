@@ -1445,13 +1445,6 @@ export function App(): React.JSX.Element {
 	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
-	// Set right after accepting a note share; NoteGrid scrolls to and briefly pulses
-	// this card once it appears in the grid, then clears it via onHighlightConsumed.
-	// A freshly accepted share isn't reordered to the front (that would permanently
-	// change grid order just to solve a one-time findability problem) — instead the
-	// app finds it for you once, the same moment it would otherwise be easy to lose
-	// in a workspace with a lot of existing notes.
-	const [pendingGridHighlightNoteId, setPendingGridHighlightNoteId] = React.useState<string | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
 	const [pendingReminderNotificationCount, setPendingReminderNotificationCount] = React.useState(0);
 	const [inboxUnreadCount, setInboxUnreadCount] = React.useState(0);
@@ -6767,12 +6760,11 @@ export function App(): React.JSX.Element {
 		[activateWorkspaceFromSidebar, activeCollection, activeCollectionId, authWorkspaceId, bubbleSelectedWorkspace, canEditActiveWorkspace, collectionPathById, manager, markPendingNewNotesChanged, openNoteEditor, showBriefDialog, sidebarView, t, viewMode]
 	);
 
-	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null; aliasId: string }) => {
+	const handleAcceptedSharedPlacement = React.useCallback(async (args: { target: 'personal' | 'shared'; targetWorkspaceId: string; folderName: string | null }) => {
 		// Accepting into Shared With Me can require a workspace switch plus a sidebar
 		// reveal. We stage the reveal first, then let the activation path complete and
 		// the follow-up effect expands the correct folder once placements are loaded.
 		setIsShareNotificationsOpen(false);
-		setPendingGridHighlightNoteId(args.aliasId);
 		if (args.target === 'shared') {
 			if (!args.targetWorkspaceId) return;
 			setPendingSharedFolderReveal({
@@ -10573,8 +10565,6 @@ export function App(): React.JSX.Element {
 						selectedNoteId={selectedNoteId}
 						canEditWorkspaceContent={canEditActiveWorkspace}
 						sharedNotes={sidebarView === 'trash' ? [] : visibleSharedPlacements}
-						highlightNoteId={pendingGridHighlightNoteId}
-						onHighlightConsumed={() => setPendingGridHighlightNoteId(null)}
 						activeCollaboratorFilter={noteGridCollaboratorFilter}
 						activeCollectionId={activeCollectionId}
 						activeLabelIds={activeLabelIds}
@@ -10708,7 +10698,6 @@ export function App(): React.JSX.Element {
 						refreshToken={inboxRefreshToken}
 						onMarkReminderDone={handleMarkReminderDone}
 						onOpenReminderModal={openNoteReminderModal}
-					onNoteAccepted={(noteId) => setPendingGridHighlightNoteId(noteId)}
 						onOpenNote={async (noteId, workspaceId, roomId, scrollToNodeId) => {
 							console.debug('[InboxView.onOpenNote]', { noteId, workspaceId, roomId, scrollToNodeId });
 							setPendingMentionScrollNodeId(scrollToNodeId ?? null);

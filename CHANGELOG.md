@@ -4,6 +4,11 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.8.5 - 2026-08-03
+
+### Changed
+- **Round two on accepted-share placement: back to "appears at the front," not "scroll to it and pulse."** 1.8.3 shipped a scroll-to-and-pulse nudge for a freshly accepted shared note instead of reordering the grid, on the reasoning that reordering was more invasive than a one-time "here it is." On reflection that trade went the wrong way — scrolling to an arbitrary position in a workspace with hundreds or thousands of notes is its own kind of annoying, potentially paging through a large chunk of the grid just to see something appear for a second and fade. Accepted shared notes are now prepended to the front of the grid again (newest-accepted first among shared notes, ahead of your own notes), with no scroll and no pulse — removed that machinery entirely rather than leaving it dormant. Worth noting for testing: this isn't literally "the note gets inserted into your own note order like one you created" — shared notes are a separate group that always renders ahead of your regular notes, and don't get bumped down by newer notes you create afterward the way a real reorder would. Flagging this explicitly since it's still being evaluated against how this used to feel in earlier versions — real usage on production will tell us more than reasoning about it in the abstract.
+
 ## 1.8.4 - 2026-08-03
 
 ### Fixed
