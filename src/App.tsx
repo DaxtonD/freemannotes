@@ -114,9 +114,12 @@ import {
 	clearPendingCollaboratorActions,
 	flushPendingCollaboratorActions,
 	flushPendingNoteShareActions,
+	flushPendingPlacementMetadataActions,
+	isNetworkUnavailableError,
 	listNoteShareInvitations,
 	listSharedNotePlacements,
 	moveCachedNoteShareCollaborators,
+	queuePlacementMetadataAction,
 	readCachedNoteShareCollaborators,
 	readPendingCollaboratorActions,
 	syncAttachedDrawingCollaborators,
@@ -189,7 +192,7 @@ import {
 } from './core/notificationDeepLink';
 import { clearCachedReminderStates, moveCachedReminderStates, readCachedReminderStates, writeCachedReminderStates } from './core/reminderCache';
 import { moveNoteOrderSnapshotEntry, readNoteOrderSnapshot, writeNoteOrderSnapshot } from './core/noteOrderSnapshot';
-import { getUserNoteColorPrefsSnapshot, replaceUserNoteColorPrefs, setUserNoteColorPreferenceScope } from './core/noteColorPreferences';
+import { getUserNoteColorPrefsSnapshot, replaceUserNoteColorPrefs, setUserNoteColorPreferenceScope, setUserNoteColorToken } from './core/noteColorPreferences';
 import { getUserNoteBannerPrefsSnapshot, replaceUserNoteBannerPrefs, setUserNoteBannerPreferenceScope } from './core/noteBannerPreferences';
 import { warmNoteBannerCache } from './core/noteBannerApi';
 import { replaceCollapsedRichHeadingPrefs, setCollapsibleHeadingPreferenceScope } from './core/collapsibleHeadingPreferences';
@@ -5460,6 +5463,25 @@ export function App(): React.JSX.Element {
 			labelIds: patch.labelIds !== undefined ? patch.labelIds : placement.labelIds,
 			updatedAt: optimisticUpdatedAt,
 		});
+		const queueForRetry = (): void => {
+			if (!authUserId) return;
+			queuePlacementMetadataAction({
+				id: `${placement.id}:${Date.now()}`,
+				userId: authUserId,
+				placementId: placement.id,
+				collectionId: patch.collectionId,
+				labelIds: patch.labelIds,
+				createdAt: optimisticUpdatedAt,
+			});
+		};
+		// 'connecting', not just a confirmed 'offline', still counts — that's the whole
+		// state a flaky connection likes to sit in while the request below hangs
+		// instead of politely failing. Don't even bother trying; straight to the
+		// queue. Same fix as the collaborator modal, same bug, different button.
+		if (connection.state !== 'connected') {
+			queueForRetry();
+			return;
+		}
 		try {
 			const result = await updateSharedNotePlacementMetadata({
 				placementId: placement.id,
@@ -5472,6 +5494,14 @@ export function App(): React.JSX.Element {
 				updatedAt: result.placement.updatedAt,
 			});
 		} catch (error) {
+			if (isNetworkUnavailableError(error)) {
+				// The whole point of offline-first: the change you just made should stick,
+				// not vanish because the server didn't answer in time. Leave the optimistic
+				// state exactly where it is, queue it, and let it sync quietly later instead
+				// of rolling back and slapping an error dialog on someone who did nothing wrong.
+				queueForRetry();
+				return;
+			}
 			applySharedPlacementMetadataLocally(placement.id, {
 				collectionId: previousCollectionId,
 				labelIds: previousLabelIds,
@@ -5479,7 +5509,7 @@ export function App(): React.JSX.Element {
 			});
 			showBriefDialog(error instanceof Error ? error.message : 'Unable to update shared note metadata.');
 		}
-	}, [applySharedPlacementMetadataLocally, showBriefDialog]);
+	}, [applySharedPlacementMetadataLocally, authUserId, connection.state, showBriefDialog]);
 
 	const noteCollectionDoc = React.useMemo(
 		() => noteCollectionModalState ? (noteCollectionModalState.doc ?? manager.getDoc(noteCollectionModalState.docId || noteCollectionModalState.noteId)) : null,
@@ -5899,8 +5929,19 @@ export function App(): React.JSX.Element {
 			if (authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedPlacements(cachedAllPlacements);
 				setActiveWorkspaceSharedPlacements(cachedActivePlacements);
+				// Same staleness guard as the state writes above, and for the same
+				// reason: cachedAllPlacements is scoped to this closure's own
+				// requestedWorkspaceId. Calling this unconditionally let a slow
+				// call for a workspace the user already switched away from
+				// silently evict the now-active workspace's already-cached shared-
+				// note doc (DocumentManager.setExternalRoomAliases destroys any
+				// room no longer present in the new alias set) — undoing
+				// DocumentManager's own "keep docs alive across switches for an
+				// instant revisit" optimization and forcing a real (if usually
+				// modest) IndexedDB re-hydration the next time that workspace
+				// became active again, felt as the shared note "appearing late".
+				manager.setExternalRoomAliases(mergeExternalRoomAliases(cachedAllPlacements));
 			}
-			manager.setExternalRoomAliases(mergeExternalRoomAliases(cachedAllPlacements));
 		}
 		const lastKnownSharedPlacements = sharedPlacementsRef.current;
 		const lastKnownActiveWorkspacePlacements = activeWorkspaceSharedPlacementsRef.current;
@@ -5985,8 +6026,59 @@ export function App(): React.JSX.Element {
 			if (authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedPlacements(resolvedAllPlacements);
 				setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
+				// Reconcile shared-note references directly into the active workspace's
+				// real noteOrder, instead of only injecting them at render time — a
+				// workspace now "contains references" (own notes + accepted shares), not
+				// just owned notes, so an accepted share behaves identically to a real
+				// note: first position on accept, freely draggable, persisted, synced
+				// across this user's own devices via normal Yjs sync. This also
+				// self-heals the one gap where nothing pushes a live event to a note-
+				// share recipient (workspace deletion cascades access away with no
+				// per-recipient notification) — the next reconciliation trigger (next
+				// load, workspace switch, or any note-share-* metadata event) prunes it.
+				void (async () => {
+					if (!requestedWorkspaceId) return;
+					try {
+						const noteOrder = await manager.getNoteOrder();
+						// Re-check right before writing — this is now a write, not just a
+						// state read, so a workspace switch mid-flight landing in the
+						// wrong workspace's noteOrder would be real corruption, not just
+						// a stale render.
+						if (authWorkspaceIdRef.current !== requestedWorkspaceId) return;
+						const currentRefs = noteOrder.toArray().filter((id) => id.startsWith('shared-placement:'));
+						const currentRefSet = new Set(currentRefs);
+						const expected = [...resolvedActiveWorkspacePlacements].sort(
+							(a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
+						);
+						const expectedIdSet = new Set(expected.map((p) => p.aliasId));
+						const missing = expected.filter((p) => !currentRefSet.has(p.aliasId)).map((p) => p.aliasId);
+						const stale = currentRefs.filter((id) => !expectedIdSet.has(id));
+						if (missing.length > 0) await manager.addNoteReferences(missing);
+						if (stale.length > 0) {
+							await manager.removeNoteReferences(stale);
+							// Color preferences are keyed by alias id, not the stable
+							// underlying docId (unlike pins, which key off docId and are
+							// safe to leave orphaned) — a re-share always mints a new
+							// alias id, so a color set here can never be reclaimed later.
+							for (const id of stale) setUserNoteColorToken(id, null);
+						}
+					} catch {
+						// Best-effort — the next reconciliation trigger retries.
+					}
+				})();
+				// Same staleness guard as the state writes above, and for the same
+				// reason: resolvedAllPlacements is scoped to this closure's own
+				// requestedWorkspaceId. Calling this unconditionally let a slow
+				// call for a workspace the user already switched away from
+				// silently evict the now-active workspace's already-cached shared-
+				// note doc (DocumentManager.setExternalRoomAliases destroys any
+				// room no longer present in the new alias set) — undoing
+				// DocumentManager's own "keep docs alive across switches for an
+				// instant revisit" optimization and forcing a real (if usually
+				// modest) IndexedDB re-hydration the next time that workspace
+				// became active again, felt as the shared note "appearing late".
+				manager.setExternalRoomAliases(mergeExternalRoomAliases(resolvedAllPlacements));
 			}
-			manager.setExternalRoomAliases(mergeExternalRoomAliases(resolvedAllPlacements));
 			if (authUserId) {
 				const workspacePlacementWrites: Promise<void>[] = [];
 				if (authWorkspaceId) {
@@ -6024,6 +6116,7 @@ export function App(): React.JSX.Element {
 		await flushQueuedNoteLinkSync(authUserId).catch(() => undefined);
 		await flushPendingCollaboratorActions(authUserId).catch(() => undefined);
 		await flushPendingNoteShareActions(authUserId).catch(() => undefined);
+		await flushPendingPlacementMetadataActions(authUserId).catch(() => undefined);
 		await loadSidebarWorkspacesRef.current().catch(() => undefined);
 		await refreshActiveWorkspaceRef.current().catch(() => undefined);
 		await refreshNoteShareState().catch(() => undefined);
@@ -6255,7 +6348,7 @@ export function App(): React.JSX.Element {
 			pendingNoteDocumentTimers.clear();
 		};
 
-		const refreshWorkspaceMetadata = () => {
+		const refreshWorkspaceMetadata = (isReconnect: boolean) => {
 			if (documentViewerOpenRef.current) {
 				pendingViewerRefreshRef.current = true;
 				return;
@@ -6270,12 +6363,21 @@ export function App(): React.JSX.Element {
 				void loadSidebarWorkspacesRef.current();
 				void refreshActiveWorkspaceRef.current();
 				void refreshNoteShareStateRef.current();
-				// Do NOT call bumpCollaborationRefreshToken() here — workspace-level events
-				// (invite accepted/created/cancelled, workspace deleted, etc.) do not change
-				// per-note collaborator data.  Bumping here causes NoteGrid to re-sync every
-				// visible note on every WS metadata event, generating hundreds of DB queries.
-				// Note-share collaborator bumps are handled by the isNoteShareMetadataEvent
-				// and isUserProfileMetadataEvent branches that already call bumpCollaborationRefreshToken.
+				// Only bump the per-note collaborator resync for an actual WS (re)connect
+				// (isReconnect=true, set below), not for every routine metadata event that
+				// funnels through here — those already get their own targeted bumps
+				// (see the isNoteShareMetadataEvent / isUserProfileMetadataEvent branches
+				// above). Why a reconnect specifically needs this: Redis pub/sub isn't a
+				// durable queue, so a note-share-revoked/added message published while this
+				// device was disconnected is just gone, no second chance. Without this, the
+				// only thing that would ever notice is a full app restart — merely coming
+				// back from the background wouldn't cut it, and "close and reopen the app to
+				// fix your stale chip" isn't a fix anyone should have to discover on their
+				// own. Reconnects are naturally rate-limited (2 s backoff plus this
+				// function's own 300 ms debounce), so this isn't reopening the "hundreds of
+				// DB queries per routine event" can of worms the original guard here was
+				// written to keep shut.
+				if (isReconnect) bumpCollaborationRefreshToken();
 			}, 300);
 		};
 
@@ -6300,7 +6402,7 @@ export function App(): React.JSX.Element {
 
 			nextSocket.addEventListener('open', () => {
 				clearReconnectTimer();
-				refreshWorkspaceMetadata();
+				refreshWorkspaceMetadata(true);
 			});
 
 			nextSocket.addEventListener('message', (event) => {
@@ -6492,7 +6594,7 @@ export function App(): React.JSX.Element {
 							});
 							return;
 						}
-						refreshWorkspaceMetadata();
+						refreshWorkspaceMetadata(false);
 					}
 				} catch {
 					// Ignore malformed websocket payloads.

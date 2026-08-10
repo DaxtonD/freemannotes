@@ -167,13 +167,30 @@ function isOffline(): boolean {
 	return typeof navigator !== 'undefined' && navigator.onLine === false;
 }
 
+const SHARE_LINK_FETCH_TIMEOUT_MS = 8000;
+
+// Same story as noteShareApi.ts (this file grew its own copy of the same fetch
+// helper independently, of course it did): a degraded connection leaves
+// navigator.onLine happily reporting true while the request just sits there. A
+// timeout (AbortError) and a raw fetch-level failure (TypeError) mean exactly the
+// same thing as a 502/503/504 gateway error — the server was unreachable — and the
+// callers below already know how to fall back to a queued/pending link for all three.
 function isGatewayError(error: unknown): boolean {
+	if (error instanceof DOMException && error.name === 'AbortError') return true;
+	if (error instanceof TypeError) return true;
 	const status = (error as { status?: number } | null)?.status;
 	return status === 502 || status === 503 || status === 504;
 }
 
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const res = await fetch(input, { credentials: 'include', ...init });
+	const controller = new AbortController();
+	const timeoutId = window.setTimeout(() => controller.abort(), SHARE_LINK_FETCH_TIMEOUT_MS);
+	let res: Response;
+	try {
+		res = await fetch(input, { credentials: 'include', ...init, signal: controller.signal });
+	} finally {
+		window.clearTimeout(timeoutId);
+	}
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
 	if (!res.ok) {

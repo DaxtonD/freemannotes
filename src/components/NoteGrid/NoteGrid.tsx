@@ -851,8 +851,17 @@ function renderNoteMetaChips(args: {
 	const labelItems = labelIds
 		.map((labelId) => args.labelById.get(labelId) ?? null)
 		.filter((label): label is LabelRecord => Boolean(label));
+	// `undefined` vs `null` is doing real work here, not just TypeScript pedantry.
+	// `undefined` = haven't checked yet this session, so fall back to the persisted
+	// skeleton count and let the chip render before sync finishes. `null` = checked,
+	// genuinely zero collaborators — and that must win outright, never fall back to
+	// a stale skeleton count, or a note that lost its last collaborator ends up
+	// stuck showing a chip that looks real but can never be clicked again.
+	const collaboratorSummaryResolved = args.collaboratorSummary !== undefined;
 	const fallbackCollaboratorCount = Math.max(0, args.snapshotShell?.collaboratorCount ?? 0);
-	const collaboratorCount = args.collaboratorSummary?.count ?? fallbackCollaboratorCount;
+	const collaboratorCount = collaboratorSummaryResolved
+		? (args.collaboratorSummary?.count ?? 0)
+		: fallbackCollaboratorCount;
 	const noteType = String(args.doc.getMap('metadata').get('type') ?? '');
 	const attachmentAllowedKinds: readonly NoteAttachmentBrowserKind[] | undefined = noteType === 'drawing'
 		? ['links']
@@ -877,7 +886,7 @@ function renderNoteMetaChips(args: {
 		: 0;
 	const showCollectionShell = Boolean(collectionId && !collectionPath);
 	const showLabelShell = labelIds.length > 0 && labelItems.length === 0;
-	const showCollaboratorShell = (!args.collaboratorSummary || args.collaboratorSummary.count <= 0) && collaboratorCount > 0;
+	const showCollaboratorShell = !collaboratorSummaryResolved && collaboratorCount > 0;
 	if (!collectionPath && !showCollectionShell && labelItems.length === 0 && !showLabelShell && collaboratorCount <= 0 && (!args.docId || liveAttachmentTotal <= 0)) {
 		return undefined;
 	}
@@ -1206,16 +1215,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [manager, props.activeWorkspaceId]);
 	// Shared notes are mounted into the grid by alias ID so the receiver can open
 	// them like local notes while the DocumentManager still resolves them back to
-	// the source room via the alias map maintained by App. Sorted newest-accepted
-	// first (see orderedIds below) so a freshly accepted share reads like a brand
-	// new note — appears at the very front of the grid, no scroll/highlight nudge
-	// needed to find it, matching how creating a note has always worked.
-	const sharedNoteIds = React.useMemo(
-		() => [...(props.sharedNotes ?? [])]
-			.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-			.map((note) => note.aliasId),
-		[props.sharedNotes]
-	);
+	// the source room via the alias map maintained by App. Position now comes
+	// from noteOrder itself (reconciled in App.tsx's refreshNoteShareState) —
+	// this list is only used for lookups (sharedNoteIdSet / sharedPlacementByAlias
+	// below), not for building orderedIds.
+	const sharedNoteIds = React.useMemo(() => (props.sharedNotes ?? []).map((note) => note.aliasId), [props.sharedNotes]);
 	const sharedNoteIdSet = React.useMemo(() => new Set(sharedNoteIds), [sharedNoteIds]);
 	const sharedAliasSignature = React.useMemo(
 		() => (props.sharedNotes ?? []).map((note) => `${note.aliasId}:${note.roomId}:${note.role}`).sort().join('|'),
@@ -1332,7 +1336,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		() => connection.pendingSyncNoteIds.join('|'),
 		[connection.pendingSyncNoteIds],
 	);
-	const [collaboratorSummariesByNoteId, setCollaboratorSummariesByNoteId] = React.useState<Record<string, NoteCardCollaboratorSummary>>({});
+	// `null` here means "resolved this session (cache or live sync) to zero
+	// collaborators" — a real, confirmed answer. A key that's simply absent means
+	// "haven't checked yet," and should still fall back to the persisted
+	// render-snapshot skeleton. These used to be the same thing (a plain omission
+	// collapsed both into "missing"), which is exactly how a note that genuinely
+	// lost its last collaborator ended up rendering a chip that looked normal and
+	// did nothing when clicked — forever, since the stale skeleton count never had
+	// a reason to go away. Took a multi-day repro and a dedicated investigation to
+	// actually pin down; don't collapse this distinction again.
+	const [collaboratorSummariesByNoteId, setCollaboratorSummariesByNoteId] = React.useState<Record<string, NoteCardCollaboratorSummary | null>>({});
 	const [openCollaboratorChip, setOpenCollaboratorChip] = React.useState<{
 		noteId: string;
 		anchorRect: { top: number; left: number; width: number; height: number };
@@ -2114,7 +2127,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			// Once the real Yjs data arrives (noteOrder becomes non-null) this branch
 			// is never entered again and the actual registry order takes over.
 			const snapshotIds = readNoteOrderSnapshot(props.activeWorkspaceId ?? '');
-			const ids = uniqueIds([...sharedNoteIds, ...snapshotIds, ...(workspaceRenderSnapshot?.orderedIds ?? [])]);
+			const ids = uniqueIds([...snapshotIds, ...(workspaceRenderSnapshot?.orderedIds ?? [])]);
 			return ids;
 		}
 		// If the live Y.Array is empty and the WS registry hasn't synced yet, the IDB
@@ -2122,18 +2135,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// the localStorage snapshot to avoid a blank flash while the WS sync catches up.
 		if (noteOrder.length === 0 && !connection.registryWsSynced) {
 			const snapshotIds = readNoteOrderSnapshot(props.activeWorkspaceId ?? '');
-			const ids = uniqueIds([...sharedNoteIds, ...snapshotIds, ...(workspaceRenderSnapshot?.orderedIds ?? [])]);
+			const ids = uniqueIds([...snapshotIds, ...(workspaceRenderSnapshot?.orderedIds ?? [])]);
 			if (ids.length > 0) {
 				return ids;
 			}
 		}
-		// Local workspace order still comes from Yjs. Shared aliases are prepended
-		// (newest-accepted first, see sharedNoteIds above) rather than mixed into the
-		// source workspace's own note order — a freshly accepted share reads like a
-		// brand new note this way, without ever touching the sharer's Yjs noteOrder.
-		const ids = uniqueIds([...sharedNoteIds, ...readOrderIds(noteOrder)]);
+		// noteOrder is the single source of truth for position — shared-note
+		// references live in it too now (reconciled in App.tsx's
+		// refreshNoteShareState), so an accepted share behaves identically to a
+		// real note: same array, same drag-drop, same multi-device sync.
+		const ids = uniqueIds(readOrderIds(noteOrder));
 		return ids;
-	}, [noteOrder, sharedNoteIds, storeVersion, props.activeWorkspaceId, workspaceRenderSnapshot, connection.registryWsSynced]);
+	}, [noteOrder, storeVersion, props.activeWorkspaceId, workspaceRenderSnapshot, connection.registryWsSynced]);
 
 	const sharedPlacementByAlias = React.useMemo(
 		() => new Map((props.sharedNotes ?? []).map((placement) => [placement.aliasId, placement] as const)),
@@ -2291,9 +2304,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const applySummaries = (rows: readonly { noteId: string; summary: NoteCardCollaboratorSummary | null }[]) => {
 			if (cancelled) return;
 			setCollaboratorSummariesByNoteId(() => {
-				const next: Record<string, NoteCardCollaboratorSummary> = {};
+				const next: Record<string, NoteCardCollaboratorSummary | null> = {};
 				for (const row of rows) {
-					if (row.summary) next[row.noteId] = row.summary;
+					// Record it even when it's `null`. This used to be `if (row.summary)
+					// next[...] = row.summary` — silently dropping a legit "zero
+					// collaborators" result was the actual bug; see the note on the state
+					// declaration above for the full story.
+					next[row.noteId] = row.summary;
 				}
 				return next;
 			});
@@ -2517,10 +2534,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const orphanIndices: number[] = [];
 		for (let i = rawOrder.length - 1; i >= 0; i--) {
 			const id = normalizeId(rawOrder[i]);
-			// Shared note aliases are intentionally absent from the user's own
-			// notesList but are valid entries in noteOrder after being dragged.
-			// Do not treat them as orphans.
-			if (id && !registrySet.has(id) && !sharedNoteIdSet.has(id)) orphanIndices.push(i);
+			// Shared note references are intentionally absent from the user's own
+			// notesList — never treat them as orphans here. Pruning genuinely stale
+			// references (access revoked/left) is refreshNoteShareState's job via
+			// removeNoteReferences, not this effect's. Checking sharedNoteIdSet
+			// instead of the id format used to cause a real bug: on a cold reload
+			// noteOrder hydrates from IndexedDB (fast, local-only) well before
+			// sharedNoteIdSet populates (gated behind an auth-dependent network
+			// fetch in refreshNoteShareState), so this effect would run with an
+			// empty sharedNoteIdSet and delete a just-dragged shared reference as
+			// a false-positive orphan — which reconciliation would then "fix" by
+			// re-inserting it at the front, permanently losing the dragged position.
+			if (id && !registrySet.has(id) && !id.startsWith('shared-placement:')) orphanIndices.push(i);
 		}
 		if (orphanIndices.length > 0) {
 			const ydoc = (noteOrder as YArrayWithDoc<string>).doc;
@@ -2544,7 +2569,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				}
 			});
 		}
-	}, [notesList, noteOrder, sharedNoteIds, storeVersion]);
+	}, [notesList, noteOrder, storeVersion]);
 
 	// Persist the current note order to localStorage so the next startup can use it
 	// as a snapshot, enabling skeleton cards to appear on the very first render
@@ -2573,7 +2598,17 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						docId,
 						userId: props.authUserId,
 						reminderAt,
-						collaboratorCount: Math.max(collaboratorSummariesByNoteId[id]?.count ?? 0, previousSnapshot?.collaboratorCount ?? 0),
+						// A live resolution wins, even when it's a drop to zero — only fall back
+						// to the old persisted count when this note hasn't resolved at all yet.
+						// This used to be an unconditional Math.max(live, persisted), a ratchet
+						// that only ever went up: once a note had shown ≥1 collaborator on a
+						// device, it could never again persist a lower number, even long after
+						// that collaborator actually left. Numbers that only increase are great
+						// for a high score, terrible for "how many people can currently see this
+						// note."
+						collaboratorCount: (id in collaboratorSummariesByNoteId)
+							? (collaboratorSummariesByNoteId[id]?.count ?? 0)
+							: (previousSnapshot?.collaboratorCount ?? 0),
 						attachmentCounts: {
 							images: Math.max(getCachedRemoteNoteImages(docId).length, previousSnapshot?.attachmentCounts.images ?? 0),
 							links: Math.max(getCachedRemoteNoteLinks(docId).length, previewLinks.length, previousSnapshot?.attachmentCounts.links ?? 0),
@@ -2626,6 +2661,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	React.useEffect(() => {
 		if (!noteOrder) return;
 		for (const id of orderedIds) {
+			// Shared-note ids only resolve to the right room once DocumentManager's
+			// alias map is populated (set by refreshNoteShareState in App.tsx, after
+			// an async placements fetch). Attempting getDocWithSync before that is
+			// ready doesn't fail — roomNameFor silently falls back to a wrong,
+			// workspace-local room name for an unregistered alias, so this would
+			// "succeed" against an empty stub doc that briefly renders as a
+			// wrong-height/wrong-position skeleton until the alias arrives, the
+			// stub gets destroyed, and the real doc loads — visible as the card
+			// popping into place a beat later. sharedNoteIdSet updates from the
+			// same props.sharedNotes change that lands right after the alias map
+			// is set, so waiting for the id to appear there avoids the wrong
+			// attempt entirely instead of racing it.
+			if (id.startsWith('shared-placement:') && !sharedNoteIdSet.has(id)) continue;
 			const currentDoc = docsByIdRef.current[id] ?? null;
 			const canonicalDoc = manager.peekDoc(id);
 			if (currentDoc && canonicalDoc === currentDoc) continue;
@@ -2643,7 +2691,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					pendingDocLoadsRef.current.delete(id);
 				});
 		}
-	}, [manager, noteOrder, orderedIds, sharedAliasSignature]);
+	}, [manager, noteOrder, orderedIds, sharedAliasSignature, sharedNoteIdSet]);
 
 	// ── Track when all docs are loaded (drives shimmer + layout animations) ─
 	//
@@ -4035,7 +4083,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				debugTransitionTraceId={props.debugTransitionTraceId}
 				hideDuringDropSettle={dropSettlingNoteId === note.id}
 				setItemElement={dragManager.setItemElement}
-				setHandleElement={!isTrashView && !note.isShared ? dragManager.setHandleElement : () => {}}
+				setHandleElement={!isTrashView ? dragManager.setHandleElement : () => {}}
 				useWholeCardDragHandle={isCoarsePointer}
 				loadDrawingDoc={props.loadDrawingDoc ? (drawingId) => props.loadDrawingDoc!(note.id, drawingId) : undefined}
 			/>
@@ -4342,7 +4390,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										canDrag={(noteId) => {
 											const note = noteById.get(noteId);
 											if (!note) return false;
-											return !isTrashView && !note.isShared && props.canReorder !== false;
+											return !isTrashView && props.canReorder !== false;
 										}}
 										onSelectNote={props.onSelectNote}
 										onMoreMenu={(noteId, rect) => {
@@ -4387,7 +4435,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								canDrag={(noteId) => {
 									const note = noteById.get(noteId);
 									if (!note) return false;
-									return !isTrashView && !note.isShared && props.canReorder !== false;
+									return !isTrashView && props.canReorder !== false;
 								}}
 								onSelectNote={props.onSelectNote}
 								onMoreMenu={(noteId, rect) => {

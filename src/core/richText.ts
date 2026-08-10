@@ -82,7 +82,6 @@ const COLLAPSIBLE_HEADING_TOGGLE_HITBOX_PX = 24;
 const COLLAPSIBLE_HEADING_TOGGLE_HITBOX_COARSE_PX = 44;
 // Must stay in sync with `.fn-collapsible-heading::after` in Editors.module.css.
 const COLLAPSIBLE_HEADING_ARROW_VISUAL_WIDTH_PX = 20;
-const COLLAPSIBLE_HEADING_ARROW_INSET_ADJUST_PX = 7;
 const COLLAPSIBLE_HEADING_SELECTION_REPAIR_META = 'collapsibleHeadingSelectionRepair';
 const COLLAPSIBLE_HEADING_ANIMATION_REFRESH_EVENT = 'freemannotes:rich-heading-animation-refresh';
 const activeCollapsibleHeadingAnimations = new Set<string>();
@@ -347,15 +346,20 @@ type CollapsibleHeadingToggleGeometry = {
 	arrowCenterX: number;
 };
 
-// Derive chevron bounds from the same CSS custom properties that position ::after.
-// Do not widen hit-testing from the heading's padding edge — that steals clicks from
-// the caret zone after the last heading character.
+// Pseudo-elements don't have a real DOM node, so there's no getBoundingClientRect()
+// to just ask "where is the arrow." We have to reconstruct it from CSS instead, which
+// is why this math has to stay glued to whatever Editors.module.css is actually doing.
+// Since the arrow is a `float: inline-end` now, it docks flush against the heading's
+// content-box edge (inset only by padding-inline-end, which reserves room for the
+// collapsed-summary snippet — the arrow reserves its own space via the float itself,
+// no padding needed for it anymore). Do not widen hit-testing from the padding edge —
+// that steals clicks from the caret zone right after the last heading character, and
+// someone will absolutely notice the cursor jumping to the wrong spot.
 function getCollapsibleHeadingToggleGeometry(element: HTMLElement): CollapsibleHeadingToggleGeometry {
 	const rect = element.getBoundingClientRect();
 	const styles = window.getComputedStyle(element);
 	const summarySpace = resolveHeadingOverlayLengthPx(element, styles.getPropertyValue('--collapsible-heading-summary-space'));
-	const arrowGap = resolveHeadingOverlayLengthPx(element, styles.getPropertyValue('--collapsible-heading-arrow-gap'));
-	const toggleVisualRight = rect.right - summarySpace - arrowGap + COLLAPSIBLE_HEADING_ARROW_INSET_ADJUST_PX;
+	const toggleVisualRight = rect.right - summarySpace;
 	const toggleVisualLeft = toggleVisualRight - COLLAPSIBLE_HEADING_ARROW_VISUAL_WIDTH_PX;
 	return {
 		toggleVisualLeft,
@@ -445,24 +449,156 @@ function prefersReducedMotion(): boolean {
 	return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-function preserveHeadingViewportPosition(view: EditorView, headingPos: number, callback: () => void): void {
-	const headingElement = view.nodeDOM(headingPos);
-	const beforeRect = headingElement instanceof HTMLElement ? headingElement.getBoundingClientRect() : null;
-	const scrollContainer = view.dom instanceof HTMLElement ? getScrollContainer(view.dom) : null;
-	const pageScrollTop = typeof window === 'undefined' ? 0 : window.scrollY;
-	callback();
-	const updatedHeadingElement = view.nodeDOM(headingPos);
-	const afterRect = updatedHeadingElement instanceof HTMLElement ? updatedHeadingElement.getBoundingClientRect() : null;
-	if (!beforeRect || !afterRect) return;
-	const delta = afterRect.top - beforeRect.top;
-	if (Math.abs(delta) < 0.5) return;
-	if (scrollContainer) {
-		scrollContainer.scrollTop += delta;
+// ── Heading collapse scroll-stability buffer ────────────────────────────────
+// Collapsing a heading shrinks the editor's scrollable content in one layout pass.
+// Scrolled deep enough and the browser has nowhere left to hold your position — it
+// just clamps scrollTop and the heading you were reading yeets itself toward the
+// bottom of the screen. Charming.
+//
+// The fix is a spacer sized to (at least) the collapsing section's height, inserted
+// BEFORE the DOM actually shrinks — it cannot be bolted on reactively after the fact,
+// the space has to already exist the instant the content disappears — then quietly
+// decayed to zero as the user scrolls away from the bottom. The buffer only ever
+// shrinks, and scrollTop itself is never written by hand. We already learned this
+// lesson the hard way once: NoteGrid's checklist completed-items collapse went
+// through six failed attempts before landing on this exact strategy, and every
+// attempt that tried to reactively correct scrollTop after the fact ended up racing
+// the browser's own momentum-scroll physics and oscillating. Don't relearn that.
+type HeadingCollapseBufferState = {
+	host: HTMLElement;
+	spacer: HTMLElement;
+	scrollListenerAttached: boolean;
+	trimRaf: number;
+	settleRaf: number;
+	settleTimeouts: number[];
+	onScroll: () => void;
+	onResize: () => void;
+};
+
+const activeHeadingCollapseBuffers = new Map<string, HeadingCollapseBufferState>();
+const HEADING_COLLAPSE_SPACER_ATTR = 'data-fn-heading-collapse-spacer';
+
+function getOrCreateHeadingCollapseSpacer(host: HTMLElement): HTMLElement {
+	const existing = host.querySelector<HTMLElement>(`:scope > [${HEADING_COLLAPSE_SPACER_ATTR}]`);
+	if (existing) return existing;
+	const spacer = document.createElement('div');
+	spacer.setAttribute(HEADING_COLLAPSE_SPACER_ATTR, 'true');
+	spacer.setAttribute('aria-hidden', 'true');
+	spacer.style.height = '0px';
+	spacer.style.pointerEvents = 'none';
+	host.appendChild(spacer);
+	return spacer;
+}
+
+function readHeadingCollapseBufferPx(spacer: HTMLElement): number {
+	const parsed = Number.parseFloat(spacer.style.height || '');
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
+function detachHeadingCollapseBufferListeners(state: HeadingCollapseBufferState): void {
+	if (!state.scrollListenerAttached) return;
+	state.host.removeEventListener('scroll', state.onScroll);
+	window.removeEventListener('resize', state.onResize);
+	state.scrollListenerAttached = false;
+}
+
+function teardownHeadingCollapseBuffer(noteId: string): void {
+	const state = activeHeadingCollapseBuffers.get(noteId);
+	if (!state) return;
+	if (state.trimRaf) window.cancelAnimationFrame(state.trimRaf);
+	if (state.settleRaf) window.cancelAnimationFrame(state.settleRaf);
+	for (const timeoutId of state.settleTimeouts) window.clearTimeout(timeoutId);
+	detachHeadingCollapseBufferListeners(state);
+	state.spacer.remove();
+	activeHeadingCollapseBuffers.delete(noteId);
+}
+
+function getOrInitHeadingCollapseBufferState(noteId: string, host: HTMLElement): HeadingCollapseBufferState {
+	const existing = activeHeadingCollapseBuffers.get(noteId);
+	if (existing && existing.host === host) return existing;
+	if (existing) teardownHeadingCollapseBuffer(noteId);
+	const state: HeadingCollapseBufferState = {
+		host,
+		spacer: getOrCreateHeadingCollapseSpacer(host),
+		scrollListenerAttached: false,
+		trimRaf: 0,
+		settleRaf: 0,
+		settleTimeouts: [],
+		onScroll: () => {},
+		onResize: () => {},
+	};
+	state.onScroll = () => scheduleHeadingCollapseTrim(noteId);
+	state.onResize = () => scheduleHeadingCollapseTrim(noteId);
+	activeHeadingCollapseBuffers.set(noteId, state);
+	return state;
+}
+
+function attachHeadingCollapseBufferListeners(state: HeadingCollapseBufferState): void {
+	if (state.scrollListenerAttached) return;
+	state.host.addEventListener('scroll', state.onScroll, { passive: true });
+	window.addEventListener('resize', state.onResize);
+	state.scrollListenerAttached = true;
+}
+
+function trimHeadingCollapseBuffer(noteId: string): void {
+	const state = activeHeadingCollapseBuffers.get(noteId);
+	if (!state) return;
+	const currentBuffer = readHeadingCollapseBufferPx(state.spacer);
+	if (currentBuffer <= 0) {
+		detachHeadingCollapseBufferListeners(state);
 		return;
 	}
-	if (typeof window !== 'undefined') {
-		window.scrollTo({ top: pageScrollTop + delta, left: window.scrollX, behavior: 'auto' });
+	const host = state.host;
+	// This is the whole trick in one line: how far the viewport bottom currently
+	// overhangs the REAL content (buffer excluded) — i.e. the smallest buffer that
+	// still keeps the current scroll position legal, with zero slack to scroll
+	// further into. Shrink to exactly that, no less, no more.
+	const overhangPx = Math.max(0, Math.ceil(host.scrollTop + host.clientHeight - (host.scrollHeight - currentBuffer)));
+	if (overhangPx >= currentBuffer) return; // only ever shrink the buffer
+	state.spacer.style.height = overhangPx > 0 ? `${overhangPx}px` : '0px';
+	if (overhangPx <= 0) detachHeadingCollapseBufferListeners(state);
+}
+
+function scheduleHeadingCollapseTrim(noteId: string): void {
+	const state = activeHeadingCollapseBuffers.get(noteId);
+	if (!state) return;
+	if (state.trimRaf) return;
+	state.trimRaf = window.requestAnimationFrame(() => {
+		state.trimRaf = 0;
+		trimHeadingCollapseBuffer(noteId);
+	});
+}
+
+function scheduleHeadingCollapseSettleTrims(noteId: string): void {
+	const state = activeHeadingCollapseBuffers.get(noteId);
+	if (!state) return;
+	if (state.settleRaf) window.cancelAnimationFrame(state.settleRaf);
+	// One rAF isn't enough — trim too early and you're measuring the pre-collapse
+	// scroll height, which defeats the entire point. Double rAF gives the browser a
+	// full paint cycle to actually commit the collapse before we go measuring anything.
+	state.settleRaf = window.requestAnimationFrame(() => {
+		state.settleRaf = window.requestAnimationFrame(() => {
+			state.settleRaf = 0;
+			trimHeadingCollapseBuffer(noteId);
+		});
+	});
+	for (const timeoutId of state.settleTimeouts) window.clearTimeout(timeoutId);
+	state.settleTimeouts.length = 0;
+	// Belt-and-suspenders passes, because layout has a habit of still settling a
+	// few frames after we thought it was done.
+	for (const delayMs of [300, 1200]) {
+		state.settleTimeouts.push(window.setTimeout(() => trimHeadingCollapseBuffer(noteId), delayMs));
 	}
+}
+
+function reserveHeadingCollapseBuffer(view: EditorView, noteId: string, minBufferPx: number): void {
+	if (!(view.dom instanceof HTMLElement) || !(minBufferPx > 0)) return;
+	const host = getScrollContainer(view.dom);
+	if (!host) return;
+	const state = getOrInitHeadingCollapseBufferState(noteId, host);
+	const currentBuffer = readHeadingCollapseBufferPx(state.spacer);
+	state.spacer.style.height = `${Math.max(currentBuffer, Math.ceil(minBufferPx))}px`;
+	attachHeadingCollapseBufferListeners(state);
 }
 
 function selectionIntersectsCollapsedRange(state: Editor['state'], startPos: number, endPos: number): boolean {
@@ -630,6 +766,18 @@ function finishSectionCollapseAnimation(
 	});
 	refreshCollapsibleHeadingDecorations(view);
 	dispatchCollapsibleHeadingAnimationRefresh(noteId, collapsed);
+	if (collapsed) {
+		// The content is actually gone now (display:none, via the decoration refresh
+		// right above) — not "about to be gone," not "fading out." Only now is it
+		// honest to measure the real overhang and start decaying the buffer we
+		// reserved back at collapse-start.
+		scheduleHeadingCollapseSettleTrims(noteId);
+	} else {
+		// Just an expand finishing up — opportunistically shrink whatever buffer
+		// might still be hanging around from an earlier collapse, now that there's
+		// more real content to fill it in with.
+		scheduleHeadingCollapseTrim(noteId);
+	}
 }
 
 function formatSectionBlockStyle(): string {
@@ -656,9 +804,7 @@ function toggleCollapsibleHeadingSection(
 	const section = getHeadingSectionRange(view.state.doc, blocks, positions, headingIndex, headingNode, headingLevel);
 	const headingEndPos = Math.max(headingPos + 1, headingPos + headingNode.nodeSize - 1);
 	const applyCollapsedState = (nextCollapsed: boolean): void => {
-		preserveHeadingViewportPosition(view, headingPos, () => {
-			saveRichHeadingCollapsed(getDeviceId(), noteId, collapseId, nextCollapsed);
-		});
+		saveRichHeadingCollapsed(getDeviceId(), noteId, collapseId, nextCollapsed);
 	};
 	if (!isCollapsed && selectionIntersectsCollapsedRange(view.state, section.contentStartPos, section.contentEndPos)) {
 		view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, headingEndPos)));
@@ -669,6 +815,11 @@ function toggleCollapsibleHeadingSection(
 			applyCollapsedState(false);
 			refreshCollapsibleHeadingDecorations(view);
 			dispatchCollapsibleHeadingAnimationRefresh(noteId, false);
+			// Expanding only ever adds content, and content growing below where you're
+			// scrolled can't yank the view out from under you — no buffer needed on
+			// this path. It CAN shrink how much of a leftover buffer from an earlier
+			// collapse is still worth keeping around, though, so still worth a trim.
+			scheduleHeadingCollapseTrim(noteId);
 			return;
 		}
 		if (isHeadingCollapseDebugEnabled()) {
@@ -703,6 +854,15 @@ function toggleCollapsibleHeadingSection(
 	}
 	const visibleElements = collectHeadingSectionElements(view, section.blockPositions);
 	if (!shouldAnimateHeadingSection(visibleElements)) {
+		// This is the no-animation path (reduced motion, or a section too big/small to
+		// bother fading), but the scroll-jump risk doesn't care whether we animated —
+		// the buffer still has to exist BEFORE this collapse commits, not after. Reuse
+		// the same offsetHeight sum shouldAnimateHeadingSection already computed
+		// internally, so the reservation can never come up short of what actually
+		// disappears.
+		let collapseHeightPx = 0;
+		for (const { element } of visibleElements) collapseHeightPx += element.offsetHeight;
+		reserveHeadingCollapseBuffer(view, noteId, collapseHeightPx);
 		if (isHeadingCollapseDebugEnabled()) {
 			beginHeadingCollapseDebugSession({
 				noteId,
@@ -722,6 +882,7 @@ function toggleCollapsibleHeadingSection(
 		}
 		refreshCollapsibleHeadingDecorations(view);
 		dispatchCollapsibleHeadingAnimationRefresh(noteId, true);
+		scheduleHeadingCollapseSettleTrims(noteId);
 		return;
 	}
 	const collapseSnapshots = captureAnimatedBlockSnapshots(visibleElements);
@@ -749,6 +910,12 @@ function toggleCollapsibleHeadingSection(
 	});
 	clearSectionAnimationTimeouts(animationKey);
 	activeCollapsibleHeadingAnimations.add(animationKey);
+	// Easy to get this wrong: the fade is just an opacity transition, the section's
+	// actual layout height doesn't go away until finishSectionCollapseAnimation flips
+	// it to display:none later. But the buffer's whole job is to exist BEFORE a shrink
+	// happens, so it has to go in right now, at the top of the animation, not when the
+	// real DOM shrink eventually lands.
+	reserveHeadingCollapseBuffer(view, noteId, sectionMetrics.totalHeight);
 	applyCollapsedState(true);
 	refreshCollapsibleHeadingDecorations(view);
 	scheduleSectionAnimationTimeout(animationKey, () => {
@@ -941,6 +1108,7 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 					unsubscribe();
 					window.removeEventListener('freemannotes:rich-heading-toggle', handleHeadingToggle as EventListener);
 					window.removeEventListener(COLLAPSIBLE_HEADING_ANIMATION_REFRESH_EVENT, handleAnimationRefresh as EventListener);
+					teardownHeadingCollapseBuffer(noteId);
 				},
 			};
 		},

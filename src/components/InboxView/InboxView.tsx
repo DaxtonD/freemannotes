@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faAt, faListCheck, faCheckDouble, faBoxArchive, faInbox, faCircleCheck, faTrashCan, faBell } from '@fortawesome/free-solid-svg-icons';
-import { acceptNoteShareInvitation } from '../../core/noteShareApi';
+import { acceptNoteShareInvitation, enqueuePendingNoteShareAction } from '../../core/noteShareApi';
 import type { PendingSelfMention } from '../../core/pendingSelfMentions';
 import { useI18n } from '../../core/i18n';
 import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
@@ -568,10 +568,35 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		const invitationId = activity.snapshot?.invitationId;
 		if (!invitationId) return;
 
+		const target = placementChoice === 'personal' ? 'personal' : 'shared';
+		const folder = placementChoice === 'shared-folder' ? folderName.trim() : '';
+
+		// The Inbox itself renders fine offline (from its own local cache), so this
+		// button is reachable while offline even though the bell dropdown that
+		// normally surfaces the same invitations disables itself entirely in that
+		// state. Unlike ShareNotificationsModal.handleAccept, this had no offline
+		// handling at all — the fetch would just throw into the bare catch below
+		// with no queueing and no feedback, silently discarding the accept attempt.
+		// Same queue, same shape as the bell dropdown so a reconnect flushes either
+		// path identically.
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			if (!authUserId) return;
+			enqueuePendingNoteShareAction({
+				id: `accept:${invitationId}`,
+				userId: authUserId,
+				invitationId,
+				action: 'accept',
+				target,
+				folderName: folder || null,
+				createdAt: new Date().toISOString(),
+			});
+			setAcceptedInvitationIds((prev) => new Set([...prev, invitationId]));
+			setPlacementPickerActivityId(null);
+			return;
+		}
+
 		setAcceptingIds((prev) => new Set([...prev, activity.id]));
 		try {
-			const target = placementChoice === 'personal' ? 'personal' : 'shared';
-			const folder = placementChoice === 'shared-folder' ? folderName.trim() : '';
 			const result = await acceptNoteShareInvitation(invitationId, {
 				target,
 				folderName: folder || undefined,
@@ -593,7 +618,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		} finally {
 			setAcceptingIds((prev) => { const n = new Set(prev); n.delete(activity.id); return n; });
 		}
-	}, [folderName, markRead, onOpenNote, placementChoice, removeFromCache]);
+	}, [authUserId, folderName, markRead, onOpenNote, placementChoice, removeFromCache]);
 
 	const reminderTabCount = overdueReminders.length + dueSoonReminders.length;
 	const tabs: { key: FilterTab; label: string; count?: number }[] = [

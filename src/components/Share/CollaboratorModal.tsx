@@ -6,6 +6,7 @@ import {
 	cancelNoteShareInvitation,
 	createNoteShareInvitation,
 	flushPendingCollaboratorActions,
+	isNetworkUnavailableError,
 	queueNoteShareCollaboratorInviteAction,
 	queueNoteShareCollaboratorRevokeAction,
 	queueNoteShareCollaboratorRoleAction,
@@ -16,6 +17,7 @@ import {
 	type NoteShareCollaboratorSnapshot,
 	type NoteShareRole,
 } from '../../core/noteShareApi';
+import { useConnectionStatus } from '../../core/useConnectionStatus';
 import {
 	copyTextToClipboard,
 	ensureNoteShareLink,
@@ -64,11 +66,6 @@ const EMPTY_SNAPSHOT: NoteShareCollaboratorSnapshot = {
 	collaborators: [],
 	pendingInvitations: [],
 };
-
-function isGatewayError(error: unknown): boolean {
-	const status = (error as { status?: number } | null)?.status;
-	return status === 502 || status === 503 || status === 504;
-}
 
 function buildOfflineManagerSnapshot(authUserId: string, docId: string, base?: NoteShareCollaboratorSnapshot | null): NoteShareCollaboratorSnapshot {
 	return {
@@ -163,7 +160,14 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	// Populated from localStorage on open so previously generated links are
 	// immediately visible without a server round-trip.
 	const [cachedLinks, setCachedLinks] = React.useState<CachedNoteShareLink[]>([]);
-	const [isOffline, setIsOffline] = React.useState(() => typeof navigator !== 'undefined' && navigator.onLine === false);
+	// navigator.onLine lies. Or rather, it tells the truth about the wrong question —
+	// "is a network interface up" isn't "can I actually talk to our server right now,"
+	// and a degraded connection sits in exactly that gap for a while. The Yjs WS
+	// status doesn't have that blind spot; it has an actual 'connecting' state for
+	// "technically online, actively useless." Treat anything but a confirmed
+	// 'connected' as a reason to skip the network attempt and queue instead.
+	const connectionStatus = useConnectionStatus();
+	const networkUnavailable = connectionStatus.state !== 'connected';
 	const [snapshot, setSnapshot] = React.useState<NoteShareCollaboratorSnapshot>(EMPTY_SNAPSHOT);
 	const [priorCollaborators, setPriorCollaborators] = React.useState<PriorCollaboratorUser[]>([]);
 	const [loadingPriorCollaborators, setLoadingPriorCollaborators] = React.useState(false);
@@ -179,17 +183,6 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	}, [props.docId]);
 
 	useBodyScrollLock(props.isOpen);
-
-	React.useEffect(() => {
-		if (typeof window === 'undefined') return;
-		const update = () => setIsOffline(typeof navigator !== 'undefined' && navigator.onLine === false);
-		window.addEventListener('online', update);
-		window.addEventListener('offline', update);
-		return () => {
-			window.removeEventListener('online', update);
-			window.removeEventListener('offline', update);
-		};
-	}, []);
 
 	React.useEffect(() => {
 		if (!shareLink?.shareUrl) {
@@ -251,7 +244,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		setError(null);
 		const hadCache = await loadCachedState();
 		if (loadRequestIdRef.current !== requestId) return;
-		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+		if (networkUnavailable) {
 			setAccessResolved(true);
 			setLoading(false);
 			return;
@@ -403,7 +396,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				props.onChanged?.();
 				return;
 			}
-			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			if (networkUnavailable) {
 				await queueNoteShareCollaboratorInviteAction({ userId: props.authUserId, docId: props.docId, identifier: normalizedIdentifier, role });
 				setIdentifier('');
 				setSuccess(t('invite.pendingQueued'));
@@ -418,7 +411,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				await load();
 				props.onChanged?.();
 			} catch (err) {
-				if (!isGatewayError(err)) throw err;
+				if (!isNetworkUnavailableError(err)) throw err;
 				// Server unreachable (502/503/504) — queue the invite for replay once online.
 				await queueNoteShareCollaboratorInviteAction({ userId: props.authUserId, docId: props.docId, identifier: normalizedIdentifier, role });
 				setIdentifier('');
@@ -479,7 +472,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		setError(null);
 		try {
 			const collaborator = snapshot.collaborators.find((item) => item.id === collaboratorId);
-			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			if (networkUnavailable) {
 				await queueNoteShareCollaboratorRevokeAction({
 					userId: props.authUserId,
 					docId: props.docId,
@@ -495,7 +488,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				await load();
 				props.onChanged?.();
 			} catch (err) {
-				if (!isGatewayError(err)) throw err;
+				if (!isNetworkUnavailableError(err)) throw err;
 				// Server unreachable — queue revoke for replay once online.
 				await queueNoteShareCollaboratorRevokeAction({
 					userId: props.authUserId,
@@ -518,7 +511,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		setBusy(true);
 		setError(null);
 		try {
-			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			if (networkUnavailable) {
 				await queueNoteShareCollaboratorRevokeAction({
 					userId: props.authUserId,
 					docId: props.docId,
@@ -534,7 +527,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				props.onSelfRemoved?.();
 				props.onChanged?.();
 			} catch (err) {
-				if (!isGatewayError(err)) throw err;
+				if (!isNetworkUnavailableError(err)) throw err;
 				// Server unreachable — queue self-removal for replay once online.
 				await queueNoteShareCollaboratorRevokeAction({
 					userId: props.authUserId,
@@ -582,7 +575,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		setBusy(true);
 		setError(null);
 		try {
-			if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+			if (networkUnavailable) {
 				await queueNoteShareCollaboratorRoleAction({
 					userId: props.authUserId,
 					docId: props.docId,
@@ -599,7 +592,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				await load();
 				props.onChanged?.();
 			} catch (err) {
-				if (!isGatewayError(err)) throw err;
+				if (!isNetworkUnavailableError(err)) throw err;
 				// Server unreachable — queue role change for replay once online.
 				await queueNoteShareCollaboratorRoleAction({
 					userId: props.authUserId,
@@ -780,7 +773,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 																type="button"
 																className={`${styles.secondaryButton} ${styles.memberActionButton}`}
 																onClick={() => void handleCancelPendingInvitation(invitation.id)}
-																disabled={busy || loading || (isOffline && !invitation.id.startsWith('queued:'))}
+																disabled={busy || loading || (networkUnavailable && !invitation.id.startsWith('queued:'))}
 															>
 																{t('invite.cancelInvite')}
 															</button>

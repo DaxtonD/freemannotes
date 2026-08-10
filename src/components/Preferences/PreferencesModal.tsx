@@ -1,7 +1,7 @@
 import React from 'react';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
-import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devResetNoteOrder, devClearInbox } from '../../core/noteManagementApi';
+import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devClearInbox } from '../../core/noteManagementApi';
 import { readPwaDebugLog, clearPwaDebugLog, getPwaDebugEnabled, setPwaDebugEnabled } from '../../core/pwa';
 import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { clearAllPendingSelfMentions } from '../../core/pendingSelfMentions';
@@ -237,22 +237,6 @@ function AboutSectionContent(props: {
 		}
 	}, [devToolsRunning, props.onInboxCleared]);
 
-	// De-duplicates and repairs the canonical noteOrder in the workspace registry
-	// Yjs doc, fixing uneven masonry caused by stale or duplicate ordering entries.
-	const handleResetNoteOrder = React.useCallback(async () => {
-		if (devToolsRunning) return;
-		setDevToolsRunning(true);
-		setDevToolsResult(null);
-		try {
-			const result = await devResetNoteOrder();
-			setDevToolsResult(`Done — rebuilt order for ${result.cleaned} of ${result.total} notes. Reload to see changes.`);
-		} catch (err) {
-			setDevToolsResult(`Error: ${err instanceof Error ? err.message : String(err)}`);
-		} finally {
-			setDevToolsRunning(false);
-		}
-	}, [devToolsRunning]);
-
 	// Clears the per-device card height cache from localStorage so every note card
 	// is remeasured from scratch on the next load (fixes stale heights from URL
 	// previews and other dynamic-content changes).
@@ -464,14 +448,6 @@ function AboutSectionContent(props: {
 							onClick={() => { void handleClearInbox(); }}
 						>
 							{props.t('prefs.devToolsClearInbox')}
-						</button>
-						<button
-							type="button"
-							className={styles.footerButton}
-							disabled={devToolsRunning || props.connectionState !== 'connected'}
-							onClick={() => { void handleResetNoteOrder(); }}
-						>
-							{props.t('prefs.devToolsResetNoteOrder')}
 						</button>
 						<button
 							type="button"

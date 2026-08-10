@@ -132,15 +132,45 @@ function isMissingAccessError(error: unknown): boolean {
 	return Boolean(error && typeof error === 'object' && (((error as HttpError).status === 403) || ((error as HttpError).status === 404)));
 }
 
+// Real mobile networks love to sit in a "technically online, practically useless"
+// state where navigator.onLine stays true and the request just... never comes back.
+// No error, no timeout, nothing — just a spinner that never resolves and a very
+// confused user staring at a greyed-out button. Every request gets a hard deadline
+// so a stalled fetch dies fast instead of leaving the UI hanging forever.
+const NOTE_SHARE_FETCH_TIMEOUT_MS = 8000;
+
+// Everything this catches means the same thing: "we couldn't reach the server," not
+// "the server said no." Callers should treat all of it as offline (queue for retry),
+// not surface it as a real error. Started as a narrow 502/503/504 gateway check, which
+// covers a server that's actually up but choking — but that misses the far more common
+// case of a request that just times out (AbortError) or fails at the fetch layer
+// entirely (TypeError, the classic "Failed to fetch"). A flaky connection produces
+// those two at least as often as it produces a clean gateway error, so all three get
+// the same treatment now.
+export function isNetworkUnavailableError(error: unknown): boolean {
+	if (error instanceof DOMException && error.name === 'AbortError') return true;
+	if (error instanceof TypeError) return true;
+	const status = (error as { status?: number } | null)?.status;
+	return status === 502 || status === 503 || status === 504;
+}
+
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const response = await fetch(input, {
-		credentials: 'include',
-		headers: {
-			'Content-Type': 'application/json',
-			...(init.headers || {}),
-		},
-		...init,
-	});
+	const controller = new AbortController();
+	const timeoutId = window.setTimeout(() => controller.abort(), NOTE_SHARE_FETCH_TIMEOUT_MS);
+	let response: Response;
+	try {
+		response = await fetch(input, {
+			credentials: 'include',
+			headers: {
+				'Content-Type': 'application/json',
+				...(init.headers || {}),
+			},
+			...init,
+			signal: controller.signal,
+		});
+	} finally {
+		window.clearTimeout(timeoutId);
+	}
 	const body = await response.json().catch(() => null);
 	if (!response.ok) {
 		const message = body && typeof body.error === 'string' ? body.error : `Request failed (${response.status})`;
@@ -392,6 +422,115 @@ export async function updateSharedNotePlacementMetadata(args: { placementId: str
 			labelIds: args.labelIds,
 		}),
 	});
+}
+
+// Your own notes get labels/collections for free offline — they're just Yjs
+// metadata, and Yjs doesn't care whether you're connected. A note shared WITH you
+// doesn't get that luxury: its placement (which collection, which labels) is a real
+// server-side row, not CRDT state, so tagging a shared note offline needs its own
+// honest-to-god queue instead of just quietly working like everything else does.
+// Mirrors the note-share accept/decline queue above.
+export type PendingPlacementMetadataAction = {
+	id: string;
+	userId: string;
+	placementId: string;
+	collectionId?: string | null;
+	labelIds?: readonly string[];
+	createdAt: string;
+};
+
+const PLACEMENT_METADATA_QUEUE_PREFIX = 'freemannotes.placementMetadataQueue.v1:';
+
+function placementMetadataQueueKey(userId: string): string {
+	return `${PLACEMENT_METADATA_QUEUE_PREFIX}${String(userId || '').trim()}`;
+}
+
+function readPlacementMetadataQueue(userId: string): PendingPlacementMetadataAction[] {
+	if (typeof localStorage === 'undefined') return [];
+	try {
+		const raw = localStorage.getItem(placementMetadataQueueKey(userId));
+		if (!raw) return [];
+		const parsed = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter((item): item is PendingPlacementMetadataAction => Boolean(item && typeof item === 'object'));
+	} catch {
+		return [];
+	}
+}
+
+function writePlacementMetadataQueue(userId: string, actions: readonly PendingPlacementMetadataAction[]): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(placementMetadataQueueKey(userId), JSON.stringify(actions));
+	} catch {
+		// Ignore persistent queue write failures.
+	}
+}
+
+export function readPendingPlacementMetadataActions(userId: string): PendingPlacementMetadataAction[] {
+	return readPlacementMetadataQueue(userId);
+}
+
+export function queuePlacementMetadataAction(action: PendingPlacementMetadataAction): void {
+	if (!action.userId || !action.placementId) return;
+	const existing = readPlacementMetadataQueue(action.userId);
+	const priorIndex = existing.findIndex((item) => item.placementId === action.placementId);
+	if (priorIndex === -1) {
+		existing.push(action);
+	} else {
+		// You changed your mind twice while offline, fine — the later edit wins over
+		// whatever's already queued for this placement. Just don't let it steamroll a
+		// field it didn't actually touch: an action that only sets labelIds shouldn't
+		// erase a collectionId change queued a minute earlier for the same note.
+		const prior = existing[priorIndex];
+		existing[priorIndex] = {
+			...action,
+			collectionId: action.collectionId !== undefined ? action.collectionId : prior.collectionId,
+			labelIds: action.labelIds !== undefined ? action.labelIds : prior.labelIds,
+		};
+	}
+	writePlacementMetadataQueue(action.userId, existing);
+	void requestPwaBackgroundSync();
+}
+
+export function removePendingPlacementMetadataAction(userId: string, placementId: string): void {
+	if (!userId || !placementId) return;
+	writePlacementMetadataQueue(userId, readPlacementMetadataQueue(userId).filter((item) => item.placementId !== placementId));
+}
+
+const pendingPlacementMetadataFlushes = new Map<string, Promise<void>>();
+
+export async function flushPendingPlacementMetadataActions(userId: string): Promise<void> {
+	if (!userId) return;
+	const existing = pendingPlacementMetadataFlushes.get(userId);
+	if (existing) {
+		await existing;
+		return;
+	}
+	const task = (async () => {
+		const pending = readPlacementMetadataQueue(userId);
+		for (const action of pending) {
+			try {
+				await updateSharedNotePlacementMetadata({
+					placementId: action.placementId,
+					collectionId: action.collectionId,
+					labelIds: action.labelIds,
+				});
+				removePendingPlacementMetadataAction(userId, action.placementId);
+			} catch {
+				// Still unreachable — bail on the whole batch rather than plowing through
+				// the rest out of order. Whatever triggers the next flush will pick up
+				// right where this one gave up.
+				break;
+			}
+		}
+	})().finally(() => {
+		if (pendingPlacementMetadataFlushes.get(userId) === task) {
+			pendingPlacementMetadataFlushes.delete(userId);
+		}
+	});
+	pendingPlacementMetadataFlushes.set(userId, task);
+	await task;
 }
 
 export async function declineNoteShareInvitation(invitationId: string): Promise<{ invitation: NoteShareInvitation }> {

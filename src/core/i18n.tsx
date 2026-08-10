@@ -196,7 +196,6 @@ const FALLBACK_MESSAGES: Dictionary = {
 		devToolsClearOrphanedPreviews: 'Clear orphaned URL previews',
 		devToolsForceClearNotifications: 'Force clear all notifications',
 		devToolsClearInbox: 'Force clear inbox badge (archive all activities)',
-		devToolsResetNoteOrder: 'Reset canonical note order',
 		devToolsRemeasureCardHeights: 'Remeasure all card heights',
 		devToolsEnableSwDebug: 'Enable SW debug logging',
 		devToolsDisableSwDebug: 'Disable SW debug logging',

@@ -641,6 +641,49 @@ export class DocumentManager {
 		await this.getDocWithSync(key);
 	}
 
+	/**
+	 * Insert shared-note reference ids (e.g. `shared-placement:<uuid>`) at the
+	 * front of the active workspace's noteOrder, same as a newly created note.
+	 * Unlike createNote, this never touches notesList and never calls
+	 * getDocWithSync — a reference has no local doc to create; it already
+	 * resolves through externalRoomAliases to a doc owned by another
+	 * workspace. Ids already present in noteOrder are skipped. Caller is
+	 * responsible for ordering refIds (e.g. newest-accepted first).
+	 */
+	public async addNoteReferences(refIds: readonly string[]): Promise<void> {
+		if (refIds.length === 0) return;
+		const noteOrder = await this.getNoteOrder();
+		const existing = new Set(noteOrder.toArray());
+		const toInsert = refIds
+			.map((id) => this.normalizeNoteId(id))
+			.filter((id) => !existing.has(id));
+		if (toInsert.length === 0) return;
+		const registryDoc = (noteOrder as any).doc as Y.Doc | undefined | null;
+		const run = (): void => {
+			noteOrder.insert(0, toInsert);
+		};
+		if (registryDoc) registryDoc.transact(run);
+		else run();
+	}
+
+	/** Remove shared-note reference ids from the active workspace's noteOrder
+	 *  (e.g. after the share was revoked or left). Positionless — removes
+	 *  wherever the id currently sits, including a manually dragged position. */
+	public async removeNoteReferences(refIds: readonly string[]): Promise<void> {
+		if (refIds.length === 0) return;
+		const noteOrder = await this.getNoteOrder();
+		const toRemove = new Set(refIds.map((id) => this.normalizeNoteId(id)));
+		const current = noteOrder.toArray();
+		const registryDoc = (noteOrder as any).doc as Y.Doc | undefined | null;
+		const run = (): void => {
+			for (let i = current.length - 1; i >= 0; i--) {
+				if (toRemove.has(current[i])) noteOrder.delete(i, 1);
+			}
+		};
+		if (registryDoc) registryDoc.transact(run);
+		else run();
+	}
+
 	public async deleteNote(noteId: string, destroyNoteDoc = true): Promise<void> {
 		// Remove from both user-visible registry and order list.
 		const key = this.normalizeNoteId(noteId);

@@ -1450,6 +1450,21 @@ export function applyTheme(themeId: ThemeId): void {
 		// over the app-bg, not a card surface.
 		themeColorMeta.setAttribute('content', isAndroidStandalonePwa() ? toAndroidStandaloneThemeColor(appBackground) : appBackground);
 	}
+	let colorSchemeMeta = document.querySelector('meta[name="color-scheme"]');
+	if (!colorSchemeMeta && document.head) {
+		colorSchemeMeta = document.createElement('meta');
+		colorSchemeMeta.setAttribute('name', 'color-scheme');
+		document.head.appendChild(colorSchemeMeta);
+	}
+	if (colorSchemeMeta) {
+		// Yes, we already set the CSS `color-scheme` property on :root above. Turns out
+		// that's not the same signal Android/Chrome reads to decide status-bar icon
+		// contrast under edge-to-edge display — it wants an actual <meta> tag, live,
+		// kept in sync here too. Skip this and a light theme can render dark icons on
+		// a background that never actually turned light: invisible battery/clock/wifi
+		// icons, very fun to debug from a screenshot alone.
+		colorSchemeMeta.setAttribute('content', prefersLightChrome ? 'light' : 'dark');
+	}
 	const appleStatusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');
 	if (appleStatusBarMeta) {
 		appleStatusBarMeta.setAttribute('content', prefersLightChrome ? 'default' : 'black-translucent');
