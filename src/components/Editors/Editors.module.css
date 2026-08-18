@@ -2344,7 +2344,21 @@
 	flex: 1;
 	min-height: 0;
 	overflow-y: auto;
-	overflow-x: auto;
+	/* NOT auto. Collapsing/expanding a heading changes the note's scroll height, which
+	   can toggle the vertical scrollbar on/off mid-animation, transiently changing this
+	   viewport's available inline width. A multi-line collapsible heading (`width:
+	   fit-content`) recomputes its shrink-to-fit width against whatever width it sees at
+	   that instant, so it can briefly render too wide — and `overflow-x: auto` turned
+	   that transient miscalculation into a visible flashing scrollbar. `scrollbar-gutter:
+	   stable` below closes off the main trigger for that (permanently reserves the
+	   vertical scrollbar's width so it can't fluctuate), but text content in this editor
+	   never legitimately needs to scroll horizontally at this level — wide code blocks
+	   and tables already have their own dedicated `overflow-x: auto` wrappers (see `pre`,
+	   `table` below) — so `hidden` here is the actual belt-and-suspenders fix: whatever
+	   transient width miscalculation still slips through gets silently clipped for one
+	   frame instead of ever being able to render a scrollbar at all. */
+	overflow-x: hidden;
+	scrollbar-gutter: stable;
 	/* Without this, exhausting this viewport's own scroll (or having nothing to
 	   scroll at all, e.g. a short note) lets the gesture chain to the note grid
 	   behind the fullscreen overlay on mobile — the grid scrolls instead of the
@@ -2477,38 +2491,28 @@
 .richEditorContent:global(.ProseMirror) h1 {
 	font-size: calc(clamp(1.45rem, 2vw, 2rem) * var(--note-editor-font-scale, 1));
 	line-height: 1.12;
-	/* Floats plant themselves at the TOP of their line, not the middle — nobody
-	   asks for that, CSS just does it. This nudge pulls the collapse arrow down to
-	   where a human eye actually expects "centered" to mean. Has to be redeclared
-	   per heading level (not shared) since each one has its own font-size/line-height
-	   ratio and the arrow is a fixed 20px regardless of how big the text gets. */
-	--collapsible-heading-arrow-margin-top: calc((1.12em - 20px) / 2);
 }
 
 .richEditorContent:global(.ProseMirror) h2 {
 	font-size: calc(clamp(1.2rem, 1.7vw, 1.55rem) * var(--note-editor-font-scale, 1));
 	line-height: 1.18;
-	--collapsible-heading-arrow-margin-top: calc((1.18em - 20px) / 2);
 }
 
 .richEditorContent:global(.ProseMirror) h3 {
 	font-size: calc(clamp(1.05rem, 1.4vw, 1.2rem) * var(--note-editor-font-scale, 1));
 	line-height: 1.22;
-	--collapsible-heading-arrow-margin-top: calc((1.22em - 20px) / 2);
 }
 
 .richEditorContent:global(.ProseMirror) h4 {
 	font-size: calc(clamp(0.98rem, 1.25vw, 1.08rem) * var(--note-editor-font-scale, 1));
 	line-height: 1.28;
 	font-weight: 700;
-	--collapsible-heading-arrow-margin-top: calc((1.28em - 20px) / 2);
 }
 
 .richEditorContent:global(.ProseMirror) h5 {
 	font-size: calc(clamp(0.92rem, 1.15vw, 1rem) * var(--note-editor-font-scale, 1));
 	line-height: 1.3;
 	font-weight: 700;
-	--collapsible-heading-arrow-margin-top: calc((1.3em - 20px) / 2);
 }
 
 .richEditorContent:global(.ProseMirror) h6 {
@@ -2517,7 +2521,6 @@
 	font-weight: 700;
 	letter-spacing: 0.03em;
 	text-transform: uppercase;
-	--collapsible-heading-arrow-margin-top: calc((1.34em - 20px) / 2);
 	color: var(--color-text-muted);
 }
 
@@ -2560,6 +2563,7 @@
 
 .richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading) {
 	--collapsible-heading-arrow-gap: 1.6rem;
+	--collapsible-heading-arrow-reserve: calc(20px + var(--collapsible-heading-arrow-gap));
 	--collapsible-heading-summary-space: 0rem;
 	--collapsible-heading-summary-shift: -10px;
 	white-space: normal;
@@ -2568,14 +2572,18 @@
 	max-width: 100%;
 	position: relative;
 	cursor: default;
-	/* Only the collapsed-summary snippet gets a padding reservation now. The old
-	   version also reserved room for the arrow here — a fixed-width padding gutter
-	   the WHOLE block paid on EVERY line, whether the arrow was anywhere near that
-	   line or not, which is exactly the kind of thing that quietly nudges a
-	   borderline-length heading into wrapping when it really didn't need to. The
-	   arrow is a float now (below), so it reserves its own space, only where it
-	   actually sits. One less thing to keep in sync by hand. */
-	padding-inline-end: var(--collapsible-heading-summary-space);
+	/* Used to be a float riding the last wrapped line, which sounded nice in
+	   theory but in practice glitched: a float inside a `width: fit-content` box
+	   makes the browser's intrinsic-size pass briefly consider the UNWRAPPED
+	   max-content width (float treated as inline-with-text for sizing purposes),
+	   which is wider than the container — hence the horizontal scrollbar flash on
+	   every collapse/expand. Pinning the arrow to an absolutely-positioned column
+	   (below) sidesteps intrinsic sizing entirely: it stays put at the block's
+	   right edge, vertically centered against the whole (possibly multi-line)
+	   heading, and always has this reserved gutter so wrapped text never runs
+	   under it. Confirmed fine by design: the arrow no longer travels with the
+	   last word on wrap — it just stays right, which reads cleaner anyway. */
+	padding-inline-end: calc(var(--collapsible-heading-arrow-reserve) + var(--collapsible-heading-summary-space));
 }
 
 .richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading.fn-collapsible-heading-toggle-hover) {
@@ -2605,21 +2613,14 @@
 
 .richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading)::after {
 	content: '';
-	float: inline-end;
 	display: block;
 	width: 20px;
 	height: 20px;
-	margin-inline-start: var(--collapsible-heading-arrow-gap);
-	/* float: inline-end is doing the actual work here — it's what makes the arrow
-	   ride along with whatever the LAST line of wrapped text turns out to be,
-	   instead of sitting dead-center on the whole (possibly multi-line) block like
-	   the old absolute-positioned version did. The margin-top below is just cleanup
-	   for the side effect: floats top-align to their line, so without it the arrow
-	   would hug the top of the text instead of looking centered. Per-level values
-	   live on h1-h6 above since they depend on that level's own font size. */
-	margin-top: var(--collapsible-heading-arrow-margin-top, 0px);
+	position: absolute;
+	inset-inline-end: var(--collapsible-heading-summary-space);
+	top: 50%;
 	color: inherit;
-	transform: rotate(90deg);
+	transform: translateY(-50%) rotate(90deg);
 	user-select: none;
 	-webkit-user-select: none;
 	background-color: currentColor;
@@ -2636,7 +2637,7 @@
 }
 
 .richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading.is-collapsed)::after {
-	transform: rotate(0deg);
+	transform: translateY(-50%) rotate(0deg);
 }
 
 @media (prefers-reduced-motion: reduce) {

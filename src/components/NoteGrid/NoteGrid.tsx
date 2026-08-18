@@ -845,8 +845,28 @@ function renderNoteMetaChips(args: {
 	title?: string;
 }): React.ReactNode | undefined {
 	const note = readNoteFromDoc(args.doc, args.noteId);
-	const collectionId = args.sharedPlacement ? args.sharedPlacement.collectionId : note.collectionId;
-	const labelIds = args.sharedPlacement ? args.sharedPlacement.labelIds : note.labelIds;
+	// A shared note's collectionId/labelIds live on the server-side placement row,
+	// not this note's own Yjs metadata (see CLAUDE.md's Shared Note Placement
+	// Reconciliation section) — args.sharedPlacement only resolves once the async
+	// placements fetch lands. Without a fallback here, a refresh or a WS reconnect
+	// briefly has sharedPlacement=null, collectionId/labelIds silently read from
+	// this note's own (unset, for a shared note) metadata instead, and the chips
+	// disappear entirely until the fetch completes — visible as a flash. The
+	// note-id prefix reliably distinguishes "shared note, placement not loaded
+	// yet" from "owned note, no placement expected" regardless of that race, so
+	// fall back to the same persisted render snapshot already used below for
+	// collaboratorCount/attachment counts instead of the note's own metadata.
+	const isSharedPlacementNote = args.noteId.startsWith('shared-placement:');
+	const collectionId = args.sharedPlacement
+		? args.sharedPlacement.collectionId
+		: isSharedPlacementNote
+			? (args.snapshotShell?.collectionId ?? null)
+			: note.collectionId;
+	const labelIds = args.sharedPlacement
+		? args.sharedPlacement.labelIds
+		: isSharedPlacementNote
+			? (args.snapshotShell?.labelIds ?? [])
+			: note.labelIds;
 	const collectionPath = collectionId ? args.collectionPathById.get(collectionId) ?? null : null;
 	const labelItems = labelIds
 		.map((labelId) => args.labelById.get(labelId) ?? null)
@@ -2588,7 +2608,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				if (liveDoc && hasRenderableNoteContent(liveDoc)) {
 					const previousSnapshot = workspaceRenderSnapshotNoteById.get(id) ?? null;
 					const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === id);
-					const docId = placement?.roomId || resolveMediaDocId(id);
+					// Same reasoning as the render-side fallback below: resolveMediaDocId()
+					// returns '' for a shared-placement id when the live placement hasn't
+					// loaded, and without this fallback a write at that exact moment would
+					// persist docId: '', overwriting a previously-good cached value with an
+					// empty one instead of just leaving it alone.
+					const docId = placement?.roomId || previousSnapshot?.docId || resolveMediaDocId(id);
 					const reminderAt = resolveNoteReminderAt(props.noteReminderByDocId, docId, id);
 					const previewLinks = extractNoteLinksFromDoc(liveDoc);
 					const cachedPreviewCards = toWorkspaceRenderSnapshotPreviewCards(getCachedRemoteNoteLinks(docId));
@@ -2615,6 +2640,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							drawings: Math.max(readDrawingLinkState(liveDoc).drawingIds.length, previousSnapshot?.attachmentCounts.drawings ?? 0),
 						},
 						previewCards: cachedPreviewCards.length > 0 ? cachedPreviewCards : (previousSnapshot?.previewCards ?? []),
+						// Same reasoning as collaboratorCount/attachmentCounts above: a live
+						// placement resolution wins outright, but while it hasn't loaded yet,
+						// fall back to whatever this shared note's snapshot already had rather
+						// than letting the write overwrite it with permanently-empty values —
+						// note.collectionId/labelIds (buildWorkspaceRenderSnapshotNote's default)
+						// read this note's own Yjs metadata, which is never populated for a note
+						// shared with you. Undefined for an owned note (no placement possible)
+						// so it keeps using its own metadata as before.
+						sharedCollectionId: id.startsWith('shared-placement:')
+							? (placement ? placement.collectionId : (previousSnapshot?.collectionId ?? null))
+							: undefined,
+						sharedLabelIds: id.startsWith('shared-placement:')
+							? (placement ? placement.labelIds : (previousSnapshot?.labelIds ?? []))
+							: undefined,
 					});
 				}
 				return workspaceRenderSnapshotNoteById.get(id) ?? null;
@@ -3960,7 +3999,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const snapshotShell = workspaceRenderSnapshotNoteById.get(note.id) ?? null;
 		const noteType = String(doc.getMap('metadata').get('type') ?? 'text') === 'checklist' ? 'checklist' : 'text';
 		const placement = (props.sharedNotes ?? []).find((entry) => entry.aliasId === note.id);
-		const docId = placement?.roomId || resolveMediaDocId(note.id);
+		// resolveMediaDocId() deliberately returns '' for a shared-placement id — it
+		// can only be resolved via the live placement (async, see CLAUDE.md's Shared
+		// Note Placement Reconciliation section). Before that fetch lands, fall back
+		// to the last-known docId cached in the render snapshot, or the attachment
+		// chip below (gated entirely on docId being truthy) doesn't render at all
+		// until the fetch completes — visible as it popping in late on every refresh.
+		const docId = placement?.roomId || snapshotShell?.docId || resolveMediaDocId(note.id);
 		const reminderAt = resolveNoteReminderAt(props.noteReminderByDocId, docId, note.id, snapshotShell?.reminderAt ?? null);
 		const canEditNote = !isSnapshotCard && !isTrashView && (note.isShared ? placement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false);
 		const title = doc.getText('title').toString();
@@ -4369,6 +4414,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										variant={props.viewMode === 'strip' ? 'strip' : 'list'}
 										orderedIds={colIds}
 										docsById={docsById}
+										snapshotDocById={snapshotDocById}
 										noteSnapshotById={noteSnapshotById}
 										collectionPathById={collectionPathById}
 										labelById={labelById}
@@ -4414,6 +4460,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 								variant={props.viewMode === 'strip' ? 'strip' : 'list'}
 								orderedIds={colIds}
 								docsById={docsById}
+								snapshotDocById={snapshotDocById}
 								noteSnapshotById={noteSnapshotById}
 								collectionPathById={collectionPathById}
 								labelById={labelById}

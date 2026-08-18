@@ -1,10 +1,17 @@
 /* global self */
 
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
-const APP_SHELL_CACHE = `freemannotes-app-shell-${APP_VERSION}`;
-const STATIC_CACHE = `freemannotes-static-${APP_VERSION}`;
-const API_CACHE = `freemannotes-api-${APP_VERSION}`;
-const IMAGE_CACHE = `freemannotes-images-${APP_VERSION}`;
+const BUILD_TAG = typeof __BUILD_TAG__ === 'string' ? __BUILD_TAG__ : '';
+const IS_DEV_BUILD = typeof __IS_DEV_BUILD__ === 'boolean' ? __IS_DEV_BUILD__ : false;
+// In dev, fold the per-process build tag into the cache-version so every `npm run dev`
+// restart gets fresh cache buckets — package.json's version rarely changes between dev
+// iterations, so on its own it wasn't forcing anything to actually refresh. Doesn't
+// affect production cache-versioning (still keyed on the real app version only).
+const CACHE_VERSION = IS_DEV_BUILD && BUILD_TAG ? `${APP_VERSION}-${BUILD_TAG}` : APP_VERSION;
+const APP_SHELL_CACHE = `freemannotes-app-shell-${CACHE_VERSION}`;
+const STATIC_CACHE = `freemannotes-static-${CACHE_VERSION}`;
+const API_CACHE = `freemannotes-api-${CACHE_VERSION}`;
+const IMAGE_CACHE = `freemannotes-images-${CACHE_VERSION}`;
 const CACHE_PREFIXES = ['freemannotes-app-shell-', 'freemannotes-static-', 'freemannotes-api-', 'freemannotes-images-'];
 const OFFLINE_FALLBACK_URL = '/index.html';
 const BACKGROUND_SYNC_TAG = 'freemannotes-background-sync';
@@ -264,11 +271,16 @@ async function postMessageToClients(message) {
 }
 
 self.addEventListener('install', (event) => {
+	// Nothing gets served from these caches in dev (see the fetch handler's IS_DEV_BUILD
+	// bail-out above) — precaching would just be a pointless fetch-and-store cycle.
+	if (IS_DEV_BUILD) return;
 	event.waitUntil(precacheAppShell());
 });
 
 self.addEventListener('activate', (event) => {
 	event.waitUntil((async () => {
+		// Always runs, even in dev — cleans up cache buckets left behind by previous
+		// dev sessions (each one is uniquely tagged, so they'd otherwise accumulate).
 		await deleteOutdatedCaches();
 		await self.clients.claim();
 	})());
@@ -308,6 +320,14 @@ self.addEventListener('sync', (event) => {
 self.addEventListener('fetch', (event) => {
 	const { request } = event;
 	if (request.method !== 'GET') return;
+	// Dev builds keep the SW registered (installed dev PWAs need a live one so push
+	// subscriptions survive reloads — see initPwa() in pwa.ts), but must NOT intercept
+	// any fetches. Caching here means Vite dev-server requests — the navigated shell,
+	// HMR-fetched modules, everything — can get served stale on top of a dev server that
+	// already has the real update, which is exactly the "which build am I even looking
+	// at" confusion this whole build-tag system exists to kill. Let every request hit
+	// the network exactly as if there were no SW at all.
+	if (IS_DEV_BUILD) return;
 	const url = new URL(request.url);
 
 	if (request.mode === 'navigate' && shouldHandleNavigation(url)) {

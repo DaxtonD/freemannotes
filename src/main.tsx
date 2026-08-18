@@ -29,6 +29,14 @@ import './styles/variables.css';
 import './styles/globals.css';
 import './styles/layout.css';
 
+// Unconditional, always-first-thing-that-runs build banner. Open devtools on ANY
+// surface (desktop tab, mobile browser, installed PWA) and this tells you exactly
+// what code actually loaded — the whole point being that this is a property of the
+// JS that ran, not something a stale cache or an old SW can fake. If what's on screen
+// doesn't match what you expect from your last build, the code you're looking at is
+// stale — go look at the cache/SW, not the bug you think you're seeing.
+console.info(`[Freeman Notes] v${__APP_VERSION__} · build ${__BUILD_TAG__}${__IS_DEV_BUILD__ ? ' (dev)' : ''}`);
+
 // Resolves default WS endpoint from current origin so desktop/mobile behave consistently
 // in local and proxied environments.
 function getDefaultWsUrl(): string {

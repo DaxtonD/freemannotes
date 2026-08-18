@@ -1340,6 +1340,12 @@ export class DocumentManager {
 			this.emitConnectionStatus();
 		};
 		const onConnectionClose = (event?: CloseEvent): void => {
+			logClientEvent('WS_LIFECYCLE', {
+				...peekNoteDebugContext(roomName),
+				event: 'ws-connection-close',
+				code: (event as any)?.code ?? null,
+				reason: (event as any)?.reason ?? null,
+			});
 			if ((event as any)?.code === 1008) {
 				// Server explicitly denied access (share revoked or note deleted).
 				// Stop retrying — schedule room destruction to unwind after this handler.
@@ -1354,6 +1360,12 @@ export class DocumentManager {
 		};
 		const onConnectionError = (err: unknown): void => {
 			const msg = err instanceof Error ? err.message : String(err);
+			logClientEvent('WS_LIFECYCLE', {
+				...peekNoteDebugContext(roomName),
+				event: 'ws-connection-error',
+				error: msg,
+				browserOnline: this.browserOnline,
+			});
 			if (this.browserOnline) {
 				console.warn(`[yjs-ws] room=${roomName} connection-error=${msg} url=${this.websocketUrl}`);
 			} else if (this.wsDebug) {
@@ -1551,12 +1563,24 @@ export class DocumentManager {
 			}
 		}
 		if (prev !== this.connectionState) {
+			// Per-room breakdown so a "stuck connecting" report can be traced back to
+			// whether every room is looping (server/network-wide issue) or just one
+			// (that room's own auth/state problem) — the aggregate state alone can't
+			// distinguish those, since it flips to 'connected' as soon as ANY single
+			// room connects (see anyConnected above).
+			const rooms = Array.from(this.websocketProviders.entries()).map(([room, provider]) => ({
+				room,
+				connected: (provider as any).wsconnected === true,
+				connecting: (provider as any).wsconnecting === true,
+				shouldConnect: (provider as any).shouldConnect === true,
+			}));
 			logClientEvent('CONNECTION_STATE', {
 				event: 'state-change',
 				from: prev,
 				to: this.connectionState,
 				wsProviders: this.websocketProviders.size,
 				browserOnline: this.browserOnline,
+				rooms,
 			});
 		}
 	}

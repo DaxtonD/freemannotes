@@ -57,6 +57,13 @@ export type WorkspaceRenderSnapshotNote = {
 	updatedAt: number;
 	collectionId: string | null;
 	labelIds: string[];
+	// The real underlying Yjs room name for a shared note (its aliasId's docId
+	// only resolves via the live placements fetch — see CLAUDE.md's Shared Note
+	// Placement Reconciliation section). Persisted so a shared note's attachment
+	// chip has something to render against before that fetch lands on the next
+	// load, instead of not rendering at all (it's gated on docId being present).
+	// null for an owned note — its id resolves to a docId directly, no fallback needed.
+	docId: string | null;
 	reminderAt: string | null;
 	isPinned: boolean;
 	lastAccessedAt: string;
@@ -186,6 +193,7 @@ function sanitizeNotes(value: unknown): WorkspaceRenderSnapshotNote[] {
 			labelIds: Array.isArray((note as { labelIds?: unknown }).labelIds)
 				? ((note as { labelIds?: unknown[] }).labelIds ?? []).map((labelId) => asString(labelId)).filter(Boolean)
 				: [],
+			docId: asStringOrNull((note as { docId?: unknown }).docId),
 			reminderAt: asStringOrNull((note as { reminderAt?: unknown }).reminderAt),
 			isPinned: Boolean((note as { isPinned?: unknown }).isPinned),
 			lastAccessedAt: asString((note as { lastAccessedAt?: unknown }).lastAccessedAt, new Date(0).toISOString()),
@@ -326,6 +334,18 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 	collaboratorCount?: number;
 	attachmentCounts?: Partial<WorkspaceRenderSnapshotAttachmentCounts>;
 	previewCards?: readonly WorkspaceRenderSnapshotPreviewCard[];
+	// A shared note's collectionId/labelIds live on the server-side placement row,
+	// not this note's own Yjs metadata (see CLAUDE.md's Shared Note Placement
+	// Reconciliation section) — note.collectionId/labelIds below is always empty
+	// for a note shared with you. Pass the placement's values here so the
+	// persisted snapshot caches the real ones instead of permanently caching
+	// empty, which otherwise defeats the snapshot's whole purpose for shared
+	// notes: their collection/label chips would flash empty on every refresh,
+	// forever, not just until the fetch resolves. `undefined` (the default)
+	// means "not a shared note, use this note's own metadata" — preserves
+	// existing behavior for owned notes.
+	sharedCollectionId?: string | null;
+	sharedLabelIds?: readonly string[] | null;
 }): WorkspaceRenderSnapshotNote {
 	const note = readNoteFromDoc(args.doc, args.noteId);
 	const metadata = args.doc.getMap<any>('metadata');
@@ -352,8 +372,9 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 			: [],
 		createdAt: note.createdAt,
 		updatedAt: note.updatedAt,
-		collectionId: note.collectionId,
-		labelIds: [...note.labelIds],
+		collectionId: args.sharedCollectionId !== undefined ? args.sharedCollectionId : note.collectionId,
+		labelIds: args.sharedLabelIds !== undefined ? [...(args.sharedLabelIds ?? [])] : [...note.labelIds],
+		docId: args.docId ?? null,
 		reminderAt: args.reminderAt,
 		// Persist user-scoped pin state so warm render snapshots match grid pin tiers.
 		isPinned: resolveUserNotePinned({

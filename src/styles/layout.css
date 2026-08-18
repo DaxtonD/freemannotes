@@ -1354,8 +1354,8 @@
 
 .sidebar-collaborator-avatar,
 .sidebar-collaborator-avatar-fallback {
-	width: 18px;
-	height: 18px;
+	width: 28px;
+	height: 28px;
 	border-radius: 999px;
 	flex: 0 0 auto;
 }
@@ -1372,9 +1372,27 @@
 	justify-content: center;
 	background: color-mix(in srgb, var(--color-surface-2) 82%, transparent);
 	color: var(--color-text-muted);
-	font-size: 10px;
+	font-size: 13px;
 	font-weight: 700;
 	border: 1px solid color-mix(in srgb, var(--color-border) 54%, transparent);
+}
+
+/* Scoped to collaborator rows specifically (not the shared .sidebar-submenu-item base,
+   which reminders/labels/collections also use) — a bigger avatar needs a taller row and
+   larger name text to not look cramped, but those other sections weren't asked for this
+   treatment yet. */
+.sidebar-submenu-item--collaborator {
+	min-height: 40px;
+	gap: 10px;
+}
+
+.sidebar-submenu-item--collaborator .sidebar-submenu-item-copy {
+	gap: 10px;
+}
+
+.sidebar-submenu-item--collaborator .sidebar-submenu-item-label,
+.sidebar-submenu-item--collaborator .sidebar-overflow-label {
+	font-size: calc(var(--sidebar-submenu-font-size) + 2px);
 }
 
 .sidebar-submenu-item:hover,

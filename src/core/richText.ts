@@ -78,10 +78,6 @@ const COLLAPSIBLE_HEADING_ANIMATION_MS = COLLAPSIBLE_HEADING_FADE_MS;
 const COLLAPSIBLE_HEADING_PHASE_BUFFER_MS = 24;
 const COLLAPSIBLE_HEADING_MAX_ANIMATED_BLOCKS = 18;
 const COLLAPSIBLE_HEADING_MAX_ANIMATED_HEIGHT = 1800;
-const COLLAPSIBLE_HEADING_TOGGLE_HITBOX_PX = 24;
-const COLLAPSIBLE_HEADING_TOGGLE_HITBOX_COARSE_PX = 44;
-// Must stay in sync with `.fn-collapsible-heading::after` in Editors.module.css.
-const COLLAPSIBLE_HEADING_ARROW_VISUAL_WIDTH_PX = 20;
 const COLLAPSIBLE_HEADING_SELECTION_REPAIR_META = 'collapsibleHeadingSelectionRepair';
 const COLLAPSIBLE_HEADING_ANIMATION_REFRESH_EVENT = 'freemannotes:rich-heading-animation-refresh';
 const activeCollapsibleHeadingAnimations = new Set<string>();
@@ -301,30 +297,32 @@ function noteHasActiveCollapsibleHeadingAnimation(noteId: string): boolean {
 	return false;
 }
 
-function findCollapsibleHeadingElement(target: EventTarget | null): HTMLElement | null {
-	if (!(target instanceof Node)) return null;
-	const element = target instanceof HTMLElement ? target : target.parentElement;
-	return element?.closest('[data-collapsible-heading="true"]') as HTMLElement | null;
+// event.target-based lookup only ever finds the heading for a point INSIDE its own
+// rendered box — browsers hit-test to literal DOM/box geometry before any of our JS
+// runs, so a point past a heading's right edge (the "outer slop" allowance in
+// isCollapsibleHeadingToggleHit, meant to forgive a fat-finger tap landing a bit past
+// the chevron) resolves event.target to whatever else is actually there — a parent or
+// sibling, never the heading — no matter how generous the coordinate math downstream
+// is. `.closest()` only searches target + ancestors, so it can't recover from that
+// either. Fall back to scanning headings directly by position for exactly that case.
+function findCollapsibleHeadingElement(view: EditorView, target: EventTarget | null, clientX: number, clientY: number): HTMLElement | null {
+	if (target instanceof Node) {
+		const element = target instanceof HTMLElement ? target : target.parentElement;
+		const direct = element?.closest('[data-collapsible-heading="true"]') as HTMLElement | null;
+		if (direct) return direct;
+	}
+	const headings = Array.from(view.dom.querySelectorAll<HTMLElement>('[data-collapsible-heading="true"]'));
+	for (const heading of headings) {
+		const rect = heading.getBoundingClientRect();
+		if (clientY < rect.top || clientY > rect.bottom) continue;
+		if (clientX >= rect.right) return heading;
+	}
+	return null;
 }
 
 function setCollapsibleHeadingToggleHover(element: HTMLElement | null, isHoveringToggle: boolean): void {
 	if (!element) return;
 	element.classList.toggle('fn-collapsible-heading-toggle-hover', isHoveringToggle);
-}
-
-function resolveHeadingOverlayLengthPx(element: HTMLElement, value: string): number {
-	const trimmed = value.trim();
-	if (!trimmed) return 0;
-	if (trimmed.endsWith('px')) return Number.parseFloat(trimmed) || 0;
-	if (trimmed.endsWith('rem')) {
-		const rootFontSize = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16;
-		return (Number.parseFloat(trimmed) || 0) * rootFontSize;
-	}
-	if (trimmed.endsWith('em')) {
-		const fontSize = Number.parseFloat(window.getComputedStyle(element).fontSize) || 16;
-		return (Number.parseFloat(trimmed) || 0) * fontSize;
-	}
-	return Number.parseFloat(trimmed) || 0;
 }
 
 function isCoarsePointerInteraction(): boolean {
@@ -333,61 +331,60 @@ function isCoarsePointerInteraction(): boolean {
 		&& window.matchMedia('(pointer: coarse)').matches;
 }
 
-function getCollapsibleHeadingToggleHitboxPx(): number {
-	if (isCoarsePointerInteraction()) {
-		return COLLAPSIBLE_HEADING_TOGGLE_HITBOX_COARSE_PX;
-	}
-	return COLLAPSIBLE_HEADING_TOGGLE_HITBOX_PX;
-}
-
 type CollapsibleHeadingToggleGeometry = {
-	toggleVisualLeft: number;
-	toggleVisualRight: number;
-	arrowCenterX: number;
+	toggleZoneLeft: number;
+	toggleZoneRight: number;
 };
 
-// Pseudo-elements don't have a real DOM node, so there's no getBoundingClientRect()
-// to just ask "where is the arrow." We have to reconstruct it from CSS instead, which
-// is why this math has to stay glued to whatever Editors.module.css is actually doing.
-// Since the arrow is a `float: inline-end` now, it docks flush against the heading's
-// content-box edge (inset only by padding-inline-end, which reserves room for the
-// collapsed-summary snippet — the arrow reserves its own space via the float itself,
-// no padding needed for it anymore). Do not widen hit-testing from the padding edge —
-// that steals clicks from the caret zone right after the last heading character, and
-// someone will absolutely notice the cursor jumping to the wrong spot.
-function getCollapsibleHeadingToggleGeometry(element: HTMLElement): CollapsibleHeadingToggleGeometry {
+// Must stay in sync with `--collapsible-heading-arrow-gap` in Editors.module.css.
+const COLLAPSIBLE_HEADING_ARROW_GAP_REM = 1.6;
+const COLLAPSIBLE_HEADING_ARROW_GAP_COARSE_REM = 1.5;
+
+function remToPx(rem: number): number {
+	const rootFontSize = Number.parseFloat(window.getComputedStyle(document.documentElement).fontSize) || 16;
+	return rem * rootFontSize;
+}
+
+// Pseudo-elements don't have a real DOM node, so there's no getBoundingClientRect() to
+// just ask "where is the arrow." The reserved space right of the text (padding-inline-end)
+// is two conceptually different things: a plain visual GAP (breathing room, no icon
+// there) and the icon's own glyph. Treating that whole reserved space as one uniform
+// zone (an earlier version of this) meant even landing barely inside the gap — a common,
+// slight overshoot when someone's just trying to click after the last character — toggled
+// instead of placing the caret. Splitting it the way it visually reads fixes that: the
+// gap still feels like "just past the text" (caret territory), and only the icon itself
+// — plus a generous allowance beyond it, since nothing legitimate lives past the box on a
+// short heading — is unambiguous toggle territory.
+function getCollapsibleHeadingToggleGeometry(view: EditorView, element: HTMLElement): CollapsibleHeadingToggleGeometry {
 	const rect = element.getBoundingClientRect();
 	const styles = window.getComputedStyle(element);
-	const summarySpace = resolveHeadingOverlayLengthPx(element, styles.getPropertyValue('--collapsible-heading-summary-space'));
-	const toggleVisualRight = rect.right - summarySpace;
-	const toggleVisualLeft = toggleVisualRight - COLLAPSIBLE_HEADING_ARROW_VISUAL_WIDTH_PX;
+	const paddingInlineEndPx = Number.parseFloat(styles.paddingInlineEnd || styles.paddingRight || '') || 0;
+	const coarse = isCoarsePointerInteraction();
+	const gapPx = remToPx(coarse ? COLLAPSIBLE_HEADING_ARROW_GAP_COARSE_REM : COLLAPSIBLE_HEADING_ARROW_GAP_REM);
+	// rect.right - paddingInlineEndPx = the text's true right edge. Adding the gap back
+	// lands exactly on the icon's own left edge (this holds even while the collapsed-
+	// summary badge is shifting the icon left too — the gap term cancels out of that math).
+	const iconLeft = rect.right - paddingInlineEndPx + gapPx;
+	// Past the box's own right edge there's no text and nothing else to protect. Touch is
+	// inherently imprecise and rarely used for "place caret via precise click" (tap-then-
+	// drag-handles is the normal touch text-selection pattern), so this can be generous —
+	// a real repro measured a 42px overshoot on a genuine attempt to tap the icon. Mouse
+	// clicks are precise and "click right after the last letter" is a common, expected
+	// gesture, so it keeps a small allowance instead of eating a deliberate click further
+	// down the row.
+	const outerSlopPx = coarse ? 56 : 12;
+	const contentRight = view.dom.getBoundingClientRect().right;
 	return {
-		toggleVisualLeft,
-		toggleVisualRight,
-		arrowCenterX: (toggleVisualLeft + toggleVisualRight) / 2,
+		toggleZoneLeft: iconLeft,
+		toggleZoneRight: coarse ? Math.min(contentRight, rect.right + outerSlopPx) : rect.right + outerSlopPx,
 	};
 }
 
-function isCollapsibleHeadingToggleHit(element: HTMLElement, event: MouseEvent): boolean {
+function isCollapsibleHeadingToggleHit(view: EditorView, element: HTMLElement, event: MouseEvent): boolean {
 	const rect = element.getBoundingClientRect();
 	if (event.clientY < rect.top || event.clientY > rect.bottom) return false;
-	const geometry = getCollapsibleHeadingToggleGeometry(element);
-	const coarse = isCoarsePointerInteraction();
-	const caretZoneEnd = geometry.toggleVisualLeft;
-	if (event.clientX < caretZoneEnd) {
-		return false;
-	}
-	const hitboxPx = getCollapsibleHeadingToggleHitboxPx();
-	const outerSlopPx = coarse ? 10 : 3;
-	let hitLeft = geometry.arrowCenterX - hitboxPx / 2;
-	let hitRight = geometry.arrowCenterX + hitboxPx / 2;
-	if (hitLeft < caretZoneEnd) {
-		const shift = caretZoneEnd - hitLeft;
-		hitLeft += shift;
-		hitRight += shift;
-	}
-	hitRight = Math.max(hitRight, geometry.toggleVisualRight) + outerSlopPx;
-	return event.clientX >= hitLeft && event.clientX <= hitRight;
+	const geometry = getCollapsibleHeadingToggleGeometry(view, element);
+	return event.clientX >= geometry.toggleZoneLeft && event.clientX <= geometry.toggleZoneRight;
 }
 
 function suppressCoarsePointerEditorFocus(view: EditorView): void {
@@ -1065,8 +1062,8 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 				hoveredHeadingElement = null;
 			};
 			const handlePointerHover = (event: MouseEvent): void => {
-				const headingElement = findCollapsibleHeadingElement(event.target);
-				const isHoveringToggle = headingElement ? isCollapsibleHeadingToggleHit(headingElement, event) : false;
+				const headingElement = findCollapsibleHeadingElement(view, event.target, event.clientX, event.clientY);
+				const isHoveringToggle = headingElement ? isCollapsibleHeadingToggleHit(view, headingElement, event) : false;
 				if (hoveredHeadingElement && hoveredHeadingElement !== headingElement) {
 					setCollapsibleHeadingToggleHover(hoveredHeadingElement, false);
 				}
@@ -1114,10 +1111,10 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 		},
 		props: {
 			handleDOMEvents: {
-				mousemove(_view, event) {
+				mousemove(view, event) {
 					if (!(event instanceof MouseEvent)) return false;
-					const headingElement = findCollapsibleHeadingElement(event.target);
-					const isHoveringToggle = headingElement ? isCollapsibleHeadingToggleHit(headingElement, event) : false;
+					const headingElement = findCollapsibleHeadingElement(view, event.target, event.clientX, event.clientY);
+					const isHoveringToggle = headingElement ? isCollapsibleHeadingToggleHit(view, headingElement, event) : false;
 					if (hoveredHeadingElement && hoveredHeadingElement !== headingElement) {
 						setCollapsibleHeadingToggleHover(hoveredHeadingElement, false);
 					}
@@ -1139,8 +1136,8 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 				},
 				pointerdown(view, event) {
 					if (!(event instanceof PointerEvent) || event.pointerType !== 'touch') return false;
-					const headingElement = findCollapsibleHeadingElement(event.target);
-					if (!headingElement || !isCollapsibleHeadingToggleHit(headingElement, event)) return false;
+					const headingElement = findCollapsibleHeadingElement(view, event.target, event.clientX, event.clientY);
+					if (!headingElement || !isCollapsibleHeadingToggleHit(view, headingElement, event)) return false;
 					suppressCoarsePointerEditorFocus(view);
 					event.preventDefault();
 					event.stopPropagation();
@@ -1157,8 +1154,8 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 						return true;
 					}
 					if (!(event instanceof MouseEvent) || event.button !== 0) return false;
-					const headingElement = findCollapsibleHeadingElement(event.target);
-					if (!headingElement || !isCollapsibleHeadingToggleHit(headingElement, event)) return false;
+					const headingElement = findCollapsibleHeadingElement(view, event.target, event.clientX, event.clientY);
+					if (!headingElement || !isCollapsibleHeadingToggleHit(view, headingElement, event)) return false;
 					suppressCoarsePointerEditorFocus(view);
 					event.preventDefault();
 					event.stopPropagation();
@@ -1172,13 +1169,13 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 					}
 					const touch = event.touches[0];
 					if (!touch) return false;
-					const headingElement = findCollapsibleHeadingElement(touch.target);
+					const headingElement = findCollapsibleHeadingElement(view, touch.target, touch.clientX, touch.clientY);
 					if (!headingElement) return false;
 					const syntheticMouseEvent = {
 						clientX: touch.clientX,
 						clientY: touch.clientY,
 					} as MouseEvent;
-					if (!isCollapsibleHeadingToggleHit(headingElement, syntheticMouseEvent)) return false;
+					if (!isCollapsibleHeadingToggleHit(view, headingElement, syntheticMouseEvent)) return false;
 					suppressCoarsePointerEditorFocus(view);
 					if (event.cancelable) event.preventDefault();
 					event.stopPropagation();
@@ -1195,8 +1192,8 @@ function createCollapsibleHeadingDecorationPlugin(noteId: string): Plugin {
 						return true;
 					}
 					if (!(event instanceof MouseEvent) || event.button !== 0) return false;
-					const headingElement = findCollapsibleHeadingElement(event.target);
-					if (!headingElement || !isCollapsibleHeadingToggleHit(headingElement, event)) return false;
+					const headingElement = findCollapsibleHeadingElement(view, event.target, event.clientX, event.clientY);
+					if (!headingElement || !isCollapsibleHeadingToggleHit(view, headingElement, event)) return false;
 					suppressCoarsePointerEditorFocus(view);
 					event.preventDefault();
 					event.stopPropagation();

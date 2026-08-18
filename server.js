@@ -1276,6 +1276,14 @@ wss.on('connection', (conn, req) => {
 						path: String(req.url || ''),
 					})
 				);
+				logEvent('WS_EVENT', {
+					...getRoomDebugContext(null),
+					event: 'connection-close',
+					reason: 'unauthorized',
+					code: 1008,
+					hasCookie: cookieHeader.length > 0,
+					path: String(req.url || ''),
+				});
 				conn.close(1008, 'unauthorized');
 				return;
 			}
@@ -1290,6 +1298,13 @@ wss.on('connection', (conn, req) => {
 						path: String(req.url || ''),
 					})
 				);
+				logEvent('WS_EVENT', {
+					...getRoomDebugContext(null, { userId: session.userId, workspaceId: session.workspaceId }),
+					event: 'connection-close',
+					reason: 'server not ready',
+					code: 1011,
+					hasPersistAdapter: Boolean(persistAdapter),
+				});
 				conn.close(1011, 'server not ready');
 				return;
 			}
@@ -1311,6 +1326,13 @@ wss.on('connection', (conn, req) => {
 			const raw = String(requestUrl.pathname || '/').replace(/^\/yjs\/?/, '').replace(/^\/+/, '');
 			if (!raw) {
 				console.warn('[ws] close invalid room', JSON.stringify({ path: String(req.url || '') }));
+				logEvent('WS_EVENT', {
+					...getRoomDebugContext(null, { userId: session.userId, workspaceId: session.workspaceId }),
+					event: 'connection-close',
+					reason: 'invalid room',
+					code: 1008,
+					path: String(req.url || ''),
+				});
 				conn.close(1008, 'invalid room');
 				return;
 			}
@@ -1327,6 +1349,12 @@ wss.on('connection', (conn, req) => {
 						rawRoom: raw,
 					})
 				);
+				logEvent('WS_EVENT', {
+					...getRoomDebugContext(raw, { userId: session.userId, workspaceId: session.workspaceId }),
+					event: 'connection-close',
+					reason: 'forbidden',
+					code: 1008,
+				});
 				conn.close(1008, 'forbidden');
 				return;
 			}
@@ -1395,6 +1423,12 @@ wss.on('connection', (conn, req) => {
 										: null,
 								})
 							);
+							logEvent('WS_EVENT', {
+								...getRoomDebugContext(raw, { userId: session.userId, workspaceId: session.workspaceId }),
+								event: 'connection-close',
+								reason: 'forbidden namespace',
+								code: 1008,
+							});
 							conn.close(1008, 'forbidden');
 							return;
 						}
@@ -1429,6 +1463,13 @@ wss.on('connection', (conn, req) => {
 			setupRoleAwareWSConnection(conn, req, { gc: true, readOnly, userId: session.userId });
 		} catch (err) {
 			console.error('[ws] connection setup error:', err.message);
+			logEvent('WS_EVENT', {
+				event: 'connection-close',
+				reason: 'internal error',
+				code: 1011,
+				error: err && err.message ? err.message : String(err),
+				path: String(req.url || ''),
+			});
 			try {
 				conn.close(1011, 'internal error');
 			} catch {

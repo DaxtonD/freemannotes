@@ -83,6 +83,17 @@ npm run db:init
 
 For development, `npm run dev` is the right command. It starts both the backend (`server.js`) and the Vite dev server concurrently, with hot module replacement for the client.
 
+### Testing Through a Reverse Proxy
+
+If you're reaching the app through a reverse proxy (Nginx Proxy Manager, Cloudflare Tunnel, etc.) instead of `localhost` — e.g. testing on a phone over a domain name — **the proxy's target port determines which build you're actually testing, and the two builds do not update the same way:**
+
+- Proxy pointed at **27015** (or wherever `npm start`/the production server binds): you're hitting the static `dist/` build. Source edits have zero effect until you run `npm run build` and restart the server.
+- Proxy pointed at **5173** (Vite's dev server): you're hitting the live dev server, which hot-reloads automatically via Vite Fast Refresh — most edits apply within a second or two, no restart needed.
+
+Mixing these up produces "my fix isn't showing up" reports that have nothing to do with the fix itself. The tell: a completely silent console for a log line you just added — that means the JS actually running predates your change. You can also tell from the served bundle shape: Vite dev serves many small, unminified per-module files under `/src/...`; a production build serves one or a few minified, content-hashed files like `index-[hash].js`.
+
+One more wrinkle: `npm run dev`'s backend binds to `PORT` from `.env` if it's set there, not necessarily the documented default of 27016 below — check your own `.env` before assuming which port the dev backend is actually listening on, especially if you've pointed a proxy at a specific port from memory.
+
 ### Banner Artwork
 
 Freeman Notes now keeps note banner artwork in theme-specific folders with separate card and list-view SVGs.
@@ -262,6 +273,8 @@ location.reload()
 
 - Server writes to `freeman-debug.log` in the project root (when `DEBUG_LOGGING=1`).
 - Client events are batched and POSTed to `/api/debug-log` every ~400 ms.
+
+The server-side writer uses a persistent stream and auto-rotates (truncates) the file at 2MB, so it's safe to leave enabled for a long session. If you ever see this file growing unbounded, that's a regression worth fixing immediately — an earlier version reopened and appended to the file on every single event with no cap, and once it grew past a few MB, per-write latency got roughly 100x worse (almost certainly antivirus scanning it on every write), which was enough on its own to cause multi-second database transaction timeouts and make the app look severely broken with no actual app bug involved.
 
 ---
 

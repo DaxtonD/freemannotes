@@ -57,6 +57,7 @@ import { attemptPendingAvatarUpload } from './core/pendingAvatarUpload';
 import { broadcastLibraryImport, parseLibraryImportFromHash, storeLibraryImport } from './core/excalidrawLibraryImport';
 import { SendInviteModal } from './components/Invites/SendInviteModal';
 import { CollaboratorModal } from './components/Share/CollaboratorModal';
+import { NoteAccessLostOverlay } from './components/Editors/NoteAccessLostOverlay';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
 import { NoteDrawingBrowserModal } from './components/NoteAttachments/NoteDrawingBrowserModal';
 import { NoteLinkBrowserModal } from './components/NoteAttachments/NoteLinkBrowserModal';
@@ -1500,6 +1501,13 @@ export function App(): React.JSX.Element {
 	const [collaborationRefreshToken, setCollaborationRefreshToken] = React.useState(0);
 	const [inboxRefreshToken, setInboxRefreshToken] = React.useState(0);
 	const [collaboratorModalState, setCollaboratorModalState] = React.useState<CollaboratorModalState | null>(_restoredOverlay?.collaboratorModalState ?? null);
+	// Set when the note currently open in the editor becomes inaccessible out from under
+	// the user (owner revoked access, or its workspace was deleted) — see the guard effect
+	// that sets it, further down. Deliberately NOT torn down automatically: the editor
+	// just vanishing mid-edit is a confusing, "did I lose my work?" moment. Instead this
+	// drives a blocking overlay explaining what happened; the editor only actually closes
+	// once the user acknowledges it (handleAcknowledgeNoteAccessLost).
+	const [noteAccessLostState, setNoteAccessLostState] = React.useState<{ noteId: string } | null>(null);
 	const [noteImageModalState, setNoteImageModalState] = React.useState<NoteImageModalState | null>(() => {
 		try {
 			const raw = sessionStorage.getItem('__freemannotes_imageModal');
@@ -2104,6 +2112,15 @@ export function App(): React.JSX.Element {
 	// Reset in the popstate handler once the navigation actually completes.
 	const isNavigatingBackRef = React.useRef(false);
 	const currentOverlaySnapshotRef = React.useRef<OverlaySnapshot>(EMPTY_OVERLAY_SNAPSHOT);
+	// Populated synchronously (no network/async gap) the instant the user leaves a shared
+	// note from inside its own editor. The collaborator modal's own close already pops one
+	// mobile history entry; that pop's popstate is asynchronous and would otherwise land on
+	// (and re-apply) the editor's own stale overlay entry for the note just left, silently
+	// reopening it. The popstate handler below checks this set — same pattern as its
+	// existing "don't restore an editor snapshot for an already-trashed note" guard — to
+	// redirect that restoration to the grid instead, so the editor never visibly reopens
+	// and no extra history entry is left behind needing a second back-press.
+	const recentlyLeftSharedNoteIdsRef = React.useRef<Set<string>>(new Set());
 
 	const getOverlaySnapshot = React.useCallback((): OverlaySnapshot => {
 		return {
@@ -2399,12 +2416,18 @@ export function App(): React.JSX.Element {
 
 	const openCollaboratorModalForNote = React.useCallback((noteId: string, title?: string, options?: { docId?: string; canManage?: boolean }) => {
 		const placement = sharedPlacements.find((item) => item.aliasId === noteId);
-		const canManage = typeof options?.canManage === 'boolean'
+		// Opening the modal only requires SOME collaborator relationship — a viewer can
+		// open it too, just in its read-only "Active Collaborators" + "Leave Note" view
+		// (see CollaboratorModal's own showManageSections comment). This used to require
+		// EDITOR role, which meant a plain viewer had no way to reach the modal at all —
+		// including no way to leave a note they no longer wanted, since leaving only ever
+		// happens through this modal.
+		const canOpen = typeof options?.canManage === 'boolean'
 			? options.canManage
 			: placement
-				? placement.role === 'EDITOR'
+				? true
 				: canEditActiveWorkspace;
-		if (!canManage) return;
+		if (!canOpen) return;
 		const docId = options?.docId ?? (placement ? placement.roomId : authWorkspaceId ? `${authWorkspaceId}:${noteId}` : null);
 		if (!docId) return;
 		const nextState: CollaboratorModalState = {
@@ -2435,9 +2458,47 @@ export function App(): React.JSX.Element {
 	}, [closeCollaboratorModal, showBriefDialog, t]);
 
 	const handleCollaboratorSelfRemoved = React.useCallback(() => {
+		// The durable removal path (refreshNoteShareState, triggered by the same
+		// handleRemove success via onChanged) is correct but network-bound — under a
+		// degraded connection it waits on a Promise.all of 6 unrelated HTTP GETs (each
+		// with an 8s timeout) before it even gets to the actual removal, which is a pure
+		// local Yjs write with zero network dependency. Do that local write immediately
+		// instead of waiting on the slow batch — the note should vanish from the grid the
+		// instant you leave it, in any network condition. refreshNoteShareState's own
+		// reconciliation still runs afterward as a no-op/self-healing fallback if this
+		// ever silently fails (e.g. workspace context raced mid-flight).
+		const leftNoteAliasId = collaboratorModalState?.noteId ?? null;
+		// Record this BEFORE closeCollaboratorModal() below, which on mobile triggers an
+		// async history.back() — the popstate guard needs this set populated before that
+		// popstate can possibly fire, not after. Plain synchronous Set mutation, so there's
+		// no gap for it to race (see the ref's own comment for the full picture).
+		if (leftNoteAliasId) recentlyLeftSharedNoteIdsRef.current.add(leftNoteAliasId);
+		// If the left note is the one currently open in the editor — guaranteed true
+		// whenever this modal was reached from inside the editor itself, since both
+		// in-editor entry points pass selectedNoteId straight through as the modal's
+		// noteId; never true for the grid-opened entry point, where the editor isn't open
+		// — close it immediately too, same direct-state-clear shape as the "note became
+		// invalid while open" guard effect elsewhere in this file. Desktop has no history
+		// entries to race against, so this alone is sufficient there; the mobile-specific
+		// popstate hazard (an async history.back() landing back on this stale editor
+		// snapshot and silently reopening it) is what recentlyLeftSharedNoteIdsRef's
+		// popstate-handler check exists to prevent.
+		if (leftNoteAliasId && selectedNoteId === leftNoteAliasId) {
+			setSelectedNoteId(null);
+			setOpenDoc(null);
+			setOpenDocId(null);
+			setNoteImageModalState((current) => current?.noteId === leftNoteAliasId ? null : current);
+			setNoteAttachmentBrowserState((current) => current?.noteId === leftNoteAliasId ? null : current);
+		}
 		closeCollaboratorModal();
 		showBriefDialog(t('share.leftNoteToast'));
-	}, [closeCollaboratorModal, showBriefDialog, t]);
+		if (leftNoteAliasId) {
+			void manager.removeNoteReferences([leftNoteAliasId]).catch(() => {
+				// Best-effort — refreshNoteShareState's reconciliation is the fallback.
+			});
+			setUserNoteColorToken(leftNoteAliasId, null);
+		}
+	}, [closeCollaboratorModal, collaboratorModalState, manager, selectedNoteId, showBriefDialog, t]);
 
 	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string, noteType?: 'text' | 'checklist' | 'drawing') => {
 		setNoteImageModalState({ noteId, docId, title: title || '', noteType });
@@ -5060,6 +5121,20 @@ export function App(): React.JSX.Element {
 	const backgroundPreloadRunningRef = React.useRef(false);
 	const authWorkspaceIdRef = React.useRef(authWorkspaceId);
 	authWorkspaceIdRef.current = authWorkspaceId;
+	// refreshNoteShareState has 18+ call sites (workspace switch, WS reconnect,
+	// metadata events, etc.) that can fire in quick succession for the SAME
+	// workspace. The authWorkspaceIdRef check below only guards against a call
+	// from a workspace the user has since switched AWAY from — it does nothing
+	// if two overlapping calls both target the still-active workspace but
+	// resolve out of order (e.g. an earlier call is slow due to transient
+	// backend latency and its correct result lands after a later, faster call
+	// already committed). Without this, the later call's result — which can be
+	// incomplete if ITS OWN fetch happened to hit that same latency — silently
+	// overwrites the correct data from the earlier call. Bumped at the top of
+	// every refreshNoteShareState invocation; each state-committing block below
+	// checks it still matches before writing, discarding results from any call
+	// that's since been superseded by a newer one.
+	const refreshNoteShareStateCallIdRef = React.useRef(0);
 
 	/**
 	 * Iterate every workspace the user belongs to (except the current one) and pull
@@ -5900,6 +5975,8 @@ export function App(): React.JSX.Element {
 			setFiredReminders([]);
 			return;
 		}
+		const callId = ++refreshNoteShareStateCallIdRef.current;
+		const superseded = (): boolean => refreshNoteShareStateCallIdRef.current !== callId;
 		const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
 		// This closure's own target workspace. refreshNoteShareState is re-invoked
 		// by an effect keyed on authWorkspaceId (so switching workspaces always
@@ -5926,7 +6003,7 @@ export function App(): React.JSX.Element {
 					? readCachedSharedNotePlacementsForWorkspace(authUserId, authWorkspaceId).catch(() => [] as SharedNotePlacement[])
 					: Promise.resolve([] as SharedNotePlacement[]),
 			]);
-			if (authWorkspaceIdRef.current === requestedWorkspaceId) {
+			if (!superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedPlacements(cachedAllPlacements);
 				setActiveWorkspaceSharedPlacements(cachedActivePlacements);
 				// Same staleness guard as the state writes above, and for the same
@@ -5956,11 +6033,31 @@ export function App(): React.JSX.Element {
 			} catch {
 				// Keep the queue intact if a replay request fails.
 			}
+			try {
+				// Without this, an offline label/collection edit on a shared note (queued
+				// via queuePlacementMetadataAction) only got replayed when the PWA's
+				// Background Sync event fired (flushPwaOfflineQueues) — unsupported on
+				// iOS Safari and some desktop browsers. The plain `online` listener and
+				// the WS-metadata reconnect path both call this function directly without
+				// flushing that queue first, so on those platforms the server's stale
+				// (pre-edit) placement data below would win the race and clobber the
+				// optimistic local edit, making it look reverted. Flushing here covers
+				// every caller of refreshNoteShareState, not just the background-sync path.
+				await flushPendingPlacementMetadataActions(authUserId);
+			} catch {
+				// Keep the queue intact if a replay request fails.
+			}
 		}
 		try {
+			let activePlacementFetchFailed = false;
 			const [invitationData, placementData, workspaceInviteData, failedLinkData, pendingReminderCount, firedRemindersData] = await Promise.all([
 				listNoteShareInvitations().catch(() => ({ invitations: [], pendingCount: 0 })),
-				authWorkspaceId ? listSharedNotePlacements(authWorkspaceId).catch(() => ({ placements: [] })) : Promise.resolve({ placements: [] }),
+				authWorkspaceId
+					? listSharedNotePlacements(authWorkspaceId).catch(() => {
+						activePlacementFetchFailed = true;
+						return { placements: [] };
+					})
+					: Promise.resolve({ placements: [] }),
 				listWorkspacePendingInvites().catch(() => ({ invites: [] })),
 				listFailedNoteLinks().catch(() => ({ failures: [], count: 0 })),
 				fetchPendingReminderCount().catch(() => 0),
@@ -5989,17 +6086,28 @@ export function App(): React.JSX.Element {
 					.map((ws) => ws.id);
 			}
 			const extraPlacementEntries = sharedWithMeWsIds.length > 0
-				? await Promise.all(sharedWithMeWsIds.map(async (id) => ({
-					workspaceId: id,
-					placements: (await listSharedNotePlacements(id).catch(() => ({ placements: [] as SharedNotePlacement[] }))).placements,
-				})))
+				? await Promise.all(sharedWithMeWsIds.map(async (id) => {
+					let failed = false;
+					const { placements } = await listSharedNotePlacements(id).catch(() => {
+						failed = true;
+						return { placements: [] as SharedNotePlacement[] };
+					});
+					return { workspaceId: id, placements, failed };
+				}))
 				: [];
 			const extraPlacementsResults: SharedNotePlacement[] = extraPlacementEntries.flatMap((entry) => entry.placements);
 			const fetchedAllPlacements: SharedNotePlacement[] = [...placementData.placements, ...extraPlacementsResults];
-			const resolvedAllPlacements = offline && fetchedAllPlacements.length === 0 && lastKnownSharedPlacements.length > 0
+			// A `.catch()` above silently turns a failed/timed-out fetch into "zero
+			// placements" — the same shape as a real "you have no shares" response.
+			// navigator.onLine alone isn't reliable enough to distinguish these (it
+			// can still read true during a captive portal, DNS failure, or a
+			// connection that drops mid-request), so also fall back to last-known
+			// state whenever the fetch itself reported failure.
+			const anyPlacementFetchFailed = activePlacementFetchFailed || extraPlacementEntries.some((entry) => entry.failed);
+			const resolvedAllPlacements = (offline || anyPlacementFetchFailed) && fetchedAllPlacements.length === 0 && lastKnownSharedPlacements.length > 0
 				? lastKnownSharedPlacements
 				: fetchedAllPlacements;
-			const resolvedActiveWorkspacePlacements = offline && placementData.placements.length === 0 && lastKnownActiveWorkspacePlacements.length > 0
+			const resolvedActiveWorkspacePlacements = (offline || activePlacementFetchFailed) && placementData.placements.length === 0 && lastKnownActiveWorkspacePlacements.length > 0
 				? lastKnownActiveWorkspacePlacements
 				: placementData.placements;
 
@@ -6023,7 +6131,18 @@ export function App(): React.JSX.Element {
 			// it needs the same staleness guard as activeWorkspaceSharedPlacements, or a
 			// slow request from a workspace the user already switched away from can
 			// silently overwrite the new workspace's correct placements.
-			if (authWorkspaceIdRef.current === requestedWorkspaceId) {
+			//
+			// !superseded() guards a DIFFERENT race than the workspace check above: two
+			// overlapping calls can both target the SAME still-active workspace and
+			// still resolve out of order (e.g. an earlier call is slow due to transient
+			// backend latency and lands after a later, faster call already committed).
+			// Without it, the later call's result — which can itself be incomplete if
+			// ITS fetch hit that same latency — silently overwrites the correct data
+			// from the earlier call. This was the actual cause of two consistently
+			// unresolvable "shared-placement:" ids stuck as permanent skeleton cards:
+			// the underlying fetch always had the right data (verified directly against
+			// the API), but a superseded call's worse result kept winning the race.
+			if (!superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedPlacements(resolvedAllPlacements);
 				setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
 				// Reconcile shared-note references directly into the active workspace's
@@ -6043,8 +6162,10 @@ export function App(): React.JSX.Element {
 						// Re-check right before writing — this is now a write, not just a
 						// state read, so a workspace switch mid-flight landing in the
 						// wrong workspace's noteOrder would be real corruption, not just
-						// a stale render.
-						if (authWorkspaceIdRef.current !== requestedWorkspaceId) return;
+						// a stale render. Also re-check supersession: getNoteOrder()'s
+						// await gives a newer call for this same workspace time to finish
+						// and commit its own (possibly better) result first.
+						if (superseded() || authWorkspaceIdRef.current !== requestedWorkspaceId) return;
 						const currentRefs = noteOrder.toArray().filter((id) => id.startsWith('shared-placement:'));
 						const currentRefSet = new Set(currentRefs);
 						const expected = [...resolvedActiveWorkspacePlacements].sort(
@@ -6052,15 +6173,27 @@ export function App(): React.JSX.Element {
 						);
 						const expectedIdSet = new Set(expected.map((p) => p.aliasId));
 						const missing = expected.filter((p) => !currentRefSet.has(p.aliasId)).map((p) => p.aliasId);
-						const stale = currentRefs.filter((id) => !expectedIdSet.has(id));
 						if (missing.length > 0) await manager.addNoteReferences(missing);
-						if (stale.length > 0) {
-							await manager.removeNoteReferences(stale);
-							// Color preferences are keyed by alias id, not the stable
-							// underlying docId (unlike pins, which key off docId and are
-							// safe to leave orphaned) — a re-share always mints a new
-							// alias id, so a color set here can never be reclaimed later.
-							for (const id of stale) setUserNoteColorToken(id, null);
+						// Never prune refs on a cycle where the placements fetch was
+						// unreliable (offline, or the request itself failed/timed out —
+						// see anyPlacementFetchFailed above). A prior version trusted an
+						// empty "fetch failed" result as ground truth here and deleted
+						// every shared note from noteOrder whenever the request merely
+						// failed (even with navigator.onLine still reporting true), then
+						// re-added them on the next successful reconciliation — the
+						// "shared notes vanish offline, reappear online" bug. Skipping is
+						// safe: this reconciliation is already eventual/self-healing via
+						// repeated triggers (see comment above this IIFE).
+						if (!offline && !activePlacementFetchFailed) {
+							const stale = currentRefs.filter((id) => !expectedIdSet.has(id));
+							if (stale.length > 0) {
+								await manager.removeNoteReferences(stale);
+								// Color preferences are keyed by alias id, not the stable
+								// underlying docId (unlike pins, which key off docId and are
+								// safe to leave orphaned) — a re-share always mints a new
+								// alias id, so a color set here can never be reclaimed later.
+								for (const id of stale) setUserNoteColorToken(id, null);
+							}
 						}
 					} catch {
 						// Best-effort — the next reconciliation trigger retries.
@@ -6079,12 +6212,22 @@ export function App(): React.JSX.Element {
 				// became active again, felt as the shared note "appearing late".
 				manager.setExternalRoomAliases(mergeExternalRoomAliases(resolvedAllPlacements));
 			}
-			if (authUserId) {
+			if (authUserId && !superseded()) {
 				const workspacePlacementWrites: Promise<void>[] = [];
 				if (authWorkspaceId) {
-					workspacePlacementWrites.push(cacheSharedNotePlacements(authUserId, authWorkspaceId, placementData.placements));
+					// Cache the resolved (fallback-aware) value, not the raw fetch
+					// result — otherwise a failed fetch persists an incorrectly empty
+					// list to IndexedDB, corrupting the offline-first seed read at the
+					// top of this function on the next cold start. The supersede check
+					// keeps a superseded call from persisting its (possibly worse)
+					// result over a newer call's already-cached correct data.
+					workspacePlacementWrites.push(cacheSharedNotePlacements(authUserId, authWorkspaceId, resolvedActiveWorkspacePlacements));
 				}
 				for (const entry of extraPlacementEntries) {
+					// Same reasoning — skip persisting a workspace's cache entry when
+					// its fetch failed rather than overwriting a possibly-good cache
+					// with an empty result.
+					if (entry.failed) continue;
 					workspacePlacementWrites.push(cacheSharedNotePlacements(authUserId, entry.workspaceId, entry.placements));
 				}
 				await Promise.all(workspacePlacementWrites).catch(() => undefined);
@@ -6092,7 +6235,7 @@ export function App(): React.JSX.Element {
 		} catch {
 			// A stale call's failure must not wipe out state a newer, already-
 			// resolved call for the current workspace has since populated.
-			if (!offline && authWorkspaceIdRef.current === requestedWorkspaceId) {
+			if (!offline && !superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedPlacements([]);
 				setActiveWorkspaceSharedPlacements([]);
 				setFailedLinkNotifications([]);
@@ -8511,10 +8654,14 @@ export function App(): React.JSX.Element {
 				// which pops {__moreMenu} and fires this popstate with the editor's overlay
 				// entry. If the note was just trashed, applying that snapshot would reopen the
 				// editor. Guard against this: skip restoring a note that is already trashed.
+				// Same hazard, same fix, for leaving a shared note from inside its own editor:
+				// the collaborator modal's own close pops one history entry too, landing back
+				// on the editor's stale snapshot for the note just left.
 				const restoredNoteId = state.snapshot.selectedNoteId;
 				if (restoredNoteId) {
 					const restoredDoc = managerRef.current.getDoc(restoredNoteId);
-					if (restoredDoc?.getMap<any>('metadata').get('trashed') === true) {
+					const wasJustLeft = recentlyLeftSharedNoteIdsRef.current.has(restoredNoteId);
+					if (wasJustLeft || restoredDoc?.getMap<any>('metadata').get('trashed') === true) {
 						const gridSnapshot: OverlaySnapshot = {
 							...state.snapshot,
 							selectedNoteId: null,
@@ -9014,13 +9161,34 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (!selectedNoteId || !selectedNoteId.startsWith('shared-placement:')) return;
 		if (selectedNoteSharedPlacement) return;
-		setSelectedNoteId((current) => current === selectedNoteId ? null : current);
-		setOpenDoc(null);
-		setOpenDocId((current) => current === selectedNoteId ? null : current);
-		setCollaboratorModalState((current) => current?.noteId === selectedNoteId ? null : current);
-		setNoteImageModalState((current) => current?.noteId === selectedNoteId ? null : current);
-		setNoteAttachmentBrowserState((current) => current?.noteId === selectedNoteId ? null : current);
+		// Used to tear the editor down immediately here. Now surfaces the blocking
+		// "you lost access" overlay instead — see noteAccessLostState's own comment for
+		// why, and handleAcknowledgeNoteAccessLost for the actual teardown, deferred until
+		// the user acknowledges it.
+		setNoteAccessLostState((current) => current?.noteId === selectedNoteId ? current : { noteId: selectedNoteId });
 	}, [selectedNoteId, selectedNoteSharedPlacement]);
+
+	// Tidy up if the editor moved on for some other reason while the overlay's state was
+	// still set (e.g. back-button navigation away from it) — the overlay itself already
+	// stops rendering once selectedNoteId no longer matches, this just avoids leaving the
+	// small state object dangling in memory.
+	React.useEffect(() => {
+		if (noteAccessLostState && selectedNoteId !== noteAccessLostState.noteId) {
+			setNoteAccessLostState(null);
+		}
+	}, [noteAccessLostState, selectedNoteId]);
+
+	const handleAcknowledgeNoteAccessLost = React.useCallback(() => {
+		const noteId = noteAccessLostState?.noteId ?? null;
+		setNoteAccessLostState(null);
+		if (!noteId) return;
+		collapseEditorOverlay();
+		setOpenDoc(null);
+		setOpenDocId((current) => current === noteId ? null : current);
+		setCollaboratorModalState((current) => current?.noteId === noteId ? null : current);
+		setNoteImageModalState((current) => current?.noteId === noteId ? null : current);
+		setNoteAttachmentBrowserState((current) => current?.noteId === noteId ? null : current);
+	}, [collapseEditorOverlay, noteAccessLostState]);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -9516,7 +9684,12 @@ export function App(): React.JSX.Element {
 	const selectedSharedPlacement = selectedNoteSharedPlacement;
 	const selectedNoteDocId = selectedNoteRoomId;
 	const selectedNoteReadOnly = selectedSharedPlacement ? selectedSharedPlacement.role === 'VIEWER' : !canEditActiveWorkspace;
-	const canManageSelectedNoteCollaborators = selectedSharedPlacement ? selectedSharedPlacement.role === 'EDITOR' : canEditActiveWorkspace;
+	// Gates whether the collaborator icon is even clickable — deliberately NOT
+	// EDITOR-only. A viewer needs to reach the modal too (to see who has access, and to
+	// leave the note — that only happens through this modal). What's shown INSIDE the
+	// modal (manage sections vs. read-only) is a separate, server-confirmed check done
+	// by CollaboratorModal itself.
+	const canOpenSelectedNoteCollaboratorModal = selectedSharedPlacement ? true : canEditActiveWorkspace;
 	const crossWorkspacePlacement = crossWorkspaceNote ? sharedPlacements.find((placement) => placement.aliasId === crossWorkspaceNote.noteId) ?? null : null;
 	const crossWorkspaceTarget = crossWorkspaceNote ? sidebarWorkspaces.find((workspace) => workspace.id === crossWorkspaceNote.workspaceId) ?? null : null;
 	const crossWorkspaceDocId = crossWorkspaceNote
@@ -9526,8 +9699,10 @@ export function App(): React.JSX.Element {
 		? crossWorkspacePlacement.role === 'EDITOR'
 		: canEditWorkspaceContent(normalizeWorkspaceRole(crossWorkspaceTarget?.role));
 	const crossWorkspaceReadOnly = crossWorkspaceNote ? !canEditCrossWorkspace : true;
-	const canManageCrossWorkspaceCollaborators = crossWorkspacePlacement
-		? crossWorkspacePlacement.role === 'EDITOR'
+	// Same broadening as canOpenSelectedNoteCollaboratorModal above, for the
+	// cross-workspace note viewer.
+	const canOpenCrossWorkspaceCollaboratorModal = crossWorkspacePlacement
+		? true
 		: canEditCrossWorkspace;
 	const selectedNewNoteCollectionSeed = selectedNoteId ? pendingNewNoteCollectionSeedRef.current.get(selectedNoteId) ?? null : null;
 	const toggleSelectedNotePin = (): void => {
@@ -10298,7 +10473,8 @@ export function App(): React.JSX.Element {
 														const isLabelsItemActive = entry.id === 'labels' && item.kind === 'item' && activeLabelIds.includes(item.id);
 														const isReminderItemActive = entry.id === 'reminders' && item.kind === 'item' && activeReminderFilter === item.id;
 														const isCollaboratorItemActive = entry.id === 'collaborators' && item.kind === 'item' && noteGridCollaboratorFilter?.key === item.id;
-														const className = `${item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item'}${isLabelsItemActive || isReminderItemActive || isCollaboratorItemActive ? ' is-active' : ''}`;
+														const isCollaboratorRow = entry.id === 'collaborators' && item.kind === 'item';
+														const className = `${item.kind === 'action' ? 'sidebar-submenu-action' : 'sidebar-submenu-item'}${isLabelsItemActive || isReminderItemActive || isCollaboratorItemActive ? ' is-active' : ''}${isCollaboratorRow ? ' sidebar-submenu-item--collaborator' : ''}`;
 														return (
 															<button
 																key={item.id}
@@ -10352,7 +10528,7 @@ export function App(): React.JSX.Element {
 																			<span className="sidebar-collaborator-avatar-fallback" aria-hidden="true">{getSidebarCollaboratorInitial(item.label)}</span>
 																		)
 																	) : null}
-																	{entry.id === 'labels' && item.kind === 'item' ? (
+																	{(entry.id === 'labels' || entry.id === 'collaborators') && item.kind === 'item' ? (
 																		<OverflowMarqueeText
 																			value={item.label}
 																			viewportClassName="sidebar-overflow-label-viewport"
@@ -10950,7 +11126,7 @@ export function App(): React.JSX.Element {
 					authUserId={authUserId}
 					websocketUrl={manager.getWebsocketUrl()}
 					readOnly={crossWorkspaceReadOnly}
-					onAddCollaborator={canManageCrossWorkspaceCollaborators ? ({ noteId, docId, title }) => openCollaboratorModalForNote(noteId, title, { docId, canManage: true }) : undefined}
+					onAddCollaborator={canOpenCrossWorkspaceCollaboratorModal ? ({ noteId, docId, title }) => openCollaboratorModalForNote(noteId, title, { docId, canManage: true }) : undefined}
 					onAddImage={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteImageModal(noteId, docId, title)}
 					onAddDocument={undefined}
 					onAddReminder={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteReminderModal(noteId, docId, title)}
@@ -11158,7 +11334,7 @@ export function App(): React.JSX.Element {
 							onClose={closeNoteEditor}
 							onSave={selectedNoteIsPendingNew ? saveDrawingEditor : closeNoteEditor}
 							onDelete={onDeleteSelectedNote}
-							onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
+							onAddCollaborator={canOpenSelectedNoteCollaboratorModal ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 							onAddImage={selectedNoteReadOnly ? undefined : () => {
 								if (!selectedNoteDocId) return;
 								openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString(), 'drawing');
@@ -11189,7 +11365,7 @@ export function App(): React.JSX.Element {
 						onSavePendingNew={selectedNoteIsPendingNew ? savePendingNewNoteAndClose : undefined}
 						onDelete={onDeleteSelectedNote}
 						isPendingNew={selectedNoteIsPendingNew}
-						onAddCollaborator={canManageSelectedNoteCollaborators ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
+						onAddCollaborator={canOpenSelectedNoteCollaboratorModal ? () => openCollaboratorModalForNote(selectedNoteId, openDoc.getText('title').toString()) : undefined}
 						onAddImage={selectedNoteReadOnly ? undefined : () => {
 							if (!selectedNoteDocId) return;
 							const rawType = String(openDoc.getMap<any>('metadata').get('type') ?? '');
@@ -11626,6 +11802,10 @@ export function App(): React.JSX.Element {
 					void refreshNoteShareState();
 				}}
 			/>
+
+			{noteAccessLostState && selectedNoteId === noteAccessLostState.noteId ? (
+				<NoteAccessLostOverlay onDismiss={handleAcknowledgeNoteAccessLost} />
+			) : null}
 
 			<WorkspaceSwitcherModal
 				isOpen={isWorkspaceSwitcherOpen}

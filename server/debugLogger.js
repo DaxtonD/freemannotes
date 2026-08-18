@@ -14,8 +14,54 @@ const DEBUG_LOGGING_ENABLED = (() => {
 const PRISMA_READ_ACTIONS = new Set(['findunique', 'finduniquethrow', 'findfirst', 'findfirstthrow', 'findmany', 'aggregate', 'count', 'groupby']);
 const PRISMA_WRITE_ACTIONS = new Set(['create', 'createmany', 'update', 'updatemany', 'upsert', 'delete', 'deletemany']);
 
+// Max bytes per log file before it's truncated and restarted. Confirmed
+// 2026-08-17: fs.appendFileSync against a file that had grown to ~5MB measured
+// ~115x slower per write than against a fresh file (~273ms vs ~2.4ms, almost
+// certainly antivirus real-time-scanning the file on every write on this dev
+// machine) — enough on its own to blow a 5s Prisma interactive-transaction
+// timeout and make the whole app look badly regressed, with zero real app bug
+// involved. A persistent write stream (opened once, reused across calls
+// instead of reopened per write) plus this size cap keeps writes fast and the
+// file small. This is a throwaway diagnostic log, not an audit trail, so
+// truncating on rollover (rather than rotating to a numbered file) is fine.
+const LOG_ROTATE_BYTES = 2 * 1024 * 1024;
+const logStreams = new Map(); // targetFile -> { stream, bytesWritten }
+
+function openStream(targetFile, truncate) {
+	const existing = logStreams.get(targetFile);
+	if (existing) {
+		try {
+			existing.stream.end();
+		} catch {
+			// best effort
+		}
+	}
+	const stream = fs.createWriteStream(targetFile, { flags: truncate ? 'w' : 'a' });
+	stream.on('error', (err) => {
+		console.error('[debug-log] stream error:', err && err.message ? err.message : err);
+		logStreams.delete(targetFile);
+	});
+	let bytesWritten = 0;
+	if (!truncate) {
+		try {
+			bytesWritten = fs.statSync(targetFile).size;
+		} catch {
+			// file doesn't exist yet — starts at 0
+		}
+	}
+	const state = { stream, bytesWritten };
+	logStreams.set(targetFile, state);
+	return state;
+}
+
 function appendLine(targetFile, entry) {
-	fs.appendFileSync(targetFile, `${JSON.stringify(entry)}\n`, 'utf8');
+	let state = logStreams.get(targetFile) || openStream(targetFile, false);
+	if (state.bytesWritten >= LOG_ROTATE_BYTES) {
+		state = openStream(targetFile, true);
+	}
+	const line = `${JSON.stringify(entry)}\n`;
+	state.stream.write(line, 'utf8');
+	state.bytesWritten += Buffer.byteLength(line, 'utf8');
 }
 
 function logEvent(type, data = {}) {

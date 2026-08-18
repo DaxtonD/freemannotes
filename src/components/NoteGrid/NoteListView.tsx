@@ -42,6 +42,13 @@ export type NoteListViewProps = {
 	variant: 'list' | 'strip';
 	orderedIds: string[];
 	docsById: Record<string, Y.Doc>;
+	/** Synthetic Y.Doc built from the persisted render snapshot — see NoteGrid.tsx's
+	 *  renderGridCard for the equivalent grid-view fallback. Without this, a note
+	 *  whose live doc hasn't loaded yet renders nothing at all (a shared note's doc
+	 *  load is gated behind an async placements fetch — see CLAUDE.md's Shared Note
+	 *  Placement Reconciliation section), instead of the last-known content grid
+	 *  view already shows immediately in the same situation. */
+	snapshotDocById: Map<string, Y.Doc>;
 	noteSnapshotById: Map<string, VisibleNoteSnapshot>;
 	/** collectionId → full path label */
 	collectionPathById: Map<string, string>;
@@ -491,7 +498,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 			style={shouldVirtualize ? { paddingTop: `${leadingPaddingPx}px`, paddingBottom: `${trailingPaddingPx}px` } : undefined}
 		>
 			{renderedItems.map(({ key, noteId }) => {
-				const doc = props.docsById[noteId];
+				const doc = props.docsById[noteId] ?? props.snapshotDocById.get(noteId) ?? null;
 				if (!doc) return null;
 				const snapshot = props.noteSnapshotById.get(noteId);
 				const collectionId = snapshot?.collectionId ?? null;

@@ -378,7 +378,10 @@ function AboutSectionContent(props: {
 						alt={props.t('prefs.aboutVersionIconAlt')}
 						className={styles.aboutVersionIcon}
 					/>
-					<span className={styles.aboutVersionText}>{__APP_VERSION__}</span>
+					<span className={styles.aboutVersionText}>
+						{__APP_VERSION__} · {__BUILD_TAG__}
+						{__IS_DEV_BUILD__ ? ' (dev)' : ''}
+					</span>
 				</div>
 				<div className={styles.aboutHudWrap}>
 					<div className={styles.aboutHudGrid} role="status" aria-live="polite">

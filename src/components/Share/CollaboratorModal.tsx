@@ -224,8 +224,16 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		if (!props.authUserId || !props.docId) return false;
 		const cached = await readCachedNoteShareCollaborators(props.authUserId, props.docId);
 		if (cached) {
-			const normalized = props.offlineCanManageHint && !cached.canManage ? buildOfflineManagerSnapshot(props.authUserId, props.docId, cached) : cached;
-			setSnapshot(normalized);
+			// A real cached snapshot already reflects a server-confirmed answer for THIS
+			// note — trust it outright. offlineCanManageHint is only a heuristic (derived
+			// from workspace/placement role, which doesn't know about notes that were
+			// shared TO this user and now live as ordinary first-class notes rather than
+			// SHARED_WITH_ME alias placements), and forcing it to override real cached
+			// data used to mean: any non-owner who had ever correctly seen canManage:false
+			// would get flipped back to a fake canManage:true on every reopen — and with
+			// no network round trip happening on a degraded connection to correct it, that
+			// wrong state could stick around indefinitely.
+			setSnapshot(cached);
 			return true;
 		}
 		if (props.offlineCanManageHint) {
@@ -519,6 +527,11 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 					collaboratorUserId: snapshot.currentUserId,
 				});
 				await loadCachedState();
+				// Queued-for-replay is still a confirmed "you're leaving this note" from
+				// the user's own perspective — the note should disappear from their grid
+				// immediately, same as the online-success path, not only once the queue
+				// eventually flushes.
+				props.onSelfRemoved?.();
 				props.onChanged?.();
 				return;
 			}
@@ -536,6 +549,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 					collaboratorUserId: snapshot.currentUserId,
 				});
 				await loadCachedState();
+				props.onSelfRemoved?.();
 				props.onChanged?.();
 			}
 		} catch (err) {
@@ -614,9 +628,15 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	const currentUserCollaborator = snapshot.currentUser && (snapshot.selfCollaboratorId || snapshot.sharedBy) ? snapshot.currentUser : null;
 	const visibleCollaboratorCount = snapshot.collaborators.length + (snapshot.sharedBy ? 1 : 0);
 	const resolvedNoteTitle = (props.noteTitle || snapshot.noteTitle || '').trim() || t('note.untitled');
-	// App only opens this modal for users who can manage, but snapshot.canManage starts false
-	// until IDB/server hydrate. Keep all accordion headers mounted until access resolves.
-	const showManageSections = snapshot.canManage || !accessResolved;
+	// snapshot.canManage starts false until IDB/server hydrate, and this modal is opened for
+	// both owners/editors AND plain viewers of a shared note — so "unresolved" can't default
+	// to "show owner controls" anymore. offlineCanManageHint carries the caller's best guess
+	// at open time (right most of the time — wrong mainly for a first-class shared note this
+	// device has never synced before); it's a reasonable optimistic default for the likely-owner
+	// case, and if it turns out wrong the sections just fade out a moment later. Defaulting to
+	// unresolved=true unconditionally used to flash the full owner accordion at every viewer who
+	// opened a shared note, every single time.
+	const showManageSections = snapshot.canManage || (!accessResolved && Boolean(props.offlineCanManageHint));
 
 	if (!props.isOpen) return null;
 
@@ -818,7 +838,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 												{snapshot.selfCollaboratorId ? (
 													<div className={styles.memberActions}>
 														<button type="button" className={`${styles.secondaryButton} ${styles.memberActionButton}`} onClick={() => void handleRemove()} disabled={busy || !snapshot.selfCollaboratorId}>
-															{t('share.leaveNote')}
+															{busy ? t('common.loading') : t('share.leaveNote')}
 														</button>
 													</div>
 												) : null}
@@ -873,7 +893,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 															<option value="VIEWER">{t('share.roleViewer')}</option>
 														</select>
 														<button type="button" className={`${styles.secondaryButton} ${styles.memberRemoveButton}`} onClick={() => void handleRevoke(collaborator.id)} disabled={busy || loading}>
-															{t('share.revoke')}
+															{busy ? t('common.loading') : t('share.revoke')}
 														</button>
 													</div>
 												) : null}

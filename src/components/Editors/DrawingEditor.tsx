@@ -528,9 +528,21 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		const scheduleInitialViewportFit = (elements: readonly ReturnType<ExcalidrawImperativeAPI['getSceneElements']>[number][]): void => {
 			if (elements.length === 0) {
 				setIsInitialViewportReady(true);
-				// Mark initial fit as done so onChange callbacks from the user's first
-				// draw don't trigger scrollToContent and jump the new element.
-				initialViewportFitNoteIdRef.current = props.noteId;
+				if (props.isPendingNew) {
+					// Genuinely new, blank drawing — empty IS the real initial state, not
+					// a sync-in-progress placeholder. Latch now so the user's first stroke
+					// (which fires this same onChange) doesn't trigger scrollToContent and
+					// yank the viewport out from under them mid-draw.
+					initialViewportFitNoteIdRef.current = props.noteId;
+				}
+				// For an existing note (own or shared) that's simply still loading, empty
+				// here is transient — leave the latch unset so the fit still runs once
+				// real content actually arrives from IDB/Yjs sync. A shared drawing this
+				// device has never cached before starts from a genuinely empty snapshot
+				// (see initialSceneElements' own comment) — latching here unconditionally
+				// used to permanently skip the centering fit for it, since real elements
+				// arriving moments later via the WS-driven onChange would hit the
+				// already-latched guard below and never call scrollToContent at all.
 				return;
 			}
 
@@ -662,6 +674,8 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 	}, [api, yAssets]);
 
 	React.useEffect(() => {
+		// TEMPORARY diagnostic — remove once the viewer-realtime-drawing investigation is done.
+		console.debug('[drawing-binding-debug] effect run', { readOnly, hasApi: Boolean(api), hasAwareness: stableAwareness != null });
 		if (!api) return;
 		// Defer binding creation until the WebSocket provider's awareness object is
 		// available. ExcalidrawBinding immediately calls awareness.getStates() in its
@@ -679,7 +693,15 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 		const bindingWithSnapshot = binding as ExcalidrawBinding & Partial<BindingSnapshot>;
 		bindingWithSnapshot.lastKnownElements = readBindingElementSnapshot(yElements);
 		bindingWithSnapshot.lastKnownFileIds = new Set(Array.from(yAssets.keys()));
+		// TEMPORARY diagnostic — a raw, independent observer bypassing ExcalidrawBinding
+		// entirely, to tell apart "the Yjs doc isn't receiving remote updates" from "it is,
+		// but the binding/Excalidraw canvas isn't reacting to them."
+		const debugObserver = (): void => {
+			console.debug('[drawing-binding-debug] yElements changed (raw observer)', { readOnly, length: yElements.length, at: Date.now() });
+		};
+		yElements.observeDeep(debugObserver);
 		return () => {
+			yElements.unobserveDeep(debugObserver);
 			bindingRef.current = null;
 			binding.destroy();
 		};
@@ -1384,34 +1406,36 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 							<MainMenu.DefaultItems.SearchMenu />
 							<MainMenu.DefaultItems.CommandPalette />
 							<MainMenu.Separator />
-							<MainMenu.ItemCustom>
-								<div className={styles.drawingMainMenuSection}>
-									<div className={styles.drawingMainMenuSectionTitle}>{t('drawings.canvasBackground')}</div>
-									<div className={styles.drawingMainMenuColorGrid} role="list" aria-label={t('drawings.canvasBackgroundColors')}>
-										{DRAWING_BACKGROUND_PRESETS.map((preset) => {
-											const isActive = drawingBackgroundColor.toLowerCase() === preset.color.toLowerCase();
-											return (
-												<button
-													key={preset.id}
-													type="button"
-													role="listitem"
-													className={`${styles.drawingMainMenuColorButton}${isActive ? ` ${styles.drawingMainMenuColorButtonActive}` : ''}`}
-													onClick={() => handleSelectCanvasBackground(preset.color)}
-													aria-label={preset.label}
-													title={preset.label}
-												>
-													<span
-														className={styles.drawingMainMenuColorSwatch}
-														aria-hidden="true"
-														style={{ background: preset.color }}
-													/>
-												</button>
-											);
-										})}
+							{!readOnly ? (
+								<MainMenu.ItemCustom>
+									<div className={styles.drawingMainMenuSection}>
+										<div className={styles.drawingMainMenuSectionTitle}>{t('drawings.canvasBackground')}</div>
+										<div className={styles.drawingMainMenuColorGrid} role="list" aria-label={t('drawings.canvasBackgroundColors')}>
+											{DRAWING_BACKGROUND_PRESETS.map((preset) => {
+												const isActive = drawingBackgroundColor.toLowerCase() === preset.color.toLowerCase();
+												return (
+													<button
+														key={preset.id}
+														type="button"
+														role="listitem"
+														className={`${styles.drawingMainMenuColorButton}${isActive ? ` ${styles.drawingMainMenuColorButtonActive}` : ''}`}
+														onClick={() => handleSelectCanvasBackground(preset.color)}
+														aria-label={preset.label}
+														title={preset.label}
+													>
+														<span
+															className={styles.drawingMainMenuColorSwatch}
+															aria-hidden="true"
+															style={{ background: preset.color }}
+														/>
+													</button>
+												);
+											})}
+										</div>
 									</div>
-								</div>
-							</MainMenu.ItemCustom>
-							<MainMenu.Separator />
+								</MainMenu.ItemCustom>
+							) : null}
+							{!readOnly ? <MainMenu.Separator /> : null}
 							<MainMenu.DefaultItems.ToggleTheme />
 							<MainMenu.DefaultItems.ClearCanvas />
 							<MainMenu.DefaultItems.Help />
@@ -1559,7 +1583,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 						setMoreMenuAnchorRect(null);
 						props.onAddLabels?.();
 					} : undefined}
-					onTrash={props.onDelete ? () => {
+					onTrash={!readOnly && props.onDelete ? () => {
 						setIsMoreMenuOpen(false);
 						setMoreMenuAnchorRect(null);
 						void props.onDelete?.(props.noteId);

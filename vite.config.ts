@@ -16,6 +16,21 @@ import type { Plugin } from 'vite';
 const packageJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf-8')) as { version?: string };
 const appVersion = String(packageJson.version || 'dev');
 
+// A random per-process fingerprint, regenerated every time Vite starts (both `npm run
+// dev` and `npm run build`) — shown in the app's About section and logged to the
+// console on boot. package.json's version rarely changes between dev iterations, so on
+// its own it can't answer "am I actually looking at what I just built" — this can.
+function generateBuildTag(): string {
+	const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+	let tag = '';
+	for (let i = 0; i < 4; i += 1) tag += alphabet[Math.floor(Math.random() * alphabet.length)];
+	return tag;
+}
+const buildTag = generateBuildTag();
+// Same info as the browser console banner (main.tsx), but printed server-side so the
+// tag is visible the instant `npm run dev`/`npm run build` starts — no browser required.
+console.log(`[vite.config] Freeman Notes v${appVersion} · build ${buildTag}`);
+
 function parsePublicOrigin(rawValue: string): URL | null {
 	const normalized = String(rawValue || '').trim();
 	if (!normalized) return null;
@@ -153,7 +168,8 @@ function yjsWebsocketPlugin(): Plugin {
 	};
 }
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
+	const isDevServer = command === 'serve';
 	const envDir = './env.vite';
 	const env = loadEnv(mode, envDir, 'VITE_');
 	const devPort = Number(env.VITE_DEV_PORT || 5173);
@@ -174,11 +190,26 @@ export default defineConfig(({ mode }) => {
 		}
 		: undefined;
 	// Branch policy for Yjs transport in Vite:
-	// - Development branch: always embed Yjs websocket in Vite to eliminate noisy
-	//   /yjs ws proxy disconnect logs during iterative mobile testing.
+	// - Development branch: proxy /yjs to server.js, same as production, so dev
+	//   testing actually proves prod behavior. The embedded in-Vite-process
+	//   plugin below (yjsWebsocketPlugin) used to be the dev default instead —
+	//   it runs in a separate Node process from server.js, so it has no access
+	//   to persistAdapter and never calls registerDocWorkspace(). Since
+	//   YjsPersistenceAdapter.bindState()'s PostgreSQL read is workspace-scoped
+	//   (`WHERE docId = ... AND workspaceId = ...`), any room whose workspace
+	//   was never registered silently loaded as empty — invisible for your own
+	//   notes (they happen to get their workspace registered some other way)
+	//   but permanently broken for a note shared into your workspace from
+	//   someone else's, since nothing else ever registers that mapping. It
+	//   also skipped auth and workspace-membership checks entirely. It was
+	//   originally embedded instead of proxied "to eliminate noisy /yjs ws
+	//   proxy disconnect logs during iterative mobile testing" — a real but
+	//   cosmetic annoyance, not worth trading correctness for. Proxying costs
+	//   noisier reconnect logs on flaky connections; it does not reintroduce
+	//   this bug.
 	// - Non-development branch: respect explicit env toggles for proxy/embed.
-	const useYjsProxy = mode === 'development' ? false : yjsProxyEnv === '1';
-	const embedYjs = mode === 'development' ? true : yjsEmbedEnv === '1';
+	const useYjsProxy = mode === 'development' ? true : yjsProxyEnv === '1';
+	const embedYjs = mode === 'development' ? false : yjsEmbedEnv === '1';
 
 	return {
 		envDir,
@@ -202,8 +233,12 @@ export default defineConfig(({ mode }) => {
 					name: 'Freeman Notes',
 					short_name: 'Freeman Notes',
 					description: 'Offline-first collaborative note taking for personal and shared workspaces.',
-					version: appVersion,
-					version_name: appVersion,
+					// NOT `version`/`version_name` — those aren't real Web App Manifest fields
+					// (that's a Chrome *Extension* manifest field; browsers silently ignore it
+					// here). There is no standard mechanism to control the version number Android
+					// shows in its WebAPK App Info screen — it's a fixed "1" no matter what a PWA's
+					// manifest says. The About-section build tag (__BUILD_TAG__) is the actual way
+					// to verify what's running; don't re-add these expecting them to do anything.
 					start_url: '/',
 					scope: '/',
 					display: 'standalone',
@@ -241,6 +276,8 @@ export default defineConfig(({ mode }) => {
 		],
 		define: {
 			__APP_VERSION__: JSON.stringify(appVersion),
+			__BUILD_TAG__: JSON.stringify(buildTag),
+			__IS_DEV_BUILD__: JSON.stringify(isDevServer),
 		},
 		server: {
 			host: true,
