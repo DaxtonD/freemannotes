@@ -96,6 +96,7 @@ import {
 	writeCachedDeviceAppearancePreferences,
 } from './core/deviceAppearancePreferences';
 import { useDocumentManager } from './core/DocumentManagerContext';
+import { fetchWithTimeout } from './core/network';
 import { type LocaleCode, useI18n } from './core/i18n';
 import { addNoteDrawingId, clearNoteDocPendingNew, initChecklistNoteDoc, initDrawingNoteDoc, initTextNoteDoc, makeNoteId, readDrawingLinkState, readNoteFromDoc, removeNoteDrawingId, setNoteDocPendingNew, setNoteReminder } from './core/noteModel';
 import { getNotePinPrefsSnapshot, moveUserNotePinPreference, replaceUserNotePinPrefs, resolveUserNotePinned, setUserNotePinnedOnDoc, setUserNotePinPreferenceScope } from './core/notePinPreferences';
@@ -1006,6 +1007,98 @@ function readAuthCache(): AuthCacheV1 | null {
 	}
 }
 
+const SHARED_WORKSPACES_PREFETCH_INFORMED_KEY_PREFIX = 'freemannotes.sharedWorkspacesPrefetchInformed.v1:';
+
+// sharedWorkspacesPrefetchInformed (see its own declaration) starts false on every
+// mount and only flips true once refreshNoteShareState has run with real knowledge
+// of the workspace list — on a warm relaunch that's still an async round trip, even
+// if usually a fast one. In the meantime, NoteGrid's Shared-With-Me folder filter
+// can't apply yet, so a warm boot briefly renders every folder's shared notes
+// unfiltered before the correct subset resolves a moment later — confirmed
+// 2026-08-22 as a visible "wrong notes flash in, then the right ones settle" bug,
+// the milder sibling of the "notes silently missing" bug this flag was originally
+// added to fix. Persisting the last-known-good value lets a warm mount start
+// already informed instead of starting blind every single time; a stale "true"
+// from an account/workspace change is harmless since the underlying data is still
+// verified fresh by the real async check that always follows on every mount, this
+// only ever changes how early the filter is ALLOWED to apply.
+//
+// Turns out fixing THIS flag alone wasn't remotely enough — it was step one of four.
+// sharedPlacements, sharedPlacementsHydrated, activeWorkspaceSystemKind, and
+// activeSharedFolder all had the exact same "starts blank, only becomes true after an
+// async round trip" disease, and any ONE of them still being wrong on first paint was
+// enough to reproduce the bug in a slightly different shape. See each of their own
+// useState declarations below for the rest of this saga. If you're fixing a "shared
+// notes flash / vanish / bounce back to the wrong folder on refresh" bug and you've
+// only found one culprit, you have not found all of them. Go check the others too.
+function readSharedWorkspacesPrefetchInformedCache(userId: string | null | undefined): boolean {
+	if (typeof window === 'undefined' || !userId) return false;
+	try {
+		return window.localStorage.getItem(`${SHARED_WORKSPACES_PREFETCH_INFORMED_KEY_PREFIX}${userId}`) === '1';
+	} catch {
+		return false;
+	}
+}
+
+function writeSharedWorkspacesPrefetchInformedCache(userId: string | null | undefined, informed: boolean): void {
+	if (typeof window === 'undefined' || !userId) return;
+	try {
+		if (informed) {
+			window.localStorage.setItem(`${SHARED_WORKSPACES_PREFETCH_INFORMED_KEY_PREFIX}${userId}`, '1');
+		} else {
+			window.localStorage.removeItem(`${SHARED_WORKSPACES_PREFETCH_INFORMED_KEY_PREFIX}${userId}`);
+		}
+	} catch {
+		// Best effort only.
+	}
+}
+
+const SHARED_PLACEMENTS_CACHE_KEY_PREFIX = 'freemannotes.sharedPlacements.v1:';
+
+// sharedWorkspacesPrefetchInformed's own synchronous seed (above) turned out to
+// only be half of the "wrong notes flash in, then the right ones settle" bug —
+// it lets NoteGrid's Shared-With-Me folder filter start ALLOWED to apply on a
+// warm mount, but the filter also needs sharedPlacements itself (the actual
+// folderName data it filters by) and sharedPlacementsHydrated (the other half
+// of the gate NoteGrid checks) to be correct on that very first render too.
+// Both of those still started from a blank/false state and only caught up once
+// refreshNoteShareState's async IDB-cache read resolved a render or two later —
+// so a page refresh while sitting in "Shared With Me / <folder>" briefly showed
+// every folder's notes unfiltered before snapping to the right subset. Seeding
+// this from localStorage (synchronous, unlike IndexedDB) closes that gap the
+// same way sidebarWorkspaces/sharedWorkspacesPrefetchInformed already do — the
+// real IDB/network read below still runs on every mount and overwrites this
+// with authoritative data shortly after.
+function readSharedPlacementsCache(userId: string | null | undefined): readonly SharedNotePlacement[] | null {
+	if (typeof window === 'undefined' || !userId) return null;
+	try {
+		const raw = window.localStorage.getItem(`${SHARED_PLACEMENTS_CACHE_KEY_PREFIX}${userId}`);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? (parsed as SharedNotePlacement[]) : null;
+	} catch {
+		return null;
+	}
+}
+
+function writeSharedPlacementsCache(userId: string | null | undefined, placements: readonly SharedNotePlacement[]): void {
+	if (typeof window === 'undefined' || !userId) return;
+	try {
+		window.localStorage.setItem(`${SHARED_PLACEMENTS_CACHE_KEY_PREFIX}${userId}`, JSON.stringify(placements));
+	} catch {
+		// Best effort only — if this fails (e.g. quota), the IDB/network read still corrects things.
+	}
+}
+
+function clearSharedPlacementsCache(userId: string | null | undefined): void {
+	if (typeof window === 'undefined' || !userId) return;
+	try {
+		window.localStorage.removeItem(`${SHARED_PLACEMENTS_CACHE_KEY_PREFIX}${userId}`);
+	} catch {
+		// Best effort only.
+	}
+}
+
 function writeAuthCache(next: AuthCacheV1): void {
 	if (typeof window === 'undefined') return;
 	try {
@@ -1359,22 +1452,96 @@ export function App(): React.JSX.Element {
 	const [importParseResult, setImportParseResult] = React.useState<import('./core/import/ImportTypes').ParseResult | null>(null);
 	const [isWorkspaceSwitcherOpen, setIsWorkspaceSwitcherOpen] = React.useState(_restoredOverlay?.isWorkspaceSwitcherOpen ?? false);
 	const [activeWorkspaceName, setActiveWorkspaceName] = React.useState<string | null>(null);
-	const [activeWorkspaceSystemKind, setActiveWorkspaceSystemKind] = React.useState<string | null>(null);
 	// Seed from localStorage so the sidebar workspace list is populated on the
 	// very first render, before the async IDB snapshot resolves. The IDB/network
 	// fetch will overwrite this with authoritative data shortly after mount.
 	const [sidebarWorkspaces, setSidebarWorkspaces] = React.useState<readonly SidebarWorkspaceListItem[]>(
 		() => startupHydration.workspaceList.length > 0 ? startupHydration.workspaceList : readWorkspaceListLocalCache(cachedAuth?.userId ?? ''),
 	);
+	// Piece three of four. This was the one that actually explained the "sometimes it
+	// flashes, sometimes it just gets stuck at the wrong folder" intermittent nonsense —
+	// pieces one and two above weren't enough on their own. Seeded from the same
+	// synchronously-available sidebarWorkspaces/authWorkspaceId
+	// (both already resolved above) instead of starting null — mirrors the effect at
+	// ~line 5410 that normally keeps this in sync. Starting null meant the very first
+	// effect pass of the activeSharedFolder validation effect below always saw
+	// activeWorkspaceSystemKind !== 'SHARED_WITH_ME' and unconditionally reset
+	// activeSharedFolder to null on every single mount — even when activeSharedFolder
+	// was itself about to be correctly seeded as non-null — forcing every warm reload
+	// of a Shared-With-Me subfolder to visibly bounce through the root folder (or, if
+	// the async restore chain that re-applies it afterward lost a race, get stuck
+	// there) before settling on the right folder a moment later.
+	const [activeWorkspaceSystemKind, setActiveWorkspaceSystemKind] = React.useState<string | null>(
+		() => sidebarWorkspaces.find((workspace) => workspace.id === authWorkspaceId)?.systemKind ?? null
+	);
 	const [sidebarWorkspacesBusy, setSidebarWorkspacesBusy] = React.useState(false);
 	const [sidebarWorkspacesError, setSidebarWorkspacesError] = React.useState<string | null>(null);
 	// sharedPlacements holds ALL placements (active workspace + every other SHARED_WITH_ME
 	// workspace) so that bubble-click lookups and setExternalRoomAliases work across any
 	// workspace. visibleSharedPlacements (below) limits what the NoteGrid receives.
-	const [sharedPlacements, setSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
+	// Piece two of four (see sharedWorkspacesPrefetchInformed's comment above for the
+	// full rundown). Seeded from localStorage (see readSharedPlacementsCache) so
+	// folder-scoping data is correct from the very first render on a warm relaunch
+	// instead of only after refreshNoteShareState's async IDB/network read resolves —
+	// see that function's own cache-write calls for where this is kept fresh.
+	const [sharedPlacements, setSharedPlacements] = React.useState<readonly SharedNotePlacement[]>(
+		() => readSharedPlacementsCache(cachedAuth?.userId) ?? []
+	);
 	// activeWorkspaceSharedPlacements holds ONLY the placements for the currently active
 	// workspace. Used by visibleSharedPlacements so personal-workspace shared notes appear.
 	const [activeWorkspaceSharedPlacements, setActiveWorkspaceSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
+	// Historically started as [] on every mount and only reflected reality once
+	// refreshNoteShareState's IDB-cache seed (or, failing that, its network fetch)
+	// resolves. Code that treats "selectedNoteId is a shared alias with no matching
+	// entry in sharedPlacements" as "access was revoked" needs to tell that apart from
+	// "we haven't checked yet" — a full page reload on a still-shared note (e.g. Android
+	// reclaiming a backgrounded PWA tab) restores selectedNoteId synchronously from
+	// history but sharedPlacements took an extra render or two, which used to read as a
+	// false, blocking "you lost access" overlay (see the noteAccessLostState effect) — and
+	// NoteGrid's folder-scoping filter (which also gates on this flag, together with
+	// sharedWorkspacesPrefetchInformed below) would render every folder's shared notes
+	// unfiltered for that same render or two. Now seeded true in lockstep with
+	// sharedPlacements above whenever a cache entry exists for this user, since both are
+	// written together by refreshNoteShareState and a cached (even empty) placements array
+	// means "we've checked before," not "we haven't checked yet."
+	const [sharedPlacementsHydrated, setSharedPlacementsHydrated] = React.useState(
+		() => readSharedPlacementsCache(cachedAuth?.userId) !== null
+	);
+	// Stronger than sharedPlacementsHydrated above: that flag flips true on the very
+	// first placements read regardless of whether the broader workspace list was known
+	// yet, so it can't by itself distinguish "we searched every Shared-With-Me workspace
+	// and found none" from "we searched blind, before the workspace list even loaded,
+	// and of course found none." This one only flips true once refreshNoteShareState's
+	// sibling-workspace placement prefetch has actually run with real knowledge of the
+	// workspace list (see hadWorkspaceListKnowledge inside refreshNoteShareState).
+	// Consumers that decide whether a workspace's shared notes are genuinely absent
+	// (vs. just not hydrated yet) — NoteGrid's folder-scoping filter, the "workspace
+	// hasn't synced yet" empty-state message — must gate on BOTH flags together, not
+	// just sharedPlacementsHydrated alone.
+	// Initialized from the persisted last-known-good value (see
+	// readSharedWorkspacesPrefetchInformedCache's own comment) so a warm relaunch can
+	// start already informed instead of starting blind on every single mount — the
+	// real async check below still runs and corrects this either way, this only
+	// affects how early NoteGrid's folder filter is allowed to apply.
+	const [sharedWorkspacesPrefetchInformed, setSharedWorkspacesPrefetchInformed] = React.useState(
+		() => readSharedWorkspacesPrefetchInformedCache(cachedAuth?.userId)
+	);
+	// In-memory, session-scoped cache of the last successfully-resolved sharedPlacements
+	// / activeWorkspaceSharedPlacements values, keyed by the workspace they were
+	// resolved for. handleWorkspaceActivated clears both live state arrays to [] on
+	// every switch — necessary (see its own comment) to stop a previous workspace's
+	// placements from bleeding into the new one via visibleSharedPlacements's
+	// folderName-only filtering — but a blind [] means every switch to a workspace
+	// with shared notes shows them as genuinely absent for the async gap until
+	// refreshNoteShareState's fetch resolves, then they all pop in at once. Confirmed
+	// 2026-08-22 as a real, visible mid-session symptom (not just a first-load one —
+	// that case was already covered by sharedWorkspacesPrefetchInformed's own
+	// localStorage persistence). Restoring from this cache on switch — instead of []
+	// — is safe against the original leak because each entry was only ever written
+	// while THAT SPECIFIC workspace was active, so it can never contain another
+	// workspace's data.
+	const sharedPlacementsSnapshotByWorkspaceRef = React.useRef<Map<string, readonly SharedNotePlacement[]>>(new Map());
+	const activeWorkspaceSharedPlacementsSnapshotByWorkspaceRef = React.useRef<Map<string, readonly SharedNotePlacement[]>>(new Map());
 	const sharedPlacementsRef = React.useRef<readonly SharedNotePlacement[]>(sharedPlacements);
 	sharedPlacementsRef.current = sharedPlacements;
 	const activeWorkspaceSharedPlacementsRef = React.useRef<readonly SharedNotePlacement[]>(activeWorkspaceSharedPlacements);
@@ -1446,7 +1613,17 @@ export function App(): React.JSX.Element {
 		}
 		return normalizedRelatedNoteId;
 	}, [ensureManualRoomAlias, resolveRelatedNoteRoomId]);
-	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(null);
+	// Piece four of four, and I mean it this time. Seeded the same way authWorkspaceId
+	// is above (cachedWorkspaceSelection, guarded by matching userId) instead of
+	// starting null. Combined with the
+	// activeWorkspaceSystemKind sync-seed above, this means a warm reload of a
+	// Shared-With-Me subfolder has the right folder selected from the very first
+	// render — the async restore chain (pendingRestoredSharedFolder /
+	// pendingSharedFolderReveal below) still runs afterward as a correction, but for
+	// the common case it now has nothing to correct.
+	const [activeSharedFolder, setActiveSharedFolder] = React.useState<string | null>(
+		() => (cachedAuth && cachedWorkspaceSelection?.userId === cachedAuth.userId ? cachedWorkspaceSelection.activeSharedFolder ?? null : null)
+	);
 	const [pendingRestoredSharedFolder, setPendingRestoredSharedFolder] = React.useState<string | null | false>(false);
 	const [pendingSharedFolderReveal, setPendingSharedFolderReveal] = React.useState<{ workspaceId: string; folderName: string | null } | null>(null);
 	const [pendingShareNotificationCount, setPendingShareNotificationCount] = React.useState(0);
@@ -1466,6 +1643,13 @@ export function App(): React.JSX.Element {
 	// user in localStorage as an offline/cache fallback, and mirrored to the
 	// server-backed user preferences row for cross-device persistence.
 	const dismissedFailedLinkIdsRef = React.useRef<Set<string>>(new Set());
+	// Server-known dismissed share-invitation notification IDs (UserPreference.
+	// dismissedShareInvitationIds). ShareNotificationsModal owns the actual
+	// localStorage-cached hidden set and merges this in itself (see its
+	// serverDismissedInvitationIds prop) — this ref just tracks the latest
+	// server-confirmed value so onPersistDismissedInvitationIds below can push a
+	// cumulative (not just newly-added) set on every clear.
+	const dismissedShareInvitationIdsRef = React.useRef<Set<string>>(new Set());
 	React.useEffect(() => {
 		if (!authUserId || typeof window === 'undefined') {
 			dismissedFailedLinkIdsRef.current = new Set();
@@ -2428,7 +2612,12 @@ export function App(): React.JSX.Element {
 				? true
 				: canEditActiveWorkspace;
 		if (!canOpen) return;
-		const docId = options?.docId ?? (placement ? placement.roomId : authWorkspaceId ? `${authWorkspaceId}:${noteId}` : null);
+		// The `${authWorkspaceId}:${noteId}` synthesis below is only valid for an owned
+		// note's real id — for a shared-placement alias with no matching placement (not
+		// yet loaded, or genuinely gone) it would produce a wrong, nonexistent room
+		// (`${authWorkspaceId}:shared-placement:<uuid>`) instead of correctly bailing,
+		// the same mistake resolveMediaDocId's own doc comment warns against elsewhere.
+		const docId = options?.docId ?? (placement ? placement.roomId : noteId.startsWith('shared-placement:') ? null : authWorkspaceId ? `${authWorkspaceId}:${noteId}` : null);
 		if (!docId) return;
 		const nextState: CollaboratorModalState = {
 			noteId,
@@ -2606,12 +2795,16 @@ export function App(): React.JSX.Element {
 			isMobileSidebarOpen: true,
 			isFabOpen: false,
 		};
-		if (sidebarView !== 'notes' && isMobileViewport && typeof window !== 'undefined' && isOverlayHistoryState(window.history.state)) {
-			commitOverlaySnapshot(nextSnapshot, 'replace');
-			return;
-		}
+		// Always push a real history entry for the sidebar itself, even when the
+		// current sidebarView isn't 'notes' (e.g. Images). A prior version replaced
+		// the current history entry instead in that case — undocumented in both the
+		// commit and the changelog it shipped in — which meant there was no longer a
+		// dedicated history entry for "I'm on Images" once the sidebar opened.
+		// closeMobileSidebar()'s history.back() then popped straight past Images to
+		// whatever was active before it was selected, landing back on the notes grid
+		// instead of returning to Images.
 		commitOverlaySnapshot(nextSnapshot, 'push');
-	}, [commitOverlaySnapshot, getOverlaySnapshot, isMobileViewport, sidebarView]);
+	}, [commitOverlaySnapshot, getOverlaySnapshot]);
 
 	const openMobileSearch = React.useCallback(() => {
 		const current = getOverlaySnapshot();
@@ -3963,8 +4156,18 @@ export function App(): React.JSX.Element {
 			//   user can access their offline IndexedDB notes.
 			const allowOfflineRestore = opts?.allowOfflineRestore ?? true;
 			try {
-				const res = await fetch(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
+				// This is the only thing that ever moves authStatus out of 'loading', and
+				// while it's loading the whole app renders nothing but the splash div — a
+				// stalled-but-never-rejecting fetch (the "technically online" mobile network
+				// state the rest of this codebase already guards against elsewhere) used to
+				// leave every user on a permanent blank screen with no way out but a reload.
+				// A hard timeout turns that hang into a real rejection, which the existing
+				// catch block below already handles correctly (falls back to the cached
+				// offline session).
+				const res = await fetchWithTimeout(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
 					credentials: 'include',
+					timeoutMs: 8000,
+					requestName: 'auth-me-probe',
 				});
 				const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 				if (!res.ok || !contentType.includes('application/json')) {
@@ -4440,6 +4643,11 @@ export function App(): React.JSX.Element {
 				if (!cancelled && mergedDismissedFailedLinkIds.size > 0) {
 					void refreshNoteShareStateRef.current();
 				}
+				dismissedShareInvitationIdsRef.current = new Set(
+					Object.entries(pref.dismissedShareInvitationIds || {})
+						.filter(([, dismissed]) => dismissed)
+						.map(([id]) => id)
+				);
 			}
 			setPrefsHydrationAttempted(true);
 		})();
@@ -4606,6 +4814,27 @@ export function App(): React.JSX.Element {
 	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [authOfflineMode, authStatus, sidebarWorkspaces.length]);
 
+	// refreshNoteShareState's own prefetch of every OTHER Shared-With-Me
+	// workspace's placements (inside it, keyed off sidebarWorkspacesRef) needs
+	// the exact same retry as backgroundPreloadAllWorkspaces above, and for the
+	// same reason: on a freshly cleared cache, refreshNoteShareState's first
+	// run (fired by the effect on authWorkspaceId) happens before
+	// loadSidebarWorkspaces has had a chance to populate sidebarWorkspaces, so
+	// it silently prefetches nothing for any workspace it doesn't know about
+	// yet — including Shared With Me — and nothing asked it to try again once
+	// the list landed. Confirmed 2026-08-20: switching to a never-visited
+	// Shared With Me workspace while offline showed zero notes as a result.
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || sidebarWorkspaces.length <= 1) return;
+		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+		const timer = window.setTimeout(() => {
+			void refreshNoteShareStateRef.current();
+		}, 500);
+		return () => window.clearTimeout(timer);
+	// Re-run only when workspace count changes or auth state changes.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [authStatus, sidebarWorkspaces.length]);
+
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId || authOfflineMode) {
 			cancelSyncOutboxWorker(authUserId);
@@ -4692,6 +4921,7 @@ export function App(): React.JSX.Element {
 		// Clear the localStorage workspace-list cache so a different user logging in
 		// on this device starts with a clean sidebar (no stale entries from previous session).
 		clearWorkspaceListLocalCache(authUserId ?? '');
+		clearSharedPlacementsCache(authUserId);
 		clearCachedReminderStates(authUserId ?? '');
 		clearPriorCollaboratorsCache();
 		clearPendingSelfMentionsStore();
@@ -4761,24 +4991,20 @@ export function App(): React.JSX.Element {
 			setOpenDocId(null);
 			setEditorMode('none');
 			setActiveSharedFolder(null);
-			// Clear stale shared placements from the previous workspace so the new
-			// NoteGrid instance doesn't inherit them as phantom skeleton cards. Without
-			// this, the offline fallback in refreshNoteShareState can restore the old
-			// workspace's placements (since lastKnownActiveWorkspacePlacements still
-			// holds them when the fallback runs), causing a blank rectangle in the grid
-			// that only disappears when the registry WebSocket syncs online.
-			setActiveWorkspaceSharedPlacements([]);
-			// Also clear the global placements list. visibleSharedPlacements's
-			// SHARED_WITH_ME branch filters THIS array (not activeWorkspaceSharedPlacements)
-			// by folderName alone — SharedNotePlacement carries no field indicating which
-			// workspace a placement is displayed in for the viewer, only sourceWorkspaceId
-			// (where the note originated), so there's no way to filter out just the old
-			// workspace's entries after the fact. Without this clear, root-level shared
-			// placements that belong to the PREVIOUS workspace (e.g. notes shared directly
-			// into Personal) stay in state and get shown as if they belonged to the newly
-			// active Shared With Me workspace, until the next refresh completes and
-			// re-scopes this array — the flash-then-correct behavior this fixes.
-			setSharedPlacements([]);
+			// Reset shared placements to whatever was last resolved specifically FOR this
+			// workspace (session-scoped, see sharedPlacementsSnapshotByWorkspaceRef's own
+			// comment) rather than blanking to [] outright. A blind [] is what originally
+			// stopped the previous workspace's placements from bleeding into the new one
+			// via visibleSharedPlacements's folderName-only filtering (SharedNotePlacement
+			// has no field indicating which workspace it's displayed in for the viewer) —
+			// but it also meant every switch showed genuinely-present shared notes as
+			// absent until refreshNoteShareState's fetch resolved, then they all popped in
+			// at once (confirmed 2026-08-22). Restoring from the per-workspace cache keeps
+			// the original fix intact (an entry can only ever contain data resolved while
+			// THAT workspace was active, so the old workspace's data can never leak in)
+			// while closing that gap for any workspace already visited this session.
+			setActiveWorkspaceSharedPlacements(activeWorkspaceSharedPlacementsSnapshotByWorkspaceRef.current.get(workspaceId) ?? []);
+			setSharedPlacements(sharedPlacementsSnapshotByWorkspaceRef.current.get(workspaceId) ?? []);
 			// Cancel any in-progress background preload so it cannot re-activate a
 			// previous workspace and clobber the user's intentional switch.
 			backgroundPreloadAbortRef.current++;
@@ -4819,7 +5045,20 @@ export function App(): React.JSX.Element {
 			if (authStatus !== 'authed' || authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) {
 				return;
 			}
-			await updateUserPreferences(deviceId, { activeSharedFolder: normalizedFolder });
+			// updateUserPreferences queues this behind a ~1s debounce by default — its
+			// own returned promise only resolves once that debounce actually fires, so
+			// simply awaiting it here still leaves up to ~1s where a page refresh kills
+			// the pending timer before the server ever sees the new folder. A refresh
+			// shortly after switching folders is a completely ordinary thing to do (not
+			// an edge case), and losing the pending write silently reverted the active
+			// folder back to whatever the server last had on reload — infuriating to
+			// debug because it looks like a data-sync bug and is actually just "we forgot
+			// to hit send." Same fix pattern as handleBubbleWorkspaceColorChange elsewhere
+			// in this file: queue, then flush immediately instead of waiting out the
+			// debounce. If you add another preference write that a user might plausibly
+			// refresh right after, it needs this too — check first, don't assume.
+			void updateUserPreferences(deviceId, { activeSharedFolder: normalizedFolder });
+			await flushUserPreferences(deviceId);
 		},
 		[authOfflineMode, authStatus, authUserId, deviceId]
 	);
@@ -5338,6 +5577,39 @@ export function App(): React.JSX.Element {
 		};
 	}, [activeWorkspaceSharedPlacements, authOfflineMode, authStatus, authUserId, authWorkspaceId, collaborationRefreshToken, manager, startupHydration.noteOrderIds]);
 
+	// Background-warms the collaborator cache for every shared note across every
+	// workspace — not just the active one. The effect above only covers
+	// activeWorkspaceSharedPlacements, and NoteGrid's own per-visible-note
+	// collaborator sync only runs for notes actually rendered on screen — so a
+	// workspace that's never been switched into while online (e.g. Shared With
+	// Me on a fresh login that goes offline before it's ever opened) has zero
+	// cached collaborator data for any of its notes. That's exactly what made
+	// the "manage collaborators" modal show nobody offline, confirmed
+	// 2026-08-20. Keyed on a stable roomId signature (not the sharedPlacements
+	// array reference) so this only re-runs when the actual set of shared docs
+	// changes, not on every unrelated refreshNoteShareState invocation.
+	const sharedPlacementRoomIdsSignature = React.useMemo(
+		() => [...new Set(sharedPlacements.map((placement) => String(placement.roomId || '').trim()).filter(Boolean))].sort().join('|'),
+		[sharedPlacements]
+	);
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId) return;
+		if (authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false)) return;
+		const docIds = sharedPlacementRoomIdsSignature ? sharedPlacementRoomIdsSignature.split('|') : [];
+		if (docIds.length === 0) return;
+		let cancelled = false;
+		void (async () => {
+			for (let start = 0; start < docIds.length; start += 6) {
+				if (cancelled) return;
+				const batch = docIds.slice(start, start + 6);
+				await Promise.all(batch.map((docId) => syncNoteShareCollaborators(authUserId, docId, { suppressError: true }).catch(() => null)));
+			}
+		})();
+		return () => {
+			cancelled = true;
+		};
+	}, [authOfflineMode, authStatus, authUserId, sharedPlacementRoomIdsSignature]);
+
 	React.useEffect(() => {
 		if (!noteGridCollaboratorFilter) return;
 		const next = workspaceCollaborators.find((entry) => entry.key === noteGridCollaboratorFilter.key);
@@ -5471,12 +5743,30 @@ export function App(): React.JSX.Element {
 	}, [activeCollection, activeLabels, activeReminderFilter, activeSortGrouping, activeSortMode, collectionPathById, noteGridCollaboratorFilter, sortDirectionByMode, t]);
 
 	const noteGridEmptyStateLabel = React.useMemo(() => {
+		// Distinguish "we don't know yet" from "genuinely empty" — without this, a
+		// Shared With Me workspace that's never been opened online before going
+		// offline shows the exact same "No notes yet." as a workspace that's fully
+		// synced and truly has zero notes, with no way to tell the difference.
+		// Both flags are required, not just sharedPlacementsHydrated: that one flips
+		// true on the very first placements read regardless of whether the broader
+		// workspace list was known yet, so alone it can't tell "we searched every
+		// Shared-With-Me workspace and found none" apart from "we searched blind,
+		// before the workspace list even loaded." sharedWorkspacesPrefetchInformed
+		// is the one that actually answers that. See both flags' own declarations.
+		if (
+			activeWorkspaceSystemKind === 'SHARED_WITH_ME'
+			&& connection.state === 'offline'
+			&& !(sharedPlacementsHydrated && sharedWorkspacesPrefetchInformed)
+			&& sidebarView === 'notes'
+		) {
+			return t('grid.workspaceNotYetSyncedOffline');
+		}
 		if (activeCollection) return 'No notes in this collection.';
 		if (activeFilterChips.length > 0) return 'No notes match current filters.';
 		if (sidebarView === 'archive') return 'No archived notes.';
 		if (sidebarView === 'trash') return 'Trash is empty.';
 		return 'No notes yet.';
-	}, [activeCollection, activeFilterChips.length, sidebarView]);
+	}, [activeCollection, activeFilterChips.length, activeWorkspaceSystemKind, connection.state, sharedPlacementsHydrated, sharedWorkspacesPrefetchInformed, sidebarView, t]);
 
 	const noteGridScopeLabel = React.useMemo(() => {
 		if (sidebarView === 'images') {
@@ -5969,6 +6259,8 @@ export function App(): React.JSX.Element {
 		if (authStatus !== 'authed' || !authUserId) {
 			setSharedPlacements([]);
 			setActiveWorkspaceSharedPlacements([]);
+			setSharedPlacementsHydrated(false);
+			setSharedWorkspacesPrefetchInformed(false);
 			setFailedLinkNotifications([]);
 			setPendingShareNotificationCount(0);
 			setPendingReminderNotificationCount(0);
@@ -6005,7 +6297,12 @@ export function App(): React.JSX.Element {
 			]);
 			if (!superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedPlacements(cachedAllPlacements);
+				writeSharedPlacementsCache(authUserId, cachedAllPlacements);
 				setActiveWorkspaceSharedPlacements(cachedActivePlacements);
+				// Flips once per login, on the first real (even if cache-only, even if
+				// empty) read — not gated on network success, since the whole point is to
+				// tell "we checked" apart from "we haven't checked yet" even fully offline.
+				setSharedPlacementsHydrated(true);
 				// Same staleness guard as the state writes above, and for the same
 				// reason: cachedAllPlacements is scoped to this closure's own
 				// requestedWorkspaceId. Calling this unconditionally let a slow
@@ -6076,14 +6373,28 @@ export function App(): React.JSX.Element {
 			// an offline load — the loadSidebarWorkspaces effect runs concurrently and may
 			// not have updated the ref yet.  Fall back to the persisted IDB workspace
 			// cache so the SHARED_WITH_ME placements are still fetched.
+			// Tracks whether this attempt had ANY real knowledge of the broader workspace
+			// list to search for Shared-With-Me siblings in — as opposed to running blind
+			// with an empty list and silently finding "zero" only because nothing had
+			// loaded yet. sharedPlacementsHydrated alone can't answer this: it flips true
+			// on the very first IDB read above regardless of whether the workspace list
+			// was known at that point, so a consumer gating on it alone could still treat
+			// a blind, uninformed "zero other workspaces" result as trustworthy. See
+			// sharedWorkspacesPrefetchInformed's own declaration for how it's used.
 			let sharedWithMeWsIds = sidebarWorkspacesRef.current
 				.filter((ws) => ws.systemKind === 'SHARED_WITH_ME' && ws.id !== authWorkspaceId)
 				.map((ws) => ws.id);
+			let hadWorkspaceListKnowledge = sidebarWorkspacesRef.current.length > 0;
 			if (sharedWithMeWsIds.length === 0 && authUserId) {
 				const cachedSnapshot = await readCachedWorkspaceSnapshot(authUserId, deviceId);
 				sharedWithMeWsIds = cachedSnapshot.workspaces
 					.filter((ws) => ws.systemKind === 'SHARED_WITH_ME' && ws.id !== authWorkspaceId)
 					.map((ws) => ws.id);
+				hadWorkspaceListKnowledge = hadWorkspaceListKnowledge || cachedSnapshot.workspaces.length > 0;
+			}
+			if (hadWorkspaceListKnowledge && !superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
+				setSharedWorkspacesPrefetchInformed(true);
+				writeSharedWorkspacesPrefetchInformedCache(authUserId, true);
 			}
 			const extraPlacementEntries = sharedWithMeWsIds.length > 0
 				? await Promise.all(sharedWithMeWsIds.map(async (id) => {
@@ -6144,7 +6455,12 @@ export function App(): React.JSX.Element {
 			// the API), but a superseded call's worse result kept winning the race.
 			if (!superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedPlacements(resolvedAllPlacements);
+				writeSharedPlacementsCache(authUserId, resolvedAllPlacements);
 				setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
+				if (requestedWorkspaceId) {
+					sharedPlacementsSnapshotByWorkspaceRef.current.set(requestedWorkspaceId, resolvedAllPlacements);
+					activeWorkspaceSharedPlacementsSnapshotByWorkspaceRef.current.set(requestedWorkspaceId, resolvedActiveWorkspacePlacements);
+				}
 				// Reconcile shared-note references directly into the active workspace's
 				// real noteOrder, instead of only injecting them at render time — a
 				// workspace now "contains references" (own notes + accepted shares), not
@@ -7156,11 +7472,15 @@ export function App(): React.JSX.Element {
 			if (authMode === 'register') payload.locale = locale;
 			if (authMode === 'register' && registrationInviteToken) payload.inviteToken = registrationInviteToken;
 
-			const res = await fetch(endpoint, {
+			// authBusy is only ever cleared in this function's own finally block below —
+			// on a stalled-but-never-rejecting request it would otherwise stay disabled
+			// forever with no error and no way to retry short of reloading the page.
+			const res = await fetchWithTimeout(endpoint, {
 				method: 'POST',
 				credentials: 'include',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(payload),
+				timeoutMs: 8000,
 			});
 
 			if (!res.ok) {
@@ -7193,9 +7513,14 @@ export function App(): React.JSX.Element {
 
 			// Re-fetch /me so we always sync to the server's truth. This keeps behavior
 			// consistent if server-side bootstrap logic updates role/workspace.
+			// Same timeout reasoning as the login/register POST above — this is a
+			// second, separate request on the same success path, and was missed in
+			// the original pass: a stall here left authBusy stuck exactly the same
+			// way, since it's still this function's own finally block that clears it.
 			try {
-				const meRes = await fetch(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
+				const meRes = await fetchWithTimeout(`/api/auth/me?deviceId=${encodeURIComponent(deviceId)}`, {
 					credentials: 'include',
+					timeoutMs: 8000,
 				});
 				const contentType = String(meRes.headers.get('content-type') || '').toLowerCase();
 				if (meRes.ok && contentType.includes('application/json')) {
@@ -7237,10 +7562,11 @@ export function App(): React.JSX.Element {
 					const blob = await getAvatarUploadBlob(registerAvatarUrl, registerAvatarAreaPixels, 256);
 					const form = new FormData();
 					form.append('file', blob, 'avatar.png');
-					const uploadRes = await fetch('/api/user/profile-image', {
+					const uploadRes = await fetchWithTimeout('/api/user/profile-image', {
 						method: 'POST',
 						credentials: 'include',
 						body: form,
+						timeoutMs: 45000,
 					});
 					if (!uploadRes.ok) throw new Error('Upload failed');
 					const uploadBody = await uploadRes.json().catch(() => null);
@@ -7281,8 +7607,14 @@ export function App(): React.JSX.Element {
 				}
 			}
 			manager.setWebsocketEnabled(Boolean(resolvedWorkspaceId));
-		} catch {
-			setAuthError('Authentication failed');
+		} catch (error) {
+			// This branch is a stalled/aborted/unreachable request (the fetchWithTimeout
+			// calls above throwing), not the server rejecting bad credentials — that
+			// case is handled separately above via res.ok, with the server's own error
+			// message. "Authentication failed" here was actively misleading: it reads
+			// as "wrong password" to a user who typed their password correctly and just
+			// happened to be on a bad connection.
+			setAuthError(isNetworkUnavailableError(error) ? t('auth.connectionTimeout') : 'Authentication failed');
 			setAuthStatus('unauth');
 			setAuthUserRole(null);
 			manager.setWebsocketEnabled(false);
@@ -9161,22 +9493,41 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (!selectedNoteId || !selectedNoteId.startsWith('shared-placement:')) return;
 		if (selectedNoteSharedPlacement) return;
+		// sharedPlacements starts empty on every mount (see sharedPlacementsHydrated's own
+		// comment) — a full page reload landing on a still-shared note (e.g. Android
+		// reclaiming a backgrounded PWA tab) restores selectedNoteId synchronously from
+		// history well before sharedPlacements catches up. Without this gate that render
+		// window looked identical to a real revoke and fired the overlay below on totally
+		// ordinary mobile app-resume.
+		if (!sharedPlacementsHydrated) return;
 		// Used to tear the editor down immediately here. Now surfaces the blocking
 		// "you lost access" overlay instead — see noteAccessLostState's own comment for
 		// why, and handleAcknowledgeNoteAccessLost for the actual teardown, deferred until
 		// the user acknowledges it.
 		setNoteAccessLostState((current) => current?.noteId === selectedNoteId ? current : { noteId: selectedNoteId });
-	}, [selectedNoteId, selectedNoteSharedPlacement]);
+	}, [selectedNoteId, selectedNoteSharedPlacement, sharedPlacementsHydrated]);
 
 	// Tidy up if the editor moved on for some other reason while the overlay's state was
 	// still set (e.g. back-button navigation away from it) — the overlay itself already
 	// stops rendering once selectedNoteId no longer matches, this just avoids leaving the
 	// small state object dangling in memory.
+	//
+	// Also self-heals a false positive from the trigger effect above: the
+	// sharedPlacementsHydrated gate closes most of that race, but isn't a hard
+	// guarantee (e.g. the placements fetch itself can be slow) — if the SAME note's
+	// placement does turn up after the overlay was already raised, clear it instead of
+	// leaving the user stuck looking at a "you lost access" screen for a note they
+	// still have.
 	React.useEffect(() => {
-		if (noteAccessLostState && selectedNoteId !== noteAccessLostState.noteId) {
+		if (!noteAccessLostState) return;
+		if (selectedNoteId !== noteAccessLostState.noteId) {
+			setNoteAccessLostState(null);
+			return;
+		}
+		if (selectedNoteSharedPlacement) {
 			setNoteAccessLostState(null);
 		}
-	}, [noteAccessLostState, selectedNoteId]);
+	}, [noteAccessLostState, selectedNoteId, selectedNoteSharedPlacement]);
 
 	const handleAcknowledgeNoteAccessLost = React.useCallback(() => {
 		const noteId = noteAccessLostState?.noteId ?? null;
@@ -10843,6 +11194,7 @@ export function App(): React.JSX.Element {
 						selectedNoteId={selectedNoteId}
 						canEditWorkspaceContent={canEditActiveWorkspace}
 						sharedNotes={sidebarView === 'trash' ? [] : visibleSharedPlacements}
+						sharedPlacementsHydrated={sharedPlacementsHydrated && sharedWorkspacesPrefetchInformed}
 						activeCollaboratorFilter={noteGridCollaboratorFilter}
 						activeCollectionId={activeCollectionId}
 						activeLabelIds={activeLabelIds}
@@ -11694,6 +12046,17 @@ export function App(): React.JSX.Element {
 					}
 					setPendingShareNotificationCount((prev) => Math.max(0, prev - failedLinkNotifications.length));
 					setFailedLinkNotifications([]);
+				}}
+				serverDismissedInvitationIds={Object.fromEntries(
+					[...dismissedShareInvitationIdsRef.current].map((id) => [id, true] as const)
+				)}
+				onPersistDismissedInvitationIds={(ids) => {
+					if (!authUserId || ids.length === 0) return;
+					const next = new Set([...dismissedShareInvitationIdsRef.current, ...ids]);
+					dismissedShareInvitationIdsRef.current = next;
+					void updateUserPreferences(deviceId, {
+						dismissedShareInvitationIds: Object.fromEntries([...next].map((id) => [id, true] as const)),
+					});
 				}}
 				onOpenReminder={(reminder) => {
 					setIsShareNotificationsOpen(false);

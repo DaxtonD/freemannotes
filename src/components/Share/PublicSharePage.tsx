@@ -1,5 +1,6 @@
 import React from 'react';
 import { getChecklistTextWithCountPrefix } from '../../core/checklistCounts';
+import { fetchWithTimeout } from '../../core/network';
 import styles from './PublicSharePage.module.css';
 
 type SharedChecklistItem = {
@@ -22,7 +23,10 @@ type Props = {
 };
 
 async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
-	const res = await fetch(input, init);
+	// This is the landing page for an unauthenticated recipient clicking a share link
+	// cold, on an unknown network — exactly the "technically online" mobile scenario a
+	// hard timeout exists for. Without it the whole page spins forever with no error.
+	const res = await fetchWithTimeout(input, { ...init, timeoutMs: 8000 });
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
 	if (!res.ok) {

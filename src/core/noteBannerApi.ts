@@ -1,4 +1,5 @@
 import { isLightTheme, type ThemeId } from './theme';
+import { fetchWithTimeout } from './network';
 
 export type NoteBannerOption = {
 	fileName: string;
@@ -79,9 +80,13 @@ export function getNoteBannerAssetUrl(
 }
 
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const response = await fetch(input, {
+	// Plain fetch() on a "technically online" mobile connection can hang forever instead
+	// of rejecting — the offline-first audit found this exact rot in ~10 fetchJson copies
+	// across the codebase. Timeout it and move on.
+	const response = await fetchWithTimeout(input, {
 		credentials: 'include',
 		...init,
+		timeoutMs: 8000,
 	});
 	if (!response.ok) {
 		const body = await response.json().catch(() => null);

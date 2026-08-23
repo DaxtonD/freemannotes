@@ -1,4 +1,5 @@
 import type { LocaleCode } from './i18n';
+import { fetchWithTimeout } from './network';
 import {
 	normalizeEditorToolbarMode,
 	normalizeNoteCardBannerTitlePosition,
@@ -37,6 +38,8 @@ export type UserDevicePreferences = {
 	notePinsByDocId: Record<string, boolean>;
 	/** Per-user dismissed failed-link notification IDs: { [failedLinkId]: true } */
 	dismissedFailedLinkIds: Record<string, boolean>;
+	/** Per-user dismissed share-invitation notification IDs: { [invitationId]: true } */
+	dismissedShareInvitationIds: Record<string, boolean>;
 	/** Whether to receive push notifications for @mentions (default: true) */
 	mentionNotifications: boolean;
 	createdAt: string | null;
@@ -110,8 +113,12 @@ function normalizeDeleteAfterDays(value: unknown): number | null {
 
 export async function fetchUserPreferences(deviceId: string): Promise<UserDevicePreferences | null> {
 	try {
+		// Awaited by primeAuthenticatedThemeBeforeWorkspaceLoad() BEFORE probeSession
+		// marks the session authed — a hang here is a second way to get stuck on the
+		// splash screen even after probeSession's own fetch gets a timeout, since this
+		// one blocks the same startup sequence from a different call site.
 		const url = `/api/user/preferences?deviceId=${encodeURIComponent(deviceId)}`;
-		const res = await fetch(url, { credentials: 'include' });
+		const res = await fetchWithTimeout(url, { credentials: 'include', timeoutMs: 8000 });
 		const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 		if (!res.ok || !contentType.includes('application/json')) return null;
 		const body = await res.json().catch(() => null);
@@ -143,6 +150,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			noteBannersByNoteId: safeJsonNullableStringRecord((body as any).noteBannersByNoteId),
 			notePinsByDocId: safeStrictBooleanRecord((body as any).notePinsByDocId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
+			dismissedShareInvitationIds: safeJson((body as any).dismissedShareInvitationIds),
 			mentionNotifications: (body as any).mentionNotifications !== false,
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,
@@ -180,6 +188,7 @@ type PreferencePatch = {
 	noteBannersByNoteId?: Record<string, string | null>;
 	notePinsByDocId?: Record<string, boolean>;
 	dismissedFailedLinkIds?: Record<string, boolean>;
+	dismissedShareInvitationIds?: Record<string, boolean>;
 };
 
 const PENDING_PREFERENCES_STORAGE_KEY_PREFIX = 'freemannotes.pendingUserPreferencesPatch.v1';
@@ -234,6 +243,7 @@ function applyPendingPatchToPreferences(pref: UserDevicePreferences, patch: Pref
 		noteBannersByNoteId: { ...pref.noteBannersByNoteId },
 		notePinsByDocId: { ...pref.notePinsByDocId },
 		dismissedFailedLinkIds: { ...pref.dismissedFailedLinkIds },
+		dismissedShareInvitationIds: { ...pref.dismissedShareInvitationIds },
 	};
 	if ('deleteAfterDays' in patch) next.deleteAfterDays = patch.deleteAfterDays ?? null;
 	if ('theme' in patch) next.theme = patch.theme ?? null;
@@ -259,6 +269,7 @@ function applyPendingPatchToPreferences(pref: UserDevicePreferences, patch: Pref
 	if ('noteBannersByNoteId' in patch && patch.noteBannersByNoteId) next.noteBannersByNoteId = { ...patch.noteBannersByNoteId };
 	if ('notePinsByDocId' in patch && patch.notePinsByDocId) next.notePinsByDocId = safeStrictBooleanRecord(patch.notePinsByDocId);
 	if ('dismissedFailedLinkIds' in patch && patch.dismissedFailedLinkIds) next.dismissedFailedLinkIds = { ...patch.dismissedFailedLinkIds };
+	if ('dismissedShareInvitationIds' in patch && patch.dismissedShareInvitationIds) next.dismissedShareInvitationIds = { ...patch.dismissedShareInvitationIds };
 	return next;
 }
 
@@ -345,6 +356,7 @@ async function _sendPreferences(
 			noteBannersByNoteId: safeJsonNullableStringRecord((body as any).noteBannersByNoteId),
 			notePinsByDocId: safeStrictBooleanRecord((body as any).notePinsByDocId),
 			dismissedFailedLinkIds: safeJson((body as any).dismissedFailedLinkIds),
+			dismissedShareInvitationIds: safeJson((body as any).dismissedShareInvitationIds),
 			mentionNotifications: (body as any).mentionNotifications !== false,
 			createdAt: (body as any).createdAt ? String((body as any).createdAt) : null,
 			updatedAt: (body as any).updatedAt ? String((body as any).updatedAt) : null,

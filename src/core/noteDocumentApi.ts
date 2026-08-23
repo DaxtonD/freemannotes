@@ -1,8 +1,13 @@
-async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
+import { fetchWithTimeout } from './network';
+
+async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}, options: { timeoutMs?: number } = {}): Promise<T> {
 	// Small local wrapper so all document endpoints share cookie auth and error shaping.
-	const response = await fetch(input, {
+	// Default timeout suits the list/delete reads; uploadNoteDocuments overrides it below
+	// since a document upload legitimately needs longer than a "stalled connection" cutoff.
+	const response = await fetchWithTimeout(input, {
 		credentials: 'include',
 		...init,
+		timeoutMs: options.timeoutMs ?? 8000,
 	});
 	const contentType = String(response.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await response.json().catch(() => null) : null;
@@ -58,7 +63,7 @@ export async function uploadNoteDocuments(docId: string, files: readonly File[])
 	return fetchJson('/api/note-documents', {
 		method: 'POST',
 		body: formData,
-	});
+	}, { timeoutMs: 90000 });
 }
 
 export async function deleteNoteDocument(documentId: string): Promise<{ ok: true; documentId: string }> {

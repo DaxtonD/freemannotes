@@ -13,6 +13,7 @@ import {
 	readCachedWorkspaceSnapshot,
 } from '../../core/workspaceMetadataStore';
 import { getWorkspaceDisplayName, isPersonalWorkspace } from '../../core/workspaceDisplay';
+import { fetchWithTimeout } from '../../core/network';
 import styles from './WorkspaceSwitcherModal.module.css';
 
 export type WorkspaceListItem = {
@@ -157,7 +158,9 @@ function hasDuplicateWorkspaceName(
 }
 
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const res = await fetch(input, { credentials: 'include', ...init });
+	// Switching workspaces is the whole point of this modal — it should not be able to
+	// hang forever because bare fetch() doesn't know how to give up on a dead connection.
+	const res = await fetchWithTimeout(input, { credentials: 'include', ...init, timeoutMs: 8000 });
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
 	if (!res.ok) {

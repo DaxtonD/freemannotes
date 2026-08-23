@@ -3,6 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faDatabase, faFile, faFileLines, faImage, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { getPasswordStrengthLabel, getPasswordStrengthScore } from '../../core/passwordStrength';
+import { fetchWithTimeout } from '../../core/network';
 import styles from './UserManagementModal.module.css';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,7 +109,10 @@ async function fetchJson<T = unknown>(input: RequestInfo | URL, init: RequestIni
 	// Centralized fetch helper used by this modal.
 	// - Always sends cookies (admin API is cookie-authenticated).
 	// - Prefers server-provided `{ error: string }` messages when present.
-	const res = await fetch(input, { credentials: 'include', ...init });
+	// - fetchWithTimeout, not fetch() — admin actions (delete a user, etc.) hanging
+	//   forever on a dead connection with zero feedback is exactly the kind of thing
+	//   that gets you a panicked support message at 2am.
+	const res = await fetchWithTimeout(input, { credentials: 'include', ...init, timeoutMs: 8000 });
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
 	if (!res.ok) {

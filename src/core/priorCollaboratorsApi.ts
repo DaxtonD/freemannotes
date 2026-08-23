@@ -1,5 +1,6 @@
 import { updateAvatarCache } from './userAvatarCache';
 import { updateKnownUserCache } from './userIdentityCache';
+import { fetchWithTimeout } from './network';
 
 const CACHE_KEY_PREFIX = 'freemannotes.priorCollaborators.v1:';
 // Legacy unscoped key written by older versions — removed on first login to stop cross-user leakage.
@@ -53,7 +54,9 @@ function writeCachedUsers(users: readonly PriorCollaboratorUser[]): void {
 }
 
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const res = await fetch(input, { credentials: 'include', ...init });
+	// Bare fetch() hangs indefinitely on a stalled-but-"online" mobile connection instead
+	// of erroring out — timeout it so the @ dropdown doesn't just sit there forever.
+	const res = await fetchWithTimeout(input, { credentials: 'include', ...init, timeoutMs: 8000 });
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
 	if (!res.ok) {

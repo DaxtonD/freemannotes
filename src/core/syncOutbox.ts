@@ -2,6 +2,7 @@ import { normalizeWorkspaceInviteRole, readCachedWorkspaceInviteLink, sendWorksp
 import { requestPwaBackgroundSync } from './pwa';
 import { resolveKnownUser, resolveKnownUserProfileImage, updateKnownUserCache } from './userIdentityCache';
 import { getCachedAvatarUrl } from './userAvatarCache';
+import { fetchWithTimeout } from './network';
 
 export type SyncOperationType = 'create' | 'update' | 'delete' | 'invite';
 export type SyncEntityType = 'workspace' | 'note' | 'collaborator' | 'workspace_invite';
@@ -230,13 +231,18 @@ function createId(prefix: string): string {
 }
 
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const response = await fetch(input, {
+	// flushSyncOutbox() processes queued rows sequentially — one hung request here used
+	// to freeze every invite/role-change/removal behind it in the queue forever. A hard
+	// timeout turns a stalled request into a real rejection the retry/backoff logic
+	// already handles.
+	const response = await fetchWithTimeout(input, {
 		credentials: 'include',
 		headers: {
 			'Content-Type': 'application/json',
 			...(init.headers || {}),
 		},
 		...init,
+		timeoutMs: 8000,
 	});
 	const body = await response.json().catch(() => null);
 	if (!response.ok) {

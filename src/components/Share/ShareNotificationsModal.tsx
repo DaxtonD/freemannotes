@@ -44,6 +44,10 @@ type Props = {
 	onOpenFailedLink?: (failure: FailedNoteLinkRecord) => void;
 	inboxUnreadCount?: number;
 	onOpenInbox?: () => void;
+	/** Server-persisted "cleared" invitation notification IDs (UserPreference.dismissedShareInvitationIds), merged into the local hidden set so a cleared notification stays cleared even after a cache clear or on a different device. */
+	serverDismissedInvitationIds?: Record<string, boolean>;
+	/** Called with the invitation IDs just cleared so the parent can persist them server-side. */
+	onPersistDismissedInvitationIds?: (ids: readonly string[]) => void;
 };
 
 type PlacementChoice = 'personal' | 'shared-root' | 'shared-folder';
@@ -123,8 +127,26 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	const hasAppUpdated = props.hasAppUpdatedNotification === true;
 
 	React.useEffect(() => {
-		setHiddenInvitationIds(readHiddenNotificationIds(props.authUserId));
-	}, [props.authUserId]);
+		// "Clear notifications" used to only ever write to localStorage. Clear your browser
+		// cache (or just get unlucky with storage eviction) and every notification you'd
+		// already dismissed comes back from the dead like nothing happened — because as far
+		// as the server was concerned, nothing HAD happened, we never told it. Merge in the
+		// server-persisted dismissed set (UserPreference.dismissedShareInvitationIds)
+		// alongside the local localStorage cache, so a notification cleared on this device
+		// (or a different one entirely) actually stays cleared.
+		const local = readHiddenNotificationIds(props.authUserId);
+		const serverIds = props.serverDismissedInvitationIds;
+		if (serverIds && Object.keys(serverIds).length > 0) {
+			const merged = new Set(local);
+			for (const id of Object.keys(serverIds)) merged.add(id);
+			if (merged.size !== local.size) {
+				writeHiddenNotificationIds(props.authUserId, merged);
+			}
+			setHiddenInvitationIds(merged);
+			return;
+		}
+		setHiddenInvitationIds(local);
+	}, [props.authUserId, props.serverDismissedInvitationIds]);
 
 	const load = React.useCallback(async () => {
 		setError(null);
@@ -234,6 +256,10 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 				writeHiddenNotificationIds(props.authUserId, next);
 				return next;
 			});
+			// Also persist server-side (UserPreference.dismissedShareInvitationIds) so this
+			// stays cleared across a cache clear or on a different device — see the merge
+			// effect above.
+			props.onPersistDismissedInvitationIds?.(clearableInvitationIds);
 		}
 		if (firedReminders.length > 0 || hasPendingReminderNotifications) {
 			props.onClearReminders?.();

@@ -19,6 +19,10 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [3. Masonry Layout Debug System](#3-masonry-layout-debug-system)
   - [4. Masonry Visual Overlay](#4-masonry-visual-overlay)
   - [5. Workspace Move Tracing](#5-workspace-move-tracing)
+  - [6. Heading Collapse Debug](#6-heading-collapse-debug)
+  - [7. Global Debug Flag (window.DEBUG)](#7-global-debug-flag-windowdebug)
+  - [8. View Transition Trace](#8-view-transition-trace)
+  - [9. Always-On Diagnostic Logs](#9-always-on-diagnostic-logs)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
 - [PWA Version Changes](#pwa-version-changes)
 - [Native Platform Companions](#native-platform-companions)
@@ -426,6 +430,115 @@ or append `?moveDebug=0` to the URL once.
 - Client-side move phases such as `move-start`, `local-move-complete`, `server-move-error`, and `rollback-start`
 - Server-side phases such as `move-preflight`, `move-doc-state`, `move-related-state`, `move-success`, and `move-error`
 - Related follow-up checks such as note-media access and collaborator snapshot requests
+
+---
+
+### 6. Heading Collapse Debug
+
+**What it covers:** Instrumentation for diagnosing collapse/expand jitter on collapsible rich-text headings — decoration refresh counts, `ResizeObserver` firings, note height measurements, and repack timing tied to a specific collapse/expand action.
+
+**How to enable:**
+
+```js
+localStorage.setItem('__headingCollapseDebug', '1')
+location.reload()
+```
+
+Equivalent: `window.__enableHeadingCollapseDebug()` in the console. Combine with the Masonry Layout Debug System (`__ngDebug`, above) for the fullest picture — the two systems track overlapping but distinct events (heading-collapse-specific timing vs. general repack/column data).
+
+**How to disable:**
+
+```js
+localStorage.removeItem('__headingCollapseDebug')
+location.reload()
+```
+
+**Retrieval:**
+
+```js
+window.__printHeadingCollapseDebugSummary()
+```
+
+or inspect `window.__headingCollapseDebugSessions` directly in DevTools.
+
+**What it logs:** `console.debug('[heading-collapse-debug]', ...)` entries for each tracked event (`decorationRefresh`, `resizeObserver`, `noteMeasure`, `heightVersionBump`, `repackStart`/`repackEnd`, React re-renders of `NoteCard`/`RichTextEditor`, the actual toggle event, preference-store notifications, and animation-refresh events), plus a structured session object per collapse/expand action with before/after container heights.
+
+---
+
+### 7. Global Debug Flag (`window.DEBUG`)
+
+**What it covers:** A blanket, non-persistent debug flag — never written to `localStorage`, resets on every reload — that gates a handful of otherwise-unrelated verbose console logs:
+
+- Drag-and-drop pointer/touch sensor internals (`src/core/dndSensors.ts`) — every `pointerdown` / `touchstart` / `touchmove` decision the custom drag sensor makes.
+- "Bubble score" metadata-change tracing in Bubble View (`src/core/DocumentManager.ts`, `src/components/BubbleView/BubbleView.tsx`) — fires on Yjs metadata changes that touch a note's bubble score.
+
+**How to enable** (console only; does not survive reload):
+
+```js
+window.DEBUG = true
+```
+
+**How to disable:**
+
+```js
+window.DEBUG = false
+```
+
+or simply reload — this flag is never persisted, so a stray `window.DEBUG = true` from an earlier console session can never be the cause of unexpected logging after a reload.
+
+**When to use it:** diagnosing drag-and-drop gesture recognition (why a touch didn't start a drag, or started one unexpectedly) or unexpected Bubble View re-scoring.
+
+---
+
+### 8. View Transition Trace
+
+**What it covers:** Timing/phase tracing for animated view transitions (switching between card / list / bubble view, opening or closing the editor overlay).
+
+**How to enable:**
+
+```
+http://localhost:27015/?viewTransitionTrace=1
+```
+
+Aliases: `?traceView=1`, `?debugViewTransition=1`. Or manually:
+
+```js
+window.__fnEnableViewTransitionTrace(true)
+// equivalent to:
+localStorage.setItem('freemannotes.viewTransitionTrace', '1')
+location.reload()
+```
+
+> **This one behaves differently from every other system on this page: in a development build (`npm run dev`), it is ON BY DEFAULT**, even with nothing explicitly set — the code falls back to "enabled" whenever it's a dev build and no explicit `localStorage`/query preference has ever been recorded for it. If you're on a dev build and seeing `[view-transition-trace]` console entries with no memory of turning this on, that default is why.
+
+**How to disable** (required on a dev build, since the default is "on"):
+
+```js
+localStorage.setItem('freemannotes.viewTransitionTrace', '0')
+location.reload()
+```
+
+or append `?viewTransitionTrace=0` once.
+
+**Retrieval:**
+
+```js
+window.__fnPrintViewTransitionTrace()
+```
+
+prints a table of the buffered events (last 300) for the most recent trace, or pass a specific `traceId` to filter to one transition.
+
+---
+
+### 9. Always-On Diagnostic Logs
+
+A few `console.debug` / `console.log` calls in the codebase have no enable/disable flag at all — either temporary scaffolding tied to an active bug investigation, or low-frequency enough (only fires on one specific, rare user action) that no toggle was ever added. Listed here so they aren't mistaken for one of the systems above, and so the temporary one actually gets removed once its investigation closes rather than lingering indefinitely.
+
+| Log prefix | File | Why it's unconditional |
+|---|---|---|
+| `[drawing-binding-debug]` | `src/components/Editors/DrawingEditor.tsx` | **Temporary.** Diagnosing an unresolved real-time drawing-sync issue for VIEWER-role collaborators. Fires on every drawing note open and on every remote Yjs update while one is open. Remove once that investigation closes — do not treat as a permanent system. |
+| `[Import]` | `src/core/import/ImportPipeline.ts` | Only fires during an actual workspace import (a rare, deliberate action), so it was left unconditional rather than gated behind a flag. |
+| `[InboxView.onOpenNote]` | `src/App.tsx` | Single low-frequency line — only fires when opening a note from the Inbox view. |
 
 ---
 

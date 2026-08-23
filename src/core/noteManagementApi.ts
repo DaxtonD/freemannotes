@@ -1,4 +1,5 @@
 import type { MoveNoteMetadataMapping } from './noteMoveMetadata';
+import { fetchWithTimeout } from './network';
 
 type MoveNoteResponse = {
 	noteId: string;
@@ -45,13 +46,17 @@ function withHttpStatus(message: string, status: number): HttpError {
 }
 
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const response = await fetch(input, {
+	// Move Note and Empty Trash both leave a busy flag set indefinitely on a hang — a
+	// hard timeout turns a stalled "technically online" mobile connection into a real
+	// rejection callers already handle, instead of a stuck button forever.
+	const response = await fetchWithTimeout(input, {
 		credentials: 'include',
 		headers: {
 			'Content-Type': 'application/json',
 			...(init.headers || {}),
 		},
 		...init,
+		timeoutMs: 8000,
 	});
 	const body = await response.json().catch(() => null);
 	if (!response.ok) {

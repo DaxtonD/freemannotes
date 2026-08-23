@@ -1984,18 +1984,37 @@ export class DocumentManager {
 			tempWsProviders.push(registryWs);
 			await waitWs(registryWs, timeoutMs);
 
-			// Read note IDs from the synced registry (same structure as getOrCreateDocEntry).
+			// Read note IDs from the synced registry. notesList (NOTES_LIST_KEY) is only
+			// ever populated by createNote/upsertRegistryNoteEntry — shared-placement
+			// aliases are deliberately never written there (addNoteReferences's own
+			// comment: "this never touches notesList"), only into noteOrder. For a
+			// Shared-With-Me workspace, notesList is therefore ALWAYS empty by design,
+			// so reading only notesList meant this function found zero note IDs and
+			// returned here before ever syncing a single note — confirmed 2026-08-20
+			// as the reason Shared-With-Me showed no notes at all offline while
+			// ordinary owned workspaces preloaded correctly. Union both arrays so this
+			// works for every workspace kind.
 			const notesList = registryDoc.getArray<Y.Map<any>>(NOTES_LIST_KEY);
-			const noteIds = notesList.toArray()
-				.map((item) => String(item.get?.('id') ?? '').trim())
-				.filter(Boolean);
+			const noteOrderArray = registryDoc.getArray<string>(NOTE_ORDER_KEY);
+			const noteIds = [...new Set([
+				...notesList.toArray().map((item) => String(item.get?.('id') ?? '').trim()).filter(Boolean),
+				...noteOrderArray.toArray().map((id) => String(id ?? '').trim()).filter(Boolean),
+			])];
 
 			if (noteIds.length === 0) return;
 
 			// ── Phase 2: sync every note doc in parallel ──────────────────────────────
 			const noteWaitPromises: Promise<void>[] = [];
 			for (const noteId of noteIds) {
-				const noteRoom = `${workspaceId}:${noteId}`;
+				// A shared-placement alias needs to resolve to its real underlying room
+				// (the owner's actual workspaceId:noteId), never workspaceId:aliasId —
+				// same resolution roomNameFor() does for the active workspace. Can't
+				// reuse roomNameFor() directly here: it falls back to
+				// this.activeWorkspaceId, which is wrong while preloading a DIFFERENT
+				// (inactive) workspace in the background. externalRoomAliases itself has
+				// no notion of "current" workspace, so reading it directly is safe
+				// regardless of which workspace is actually active right now.
+				const noteRoom = this.externalRoomAliases.get(noteId) || `${workspaceId}:${noteId}`;
 				const noteDoc = new Y.Doc();
 				tempDocs.push(noteDoc);
 

@@ -187,9 +187,13 @@ function renderRichPreview(json: JSONContent | null | undefined, liveAvatarLooku
 
 function renderChecklistPreviewContent(item: ChecklistItem, content: React.ReactNode): React.ReactNode {
 	const countPrefix = getChecklistCountPrefix(item);
+	// The sweep span must wrap only the text, not the count prefix — the prefix
+	// (e.g. a running tally like "3/5") shouldn't visually get struck through
+	// sweeping across it along with the item text.
+	const textNode = <span className={styles.checklistPreviewTextSweep}>{content}</span>;
 	return countPrefix
-		? <><span className={styles.checklistCountPrefix} aria-hidden="true">{countPrefix}</span>{content}</>
-		: content;
+		? <><span className={styles.checklistCountPrefix} aria-hidden="true">{countPrefix}</span>{textNode}</>
+		: textNode;
 }
 
 // Local-only draft ID generator used before data is persisted to Yjs.
@@ -273,6 +277,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const [items, setItems] = React.useState<DraftChecklistItem[]>(() => [
 		{ id: makeId(), text: '', completed: false, parentId: null, countValue: null, richContent: createRichTextDocFromPlainText('') },
 	]);
+	// Kept in sync every render (not via useEffect — needs to be current inside
+	// the SAME synchronous event handler that reads it, e.g. toggleCompleted
+	// below, before this render's effects would even run).
+	const itemsRef = React.useRef(items);
+	itemsRef.current = items;
 	const [previewLinks, setPreviewLinks] = React.useState<string[]>([]);
 	const [saving, setSaving] = React.useState(false);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
@@ -771,16 +780,102 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	}, [isCoarsePointer, mobileKeyboardOpen]);
 	const lastOverIndexRef = React.useRef<number | null>(null);
 	const [draggingParentId, setDraggingParentId] = React.useState<string | null>(null);
+	// This one took three tries. An active (unchecked) row can NEVER be dropped into the
+	// completed section — it's not even in the same Droppable — but @hello-pangea/dnd's
+	// auto-scroll has no idea, so dragging near the bottom used to auto-scroll the
+	// completed section into view for absolutely no reason, and dropping there just
+	// snapped the item back and made the user lose their place. Fixing this correctly
+	// took two failed attempts first: a reactive scrollTop clamp that fought the
+	// library's own auto-scroll loop and oscillated like a broken metronome, then a
+	// "smarter" sensor-level pointer-Y clamp that froze the drag ghost dead at the
+	// boundary while your actual finger kept moving — which just feels like the app is
+	// broken, not "blocked." Both got reverted. DO NOT go back and try either of those
+	// again, they don't work, I already checked. The actual fix: stop trying to
+	// constrain where a black-box drag library thinks the pointer is, and just remove
+	// the hazard. The completed section's item list unrenders for the duration of any
+	// active-item drag, so there's nothing there to scroll into or hover over. Can't
+	// have a race condition with a library's internal state if the thing it would race
+	// over doesn't exist.
+	const [isChecklistDragActive, setIsChecklistDragActive] = React.useState(false);
 
 	// FLIP animation helper for indent/un-indent (horizontal snap):
 	// We snapshot row positions immediately before we mutate the list so React's
 	// next render can animate rows from old -> new positions (less “teleporting”).
 	const { capturePositions: captureFlipPositions } = useChecklistFlip(rowContainersRef, items);
 
+	// ── Checkbox completion animation ──────────────────────────────────────────
+	// Purely visual: toggleCompleted below still flips the real completed flag
+	// immediately, exactly as before, so Yjs sync/undo-redo are unaffected. While
+	// an id is in this map, activeItems/completedItems/completedRows below keep
+	// classifying it by its PREVIOUS section instead of its new completed value,
+	// so it stays visually in place long enough to play a strikethrough sweep +
+	// pulse (CSS, driven by the checklistItemCompleting/Uncompleting classes
+	// below) before it actually relocates. A second useChecklistFlip instance,
+	// keyed on this map instead of `items`, then animates that relocation smoothly
+	// once the hold is released — reusing the same FLIP mechanism the indent/
+	// un-indent drag already relies on, just triggered by a different signal.
+	const [animatingCompletionById, setAnimatingCompletionById] = React.useState<Map<string, 'completing' | 'uncompleting'>>(new Map());
+	const completionAnimationTimersRef = React.useRef<Map<string, number>>(new Map());
+	const { capturePositions: captureCompletionFlipPositions } = useChecklistFlip(rowContainersRef, animatingCompletionById);
+	const prefersReducedMotionRef = React.useRef(
+		typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+			? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+			: false
+	);
+	// Strikethrough sweep, then a brief pulse once the sweep finishes (see the
+	// matching CSS animation-delay in Editors.module.css) — total time an item is
+	// held in its old section before relocating.
+	const CHECKLIST_COMPLETION_ANIMATION_MS = prefersReducedMotionRef.current ? 0 : 560;
+
+	React.useEffect(() => {
+		// Clear any pending completion-animation timers on unmount so they don't
+		// fire setState after the component is gone.
+		const timers = completionAnimationTimersRef.current;
+		return () => {
+			for (const timer of timers.values()) window.clearTimeout(timer);
+			timers.clear();
+		};
+	}, []);
+
+	React.useEffect(() => {
+		console.warn('[checklist-anim-debug] animatingCompletionById committed to render', Array.from(animatingCompletionById.entries()));
+	}, [animatingCompletionById]);
+
 	const normalizedItems = React.useMemo(() => reconcileDraftItems(normalizeChecklistHierarchy(items), items), [items]);
-	const activeItems = React.useMemo(() => normalizedItems.filter((row) => !row.completed), [normalizedItems]);
-	const completedItems = React.useMemo(() => normalizedItems.filter((row) => row.completed), [normalizedItems]);
-	const completedRows = React.useMemo(() => buildChecklistCompletedRows(normalizedItems), [normalizedItems]);
+	const activeItems = React.useMemo(() => normalizedItems.filter((row) => {
+		const animating = animatingCompletionById.get(row.id);
+		if (animating === 'completing') return true;
+		if (animating === 'uncompleting') return false;
+		return !row.completed;
+	}), [normalizedItems, animatingCompletionById]);
+	const completedItems = React.useMemo(() => normalizedItems.filter((row) => {
+		const animating = animatingCompletionById.get(row.id);
+		if (animating === 'completing') return false;
+		if (animating === 'uncompleting') return true;
+		return row.completed;
+	}), [normalizedItems, animatingCompletionById]);
+	// buildChecklistCompletedRows decides inclusion (and ghost-parent rows) purely
+	// off item.completed, so it needs the same section-membership override as
+	// activeItems/completedItems above to avoid an item appearing in both
+	// sections during its animation window. Feed it an override array for that
+	// decision, then swap each resulting row's item back to the real (raw) item —
+	// the actual strikethrough styling below reads the real completed value
+	// directly, so the CSS transition always animates toward the true end state
+	// regardless of which section the item is being held in.
+	const completedRows = React.useMemo(() => {
+		if (animatingCompletionById.size === 0) return buildChecklistCompletedRows(normalizedItems);
+		const sectionOverrideItems = normalizedItems.map((row) => {
+			const animating = animatingCompletionById.get(row.id);
+			if (animating === 'completing') return { ...row, completed: false };
+			if (animating === 'uncompleting') return { ...row, completed: true };
+			return row;
+		});
+		const rawById = new Map(normalizedItems.map((row) => [row.id, row] as const));
+		return buildChecklistCompletedRows(sectionOverrideItems).map((row) => ({
+			...row,
+			item: rawById.get(row.item.id) ?? row.item,
+		}));
+	}, [normalizedItems, animatingCompletionById]);
 	const visibleChecklistRowIds = React.useMemo(
 		() => [
 			...activeItems.map((item) => item.id),
@@ -971,15 +1066,63 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		setCheckboxRedoAvail(false);
 	}, []);
 
-	const toggleCompleted = React.useCallback((id: string, checked: boolean): void => {
-		prepareRowFocusHandoff();
-		setItems((prev) => {
-			const next = reconcileDraftItems(toggleChecklistItemCompleted(prev, id, checked), prev);
-			if (next === prev) return prev;
-			pushChecklistUndoSnapshot(prev);
-			return next;
+	// Holds the ids the completion animation should apply to for its
+	// CHECKLIST_COMPLETION_ANIMATION_MS window, then releases them so
+	// activeItems/completedItems/completedRows reclassify and the second
+	// useChecklistFlip instance animates the resulting move. Cancels/restarts
+	// cleanly for an id that's re-toggled before its previous animation finished.
+	const beginCompletionAnimation = React.useCallback((diff: readonly { id: string; direction: 'completing' | 'uncompleting' }[]): void => {
+		console.warn('[checklist-anim-debug] beginCompletionAnimation called', { diff, durationMs: CHECKLIST_COMPLETION_ANIMATION_MS });
+		if (diff.length === 0) return;
+		setAnimatingCompletionById((prevMap) => {
+			const nextMap = new Map(prevMap);
+			for (const entry of diff) nextMap.set(entry.id, entry.direction);
+			console.warn('[checklist-anim-debug] animatingCompletionById ->', Array.from(nextMap.entries()));
+			return nextMap;
 		});
-	}, [prepareRowFocusHandoff, pushChecklistUndoSnapshot]);
+		const ids = diff.map((entry) => entry.id);
+		for (const id of ids) {
+			const existingTimer = completionAnimationTimersRef.current.get(id);
+			if (existingTimer !== undefined) window.clearTimeout(existingTimer);
+		}
+		const timer = window.setTimeout(() => {
+			console.warn('[checklist-anim-debug] timer fired, releasing', ids);
+			captureCompletionFlipPositions();
+			setAnimatingCompletionById((prevMap) => {
+				const nextMap = new Map(prevMap);
+				for (const id of ids) nextMap.delete(id);
+				return nextMap;
+			});
+			for (const id of ids) completionAnimationTimersRef.current.delete(id);
+		}, CHECKLIST_COMPLETION_ANIMATION_MS);
+		for (const id of ids) completionAnimationTimersRef.current.set(id, timer);
+	}, [captureCompletionFlipPositions, CHECKLIST_COMPLETION_ANIMATION_MS]);
+
+	const toggleCompleted = React.useCallback((id: string, checked: boolean): void => {
+		console.warn('[checklist-anim-debug] toggleCompleted CALLED', { id, checked });
+		prepareRowFocusHandoff();
+		// Computed synchronously from itemsRef rather than inside setItems's
+		// updater — React does not guarantee a functional updater runs before the
+		// next line of code executes (it commonly doesn't, under React 19's
+		// batching), so beginCompletionAnimation below was reliably firing with an
+		// empty diff and no animation ever played. itemsRef is guaranteed current
+		// here since it's assigned directly in the render body, not via an effect.
+		const prev = itemsRef.current;
+		const next = reconcileDraftItems(toggleChecklistItemCompleted(prev, id, checked), prev);
+		if (next === prev) return;
+		pushChecklistUndoSnapshot(prev);
+		setItems(next);
+		// Diff, not just the single toggled id: toggling a parent cascades to its
+		// children (and unchecking a child can reopen a completed parent) — see
+		// toggleChecklistItemCompleted — so every row whose completed flag
+		// actually changed should get the same hold-and-animate treatment.
+		const prevCompletedById = new Map(prev.map((row) => [row.id, row.completed] as const));
+		const completionDiff = next
+			.filter((row) => prevCompletedById.get(row.id) !== row.completed)
+			.map((row) => ({ id: row.id, direction: (row.completed ? 'completing' : 'uncompleting') as 'completing' | 'uncompleting' }));
+		console.warn('[checklist-anim-debug] toggleCompleted', { id, checked, completionDiff });
+		if (completionDiff.length > 0) beginCompletionAnimation(completionDiff);
+	}, [beginCompletionAnimation, prepareRowFocusHandoff, pushChecklistUndoSnapshot]);
 
 	const undoCheckboxChange = React.useCallback((): void => {
 		const snapshot = checkboxUndoStack.current[checkboxUndoStack.current.length - 1];
@@ -1271,6 +1414,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 				setDraggingParentId(null);
 			}
 			lastOverIndexRef.current = null;
+			setIsChecklistDragActive(true);
 		},
 		[activeItems]
 	);
@@ -1626,6 +1770,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 							lastOverIndexRef.current = null;
 							onDragEnd(event);
 							setDraggingParentId(null);
+							setIsChecklistDragActive(false);
 							resetChecklistDragAxis();
 							const removeGuard = (): void => {
 								if (!isCoarsePointer || !scrollEl) return;
@@ -1691,7 +1836,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	rowContainersRef.current.set(item.id, node);
 																}}
 													{...dragProvided.draggableProps}
-														className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}`}
+														className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}${animatingCompletionById.get(item.id) === 'completing' ? ` ${styles.checklistItemCompleting}` : ''}${animatingCompletionById.get(item.id) === 'uncompleting' ? ` ${styles.checklistItemUncompleting}` : ''}`}
 													aria-label={t('editors.dragHandle')}
 													style={{
 														...dragStyle,
@@ -1850,7 +1995,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						>
 							{showCompleted ? '▾' : '▸'} {completedItems.length} {t('editors.completedItems')}
 						</button>
-						{showCompleted ? (
+						{showCompleted && !isChecklistDragActive ? (
 							<ul className={styles.checklistList}>
 								{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
 											<li key={`ghost-${item.id}`}
@@ -1865,7 +2010,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 										</div>
 									</li>
 								) : (
-											<li key={item.id} className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}`}>
+											<li
+												key={item.id}
+												ref={(node) => { rowContainersRef.current.set(item.id, node); }}
+												className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${animatingCompletionById.get(item.id) === 'completing' ? ` ${styles.checklistItemCompleting}` : ''}${animatingCompletionById.get(item.id) === 'uncompleting' ? ` ${styles.checklistItemUncompleting}` : ''}`}
+											>
 											<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true">
 													<FontAwesomeIcon icon={faGripVertical} />
 											</div>

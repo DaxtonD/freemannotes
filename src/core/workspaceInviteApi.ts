@@ -1,4 +1,5 @@
 import { type WorkspaceInviteRole } from './shareLinks';
+import { fetchWithTimeout } from './network';
 
 export type WorkspacePendingInvite = {
 	id: string;
@@ -23,7 +24,9 @@ type AcceptResponse = {
 };
 
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
-	const res = await fetch(input, { credentials: 'include', ...init });
+	// Timeout, not bare fetch() — a workspace invite accept/decline button that hangs
+	// forever on a flaky mobile connection because fetch() never rejects is not a good time.
+	const res = await fetchWithTimeout(input, { credentials: 'include', ...init, timeoutMs: 8000 });
 	const contentType = String(res.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await res.json().catch(() => null) : null;
 	if (!res.ok) {

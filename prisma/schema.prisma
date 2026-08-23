@@ -685,6 +685,10 @@ model UserPreference {
   /// Shape: { [failedLinkId: string]: true }
   dismissedFailedLinkIds Json @default("{}") @map("dismissed_failed_link_ids") @db.JsonB
 
+  /// Per-user dismissed share-invitation notification IDs.
+  /// Shape: { [invitationId: string]: true }
+  dismissedShareInvitationIds Json @default("{}") @map("dismissed_share_invitation_ids") @db.JsonB
+
   /// Per-user note color overrides.
   /// Shape: { [noteId: string]: NoteColorToken | null }
   /// Null is an explicit per-user clear that hides any legacy shared-doc color.

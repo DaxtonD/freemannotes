@@ -174,6 +174,13 @@ export type NoteGridProps = {
 	showArchived?: boolean;
 	emptyStateLabel?: string;
 	sharedNotes?: readonly SharedNotePlacement[];
+	/**
+	 * True once App.tsx's sharedPlacements has been through at least one real read
+	 * (cache or network) since login — lets NoteGrid tell "this shared note isn't in
+	 * the currently-selected folder" apart from "we haven't checked yet" on a cold
+	 * mount. See the folderScopedVisibleIds comment below for why this matters.
+	 */
+	sharedPlacementsHydrated?: boolean;
 	/** Fires once the initial docs are loaded and the first layout is settled. */
 	onReady?: () => void;
 	/**
@@ -1380,13 +1387,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [latchedOverlayNoteId, setLatchedOverlayNoteId] = React.useState<string | null>(null);
 	const isCoarsePointer = useIsCoarsePointer();
 	const collaboratorOverlayPanelRef = React.useRef<HTMLDivElement | null>(null);
-	// ── DEBUG: tracks previous collaborator-sync effect deps to surface which one changed ──
-	const prevCollabSyncDepsRef = React.useRef<{
-		pendingSyncSig: string;
-		authUserId: string | null | undefined;
-		refreshToken: number | undefined;
-		noteSig: string;
-	} | null>(null);
 	const collaboratorOverlayListRef = React.useRef<HTMLDivElement | null>(null);
 	const metadataOverlayPanelRef = React.useRef<HTMLDivElement | null>(null);
 	const collaboratorTouchYRef = React.useRef<number | null>(null);
@@ -2182,7 +2182,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				const snapshotNote = workspaceRenderSnapshotNoteById.get(id);
 				if (!snapshotNote) return createFallbackNoteSnapshot(id);
 				const placement = sharedPlacementByAlias.get(id) ?? null;
-				const docId = placement?.roomId || resolveMediaDocId(id);
+				const docId = placement?.roomId || snapshotNote.docId || resolveMediaDocId(id);
 				// Warm boot renders snapshot shells before live Yjs docs; pin tier must come
 				// from user prefs, not legacy metadata.isPinned on the snapshot payload.
 				return {
@@ -2197,7 +2197,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			}
 			const note = readNoteFromDoc(doc, id);
 			const placement = sharedPlacementByAlias.get(id) ?? null;
-			const docId = placement?.roomId || resolveMediaDocId(id);
+			const docId = placement?.roomId || workspaceRenderSnapshotNoteById.get(id)?.docId || resolveMediaDocId(id);
 			return {
 				id,
 				title: note.title,
@@ -2256,12 +2256,28 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		const unresolvedIds = !allDocsLoaded
 			? orderedIds.filter((id) => !(docsById[id] ?? manager.peekDoc(id)))
 			: [];
-		const mergedIds = unresolvedIds.length > 0 ? uniqueIds([...ids, ...unresolvedIds]) : ids;
+		let mergedIds = unresolvedIds.length > 0 ? uniqueIds([...ids, ...unresolvedIds]) : ids;
+		// getVisibleNotes has no concept of "Shared With Me" folders — that filtering
+		// happens one level up, in App.tsx's visibleSharedPlacements, which is what
+		// props.sharedNotes (and therefore sharedNoteIdSet) actually is. The underlying
+		// Yjs noteOrder is NOT folder-scoped (refreshNoteShareState reconciles every
+		// folder's aliases into the same array), so without this, switching to a
+		// different folder left every OTHER folder's shared notes still sitting in
+		// orderedIds — with no matching placement in sharedNoteIdSet, they fell back to
+		// a permanently-blank skeleton card that never resolved, and (since sharedNoteIdSet
+		// also drives isShared/role checks below) could misclassify a still-live doc from
+		// a previously-visited folder as an ordinary editable note instead of a
+		// permission-gated shared one. Gated on sharedPlacementsHydrated so a genuinely
+		// in-folder note doesn't get excluded during the brief cold-start window before
+		// props.sharedNotes has loaded at all — see that prop's own comment.
+		if (props.sharedPlacementsHydrated) {
+			mergedIds = mergedIds.filter((id) => !id.startsWith('shared-placement:') || sharedNoteIdSet.has(id));
+		}
 		if (props.hiddenNoteId) return mergedIds.filter((id) => id !== props.hiddenNoteId);
 		// ^ Suppress the draft note ID from the visible list so it never renders as
 		//   an empty card while the user is composing it in the editor overlay.
 		return mergedIds;
-	}, [allDocsLoaded, docsById, manager, noteSnapshots, orderedIds, props.activeCollectionId, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode]);
+	}, [allDocsLoaded, docsById, manager, noteSnapshots, orderedIds, props.activeCollectionId, props.activeLabelIds, props.hiddenNoteId, props.reminderFilter, props.sharedPlacementsHydrated, props.showArchived, props.showTrashed, props.sortDirection, props.sortMode, sharedNoteIdSet]);
 
 	const baseVisibleIds = React.useMemo<string[]>(
 		() => buildFilteredVisibleIds(shouldPrioritizePinnedForDisplay),
@@ -2279,11 +2295,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		return baseVisibleIds
 			.map((noteId) => {
 				const placement = sharedPlacementByAlias.get(noteId) ?? null;
-				const docId = placement?.roomId || resolveMediaDocId(noteId);
+				// Same fallback as snapshotNotesForPersistence/renderGridCard below: on a
+				// fresh mount sharedPlacementByAlias is still empty (props.sharedNotes only
+				// populates after refreshNoteShareState's IDB read resolves), so a shared
+				// note's docId would otherwise come back '' on this very first render and
+				// get dropped from the collaborator-sync list entirely. That first render is
+				// exactly when an offline session needs its cached collaborator chip to show
+				// — falling back to the last-persisted docId from the render snapshot lets
+				// the cache read below succeed immediately instead of waiting on a second
+				// render pass that a since-gone-offline session will never get.
+				const docId = placement?.roomId || workspaceRenderSnapshotNoteById.get(noteId)?.docId || resolveMediaDocId(noteId);
 				return docId ? { noteId, docId, isSharedAlias: Boolean(placement) } : null;
 			})
 			.filter((entry): entry is { noteId: string; docId: string; isSharedAlias: boolean } => Boolean(entry));
-	}, [baseVisibleIds, resolveMediaDocId, sharedPlacementByAlias]);
+	}, [baseVisibleIds, resolveMediaDocId, sharedPlacementByAlias, workspaceRenderSnapshotNoteById]);
 	const visibleNoteEntriesForCollaboratorSync = React.useMemo(
 		() => [...visibleNoteEntries].sort((left, right) => left.noteId.localeCompare(right.noteId)),
 		[visibleNoteEntries]
@@ -2303,23 +2328,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			return;
 		}
 		let cancelled = false;
-
-		// ── DEBUG: log which dep changed to surface infinite-loop causes ──
-		if (process.env.NODE_ENV !== 'production') {
-			const prev = prevCollabSyncDepsRef.current;
-			const changed: string[] = [];
-			if (!prev || prev.pendingSyncSig !== pendingSyncNoteIdsSignature) changed.push(`pendingSyncNoteIds(${pendingSyncNoteIdsSignature || 'empty'})`);
-			if (!prev || prev.authUserId !== props.authUserId) changed.push(`authUserId(${props.authUserId})`);
-			if (!prev || prev.refreshToken !== props.refreshCollaboratorsToken) changed.push(`refreshCollaboratorsToken(${props.refreshCollaboratorsToken})`);
-			if (!prev || prev.noteSig !== visibleNoteEntriesForCollaboratorSyncSignature) changed.push(`notesSig`);
-			console.log('[collab-sync] effect fired — changed deps:', changed.join(', ') || '(none?)');
-			prevCollabSyncDepsRef.current = {
-				pendingSyncSig: pendingSyncNoteIdsSignature,
-				authUserId: props.authUserId,
-				refreshToken: props.refreshCollaboratorsToken,
-				noteSig: visibleNoteEntriesForCollaboratorSyncSignature,
-			};
-		}
 
 		const applySummaries = (rows: readonly { noteId: string; summary: NoteCardCollaboratorSummary | null }[]) => {
 			if (cancelled) return;
@@ -3719,7 +3727,9 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const activeCollaboratorSummary = activeNote ? collaboratorSummariesByNoteId[activeNote.id] ?? null : null;
 	const moreMenuDoc = moreMenuNoteId ? docsById[moreMenuNoteId] : undefined;
 	const moreMenuPlacement = moreMenuNoteId ? (props.sharedNotes ?? []).find((entry) => entry.aliasId === moreMenuNoteId) : undefined;
-	const moreMenuDocId = moreMenuNoteId ? moreMenuPlacement?.roomId || resolveMediaDocId(moreMenuNoteId) : undefined;
+	const moreMenuDocId = moreMenuNoteId
+		? moreMenuPlacement?.roomId || workspaceRenderSnapshotNoteById.get(moreMenuNoteId)?.docId || resolveMediaDocId(moreMenuNoteId)
+		: undefined;
 	const moreMenuCanEdit = Boolean(
 		moreMenuNoteId && !isTrashView && (sharedNoteIdSet.has(moreMenuNoteId) ? moreMenuPlacement?.role === 'EDITOR' : props.canEditWorkspaceContent !== false)
 	);

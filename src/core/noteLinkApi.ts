@@ -1,12 +1,17 @@
 import type { ExtractedNoteLink } from './noteLinks';
+import { fetchWithTimeout } from './network';
 
 type HttpError = Error & { status?: number };
 
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
 	// Shared wrapper so link-preview endpoints behave like the rest of the authenticated API.
-	const response = await fetch(input, {
+	// fetchWithTimeout, not bare fetch() — a stalled "online but not really" mobile
+	// connection just hangs forever otherwise, no error, no timeout, nothing. Found this
+	// same landmine in about ten other files this pass. Enough.
+	const response = await fetchWithTimeout(input, {
 		credentials: 'include',
 		...init,
+		timeoutMs: 8000,
 	});
 	const contentType = String(response.headers.get('content-type') || '').toLowerCase();
 	const body = contentType.includes('application/json') ? await response.json().catch(() => null) : null;

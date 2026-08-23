@@ -235,6 +235,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 	auth: {
 		language: 'Language',
 		languageHint: 'Your welcome note will be created in the selected language.',
+		connectionTimeout: "Couldn't reach the server. Check your connection and try again.",
 	},
 	pwa: {
 		installTitle: 'Install Freeman Notes',
@@ -614,6 +615,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 	grid: {
 		notes: 'Notes',
 		notesGrid: 'Notes Grid',
+		workspaceNotYetSyncedOffline: "This workspace hasn't finished syncing to this device yet. Connect to the internet to load it.",
 	},
 	workspace: {
 		title: 'Workspaces',

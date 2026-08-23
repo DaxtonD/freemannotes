@@ -364,6 +364,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteBannersByNoteId: safeJsonNullableStringRecord(userPref.noteBannersByNoteId),
 						notePinsByDocId: safeJsonStrictBooleanRecord(userPref.notePinsByDocId),
 						dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
+						dismissedShareInvitationIds: safeJsonBooleanRecord(userPref.dismissedShareInvitationIds),
 						mentionNotifications: userPref.mentionNotifications !== false,
 						createdAt: fmt(devicePref.createdAt),
 						updatedAt: fmt(devicePref.updatedAt),
@@ -457,6 +458,29 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							}
 						} else {
 							jsonResponse(res, 400, { error: 'dismissedFailedLinkIds must be an object or null' });
+							return;
+						}
+					}
+
+					if ('dismissedShareInvitationIds' in body) {
+						const dismissedIds = body.dismissedShareInvitationIds;
+						if (dismissedIds == null || dismissedIds === '') {
+							userUpdateData.dismissedShareInvitationIds = {};
+						} else if (dismissedIds && typeof dismissedIds === 'object' && !Array.isArray(dismissedIds)) {
+							const normalized = {};
+							for (const [k, v] of Object.entries(dismissedIds)) {
+								if (typeof k === 'string' && k.length > 0 && k.length <= 120 && Boolean(v)) {
+									normalized[k] = true;
+								}
+							}
+							if (Object.keys(normalized).length <= 1000) {
+								userUpdateData.dismissedShareInvitationIds = normalized;
+							} else {
+								jsonResponse(res, 400, { error: 'dismissedShareInvitationIds exceeds 1000 entries' });
+								return;
+							}
+						} else {
+							jsonResponse(res, 400, { error: 'dismissedShareInvitationIds must be an object or null' });
 							return;
 						}
 					}
@@ -768,6 +792,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							noteBannersByNoteId: safeJsonNullableStringRecord(userPref.noteBannersByNoteId),
 							notePinsByDocId: safeJsonStrictBooleanRecord(userPref.notePinsByDocId),
 							dismissedFailedLinkIds: safeJsonBooleanRecord(userPref.dismissedFailedLinkIds),
+							dismissedShareInvitationIds: safeJsonBooleanRecord(userPref.dismissedShareInvitationIds),
 							createdAt: fmt(devicePref.createdAt),
 							updatedAt: fmt(devicePref.updatedAt),
 							timezone: timezone || 'UTC',
@@ -939,6 +964,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						noteBannersByNoteId: safeJsonNullableStringRecord(pref.userPref.noteBannersByNoteId),
 						notePinsByDocId: safeJsonStrictBooleanRecord(pref.userPref.notePinsByDocId),
 						dismissedFailedLinkIds: safeJsonBooleanRecord(pref.userPref.dismissedFailedLinkIds),
+						dismissedShareInvitationIds: safeJsonBooleanRecord(pref.userPref.dismissedShareInvitationIds),
 						createdAt: fmt(pref.devicePref.createdAt),
 						updatedAt: fmt(pref.devicePref.updatedAt),
 						timezone: timezone || 'UTC',

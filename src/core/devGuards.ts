@@ -72,8 +72,16 @@ export function runNoteGuards(
 	// ── 3. noteOrder references missing notes (orphaned order entries) ───
 	// If noteOrder contains an ID that doesn't exist in the registry, the
 	// grid would try to render a non-existent note.
+	// shared-placement:<uuid> aliases are excluded on purpose — since the 1.8.6
+	// "shared notes as first-class noteOrder members" change, addNoteReferences
+	// deliberately writes these into noteOrder ONLY, never into notesList (see
+	// that function's own comment). A real note has no business in noteOrder
+	// without a matching notesList entry; a shared-placement alias always looks
+	// exactly like that by design, so flagging it here was a false positive on
+	// every shared note the recipient's client has, firing on every unrelated
+	// re-render that happens to touch this effect's dependencies.
 	for (const id of orderIds) {
-		if (!registrySet.has(id)) {
+		if (!registrySet.has(id) && !id.startsWith('shared-placement:')) {
 			console.warn(`[dev-guard] noteOrder contains orphan ID not in notesList: "${id}"`);
 		}
 	}

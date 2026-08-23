@@ -1761,8 +1761,18 @@
 	inset: 0;
 	z-index: 1;
 	pointer-events: none;
-	opacity: 0;
-	background: transparent;
+	/* Tracks the media sheet's drag progress continuously (0 → 1, set on this
+	   element's ancestor via --media-sheet-open-progress) instead of snapping to
+	   fully blurred only once the sheet finishes opening — mirrors the sidebar's
+	   own drag-tied blur. Defaults to 0 (fully transparent, no blur) wherever the
+	   variable isn't set at all, which is visually identical to the old static
+	   opacity:0/background:transparent — background is always painted, opacity
+	   just hides it. */
+	opacity: var(--media-sheet-open-progress, 0);
+	background: color-mix(in srgb, var(--note-editor-surface, var(--color-surface)) 18%, transparent);
+	backdrop-filter: blur(calc(var(--media-sheet-open-progress, 0) * 5px));
+	-webkit-backdrop-filter: blur(calc(var(--media-sheet-open-progress, 0) * 5px));
+	transition: opacity 220ms ease, backdrop-filter 220ms ease;
 }
 
 .editorInteractionGuardActive .editorBlockLayer {
@@ -2226,7 +2236,7 @@
 		right: 0;
 		bottom: 0;
 		height: min(72dvh, 620px);
-		--media-sheet-peek-height: 56px;
+		--media-sheet-peek-height: 40px;
 		background: var(--note-editor-surface, var(--color-surface));
 		border-top-left-radius: 18px;
 		border-top-right-radius: 18px;
@@ -2243,6 +2253,22 @@
 	.mediaSheetBody {
 		opacity: var(--media-sheet-open-progress, 0);
 		transition: opacity 200ms ease;
+	}
+
+	/* "Attachments" label lives inside the always-visible drag handle, not the
+	   header, so it doesn't get the header/body rule above for free — collapsed,
+	   only the pill (handle bar) should show; dragged up, the label fades in
+	   alongside the header/body. The handle button itself stays fully opaque and
+	   clickable throughout; only this text fades. */
+	.mediaDockLabel {
+		/* Collapses its own layout space when closed (not just fading out) so the
+		   collapsed peek height only needs to fit the pill, not the pill plus a
+		   now-invisible-but-still-reserved label row underneath it. */
+		opacity: var(--media-sheet-open-progress, 0);
+		max-height: calc(var(--media-sheet-open-progress, 0) * 24px);
+		margin-top: calc(var(--media-sheet-open-progress, 0) * 6px);
+		overflow: hidden;
+		transition: opacity 200ms ease, max-height 200ms ease, margin-top 200ms ease;
 	}
 
 	.mediaSheetOpen {
@@ -3463,12 +3489,93 @@ Drag ghost:
 	cursor: default;
 }
 
-.checklistItemCompleted .checklistRowPreview,
+/* .checklistRowPreview deliberately excluded here — its strikethrough is the
+   animated sweep below (.checklistPreviewTextSweep) instead of a plain
+   text-decoration, so the two don't double up. The rich-editing view (shown
+   only while a row is focused for editing) keeps the plain static version,
+   since animating a live ProseMirror DOM node isn't worth the risk for a state
+   that's rarely what's on screen at the moment a checkbox is toggled. */
 .checklistItemCompleted .checklistRowRichShell,
 .checklistItemCompleted .checklistRowRichEditor,
 .checklistItemCompleted .checklistRowRichEditor:global(.ProseMirror) {
 	text-decoration: line-through;
 	text-decoration-thickness: 0.06em;
+}
+
+/* Animated strikethrough sweep + completion pulse ─────────────────────────
+   Wrapped in its own inline span (checklistPreviewTextSweep, see
+   renderChecklistPreviewContent) rather than applied to .checklistRowPreview
+   directly — that outer element is a flex child stretched to the full row
+   width, so a background gradient there would draw the line across the whole
+   row instead of just under the text itself. An inline span sizes to its
+   actual text content, so background-size: 100% tracks the text width
+   correctly for the common short/single-line item — for a rarer multi-line
+   wrapped item, the line spans the element's overall bounding box rather than
+   following each wrapped line individually, a known, harmless simplification
+   of this technique rather than a bug.
+
+   checklistItemCompleting / checklistItemUncompleting are transient classes
+   (ChecklistEditor.tsx, ~CHECKLIST_COMPLETION_ANIMATION_MS) applied only for
+   the brief window right after a checkbox toggle, during which the item is
+   deliberately still held in its OLD section (see activeItems/completedItems)
+   so this can play out in place before it actually relocates. The pulse
+   animation-delay is timed to start right as the sweep transition finishes. */
+.checklistPreviewTextSweep {
+	background-image: linear-gradient(currentColor, currentColor);
+	background-repeat: no-repeat;
+	background-position: left center;
+	background-size: 0% 0.08em;
+}
+
+.checklistItemCompleted .checklistPreviewTextSweep {
+	background-size: 100% 0.08em;
+}
+
+.checklistItemCompleting .checklistPreviewTextSweep,
+.checklistItemUncompleting .checklistPreviewTextSweep {
+	transition: background-size 300ms ease;
+}
+
+/* First pass at this used a 16% background tint and a 1.03 scale — technically
+   fired correctly (checked the compiled CSS, keyframe name matched its reference,
+   no conflicting rules), just completely invisible in practice, buried under the
+   sweep and the move. Bumped to 34% + a color-mix ring so it actually reads as a
+   pulse instead of "nothing happened." */
+@keyframes checklistCompletionPulse {
+	0% {
+		transform: scale(1);
+		background-color: transparent;
+		box-shadow: 0 0 0 0 transparent;
+	}
+	45% {
+		transform: scale(1.035);
+		background-color: color-mix(in srgb, var(--color-accent) 34%, transparent);
+		box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-accent) 55%, transparent);
+	}
+	100% {
+		transform: scale(1);
+		background-color: transparent;
+		box-shadow: 0 0 0 0 transparent;
+	}
+}
+
+.checklistItemCompleting,
+.checklistItemUncompleting {
+	animation: checklistCompletionPulse 260ms ease-out;
+	animation-delay: 300ms;
+	animation-fill-mode: backwards;
+	transform-origin: left center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.checklistItemCompleting .checklistPreviewTextSweep,
+	.checklistItemUncompleting .checklistPreviewTextSweep {
+		transition: none;
+	}
+	.checklistItemCompleting,
+	.checklistItemUncompleting {
+		animation: none;
+	}
 }
 
 .childDraggingWithParent {

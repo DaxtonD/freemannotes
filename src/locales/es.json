@@ -175,7 +175,8 @@
   },
   "auth": {
     "language": "Idioma",
-    "languageHint": "Tu nota de bienvenida se creará en el idioma seleccionado."
+    "languageHint": "Tu nota de bienvenida se creará en el idioma seleccionado.",
+    "connectionTimeout": "No se pudo conectar con el servidor. Comprueba tu conexión e inténtalo de nuevo."
   },
   "pwa": {
     "installTitle": "Instalar Freeman Notes",
@@ -521,7 +522,8 @@
     "viewList": "Vista de lista",
     "viewStrip": "Vista de tira",
     "viewBubble": "Vista de burbujas",
-    "viewInbox": "Bandeja de entrada"
+    "viewInbox": "Bandeja de entrada",
+    "workspaceNotYetSyncedOffline": "Este espacio de trabajo aún no ha terminado de sincronizarse en este dispositivo. Conéctate a internet para cargarlo."
   },
   "workspace": {
     "title": "Espacios de trabajo",
