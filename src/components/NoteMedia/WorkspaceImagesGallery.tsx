@@ -227,7 +227,7 @@ function TileImage(props: { item: GalleryItem; onOpen: () => void }): React.JSX.
 							<FontAwesomeIcon icon={faImage} />
 						</div>
 					) : (
-						<img className={styles.thumb} src={resolvedImage.src} alt={props.item.noteTitle} onError={resolvedImage.fallbackToOfflinePreview} />
+						<img className={styles.thumb} src={resolvedImage.src} alt={props.item.noteTitle} onLoad={resolvedImage.onImageLoad} onError={resolvedImage.fallbackToOfflinePreview} />
 					)}
 				</div>
 				<div className={styles.metadata}>

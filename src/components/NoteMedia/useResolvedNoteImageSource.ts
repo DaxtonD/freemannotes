@@ -1,7 +1,16 @@
 import React from 'react';
-import { getConnectionQuality, subscribeConnectionQualityChange } from '../../core/networkQuality';
+import { getConnectionQuality, reportImageLoadTiming, subscribeConnectionQualityChange } from '../../core/networkQuality';
 
 const NOTE_IMAGE_CACHE_NAME = 'freemannotes-images-v1';
+
+// How long a network image attempt gets before we give up and show the cached preview
+// instead, when one is available. Thumbnails should be small — if a "thumbnail" is
+// taking this long, the connection is bad, not the file. Viewer gets more rope since a
+// full-quality photo is a legitimately bigger download even on a fine connection.
+const NETWORK_IMAGE_TIMEOUT_MS: Record<'thumbnail' | 'viewer', number> = {
+	thumbnail: 1800,
+	viewer: 3500,
+};
 
 export type ResolvedNoteImageSourceOptions = {
 	fullUrl?: string | null;
@@ -16,6 +25,9 @@ export type ResolvedNoteImageSourceState = {
 	isUsingCachedFullImage: boolean;
 	showPlaceholder: boolean;
 	fallbackToOfflinePreview: () => void;
+	/** Wire to the rendered <img>'s onLoad — times the network fetch so a slow-but-
+	 *  undetected connection gets caught (and reported) even when nothing ever errors. */
+	onImageLoad: () => void;
 };
 
 async function hasCachedImage(url: string): Promise<boolean> {
@@ -155,11 +167,58 @@ export function useResolvedNoteImageSource(options: ResolvedNoteImageSourceOptio
 		setIsUsingCachedFullImage(false);
 	}, [objectUrl]);
 
+	// onError alone only catches an outright failed request — a 404, a dropped
+	// connection. It does nothing for a request that's merely taking forever, which is
+	// exactly what a throttled-but-technically-online connection produces: the browser
+	// just keeps waiting, no error ever fires, and the user stares at a placeholder (or
+	// nothing) for as long as the network wants to take. Race the attempt against a
+	// timeout instead, and only bother when there's actually a cached preview worth
+	// falling back to — no local blob means there's nothing better to show anyway, so
+	// let it run as long as it needs to.
+	const timeoutRef = React.useRef<number | null>(null);
+	const loadStartRef = React.useRef<number | null>(null);
+	React.useEffect(() => {
+		if (timeoutRef.current !== null) {
+			window.clearTimeout(timeoutRef.current);
+			timeoutRef.current = null;
+		}
+		loadStartRef.current = null;
+		if (preferOfflinePreview || isUsingCachedFullImage) return;
+		if (!src || isOfflinePreview || isBlobUrl(src) || !objectUrl) return;
+		loadStartRef.current = Date.now();
+		const thresholdMs = NETWORK_IMAGE_TIMEOUT_MS[mode];
+		timeoutRef.current = window.setTimeout(() => {
+			// Report BEFORE falling back — every other image (this gallery, this
+			// session) should start preferring cached previews immediately, not
+			// re-discover the same slow connection one timeout at a time.
+			reportImageLoadTiming(thresholdMs + 1, thresholdMs);
+			setPreferOfflinePreview(true);
+		}, thresholdMs);
+		return () => {
+			if (timeoutRef.current !== null) window.clearTimeout(timeoutRef.current);
+		};
+	}, [src, isOfflinePreview, isUsingCachedFullImage, mode, objectUrl, preferOfflinePreview]);
+
+	const onImageLoad = React.useCallback(() => {
+		if (timeoutRef.current !== null) {
+			window.clearTimeout(timeoutRef.current);
+			timeoutRef.current = null;
+		}
+		const startedAt = loadStartRef.current;
+		loadStartRef.current = null;
+		if (startedAt === null) return;
+		// A genuinely fast load here clears a previously-observed-slow flag too, so a
+		// connection that recovers isn't stuck treating every image as an emergency
+		// for the rest of the session.
+		reportImageLoadTiming(Date.now() - startedAt, NETWORK_IMAGE_TIMEOUT_MS[mode]);
+	}, [mode]);
+
 	return {
 		src,
 		isOfflinePreview,
 		isUsingCachedFullImage,
 		showPlaceholder: !src,
 		fallbackToOfflinePreview,
+		onImageLoad,
 	};
 }

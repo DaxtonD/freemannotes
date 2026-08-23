@@ -377,6 +377,7 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 								alt={props.title}
 								className={styles.image}
 								draggable={false}
+								onLoad={resolvedImage.onImageLoad}
 								onError={resolvedImage.fallbackToOfflinePreview}
 								style={{
 									transform: `translate3d(${offset.x}px, ${offset.y}px, 0) scale(${scale})`,

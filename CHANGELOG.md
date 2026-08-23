@@ -4,6 +4,15 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.8.9 - 2026-08-23
+
+Quick follow-up. Font scaling and one more offline-first gap, both found by actually testing the sliders and the throttle instead of assuming they worked.
+
+### Fixed
+- **Checklist checkboxes (and the drag handle next to them) drifted away from the text at any font scale that wasn't close to 100%.** The formula deciding their vertical offset computed the text's line-box from an unscaled `1em` that never once multiplied in the font-scale preference — it just happened to sit close enough to correct right around the default size that nobody noticed, which is exactly why "80-90% looks fine" was the reported range: that's just "close to 100%," not an actual safe zone. Drag the slider to 60% or 150% and the assumed line-box and the real rendered one diverge enough that the checkbox visibly floats above or below the text instead of sitting next to it. Fixed at the root instead of adding more special-case offsets on top of a wrong number.
+- **The collapsible-heading dropdown arrow was a flat 20px icon that did not care in the slightest what font size was in play** — same size on h1 as h6, same size at 60% scale as 150%. Switched it to `em` units so it inherits the heading's own already-correctly-scaled font-size instead of ignoring it, which also makes it proportionally right across heading levels for the first time, not just across the font-size slider.
+- **Throttle your connection and the Images gallery loaded like garbage instead of instantly** — going properly offline was already fast (cached previews kick in immediately), but a merely slow, "technically online" connection sat there waiting on a real network fetch every time, the exact same class of bug this whole offline-first pass keeps finding. Turned out the existing poor-connection detection only trusts the browser's Network Information API, and that API's thresholds are tuned for something close to dial-up — ordinary DevTools throttling doesn't reliably cross them, so the app kept thinking the connection was fine the entire time it very much was not. Every network image load now races against a timeout (short for thumbnails, longer for the full-size viewer) and falls back to the cached preview if it loses, and reports the slow load so every other image in the gallery benefits immediately instead of each one individually rediscovering the same bad connection one timeout at a time.
+
 ## 1.8.8 - 2026-08-23
 
 Smaller than 1.8.7 on paper, but two of these took multiple genuine attempts before they actually worked, and one "bug" turned out to be four separate bugs wearing the same trenchcoat. Testing this hard keeps paying for itself.

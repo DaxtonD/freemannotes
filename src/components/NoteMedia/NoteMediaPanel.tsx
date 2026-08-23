@@ -74,7 +74,7 @@ function RemoteImageThumb(props: RemoteImageThumbProps): React.JSX.Element {
 	}
 
 	return (
-		<img className={styles.thumb} src={resolvedImage.src} alt={props.alt} onError={resolvedImage.fallbackToOfflinePreview} />
+		<img className={styles.thumb} src={resolvedImage.src} alt={props.alt} onLoad={resolvedImage.onImageLoad} onError={resolvedImage.fallbackToOfflinePreview} />
 	);
 }
 

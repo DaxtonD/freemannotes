@@ -95,7 +95,22 @@
 	--checklist-text-bottom-extra: 0px;
 	--checklist-control-optical-adjust: 0px;
 	--checklist-handle-optical-adjust: 1px;
-	--checklist-text-line-box: calc(1em * var(--checklist-text-line-height));
+	/* This has to track --note-editor-font-scale or the whole offset system below is
+	   computing against a lie. .checklistRowPreview/.checklistRowRichEditor size their
+	   actual text as calc(1rem * var(--note-editor-font-scale)) — but this variable
+	   lived on .checklistItem, an ANCESTOR of that text, so its own "1em" was just the
+	   plain unscaled base font-size the whole time, not what the text was actually
+	   rendered at. At 100% scale that unscaled ~16px happens to sit close enough to
+	   correct that the misalignment was invisible — which is exactly why this went
+	   unnoticed and "80-90% looks fine" was the reported range. Drag the font-size
+	   slider to 60% or 150% and the assumed line-box and the real one diverge hard
+	   enough that the checkbox (and drag handle, same formula) visibly floats above or
+	   below the text instead of sitting next to it. Multiplying by the actual scale
+	   here fixes both controls at every scale, not just near the one value nobody
+	   thought to test away from. The optical-adjust knobs below are still real and
+	   still needed — this only fixes the base they're adjusting FROM.
+	*/
+	--checklist-text-line-box: calc(1em * var(--note-editor-font-scale, 1) * var(--checklist-text-line-height));
 	--checklist-control-top-offset: max(0px, calc(var(--checklist-text-pad-y) + ((var(--checklist-text-line-box) - var(--checklist-checkbox-size)) / 2) + var(--checklist-control-optical-adjust)));
 	--checklist-handle-top-offset: max(0px, calc(var(--checklist-text-pad-y) + ((var(--checklist-text-line-box) - var(--checklist-handle-size)) / 2) + var(--checklist-handle-optical-adjust)));
 	display: grid;
@@ -2640,8 +2655,18 @@
 .richEditorContent:global(.ProseMirror) :global(.fn-collapsible-heading)::after {
 	content: '';
 	display: block;
-	width: 20px;
-	height: 20px;
+	/* Was a flat 20px/12px mask, completely deaf to both the heading level (h1
+	   through h6 all got the identical icon size) and --note-editor-font-scale.
+	   ::after inherits font-size from its host element by default, and the host
+	   here IS the h1-h6 element itself, which already bakes in both the
+	   per-level clamp() AND the font-scale multiplier (see the h1-h6 rules
+	   above) — so sizing this in em instead of px means it just rides along
+	   with whatever that heading actually rendered at, no separate scale
+	   variable needed here at all. Ratio picked to land close to the old fixed
+	   size at a mid-range heading; nudge if it doesn't sit right against a
+	   specific level once you've actually looked at it. */
+	width: 1.15em;
+	height: 1.15em;
 	position: absolute;
 	inset-inline-end: var(--collapsible-heading-summary-space);
 	top: 50%;
@@ -2653,11 +2678,11 @@
 	-webkit-mask-image: url('/icons/Arrow.png');
 	-webkit-mask-repeat: no-repeat;
 	-webkit-mask-position: center;
-	-webkit-mask-size: 12px 12px;
+	-webkit-mask-size: 0.7em 0.7em;
 	mask-image: url('/icons/Arrow.png');
 	mask-repeat: no-repeat;
 	mask-position: center;
-	mask-size: 12px 12px;
+	mask-size: 0.7em 0.7em;
 	pointer-events: none;
 	transition: transform 160ms ease, color 140ms ease;
 }
