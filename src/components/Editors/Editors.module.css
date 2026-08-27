@@ -2180,6 +2180,17 @@
 		gap: 6px;
 		background: var(--note-editor-surface, var(--color-surface));
 		padding-bottom: var(--app-safe-bottom-visual, env(safe-area-inset-bottom, 0px));
+		/* .fullscreenEditor's own flex `gap` (12px) applies uniformly to every
+		   section boundary in the editor column — header-to-title,
+		   title-to-body, and this one, body-to-dock. The first two want that
+		   breathing room; this one doesn't. That 12px was always blank (the
+		   scrollable content's own box already ends before it starts — gap
+		   space was never something content could render into), so pulling
+		   this element up by exactly that amount closes the empty strip
+		   without covering any text. Mobile-only: desktop's media flyout is a
+		   completely different (right-side panel) layout, not a bottom sheet,
+		   so this gap isn't the same kind of dead space there. */
+		margin-top: -12px;
 	}
 
 	.mediaDockSlot {
@@ -2201,6 +2212,24 @@
 		justify-content: center;
 		width: calc(100% + 24px);
 		margin-left: -12px;
+		/* Declared here (a shared ancestor of both .mediaDockSlot and .mediaSheet)
+		   instead of on .mediaSheet itself. It used to live only on .mediaSheet,
+		   which meant .mediaDockSlot and this element — both ANCESTORS of
+		   .mediaSheet — couldn't see it (custom properties only cascade downward)
+		   and silently fell back to the hardcoded 56px default below, taller than
+		   .mediaSheet was actually animating its collapsed peek to. That gap was
+		   real, wasted, reserved-but-unused space between the last line of note
+		   content and the drag handle — content couldn't push down into it, but
+		   nothing was drawn there either. Declaring it once, up here, means every
+		   reference (this min-height, .mediaDockSlot's min-height, and
+		   .mediaSheet's own translateY animation) now agrees on the same number.
+		   28px is close to the floor: the handle button's own content (pill +
+		   its `padding: 8px 0` from the .mediaSheetHandle override further down)
+		   is already 20px tall on its own, so this leaves only ~4px of slack
+		   above/below before the button itself starts getting clipped by
+		   .mediaDockSlot's overflow:hidden — don't go lower than that without
+		   also shrinking the handle's own padding. */
+		--media-sheet-peek-height: 28px;
 		min-height: var(--media-sheet-peek-height, 56px);
 	}
 
@@ -2215,9 +2244,22 @@
 		   remains centered independently of the button widths. */
 		position: absolute;
 		left: max(calc(env(safe-area-inset-left, 0px) + 8px), 8px);
-		top: 50%;
-		transform: translateY(-50%);
+		/* Bottom-anchored, not vertically centered, and nudged 2px past the
+		   row's own bottom edge on top of that. This row's collapsed height
+		   (--media-sheet-peek-height, see .mobileChecklistMediaRow) is only
+		   28px, matching the button size below exactly — bottom:0 alone still
+		   read as "just touching" the content area above with zero buffer, so
+		   the extra -2px gives it real breathing room instead of sitting
+		   exactly flush on the boundary. There's a 6px gap below this row
+		   before the bottom-dock nav starts (.editorBottomArea's own `gap`),
+		   so dipping 2px into that is safe — nowhere near the toolbar. */
+		bottom: -2px;
 		z-index: 3;
+	}
+
+	.mobileChecklistMediaRow .mobileChecklistUndoFabButton {
+		width: 28px;
+		height: 28px;
 	}
 
 	.mobileChecklistMediaRow .mediaDock {
@@ -2232,7 +2274,7 @@
 		padding: 8px 0;
 	}
 
-	/* Match mobile dock screenshot: no visible divider lines. */
+	/* no visible divider lines. */
 	.mediaDock {
 		border: 0;
 		border-radius: 0;
@@ -2251,7 +2293,9 @@
 		right: 0;
 		bottom: 0;
 		height: min(72dvh, 620px);
-		--media-sheet-peek-height: 40px;
+		/* --media-sheet-peek-height is now declared on .mobileChecklistMediaRow,
+		   a shared ancestor of both this element and .mediaDockSlot — see the
+		   comment there for why. */
 		background: var(--note-editor-surface, var(--color-surface));
 		border-top-left-radius: 18px;
 		border-top-right-radius: 18px;
@@ -3178,6 +3222,8 @@ Drag handle:
 	align-items: center;
 	justify-content: center;
 	line-height: 1;
+	/* Only top is reset here on purpose (see .dragHandleNonDraggable below for
+	   why the other three sides matter). */
 	padding-top: 0;
 	margin-top: var(--checklist-handle-top-offset);
 	align-self: start;
@@ -3204,6 +3250,29 @@ Drag handle:
 	pointer-events: none;
 	touch-action: pan-y;
 	cursor: default;
+	/* The draggable handle (active-section rows) is a real <button> —
+	   react-beautiful-dnd's dragHandleProps need a focusable/interactive
+	   element. globals.css has a bare `button { padding: 8px 10px; }` reset
+	   that applies to it, and .dragHandle above only overrides padding-top
+	   (to 0) — the other three longhands (right/bottom/left) leak through
+	   from that global rule, giving the button an asymmetric 0/10/8/10
+	   padding box. --checklist-handle-top-offset's optical-adjust term was
+	   tuned by eye against that rendering, where the leftover 8px of
+	   bottom-only padding nudges the flex-centered icon up a few px within
+	   its own box.
+	   This non-draggable variant is a plain <div> (completed section,
+	   read-only viewer, composer/ghost rows) — globals.css's `button`
+	   selector never touches it, so without this it renders with zero
+	   padding and a genuinely centered icon: same class, same fixed
+	   box-sizing:border-box box, but a different effective padding box
+	   depending on which element happens to host it, throwing its icon out
+	   of alignment with the checkbox/text beside it. Matching the button's
+	   leftover padding here (rather than stripping the button's, which would
+	   just move the misalignment onto the currently-correct draggable rows
+	   instead) keeps this fix scoped to the thing that's actually broken. */
+	padding-right: 10px;
+	padding-bottom: 8px;
+	padding-left: 10px;
 }
 
 .dragHandle svg {
@@ -3353,6 +3422,63 @@ Drag handle:
 	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
 }
 
+/* Wraps the move-to-top/move-to-bottom buttons + the remove button as one
+   group, sitting in the grid's existing trailing (auto-sized) column —
+   letting that column grow to fit 3 buttons instead of 1, with no change
+   needed to .checklistItem's own grid-template-columns. */
+.rowActions {
+	display: inline-flex;
+	align-items: center;
+	gap: 2px;
+	justify-self: center;
+	align-self: center;
+}
+
+/* "Move to top" / "move to bottom" — desktop-only (hover-revealed), mirrors
+   .rowRemoveButton's box/hover pattern. Mobile gets the equivalent action via
+   swipe instead (see handleRowTouchStart/handleRowTouchEnd in NoteEditor.tsx
+   / ChecklistEditor.tsx) — these buttons are hidden outright on coarse
+   pointer below, rather than reusing .rowRemoveButton's "reveal on the active
+   row" coarse-pointer carve-out, since arrows were never meant to exist on
+   touch at all. */
+.rowMoveButton {
+	margin-top: 0;
+	opacity: 0;
+	pointer-events: none;
+	border: 0;
+	background: transparent;
+	color: var(--color-text-muted);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	padding: 2px 6px;
+	line-height: 1;
+	font-size: 14px;
+	border-radius: var(--radius-sm);
+}
+
+@media (pointer: fine) {
+	.checklistItem:hover .rowMoveButton,
+	.checklistItem:focus-within .rowMoveButton {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+@media (pointer: coarse) {
+	.rowMoveButton {
+		display: none;
+	}
+}
+
+.rowMoveButton:hover,
+.rowMoveButton:focus-visible {
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+}
+
 .rowTextArea {
 	flex: 1;
 	box-sizing: border-box;
@@ -3487,7 +3613,8 @@ Drag ghost:
 	box-shadow: 0 12px 28px -10px rgba(0, 0, 0, 0.75);
 }
 
-.dragGhost .rowRemoveButton {
+.dragGhost .rowRemoveButton,
+.dragGhost .rowMoveButton {
 	opacity: 1;
 	pointer-events: none;
 }
@@ -3561,35 +3688,126 @@ Drag ghost:
 	transition: background-size 300ms ease;
 }
 
-/* First pass at this used a 16% background tint and a 1.03 scale — technically
-   fired correctly (checked the compiled CSS, keyframe name matched its reference,
-   no conflicting rules), just completely invisible in practice, buried under the
-   sweep and the move. Bumped to 34% + a color-mix ring so it actually reads as a
-   pulse instead of "nothing happened." */
-@keyframes checklistCompletionPulse {
+/* First pass at the row-level pulse used a whole-row scale + 16% background
+   tint (then 34% + a box-shadow ring after a first fix attempt) — technically
+   fired correctly every time (checked the compiled CSS, keyframe name matched
+   its reference, no conflicting rules), it just never read as the intended
+   "FAB long-press ring" feel; at best it looked like one plain, unremarkable
+   flash. A second pass anchored the double-expanding-ring technique (built
+   for the checklist progress bar's orb — ChecklistProgressBar.tsx /
+   .checklistProgressOrb below) to the checkbox alone instead of the row, on
+   the theory that the checkbox is the thing actually being acted on — but
+   that read as too small/isolated and lost the "whole row just did
+   something" feel the original row-level version had. Settled on: the
+   double-ring technique, but back on the row (`.checklistItem` itself,
+   which is already `position: relative` + `isolation: isolate`), so the
+   ring radiates outward from the row — including the text that was just
+   struck through — instead of from the tiny checkbox. That version used a
+   solid `border` for both rings, growing via `inset`; on a wide rectangular
+   row that read as "the row grew a highlighted outline" rather than a
+   pulse — a crisp straight-edged rectangle doesn't sell "radiating" the way
+   a ring does on a small, roughly-circular checkbox. Replaced the border
+   with a blurred `box-shadow` glow instead (still per-corner via
+   `border-radius: inherit`, still two staggered layers) — a soft bloom has
+   no hard edge to read as "a border," and animating blur+spread growing
+   while the shadow's own color fades to transparent is what actually
+   registers as light radiating outward, independent of the host box's
+   aspect ratio (unlike `transform: scale()`, which would still stretch a
+   wide-short row's bloom out of proportion — box-shadow does not have that
+   problem since blur/spread apply as fixed px in every direction).
+   Both selectors below are the compound `.checklistItem.checklistItemCompleting`
+   rather than the shorter `.checklistItemCompleting` alone: a coarse-pointer
+   row that's simultaneously the active (focused-for-editing) row ALSO uses
+   its own `::before` for an unrelated background highlight tint
+   (.checklistItemActive::before, ~line 176, z-index:-1, behind content) — the
+   same single pseudo-element box, since an element only ever has one
+   `::before`. A bare `.checklistItemCompleting::before` has equal
+   specificity to that rule, so which one wins for shared properties like
+   z-index/position would depend on source order alone (fragile — reordering
+   either rule later would silently break this). The extra `.checklistItem`
+   class (always present alongside `.checklistItemCompleting` in practice)
+   costs nothing selector-wise but guarantees this rule outranks the active
+   highlight regardless of file order. */
+.checklistItem.checklistItemCompleting::before,
+.checklistItem.checklistItemCompleting::after,
+.checklistItem.checklistItemUncompleting::before,
+.checklistItem.checklistItemUncompleting::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: inherit;
+	/* Explicit, not left to fall through: the active-row highlight rule above
+	   sets a `background` on this same pseudo-element, and outranking it on
+	   z-index/position alone would leave that tint still painted, now
+	   dragged in front of the row's content instead of behind it. */
+	background: transparent;
+	opacity: 0;
+	pointer-events: none;
+	/* .checklistItem's `isolation: isolate` gives it its own stacking
+	   context, so this z-index only has to beat the row's own in-flow
+	   content (checkbox, drag handle, text) — enough to paint the glow
+	   above all of it regardless of DOM order. */
+	z-index: 1;
+}
+
+.checklistItem.checklistItemCompleting::before,
+.checklistItem.checklistItemUncompleting::before {
+	/* Used to wait for the strikethrough sweep (below) to finish before
+	   starting — sequential felt slow, since the row didn't actually move
+	   until both had played out one after another. Now starts immediately,
+	   playing alongside the sweep instead of after it; 250ms duration still
+	   finishes at/before the sweep's own 300ms and comfortably inside the
+	   now-300ms CHECKLIST_COMPLETION_ANIMATION_MS hold window (NoteEditor.tsx
+	   / ChecklistEditor.tsx) — anything that ran past the hold would get its
+	   DOM removed mid-animation and read as an abrupt cutoff instead of a
+	   fade. */
+	animation: checklistRowGlowPulseOuter 250ms cubic-bezier(0.2, 0, 0.8, 1);
+	/* The `animation` shorthand above resets every sub-property it doesn't
+	   mention — including animation-fill-mode — back to `none`. Redeclaring
+	   it here, in the same rule, makes sure it isn't silently reset back to
+	   `none` by that shorthand (which it was, when this lived in a separate
+	   rule from the fill-mode declaration — the glow sat fully transparent
+	   for the whole animation-delay instead of holding its start-of-animation
+	   look, then popped in abruptly instead of already being visible). */
+	animation-fill-mode: backwards;
+}
+
+.checklistItem.checklistItemCompleting::after,
+.checklistItem.checklistItemUncompleting::after {
+	/* Same "play alongside the sweep, not after it" change as ::before above.
+	   Keeps its ~90ms stagger behind ::before (0ms) so the two layers still
+	   read as a distinct "pulse... pulse" beat instead of one blended flash —
+	   delay(90) + 160ms duration lands at 250ms, same finish line as ::before. */
+	animation: checklistRowGlowPulseInner 160ms cubic-bezier(0.2, 0, 0.8, 1);
+	animation-delay: 90ms;
+	/* Same shorthand-vs-longhand fill-mode conflict as ::before above. */
+	animation-fill-mode: backwards;
+}
+
+/* Outer layer: wider blur, dimmer accent — the soft "bloom" that reads as
+   light spreading away from the row. */
+@keyframes checklistRowGlowPulseOuter {
 	0% {
-		transform: scale(1);
-		background-color: transparent;
-		box-shadow: 0 0 0 0 transparent;
-	}
-	45% {
-		transform: scale(1.035);
-		background-color: color-mix(in srgb, var(--color-accent) 34%, transparent);
-		box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-accent) 55%, transparent);
+		box-shadow: 0 0 0 0 color-mix(in srgb, var(--note-editor-accent, var(--color-accent)) 55%, transparent);
+		opacity: 0.85;
 	}
 	100% {
-		transform: scale(1);
-		background-color: transparent;
-		box-shadow: 0 0 0 0 transparent;
+		box-shadow: 0 0 32px 6px transparent;
+		opacity: 0;
 	}
 }
 
-.checklistItemCompleting,
-.checklistItemUncompleting {
-	animation: checklistCompletionPulse 260ms ease-out;
-	animation-delay: 300ms;
-	animation-fill-mode: backwards;
-	transform-origin: left center;
+/* Inner layer: tighter blur, full-strength accent — a brighter second beat
+   that arrives ~90ms behind the outer one (see animation-delay above). */
+@keyframes checklistRowGlowPulseInner {
+	0% {
+		box-shadow: 0 0 0 0 var(--note-editor-accent, var(--color-accent));
+		opacity: 0.85;
+	}
+	100% {
+		box-shadow: 0 0 16px 2px transparent;
+		opacity: 0;
+	}
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -3597,8 +3815,233 @@ Drag ghost:
 	.checklistItemUncompleting .checklistPreviewTextSweep {
 		transition: none;
 	}
-	.checklistItemCompleting,
-	.checklistItemUncompleting {
+	.checklistItem.checklistItemCompleting::before,
+	.checklistItem.checklistItemCompleting::after,
+	.checklistItem.checklistItemUncompleting::before,
+	.checklistItem.checklistItemUncompleting::after {
+		animation: none;
+	}
+}
+
+/* Checklist progress bar (ChecklistProgressBar.tsx) ───────────────────────
+   Sits above the title for checklist notes. The fill's own transition and
+   the pulse overlay's animation are deliberately separate elements — the
+   fill never remounts (it needs a stable node for its transform transition
+   to interpolate smoothly across renders), only the pulse overlay remounts
+   via a React `key` to retrigger its animation on every completed-count
+   change. No overflow:hidden on the track on purpose: the pulse's box-shadow
+   glow is allowed to bloom slightly outside the bar's own rect, which reads
+   as "achievement glow" rather than being clipped into a flat brightness
+   change. */
+.checklistProgressBar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 2px 2px 10px;
+}
+
+.checklistProgressTrack {
+	position: relative;
+	flex: 1 1 auto;
+	height: 5px;
+	border-radius: 999px;
+	background: color-mix(in srgb, var(--note-editor-text, var(--color-text)) 12%, transparent);
+}
+
+.checklistProgressFill {
+	position: absolute;
+	inset: 0;
+	transform-origin: left center;
+	border-radius: inherit;
+	background: var(--note-editor-accent, var(--color-accent));
+	/* This default (used for mount and for the simple recede-on-uncheck case)
+	   is overridden inline with a computed delay+duration during a "checking"
+	   shot (see ChecklistProgressBar.tsx) — the fill deliberately does NOT
+	   move for the first leg of that shot, only once the orb reaches this
+	   edge's old position does the fill start moving too, arriving at the
+	   same instant the orb does. Same "standard" easing already used
+	   elsewhere in this app for the mobile FAB's charge-phase squeeze — a
+	   weighted, physical feel rather than a linear snap. */
+	transition: transform 420ms cubic-bezier(0.4, 0, 0.2, 1);
+	will-change: transform;
+}
+
+.checklistProgressLabel {
+	flex: 0 0 auto;
+	font-size: var(--font-size-xs);
+	font-weight: 600;
+	color: var(--note-editor-muted, var(--color-text-muted));
+	white-space: nowrap;
+}
+
+/* Half-Life 2 pulse-rifle energy orb, not a whole-bar flash: on a "checking"
+   shot this travels the FULL 0→target distance alone (through whatever's
+   already filled) at a constant rate, while .checklistProgressFill above
+   stays put until the orb reaches its old edge, then bursts once it arrives.
+   This default transition (used for mount and the simple recede-on-uncheck
+   case) is overridden inline with a fixed-duration linear one during a
+   shot — see ChecklistProgressBar.tsx. No overflow:hidden on the track (see
+   .checklistProgressTrack) on purpose — the orb's glow and the arrival burst
+   are both allowed to bloom slightly outside the bar's own rect. */
+.checklistProgressOrbAnchor {
+	position: absolute;
+	top: 50%;
+	transition: left 420ms cubic-bezier(0.4, 0, 0.2, 1);
+	transform: translate(-50%, -50%);
+	pointer-events: none;
+}
+
+.checklistProgressOrb {
+	position: relative; /* anchors the ::before/::after expanding rings below */
+	display: block;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	/* Checking fires an accent-colored orb from the start of the bar;
+	   unchecking fires a muted/"incomplete-grey" one from the end (see
+	   .checklistProgressOrbUnchecking below and ChecklistProgressBar.tsx) —
+	   two opposing forces, not one orb that's merely direction-agnostic. This
+	   one custom property re-colors the core dot, its glow, and both rings
+	   together, so the color swap doesn't need a second copy of every rule. */
+	--checklist-progress-orb-color: var(--note-editor-accent, var(--color-accent));
+	background: color-mix(in srgb, white 65%, var(--checklist-progress-orb-color));
+	box-shadow: 0 0 3px 1px color-mix(in srgb, var(--checklist-progress-orb-color) 70%, transparent);
+	/* Retriggered via a React `key` remount on every completed-count change
+	   (see ChecklistProgressBar.tsx) — CSS animations don't restart just
+	   because a class is already applied, only on a fresh element. Remounting
+	   this one element restarts its own animation AND both pseudo-elements'
+	   below together. The delay is set to land right as
+	   .checklistProgressOrbAnchor's own 420ms `left` transition finishes, so
+	   the burst plays exactly when the orb arrives — same "delay lands as the
+	   preceding transition ends" trick already used by checklistCompletionPulse
+	   above. */
+	animation: checklistProgressOrbCore 300ms ease-out;
+	animation-delay: 420ms;
+	animation-fill-mode: backwards;
+}
+
+.checklistProgressOrbUnchecking {
+	--checklist-progress-orb-color: var(--note-editor-muted, var(--color-text-muted));
+}
+
+/* Double-PULSE expanding ring, modeled on the mobile FAB long-press's fire
+   moment (fab-press-glow + fab-press-circle, this same file's layout.css
+   counterpart) — but the FAB's own two strokes both start at the same
+   instant, which (checked here) reads as one blended ring, not two. What
+   actually reads as "double pulse" is staggering them in TIME: ::before
+   fires first, ::after fires ~90ms behind it, so it's a genuine one-two beat
+   ("ring... ring") rather than two overlapping styles on a single expansion.
+   Kept deliberately modest (small max-scale, capped opacity) — a checklist
+   ticking along should feel pleasant, not like an event notification. */
+.checklistProgressOrb::before,
+.checklistProgressOrb::after {
+	content: '';
+	position: absolute;
+	inset: 0;
+	border-radius: 50%;
+	opacity: 0;
+	pointer-events: none;
+	animation-fill-mode: backwards;
+}
+
+.checklistProgressOrb::before {
+	border: 2px solid color-mix(in srgb, var(--checklist-progress-orb-color) 55%, transparent);
+	animation: checklistProgressRingPulse 320ms cubic-bezier(0.2, 0, 0.8, 1);
+	animation-delay: 420ms;
+}
+
+.checklistProgressOrb::after {
+	border: 1.5px solid var(--checklist-progress-orb-color);
+	animation: checklistProgressRingPulse 320ms cubic-bezier(0.2, 0, 0.8, 1);
+	/* The ~90ms stagger behind ::before is what makes this two pulses instead
+	   of one. */
+	animation-delay: 510ms;
+}
+
+@keyframes checklistProgressOrbCore {
+	0% {
+		transform: scale(1);
+	}
+	35% {
+		transform: scale(1.4);
+		background: white;
+	}
+	100% {
+		transform: scale(1);
+	}
+}
+
+@keyframes checklistProgressRingPulse {
+	0% {
+		transform: scale(1);
+		opacity: 0.85;
+		border-color: white;
+	}
+	30% {
+		border-color: var(--checklist-progress-orb-color);
+	}
+	100% {
+		transform: scale(5.5);
+		opacity: 0;
+	}
+}
+
+/* A bigger moment specifically for reaching 100% — still the same staggered
+   double-pulse shape, just a little further/brighter, so finishing the whole
+   list reads as a small occasion rather than just another tick. */
+.checklistProgressOrbComplete {
+	animation-name: checklistProgressOrbCoreComplete;
+	animation-duration: 380ms;
+}
+
+.checklistProgressOrbComplete::before {
+	animation-name: checklistProgressRingPulseComplete;
+	animation-duration: 380ms;
+	animation-delay: 420ms;
+}
+
+.checklistProgressOrbComplete::after {
+	animation-name: checklistProgressRingPulseComplete;
+	animation-duration: 380ms;
+	animation-delay: 520ms;
+}
+
+@keyframes checklistProgressOrbCoreComplete {
+	0% {
+		transform: scale(1);
+	}
+	35% {
+		transform: scale(1.7);
+		background: white;
+	}
+	100% {
+		transform: scale(1);
+	}
+}
+
+@keyframes checklistProgressRingPulseComplete {
+	0% {
+		transform: scale(1);
+		opacity: 0.9;
+		border-color: white;
+	}
+	30% {
+		border-color: var(--checklist-progress-orb-color);
+	}
+	100% {
+		transform: scale(7.5);
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.checklistProgressFill,
+	.checklistProgressOrbAnchor {
+		transition: none;
+	}
+	.checklistProgressOrb,
+	.checklistProgressOrb::before,
+	.checklistProgressOrb::after {
 		animation: none;
 	}
 }

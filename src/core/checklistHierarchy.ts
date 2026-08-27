@@ -71,17 +71,45 @@ export function normalizeChecklistHierarchy(items: readonly ChecklistItem[]): Ch
 	return grouped;
 }
 
+/**
+ * Sorts completed items most-recently-completed-first, so the completed
+ * section reads as a timeline of what you just finished rather than a frozen
+ * copy of the list's original order. `completedAt` is missing for anything
+ * completed before this field existed (or from a stale client) — those fall
+ * back to their original list position, reversed, so old data degrades to a
+ * stable, sensible order instead of an arbitrary one.
+ *
+ * Takes the already-filtered completed subset separately from the full,
+ * original-order list because callers often have their own filtering rules
+ * on top of plain `item.completed` (e.g. holding a row in place during its
+ * completion animation) — this only owns the ordering, not the filtering.
+ */
+export function sortCompletedChecklistItemsByRecency<T extends ChecklistItem>(
+	completedItems: readonly T[],
+	allItemsInOriginalOrder: readonly T[],
+): T[] {
+	const orderIndexById = new Map(allItemsInOriginalOrder.map((item, index) => [item.id, index] as const));
+	return completedItems.slice().sort((left, right) => {
+		const leftCompletedAt = Number.isFinite(Number(left.completedAt)) ? Number(left.completedAt) : Number.NEGATIVE_INFINITY;
+		const rightCompletedAt = Number.isFinite(Number(right.completedAt)) ? Number(right.completedAt) : Number.NEGATIVE_INFINITY;
+		if (leftCompletedAt !== rightCompletedAt) return rightCompletedAt - leftCompletedAt;
+		return (orderIndexById.get(right.id) ?? 0) - (orderIndexById.get(left.id) ?? 0);
+	});
+}
+
 export function buildChecklistCompletedRows<T extends ChecklistItem>(items: readonly T[]): ChecklistCompletedRow<T>[] {
 	// In completed sections, show a lightweight parent "ghost" row before a
-	// completed child when the parent itself is still active.
-	const completedItems = items.filter((item) => item.completed);
-	const completedIdSet = new Set(completedItems.map((item) => item.id));
+	// completed child when the parent itself is still active. Walking the
+	// recency-sorted completed items (rather than plain document order) means
+	// a ghost parent row surfaces alongside whichever of its children was
+	// most recently completed, consistent with the rest of the section.
+	const recencyOrderedCompleted = sortCompletedChecklistItemsByRecency(items.filter((item) => item.completed), items);
+	const completedIdSet = new Set(recencyOrderedCompleted.map((item) => item.id));
 	const itemById = new Map(items.map((item) => [item.id, item]));
 	const rows: ChecklistCompletedRow<T>[] = [];
 	const insertedGhosts = new Set<string>();
 
-	for (const item of items) {
-		if (!item.completed) continue;
+	for (const item of recencyOrderedCompleted) {
 		if (item.parentId) {
 			const parent = itemById.get(item.parentId);
 			if (parent && !completedIdSet.has(parent.id) && !insertedGhosts.has(parent.id)) {
@@ -125,11 +153,37 @@ export function toggleChecklistItemCompleted<T extends ChecklistItem>(
 
 	if (nextCompletedById.size === 0) return normalized;
 
+	// A single call can cascade to several items at once (a parent toggle
+	// carrying its children with it). They all still need a well-defined
+	// relative order for the completed-section recency sort, so each gets its
+	// own tick off a shared base timestamp rather than colliding on the same
+	// Date.now() value.
+	//
+	// The ticks are handed out in REVERSE of document order on purpose.
+	// sortCompletedChecklistItemsByRecency sorts most-recent-first (descending
+	// completedAt); if the parent (processed first, right below) and its
+	// children (processed after, in list order) simply counted upward, the
+	// parent would end up with the OLDEST stamp of the group and the last
+	// child the NEWEST — surfacing the whole cascade upside down (child N,
+	// child N-1, ..., parent) even though every item in it completed in the
+	// same user action. Reversing the assignment so the topmost item in
+	// document order gets the largest stamp keeps a cascaded group reading
+	// top-to-bottom, matching how it already read in the active list.
+	const completionStampBase = Date.now();
+	const completingIds = normalized
+		.filter((item) => nextCompletedById.get(item.id) === true && item.completed !== true)
+		.map((item) => item.id);
+	const completionStampOffsetById = new Map(
+		completingIds.map((itemId, index) => [itemId, completingIds.length - 1 - index] as const)
+	);
 	return normalized.map((item) => {
 		const nextCompleted = nextCompletedById.get(item.id);
-		return nextCompleted === undefined || nextCompleted === item.completed
-			? item
-			: { ...item, completed: nextCompleted };
+		if (nextCompleted === undefined || nextCompleted === item.completed) return item;
+		return {
+			...item,
+			completed: nextCompleted,
+			completedAt: nextCompleted ? completionStampBase + (completionStampOffsetById.get(item.id) ?? 0) : null,
+		};
 	});
 }
 
@@ -325,4 +379,34 @@ export function removeChecklistItemWithChildren(
 		items.filter((item) => item.parentId === id).map((item) => item.id),
 	);
 	return items.filter((item) => item.id !== id && !childIds.has(item.id));
+}
+
+/**
+ * Move an item to the very top or bottom of the ACTIVE (unchecked) items —
+ * a shortcut for "drag this all the way to one end of a long list" without
+ * actually dragging. Reuses applyChecklistDragToItems (the same function
+ * drag-and-drop calls) rather than reimplementing hierarchy rules: a parent
+ * still carries its children along as a block, and a child landing with no
+ * valid parent above it (e.g. moved to the very top) becomes top-level —
+ * exactly what dragging it there by hand would do.
+ * Completed items are untouched; this only reorders within the active group.
+ */
+export function moveChecklistItemToEdge<T extends ChecklistItem>(
+	items: readonly T[],
+	id: string,
+	edge: 'top' | 'bottom',
+): T[] {
+	const normalized = normalizeChecklistHierarchy(items) as T[];
+	const activeItems = normalized.filter((item) => !item.completed);
+	const sourceIndex = activeItems.findIndex((item) => item.id === id);
+	if (sourceIndex === -1) return normalized;
+	const destinationIndex = edge === 'top' ? 0 : activeItems.length - 1;
+	if (sourceIndex === destinationIndex) return normalized;
+	return applyChecklistDragToItems({
+		items: normalized,
+		sourceIndex,
+		destinationIndex,
+		axis: 'vertical',
+		horizontalDirection: null,
+	}) as T[];
 }

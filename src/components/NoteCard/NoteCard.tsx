@@ -18,7 +18,7 @@ import {
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, normalizeChecklistCountValue } from '../../core/checklistCounts';
-import { normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
+import { normalizeChecklistHierarchy, sortCompletedChecklistItemsByRecency, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { buildCollapsibleHeadingLayout } from '../../core/collapsibleRichHeadings';
 import { getCollapsedRichHeadingPrefsForNoteVersion, getRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefsForNote } from '../../core/collapsibleHeadingPreferences';
 import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
@@ -1465,15 +1465,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		return 1;
 	}, [clampedById, multilineById]);
 	const checklistItemById = React.useMemo(() => new Map(normalizedItems.map((item) => [item.id, item])), [normalizedItems]);
-	const checklistOrderIndexById = React.useMemo(() => new Map(normalizedItems.map((item, index) => [item.id, index])), [normalizedItems]);
-	const recentCompletedItems = React.useMemo(() => {
-		return completedChecklistItems.slice().sort((left, right) => {
-			const leftCompletedAt = Number.isFinite(Number(left.completedAt)) ? Number(left.completedAt) : Number.NEGATIVE_INFINITY;
-			const rightCompletedAt = Number.isFinite(Number(right.completedAt)) ? Number(right.completedAt) : Number.NEGATIVE_INFINITY;
-			if (leftCompletedAt !== rightCompletedAt) return rightCompletedAt - leftCompletedAt;
-			return (checklistOrderIndexById.get(right.id) ?? 0) - (checklistOrderIndexById.get(left.id) ?? 0);
-		});
-	}, [checklistOrderIndexById, completedChecklistItems]);
+	// Shared with the full editors (src/core/checklistHierarchy.ts) so recency
+	// ordering behaves identically everywhere a checklist's completed section
+	// renders, not just here.
+	const recentCompletedItems = React.useMemo(
+		() => sortCompletedChecklistItemsByRecency(completedChecklistItems, normalizedItems),
+		[completedChecklistItems, normalizedItems]
+	);
 	const fitChecklistItemsToLineBudget = React.useCallback((items: readonly NoteCardChecklistItem[], lineBudget: number) => {
 		if (type !== 'checklist' || items.length === 0) {
 			return { visible: [] as NoteCardChecklistItem[], hiddenCount: items.length, usedLineCount: 0 };
@@ -1688,17 +1686,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 	const toggleNoteCardChecklistItem = React.useCallback((id: string, checked: boolean): void => {
 		if (!canEdit) return;
-		// Apply the shared parent/child completion rules, then only write the rows
-		// whose completion state actually changed back into Yjs.
+		// Apply the shared parent/child completion rules (which also stamps
+		// completedAt for anything becoming completed — see
+		// toggleChecklistItemCompleted in checklistHierarchy.ts), then only
+		// write the rows whose completion state actually changed back into Yjs.
 		const nextItems = toggleChecklistItemCompleted(normalizedItems, id, checked);
-		const completionStampBase = Date.now();
-		let completionStampOffset = 0;
 		for (const item of nextItems) {
 			const previous = normalizedItems.find((entry) => entry.id === item.id);
 			if (!previous || previous.completed === item.completed) continue;
 			updateChecklistItemById(checklistArray, item.id, {
 				completed: item.completed,
-				completedAt: item.completed ? completionStampBase + completionStampOffset++ : null,
+				completedAt: item.completed ? (item.completedAt ?? Date.now()) : null,
 			});
 		}
 	}, [canEdit, checklistArray, normalizedItems]);

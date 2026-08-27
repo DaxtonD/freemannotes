@@ -1462,7 +1462,7 @@ export function applyTheme(themeId: ThemeId): void {
 		// contrast under edge-to-edge display — it wants an actual <meta> tag, live,
 		// kept in sync here too. Skip this and a light theme can render dark icons on
 		// a background that never actually turned light: invisible battery/clock/wifi
-		// icons, very fun to debug from a screenshot alone.
+		// icons.
 		colorSchemeMeta.setAttribute('content', prefersLightChrome ? 'light' : 'dark');
 	}
 	const appleStatusBarMeta = document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]');

@@ -237,6 +237,7 @@ import { clearUserAvatarCache } from './core/userAvatarCache';
 import { clearDrawingThumbnailLocalCache } from './core/drawingThumbnailStore';
 import { clearAdminUserCache } from './components/Admin/UserManagementModal';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
+import { BubbleZoomSlider } from './components/BubbleView/BubbleZoomSlider';
 import { InboxView } from './components/InboxView/InboxView';
 import { CrossWorkspaceNoteModal } from './components/BubbleView/CrossWorkspaceNoteModal';
 
@@ -1099,6 +1100,53 @@ function clearSharedPlacementsCache(userId: string | null | undefined): void {
 	}
 }
 
+const ACTIVE_WORKSPACE_SHARED_PLACEMENTS_CACHE_KEY_PREFIX = 'freemannotes.activeWorkspaceSharedPlacements.v1:';
+
+// Sibling gap to sharedPlacements above, and this is the one actually on the hook for
+// "shared notes pop in a beat after everything else on a cold app open" — a bug a user
+// reported as back AGAIN right after the sharedPlacements/folder-flash saga shipped.
+// It isn't back. It's a different, adjacent piece of the exact same disease that got
+// explicitly called out and deliberately left alone at the time: activeWorkspaceSharedPlacements
+// starting blank on every mount is what visibleSharedPlacements resolves to for any
+// non-Shared-With-Me workspace (i.e. a normal Personal workspace with some accepted
+// shares mixed in, post-1.8.6), and THAT is what NoteGrid actually reads to render a
+// shared note's title/content at all — not a chip, the whole card. It was scoped out
+// of the earlier fix because the reported symptom at the time was a chip flash, not a
+// card popping in — reasonable at the time, wrong in hindsight now that it's the more
+// visible bug. Workspace-scoped (unlike sharedPlacements, which is deliberately the
+// same array across every workspace) because activeWorkspaceSharedPlacements only ever
+// means "for THIS workspace" — a stale cross-workspace read here isn't a flash, it's
+// rendering the wrong notes.
+function readActiveWorkspaceSharedPlacementsCache(userId: string | null | undefined, workspaceId: string | null | undefined): readonly SharedNotePlacement[] | null {
+	if (typeof window === 'undefined' || !userId || !workspaceId) return null;
+	try {
+		const raw = window.localStorage.getItem(`${ACTIVE_WORKSPACE_SHARED_PLACEMENTS_CACHE_KEY_PREFIX}${userId}:${workspaceId}`);
+		if (!raw) return null;
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? (parsed as SharedNotePlacement[]) : null;
+	} catch {
+		return null;
+	}
+}
+
+function writeActiveWorkspaceSharedPlacementsCache(userId: string | null | undefined, workspaceId: string | null | undefined, placements: readonly SharedNotePlacement[]): void {
+	if (typeof window === 'undefined' || !userId || !workspaceId) return;
+	try {
+		window.localStorage.setItem(`${ACTIVE_WORKSPACE_SHARED_PLACEMENTS_CACHE_KEY_PREFIX}${userId}:${workspaceId}`, JSON.stringify(placements));
+	} catch {
+		// Best effort only — if this fails (e.g. quota), the IDB/network read still corrects things.
+	}
+}
+
+function clearActiveWorkspaceSharedPlacementsCache(userId: string | null | undefined, workspaceId: string | null | undefined): void {
+	if (typeof window === 'undefined' || !userId || !workspaceId) return;
+	try {
+		window.localStorage.removeItem(`${ACTIVE_WORKSPACE_SHARED_PLACEMENTS_CACHE_KEY_PREFIX}${userId}:${workspaceId}`);
+	} catch {
+		// Best effort only.
+	}
+}
+
 function writeAuthCache(next: AuthCacheV1): void {
 	if (typeof window === 'undefined') return;
 	try {
@@ -1489,7 +1537,12 @@ export function App(): React.JSX.Element {
 	);
 	// activeWorkspaceSharedPlacements holds ONLY the placements for the currently active
 	// workspace. Used by visibleSharedPlacements so personal-workspace shared notes appear.
-	const [activeWorkspaceSharedPlacements, setActiveWorkspaceSharedPlacements] = React.useState<readonly SharedNotePlacement[]>([]);
+	// Seeded synchronously the same way sharedPlacements is above (see
+	// readActiveWorkspaceSharedPlacementsCache's own comment for why this one matters
+	// even more) instead of starting blank on every mount.
+	const [activeWorkspaceSharedPlacements, setActiveWorkspaceSharedPlacements] = React.useState<readonly SharedNotePlacement[]>(
+		() => readActiveWorkspaceSharedPlacementsCache(cachedAuth?.userId, authWorkspaceId) ?? []
+	);
 	// Historically started as [] on every mount and only reflected reality once
 	// refreshNoteShareState's IDB-cache seed (or, failing that, its network fetch)
 	// resolves. Code that treats "selectedNoteId is a shared alias with no matching
@@ -4922,6 +4975,7 @@ export function App(): React.JSX.Element {
 		// on this device starts with a clean sidebar (no stale entries from previous session).
 		clearWorkspaceListLocalCache(authUserId ?? '');
 		clearSharedPlacementsCache(authUserId);
+		clearActiveWorkspaceSharedPlacementsCache(authUserId, authWorkspaceId);
 		clearCachedReminderStates(authUserId ?? '');
 		clearPriorCollaboratorsCache();
 		clearPendingSelfMentionsStore();
@@ -6299,6 +6353,7 @@ export function App(): React.JSX.Element {
 				setSharedPlacements(cachedAllPlacements);
 				writeSharedPlacementsCache(authUserId, cachedAllPlacements);
 				setActiveWorkspaceSharedPlacements(cachedActivePlacements);
+				writeActiveWorkspaceSharedPlacementsCache(authUserId, requestedWorkspaceId, cachedActivePlacements);
 				// Flips once per login, on the first real (even if cache-only, even if
 				// empty) read — not gated on network success, since the whole point is to
 				// tell "we checked" apart from "we haven't checked yet" even fully offline.
@@ -6457,6 +6512,7 @@ export function App(): React.JSX.Element {
 				setSharedPlacements(resolvedAllPlacements);
 				writeSharedPlacementsCache(authUserId, resolvedAllPlacements);
 				setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
+				writeActiveWorkspaceSharedPlacementsCache(authUserId, requestedWorkspaceId, resolvedActiveWorkspacePlacements);
 				if (requestedWorkspaceId) {
 					sharedPlacementsSnapshotByWorkspaceRef.current.set(requestedWorkspaceId, resolvedAllPlacements);
 					activeWorkspaceSharedPlacementsSnapshotByWorkspaceRef.current.set(requestedWorkspaceId, resolvedActiveWorkspacePlacements);
@@ -11072,28 +11128,12 @@ export function App(): React.JSX.Element {
 								{viewMode === 'bubble' && sidebarView !== 'images' ? (
 									<div className="note-grid-scope-chip">
 										<ScrollingScopeChipLabel value="All Workspaces" />
-										<input
-											type="range"
-											className="note-grid-scope-slider"
+										<BubbleZoomSlider
 											min={BUBBLE_ZOOM_MIN}
 											max={BUBBLE_ZOOM_MAX}
-											step={1}
 											value={bubbleZoom}
-											onChange={(event) => setBubbleZoom(Number(event.target.value))}
-											// iOS PWA: touch-action:none prevents page-scroll interference but also
-											// breaks WebKit's internal range-input drag handler. Instead we claim
-											// pointer capture on pointerdown and manually compute the value from
-											// clientX so the slider responds reliably to touch-drag on iOS.
-											onPointerDown={(event) => {
-												try { event.currentTarget.setPointerCapture(event.pointerId); } catch {}
-											}}
-											onPointerMove={(event) => {
-												if (!event.currentTarget.hasPointerCapture(event.pointerId)) return;
-												const rect = event.currentTarget.getBoundingClientRect();
-												const relX = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-												setBubbleZoom(Math.round(BUBBLE_ZOOM_MIN + relX * (BUBBLE_ZOOM_MAX - BUBBLE_ZOOM_MIN)));
-											}}
-											aria-label="Bubble zoom"
+											onChange={setBubbleZoom}
+											ariaLabel="Bubble zoom"
 										/>
 									</div>
 								) : activeFilterChips.length === 0 ? (

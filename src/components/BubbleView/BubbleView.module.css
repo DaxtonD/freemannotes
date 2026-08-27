@@ -33,9 +33,22 @@
 .cloudItem {
 	position: absolute;
 	will-change: top, left, width, height;
-	/* Deliberately slow — score-driven repositioning should feel like organic
-	   drifting, not snappy animation. Transitions only fire when a note crosses
-	   a size-class threshold, so movement is rare and unhurried. */
+	/* Deliberately slow, and deliberately the SAME duration regardless of what
+	   triggered the repack (score drift OR the zoom slider). An earlier pass
+	   gave zoom its own fast (180ms) duration so bubbles would "track" the
+	   slider — turns out that's not what organic drifting means: dragging the
+	   slider made bubbles visibly snap-resize on every step. What actually
+	   reads as organic is the opposite — the target size/position changes
+	   instantly with the slider, but the bubble always takes the full slow
+	   duration below to *catch up* to wherever the target currently is. CSS
+	   transition retargeting does this for free: if the target changes again
+	   mid-transition (e.g. every pointermove while dragging), the browser
+	   restarts the full duration from the bubble's current on-screen value
+	   toward the new target — so a fast drag never lets any bubble catch up,
+	   it just keeps trailing behind, and only finishes growing/shrinking a
+	   couple seconds after you stop moving the slider. Do NOT reintroduce a
+	   fast transition for zoom — that was the wrong fix.
+	   */
 	transition:
 		width  2500ms ease-in-out,
 		height 2500ms ease-in-out,
@@ -190,10 +203,12 @@
 		0 9px 18px rgba(0 0 0 / 0.10),
 		0 3px 8px rgba(0 0 0 / 0.07);
 	transition:
-		/* width mirrors the cloudItem size transition so the inner circle tracks
-		   smoothly when the bubble shrinks (the min(100%, var(--bv-bubble-diameter))
-		   formula resolves instantly when the CSS variable is smaller than 100%,
-		   so we need an explicit width transition to fill that gap). */
+		/* width mirrors .cloudItem's width transition (2500ms, see
+		   BubbleView.module.css .cloudItem) so the inner circle tracks
+		   smoothly when the bubble shrinks (the
+		   min(100%, var(--bv-bubble-diameter)) formula resolves instantly when
+		   the CSS variable is smaller than 100%, so we need an explicit width
+		   transition to fill that gap). Keep these two in sync. */
 		width  2500ms ease-in-out,
 		transform 300ms ease,
 		box-shadow 200ms ease;

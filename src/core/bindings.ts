@@ -164,6 +164,10 @@ export type ChecklistItem = {
 	completed: boolean;
 	parentId: string | null;
 	countValue?: number | null;
+	/** Ms timestamp of the last completion (null while unchecked). Drives the
+	 * completed section's most-recently-completed-first ordering; not itself
+	 * a completion source of truth (`completed` is). */
+	completedAt?: number | null;
 };
 
 export class ChecklistModel {

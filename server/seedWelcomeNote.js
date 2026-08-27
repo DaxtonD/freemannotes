@@ -142,6 +142,7 @@ function buildWelcomeContentEn(fragment) {
 
 		h3('Checklists'),
 		para(t('Running lists with a couple of features I actually use every day. Tap '), b('+1'), t(' on any item and it turns into a counter. Hit '), b('+'), t(' or '), b('−'), t(' to adjust it, tap the checkbox again to turn it back into a normal item. There\'s also auto-scroll (not just here — text notes have it too), which scrolls you to the bottom of the note when you open it. Handy for logs or anything you\'re treating like a running journal. Toggle it with the '), b('≡↓'), t(' button in the toolbar.')),
+		para(t('Can\'t check something off yet on a long list? Swipe an item right to send it to the bottom, out of your way — swipe left to bring it back to the top. On desktop, hover a row for the same two arrows instead.')),
 
 		h3('✏️ Drawing Notes'),
 		para(t('A full Excalidraw canvas is built in: shapes, freehand drawing, text, arrows. If you\'ve got collaborators in the note, it syncs live while you draw.')),
@@ -235,6 +236,7 @@ function buildWelcomeContentEs(fragment) {
 
 		h3('Listas de verificación'),
 		para(t('Listas con un par de funciones que uso todos los días. Toca '), b('+1'), t(' en cualquier elemento y se convierte en un contador. Usa '), b('+'), t(' o '), b('−'), t(' para ajustarlo, toca el checkbox de nuevo para volver a un elemento normal. También hay desplazamiento automático (no solo aquí — las notas de texto también lo tienen), que te lleva al final de la nota cuando la abres. Útil para registros o cualquier cosa que uses como diario. Actívalo con el botón '), b('≡↓'), t(' en la barra de herramientas.')),
+		para(t('¿No puedes marcar algo todavía en una lista larga? Desliza un elemento hacia la derecha para mandarlo al final, fuera del camino — deslízalo hacia la izquierda para devolverlo arriba. En escritorio, pasa el cursor sobre la fila para ver las mismas dos flechas.')),
 
 		h3('✏️ Notas de dibujo'),
 		para(t('Un lienzo Excalidraw completo integrado: formas, dibujo a mano alzada, texto, flechas. Si tienes colaboradores en la nota, se sincroniza en tiempo real mientras dibujas.')),

@@ -2570,18 +2570,6 @@
 	}
 }
 
-.note-grid-scope-slider {
-	width: clamp(120px, 26vw, 220px);
-	height: 18px;
-	accent-color: var(--color-accent);
-	background: transparent;
-	flex: 0 1 auto;
-	/* iOS Safari / PWA: prevent the browser from claiming horizontal touch
-	   gestures as page-scroll before the native <input type="range"> can
-	   enter drag mode. Without this the slider thumb refuses to drag. */
-	touch-action: none;
-}
-
 .note-grid-scope-clear {
 	width: 24px;
 	height: 24px;

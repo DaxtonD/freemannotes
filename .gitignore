@@ -26,6 +26,7 @@ CURSOR_CONTEXT.md
 .aider*
 .anthropic/
 *.cursorrules
+.clinerules
 memory/
 
 # Windsurf

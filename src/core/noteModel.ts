@@ -52,6 +52,8 @@ export interface ChecklistItemData {
 	parentId: string | null;
 	/** Optional count prefix for rows such as "1 - item". */
 	countValue?: number | null;
+	/** Ms timestamp of the last completion (null while unchecked). */
+	completedAt?: number | null;
 }
 
 /**
@@ -309,6 +311,11 @@ export function initChecklistNoteDoc(
 			m.set('completed', item.completed);
 			m.set('parentId', typeof item.parentId === 'string' && item.parentId.trim().length > 0 ? item.parentId : null);
 			m.set('countValue', normalizeChecklistCountValue(item.countValue));
+			// Preserve a completion timestamp stamped during drafting (checked off
+			// before the note was ever saved); fall back to `now` for a completed
+			// item that somehow arrives without one, so it isn't sorted as if it
+			// were completed before everything else in the completed section.
+			m.set('completedAt', item.completed ? (Number.isFinite(Number(item.completedAt)) ? Number(item.completedAt) : now) : null);
 			yChecklist.push([m]);
 
 			// Populate nested rich content only after the map is attached to the checklist
@@ -469,6 +476,7 @@ export function readNoteFromDoc(doc: Y.Doc, id: string): Note {
 						? String(m.get('parentId')).trim()
 						: null,
 				countValue: normalizeChecklistCountValue(m.get('countValue')),
+				completedAt: Number.isFinite(Number(m.get('completedAt'))) ? Number(m.get('completedAt')) : null,
 			}))
 			.filter((item) => item.id.length > 0);
 	}

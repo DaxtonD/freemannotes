@@ -203,8 +203,24 @@ function packBubbles(
 	const result = new Map<string, { cx: number; cy: number }>();
 	if (inputs.length === 0 || containerWidth <= 0) return result;
 
-	// Sort largest-first — big circles claim centre space, small ones fill gaps.
-	const sorted = [...inputs].sort((a, b) => (b.r - a.r) || (b.score - a.score));
+	// Sort by SCORE first (not radius) — this order decides who gets first pick
+	// of the topmost placement band below, i.e. which bubbles read as "most
+	// important." r is only a tiebreaker for equal scores, still placing the
+	// visually bigger one first for packing efficiency.
+	//
+	// This used to sort by r (radius) first, on the reasoning that "big circles
+	// claim centre space, small ones fill gaps" — true for packing efficiency,
+	// but r isn't a pure function of score: resolveBubbleTitleLayout grows a
+	// bubble up to 14% to fit its title, and how much growth that is depends on
+	// getBubbleTitleFontSize/getBubbleTitleClamp's font-size/line-clamp
+	// breakpoints, which are fixed absolute pixel thresholds, NOT proportional
+	// to the current zoom scale. So two notes at nearly the same score/size can
+	// cross those breakpoints at different zoom levels and end up with their
+	// grown radii in a different relative order than their scores — sorting by
+	// r first let that reorder who got placed (and therefore who visually sat
+	// "on top") as you moved the zoom slider, even though nothing about either
+	// note's actual importance had changed.
+	const sorted = [...inputs].sort((a, b) => (b.score - a.score) || (b.r - a.r));
 	const maxR = sorted[0]?.r ?? 0;
 	const minR = sorted[sorted.length - 1]?.r ?? maxR;
 
@@ -264,14 +280,29 @@ function packBubbles(
 		const sizeBias = maxR > minR ? 1 - ((r - minR) / (maxR - minR)) : 0;
 		const orderBias = sorted.length > 1 ? index / (sorted.length - 1) : 0;
 		const depthReference = Math.max(cloudMaxY, maxR * 1.35);
+		// Rank (orderBias) now dominates and ramps early — pow(orderBias, 0.7) is
+		// front-loaded, so a bubble doesn't need to be near the very bottom of
+		// the ranking before its floor drops meaningfully; it only needs to be
+		// past the top handful. sizeBias stays as a smaller secondary nudge so
+		// genuinely differently-sized bubbles at similar rank still separate a
+		// bit. Together they can now reach depthReference in full (1.0) —
+		// previously capped at 0.70 of it (0.52 + 0.18), which was the actual
+		// bug: by the time a mid-ranked bubble was placed, everything above it
+		// in score had already pushed cloudMaxY down further than this bubble's
+		// own floor ever caught up to, so its spiral search kept finding "free"
+		// space back up inside the top cluster instead of below it — read as
+		// smaller bubbles nestled between bigger ones, or a lower-scored bubble
+		// ending up placed higher than a higher-scored one nearby. This won't
+		// make ordering perfectly strict (it's still a greedy first-fit packer,
+		// not a grid), but it should be a lot less common now.
 		const verticalBandProgress = Math.min(
 			1,
-			Math.pow(sizeBias, 1.12) * 0.52 + orderBias * 0.18,
+			Math.pow(orderBias, 0.7) * 0.7 + Math.pow(sizeBias, 1.12) * 0.3,
 		);
 		const topFloor = r + 2 + depthReference * verticalBandProgress;
 		const seedBandHeight = index === 0
 			? Math.max(10, r * 0.16)
-			: Math.max(r * 0.45, depthReference * 0.12);
+			: Math.max(r * 0.35, depthReference * 0.08);
 
 		// Seed a start position inside the cloud's current extent.
 		// The vertical seed band is always rank-aware so important bubbles keep
@@ -928,66 +959,24 @@ function useBubbleNotes(
 					}));
 					nextNotes.push(...activeEntries.filter((entry): entry is BubbleNote => entry !== null));
 
-					// ── Shared notes placed into this personal workspace ─────────────────
-					// When another user shares a note into the currently-active personal
-					// workspace (not into Shared-With-Me), those placements appear in the
-					// sharedPlacements prop (pre-filtered to the active workspace by the
-					// caller via visibleSharedPlacements).  The Yjs registry only lists
-					// notes owned by this workspace, so we must handle them separately here.
-					if (sharedPlacements.length > 0) {
-						const activeSharedEntries = await Promise.all(
-							sharedPlacements.slice(0, MAX_NOTES_PER_INACTIVE_WORKSPACE).map(async (placement) => {
-								try {
-									const doc = await manager.getDocReady(placement.aliasId);
-									const meta = doc.getMap<any>('metadata');
-									const titleText = doc.getText('title');
-									const contentText = doc.getText('content');
-									const checklist = doc.getArray<Y.Map<any>>('checklist');
-									const onMetadataChange = (event: Y.YMapEvent<any>): void => {
-										if (event.keysChanged.size === 1 && event.keysChanged.has('lastAccessedAt')) return;
-										scheduleRefresh();
-									};
-									const onTitleChange = (): void => scheduleRefresh();
-									meta.observe(onMetadataChange);
-									titleText.observe(onTitleChange);
-									cleanups.push(() => {
-										try { meta.unobserve(onMetadataChange); } catch { /* ignore */ }
-										try { titleText.unobserve(onTitleChange); } catch { /* ignore */ }
-									});
-									const isTrashed = Boolean(meta.get('trashed'));
-									if (showTrashed ? !isTrashed : isTrashed) return null;
-									const reminderAt = resolveReminderAt(noteReminderByDocId, placement.roomId, placement.aliasId);
-									if (!matchesReminderFilter(reminderAt, reminderFilter, nowMs)) return null;
-									if (!hasRenderableBubbleNote(doc, placement.aliasId)) return null;
-									const resolvedTitle = readNoteFromDoc(doc, placement.aliasId).title.trim();
-									const title = resolvedTitle || placement.sourceNoteId;
-									const reminderMs = reminderAt ? Date.parse(String(reminderAt)) : Number.NaN;
-									return {
-										noteId: placement.aliasId,
-										workspaceId: activeWorkspaceId,
-										workspaceName: activeWorkspaceName,
-										title,
-										searchText: extractNoteSearchText(placement.aliasId, doc, title),
-										updatedAt: Number(meta.get('updatedAt') ?? 0),
-										reminderAt,
-										isPinned: resolveUserNotePinned({
-											docId: placement.roomId,
-											noteId: placement.aliasId,
-											userId: authUserId,
-											legacyPinned: Boolean(meta.get('isPinned')),
-										}),
-										hasReminder: Number.isFinite(reminderMs) && reminderMs > Date.now() - ONE_DAY_MS,
-										hasCollaborators: false,
-										isActiveWorkspace: true,
-									} satisfies BubbleNote;
-								} catch {
-									return null;
-								}
-							})
-						);
-						nextNotes.push(...activeSharedEntries.filter((entry): entry is BubbleNote => entry !== null));
-					}
-
+					// There used to be a second block here that merged `sharedPlacements`
+					// (notes shared directly into this workspace) in on top of the
+					// registry-driven activeEntries above, because — at the time — the Yjs
+					// noteOrder array only ever listed notes this workspace actually owned.
+					// That stopped being true in 1.8.6: accepted shares now get written
+					// straight into noteOrder as `shared-placement:<id>` refs (see
+					// refreshNoteShareState's reconciliation IIFE in App.tsx), and
+					// orderedIds/activeEntries above already walks noteOrder and resolves
+					// those refs through externalRoomAliases to the real doc. So that
+					// second block was quietly adding the exact same notes a second time —
+					// same noteId, same workspaceId, same React key — which is what was
+					// producing the stacked/duplicated bubbles (and why tapping one could
+					// look like it "caused" more of them: opening a shared-placement note
+					// calls refreshNoteShareState(), which re-ran this whole effect and
+					// regenerated the duplicate). Nobody touched this file when the
+					// noteOrder architecture changed, so it kept doing 1.8.5-era double
+					// bookkeeping. Don't add it back — if a shared note is missing from
+					// bubbles, the bug is in the noteOrder reconciliation, not here.
 					const onRegistryChange = (): void => { scheduleRefresh(); };
 					registryDoc.getArray(NOTES_LIST_KEY).observe(onRegistryChange);
 					registryDoc.getArray(NOTE_ORDER_KEY).observe(onRegistryChange);
@@ -1039,7 +1028,27 @@ function useBubbleNotes(
 						try {
 							const entries = await loadWorkspaceRegistry(workspace.id);
 							if (cancelled) return;
-							const visibleEntries = await Promise.all(entries.map((entry) => loadInactiveWorkspaceNote(workspace.id, entry, showTrashed, reminderFilter, noteReminderByDocId, nowMs, authUserId)));
+
+							// Since 1.8.6, a regular workspace's own noteOrder can contain
+							// `shared-placement:<uuid>` refs too — a note someone shared
+							// directly into THIS workspace, not through Shared With Me.
+							// Those aren't real note ids, so blindly handing one to
+							// loadInactiveWorkspaceNote (which guesses the IDB room name as
+							// `${workspaceId}:${noteId}`) points at a room nothing was ever
+							// written to — the note just silently never appears as a bubble
+							// until you actually open this workspace directly. Split them
+							// out and resolve them the same way the SHARED_WITH_ME branch
+							// above does: fetch this workspace's own placements and use
+							// loadInactiveSharedPlacementNote, which reads from the real
+							// placement.roomId instead of guessing.
+							const ownedEntries: RegistryEntry[] = [];
+							const sharedEntryIds: string[] = [];
+							for (const entry of entries) {
+								if (entry.noteId.startsWith('shared-placement:')) sharedEntryIds.push(entry.noteId);
+								else ownedEntries.push(entry);
+							}
+
+							const visibleEntries = await Promise.all(ownedEntries.map((entry) => loadInactiveWorkspaceNote(workspace.id, entry, showTrashed, reminderFilter, noteReminderByDocId, nowMs, authUserId)));
 							for (const visibleEntry of visibleEntries) {
 								if (!visibleEntry) continue;
 								wsNotes.push({
@@ -1055,6 +1064,29 @@ function useBubbleNotes(
 									hasCollaborators: false,
 									isActiveWorkspace: false,
 								});
+							}
+
+							if (sharedEntryIds.length > 0) {
+								try {
+									const cachedPlacements = authUserId
+										? await readCachedSharedNotePlacementsForWorkspace(authUserId, workspace.id).catch(() => [] as SharedNotePlacement[])
+										: [];
+									const placementData = cachedPlacements.length > 0
+										? { placements: cachedPlacements }
+										: await listSharedNotePlacements(workspace.id);
+									if (cancelled) return;
+									const sharedEntryIdSet = new Set(sharedEntryIds);
+									const relevantPlacements = placementData.placements.filter((placement) => sharedEntryIdSet.has(placement.aliasId));
+									const visibleDirectShares = await Promise.all(
+										relevantPlacements
+											.slice(0, MAX_NOTES_PER_INACTIVE_WORKSPACE)
+											.map((placement) => loadInactiveSharedPlacementNote(workspace.id, workspace.name, placement, showTrashed, reminderFilter, noteReminderByDocId, nowMs, authUserId))
+									);
+									for (const visiblePlacement of visibleDirectShares) {
+										if (!visiblePlacement) continue;
+										wsNotes.push(visiblePlacement);
+									}
+								} catch { /* skip direct-share refs if their placements are unavailable */ }
 							}
 						} catch { /* skip workspace if IDB not available */ }
 					}
@@ -1524,10 +1556,17 @@ export function BubbleView({
 	const clampedZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom));
 	const scale = getBubbleZoomScale(clampedZoom, viewportWidth);
 	const effectiveZoom = getDesktopEquivalentZoom(scale);
-	// Changes when the user drags the zoom slider or resizes the window — these
-	// layout changes should snap bubbles to new positions immediately rather than
-	// using the slow organic transition.
-	const layoutChangeKey = `${containerWidth}:${Math.round(effectiveZoom)}`;
+	// Only a REAL resize (window resize, sidebar collapse/expand, cloud remount)
+	// forces bubbles to snap to their new spot instantly. Zoom-slider changes used
+	// to be lumped in here too, which is why dragging the slider looked like it
+	// "snapped then animated" instead of gently scaling: every drag step disabled
+	// transitions synchronously (useLayoutEffect below), so bubbles jumped to the
+	// new size immediately, and only the very last step (the one that won the race
+	// against the re-enable RAF) ever got to play the transition. Zoom now always
+	// rides the same slow organic transition as everything else in .cloudItem
+	// (see that class for why a SHARED slow duration, not a fast zoom-specific
+	// one, is actually what "gentle zoom" means here).
+	const layoutChangeKey = String(containerWidth);
 	const workspaceColorSchemeById = React.useMemo(() => {
 		const entries = new Map<string, ReturnType<typeof getWorkspaceBubbleColorSchemeOverridden>>();
 		for (const workspace of workspaces) {

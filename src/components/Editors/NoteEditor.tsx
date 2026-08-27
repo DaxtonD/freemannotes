@@ -20,13 +20,15 @@ import {
 	faNoteSticky,
 	faListCheck,
 	faPencil,
+	faArrowUp,
+	faArrowDown,
 } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import * as Y from 'yjs';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem, normalizeChecklistCountValue } from '../../core/checklistCounts';
-import { applyChecklistDragToItems, buildChecklistCompletedRows, normalizeChecklistHierarchy, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
+import { applyChecklistDragToItems, buildChecklistCompletedRows, moveChecklistItemToEdge, normalizeChecklistHierarchy, sortCompletedChecklistItemsByRecency, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { getDeviceId } from '../../core/deviceId';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
@@ -82,6 +84,7 @@ import { NoteBannerPickerModal } from '../NoteCard/NoteBannerPickerModal';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { DrawingsPanel } from './DrawingsPanel';
 import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible, focusRichTextEditable } from './RichTextEditor';
+import { ChecklistProgressBar } from './ChecklistProgressBar';
 import styles from './Editors.module.css';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { assignNoteBannerFile } from '../../services/noteService';
@@ -338,6 +341,7 @@ function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly Checkl
 					? String(m.get('parentId')).trim()
 					: null,
 			countValue: normalizeChecklistCountValue(m.get('countValue')),
+			completedAt: Number.isFinite(Number(m.get('completedAt'))) ? Number(m.get('completedAt')) : null,
 		}))
 		.filter((item) => item.id.length > 0);
 }
@@ -537,6 +541,9 @@ type ChecklistRowContentProps = {
 	activate: (id: string) => void;
 	toggleCompleted: (id: string, checked: boolean) => void;
 	remove: (id: string, options?: { clearSelection?: boolean }) => void;
+	moveToEdge: (id: string, edge: 'top' | 'bottom') => void;
+	moveToTopLabel: string;
+	moveToBottomLabel: string;
 	insertAfter: (id: string, editor?: Editor) => void;
 	acceptSuggestion?: (id: string, suggestion: string) => void;
 	onTextChange?: (id: string, text: string) => void;
@@ -569,6 +576,9 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 		activate,
 		toggleCompleted,
 		remove,
+		moveToEdge,
+		moveToTopLabel,
+		moveToBottomLabel,
 		insertAfter,
 		acceptSuggestion,
 		onTextChange,
@@ -600,6 +610,38 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	const handleRemove = React.useCallback((): void => {
 		remove(item.id);
 	}, [item.id, remove]);
+
+	const handleMoveToTop = React.useCallback((): void => {
+		moveToEdge(item.id, 'top');
+	}, [item.id, moveToEdge]);
+	const handleMoveToBottom = React.useCallback((): void => {
+		moveToEdge(item.id, 'bottom');
+	}, [item.id, moveToEdge]);
+
+	// Swipe-to-reorder (mobile only in practice — a mouse never dispatches
+	// touch events, so no pointer-type check is needed here). Attached only to
+	// the row's text-area wrapper (never the checkbox or drag handle) so it
+	// can't be triggered by a mis-aimed tap-to-toggle or drag-start. A 56px
+	// minimum distance (larger than the 28px used for the media-dock tab
+	// swipe elsewhere in this file) plus requiring the gesture read as clearly
+	// more horizontal than vertical keeps ordinary vertical list scrolling
+	// from being misread as a swipe.
+	const rowSwipeStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const handleRowTouchStart = React.useCallback((event: React.TouchEvent): void => {
+		const touch = event.touches[0];
+		if (!touch) return;
+		rowSwipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+	}, []);
+	const handleRowTouchEnd = React.useCallback((event: React.TouchEvent): void => {
+		const start = rowSwipeStartRef.current;
+		rowSwipeStartRef.current = null;
+		const touch = event.changedTouches[0];
+		if (!start || !touch) return;
+		const dx = touch.clientX - start.x;
+		const dy = touch.clientY - start.y;
+		if (Math.abs(dx) < 56 || Math.abs(dx) <= Math.abs(dy) * 1.1) return;
+		moveToEdge(item.id, dx > 0 ? 'bottom' : 'top');
+	}, [item.id, moveToEdge]);
 
 	// Enter always creates the next item — it no longer doubles as an autocomplete
 	// accept gesture. Overloading it meant Enter's behavior silently depended on
@@ -674,9 +716,42 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 						onChange={handleToggleCompleted}
 					/>
 				</label>
-				<div ref={contentRef} className={styles.checklistRowPreview} onClick={handleActivate}>
+				<div
+					ref={contentRef}
+					className={styles.checklistRowPreview}
+					onClick={handleActivate}
+					onTouchStart={handleRowTouchStart}
+					onTouchEnd={handleRowTouchEnd}
+				>
 					{renderChecklistPreviewContent(item, richPreview || item.text || '\u00A0')}
 				</div>
+				<div className={styles.rowActions}>
+				{!item.completed ? (
+					<>
+						<button
+							type="button"
+							className={styles.rowMoveButton}
+							onMouseDown={preventCheckboxFocusSteal}
+							onPointerDown={preventCheckboxFocusSteal}
+							onClick={handleMoveToTop}
+							aria-label={moveToTopLabel}
+							title={moveToTopLabel}
+						>
+							<FontAwesomeIcon icon={faArrowUp} />
+						</button>
+						<button
+							type="button"
+							className={styles.rowMoveButton}
+							onMouseDown={preventCheckboxFocusSteal}
+							onPointerDown={preventCheckboxFocusSteal}
+							onClick={handleMoveToBottom}
+							aria-label={moveToBottomLabel}
+							title={moveToBottomLabel}
+						>
+							<FontAwesomeIcon icon={faArrowDown} />
+						</button>
+					</>
+				) : null}
 				<button
 					type="button"
 					className={styles.rowRemoveButton}
@@ -688,6 +763,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 				>
 					×
 				</button>
+				</div>
 			</>
 		);
 	}
@@ -714,6 +790,8 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 					onMouseDown={preventSuggestionAcceptFocusSteal}
 					onPointerDown={preventSuggestionAcceptFocusSteal}
 					onClick={handleRowShellClick}
+					onTouchStart={handleRowTouchStart}
+					onTouchEnd={handleRowTouchEnd}
 				>
 					{getChecklistCountPrefix(item) ? <span className={styles.checklistCountPrefix} aria-hidden="true">{getChecklistCountPrefix(item)}</span> : null}
 					<div className={styles.checklistRowRichStack}>
@@ -772,10 +850,43 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 					</div>
 				</div>
 			) : (
-				<div ref={contentRef} className={styles.checklistRowPreview} onClick={handleActivate}>
+				<div
+					ref={contentRef}
+					className={styles.checklistRowPreview}
+					onClick={handleActivate}
+					onTouchStart={handleRowTouchStart}
+					onTouchEnd={handleRowTouchEnd}
+				>
 					{renderChecklistPreviewContent(item, item.text || '\u00A0')}
 				</div>
 			)}
+			<div className={styles.rowActions}>
+			{!item.completed ? (
+				<>
+					<button
+						type="button"
+						className={styles.rowMoveButton}
+						onMouseDown={preventCheckboxFocusSteal}
+						onPointerDown={preventCheckboxFocusSteal}
+						onClick={handleMoveToTop}
+						aria-label={moveToTopLabel}
+						title={moveToTopLabel}
+					>
+						<FontAwesomeIcon icon={faArrowUp} />
+					</button>
+					<button
+						type="button"
+						className={styles.rowMoveButton}
+						onMouseDown={preventCheckboxFocusSteal}
+						onPointerDown={preventCheckboxFocusSteal}
+						onClick={handleMoveToBottom}
+						aria-label={moveToBottomLabel}
+						title={moveToBottomLabel}
+					>
+						<FontAwesomeIcon icon={faArrowDown} />
+					</button>
+				</>
+			) : null}
 			<button
 				type="button"
 				className={styles.rowRemoveButton}
@@ -787,6 +898,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 			>
 				×
 			</button>
+			</div>
 		</>
 	);
 }, (prev, next) => (
@@ -803,6 +915,9 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 	prev.activate === next.activate &&
 	prev.toggleCompleted === next.toggleCompleted &&
 	prev.remove === next.remove &&
+	prev.moveToEdge === next.moveToEdge &&
+	prev.moveToTopLabel === next.moveToTopLabel &&
+	prev.moveToBottomLabel === next.moveToBottomLabel &&
 	prev.insertAfter === next.insertAfter &&
 	prev.acceptSuggestion === next.acceptSuggestion &&
 	prev.onTextChange === next.onTextChange &&
@@ -2085,16 +2200,31 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// triggered by a different signal.
 	const [animatingCompletionById, setAnimatingCompletionById] = React.useState<Map<string, 'completing' | 'uncompleting'>>(new Map());
 	const completionAnimationTimersRef = React.useRef<Map<string, number>>(new Map());
+	// An unchecked item's completedAt is nulled out the instant it toggles
+	// (toggleChecklistItemCompleted), same tick as it starts being held in its
+	// old (completed) section for the animation window below. Without this,
+	// the recency sort sees a hole where its timestamp used to be and treats
+	// it as the OLDEST item in the section (missing completedAt sorts last),
+	// so it visibly jumped to the bottom of the completed list for the
+	// duration of the hold, then vanished into the active list once the hold
+	// ended — reads as "drops to the bottom, then jumps up." This captures
+	// the item's real completedAt right before the toggle clears it, keyed by
+	// id, so the sort can keep using it — and therefore keep the item exactly
+	// where it already was — for as long as it's being held in place.
+	const heldCompletedAtByIdRef = React.useRef<Map<string, number | null>>(new Map());
 	const { capturePositions: captureCompletionFlipPositions } = useChecklistFlip(rowContainersRef, animatingCompletionById);
 	const prefersReducedMotionRef = React.useRef(
 		typeof window !== 'undefined' && typeof window.matchMedia === 'function'
 			? window.matchMedia('(prefers-reduced-motion: reduce)').matches
 			: false
 	);
-	// Strikethrough sweep, then a brief pulse once the sweep finishes (see the
-	// matching CSS animation-delay in Editors.module.css) — total time an item is
-	// held in its old section before relocating.
-	const CHECKLIST_COMPLETION_ANIMATION_MS = prefersReducedMotionRef.current ? 0 : 560;
+	// Strikethrough sweep and the glow pulse play concurrently (see the matching
+	// CSS in Editors.module.css) — total time an item is held in its old section
+	// before relocating. Matches the strikethrough's own 300ms transition, the
+	// longer of the two effects; used to be 560ms back when the pulse waited
+	// for the sweep to finish before starting, which made the row feel slow to
+	// actually move.
+	const CHECKLIST_COMPLETION_ANIMATION_MS = prefersReducedMotionRef.current ? 0 : 300;
 
 	React.useEffect(() => {
 		// Clear any pending completion-animation timers on unmount so they don't
@@ -2118,12 +2248,24 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (animating === 'uncompleting') return false;
 		return !row.completed;
 	}), [normalizedItems, animatingCompletionById]);
-	const completedItems = useMemo(() => normalizedItems.filter((row) => {
-		const animating = animatingCompletionById.get(row.id);
-		if (animating === 'completing') return false;
-		if (animating === 'uncompleting') return true;
-		return row.completed;
-	}), [normalizedItems, animatingCompletionById]);
+	const completedItems = useMemo(() => {
+		const filtered = normalizedItems
+			.filter((row) => {
+				const animating = animatingCompletionById.get(row.id);
+				if (animating === 'completing') return false;
+				if (animating === 'uncompleting') return true;
+				return row.completed;
+			})
+			.map((row) => {
+				// See heldCompletedAtByIdRef's declaration above — restore the
+				// pre-toggle timestamp for sorting purposes while this row is being
+				// held in place.
+				if (animatingCompletionById.get(row.id) !== 'uncompleting') return row;
+				const held = heldCompletedAtByIdRef.current.get(row.id);
+				return held === undefined ? row : { ...row, completedAt: held };
+			});
+		return sortCompletedChecklistItemsByRecency(filtered, normalizedItems);
+	}, [normalizedItems, animatingCompletionById]);
 	// buildChecklistCompletedRows decides inclusion (and ghost-parent rows) purely
 	// off item.completed, so it needs the same section-membership override as
 	// activeItems/completedItems above to avoid an item appearing in both
@@ -2137,7 +2279,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		const sectionOverrideItems = normalizedItems.map((row) => {
 			const animating = animatingCompletionById.get(row.id);
 			if (animating === 'completing') return { ...row, completed: false };
-			if (animating === 'uncompleting') return { ...row, completed: true };
+			if (animating === 'uncompleting') {
+				// Same completedAt restore as completedItems above — this array
+				// feeds buildChecklistCompletedRows's own internal recency sort, so
+				// it needs the same fix or the row still jumps around within the
+				// held section even though its section membership is now correct.
+				const held = heldCompletedAtByIdRef.current.get(row.id);
+				return { ...row, completed: true, completedAt: held === undefined ? row.completedAt : held };
+			}
 			return row;
 		});
 		const rawById = new Map(normalizedItems.map((row) => [row.id, row] as const));
@@ -2157,6 +2306,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const checklistAddItemLabel = t('editors.addItem');
 	const checklistItemPlaceholder = t('editors.checklistItemPlaceholder');
 	const checklistRemoveLabel = t('editors.remove');
+	const checklistMoveToTopLabel = t('editors.moveToTop');
+	const checklistMoveToBottomLabel = t('editors.moveToBottom');
 	const checklistAcceptSuggestionLabel = t('editors.acceptAutocompleteSuggestion');
 	const activeChecklistRowItem = useMemo(
 		() => normalizedItems.find((item) => item.id === activeChecklistRowId) ?? null,
@@ -2319,13 +2470,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						const currentCompleted = Boolean(map.get('completed'));
 						const currentCountValue = normalizeChecklistCountValue(map.get('countValue'));
 						const nextCountValue = normalizeChecklistCountValue(entry.countValue);
+						const currentCompletedAt = Number.isFinite(Number(map.get('completedAt'))) ? Number(map.get('completedAt')) : null;
+						const nextCompletedAt = Number.isFinite(Number(entry.completedAt)) ? Number(entry.completedAt) : null;
 
 						if (
 							currentId === entry.id &&
 							currentText === entry.text &&
 							currentCompleted === entry.completed &&
 							currentParentId === nextParentId &&
-							currentCountValue === nextCountValue
+							currentCountValue === nextCountValue &&
+							currentCompletedAt === nextCompletedAt
 						) {
 							continue;
 						}
@@ -2335,6 +2489,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						map.set('completed', entry.completed);
 						map.set('parentId', nextParentId);
 						map.set('countValue', nextCountValue);
+						map.set('completedAt', nextCompletedAt);
 
 						const fragment = ensureChecklistItemRichContent(map);
 						replaceRichFragmentFromJson(
@@ -2355,6 +2510,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					map.set('completed', entry.completed);
 					map.set('parentId', entry.parentId);
 					map.set('countValue', normalizeChecklistCountValue(entry.countValue));
+					map.set('completedAt', Number.isFinite(Number(entry.completedAt)) ? Number(entry.completedAt) : null);
 					return map;
 				});
 				checklistArray.insert(0, maps);
@@ -2390,13 +2546,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// activeItems/completedItems/completedRows reclassify and the second
 	// useChecklistFlip instance animates the resulting move. Cancels/restarts
 	// cleanly for an id that's re-toggled before its previous animation finished.
-	const beginCompletionAnimation = React.useCallback((diff: readonly { id: string; direction: 'completing' | 'uncompleting' }[]): void => {
+	const beginCompletionAnimation = React.useCallback((diff: readonly { id: string; direction: 'completing' | 'uncompleting'; previousCompletedAt?: number | null }[]): void => {
 		if (diff.length === 0) return;
 		setAnimatingCompletionById((prevMap) => {
 			const nextMap = new Map(prevMap);
 			for (const entry of diff) nextMap.set(entry.id, entry.direction);
 			return nextMap;
 		});
+		for (const entry of diff) {
+			if (entry.direction === 'uncompleting') heldCompletedAtByIdRef.current.set(entry.id, entry.previousCompletedAt ?? null);
+		}
 		const ids = diff.map((entry) => entry.id);
 		for (const id of ids) {
 			const existingTimer = completionAnimationTimersRef.current.get(id);
@@ -2409,7 +2568,10 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				for (const id of ids) nextMap.delete(id);
 				return nextMap;
 			});
-			for (const id of ids) completionAnimationTimersRef.current.delete(id);
+			for (const id of ids) {
+				completionAnimationTimersRef.current.delete(id);
+				heldCompletedAtByIdRef.current.delete(id);
+			}
 		}, CHECKLIST_COMPLETION_ANIMATION_MS);
 		for (const id of ids) completionAnimationTimersRef.current.set(id, timer);
 	}, [captureCompletionFlipPositions, CHECKLIST_COMPLETION_ANIMATION_MS]);
@@ -2426,13 +2588,44 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			// children (and unchecking a child can reopen a completed parent), so
 			// every row whose completed flag actually changed should get the same
 			// hold-and-animate treatment.
-			const prevCompletedById = new Map(snapshot.map((row) => [row.id, row.completed] as const));
+			const prevRowById = new Map(snapshot.map((row) => [row.id, row] as const));
 			const completionDiff = next
-				.filter((row) => prevCompletedById.get(row.id) !== row.completed)
-				.map((row) => ({ id: row.id, direction: (row.completed ? 'completing' : 'uncompleting') as 'completing' | 'uncompleting' }));
+				.filter((row) => prevRowById.get(row.id)?.completed !== row.completed)
+				.map((row) => ({
+					id: row.id,
+					direction: (row.completed ? 'completing' : 'uncompleting') as 'completing' | 'uncompleting',
+					previousCompletedAt: prevRowById.get(row.id)?.completedAt ?? null,
+				}));
 			if (completionDiff.length > 0) beginCompletionAnimation(completionDiff);
 		},
 		[beginCompletionAnimation, normalizedItems, prepareChecklistRowFocusHandoff, pushChecklistUndoSnapshot, replaceChecklistItems, type]
+	);
+
+	// "Skip this item" shortcut (swipe on mobile, hover arrows on desktop) —
+	// instantly send an item to the very top or bottom of the active list
+	// instead of dragging it there by hand. Reuses the same
+	// captureFlipPositions instance already wired up for indent/unindent
+	// (line ~2360) rather than a second hook instance, since both are just
+	// "snapshot positions right before a hierarchy-array mutation, animate
+	// the settle" — no reason to duplicate that plumbing. Unlike drag
+	// reordering (which never pushes undo), this pushes one: a swipe is far
+	// easier to fire by accident than a deliberate drag-and-drop.
+	const handleMoveChecklistItemToEdge = React.useCallback(
+		(id: string, edge: 'top' | 'bottom'): void => {
+			if (type !== 'checklist') return;
+			const snapshot = normalizedItems;
+			const next = moveChecklistItemToEdge(snapshot, id, edge);
+			// normalizeChecklistHierarchy (called inside moveChecklistItemToEdge)
+			// always clones, so a reference check against `snapshot` would never
+			// catch the "already at that edge" no-op — compare the actual id order
+			// instead, so a no-op swipe/click doesn't push a pointless undo entry.
+			const orderUnchanged = next.length === snapshot.length && next.every((item, index) => item.id === snapshot[index]?.id);
+			if (orderUnchanged) return;
+			pushChecklistUndoSnapshot(snapshot);
+			captureFlipPositions();
+			replaceChecklistItems(next);
+		},
+		[captureFlipPositions, normalizedItems, pushChecklistUndoSnapshot, replaceChecklistItems, type]
 	);
 
 	const undoCheckboxChange = React.useCallback((): void => {
@@ -3044,6 +3237,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							✕
 						</button>
 					</header>
+					{type === 'checklist' ? (
+						<ChecklistProgressBar completed={completedItems.length} total={activeItems.length + completedItems.length} />
+					) : null}
 					<input
 						type="text"
 						className={styles.editorTitleInput}
@@ -3378,6 +3574,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</div>
 				) : null}
 				{type === 'checklist' ? (
+					<ChecklistProgressBar completed={completedItems.length} total={activeItems.length + completedItems.length} />
+				) : null}
+				{type === 'checklist' ? (
 					<textarea
 						name="note-title"
 						autoComplete="off"
@@ -3601,6 +3800,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																isProtectedFromEmptyBackspace={firstActiveItemId === item.id}
 																placeholderText={checklistItemPlaceholder}
 																removeLabel={checklistRemoveLabel}
+																moveToEdge={handleMoveChecklistItemToEdge}
+																moveToTopLabel={checklistMoveToTopLabel}
+																moveToBottomLabel={checklistMoveToBottomLabel}
 																caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 																activate={activateChecklistRow}
 																toggleCompleted={toggleChecklistCompleted}
@@ -3699,6 +3901,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 														isProtectedFromEmptyBackspace={false}
 														placeholderText={checklistItemPlaceholder}
 														removeLabel={checklistRemoveLabel}
+														moveToEdge={handleMoveChecklistItemToEdge}
+														moveToTopLabel={checklistMoveToTopLabel}
+														moveToBottomLabel={checklistMoveToBottomLabel}
 														caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 														activate={activateChecklistRow}
 														toggleCompleted={toggleChecklistCompleted}
