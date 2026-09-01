@@ -2110,8 +2110,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 						>
 							{showCompleted ? '▾' : '▸'} {completedItems.length} {t('editors.completedItems')}
 						</button>
-						{showCompleted && !isChecklistDragActive ? (
-							<ul className={styles.checklistList}>
+						{showCompleted ? (
+							<ul className={`${styles.checklistList}${isChecklistDragActive ? ` ${styles.completedListHiddenDuringDrag}` : ''}`}>
 								{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
 											<li key={`ghost-${item.id}`}
 												className={`${styles.checklistItem} ${styles.checklistGhostItem}`}

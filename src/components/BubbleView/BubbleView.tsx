@@ -1631,11 +1631,26 @@ export function BubbleView({
 	);
 	const stableFilteredNotesRef = React.useRef<typeof filteredNotes>(filteredNotes);
 	const prevSizeKeyRef = React.useRef('');
+	const prevActiveWorkspaceIdForStableNotesRef = React.useRef(activeWorkspaceId);
 	// Only commit a new layout when all workspaces have finished loading.
 	// During the streaming load phase (notesStable=false), successive setNotes calls
 	// would trigger N repacks — one per inactive workspace — causing visible snapping
 	// on every workspace arrival. Wait for the stable snapshot instead.
-	if (notesStable && filteredNotesSizeKey !== prevSizeKeyRef.current) {
+	//
+	// Workspace identity is the one exception: a bubble's note.workspaceId (baked into
+	// this snapshot) is what click-to-open routing compares against authWorkspaceId to
+	// decide same-workspace vs. cross-workspace open. Letting it ride the same gate as
+	// position/size meant clicking a bubble during another workspace's multi-second
+	// settle window resolved against the *previous* workspace's snapshot, mismatched
+	// the just-switched authWorkspaceId, and opened a cross-workspace room that was
+	// never written to — silently failing everywhere except Personal, which is always
+	// long-settled by the time you can click. So workspace switches force an immediate
+	// snapshot refresh regardless of notesStable/size-key.
+	if (activeWorkspaceId !== prevActiveWorkspaceIdForStableNotesRef.current) {
+		prevActiveWorkspaceIdForStableNotesRef.current = activeWorkspaceId;
+		prevSizeKeyRef.current = filteredNotesSizeKey;
+		stableFilteredNotesRef.current = filteredNotes;
+	} else if (notesStable && filteredNotesSizeKey !== prevSizeKeyRef.current) {
 		prevSizeKeyRef.current = filteredNotesSizeKey;
 		stableFilteredNotesRef.current = filteredNotes;
 	}

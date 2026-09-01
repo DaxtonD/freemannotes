@@ -342,6 +342,9 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 					onPointerUp={(event) => endDrag(event)}
 					onPointerCancel={(event) => endDrag(event)}
 					onWheel={handleWheel}
+					onTouchStart={(event) => event.stopPropagation()}
+					onTouchMove={(event) => event.stopPropagation()}
+					onTouchEnd={(event) => event.stopPropagation()}
 				>
 					<div className={styles.overlay}>
 						<div className={styles.headerGroup}>

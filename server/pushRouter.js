@@ -306,6 +306,7 @@ function createPushRouter({ prisma, redis = null }) {
 						workspaceId: true,
 						reminderAt: true,
 						noteTitle: true,
+						fired: true,
 					},
 				});
 				jsonResponse(res, 200, {
@@ -315,6 +316,13 @@ function createPushRouter({ prisma, redis = null }) {
 						workspaceId: reminder.workspaceId,
 						reminderAt: reminder.reminderAt.toISOString(),
 						noteTitle: reminder.noteTitle ?? null,
+						// Deliberately NOT filtered/joined against notificationAcknowledgedAt —
+						// this feeds the note editor's per-note overdue chip, and acknowledging
+						// the bell notification must not silently resolve that chip too. Only an
+						// actual mark-complete/reschedule (which deletes or resets this row)
+						// should. /reminders/fired below is the acknowledgment-aware query used
+						// by the bell badge and Inbox tab.
+						fired: reminder.fired,
 					})),
 				});
 			} catch (err) {

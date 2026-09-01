@@ -195,6 +195,12 @@ export type NoteReminderState = {
 	workspaceId: string;
 	reminderAt: string;
 	noteTitle: string | null;
+	// Server-confirmed "the scheduler has actually flipped this due" state, independent
+	// of whether the bell notification for it has been acknowledged — see
+	// server/pushRouter.js's GET /api/push/reminders handler for why the two are kept
+	// separate. Optional because cached copies written before this field existed won't
+	// have it; treat missing as not-fired.
+	fired?: boolean;
 };
 
 export async function fetchNoteReminderStates(): Promise<{ reminders: NoteReminderState[] }> {

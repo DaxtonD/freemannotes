@@ -145,6 +145,22 @@ function estimateInitialChecklistRailHeight(linkCount: number): number {
 	return visibleCount * 56;
 }
 
+// The real header (headerRef) wraps the title row AND, when a banner is set, a
+// .headerBannerMedia block sized by aspect-ratio 16/4.6 off the card's actual width
+// (NoteCard.module.css). We don't have a DOM width yet at first-render time, so this
+// approximates against a representative card width — same flat-heuristic spirit as
+// estimateInitialChecklistRailHeight above, not meant to be pixel-exact. It only needs
+// to get the checklist item budget's first guess close enough that the real
+// measurement effect (~NoteCard.tsx:1855) has little left to correct, instead of the
+// previous flat 39px guessing right past a banner entirely.
+const REPRESENTATIVE_CARD_WIDTH_PX = 260;
+const BANNER_ASPECT_RATIO = 16 / 4.6;
+function estimateInitialChecklistHeaderHeight(hasBanner: boolean): number {
+	const titleRowHeightPx = 39;
+	if (!hasBanner) return titleRowHeightPx;
+	return titleRowHeightPx + Math.round(REPRESENTATIVE_CARD_WIDTH_PX / BANNER_ASPECT_RATIO);
+}
+
 function renderChecklistCardContent(item: ChecklistItem, content: React.ReactNode): React.ReactNode {
 	const prefix = getChecklistCountPrefix(item);
 	if (!prefix) return content;
@@ -1353,7 +1369,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		// snapshot need those shells budgeted immediately; otherwise the preview rail
 		// is briefly clipped and cards below shift down after the first measurement.
 		return {
-		headerHeightPx: 39,
+		headerHeightPx: estimateInitialChecklistHeaderHeight(Boolean(noteBannerFile)),
 		metaHeightPx: props.metaChips ? 40 : 0,
 		linkPreviewHeightPx: estimateInitialChecklistRailHeight(initialPreviewLinkCount),
 		// Match the CSS min-height for the completed toggle rail so checklist cards

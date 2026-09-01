@@ -116,6 +116,17 @@ export type NoteEditorProps = {
 	onAddReminder?: () => void;
 	/** Current reminder value for this note, if any (ISO string). Used to show the overdue-reminder prompt. */
 	reminderAt?: string | null;
+	// reminderAt alone is unfiltered client-side date math — it can read as "overdue"
+	// for up to ~60s before the server scheduler actually confirms it (see
+	// server/pushRouter.js's poll interval), showing this chip prematurely with no
+	// corresponding bell notification or inbox card yet. reminderFired is the
+	// server-confirmed "the scheduler has actually flipped this due" signal, so the
+	// chip only appears once that's true. It's deliberately NOT tied to whether the
+	// bell notification has been acknowledged — dismissing a notification just clears
+	// the badge, it doesn't mean the reminder itself was handled, so it must not also
+	// hide this chip. Only an actual mark-complete/reschedule does that (both reset it
+	// via onMarkReminderDone / the reminder modal).
+	reminderFired?: boolean;
 	onMarkReminderDone?: () => void;
 	onAddToCollection?: () => void;
 	onAddLabels?: () => void;
@@ -3547,7 +3558,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						) : null}
 					</nav>
 				) : null}
-				{props.reminderAt && isReminderOverdue(props.reminderAt) ? (
+				{props.reminderAt && isReminderOverdue(props.reminderAt) && props.reminderFired ? (
 					<div className={styles.reminderOverduePrompt} role="status">
 						<span className={styles.reminderOverdueLabel}>
 							<FontAwesomeIcon icon={faBell} />
@@ -3870,8 +3881,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								>
 									{showCompleted ? '▾' : '▸'} {completedItems.length} {t('editors.completedItems')}
 								</button>
-								{showCompleted && !isChecklistDragActive ? (
-									<ul className={styles.checklistList}>
+								{showCompleted ? (
+									<ul className={`${styles.checklistList}${isChecklistDragActive ? ` ${styles.completedListHiddenDuringDrag}` : ''}`}>
 											{completedRows.map(({ kind, item }) => kind === 'ghost' ? (
 												<li key={`ghost-${item.id}`} className={`${styles.checklistItem} ${styles.checklistGhostItem}`} aria-hidden="true">
 													<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true" />

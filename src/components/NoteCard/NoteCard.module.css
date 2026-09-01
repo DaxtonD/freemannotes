@@ -1269,20 +1269,27 @@
 		margin-top: 10px;
 	}
 
-	/* Mobile note-card checklist rows: center checkbox and first text line. */
-	.linkPreviewRail {
+	/* Mobile note-card checklist rows: center checkbox and first text line.
+	   :not(...MenuSafe) guards below are load-bearing, not decorative: these rules and
+	   the *MenuSafe rules above share equal specificity (single class) on the same
+	   element, so without the guard the later same-specificity rule always wins by
+	   source order regardless of which classes are actually applied — which is exactly
+	   how linkPreviewRailMenuSafe's reserved space for the overflow menu button got
+	   silently zeroed out the moment it was introduced (confirmed via git history:
+	   both rules landed in the same commit, this one just came second in the file). */
+	.linkPreviewRail:not(.linkPreviewRailMenuSafe) {
 		padding-bottom: 0;
 	}
 
-	.checklistCardCompletedExpanded .linkPreviewRail {
+	.checklistCardCompletedExpanded .linkPreviewRail:not(.linkPreviewRailMenuSafe) {
 		padding-bottom: 0;
 	}
 
-	.checklistCard .body {
+	.checklistCard .body:not(.bodyMenuSafe) {
 		padding-bottom: 10px;
 	}
 
-	.checklistCard .completedSection {
+	.checklistCard .completedSection:not(.completedSectionMenuSafe) {
 		padding-bottom: 10px;
 	}
 

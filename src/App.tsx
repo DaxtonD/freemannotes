@@ -176,9 +176,12 @@ import { clearSessionRestoreNote, readSessionRestoreNote, setSessionRestoreNote 
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
 import {
+	buildReminderFiredLookup,
 	buildReminderLookup,
 	mergeServerReminderLookup,
+	readReminderFiredLookupValue,
 	readReminderLookupValue,
+	updateReminderFiredLookup,
 	updateReminderLookup,
 } from './core/reminderLookup';
 import {
@@ -1949,6 +1952,13 @@ export function App(): React.JSX.Element {
 	const [noteReminderByDocId, setNoteReminderByDocId] = React.useState<Record<string, string | null>>(
 		() => buildReminderLookup(startupHydration.reminderStates)
 	);
+	// Separate from noteReminderByDocId's reminderAt: whether the scheduler has actually
+	// fired this reminder, independent of bell-notification acknowledgment. Drives the
+	// note editor's overdue chip so acknowledging the bell doesn't also dismiss it — see
+	// buildReminderFiredLookup for why this can't just be derived from firedReminders.
+	const [noteReminderFiredByDocId, setNoteReminderFiredByDocId] = React.useState<Record<string, boolean>>(
+		() => buildReminderFiredLookup(startupHydration.reminderStates)
+	);
 	const [pendingReminderMutationVersion, bumpPendingReminderMutationVersion] = React.useReducer((value: number) => value + 1, 0);
 	const pendingReminderStorageKey = React.useMemo(
 		() => `freemannotes.pendingReminderSync.v1:${authUserId ?? ''}:${deviceId}`,
@@ -2032,6 +2042,27 @@ export function App(): React.JSX.Element {
 		const doc = manager.peekDoc(entry.noteId);
 		if (doc) setNoteReminder(doc, entry.reminderAt);
 		setNoteReminderByDocId((current) => updateReminderLookup(current, entry.docId, entry.noteId, entry.reminderAt));
+		// Mirrors the server: clearing a reminder deletes the row, and rescheduling
+		// upserts with fired reset to false (see PUT /api/push/reminder) — either way,
+		// whatever was previously firing for this note is resolved. Set optimistically
+		// so the editor chip disappears immediately rather than waiting on a round trip.
+		setNoteReminderFiredByDocId((current) => updateReminderFiredLookup(current, entry.docId, entry.noteId, false));
+		// Mark-complete/reschedule only ever updated this lookup (feeds the editor chip,
+		// grid dots, sidebar filters) — the bell badge/notification panel and the Inbox
+		// reminders tab are driven by entirely separate fired/pending queries that this
+		// call never touched, so completing from the editor left them stale until
+		// something unrelated happened to refresh them (reported as "had to open and
+		// close a few notes before it cleared"). Optimistically resolve this note out of
+		// the fired set immediately, from whichever surface performed the action, and
+		// let the Inbox tab (if mounted) pull the authoritative state to match.
+		setFiredReminders((current) => {
+			const stillFired = current.filter((reminder) => reminder.noteId !== entry.noteId);
+			if (stillFired.length !== current.length) {
+				setPendingReminderNotificationCount((count) => Math.max(0, count - (current.length - stillFired.length)));
+			}
+			return stillFired;
+		});
+		setInboxRefreshToken((value) => value + 1);
 		updateCachedReminderState({
 			docId: entry.docId,
 			noteId: entry.noteId,
@@ -2067,10 +2098,11 @@ export function App(): React.JSX.Element {
 				.then((data) => {
 					writeCachedReminderStates(authUserId ?? '', data.reminders);
 					setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
+					setNoteReminderFiredByDocId(buildReminderFiredLookup(data.reminders));
 				})
 				.catch(() => undefined);
 		});
-	}, [applyPendingReminderMutations, applyServerReminderStates, authOfflineMode, authStatus, authUserId, deviceId, manager, queuePendingReminderMutation, removePendingReminderMutation, updateCachedReminderState]);
+	}, [applyPendingReminderMutations, applyServerReminderStates, authOfflineMode, authStatus, authUserId, deviceId, manager, queuePendingReminderMutation, removePendingReminderMutation, updateCachedReminderState, setFiredReminders, setPendingReminderNotificationCount, setInboxRefreshToken, setNoteReminderFiredByDocId]);
 	const flushPendingReminderMutations = React.useCallback(async (): Promise<void> => {
 		if (authStatus !== 'authed' || authOfflineMode) return;
 		if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
@@ -2098,6 +2130,7 @@ export function App(): React.JSX.Element {
 		if (data) {
 			writeCachedReminderStates(authUserId ?? '', data.reminders);
 			setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
+			setNoteReminderFiredByDocId(buildReminderFiredLookup(data.reminders));
 		}
 	}, [applyPendingReminderMutations, applyServerReminderStates, authOfflineMode, authStatus, authUserId, deviceId, readPendingReminderMutations, writePendingReminderMutations]);
 	const [moveNoteModalState, setMoveNoteModalState] = React.useState<MoveNoteModalState | null>(null);
@@ -4380,7 +4413,80 @@ export function App(): React.JSX.Element {
 					}
 				} else {
 					manager.setActiveWorkspaceId(effectiveWorkspaceId);
-					manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
+					// This branch means the target workspace already matches the server's —
+					// the overwhelmingly common reconnect case (nothing switched while
+					// offline). But that equality alone doesn't prove every OTHER local
+					// workspace is already synced: a workspace created/edited fully offline
+					// and then switched away from before reconnecting has local IndexedDB
+					// data yet was never activated on the server this session, so its
+					// Document row is never created — anything queued against it (note
+					// edits, link-preview fetches) 403s on every retry forever. Detect that
+					// narrow case and reconcile it the same way the branch above does for a
+					// genuine workspace switch; the common single-workspace case below skips
+					// straight to enabling WS exactly as before, with no extra cost.
+					let localWorkspaceIds = await manager.discoverLocalWorkspaceIds();
+					if (localWorkspaceIds.length === 0) {
+						const snapshot = await readCachedWorkspaceSnapshot(userId, deviceId);
+						localWorkspaceIds = snapshot.workspaces.map((w) => w.id);
+					}
+					const targetWorkspaceId: string | null = effectiveWorkspaceId;
+					const idsToFlush = targetWorkspaceId
+						? localWorkspaceIds.filter((id) => id !== targetWorkspaceId)
+						: [];
+					if (!targetWorkspaceId || idsToFlush.length === 0) {
+						manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId));
+					} else {
+						manager.setWebsocketEnabled(false);
+						let flushNetworkFailed = false;
+						for (const wsId of idsToFlush) {
+							try {
+								const res = await fetch(
+									`/api/workspaces/${encodeURIComponent(wsId)}/activate`,
+									{
+										method: 'POST',
+										credentials: 'include',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ deviceId }),
+									}
+								);
+								if (!res.ok) continue; // Lost access to this workspace — skip it.
+							} catch {
+								flushNetworkFailed = true;
+								break; // Network dropped — stop flushing, try again next reconnect.
+							}
+							await manager.flushPreviousWorkspaceEdits(wsId, 5_000);
+						}
+						if (flushNetworkFailed) {
+							setAuthOfflineMode(true);
+							manager.setWebsocketEnabled(false);
+						} else {
+							// Every activate() call above repointed the server session at a
+							// DIFFERENT workspace to flush it — re-point it back at the real
+							// target before re-enabling WS.
+							try {
+								const activateRes = await fetch(
+									`/api/workspaces/${encodeURIComponent(targetWorkspaceId)}/activate`,
+									{
+										method: 'POST',
+										credentials: 'include',
+										headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ deviceId }),
+									}
+								);
+								manager.setWebsocketEnabled(activateRes.ok);
+								// The unconditional flushQueuedNoteLinkSync effect elsewhere fires
+								// as soon as authStatus flips to 'authed' — which happens well
+								// before this reconciliation loop finishes — so its one un-retried
+								// attempt would still 403 against a workspace whose Document row
+								// we only just created above. Retry right now that it can actually
+								// succeed, instead of waiting for the next reload or online event.
+								if (activateRes.ok) void flushQueuedNoteLinkSync(userId);
+							} catch {
+								setAuthOfflineMode(true);
+								manager.setWebsocketEnabled(false);
+							}
+						}
+					}
 				}
 			} catch {
 				// Treat transport failures and unreachable backends like offline mode when
@@ -5429,6 +5535,17 @@ export function App(): React.JSX.Element {
 	// that's since been superseded by a newer one.
 	const refreshNoteShareStateCallIdRef = React.useRef(0);
 
+	// Same supersession pattern as refreshNoteShareStateCallIdRef, for InboxView's
+	// onOpenNote handler below. A rapid second inbox-card click (a different card,
+	// since InboxView itself now guards against re-entrant clicks on its own) could
+	// still race a workspace switch / access-check / refreshNoteShareState await
+	// against an earlier still-in-flight call, letting the earlier call's delayed
+	// openNoteEditor/activateWorkspaceFromSidebar land after the newer call already
+	// changed the active workspace or sharedPlacements — producing a false "no longer
+	// have access" overlay and/or stacking redundant history entries. Bumped at the
+	// top of every call; checked after every await before touching shared state.
+	const openNoteFromActivityCallIdRef = React.useRef(0);
+
 	/**
 	 * Iterate every workspace the user belongs to (except the current one) and pull
 	 * its full dataset (registry + all notes) into IndexedDB via temporary Yjs
@@ -6088,11 +6205,14 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) {
 			setNoteReminderByDocId({});
+			setNoteReminderFiredByDocId({});
 			return;
 		}
-		const cachedLookup = applyPendingReminderMutations(buildReminderLookup(readCachedReminderStates(authUserId)));
+		const cachedReminders = readCachedReminderStates(authUserId);
+		const cachedLookup = applyPendingReminderMutations(buildReminderLookup(cachedReminders));
 		if (Object.keys(cachedLookup).length > 0) {
 			setNoteReminderByDocId(cachedLookup);
+			setNoteReminderFiredByDocId(buildReminderFiredLookup(cachedReminders));
 		}
 		if (authOfflineMode) return;
 		let cancelled = false;
@@ -6103,6 +6223,7 @@ export function App(): React.JSX.Element {
 				if (cancelled) return;
 				writeCachedReminderStates(authUserId, data.reminders);
 				setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
+				setNoteReminderFiredByDocId(buildReminderFiredLookup(data.reminders));
 			})
 			.catch(() => undefined);
 		return () => {
@@ -7062,6 +7183,20 @@ export function App(): React.JSX.Element {
 							// refresh path (which would delay badge update by ~300 ms and
 							// could drop the event if another refresh is in flight).
 							void refreshNoteShareStateRef.current();
+							bumpInboxRefreshToken();
+							// The scheduler flipping this reminder's `fired` column is exactly
+							// what the note editor chip's independent fired-lookup needs to hear
+							// about too — otherwise a note left open shows no chip until whatever
+							// else happens to trigger a refetch, even though it just became due.
+							if (authUserId && !authOfflineMode) {
+								void fetchNoteReminderStates()
+									.then((data) => {
+										writeCachedReminderStates(authUserId, data.reminders);
+										setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
+										setNoteReminderFiredByDocId(buildReminderFiredLookup(data.reminders));
+									})
+									.catch(() => undefined);
+							}
 							return;
 						}
 						if (payload.type === 'workspace-metadata-changed' && payload.reason === 'inbox_updated') {
@@ -7074,8 +7209,16 @@ export function App(): React.JSX.Element {
 								.then((data) => {
 									writeCachedReminderStates(authUserId, data.reminders);
 									setNoteReminderByDocId((current) => applyServerReminderStates(current, data.reminders));
+									setNoteReminderFiredByDocId(buildReminderFiredLookup(data.reminders));
 								})
 								.catch(() => undefined);
+							// This event fires on every reminder mutation (create, mark-complete,
+							// reschedule) from ANY device/tab, but until now only ever refreshed
+							// the lookup above — never the bell badge/notification panel's
+							// separate fired/pending queries, nor the Inbox reminders tab. Mirror
+							// what 'reminder-fired' does above for exactly this reason.
+							void refreshNoteShareStateRef.current();
+							bumpInboxRefreshToken();
 							return;
 						}
 						if (isUserProfileMetadataEvent) {
@@ -8829,6 +8972,12 @@ export function App(): React.JSX.Element {
 			if (!gridReadyRef.current && !splashGoneRef.current) return false;
 			if (editorModeRef.current !== 'none' || selectedNoteIdRef.current !== null) return false;
 			if (isMobileSidebarOpenRef.current) return false;
+			// The image viewer is a full-screen overlay stacked above everything via z-index,
+			// not reflected in editorMode/selectedNoteId above — without this check, a
+			// left-edge swipe used to navigate between images also satisfies this gesture's
+			// own edge-start threshold, arming the drawer open underneath the viewer. It only
+			// becomes visible once the viewer closes and its z-index stops hiding it.
+			if (isNoteImageViewerHistoryState(window.history.state)) return false;
 			return true;
 		};
 
@@ -11369,7 +11518,8 @@ export function App(): React.JSX.Element {
 						onMarkReminderDone={handleMarkReminderDone}
 						onOpenReminderModal={openNoteReminderModal}
 						onOpenNote={async (noteId, workspaceId, roomId, scrollToNodeId) => {
-							console.debug('[InboxView.onOpenNote]', { noteId, workspaceId, roomId, scrollToNodeId });
+							const callId = ++openNoteFromActivityCallIdRef.current;
+							const superseded = (): boolean => openNoteFromActivityCallIdRef.current !== callId;
 							setPendingMentionScrollNodeId(scrollToNodeId ?? null);
 							if (noteId.startsWith('shared-placement:')) {
 								// Pre-register the alias so DocumentManager can route before
@@ -11378,7 +11528,9 @@ export function App(): React.JSX.Element {
 								// Must refresh sharedPlacements so the guard effect
 								// (selectedNoteSharedPlacement == null → close) doesn't fire.
 								await refreshNoteShareStateRef.current();
+								if (superseded()) return;
 								try { await manager.getDocWithSync(noteId); } catch {}
+								if (superseded()) return;
 								openNoteEditor(noteId);
 								return;
 							}
@@ -11391,6 +11543,7 @@ export function App(): React.JSX.Element {
 								);
 								if (placement) {
 									try { await manager.getDocWithSync(placement.aliasId); } catch {}
+									if (superseded()) return;
 									openNoteEditor(placement.aliasId);
 									return;
 								}
@@ -11411,6 +11564,7 @@ export function App(): React.JSX.Element {
 								let trashed = false;
 								try {
 									const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`);
+									if (superseded()) return;
 									if (res.status === 404) {
 										showBriefDialog(t('links.noteMissingToast'));
 										return { noteMissing: true };
@@ -11430,12 +11584,15 @@ export function App(): React.JSX.Element {
 									// optimistically; activateWorkspaceFromSidebar itself is
 									// offline-safe (switches locally first).
 								}
+								if (superseded()) return;
 								await activateWorkspaceFromSidebar(workspaceId);
+								if (superseded()) return;
 								if (trashed) {
 									showTrashedNoteLinkToast(noteId);
 									return;
 								}
 								try { await manager.getDocWithSync(noteId); } catch {}
+								if (superseded()) return;
 								openNoteEditor(noteId);
 								return;
 							}
@@ -11448,6 +11605,7 @@ export function App(): React.JSX.Element {
 							if (isNoteDenied(noteId)) return;
 							try {
 								const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`);
+								if (superseded()) return;
 								if (res.status === 404) {
 									showBriefDialog(t('links.noteMissingToast'));
 									return { noteMissing: true };
@@ -11470,6 +11628,7 @@ export function App(): React.JSX.Element {
 									return;
 								}
 							}
+							if (superseded()) return;
 							openNoteEditor(noteId);
 						}}
 						onAllArchived={bumpInboxRefreshToken}
@@ -11772,6 +11931,7 @@ export function App(): React.JSX.Element {
 						loadDrawingDoc={(drawingId) => loadDrawingDoc(selectedNoteId, drawingId)}
 						onAddReminder={selectedNoteReadOnly ? undefined : () => openNoteReminderModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
 						reminderAt={readReminderLookupValue(noteReminderByDocId, selectedNoteDocId, selectedNoteId)}
+						reminderFired={readReminderFiredLookupValue(noteReminderFiredByDocId, selectedNoteDocId, selectedNoteId)}
 						onMarkReminderDone={selectedNoteReadOnly ? undefined : () => handleMarkReminderDone(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString())}
 						onAddToCollection={selectedNoteReadOnly ? undefined : () => openNoteCollectionModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
 						onAddLabels={selectedNoteReadOnly ? undefined : () => openNoteLabelsModal(selectedNoteId, openDoc.getText('title').toString(), { docId: selectedNoteDocId, doc: openDoc })}
@@ -12144,6 +12304,12 @@ export function App(): React.JSX.Element {
 				onChanged={() => {
 					bumpCollaborationRefreshToken();
 					void refreshNoteShareState();
+					// Accepting a share from someone never collaborated with before must
+					// make them selectable in the Collaborators modal / @ mention dropdown
+					// right away — both read from module-level singleton caches that
+					// otherwise only refresh once per session at login.
+					void refreshPriorCollaboratorsCache();
+					invalidateWorkspaceMembersCache();
 				}}
 				inboxUnreadCount={inboxUnreadCount + pendingSelfMentions.length}
 				onOpenInbox={() => {
@@ -12203,6 +12369,8 @@ export function App(): React.JSX.Element {
 				onChanged={() => {
 					bumpCollaborationRefreshToken();
 					void refreshNoteShareState();
+					void refreshPriorCollaboratorsCache();
+					invalidateWorkspaceMembersCache();
 				}}
 			/>
 

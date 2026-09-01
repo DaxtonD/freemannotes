@@ -14,7 +14,20 @@ function sanitizeFilename(name: string): string {
  * - Drawing notes → Excalidraw JSON (.excalidraw)
  */
 export async function exportNote(manager: DocumentManager, noteId: string): Promise<void> {
-	const doc = await manager.getDocReady(noteId);
+	let doc: Awaited<ReturnType<DocumentManager['getDocReady']>>;
+	try {
+		doc = await manager.getDocReady(noteId);
+	} catch (err) {
+		// getDocReady throws (by name, not exported — see DocumentManager.ts) when the
+		// active workspace changes mid-await. The only caller here fires this
+		// fire-and-forget with no .catch(), so an unguarded switch-mid-export left an
+		// unhandled promise rejection sitting behind whatever else was going on.
+		// Exporting a note that just stopped being in the active workspace no longer
+		// makes sense anyway — abort silently, same as DocumentManager's own
+		// initializeRegistry does for this exact error.
+		if (err instanceof Error && err.name === 'WorkspaceChangedError') return;
+		throw err;
+	}
 	const meta = doc.getMap<unknown>('metadata');
 	const title = doc.getText('title').toString().trim() || 'Untitled';
 	const type = String(meta.get('type') ?? 'text');

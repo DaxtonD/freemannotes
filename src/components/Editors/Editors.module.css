@@ -4054,6 +4054,18 @@ Drag ghost:
 	visibility: hidden;
 }
 
+/* Hides the completed list during an active-item drag WITHOUT unmounting it — same
+   visibility:hidden trick as .childHiddenDuringParentDrag above, chosen deliberately
+   over removing the content: unmounting a long completed list shrinks
+   .checklistScrollArea's scrollHeight out from under a scrolled-down position, and the
+   browser's own forced scrollTop clamp is what actually produced the "list jumps, wrong
+   neighbor-shift animations" bug. Keeping the layout box in place means the scroll
+   container's height never changes, so there's nothing to clamp. */
+.completedListHiddenDuringDrag {
+	visibility: hidden;
+	pointer-events: none;
+}
+
 
 
 .completedSection {

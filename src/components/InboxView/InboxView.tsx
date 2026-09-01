@@ -7,6 +7,8 @@ import { useI18n } from '../../core/i18n';
 import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
 import { fetchFiredReminders, fetchNoteReminderStates, type FiredReminder, type NoteReminderState } from '../../core/pushApi';
 import { isReminderDueSoon } from '../../core/reminderUrgency';
+import { refreshPriorCollaboratorsCache } from '../../core/priorCollaboratorsApi';
+import { invalidateWorkspaceMembersCache } from '../../core/references/providers/UserReferenceProvider';
 import styles from './InboxView.module.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -525,6 +527,20 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		}
 	}, [swipeOffsets, archiveActivityById, onActivityChanged, onPendingDismissed]);
 
+	// Rapid taps on inbox cards (this one or another) could each independently reach
+	// onOpenNote — which may trigger a workspace switch + note load — before the first
+	// one resolves. Overlapping opens raced into false "no longer have access" overlays
+	// and stacked redundant history entries. One in-flight open at a time, app-wide
+	// across every card type in this view.
+	const openNoteInFlightRef = useRef(false);
+	const guardedOpenNote = useCallback((noteId: string, workspaceId: string, roomId?: string, scrollToNodeId?: string) => {
+		if (openNoteInFlightRef.current) return Promise.resolve(undefined);
+		openNoteInFlightRef.current = true;
+		return Promise.resolve(onOpenNote(noteId, workspaceId, roomId, scrollToNodeId)).finally(() => {
+			openNoteInFlightRef.current = false;
+		});
+	}, [onOpenNote]);
+
 	const handleActivityClick = useCallback((activity: Activity) => {
 		// Don't navigate if the placement picker is open on this card.
 		if (placementPickerActivityId === activity.id) return;
@@ -536,7 +552,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			// Clicking a pending self-mention: open the note and dismiss the pending entry.
 			onPendingDismissed?.(activity.id);
 			onActivityChanged?.();
-			onOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId);
+			void guardedOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId);
 			return;
 		}
 		markRead(activity.id);
@@ -545,11 +561,11 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 		// found the note is gone for good (as opposed to just trashed) — in that
 		// case there's nothing useful left for this card to point at, so archive
 		// it automatically instead of leaving a permanently-dead notification.
-		void Promise.resolve(onOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId))
+		void guardedOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId)
 			.then((outcome) => {
 				if (outcome?.noteMissing) void archiveActivityById(activity.id);
 			});
-	}, [markRead, onOpenNote, placementPickerActivityId, onPendingDismissed, onActivityChanged, archiveActivityById]);
+	}, [markRead, guardedOpenNote, placementPickerActivityId, onPendingDismissed, onActivityChanged, archiveActivityById]);
 
 	const openPlacementPicker = useCallback((e: React.MouseEvent, activity: Activity) => {
 		e.stopPropagation();
@@ -612,13 +628,18 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			setActivities((prev) => prev.filter((a) => a.id !== activity.id));
 			removeFromCache(activity.id);
 			markRead(activity.id);
-			onOpenNote(noteId, activity.subject.workspaceId, roomId);
+			// Accept & View here bypasses ShareNotificationsModal entirely (no onChanged
+			// callback wired for this path), so a sharer accepted for the first time from
+			// an inbox card was left out of collaborator suggestions until app restart.
+			void refreshPriorCollaboratorsCache();
+			invalidateWorkspaceMembersCache();
+			void guardedOpenNote(noteId, activity.subject.workspaceId, roomId);
 		} catch {
 			// non-fatal — let user retry
 		} finally {
 			setAcceptingIds((prev) => { const n = new Set(prev); n.delete(activity.id); return n; });
 		}
-	}, [authUserId, folderName, markRead, onOpenNote, placementChoice, removeFromCache]);
+	}, [authUserId, folderName, markRead, guardedOpenNote, placementChoice, removeFromCache]);
 
 	const reminderTabCount = overdueReminders.length + dueSoonReminders.length;
 	const tabs: { key: FilterTab; label: string; count?: number }[] = [
@@ -733,8 +754,8 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 												role="button"
 												tabIndex={0}
 												className={styles.reminderCardMain}
-												onClick={() => onOpenNote(reminder.noteId, reminder.workspaceId)}
-												onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpenNote(reminder.noteId, reminder.workspaceId); }}
+												onClick={() => void guardedOpenNote(reminder.noteId, reminder.workspaceId)}
+												onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') void guardedOpenNote(reminder.noteId, reminder.workspaceId); }}
 											>
 												<FontAwesomeIcon icon={faBell} className={styles.reminderCardIcon} />
 												<div>
@@ -763,8 +784,8 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 												role="button"
 												tabIndex={0}
 												className={styles.reminderCardMain}
-												onClick={() => onOpenNote(reminder.noteId, reminder.workspaceId)}
-												onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onOpenNote(reminder.noteId, reminder.workspaceId); }}
+												onClick={() => void guardedOpenNote(reminder.noteId, reminder.workspaceId)}
+												onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') void guardedOpenNote(reminder.noteId, reminder.workspaceId); }}
 											>
 												<FontAwesomeIcon icon={faBell} className={styles.reminderCardIcon} />
 												<div>

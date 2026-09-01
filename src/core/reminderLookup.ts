@@ -73,6 +73,47 @@ export function resolveNoteReminderAt(
 	return fallback.length > 0 ? fallback : null;
 }
 
+/**
+ * Per-note "has the scheduler actually fired this" lookup, independent of the bell's
+ * acknowledgment state (see NoteReminderState.fired). Keyed the same docId-then-noteId
+ * way as buildReminderLookup, but there's no pending-mutation overlay to merge here —
+ * unlike reminderAt, a mark-complete/reschedule resets `fired` on the server in the
+ * very same write that changes reminderAt, so there's no separate offline-queued state
+ * to reconcile; the optimistic local write in App.tsx's persistNoteReminderState is
+ * enough to bridge the gap until that sync lands.
+ */
+export function buildReminderFiredLookup(reminders: readonly NoteReminderState[]): Record<string, boolean> {
+	const next: Record<string, boolean> = {};
+	for (const reminder of reminders) {
+		const fired = Boolean(reminder.fired);
+		if (reminder.docId) next[reminder.docId] = fired;
+		if (reminder.noteId && !(reminder.noteId in next)) next[reminder.noteId] = fired;
+	}
+	return next;
+}
+
+export function updateReminderFiredLookup(
+	lookup: Record<string, boolean>,
+	docId: string,
+	noteId: string,
+	fired: boolean,
+): Record<string, boolean> {
+	const next = { ...lookup };
+	if (docId) next[docId] = fired;
+	if (noteId) next[noteId] = fired;
+	return next;
+}
+
+export function readReminderFiredLookupValue(
+	lookup: Record<string, boolean>,
+	docId: string | null | undefined,
+	noteId?: string | null,
+): boolean {
+	if (docId && docId in lookup) return lookup[docId];
+	if (noteId && noteId in lookup) return lookup[noteId];
+	return false;
+}
+
 export function mergeServerReminderLookup(
 	current: Record<string, string | null>,
 	serverLookup: Record<string, string | null>,
