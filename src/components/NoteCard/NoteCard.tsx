@@ -1954,6 +1954,23 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		if (type !== 'checklist') return;
 		// Checklist line wrapping changes when the card width, viewport, or
 		// completed-section height changes, so remeasure on those layout signals.
+		// checklistLayoutSignature is also in here on purpose, even though nothing
+		// above reads it directly: on a fresh mount multilineById/clampedById start
+		// empty, so the very first render assumes every item is a cheap one-liner,
+		// budgets in items that don't actually fit, and only this same effect's own
+		// measureChecklistTextLayout() call corrects it. Without this dependency
+		// that correction still happens, but ends up hidden behind the
+		// ResizeObserver's requestAnimationFrame-deferred scheduleMeasure below,
+		// which lands a frame after the browser already painted the wrong,
+		// too-tall guess. Wiring the signature in here makes the corrected
+		// item set force this effect to run again immediately, inside the same
+		// pre-paint layout-effect flush React already guarantees for these two
+		// checklist effects, so the fix lands before anything is ever shown on
+		// screen instead of one visible frame later. Confirmed this is exactly
+		// what production users were seeing as "cards appear tall, then shrink,
+		// cards below jump up" on long, text-heavy checklists (production's older,
+		// larger notes) that dev's small test dataset never had the item count or
+		// line-wrapping needed to expose.
 		measureChecklistTextLayout();
 		if (typeof ResizeObserver === 'undefined' || typeof window === 'undefined') return;
 
@@ -1983,7 +2000,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			window.removeEventListener('resize', scheduleMeasure);
 			viewport?.removeEventListener('resize', scheduleMeasure);
 		};
-	}, [measureChecklistTextLayout, normalizedItems, showCompleted, type]);
+	}, [checklistLayoutSignature, measureChecklistTextLayout, normalizedItems, showCompleted, type]);
 
 	React.useLayoutEffect(() => {
 		if (type !== 'text' || showLinkedDrawingPreview || showImageGridPreview) {
@@ -2154,6 +2171,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 		// Run synchronously on first commit so CSS vars are set before the browser
 		// paints - avoids a visible gap when the initial estimate is slightly off.
+		// checklistLayoutSignature in the deps below re-triggers this same
+		// synchronous measure() when multilineById/clampedById finish correcting
+		// which items actually fit (see the sibling effect above for the full
+		// story) - otherwise bodyScrollHeightPx keeps reporting the taller,
+		// over-included DOM from the first guess until the ResizeObserver's
+		// requestAnimationFrame callback below gets around to it a frame later,
+		// which is late enough for the browser to have already painted it.
 		measure();
 		const observer = new ResizeObserver(() => scheduleMeasure());
 		if (cardRef.current) observer.observe(cardRef.current);
@@ -2174,7 +2198,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			window.removeEventListener('resize', scheduleMeasure);
 			viewport?.removeEventListener('resize', scheduleMeasure);
 		};
-	}, [requestChecklistLayoutRefresh, showCompleted, type, !!props.metaChips]);
+	}, [checklistLayoutSignature, requestChecklistLayoutRefresh, showCompleted, type, !!props.metaChips]);
 
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);
