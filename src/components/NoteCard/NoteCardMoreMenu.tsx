@@ -16,6 +16,7 @@ import {
 	faSquare,
 	faXmark,
 	faFileExport,
+	faBroom,
 } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
@@ -42,6 +43,7 @@ export type NoteCardMoreMenuProps = {
 	onMoveToWorkspace?: (() => void) | undefined;
 	onCheckAll?: (() => void) | undefined;
 	onUncheckAll?: (() => void) | undefined;
+	onRemoveCompleted?: (() => void) | undefined;
 	onExportNote?: (() => void) | undefined;
 	isTrashView?: boolean;
 	showAddImage?: boolean;
@@ -510,6 +512,17 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 							if (isTrashView) return;
 							props.onClose();
 							props.onCheckAll?.();
+						},
+					},
+					{
+						key: 'removeCompleted',
+						labelKey: 'noteMenu.removeCompleted',
+						icon: faBroom,
+						disabled: isTrashView || !props.onRemoveCompleted,
+						action: () => {
+							if (isTrashView) return;
+							props.onClose();
+							props.onRemoveCompleted?.();
 						},
 					},
 				]

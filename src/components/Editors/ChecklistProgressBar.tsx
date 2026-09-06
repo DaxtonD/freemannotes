@@ -14,6 +14,23 @@ export type ChecklistProgressBarProps = {
 // catch-up math in the effect below for why that matters.
 const ORB_TRAVEL_DURATION_MS = 420;
 
+// This bar was playing its full check/uncheck shot animation on every single
+// note open, for notes nobody had touched. Nothing was wrong with the
+// animation code — a note's checklist data just doesn't necessarily reflect
+// its true completed/total counts on this component's very first render,
+// since IndexedDB hydration and Yjs materialization can still be settling for
+// a short window right after the note opens, and from this component's point
+// of view that settle is completely indistinguishable from a real toggle:
+// same completed-count jump, same trigger, same animation. (This component
+// gets a fresh instance per note via key={noteId} at its call sites
+// specifically so this window resets on every note you open, not just once
+// at app startup.) Any completed-count change within this many ms of mount
+// now gets treated as "still opening," not a real toggle, and just snaps
+// into place. Chosen generously against realistic hydration timing — the
+// cost of a genuine toggle landing THIS fast after open merely not animating
+// once is nothing next to animating on literally every open.
+const OPEN_SETTLE_GRACE_MS = 800;
+
 /**
  * Discrete "N of M completed" indicator + animated fill bar for checklist
  * notes. Modeled on two opposing Half-Life 2 pulse-rifle-style energy orbs
@@ -74,6 +91,7 @@ export function ChecklistProgressBar({ completed, total }: ChecklistProgressBarP
 	const [orbDirection, setOrbDirection] = React.useState<'checking' | 'unchecking'>('checking');
 	const previousCompletedRef = React.useRef(clampedCompleted);
 	const previousProgressRef = React.useRef(progress);
+	const mountTimeRef = React.useRef(Date.now());
 	// Retrigger the arrival burst on every change after mount (not on mount
 	// itself), incremented in a ref rather than state so this never causes an
 	// extra render on its own.
@@ -84,9 +102,13 @@ export function ChecklistProgressBar({ completed, total }: ChecklistProgressBarP
 		const previousProgress = previousProgressRef.current;
 		previousProgressRef.current = progress;
 
-		if (previousCompleted === clampedCompleted) {
-			// total changed with no completion toggle (e.g. a new item was added)
-			// — just track both directly, no shot ceremony.
+		const stillOpening = Date.now() - mountTimeRef.current < OPEN_SETTLE_GRACE_MS;
+		if (previousCompleted === clampedCompleted || stillOpening) {
+			// total changed with no completion toggle (e.g. a new item was added),
+			// OR this note is still settling in from having just been opened (see
+			// OPEN_SETTLE_GRACE_MS above) — either way, just track both directly,
+			// no shot ceremony.
+			previousCompletedRef.current = clampedCompleted;
 			setOrbPosition(progress);
 			setFillPosition(progress);
 			return;

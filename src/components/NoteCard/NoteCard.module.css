@@ -374,11 +374,36 @@
 	padding-bottom: calc(var(--space-2) + 20px);
 }
 
+/* Deterministic drawing height model (Phase 3 item 9). We couldn't just copy
+   .mediaImageGridCell's trick wholesale here — that one forces every thumbnail
+   into a fixed square via object-fit:cover, which is fine for a small attached-
+   drawing chip but would crop off part of the actual drawing on the card that's
+   supposed to show the whole thing. Real fix required knowing each drawing's
+   REAL aspect ratio, which nothing was tracking anywhere, so we now capture it
+   the moment its thumbnail is generated (drawingThumbnails.ts, straight off the
+   exportToCanvas result) and thread it down as --note-card-drawing-aspect-ratio
+   (NoteCard.tsx's cardStyle). Giving .drawingBody that aspect-ratio makes its
+   height knowable from the card's own (definite) width before the thumbnail
+   image ever loads or decodes, while still preserving the drawing's own
+   proportions (object-fit:contain, no crop). The default (0.671 ≈ 784/1168)
+   matches the bundled placeholder art's own ratio, so a brand-new drawing with
+   no cached dimensions yet still reserves a sensible box instead of collapsing
+   to 0 height.
+   The actual bug this closes only became obvious once you go looking for it:
+   once aspect-ratio gives .drawingBody a definite height, height:100% on its
+   children below finally resolves the way you'd expect (percentage heights
+   don't resolve against an auto-height ancestor — before this fix they were
+   silently falling back to each element's own intrinsic size). That's exactly
+   why the skeleton (min-height:150px) and the real image (whatever its natural
+   aspect ratio produced at the card's width) could quietly disagree and pop the
+   moment the thumbnail loaded — two completely different sizing mechanisms
+   that happened to share a CSS property name and nothing else. */
 .drawingBody {
 	padding: 10px;
 	align-items: stretch;
 	justify-content: center;
-	flex: 1 1 auto;
+	flex: 0 0 auto;
+	aspect-ratio: var(--note-card-drawing-aspect-ratio, 0.671);
 	min-height: 150px;
 }
 
@@ -965,6 +990,17 @@
 	padding-bottom: 20px;
 }
 
+/* Wraps .completedToggle together with .cardMenuButtonInToggle (coarse-pointer,
+   no-preview checklist cards only — see isCompletedSectionMenuSafeRegion) as true
+   flex siblings in one row, so align-items:center centers the icon against
+   whatever height the toggle row actually renders at — no separate positioning
+   math to keep in sync with it. */
+.completedToggleRow {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
 .completedToggle {
 	align-self: stretch;
 	border: 0;
@@ -976,6 +1012,8 @@
 	align-items: center;
 	gap: 4px;
 	min-height: 20px;
+	min-width: 0;
+	flex: 1 1 auto;
 	text-align: left;
 	touch-action: manipulation;
 	-webkit-tap-highlight-color: transparent;
@@ -1054,6 +1092,81 @@
 	padding-bottom: 28px;
 }
 
+/* Pointer-agnostic (an empty preview rail should never reserve real estate on
+   ANY platform, not just mobile — see checklistFixedChromePx's linkPreviewHeightPx
+   in NoteCard.tsx, which deliberately measures 0 for an empty rail
+   (childElementCount === 0) as a shortcut. That shortcut is only accurate if the
+   CSS itself also renders 0 for that case. This used to be coarse-pointer-only,
+   which made the shortcut correct on mobile but silently wrong on desktop: the
+   base .linkPreviewRail rule's padding-bottom (var(--space-2)) always applied
+   there uncontested, so a checklist card with a docId but zero real links carried
+   a phantom several-px gap the height budget never knew about — on a desktop
+   checklist card packed close to its max-height, that shortfall was enough for
+   .contentRegion's own overflow:hidden to clip a chunk of the completed-items
+   dropdown, confirmed via direct DOM measurement (contentRegion's bottom edge sat
+   ~20-27px above completedSection/linkPreviewRail's own bottom edges — a real
+   clip, not a rendering-order illusion). Kept pointer-agnostic so this can't
+   regress the same way on either platform again. */
+.linkPreviewRail:not(.linkPreviewRailMenuSafe) {
+	padding-bottom: 0;
+}
+
+.checklistCardCompletedExpanded .linkPreviewRail:not(.linkPreviewRailMenuSafe) {
+	padding-bottom: 0;
+}
+
+/* Checklist, no-preview cards only (isCompletedSectionMenuSafeRegion). We burned
+   three separate rounds trying to center this glyph in a reserved band below the
+   toggle row before admitting the actual problem: centering something in empty
+   space AFTER a row is never the same thing as sharing that row's own
+   centerline, no matter how precisely you measure the empty space. You can tune
+   the number forever and it will never look right, because it's the wrong axis
+   of adjustment entirely. The fix that actually worked: stop reserving a band at
+   all, make this a genuine flex sibling of .completedToggle inside
+   .completedToggleRow instead. align-self:stretch takes on whatever height the
+   row actually renders at (driven by the toggle's own content/font-scale), and
+   the inner align-items:center centers the glyph on THAT — the row's real
+   centerline, not our guess at where it probably is. Deliberately narrower/
+   shorter than .cardMenuButton's 40px touch target: matching the toggle row's
+   natural (~20-24px) height instead would force the whole row taller just to
+   fit a 40px icon, inflating completedSection for nothing.
+   Then, immediately after finally nailing the vertical alignment, the user
+   pointed out this icon and .cardMenuButton's icon (text/drawing cards) don't
+   even line up horizontally with EACH OTHER. Turns out this row sits inside
+   .completedSection's own 8px right padding, so a plain centered 32px box lands
+   ~14px further left than .cardMenuButton's icon — confirmed, not imagined.
+   margin-right:-8px cancels that inherited padding so this box's right edge
+   reaches the card's true right edge, the same reference point .cardMenuButton
+   positions from (right:0), and the matching 8px right padding + flex-end then
+   puts both glyphs' right edges at cardRight - 8px, identically. The trick that
+   actually made this stick: match the same EDGE on both sides instead of
+   matching a "center," which is exactly the same lesson as the vertical fix
+   above, just on the other axis. Works regardless of the two boxes' differing
+   widths (32px vs 40px) or the glyph's own rendered size, because edges don't
+   care about any of that. */
+.cardMenuButtonInToggle {
+	align-self: stretch;
+	flex: 0 0 32px;
+	width: 32px;
+	margin-right: -8px;
+	border: 0;
+	background: transparent;
+	color: color-mix(in srgb, var(--note-color-text, var(--color-text)) 30%, var(--note-color-muted, var(--color-text-muted)) 70%);
+	display: inline-flex;
+	align-items: center;
+	justify-content: flex-end;
+	padding: 0 8px 0 0;
+	font-size: 11px;
+	cursor: pointer;
+	-webkit-tap-highlight-color: transparent;
+	opacity: 0.62;
+	transition: color 160ms ease, opacity 160ms ease;
+}
+
+.cardMenuButtonInToggle:active {
+	opacity: 0.84;
+}
+
 .cardMenuButton {
 	position: absolute;
 	right: 0;
@@ -1069,7 +1182,24 @@
 	display: inline-flex;
 	align-items: flex-end;
 	justify-content: flex-end;
-	padding: 0 8px 8px 0;
+	/* Bottom inset centers the glyph within whatever trailing band is actually
+	   reserved (--note-card-menu-reserved-height, set in NoteCard.tsx, shared with
+	   the *MenuSafe padding-bottom rules that reserve that band in the first
+	   place) instead of yet another hardcoded guess. A fixed inset here was
+	   exactly why bumping the reserved padding elsewhere never visibly re-centered
+	   the icon in earlier rounds — the glyph's own position never moved to match
+	   whatever number we'd just changed two rules away. 11px (measured directly
+	   off the rendered glyph's own bounding box, not eyeballed) is the glyph's
+	   real height at this font-size; if it's ever off-center again, adjust that
+	   one number here, not the padding-bottom values above — that's the whole
+	   point of sharing the variable, they can't drift apart from each other
+	   anymore. The 20px fallback applies only to non-checklist/no-preview cards,
+	   which use .bodyMenuSafe's own independent (--space-2-relative) reservation
+	   instead of this variable.
+	   The right padding (8px) is also the reference edge .cardMenuButtonInToggle
+	   matches against — see that rule's own comment for why matching an edge,
+	   not a center, is what finally made these two icons line up. */
+	padding: 0 8px max(2px, calc((var(--note-card-menu-reserved-height, 20px) - 11px) / 2)) 0;
 	font-size: 11px;
 	line-height: 1;
 	cursor: pointer;
@@ -1244,17 +1374,44 @@
 		padding-right: 0;
 	}
 
+	/* Menu-safe padding, recalibrated: restoring these to their pre-regression values
+	   (22px / 22px) turned out to be far more than "just enough to clear the button" —
+	   they were apparently sized assuming zero reserved space existed at all (since the
+	   bug made that true for a long time), not to a real measurement of the button.
+	   .cardMenuButton is a 40x40px hit target, but the visible glyph inside it is
+	   bottom/right-inset by 8px at font-size:11px — so the icon itself only occupies
+	   roughly the bottom ~20px of that box, not the full 40. These values reserve just
+	   that much (plus a small buffer), not the whole hit target's height.
+	   NOT pixel-verified on-device yet — I can't render this myself. Check against the
+	   real spec next time you're on the phone: note/drawing body text should sit as
+	   close to the menu as fits without visual overlap; the checklist completed-toggle
+	   text should share the menu icon's centerline. */
 	.bodyMenuSafe {
-		padding-bottom: calc(var(--space-2) + 22px);
+		padding-bottom: calc(var(--space-2) + 8px);
 	}
 
+	/* --note-card-menu-reserved-height is set in NoteCard.tsx (cardStyle) — one
+	   JS-computed value shared with .cardMenuButton's own glyph inset below, so the
+	   reserved space and the glyph's centering can never drift apart the way two
+	   independently hand-tuned numbers did across several rounds of this. The
+	   fallback (16px) only matters if that var is ever unset.
+	   min-height:0 matters too, same reason it was needed on
+	   .completedSectionAdjacentToPreview: .completedSection's base rule sets
+	   min-height:38px, and with justify-content:flex-start any shortfall between
+	   that floor and the toggle row's real (shorter, collapsed-state) content
+	   becomes invisible slack AFTER the toggle — pushing the icon further from the
+	   text than the intended reserved band, without changing the icon's own
+	   position relative to the card's true bottom edge. Only matters in the
+	   collapsed state (natural expanded content already exceeds 38px on its own),
+	   which is exactly the state this was reported as visibly wrong for. */
 	.completedSectionMenuSafe {
-		padding-bottom: 22px;
+		padding-bottom: var(--note-card-menu-reserved-height, 16px);
+		min-height: 0;
 	}
 
 	.linkPreviewRailMenuSafe {
 		padding-right: 0;
-		padding-bottom: 30px;
+		padding-bottom: var(--note-card-menu-reserved-height, 52px);
 	}
 
 	.checklistCardCompletedExpanded .completedSection {
@@ -1270,20 +1427,9 @@
 	}
 
 	/* Mobile note-card checklist rows: center checkbox and first text line.
-	   :not(...MenuSafe) guards below are load-bearing, not decorative: these rules and
-	   the *MenuSafe rules above share equal specificity (single class) on the same
-	   element, so without the guard the later same-specificity rule always wins by
-	   source order regardless of which classes are actually applied — which is exactly
-	   how linkPreviewRailMenuSafe's reserved space for the overflow menu button got
-	   silently zeroed out the moment it was introduced (confirmed via git history:
-	   both rules landed in the same commit, this one just came second in the file). */
-	.linkPreviewRail:not(.linkPreviewRailMenuSafe) {
-		padding-bottom: 0;
-	}
-
-	.checklistCardCompletedExpanded .linkPreviewRail:not(.linkPreviewRailMenuSafe) {
-		padding-bottom: 0;
-	}
+	   (The .linkPreviewRail:not(.linkPreviewRailMenuSafe) zeroing rules that used to
+	   live here are now pointer-agnostic — see the base .linkPreviewRailMenuSafe
+	   definition earlier in this file.) */
 
 	.checklistCard .body:not(.bodyMenuSafe) {
 		padding-bottom: 10px;
@@ -1296,4 +1442,42 @@
 	.checklistItem {
 		align-items: flex-start;
 	}
+
+	/* Proactive, not a reported bug: the completed-count toggle's text ("N completed
+	   items") is translated and can run considerably longer in other languages.
+	   Ellipsis-truncate rather than let it wrap or overflow. Used to also reserve
+	   padding-right here for a menu button that overlaid this row from outside it —
+	   now that the button is a true flex sibling (completedToggleRow) taking its own
+	   space, flex sizing (.completedToggle's flex:1 1 auto + min-width:0) already
+	   keeps the text out of its way with nothing to reserve by hand. */
+	.completedToggle > span:last-child {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+}
+
+/* Pointer-agnostic (both the coarse .completedSection:not(.completedSectionMenuSafe)
+   override above and the @media(pointer:fine) base rule near the top of this file set
+   their own padding-bottom on .completedSection) — chained to match/exceed both of
+   those selectors' specificity, placed last so it wins the tie. See
+   isCompletedSectionAdjacentToPreview's comment in NoteCard.tsx: when a link preview
+   immediately follows the completed-items section, that section's own trailing
+   padding just doubles up with the preview card's own border+padding.
+   padding-bottom was originally zeroed out here on the theory that the preview's
+   own internal padding alone would supply enough breathing room to match the
+   divider's gap above the toggle — on-device this read as too tight (preview
+   sitting noticeably closer to the toggle than the toggle sits to the row above
+   it). Matched to padding-top (6px, the same value the base .completedSection
+   rule already uses above the toggle) instead of zero, for the same visual gap on
+   both sides of the row — reasoned, not pixel-measured against a live render.
+   min-height is overridden too, and it matters just as much as padding-bottom here:
+   .completedSection's base rule sets min-height:38px, and with justify-content:
+   flex-start, any shortfall between that floor and the toggle row's real (shorter)
+   content height becomes invisible slack AFTER the last child — i.e. an effective
+   bottom gap the padding-bottom value above does nothing to remove on its own. */
+.checklistCard .completedSection.completedSectionAdjacentToPreview {
+	padding-bottom: 6px;
+	min-height: 0;
 }

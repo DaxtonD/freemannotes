@@ -984,6 +984,7 @@
     "cardWidth": "Ancho de tarjeta",
     "uncheckAll": "Desmarcar todo",
     "checkAll": "Marcar todo",
+    "removeCompleted": "Eliminar elementos completados",
     "narrow": "Estrecho",
     "default": "Normal",
     "wide": "Ancho"

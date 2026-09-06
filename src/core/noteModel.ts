@@ -332,6 +332,48 @@ export function initChecklistNoteDoc(
 }
 
 /**
+ * Delete every completed row from a checklist note's Yjs `checklist` array in
+ * one transaction — the "Remove completed items" more-menu action. Only rows
+ * with `completed === true` are removed; an active (unchecked) row is never
+ * deleted just because its parent happens to be completed — instead, any
+ * surviving row whose `parentId` pointed at a just-deleted row gets its
+ * `parentId` cleared (promoted to top-level), so the hierarchy stays valid.
+ * Mirrors NoteEditor.tsx's pruneEmptyChecklistRows (same end-to-start delete +
+ * dangling-parentId cleanup shape, keyed on `completed` instead of blank text).
+ *
+ * Works directly off a Y.Doc so it can be called both with the note open in
+ * the editor and from the note grid's more-menu with no editor mounted at all
+ * (matching NoteGrid.tsx's existing setChecklistCompletedState).
+ *
+ * @param doc - The Yjs document whose checklist to prune.
+ */
+export function removeCompletedChecklistItems(doc: Y.Doc): void {
+	const checklist = doc.getArray<Y.Map<any>>('checklist');
+	if (checklist.length === 0) return;
+	const removedIds = new Set<string>();
+	for (const item of checklist.toArray()) {
+		if (!item.get('completed')) continue;
+		const id = String(item.get('id') ?? '').trim();
+		if (id) removedIds.add(id);
+	}
+	if (removedIds.size === 0) return;
+	doc.transact(() => {
+		for (let i = checklist.length - 1; i >= 0; i--) {
+			const item = checklist.get(i);
+			if (!item) continue;
+			const id = String(item.get('id') ?? '').trim();
+			if (id && removedIds.has(id)) checklist.delete(i, 1);
+		}
+		for (let i = 0; i < checklist.length; i++) {
+			const item = checklist.get(i);
+			if (!item) continue;
+			const parentId = typeof item.get('parentId') === 'string' ? String(item.get('parentId')).trim() : '';
+			if (parentId && removedIds.has(parentId)) item.set('parentId', null);
+		}
+	});
+}
+
+/**
  * Initialize a Y.Doc as a **drawing note** backed by Excalidraw/Yjs.
  *
  * Canonical drawing docs use the same title/metadata fields as other notes, plus:

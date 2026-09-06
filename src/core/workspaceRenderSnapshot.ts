@@ -4,6 +4,8 @@ import { normalizeChecklistCountValue } from './checklistCounts';
 import { getNoteBannerWarmCacheEntry } from './noteBannerWarmCache';
 import { readNoteFromDoc } from './noteModel';
 import { resolveUserNotePinned } from './notePinPreferences';
+import { getUserNoteColorToken, hasUserNoteColorPref } from './noteColorPreferences';
+import { readEffectiveNoteColorToken } from './noteColors';
 import { extractNoteLinksFromDoc, setNotePreviewLinksOnDoc, type ExtractedNoteLink } from './noteLinks';
 import type { NoteLinkRecord } from './noteLinkApi';
 import {
@@ -349,7 +351,20 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 }): WorkspaceRenderSnapshotNote {
 	const note = readNoteFromDoc(args.doc, args.noteId);
 	const metadata = args.doc.getMap<any>('metadata');
-	const colorToken = asStringOrNull(metadata.get('colorToken'));
+	// metadata.get('colorToken') is a legacy shared-doc field — its only writer,
+	// setNoteColorToken(), has no live callers anywhere in this codebase anymore.
+	// Every current color change goes through the per-user noteColorPreferences.ts
+	// cache instead, which this snapshot never captured at all, so a persisted
+	// snapshot's colorToken was always stale/empty for any note colored through
+	// the current UI. Mirror the same "resolve the real effective value, same as
+	// render time" pattern already used for isPinned just below via
+	// resolveUserNotePinned, so a warm restart shows this device's last-known
+	// color preference instead of dead legacy data.
+	const colorToken = readEffectiveNoteColorToken(
+		metadata,
+		getUserNoteColorToken(args.noteId),
+		hasUserNoteColorPref(args.noteId)
+	);
 	const bannerFile = note.bannerFile ?? null;
 	const checklistArray = note.type === 'checklist' ? args.doc.getArray<Y.Map<any>>('checklist') : null;
 	const previewLinks = extractNoteLinksFromDoc(args.doc);

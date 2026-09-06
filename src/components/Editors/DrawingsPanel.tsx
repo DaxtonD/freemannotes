@@ -107,7 +107,7 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 						const drawingDoc = await props.loadDrawingDoc?.(drawingId);
 						const title = drawingDoc?.getText('title').toString().trim() || t('note.untitled');
 						const thumbnailUrl = drawingDoc
-							? await renderDrawingThumbnail(drawingId, drawingDoc, title, getDrawingThumbnailVersion(drawingDoc))
+							? (await renderDrawingThumbnail(drawingId, drawingDoc, title, getDrawingThumbnailVersion(drawingDoc))).dataUrl
 							: await buildDrawingPlaceholderDataUrl(title, { seed: drawingId });
 						const createdAt = readDrawingCreatedAtIso(drawingDoc);
 						return { id: drawingId, title, thumbnailUrl, createdAt } satisfies DrawingSummary;

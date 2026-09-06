@@ -24,15 +24,36 @@ export type DrawingPlaceholderOptions = {
 	colors?: Partial<DrawingPlaceholderPalette>;
 };
 
-const thumbnailCache = new Map<string, Promise<string>>();
-const resolvedThumbnailCache = new Map<string, string>();
-const storedThumbnailLoadCache = new Map<string, Promise<string | null>>();
+// Real pixel dimensions travel alongside the data URL everywhere this is cached
+// so a card can size an aspect-ratio box before the image itself loads — see
+// NoteCard.tsx's drawing height model (Phase 3 item 9). width/height are null
+// (not a reason to discard a perfectly usable cached dataUrl) whenever a row was
+// written before this field existed — losing the aspect-ratio hint is fine and
+// falls back to a default; forcing an expensive re-render just to backfill it
+// would not be.
+export type DrawingThumbnailResult = {
+	dataUrl: string;
+	width: number | null;
+	height: number | null;
+};
+
+const thumbnailCache = new Map<string, Promise<DrawingThumbnailResult>>();
+const resolvedThumbnailCache = new Map<string, DrawingThumbnailResult>();
+const storedThumbnailLoadCache = new Map<string, Promise<DrawingThumbnailResult | null>>();
 const placeholderSvgCache = new Map<string, Promise<string>>();
 const DRAWING_PLACEHOLDER_ASSETS = [
 	'DrawingPlaceholders/d1.svg',
 	'DrawingPlaceholders/d2.svg',
 	'DrawingPlaceholders/d3.svg',
 ] as const;
+// All three DRAWING_PLACEHOLDER_ASSETS files are 784x1168 (checked directly).
+// buildInlineFallbackPlaceholderDataUrl's own inline SVG (used only if fetching
+// one of those assets fails) is a different 960x720 — that path is rare enough
+// (a bundled static asset failing to load) that reporting the common 784x1168
+// ratio for it too is an acceptable, deliberate simplification rather than
+// threading a second dimension pair through for an edge case this unlikely.
+const PLACEHOLDER_THUMBNAIL_WIDTH = 784;
+const PLACEHOLDER_THUMBNAIL_HEIGHT = 1168;
 
 function parseHexColor(hex: string): { r: number; g: number; b: number } {
 	const normalized = String(hex || '').trim().replace(/^#/, '');
@@ -221,39 +242,52 @@ export function getDrawingThumbnailCacheKey(
 	return `${drawingId}:${versionKey}:${getPlaceholderPaletteKey(placeholderOptions)}`;
 }
 
-export function peekDrawingThumbnail(cacheKey: string): string | null {
+// A row's width/height are only trustworthy if both are present and positive —
+// rows written before this field existed have neither. Returns null dimensions
+// (NOT a reason to discard row.dataUrl itself) rather than a bogus 0x0/NaN ratio.
+function rowDimensions(row: { width?: number; height?: number }): { width: number | null; height: number | null } {
+	const width = Number(row.width);
+	const height = Number(row.height);
+	const valid = Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0;
+	return valid ? { width, height } : { width: null, height: null };
+}
+
+export function peekDrawingThumbnail(cacheKey: string): DrawingThumbnailResult | null {
 	return resolvedThumbnailCache.get(cacheKey) ?? null;
 }
 
-export function peekLatestDrawingThumbnail(noteId: string): string | null {
+export function peekLatestDrawingThumbnail(noteId: string): DrawingThumbnailResult | null {
 	if (!noteId) return null;
 	const snapshot = readLatestStoredDrawingThumbnailSnapshot(noteId);
 	if (!snapshot?.dataUrl) return null;
-	resolvedThumbnailCache.set(snapshot.id, snapshot.dataUrl);
-	thumbnailCache.set(snapshot.id, Promise.resolve(snapshot.dataUrl));
-	return snapshot.dataUrl;
+	const result: DrawingThumbnailResult = { dataUrl: snapshot.dataUrl, ...rowDimensions(snapshot) };
+	resolvedThumbnailCache.set(snapshot.id, result);
+	thumbnailCache.set(snapshot.id, Promise.resolve(result));
+	return result;
 }
 
-export async function readLatestCachedDrawingThumbnail(noteId: string): Promise<string | null> {
+export async function readLatestCachedDrawingThumbnail(noteId: string): Promise<DrawingThumbnailResult | null> {
 	if (!noteId) return null;
 	const snapshot = readLatestStoredDrawingThumbnailSnapshot(noteId);
 	if (snapshot?.dataUrl) {
-		resolvedThumbnailCache.set(snapshot.id, snapshot.dataUrl);
-		thumbnailCache.set(snapshot.id, Promise.resolve(snapshot.dataUrl));
-		return snapshot.dataUrl;
+		const result: DrawingThumbnailResult = { dataUrl: snapshot.dataUrl, ...rowDimensions(snapshot) };
+		resolvedThumbnailCache.set(snapshot.id, result);
+		thumbnailCache.set(snapshot.id, Promise.resolve(result));
+		return result;
 	}
 	const latest = await readLatestStoredDrawingThumbnail(noteId);
 	if (!latest?.dataUrl) return null;
-	resolvedThumbnailCache.set(latest.id, latest.dataUrl);
-	thumbnailCache.set(latest.id, Promise.resolve(latest.dataUrl));
-	return latest.dataUrl;
+	const result: DrawingThumbnailResult = { dataUrl: latest.dataUrl, ...rowDimensions(latest) };
+	resolvedThumbnailCache.set(latest.id, result);
+	thumbnailCache.set(latest.id, Promise.resolve(result));
+	return result;
 }
 
 export async function readCachedDrawingThumbnail(
 	cacheKey: string,
 	drawingId: string,
 	versionKey: string
-): Promise<string | null> {
+): Promise<DrawingThumbnailResult | null> {
 	if (!cacheKey || !drawingId || !versionKey) return null;
 	const resolved = resolvedThumbnailCache.get(cacheKey);
 	if (resolved) return resolved;
@@ -263,9 +297,10 @@ export async function readCachedDrawingThumbnail(
 		const row = await readStoredDrawingThumbnail(cacheKey);
 		if (!row) return null;
 		if (row.noteId !== drawingId || row.versionKey !== versionKey || !row.dataUrl) return null;
-		resolvedThumbnailCache.set(cacheKey, row.dataUrl);
-		thumbnailCache.set(cacheKey, Promise.resolve(row.dataUrl));
-		return row.dataUrl;
+		const result: DrawingThumbnailResult = { dataUrl: row.dataUrl, ...rowDimensions(row) };
+		resolvedThumbnailCache.set(cacheKey, result);
+		thumbnailCache.set(cacheKey, Promise.resolve(result));
+		return result;
 	})();
 	storedThumbnailLoadCache.set(cacheKey, nextLoad);
 	return nextLoad;
@@ -277,7 +312,7 @@ export async function renderDrawingThumbnail(
 	fallbackTitle: string,
 	versionKey = getDrawingThumbnailVersion(drawingDoc),
 	placeholderOptions?: DrawingPlaceholderOptions
-): Promise<string> {
+): Promise<DrawingThumbnailResult> {
 	const cacheKey = getDrawingThumbnailCacheKey(drawingId, versionKey, placeholderOptions);
 	const resolved = resolvedThumbnailCache.get(cacheKey);
 	if (resolved) {
@@ -288,17 +323,25 @@ export async function renderDrawingThumbnail(
 		return cached;
 	}
 
-	const persistThumbnail = (dataUrl: string): string => {
-		resolvedThumbnailCache.set(cacheKey, dataUrl);
+	const persistThumbnail = (dataUrl: string, width: number | null, height: number | null): DrawingThumbnailResult => {
+		const result: DrawingThumbnailResult = { dataUrl, width, height };
+		resolvedThumbnailCache.set(cacheKey, result);
 		void writeStoredDrawingThumbnail({
 			id: cacheKey,
 			noteId: drawingId,
 			versionKey,
 			dataUrl,
+			width: width ?? undefined,
+			height: height ?? undefined,
 			updatedAt: new Date().toISOString(),
 		});
-		return dataUrl;
+		return result;
 	};
+	const persistPlaceholder = async (): Promise<DrawingThumbnailResult> => persistThumbnail(
+		await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: placeholderOptions?.seed || drawingId }),
+		PLACEHOLDER_THUMBNAIL_WIDTH,
+		PLACEHOLDER_THUMBNAIL_HEIGHT
+	);
 
 	const renderPromise = (async () => {
 		try {
@@ -312,13 +355,13 @@ export async function renderDrawingThumbnail(
 			if (elements.length === 0) {
 				const latestPreview = peekLatestDrawingThumbnail(drawingId);
 				if (latestPreview) {
-					return persistThumbnail(latestPreview);
+					return persistThumbnail(latestPreview.dataUrl, latestPreview.width, latestPreview.height);
 				}
 				const latestCachedThumbnail = await readLatestCachedDrawingThumbnail(drawingId);
 				if (latestCachedThumbnail) {
-					return persistThumbnail(latestCachedThumbnail);
+					return persistThumbnail(latestCachedThumbnail.dataUrl, latestCachedThumbnail.width, latestCachedThumbnail.height);
 				}
-				return persistThumbnail(await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: placeholderOptions?.seed || drawingId }));
+				return persistPlaceholder();
 			}
 			const files = Object.fromEntries(drawingDoc.getMap<any>('assets').entries());
 			const canvas = await exportToCanvas({
@@ -331,9 +374,9 @@ export async function renderDrawingThumbnail(
 					viewBackgroundColor: drawingBackgroundColor || DEFAULT_DRAWING_BACKGROUND,
 				},
 			});
-			return persistThumbnail(canvas.toDataURL('image/png'));
+			return persistThumbnail(canvas.toDataURL('image/png'), canvas.width, canvas.height);
 		} catch {
-			return persistThumbnail(await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: placeholderOptions?.seed || drawingId }));
+			return persistPlaceholder();
 		}
 	})();
 

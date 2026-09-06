@@ -3140,7 +3140,23 @@
 	overflow-y: auto;
 	overflow-x: hidden;
 	overscroll-behavior-y: contain;
-	padding-bottom: 6px;
+	/* Top/left/right padding exists purely so the completion pulse
+	   (.checklistRowGlowPulseOuter/Inner below) has room to bloom before hitting
+	   this element's own clip edge. Reported as "make the glow render in front of
+	   everything," which sounded like a z-index ask and very much was not one —
+	   the glow already paints above the row's own content (each .checklistItem is
+	   isolation:isolate, its pulse pseudo-elements are z-index:1 within that).
+	   The actual culprit is a CSS rule nobody asks for on purpose: a scrollable
+	   container can't set overflow-y:auto without ALSO clipping overflow-x
+	   (browsers force the other axis to at least `auto` the moment either axis
+	   isn't `visible`), so the row glow's box-shadow was getting a flat, ugly cut
+	   right at this container's top/left/right edges instead of fading out —
+	   worst on the very first row, which had nowhere to bloom upward into at all.
+	   No amount of z-index was ever going to touch this; it was never a stacking
+	   problem. 12px comfortably covers the glow's highest-opacity inner portion
+	   (it fades close to transparent well before its own max blur reach) without
+	   meaningfully narrowing the checklist's usable text width on mobile. */
+	padding: 12px 12px 6px;
 	/* Keep scrollIntoView/caret scrolling above the floating keyboard toolbar in checklist mode too. */
 	scroll-padding-bottom: 88px;
 }

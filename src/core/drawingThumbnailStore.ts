@@ -3,6 +3,13 @@ export type StoredDrawingThumbnailRow = {
 	noteId: string;
 	versionKey: string;
 	dataUrl: string;
+	// Real pixel dimensions of dataUrl, captured at generation time (from the
+	// exportToCanvas result, or the known placeholder-asset size) so a card can
+	// reserve the correct aspect-ratio box before the image itself loads/decodes —
+	// see NoteCard.tsx's drawing height model. Optional: rows written before this
+	// field existed won't have it; treat missing/invalid values as "unknown," not 0.
+	width?: number;
+	height?: number;
 	updatedAt: string;
 };
 

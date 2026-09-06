@@ -121,9 +121,11 @@ import {
 	listNoteShareInvitations,
 	listSharedNotePlacements,
 	moveCachedNoteShareCollaborators,
+	queueNoteShareCollaboratorRevokeAction,
 	queuePlacementMetadataAction,
 	readCachedNoteShareCollaborators,
 	readPendingCollaboratorActions,
+	revokeNoteShareCollaborator,
 	syncAttachedDrawingCollaborators,
 	syncNoteShareCollaborators,
 	type NoteShareCollaboratorSnapshot,
@@ -2732,48 +2734,79 @@ export function App(): React.JSX.Element {
 		showBriefDialog(t('share.accessRemovedToast'));
 	}, [closeCollaboratorModal, showBriefDialog, t]);
 
-	const handleCollaboratorSelfRemoved = React.useCallback(() => {
-		// The durable removal path (refreshNoteShareState, triggered by the same
-		// handleRemove success via onChanged) is correct but network-bound — under a
-		// degraded connection it waits on a Promise.all of 6 unrelated HTTP GETs (each
-		// with an 8s timeout) before it even gets to the actual removal, which is a pure
-		// local Yjs write with zero network dependency. Do that local write immediately
-		// instead of waiting on the slow batch — the note should vanish from the grid the
-		// instant you leave it, in any network condition. refreshNoteShareState's own
-		// reconciliation still runs afterward as a no-op/self-healing fallback if this
-		// ever silently fails (e.g. workspace context raced mid-flight).
-		const leftNoteAliasId = collaboratorModalState?.noteId ?? null;
-		// Record this BEFORE closeCollaboratorModal() below, which on mobile triggers an
-		// async history.back() — the popstate guard needs this set populated before that
-		// popstate can possibly fire, not after. Plain synchronous Set mutation, so there's
-		// no gap for it to race (see the ref's own comment for the full picture).
-		if (leftNoteAliasId) recentlyLeftSharedNoteIdsRef.current.add(leftNoteAliasId);
-		// If the left note is the one currently open in the editor — guaranteed true
-		// whenever this modal was reached from inside the editor itself, since both
-		// in-editor entry points pass selectedNoteId straight through as the modal's
-		// noteId; never true for the grid-opened entry point, where the editor isn't open
-		// — close it immediately too, same direct-state-clear shape as the "note became
-		// invalid while open" guard effect elsewhere in this file. Desktop has no history
-		// entries to race against, so this alone is sufficient there; the mobile-specific
-		// popstate hazard (an async history.back() landing back on this stale editor
-		// snapshot and silently reopening it) is what recentlyLeftSharedNoteIdsRef's
-		// popstate-handler check exists to prevent.
-		if (leftNoteAliasId && selectedNoteId === leftNoteAliasId) {
+	// The durable removal path (refreshNoteShareState, triggered elsewhere by the
+	// same server round trip via onChanged) is correct but network-bound — under a
+	// degraded connection it waits on a Promise.all of 6 unrelated HTTP GETs (each
+	// with an 8s timeout) before it even gets to the actual removal, which is a pure
+	// local Yjs write with zero network dependency. Do that local write immediately
+	// instead of waiting on the slow batch — the note should vanish from the grid the
+	// instant you leave it, in any network condition. refreshNoteShareState's own
+	// reconciliation still runs afterward as a no-op/self-healing fallback if this
+	// ever silently fails (e.g. workspace context raced mid-flight). Shared between
+	// both places a note can be left from: the Collaborators modal's own "Leave
+	// Note" button, and the grid more-menu's "Move to trash" entry for shared notes
+	// (see leaveSharedNoteFromMenu) — both need the exact same local cleanup once
+	// the server-side revoke has been requested (or queued for offline replay).
+	const finishLeavingSharedNote = React.useCallback((leftNoteAliasId: string) => {
+		// Record this before any editor-close/modal-close below, which on mobile can
+		// trigger an async history.back() — the popstate guard needs this set
+		// populated before that popstate can possibly fire, not after. Plain
+		// synchronous Set mutation, so there's no gap for it to race (see the ref's
+		// own comment for the full picture).
+		recentlyLeftSharedNoteIdsRef.current.add(leftNoteAliasId);
+		// If the left note is the one currently open in the editor — same direct
+		// state-clear shape as the "note became invalid while open" guard effect
+		// elsewhere in this file.
+		if (selectedNoteId === leftNoteAliasId) {
 			setSelectedNoteId(null);
 			setOpenDoc(null);
 			setOpenDocId(null);
 			setNoteImageModalState((current) => current?.noteId === leftNoteAliasId ? null : current);
 			setNoteAttachmentBrowserState((current) => current?.noteId === leftNoteAliasId ? null : current);
 		}
-		closeCollaboratorModal();
 		showBriefDialog(t('share.leftNoteToast'));
-		if (leftNoteAliasId) {
-			void manager.removeNoteReferences([leftNoteAliasId]).catch(() => {
-				// Best-effort — refreshNoteShareState's reconciliation is the fallback.
-			});
-			setUserNoteColorToken(leftNoteAliasId, null);
-		}
-	}, [closeCollaboratorModal, collaboratorModalState, manager, selectedNoteId, showBriefDialog, t]);
+		void manager.removeNoteReferences([leftNoteAliasId]).catch(() => {
+			// Best-effort — refreshNoteShareState's reconciliation is the fallback.
+		});
+		setUserNoteColorToken(leftNoteAliasId, null);
+	}, [manager, selectedNoteId, showBriefDialog, t]);
+
+	const handleCollaboratorSelfRemoved = React.useCallback(() => {
+		const leftNoteAliasId = collaboratorModalState?.noteId ?? null;
+		closeCollaboratorModal();
+		if (leftNoteAliasId) finishLeavingSharedNote(leftNoteAliasId);
+	}, [closeCollaboratorModal, collaboratorModalState, finishLeavingSharedNote]);
+
+	// Grid more-menu entry point for leaving a shared note — labeled "Move to
+	// trash" there (see NoteGrid.tsx's onLeaveSharedNote/onTrash wiring) since a
+	// recipient shouldn't need to know "leave" is the underlying mechanism to get
+	// rid of a note they don't own. Mirrors CollaboratorModal.tsx's own
+	// handleRemove (resolve selfCollaboratorId, revoke, fall back to queuing for
+	// offline replay) without requiring that modal to be open first.
+	const leaveSharedNoteFromMenu = React.useCallback((noteAliasId: string, docId: string) => {
+		if (!authUserId) return;
+		void (async () => {
+			try {
+				const snapshot = await syncNoteShareCollaborators(authUserId, docId, { suppressError: true })
+					.catch(() => null) ?? await readCachedNoteShareCollaborators(authUserId, docId).catch(() => null);
+				const collaboratorId = snapshot?.selfCollaboratorId ?? null;
+				if (!collaboratorId) return;
+				if (!navigator.onLine) {
+					await queueNoteShareCollaboratorRevokeAction({ userId: authUserId, docId, collaboratorId, collaboratorUserId: snapshot?.currentUserId ?? null });
+				} else {
+					try {
+						await revokeNoteShareCollaborator(collaboratorId);
+					} catch (err) {
+						if (!isNetworkUnavailableError(err)) throw err;
+						await queueNoteShareCollaboratorRevokeAction({ userId: authUserId, docId, collaboratorId, collaboratorUserId: snapshot?.currentUserId ?? null });
+					}
+				}
+				finishLeavingSharedNote(noteAliasId);
+			} catch {
+				showBriefDialog(t('share.removeFailed'));
+			}
+		})();
+	}, [authUserId, finishLeavingSharedNote, showBriefDialog, t]);
 
 	const openNoteImageModal = React.useCallback((noteId: string, docId: string, title?: string, noteType?: 'text' | 'checklist' | 'drawing') => {
 		setNoteImageModalState({ noteId, docId, title: title || '', noteType });
@@ -3903,7 +3936,21 @@ export function App(): React.JSX.Element {
 		});
 	}, [applyDevicePreferenceState, persistDevicePrefsLocally]);
 
-	React.useEffect(() => {
+	// useLayoutEffect, not useEffect: authUserId is already known synchronously on
+	// the very first render (seeded from cachedAuth, ~line 1307), but these 4
+	// preference modules all start scoped to "guest" at module load (userId isn't
+	// known at module-evaluation time) and only get re-scoped to the real user
+	// here. A plain useEffect runs after paint, so on every single hard reload
+	// there was a real window where color/pin/banner/heading-collapse reads
+	// (all synchronous localStorage-backed module caches, not async) briefly hit
+	// the wrong-user (guest, effectively empty) scope and rendered with no
+	// preference applied — most visibly a note's color or pinned badge being
+	// briefly wrong. Each scope-setter is itself fully synchronous (a plain
+	// localStorage read + notifyListeners()), so running this in a layout effect
+	// forces the correction (and the re-render it triggers via each module's
+	// useSyncExternalStore subscribers) to happen before the browser paints,
+	// instead of after.
+	React.useLayoutEffect(() => {
 		setUserNoteColorPreferenceScope(authUserId ?? null);
 		setUserNoteBannerPreferenceScope(authUserId ?? null);
 		setUserNotePinPreferenceScope(authUserId ?? null);
@@ -11396,6 +11443,7 @@ export function App(): React.JSX.Element {
 						sortGrouping={activeSortGrouping}
 						refreshCollaboratorsToken={collaborationRefreshToken}
 						maxCardHeightPx={maxCardHeightPx}
+						noteCardFontScale={clampFontScale(noteCardFontScalePref)}
 						noteCardCheckboxInteractions={noteCardCheckboxInteractionsPref}
 						noteCardLinkInteractions={noteCardLinkInteractionsPref}
 						noteCardCompletedInteractions={noteCardCompletedInteractionsPref}
@@ -11414,6 +11462,7 @@ export function App(): React.JSX.Element {
 						onTrashNote={(noteId) => {
 							void onDeleteSelectedNote(noteId);
 						}}
+						onLeaveSharedNote={leaveSharedNoteFromMenu}
 						onMoveToWorkspace={(noteId, title) => openMoveNoteModal(noteId, title)}
 						onExportNote={(noteId) => void exportNote(manager, noteId)}
 						onOpenAttachmentBrowser={openNoteAttachmentBrowser}

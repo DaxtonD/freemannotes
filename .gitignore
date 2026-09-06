@@ -16,6 +16,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 freeman-debug.log
+.npm-start.log
 
 # AI assistant files and settings (not part of the codebase)
 CLAUDE.md

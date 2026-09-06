@@ -988,6 +988,7 @@
     "cardWidth": "Card width",
     "uncheckAll": "Uncheck all",
     "checkAll": "Check all",
+    "removeCompleted": "Remove completed items",
     "narrow": "Narrow",
     "default": "Default",
     "wide": "Wide"

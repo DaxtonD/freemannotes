@@ -110,8 +110,17 @@
 .card {
 	position: relative;
 	border-radius: 18px;
-	border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
-	background: color-mix(in srgb, var(--color-surface-2) 34%, transparent);
+	/* --note-color-* falls back to the plain theme vars wherever this renders
+	   outside a note card (e.g. a standalone links modal) that never sets
+	   them — a genuine no-op there, not just "should be." Rendered INSIDE a
+	   note card (the .rail variant), these inherit the note's own resolved
+	   color scheme instead of hardcoding this app's dark-theme surface colors
+	   regardless of what color the card itself is — which is exactly the bug:
+	   a note recolored to "white" still got a dark-theme grey chip with
+	   dark-theme muted-grey text, both tuned to sit on a dark background,
+	   dropped onto a white card that had nothing to do with either. */
+	border: 1px solid color-mix(in srgb, var(--note-color-border, var(--color-border)) 82%, transparent);
+	background: color-mix(in srgb, var(--note-color-header-bg, var(--color-surface-2)) 34%, transparent);
 	min-width: 0;
 	overflow: hidden;
 }
@@ -156,7 +165,7 @@
 .domain {
 	margin: 0;
 	font-size: 12px;
-	color: var(--color-text-muted);
+	color: var(--note-color-muted, var(--color-text-muted));
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
@@ -166,7 +175,7 @@
 	margin: 0;
 	font-size: 12px;
 	line-height: 1.35;
-	color: var(--color-text-muted);
+	color: var(--note-color-muted, var(--color-text-muted));
 	display: -webkit-box;
 	-webkit-line-clamp: 3;
 	-webkit-box-orient: vertical;
@@ -179,7 +188,7 @@
 	aspect-ratio: 1 / 1;
 	border-radius: 10px;
 	object-fit: cover;
-	background: color-mix(in srgb, var(--color-surface) 50%, var(--color-border) 50%);
+	background: color-mix(in srgb, var(--note-color-card-bg, var(--color-surface)) 50%, var(--note-color-border, var(--color-border)) 50%);
 }
 
 .panel .image,
@@ -194,7 +203,7 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	color: var(--color-text-muted);
+	color: var(--note-color-muted, var(--color-text-muted));
 	font-size: 15px;
 }
 
@@ -244,7 +253,7 @@
 	font-size: 11px;
 	line-height: 1.25;
 	-webkit-line-clamp: 2;
-	color: var(--color-text);
+	color: var(--note-color-text, var(--color-text));
 }
 
 .rail .domain {

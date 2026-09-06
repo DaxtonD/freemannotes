@@ -75,7 +75,7 @@ import {
 	readQueuedNoteImages,
 	readStoredRemoteNoteImages,
 } from '../../core/noteMediaStore';
-import { readDrawingLinkState } from '../../core/noteModel';
+import { readDrawingLinkState, removeCompletedChecklistItems } from '../../core/noteModel';
 import { isReminderOverdue } from '../../core/reminderUrgency';
 import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
@@ -338,6 +338,38 @@ function getChecklistAutocompleteSuggestion(
 		}
 	}
 	return null;
+}
+
+// "Remove all completed items" clutter, take two: rather than waiting for the
+// user to clean up manually, a newly-finished active item that exactly matches
+// an already-completed one (case/whitespace-insensitive — same normalization as
+// autocomplete matching above) reactivates that completed row instead of adding
+// a visible duplicate. Reactivating (not "delete completed, keep the new one")
+// preserves whatever the original completed row was carrying — nested children,
+// a count value, rich formatting — that a freshly-typed row never had. When more
+// than one completed row shares the same text (e.g. "apples" bought in three
+// separate weeks), only the MOST RECENTLY completed one is reactivated; older
+// duplicates are left alone rather than guessing which of several should merge.
+function findMostRecentCompletedChecklistMatch(
+	checklistArray: Y.Array<Y.Map<any>>,
+	text: string,
+	excludeId?: string
+): Y.Map<any> | null {
+	const normalizedTarget = normalizeChecklistAutocompleteText(text);
+	if (!normalizedTarget) return null;
+	let best: Y.Map<any> | null = null;
+	let bestCompletedAt = -Infinity;
+	for (const item of checklistArray.toArray()) {
+		if (!item.get('completed')) continue;
+		if (excludeId && String(item.get('id') ?? '') === excludeId) continue;
+		if (normalizeChecklistAutocompleteText(String(item.get('text') ?? '')) !== normalizedTarget) continue;
+		const completedAt = Number(item.get('completedAt') ?? 0) || 0;
+		if (!best || completedAt > bestCompletedAt) {
+			best = item;
+			bestCompletedAt = completedAt;
+		}
+	}
+	return best;
 }
 
 function materializeChecklistItems(yarray: Y.Array<Y.Map<any>>): readonly ChecklistItem[] {
@@ -2716,6 +2748,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		replaceChecklistItems(normalizedItems.map((item) => (!item.completed ? item : { ...item, completed: false })));
 	}, [normalizedItems, readOnly, replaceChecklistItems, type]);
 
+	const removeCompletedItems = React.useCallback((): void => {
+		if (type !== 'checklist' || readOnly) return;
+		removeCompletedChecklistItems(props.doc);
+	}, [props.doc, readOnly, type]);
+
 	// Keyboard undo/redo for checkbox toggles (Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z)
 	React.useEffect(() => {
 		if (type !== 'checklist' || readOnly) return;
@@ -2916,9 +2953,22 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				const split = splitMinimalRichTextAtSelection(editor);
 				const currentMap = findChecklistItemMapById(checklistArray, rowId);
 				if (currentMap) {
-					currentMap.set('text', split.beforeText);
-					const fragment = ensureChecklistItemRichContent(currentMap);
-					replaceRichFragmentFromJson(fragment, split.before, 'minimal');
+					const matchedCompleted = findMostRecentCompletedChecklistMatch(checklistArray, split.beforeText, rowId);
+					if (matchedCompleted) {
+						const doc = (checklistArray as any).doc as Y.Doc | null | undefined;
+						const mergeIntoCompleted = (): void => {
+							matchedCompleted.set('completed', false);
+							matchedCompleted.set('completedAt', null);
+							const index = checklistArray.toArray().indexOf(currentMap);
+							if (index !== -1) checklistArray.delete(index, 1);
+						};
+						if (doc) doc.transact(mergeIntoCompleted);
+						else mergeIntoCompleted();
+					} else {
+						currentMap.set('text', split.beforeText);
+						const fragment = ensureChecklistItemRichContent(currentMap);
+						replaceRichFragmentFromJson(fragment, split.before, 'minimal');
+					}
 				}
 				const currentItem = items.find((row) => row.id === rowId) ?? null;
 				const currentIndex = items.findIndex((row) => row.id === rowId);
@@ -2945,7 +2995,20 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		const map = findChecklistItemMapById(checklistArray, rowId);
 		if (!map) return;
 		const doc = (checklistArray as any).doc as Y.Doc | null | undefined;
+		// A suggestion can itself come from a completed item's text (see
+		// getChecklistAutocompleteSuggestion's candidate pool). Accepting it is the
+		// same "would create a visible duplicate of a completed item" case
+		// insertChecklistItemAfter handles for manually-typed text — merge into the
+		// existing completed row instead of keeping this one as a separate active row.
+		const matchedCompleted = findMostRecentCompletedChecklistMatch(checklistArray, suggestion, rowId);
 		const apply = (): void => {
+			if (matchedCompleted) {
+				matchedCompleted.set('completed', false);
+				matchedCompleted.set('completedAt', null);
+				const index = checklistArray.toArray().indexOf(map);
+				if (index !== -1) checklistArray.delete(index, 1);
+				return;
+			}
 			map.set('text', suggestion);
 			const fragment = ensureChecklistItemRichContent(map);
 			replaceRichFragmentFromJson(fragment, createRichTextDocFromPlainText(suggestion), 'minimal');
@@ -3249,7 +3312,13 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						</button>
 					</header>
 					{type === 'checklist' ? (
-						<ChecklistProgressBar completed={completedItems.length} total={activeItems.length + completedItems.length} />
+						// key={props.noteId}: this component isn't remounted on note switch
+						// (NoteEditor itself persists across notes) — forcing a fresh
+						// instance per note resets its internal grace-period tracking so a
+						// newly-opened note's initial data-hydration settle never fires the
+						// check/uncheck shot animation (see ChecklistProgressBar's own
+						// mountTimeRef comment).
+						<ChecklistProgressBar key={props.noteId} completed={completedItems.length} total={activeItems.length + completedItems.length} />
 					) : null}
 					<input
 						type="text"
@@ -3585,7 +3654,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</div>
 				) : null}
 				{type === 'checklist' ? (
-					<ChecklistProgressBar completed={completedItems.length} total={activeItems.length + completedItems.length} />
+					// See the other ChecklistProgressBar mount above for why key={props.noteId} is here.
+					<ChecklistProgressBar key={props.noteId} completed={completedItems.length} total={activeItems.length + completedItems.length} />
 				) : null}
 				{type === 'checklist' ? (
 					<textarea
@@ -4285,6 +4355,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
 					uncheckAllChecklistItems();
+				} : undefined}
+				onRemoveCompleted={type === 'checklist' && !readOnly && completedItems.length > 0 ? () => {
+					setIsMoreMenuOpen(false);
+					setMoreMenuAnchorRect(null);
+					removeCompletedItems();
 				} : undefined}
 				onTrash={!readOnly ? () => {
 					setIsMoreMenuOpen(false);

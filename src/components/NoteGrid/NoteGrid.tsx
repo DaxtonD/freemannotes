@@ -37,7 +37,7 @@ import {
 	type NoteShareCollaboratorSnapshot,
 	type SharedNotePlacement,
 } from '../../core/noteShareApi';
-import { readDrawingLinkState, readNoteFromDoc } from '../../core/noteModel';
+import { readDrawingLinkState, readNoteFromDoc, removeCompletedChecklistItems } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import { useConnectionStatus } from '../../core/useConnectionStatus';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
@@ -167,9 +167,23 @@ export type NoteGridProps = {
 	onAddToCollection?: (noteId: string, title?: string) => void;
 	onAddLabels?: (noteId: string, title?: string) => void;
 	onTrashNote?: (noteId: string) => void;
+	// A shared-with-me note has no owned "trash" of its own — revoking your own
+	// access (the same mechanism as CollaboratorModal's "Leave Note") is the
+	// closest equivalent, wired to the more-menu's "Move to trash" entry so a
+	// recipient doesn't need to know that distinction to get rid of a note. See
+	// App.tsx's leaveSharedNoteFromMenu.
+	onLeaveSharedNote?: (noteAliasId: string, docId: string) => void;
 	onSelectCollectionFilter?: (collectionId: string) => void;
 	onToggleLabelFilter?: (labelId: string) => void;
 	maxCardHeightPx: number;
+	// Clamped note-card text-size preference (see App.tsx's clampFontScale). Threaded
+	// through the same path as maxCardHeightPx so NoteCard's checklist line-height
+	// budgeting can react to a *live* preference change — it used to read
+	// --note-card-font-scale directly off the DOM in a mount-only memo, which meant a
+	// live font-size change left the checklist item/height budget computed against the
+	// stale scale until the card happened to remount, clipping the completed-toggle
+	// and URL preview. See noteCardFontScale prop on NoteCard for the actual fix.
+	noteCardFontScale?: number;
 	showTrashed?: boolean;
 	showArchived?: boolean;
 	emptyStateLabel?: string;
@@ -727,6 +741,12 @@ type GridNoteCardProps = {
 	bannerTitlePosition?: NoteCardBannerTitlePosition;
 	isTrashView?: boolean;
 	maxCardHeightPx: number;
+	// The real column width this render is currently using (mobileCardWidthPx on
+	// touch, or the static --note-card-width CSS default on desktop) — see the
+	// `cardWidthPx` local this is passed from, and NoteCardProps.cardWidthPx for
+	// why NoteCard needs it as a prop rather than a DOM read.
+	cardWidthPx: number;
+	noteCardFontScale?: number;
 	isPlaceholder: boolean;
 	initialLinkRecords?: React.ComponentProps<typeof NoteCard>['initialLinkRecords'];
 	preserveControlShell?: boolean;
@@ -1114,6 +1134,8 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					hasPendingSync={props.hasPendingSync}
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
+					cardWidthPx={props.cardWidthPx}
+					noteCardFontScale={props.noteCardFontScale}
 					onOpen={props.onOpen}
 					onAddReminder={props.onAddReminder}
 					onRestoreNote={props.onRestoreNote}
@@ -1460,11 +1482,19 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const seededHeightNoteIdsRef = React.useRef<Set<string>>(new Set());
 
 
-	// Seed height cache on first render from localStorage (before first pack)
+	// Seed height cache on first render from localStorage (before first pack).
+	// Computed inline rather than via the layoutViewportBucket/layoutDensityKey
+	// consts below, since this runs before those are declared and this block
+	// only ever executes once per mount anyway (heightCacheLoadedRef guard) —
+	// no benefit to memoizing a one-shot read. Must match noteHeightCacheFingerprint
+	// used by the debounced save effect below exactly, or every load is a miss.
 	if (!heightCacheLoadedRef.current) {
 		heightCacheLoadedRef.current = true;
 		if (props.deviceId) {
-			const cached = loadNoteHeightCache(props.deviceId);
+			const fingerprint = typeof window !== 'undefined'
+				? `${getLayoutViewportBucket(window.innerWidth, window.innerHeight)}:${getLayoutDeviceType(window.innerWidth)}:${props.layoutDensityKey || 'default'}`
+				: '';
+			const cached = loadNoteHeightCache(props.deviceId, fingerprint);
 			for (const [k, v] of cached) {
 				noteHeightByIdRef.current.set(k, v);
 				seededHeightNoteIdsRef.current.add(k);
@@ -1915,9 +1945,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (heightSaveTimerRef.current) {
 			window.clearTimeout(heightSaveTimerRef.current);
 		}
+		// Must match the fingerprint formula in the mount-time load above exactly.
+		const fingerprint = `${layoutViewportBucket}:${layoutDeviceType}:${layoutDensityKey}`;
 		heightSaveTimerRef.current = window.setTimeout(() => {
 			heightSaveTimerRef.current = 0;
-			saveNoteHeightCache(props.deviceId!, noteHeightByIdRef.current);
+			saveNoteHeightCache(props.deviceId!, fingerprint, noteHeightByIdRef.current);
 		}, 250);
 		return () => {
 			if (heightSaveTimerRef.current) {
@@ -1925,7 +1957,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				heightSaveTimerRef.current = 0;
 			}
 		};
-	}, [initialLayoutSettled, noteHeightsVersion, props.deviceId]);
+	}, [initialLayoutSettled, layoutDensityKey, layoutDeviceType, layoutViewportBucket, noteHeightsVersion, props.deviceId]);
 
 	const handleMeasuredCardHeight = React.useCallback((noteId: string, height: number): void => {
 		if (!isGridVisible) return;
@@ -2197,15 +2229,37 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			}
 			const note = readNoteFromDoc(doc, id);
 			const placement = sharedPlacementByAlias.get(id) ?? null;
-			const docId = placement?.roomId || workspaceRenderSnapshotNoteById.get(id)?.docId || resolveMediaDocId(id);
+			const snapshotNoteForFallback = workspaceRenderSnapshotNoteById.get(id);
+			const docId = placement?.roomId || snapshotNoteForFallback?.docId || resolveMediaDocId(id);
+			// Same race renderNoteMetaChips already guards against (see its comment
+			// above): a shared note's collectionId/labelIds/reminderAt live on the
+			// server-side placement row, not this note's own Yjs metadata, and
+			// args.sharedPlacement/placement only resolves once the async placements
+			// fetch lands. Without this fallback, a refresh or WS reconnect briefly
+			// has placement=null here too, and — since this memo feeds List View's
+			// chips and pin-tier ordering, not just Card view — the exact same
+			// disappearing-chip bug that was fixed for renderNoteMetaChips was still
+			// reachable through this second, shared code path. Reminder is worse than
+			// just "wrong for a beat": this value also feeds the persisted snapshot
+			// write below, so the race could silently overwrite a previously-good
+			// cached reminderAt with null, not just misdisplay it live.
+			const isSharedPlacementNote = id.startsWith('shared-placement:');
 			return {
 				id,
 				title: note.title,
 				createdAt: note.createdAt,
 				updatedAt: note.updatedAt,
-				collectionId: placement ? placement.collectionId : note.collectionId,
-				labelIds: placement ? placement.labelIds : note.labelIds,
-				reminderAt: resolveNoteReminderAt(props.noteReminderByDocId, docId, id),
+				collectionId: placement
+					? placement.collectionId
+					: isSharedPlacementNote
+						? (snapshotNoteForFallback?.collectionId ?? null)
+						: note.collectionId,
+				labelIds: placement
+					? placement.labelIds
+					: isSharedPlacementNote
+						? (snapshotNoteForFallback?.labelIds ?? [])
+						: note.labelIds,
+				reminderAt: resolveNoteReminderAt(props.noteReminderByDocId, docId, id, snapshotNoteForFallback?.reminderAt ?? null),
 				isPinned: resolveUserNotePinned({
 					docId: docId || id,
 					noteId: id,
@@ -2622,7 +2676,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					// persist docId: '', overwriting a previously-good cached value with an
 					// empty one instead of just leaving it alone.
 					const docId = placement?.roomId || previousSnapshot?.docId || resolveMediaDocId(id);
-					const reminderAt = resolveNoteReminderAt(props.noteReminderByDocId, docId, id);
+					// Same reasoning as docId/sharedCollectionId/sharedLabelIds in this same
+					// function: without the snapshot fallback, a write racing ahead of the
+					// reminders fetch would persist reminderAt: null, silently clobbering a
+					// previously-good cached reminder instead of just leaving it alone.
+					const reminderAt = resolveNoteReminderAt(props.noteReminderByDocId, docId, id, previousSnapshot?.reminderAt ?? null);
 					const previewLinks = extractNoteLinksFromDoc(liveDoc);
 					const cachedPreviewCards = toWorkspaceRenderSnapshotPreviewCards(getCachedRemoteNoteLinks(docId));
 					return buildWorkspaceRenderSnapshotNote({
@@ -3595,20 +3653,38 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, [dragManager.isTouchDragging, unlockTouchSelection]);
 
-	// When the max-card-height preference changes, all previously measured heights
-	// are stale (the CSS cap has moved). Clear the in-memory cache so the next
-	// layout pass re-measures at the new cap instead of using the old values.
+	// When the max-card-height preference changes, previously measured heights can
+	// go stale in TWO different directions, and they need different handling:
+	//   - Cap went DOWN: any cached height taller than the new cap is definitely
+	//     wrong now (it can't render that tall anymore) — clamp it immediately so
+	//     packing doesn't reserve space for a size the card can no longer be.
+	//   - Cap went UP: a cached height sitting exactly at the OLD cap was most
+	//     likely clamped there, not genuinely that height — but nothing about
+	//     raising a ceiling causes an already-mounted card to resize, so its
+	//     ResizeObserver never fires and that stale-short value would otherwise
+	//     sit there forever. Drop just those entries so the next layout pass
+	//     re-measures them against the new, taller cap.
 	// Skip the initial mount so we don't wipe heights seeded from localStorage.
+	// Deliberately NOT clearing the whole cache either direction: that would force
+	// an immediate fallback-estimate pack that can re-freeze the old layout before
+	// live ResizeObserver measurements arrive — only entries that are actually
+	// suspect (per the two rules above) get touched.
 	const maxCardHeightPxInitializedRef = React.useRef(false);
+	const prevMaxCardHeightPxRef = React.useRef(props.maxCardHeightPx);
 	React.useEffect(() => {
 		if (!maxCardHeightPxInitializedRef.current) {
 			maxCardHeightPxInitializedRef.current = true;
+			prevMaxCardHeightPxRef.current = props.maxCardHeightPx;
 			return;
 		}
-		// Keep the measured cache, but clamp it to the new cap. Clearing every
-		// height forces an immediate fallback-estimate pack that can re-freeze the
-		// old layout before live ResizeObserver measurements arrive.
+		const previousMaxCardHeightPx = prevMaxCardHeightPxRef.current;
+		prevMaxCardHeightPxRef.current = props.maxCardHeightPx;
+		const capIncreased = props.maxCardHeightPx > previousMaxCardHeightPx;
 		for (const [noteId, measuredHeight] of noteHeightByIdRef.current) {
+			if (capIncreased && measuredHeight >= previousMaxCardHeightPx) {
+				noteHeightByIdRef.current.delete(noteId);
+				continue;
+			}
 			noteHeightByIdRef.current.set(noteId, Math.min(measuredHeight, props.maxCardHeightPx));
 		}
 		repackReasonRef.current = 'max-card-height-change';
@@ -3985,6 +4061,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			lastRepackReason: repackReasonRef.current,
 		});
 	});
+	// The real column width this render is currently using — same fallback chain
+	// getGridLayoutForViewport itself resolves to (mobileCardWidthPx on touch,
+	// else the static --note-card-width CSS default). Recomputed inline each
+	// render (matching this file's existing style at e.g. the columnWidth local
+	// a few hundred lines below) rather than memoized, since it's only read here
+	// and needs to land in renderGridCard's own deps below so a mobile resize
+	// gives freshly-mounting cards the new width instead of a stale closure.
+	const cardWidthPx = mobileCardWidthPx ?? readCssPxVariable('--note-card-width', 280);
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
@@ -4117,7 +4201,18 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				bannerTitlePosition={props.noteCardBannerTitlePosition}
 				suppressContentInteractions={isChipInteractionGuardActive}
 				onAddReminder={props.onAddReminder ? () => props.onAddReminder?.(note.id, docId, doc.getText('title').toString()) : undefined}
-				onRestoreNote={isTrashView ? () => { void manager.restoreNote(note.id); } : undefined}
+				// Caught this one because the user asked "did we consider the restore
+				// case?" while we were mid-implementation of shared-note trash below —
+				// good catch, we hadn't. A shared note's trashed flag lives on the
+				// OWNER's own Yjs doc (shared CRDT state, not per-user), so if the owner
+				// trashes it, it can sync straight into a recipient's OWN trash view too.
+				// Without this guard, a recipient could sit there and hit Restore on a
+				// note they don't own, un-trashing it out from under the owner without
+				// the owner doing anything. Restoring is deliberately excluded here — it
+				// was never this recipient's note to restore in the first place. Trashing
+				// a shared note goes through the "leave" flow instead (see onTrash in the
+				// more-menu below), never this.
+				onRestoreNote={isTrashView && !note.isShared ? () => { void manager.restoreNote(note.id); } : undefined}
 				onAddCollaborator={props.onAddCollaborator ? () => props.onAddCollaborator?.(note.id, doc.getText('title').toString()) : undefined}
 				onAddImage={props.onAddImage ? () => {
 					if (!docId) return;
@@ -4132,6 +4227,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					setMoreMenuNoteId(note.id);
 				}}
 				maxCardHeightPx={props.maxCardHeightPx}
+				cardWidthPx={cardWidthPx}
+				noteCardFontScale={props.noteCardFontScale}
 				isPlaceholder={isPlaceholder}
 				isOverlayActiveCard={overlayActiveNoteId === note.id}
 				layoutReady={cardPositionAnimationsReady}
@@ -4143,7 +4240,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				loadDrawingDoc={props.loadDrawingDoc ? (drawingId) => props.loadDrawingDoc!(note.id, drawingId) : undefined}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, cardWidthPx, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -4454,7 +4551,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 											setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
 											setMoreMenuNoteId(noteId);
 										}}
+										// See the grid-card render's own onRestoreNote comment: a shared
+										// note's trashed flag is the owner's, not this recipient's to restore.
 										onRestoreNote={isTrashView ? (noteId) => {
+											if (noteById.get(noteId)?.isShared) return;
 											void manager.restoreNote(noteId);
 										} : undefined}
 									/>
@@ -4500,7 +4600,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									setMoreMenuAnchorRect(rect ? { top: rect.top, left: rect.left, width: rect.width, height: rect.height } : null);
 									setMoreMenuNoteId(noteId);
 								}}
+								// See the grid-card render's own onRestoreNote comment: a shared
+								// note's trashed flag is the owner's, not this recipient's to restore.
 								onRestoreNote={isTrashView ? (noteId) => {
+									if (noteById.get(noteId)?.isShared) return;
 									void manager.restoreNote(noteId);
 								} : undefined}
 							/>
@@ -4844,6 +4947,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						if (!moreMenuCanEdit) return;
 						setChecklistCompletedState(moreMenuDoc, false);
 					} : undefined}
+					onRemoveCompleted={(moreMenuCanEdit || isTrashView) ? () => {
+						if (!moreMenuCanEdit) return;
+						if (!moreMenuDoc) return;
+						removeCompletedChecklistItems(moreMenuDoc);
+					} : undefined}
 					onAddCollaborator={props.onAddCollaborator && (moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;
 						// The more-menu now routes share/collaboration actions through the
@@ -4926,9 +5034,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						setMoreMenuAnchorRect(null);
 						props.onExportNote?.(noteId);
 					} : undefined}
-					onTrash={sharedNoteIdSet.has(moreMenuNoteId) ? undefined : () => {
-						// Shared aliases are projections of another workspace's document, so the
-						// receiver can remove access but cannot locally trash the source note.
+					onTrash={sharedNoteIdSet.has(moreMenuNoteId) ? (
+						// Shared aliases are projections of another workspace's document — a
+						// recipient can't locally trash the source note, only leave it (see
+						// onLeaveSharedNote). If this alias is showing up in trash view at all,
+						// that's the OWNER's own trashed flag synced through the shared doc, not
+						// this recipient's to restore — hide the entry entirely rather than
+						// offering a "Restore" that isn't really this user's to make.
+						isTrashView || !props.onLeaveSharedNote ? undefined : () => {
+							const noteId = moreMenuNoteId;
+							setMoreMenuNoteId(null);
+							setMoreMenuAnchorRect(null);
+							if (moreMenuDocId) props.onLeaveSharedNote?.(noteId, moreMenuDocId);
+						}
+					) : () => {
 						const noteId = moreMenuNoteId;
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
