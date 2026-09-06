@@ -25,6 +25,14 @@
  * fingerprinting would be strictly more code for no practical benefit here:
  * a fingerprint change means EVERY card's real height changed, not some).
  *
+ * The caller's fingerprint alone missed the actual most common way a cached
+ * height goes wrong: the CODE that computed it changing out from under it,
+ * with the user's viewport/density prefs never touched at all. Every one of
+ * this project's own height-related fixes falls into that bucket, and none of
+ * them used to invalidate anything here — this module has APP_VERSION folded
+ * into the effective fingerprint specifically so a real release, not just a
+ * preference change, also counts as "this number needs re-measuring."
+ *
  * The cache is written once per session (debounced) after real heights are
  * measured from the DOM. On the next page load / workspace switch, heights
  * are seeded from the cache so skeleton cards render at the correct size.
@@ -32,6 +40,20 @@
 
 const VERSION = 4;
 const PREFIX = 'freemannotes.noteHeights';
+// Folded into the caller's own fingerprint (viewport/density/etc.) below, not a
+// separate check — real-world case that exposed why this was needed: a note
+// created months ago on production, never touched again since, still had a
+// height cached from whatever layout code existed the day it was measured.
+// Every fix that ever changed a real card's height (there have been a lot,
+// see CHANGELOG) left every pre-existing cache entry stale with nothing to
+// detect it — the fingerprint only ever caught a viewport/density change, not
+// "the code computing this number is different now." A build with a long note
+// history and infrequent resets (production) accumulates these silently for
+// months; a dev environment that gets reset often barely has time to notice.
+// Tying the fingerprint to the app's own version means every release
+// invalidates every previously-cached height for everyone, automatically, the
+// same day it ships — no dev-tools button to remember to click.
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 type HeightCacheV1 = {
 	v: 4;
@@ -48,6 +70,7 @@ type HeightCacheV1 = {
  */
 export function loadNoteHeightCache(deviceId: string, fingerprint: string): Map<string, number> {
 	if (typeof window === 'undefined' || !deviceId) return new Map();
+	const effectiveFingerprint = `${fingerprint}:${APP_VERSION}`;
 	try {
 		const raw = window.localStorage.getItem(`${PREFIX}.${deviceId}`);
 		if (!raw) return new Map();
@@ -56,7 +79,7 @@ export function loadNoteHeightCache(deviceId: string, fingerprint: string): Map<
 			typeof parsed !== 'object' ||
 			parsed === null ||
 			(parsed as { v?: unknown }).v !== VERSION ||
-			(parsed as { fingerprint?: unknown }).fingerprint !== fingerprint
+			(parsed as { fingerprint?: unknown }).fingerprint !== effectiveFingerprint
 		) {
 			return new Map();
 		}
@@ -83,7 +106,7 @@ export function saveNoteHeightCache(deviceId: string, fingerprint: string, heigh
 	try {
 		const obj: Record<string, number> = {};
 		for (const [k, v] of heights) obj[k] = v;
-		const payload: HeightCacheV1 = { v: VERSION, fingerprint, heights: obj };
+		const payload: HeightCacheV1 = { v: VERSION, fingerprint: `${fingerprint}:${APP_VERSION}`, heights: obj };
 		window.localStorage.setItem(`${PREFIX}.${deviceId}`, JSON.stringify(payload));
 	} catch {
 		// localStorage may be full or blocked — height caching is best-effort

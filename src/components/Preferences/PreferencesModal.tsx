@@ -3,6 +3,7 @@ import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { fetchAboutHudStats, type AboutHudStatsResponse, devClearAllNotifications, devClearInbox } from '../../core/noteManagementApi';
 import { readPwaDebugLog, clearPwaDebugLog, getPwaDebugEnabled, setPwaDebugEnabled } from '../../core/pwa';
+import { NOTE_GRID_LAYOUT_CACHE_KEY_PREFIX } from '../../core/noteGridLayoutCache';
 import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { clearAllPendingSelfMentions } from '../../core/pendingSelfMentions';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
@@ -242,9 +243,20 @@ function AboutSectionContent(props: {
 	// previews and other dynamic-content changes).
 	const handleRemeasureCardHeights = React.useCallback(() => {
 		if (devToolsRunning) return;
-		const key = `freemannotes.noteHeights.${props.deviceId}`;
+		// Two completely separate caches feed a card's height on load, and this
+		// button used to only clear one of them (noteHeightCache.ts) — the other
+		// (noteGridLayoutCache.ts, a per-workspace/view/device/density/viewport
+		// snapshot of every note's rect) sat there fully intact, still seeding
+		// whatever it had cached under the CSS/layout code from whenever it was
+		// last written. That's exactly why clicking this never actually fixed a
+		// long-lived account's resize-on-reopen/shift-while-scrolling reports —
+		// it fixed half the bug. Now clears every scope this second cache could
+		// possibly be holding, not just the one currently active.
 		try {
-			window.localStorage.removeItem(key);
+			window.localStorage.removeItem(`freemannotes.noteHeights.${props.deviceId}`);
+			for (const key of Object.keys(window.localStorage)) {
+				if (key.startsWith(NOTE_GRID_LAYOUT_CACHE_KEY_PREFIX)) window.localStorage.removeItem(key);
+			}
 		} catch {
 			// localStorage blocked — proceed with reload anyway
 		}

@@ -3,6 +3,16 @@ import type { ViewMode } from './viewMode';
 // Lightweight localStorage snapshot of the last measured masonry layout for a
 // workspace/view/device bucket. Used only as a startup hint until live DOM
 // measurements replace it.
+//
+// This is the OTHER cache that seeds a note card's height on load — the
+// PreferencesModal "Remeasure all card heights" dev-tools button used to only
+// clear noteHeightCache.ts (a different file) and had absolutely no effect on
+// this one, which is exactly why it never actually fixed the reported "cards
+// resize on reopen / shift while scrolling" bug: half the seed data was still
+// sitting there, stale, from whatever layout code existed the day each entry
+// was written. appVersion below fixes that at the root instead of relying on
+// someone remembering to click a button that didn't even work — every real
+// release invalidates every previously-cached rect automatically.
 export type NoteGridLayoutRect = {
 	noteId: string;
 	x: number;
@@ -13,6 +23,7 @@ export type NoteGridLayoutRect = {
 
 export type NoteGridLayoutSnapshot = {
 	v: 1;
+	appVersion: string;
 	workspaceId: string;
 	viewMode: ViewMode;
 	deviceType: 'mobile' | 'desktop';
@@ -34,7 +45,14 @@ export type NoteGridLayoutCacheScope = {
 };
 
 const VERSION = 1;
-const KEY_PREFIX = 'layout:';
+// Exported so anything that needs to nuke every scope's snapshot at once (the
+// "Remeasure all card heights" dev-tools button, which used to only clear the
+// OTHER height cache and leave every one of these sitting there stale) can
+// find every key belonging to this cache without hardcoding the prefix a
+// second place and risking it drifting out of sync with this one.
+export const NOTE_GRID_LAYOUT_CACHE_KEY_PREFIX = 'layout:';
+const KEY_PREFIX = NOTE_GRID_LAYOUT_CACHE_KEY_PREFIX;
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 
 export function getLayoutDeviceType(viewportWidth: number): 'mobile' | 'desktop' {
 	// Prefer UA hints when available, but keep a viewport-width fallback for older
@@ -62,9 +80,14 @@ export function readNoteGridLayoutSnapshot(scope: NoteGridLayoutCacheScope): Not
 		if (!raw) return null;
 		const parsed = JSON.parse(raw) as Partial<NoteGridLayoutSnapshot> | null;
 		if (!parsed || parsed.v !== VERSION) return null;
+		// Same "treat as fully absent, not partially trusted" rule noteHeightCache.ts
+		// uses for its own fingerprint — a snapshot saved under an older app version
+		// almost certainly has rects sized by code that no longer exists.
+		if (parsed.appVersion !== APP_VERSION) return null;
 		if (!Array.isArray(parsed.orderedIds)) return null;
 		return {
 			v: 1,
+			appVersion: APP_VERSION,
 			workspaceId: String(parsed.workspaceId || ''),
 			viewMode: String(parsed.viewMode || 'card') as ViewMode,
 			deviceType: parsed.deviceType === 'mobile' ? 'mobile' : 'desktop',
@@ -93,13 +116,14 @@ export function readNoteGridLayoutSnapshot(scope: NoteGridLayoutCacheScope): Not
 	}
 }
 
-export function writeNoteGridLayoutSnapshot(scope: NoteGridLayoutCacheScope, snapshot: Omit<NoteGridLayoutSnapshot, 'v' | 'workspaceId' | 'viewMode' | 'deviceType' | 'density' | 'viewportBucket' | 'savedAt'>): void {
+export function writeNoteGridLayoutSnapshot(scope: NoteGridLayoutCacheScope, snapshot: Omit<NoteGridLayoutSnapshot, 'v' | 'appVersion' | 'workspaceId' | 'viewMode' | 'deviceType' | 'density' | 'viewportBucket' | 'savedAt'>): void {
 	if (typeof window === 'undefined' || !scope.workspaceId) return;
 	try {
 		// Round persisted rects so tiny subpixel differences do not create needless
 		// cache churn across repeated measurements of the same settled layout.
 		const payload: NoteGridLayoutSnapshot = {
 			v: 1,
+			appVersion: APP_VERSION,
 			workspaceId: scope.workspaceId,
 			viewMode: scope.viewMode,
 			deviceType: scope.deviceType,

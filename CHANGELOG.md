@@ -4,6 +4,14 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.11.0 - 2026-09-06
+
+Same-day follow-up to 1.10.0: a production-only report ("cards resize when reopening the app, and shift constantly while scrolling") that never showed up in testing, because testing resets its database often and production doesn't. Turned out to be exactly the kind of bug that hides from you on purpose.
+
+### Fixed
+- **A production account with a long note history could see cards resize on reopen and visibly shift around while scrolling fast — completely absent on a database that gets reset regularly, which is the only reason this took this long to notice.** Two separate local caches feed a card's height before it's ever measured for real, and the existing "Remeasure all card heights" dev-tools button only ever cleared one of them. The other — a per-workspace/view/device snapshot that also stores card height — was never touched by that button, so it just kept quietly reseeding whatever number it last saved, sometimes from months and several releases ago, no matter how many times you clicked "fix this." Neither cache had any idea a new release could be the reason a cached number was wrong; only a viewport or preference change ever invalidated anything. Both now carry the app's own version, so shipping a release invalidates every previously-cached height for everyone automatically — not just the one account that happens to click a button. Also fixed the button itself, since it's still there and should actually work now.
+- Nearly went a much worse route on this one: the initial theory was "reset the production database." It wasn't a database problem — it was sitting entirely in the browser's own local storage, and wiping the database would have thrown away real content for a bug that lives nowhere near it.
+
 ## 1.10.0 - 2026-09-06
 
 The note card height/layout thread from 1.9.1's Known Issues finally got the full audit it needed instead of another patch on top of a patch — both open issues from that list are closed out below. Also: shared notes can finally be thrown in the trash like a normal person would expect, checklists can clear their own completed-item graveyard in one click, and a few animations that were technically firing exactly as coded were, once again, doing something nobody asked for.
