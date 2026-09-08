@@ -18,27 +18,10 @@ type VirtualizedNoteColumnItemProps = {
 	index: number;
 	virtualizer: Virtualizer<Window, HTMLDivElement>;
 	onItemHeightChange: (noteId: string, height: number) => void;
-	estimatedHeight: number;
 	children: React.ReactNode;
 };
 
 const MIN_ITEMS_BEFORE_VIRTUALIZING = 18;
-
-// Height settle gate. Instrumented capture (card-diag, 2026-09-07) proved the ONLY
-// cards in the grid that report an unstable height are checklist cards: they render
-// ~230px too tall for ~90ms on every (re)mount, then correct. Virtualization keeps
-// remounting such a card whenever it sits at the render-window boundary, so that
-// single transient becomes a self-sustaining repack storm — and because a height
-// change re-renders the WHOLE grid, it shoves every card in BOTH columns, not just
-// the offender's. 40 of 43 real cards (all text/drawing/media + trivial checklists)
-// measured a perfectly stable height and were pure victims. So: never report a card's
-// height (to the virtualizer or the grid) until it has held steady for a beat. The
-// bad value is transient; the good value is stable; a settle window filters exactly
-// that shape. HEIGHT_SETTLE_MS must comfortably exceed the ~90ms correction.
-const HEIGHT_SETTLE_MS = 150;
-// A sub-pixel wobble (e.g. 179.5 rounding to 180 then 181) is noise, never worth a
-// grid-wide repack.
-const HEIGHT_HYSTERESIS_PX = 2;
 
 // Escape hatch so we can reproduce production's virtualization behavior on a dev
 // server without seeding 40+ notes by hand. Prod only windows a column once it
@@ -100,61 +83,37 @@ const VirtualizedNoteColumnItem = React.memo(function VirtualizedNoteColumnItem(
 	props: VirtualizedNoteColumnItemProps
 ): React.JSX.Element {
 	const nodeRef = React.useRef<HTMLDivElement | null>(null);
-	// Seed with the grid's warm estimate for this note, captured once at mount. This
-	// is what breaks the remount loop: a card that remounts at its already-known
-	// height matches the seed, so its ~90ms mount transient never clears hysteresis,
-	// never commits, and the card stops flipping across the window boundary. A stable
-	// card (the overwhelming majority) also matches its estimate, so nothing waits on
-	// it either — the gate only ever delays a genuine, sustained height change.
-	const lastPropagatedHeightRef = React.useRef<number>(Math.round(props.estimatedHeight) || 0);
-	const settleTimerRef = React.useRef<number>(0);
 
-	const handleRef = React.useCallback((node: HTMLDivElement | null) => {
-		nodeRef.current = node;
-	}, []);
-
-	React.useLayoutEffect(() => {
-		const node = nodeRef.current;
-		if (!node || typeof ResizeObserver === 'undefined' || typeof window === 'undefined') return;
-
-		const propagate = (height: number): void => {
-			lastPropagatedHeightRef.current = height;
+	const handleRef = React.useCallback(
+		(node: HTMLDivElement | null) => {
+			nodeRef.current = node;
+			if (!node) return;
 			props.virtualizer.measureElement(node);
+			const height = Math.round(node.getBoundingClientRect().height);
 			if (height > 0) {
 				props.onItemHeightChange(props.noteId, height);
 			}
-		};
+		},
+		[props.noteId, props.onItemHeightChange, props.virtualizer]
+	);
 
-		const scheduleSettle = (height: number): void => {
-			recordHeadingCollapseDebug('resizeObserver', { noteId: props.noteId, height, surface: 'virtual-column-item' });
-			// Ignore sub-threshold wobble outright — it never earns a repack.
-			if (Math.abs(height - lastPropagatedHeightRef.current) <= HEIGHT_HYSTERESIS_PX) return;
-			// A real change: wait for it to stop changing. Each new measurement resets
-			// the timer, so an oscillating card (new value every ~90ms) never fires it
-			// until it finally settles — at which point we commit the settled value once.
-			if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
-			settleTimerRef.current = window.setTimeout(() => {
-				settleTimerRef.current = 0;
-				const settled = Math.round(node.getBoundingClientRect().height);
-				if (settled <= 0) return;
-				if (Math.abs(settled - lastPropagatedHeightRef.current) <= HEIGHT_HYSTERESIS_PX) return;
-				propagate(settled);
-			}, HEIGHT_SETTLE_MS);
-		};
+	React.useLayoutEffect(() => {
+		const node = nodeRef.current;
+		if (!node || typeof ResizeObserver === 'undefined') return;
 
 		const observer = new ResizeObserver((entries) => {
 			const entry = entries[0];
 			const height = Math.round(entry?.contentRect.height ?? node.getBoundingClientRect().height);
-			if (height > 0) scheduleSettle(height);
+			recordHeadingCollapseDebug('resizeObserver', { noteId: props.noteId, height, surface: 'virtual-column-item' });
+			if (height > 0) {
+				props.onItemHeightChange(props.noteId, height);
+			}
+			props.virtualizer.measureElement(node);
 		});
 
 		observer.observe(node);
 		return () => {
 			observer.disconnect();
-			if (settleTimerRef.current) {
-				window.clearTimeout(settleTimerRef.current);
-				settleTimerRef.current = 0;
-			}
 		};
 	}, [props.noteId, props.onItemHeightChange, props.virtualizer]);
 
@@ -276,7 +235,6 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 						index={item.index}
 						virtualizer={virtualizer}
 						onItemHeightChange={props.onItemHeightChange}
-						estimatedHeight={props.estimateSize(item.noteId)}
 					>
 						{props.renderItem(item.noteId)}
 					</VirtualizedNoteColumnItem>

@@ -4,6 +4,17 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.11.2 - 2026-09-07
+
+Reverts 1.11.1's grid fix, which was worse than the problem it solved. Same-day rollback.
+
+### Fixed
+- **Rolled back the "settle gate" from 1.11.1.** The idea was to stop reporting a card's height to the layout until it stopped changing, to starve the oscillation of the rapid updates feeding it. It worked on paper and broke virtualization in practice: deferring each card's measurement meant the virtualizer never had real sizes to lay out with, so columns rendered at estimated heights and only crept toward correct after scrolling the whole grid top-to-bottom several times — and drag-and-drop, which reads those same measurements, fell apart completely (invisible drag ghost, every column jumping to the wrong height the instant a card was picked up, and not recovering after drop). You can't quietly withhold measurements from a measurement-driven layout engine; that was the wrong layer to touch. Back to 1.11.0's grid behavior now.
+- The upside kept from 1.11.1: the `?forceVirtualization=1` dev flag and the local Docker run scripts are unaffected and stay — those are what let us catch this class of bug in the first place.
+
+### Known Issues
+- The note-grid oscillation described in 1.11.1 (cards shifting while scrolling on a large, virtualized grid, and settling into an up-and-down "dance" at the wrong stopping point) is unfixed again, deliberately, after the 1.11.1 attempt made things worse. The root cause is understood — checklist cards render ~230px too tall for ~90ms on every mount, then correct, and virtualization remounting turns that transient into a loop — but the fix has to stabilize the card's own render, not gate the grid's measurements. That's the next attempt. A broken drag is not a trade worth making for a cosmetic settling issue on big grids.
+
 ## 1.11.1 - 2026-09-07
 
 The note grid oscillation, finally cornered with data instead of theories. On a production-sized grid (dev never had enough notes to trigger it), cards in both columns would drift up and down while scrolling, and if you stopped at just the wrong spot they'd settle into a rapid, hypnotic up-and-down *dance* that only stopped when it felt like it. This one took building actual tooling to see, and one wrong turn we backed out of first.
