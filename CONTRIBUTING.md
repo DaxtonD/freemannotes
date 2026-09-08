@@ -10,6 +10,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
 - [Local Setup](#local-setup)
 - [Running the App](#running-the-app)
   - [Banner Artwork](#banner-artwork)
+- [Running in Docker](#running-in-docker)
 - [Environment Configuration](#environment-configuration)
   - [Server config (`.env`)](#server-config-env)
   - [Client build config (`env.vite/`)](#client-build-config-envvite)
@@ -148,6 +149,72 @@ If a banner appears unchanged after updating the SVGs, refresh the app or clear 
 
 ---
 
+## Running in Docker
+
+Sometimes you want to run the app **as a container** — the same way it runs in production — rather than through `npm`. The most common reason: reproducing a bug that only shows up in a production build (grid virtualization, service-worker/PWA behavior), or getting true prod parity by pointing at real data.
+
+This repo ships two ways to do that:
+
+| File | What it starts | When to use |
+|---|---|---|
+| `docker-compose.yml` | The **full stack** — app **plus** its own PostgreSQL and Redis containers. | You want a completely self-contained instance and don't already have a database. Run: `docker compose up -d --build`. |
+| `docker-compose.local.yml` + the `run-docker` scripts | **Only the app**, pointed at Postgres/Redis you already run elsewhere (e.g. Unraid containers). | You already have a database/cache (dev or prod) and just want to plug in its IP. |
+
+The rest of this section covers the second case — the app container against your **existing** Postgres/Redis.
+
+### Quick start
+
+There's a wrapper script per platform so you don't retype the build/run command every time. From the repo root:
+
+**Windows (PowerShell):**
+```powershell
+.\scripts\run-docker.ps1
+```
+
+**Linux / macOS:**
+```bash
+./scripts/run-docker.sh
+```
+
+**First run** copies `.env.docker.example` → `.env.docker` and stops, asking you to fill in your connection details. Edit `.env.docker` and set at least:
+
+```dotenv
+# Your existing Postgres (e.g. an Unraid container) — IP/host, port, db, credentials:
+DATABASE_URL=postgresql://USER:PASS@POSTGRES_IP:5432/DBNAME?schema=public
+
+# Your existing Redis (optional but recommended). Leave empty to run without it:
+REDIS_URL=redis://REDIS_IP:6379          # or redis://:PASSWORD@REDIS_IP:6379
+
+# Any value works locally — you'll just log in fresh on localhost:
+AUTH_JWT_SECRET=local-testing-secret
+```
+
+**Run the script again** and it builds the image **from your current working tree** (so uncommitted changes and dev flags are included) and starts the container at **http://localhost:27015**.
+
+### Script subcommands
+
+| Windows | Linux / macOS | Action |
+|---|---|---|
+| `.\scripts\run-docker.ps1` | `./scripts/run-docker.sh` | Build from current code and start (default). |
+| `.\scripts\run-docker.ps1 -Logs` | `./scripts/run-docker.sh logs` | Follow the container logs. |
+| `.\scripts\run-docker.ps1 -Down` | `./scripts/run-docker.sh down` | Stop and remove the container. |
+
+Both scripts `cd` to the repo root themselves, so they work from any directory. Under the hood they just run `docker compose -f docker-compose.local.yml --env-file .env.docker up -d --build`, so you can run that directly too if you prefer.
+
+### Data: which database do I point at?
+
+- **A dev / throwaway database** is the safe default. The container runs `prisma migrate deploy` on boot, which only *applies committed migrations* and never drops data — but a dev DB removes any doubt.
+- **Your production database** gives the truest bug repro (real notes, real volume), but remember the container is a **real client**: notes you create/edit/delete while testing hit that database for real. If you point at prod, either accept that, or set `DB_SCHEMA_SYNC=none` in `.env.docker` so the container never even attempts a migration on boot.
+- **Uploaded images won't render** when pointed at a remote database: the image *metadata* is in the DB, but the actual files live on that server's uploads volume, not your machine. Harmless for layout/grid debugging — just don't be alarmed by broken thumbnails.
+
+### Notes
+
+- `.env.docker` is **git-ignored** — it holds your IPs and secrets. The `.env.docker.example` template stays in version control.
+- This runs a real **production build** (`NODE_ENV=production`, minified client, active service worker), so it matches your deployed instance far more closely than `npm run dev`. To iterate on UI with hot-reload, `npm run dev` is still the faster loop; use Docker when you specifically need production behavior.
+- After code changes, just run the script again — it rebuilds. (Docker layer caching keeps rebuilds reasonably quick.)
+
+---
+
 ## Environment Configuration
 
 Freeman Notes has two separate env config files that serve different purposes.
@@ -169,6 +236,14 @@ VITE_DEBUG_LOGGING=1
 
 All available options are documented in `.env.example`.
 
+#### `NODE_ENV`
+
+The container image sets `NODE_ENV=production` by default (see `Dockerfile`), and you should leave it that way in any real deployment. Its scope in Freeman Notes is deliberately small — it is **not** a general on/off switch for app behavior:
+
+- **Server (read at runtime):** gates verbose dev-only logging (`server/trashCleanup.js`, the startup debug line in `server.js`), and acts as a *fallback* for the schema-sync mode in `server/dbInit.js` — but only when no committed migrations exist. This repo always ships committed migrations, so that fallback never fires; both dev and prod resolve to `deploy` regardless, and `DB_SCHEMA_SYNC` is the real control. Keep it `production` on production for least-surprise (some third-party libraries read it); leaving it unset (`development`) on a dev box is harmless.
+- **Client (browser bundle):** `NODE_ENV` is **not** read at runtime. Vite replaces `process.env.NODE_ENV` with a literal at build time (`vite build` → `production`, `vite dev` → `development`), so the shell variable on your server never reaches the browser. On the client it only toggles debug overlays and logging — never layout or data behavior.
+- **What it does *not* affect:** it has no bearing on note-grid virtualization, card layout, or any dev/prod rendering divergence. Grid virtualization is driven purely by note count per column (`VirtualizedNoteColumn.tsx`), not by any environment flag.
+
 ### Client build config (`env.vite/`)
 
 This directory holds Vite build-time env vars (only `VITE_*` keys are exposed to the browser). Copy from `env.vite/.env.example`.
@@ -187,7 +262,7 @@ VITE_DEBUG_LOGGING=1
 
 ## Debug Tools
 
-Freeman Notes ships four independent debug systems. Each targets a different layer of the app.
+Freeman Notes ships ten independent debug systems. Each targets a different layer of the app.
 
 ---
 
@@ -539,6 +614,41 @@ A few `console.debug` / `console.log` calls in the codebase have no enable/disab
 | `[drawing-binding-debug]` | `src/components/Editors/DrawingEditor.tsx` | **Temporary.** Diagnosing an unresolved real-time drawing-sync issue for VIEWER-role collaborators. Fires on every drawing note open and on every remote Yjs update while one is open. Remove once that investigation closes — do not treat as a permanent system. |
 | `[Import]` | `src/core/import/ImportPipeline.ts` | Only fires during an actual workspace import (a rare, deliberate action), so it was left unconditional rather than gated behind a flag. |
 | `[InboxView.onOpenNote]` | `src/App.tsx` | Single low-frequency line — only fires when opening a note from the Inbox view. |
+
+---
+
+### 10. Force Grid Virtualization
+
+**What it covers:** Forces the note-grid's windowed virtualization ON with only a handful of notes, so a small dev dataset reproduces production behavior.
+
+**Why it exists:** The grid only virtualizes a column once it crosses ~18–20 notes (`VirtualizedNoteColumn.tsx`, `shouldVirtualize`). Below that, every card mounts once and stays mounted — so the entire estimate→measure→reposition path (windowed cards mounting/unmounting on scroll) never runs. A dev instance with a dozen notes is therefore *structurally* blind to any bug that only appears under virtualization (e.g. cards oscillating vertically while scrolling, or a checklist card's visible item count changing as it scrolls in and out of view). This flag closes that gap without having to hand-seed 40+ notes.
+
+**How to enable** — URL query parameter (persists in localStorage after first visit), same mechanism as Application Debug Logging:
+
+```
+http://localhost:27015/?forceVirtualization=1
+```
+
+To disable:
+
+```
+http://localhost:27015/?forceVirtualization=0
+```
+
+Or via the browser console:
+
+```js
+localStorage.setItem('freemannotes.forceVirtualization', '1') // '0' to disable
+location.reload()
+```
+
+There is also a build-time env var, `VITE_FORCE_VIRTUALIZATION=1` in `env.vite/.env`, for the `npm run dev` convenience case — but the URL/localStorage toggle is preferred because it works on **any** build, including a production build (`npm start`), where a build-time flag would behave differently.
+
+**What it does when on:** drops the virtualize threshold to 4 notes/column **and** lowers the overscan to 2. The low overscan is essential — otherwise a small dev list fits entirely inside the overscan window and nothing is ever actually unmounted/remounted, so the bug wouldn't reproduce.
+
+**How to test with it:** enable the flag, then put ~12+ notes in a workspace (enough that windowing actually kicks in), including at least one long checklist card (many active + completed items, long wrapping text). Scroll the grid to reproduce virtualization-only layout bugs.
+
+> **Safety:** The flag reads at runtime and only activates in a browser that explicitly opted in, so it is harmless even if the code ships to production — it changes nothing for any visitor who hasn't set it. It is *not* gated on a dev build, deliberately, so it also works under `npm start`.
 
 ---
 

@@ -4,6 +4,21 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.11.1 - 2026-09-07
+
+The note grid oscillation, finally cornered with data instead of theories. On a production-sized grid (dev never had enough notes to trigger it), cards in both columns would drift up and down while scrolling, and if you stopped at just the wrong spot they'd settle into a rapid, hypnotic up-and-down *dance* that only stopped when it felt like it. This one took building actual tooling to see, and one wrong turn we backed out of first.
+
+### Fixed
+- **Cards shifting during scroll, and the stop-and-it-oscillates dance, are gone.** We instrumented a real production grid card-by-card, and the culprit was unambiguous: of 43 cards, exactly 3 were unstable, and all 3 were checklist cards. Every other card type — text, drawings, image-only, even checklists carrying a banner + image + link preview + chips — measured one rock-solid height and just rode the shove. A checklist card renders ~230px too tall for about 90ms on every mount, then corrects to its real height; on its own that's a one-frame blip nobody would notice. But once a grid is big enough to virtualize (mount/unmount cards as you scroll — only production had the note count for it), that card keeps getting remounted every time it passes the edge of the render window, and each remount restarts the tall-then-correct cycle. Since a single card's height change re-renders the entire grid, one checklist card stuck in that loop shoves *every* card in *both* columns, ~10 times a second, until the timing happens to line up and it stops. Fixed by refusing to report a card's height to the layout until it's held steady for a beat (a settle gate), seeded from the height the grid already expects — so a card that remounts at its known height matches instantly and its transient never reaches the layout at all. The 40 stable cards wait on nothing; only a genuine, sustained height change ever pays the small delay.
+- Honesty, because this changelog does that: the first swing at this made it *worse* and got reverted the same day. The theory — force the checklist's own correction to happen synchronously before paint — was reasonable and completely wrong; it fed a measurement back into the thing that produced the measurement and turned a shrink into an ever-growing item count. The fix that stuck came from instrumenting production and letting the data name the culprit, instead of reasoning about which knob felt right.
+
+### Added
+- **A `?forceVirtualization=1` dev switch.** The whole reason this bug hid for so long: the grid only virtualizes once a column crosses ~20 notes, and a dev database rarely has that many — so the entire subsystem where this lived never even ran in testing. This flag drops the threshold so a dozen notes reproduce production behavior on demand. Runtime-only and opt-in per browser, so it's inert for anyone who doesn't set it. Documented in CONTRIBUTING.
+- **Scripts to run the app in Docker against an existing Postgres/Redis** (`scripts/run-docker.ps1`, `scripts/run-docker.sh`, `docker-compose.local.yml`) — one command builds the current code into a container and points it at a database you already have (e.g. your real one), instead of typing a wall of `docker run -e ...`. This is how production data got reproduced locally to catch the bug above.
+
+### Changed
+- Documented what `NODE_ENV` actually does here — narrower than you'd think: it gates some dev-only logging and a schema-sync fallback that committed migrations already override, and the browser bundle bakes its own value at build time regardless of the runtime variable. Written up in CONTRIBUTING and the Unraid template so nobody goes chasing it as the source of a dev-vs-prod difference again. It was not the source of this one.
+
 ## 1.11.0 - 2026-09-06
 
 Same-day follow-up to 1.10.0: a production-only report ("cards resize when reopening the app, and shift constantly while scrolling") that never showed up in testing, because testing resets its database often and production doesn't. Turned out to be exactly the kind of bug that hides from you on purpose.

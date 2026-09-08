@@ -18,46 +18,143 @@ type VirtualizedNoteColumnItemProps = {
 	index: number;
 	virtualizer: Virtualizer<Window, HTMLDivElement>;
 	onItemHeightChange: (noteId: string, height: number) => void;
+	estimatedHeight: number;
 	children: React.ReactNode;
 };
 
 const MIN_ITEMS_BEFORE_VIRTUALIZING = 18;
 
+// Height settle gate. Instrumented capture (card-diag, 2026-09-07) proved the ONLY
+// cards in the grid that report an unstable height are checklist cards: they render
+// ~230px too tall for ~90ms on every (re)mount, then correct. Virtualization keeps
+// remounting such a card whenever it sits at the render-window boundary, so that
+// single transient becomes a self-sustaining repack storm — and because a height
+// change re-renders the WHOLE grid, it shoves every card in BOTH columns, not just
+// the offender's. 40 of 43 real cards (all text/drawing/media + trivial checklists)
+// measured a perfectly stable height and were pure victims. So: never report a card's
+// height (to the virtualizer or the grid) until it has held steady for a beat. The
+// bad value is transient; the good value is stable; a settle window filters exactly
+// that shape. HEIGHT_SETTLE_MS must comfortably exceed the ~90ms correction.
+const HEIGHT_SETTLE_MS = 150;
+// A sub-pixel wobble (e.g. 179.5 rounding to 180 then 181) is noise, never worth a
+// grid-wide repack.
+const HEIGHT_HYSTERESIS_PX = 2;
+
+// Escape hatch so we can reproduce production's virtualization behavior on a dev
+// server without seeding 40+ notes by hand. Prod only windows a column once it
+// crosses ~18-20 notes; below that every card stays mounted forever and the entire
+// estimate→measure→reposition churn (the source of the scroll-oscillation and the
+// checklist item-count regrowth) simply never runs — which is why dev, with its
+// small dataset, has been structurally blind to this whole class of bug.
+//
+// When forced on we drop BOTH the count threshold AND the overscan: a low overscan
+// is essential, or a small dev list fits entirely inside the overscan window and
+// nothing is ever actually unmounted/remounted, so the bug wouldn't reproduce.
+//
+// Deliberately a RUNTIME flag (URL param persisted to localStorage), not a
+// build-time env gate: the dev server may be a real built deployment (its own DB,
+// its own notes) where import.meta.env.DEV is false, so a DEV-gated flag would be
+// stripped there and never help. This activates only in a browser that explicitly
+// opted in via `?forceVirtualization=1`, so it's harmless even if the code ships to
+// prod — it changes nothing for any visitor who didn't set the flag. The
+// VITE_FORCE_VIRTUALIZATION env var is also honored (baked per-build) for the
+// `npm run dev` convenience case. Same pattern as debugLogger.ts's runtime toggle.
+const FORCE_VIRTUALIZATION_STORAGE_KEY = 'freemannotes.forceVirtualization';
+const FORCED_MIN_ITEMS = 4;
+const FORCED_OVERSCAN = 2;
+
+function parseForceVirtualizationToggle(value: unknown): boolean | null {
+	const normalized = String(value ?? '').trim().toLowerCase();
+	if (!normalized) return null;
+	if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') return true;
+	if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') return false;
+	return null;
+}
+
+const FORCE_VIRTUALIZATION = (() => {
+	const envValue = parseForceVirtualizationToggle(import.meta.env.VITE_FORCE_VIRTUALIZATION);
+	if (envValue !== null) return envValue;
+	if (typeof window === 'undefined') return false;
+	try {
+		const url = new URL(window.location.href);
+		const queryValue = parseForceVirtualizationToggle(url.searchParams.get('forceVirtualization'));
+		if (queryValue !== null) {
+			try {
+				window.localStorage.setItem(FORCE_VIRTUALIZATION_STORAGE_KEY, queryValue ? '1' : '0');
+			} catch {
+				// Best effort only.
+			}
+			return queryValue;
+		}
+	} catch {
+		// ignore malformed location state
+	}
+	try {
+		return parseForceVirtualizationToggle(window.localStorage.getItem(FORCE_VIRTUALIZATION_STORAGE_KEY)) === true;
+	} catch {
+		return false;
+	}
+})();
+
 const VirtualizedNoteColumnItem = React.memo(function VirtualizedNoteColumnItem(
 	props: VirtualizedNoteColumnItemProps
 ): React.JSX.Element {
 	const nodeRef = React.useRef<HTMLDivElement | null>(null);
+	// Seed with the grid's warm estimate for this note, captured once at mount. This
+	// is what breaks the remount loop: a card that remounts at its already-known
+	// height matches the seed, so its ~90ms mount transient never clears hysteresis,
+	// never commits, and the card stops flipping across the window boundary. A stable
+	// card (the overwhelming majority) also matches its estimate, so nothing waits on
+	// it either — the gate only ever delays a genuine, sustained height change.
+	const lastPropagatedHeightRef = React.useRef<number>(Math.round(props.estimatedHeight) || 0);
+	const settleTimerRef = React.useRef<number>(0);
 
-	const handleRef = React.useCallback(
-		(node: HTMLDivElement | null) => {
-			nodeRef.current = node;
-			if (!node) return;
-			props.virtualizer.measureElement(node);
-			const height = Math.round(node.getBoundingClientRect().height);
-			if (height > 0) {
-				props.onItemHeightChange(props.noteId, height);
-			}
-		},
-		[props.noteId, props.onItemHeightChange, props.virtualizer]
-	);
+	const handleRef = React.useCallback((node: HTMLDivElement | null) => {
+		nodeRef.current = node;
+	}, []);
 
 	React.useLayoutEffect(() => {
 		const node = nodeRef.current;
-		if (!node || typeof ResizeObserver === 'undefined') return;
+		if (!node || typeof ResizeObserver === 'undefined' || typeof window === 'undefined') return;
+
+		const propagate = (height: number): void => {
+			lastPropagatedHeightRef.current = height;
+			props.virtualizer.measureElement(node);
+			if (height > 0) {
+				props.onItemHeightChange(props.noteId, height);
+			}
+		};
+
+		const scheduleSettle = (height: number): void => {
+			recordHeadingCollapseDebug('resizeObserver', { noteId: props.noteId, height, surface: 'virtual-column-item' });
+			// Ignore sub-threshold wobble outright — it never earns a repack.
+			if (Math.abs(height - lastPropagatedHeightRef.current) <= HEIGHT_HYSTERESIS_PX) return;
+			// A real change: wait for it to stop changing. Each new measurement resets
+			// the timer, so an oscillating card (new value every ~90ms) never fires it
+			// until it finally settles — at which point we commit the settled value once.
+			if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
+			settleTimerRef.current = window.setTimeout(() => {
+				settleTimerRef.current = 0;
+				const settled = Math.round(node.getBoundingClientRect().height);
+				if (settled <= 0) return;
+				if (Math.abs(settled - lastPropagatedHeightRef.current) <= HEIGHT_HYSTERESIS_PX) return;
+				propagate(settled);
+			}, HEIGHT_SETTLE_MS);
+		};
 
 		const observer = new ResizeObserver((entries) => {
 			const entry = entries[0];
 			const height = Math.round(entry?.contentRect.height ?? node.getBoundingClientRect().height);
-			recordHeadingCollapseDebug('resizeObserver', { noteId: props.noteId, height, surface: 'virtual-column-item' });
-			if (height > 0) {
-				props.onItemHeightChange(props.noteId, height);
-			}
-			props.virtualizer.measureElement(node);
+			if (height > 0) scheduleSettle(height);
 		});
 
 		observer.observe(node);
 		return () => {
 			observer.disconnect();
+			if (settleTimerRef.current) {
+				window.clearTimeout(settleTimerRef.current);
+				settleTimerRef.current = 0;
+			}
 		};
 	}, [props.noteId, props.onItemHeightChange, props.virtualizer]);
 
@@ -71,9 +168,16 @@ const VirtualizedNoteColumnItem = React.memo(function VirtualizedNoteColumnItem(
 export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.JSX.Element {
 	const columnRef = React.useRef<HTMLDivElement | null>(null);
 	const [scrollMargin, setScrollMargin] = React.useState(0);
+	// Dev override lowers overscan too (see FORCE_VIRTUALIZATION note above) so a small
+	// dev list actually windows instead of rendering everything within overscan.
+	const effectiveOverscan = FORCE_VIRTUALIZATION ? FORCED_OVERSCAN : props.overscan;
 	// Keep small columns fully mounted. The measurement churn of virtualization only
 	// pays for itself once the column is tall enough to scroll meaningfully.
-	const shouldVirtualize = props.enabled && props.noteIds.length >= Math.max(MIN_ITEMS_BEFORE_VIRTUALIZING, props.overscan * 2 + 8);
+	const shouldVirtualize = props.enabled && props.noteIds.length >= (
+		FORCE_VIRTUALIZATION
+			? FORCED_MIN_ITEMS
+			: Math.max(MIN_ITEMS_BEFORE_VIRTUALIZING, props.overscan * 2 + 8)
+	);
 
 	React.useLayoutEffect(() => {
 		if (typeof window === 'undefined') return;
@@ -129,7 +233,7 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 	const virtualizer = useWindowVirtualizer<HTMLDivElement>({
 		count: props.noteIds.length,
 		estimateSize,
-		overscan: props.overscan,
+		overscan: effectiveOverscan,
 		gap: props.gapPx,
 		scrollMargin,
 		getItemKey,
@@ -172,6 +276,7 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 						index={item.index}
 						virtualizer={virtualizer}
 						onItemHeightChange={props.onItemHeightChange}
+						estimatedHeight={props.estimateSize(item.noteId)}
 					>
 						{props.renderItem(item.noteId)}
 					</VirtualizedNoteColumnItem>

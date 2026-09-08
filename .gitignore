@@ -5,6 +5,9 @@ dist-*/
 
 # Runtime env (local / docker-compose env_file)
 .env
+# Real Docker connection config (holds DB/Redis IPs + secrets). The .example
+# template stays tracked; the filled-in copy must not be committed.
+.env.docker
 
 # Vite env files (build-time)
 env.vite/.env
@@ -17,6 +20,9 @@ yarn-debug.log*
 yarn-error.log*
 freeman-debug.log
 .npm-start.log
+
+# Local diagnostic dumps (NoteGrid card-height captures, etc.)
+card-diag-*.json
 
 # AI assistant files and settings (not part of the codebase)
 CLAUDE.md

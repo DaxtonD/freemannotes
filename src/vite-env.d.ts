@@ -16,6 +16,16 @@ interface ImportMetaEnv {
 	 * "1"           → HL2 Combine electric-fence crackle SVG overlay
 	 */
 	readonly VITE_NOTE_CARD_EFFECT?: string;
+	/**
+	 * Force windowed grid virtualization on with just a handful of notes. Production
+	 * only virtualizes a column once it crosses ~18-20 notes, so a small dev dataset
+	 * never exercises that whole subsystem — which is exactly where the "cards
+	 * oscillate while scrolling" / "item count regrows on scroll" bugs live. Set to
+	 * "1" in a dev build's env.vite config to bake it in. There is also a per-browser
+	 * runtime toggle (`?forceVirtualization=1`, persisted to localStorage) that works
+	 * on any build — see VirtualizedNoteColumn.tsx. Leave this unset in production.
+	 */
+	readonly VITE_FORCE_VIRTUALIZATION?: string;
 }
 
 interface ImportMeta {

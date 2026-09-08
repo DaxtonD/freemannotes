@@ -563,6 +563,26 @@
        DEBUG
        ═══════════════════════════════════════════════════════════════════════ -->
 
+  <!-- Node.js runtime environment. The container image already sets this to
+       'production' (see Dockerfile) — leave it there for any real deployment.
+       Its scope in Freeman Notes is deliberately narrow:
+         - Suppresses verbose dev-only server logging.
+         - Acts as a schema-sync fallback ONLY when no committed migrations exist;
+           this image always ships migrations, so DB Schema Sync Mode above is the
+           real control and NODE_ENV never decides it in practice.
+       It is NOT read by the browser bundle (the client bakes its own build-time
+       value) and does NOT affect note-grid layout or virtualization. Set to
+       'development' only for a local debugging box, never in production. -->
+  <Config
+    Name="Node Environment"
+    Target="NODE_ENV"
+    Default="production"
+    Description="Node.js runtime mode. Defaults to 'production' (also baked into the image) — leave it there. Only effects here: suppressing verbose dev-only server logs, and a schema-sync fallback that's already superseded by DB Schema Sync Mode above. Not read by the browser; no effect on layout. Use 'development' only for local debugging."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">production</Config>
+
   <Config
     Name="Debug Logging"
     Target="DEBUG_LOGGING"
