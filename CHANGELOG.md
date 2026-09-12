@@ -4,6 +4,29 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.12.0 - 2026-09-12
+
+We stopped patching the note grid and went back to the last version that was actually right.
+
+Short version: 1.10.0 gave the note card's height/layout code a full audit. That audit destabilized it, and 1.10.0 → 1.11.2 was us chasing the fallout one symptom at a time, each fix landing slightly differently than the last. So we rolled the grid back to **1.9.0** — the last release whose cards genuinely looked correct — kept every non-grid improvement made since, and then fixed the real bugs properly. With measurements this time, not screenshots.
+
+### Changed
+- **The note grid is back to its 1.9.0 behavior.** Only the grid: every non-grid fix from 1.9.1 through 1.11.2 is untouched (shared-note trash and the restore-permission guard, the checklist "remove completed"/reactivate-duplicate work, the progress-bar animate-on-open fix, the note-color-aware URL previews, the offline and reminder fixes, the Docker scripts, the `?forceVirtualization=1` flag, and the 3-dot menu's touch-padding fix). It turned out the grid had barely moved since 1.9.0 in the first place — the packing algorithm and the whole drag-and-drop manager were still byte-for-byte identical to it. Essentially all the damage lived in one release's worth of card-height changes, which is why this ended up being surgery rather than a rewrite.
+- **The height-cache invalidation from 1.11.0 stays.** Tagging cached card heights with the app version is genuinely useful and had nothing to do with the layout mess, so it survived the rollback.
+
+### Added
+- **A note-card height diagnostic (`?cardDiag=1`).** Every term that decides a checklist card's height, what was computed, what actually rendered, and exactly how many pixels are being clipped off which element — captured into a copyable report. This exists because we spent days trying to read layout bugs off screenshots, which cannot tell you whether a card is short because the formula under-reserved, because a measurement was stale, or because something overrode the height. Those three have completely different fixes. It found every bug below in one pass, including one we'd have never guessed. Documented in CONTRIBUTING.
+- The diagnostic also grades clipping honestly: a few pixels shaved off a row's own padding is invisible and gets reported as cosmetic, separately from clipping that actually removes something you can see. The first version of it flagged any overlap at all, which made all eight checklist cards look broken at every font size and buried the two that really were.
+
+### Fixed
+- **The 3-dot menu is anchored to a row instead of floating in the card's corner.** It was absolutely positioned at the bottom-right, with a padding hack bolted onto whichever element happened to be last, so it drifted across all sixteen card variations — below the URL preview on some cards, near the completed-items row on others, never quite aligned to anything. It now lives *in* the "N completed items" row on checklist cards and on a slim action row everywhere else, so it stays put when you expand or collapse completed items, and short cards no longer reserve a dead band at the bottom for it.
+- **Checklist cards clipped their completed-items row and URL previews right off the bottom of the card.** Four separate causes, all of which had to go:
+  - The collapsed height was clamped with `Math.min(maxCardHeight, …)` *after* the item count had already been trimmed to fit that same budget. Chrome and the completed row can't shrink, so clamping didn't make them smaller — it just pushed them outside the card's own `overflow: hidden`. The cap does its job at the item-count budget; it doesn't get a second bite.
+  - The checklist row pitch was read from the DOM once, in a memo with an empty dependency array, and then never recomputed. Change the text size and every row physically grew while that number stayed frozen at whatever scale the card happened to mount at — so the budget thought more rows fit than really did *and* under-reserved the height. It's a real prop now.
+  - That same pitch was floored at 18px, but a row can't be shorter than the checkbox plus the gap between rows — and the checkbox is 20px on desktop, 18px on touch, and doesn't scale with the font at all. At 60% text on desktop that under-reserved about 5px per row, which on a nine-item card was enough to push the entire completed-items row out of view.
+  - Row cost was bucketed 1/2/3 from two booleans, where "3" meant *being truncated* rather than *three lines tall*. A row that wrapped to exactly three lines was therefore billed as two, losing a full line of reserved height per wrapping row at large text sizes.
+- **Every checklist card was short by exactly 5px, on every device, at every text size.** The card header carries `margin: -1px -1px 6px -1px` — a net five pixels of real layout space — and the height budget measured it with `offsetHeight`, which excludes margins. Five pixels doesn't sound like much, and on most cards it just quietly ate the completed row's bottom padding where nobody could see it. On cards with a URL preview it clipped the preview instead. This is the one we'd never have found by looking; the diagnostic reported an unexplained ~5px on all 26 cards at once and the margin was the only thing that fit.
+
 ## 1.11.2 - 2026-09-07
 
 Reverts 1.11.1's grid fix, which was worse than the problem it solved. Same-day rollback.

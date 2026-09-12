@@ -119,6 +119,7 @@ import {
 } from './gridDebug';
 import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import { NoteGridDebugOverlay } from './NoteGridDebugOverlay';
+import { NoteCardDiagnosticsOverlay } from './NoteCardDiagnosticsOverlay';
 
 type Note = {
 	id: string;
@@ -741,11 +742,9 @@ type GridNoteCardProps = {
 	bannerTitlePosition?: NoteCardBannerTitlePosition;
 	isTrashView?: boolean;
 	maxCardHeightPx: number;
-	// The real column width this render is currently using (mobileCardWidthPx on
-	// touch, or the static --note-card-width CSS default on desktop) — see the
-	// `cardWidthPx` local this is passed from, and NoteCardProps.cardWidthPx for
-	// why NoteCard needs it as a prop rather than a DOM read.
-	cardWidthPx: number;
+	// Threaded purely so NoteCard's checklist row-pitch recomputes on a live
+	// text-size change (see NoteCardProps.noteCardFontScale). Not part of the
+	// old card-width height-estimation plumbing.
 	noteCardFontScale?: number;
 	isPlaceholder: boolean;
 	initialLinkRecords?: React.ComponentProps<typeof NoteCard>['initialLinkRecords'];
@@ -1134,7 +1133,6 @@ const GridNoteCard = React.memo(function GridNoteCard(props: GridNoteCardProps):
 					hasPendingSync={props.hasPendingSync}
 					isMoreMenuOpen={props.isMoreMenuOpen}
 					maxCardHeightPx={props.maxCardHeightPx}
-					cardWidthPx={props.cardWidthPx}
 					noteCardFontScale={props.noteCardFontScale}
 					onOpen={props.onOpen}
 					onAddReminder={props.onAddReminder}
@@ -4061,14 +4059,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			lastRepackReason: repackReasonRef.current,
 		});
 	});
-	// The real column width this render is currently using — same fallback chain
-	// getGridLayoutForViewport itself resolves to (mobileCardWidthPx on touch,
-	// else the static --note-card-width CSS default). Recomputed inline each
-	// render (matching this file's existing style at e.g. the columnWidth local
-	// a few hundred lines below) rather than memoized, since it's only read here
-	// and needs to land in renderGridCard's own deps below so a mobile resize
-	// gives freshly-mounting cards the new width instead of a stale closure.
-	const cardWidthPx = mobileCardWidthPx ?? readCssPxVariable('--note-card-width', 280);
 	const renderGridCard = React.useCallback((noteId: string): React.ReactNode => {
 		const note = noteById.get(noteId);
 		if (!note) return null;
@@ -4227,7 +4217,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					setMoreMenuNoteId(note.id);
 				}}
 				maxCardHeightPx={props.maxCardHeightPx}
-				cardWidthPx={cardWidthPx}
 				noteCardFontScale={props.noteCardFontScale}
 				isPlaceholder={isPlaceholder}
 				isOverlayActiveCard={overlayActiveNoteId === note.id}
@@ -4240,7 +4229,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				loadDrawingDoc={props.loadDrawingDoc ? (drawingId) => props.loadDrawingDoc!(note.id, drawingId) : undefined}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, cardWidthPx, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardFontScale, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);
@@ -5088,6 +5077,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			{process.env.NODE_ENV !== 'production' ? (
 				<NoteGridDebugOverlay columns={columns} noteHeightByIdRef={noteHeightByIdRef} />
 			) : null}
+			<NoteCardDiagnosticsOverlay />
 		</section>
 	);
 }

@@ -37,7 +37,6 @@ import {
 	readLatestCachedDrawingThumbnail,
 	renderDrawingThumbnail,
 	type DrawingPlaceholderOptions,
-	type DrawingThumbnailResult,
 } from '../../core/drawingThumbnails';
 import {
 	filterRemoteNoteImagesByPendingDeletes,
@@ -65,7 +64,6 @@ import {
 import {
 	getNoteCardCompletedExpanded,
 	setNoteCardCompletedExpanded,
-	subscribeNoteCardCompletedExpansion,
 } from '../../core/noteCardCompletedExpansion';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
@@ -82,6 +80,7 @@ import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { useDeniedNoteIds } from '../../core/references/noteAccessCache';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from './NoteColorPickerModal';
+import { CARD_DIAG_ENABLED, registerNoteCardDiag, unregisterNoteCardDiag } from '../../core/noteCardDiagnostics';
 import styles from './NoteCard.module.css';
 
 export type NoteCardProps = {
@@ -110,19 +109,13 @@ export type NoteCardProps = {
 	dragHandleProps?: React.HTMLAttributes<HTMLDivElement>;
 	useWholeCardDragHandle?: boolean;
 	maxCardHeightPx?: number;
-	// The real column card width NoteGrid just computed for this render (its own
-	// mobileCardWidthPx state, or the static --note-card-width CSS default on
-	// desktop) — see NoteGrid.tsx's `cardWidthPx` local. Passed as a real prop,
-	// not read off the DOM, because it's needed inside a lazy useState
-	// initializer that runs before this card's own DOM exists to measure (see
-	// checklistLayoutMetrics below); it replaces a flat "representative" width
-	// guess the checklist header-height estimate used to make.
-	cardWidthPx?: number;
 	// Clamped note-card text-size preference (App.tsx's clampFontScale), the same
-	// value driving the --note-card-font-scale CSS var. Passed as a real prop —
-	// not read back off the DOM — so collapsedChecklistLineHeightPx recomputes on
-	// a live preference change instead of freezing at whatever scale was active
-	// on mount. See that memo's own comment for the bug this replaces.
+	// value driving the --note-card-font-scale CSS var. Passed as a real prop
+	// rather than read back off the DOM because collapsedChecklistLineHeightPx
+	// needs to RECOMPUTE when the preference changes: a mount-only DOM read
+	// freezes the row pitch at whatever scale happened to be active when the card
+	// mounted, which then under-counts every checklist budget after a text-size
+	// change and clips the completed row / URL preview off the bottom of the card.
 	noteCardFontScale?: number;
 	forcedHeightPx?: number;
 	allowChecklistItemInteractions?: boolean;
@@ -153,45 +146,31 @@ type NoteCardStyle = React.CSSProperties & {
 	'--note-card-banner-highlight'?: string;
 	'--note-card-collapsed-checklist-height'?: string;
 	'--note-card-expanded-checklist-max-height'?: string;
-	'--note-card-menu-reserved-height'?: string;
-	'--note-card-drawing-aspect-ratio'?: string;
 };
 
-// NoteLinkPanel.module.css's ".rail .cardLink" grid gives each preview row a fixed-
-// width image column (aspect-ratio 1/1, so its height equals its own width) beside a
-// text column whose height depends on content (a 2-line-clamped description, so it
-// varies by whether that clamp is actually reached). Above the panel's own 640px
-// viewport breakpoint the image column is 42px — comfortably taller than the text
-// column even at its 2-line max (~11px description * 1.25 line-height * 2 lines +
-// ~11px domain line + padding ≈ 41.7px) — so the image height dominates and total row
-// height (image 42 + padding 6+6 + border 1+1) lands on a stable, content-independent
-// 56px. Below that breakpoint the image column shrinks to 38px while the text column's
-// own max barely changes, so text can dominate instead — the same arithmetic there
-// gives padding(5+5)+border(1+1)+max(38, ~41.7)≈53.7, rounded to 54. This SECOND case
-// is a bound, not an exact figure: a short (1-line) description still renders shorter
-// than this, so some residual correction can remain below 640px specifically — flagged
-// rather than claimed as fully deterministic, unlike the >640px case above.
+/**
+ * offsetHeight PLUS vertical margins.
+ *
+ * offsetHeight excludes margins, which quietly broke every checklist height
+ * calculation: `.header` carries `margin: -1px -1px 6px -1px`, so it occupies 5
+ * more vertical pixels than it measures. The card reserved 5px less than its own
+ * chrome actually needs, and whatever rendered last — the completed-items row, or
+ * a URL preview — had that much shaved off the bottom by contentRegion's
+ * overflow:hidden. Always measure flex children this way when the number is going
+ * to be summed into a height budget.
+ */
+function outerHeightWithMarginsPx(el: HTMLElement | null): number {
+	if (!el || typeof window === 'undefined') return el?.offsetHeight ?? 0;
+	const style = window.getComputedStyle(el);
+	return el.offsetHeight
+		+ (Number.parseFloat(style.marginTop || '0') || 0)
+		+ (Number.parseFloat(style.marginBottom || '0') || 0);
+}
+
 function estimateInitialChecklistRailHeight(linkCount: number): number {
 	if (linkCount <= 0) return 0;
 	const visibleCount = Math.max(1, Math.min(3, Math.floor(linkCount)));
-	const isNarrowViewport = typeof window !== 'undefined' && window.innerWidth <= 640;
-	return visibleCount * (isNarrowViewport ? 54 : 56);
-}
-
-// The real header (headerRef) wraps the title row AND, when a banner is set, a
-// .headerBannerMedia block sized by aspect-ratio 16/4.6 off the card's actual width
-// (NoteCard.module.css). cardWidthPx is NoteGrid's own real, currently-computed column
-// width (see NoteCardProps.cardWidthPx) — passed in because column width is knowable
-// synchronously from NoteGrid's own layout state before this card ever mounts, unlike
-// this card's own DOM (which doesn't exist yet at first-render time). Falling back to
-// FALLBACK_CARD_WIDTH_PX only matters for a caller that doesn't pass the prop
-// (defensive, not the expected path through NoteGrid).
-const FALLBACK_CARD_WIDTH_PX = 260;
-const BANNER_ASPECT_RATIO = 16 / 4.6;
-function estimateInitialChecklistHeaderHeight(hasBanner: boolean, cardWidthPx: number): number {
-	const titleRowHeightPx = 39;
-	if (!hasBanner) return titleRowHeightPx;
-	return titleRowHeightPx + Math.round(cardWidthPx / BANNER_ASPECT_RATIO);
+	return visibleCount * 56;
 }
 
 function renderChecklistCardContent(item: ChecklistItem, content: React.ReactNode): React.ReactNode {
@@ -892,7 +871,7 @@ function useLinkedDrawingThumbnail(
 	// Synchronously seed the thumbnail from the persistent cache (same source used by
 	// native drawing cards) so view-switch and warm-start cards don't start blank.
 	const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(
-		() => (firstDrawingId ? peekLatestDrawingThumbnail(firstDrawingId)?.dataUrl ?? null : null)
+		() => (firstDrawingId ? peekLatestDrawingThumbnail(firstDrawingId) : null)
 	);
 	// Stable-ref for the debounce timer so we can cancel it in cleanup.
 	const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -913,7 +892,7 @@ function useLinkedDrawingThumbnail(
 			try {
 				const title = doc?.getText('title').toString().trim() || fallbackTitle;
 				const nextUrl = doc
-					? (await renderDrawingThumbnail(firstDrawingId, doc, title, getDrawingThumbnailVersion(doc), placeholderOptions)).dataUrl
+					? await renderDrawingThumbnail(firstDrawingId, doc, title, getDrawingThumbnailVersion(doc), placeholderOptions)
 					: await buildDrawingPlaceholderDataUrl(title, { ...placeholderOptions, seed: firstDrawingId });
 				if (!cancelled) setThumbnailUrl(nextUrl);
 			} catch {
@@ -1055,21 +1034,13 @@ function useNoteCardImages(
 	return images;
 }
 
-type DrawingThumbnailInfo = {
-	url: string | null;
-	// width/height's own aspect ratio, once known (see drawingThumbnails.ts's
-	// DrawingThumbnailResult) — null until a cache entry with real dimensions is
-	// found, so the card can fall back to a default box instead.
-	aspectRatio: number | null;
-};
-
 function useDrawingThumbnail(
 	doc: Y.Doc,
 	noteId: string,
 	noteType: NoteType,
 	title: string,
 	placeholderOptions?: DrawingPlaceholderOptions
-): DrawingThumbnailInfo {
+): string | null {
 	const snapshotKey = React.useSyncExternalStore(
 		(onStoreChange) => {
 			let rafId = 0;
@@ -1096,31 +1067,27 @@ function useDrawingThumbnail(
 		() => noteType === 'drawing' ? getDrawingThumbnailCacheKey(noteId, snapshotKey, placeholderOptions) : '',
 		[noteId, noteType, placeholderOptions, snapshotKey]
 	);
-	const toInfo = (result: DrawingThumbnailResult | null): DrawingThumbnailInfo => ({
-		url: result?.dataUrl ?? null,
-		aspectRatio: result?.width && result?.height ? result.width / result.height : null,
-	});
-	const [thumbnail, setThumbnail] = React.useState<DrawingThumbnailInfo>(() => (
+	const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(() => (
 		noteType === 'drawing'
-			? toInfo((thumbnailCacheKey ? peekDrawingThumbnail(thumbnailCacheKey) : null) || peekLatestDrawingThumbnail(noteId))
-			: { url: null, aspectRatio: null }
+			? (thumbnailCacheKey ? peekDrawingThumbnail(thumbnailCacheKey) : null) || peekLatestDrawingThumbnail(noteId)
+			: null
 	));
 
 	React.useEffect(() => {
 		let cancelled = false;
 		if (noteType !== 'drawing') {
-			setThumbnail({ url: null, aspectRatio: null });
+			setThumbnailUrl(null);
 			return () => {
 				cancelled = true;
 			};
 		}
 		const cached = thumbnailCacheKey ? peekDrawingThumbnail(thumbnailCacheKey) : null;
 		if (cached) {
-			setThumbnail((current) => (current.url === cached.dataUrl ? current : toInfo(cached)));
+			setThumbnailUrl((current) => (current === cached ? current : cached));
 		} else {
 			const latestCached = peekLatestDrawingThumbnail(noteId);
 			if (latestCached) {
-				setThumbnail((current) => (current.url === latestCached.dataUrl ? current : toInfo(latestCached)));
+				setThumbnailUrl((current) => (current === latestCached ? current : latestCached));
 			}
 		}
 		void (async () => {
@@ -1129,72 +1096,70 @@ function useDrawingThumbnail(
 				: null;
 			if (cancelled) return;
 			if (persisted) {
-				setThumbnail((current) => (current.url === persisted.dataUrl ? current : toInfo(persisted)));
+				setThumbnailUrl((current) => (current === persisted ? current : persisted));
 				return;
 			}
 			const latestPersisted = await readLatestCachedDrawingThumbnail(noteId);
 			if (cancelled) return;
 			if (latestPersisted) {
-				setThumbnail((current) => (current.url === latestPersisted.dataUrl ? current : toInfo(latestPersisted)));
+				setThumbnailUrl((current) => (current === latestPersisted ? current : latestPersisted));
 			}
-			const rendered = await renderDrawingThumbnail(noteId, doc, title || 'Drawing', snapshotKey, placeholderOptions);
+			const nextUrl = await renderDrawingThumbnail(noteId, doc, title || 'Drawing', snapshotKey, placeholderOptions);
 			if (cancelled) return;
-			setThumbnail(toInfo(rendered));
+			setThumbnailUrl(nextUrl);
 		})();
 		return () => {
 			cancelled = true;
 		};
 	}, [doc, noteId, noteType, placeholderOptions, placeholderThemeKey, snapshotKey, thumbnailCacheKey, title]);
 
-	return thumbnail;
+	return thumbnailUrl;
 }
 
 export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	recordHeadingCollapseDebug('reactRenderNoteCard', { noteId: props.noteId });
 	const { t } = useI18n();
 	const maxCardHeightPx = Math.max(220, props.maxCardHeightPx ?? 300);
-	// While forcedHeightPx is active (this card is a pre-hydration snapshot shell,
-	// see NoteGrid.tsx's isSnapshotCard), the box is literally pinned to that
-	// cached height via an inline style that wins over everything else — but the
-	// checklist item-count budget below was, until now, computed purely against
-	// the grid-wide maxCardHeightPx ceiling with zero awareness of that pin. If
-	// the cached height was shorter than maxCardHeightPx, budgeting rendered more
-	// items than physically fit in the pinned box (clipped). If it was taller,
-	// budgeting rendered fewer than the box had room for (dead space). Budget
-	// against whichever ceiling is actually in effect right now instead — once
-	// the snapshot phase ends and forcedHeightPx goes away, this collapses back
-	// to plain maxCardHeightPx with no change in behavior.
-	const effectiveMaxCardHeightPx = Number.isFinite(Number(props.forcedHeightPx)) && Number(props.forcedHeightPx) > 0
-		? Math.max(220, Number(props.forcedHeightPx))
-		: maxCardHeightPx;
 	const noteCardLinkPreviewMaxItems = maxCardHeightPx >= 420 ? 3 : 2;
 	const hasFinePointer = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
 		? window.matchMedia('(pointer: fine)').matches
 		: true;
-	const cardWidthPx = props.cardWidthPx ?? FALLBACK_CARD_WIDTH_PX;
 	const initialChecklistCardPaddingBottomPx = hasFinePointer ? 50 : 0;
 	const initialChecklistBodyPaddingVerticalPx = hasFinePointer ? 14 : 18;
 	// Budget checklist preview rows using the rendered row pitch (text line box
-	// + 4 px gap between items). The pitch scales with --note-card-font-scale.
-	// Prefer the live prop (threaded from App.tsx's same preference state that
-	// drives the CSS var) over reading the DOM: this used to read
-	// getComputedStyle in a useMemo with an EMPTY dependency array, so it only
-	// ever captured the scale active at mount and silently went stale for the
-	// rest of that card instance's life on any live font-size preference
-	// change — the checklist item/height budget kept computing against the old,
-	// smaller line pitch, which under-reserved space and clipped the completed-
-	// toggle and URL preview at the bottom of the card. Falling back to the DOM
-	// read only covers a caller that doesn't pass the prop (defensive, not the
-	// expected path through NoteGrid).
+	// + 4 px gap between items).  The pitch scales with --note-card-font-scale,
+	// so read the live CSS value to avoid overestimating at sub-1 scales (which
+	// causes a visible tall→shrink snap when cards first mount after a view switch).
+	// Prefer the prop (a real, reactive preference value) and only fall back to the
+	// DOM read for callers that don't thread it. The DOM read alone used to be
+	// memoised with an empty dep array, so it never re-ran after mount: change the
+	// text size and every row physically grew while this pitch stayed frozen at the
+	// old scale, so the budget below thought more rows fit than really did AND
+	// under-reserved the card height — which is what pushed the completed-items row
+	// and URL preview off the bottom of the card.
 	const collapsedChecklistLineHeightPx = React.useMemo(() => {
-		const propScale = Number(props.noteCardFontScale);
-		const scale = Number.isFinite(propScale) && propScale > 0
-			? propScale
-			: typeof document !== 'undefined'
-				? Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--note-card-font-scale') || '1') || 1
-				: 1;
-		return Math.max(18, Math.round(scale * 16 * 1.35 + 4));
-	}, [props.noteCardFontScale]);
+		const domScale = typeof document !== 'undefined'
+			? Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--note-card-font-scale') || '1') || 1
+			: 1;
+		const scale = Number.isFinite(Number(props.noteCardFontScale)) && Number(props.noteCardFontScale) > 0
+			? Number(props.noteCardFontScale)
+			: domScale;
+		// A row can never be shorter than the checkbox, and --note-card-checkbox-size
+		// does NOT scale with the font — it's 18px on touch and 20px on fine-pointer
+		// (see the `@media (pointer: fine)` override in NoteCard.module.css). Rows
+		// are then separated by .checklist's 4px gap.
+		//
+		// Two things were wrong here before. The original floored the whole pitch
+		// *including* the gap at 18, so at small text sizes it predicted 18px rows
+		// that really render 22-24px; on a 9-item card that under-reserved ~40-50px,
+		// enough to push the entire completed-items row outside the clipped region.
+		// Flooring at a flat 18 then fixed touch but still under-reserved by 2px per
+		// row on desktop, because the fine-pointer checkbox is 20px — which measured
+		// as exactly the 24px real pitch the diagnostics reported at 60%/85% text.
+		const checkboxSizePx = hasFinePointer ? 20 : 18;
+		const textLineHeightPx = Math.max(checkboxSizePx, scale * 16 * 1.35);
+		return Math.round(textLineHeightPx + 4);
+	}, [hasFinePointer, props.noteCardFontScale]);
 	// Let the completed summary move with the visible active rows. The coarse-
 	// pointer path previously reused a stale measured body height, which created
 	// a collapsing gap on mobile as checklist items crossed the preview threshold.
@@ -1322,7 +1287,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const content = useOptionalYTextValue(
 		React.useCallback(() => (type === 'text' ? props.doc.getText('content') : null), [props.doc, type])
 	);
-	const { url: drawingThumbnailUrl, aspectRatio: drawingThumbnailAspectRatio } = useDrawingThumbnail(props.doc, props.noteId, type, title, drawingPlaceholderOptions);
+	const drawingThumbnailUrl = useDrawingThumbnail(props.doc, props.noteId, type, title, drawingPlaceholderOptions);
 	const linkedDrawingIds = useLinkedDrawingIds(props.doc);
 	// Two hook calls cover the max DRAWING_PREVIEW_MAX (2) drawing slots.
 	// Each is a no-op when its index exceeds linkedDrawingIds.length.
@@ -1403,67 +1368,6 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		() => extractNoteLinksFromDoc(props.doc),
 		() => extractNoteLinksFromDoc(props.doc)
 	);
-	// Declared here (rather than down near the rest of the corner-menu JSX) because
-	// cardStyle's useMemo, below, needs menuReservedHeightPx as a dependency.
-	const hasMenuButton = Boolean(props.onMoreMenu) && isCoarsePointerDevice();
-	// The corner menu button is one absolutely-positioned element anchored to the
-	// CARD's bottom edge, so only whichever chrome region actually renders last
-	// (in DOM order: body -> completedSection [checklist only] -> linkPreviewRail
-	// [any type, whenever docId is set]) needs padding reserved to clear it. Every
-	// region used to get its own *MenuSafe class unconditionally off hasMenuButton
-	// alone, with no awareness of what actually followed it — so a checklist card
-	// with a URL preview reserved clearance in completedSection AND body, on top of
-	// linkPreviewRail's own (correct) reservation, none of which was needed since
-	// linkPreviewRail was the true last element. That's what produced the visibly
-	// bigger gap below the completed-toggle than above it: the extra reservation
-	// sat between the toggle and the preview, not after the preview where the menu
-	// button actually lives.
-	const hasCompletedSectionRegion = type === 'checklist';
-	// NOT just Boolean(props.docId) — the wrapping <div> for the link-preview rail
-	// renders whenever a note has a docId at all (nearly every saved note), even
-	// when it has zero actual links and NoteLinkPanel itself renders null inside
-	// that div. Treating docId-presence alone as "a preview region exists" wrongly
-	// stole the menu-safe reservation away from completedSection for cards with NO
-	// preview at all — worse than the original bug, since nothing downstream of
-	// completedSection was left to reserve the space instead. Mirrors the same
-	// props.initialLinkRecords/extractedLinks combination the initial
-	// checklistLayoutMetrics estimate already uses, so a warm-snapshot cold start
-	// (initialLinkRecords known before the Yjs doc finishes hydrating extractedLinks)
-	// doesn't flash between the two states either.
-	const hasLinkPreviewRegion = Boolean(props.docId) && Math.max(props.initialLinkRecords?.length ?? 0, extractedLinks.length) > 0;
-	const isBodyMenuSafeRegion = hasMenuButton && !hasCompletedSectionRegion && !hasLinkPreviewRegion;
-	const isCompletedSectionMenuSafeRegion = hasMenuButton && hasCompletedSectionRegion && !hasLinkPreviewRegion;
-	const isLinkPreviewMenuSafeRegion = hasMenuButton && hasLinkPreviewRegion;
-	// Independent of hasMenuButton (applies on desktop too): completedSection's own
-	// padding-bottom is sized to look right as the card's trailing edge on its own
-	// (a divider above, breathing room below). When a link preview immediately
-	// follows it instead, that padding just stacks on top of the preview card's own
-	// border+internal padding, which was already doing that same job — producing a
-	// visibly bigger gap below the completed-toggle than the divider's gap above it.
-	// Zero it out here so the preview's own edge provides the sole gap.
-	const isCompletedSectionAdjacentToPreview = hasCompletedSectionRegion && hasLinkPreviewRegion;
-	// Single source of truth for how tall the trailing reserved band is, shared via
-	// CSS custom property with .linkPreviewRailMenuSafe's own padding-bottom AND
-	// .cardMenuButton's own glyph inset (NoteCard.module.css) — previously these were
-	// two independently hand-tuned numbers with no way to stay in sync: bumping the
-	// reserved padding to fix clipping never re-centered the glyph within the new
-	// size. Tune EITHER of these two things and both move together.
-	// Only the with-preview case (isLinkPreviewMenuSafeRegion) still needs this at
-	// all: the no-preview case (isCompletedSectionMenuSafeRegion) used to reserve
-	// trailing space below the toggle for this same button, but centering a glyph
-	// within an empty reserved band below a row can never actually share that row's
-	// OWN centerline — moving the icon in-line as a true flex sibling of the toggle
-	// (completedToggleRow, below) fixed that by construction and made this whole
-	// reserved-space mechanism unnecessary for that case: ordinary flex layout
-	// already keeps the icon clear of everything with nothing to reserve.
-	// 52px (an oversized diagnostic value from an earlier round) read as too much
-	// clearance below the preview; 28px, tried next, read as "a little too tight
-	// on the top" of the icon's own space. Split the difference upward rather than
-	// all the way back — 34px.
-	const MENU_RESERVED_HEIGHT_LINK_PREVIEW_PX = 34;
-	const menuReservedHeightPx = isLinkPreviewMenuSafeRegion
-		? MENU_RESERVED_HEIGHT_LINK_PREVIEW_PX
-		: null;
 	const handleDeletePreview = React.useCallback((normalizedUrl: string): void => {
 		if (!canEdit) return;
 		removeNotePreviewLinkFromDoc(props.doc, normalizedUrl);
@@ -1475,17 +1379,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			links: extractNoteLinksFromDoc(props.doc),
 		});
 	}, [canEdit, props.authUserId, props.doc, props.docId]);
-	// useSyncExternalStore, not local useState: this needs to react when a
-	// cross-device server seed lands (seedNoteCardCompletedExpandedByNoteId) for a
-	// note this device has never toggled locally, not just to local toggles on
-	// this exact card instance — see noteCardCompletedExpansion.ts's own comment
-	// for the bug this closes (an already-mounted card previously had no way to
-	// hear about that seed arriving at all).
-	const showCompleted = React.useSyncExternalStore(
-		subscribeNoteCardCompletedExpansion,
-		() => getNoteCardCompletedExpanded(props.noteId),
-		() => getNoteCardCompletedExpanded(props.noteId)
-	);
+	const [showCompleted, setShowCompleted] = React.useState<boolean>(() => getNoteCardCompletedExpanded(props.noteId));
 	React.useSyncExternalStore(
 		(onStoreChange) => subscribeCollapsedRichHeadingPrefsForNote(props.noteId, onStoreChange),
 		() => getCollapsedRichHeadingPrefsForNoteVersion(props.noteId),
@@ -1493,6 +1387,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	);
 	const [multilineById, setMultilineById] = React.useState<Record<string, boolean>>({});
 	const [clampedById, setClampedById] = React.useState<Record<string, boolean>>({});
+	// Actual rendered line count per row (1..3). The two booleans above drive CSS
+	// classes and can't express "renders exactly three lines" — see
+	// checklistItemLineCost for why that gap under-reserved the height budget.
+	const [lineCountById, setLineCountById] = React.useState<Record<string, number>>({});
 	const [textPreviewLayout, setTextPreviewLayout] = React.useState<{ maxHeightPx: number | null; isOverflowing: boolean }>({
 		maxHeightPx: null,
 		isOverflowing: false,
@@ -1511,25 +1409,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		// snapshot need those shells budgeted immediately; otherwise the preview rail
 		// is briefly clipped and cards below shift down after the first measurement.
 		return {
-		headerHeightPx: estimateInitialChecklistHeaderHeight(Boolean(noteBannerFile), cardWidthPx),
-		// .metaChipRow's real CSS min-height differs by pointer type: 42px fine
-		// (NoteCard.module.css base rule), 40px coarse (pointer:coarse override).
-		// At most 4 small icon+count chips render here and never wrap in practice
-		// (see NoteGrid.tsx's renderNoteMetaChips — labels collapse into one
-		// counted chip), so the CSS floor IS the real height, not just a guess.
-		metaHeightPx: props.metaChips ? (hasFinePointer ? 42 : 40) : 0,
+		headerHeightPx: 39,
+		metaHeightPx: props.metaChips ? 40 : 0,
 		linkPreviewHeightPx: estimateInitialChecklistRailHeight(initialPreviewLinkCount),
-		// Real value = toggle.offsetHeight + completedSection's padding-top/bottom
-		// + border-top. The toggle's own text renders at the flat, non-scaling
-		// --font-size-xs (12px, NoteCard.module.css/variables.css — unlike
-		// checklist item rows, this text does NOT scale with
-		// --note-card-font-scale), so its line height never reaches
-		// .completedToggle's own 20px min-height floor — that floor wins
-		// regardless of font-scale or collapsed/expanded state (this field only
-		// ever measures the toggle row itself, never the dropdown content).
-		// completedSection's padding/border differ by pointer type: coarse is
-		// 6px/6px/1px (20+6+6+1=33), fine is 10px/6px/1px (20+10+6+1=37).
-		completedBaseHeightPx: hasFinePointer ? 37 : 33,
+		// Match the CSS min-height for the completed toggle rail so checklist cards
+		// reserve that band before the first DOM measurement runs.
+		completedBaseHeightPx: 38,
 		cardPaddingBottomPx: initialChecklistCardPaddingBottomPx,
 		bodyPaddingVerticalPx: initialChecklistBodyPaddingVerticalPx,
 		bodyScrollHeightPx: 0,
@@ -1582,6 +1467,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		if (!isElementLayoutMeasurable(card)) return;
 		const next: Record<string, boolean> = {};
 		const nextClamped: Record<string, boolean> = {};
+		const nextLineCount: Record<string, number> = {};
 		const mergeMeasuredState = (previous: Record<string, boolean>, measured: Record<string, boolean>): Record<string, boolean> => {
 			const merged: Record<string, boolean> = {};
 			for (const item of normalizedItems) {
@@ -1604,6 +1490,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			const expectedClampHeight = Math.ceil(lineHeight * 3 + 4);
 			next[id] = node.scrollHeight > expectedSingleLine + 4;
 			nextClamped[id] = node.scrollHeight > expectedClampHeight;
+			// The real rendered line count, capped at the CSS clamp
+			// (.checklistText is max-height: calc(1.35em * 3), so 3 is the most a
+			// row can ever occupy). scrollHeight reports the full unclipped content,
+			// so an over-long row correctly saturates at 3 rather than reporting 10.
+			nextLineCount[id] = Math.max(1, Math.min(3, Math.round(node.scrollHeight / lineHeight)));
 		}
 		setMultilineById((prev) => {
 			const merged = mergeMeasuredState(prev, next);
@@ -1623,18 +1514,44 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			}
 			return merged;
 		});
+		setLineCountById((prev) => {
+			// Same "keep the last measured value for rows the budget is currently
+			// hiding" rule as the booleans above, so a hidden row doesn't forget it
+			// was three lines tall and start a re-render loop when it comes back.
+			const merged: Record<string, number> = {};
+			for (const item of normalizedItems) {
+				merged[item.id] = Object.prototype.hasOwnProperty.call(nextLineCount, item.id)
+					? nextLineCount[item.id]
+					: (prev[item.id] ?? 1);
+			}
+			const prevKeys = Object.keys(prev);
+			const nextKeys = Object.keys(merged);
+			if (prevKeys.length === nextKeys.length && nextKeys.every((key) => prev[key] === merged[key])) {
+				return prev;
+			}
+			return merged;
+		});
 	}, [normalizedItems, type]);
 
-	// (No longer need a props.noteId-keyed re-sync effect here: showCompleted now
-	// reads live from useSyncExternalStore above, which already re-evaluates its
-	// snapshot on every render, including when props.noteId changes.)
+	React.useEffect(() => {
+		setShowCompleted(getNoteCardCompletedExpanded(props.noteId));
+	}, [props.noteId]);
 	const activeChecklistItems = React.useMemo(() => normalizedItems.filter((item) => !item.completed), [normalizedItems]);
 	const completedChecklistItems = React.useMemo(() => normalizedItems.filter((item) => item.completed), [normalizedItems]);
 	const checklistItemLineCost = React.useCallback((itemId: string): number => {
+		// Prefer the measured line count. The boolean fallback below is what this
+		// used to rely on entirely, and it systematically under-counted: "clamped"
+		// means the row is being TRUNCATED (content exceeds three lines), so a row
+		// that renders exactly three lines was multiline-but-not-clamped and cost 2
+		// instead of 3. At large text sizes that lost a whole line of reserved
+		// height per wrapping row, which is what pushed the completed-items row and
+		// URL previews off the bottom of the card.
+		const measured = lineCountById[itemId];
+		if (Number.isFinite(measured) && measured > 0) return Math.min(3, measured);
 		if (clampedById[itemId]) return 3;
 		if (multilineById[itemId]) return 2;
 		return 1;
-	}, [clampedById, multilineById]);
+	}, [clampedById, lineCountById, multilineById]);
 	const checklistItemById = React.useMemo(() => new Map(normalizedItems.map((item) => [item.id, item])), [normalizedItems]);
 	// Shared with the full editors (src/core/checklistHierarchy.ts) so recency
 	// ordering behaves identically everywhere a checklist's completed section
@@ -1691,40 +1608,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		}
 		return visible;
 	}, [checklistItemById, checklistItemLineCost, minimumExpandedCompletedItems, recentCompletedItems, type]);
-	// Deliberately NOT checklistLayoutMetrics.linkPreviewHeightPx (the rail's live
-	// measured DOM height) here — that was the actual bug behind a genuinely
-	// baffling repro: a checklist would show 6 active items + "3 more" on a fresh
-	// mobile load, then a few seconds later, with nobody touching anything,
-	// reshuffle itself to 7 active + "2 more" and shove the preview down. Turned
-	// out NoteLinkPanel's own data can still be mid-hydration for several seconds
-	// after mount (retries at 800ms/1.5s/3s/5s/8s/12s, see noteLinkStore.ts) —
-	// every time real title/description text landed, the rail's real rendered
-	// height grew, and we were feeding that straight into the item-count budget
-	// below. The card wasn't broken, it was just still loading and we were
-	// re-deciding the layout every time new data trickled in. The CSS already
-	// hard-caps a rail row's height (-webkit-line-clamp:2 on the description),
-	// so the same worst-case, link-count-derived estimate the very first paint
-	// already uses (estimateInitialChecklistRailHeight) is a genuine upper bound,
-	// not just a first guess — reusing it here keeps the item budget stable no
-	// matter when, or whether, hydration ever finishes. Tradeoff: a card whose
-	// real description is short may reserve a few px more than strictly
-	// necessary. Fine. A few wasted pixels beats a checklist that redecorates
-	// itself mid-read.
-	const currentPreviewLinkCount = React.useMemo(
-		() => Math.max(0, Math.min(noteCardLinkPreviewMaxItems, Math.max(props.initialLinkRecords?.length ?? 0, extractedLinks.length))),
-		[extractedLinks.length, noteCardLinkPreviewMaxItems, props.initialLinkRecords]
-	);
-	const stableLinkPreviewHeightPx = React.useMemo(
-		() => estimateInitialChecklistRailHeight(currentPreviewLinkCount),
-		[currentPreviewLinkCount]
-	);
 	const checklistFixedChromePx = React.useMemo(
-		() => checklistLayoutMetrics.headerHeightPx + checklistLayoutMetrics.metaHeightPx + stableLinkPreviewHeightPx + checklistLayoutMetrics.cardPaddingBottomPx + checklistLayoutMetrics.bodyPaddingVerticalPx,
-		[checklistLayoutMetrics, stableLinkPreviewHeightPx]
+		() => checklistLayoutMetrics.headerHeightPx + checklistLayoutMetrics.metaHeightPx + checklistLayoutMetrics.linkPreviewHeightPx + checklistLayoutMetrics.cardPaddingBottomPx + checklistLayoutMetrics.bodyPaddingVerticalPx,
+		[checklistLayoutMetrics]
 	);
 	const collapsedAvailableLineBudget = React.useMemo(
-		() => Math.max(0, Math.floor((effectiveMaxCardHeightPx - checklistFixedChromePx - checklistLayoutMetrics.completedBaseHeightPx) / collapsedChecklistLineHeightPx)),
-		[collapsedChecklistLineHeightPx, checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, effectiveMaxCardHeightPx]
+		() => Math.max(0, Math.floor((maxCardHeightPx - checklistFixedChromePx - checklistLayoutMetrics.completedBaseHeightPx) / collapsedChecklistLineHeightPx)),
+		[collapsedChecklistLineHeightPx, checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, maxCardHeightPx]
 	);
 	const collapsedActiveFit = React.useMemo(
 		() => fitChecklistItemsToLineBudget(activeChecklistItems, collapsedAvailableLineBudget),
@@ -1736,24 +1626,26 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			0,
 			checklistLayoutMetrics.bodyScrollHeightPx - checklistLayoutMetrics.bodyPaddingVerticalPx
 		);
-		// Trust the live rendered body height outright once it exists — it describes
-		// exactly the same set of items the estimate above is guessing at, just
-		// measured instead of guessed, so it's strictly more accurate whichever
-		// direction it differs. This used to Math.min() it against the estimate
-		// (rationale: "multiline rows can otherwise reserve extra card height that
-		// shows up as empty space beneath the completed-items rail" — i.e. only
-		// trust the measurement when it's SMALLER). That direction-locked trust was
-		// backwards for a case that rationale didn't anticipate: at low note-card
-		// text-size scales, the per-line estimate (collapsedChecklistLineHeightPx)
-		// keeps shrinking with scale, but real rows bottom out at the fixed-size
-		// checkbox's own height (~20px, not scaled by font at all) well before the
-		// estimate does — so the estimate becomes SMALLER than the real, measured
-		// content at low scale. Math.min() then picked the too-small estimate,
-		// under-budgeting the card's total height by exactly that shortfall — with
-		// nowhere else to absorb it, completedSection got pushed past
-		// contentRegion's own overflow:hidden boundary (confirmed via direct
-		// Playwright DOM measurement: contentRegion.bottom sat ~4-28px above
-		// completedSection's real bottom edge, growing worse the lower the scale).
+		if (!keepCompletedToggleStable) {
+			// Prefer the live rendered body height when it is smaller than the coarse
+			// line-cost estimate. Multiline rows can otherwise reserve extra card
+			// height that shows up as empty space beneath the completed-items rail.
+			//
+			// Do NOT "simplify" this to just trusting the measurement. The body is
+			// `flex: 1 1 auto`, so once the card has a height it STRETCHES to fill
+			// it, and scrollHeight then reports the stretched box rather than the
+			// content. Feeding that straight back into the height that caused it is
+			// a runaway loop — the card grows every pass. Taking the min pins it to
+			// the estimate, which is why the estimate has to be right: an estimate
+			// that is too LOW is never corrected upward by the measurement, and the
+			// shortfall gets clipped off the bottom of the card instead. That is
+			// exactly how the row-pitch floor and the line-cost bugs below showed up
+			// as missing completed-items rows rather than as a wrong number.
+			if (measuredBodyContentHeightPx > 0) {
+				return Math.min(estimatedBodyContentHeightPx, measuredBodyContentHeightPx);
+			}
+			return estimatedBodyContentHeightPx;
+		}
 		if (measuredBodyContentHeightPx > 0) return measuredBodyContentHeightPx;
 		return estimatedBodyContentHeightPx;
 	}, [
@@ -1761,52 +1653,26 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		checklistLayoutMetrics.bodyScrollHeightPx,
 		collapsedActiveFit.usedLineCount,
 		collapsedChecklistLineHeightPx,
+		keepCompletedToggleStable,
 	]);
-	// Soft cap, hard floor: effectiveMaxCardHeightPx is a *target*, not a promise —
-	// collapsedAvailableLineBudget above already reduces active items (down to zero)
-	// to try to hit it, and in the overwhelming majority of real checklists that's
-	// enough. But chrome (header/banner, meta chips, the full URL preview, the
-	// completed-items toggle, reserved menu/dock padding) is never allowed to
-	// flex, and when it alone — even with zero active items shown — doesn't fit
-	// under the cap, clamping down here would just silently clip the preview via
-	// the card's own overflow:hidden (it's last in flex order). So the floor
-	// (chrome, uncompressible) always wins over the cap; only the amount ABOVE
-	// that floor gets capped. This only grows the card past the target in that
-	// genuinely rare case — every normal case still resolves to the same value
-	// as before, since collapsedAvailableLineBudget already targeted the cap.
-	const collapsedChecklistMandatoryFloorPx = React.useMemo(
-		() => checklistFixedChromePx + checklistLayoutMetrics.completedBaseHeightPx,
-		[checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx]
-	);
-	// Deliberately NOT Math.min(effectiveMaxCardHeightPx, ...) anymore. That was
-	// quietly reintroducing exactly the clip this whole "hard floor" policy exists
-	// to prevent, and it took a live-DevTools session with the user actually
-	// hovering a card to catch it, because the bug only shows up once you already
-	// believe the floor is safe. collapsedActiveBodyContentHeightPx trusts the
-	// LIVE measured body height once one exists (see that memo's own comment —
-	// added to fix a different, earlier font-scale under-estimate bug), but the
-	// item COUNT shown was already decided by collapsedAvailableLineBudget using
-	// the *per-line estimate*, not this measurement. Two different numbers,
-	// deciding two different things, that everyone assumed agreed with each
-	// other. When real rendering comes in even slightly taller than the estimate
-	// assumed — measured on a real card: 8 short single-line items came in at
-	// ~227px of real body height against the ~168px the estimate had budgeted for
-	// them, a gap that compounds per item — floor + the REAL content can exceed
-	// effectiveMaxCardHeightPx even though the item count was already trimmed
-	// toward it. Re-clamping to the cap right here silently ate that difference
-	// via the card's own overflow:hidden. Direct measurement caught it in the
-	// act: a card that needed 390px total was rendering at the 380px cap, and the
-	// missing 10px was exactly the completed-toggle row — the "hidden behind the
-	// dock" bug, explained in full. Once the item count is decided, whatever real
-	// height it turns out to need gets honored in full. The cap already did its
-	// job at the item-count budget; it doesn't get a second bite here.
+	// Soft cap, hard floor: maxCardHeightPx is a *target*, not a promise —
+	// collapsedAvailableLineBudget above already reduces active items (down to
+	// zero) to try to hit it, and in the overwhelming majority of real checklists
+	// that's enough. But chrome (header/banner, meta chips, the URL preview) and
+	// the completed-items row are never allowed to flex, and clamping the total
+	// back down to maxCardHeightPx here — after the item count was already
+	// decided against that same budget — doesn't shrink them, it just clips them
+	// via contentRegion's own overflow:hidden (whatever renders last, e.g. the URL
+	// preview, eats it). Once the item count is decided, whatever real height it
+	// needs is honored in full; the cap already did its job at the item-count
+	// budget and doesn't get a second bite here.
 	const collapsedChecklistMinHeightPx = React.useMemo(
-		() => collapsedChecklistMandatoryFloorPx + collapsedActiveBodyContentHeightPx,
-		[collapsedChecklistMandatoryFloorPx, collapsedActiveBodyContentHeightPx]
+		() => checklistFixedChromePx + checklistLayoutMetrics.completedBaseHeightPx + collapsedActiveBodyContentHeightPx,
+		[checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, collapsedActiveBodyContentHeightPx]
 	);
 	const expandedAvailableLineBudget = React.useMemo(
-		() => Math.max(0, Math.floor((effectiveMaxCardHeightPx - checklistFixedChromePx - checklistLayoutMetrics.completedBaseHeightPx) / collapsedChecklistLineHeightPx)),
-		[collapsedChecklistLineHeightPx, checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, effectiveMaxCardHeightPx]
+		() => Math.max(0, Math.floor((maxCardHeightPx - checklistFixedChromePx - checklistLayoutMetrics.completedBaseHeightPx) / collapsedChecklistLineHeightPx)),
+		[collapsedChecklistLineHeightPx, checklistFixedChromePx, checklistLayoutMetrics.completedBaseHeightPx, maxCardHeightPx]
 	);
 	const totalActiveChecklistLineCost = React.useMemo(() => {
 		if (type !== 'checklist') return 0;
@@ -1881,6 +1747,58 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		requestChecklistLayoutRefresh();
 	}, [checklistLayoutSignature, requestChecklistLayoutRefresh, type]);
 	const expandedChecklistMaxHeightPx = Math.max(maxCardHeightPx, expandedChecklistMinHeightPx, expandedChecklistRenderedHeightPx);
+
+	// Dev-only (`?cardDiag=1`) — publish every term that decided this card's height
+	// so the diagnostics overlay can diff computed-vs-rendered and report exactly
+	// how many pixels are being clipped. Inert (and retains nothing) when the flag
+	// is off; deliberately read-only so it can never perturb the layout it measures.
+	React.useEffect(() => {
+		if (!CARD_DIAG_ENABLED) return;
+		registerNoteCardDiag(
+			{
+				noteId: props.noteId,
+				title: title || '(untitled)',
+				type,
+				hasBanner: Boolean(headerBannerUrl),
+				completedExpanded: showCompleted,
+				completedTotal: completedChecklistItems.length,
+				fontScale: Number(props.noteCardFontScale ?? 1),
+				maxCardHeightPx,
+				forcedHeightPx: Number.isFinite(Number(props.forcedHeightPx)) && Number(props.forcedHeightPx) > 0
+					? Math.round(Number(props.forcedHeightPx))
+					: null,
+				headerHeightPx: checklistLayoutMetrics.headerHeightPx,
+				metaHeightPx: checklistLayoutMetrics.metaHeightPx,
+				linkPreviewHeightPx: checklistLayoutMetrics.linkPreviewHeightPx,
+				cardPaddingBottomPx: checklistLayoutMetrics.cardPaddingBottomPx,
+				bodyPaddingVerticalPx: checklistLayoutMetrics.bodyPaddingVerticalPx,
+				completedBaseHeightPx: checklistLayoutMetrics.completedBaseHeightPx,
+				lineHeightPx: collapsedChecklistLineHeightPx,
+				availableLineBudget: collapsedAvailableLineBudget,
+				usedLineCount: collapsedActiveFit.usedLineCount,
+				itemsShown: activeChecklistItemsToRender.length,
+				itemsTotal: activeChecklistItems.length,
+				computedCollapsedMinHeightPx: Math.round(collapsedChecklistMinHeightPx),
+				computedExpandedMaxHeightPx: Math.round(expandedChecklistMaxHeightPx),
+			},
+			{
+				card: cardRef.current,
+				header: headerRef.current,
+				metaChipRow: metaChipRowRef.current,
+				contentRegion: contentRegionRef.current,
+				body: bodyRef.current,
+				completedSection: completedSectionRef.current,
+				linkPreviewRail: linkPreviewRailRef.current,
+				footer: footerRef.current,
+			}
+		);
+	});
+	React.useEffect(() => {
+		if (!CARD_DIAG_ENABLED) return;
+		const id = props.noteId;
+		return () => unregisterNoteCardDiag(id);
+	}, [props.noteId]);
+
 	// When either checklist CSS height variable changes, the card's rendered height
 	// changes without necessarily changing card.scrollHeight. Fire the grid refresh in
 	// a layout effect so NoteGrid re-measures after the new CSS vars are committed,
@@ -1908,12 +1826,6 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			nextStyle['--note-card-collapsed-checklist-height'] = `${collapsedChecklistMinHeightPx}px`;
 			nextStyle['--note-card-expanded-checklist-max-height'] = `${expandedChecklistMaxHeightPx}px`;
 		}
-		if (menuReservedHeightPx !== null) {
-			nextStyle['--note-card-menu-reserved-height'] = `${menuReservedHeightPx}px`;
-		}
-		if (type === 'drawing' && drawingThumbnailAspectRatio !== null && Number.isFinite(drawingThumbnailAspectRatio) && drawingThumbnailAspectRatio > 0) {
-			nextStyle['--note-card-drawing-aspect-ratio'] = String(drawingThumbnailAspectRatio);
-		}
 		if (Number.isFinite(Number(props.forcedHeightPx)) && Number(props.forcedHeightPx) > 0) {
 			const forcedHeightPx = `${Math.round(Number(props.forcedHeightPx))}px`;
 			nextStyle.height = forcedHeightPx;
@@ -1921,7 +1833,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			nextStyle.minHeight = forcedHeightPx;
 		}
 		return Object.keys(nextStyle).length > 0 ? nextStyle : undefined;
-	}, [collapsedChecklistMinHeightPx, displayedCardColors, drawingThumbnailAspectRatio, expandedChecklistMaxHeightPx, headerBannerTitleColors?.backgroundColor, menuReservedHeightPx, props.forcedHeightPx, resolvedColor?.accentColor, showImageGridPreview, showLinkedDrawingPreview, type]);
+	}, [collapsedChecklistMinHeightPx, displayedCardColors, expandedChecklistMaxHeightPx, headerBannerTitleColors?.backgroundColor, props.forcedHeightPx, resolvedColor?.accentColor, showImageGridPreview, showLinkedDrawingPreview, type]);
 	const textPreviewStyle = React.useMemo(() => {
 		if (type !== 'text') return undefined;
 		if (!Number.isFinite(Number(textPreviewLayout.maxHeightPx)) || !textPreviewLayout.maxHeightPx || textPreviewLayout.maxHeightPx <= 0) return undefined;
@@ -1929,6 +1841,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [textPreviewLayout.maxHeightPx, type]);
 	React.useEffect(() => {
 		if (completedChecklistItems.length > 0 || !showCompleted) return;
+		setShowCompleted(false);
 		setNoteCardCompletedExpanded(props.noteId, false);
 		requestChecklistLayoutRefresh();
 	}, [completedChecklistItems.length, props.noteId, requestChecklistLayoutRefresh, showCompleted]);
@@ -2015,19 +1928,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 
 			const cardStyle = window.getComputedStyle(card);
 			const bodyStyle = window.getComputedStyle(body);
-			const headerHeightPx = headerRef.current?.offsetHeight ?? 0;
-			const metaHeightPx = metaChipRowRef.current?.offsetHeight ?? 0;
-			// Stable, count-derived upper bound rather than the rail's live measured
-			// height — same reasoning as checklistFixedChromePx above: NoteLinkPanel's
-			// data can still be mid-hydration for several seconds after mount, and
-			// using the live height here would re-clamp (or un-clamp) this preview
-			// every time a preview's real title/description text lands.
+			const headerHeightPx = outerHeightWithMarginsPx(headerRef.current);
+			const metaHeightPx = outerHeightWithMarginsPx(metaChipRowRef.current);
+			const linkPreviewHeightPx = linkPreviewRailRef.current && linkPreviewRailRef.current.childElementCount > 0
+				? linkPreviewRailRef.current.offsetHeight
+				: 0;
 			const cardPaddingBottomPx = Number.parseFloat(cardStyle.paddingBottom || '0') || 0;
 			const bodyPaddingVerticalPx =
 				(Number.parseFloat(bodyStyle.paddingTop || '0') || 0) +
 				(Number.parseFloat(bodyStyle.paddingBottom || '0') || 0);
 			const availableHeightPx = Math.floor(
-				maxCardHeightPx - headerHeightPx - metaHeightPx - stableLinkPreviewHeightPx - cardPaddingBottomPx - bodyPaddingVerticalPx
+				maxCardHeightPx - headerHeightPx - metaHeightPx - linkPreviewHeightPx - cardPaddingBottomPx - bodyPaddingVerticalPx
 			);
 
 			if (availableHeightPx <= 0 || fullContentHeightPx <= availableHeightPx + 1) {
@@ -2101,7 +2012,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			window.removeEventListener('resize', scheduleMeasure);
 			viewport?.removeEventListener('resize', scheduleMeasure);
 		};
-	}, [content, maxCardHeightPx, richContent, showImageGridPreview, showLinkedDrawingPreview, stableLinkPreviewHeightPx, type]);
+	}, [content, maxCardHeightPx, richContent, showImageGridPreview, showLinkedDrawingPreview, type]);
 
 	React.useLayoutEffect(() => {
 		if (type !== 'checklist') return;
@@ -2120,8 +2031,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			const bodyStyle = window.getComputedStyle(body);
 			const completedStyle = window.getComputedStyle(completed);
 			const nextMetrics = {
-				headerHeightPx: headerRef.current?.offsetHeight ?? 0,
-				metaHeightPx: metaChipRowRef.current?.offsetHeight ?? 0,
+				headerHeightPx: outerHeightWithMarginsPx(headerRef.current),
+				metaHeightPx: outerHeightWithMarginsPx(metaChipRowRef.current),
 				linkPreviewHeightPx: linkPreviewRailRef.current && linkPreviewRailRef.current.childElementCount > 0 ? linkPreviewRailRef.current.offsetHeight : 0,
 				completedBaseHeightPx:
 					toggle.offsetHeight +
@@ -2197,24 +2108,23 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	}, [props]);
 
 	const toggleCompletedSection = React.useCallback((): void => {
-		// No local setState to drive this off anymore — showCompleted comes from
-		// useSyncExternalStore now, so read the store's current value directly and
-		// write the flip straight back to it; the subscription updates this (and
-		// every other mounted card showing the same note) reactively.
-		const next = !getNoteCardCompletedExpanded(props.noteId);
-		setNoteCardCompletedExpanded(props.noteId, next);
-		void updateUserPreferences(getDeviceId(), {
-			noteCardCompletedExpandedPatch: { noteId: props.noteId, expanded: next },
+		setShowCompleted((prev) => {
+			const next = !prev;
+			setNoteCardCompletedExpanded(props.noteId, next);
+			void updateUserPreferences(getDeviceId(), {
+				noteCardCompletedExpandedPatch: { noteId: props.noteId, expanded: next },
+			});
+			if (typeof window !== 'undefined') {
+				window.dispatchEvent(new CustomEvent('freemannotes:checklist-toggle', {
+					detail: {
+						noteId: props.noteId,
+						expanded: next,
+					},
+				}));
+			}
+			requestChecklistLayoutRefresh();
+			return next;
 		});
-		if (typeof window !== 'undefined') {
-			window.dispatchEvent(new CustomEvent('freemannotes:checklist-toggle', {
-				detail: {
-					noteId: props.noteId,
-					expanded: next,
-				},
-			}));
-		}
-		requestChecklistLayoutRefresh();
 	}, [props.noteId, requestChecklistLayoutRefresh]);
 
 	const handleReminderAction = React.useCallback((event: React.MouseEvent<HTMLButtonElement>): void => {
@@ -2283,10 +2193,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	const disableImageAction = !props.onAddImage || (!renderInteractiveShell && !canEdit);
 	// The floating corner ellipsis is touch-only; fine-pointer desktops reopen the
 	// same menu from the footer dock so the card body stays visually cleaner.
-	// (hasMenuButton, the *MenuSafeRegion booleans, isCompletedSectionAdjacentToPreview,
-	// and menuReservedHeightPx are all declared earlier in this component — see
-	// extractedLinks's declaration — since cardStyle's useMemo needs
-	// menuReservedHeightPx as a dependency before this point is reached.)
+	const hasMenuButton = Boolean(props.onMoreMenu) && isCoarsePointerDevice();
 	const disableChecklistCheckbox = !allowChecklistItemInteractions;
 	const disableCompletedChecklistCheckbox = !allowCompletedItemInteractions;
 	const headerTitleValue = title.trim().length > 0 ? title : t('note.untitled');
@@ -2555,7 +2462,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				) : null}
 				{type === 'drawing' ? (
 					/* Native drawing note: variable-height thumbnail showing the full drawing */
-					<div ref={bodyRef} className={`${styles.body} ${styles.drawingBody}${isBodyMenuSafeRegion ? ` ${styles.bodyMenuSafe} ${styles.drawingBodyMenuSafe}` : ''}`} data-note-drag-manual="true">
+					<div ref={bodyRef} className={`${styles.body} ${styles.drawingBody}`} data-note-drag-manual="true">
 						{drawingThumbnailUrl ? (
 							<img
 								className={styles.drawingThumbnail}
@@ -2571,7 +2478,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				) : showMediaPreview ? (
 					/* Mixed media grid: drawing thumbnails (slot 0, 1) + image thumbnails, up to 4 total.
 					   Cell count is fixed at render time so card height never oscillates on async loads. */
-					<div ref={bodyRef} className={`${styles.body} ${styles.mediaImageBody}${isBodyMenuSafeRegion ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
+					<div ref={bodyRef} className={`${styles.body} ${styles.mediaImageBody}`} data-note-drag-manual="true">
 						<div className={styles.mediaImageGrid}>
 							{drawingSlots > 0 && linkedDrawingIds[0] ? (
 								<div key={`d0-${linkedDrawingIds[0]}`} className={styles.mediaImageGridCell}>
@@ -2595,12 +2502,12 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 						</div>
 					</div>
 				) : type === 'text' ? (
-					<div ref={bodyRef} className={`${styles.body}${isBodyMenuSafeRegion ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
+					<div ref={bodyRef} className={`${styles.body}`} data-note-drag-manual="true">
 						<div ref={contentPreviewRef} className={`${styles.contentPreview}${textPreviewLayout.isOverflowing ? ` ${styles.contentPreviewOverflowing}` : ''}`} style={textPreviewStyle}>{renderRichPreview(richContent, allowLinkInteractions, allowChecklistItemInteractions && canEdit ? handleToggleRichTaskItem : undefined, props.noteId, deniedNoteIds, liveAvatarLookup) ?? content}</div>
 					</div>
 				) : (
 					<>
-						<div ref={bodyRef} className={`${styles.body}${isBodyMenuSafeRegion ? ` ${styles.bodyMenuSafe}` : ''}`} data-note-drag-manual="true">
+						<div ref={bodyRef} className={`${styles.body}`} data-note-drag-manual="true">
 							<ul ref={checklistRef} className={styles.checklist}>
 								{activeChecklistItemsToRender.map((item) => (
 									<li key={item.id} className={`${styles.checklistItem}${multilineById[item.id] ? ` ${styles.checklistItemMultiline}` : ''}${item.parentId ? ` ${styles.childItem}` : ''}`}>
@@ -2633,19 +2540,10 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 							) : null}
 						</div>
 
-						{/* completedSectionMenuSafe's extra padding-bottom reservation is now
-						    obsolete when the corner menu lives on the toggle row (see
-						    completedToggleRow below) rather than overlaid past this section's
-						    trailing edge — the icon is a true flex sibling now, so ordinary
-						    layout already keeps it clear of everything without any reserved
-						    space to get wrong. That reservation is only still needed, and only
-						    still applied, in the with-preview case (isLinkPreviewMenuSafeRegion),
-						    which still uses the original card-bottom-anchored button. */}
-						<div ref={completedSectionRef} className={`${styles.completedSection}${isCompletedSectionAdjacentToPreview ? ` ${styles.completedSectionAdjacentToPreview}` : ''}`}>
-							<div className={styles.completedToggleRow}>
+						<div ref={completedSectionRef} className={styles.completedSection}>
+							<div ref={completedToggleRef as React.RefObject<HTMLDivElement>} className={styles.completedToggleRow}>
 							{allowCompletedItemInteractions ? (
 								<button
-									ref={completedToggleRef as React.RefObject<HTMLButtonElement>}
 									type="button"
 									className={styles.completedToggle}
 									onPointerDown={(e) => e.stopPropagation()}
@@ -2662,28 +2560,17 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 									<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
 								</button>
 							) : (
-								<div ref={completedToggleRef as React.RefObject<HTMLDivElement>} className={styles.completedToggle}>
+								<div className={styles.completedToggle}>
 										<span className={styles.completedToggleArrow} aria-hidden="true">
 											<span className={`${styles.completedToggleArrowIcon}${showCompleted ? ` ${styles.completedToggleArrowIconOpen}` : ''}`} />
 										</span>
 									<span>{completedChecklistItems.length} {t('editors.completedItems')}</span>
 								</div>
 							)}
-							{/* Rendered here instead of at the card's bottom edge specifically for
-							    this case (checklist, no preview) — a true flex sibling of the toggle
-							    row centers on it via ordinary align-items:center, tracking whatever
-							    height the row actually renders at (font-scale, wrapped translated
-							    text, etc.) with no computed offset to keep in sync. This also means
-							    the icon's position is now identical whether the completed section is
-							    collapsed or expanded, satisfying "always maintain its position" by
-							    construction rather than by matching two independently-tuned values.
-							    See isCompletedSectionMenuSafeRegion's own comment for why this is
-							    scoped to exactly that case: a with-preview card still wants the icon
-							    at the card's bottom edge, after the preview, not on the toggle row. */}
-							{isCompletedSectionMenuSafeRegion ? (
+							{hasMenuButton ? (
 								<button
 									type="button"
-									className={styles.cardMenuButtonInToggle}
+									className={styles.cardMenuButton}
 									onPointerDown={(e) => e.stopPropagation()}
 									onClick={handleMoreMenuAction}
 									aria-label={t('editors.dockAction')}
@@ -2740,12 +2627,13 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				)}
 
 				{props.docId ? (
-					<div ref={linkPreviewRailRef} className={`${styles.linkPreviewRail}${isLinkPreviewMenuSafeRegion ? ` ${styles.linkPreviewRailMenuSafe}` : ''}`}>
+					<div ref={linkPreviewRailRef} className={`${styles.linkPreviewRail}`}>
 						<NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} initialLinks={props.initialLinkRecords} canEdit={canEdit} onDeleteLink={handleDeletePreview} variant="rail" maxItems={noteCardLinkPreviewMaxItems} disableInitialRemoteRefresh disableOpenLinks={!allowLinkInteractions} />
 					</div>
 				) : null}
 			</div>
-				{hasMenuButton && !isCompletedSectionMenuSafeRegion ? (
+				{hasMenuButton && !(type === 'checklist' && !showLinkedDrawingPreview && !showImageGridPreview) ? (
+					<div className={styles.cardMenuRow}>
 					<button
 						type="button"
 						className={styles.cardMenuButton}
@@ -2755,6 +2643,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					>
 						<FontAwesomeIcon icon={faEllipsisVertical} />
 					</button>
+					</div>
 				) : null}
 			<div ref={footerRef} className={`${styles.cardFooter}${suppressContentInteractions ? ` ${styles.cardFooterGuarded}` : ''}`}>
 				{/* Desktop-only footer dock mirrors the editor action strip so note

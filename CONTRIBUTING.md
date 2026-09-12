@@ -24,6 +24,8 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [7. Global Debug Flag (window.DEBUG)](#7-global-debug-flag-windowdebug)
   - [8. View Transition Trace](#8-view-transition-trace)
   - [9. Always-On Diagnostic Logs](#9-always-on-diagnostic-logs)
+  - [10. Force Grid Virtualization](#10-force-grid-virtualization)
+  - [11. Note-Card Height Diagnostics](#11-note-card-height-diagnostics)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
 - [PWA Version Changes](#pwa-version-changes)
 - [Native Platform Companions](#native-platform-companions)
@@ -652,14 +654,59 @@ There is also a build-time env var, `VITE_FORCE_VIRTUALIZATION=1` in `env.vite/.
 
 ---
 
+### 11. Note-Card Height Diagnostics
+
+**What it covers:** Captures every number that decides a note card's height — each term of the formula, what was computed, what actually rendered, and exactly how many pixels are being clipped off which element.
+
+**Why it exists:** A checklist card's height is the product of a lot of interacting parts (header/banner, meta chips, URL preview rail, the completed-items row, per-item line costs that depend on *measured* wrap state, the text-size preference, the max-card-height preference). When a card clips its completed row or a URL preview, a screenshot can't tell you *why*: the formula may have under-reserved, a measurement may be stale, or something may have overridden the height. Those three causes have completely different fixes, and guessing between them from a picture has repeatedly cost days. This turns the question into arithmetic.
+
+**How to enable** — URL query parameter (persists in localStorage), same mechanism as Force Grid Virtualization:
+
+```
+http://localhost:27015/?cardDiag=1
+```
+
+To disable:
+
+```
+http://localhost:27015/?cardDiag=0
+```
+
+**How to use it:** a small `card diag` button appears bottom-left (bottom-*left* so it never sits under the mobile FAB). Tap it to capture every currently-rendered card. The report appears in a selectable textarea with a `copy` button.
+
+> The textarea matters: when testing on a phone against the dev server over the LAN, the page is plain `http`, so `navigator.clipboard` is unavailable (it requires a secure context). The copy button falls back to selecting the text so you can use your device's own copy gesture.
+
+**What it reports, per card:**
+
+- **variant** — banner yes/no, chip count, URL-preview count, completed section expanded/collapsed
+- **inputs** — font scale, max card height, resolved row pitch (`lineH`), any `forcedHeightPx`
+- **chrome** — header, meta, preview rail, card bottom padding, body vertical padding, and their sum
+- **parts** — completed-row base height, the line budget, lines used, items shown vs. total
+- **height** — computed collapsed/expanded height vs. the card's *actual* rendered height, plus the delta
+- **regions** — `clientHeight` vs `scrollHeight` for the content region and body. **This is the key signal:** on a container with `overflow: hidden`, `scrollHeight − clientHeight` is literally how many pixels are being thrown away
+- **clipped** — pixels cut off the completed row, split into *total* clipped vs **CONTENT-LOSS**, and how many URL previews are fully visible
+- **box** — the card's height reconciled against its real parts (`cardPadT`, `borderY`, header, meta, contentRegion), with any leftover reported as **`unaccounted`**
+
+**Severity matters — read `CONTENT-LOSS`, not raw clipping.** A few pixels shaved off the completed row's own bottom *padding* is invisible: the text and menu button still render in full. Only clipping that reaches *past* that padding removes something you can see. The report classifies each checklist card as `ok`, `(cosmetic)`, or `*** CONTENT LOSS ***`, sorts worst-first, and the headline counts them separately. An earlier version of this tool flagged any clip over 0.5px, which made all eight checklist cards look broken at every font scale and buried the two that were genuinely wrong.
+
+Non-checklist cards (text/drawing) are listed separately as context only — they have no completed row and no line budget, so the checklist-specific numbers are meaningless for them and are omitted rather than printed as noise.
+- **dock** — the desktop hover dock's height, the card's reserved bottom padding, and whether real content would sit underneath the dock once revealed (measured from its reserved geometry, so you don't have to hold a hover while capturing)
+
+**How to test with it:** enable the flag, then capture once per text-size setting (e.g. 60% / 85% / 115% / 150%) and per max-card-height setting, on both desktop and mobile. Each capture covers every visible card at once, so a handful of pastes covers the whole variant matrix (chips, banners, previews, expanded/collapsed).
+
+> **Safety:** Runtime opt-in, identical to the virtualization flag — inert for anyone who hasn't set it, and the capture is strictly read-only, so it cannot perturb the layout it is measuring.
+
+---
+
 ## Reporting a Layout Bug
 
 When reporting a masonry layout issue (cards in the wrong column, column imbalance, cards jumping after drag-drop), please include:
 
 1. **Debug payload** — captured immediately after the issue appears using `window.__noteGridDebugDownloadImportant()` (see [Masonry Layout Debug System](#3-masonry-layout-debug-system) above)
-2. **Device and viewport** — device type (desktop/tablet/phone), approximate screen width, browser
-3. **Steps to reproduce** — what you did before the issue appeared (e.g., "dragged card A over card B, then expanded the completed items section on card C")
-4. **How reliably it reproduces** — every time, intermittently, or only after a specific sequence
+2. **Card height diagnostics** — if the issue is a card *clipping* its completed-items row or a URL preview (rather than a column-placement issue), capture with `?cardDiag=1` instead; see [Note-Card Height Diagnostics](#11-note-card-height-diagnostics) above. Include one capture per text size / card-height setting involved.
+3. **Device and viewport** — device type (desktop/tablet/phone), approximate screen width, browser
+4. **Steps to reproduce** — what you did before the issue appeared (e.g., "dragged card A over card B, then expanded the completed items section on card C")
+5. **How reliably it reproduces** — every time, intermittently, or only after a specific sequence
 
 ---
 
