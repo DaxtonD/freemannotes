@@ -380,3 +380,85 @@ export function formatNoteCardDiagReport(rows: readonly NoteCardDiagRow[]): stri
 	}
 	return lines.join('\n');
 }
+
+// ── Mount trace ───────────────────────────────────────────────────────────────
+//
+// The scroll recorder caught "Beta Test Bugs" laying out at 333px, painting at
+// 365px, then settling at 332px — every single time it scrolls back into view —
+// with its header, chips, body and completed section all IDENTICAL at 365 and
+// 332. So the extra 33px isn't in anything you can see; it's in the numbers the
+// height formula was fed on those first renders. Two earlier fixes for this exact
+// card went in blind and both got reverted. This records, for every React commit
+// in a checklist card's first moments after mounting, every term the formula used
+// next to what the DOM actually laid out, so the wrong term names itself.
+
+export type NoteCardMountTraceRow = {
+	ms: number;
+	render: number;
+	measurable: boolean;
+	showCompleted: boolean;
+	// what this render's height formula USED
+	usedHeaderPx: number;
+	usedMetaPx: number;
+	usedPreviewPx: number;
+	usedCardPadBottomPx: number;
+	usedBodyPadVPx: number;
+	usedCompletedBasePx: number;
+	usedBodyScrollPx: number;
+	lineHeightPx: number;
+	lineBudget: number;
+	usedLines: number;
+	itemsShown: number;
+	itemsTotal: number;
+	measuredLineCounts: number;
+	lineCostSum: number;
+	estimatedBodyPx: number;
+	measuredBodyPx: number;
+	bodyTermPx: number;
+	collapsedMinPx: number;
+	// what the DOM actually laid out right after this render committed
+	domCardPx: number;
+	domCardMinHeight: string;
+	domCardMaxHeight: string;
+	domHeaderPx: number;
+	domChipsPx: number;
+	domRegionPx: number;
+	domBodyPx: number;
+	domBodyScrollPx: number;
+	domCompletedPx: number;
+	domPreviewPx: number;
+};
+
+const MOUNT_TRACE_WINDOW_MS = 1500;
+const MOUNT_TRACE_MAX_ROWS = 12;
+const MOUNT_TRACES_PER_NOTE = 2;
+
+const mountTraces = new Map<string, { mountId: number; rows: NoteCardMountTraceRow[] }[]>();
+let mountCounter = 0;
+
+export function nextNoteCardMountId(): number {
+	mountCounter += 1;
+	return mountCounter;
+}
+
+export function recordNoteCardMountTrace(noteId: string, mountId: number, row: NoteCardMountTraceRow): void {
+	if (!NOTE_CARD_DIAG_REGISTRY_ENABLED) return;
+	if (row.ms > MOUNT_TRACE_WINDOW_MS) return;
+	let mounts = mountTraces.get(noteId);
+	if (!mounts) {
+		mounts = [];
+		mountTraces.set(noteId, mounts);
+	}
+	let mount = mounts.find((entry) => entry.mountId === mountId);
+	if (!mount) {
+		mount = { mountId, rows: [] };
+		mounts.push(mount);
+		if (mounts.length > MOUNT_TRACES_PER_NOTE) mounts.shift();
+	}
+	if (mount.rows.length >= MOUNT_TRACE_MAX_ROWS) return;
+	mount.rows.push(row);
+}
+
+export function getNoteCardMountTraces(noteId: string): readonly { mountId: number; rows: readonly NoteCardMountTraceRow[] }[] {
+	return mountTraces.get(noteId) ?? [];
+}

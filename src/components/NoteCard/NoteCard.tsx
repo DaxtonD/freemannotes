@@ -80,7 +80,13 @@ import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { useDeniedNoteIds } from '../../core/references/noteAccessCache';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from './NoteColorPickerModal';
-import { NOTE_CARD_DIAG_REGISTRY_ENABLED, registerNoteCardDiag, unregisterNoteCardDiag } from '../../core/noteCardDiagnostics';
+import {
+	NOTE_CARD_DIAG_REGISTRY_ENABLED,
+	nextNoteCardMountId,
+	recordNoteCardMountTrace,
+	registerNoteCardDiag,
+	unregisterNoteCardDiag,
+} from '../../core/noteCardDiagnostics';
 import styles from './NoteCard.module.css';
 
 export type NoteCardProps = {
@@ -2110,6 +2116,63 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			viewport?.removeEventListener('resize', scheduleMeasure);
 		};
 	}, [requestChecklistLayoutRefresh, showCompleted, type, !!props.metaChips]);
+
+	// Diagnostics only (`?scrollDiag=1` / `?cardDiag=1`): one row per React commit in
+	// a checklist card's first moments after mounting — every term the height formula
+	// used, next to what the DOM actually laid out. Declared AFTER the measuring
+	// layout effect above so each row sees the DOM that measurement just read.
+	// Strictly read-only; does nothing at all unless a diag flag is on.
+	const diagMountIdRef = React.useRef(0);
+	const diagMountAtRef = React.useRef(0);
+	const diagRenderIndexRef = React.useRef(0);
+	React.useLayoutEffect(() => {
+		if (!NOTE_CARD_DIAG_REGISTRY_ENABLED || type !== 'checklist') return;
+		const card = cardRef.current;
+		if (!card || typeof window === 'undefined') return;
+		if (!diagMountIdRef.current) {
+			diagMountIdRef.current = nextNoteCardMountId();
+			diagMountAtRef.current = performance.now();
+		}
+		diagRenderIndexRef.current += 1;
+		const px = (element: HTMLElement | null): number => (element ? element.offsetHeight : 0);
+		let lineCostSum = 0;
+		for (const item of activeChecklistItemsToRender) lineCostSum += checklistItemLineCost(item.id);
+		const cardStyle = window.getComputedStyle(card);
+		recordNoteCardMountTrace(props.noteId, diagMountIdRef.current, {
+			ms: Math.round(performance.now() - diagMountAtRef.current),
+			render: diagRenderIndexRef.current,
+			measurable: isElementLayoutMeasurable(card),
+			showCompleted,
+			usedHeaderPx: checklistLayoutMetrics.headerHeightPx,
+			usedMetaPx: checklistLayoutMetrics.metaHeightPx,
+			usedPreviewPx: checklistLayoutMetrics.linkPreviewHeightPx,
+			usedCardPadBottomPx: checklistLayoutMetrics.cardPaddingBottomPx,
+			usedBodyPadVPx: checklistLayoutMetrics.bodyPaddingVerticalPx,
+			usedCompletedBasePx: checklistLayoutMetrics.completedBaseHeightPx,
+			usedBodyScrollPx: checklistLayoutMetrics.bodyScrollHeightPx,
+			lineHeightPx: collapsedChecklistLineHeightPx,
+			lineBudget: collapsedAvailableLineBudget,
+			usedLines: collapsedActiveFit.usedLineCount,
+			itemsShown: activeChecklistItemsToRender.length,
+			itemsTotal: activeChecklistItems.length,
+			measuredLineCounts: Object.keys(lineCountById).length,
+			lineCostSum,
+			estimatedBodyPx: collapsedActiveFit.usedLineCount * collapsedChecklistLineHeightPx,
+			measuredBodyPx: Math.max(0, checklistLayoutMetrics.bodyScrollHeightPx - checklistLayoutMetrics.bodyPaddingVerticalPx),
+			bodyTermPx: collapsedActiveBodyContentHeightPx,
+			collapsedMinPx: Math.round(collapsedChecklistMinHeightPx),
+			domCardPx: card.offsetHeight,
+			domCardMinHeight: cardStyle.minHeight,
+			domCardMaxHeight: cardStyle.maxHeight,
+			domHeaderPx: outerHeightWithMarginsPx(headerRef.current),
+			domChipsPx: outerHeightWithMarginsPx(metaChipRowRef.current),
+			domRegionPx: px(contentRegionRef.current),
+			domBodyPx: px(bodyRef.current),
+			domBodyScrollPx: bodyRef.current ? Math.ceil(bodyRef.current.scrollHeight) : 0,
+			domCompletedPx: px(completedSectionRef.current),
+			domPreviewPx: px(linkPreviewRailRef.current),
+		});
+	});
 
 	// Pointer tracking distinguishes tap-to-open from drag/move gestures.
 	const pointerDownRef = React.useRef<{ x: number; y: number; moved: boolean; pointerId: number } | null>(null);

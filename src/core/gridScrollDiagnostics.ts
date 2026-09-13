@@ -22,7 +22,12 @@
  * every hook bails on its first line unless a recording is actually running.
  */
 
-import { getNoteCardDiagEntry, readStickyDiagToggle } from './noteCardDiagnostics';
+import {
+	getNoteCardDiagEntry,
+	getNoteCardMountTraces,
+	readStickyDiagToggle,
+	type NoteCardMountTraceRow,
+} from './noteCardDiagnostics';
 
 export const SCROLL_DIAG_ENABLED = readStickyDiagToggle('scrollDiag', 'freemannotes.scrollDiag');
 
@@ -516,6 +521,18 @@ function label(noteId: string): string {
 	return `#${shortId} [${info?.type || '?'}] "${clipped}"`;
 }
 
+function formatMountTraceRow(row: NoteCardMountTraceRow): string {
+	const chrome = row.usedHeaderPx + row.usedMetaPx + row.usedPreviewPx + row.usedCardPadBottomPx + row.usedBodyPadVPx;
+	return [
+		`+${row.ms}ms r${row.render}${row.measurable ? '' : ' NOT-MEASURABLE'}${row.showCompleted ? ' completed=EXPANDED' : ''}`,
+		`card=${row.domCardPx} (min-height ${row.domCardMinHeight}, max-height ${row.domCardMaxHeight})`,
+		`used: hdr ${row.usedHeaderPx} + meta ${row.usedMetaPx} + preview ${row.usedPreviewPx} + padB ${row.usedCardPadBottomPx} + bodyPadV ${row.usedBodyPadVPx} = chrome ${chrome}`,
+		`+ completedBase ${row.usedCompletedBasePx} + body ${row.bodyTermPx} (est ${row.estimatedBodyPx} = ${row.usedLines} lines x ${row.lineHeightPx}; meas ${row.measuredBodyPx} from bodyScroll ${row.usedBodyScrollPx}) = ${row.collapsedMinPx}`,
+		`lines: budget ${row.lineBudget} shown ${row.itemsShown}/${row.itemsTotal} costSum ${row.lineCostSum} measuredRows ${row.measuredLineCounts}`,
+		`dom: hdr ${row.domHeaderPx} chips ${row.domChipsPx} region ${row.domRegionPx} body ${row.domBodyPx}/scroll ${row.domBodyScrollPx} completed ${row.domCompletedPx} preview ${row.domPreviewPx}`,
+	].join(' | ');
+}
+
 function countFlips(sequence: readonly number[]): number {
 	let flips = 0;
 	for (let i = 2; i < sequence.length; i++) {
@@ -636,6 +653,10 @@ export function formatScrollDiagReport(): string {
 			.map((event) => `${event.from}→${event.to}: ${event.info?.slice('changed: '.length)}`);
 		for (const change of partChanges.slice(0, 8)) lines.push(`      ${change}`);
 		if (partChanges.length > 8) lines.push(`      …${partChanges.length - 8} more part changes`);
+		for (const trace of getNoteCardMountTraces(entry.noteId)) {
+			lines.push(`      mount trace #${trace.mountId} (one row per React commit after mounting; "used" = what the height formula was fed, "dom" = what actually laid out):`);
+			for (const row of trace.rows) lines.push(`        ${formatMountTraceRow(row)}`);
+		}
 	}
 	lines.push('');
 

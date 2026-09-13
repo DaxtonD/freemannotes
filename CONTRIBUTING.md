@@ -730,6 +730,8 @@ To disable: `?scrollDiag=0`.
 
 **Card parts.** Whenever a card's height changes, the recorder diffs the card's parts against the last time it saw that card: `header`, `banner` (none / loaded / LOADING), `chips` (count/height), `body` (text / checklist / drawing / media-grid, with height), checklist `items` shown/total, `completed` (EXPANDED or collapsed, count, height), `urlPreviews` (count/height), `mediaGrid` cells, `images` loaded/total, and any `forcedHeight`. So a line reads `604→368: completed EXPANDED→collapsed(4)/…` rather than just a number. If the height changed but none of the parts did, it says so — which points outside the card. These parts come from the same per-card registry as the card diag, which registers whenever either flag is on.
 
+**Mount trace (checklist cards).** For each card whose height changed, the report also prints its last two mounts, one row per React commit in the first 1.5 seconds: every term the collapsed-checklist height formula was fed (`used:` header, meta, preview, card/body padding, completed-row base, body term with both its line-count estimate and its measured value, and the resulting height) next to what the DOM actually laid out (`dom:`), plus the line budget and how many rows had their wrapped line count measured yet. A card that paints at the wrong height and then corrects itself shows up as a term that changes between rows while the DOM parts don't — that term is the bug.
+
 > Titles are included (first 28 characters) so you can tell which card is which. Keep that in mind before pasting a report somewhere public.
 
 > **Safety:** Runtime opt-in. Every hook bails on its first line unless a recording is running, and sampling only reads geometry, so it can't cause the movement it's recording.

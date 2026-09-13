@@ -4,6 +4,15 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.13.3 - 2026-09-13
+
+A diagnostics-only release, and we're not even a little bit sorry about it.
+
+1.13.2 killed the loop — the page no longer jumps and the right column holds perfectly still. What's left is a single 33px nudge in the left column each time "Beta Test Bugs" scrolls back into view: it lays out at 333px, paints at 365px, then settles at 332px a couple of frames later, with its header, chips, body and completed section all *identical* at 365 and 332. It only happens with completed items collapsed, which points squarely at the collapsed-checklist height formula. Two earlier fixes for this exact card went in blind and both got reverted, so this time we're making it confess first.
+
+### Added
+- **A mount trace in the scroll recorder (`?scrollDiag=1`).** For every checklist card whose height changes, the report now prints its last two mounts, one row per React commit in the first 1.5 seconds: every term the collapsed height formula was fed (header, meta, preview, paddings, completed-row base, and the body term with both its line-count estimate and its measured value) side by side with what the DOM actually laid out, plus the line budget and how many rows had their wrapped line count measured yet. Whichever term changes between the 365 row and the 332 row is the bug. Documented in CONTRIBUTING.
+
 ## 1.13.2 - 2026-09-13
 
 The scroll recorder from 1.13.1 earned its keep on its very first production run.
