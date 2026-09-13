@@ -19,8 +19,6 @@
  * calls bail on the first line and nothing is retained.
  */
 
-const CARD_DIAG_STORAGE_KEY = 'freemannotes.cardDiag';
-
 function parseToggle(value: unknown): boolean | null {
 	const normalized = String(value ?? '').trim().toLowerCase();
 	if (!normalized) return null;
@@ -29,14 +27,18 @@ function parseToggle(value: unknown): boolean | null {
 	return null;
 }
 
-export const CARD_DIAG_ENABLED = (() => {
+/**
+ * `?param=1` turns a diagnostic on and remembers it in localStorage; `?param=0`
+ * turns it back off. Shared by every diag flag so they all behave the same way.
+ */
+export function readStickyDiagToggle(param: string, storageKey: string): boolean {
 	if (typeof window === 'undefined') return false;
 	try {
 		const url = new URL(window.location.href);
-		const queryValue = parseToggle(url.searchParams.get('cardDiag'));
+		const queryValue = parseToggle(url.searchParams.get(param));
 		if (queryValue !== null) {
 			try {
-				window.localStorage.setItem(CARD_DIAG_STORAGE_KEY, queryValue ? '1' : '0');
+				window.localStorage.setItem(storageKey, queryValue ? '1' : '0');
 			} catch {
 				// Best effort only.
 			}
@@ -46,11 +48,21 @@ export const CARD_DIAG_ENABLED = (() => {
 		// ignore malformed location state
 	}
 	try {
-		return parseToggle(window.localStorage.getItem(CARD_DIAG_STORAGE_KEY)) === true;
+		return parseToggle(window.localStorage.getItem(storageKey)) === true;
 	} catch {
 		return false;
 	}
-})();
+}
+
+export const CARD_DIAG_ENABLED = readStickyDiagToggle('cardDiag', 'freemannotes.cardDiag');
+
+/**
+ * The scroll recorder (`?scrollDiag=1`) needs the same per-card parts this
+ * registry holds, so it can say WHAT inside a card changed when the card's
+ * height changes. Cards register whenever either diagnostic is on.
+ */
+export const NOTE_CARD_DIAG_REGISTRY_ENABLED = CARD_DIAG_ENABLED
+	|| readStickyDiagToggle('scrollDiag', 'freemannotes.scrollDiag');
 
 /** Everything the card COMPUTED, straight from the memos that decide its height. */
 export type NoteCardDiagComputed = {
@@ -77,6 +89,9 @@ export type NoteCardDiagComputed = {
 	itemsTotal: number;
 	computedCollapsedMinHeightPx: number;
 	computedExpandedMaxHeightPx: number;
+	// what the body is showing: 'text' | 'checklist' | 'drawing' | 'media-grid'
+	bodyKind: string;
+	mediaCells: number;
 };
 
 /** Live element refs so we can read real geometry at capture time. */
@@ -138,13 +153,17 @@ export type NoteCardDiagRow = NoteCardDiagComputed & {
 const registry = new Map<string, { computed: NoteCardDiagComputed; elements: NoteCardDiagElements }>();
 
 export function registerNoteCardDiag(computed: NoteCardDiagComputed, elements: NoteCardDiagElements): void {
-	if (!CARD_DIAG_ENABLED) return;
+	if (!NOTE_CARD_DIAG_REGISTRY_ENABLED) return;
 	registry.set(computed.noteId, { computed, elements });
 }
 
 export function unregisterNoteCardDiag(noteId: string): void {
-	if (!CARD_DIAG_ENABLED) return;
+	if (!NOTE_CARD_DIAG_REGISTRY_ENABLED) return;
 	registry.delete(noteId);
+}
+
+export function getNoteCardDiagEntry(noteId: string): { computed: NoteCardDiagComputed; elements: NoteCardDiagElements } | null {
+	return registry.get(noteId) ?? null;
 }
 
 const round = (value: number): number => Math.round(value * 10) / 10;

@@ -4,6 +4,18 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.13.1 - 2026-09-13
+
+Half fix, half flashlight. The drag-and-drop swap from 1.13.0 was wrong in a way that was obvious the moment someone actually used it, and the scroll oscillation we declared dead in that same release turned out to only be mostly dead — so this one ships a proper recorder to catch it in the act on production.
+
+### Fixed
+- **Dropping a card into another column no longer shuffles cards you never touched.** The drag preview was already doing the right thing: the destination column slides down to open a slot, the source column slides up to close the gap. Then the drop threw that away and committed a *swap* instead — whoever had been sitting in your drop slot got sent back to your card's old spot in the other column, and the source column slid back down to make room for it. So the preview showed the correct layout for a split second and the drop undid it. We now commit exactly what the preview showed. The only thing round-robin can't represent is one column holding an extra note, so a single note from the **bottom** of the fuller column moves to the bottom of the shorter one, and the usual height balancing (also bottom-only) takes it from there. Yes, this reverses the "drag now swaps" line in 1.13.0. That line was confidently wrong.
+- Dropping a card at the very bottom of a column sticks — the rebalance takes the note above it instead of quietly sending your card straight back.
+- Same-column drags now land exactly where the preview put them too, instead of trading places with whatever was at the destination.
+
+### Added
+- **A grid scroll recorder (`?scrollDiag=1`).** Start it, scroll through the twitchy part, stop, paste. Every frame it samples every mounted card's position and height inside its column plus the virtualizer's spacer padding, and it's told directly whenever a height is committed, a card is placed on a guessed height, or the columns are recomputed. Every frame where cards move gets a cause: a card above resized, the virtualizer's guess didn't match a card that just mounted, the spacer changed on its own, a card jumped column, or — tellingly — nothing visible at all. When a card's height changes it also diffs the card's parts (banner loaded or still loading, chips, body, checklist items shown, completed items expanded or collapsed, URL previews, media grid, images loaded), so the report says *"604→368: completed EXPANDED→collapsed"* instead of just *"604→368"*. This exists because the card causing the shifting is almost never the one you can see moving. Documented in CONTRIBUTING.
+
 ## 1.13.0 - 2026-09-13
 
 The note cards finally hold still while you scroll. This is the original bug — the one that kicked off the whole grid saga weeks ago — and it turned out to be three unrelated problems wearing a trenchcoat, none of which was the one we'd spent the most time on.

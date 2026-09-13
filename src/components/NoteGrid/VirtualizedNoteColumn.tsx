@@ -1,6 +1,7 @@
 import React from 'react';
 import { useWindowVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
+import { SCROLL_DIAG_ENABLED } from '../../core/gridScrollDiagnostics';
 import styles from './NoteGrid.module.css';
 
 type VirtualizedNoteColumnProps = {
@@ -118,7 +119,12 @@ const VirtualizedNoteColumnItem = React.memo(function VirtualizedNoteColumnItem(
 	}, [props.noteId, props.onItemHeightChange, props.virtualizer]);
 
 	return (
-		<div ref={handleRef} data-index={props.index} className={styles.virtualItemShell}>
+		<div
+			ref={handleRef}
+			data-index={props.index}
+			data-scroll-diag-item={SCROLL_DIAG_ENABLED ? props.noteId : undefined}
+			className={styles.virtualItemShell}
+		>
 			{props.children}
 		</div>
 	);
@@ -226,6 +232,8 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 		<div ref={columnRef} className={styles.virtualColumn}>
 			<div
 				className={styles.virtualColumnInner}
+				data-scroll-diag-inner={SCROLL_DIAG_ENABLED ? '' : undefined}
+				data-scroll-diag-virtualized={SCROLL_DIAG_ENABLED ? (shouldVirtualize ? '1' : '0') : undefined}
 				style={shouldVirtualize ? { paddingTop: `${leadingPaddingPx}px`, paddingBottom: `${trailingPaddingPx}px` } : undefined}
 			>
 				{renderedItems.map((item) => (

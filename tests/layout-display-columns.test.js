@@ -19,8 +19,10 @@ const { describe, it } = require('node:test');
 const assert = require('node:assert/strict');
 const {
 	computeDisplayColumns,
+	dealIntoColumns,
 	findColumnNeighborAnchor,
 	applyTierReorderByInsertion,
+	resolveGridDropOrder,
 } = require('../src/components/NoteGrid/layout.ts');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -279,4 +281,68 @@ describe('applyTierReorderByInsertion', () => {
 		);
 	});
 
+});
+
+// ── resolveGridDropOrder ─────────────────────────────────────────────────────
+
+describe('resolveGridDropOrder', () => {
+	const flat = heights({});
+	const resolve = (renderedOrder, finalColumns, draggedId, isPinned = noPin, heightById = flat) =>
+		resolveGridDropOrder({ renderedOrder, finalColumns, draggedId, isPinned, heightById, gapPx: 0, fallbackHeightPx: 100 });
+
+	it('same-column drop commits exactly the preview and touches no other column', () => {
+		// col0=[A,C,E] col1=[B,D,F]. Drag E to the top of col0.
+		const next = resolve(['A', 'B', 'C', 'D', 'E', 'F'], [['E', 'A', 'C'], ['B', 'D', 'F']], 'E');
+		assert.deepEqual(dealIntoColumns(next, 2), [['E', 'A', 'C'], ['B', 'D', 'F']]);
+	});
+
+	it('cross-column drop keeps every neighbour shift; only a bottom note rebalances', () => {
+		// col0=[A,C,E,G] col1=[B,D,F,H]. Drag C into col1 between B and D.
+		// Preview: col0=[A,E,G] col1=[B,C,D,F,H]. col1's bottom note H moves to col0.
+		const next = resolve(
+			['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
+			[['A', 'E', 'G'], ['B', 'C', 'D', 'F', 'H']],
+			'C',
+		);
+		assert.deepEqual(dealIntoColumns(next, 2), [['A', 'E', 'G', 'H'], ['B', 'C', 'D', 'F']]);
+	});
+
+	it('dropping at the very bottom of a column does not undo itself', () => {
+		// Drag A to the bottom of col1: the note above it rebalances instead.
+		const next = resolve(
+			['A', 'B', 'C', 'D', 'E', 'F'],
+			[['C', 'E'], ['B', 'D', 'F', 'A']],
+			'A',
+		);
+		assert.deepEqual(dealIntoColumns(next, 2), [['C', 'E', 'F'], ['B', 'D', 'A']]);
+	});
+
+	it('with several under-full columns, the pixel-shortest one is filled first', () => {
+		// 3 cols, 2 notes each required. col1 is 2 over; col0 (600px) and col2
+		// (100px) are each 1 under. E goes to col2 first, then D to col0.
+		const next = resolve(
+			['A', 'B', 'C', 'D', 'E', 'F'],
+			[['B'], ['A', 'C', 'D', 'E'], ['F']],
+			'A',
+			noPin,
+			heights({ B: 600 }),
+		);
+		assert.deepEqual(dealIntoColumns(next, 3), [['B', 'D'], ['A', 'C'], ['F', 'E']]);
+	});
+
+	it('pinned notes keep every index when an unpinned note is dragged', () => {
+		// Dealt: [P1,P2,P3,U1,U2,U3] → col0=[P1,P3,U2] col1=[P2,U1,U3]. Drag U2 above U1.
+		const next = resolve(
+			['P1', 'P2', 'P3', 'U1', 'U2', 'U3'],
+			[['P1', 'P3'], ['P2', 'U2', 'U1', 'U3']],
+			'U2',
+			pinByPrefix,
+		);
+		assert.deepEqual(next.slice(0, 3), ['P1', 'P2', 'P3']);
+		assert.deepEqual(dealIntoColumns(next, 2), [['P1', 'P3', 'U3'], ['P2', 'U2', 'U1']]);
+	});
+
+	it('returns null when the columns and the dealt order disagree about which notes exist', () => {
+		assert.equal(resolve(['A', 'B', 'C'], [['A', 'C'], ['B', 'Z']], 'A'), null);
+	});
 });

@@ -1222,3 +1222,104 @@ export function applyTierReorderByInsertion(
 		return newTierOrder[tierCursor++] ?? id;
 	});
 }
+
+/**
+ * Turn the columns a grid drop LOOKED like into the reading order that will
+ * reproduce them, touching nothing but the bottom of each column.
+ *
+ * We spent a release committing grid drops as a swap: "whoever sat in the slot
+ * you dropped into goes back to where you came from." That fought the drag
+ * preview, which inserts — the destination column's notes slide down to open a
+ * slot, the source column's notes slide up to close the hole. So the preview
+ * showed exactly the right thing, and then the drop yanked the displaced note
+ * over to the other column and slid the source column back down. Every drop
+ * shuffled cards the user never touched.
+ *
+ * This takes the preview at its word instead. The only thing round-robin can't
+ * represent is a column holding more notes than its share (a cross-column drop
+ * leaves one column +1 and another -1), so we move bottom notes from over-full
+ * columns to the bottoms of under-full ones until the counts fit, then read the
+ * columns back into round-robin order. computeDisplayColumns then does its
+ * usual height rebalance, which also only ever moves bottom notes.
+ *
+ * Only the dragged note's pin tier is rearranged. Its notes are poured back
+ * into the exact indices that tier already occupied in `renderedOrder`, so the
+ * other tier keeps every index — and therefore every column — it had.
+ *
+ * `renderedOrder` must be the order the columns were dealt from (renderedIds),
+ * and `finalColumns` the full post-drop display columns. Returns null when the
+ * two don't describe the same set of notes, so the caller can fall back rather
+ * than write a corrupted order.
+ */
+export function resolveGridDropOrder(args: {
+	renderedOrder: readonly string[];
+	finalColumns: readonly string[][];
+	draggedId: string;
+	isPinned: (id: string) => boolean;
+	heightById: HeightLookup;
+	gapPx: number;
+	fallbackHeightPx: number;
+}): string[] | null {
+	const { renderedOrder, finalColumns, draggedId, isPinned, heightById, gapPx, fallbackHeightPx } = args;
+	const columnCount = finalColumns.length;
+	if (columnCount === 0) return null;
+	const tierIsPinned = isPinned(draggedId);
+	const inTier = (id: string): boolean => isPinned(id) === tierIsPinned;
+
+	// Where this tier lives in the dealt order, and how many of those slots each
+	// column owns. Those per-column counts are fixed; the notes filling them move.
+	const tierSlots: number[] = [];
+	const requiredByColumn = new Array<number>(columnCount).fill(0);
+	for (let index = 0; index < renderedOrder.length; index++) {
+		if (!inTier(renderedOrder[index])) continue;
+		tierSlots.push(index);
+		requiredByColumn[index % columnCount] += 1;
+	}
+
+	const tierColumns = finalColumns.map((column) => column.filter(inTier));
+	const seen = new Set<string>();
+	for (const column of tierColumns) for (const id of column) seen.add(id);
+	if (seen.size !== tierSlots.length || !tierSlots.every((slot) => seen.has(renderedOrder[slot]))) {
+		return null;
+	}
+
+	const heightOf = (id: string): number => heightById.get(id) ?? fallbackHeightPx;
+	const columnHeights = finalColumns.map((column) => {
+		if (column.length === 0) return 0;
+		return column.reduce((sum, id) => sum + heightOf(id), 0) + (column.length - 1) * gapPx;
+	});
+
+	// Each pass moves one note, and every pass shrinks the total excess by one,
+	// so this terminates in at most (number of tier notes) passes.
+	for (;;) {
+		let donor = -1;
+		let receiver = -1;
+		for (let column = 0; column < columnCount; column++) {
+			const surplus = tierColumns[column].length - requiredByColumn[column];
+			if (surplus > 0 && (donor < 0 || columnHeights[column] > columnHeights[donor])) donor = column;
+			if (surplus < 0 && (receiver < 0 || columnHeights[column] < columnHeights[receiver])) receiver = column;
+		}
+		if (donor < 0 || receiver < 0) break;
+
+		// Take the donor's bottom tier note — but not the card that was just
+		// dropped there, or dropping at the bottom of a column would quietly undo
+		// itself. The note sitting above it goes instead.
+		const donorColumn = tierColumns[donor];
+		let takeIndex = donorColumn.length - 1;
+		if (donorColumn[takeIndex] === draggedId && takeIndex > 0) takeIndex -= 1;
+		const [moved] = donorColumn.splice(takeIndex, 1);
+		tierColumns[receiver].push(moved);
+
+		const movedHeight = heightOf(moved);
+		columnHeights[donor] = Math.max(0, columnHeights[donor] - movedHeight - gapPx);
+		columnHeights[receiver] += movedHeight + (columnHeights[receiver] > 0 ? gapPx : 0);
+	}
+
+	const next = renderedOrder.slice();
+	const cursorByColumn = new Array<number>(columnCount).fill(0);
+	for (const slot of tierSlots) {
+		const column = slot % columnCount;
+		next[slot] = tierColumns[column][cursorByColumn[column]++];
+	}
+	return next;
+}

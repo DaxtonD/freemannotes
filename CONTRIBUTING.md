@@ -26,6 +26,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [9. Always-On Diagnostic Logs](#9-always-on-diagnostic-logs)
   - [10. Force Grid Virtualization](#10-force-grid-virtualization)
   - [11. Note-Card Height Diagnostics](#11-note-card-height-diagnostics)
+  - [12. Grid Scroll Recorder](#12-grid-scroll-recorder)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
 - [PWA Version Changes](#pwa-version-changes)
 - [Native Platform Companions](#native-platform-companions)
@@ -698,15 +699,53 @@ Non-checklist cards (text/drawing) are listed separately as context only — the
 
 ---
 
+### 12. Grid Scroll Recorder
+
+**What it covers:** Cards shifting, oscillating, or jumping columns while you scroll the note grid. It records what every mounted card does, frame by frame, and says why each movement happened.
+
+**Why it exists:** The card that causes a shift is almost never the one you see move. A card above it (often off-screen, or not mounted at all) changed height, or the virtualizer's spacer was corrected when a card scrolled in at a different height than it had been guessed at — and everything below pays for it. Watching the grid can't separate those; a frame-by-frame record can.
+
+**How to enable** — URL query parameter (persists in localStorage), same mechanism as the others. Works on production builds:
+
+```
+https://your-host/?scrollDiag=1
+```
+
+To disable: `?scrollDiag=0`.
+
+**How to use it:** a `● scroll diag` button appears bottom-left (just above the `card diag` button if both are on). Tap it to start, scroll through the area where cards misbehave — up and down, 15–30 seconds is plenty — then tap `■ stop`. Recording stops on its own after 2 minutes. The report opens in a selectable textarea with a `copy` button (same clipboard fallback as the card diag).
+
+**What it reports:**
+
+- **Header** — app version and build tag, pointer type, viewport, column count, notes per column, how many columns are actually virtualized, frames recorded, scroll distance
+- **SUMMARY** — frames where mounted cards moved inside their column, broken down by cause:
+  - `estimate-mismatch` — a card mounted or unmounted above, and the virtualizer's spacer changed by a different amount than the card's real height (its guessed height was wrong)
+  - `virtual-padding` — the spacer changed with no mount change (an off-screen card above was re-measured)
+  - `card-above-resized` — a mounted card above changed height
+  - `mount-above-no-padding` — cards mounted/unmounted above with no spacer compensation
+  - `reordered` / `unexplained` — the order changed, or nothing visible explains it (itself a useful clue — check the layout animation count)
+- **CARDS WHOSE HEIGHT CHANGED** — each card's height sequence on screen and as committed to the grid, `flips` (went back to a previous height — the oscillation signature), mount count, and **what changed inside the card** for each change
+- **WORST HEIGHT GUESSES** — cards the virtualizer placed on an estimate before they were ever measured, and how far off the estimate was
+- **MOST-SHIFTED CARDS**, **LAYOUT RECOMPUTES** that moved a card's column, and a **TIMELINE** of the last 300 events
+
+**Card parts.** Whenever a card's height changes, the recorder diffs the card's parts against the last time it saw that card: `header`, `banner` (none / loaded / LOADING), `chips` (count/height), `body` (text / checklist / drawing / media-grid, with height), checklist `items` shown/total, `completed` (EXPANDED or collapsed, count, height), `urlPreviews` (count/height), `mediaGrid` cells, `images` loaded/total, and any `forcedHeight`. So a line reads `604→368: completed EXPANDED→collapsed(4)/…` rather than just a number. If the height changed but none of the parts did, it says so — which points outside the card. These parts come from the same per-card registry as the card diag, which registers whenever either flag is on.
+
+> Titles are included (first 28 characters) so you can tell which card is which. Keep that in mind before pasting a report somewhere public.
+
+> **Safety:** Runtime opt-in. Every hook bails on its first line unless a recording is running, and sampling only reads geometry, so it can't cause the movement it's recording.
+
+---
+
 ## Reporting a Layout Bug
 
 When reporting a masonry layout issue (cards in the wrong column, column imbalance, cards jumping after drag-drop), please include:
 
 1. **Debug payload** — captured immediately after the issue appears using `window.__noteGridDebugDownloadImportant()` (see [Masonry Layout Debug System](#3-masonry-layout-debug-system) above)
 2. **Card height diagnostics** — if the issue is a card *clipping* its completed-items row or a URL preview (rather than a column-placement issue), capture with `?cardDiag=1` instead; see [Note-Card Height Diagnostics](#11-note-card-height-diagnostics) above. Include one capture per text size / card-height setting involved.
-3. **Device and viewport** — device type (desktop/tablet/phone), approximate screen width, browser
-4. **Steps to reproduce** — what you did before the issue appeared (e.g., "dragged card A over card B, then expanded the completed items section on card C")
-5. **How reliably it reproduces** — every time, intermittently, or only after a specific sequence
+3. **Scroll recording** — if cards shift, oscillate, or jump columns *while scrolling*, record with `?scrollDiag=1` and paste the report; see [Grid Scroll Recorder](#12-grid-scroll-recorder) above.
+4. **Device and viewport** — device type (desktop/tablet/phone), approximate screen width, browser
+5. **Steps to reproduce** — what you did before the issue appeared (e.g., "dragged card A over card B, then expanded the completed items section on card C")
+6. **How reliably it reproduces** — every time, intermittently, or only after a specific sequence
 
 ---
 

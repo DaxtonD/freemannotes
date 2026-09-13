@@ -67,7 +67,7 @@ import {
 	pickRenderedDisplayOrder,
 	readCssPxVariable,
 	type StableMasonryPlacementDecision,
-	swapIds,
+	resolveGridDropOrder,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
 import { VirtualizedNoteColumn } from './VirtualizedNoteColumn';
@@ -120,6 +120,14 @@ import {
 import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import { NoteGridDebugOverlay } from './NoteGridDebugOverlay';
 import { NoteCardDiagnosticsOverlay } from './NoteCardDiagnosticsOverlay';
+import { GridScrollDiagnosticsOverlay } from './GridScrollDiagnosticsOverlay';
+import {
+	SCROLL_DIAG_ENABLED,
+	recordScrollDiagEstimate,
+	recordScrollDiagLayout,
+	recordScrollDiagMeasure,
+	setScrollDiagNoteInfoLookup,
+} from '../../core/gridScrollDiagnostics';
 
 type Note = {
 	id: string;
@@ -1387,8 +1395,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// Reading the ref inside keeps this callback's identity stable, which matters:
 	// a new estimateSize identity makes the virtualizer recompute.
 	const getEstimatedNoteHeight = React.useCallback(
-		(noteId: string): number => noteHeightByIdRef.current.get(noteId)
-			?? estimateUnmeasuredNoteHeightPx(noteId, props.maxCardHeightPx),
+		(noteId: string): number => {
+			const measured = noteHeightByIdRef.current.get(noteId);
+			if (measured !== undefined) return measured;
+			const estimate = estimateUnmeasuredNoteHeightPx(noteId, props.maxCardHeightPx);
+			recordScrollDiagEstimate(noteId, estimate);
+			return estimate;
+		},
 		[props.maxCardHeightPx]
 	);
 	const packedHeightLookup = React.useMemo<Pick<ReadonlyMap<string, number>, 'get'>>(
@@ -1987,6 +2000,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		if (!noteId || normalizedHeight <= 0) return;
 		const previousMeasuredHeight = noteHeightByIdRef.current.get(noteId);
 		if (previousMeasuredHeight === normalizedHeight) return;
+		recordScrollDiagMeasure(noteId, previousMeasuredHeight, normalizedHeight);
 		// Preserve higher-priority reasons set before the ResizeObserver fires.
 		// A checklist toggle or a max-card-height preference change sets the reason
 		// first; the ResizeObserver measurement arrives a tick later and must not
@@ -2491,6 +2505,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		[orderedIds]
 	);
 
+	// renderedIds is computed further down; the drop commit needs the order the
+	// grid was actually dealt from at the moment of the drop.
+	const renderedIdsRef = React.useRef<readonly string[]>([]);
+
 	// ── Commit drag result to Yjs ─────────────────────────────────────────
 	// Writes within-tier reordering into canonical noteOrder only. Pin tier sort
 	// is display-layer (applyPinnedDisplaySort); Yjs never receives pinned-first.
@@ -2515,34 +2533,38 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				// flattenColumns(finalColumns) is not the canonical reading order and
 				// cannot be used to derive the commit.
 				//
-				// A drop here is a SWAP, not an insertion. That is not a style choice —
-				// the canonical layer is a round-robin deal, so a note's column is
-				// decided by its INDEX. An insertion shifts every index between source
-				// and destination, and in round-robin every one of those notes changes
-				// column with it: drop one card and a dozen unrelated ones visibly jump
-				// between columns. Exchanging two indices moves exactly those two notes
-				// and leaves every other index — and therefore every other column
-				// assignment — untouched. Only the bottom-of-column migration in the
-				// display layer may then shift, which is the intended rebalance.
-				//
-				// Find which note previously occupied the slot the dragged card was
-				// dropped into, and trade places with it.
-				const destCol = finalColumns.findIndex((col) => col.includes(draggedId));
-				const destIdx = destCol >= 0 ? finalColumns[destCol].indexOf(draggedId) : -1;
-				const noteAtDest = destCol >= 0 && destIdx >= 0
-					? (originalColumns[destCol]?.[destIdx] ?? null)
-					: null;
-				// Never swap across pin tiers — that would silently change which tier a
-				// note sits in. Those fall through to the insertion path, which is
-				// tier-safe by construction.
-				if (noteAtDest && noteAtDest !== draggedId && isPinnedNote(noteAtDest) === draggedIsPinned) {
-					nextCanonicalVisible = swapIds(canonicalVisibleIdsFiltered, draggedId, noteAtDest);
+				// Commit what the drop preview SHOWED. The preview already slid the
+				// neighbours into place in both columns; resolveGridDropOrder keeps
+				// every one of those positions and only moves bottom-of-column notes to
+				// even out the note counts round-robin needs. (We used to swap with
+				// whoever sat in the drop slot, which dragged that note across to the
+				// source column and slid the source column back down — the "cards I
+				// didn't touch moved" bug.)
+				const resolvedDropOrder = resolveGridDropOrder({
+					renderedOrder: renderedIdsRef.current,
+					finalColumns,
+					draggedId,
+					isPinned: isPinnedNote,
+					heightById: { get: (id: string) => noteHeightByIdRef.current.get(id) ?? getEstimatedNoteHeight(id) },
+					gapPx: readCssPxVariable('--grid-gap', 16),
+					fallbackHeightPx: 220,
+				});
+				const canonicalTier = canonicalVisibleIdsFiltered.filter((id) => isPinnedNote(id) === draggedIsPinned);
+				const resolvedTier = resolvedDropOrder?.filter((id) => isPinnedNote(id) === draggedIsPinned) ?? null;
+				const resolvedMatchesCanonical = resolvedTier !== null
+					&& resolvedTier.length === canonicalTier.length
+					&& canonicalTier.every((id) => resolvedTier.includes(id));
+				if (resolvedDropOrder && resolvedMatchesCanonical) {
+					nextCanonicalVisible = applyTierReorderToCanonicalVisible(
+						canonicalVisibleIdsFiltered,
+						resolvedDropOrder,
+						draggedIsPinned,
+						isPinnedNote,
+					);
 				} else {
-					// No note occupied that slot (dropped past the end of a shorter
-					// column) or it belongs to the other pin tier. Fall back to inserting
-					// next to the dragged note's nearest same-tier column neighbour,
-					// which expresses "put it above/below this one" and correctly handles
-					// appending to the bottom of a column.
+					// The dealt order and the canonical list disagree about which notes
+					// exist (a sync landed mid-drag). Don't guess at a whole-tier rewrite
+					// — just insert the dragged note next to its column neighbour.
 					const anchor = findColumnNeighborAnchor(finalColumns, draggedId, isPinnedNote);
 					nextCanonicalVisible = applyTierReorderByInsertion(
 						canonicalVisibleIdsFiltered,
@@ -3009,6 +3031,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			isPinned: (id) => noteSnapshotById.get(id)?.isPinned === true,
 		});
 	}, [layoutOrderIds, noteSnapshotById, shouldPrioritizePinnedForDisplay, visibleIds]);
+	renderedIdsRef.current = renderedIds;
 	const renderedIdsSignature = React.useMemo(() => renderedIds.join('\u001f'), [renderedIds]);
 	const layoutMeasurementTargetIds = React.useMemo(
 		() => (isGridVisible && props.viewMode === 'card' ? renderedIds.slice(0, viewportCapacity) : renderedIds),
@@ -3317,9 +3340,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	// These are DISPLAY columns: flattenColumns(columns) === renderedIds does NOT
 	// hold, by design — that is the whole point of migrating a note between
 	// columns. The canonical note order lives in Yjs and is never derived from
-	// these columns. Anything that needs canonical order from a drag must use
-	// findColumnNeighborAnchor + applyTierReorderByInsertion (see
-	// commitVisibleOrder), NOT flattenColumns.
+	// these columns by flattening. A drag commit maps them back through
+	// resolveGridDropOrder (see commitVisibleOrder), NOT flattenColumns.
 	//
 	// The previous slot-based balancer preserved that invariant but could only
 	// move the boundary between columns, re-dealing the entire tail; with tall
@@ -3397,6 +3419,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [columnCount, mobileGridGapPx, noteHeightsVersion, packedHeightLookup, props.maxCardHeightPx, renderedIds]);
 	const packedColumns = packedLayout.columns;
 	const resolvedBaseColumns = packedColumns;
+	React.useEffect(() => {
+		recordScrollDiagLayout(packedColumns, noteHeightsVersion, renderedIds);
+	}, [noteHeightsVersion, packedColumns, renderedIds]);
+	React.useEffect(() => {
+		if (!SCROLL_DIAG_ENABLED) return;
+		setScrollDiagNoteInfoLookup((noteId) => {
+			const liveType = String(docsById[noteId]?.getMap('metadata').get('type') ?? '');
+			const snapshotNote = workspaceRenderSnapshotNoteById.get(noteId);
+			return {
+				type: liveType || snapshotNote?.type || '',
+				title: noteSnapshotById.get(noteId)?.title ?? snapshotNote?.title ?? '',
+			};
+		});
+	}, [docsById, noteSnapshotById, workspaceRenderSnapshotNoteById]);
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';
 	const listColumnCount = React.useMemo(() => {
 		if (isCoarsePointer) return 1;
@@ -4706,7 +4742,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 									</div>
 									<div className={styles.grid}>
 										{sectionColumns.map((columnIds, columnIndex) => (
-											<div key={`${section.key}:col-${columnIndex}`} className={styles.column}>
+											<div key={`${section.key}:col-${columnIndex}`} className={styles.column} data-scroll-diag-column={SCROLL_DIAG_ENABLED ? `${section.key}:${columnIndex}` : undefined}>
 												<VirtualizedNoteColumn
 													key={`${props.activeWorkspaceId ?? 'workspace'}:${props.viewMode}:${section.key}:col-${columnIndex}`}
 													noteIds={columnIds}
@@ -4724,7 +4760,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							);
 						})
 						: columns.map((columnIds, columnIndex) => (
-							<div key={`col-${columnIndex}`} className={styles.column}>
+							<div key={`col-${columnIndex}`} className={styles.column} data-scroll-diag-column={SCROLL_DIAG_ENABLED ? String(columnIndex) : undefined}>
 								<VirtualizedNoteColumn
 									key={`${props.activeWorkspaceId ?? 'workspace'}:${props.viewMode}:col-${columnIndex}`}
 									noteIds={columnIds}
@@ -5163,6 +5199,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				<NoteGridDebugOverlay columns={columns} noteHeightByIdRef={noteHeightByIdRef} />
 			) : null}
 			<NoteCardDiagnosticsOverlay />
+			<GridScrollDiagnosticsOverlay />
 		</section>
 	);
 }

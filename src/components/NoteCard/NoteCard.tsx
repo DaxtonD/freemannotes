@@ -80,7 +80,7 @@ import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { useDeniedNoteIds } from '../../core/references/noteAccessCache';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from './NoteColorPickerModal';
-import { CARD_DIAG_ENABLED, registerNoteCardDiag, unregisterNoteCardDiag } from '../../core/noteCardDiagnostics';
+import { NOTE_CARD_DIAG_REGISTRY_ENABLED, registerNoteCardDiag, unregisterNoteCardDiag } from '../../core/noteCardDiagnostics';
 import styles from './NoteCard.module.css';
 
 export type NoteCardProps = {
@@ -1775,7 +1775,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 	// how many pixels are being clipped. Inert (and retains nothing) when the flag
 	// is off; deliberately read-only so it can never perturb the layout it measures.
 	React.useEffect(() => {
-		if (!CARD_DIAG_ENABLED) return;
+		if (!NOTE_CARD_DIAG_REGISTRY_ENABLED) return;
 		registerNoteCardDiag(
 			{
 				noteId: props.noteId,
@@ -1802,6 +1802,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				itemsTotal: activeChecklistItems.length,
 				computedCollapsedMinHeightPx: Math.round(collapsedChecklistMinHeightPx),
 				computedExpandedMaxHeightPx: Math.round(expandedChecklistMaxHeightPx),
+				bodyKind: type === 'drawing' ? 'drawing' : showMediaPreview ? 'media-grid' : type,
+				mediaCells: showMediaPreview ? drawingSlots + imageSlots : 0,
 			},
 			{
 				card: cardRef.current,
@@ -1816,7 +1818,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		);
 	});
 	React.useEffect(() => {
-		if (!CARD_DIAG_ENABLED) return;
+		if (!NOTE_CARD_DIAG_REGISTRY_ENABLED) return;
 		const id = props.noteId;
 		return () => unregisterNoteCardDiag(id);
 	}, [props.noteId]);
