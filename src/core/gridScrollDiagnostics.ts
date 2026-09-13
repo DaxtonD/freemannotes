@@ -15,7 +15,7 @@
  * height is handed to the virtualizer, or the column layout is recomputed. Any
  * frame where mounted cards move inside their column is recorded with the most
  * likely cause: a card above resized, the spacer didn't match a card that just
- * mounted (estimate mismatch), the spacer changed by itself, cards changed
+ * mounted or unmounted (spacer mismatch), the spacer changed by itself, cards changed
  * column, or nothing we can see ("unexplained" — which is itself a clue).
  *
  * Runtime flag, sticky per browser, same pattern as `?cardDiag=1`. Safe to ship:
@@ -32,7 +32,7 @@ type EventKind = 'shift' | 'resize' | 'remount-resize' | 'column-jump' | 'pad' |
 
 type ShiftCause =
 	| 'card-above-resized'
-	| 'estimate-mismatch'
+	| 'spacer-mismatch'
 	| 'virtual-padding'
 	| 'mount-above-no-padding'
 	| 'reordered'
@@ -424,8 +424,8 @@ function sampleFrame(timestamp: number): void {
 			}).join('; ')}`);
 		} else if ((mountedAbove.length > 0 || unmountedAbove.length > 0) && padDelta !== 0) {
 			// The virtualizer swapped a real card for spacer padding (or back) and the
-			// two weren't the same size — i.e. the height it had for that card was wrong.
-			cause = 'estimate-mismatch';
+			// two weren't the same size: either its guess was wrong, or the card came back at a different height than when it left.
+			cause = 'spacer-mismatch';
 			const mountedPx = mountedAbove.reduce((sum, noteId) => sum + (nextCards.get(noteId)?.height ?? 0), 0);
 			const unmountedPx = unmountedAbove.reduce((sum, noteId) => sum + (prevCards.get(noteId)?.height ?? 0), 0);
 			details.push(`pad ${previousColumn.padTop}→${column.padTop} (Δ${padDelta})`);
@@ -585,7 +585,7 @@ export function formatScrollDiagReport(): string {
 	const totalShiftDy = shiftEvents.reduce((sum, event) => sum + Math.abs(event.from ?? 0), 0);
 	lines.push('SUMMARY');
 	lines.push(`  frames where mounted cards moved inside their column: ${shiftEvents.length} (total |dy| ${totalShiftDy}px), while not scrolling: ${shiftEvents.filter((event) => event.scrollDelta === 0).length}`);
-	const causeOrder: ShiftCause[] = ['estimate-mismatch', 'virtual-padding', 'card-above-resized', 'mount-above-no-padding', 'reordered', 'unexplained'];
+	const causeOrder: ShiftCause[] = ['spacer-mismatch', 'virtual-padding', 'card-above-resized', 'mount-above-no-padding', 'reordered', 'unexplained'];
 	for (const cause of causeOrder) {
 		const stats = shiftStatsByCause.get(cause);
 		if (!stats) continue;

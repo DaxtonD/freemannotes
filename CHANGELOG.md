@@ -4,6 +4,19 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.13.2 - 2026-09-13
+
+The scroll recorder from 1.13.1 earned its keep on its very first production run.
+
+### Fixed
+- **Both columns bouncing up and down while you sat still.** The virtualizer has a setting that stops it scrolling the page whenever a card *above* you changes size, and we'd turned it off ages ago. Except we passed it in the options object, and virtual-core only ever reads it off the virtualizer instance — so it was silently ignored the entire time, and the TypeScript error saying exactly that sat in our "known baseline errors" pile like a smoke alarm we'd pulled the battery out of. The recording showed the rest: one checklist ("Beta Test Bugs") at the top edge of the left column's loaded window settled 365→332px, the virtualizer scrolled the *whole page* 33px to compensate (the page is shared, so the right column went along for the ride), that pushed the card out of the window, it remounted at the wrong height again, and round we went about five times a second. The setting now actually applies.
+
+### Changed
+- The recorder's `estimate-mismatch` cause is now `spacer-mismatch`. In that recording nothing had been guessed — the card simply came back at a different height than when it left — and the old name sent us looking in the wrong place.
+
+### Known issue
+- Checklist cards still don't mount at their final height (they settle through a couple of sizes over the first few frames). With the page no longer being scrolled around, that should now be a one-off nudge instead of a loop, but it's the next thing on the list.
+
 ## 1.13.1 - 2026-09-13
 
 Half fix, half flashlight. The drag-and-drop swap from 1.13.0 was wrong in a way that was obvious the moment someone actually used it, and the scroll oscillation we declared dead in that same release turned out to only be mostly dead — so this one ships a proper recorder to catch it in the act on production.

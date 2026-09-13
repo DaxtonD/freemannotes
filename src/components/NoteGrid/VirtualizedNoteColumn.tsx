@@ -205,8 +205,18 @@ export function VirtualizedNoteColumn(props: VirtualizedNoteColumnProps): React.
 		enabled: shouldVirtualize,
 		useFlushSync: false,
 		measureElement: (element, entry) => Math.max(1, Math.round(entry?.contentRect.height ?? element.getBoundingClientRect().height)),
-		shouldAdjustScrollPositionOnItemSizeChange: () => false,
 	});
+	// Never scroll the page because a card above the viewport changed size.
+	//
+	// This used to be passed in the options object above, where virtual-core
+	// silently ignores it — it's a property on the instance, and only the instance
+	// property is ever read. So the "off" switch was never actually off, and every
+	// time a card above you resized, this column scrolled the WHOLE PAGE by the
+	// difference. The page is shared by every column, so one checklist settling
+	// 365→332px at the top of the left column's window jumped both columns 33px,
+	// which pushed that card out of the window, which remounted it at the wrong
+	// height again, forever. Caught red-handed by ?scrollDiag=1.
+	virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
 
 	React.useEffect(() => {
 		if (!shouldVirtualize) return;

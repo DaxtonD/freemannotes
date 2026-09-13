@@ -719,7 +719,7 @@ To disable: `?scrollDiag=0`.
 
 - **Header** — app version and build tag, pointer type, viewport, column count, notes per column, how many columns are actually virtualized, frames recorded, scroll distance
 - **SUMMARY** — frames where mounted cards moved inside their column, broken down by cause:
-  - `estimate-mismatch` — a card mounted or unmounted above, and the virtualizer's spacer changed by a different amount than the card's real height (its guessed height was wrong)
+  - `spacer-mismatch` — a card mounted or unmounted above, and the virtualizer's spacer changed by a different amount than the card's real height (either its height was guessed wrong, or it came back at a different height than when it left)
   - `virtual-padding` — the spacer changed with no mount change (an off-screen card above was re-measured)
   - `card-above-resized` — a mounted card above changed height
   - `mount-above-no-padding` — cards mounted/unmounted above with no spacer compensation
