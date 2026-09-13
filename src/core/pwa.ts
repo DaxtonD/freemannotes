@@ -248,30 +248,38 @@ function markPwaInteraction(): void {
 	pwaLastInteractionAt = Date.now();
 }
 
+// Whether it is safe to reload the page ON OUR OWN, with no explicit request
+// from the user — i.e. never. This used to gate a silent auto-apply on
+// visibility + an idle-time heuristic (no pointerdown/keydown/touchstart for
+// SW_UPDATE_IDLE_MS). That heuristic has an inherent hole at exactly the
+// moment it matters most: opening the app resets the idle clock (see
+// markPwaInteraction() on the visibilitychange 'visible' branch below), and
+// the update check that follows is asynchronous — so a user who opens the app
+// and then just reads the screen without touching it sails past the idle
+// window a short while later and gets silently reloaded while looking at it.
+// "Never apply while hidden" doesn't rescue this either: Chrome PWA queues a
+// location.replace() made on a backgrounded page and only executes it once
+// the page becomes visible again, so an update applied while hidden still
+// produces the exact same surprise reload the instant the user returns.
+//
+// There is no heuristic that reliably distinguishes "safe to reload without
+// asking" from "the user is currently looking at this" — so this no longer
+// tries. Every automatic path below now always defers to
+// setSnapshot({ updateAvailable: true }), which drives the real "Update
+// available" banner in App.tsx (onApplyAppUpdate/onDismissAppUpdate) — an
+// update only ever actually reloads the page via that banner's explicit
+// button, through applyPwaUpdate(), which bypasses this function entirely.
 function canSafelyApplyPwaUpdate(caller?: string): boolean {
-	if (typeof document === 'undefined') return !pwaUpdateBlocked;
-	const vis = document.visibilityState;
-	const idleMs = Date.now() - pwaLastInteractionAt;
-	let result: boolean;
-	let reason: string;
-	if (pwaUpdateBlocked) {
-		result = false;
-		reason = 'blocked';
-	} else if (vis !== 'visible') {
-		// Never apply while the page is hidden: Chrome PWA queues location.replace()
-		// calls made on a backgrounded page and executes them on foreground, producing
-		// a surprise reload the moment the user returns to the app.
-		result = false;
-		reason = 'hidden';
-	} else if (idleMs < SW_UPDATE_IDLE_MS) {
-		result = false;
-		reason = `not-idle(${Math.round(idleMs / 1000)}s)`;
-	} else {
-		result = true;
-		reason = 'safe';
-	}
-	pwaLog('canSafelyApply', { caller, result, reason, vis, idleMs, swPendingApply, networkVersionPending });
-	return result;
+	pwaLog('canSafelyApply', {
+		caller,
+		result: false,
+		reason: 'always-defer-to-banner',
+		vis: typeof document !== 'undefined' ? document.visibilityState : 'unknown',
+		pwaUpdateBlocked,
+		swPendingApply,
+		networkVersionPending,
+	});
+	return false;
 }
 
 async function applyNetworkVersionUpdate(): Promise<void> {

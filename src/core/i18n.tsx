@@ -307,6 +307,11 @@ const FALLBACK_MESSAGES: Dictionary = {
 		clearAction: 'Clear reminder',
 		saveAction: 'Save reminder',
 	},
+	date: {
+		yesterday: 'Yesterday',
+		today: 'Today',
+		tomorrow: 'Tomorrow',
+	},
 	editors: {
 		// Fallback branch for newly introduced editor dock/formatting labels.
 		// These keys ensure old or failed locale payloads still render readable UI
@@ -498,6 +503,13 @@ const FALLBACK_MESSAGES: Dictionary = {
 		addButton: 'URL Preview',
 		prompt: 'Enter a URL to preview',
 		deletePreview: 'Delete URL preview',
+		cleanupButton: 'Clean up',
+		cleanupTooltip: 'Removes any link previews whose link no longer appears in the note.',
+		cleanupNoneFound: 'Nothing to clean up — every preview matches a link in the note.',
+		cleanupRemovedSingular: 'Removed 1 unused preview.',
+		cleanupRemovedPlural: 'Removed {count} unused previews.',
+		viewAsCards: 'View as cards',
+		viewAsList: 'View as list',
 		notificationsSubtitle: 'Review link previews that failed to resolve and reopen the note to fix the URL.',
 		notificationMessage: 'has a link preview that needs attention.',
 		openNote: 'Open note',

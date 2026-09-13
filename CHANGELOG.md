@@ -4,6 +4,20 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.14.0 - 2026-09-13
+
+A grab bag today: a notification fix, a genuinely new feature (with a correction mid-flight, courtesy of good testing), and a PWA bug that's been quietly refreshing the app out from under people.
+
+### Added
+- **URLs typed or pasted into a note now become real hyperlinks and preview cards on their own**, without touching "Add URL preview." This runs once, when the note is closed (or a new note is saved), not while you're typing — rewriting a document's rich content live, possibly while someone else is editing the same note, is exactly the kind of thing that goes wrong in a CRDT editor. It also catches a link however it got there — typed as a bare URL, pasted, or turned into a link by hand via the toolbar — since only checking for unlinked text would've missed a manually-linked "Google" pointing at google.com entirely.
+- **A "Clean up" button in the Links tab** removes preview cards whose link no longer exists anywhere in the note — deleted text, or a link manually un-linked but left in place. It does *not* touch a preview you added yourself through "+ URL Preview" with no backing text — those aren't "orphaned," that's the entire point of adding one by hand, and we came very close to shipping a version that would have quietly deleted them. Holding the button down explains what it does instead of running it.
+- **A card/list view toggle** in the Links tab, remembered per device (not per note, not synced) for anyone with enough links that scanning a list beats scanning a grid of cards.
+- **Reminder dates now say "Yesterday" / "Today" / "Tomorrow"** instead of a hard date, everywhere a reminder shows one — the note card badge, Inbox cards, and the push/email text itself. Anything further out still shows a real date. The server has no idea which timezone any given user is actually in (nothing in this app tracks that per person), so push/email text uses the same instance-wide timezone the REST API already assumes elsewhere.
+
+### Fixed
+- **The Android notification header showed what looked like two copies of the app icon.** The small icon Android draws next to the notification title is supposed to be a plain white silhouette that the OS tints itself — ours was a full-color copy of the exact same logo already showing as the large icon, so Android drew the logo twice. Regenerated as a proper silhouette (`scripts/generate-notification-badge.mjs`). The line of text next to it (app name, site address, timestamp) is Android's own notification chrome and isn't something any app, native or web, can remove.
+- **The app occasionally reloaded itself out of nowhere shortly after opening it.** There's a real, careful mechanism in here already guarding against a disruptive reload — never while a note editor is open, never while the tab is hidden, only after 90 seconds with no tap or keystroke. The hole: opening the app resets that 90-second clock, but the update check that follows is a background network request, so if you then just sit and read for a bit, those 90 seconds run out mid-glance and it reloads right then. There's already a proper "update available" banner with its own Apply/Dismiss buttons built for this — it just wasn't the only path. Now it is: nothing reloads the page on its own anymore, ever. It only happens when you tap Apply.
+
 ## 1.13.4 - 2026-09-13
 
 The mount trace from 1.13.3 did exactly what it was built for: one recording, and the wrong number named itself.

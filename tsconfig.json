@@ -14,5 +14,24 @@
     "rootDir": "src"
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.d.ts"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist"],
+  // Only read by ts-node (our `node --test` suite requires .ts source files
+  // directly via `ts-node/register/transpile-only`), never by tsc or Vite.
+  // The top-level compilerOptions target ESNext modules for Vite's bundler
+  // resolution, but ts-node's transpile-only mode emits whatever module format
+  // it's told to — given ESNext, that's still literal `import`/`export` in the
+  // JS it hands to Node, and Node then treats any of THAT file's own further
+  // relative imports as real ESM specifiers, which require full extensions. A
+  // source file with an extensionless local import (e.g. `from './noteLinks'`,
+  // fine for Vite) then fails at test time with a confusing
+  // ERR_MODULE_NOT_FOUND blaming the loader, not the actual TS. Overriding to
+  // commonjs/node here (ts-node only) makes it transpile+resolve the same way
+  // Node's classic CJS require always has.
+  "ts-node": {
+    "transpileOnly": true,
+    "compilerOptions": {
+      "module": "commonjs",
+      "moduleResolution": "node"
+    }
+  }
 }

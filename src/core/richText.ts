@@ -1714,7 +1714,10 @@ export function createRichTextExtensions(args: {
 	return extensions;
 }
 
-function getSchemaForVariant(variant: RichTextVariant) {
+// Exported so callers that need to round-trip a Y.XmlFragment through
+// prosemirror-json (e.g. the close-time URL auto-linker) can build the same
+// schema this module uses internally, without duplicating the extension list.
+export function getSchemaForVariant(variant: RichTextVariant) {
 	return getSchema(createRichTextExtensions({ variant }));
 }
 

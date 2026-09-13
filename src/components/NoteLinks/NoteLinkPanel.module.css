@@ -89,6 +89,29 @@
 	background: color-mix(in srgb, var(--color-accent) 20%, var(--color-surface-2));
 }
 
+/* Clean-up + card/list toggle: icon-only, same footprint as .addButton without
+   its label so it sits comfortably beside it in the same row. */
+.iconButton {
+	border: 0;
+	border-radius: 999px;
+	width: 34px;
+	height: 34px;
+	font-size: 13px;
+	cursor: pointer;
+	color: var(--color-text-muted);
+	background: var(--color-surface-2);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+}
+
+.iconButton:hover,
+.iconButton:focus-visible {
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface-2));
+}
+
 .emptyBody {
 	font-size: 12px;
 	color: var(--color-text-muted);
@@ -274,6 +297,49 @@
 .rail .card:last-child {
 	border-bottom-left-radius: 0;
 	border-bottom-right-radius: 0;
+}
+
+/* List view for the full panel (not the rail, which is already this compact by
+   default) — same row-of-thumbnail-plus-text shape as .rail, but keeps the
+   panel's own delete button and behaviors. Placed after the `.panel .x` rules
+   above so equal-specificity selectors here win by source order. */
+.listView {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.cardListRow .cardLink {
+	display: flex;
+	flex-direction: row;
+	align-items: center;
+	gap: 10px;
+	padding: 7px 40px 7px 10px; /* right padding clears the absolutely-positioned delete button */
+}
+
+.cardListRow .copy {
+	padding: 0;
+	gap: 2px;
+}
+
+.cardListRow .image,
+.cardListRow .imagePlaceholder {
+	width: 44px;
+	height: 44px;
+	aspect-ratio: 1 / 1;
+	border-radius: 10px;
+	flex-shrink: 0;
+}
+
+.cardListRow .description {
+	-webkit-line-clamp: 1;
+}
+
+.cardListRow .deleteButton {
+	top: 50%;
+	transform: translateY(-50%);
+	width: 26px;
+	height: 26px;
 }
 
 @media (max-width: 640px) {

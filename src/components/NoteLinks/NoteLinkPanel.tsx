@@ -1,6 +1,6 @@
 import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faLink, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faBroom, faLink, faListUl, faPlus, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
 import {
 	flushQueuedNoteLinkSync,
@@ -26,8 +26,29 @@ type NoteLinkPanelProps = {
 	disableOpenLinks?: boolean;
 	onDeleteLink?: (normalizedUrl: string) => void;
 	onAddUrlPreview?: (() => void) | undefined;
+	/** Removes any preview card whose link no longer exists anywhere in the note's content. Omit to hide the button entirely (e.g. read-only). */
+	onCleanUpUrlPreviews?: (() => void) | undefined;
+	/** Brief toast, e.g. after a clean-up run, or the long-press explanation of what it does. */
+	onShowBriefDialog?: ((message: string) => void) | undefined;
 	disableInitialRemoteRefresh?: boolean;
 };
+
+const VIEW_MODE_STORAGE_KEY = 'freemannotes.noteLinkPanelViewMode';
+type LinkPanelViewMode = 'card' | 'list';
+
+function readStoredViewMode(): LinkPanelViewMode {
+	if (typeof window === 'undefined') return 'card';
+	try {
+		return window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) === 'list' ? 'list' : 'card';
+	} catch {
+		return 'card';
+	}
+}
+
+// How long a press has to be held before it's treated as "explain this button"
+// rather than "activate it" — same idea as NoteCard's own long-press-to-open-
+// the-more-menu gesture, just local to this one button instead of a whole card.
+const CLEANUP_LONG_PRESS_MS = 500;
 
 // Generous retry schedule so the client keeps polling even when the first flush/GET
 // fails because the network is not fully stable yet after reconnect.
@@ -162,6 +183,51 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 	);
 	const summaryLabel = links.length === 1 ? `1 ${t('links.linkSingular')}` : `${links.length} ${t('links.linkPlural')}`;
 	const fallbackCount = props.fallbackLinks?.length || 0;
+
+	// Per-device display preference, not per-note data — deliberately
+	// localStorage, not synced through Yjs. Only meaningful for the full panel;
+	// the rail embedded in a note card is already a single compact layout.
+	const [viewMode, setViewMode] = React.useState<LinkPanelViewMode>(readStoredViewMode);
+	const toggleViewMode = React.useCallback(() => {
+		setViewMode((current) => {
+			const next: LinkPanelViewMode = current === 'card' ? 'list' : 'card';
+			try {
+				window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, next);
+			} catch {
+				// Best effort only — worst case the preference doesn't persist.
+			}
+			return next;
+		});
+	}, []);
+
+	// "Clean up" button: a plain click runs it, but a press held past
+	// CLEANUP_LONG_PRESS_MS instead shows what it does and swallows the click
+	// that follows release, so the same press never both explains AND runs it.
+	const cleanupLongPressTimerRef = React.useRef<number>(0);
+	const cleanupLongPressFiredRef = React.useRef(false);
+	const clearCleanupLongPressTimer = React.useCallback((): void => {
+		if (cleanupLongPressTimerRef.current) {
+			window.clearTimeout(cleanupLongPressTimerRef.current);
+			cleanupLongPressTimerRef.current = 0;
+		}
+	}, []);
+	const handleCleanupPointerDown = React.useCallback((): void => {
+		cleanupLongPressFiredRef.current = false;
+		clearCleanupLongPressTimer();
+		cleanupLongPressTimerRef.current = window.setTimeout(() => {
+			cleanupLongPressTimerRef.current = 0;
+			cleanupLongPressFiredRef.current = true;
+			props.onShowBriefDialog?.(t('links.cleanupTooltip'));
+		}, CLEANUP_LONG_PRESS_MS);
+	}, [clearCleanupLongPressTimer, props, t]);
+	const handleCleanupClick = React.useCallback((): void => {
+		clearCleanupLongPressTimer();
+		if (cleanupLongPressFiredRef.current) {
+			cleanupLongPressFiredRef.current = false;
+			return;
+		}
+		props.onCleanUpUrlPreviews?.();
+	}, [clearCleanupLongPressTimer, props]);
 
 	const clearRetryTimer = React.useCallback(() => {
 		if (retryTimerRef.current !== null) {
@@ -356,6 +422,30 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 						</p>
 					</div>
 					<div className={styles.headerActions}>
+						{props.canEdit && props.onCleanUpUrlPreviews ? (
+							<button
+								type="button"
+								className={styles.iconButton}
+								onClick={handleCleanupClick}
+								onPointerDown={handleCleanupPointerDown}
+								onPointerUp={clearCleanupLongPressTimer}
+								onPointerLeave={clearCleanupLongPressTimer}
+								onPointerCancel={clearCleanupLongPressTimer}
+								aria-label={t('links.cleanupButton')}
+								title={t('links.cleanupTooltip')}
+							>
+								<FontAwesomeIcon icon={faBroom} />
+							</button>
+						) : null}
+						<button
+							type="button"
+							className={styles.iconButton}
+							onClick={toggleViewMode}
+							aria-label={viewMode === 'card' ? t('links.viewAsList') : t('links.viewAsCards')}
+							title={viewMode === 'card' ? t('links.viewAsList') : t('links.viewAsCards')}
+						>
+							<FontAwesomeIcon icon={viewMode === 'card' ? faListUl : faTableCellsLarge} />
+						</button>
 						{props.canEdit && props.onAddUrlPreview ? (
 							<button type="button" className={styles.addButton} onClick={props.onAddUrlPreview}>
 								<FontAwesomeIcon icon={faPlus} />
@@ -367,11 +457,11 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 			) : null}
 			{error && variant === 'panel' ? <p className={styles.error}>{error}</p> : null}
 			{visibleLinks.length === 0 ? null : (
-				<div className={variant === 'rail' ? styles.railList : styles.list}>
+				<div className={variant === 'rail' ? styles.railList : (viewMode === 'list' ? styles.listView : styles.list)}>
 					{visibleLinks.map((link) => (
 						<div
 							key={link.id}
-							className={`${styles.card}${variant === 'rail' ? ` ${styles.cardCompact}` : ''}`}
+							className={`${styles.card}${variant === 'rail' ? ` ${styles.cardCompact}` : ''}${variant === 'panel' && viewMode === 'list' ? ` ${styles.cardListRow}` : ''}`}
 						>
 							{variant !== 'rail' && props.canEdit && props.onDeleteLink ? (
 								<button

@@ -260,6 +260,11 @@
     "clearAction": "Clear reminder",
     "saveAction": "Save reminder"
   },
+  "date": {
+    "yesterday": "Yesterday",
+    "today": "Today",
+    "tomorrow": "Tomorrow"
+  },
   "editors": {
     "newText": "New Text Note",
     "newChecklist": "New Checklist Note",
@@ -485,6 +490,13 @@
     "prompt": "Enter a URL to preview",
     "addedToast": "URL preview added",
     "deletePreview": "Delete URL preview",
+    "cleanupButton": "Clean up",
+    "cleanupTooltip": "Removes any link previews whose link no longer appears in the note.",
+    "cleanupNoneFound": "Nothing to clean up — every preview matches a link in the note.",
+    "cleanupRemovedSingular": "Removed 1 unused preview.",
+    "cleanupRemovedPlural": "Removed {count} unused previews.",
+    "viewAsCards": "View as cards",
+    "viewAsList": "View as list",
     "noteTrashedToast": "This note is in the trash.",
     "noteMissingToast": "This note no longer exists.",
     "notificationsSubtitle": "Review link previews that failed to resolve and reopen the note to fix the URL.",

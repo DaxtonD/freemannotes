@@ -7,6 +7,7 @@ import { useI18n } from '../../core/i18n';
 import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
 import { fetchFiredReminders, fetchNoteReminderStates, type FiredReminder, type NoteReminderState } from '../../core/pushApi';
 import { isReminderDueSoon } from '../../core/reminderUrgency';
+import { formatRelativeReminderDate } from '../../core/relativeDate';
 import { refreshPriorCollaboratorsCache } from '../../core/priorCollaboratorsApi';
 import { invalidateWorkspaceMembersCache } from '../../core/references/providers/UserReferenceProvider';
 import styles from './InboxView.module.css';
@@ -760,7 +761,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 												<FontAwesomeIcon icon={faBell} className={styles.reminderCardIcon} />
 												<div>
 													<div className={styles.reminderCardTitle}>{reminder.noteTitle || t('note.untitled')}</div>
-													<div className={styles.reminderCardMeta}>{new Date(reminder.reminderAt).toLocaleString()}</div>
+													<div className={styles.reminderCardMeta}>{formatRelativeReminderDate(reminder.reminderAt, t)}</div>
 												</div>
 											</div>
 											<div className={styles.reminderCardActions}>
@@ -790,7 +791,7 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 												<FontAwesomeIcon icon={faBell} className={styles.reminderCardIcon} />
 												<div>
 													<div className={styles.reminderCardTitle}>{reminder.noteTitle || t('note.untitled')}</div>
-													<div className={styles.reminderCardMeta}>{new Date(reminder.reminderAt).toLocaleString()}</div>
+													<div className={styles.reminderCardMeta}>{formatRelativeReminderDate(reminder.reminderAt, t)}</div>
 												</div>
 											</div>
 											<div className={styles.reminderCardActions}>

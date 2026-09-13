@@ -260,6 +260,11 @@
     "clearAction": "Borrar recordatorio",
     "saveAction": "Guardar recordatorio"
   },
+  "date": {
+    "yesterday": "Ayer",
+    "today": "Hoy",
+    "tomorrow": "Mañana"
+  },
   "editors": {
     "newText": "Nueva nota de texto",
     "newChecklist": "Nueva lista",
@@ -485,6 +490,13 @@
     "prompt": "Introduce una URL para la vista previa",
     "addedToast": "Vista previa de URL añadida",
     "deletePreview": "Eliminar vista previa de URL",
+    "cleanupButton": "Limpiar",
+    "cleanupTooltip": "Elimina las vistas previas cuyo enlace ya no aparece en la nota.",
+    "cleanupNoneFound": "Nada que limpiar: cada vista previa coincide con un enlace de la nota.",
+    "cleanupRemovedSingular": "Se elimino 1 vista previa sin uso.",
+    "cleanupRemovedPlural": "Se eliminaron {count} vistas previas sin uso.",
+    "viewAsCards": "Ver como tarjetas",
+    "viewAsList": "Ver como lista",
     "noteTrashedToast": "Esta nota esta en la papelera.",
     "noteMissingToast": "Esta nota ya no existe.",
     "notificationsSubtitle": "Revisa las vistas previas de enlaces que fallaron y vuelve a abrir la nota para corregir la URL.",

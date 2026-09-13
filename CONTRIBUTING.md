@@ -933,4 +933,6 @@ If you add a new conversion function:
 npm test
 ```
 
-Tests live in the `tests/` directory. The test runner is Node's built-in `node:test`.
+Tests live in the `tests/` directory. The test runner is Node's built-in `node:test`; TypeScript source files are required directly via `ts-node/register/transpile-only` (no separate build step).
+
+**Writing a test that imports a `.ts` file which itself imports another local `.ts` file** (e.g. a test requires `src/core/noteLinkAutoLink.ts`, which imports from `./noteLinks`): this works today, but didn't always. `tsconfig.json`'s top-level `compilerOptions` target `module: "ESNext"` / `moduleResolution: "Bundler"` for Vite's sake, and ts-node's transpile-only mode used to inherit that, emitting literal `import`/`export` syntax into the JS it hands to Node. Node then resolved that file's *own* further relative imports as real ESM specifiers, which require exact extensions — so a perfectly normal extensionless import (fine for Vite) failed at test time with a confusing `ERR_MODULE_NOT_FOUND` that named the wrong file. Fixed via tsconfig.json's `"ts-node"` block, which overrides `module`/`moduleResolution` to `commonjs`/`node` for ts-node specifically — Vite and `tsc` never read that key, so this changes nothing about the production build or the type-check.

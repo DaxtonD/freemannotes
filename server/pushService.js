@@ -61,7 +61,21 @@ const ANDROID_NOTIFICATION_MODE = normalizeNotificationMode(
 const IOS_NOTIFICATION_MODE = normalizeNotificationMode(process.env.IOS_NOTIFICATION_MODE, 'auto');
 const smtpReady = isSmtpConfigured();
 const BRAND_NAME = 'Freeman Notes';
+// Same env var + same UTC fallback as server/timezone.js, reused here rather
+// than threaded in as a constructor param since this whole file already reads
+// its config straight from process.env (see ANDROID_NOTIFICATION_MODE etc.
+// above). There's no per-user timezone anywhere in this app (self-hosted,
+// single deployment) — this is the one reference frame every server-formatted
+// reminder date/time uses, matching how the REST API already formats
+// timestamps via createTimestampFormatter(timezone) in apiRouter.js.
+const REMINDER_TIMEZONE = String(process.env.PGTIMEZONE || '').trim() || 'UTC';
 const DEFAULT_NOTIFICATION_ICON = '/notification-icon.png';
+// Alpha-only white silhouette, NOT a small copy of the full-color icon — see
+// scripts/generate-notification-badge.mjs. Android masks/tints this itself for
+// the status bar and the notification header's small icon; giving it a
+// full-color image (as this used to be) makes Android draw the logo a second
+// time next to the large icon, which read as a duplicate app icon. Regenerate
+// with that script if notification-icon.png ever changes.
 const DEFAULT_NOTIFICATION_BADGE = '/notification-badge.png';
 
 // ── VAPID initialisation ──────────────────────────────────────────────────────
@@ -151,13 +165,49 @@ function escapeHtml(value) {
 		.replace(/'/g, '&#39;');
 }
 
+/**
+ * Y/M/D of `date` in `timezone`, as a UTC-midnight epoch-ms value. Using a
+ * fixed UTC-midnight anchor for the day-diff math below sidesteps DST/offset
+ * edge cases entirely — this is a pure calendar-day integer, never a partial
+ * day from subtracting two wall-clock instants.
+ */
+function localCalendarDayMs(date, timezone) {
+	const formatter = new Intl.DateTimeFormat('en-CA', { timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit' });
+	const parts = {};
+	for (const { type, value } of formatter.formatToParts(date)) parts[type] = value;
+	return Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day));
+}
+
+/**
+ * 'yesterday' | 'today' | 'tomorrow' | null, bucketed by calendar day in
+ * REMINDER_TIMEZONE. Mirrors src/core/relativeDate.ts's client-side logic —
+ * kept as a separate implementation (not imported) because the server has no
+ * bundler step here and no per-user timezone to pass in, unlike the client
+ * version which always uses the viewer's own device timezone.
+ */
+function getReminderRelativeDayBucket(date, now = new Date()) {
+	const dayDiff = Math.round((localCalendarDayMs(date, REMINDER_TIMEZONE) - localCalendarDayMs(now, REMINDER_TIMEZONE)) / 86_400_000);
+	if (dayDiff === -1) return 'yesterday';
+	if (dayDiff === 0) return 'today';
+	if (dayDiff === 1) return 'tomorrow';
+	return null;
+}
+
+const REMINDER_RELATIVE_DAY_LABELS = { yesterday: 'Yesterday', today: 'Today', tomorrow: 'Tomorrow' };
+
 function formatReminderDateTime(value) {
 	if (!value) return '';
 	const date = value instanceof Date ? value : new Date(value);
 	if (Number.isNaN(date.getTime())) return '';
+	const bucket = getReminderRelativeDayBucket(date);
+	if (bucket) {
+		const timeLabel = new Intl.DateTimeFormat('en-US', { timeStyle: 'short', timeZone: REMINDER_TIMEZONE }).format(date);
+		return `${REMINDER_RELATIVE_DAY_LABELS[bucket]}, ${timeLabel}`;
+	}
 	return new Intl.DateTimeFormat('en-US', {
 		dateStyle: 'medium',
 		timeStyle: 'short',
+		timeZone: REMINDER_TIMEZONE,
 	}).format(date);
 }
 

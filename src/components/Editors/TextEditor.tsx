@@ -12,6 +12,7 @@ import {
 import { byPrefixAndName } from '../../core/byPrefixAndName';
 import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
+import { autoLinkifyRichContentJson } from '../../core/noteLinkAutoLink';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { createRichTextDocFromPlainText } from '../../core/richText';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
@@ -439,7 +440,20 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		if (saving) return;
 		setSaving(true);
 		try {
-			await props.onSave({ title, body, richContent: bodyRichContent, previewLinks });
+			// URLs typed/pasted into the draft become hyperlinks + preview links
+			// here, at save — not live while typing. See NoteEditor.tsx's
+			// runCloseTimeUrlAutoLink for the equivalent on an existing note, and
+			// why this waits for a quiet point rather than running on every
+			// keystroke. There's no persisted "already handled" set to check here
+			// (an empty Set) — this note doesn't exist yet, so every URL in it is
+			// new by definition.
+			const autoLinked = autoLinkifyRichContentJson(bodyRichContent, new Set());
+			const finalRichContent = autoLinked.changed ? autoLinked.json : bodyRichContent;
+			const finalPreviewLinks = autoLinked.linksNeedingPreview.reduce(
+				(next, link) => mergeNotePreviewLinkInputs(next, link.url),
+				previewLinks
+			);
+			await props.onSave({ title, body, richContent: finalRichContent, previewLinks: finalPreviewLinks });
 		} finally {
 			setSaving(false);
 		}
@@ -450,6 +464,10 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		if (!next) return;
 		setPreviewLinks((current) => mergeNotePreviewLinkInputs(current, next));
 	}, [t]);
+
+	// URLs typed/pasted into the draft are auto-detected at save time (see
+	// onSubmit below), not live while typing — see NoteEditor.tsx's identical
+	// note on why this waits.
 
 	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
 		if (mediaDockTab === 2) return <DocumentsPanel showComingSoonPlaceholder />;

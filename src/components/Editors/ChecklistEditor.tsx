@@ -31,6 +31,7 @@ import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem } from '../../core/checklistCounts';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
+import { autoLinkifyRichContentJson } from '../../core/noteLinkAutoLink';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
 import { createRichTextDocFromPlainText, getPlainTextFromRichJson, splitMinimalRichTextAtSelection } from '../../core/richText';
 import { applyChecklistDragToItems, buildChecklistCompletedRows, moveChecklistItemToEdge, normalizeChecklistHierarchy, removeChecklistItemWithChildren, sortCompletedChecklistItemsByRecency, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
@@ -963,6 +964,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		setPreviewLinks((current) => mergeNotePreviewLinkInputs(current, next));
 		props.onShowBriefDialog?.(t('links.addedToast'));
 	}, [props.onShowBriefDialog, t]);
+
+	// URLs typed/pasted into any item's text are auto-detected at save time
+	// (see onSubmit below), not live while typing — see NoteEditor.tsx's
+	// identical note on why this waits.
+
 	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
 		if (mediaDockTab === 2) return <DocumentsPanel showComingSoonPlaceholder />;
 		return <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />;
@@ -1571,7 +1577,23 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 				}
 			}
 			const prunedItems = itemsForSave.filter((item) => item.text.trim().length > 0);
-			await props.onSave({ title, items: prunedItems, previewLinks });
+			// URLs typed/pasted into any item's text become hyperlinks + preview
+			// links here, at save — not live while typing. See NoteEditor.tsx's
+			// runCloseTimeUrlAutoLink for the equivalent on an existing note. Each
+			// item is checked against its own empty "already handled" set (not
+			// shared across items) — the same URL typed into two different items
+			// should become a hyperlink in both, not just the first one found.
+			let finalPreviewLinks = previewLinks;
+			const linkedItems = prunedItems.map((item) => {
+				const autoLinked = autoLinkifyRichContentJson(item.richContent, new Set());
+				if (!autoLinked.changed) return item;
+				finalPreviewLinks = autoLinked.linksNeedingPreview.reduce(
+					(next, link) => mergeNotePreviewLinkInputs(next, link.url),
+					finalPreviewLinks
+				);
+				return { ...item, richContent: autoLinked.json };
+			});
+			await props.onSave({ title, items: linkedItems, previewLinks: finalPreviewLinks });
 		} finally {
 			setSaving(false);
 		}

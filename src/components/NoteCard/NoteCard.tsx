@@ -78,6 +78,7 @@ import type { ThemeId } from '../../core/theme';
 import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import { updateUserPreferences } from '../../core/userDevicePreferencesApi';
 import { useDeniedNoteIds } from '../../core/references/noteAccessCache';
+import { formatRelativeReminderDate } from '../../core/relativeDate';
 import { NoteLinkPanel } from '../NoteLinks/NoteLinkPanel';
 import { NoteColorPickerModal } from './NoteColorPickerModal';
 import {
@@ -1475,7 +1476,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		if (!reminderAt) return null;
 		const parsed = new Date(reminderAt);
 		if (!Number.isFinite(parsed.getTime())) return t('note.addReminder');
-		return parsed.toLocaleString();
+		return formatRelativeReminderDate(parsed, t);
 	}, [reminderAt, t]);
 	const reminderTier = React.useMemo(() => {
 		if (!reminderAt) return null;

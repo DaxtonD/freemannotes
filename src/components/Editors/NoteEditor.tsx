@@ -1,6 +1,6 @@
 ﻿import React, { useMemo, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
-import type { Editor } from '@tiptap/core';
+import type { Editor, JSONContent } from '@tiptap/core';
 import {
 	DragDropContext,
 	Draggable,
@@ -36,7 +36,9 @@ import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import { useI18n } from '../../core/i18n';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
-import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
+import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, findCleanableOrphanedPreviews, forgetAutoLinkedUrls, getAutoLinkedUrlsFromDoc, markUrlsAsAutoLinked, removeNotePreviewLinkFromDoc } from '../../core/noteLinks';
+import { autoLinkifyRichContentJson, collectLinkedUrlsFromRichContentJson } from '../../core/noteLinkAutoLink';
+import { yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import { getUserNoteBannerFile, saveUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
@@ -1596,6 +1598,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			});
 		}
 	}, []);
+	// handleCleanUpUrlPreviews itself isn't declared until further down (it needs
+	// checklistArray/richContentFragment, which aren't in scope yet at this
+	// point in the component), but renderMediaDockPanel is declared here and
+	// needs to pass it through. A ref sidesteps the ordering problem: it's
+	// assigned right after the real callback is defined below (see that
+	// assignment), and by the time a user can actually click the button in the
+	// rendered JSX, the ref already holds the latest version — no effect, no
+	// re-render needed for this to stay current.
+	const handleCleanUpUrlPreviewsRef = React.useRef<(() => void) | undefined>(undefined);
 	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
 		// All dock variants funnel through one renderer so mobile sheets and desktop
 		// flyouts cannot drift into subtly different attachment behavior.
@@ -1611,7 +1622,18 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			);
 		}
 		if (mediaDockTab === 1) {
-			return <NoteLinkPanel docId={props.docId} authUserId={props.authUserId} fallbackLinks={extractedLinks} canEdit={!readOnly} onDeleteLink={handleDeleteUrlPreview} onAddUrlPreview={handleCreateUrlPreview} />;
+			return (
+				<NoteLinkPanel
+					docId={props.docId}
+					authUserId={props.authUserId}
+					fallbackLinks={extractedLinks}
+					canEdit={!readOnly}
+					onDeleteLink={handleDeleteUrlPreview}
+					onAddUrlPreview={handleCreateUrlPreview}
+					onCleanUpUrlPreviews={!readOnly ? handleCleanUpUrlPreviewsRef.current : undefined}
+					onShowBriefDialog={props.onShowBriefDialog}
+				/>
+			);
 		}
 		return (
 			<DrawingsPanel
@@ -1623,7 +1645,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				loadDrawingDoc={props.loadDrawingDoc}
 			/>
 		);
-	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, handleOpenImageFromMediaDock, mediaDockTab, props.doc, props.loadDrawingDoc, props.onAddDocument, props.onAddImage, props.onDeleteDrawing, props.onOpenDrawing, props.isPendingNew, readOnly]);
+	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, handleOpenImageFromMediaDock, mediaDockTab, props.doc, props.loadDrawingDoc, props.onAddDocument, props.onAddImage, props.onDeleteDrawing, props.onOpenDrawing, props.onShowBriefDialog, props.isPendingNew, readOnly]);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	React.useEffect(() => {
 		setShowCompleted(Boolean(props.initialShowCompleted));
@@ -2228,6 +2250,130 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		}
 		return next;
 	}, [checklistArray, items]);
+
+	// URLs typed/pasted into the note are auto-detected and turned into both a
+	// preview card and a real hyperlink — but only once, at close time (see
+	// handleClose below), not live while typing. An earlier version of this ran
+	// on every keystroke; per-keystroke was reverted in favor of a single
+	// close-time pass so nothing rewrites the document's rich content — with its
+	// own undo history and collaborative-editing exposure — while the note is
+	// actively being edited, by this user or anyone else.
+	//
+	// `content` (the top-level 'text' type's rich fragment) and each checklist
+	// item's own rich fragment are each converted through prosemirror-json,
+	// linkified, and only written back with replaceRichFragmentFromJson when
+	// something actually changed (autoLinkifyRichContentJson signals this by
+	// returning the exact same object when there was nothing to do — see its
+	// own comments). `autoLinkedUrls` is the persisted "never offer this URL
+	// again" record shared with the preview-card side of this feature: once a
+	// URL has been auto-handled, deleting the resulting preview or removing the
+	// hyperlink (but leaving the bare text) stays that way, rather than
+	// reappearing the next time the note is closed.
+	const runCloseTimeUrlAutoLink = React.useCallback((): void => {
+		if (readOnly) return;
+		if (type !== 'text' && type !== 'checklist') return;
+		const alreadyHandled = getAutoLinkedUrlsFromDoc(props.doc);
+		const newlyHandledNormalizedUrls: string[] = [];
+		let addedAnyPreview = false;
+
+		const applyToFragment = (fragment: Y.XmlFragment, variant: 'full' | 'minimal', onChanged: () => void): void => {
+			if (fragment.length === 0) return;
+			let json: JSONContent;
+			try {
+				json = yXmlFragmentToProsemirrorJSON(fragment) as JSONContent;
+			} catch {
+				return; // Malformed/detached fragment — leave it alone rather than risk corrupting it.
+			}
+			const result = autoLinkifyRichContentJson(json, alreadyHandled);
+			if (result.changed) {
+				replaceRichFragmentFromJson(fragment, result.json, variant);
+				onChanged();
+			}
+			for (const link of result.linksNeedingPreview) {
+				addNotePreviewLinkToDoc(props.doc, link.url);
+				newlyHandledNormalizedUrls.push(link.normalizedUrl);
+				addedAnyPreview = true;
+			}
+		};
+
+		if (type === 'text' && richContentFragment) {
+			applyToFragment(richContentFragment, 'full', () => syncTextNotePlainText(props.doc, richContentFragment));
+		} else if (type === 'checklist') {
+			for (const itemMap of checklistArray.toArray()) {
+				const fragment = itemMap.get(CHECKLIST_ITEM_RICH_FIELD);
+				if (!(fragment instanceof Y.XmlFragment)) continue;
+				applyToFragment(fragment, 'minimal', () => syncChecklistItemPlainText(itemMap, fragment));
+			}
+		}
+
+		if (newlyHandledNormalizedUrls.length > 0) {
+			markUrlsAsAutoLinked(props.doc, newlyHandledNormalizedUrls);
+		}
+		if (addedAnyPreview) {
+			void syncNoteLinksForDoc({
+				userId: props.authUserId,
+				docId: props.docId,
+				links: extractNoteLinksFromDoc(props.doc),
+			});
+		}
+	}, [checklistArray, props.authUserId, props.doc, props.docId, readOnly, richContentFragment, type]);
+
+	// "Clean up" in the Links tab: removing a hyperlink from a note's content —
+	// deleting the linked text, or just stripping its link formatting — was
+	// never taught to remove the resulting preview card. That's deliberate (see
+	// runCloseTimeUrlAutoLink above): a user might want to keep a preview after
+	// unlinking the inline reference, or vice versa, so nothing does this
+	// automatically. This is the explicit, opt-in version — it removes exactly
+	// the preview cards whose link no longer exists ANYWHERE in the note's
+	// current content, and nothing else.
+	const handleCleanUpUrlPreviews = React.useCallback((): void => {
+		if (readOnly) return;
+		const linkedUrls = new Set<string>();
+		if (type === 'text' && richContentFragment && richContentFragment.length > 0) {
+			try {
+				const json = yXmlFragmentToProsemirrorJSON(richContentFragment) as JSONContent;
+				for (const url of collectLinkedUrlsFromRichContentJson(json)) linkedUrls.add(url);
+			} catch {
+				// Malformed/detached fragment — treat as contributing no links rather
+				// than throwing away every preview because of one broken item.
+			}
+		} else if (type === 'checklist') {
+			for (const itemMap of checklistArray.toArray()) {
+				const fragment = itemMap.get(CHECKLIST_ITEM_RICH_FIELD);
+				if (!(fragment instanceof Y.XmlFragment) || fragment.length === 0) continue;
+				try {
+					const json = yXmlFragmentToProsemirrorJSON(fragment) as JSONContent;
+					for (const url of collectLinkedUrlsFromRichContentJson(json)) linkedUrls.add(url);
+				} catch {
+					// Same reasoning as above.
+				}
+			}
+		}
+
+		// findCleanableOrphanedPreviews excludes previews added by hand via
+		// "+ URL Preview" — see its own comment in noteLinks.ts for why that's
+		// safe to rely on.
+		const orphaned = findCleanableOrphanedPreviews(
+			extractNoteLinksFromDoc(props.doc),
+			linkedUrls,
+			getAutoLinkedUrlsFromDoc(props.doc)
+		);
+		if (orphaned.length === 0) {
+			props.onShowBriefDialog?.(t('links.cleanupNoneFound'));
+			return;
+		}
+		for (const link of orphaned) removeNotePreviewLinkFromDoc(props.doc, link.normalizedUrl);
+		forgetAutoLinkedUrls(props.doc, orphaned.map((link) => link.normalizedUrl));
+		void syncNoteLinksForDoc({
+			userId: props.authUserId,
+			docId: props.docId,
+			links: extractNoteLinksFromDoc(props.doc),
+		});
+		props.onShowBriefDialog?.(
+			orphaned.length === 1 ? t('links.cleanupRemovedSingular') : t('links.cleanupRemovedPlural').replace('{count}', String(orphaned.length))
+		);
+	}, [checklistArray, props.authUserId, props.doc, props.docId, readOnly, richContentFragment, t, type]);
+	handleCleanUpUrlPreviewsRef.current = handleCleanUpUrlPreviews;
 
 	// ── Checkbox completion animation ──────────────────────────────────────────
 	// Purely visual: toggleChecklistCompleted below still writes the real
@@ -3185,13 +3331,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const handleClose = React.useCallback((): void => {
 		pruneEmptyChecklistRows();
 		finalizeRichHeadingWritingState();
+		runCloseTimeUrlAutoLink();
 		void props.onClose();
-	}, [finalizeRichHeadingWritingState, pruneEmptyChecklistRows, props]);
+	}, [finalizeRichHeadingWritingState, pruneEmptyChecklistRows, props, runCloseTimeUrlAutoLink]);
 	const handleSavePendingNew = React.useCallback((): void => {
 		pruneEmptyChecklistRows();
 		finalizeRichHeadingWritingState();
+		runCloseTimeUrlAutoLink();
 		void props.onSavePendingNew?.();
-	}, [finalizeRichHeadingWritingState, pruneEmptyChecklistRows, props]);
+	}, [finalizeRichHeadingWritingState, pruneEmptyChecklistRows, props, runCloseTimeUrlAutoLink]);
 	React.useLayoutEffect(() => {
 		resizeTitleField();
 	}, [resizeTitleField, title]);
