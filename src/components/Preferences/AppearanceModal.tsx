@@ -186,10 +186,35 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 		displaySizeDraft.noteCardBannerTitlePosition !== displaySizeInitial.noteCardBannerTitlePosition
 	);
 
+	// Reset to the default pane each time the modal OPENS.
+	//
+	// Two things matter here, and the old version got both wrong:
+	//
+	// 1. This is a layout effect, not a regular one. The modal renders null while
+	//    closed instead of unmounting, so it keeps whatever pane the user last
+	//    selected in state. With a normal effect React paints that stale pane and
+	//    only then runs the reset — which is exactly the flash of the previous
+	//    pane snapping back to Theme on reopen. A layout effect lands the reset
+	//    before the browser paints, so the modal simply opens on Theme.
+	//
+	// 2. It fires only on the closed→open transition. themeId has to stay in the
+	//    dependency list, but re-running the reset whenever the theme changes
+	//    would drag the user back to the Theme pane mid-edit — changing the theme
+	//    while sitting on Language or Display shouldn't move them. Keeping the
+	//    category in step with a live theme change is the separate effect below.
+	const wasOpenRef = React.useRef(false);
+	React.useLayoutEffect(() => {
+		const justOpened = props.isOpen && !wasOpenRef.current;
+		wasOpenRef.current = props.isOpen;
+		if (!justOpened) return;
+		setActivePane('theme');
+		setCategory(getThemeCategory(props.themeId));
+	}, [props.isOpen, props.themeId]);
+
+	// Keep the theme category in step when the theme itself changes while open.
 	React.useEffect(() => {
 		if (!props.isOpen) return;
 		setCategory(getThemeCategory(props.themeId));
-		setActivePane('theme');
 	}, [props.isOpen, props.themeId]);
 
 	const themesInCategory = React.useMemo(() => {

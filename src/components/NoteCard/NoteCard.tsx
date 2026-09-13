@@ -717,6 +717,13 @@ function renderBlockNode(block: JSONContent, key: string, options: RichPreviewRe
 	return null;
 }
 
+/**
+ * Upper bound on how many rich-text blocks a note CARD preview will render.
+ * See renderRichPreview below for why this exists. Not used by the editors —
+ * they render the real document.
+ */
+const MAX_PREVIEW_BLOCKS = 120;
+
 function renderRichPreview(
 	json: JSONContent | null | undefined,
 	allowLinkInteraction = true,
@@ -731,7 +738,22 @@ function renderRichPreview(
 			.filter((item) => !item.hidden)
 			.map((item) => item.block)
 		: json.content;
+	// Only render enough blocks to fill the tallest card the preview could ever be.
+	// This is a PREVIEW clipped by max-height + overflow:hidden, so everything past
+	// the visible area is built and then thrown away by the browser. A note with a
+	// few thousand lines was materialising a few thousand block nodes per card —
+	// and because virtualization remounts cards as you scroll, it paid that cost
+	// again every single time the card re-entered the render window. One such note
+	// was enough to make the whole grid lurch whenever it scrolled into view.
+	//
+	// The cap is deliberately generous: the largest card-height preference against
+	// the smallest text scale fits roughly 50 lines, so 120 blocks still overfills
+	// the tallest possible card by ~2x. It only ever truncates content that could
+	// not have been visible anyway, and the "is this overflowing" check still
+	// reports correctly because 120 blocks overflow any card that a longer note
+	// would have overflowed too.
 	const blocks = visibleBlocks
+		.slice(0, MAX_PREVIEW_BLOCKS)
 		.map((block, index) => renderBlockNode(block, `block:${index}`, { allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup }))
 		.filter(Boolean);
 	return blocks.length > 0 ? blocks : null;

@@ -53,21 +53,21 @@ import { buildNoteGroupSections } from '../../utilities/noteGrouping';
 import { measureDocumentRects } from './flip';
 import {
 	applyPinnedDisplaySort,
+	applyTierReorderByInsertion,
 	applyTierReorderToCanonicalVisible,
 	arraysEqual,
 	buildMasonryLayoutFromColumns,
-	computeTailBalancedSlots,
+	computeDisplayColumns,
 	dealIntoColumns,
-	flattenColumns,
+	findColumnNeighborAnchor,
 	getGridLayoutForViewport,
 	MOBILE_GRID_EDGE_MARGIN_PX,
 	mergeVisibleIdsIntoLayoutOrder,
 	mergeVisibleOrderIntoFullOrder,
 	pickRenderedDisplayOrder,
 	readCssPxVariable,
-	splitIntoColumnsBySlotLengths,
-	swapIds,
 	type StableMasonryPlacementDecision,
+	swapIds,
 } from './layout';
 import { useNoteGridDragManager } from './useNoteGridDragManager';
 import { VirtualizedNoteColumn } from './VirtualizedNoteColumn';
@@ -1362,8 +1362,33 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		};
 	}, [props.enableLayoutAnimations, allDocsLoaded, layoutReady]);
 
+	// Measured card heights, keyed by note id (seeded from the per-device height
+	// cache on load). Declared here because getEstimatedNoteHeight below reads it.
+	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
+
+	// Prefer a height we have actually measured for this note over the generic
+	// estimate. This feeds the virtualizer's estimateSize, which is what decides
+	// each column's total height and every item's scroll offset.
+	//
+	// It used to return the generic estimate unconditionally, even for notes whose
+	// real height was already sitting in noteHeightByIdRef (measured earlier this
+	// session, or seeded from the per-device height cache on load). So the
+	// virtualizer laid the column out from guesses, and then every card that
+	// scrolled into view reported its real size through measureElement, shifting
+	// the total size and every offset below it — cards visibly sliding up and down
+	// as you scroll. The packer had this right all along (see packedHeightLookup
+	// just below, same fallback chain); only the virtualizer was left guessing.
+	//
+	// Note what this is NOT: it does not withhold or delay a measurement. Gating
+	// measureElement to stop oscillation is what broke virtualization and drag in
+	// 1.11.1. This only improves the starting estimate; real measurements still
+	// flow through untouched and still win.
+	//
+	// Reading the ref inside keeps this callback's identity stable, which matters:
+	// a new estimateSize identity makes the virtualizer recompute.
 	const getEstimatedNoteHeight = React.useCallback(
-		(noteId: string): number => estimateUnmeasuredNoteHeightPx(noteId, props.maxCardHeightPx),
+		(noteId: string): number => noteHeightByIdRef.current.get(noteId)
+			?? estimateUnmeasuredNoteHeightPx(noteId, props.maxCardHeightPx),
 		[props.maxCardHeightPx]
 	);
 	const packedHeightLookup = React.useMemo<Pick<ReadonlyMap<string, number>, 'get'>>(
@@ -1463,7 +1488,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const appliedLayoutCacheKeyRef = React.useRef<string | null>(null);
 	const sectionRef = React.useRef<HTMLElement | null>(null);
 	const gridRef = React.useRef<HTMLDivElement | null>(null);
-	const noteHeightByIdRef = React.useRef<Map<string, number>>(new Map());
 	const viewportAnchorColumnsRef = React.useRef<Map<string, number>>(new Map());
 	const viewportAnchorSourceColumnsRef = React.useRef<string[][]>([]);
 	const settledColumnByIdRef = React.useRef<Map<string, number>>(new Map());
@@ -2474,32 +2498,60 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		(finalColumns: string[][], draggedId: string, draggedHeight: number, originalColumns: string[][]) => {
 			if (!noteOrder) return;
 			const isListLikeCommit = props.viewMode === 'list' || props.viewMode === 'strip';
-			const readingOrder = props.viewMode === 'list' || props.viewMode === 'strip'
-				? flattenListColumns(finalColumns)
-				: flattenColumns(finalColumns);
 			const isPinnedNote = (id: string): boolean => noteSnapshotById.get(id)?.isPinned === true;
 			const draggedIsPinned = isPinnedNote(draggedId);
-			// Reorder only within the dragged note's pin tier in canonical space.
-			let nextCanonicalVisible = applyTierReorderToCanonicalVisible(
-				canonicalVisibleIdsFiltered,
-				readingOrder,
-				draggedIsPinned,
-				isPinnedNote,
-			);
-			// Cross-column no-op fallback: when flattenColumns produces the same reading
-			// order as the current canonical (e.g. inserting a note at its canonical
-			// row-major equivalent position), the drag visually crossed columns but the
-			// canonical order is unchanged. Recover by swapping the dragged note with
-			// the note that occupied the destination index in the pre-drag columns.
-			if (!isListLikeCommit && nextCanonicalVisible.every((id, i) => id === canonicalVisibleIdsFiltered[i])) {
+			let nextCanonicalVisible: string[];
+			if (isListLikeCommit) {
+				// List/strip columns are a plain reading-order split, so flattening
+				// them back still yields a valid canonical order.
+				nextCanonicalVisible = applyTierReorderToCanonicalVisible(
+					canonicalVisibleIdsFiltered,
+					flattenListColumns(finalColumns),
+					draggedIsPinned,
+					isPinnedNote,
+				);
+			} else {
+				// Grid view runs the two-layer masonry: these are DISPLAY columns, so
+				// flattenColumns(finalColumns) is not the canonical reading order and
+				// cannot be used to derive the commit.
+				//
+				// A drop here is a SWAP, not an insertion. That is not a style choice —
+				// the canonical layer is a round-robin deal, so a note's column is
+				// decided by its INDEX. An insertion shifts every index between source
+				// and destination, and in round-robin every one of those notes changes
+				// column with it: drop one card and a dozen unrelated ones visibly jump
+				// between columns. Exchanging two indices moves exactly those two notes
+				// and leaves every other index — and therefore every other column
+				// assignment — untouched. Only the bottom-of-column migration in the
+				// display layer may then shift, which is the intended rebalance.
+				//
+				// Find which note previously occupied the slot the dragged card was
+				// dropped into, and trade places with it.
 				const destCol = finalColumns.findIndex((col) => col.includes(draggedId));
-				const origCol = originalColumns.findIndex((col) => col.includes(draggedId));
-				if (destCol >= 0 && origCol >= 0 && destCol !== origCol) {
-					const destIdx = finalColumns[destCol].indexOf(draggedId);
-					const noteAtDest = originalColumns[destCol]?.[destIdx] ?? null;
-					if (noteAtDest && noteAtDest !== draggedId) {
-						nextCanonicalVisible = swapIds(canonicalVisibleIdsFiltered, draggedId, noteAtDest);
-					}
+				const destIdx = destCol >= 0 ? finalColumns[destCol].indexOf(draggedId) : -1;
+				const noteAtDest = destCol >= 0 && destIdx >= 0
+					? (originalColumns[destCol]?.[destIdx] ?? null)
+					: null;
+				// Never swap across pin tiers — that would silently change which tier a
+				// note sits in. Those fall through to the insertion path, which is
+				// tier-safe by construction.
+				if (noteAtDest && noteAtDest !== draggedId && isPinnedNote(noteAtDest) === draggedIsPinned) {
+					nextCanonicalVisible = swapIds(canonicalVisibleIdsFiltered, draggedId, noteAtDest);
+				} else {
+					// No note occupied that slot (dropped past the end of a shorter
+					// column) or it belongs to the other pin tier. Fall back to inserting
+					// next to the dragged note's nearest same-tier column neighbour,
+					// which expresses "put it above/below this one" and correctly handles
+					// appending to the bottom of a column.
+					const anchor = findColumnNeighborAnchor(finalColumns, draggedId, isPinnedNote);
+					nextCanonicalVisible = applyTierReorderByInsertion(
+						canonicalVisibleIdsFiltered,
+						draggedId,
+						anchor?.id ?? null,
+						anchor?.placeAfter ?? false,
+						draggedIsPinned,
+						isPinnedNote,
+					);
 				}
 			}
 			// Display layer may apply pin tier sort; Yjs merge uses nextCanonicalVisible only.
@@ -3257,29 +3309,57 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	}, [noteSnapshotById, renderedIds, sharedNoteIdSet]);
 
 	// ── Column computation: packedColumns ─────────────────────────────────
-	// Tail-balanced masonry: start from round-robin slot sizes then iteratively
-	// transfer one slot from the tallest column to the shortest column up to
-	// maxPasses times (or until imbalance ≤ 150 px). Column content is always
-	// determined by splitIntoColumnsBySlotLengths (row-major from canonical order),
-	// so flattenColumns(columns) === renderedIds is preserved after every adjustment.
-	// Only the bottom rows of the tallest column participate — top and mid cards never
-	// migrate. Heights only affect slot allocation, never canonical note ordering.
+	// Two-layer masonry. The canonical layer is a round-robin deal that preserves
+	// reading order; the display layer then migrates individual bottom notes from
+	// the tallest column to the shortest to even the columns out. Cards above the
+	// bottom of the shortest column never move.
 	//
-	// INVARIANT: flattenColumns(columns) === renderedIds at every column count.
-	// Do not use splitIntoColumnsByHeight — it breaks this invariant.
+	// These are DISPLAY columns: flattenColumns(columns) === renderedIds does NOT
+	// hold, by design — that is the whole point of migrating a note between
+	// columns. The canonical note order lives in Yjs and is never derived from
+	// these columns. Anything that needs canonical order from a drag must use
+	// findColumnNeighborAnchor + applyTierReorderByInsertion (see
+	// commitVisibleOrder), NOT flattenColumns.
+	//
+	// The previous slot-based balancer preserved that invariant but could only
+	// move the boundary between columns, re-dealing the entire tail; with tall
+	// cards it was too coarse to balance at all and gave up leaving large gaps.
 	const packedLayout = React.useMemo(() => {
 		const fallbackH = Math.min(props.maxCardHeightPx, 220);
 		const gapPx = mobileGridGapPx ?? 16;
-		const slots = computeTailBalancedSlots({
-			ids: renderedIds,
-			columnCount,
+		// Two-layer masonry (see layout.ts "Option B"):
+		//
+		//  1. Canonical layer — deal the notes round-robin. Card i goes to column
+		//     i % columnCount, so reading order is preserved and the same notes
+		//     appear in the same order whether you're on a 2-column phone or a
+		//     6-column desktop.
+		//  2. Display layer — rebalance ONLY the bottom of the grid, by migrating
+		//     the bottom note of the tallest column to the shortest column, one
+		//     note per pass.
+		//
+		// The slot-based balancer this replaces could only shift the BOUNDARY
+		// between columns, which re-deals the whole tail; with tall cards that is
+		// too coarse to actually even the columns out. Migrating individual bottom
+		// notes leaves everything above untouched (your grocery list stays exactly
+		// where it was) and only rearranges the notes at the very bottom, which are
+		// the ones least likely to be hunted for by position.
+		//
+		// These display columns deliberately do NOT satisfy
+		// flattenColumns(columns) === renderedIds, so they must never be written to
+		// Yjs or used to derive a commit order — see commitVisibleOrder, which
+		// resolves drag intent from the dragged note's column neighbour instead.
+		//
+		// maxPasses scales with column count: a 6-10 column desktop can need far
+		// more than the default 8 migrations before it settles.
+		const canonicalColumns = dealIntoColumns(renderedIds, columnCount);
+		const columns = computeDisplayColumns({
+			canonicalColumns,
 			heightById: packedHeightLookup,
 			gapPx,
 			fallbackHeightPx: fallbackH,
 			thresholdPx: 150,
-			maxPasses: 4,
+			maxPasses: Math.max(8, columnCount * 4),
 		});
-		const columns = splitIntoColumnsBySlotLengths(renderedIds, slots);
 		// Placement decisions feed debug logging only; packing is tail-balanced deal.
 		const placementDecisions = new Map<string, StableMasonryPlacementDecision>();
 		const columnHeightsAtDecision = new Array<number>(columns.length).fill(0);
@@ -3309,7 +3389,12 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			}
 		}
 		return { columns, placementDecisions };
-	}, [columnCount, mobileGridGapPx, packedHeightLookup, props.maxCardHeightPx, renderedIds]);
+		// noteHeightsVersion is load-bearing: the display layer balances BY measured
+		// height, but those heights live in a ref the memo can't otherwise see
+		// change. Without it the columns only re-balanced when the note list or
+		// column count changed — so expanding a checklist's completed items, or
+		// changing the text size, left the grid packed for the old heights.
+	}, [columnCount, mobileGridGapPx, noteHeightsVersion, packedHeightLookup, props.maxCardHeightPx, renderedIds]);
 	const packedColumns = packedLayout.columns;
 	const resolvedBaseColumns = packedColumns;
 	const isListLikeView = props.viewMode === 'list' || props.viewMode === 'strip';

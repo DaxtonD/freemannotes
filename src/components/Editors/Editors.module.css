@@ -3974,6 +3974,20 @@ Drag ghost:
 	animation-delay: 510ms;
 }
 
+/* No check/uncheck has fired yet this mount — e.g. the checklist editor was
+   just opened. The orb is a position marker in that state, not an event.
+   The JS already suppresses the orb's TRAVEL while a note settles in, but the
+   flash and both ring pulses are keyframes on this element, and CSS animations
+   run whenever an element mounts — so opening a checklist note played the full
+   double-pulse on its own. Killing all three here is what actually stops it;
+   the orb remounts (via its key) the moment a real toggle fires, without this
+   class, and animates normally from then on. */
+.checklistProgressOrbIdle,
+.checklistProgressOrbIdle::before,
+.checklistProgressOrbIdle::after {
+	animation: none;
+}
+
 @keyframes checklistProgressOrbCore {
 	0% {
 		transform: scale(1);

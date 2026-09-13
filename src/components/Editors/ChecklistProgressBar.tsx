@@ -96,6 +96,15 @@ export function ChecklistProgressBar({ completed, total }: ChecklistProgressBarP
 	// itself), incremented in a ref rather than state so this never causes an
 	// extra render on its own.
 	const orbKeyRef = React.useRef(0);
+	// Has a real check/uncheck actually fired yet this mount?
+	//
+	// The travel above is already suppressed while a note is settling in, but the
+	// orb's core flash and its two staggered ring pulses are CSS keyframes on the
+	// orb element itself — and CSS animations play when an element MOUNTS. So
+	// simply opening a checklist note still fired the whole double-pulse once,
+	// even though nothing had been toggled. Until a genuine toggle happens the orb
+	// is only a position marker, so its animations stay off.
+	const [hasFiredShot, setHasFiredShot] = React.useState(false);
 
 	React.useLayoutEffect(() => {
 		const previousCompleted = previousCompletedRef.current;
@@ -115,6 +124,7 @@ export function ChecklistProgressBar({ completed, total }: ChecklistProgressBarP
 		}
 		previousCompletedRef.current = clampedCompleted;
 		orbKeyRef.current += 1;
+		setHasFiredShot(true);
 
 		const checking = clampedCompleted > previousCompleted;
 		setOrbDirection(checking ? 'checking' : 'unchecking');
@@ -168,6 +178,7 @@ export function ChecklistProgressBar({ completed, total }: ChecklistProgressBarP
 						key={orbKeyRef.current}
 						className={[
 							styles.checklistProgressOrb,
+							hasFiredShot ? '' : styles.checklistProgressOrbIdle,
 							isComplete ? styles.checklistProgressOrbComplete : '',
 							orbDirection === 'unchecking' ? styles.checklistProgressOrbUnchecking : '',
 						].filter(Boolean).join(' ')}
