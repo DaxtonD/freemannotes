@@ -4,6 +4,14 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.13.4 - 2026-09-13
+
+The mount trace from 1.13.3 did exactly what it was built for: one recording, and the wrong number named itself.
+
+### Fixed
+- **A collapsed checklist no longer paints 33px too tall every time it scrolls back into view.** On mount, the card doesn't know yet which of its rows wrap, so its first render assumes every row is one line and renders *all* of them — "Beta Test Bugs" put all 9 rows into a 516px body, clipped out of sight. The card measured that body right away. The very next render knew the real line counts and dropped to 3 rows, a 205px body — but nothing measured it again until the next animation frame, about 100ms later. So the first frame you actually saw sized the body as `min(estimate 220, stale measurement 498)` = 220 instead of the real 187, painted the card at 365px, then snapped to 332px and dragged all fifteen cards below it along for the ride. The card now re-measures, before the browser paints, whenever the set of visible rows changes, so the first frame is already the right height. It only ever hit collapsed cards because only the collapsed height formula takes that `min()` — which is precisely the clue that made this quick to find.
+- Unlike the two earlier attempts at this exact card (both reverted), this stays entirely inside the card and doesn't touch how the grid measures anything. It also can't loop: which rows are visible depends on the header, chips and completed-row heights, never on the body measurement it refreshes.
+
 ## 1.13.3 - 2026-09-13
 
 A diagnostics-only release, and we're not even a little bit sorry about it.

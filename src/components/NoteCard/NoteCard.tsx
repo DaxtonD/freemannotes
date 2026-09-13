@@ -2044,6 +2044,27 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 		};
 	}, [content, maxCardHeightPx, richContent, showImageGridPreview, showLinkedDrawingPreview, type]);
 
+	// Which active rows are actually on the card right now. The measure effect below
+	// re-runs (synchronously, before paint) whenever this changes.
+	//
+	// Why: on mount the card doesn't know yet which rows wrap, so its first render
+	// assumes one line each and renders EVERY item — "Beta Test Bugs" put all 9 rows
+	// in a 516px body, clipped out of sight. The synchronous measure read that 516.
+	// The very next render knew the real line counts and dropped to 3 rows (a 205px
+	// body), but nothing measured again until the ResizeObserver's next frame, ~100ms
+	// later. So the first frame you actually SAW took min(estimate 220, stale 498) =
+	// 220 and painted the card 33px too tall, then snapped to 332 — shoving all 15
+	// cards below it, every time the card scrolled back into view. Only collapsed
+	// cards, because only the collapsed formula takes that min(). Re-measuring when
+	// the row set changes means the first painted frame is already the real height.
+	//
+	// Loop-safe: the row set is decided by the line budget, which depends on chrome
+	// and the completed-row height, never on the body measurement this refreshes.
+	const renderedActiveChecklistRowsSignature = React.useMemo(
+		() => activeChecklistItemsToRender.map((item) => item.id).join('|'),
+		[activeChecklistItemsToRender]
+	);
+
 	React.useLayoutEffect(() => {
 		if (type !== 'checklist') return;
 		if (typeof ResizeObserver === 'undefined' || typeof window === 'undefined') return;
@@ -2115,7 +2136,7 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 			window.removeEventListener('resize', scheduleMeasure);
 			viewport?.removeEventListener('resize', scheduleMeasure);
 		};
-	}, [requestChecklistLayoutRefresh, showCompleted, type, !!props.metaChips]);
+	}, [renderedActiveChecklistRowsSignature, requestChecklistLayoutRefresh, showCompleted, type, !!props.metaChips]);
 
 	// Diagnostics only (`?scrollDiag=1` / `?cardDiag=1`): one row per React commit in
 	// a checklist card's first moments after mounting — every term the height formula
