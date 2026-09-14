@@ -204,6 +204,7 @@ docker run -d \
 Optional:
 
 * `REDIS_URL` (recommended)
+* `GOTENBERG_URL` — office documents open in the in-app viewer (see [Document Conversion](#document-conversion-optional))
 * `SMTP_*` settings
 * `OCR_DISABLED=1`
 * `IMAGE_CAPTURE_MAX_DIMENSION_PX` / `IMAGE_CAPTURE_JPEG_QUALITY` — image quality ceiling for uploads and in-app camera capture. Defaults to 2560px / 0.82 (~0.5MB per photo — budget that × images-per-user × user-count for your uploads volume). Raise or lower to trade image sharpness against storage/bandwidth for your deployment's size. Only affects new uploads.
@@ -227,6 +228,7 @@ Works as a standard custom container:
 Optional but recommended:
 
   * `REDIS_URL`
+  * `GOTENBERG_URL` (install Gotenberg from Community Applications; see [Document Conversion](#document-conversion-optional))
   * `SMTP_*`
   * `WEB_NOTIFICATION_MODE` / `ANDROID_NOTIFICATION_MODE` / `IOS_NOTIFICATION_MODE`
   * `VAPID_*` and `FCM_*` when push notifications are enabled
@@ -236,6 +238,33 @@ The included Unraid template lives at `third-party/freemannotes.xml`.
 If you use a reverse proxy:
 
 * Make sure `/yjs` supports WebSocket upgrades
+
+---
+
+## Document Conversion (Optional)
+
+Word, Excel, PowerPoint and OpenDocument files can open in the same in-app viewer as PDFs (zoom, page panel, search) when a [Gotenberg](https://gotenberg.dev) container is available. Like Redis, it's optional:
+
+* **Without it:** office files still upload, sync, work offline and download. Opening one shows its text.
+* **With it:** each office file gets a PDF copy made in the background. Downloads still give you the original file.
+
+Docker Compose ships Gotenberg as an opt-in profile:
+
+```bash
+docker compose --env-file .env.docker --profile gotenberg up -d
+```
+
+and in `.env.docker`:
+
+```env
+GOTENBERG_URL=http://gotenberg:3000
+```
+
+On Unraid, install Gotenberg from Community Applications and set `GOTENBERG_URL` on Freeman Notes to `http://<server-ip>:<gotenberg-port>`.
+
+Existing office files convert automatically the first time the server starts with `GOTENBERG_URL` set, and the server log says whether Gotenberg is connected. If Gotenberg goes down, files simply wait and conversion picks up again when it's back.
+
+Security: Gotenberg has no login by default, and its Chromium routes can fetch any web address. Don't publish its port to the internet. The bundled Compose service keeps it on the internal network and starts it with `--chromium-disable-routes=true`. If other machines can reach it, turn on its basic auth (`--api-enable-basic-auth` with `GOTENBERG_API_BASIC_AUTH_USERNAME` / `GOTENBERG_API_BASIC_AUTH_PASSWORD`) and set `GOTENBERG_USERNAME` / `GOTENBERG_PASSWORD` on Freeman Notes.
 
 ---
 

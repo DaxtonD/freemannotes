@@ -1,0 +1,47 @@
+/* "Preparing PDF" / "couldn't make a PDF" line under the header. */
+.notice {
+	margin: 0;
+	padding: 10px 14px;
+	flex: 0 0 auto;
+	font-size: 13px;
+	line-height: 1.45;
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-accent) 12%, var(--color-surface));
+	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.body {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	/* The page body blocks touch gestures while a viewer is open; this is its own scroller. */
+	touch-action: pan-y;
+	background: var(--color-surface);
+}
+
+/* Reading width, and the file's own line breaks kept. Selectable, so a phone number or
+   paragraph can be copied without downloading the file. */
+.text {
+	box-sizing: border-box;
+	max-width: 72ch;
+	margin: 0 auto;
+	padding: 20px 20px 48px;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	font-size: 15px;
+	line-height: 1.6;
+	color: var(--color-text);
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.empty {
+	margin: 0;
+	padding: 48px 24px;
+	text-align: center;
+	font-size: 14px;
+	line-height: 1.5;
+	color: var(--color-text-muted);
+}

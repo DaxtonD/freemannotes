@@ -16,6 +16,10 @@ const {
 } = require('./noteDocumentPreview');
 const { buildLinkSeed, isLikelyBadPreviewImageUrl, resolveNoteLinkPreview } = require('./noteLinkPreview');
 const { resolveDocAccess } = require('./noteShareRouter');
+const { listManifestDocuments } = require('./noteDocumentManifest');
+const { createGotenbergConverter, describeConverterHealth, isConvertibleDocumentExtension } = require('./documentConverter');
+const { createDocumentConversionQueue } = require('./documentConversionQueue');
+const { createDocumentThumbnailQueue } = require('./documentThumbnails');
 const { buildSearchSnippet, decodeDocumentState, normalizeText } = require('./noteSnapshot');
 const { queueNoteImageOcr } = require('./ocr');
 const { normalizeMoveDebugTraceId, recordMoveDebugTrace } = require('./moveDebugTrace');
@@ -440,7 +444,7 @@ async function hydrateNoteLinkRows(prisma, rows) {
 // Writes one version's files and fills in its row. Files live in their own folder per
 // version (users/<uploader>/documents/<versionId>/), which is also how /uploads/ access
 // checks find the row again (see server/uploadAccess.js).
-async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versionNumber, userId, sourceBuffer, fileName, mimeType }) {
+async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versionNumber, userId, sourceBuffer, fileName, mimeType, convertOffice = false }) {
 	const fileExtension = getNormalizedDocumentExtension(fileName, mimeType);
 	const version = await prisma.noteDocumentVersion.create({
 		data: {
@@ -454,6 +458,8 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 			fileExtension,
 			mimeType,
 			byteSize: sourceBuffer.length,
+			// Office files wait for a PDF copy only when Gotenberg is set up; the queue picks them up.
+			conversionStatus: convertOffice && isConvertibleDocumentExtension(fileExtension) ? 'PENDING' : 'NOT_NEEDED',
 		},
 	});
 
@@ -471,7 +477,6 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 		const extracted = await extractDocumentText({
 			buffer: sourceBuffer,
 			extension: fileExtension,
-			sourcePath: absoluteOriginalPath,
 		});
 		const preview = await createDocumentPreviewBuffers({
 			fileName,
@@ -509,7 +514,7 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 	}
 }
 
-async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourceBuffer, fileName, mimeType }) {
+async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourceBuffer, fileName, mimeType, convertOffice = false }) {
 	if (!isSupportedNoteDocument(fileName, mimeType)) {
 		throw new Error('Unsupported document type');
 	}
@@ -532,6 +537,7 @@ async function persistDocumentRecord({ prisma, uploadDir, access, userId, source
 			sourceBuffer,
 			fileName,
 			mimeType,
+			convertOffice,
 		});
 	} catch (error) {
 		await prisma.noteDocument.delete({ where: { id: noteDocument.id } }).catch(() => undefined);
@@ -703,10 +709,61 @@ async function buildAccessibleDocContext(prisma, userId) {
 	return { docContext, workspaceIds, sharedDocIds: placements.map((placement) => placement.collaborator.docId) };
 }
 
-function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged = null }) {
+function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged = null, documentConverter = null }) {
 	if (!uploadDir) throw new Error('uploadDir is required');
 
-	return function handleRequest(req, res) {
+	// Office → PDF only when a Gotenberg container is configured (GOTENBERG_URL). Optional like Redis.
+	const converter = documentConverter || createGotenbergConverter({
+		url: process.env.GOTENBERG_URL,
+		username: process.env.GOTENBERG_USERNAME,
+		password: process.env.GOTENBERG_PASSWORD,
+	});
+	// Real first-page previews for PDFs and converted office files, made in the background.
+	const thumbnailQueue = createDocumentThumbnailQueue({
+		prisma,
+		uploadDir,
+		onUpdated: (target) => publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, target, 'note-documents-previewed'),
+	});
+	const conversionQueue = createDocumentConversionQueue({
+		prisma,
+		uploadDir,
+		converter,
+		extractDocumentText,
+		// Same event as upload/delete, so every device refreshes that note's documents and the
+		// background download fetches the new PDF copy. A finished copy also has a first page to show.
+		onConverted: (target) => {
+			thumbnailQueue.scanSoon();
+			return publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, target, 'note-documents-converted');
+		},
+	});
+
+	// Preferences → Storage asks "is the document converter up?". A short cache (and one shared
+	// in-flight check) so a room full of people opening Preferences doesn't hammer Gotenberg.
+	const CONVERTER_STATUS_CACHE_MS = 10_000;
+	const CONVERTER_STATUS_REFRESH_MIN_MS = 3_000;
+	let converterStatus = null;
+	let converterStatusCheckedAt = 0;
+	let converterStatusInFlight = null;
+	function readConverterStatus({ refresh = false } = {}) {
+		const age = Date.now() - converterStatusCheckedAt;
+		if (converterStatus && age < (refresh ? CONVERTER_STATUS_REFRESH_MIN_MS : CONVERTER_STATUS_CACHE_MS)) {
+			return Promise.resolve(converterStatus);
+		}
+		if (converterStatusInFlight) return converterStatusInFlight;
+		converterStatusInFlight = (async () => {
+			try {
+				const health = converter.enabled ? await converter.checkHealth() : null;
+				converterStatus = describeConverterHealth(converter.enabled, health);
+				converterStatusCheckedAt = Date.now();
+				return converterStatus;
+			} finally {
+				converterStatusInFlight = null;
+			}
+		})();
+		return converterStatusInFlight;
+	}
+
+	const handleRequest = function handleRequest(req, res) {
 		const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
 		const pathname = url.pathname;
 		const method = String(req.method || 'GET').toUpperCase();
@@ -820,6 +877,32 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					jsonResponse(res, 200, { documents, count: documents.length });
 				} catch (err) {
 					console.error('[note-documents] list error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		// Every document this user can see, so each device can keep a copy (plan D3).
+		if (pathname === '/api/note-documents/manifest' && method === 'GET') {
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const { workspaceIds, sharedDocIds } = await buildAccessibleDocContext(prisma, session.userId);
+					const manifest = await listManifestDocuments({
+						prisma,
+						workspaceIds,
+						sharedDocIds,
+						include: LATEST_DOCUMENT_VERSION_INCLUDE,
+						mapDocument: mapNoteDocument,
+					});
+					// Devices decide what to download and delete from this. A service-worker copy
+					// from an hour ago would be worse than no answer at all.
+					res.setHeader('Cache-Control', 'no-store');
+					jsonResponse(res, 200, manifest);
+				} catch (err) {
+					console.error('[note-documents] manifest error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
 				}
 			})();
@@ -1231,12 +1314,15 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							userId: session.userId,
 							sourceBuffer: entry.buffer,
 							fileName: entry.fileName,
+							convertOffice: conversionQueue.enabled,
 							mimeType: entry.mimeType,
 						});
 						const mapped = mapNoteDocument(documentRecord);
 						if (mapped) documents.push(mapped);
 					}
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-created');
+					conversionQueue.notify();
+					thumbnailQueue.scanSoon();
 					jsonResponse(res, 201, { documents, count: documents.length });
 				} catch (err) {
 					console.error('[note-documents] upload error:', err.message);
@@ -1335,12 +1421,31 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 			return true;
 		}
 
+		if (pathname === '/api/document-conversion/status' && method === 'GET') {
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const status = await readConverterStatus({ refresh: url.searchParams.get('refresh') === '1' });
+					res.setHeader('Cache-Control', 'no-store');
+					jsonResponse(res, 200, status);
+				} catch (err) {
+					console.error('[converter] status check error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		if (pathname === '/api/config' && method === 'GET') {
 			const session = requireAuth(req, res);
 			if (!session) return true;
 			jsonResponse(res, 200, {
 				imageCaptureMaxDimensionPx: IMAGE_CAPTURE_MAX_DIMENSION_PX,
 				imageCaptureJpegQuality: IMAGE_CAPTURE_JPEG_QUALITY,
+				// Whether office files will get a PDF copy (Gotenberg configured). Clients use it to
+				// choose between "preparing PDF" and the text view.
+				documentConversion: conversionQueue.enabled,
 			});
 			return true;
 		}
@@ -1641,6 +1746,13 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 
 		return false;
 	};
+	// Started by server.js once the database is ready, and stopped on shutdown.
+	handleRequest.startBackgroundWork = () => Promise.all([conversionQueue.start(), thumbnailQueue.start()]);
+	handleRequest.stop = () => {
+		conversionQueue.stop();
+		thumbnailQueue.stop();
+	};
+	return handleRequest;
 }
 
 module.exports = {

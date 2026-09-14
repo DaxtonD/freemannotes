@@ -1546,6 +1546,14 @@ async function gracefulShutdown(signal) {
 		}
 	}
 
+	if (noteMediaRouter && typeof noteMediaRouter.stop === 'function') {
+		try {
+			noteMediaRouter.stop();
+		} catch (err) {
+			console.error('[server] Error stopping document conversion:', err.message);
+		}
+	}
+
 	if (workspaceCleanup) {
 		try {
 			workspaceCleanup.stop();
@@ -1728,6 +1736,10 @@ process.on('uncaughtException', (err) => {
 				gracePeriodMs: Number(process.env.WORKSPACE_CLEANUP_GRACE_MS) || 24 * 60 * 60 * 1000,
 			});
 			console.info('[server] Workspace cleanup scheduler initialized');
+			// Office → PDF conversion (optional Gotenberg). Needs the schema in place, hence here.
+			if (noteMediaRouter && typeof noteMediaRouter.startBackgroundWork === 'function') {
+				void noteMediaRouter.startBackgroundWork();
+			}
 		} catch (err) {
 			console.error('[server] Failed to initialize workspace cleanup:', err.message);
 		}

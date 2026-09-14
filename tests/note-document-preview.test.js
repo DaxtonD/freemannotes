@@ -48,7 +48,7 @@ test('extracts PDF text and page count without the page marker lines', async () 
 });
 
 test('a broken PDF reports an error instead of pretending it had no text', async () => {
-	const result = await extractDocumentText({ buffer: Buffer.from('definitely not a pdf'), extension: 'pdf', sourcePath: 'Z:/nowhere/broken.pdf' });
+	const result = await extractDocumentText({ buffer: Buffer.from('definitely not a pdf'), extension: 'pdf' });
 	assert.equal(result.text, '');
 	assert.equal(typeof result.errorMessage, 'string');
 	assert.ok(result.errorMessage.length > 0);

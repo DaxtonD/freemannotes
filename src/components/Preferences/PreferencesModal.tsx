@@ -8,6 +8,7 @@ import { flushOrphanedNoteLinkPreviews } from '../../core/noteLinkApi';
 import { clearAllPendingSelfMentions } from '../../core/pendingSelfMentions';
 import { useBubbleMenuEnabled, setBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import { NotificationsSection } from './NotificationsSection';
+import { StorageSection } from './StorageSection';
 import { SupportSection } from './SupportSection';
 import styles from './PreferencesModal.module.css';
 
@@ -21,6 +22,7 @@ type PreferencesSection =
 	| 'editor'
 	| 'notifications'
 	| 'note-management'
+	| 'storage'
 	| 'import'
 	| 'support';
 
@@ -37,6 +39,7 @@ const sections: readonly SectionConfig[] = [
 	{ id: 'editor', labelKey: 'prefs.editor' },
 	{ id: 'notifications', labelKey: 'prefs.notifications' },
 	{ id: 'note-management', labelKey: 'prefs.noteManagement' },
+	{ id: 'storage', labelKey: 'prefs.storage' },
 	{ id: 'import', labelKey: 'importExport.prefsTitle' },
 	{ id: 'support', labelKey: 'prefs.support' },
 ];
@@ -78,6 +81,8 @@ export type PreferencesModalProps = {
 	showSendInvite?: boolean;
 	onSendInvite?: () => void;
 	onSignOut?: () => void;
+	/** Scopes per-login device settings (document storage mode). */
+	authUserId?: string | null;
 	isSupporter?: boolean;
 	supporterShowPublic?: boolean;
 	onSupporterVisibilityChange?: (showPublic: boolean) => void;
@@ -87,6 +92,7 @@ export type PreferencesModalProps = {
 
 type SectionModalProps = {
 	section: PreferencesSection;
+	authUserId?: string | null;
 	onClose: () => void;
 	/** Closes the whole preferences modal, not just the sub-section. */
 	onCloseAll?: () => void;
@@ -729,6 +735,8 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 							deleteAfterDays={props.deleteAfterDays}
 							onDeleteAfterDaysChange={props.onDeleteAfterDaysChange}
 						/>
+					) : props.section === 'storage' ? (
+						<StorageSection t={props.t} authUserId={props.authUserId} />
 					) : props.section === 'about' ? (
 						<AboutSectionContent
 							t={props.t}
@@ -857,6 +865,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 			{activeSection ? (
 				<SectionModal
 					section={activeSection}
+					authUserId={props.authUserId}
 					onClose={() => setActiveSection(null)}
 					onCloseAll={props.onCloseDirect ?? props.onClose}
 					t={props.t}

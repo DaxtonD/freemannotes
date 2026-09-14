@@ -162,8 +162,9 @@ import {
 	scheduleQueuedNoteImageFlush,
 	warmQueuedImageCounts,
 	warmWorkspaceImageMetadata,
+	clearNoteMediaDeviceDataForLogout,
 } from './core/noteMediaStore';
-import { emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, moveLocalNoteLinks, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
+import { clearNoteLinkDeviceDataForLogout, emitNoteLinksChanged, flushQueuedNoteLinkSync, hasQueuedNoteLinkSync, moveLocalNoteLinks, scanAllDocumentsForPlaceholders, syncNoteLinksForDoc } from './core/noteLinkStore';
 import {
 	emitNoteDocumentsChanged,
 	getCachedNoteDocuments,
@@ -172,6 +173,12 @@ import {
 	readQueuedNoteDocuments,
 	readStoredRemoteNoteDocuments,
 	scheduleQueuedNoteDocumentFlush,
+	clearNoteDocumentDeviceDataForLogout,
+	hasQueuedNoteDocumentWork,
+	requestNoteDocumentBackgroundSync,
+	startNoteDocumentBackgroundSync,
+	stopNoteDocumentBackgroundSync,
+	syncAllNoteDocuments,
 } from './core/noteDocumentStore';
 import { searchOfflineNotes, searchLoadedNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, clearPrivateServiceWorkerCaches, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
@@ -5156,6 +5163,11 @@ export function App(): React.JSX.Element {
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
 		clearPdfViewerPositions();
+		// Downloaded document files, photo thumbnails, link previews and their cached lists used
+		// to survive sign-out, sitting in storage for whoever signed in next. Unsent uploads stay put.
+		void clearNoteDocumentDeviceDataForLogout();
+		void clearNoteMediaDeviceDataForLogout();
+		void clearNoteLinkDeviceDataForLogout();
 		setSharedPlacements([]);
 		setActiveWorkspaceSharedPlacements([]);
 		setActiveSharedFolder(null);
@@ -5165,6 +5177,20 @@ export function App(): React.JSX.Element {
 		setCollaboratorModalState(null);
 		setNoteGridCollaboratorFilter(null);
 	}, [authUserId, manager]);
+
+	// Offline uploads survive sign-out (they only send for the same person), but they won't
+	// go anywhere until that person is back, so say so before signing out.
+	const confirmAndSignOut = React.useCallback(async () => {
+		if (authUserId) {
+			const waiting = await Promise.all([
+				hasQueuedNoteImageUploads(authUserId).catch(() => false),
+				hasQueuedNoteDocumentWork(authUserId).catch(() => false),
+				hasQueuedNoteLinkSync(authUserId).catch(() => false),
+			]);
+			if (waiting.some(Boolean) && !window.confirm(t('prefs.signOutPendingUploadsConfirm'))) return;
+		}
+		await signOut();
+	}, [authUserId, signOut, t]);
 
 	const clearActiveWorkspaceState = React.useCallback(
 		(opts?: { preserveAuthCache?: boolean }) => {
@@ -7200,6 +7226,8 @@ export function App(): React.JSX.Element {
 							const timer = window.setTimeout(() => {
 								pendingNoteDocumentTimers.delete(payload.docId as string);
 								emitNoteDocumentsChanged(payload.docId as string);
+								// A note that isn't open anywhere on this device still needs its new file.
+								requestNoteDocumentBackgroundSync();
 							}, 150);
 							pendingNoteDocumentTimers.set(payload.docId, timer);
 							return;
@@ -9902,6 +9930,34 @@ export function App(): React.JSX.Element {
 		sidebarIsCollapsed,
 	]);
 
+	// Keep every document the user can see on this device (plan D3). The store throttles and
+	// cancels itself; this just tells it who's signed in and nudges it when the network is back
+	// or the app comes to the front.
+	React.useEffect(() => {
+		if (authStatus !== 'authed' || !authUserId) return;
+		startNoteDocumentBackgroundSync(authUserId);
+		let onlineTimer: ReturnType<typeof setTimeout> | null = null;
+		const onOnline = (): void => {
+			// Same settle delay as the upload flush below: DNS/TLS can lag the online event.
+			if (onlineTimer !== null) clearTimeout(onlineTimer);
+			onlineTimer = setTimeout(() => {
+				onlineTimer = null;
+				void syncAllNoteDocuments(authUserId, { force: true });
+			}, 2500);
+		};
+		const onVisibilityChange = (): void => {
+			if (document.visibilityState === 'visible') void syncAllNoteDocuments(authUserId);
+		};
+		window.addEventListener('online', onOnline);
+		document.addEventListener('visibilitychange', onVisibilityChange);
+		return () => {
+			if (onlineTimer !== null) clearTimeout(onlineTimer);
+			window.removeEventListener('online', onOnline);
+			document.removeEventListener('visibilitychange', onVisibilityChange);
+			stopNoteDocumentBackgroundSync(authUserId);
+		};
+	}, [authStatus, authUserId]);
+
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) return;
 		void scheduleQueuedNoteImageFlush(authUserId);
@@ -12101,7 +12157,8 @@ export function App(): React.JSX.Element {
 				userManagementDisabled={isGlobalAdmin && isUserManagementOffline}
 				showSendInvite={isGlobalAdmin}
 				onSendInvite={openSendInviteFromPreferences}
-				onSignOut={() => void signOut()}
+				onSignOut={() => void confirmAndSignOut()}
+				authUserId={authUserId}
 				isSupporter={authIsSupporter}
 				supporterShowPublic={authSupporterShowPublic}
 				onSupporterVisibilityChange={(showPublic) => setAuthSupporterShowPublic(showPublic)}

@@ -6,7 +6,7 @@ import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
-import { resolveNoteDocumentBlob } from '../../core/noteDocumentStore';
+import { resolveNoteDocumentViewBlob } from '../../core/noteDocumentStore';
 import { readPdfViewerPosition, writePdfViewerPosition } from '../../core/pdfViewerPositions';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
@@ -317,7 +317,8 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		setActiveMatch(-1);
 		void (async () => {
 			try {
-				const blob = await resolveNoteDocumentBlob(noteDocument);
+				// A PDF opens itself; an office file opens the PDF copy Gotenberg made of it.
+				const blob = await resolveNoteDocumentViewBlob(noteDocument);
 				if (cancelled) return;
 				if (!blob) {
 					console.warn('[pdf-viewer] no file available', {
@@ -357,7 +358,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			// Destroys the document and terminates its worker.
 			void loadingTask?.destroy();
 		};
-	}, [noteDocument.id, noteDocument.originalUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+	}, [noteDocument.id, noteDocument.originalUrl, noteDocument.viewPdfUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
 	React.useEffect(() => {
 		const scroller = scrollerRef.current;
@@ -420,7 +421,10 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		window.addEventListener('popstate', onPopState);
 		const currentState = window.history.state as { __notePdfViewer?: string } | null;
 		if (currentState?.__notePdfViewer !== token) {
-			window.history.pushState({ __notePdfViewer: token }, '');
+			// Swapping straight in from the text view (the PDF copy just finished): take over its
+			// entry rather than stacking a second one that Back would have to get through.
+			if (typeof currentState?.__notePdfViewer === 'string') window.history.replaceState({ __notePdfViewer: token }, '');
+			else window.history.pushState({ __notePdfViewer: token }, '');
 			didPush = true;
 		}
 		return () => {
@@ -718,6 +722,50 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			scroller.removeEventListener('gesturechange', blockNativeGesture);
 		};
 	}, [animateZoomTo, beginZoomGesture, commitZoomGesture, load.status, updateZoomGesture]);
+
+	// Desktop: grab the page and drag it around like any PDF reader, instead of hunting for the
+	// scrollbars once you've zoomed in. Mouse only: touch already pans natively, and pinch lives
+	// in the touch handlers above.
+	React.useEffect(() => {
+		const scroller = scrollerRef.current;
+		if (!scroller || load.status !== 'ready') return;
+		let drag: { pointerId: number; x: number; y: number; left: number; top: number } | null = null;
+
+		const onPointerDown = (event: PointerEvent): void => {
+			if (event.pointerType !== 'mouse' || event.button !== 0 || gestureRef.current) return;
+			// A press on the scrollbars themselves still works the normal way.
+			const rect = scroller.getBoundingClientRect();
+			if (event.clientX - rect.left >= scroller.clientWidth || event.clientY - rect.top >= scroller.clientHeight) return;
+			drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop };
+			scroller.setPointerCapture(event.pointerId);
+			scroller.dataset.dragging = 'true';
+			// Otherwise the browser starts dragging a ghost image of the canvas, or a text selection.
+			event.preventDefault();
+		};
+		const onPointerMove = (event: PointerEvent): void => {
+			if (!drag || event.pointerId !== drag.pointerId) return;
+			scroller.scrollLeft = drag.left - (event.clientX - drag.x);
+			scroller.scrollTop = drag.top - (event.clientY - drag.y);
+		};
+		const endDrag = (event: PointerEvent): void => {
+			if (!drag || event.pointerId !== drag.pointerId) return;
+			drag = null;
+			delete scroller.dataset.dragging;
+			if (scroller.hasPointerCapture(event.pointerId)) scroller.releasePointerCapture(event.pointerId);
+		};
+
+		scroller.addEventListener('pointerdown', onPointerDown);
+		scroller.addEventListener('pointermove', onPointerMove);
+		scroller.addEventListener('pointerup', endDrag);
+		scroller.addEventListener('pointercancel', endDrag);
+		return () => {
+			scroller.removeEventListener('pointerdown', onPointerDown);
+			scroller.removeEventListener('pointermove', onPointerMove);
+			scroller.removeEventListener('pointerup', endDrag);
+			scroller.removeEventListener('pointercancel', endDrag);
+			delete scroller.dataset.dragging;
+		};
+	}, [load.status]);
 
 	// ── Layout ──────────────────────────────────────────────────────────────
 

@@ -287,6 +287,34 @@ export function getNoteMediaChangedEventName(): string {
 	return NOTE_MEDIA_CHANGED_EVENT;
 }
 
+/**
+ * Sign-out: forget the photo lists and thumbnails saved on this device for the account that's
+ * leaving. Queued uploads (and their local previews) stay; they only send for the same user.
+ */
+export async function clearNoteMediaDeviceDataForLogout(): Promise<void> {
+	remoteCache.clear();
+	pendingRemoteRefreshes.clear();
+	remoteRefreshTimestamps.clear();
+	remoteFileNameOverrides.clear();
+	movedCacheGraceUntil.clear();
+	// Rebuilt per user by warmQueuedImageCounts on the next sign-in.
+	queuedCountByDocId.clear();
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_MEDIA_PREVIEW_STORE], 'readwrite');
+		const request = tx.objectStore(NOTE_MEDIA_PREVIEW_STORE).openCursor();
+		request.onsuccess = () => {
+			const cursor = request.result;
+			if (!cursor) return;
+			if ((cursor.value as StoredNoteImagePreviewRecord).kind === 'remote') cursor.delete();
+			cursor.continue();
+		};
+		await transactionToPromise(tx);
+	} catch {
+		// Nothing stored yet, or storage unavailable.
+	}
+}
+
 export function emitNoteMediaChanged(docId: string): void {
 	if (!docId || typeof window === 'undefined' || typeof window.dispatchEvent !== 'function') return;
 	window.dispatchEvent(new CustomEvent(NOTE_MEDIA_CHANGED_EVENT, { detail: { docId } }));

@@ -15,11 +15,14 @@ const DEFAULT_IMAGE_CAPTURE_JPEG_QUALITY = 0.82;
 type InstanceConfig = {
 	imageCaptureMaxDimensionPx: number;
 	imageCaptureJpegQuality: number;
+	/** The server has Gotenberg (GOTENBERG_URL), so office files get a PDF copy. */
+	documentConversion: boolean;
 };
 
 const defaultConfig: InstanceConfig = {
 	imageCaptureMaxDimensionPx: DEFAULT_IMAGE_CAPTURE_MAX_DIMENSION_PX,
 	imageCaptureJpegQuality: DEFAULT_IMAGE_CAPTURE_JPEG_QUALITY,
+	documentConversion: false,
 };
 
 function readPersistedConfig(): InstanceConfig | null {
@@ -31,7 +34,11 @@ function readPersistedConfig(): InstanceConfig | null {
 		if (!parsed || typeof parsed !== 'object') return null;
 		const { imageCaptureMaxDimensionPx, imageCaptureJpegQuality } = parsed as Partial<InstanceConfig>;
 		if (typeof imageCaptureMaxDimensionPx !== 'number' || typeof imageCaptureJpegQuality !== 'number') return null;
-		return { imageCaptureMaxDimensionPx, imageCaptureJpegQuality };
+		return {
+			imageCaptureMaxDimensionPx,
+			imageCaptureJpegQuality,
+			documentConversion: (parsed as { documentConversion?: unknown }).documentConversion === true,
+		};
 	} catch {
 		return null;
 	}
@@ -66,6 +73,7 @@ function ensureInstanceConfigLoaded(): void {
 				imageCaptureJpegQuality: typeof imageCaptureJpegQuality === 'number' && imageCaptureJpegQuality > 0
 					? imageCaptureJpegQuality
 					: defaultConfig.imageCaptureJpegQuality,
+				documentConversion: (data as { documentConversion?: unknown }).documentConversion === true,
 			};
 			cachedConfig = next;
 			writePersistedConfig(next);
@@ -86,4 +94,9 @@ export function getImageCaptureMaxDimensionPx(): number {
 export function getImageCaptureJpegQuality(): number {
 	ensureInstanceConfigLoaded();
 	return cachedConfig.imageCaptureJpegQuality;
+}
+
+export function getDocumentConversionEnabled(): boolean {
+	ensureInstanceConfigLoaded();
+	return cachedConfig.documentConversion;
 }

@@ -132,6 +132,24 @@ async function openDb(): Promise<IDBDatabase> {
 	return dbPromise;
 }
 
+/** Sign-out: forget link previews saved on this device. Queued link syncs stay; they're tagged with their user. */
+export async function clearNoteLinkDeviceDataForLogout(): Promise<void> {
+	remoteCache.clear();
+	pendingRefreshes.clear();
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_LINK_CACHE_STORE], 'readwrite');
+		tx.objectStore(NOTE_LINK_CACHE_STORE).clear();
+		await new Promise<void>((resolve, reject) => {
+			tx.oncomplete = () => resolve();
+			tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+			tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+		});
+	} catch {
+		// Nothing stored yet, or storage unavailable.
+	}
+}
+
 export function getNoteLinksChangedEventName(): string {
 	return NOTE_LINK_CHANGED_EVENT;
 }

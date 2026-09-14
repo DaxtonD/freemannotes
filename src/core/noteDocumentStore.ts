@@ -1,8 +1,11 @@
 import {
 	deleteNoteDocument,
+	fetchNoteDocumentManifest,
 	listNoteDocuments,
 	NoteDocumentApiError,
 	uploadNoteDocuments,
+	type NoteDocumentManifestEntry,
+	type NoteDocumentManifestResponse,
 	type NoteDocumentRecord,
 } from './noteDocumentApi';
 import { requestPwaBackgroundSync } from './pwa';
@@ -96,6 +99,9 @@ type StoredRemoteNoteDocumentAssetRow = {
 	document: NoteDocumentRecord | null;
 	blob: Blob | null;
 	originalUrl: string;
+	/** The server-made PDF copy of an office file (Gotenberg), so it opens in the viewer offline. */
+	viewBlob?: Blob | null;
+	viewPdfUrl?: string | null;
 	createdAt: string;
 	updatedAt: string;
 };
@@ -418,27 +424,41 @@ async function syncRemoteNoteDocumentAssetRows(
 		const existing = existingById.get(document.id);
 		// A new version means a new file URL; the old bytes are no use for it.
 		const sameFile = existing?.originalUrl === document.originalUrl;
+		const sameView = Boolean(document.viewPdfUrl) && existing?.viewPdfUrl === document.viewPdfUrl;
 		return {
 			id: document.id,
 			docId,
 			document,
 			blob: sameFile ? existing?.blob || null : null,
 			originalUrl: document.originalUrl,
+			viewBlob: sameView ? existing?.viewBlob || null : null,
+			viewPdfUrl: document.viewPdfUrl || null,
 			createdAt: existing?.createdAt || document.createdAt,
 			updatedAt: document.updatedAt,
 		};
 	});
 	await upsertRemoteAssetRows(baseRows);
 	if (isOffline()) return;
+	// "Only ones I open": the viewer saves a file when it's opened, nothing else downloads.
+	if (readNoteDocumentStorageMode(backgroundSyncUserId) === 'opened') return;
 
 	// Keep a copy of every document on the device so it opens offline (plan decision D3).
 	let storedBlob = false;
 	const deleting = pendingDeleteIds.get(docId);
 	for (const row of baseRows) {
-		if (row.blob || (deleting && deleting.has(row.id))) continue;
-		const blob = await fetchBlob(row.originalUrl);
-		if (!blob) continue;
-		await upsertRemoteAssetRows([{ ...row, blob }]);
+		if (deleting && deleting.has(row.id)) continue;
+		let next = row;
+		if (!row.blob) {
+			const blob = await fetchBlob(row.originalUrl);
+			if (blob) next = { ...next, blob };
+		}
+		// Office files: the PDF copy is what the viewer opens, so it needs saving too.
+		if (row.viewPdfUrl && !row.viewBlob) {
+			const viewBlob = await fetchBlob(row.viewPdfUrl);
+			if (viewBlob) next = { ...next, viewBlob };
+		}
+		if (next === row) continue;
+		await upsertRemoteAssetRows([next]);
 		storedBlob = true;
 	}
 	if (storedBlob && options.emitChange !== false) {
@@ -703,6 +723,7 @@ export async function resolveNoteDocumentBlob(document: NoteDocumentRecord): Pro
 	if (cachedRow?.blob && cachedRow.originalUrl === document.originalUrl) return cachedRow.blob;
 	const blob = await fetchBlob(document.originalUrl);
 	if (!blob) return null;
+	const keepView = Boolean(cachedRow?.viewBlob) && cachedRow?.viewPdfUrl === (document.viewPdfUrl || null);
 	await upsertRemoteAssetRows([
 		{
 			id: document.id,
@@ -710,11 +731,38 @@ export async function resolveNoteDocumentBlob(document: NoteDocumentRecord): Pro
 			document,
 			blob,
 			originalUrl: document.originalUrl,
+			viewBlob: keepView ? cachedRow?.viewBlob ?? null : null,
+			viewPdfUrl: document.viewPdfUrl || null,
 			createdAt: document.createdAt,
 			updatedAt: document.updatedAt,
 		},
 	]).catch(() => undefined);
 	return blob;
+}
+
+/** What the PDF viewer shows: the file itself for a PDF, the server-made copy for an office file. */
+export async function resolveNoteDocumentViewBlob(document: NoteDocumentRecord): Promise<Blob | null> {
+	if (!document || !document.id) return null;
+	const isPdf = (document.fileExtension || getNoteDocumentExtension(document.fileName, document.mimeType)) === 'pdf';
+	if (isPdf || document.isLocal || !document.viewPdfUrl) return resolveNoteDocumentBlob(document);
+	const cachedRow = await readRemoteAssetRow(document.id);
+	if (cachedRow?.viewBlob && cachedRow.viewPdfUrl === document.viewPdfUrl) return cachedRow.viewBlob;
+	const viewBlob = await fetchBlob(document.viewPdfUrl);
+	if (!viewBlob) return null;
+	await upsertRemoteAssetRows([
+		{
+			id: document.id,
+			docId: document.docId,
+			document,
+			blob: cachedRow && cachedRow.originalUrl === document.originalUrl ? cachedRow.blob : null,
+			originalUrl: document.originalUrl,
+			viewBlob,
+			viewPdfUrl: document.viewPdfUrl,
+			createdAt: cachedRow?.createdAt || document.createdAt,
+			updatedAt: document.updatedAt,
+		},
+	]).catch(() => undefined);
+	return viewBlob;
 }
 
 export async function queueNoteDocumentsForUpload(args: {
@@ -937,4 +985,444 @@ export async function flushQueuedNoteDocuments(userId: string): Promise<void> {
 	} finally {
 		pendingFlushes.delete(userId);
 	}
+}
+
+/** True when this user has uploads or deletes that haven't reached the server yet. */
+export async function hasQueuedNoteDocumentWork(userId: string): Promise<boolean> {
+	if (!userId) return false;
+	const [uploads, deletes] = await Promise.all([readAllQueuedRows(userId), readAllDeleteRows(userId)]);
+	// A file the server already rejected for good is never going to send, so it doesn't count.
+	return uploads.some((row) => row.permanentFailure !== true) || deletes.length > 0;
+}
+
+// ── Every document on every device (plan D3) ──────────────────────────────────
+//
+// The per-note refresh above only saves files for notes something has listed on this device.
+// This goes the rest of the way: one request asks the server for every document the user can
+// see (all their workspaces plus notes shared with them), each note's cached list is brought
+// up to date, and the files download one at a time in the background. A brand-new device can
+// then go offline without having opened a thing and still open every document.
+
+export type NoteDocumentStorageMode = 'all' | 'opened';
+
+export type NoteDocumentBackgroundSyncStatus = {
+	phase: 'idle' | 'checking' | 'downloading' | 'done' | 'offline' | 'storage-full' | 'error';
+	/** Documents the server says this user can see. */
+	total: number;
+	/** How many of those already have their file on this device. */
+	saved: number;
+	/** Files the server wouldn't hand over (deleted in the meantime, access gone). */
+	failed: number;
+};
+
+export type NoteDocumentStorageUsage = {
+	savedBytes: number;
+	savedCount: number;
+	/** Offline uploads still waiting to send. Clear never touches these. */
+	waitingBytes: number;
+	waitingCount: number;
+};
+
+const STORAGE_MODE_KEY_PREFIX = 'freemannotes.documentStorageMode.v1:';
+const BACKGROUND_SYNC_MIN_INTERVAL_MS = 60_000;
+const BACKGROUND_SYNC_RETRY_MS = 15_000;
+const BACKGROUND_SYNC_REQUEST_DEBOUNCE_MS = 5_000;
+// A document uploaded while the manifest was being built isn't in it. Anything created this
+// close to (or after) the server's timestamp is left alone instead of pruned as "gone".
+const MANIFEST_PRUNE_SKEW_MS = 30_000;
+
+let backgroundSyncUserId: string | null = null;
+// Bumped by sign-out, Clear and switching accounts. A download loop that sees a different
+// value stops at the next file instead of writing into storage that was just emptied.
+let backgroundSyncGeneration = 0;
+let backgroundSyncInFlight: Promise<void> | null = null;
+let backgroundSyncLastAttemptAt = 0;
+let backgroundSyncLastSucceeded = false;
+let backgroundSyncRequestTimer: number | null = null;
+let storagePersistRequested = false;
+let backgroundSyncStatus: NoteDocumentBackgroundSyncStatus = { phase: 'idle', total: 0, saved: 0, failed: 0 };
+const backgroundSyncListeners = new Set<() => void>();
+
+function setBackgroundSyncStatus(next: NoteDocumentBackgroundSyncStatus): void {
+	backgroundSyncStatus = next;
+	for (const listener of backgroundSyncListeners) listener();
+}
+
+export function subscribeNoteDocumentBackgroundSync(listener: () => void): () => void {
+	backgroundSyncListeners.add(listener);
+	return () => {
+		backgroundSyncListeners.delete(listener);
+	};
+}
+
+export function getNoteDocumentBackgroundSyncStatus(): NoteDocumentBackgroundSyncStatus {
+	return backgroundSyncStatus;
+}
+
+/** Per device and per login. Defaults to keeping everything, which is the whole point of D3. */
+export function readNoteDocumentStorageMode(userId: string | null | undefined): NoteDocumentStorageMode {
+	if (!userId || typeof window === 'undefined') return 'all';
+	try {
+		return window.localStorage.getItem(`${STORAGE_MODE_KEY_PREFIX}${userId}`) === 'opened' ? 'opened' : 'all';
+	} catch {
+		return 'all';
+	}
+}
+
+export function writeNoteDocumentStorageMode(userId: string, mode: NoteDocumentStorageMode): void {
+	if (!userId || typeof window === 'undefined') return;
+	try {
+		window.localStorage.setItem(`${STORAGE_MODE_KEY_PREFIX}${userId}`, mode);
+	} catch {
+		// Private browsing with storage blocked: the default ('all') stands.
+	}
+	if (mode === 'all' && userId === backgroundSyncUserId) void syncAllNoteDocuments(userId, { force: true });
+}
+
+function isQuotaError(error: unknown): boolean {
+	const name = (error as { name?: string } | null)?.name;
+	return name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED';
+}
+
+/** Walks every row of a store with a cursor, optionally deleting as it goes. */
+async function forEachStoredRow<T>(storeName: string, visit: (row: T) => 'delete' | void, mode: IDBTransactionMode = 'readonly'): Promise<void> {
+	const db = await openDb();
+	const tx = db.transaction([storeName], mode);
+	await new Promise<void>((resolve, reject) => {
+		const request = tx.objectStore(storeName).openCursor();
+		request.onsuccess = () => {
+			const cursor = request.result;
+			if (!cursor) {
+				resolve();
+				return;
+			}
+			if (visit(cursor.value as T) === 'delete') cursor.delete();
+			cursor.continue();
+		};
+		request.onerror = () => reject(request.error || new Error('IndexedDB cursor failed'));
+	});
+	await transactionToPromise(tx);
+}
+
+async function clearStores(storeNames: readonly string[]): Promise<void> {
+	const db = await openDb();
+	const tx = db.transaction([...storeNames], 'readwrite');
+	for (const storeName of storeNames) tx.objectStore(storeName).clear();
+	await transactionToPromise(tx);
+}
+
+async function readAllCachedListDocIds(): Promise<string[]> {
+	try {
+		const db = await openDb();
+		const tx = db.transaction([NOTE_DOCUMENT_CACHE_STORE], 'readonly');
+		const keys = (await requestToPromise(tx.objectStore(NOTE_DOCUMENT_CACHE_STORE).getAllKeys())) as IDBValidKey[];
+		await transactionToPromise(tx);
+		return keys.map((key) => String(key));
+	} catch {
+		return [];
+	}
+}
+
+function listSignature(documents: readonly NoteDocumentRecord[]): string {
+	return documents
+		.map((document) => `${document.id}@${document.latestVersionId ?? document.originalUrl}:${document.fileName}:${document.conversionStatus ?? ''}`)
+		.sort()
+		.join('|');
+}
+
+/** Brings every note's cached document list in line with the manifest, so lists work offline too. */
+async function reconcileListsWithManifest(documents: readonly NoteDocumentManifestEntry[], pruneCutoffMs: number): Promise<void> {
+	const byDocId = new Map<string, NoteDocumentManifestEntry[]>();
+	for (const document of documents) {
+		const list = byDocId.get(document.docId);
+		if (list) list.push(document);
+		else byDocId.set(document.docId, [document]);
+	}
+	const docIds = new Set<string>([...byDocId.keys(), ...(await readAllCachedListDocIds())]);
+	for (const docId of docIds) {
+		// A note that just moved workspaces can briefly look empty server-side; same grace as refreshRemoteNoteDocuments.
+		if (Date.now() - (recentMoveTargets.get(docId) || 0) < MOVE_EMPTY_LIST_GRACE_MS) continue;
+		const existing = remoteCache.get(docId) ?? await readStoredRemoteNoteDocuments(docId);
+		const existingById = new Map(existing.map((document) => [document.id, document]));
+		const fromServer = (byDocId.get(docId) || []).map((entry): NoteDocumentRecord => {
+			const cached = existingById.get(entry.id);
+			// The manifest leaves the extracted text out. Keep what the per-note list already had
+			// for this same version rather than blanking it.
+			const ocrText = cached && cached.latestVersionId === entry.latestVersionId ? cached.ocrText : '';
+			return { ...entry, ocrText };
+		});
+		const serverIds = new Set(fromServer.map((document) => document.id));
+		const tooNewToJudge = existing.filter((document) => !serverIds.has(document.id) && (Date.parse(document.createdAt) || 0) > pruneCutoffMs);
+		const next = [...fromServer, ...tooNewToJudge].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+		if (listSignature(next) === listSignature(existing)) continue;
+		await writeStoredRemoteDocuments(docId, next);
+	}
+}
+
+/** Deleted documents, and ones this user can no longer see, shouldn't leave their files behind. */
+async function pruneSavedFilesNotInManifest(documents: readonly NoteDocumentManifestEntry[], pruneCutoffMs: number): Promise<void> {
+	const keep = new Set(documents.map((document) => document.id));
+	try {
+		await forEachStoredRow<StoredRemoteNoteDocumentAssetRow>(NOTE_DOCUMENT_REMOTE_ASSET_STORE, (row) => {
+			if (keep.has(row.id)) return;
+			const createdAt = Date.parse(row.document?.createdAt || row.createdAt) || 0;
+			return createdAt <= pruneCutoffMs ? 'delete' : undefined;
+		}, 'readwrite');
+	} catch {
+		// The next run tries again.
+	}
+}
+
+type SavedFileState = { originalUrl: string | null; viewPdfUrl: string | null };
+
+async function readSavedFiles(): Promise<Map<string, SavedFileState>> {
+	const saved = new Map<string, SavedFileState>();
+	try {
+		await forEachStoredRow<StoredRemoteNoteDocumentAssetRow>(NOTE_DOCUMENT_REMOTE_ASSET_STORE, (row) => {
+			saved.set(row.id, {
+				originalUrl: row.blob ? row.originalUrl : null,
+				viewPdfUrl: row.viewBlob ? row.viewPdfUrl ?? null : null,
+			});
+		});
+	} catch {
+		// Treat as nothing saved; downloads just check again.
+	}
+	return saved;
+}
+
+async function fetchFileForBackgroundSync(url: string): Promise<{ blob: Blob } | { error: 'network' | 'refused' }> {
+	try {
+		const response = await fetch(url, { credentials: 'include' });
+		if (!response.ok) return { error: 'refused' };
+		return { blob: await response.blob() };
+	} catch {
+		return { error: 'network' };
+	}
+}
+
+async function downloadManifestFiles(userId: string, documents: readonly NoteDocumentManifestEntry[], stillCurrent: () => boolean): Promise<void> {
+	const total = documents.length;
+	const savedFiles = await readSavedFiles();
+	// Saved means the original and, for a converted office file, its PDF copy too.
+	const isSaved = (document: NoteDocumentManifestEntry): boolean => {
+		const state = savedFiles.get(document.id);
+		return Boolean(state && state.originalUrl === document.originalUrl && (!document.viewPdfUrl || state.viewPdfUrl === document.viewPdfUrl));
+	};
+	let saved = documents.filter(isSaved).length;
+	let failed = 0;
+	if (readNoteDocumentStorageMode(userId) !== 'all') {
+		setBackgroundSyncStatus({ phase: 'done', total, saved, failed });
+		return;
+	}
+	// Ask the browser not to quietly evict all this when the device runs low. Installed PWAs
+	// usually get it without a prompt; if it's refused, files just may need downloading again.
+	if (!storagePersistRequested && total > 0 && typeof navigator !== 'undefined' && navigator.storage?.persist) {
+		storagePersistRequested = true;
+		void navigator.storage.persist().catch(() => false);
+	}
+	// Newest first: the thing someone just attached is the thing they're about to want.
+	const newestFirst = documents
+		.filter((document) => !isSaved(document))
+		.sort((left, right) => (right.versionCreatedAt || right.updatedAt).localeCompare(left.versionCreatedAt || left.updatedAt));
+	setBackgroundSyncStatus({ phase: newestFirst.length > 0 ? 'downloading' : 'done', total, saved, failed });
+	for (const document of newestFirst) {
+		if (!stillCurrent() || readNoteDocumentStorageMode(userId) !== 'all') return;
+		if (pendingDeleteIds.get(document.docId)?.has(document.id)) continue;
+		if (isOffline()) {
+			backgroundSyncLastSucceeded = false;
+			setBackgroundSyncStatus({ phase: 'offline', total, saved, failed });
+			return;
+		}
+		const state = savedFiles.get(document.id);
+		const wanted: Array<{ kind: 'original' | 'view'; url: string }> = [];
+		if (state?.originalUrl !== document.originalUrl) wanted.push({ kind: 'original', url: document.originalUrl });
+		if (document.viewPdfUrl && state?.viewPdfUrl !== document.viewPdfUrl) wanted.push({ kind: 'view', url: document.viewPdfUrl });
+		const fetched: { original?: Blob; view?: Blob } = {};
+		let refused = false;
+		for (const item of wanted) {
+			const result = await fetchFileForBackgroundSync(item.url);
+			if (!stillCurrent()) return;
+			if ('error' in result) {
+				if (result.error === 'network') {
+					// The connection dropped: stop and pick up from here next time, don't mark every
+					// remaining file as failed.
+					backgroundSyncLastSucceeded = false;
+					setBackgroundSyncStatus({ phase: 'offline', total, saved, failed });
+					return;
+				}
+				refused = true;
+				break;
+			}
+			fetched[item.kind] = result.blob;
+		}
+		if (refused) {
+			failed += 1;
+			setBackgroundSyncStatus({ phase: 'downloading', total, saved, failed });
+			continue;
+		}
+		try {
+			const existing = await readRemoteAssetRow(document.id);
+			await upsertRemoteAssetRows([{
+				id: document.id,
+				docId: document.docId,
+				document: existing?.document ?? { ...document, ocrText: '' },
+				blob: fetched.original ?? (existing?.originalUrl === document.originalUrl ? existing.blob : null),
+				originalUrl: document.originalUrl,
+				viewBlob: fetched.view ?? (existing?.viewBlob && existing.viewPdfUrl === (document.viewPdfUrl || null) ? existing.viewBlob : null),
+				viewPdfUrl: document.viewPdfUrl || null,
+				createdAt: existing?.createdAt || document.createdAt,
+				updatedAt: document.updatedAt,
+			}]);
+		} catch (error) {
+			if (isQuotaError(error)) {
+				setBackgroundSyncStatus({ phase: 'storage-full', total, saved, failed });
+				return;
+			}
+			failed += 1;
+			continue;
+		}
+		saved += 1;
+		setBackgroundSyncStatus({ phase: 'downloading', total, saved, failed });
+	}
+	setBackgroundSyncStatus({ phase: 'done', total, saved, failed });
+}
+
+async function runBackgroundSync(userId: string, generation: number): Promise<void> {
+	const stillCurrent = (): boolean => generation === backgroundSyncGeneration && userId === backgroundSyncUserId;
+	if (isOffline()) {
+		backgroundSyncLastSucceeded = false;
+		setBackgroundSyncStatus({ ...backgroundSyncStatus, phase: 'offline' });
+		return;
+	}
+	setBackgroundSyncStatus({ ...backgroundSyncStatus, phase: 'checking' });
+	let manifest: NoteDocumentManifestResponse;
+	try {
+		manifest = await fetchNoteDocumentManifest();
+	} catch (error) {
+		if (!stillCurrent()) return;
+		backgroundSyncLastSucceeded = false;
+		// A failed request is never "you have no documents". Treating it that way is exactly how
+		// shared notes once vanished whenever a fetch fell over; nothing gets pruned here.
+		setBackgroundSyncStatus({ ...backgroundSyncStatus, phase: errorStatus(error) ? 'error' : 'offline' });
+		return;
+	}
+	if (!stillCurrent()) return;
+	backgroundSyncLastSucceeded = true;
+	const pruneCutoffMs = (Date.parse(manifest.generatedAt) || Date.now()) - MANIFEST_PRUNE_SKEW_MS;
+	await reconcileListsWithManifest(manifest.documents, pruneCutoffMs);
+	if (!stillCurrent()) return;
+	await pruneSavedFilesNotInManifest(manifest.documents, pruneCutoffMs);
+	if (!stillCurrent()) return;
+	await downloadManifestFiles(userId, manifest.documents, stillCurrent);
+}
+
+/** Checks the server for documents and downloads what's missing. Throttled unless forced. */
+export async function syncAllNoteDocuments(userId: string, options: { force?: boolean } = {}): Promise<void> {
+	if (!userId || userId !== backgroundSyncUserId) return;
+	if (backgroundSyncInFlight) {
+		if (!options.force) return backgroundSyncInFlight;
+		// Forced (Clear, back online, a document changed): let the current run notice it's stale, then go again.
+		await backgroundSyncInFlight;
+		if (backgroundSyncInFlight) return backgroundSyncInFlight;
+		if (userId !== backgroundSyncUserId) return;
+	}
+	const now = Date.now();
+	const minimumGap = backgroundSyncLastSucceeded ? BACKGROUND_SYNC_MIN_INTERVAL_MS : BACKGROUND_SYNC_RETRY_MS;
+	if (!options.force && now - backgroundSyncLastAttemptAt < minimumGap) return;
+	backgroundSyncLastAttemptAt = now;
+	const work = runBackgroundSync(userId, backgroundSyncGeneration)
+		.catch((error) => {
+			console.error('[note-documents] background sync failed', error);
+		})
+		.finally(() => {
+			backgroundSyncInFlight = null;
+		});
+	backgroundSyncInFlight = work;
+	return work;
+}
+
+/** Something changed server-side (a metadata event): check again shortly, once per burst. */
+export function requestNoteDocumentBackgroundSync(): void {
+	const userId = backgroundSyncUserId;
+	if (!userId || typeof window === 'undefined') return;
+	if (backgroundSyncRequestTimer != null) window.clearTimeout(backgroundSyncRequestTimer);
+	backgroundSyncRequestTimer = window.setTimeout(() => {
+		backgroundSyncRequestTimer = null;
+		void syncAllNoteDocuments(userId, { force: true });
+	}, BACKGROUND_SYNC_REQUEST_DEBOUNCE_MS);
+}
+
+export function startNoteDocumentBackgroundSync(userId: string): void {
+	if (!userId) return;
+	if (backgroundSyncUserId !== userId) {
+		backgroundSyncGeneration += 1;
+		backgroundSyncLastAttemptAt = 0;
+		backgroundSyncLastSucceeded = false;
+	}
+	backgroundSyncUserId = userId;
+	void syncAllNoteDocuments(userId, { force: true });
+}
+
+export function stopNoteDocumentBackgroundSync(userId: string): void {
+	if (backgroundSyncUserId !== userId) return;
+	backgroundSyncGeneration += 1;
+	backgroundSyncUserId = null;
+	if (backgroundSyncRequestTimer != null && typeof window !== 'undefined') {
+		window.clearTimeout(backgroundSyncRequestTimer);
+		backgroundSyncRequestTimer = null;
+	}
+}
+
+export async function readNoteDocumentStorageUsage(userId: string | null | undefined): Promise<NoteDocumentStorageUsage> {
+	let savedBytes = 0;
+	let savedCount = 0;
+	try {
+		// Blob sizes come from the stored record; none of the file contents are read.
+		await forEachStoredRow<StoredRemoteNoteDocumentAssetRow>(NOTE_DOCUMENT_REMOTE_ASSET_STORE, (row) => {
+			if (!row.blob && !row.viewBlob) return;
+			savedBytes += (row.blob?.size || 0) + (row.viewBlob?.size || 0);
+			savedCount += 1;
+		});
+	} catch {
+		// Storage unavailable: report zero rather than failing the whole panel.
+	}
+	const waiting = userId ? (await readAllQueuedRows(userId)).filter((row) => row.permanentFailure !== true) : [];
+	return {
+		savedBytes,
+		savedCount,
+		waitingBytes: waiting.reduce((sum, row) => sum + (row.blob?.size || row.byteSize || 0), 0),
+		waitingCount: waiting.length,
+	};
+}
+
+/** Preferences → Clear: drops downloaded files only. Lists, unsent uploads and your notes stay. */
+export async function clearSavedNoteDocumentFiles(): Promise<void> {
+	backgroundSyncGeneration += 1;
+	await clearStores([NOTE_DOCUMENT_REMOTE_ASSET_STORE]).catch(() => undefined);
+	setBackgroundSyncStatus({ ...backgroundSyncStatus, phase: 'idle', saved: 0, failed: 0 });
+	const userId = backgroundSyncUserId;
+	if (userId) void syncAllNoteDocuments(userId, { force: true });
+}
+
+/**
+ * Sign-out: nothing of this account's documents stays readable on the device. Downloaded
+ * files and cached lists go. Unsent uploads and deletes stay, because they're tagged with
+ * their user and only ever send when that same person signs back in.
+ */
+export async function clearNoteDocumentDeviceDataForLogout(): Promise<void> {
+	backgroundSyncGeneration += 1;
+	backgroundSyncUserId = null;
+	backgroundSyncLastAttemptAt = 0;
+	backgroundSyncLastSucceeded = false;
+	if (backgroundSyncRequestTimer != null && typeof window !== 'undefined') {
+		window.clearTimeout(backgroundSyncRequestTimer);
+		backgroundSyncRequestTimer = null;
+	}
+	remoteCache.clear();
+	queuedCache.clear();
+	pendingDeleteIds.clear();
+	recentMoveTargets.clear();
+	for (const id of Array.from(objectUrlCache.keys())) revokeObjectUrl(id);
+	setBackgroundSyncStatus({ phase: 'idle', total: 0, saved: 0, failed: 0 });
+	await clearStores([NOTE_DOCUMENT_REMOTE_ASSET_STORE, NOTE_DOCUMENT_CACHE_STORE]).catch(() => undefined);
 }

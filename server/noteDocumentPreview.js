@@ -5,9 +5,7 @@
 // - generates preview/thumbnail art so note cards stay compact and fast
 
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
 const JSZip = require('jszip');
 const mammoth = require('mammoth');
 const { PDFParse } = require('pdf-parse');
@@ -256,44 +254,6 @@ function extractPlainText(buffer) {
 	};
 }
 
-async function runLibreOfficeConvert(sourcePath) {
-	return runLibreOfficeConversion(sourcePath, {
-		format: 'txt:Text',
-		extension: 'txt',
-		binaries: ['soffice', 'libreoffice'],
-	});
-}
-
-async function runLibreOfficeConversion(sourcePath, args) {
-	const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'freemannotes-doc-'));
-	try {
-		// Try both common binary names so the same code works locally, in containers,
-		// and on hosts where LibreOffice is installed under a different executable.
-		for (const binary of Array.isArray(args.binaries) ? args.binaries : ['soffice', 'libreoffice']) {
-			const result = await new Promise((resolve) => {
-				const child = spawn(binary, ['--headless', '--convert-to', args.format, '--outdir', tempDir, sourcePath], {
-					stdio: ['ignore', 'pipe', 'pipe'],
-				});
-				let stderr = '';
-				child.stderr.on('data', (chunk) => {
-					stderr += chunk.toString('utf-8');
-				});
-				child.on('error', (error) => resolve({ ok: false, error: error && error.message ? error.message : 'launch-failed' }));
-				child.on('close', (code) => resolve({ ok: code === 0, error: stderr.trim() || `exit-${code}` }));
-			});
-			if (!result.ok) continue;
-			const fileNames = await fs.promises.readdir(tempDir);
-			const outputFile = fileNames.find((fileName) => fileName.toLowerCase().endsWith(`.${String(args.extension || '').toLowerCase()}`));
-			if (!outputFile) continue;
-			const contents = await fs.promises.readFile(path.join(tempDir, outputFile), 'utf8');
-			return contents;
-		}
-		return '';
-	} finally {
-		await fs.promises.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-	}
-}
-
 async function extractDocumentText(args) {
 	const result = await extractDocumentTextUncapped(args);
 	if (result && typeof result.text === 'string' && result.text.length > MAX_EXTRACTED_TEXT_CHARS) {
@@ -304,7 +264,6 @@ async function extractDocumentText(args) {
 
 async function extractDocumentTextUncapped(args) {
 	const extension = String(args.extension || '').toLowerCase();
-	let extractorError = null;
 	try {
 		if (extension === 'pdf') return await extractPdfText(args.buffer);
 		if (extension === 'docx') return await extractDocxText(args.buffer);
@@ -314,41 +273,17 @@ async function extractDocumentTextUncapped(args) {
 		if (extension === 'txt' || extension === 'md' || extension === 'csv') return extractPlainText(args.buffer);
 		if (extension === 'rtf') return { text: stripRtfText(args.buffer.toString('utf8')), pageCount: null };
 	} catch (error) {
-		extractorError = error;
-		if (!args.sourcePath) {
-			return {
-				text: '',
-				pageCount: null,
-				errorMessage: error && error.message ? error.message : 'Text extraction failed',
-			};
-		}
-	}
-
-	if (args.sourcePath) {
-		try {
-			const libreOfficeText = await runLibreOfficeConvert(args.sourcePath);
-			if (libreOfficeText) {
-				return { text: libreOfficeText, pageCount: null };
-			}
-		} catch (error) {
-			return {
-				text: '',
-				pageCount: null,
-				errorMessage: error && error.message ? error.message : 'Text extraction failed',
-			};
-		}
-	}
-
-	// If the real extractor blew up and the LibreOffice fallback found nothing, report the
-	// original error. Returning a clean "no text" here is exactly how the pdf-parse break
-	// hid for so long.
-	if (extractorError) {
+		// Report the real failure. Returning a clean "no text" here is exactly how the
+		// pdf-parse break hid for so long (behind a LibreOffice fallback that wasn't installed).
 		return {
 			text: '',
 			pageCount: null,
-			errorMessage: extractorError.message ? extractorError.message : 'Text extraction failed',
+			errorMessage: error && error.message ? error.message : 'Text extraction failed',
 		};
 	}
+
+	// No extractor of our own for this format (old binary .doc/.ppt). With Gotenberg set up,
+	// the conversion queue fills the text in from the PDF copy instead.
 	return { text: '', pageCount: null };
 }
 

@@ -8,6 +8,8 @@
       Create a database + user for Freeman Notes before starting this container.
     - Redis 7 container is strongly recommended for multi-tab real-time sync and reminders.
       Set REDIS_URL="" to run without Redis (single-instance only).
+    - Gotenberg 8 is optional. Set GOTENBERG_URL to open Word/Excel/PowerPoint files
+      in the in-app viewer; without it they open as text.
 
   FIRST-RUN NOTE:
     Freeman Notes automatically runs `prisma migrate deploy` on startup.
@@ -35,7 +37,7 @@
   <DateInstalled/>
   <DonateText>If Freeman Notes is useful to you, a coffee is always appreciated!</DonateText>
   <DonateLink>https://buymeacoffee.com/DaxtonD</DonateLink>
-  <Requires>PostgreSQL 16 | Redis 7 (recommended)</Requires>
+  <Requires>PostgreSQL 16 | Redis 7 (recommended) | Gotenberg 8 (optional, office documents)</Requires>
 
   <!-- ═══════════════════════════════════════════════════════════════════════
        VOLUMES
@@ -208,6 +210,45 @@
     Display="always"
     Required="false"
     Mask="false"></Config>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       DOCUMENT CONVERSION (GOTENBERG)
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <!-- Optional. With a Gotenberg 8 container (it's in Community Applications), Word,
+       Excel, PowerPoint and OpenDocument files open in the in-app viewer as PDFs.
+       Without it they still upload, sync and download, and open as text.
+       Keep Gotenberg's port off the internet: it has no login unless basic auth is
+       enabled on it, and its Chromium routes can fetch arbitrary URLs. -->
+  <Config
+    Name="Gotenberg URL"
+    Target="GOTENBERG_URL"
+    Default=""
+    Description="Optional. Address of a Gotenberg 8 container for office-to-PDF conversion, e.g. http://192.168.1.10:3000. Leave empty to run without it (office files open as text). Existing office files convert automatically once this is set."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false"></Config>
+
+  <Config
+    Name="Gotenberg Username"
+    Target="GOTENBERG_USERNAME"
+    Default=""
+    Description="Only if basic auth is enabled on Gotenberg (GOTENBERG_API_BASIC_AUTH_USERNAME there)."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false"></Config>
+
+  <Config
+    Name="Gotenberg Password"
+    Target="GOTENBERG_PASSWORD"
+    Default=""
+    Description="Only if basic auth is enabled on Gotenberg (GOTENBERG_API_BASIC_AUTH_PASSWORD there)."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="true"></Config>
 
   <!-- ═══════════════════════════════════════════════════════════════════════
        AUTHENTICATION

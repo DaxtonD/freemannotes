@@ -31,6 +31,10 @@ services:
       PGTIMEZONE: ${PGTIMEZONE:-}
       YPERSISTENCE: ${YPERSISTENCE:-}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+      # Optional office-to-PDF conversion (see the gotenberg service below).
+      GOTENBERG_URL: ${GOTENBERG_URL:-}
+      GOTENBERG_USERNAME: ${GOTENBERG_USERNAME:-}
+      GOTENBERG_PASSWORD: ${GOTENBERG_PASSWORD:-}
       # Image quality ceiling for uploads and in-app camera capture. See
       # .env.example for the storage-sizing estimate (roughly 0.5MB/photo at
       # the defaults below — budget that x images-per-user x user-count).
@@ -130,6 +134,25 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # ─── Gotenberg — optional; turns Word/Excel/PowerPoint files into PDFs ─────
+  # Off unless you ask for it:
+  #   docker compose --env-file .env.docker --profile gotenberg up -d
+  # then set GOTENBERG_URL=http://gotenberg:3000 in .env.docker.
+  # Without it, office files still upload, sync and download; they open as text.
+  # No ports are published on purpose: only Freeman Notes needs to reach it, and
+  # Gotenberg has no login by default. Chromium routes are switched off because we
+  # only convert office files, and the HTML-to-PDF route can fetch arbitrary URLs.
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    container_name: freemannotes-gotenberg
+    restart: unless-stopped
+    profiles: ["gotenberg"]
+    command:
+      - gotenberg
+      - --chromium-disable-routes=true
+      - --webhook-disable=true
+      - --api-timeout=120s
 
 volumes:
   freemannotes-pgdata:

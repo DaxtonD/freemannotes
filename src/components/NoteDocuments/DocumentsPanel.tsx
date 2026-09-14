@@ -4,7 +4,9 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faArrowLeft, faDownload, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
 import { useI18n } from '../../core/i18n';
+import { getDocumentConversionEnabled } from '../../core/instanceConfig';
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
+import { DocumentTextViewer } from './DocumentTextViewer';
 import {
 	NOTE_DOCUMENT_ACCEPT,
 	NOTE_DOCUMENT_MAX_FILE_BYTES,
@@ -58,6 +60,12 @@ type Translate = (key: string) => string;
 
 function isPdfDocument(document: NoteDocumentRecord): boolean {
 	return (document.fileExtension || getNoteDocumentExtension(document.fileName, document.mimeType)) === 'pdf';
+}
+
+/** A PDF, or an office file Gotenberg has made a PDF copy of: both open in the PDF viewer. */
+function hasPdfView(document: NoteDocumentRecord): boolean {
+	if (isPdfDocument(document)) return true;
+	return !document.isLocal && document.conversionStatus === 'COMPLETE' && Boolean(document.viewPdfUrl);
 }
 
 type DocumentsPanelProps = {
@@ -146,6 +154,10 @@ function describeDocument(document: NoteDocumentRecord, isOnline: boolean, t: Tr
 			statusLabel = t('documents.waitingBadge');
 			statusState = 'waiting';
 		}
+	} else if (document.conversionStatus === 'PENDING' && getDocumentConversionEnabled()) {
+		// Uploaded fine; Gotenberg is still making the PDF copy. It opens as text until then.
+		statusLabel = t('documents.preparingPdf');
+		statusState = 'waiting';
 	}
 	return {
 		kind: documentKind(extension),
@@ -186,9 +198,9 @@ type DocumentItemProps = {
 	onRetry: (document: NoteDocumentRecord) => void;
 };
 
-function openLabel(document: NoteDocumentRecord, t: Translate): string {
-	// PDFs open in the viewer; everything else downloads until the office converter lands.
-	return isPdfDocument(document) ? t('documents.open') : t('documents.download');
+function openLabel(_document: NoteDocumentRecord, t: Translate): string {
+	// Everything opens in the app now: PDFs and converted office files in the PDF viewer, the rest as text.
+	return t('documents.open');
 }
 
 function DocumentActions(props: DocumentItemProps): React.JSX.Element {
@@ -310,6 +322,7 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 	const [isOnline, setIsOnline] = React.useState(readIsOnline);
 	const [busyId, setBusyId] = React.useState<string | null>(null);
 	const [viewerDocument, setViewerDocument] = React.useState<NoteDocumentRecord | null>(null);
+	const [textViewerDocument, setTextViewerDocument] = React.useState<NoteDocumentRecord | null>(null);
 	// Documents open as a list by default: for files, name/type/size reads better than a preview.
 	const [viewMode, toggleViewMode] = usePanelViewMode(PANEL_VIEW_MODE_STORAGE_KEYS.documents, 'list');
 	const inputRef = React.useRef<HTMLInputElement | null>(null);
@@ -425,18 +438,32 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 	}, [authUserId]);
 
 	const handleOpen = React.useCallback((document: NoteDocumentRecord): void => {
-		if (isPdfDocument(document)) {
+		if (hasPdfView(document)) {
 			setViewerDocument(document);
 			return;
 		}
-		void handleDownload(document);
-	}, [handleDownload]);
+		// No PDF to show (no Gotenberg, still converting, couldn't convert, or a text/CSV file).
+		setTextViewerDocument(document);
+	}, []);
 
 	const closeViewer = React.useCallback((): void => setViewerDocument(null), []);
+	const closeTextViewer = React.useCallback((): void => setTextViewerDocument(null), []);
 
-	// A PDF is on screen, so someone may well open it: start fetching the viewer now
-	// rather than on the tap.
-	const hasPdf = documents.some(isPdfDocument);
+	// The text view shows the list's current copy of the document, so "preparing PDF" clears
+	// when conversion finishes. The moment a PDF copy exists, swap to the real viewer.
+	const liveTextDocument = textViewerDocument
+		? documents.find((document) => document.id === textViewerDocument.id) ?? textViewerDocument
+		: null;
+	const liveTextDocumentHasPdf = liveTextDocument ? hasPdfView(liveTextDocument) : false;
+	React.useEffect(() => {
+		if (!liveTextDocument || !liveTextDocumentHasPdf) return;
+		setTextViewerDocument(null);
+		setViewerDocument(liveTextDocument);
+	}, [liveTextDocument, liveTextDocumentHasPdf]);
+
+	// A PDF (or converted office file) is on screen, so someone may well open it: start
+	// fetching the viewer now rather than on the tap.
+	const hasPdf = documents.some(hasPdfView);
 	React.useEffect(() => {
 		if (hasPdf) void loadPdfViewer().catch(() => undefined);
 	}, [hasPdf]);
@@ -528,6 +555,14 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 						onDownload={(target) => void handleDownload(target)}
 					/>
 				</React.Suspense>
+			) : null}
+			{liveTextDocument && !liveTextDocumentHasPdf ? (
+				<DocumentTextViewer
+					document={liveTextDocument}
+					conversionEnabled={getDocumentConversionEnabled()}
+					onClose={closeTextViewer}
+					onDownload={(target) => void handleDownload(target)}
+				/>
 			) : null}
 		</section>
 	);

@@ -135,6 +135,18 @@
 	background: color-mix(in srgb, var(--color-surface-2) 70%, #1b1e24);
 }
 
+/* Desktop grab-to-pan (the pointer effect in PdfViewer.tsx sets data-dragging). */
+@media (pointer: fine) {
+	.scroller {
+		cursor: grab;
+	}
+
+	.scroller[data-dragging='true'] {
+		cursor: grabbing;
+		user-select: none;
+	}
+}
+
 /* Width, padding and gap are set inline from the zoom. Centred with auto margins while it's
    narrower than the screen; wider than the screen, the scroller scrolls sideways. */
 .pages {

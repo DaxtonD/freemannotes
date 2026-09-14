@@ -642,7 +642,7 @@ model NoteDocumentVersion {
   ocrText String? @map("ocr_text")
   ocrError String? @map("ocr_error")
 
-  /// Office files get a PDF copy made on the server (bundled LibreOffice) so they open
+  /// Office files get a PDF copy made through Gotenberg (optional, GOTENBERG_URL) so they open
   /// in the same viewer and can be marked up. PDFs never need one. The original is
   /// always what gets downloaded.
   conversionStatus NoteDocumentConversionStatus @default(NOT_NEEDED) @map("conversion_status")

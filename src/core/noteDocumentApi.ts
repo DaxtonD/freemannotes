@@ -80,6 +80,33 @@ export async function listNoteDocuments(docId: string): Promise<NoteDocumentList
 	return fetchJson(`/api/note-documents?docId=${encodeURIComponent(docId)}`);
 }
 
+/** A document as the manifest lists it: the same record minus the (possibly huge) extracted text. */
+export type NoteDocumentManifestEntry = Omit<NoteDocumentRecord, 'ocrText' | 'isLocal' | 'syncStatus' | 'lastSyncError' | 'syncPermanentFailure'>;
+
+export type NoteDocumentManifestResponse = {
+	/** Server time taken before it looked; anything newer may not be listed yet. */
+	generatedAt: string;
+	documents: NoteDocumentManifestEntry[];
+	count: number;
+};
+
+/** Every document this user can see, across all their workspaces and shared notes. */
+export async function fetchNoteDocumentManifest(): Promise<NoteDocumentManifestResponse> {
+	return fetchJson('/api/note-documents/manifest', {}, { timeoutMs: 20000 });
+}
+
+export type DocumentConversionStatus = {
+	configured: boolean;
+	state: 'off' | 'connected' | 'unreachable' | 'auth' | 'libreoffice-down';
+	version: string | null;
+	checkedAt: string;
+};
+
+/** Is the server's document converter (Gotenberg) up? `refresh` skips the server's short cache. */
+export async function fetchDocumentConversionStatus(refresh = false): Promise<DocumentConversionStatus> {
+	return fetchJson(`/api/document-conversion/status${refresh ? '?refresh=1' : ''}`, {}, { timeoutMs: 10000 });
+}
+
 export async function uploadNoteDocuments(docId: string, files: readonly File[]): Promise<NoteDocumentListResponse> {
 	const formData = new FormData();
 	formData.append('docId', docId);
