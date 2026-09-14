@@ -240,6 +240,7 @@ import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache, refreshPri
 import { addPendingSelfMention, clearMatchedPendingSelfMentions, clearPendingSelfMentionsStore, dismissPendingSelfMention, getPendingSelfMentions, initPendingSelfMentionsForUser, type PendingSelfMention } from './core/pendingSelfMentions';
 import { clearUserIdentityCache } from './core/userIdentityCache';
 import { clearUserAvatarCache } from './core/userAvatarCache';
+import { clearPdfViewerPositions } from './core/pdfViewerPositions';
 import { clearDrawingThumbnailLocalCache } from './core/drawingThumbnailStore';
 import { clearAdminUserCache } from './components/Admin/UserManagementModal';
 import { BubbleView, type BubbleWorkspaceInfo } from './components/BubbleView/BubbleView';
@@ -844,6 +845,13 @@ function isNoteImageUploadHistoryState(value: unknown): boolean {
 function isNoteImageViewerHistoryState(value: unknown): boolean {
 	if (!value || typeof value !== 'object') return false;
 	return typeof (value as { __noteImageViewer?: unknown }).__noteImageViewer === 'string';
+}
+
+// The PDF viewer sits inside the media sheet or the attachment browser. Landing on its
+// entry is still "in the editor", not "back to the grid".
+function isNotePdfViewerHistoryState(value: unknown): boolean {
+	if (!value || typeof value !== 'object') return false;
+	return typeof (value as { __notePdfViewer?: unknown }).__notePdfViewer === 'string';
 }
 
 function isNoteEditorMediaDockHistoryState(value: unknown): boolean {
@@ -5147,6 +5155,7 @@ export function App(): React.JSX.Element {
 		clearDrawingThumbnailLocalCache();
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
+		clearPdfViewerPositions();
 		setSharedPlacements([]);
 		setActiveWorkspaceSharedPlacements([]);
 		setActiveSharedFolder(null);
@@ -9294,7 +9303,7 @@ export function App(): React.JSX.Element {
 				applyOverlaySnapshot(state.snapshot);
 				return;
 			}
-			if (isNoteImageViewerHistoryState(state) || isNoteEditorMediaDockHistoryState(state) || isNoteImageUploadHistoryState(state)) {
+			if (isNoteImageViewerHistoryState(state) || isNotePdfViewerHistoryState(state) || isNoteEditorMediaDockHistoryState(state) || isNoteImageUploadHistoryState(state)) {
 				return;
 			}
 			// Closing a card-action modal (reminder, collection, labels, color picker, ⋮ menu,

@@ -22,7 +22,7 @@ import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
 import { getCachedRemoteNoteLinks, syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { getCachedRemoteNoteImages, getQueuedNoteImageCount } from '../../core/noteMediaStore';
-import { getCachedNoteDocuments } from '../../core/noteDocumentStore';
+import { getCachedNoteDocuments, getNoteDocumentsChangedEventName } from '../../core/noteDocumentStore';
 import { readInheritedNoteColorVars } from '../../core/noteChipOverlayColors';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, setUserNotePinnedOnDoc, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import { resolveNoteReminderAt } from '../../core/reminderLookup';
@@ -2200,6 +2200,38 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const getSnapshot = React.useCallback(() => versionRef.current, []);
 	const storeVersion = React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 
+	// The attachment chip only mounts once renderNoteMetaChips decides a note has something
+	// to show, and renderGridCard is memoised, so a note getting its first document (or losing
+	// its last) sat there chipless until a reload. Re-render on those edges only: the documents
+	// event fires for every refresh and upload tick, and nobody needs the grid redrawn for that.
+	const [documentPresenceVersion, setDocumentPresenceVersion] = React.useState(0);
+	React.useEffect(() => {
+		if (typeof window === 'undefined') return;
+		const hasDocumentsByDocId = new Map<string, boolean>();
+		let pendingBump: number | null = null;
+		const eventName = getNoteDocumentsChangedEventName();
+		const onChanged = (event: Event): void => {
+			const docId = (event as CustomEvent<{ docId?: string }>).detail?.docId;
+			if (!docId) return;
+			const hasDocuments = getCachedNoteDocuments(docId).length > 0;
+			const previous = hasDocumentsByDocId.get(docId);
+			hasDocumentsByDocId.set(docId, hasDocuments);
+			// First sighting with nothing in it changes no chip, so don't redraw for it.
+			if (previous === hasDocuments || (previous === undefined && !hasDocuments)) return;
+			// Startup refreshes land in a burst; one redraw covers the lot.
+			if (pendingBump != null) return;
+			pendingBump = window.setTimeout(() => {
+				pendingBump = null;
+				setDocumentPresenceVersion((version) => version + 1);
+			}, 100);
+		};
+		window.addEventListener(eventName, onChanged as EventListener);
+		return () => {
+			window.removeEventListener(eventName, onChanged as EventListener);
+			if (pendingBump != null) window.clearTimeout(pendingBump);
+		};
+	}, []);
+
 	React.useEffect(() => {
 		const entries = Object.entries(docsById);
 		if (entries.length === 0) return;
@@ -4363,7 +4395,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 				loadDrawingDoc={props.loadDrawingDoc ? (drawingId) => props.loadDrawingDoc!(note.id, drawingId) : undefined}
 			/>
 		);
-	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardFontScale, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
+	}, [allDocsLoaded, cardPositionAnimationsReady, collaboratorSummariesByNoteId, collectionPathById, disableAttachmentInitialRemoteRefresh, docsById, documentPresenceVersion, dragManager.activeDragId, dragManager.dropOverlay, dragManager.setHandleElement, dragManager.setItemElement, dropSettlingNoteId, getEstimatedNoteHeight, gridRef, isChipInteractionGuardActive, isCoarsePointer, isDropSettling, isTrashView, labelById, manager, moreMenuNoteId, noteById, noteHeightByIdRef, openAttachmentChipNoteId, openCollaboratorChip, openMetadataChip, overlayActiveNoteId, pendingSyncNoteIds, props.activeCollectionId, props.activeLabelIds, props.authUserId, props.canEditWorkspaceContent, props.debugTransitionTraceId, props.loadDrawingDoc, props.maxCardHeightPx, props.noteCardBannerTitlePosition, props.noteCardCheckboxInteractions, props.noteCardCompletedInteractions, props.noteCardFontScale, props.noteCardLinkInteractions, props.noteReminderByDocId, props.onAddCollaborator, props.onAddImage, props.onAddReminder, props.onOpenAttachmentBrowser, props.onSelectNote, props.selectedNoteId, props.sharedNotes, props.themeId, resolveMediaDocId, snapshotDocById, suspendAttachmentRemoteRefresh, t]);
 	const isGroupedView = groupedSections.length > 0;
 	const groupedGapPx = mobileGridGapPx ?? readCssPxVariable('--grid-gap', 16);
 	const groupedFallbackHeightPx = Math.min(props.maxCardHeightPx, 220);

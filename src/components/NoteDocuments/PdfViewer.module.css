@@ -99,9 +99,32 @@
 	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-2));
 }
 
+/* Row under the header: the desktop page panel (when open) and the page scroller. */
+.body {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+}
+
+/* Phone page panel: dims the pages and slides the panel up from the bottom. */
+.sheetBackdrop {
+	position: absolute;
+	inset: 0;
+	z-index: 3;
+	display: flex;
+	align-items: flex-end;
+	background: rgba(0, 0, 0, 0.32);
+}
+
+.iconButtonActive {
+	background: color-mix(in srgb, var(--color-accent) 24%, var(--color-surface-2));
+}
+
 .scroller {
 	position: relative;
 	flex: 1 1 auto;
+	min-width: 0;
 	min-height: 0;
 	overflow: auto;
 	overscroll-behavior: contain;
@@ -112,12 +135,45 @@
 	background: color-mix(in srgb, var(--color-surface-2) 70%, #1b1e24);
 }
 
+/* Width, padding and gap are set inline from the zoom. Centred with auto margins while it's
+   narrower than the screen; wider than the screen, the scroller scrolls sideways. */
 .pages {
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	box-sizing: border-box;
-	min-height: 100%;
+	margin: 0 auto;
+}
+
+.zoomControls {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.zoomValue {
+	border: 0;
+	border-radius: 999px;
+	min-width: 52px;
+	height: 36px;
+	padding: 0 8px;
+	background: transparent;
+	color: var(--color-text-muted);
+	font-size: 12px;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+	cursor: pointer;
+}
+
+.zoomValue:hover,
+.zoomValue:focus-visible {
+	background: var(--color-surface-2);
+	color: var(--color-text);
+}
+
+.iconButton:disabled {
+	opacity: 0.45;
+	cursor: default;
 }
 
 .page {
@@ -162,7 +218,86 @@
 	color: var(--color-text-muted);
 }
 
+/* Find bar, under the header. */
+.searchBar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 12px;
+	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 96%, transparent);
+	flex: 0 0 auto;
+}
+
+.searchField {
+	position: relative;
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+}
+
+.searchIcon {
+	position: absolute;
+	left: 13px;
+	font-size: 13px;
+	color: var(--color-text-muted);
+	pointer-events: none;
+}
+
+.searchInput {
+	width: 100%;
+	min-width: 0;
+	height: 36px;
+	box-sizing: border-box;
+	border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+	border-radius: 999px;
+	padding: 0 12px 0 34px;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	font: inherit;
+	font-size: 14px;
+	outline: none;
+}
+
+.searchInput:focus {
+	border-color: var(--color-accent);
+}
+
+.searchCount {
+	flex: 0 1 auto;
+	min-width: 0;
+	max-width: 42%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	font-size: 12px;
+	color: var(--color-text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+/* Search hits. Positioned in page percentages, so they ride along with zoom for free.
+   Multiply keeps the text under the colour readable on the white page. */
+.highlight {
+	position: absolute;
+	z-index: 1;
+	border-radius: 2px;
+	background: rgba(255, 200, 0, 0.45);
+	mix-blend-mode: multiply;
+	pointer-events: none;
+}
+
+.highlightActive {
+	background: rgba(255, 120, 0, 0.6);
+	box-shadow: 0 0 0 2px rgba(255, 120, 0, 0.95);
+}
+
 @media (pointer: coarse) {
+	/* 16px stops iOS zooming the page when the box gets focus. */
+	.searchInput {
+		font-size: 16px;
+	}
+
 	.backdrop {
 		/* Standalone iOS PWAs don't reserve the status bar, so pad for the safe areas. */
 		padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
@@ -177,6 +312,12 @@
 	}
 
 	.buttonLabel {
+		display: none;
+	}
+
+	/* Phones pinch and double-tap; the +/- buttons just crowd the header. The percentage
+	   stays as a one-tap way back to fit-width. */
+	.zoomStep {
 		display: none;
 	}
 }

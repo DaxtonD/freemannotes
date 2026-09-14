@@ -1,6 +1,7 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faDownload, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faDownload, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
 import { useI18n } from '../../core/i18n';
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
@@ -22,9 +23,36 @@ import {
 	scheduleQueuedNoteDocumentFlush,
 } from '../../core/noteDocumentStore';
 import styles from './DocumentsPanel.module.css';
+import viewerStyles from './PdfViewer.module.css';
 
 // Lazy: pdf.js is big, and most visits to the Documents tab never open a PDF.
-const PdfViewer = React.lazy(() => import('./PdfViewer').then((module) => ({ default: module.PdfViewer })));
+const loadPdfViewer = () => import('./PdfViewer');
+const PdfViewer = React.lazy(() => loadPdfViewer().then((module) => ({ default: module.PdfViewer })));
+
+// Shown while the viewer chunk downloads. With no fallback the first tap on a PDF did
+// nothing visible for a second or two, so it looked ignored and got tapped again.
+function PdfViewerLoading(props: { fileName: string; onClose: () => void; t: (key: string) => string }): React.JSX.Element {
+	const stop = (event: React.SyntheticEvent): void => event.stopPropagation();
+	const content = (
+		<div className={viewerStyles.backdrop} role="presentation" onClick={stop} onPointerDown={stop} onTouchStart={stop} onTouchMove={stop} onTouchEnd={stop}>
+			<section className={viewerStyles.viewer} role="dialog" aria-modal="true" aria-label={props.fileName}>
+				<header className={viewerStyles.header}>
+					<button type="button" className={viewerStyles.button} onClick={props.onClose}>
+						<FontAwesomeIcon icon={faArrowLeft} />
+						<span className={viewerStyles.buttonLabel}>{props.t('common.back')}</span>
+					</button>
+					<div className={viewerStyles.titleWrap}>
+						<h2 className={viewerStyles.title} title={props.fileName}>{props.fileName}</h2>
+					</div>
+				</header>
+				<div className={viewerStyles.body}>
+					<p className={viewerStyles.status}>{props.t('documents.viewerLoading')}</p>
+				</div>
+			</section>
+		</div>
+	);
+	return typeof document !== 'undefined' ? createPortal(content, document.body) : content;
+}
 
 type Translate = (key: string) => string;
 
@@ -406,6 +434,13 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 
 	const closeViewer = React.useCallback((): void => setViewerDocument(null), []);
 
+	// A PDF is on screen, so someone may well open it: start fetching the viewer now
+	// rather than on the tap.
+	const hasPdf = documents.some(isPdfDocument);
+	React.useEffect(() => {
+		if (hasPdf) void loadPdfViewer().catch(() => undefined);
+	}, [hasPdf]);
+
 	if (isPendingNew) {
 		return <DocumentsUnsavedNotePanel />;
 	}
@@ -485,9 +520,10 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 				</ul>
 			)}
 			{viewerDocument ? (
-				<React.Suspense fallback={null}>
+				<React.Suspense fallback={<PdfViewerLoading fileName={viewerDocument.fileName} onClose={closeViewer} t={t} />}>
 					<PdfViewer
 						document={viewerDocument}
+						authUserId={authUserId}
 						onClose={closeViewer}
 						onDownload={(target) => void handleDownload(target)}
 					/>

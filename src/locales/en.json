@@ -428,7 +428,21 @@
     "pageLabel": "Page",
     "viewerLoading": "Opening…",
     "viewerFailed": "This PDF couldn't be opened.",
-    "viewerPassword": "This PDF is password protected, which isn't supported yet."
+    "viewerPassword": "This PDF is password protected, which isn't supported yet.",
+    "zoomIn": "Zoom in",
+    "zoomOut": "Zoom out",
+    "zoomReset": "Fit to width",
+    "pagesPanel": "Pages",
+    "goToPage": "Go to page",
+    "closePages": "Close pages",
+    "search": "Search",
+    "searchPlaceholder": "Find in document",
+    "searchPrevious": "Previous match",
+    "searchNext": "Next match",
+    "searchClose": "Close search",
+    "searchSearching": "Searching…",
+    "searchNoMatches": "No matches",
+    "searchNoText": "No searchable text (scanned PDF?)"
   },
   "media": {
     "summaryEmpty": "No images attached yet",

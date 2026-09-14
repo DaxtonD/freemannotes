@@ -1490,6 +1490,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			if (!active) return;
 			if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageUploadOpen === 'true') return;
 			if (isMediaDockHistoryEntry(event.state)) return;
+			// The PDF viewer opens inside this sheet; its entry isn't a reason to close it.
+			if (typeof (event.state as { __notePdfViewer?: unknown } | null)?.__notePdfViewer === 'string') return;
 			setMediaDockOpen(false);
 		};
 		window.addEventListener('popstate', onPopState);

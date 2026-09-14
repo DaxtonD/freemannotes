@@ -428,7 +428,21 @@
     "pageLabel": "Página",
     "viewerLoading": "Abriendo…",
     "viewerFailed": "No se pudo abrir este PDF.",
-    "viewerPassword": "Este PDF está protegido con contraseña, algo que todavía no es compatible."
+    "viewerPassword": "Este PDF está protegido con contraseña, algo que todavía no es compatible.",
+    "zoomIn": "Acercar",
+    "zoomOut": "Alejar",
+    "zoomReset": "Ajustar al ancho",
+    "pagesPanel": "Páginas",
+    "goToPage": "Ir a la página",
+    "closePages": "Cerrar páginas",
+    "search": "Buscar",
+    "searchPlaceholder": "Buscar en el documento",
+    "searchPrevious": "Coincidencia anterior",
+    "searchNext": "Coincidencia siguiente",
+    "searchClose": "Cerrar búsqueda",
+    "searchSearching": "Buscando…",
+    "searchNoMatches": "Sin coincidencias",
+    "searchNoText": "Sin texto para buscar (¿PDF escaneado?)"
   },
   "media": {
     "summaryEmpty": "Todavía no hay imágenes adjuntas",
