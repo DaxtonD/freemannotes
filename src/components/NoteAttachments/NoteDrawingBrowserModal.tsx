@@ -25,7 +25,7 @@ export function NoteDrawingBrowserModal(props: NoteDrawingBrowserModalProps): Re
 		<AttachmentBrowserModalFrame
 			isOpen={props.isOpen}
 			noteTitle={props.noteTitle}
-			subtitle={t('editors.mediaTabDocuments')}
+			subtitle={t('editors.mediaTabDrawings')}
 			onClose={props.onClose}
 			closeLabel={t('common.close')}
 		>

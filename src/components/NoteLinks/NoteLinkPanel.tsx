@@ -2,6 +2,7 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBroom, faLink, faListUl, faPlus, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
+import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
 import {
 	flushQueuedNoteLinkSync,
 	getCachedRemoteNoteLinks,
@@ -32,18 +33,6 @@ type NoteLinkPanelProps = {
 	onShowBriefDialog?: ((message: string) => void) | undefined;
 	disableInitialRemoteRefresh?: boolean;
 };
-
-const VIEW_MODE_STORAGE_KEY = 'freemannotes.noteLinkPanelViewMode';
-type LinkPanelViewMode = 'card' | 'list';
-
-function readStoredViewMode(): LinkPanelViewMode {
-	if (typeof window === 'undefined') return 'card';
-	try {
-		return window.localStorage.getItem(VIEW_MODE_STORAGE_KEY) === 'list' ? 'list' : 'card';
-	} catch {
-		return 'card';
-	}
-}
 
 // How long a press has to be held before it's treated as "explain this button"
 // rather than "activate it" — same idea as NoteCard's own long-press-to-open-
@@ -187,18 +176,7 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 	// Per-device display preference, not per-note data — deliberately
 	// localStorage, not synced through Yjs. Only meaningful for the full panel;
 	// the rail embedded in a note card is already a single compact layout.
-	const [viewMode, setViewMode] = React.useState<LinkPanelViewMode>(readStoredViewMode);
-	const toggleViewMode = React.useCallback(() => {
-		setViewMode((current) => {
-			const next: LinkPanelViewMode = current === 'card' ? 'list' : 'card';
-			try {
-				window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, next);
-			} catch {
-				// Best effort only — worst case the preference doesn't persist.
-			}
-			return next;
-		});
-	}, []);
+	const [viewMode, toggleViewMode] = usePanelViewMode(PANEL_VIEW_MODE_STORAGE_KEYS.links, 'card');
 
 	// "Clean up" button: a plain click runs it, but a press held past
 	// CLEANUP_LONG_PRESS_MS instead shows what it does and swallows the click

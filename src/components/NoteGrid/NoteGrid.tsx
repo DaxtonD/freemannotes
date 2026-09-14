@@ -22,6 +22,8 @@ import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
 import { getCachedRemoteNoteLinks, syncNoteLinksForDoc } from '../../core/noteLinkStore';
 import { getCachedRemoteNoteImages, getQueuedNoteImageCount } from '../../core/noteMediaStore';
+import { getCachedNoteDocuments } from '../../core/noteDocumentStore';
+import { readInheritedNoteColorVars } from '../../core/noteChipOverlayColors';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, setUserNotePinnedOnDoc, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import { resolveNoteReminderAt } from '../../core/reminderLookup';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
@@ -144,7 +146,7 @@ export type NoteGridProps = {
 	onTouchReorderEnd?: () => void;
 	onAddCollaborator?: (noteId: string, title?: string) => void;
 	onAddImage?: (noteId: string, docId: string, title?: string, noteType?: 'text' | 'checklist' | 'drawing') => void;
-	onAddDocument?: (noteId: string, docId: string, title?: string) => void;
+	onAddDrawing?: (noteId: string, docId: string, title?: string) => void;
 	onMoveToWorkspace?: (noteId: string, title?: string) => void;
 	onExportNote?: (noteId: string) => void;
 	onOpenAttachmentBrowser?: (
@@ -867,12 +869,14 @@ function renderNoteMetaChips(args: {
 		title: string | undefined,
 		canEdit: boolean
 	) => void;
-	onToggleCollaboratorChip?: (noteId: string, anchorRect: { top: number; left: number; width: number; height: number }) => void;
+	/** colorStyle: the card's real colors at open time (see readInheritedNoteColorVars). */
+	onToggleCollaboratorChip?: (noteId: string, colorStyle: React.CSSProperties | undefined, anchorRect: { top: number; left: number; width: number; height: number }) => void;
 	onOpenMetadataChip?: (args: {
 		noteId: string;
 		kind: 'collection' | 'label';
 		anchorRect: { top: number; left: number; width: number; height: number };
 		entries: NoteMetaOverlayEntry[];
+		colorStyle?: React.CSSProperties;
 	}) => void;
 	onAttachmentChipOpenStateChange?: (noteId: string, isOpen: boolean) => void;
 	t: (key: string) => string;
@@ -923,11 +927,13 @@ function renderNoteMetaChips(args: {
 	const allowsImages = !attachmentAllowedKinds || attachmentAllowedKinds.includes('images');
 	const allowsLinks = !attachmentAllowedKinds || attachmentAllowedKinds.includes('links');
 	const allowsDrawings = !attachmentAllowedKinds || attachmentAllowedKinds.includes('drawings');
+	const allowsDocuments = !attachmentAllowedKinds || attachmentAllowedKinds.includes('documents');
 	const attachmentShellCounts = args.snapshotShell?.attachmentCounts;
 	const attachmentShellTotal =
 		(allowsImages ? (attachmentShellCounts?.images ?? 0) : 0) +
 		(allowsLinks ? (attachmentShellCounts?.links ?? 0) : 0) +
-		(allowsDrawings ? (attachmentShellCounts?.drawings ?? 0) : 0);
+		(allowsDrawings ? (attachmentShellCounts?.drawings ?? 0) : 0) +
+		(allowsDocuments ? (attachmentShellCounts?.documents ?? 0) : 0);
 	const liveAttachmentTotal = args.docId
 		? Math.max(
 			attachmentShellTotal,
@@ -935,7 +941,9 @@ function renderNoteMetaChips(args: {
 			// before images are uploaded to the server.
 			(allowsImages ? getCachedRemoteNoteImages(args.docId).length + getQueuedNoteImageCount(args.docId) : 0) +
 			(allowsLinks ? Math.max(getCachedRemoteNoteLinks(args.docId).length, extractNoteLinksFromDoc(args.doc).length) : 0) +
-			(allowsDrawings ? readDrawingLinkState(args.doc).drawingIds.length : 0)
+			(allowsDrawings ? readDrawingLinkState(args.doc).drawingIds.length : 0) +
+			// Queued uploads are already in this merged count, same idea as images above.
+			(allowsDocuments ? getCachedNoteDocuments(args.docId).length : 0)
 		)
 		: 0;
 	const showCollectionShell = Boolean(collectionId && !collectionPath);
@@ -965,6 +973,7 @@ function renderNoteMetaChips(args: {
 							noteId: args.noteId,
 							kind: 'collection',
 							anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+							colorStyle: readInheritedNoteColorVars(event.currentTarget),
 							entries: [{
 								key: `collection:${collectionId}`,
 								id: collectionId,
@@ -999,6 +1008,7 @@ function renderNoteMetaChips(args: {
 							noteId: args.noteId,
 							kind: 'label',
 							anchorRect: { top: rect.top, left: rect.left, width: rect.width, height: rect.height },
+							colorStyle: readInheritedNoteColorVars(event.currentTarget),
 							entries: labelItems.map((label) => ({
 								key: `label:${label.id}`,
 								id: label.id,
@@ -1028,7 +1038,7 @@ function renderNoteMetaChips(args: {
 						event.stopPropagation();
 						const rect = readChipOverlayAnchorRect(event.currentTarget);
 						if (!rect) return;
-						args.onToggleCollaboratorChip?.(args.noteId, {
+						args.onToggleCollaboratorChip?.(args.noteId, readInheritedNoteColorVars(event.currentTarget), {
 							top: rect.top,
 							left: rect.left,
 							width: rect.width,
@@ -1434,12 +1444,14 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [openCollaboratorChip, setOpenCollaboratorChip] = React.useState<{
 		noteId: string;
 		anchorRect: { top: number; left: number; width: number; height: number };
+		colorStyle?: React.CSSProperties;
 	} | null>(null);
 	const [openMetadataChip, setOpenMetadataChip] = React.useState<{
 		noteId: string;
 		kind: 'collection' | 'label';
 		anchorRect: { top: number; left: number; width: number; height: number };
 		entries: NoteMetaOverlayEntry[];
+		colorStyle?: React.CSSProperties;
 	} | null>(null);
 	const [openAttachmentChipNoteId, setOpenAttachmentChipNoteId] = React.useState<string | null>(null);
 	const [latchedOverlayNoteId, setLatchedOverlayNoteId] = React.useState<string | null>(null);
@@ -2776,6 +2788,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							images: Math.max(getCachedRemoteNoteImages(docId).length, previousSnapshot?.attachmentCounts.images ?? 0),
 							links: Math.max(getCachedRemoteNoteLinks(docId).length, previewLinks.length, previousSnapshot?.attachmentCounts.links ?? 0),
 							drawings: Math.max(readDrawingLinkState(liveDoc).drawingIds.length, previousSnapshot?.attachmentCounts.drawings ?? 0),
+							documents: Math.max(getCachedNoteDocuments(docId).length, previousSnapshot?.attachmentCounts.documents ?? 0),
 						},
 						previewCards: cachedPreviewCards.length > 0 ? cachedPreviewCards : (previousSnapshot?.previewCards ?? []),
 						// Same reasoning as collaboratorCount/attachmentCounts above: a live
@@ -4264,15 +4277,15 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					collaboratorSummary,
 					snapshotShell,
 					onOpenAttachmentBrowser: props.onOpenAttachmentBrowser,
-					onToggleCollaboratorChip: (chipNoteId, anchorRect) => {
+					onToggleCollaboratorChip: (chipNoteId, colorStyle, anchorRect) => {
 						setOpenAttachmentChipNoteId(null);
 						setOpenMetadataChip(null);
-						setOpenCollaboratorChip((current) => current?.noteId === chipNoteId ? null : { noteId: chipNoteId, anchorRect });
+						setOpenCollaboratorChip((current) => current?.noteId === chipNoteId ? null : { noteId: chipNoteId, anchorRect, colorStyle });
 					},
-					onOpenMetadataChip: ({ noteId: chipNoteId, kind, anchorRect, entries }) => {
+					onOpenMetadataChip: ({ noteId: chipNoteId, kind, anchorRect, entries, colorStyle }) => {
 						setOpenAttachmentChipNoteId(null);
 						setOpenCollaboratorChip(null);
-						setOpenMetadataChip((current) => current && current.noteId === chipNoteId && current.kind === kind ? null : { noteId: chipNoteId, kind, anchorRect, entries });
+						setOpenMetadataChip((current) => current && current.noteId === chipNoteId && current.kind === kind ? null : { noteId: chipNoteId, kind, anchorRect, entries, colorStyle });
 					},
 					onAttachmentChipOpenStateChange: (chipNoteId, isOpen) => {
 						if (isOpen) {
@@ -4868,6 +4881,8 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										data-note-chip-panel="true"
 									style={{
 										...(collaboratorOverlayColorStyle ?? {}),
+										// The card's real colors win (banner-only cards paint with sampled colors).
+										...(openCollaboratorChip?.colorStyle ?? {}),
 										...collaboratorOverlayPosition,
 									}}
 									onPointerDown={(event) => event.stopPropagation()}
@@ -4954,7 +4969,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 										ref={metadataOverlayPanelRef}
 										className={styles.collaboratorOverlayPanel}
 										data-note-chip-panel="true"
-										style={{ ...(metadataOverlayColorStyle ?? {}), ...metadataOverlayPosition }}
+										style={{ ...(metadataOverlayColorStyle ?? {}), ...(openMetadataChip?.colorStyle ?? {}), ...metadataOverlayPosition }}
 										onPointerDown={(event) => event.stopPropagation()}
 										onClick={(event) => event.stopPropagation()}
 										initial={{ opacity: 0 }}
@@ -5026,6 +5041,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 							: 'text'
 					}
 					showAddImage={String(moreMenuDoc.getMap('metadata').get('type') ?? '') !== 'drawing'}
+					showAddDrawing={String(moreMenuDoc.getMap('metadata').get('type') ?? '') !== 'drawing'}
 					showAddDocument={String(moreMenuDoc.getMap('metadata').get('type') ?? '') !== 'drawing'}
 					isPinned={noteSnapshotById.get(moreMenuNoteId)?.isPinned === true}
 					anchorRect={moreMenuAnchorRect}
@@ -5082,13 +5098,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					onSelectBannerImage={moreMenuCanEdit ? () => {
 						setBannerPickerNoteId(moreMenuNoteId);
 					} : undefined}
-					onAddDocument={props.onAddDocument && (moreMenuCanEdit || isTrashView) ? () => {
+					onAddDrawing={props.onAddDrawing && (moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;
 						const noteId = moreMenuNoteId;
 						setMoreMenuNoteId(null);
 						setMoreMenuAnchorRect(null);
 						if (!moreMenuDocId || !moreMenuDoc) return;
-						props.onAddDocument?.(noteId, moreMenuDocId, moreMenuDoc.getText('title').toString());
+						props.onAddDrawing?.(noteId, moreMenuDocId, moreMenuDoc.getText('title').toString());
+					} : undefined}
+					onAddDocument={props.onOpenAttachmentBrowser && moreMenuCanEdit ? () => {
+						// Opens the note's documents (same browser as the attachment chip), where
+						// the Add button and file picker live.
+						const noteId = moreMenuNoteId;
+						setMoreMenuNoteId(null);
+						setMoreMenuAnchorRect(null);
+						if (!noteId || !moreMenuDocId || !moreMenuDoc) return;
+						props.onOpenAttachmentBrowser?.('documents', noteId, moreMenuDocId, moreMenuDoc.getText('title').toString(), true);
 					} : undefined}
 					onAddReminder={props.onAddReminder && (moreMenuCanEdit || isTrashView) ? () => {
 						if (!moreMenuCanEdit) return;

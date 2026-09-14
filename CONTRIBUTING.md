@@ -27,6 +27,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [10. Force Grid Virtualization](#10-force-grid-virtualization)
   - [11. Note-Card Height Diagnostics](#11-note-card-height-diagnostics)
   - [12. Grid Scroll Recorder](#12-grid-scroll-recorder)
+- [Documents and Uploaded Files](#documents-and-uploaded-files)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
 - [PWA Version Changes](#pwa-version-changes)
 - [Native Platform Companions](#native-platform-companions)
@@ -735,6 +736,33 @@ To disable: `?scrollDiag=0`.
 > Titles are included (first 28 characters) so you can tell which card is which. Keep that in mind before pasting a report somewhere public.
 
 > **Safety:** Runtime opt-in. Every hook bails on its first line unless a recording is running, and sampling only reads geometry, so it can't cause the movement it's recording.
+
+---
+
+## Documents and Uploaded Files
+
+**Who can read `/uploads/`** is decided in `server/uploadAccess.js`, not by the static file handler. The path shape says what a file is:
+
+| Path | Kind | Rule |
+|---|---|---|
+| `<userId>.webp` | avatar | any logged-in user |
+| `users/<uploader>/notes/<imageId>/…` | note image | access to the image's note |
+| `users/<uploader>/documents/<versionId>/…` | document version | access to the document's note |
+| `users/<uploader>/notes/<documentId>/documents/…` | document from before versions existed | same |
+
+Rows are looked up by the id in the path, never the uploader folder, because moving a note rewrites the row's `docId` but doesn't move files. Anything else is a 404 (so is every refusal). Responses are `Cache-Control: private` with `nosniff`; document originals go out as `attachment`. If you add a new kind of uploaded file, add its path shape and rule there, with a test in `tests/upload-access.test.js`.
+
+**Documents are a document plus versions.** `note_document` is the item on the note; each uploaded file is a `note_document_version`. The list API still returns the latest version's fields flat (`fileName`, `ocrText`, `originalUrl`, …) plus `versionCount`/`latestVersionId`, and search only looks at the latest version.
+
+**Offline store:** `src/core/noteDocumentStore.ts` keeps the server list, a copy of each file, an upload queue and a **delete queue** in IndexedDB. Deletes flush before uploads. An empty server list is trusted, except for 15 seconds after a note move. Uploads the server rejects (400/413/415) stop retrying until the user retries; a dropped connection just leaves them waiting.
+
+**PDF viewer:** `src/components/NoteDocuments/PdfViewer.tsx` is lazy-loaded and uses `pdfjs-dist`. Its worker is an `.mjs` file, which is why `mjs` is in the PWA precache glob in `vite.config.ts` — take it out and the viewer still works online but can't open anything offline. Failures log `[pdf-viewer] failed while <step>` with the real error.
+
+**Attachment sheet tabs** are remembered per note by index (`src/components/Editors/mediaDockTabs.ts`). Only ever add tabs at the end.
+
+**Card/list preferences** for attachment panels go through `usePanelViewMode` in `src/core/panelViewMode.ts` (one localStorage key per panel; two open copies of the same panel stay in sync).
+
+**Server text extraction** (`server/noteDocumentPreview.js`): `pdf-parse` 2.x is a class (`new PDFParse({ data }).getText()`), not a function. Extraction failures must return their error, not an empty result — an empty result is how a broken extractor hid for a very long time.
 
 ---
 

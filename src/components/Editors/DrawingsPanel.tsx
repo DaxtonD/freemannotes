@@ -1,11 +1,12 @@
 import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faListUl, faPlus, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import * as Y from 'yjs';
 import { buildDrawingPlaceholderDataUrl, getDrawingThumbnailVersion, renderDrawingThumbnail } from '../../core/drawingThumbnails';
 import { readDrawingLinkState } from '../../core/noteModel';
 import { useI18n } from '../../core/i18n';
-import styles from './DocumentsPanel.module.css';
+import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
+import styles from './DrawingsPanel.module.css';
 
 type DrawingSummary = {
 	id: string;
@@ -73,6 +74,27 @@ function useDrawingIds(doc: Y.Doc): readonly string[] {
 	}, [snapshot]);
 }
 
+// The new-note screens have no saved note to hang a drawing off yet, so their
+// Drawings tab just says so. This used to live inside the old DocumentsPanel (which,
+// despite the name, only ever showed drawings or this placeholder).
+export function DrawingsComingSoonPanel(): React.JSX.Element {
+	const { t } = useI18n();
+	return (
+		<section className={styles.panel} aria-label={t('editors.mediaTabDrawings')}>
+			<div className={styles.header}>
+				<div>
+					<p className={styles.eyebrow}>{t('editors.mediaTabDrawings')}</p>
+					<p className={styles.summary}>{t('drawings.comingSoonTitle')}</p>
+				</div>
+			</div>
+			<div className={styles.comingSoonCard}>
+				<p className={styles.placeholderTitle}>{t('drawings.comingSoonTitle')}</p>
+				<p className={styles.placeholderBody}>{t('drawings.comingSoonBody')}</p>
+			</div>
+		</section>
+	);
+}
+
 export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 	const { t, locale } = useI18n();
 	const canEdit = props.canEdit === true;
@@ -82,6 +104,7 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 	);
 	const [error, setError] = React.useState<string | null>(null);
 	const [deletingId, setDeletingId] = React.useState<string | null>(null);
+	const [viewMode, toggleViewMode] = usePanelViewMode(PANEL_VIEW_MODE_STORAGE_KEYS.drawings, 'card');
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -120,7 +143,7 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 				setDrawings(nextDrawings);
 			} catch (nextError) {
 				if (cancelled) return;
-				setError(nextError instanceof Error ? nextError.message : t('documents.loadFailed'));
+				setError(nextError instanceof Error ? nextError.message : t('drawings.loadFailed'));
 			}
 		})();
 
@@ -131,32 +154,41 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 
 	const handleDeleteDrawing = React.useCallback(async (drawingId: string): Promise<void> => {
 		if (!canEdit || !props.onDeleteDrawing) return;
-		if (typeof window !== 'undefined' && !window.confirm(t('documents.deleteConfirm'))) return;
+		if (typeof window !== 'undefined' && !window.confirm(t('drawings.deleteConfirm'))) return;
 		setDeletingId(drawingId);
 		setError(null);
 		try {
 			await props.onDeleteDrawing(drawingId);
 		} catch (nextError) {
-			setError(nextError instanceof Error ? nextError.message : t('documents.deleteFailed'));
+			setError(nextError instanceof Error ? nextError.message : t('drawings.deleteFailed'));
 		} finally {
 			setDeletingId(null);
 		}
 	}, [canEdit, props.onDeleteDrawing, t]);
 
-	const summaryLabel = drawings.length === 1 ? `1 ${t('documents.itemSingular')}` : `${drawings.length} ${t('documents.itemPlural')}`;
+	const summaryLabel = drawings.length === 1 ? `1 ${t('drawings.itemSingular')}` : `${drawings.length} ${t('drawings.itemPlural')}`;
 
 	return (
-		<section className={styles.panel} aria-label={t('editors.mediaTabDocuments')}>
+		<section className={styles.panel} aria-label={t('editors.mediaTabDrawings')}>
 			<div className={styles.header}>
 				<div>
-					<p className={styles.eyebrow}>{t('editors.mediaTabDocuments')}</p>
-					<p className={styles.summary}>{drawings.length === 0 ? t('documents.emptyTitle') : summaryLabel}</p>
+					<p className={styles.eyebrow}>{t('editors.mediaTabDrawings')}</p>
+					<p className={styles.summary}>{drawings.length === 0 ? t('drawings.emptyTitle') : summaryLabel}</p>
 				</div>
 				<div className={styles.toolbar}>
+					<button
+						type="button"
+						className={styles.iconButton}
+						onClick={toggleViewMode}
+						aria-label={viewMode === 'card' ? t('common.viewAsList') : t('common.viewAsCards')}
+						title={viewMode === 'card' ? t('common.viewAsList') : t('common.viewAsCards')}
+					>
+						<FontAwesomeIcon icon={viewMode === 'card' ? faListUl : faTableCellsLarge} />
+					</button>
 					{canEdit && props.onAddDrawing ? (
 						<button type="button" className={styles.addButton} onClick={props.onAddDrawing}>
 							<FontAwesomeIcon icon={faPlus} />
-							<span>{t('documents.addButton')}</span>
+							<span>{t('drawings.addButton')}</span>
 						</button>
 					) : null}
 				</div>
@@ -165,9 +197,9 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 			{drawings.length === 0 ? (
 				null
 			) : (
-				<div className={styles.list}>
+				<div className={viewMode === 'list' ? styles.listView : styles.list}>
 					{drawings.map((drawing) => (
-						<div key={drawing.id} className={styles.card}>
+						<div key={drawing.id} className={`${styles.card}${viewMode === 'list' ? ` ${styles.cardListRow}` : ''}`}>
 							{canEdit && props.onDeleteDrawing ? (
 								<button
 									type="button"
@@ -177,7 +209,7 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 										void handleDeleteDrawing(drawing.id);
 									}}
 									disabled={deletingId === drawing.id}
-									aria-label={t('documents.delete')}
+									aria-label={t('drawings.delete')}
 								>
 									<FontAwesomeIcon icon={faTrash} />
 								</button>

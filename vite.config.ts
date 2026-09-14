@@ -263,7 +263,9 @@ export default defineConfig(({ mode, command }) => {
 					],
 				},
 				injectManifest: {
-					globPatterns: ['**/*.{js,css,html,ico,png,svg,json,woff2}'],
+					// mjs: the PDF viewer's pdf.js worker ships as an .mjs file. Without it in the
+					// precache the viewer works online and silently can't open anything offline.
+					globPatterns: ['**/*.{js,mjs,css,html,ico,png,svg,json,woff2}'],
 					maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
 				},
 				devOptions: {

@@ -1540,7 +1540,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 			{isMoreMenuOpen ? (
 				<NoteCardMoreMenu
 					noteType="text"
-					showAddDocument={false}
+					showAddDrawing={false}
 					showAddImage={false}
 					anchorRect={moreMenuAnchorRect}
 					isPinned={isPinned}

@@ -144,6 +144,13 @@ enum NoteDocumentOcrStatus {
   FAILED
 }
 
+enum NoteDocumentConversionStatus {
+  NOT_NEEDED
+  PENDING
+  COMPLETE
+  FAILED
+}
+
 enum PushPlatform {
   WEB
   IOS
@@ -187,7 +194,7 @@ model User {
   uploadedNoteImages NoteImage[]
   noteLinks NoteLink[]
   uploadedNoteDocuments NoteDocument[]
-  noteDocumentAnnotations NoteDocumentAnnotation[]
+  uploadedNoteDocumentVersions NoteDocumentVersion[]
   pushSubscriptions PushSubscription[]
   pushNotificationLogs PushNotificationLog[]
   noteReminders NoteReminder[]
@@ -581,15 +588,43 @@ model NoteLink {
   @@map("note_link")
 }
 
+/// A document attached to a note. The file itself lives on its versions: replacing a
+/// document adds a version instead of a second copy, so everyone keeps looking at the
+/// same item. Markup (later stages) belongs to a version, never to the document.
 model NoteDocument {
   id String @id @default(uuid()) @db.Uuid
 
   docId String @map("doc_id")
   sourceWorkspaceId String @map("source_workspace_id") @db.Uuid
   sourceNoteId String @map("source_note_id")
+  /// Who first attached the document. Each version records its own uploader.
+  uploadedByUserId String @map("uploaded_by_user_id") @db.Uuid
+  /// Highest version number ever handed out, so deleting a version never frees its
+  /// number up for reuse ("v3" always means the same file).
+  latestVersionNumber Int @default(0) @map("latest_version_number")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  document Document @relation(fields: [docId], references: [docId], onDelete: Cascade)
+  sourceWorkspace Workspace @relation(fields: [sourceWorkspaceId], references: [id], onDelete: Cascade)
+  uploader User @relation(fields: [uploadedByUserId], references: [id], onDelete: Cascade)
+  versions NoteDocumentVersion[]
+
+  @@index([docId, deletedAt])
+  @@index([sourceWorkspaceId, sourceNoteId])
+  @@index([uploadedByUserId])
+  @@map("note_document")
+}
+
+model NoteDocumentVersion {
+  id String @id @default(uuid()) @db.Uuid
+
+  noteDocumentId String @map("note_document_id") @db.Uuid
+  versionNumber Int @map("version_number")
   uploadedByUserId String @map("uploaded_by_user_id") @db.Uuid
 
-  storageKey String @map("storage_key")
   originalPath String @map("original_path")
   previewPath String @map("preview_path")
   thumbnailPath String @map("thumbnail_path")
@@ -607,47 +642,23 @@ model NoteDocument {
   ocrText String? @map("ocr_text")
   ocrError String? @map("ocr_error")
 
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
-  deletedAt DateTime? @map("deleted_at")
-
-  document Document @relation(fields: [docId], references: [docId], onDelete: Cascade)
-  sourceWorkspace Workspace @relation(fields: [sourceWorkspaceId], references: [id], onDelete: Cascade)
-  uploader User @relation(fields: [uploadedByUserId], references: [id], onDelete: Cascade)
-  annotations NoteDocumentAnnotation[]
-
-  @@index([docId, deletedAt])
-  @@index([sourceWorkspaceId, sourceNoteId])
-  @@index([uploadedByUserId])
-  @@map("note_document")
-}
-
-model NoteDocumentAnnotation {
-  id String @id @default(uuid()) @db.Uuid
-
-  noteDocumentId String @map("note_document_id") @db.Uuid
-  createdByUserId String? @map("created_by_user_id") @db.Uuid
-  annotationType String @map("annotation_type")
-  quoteText String? @map("quote_text")
-  bodyText String? @map("body_text")
-  pageNumber Int? @map("page_number")
-  positionJson Json @map("position_json") @db.JsonB
-  color String?
-  highlightStyle String? @map("highlight_style")
-  backgroundColor String? @map("background_color")
-  fontFamily String? @map("font_family")
-  fontSize String? @map("font_size")
+  /// Office files get a PDF copy made on the server (bundled LibreOffice) so they open
+  /// in the same viewer and can be marked up. PDFs never need one. The original is
+  /// always what gets downloaded.
+  conversionStatus NoteDocumentConversionStatus @default(NOT_NEEDED) @map("conversion_status")
+  viewPdfPath String? @map("view_pdf_path")
+  conversionError String? @map("conversion_error")
 
   createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
   deletedAt DateTime? @map("deleted_at")
 
   noteDocument NoteDocument @relation(fields: [noteDocumentId], references: [id], onDelete: Cascade)
-  creator User? @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  uploader User @relation(fields: [uploadedByUserId], references: [id], onDelete: Cascade)
 
+  @@unique([noteDocumentId, versionNumber])
   @@index([noteDocumentId, deletedAt])
-  @@index([createdByUserId])
-  @@map("note_document_annotation")
+  @@index([uploadedByUserId])
+  @@map("note_document_version")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

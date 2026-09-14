@@ -77,6 +77,8 @@ import {
 	readQueuedNoteImages,
 	readStoredRemoteNoteImages,
 } from '../../core/noteMediaStore';
+import { DocumentsPanel } from '../NoteDocuments/DocumentsPanel';
+import { MEDIA_DOCK_LAST_TAB, sanitizeMediaDockTab, isMediaDockTabTap, useMediaDockTabAutoScroll, type MediaDockTab } from './mediaDockTabs';
 import { readDrawingLinkState, removeCompletedChecklistItems } from '../../core/noteModel';
 import { isReminderOverdue } from '../../core/reminderUrgency';
 import { NoteMediaPanel } from '../NoteMedia/NoteMediaPanel';
@@ -111,7 +113,7 @@ export type NoteEditorProps = {
 	onTogglePin?: (() => void) | undefined;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
-	onAddDocument?: () => void;
+	onAddDrawing?: () => void;
 	onOpenDrawing?: (drawingId: string) => void;
 	onDeleteDrawing?: (drawingId: string) => Promise<void> | void;
 	loadDrawingDoc?: (drawingId: string) => Promise<Y.Doc | null>;
@@ -161,11 +163,7 @@ type NoteType = 'text' | 'checklist';
 
 const EMPTY_ITEMS: readonly ChecklistItem[] = [];
 
-function sanitizeMediaDockTab(value: unknown): 0 | 1 | 2 {
-	return value === '1' || value === 1 ? 1 : value === '2' || value === 2 ? 2 : 0;
-}
-
-function readStoredMediaDockTab(noteId: string): 0 | 1 | 2 {
+function readStoredMediaDockTab(noteId: string): MediaDockTab {
 	try {
 		return sanitizeMediaDockTab(sessionStorage.getItem(`__freemannotes_mediaDockTab:${noteId}`));
 	} catch {
@@ -995,7 +993,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [mediaSheetProgress, setMediaSheetProgress] = React.useState(0);
 	const [isMediaSheetDragging, setIsMediaSheetDragging] = React.useState(false);
 	const [isMediaSheetClosing, setIsMediaSheetClosing] = React.useState(false);
-	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(() => readStoredMediaDockTab(props.noteId));
+	const [mediaDockTab, setMediaDockTab] = React.useState<MediaDockTab>(() => readStoredMediaDockTab(props.noteId));
+	useMediaDockTabAutoScroll(mediaDockTab, mediaDockOpen);
 	// More-menu state (editor 3-dot button):
 	// - Desktop: anchored popover positioned relative to the trigger button rect.
 	// - Mobile: bottom sheet menu (anchor rect is ignored).
@@ -1478,25 +1477,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (mediaDockOpen || mediaSheetProgress > 0.001) return;
 		setIsMediaSheetClosing(false);
 	}, [mediaDockOpen, mediaSheetProgress]);
-	const handleDockSwipeEnd = React.useCallback(
-		(event: React.TouchEvent): void => {
-			// Landscape branch: horizontal media tab swipe is disabled.
-			if (isMobileLandscapeRef.current) return;
-			const start = dockTouchStartRef.current;
-			const t0 = event.changedTouches[0];
-			if (!start || !t0) return;
-			event.stopPropagation();
-			dockTouchStartRef.current = null;
-			const dx = t0.clientX - start.x;
-			const dy = t0.clientY - start.y;
-			if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
-			setMediaDockTab((prev) => {
-				if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
-				return Math.max(prev - 1, 0) as 0 | 1 | 2;
-			});
-		},
-		[]
-	);
 	React.useEffect(() => {
 		if (!isCoarsePointer || !mediaDockOpen) return;
 		if (pendingMediaDockCleanupRef.current != null) {
@@ -1513,10 +1493,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			setMediaDockOpen(false);
 		};
 		window.addEventListener('popstate', onPopState);
-		const currentState = window.history.state as { __noteEditorMediaDock?: string } | null;
+		const currentState = window.history.state as { __noteEditorMediaDock?: string; __moreMenu?: boolean } | null;
 		// The media sheet gets its own history entry so mobile Back dismisses the
 		// sheet first and leaves the surrounding editor mounted in place.
-		if (currentState?.__noteEditorMediaDock !== token) {
+		if (currentState?.__moreMenu === true) {
+			// Opened from the more-menu ("Add Document"). The menu leaves its history entry
+			// behind for child overlays to take over; replace it instead of stacking on top,
+			// same as the menu's other child modals, so one Back press still closes the sheet.
+			window.history.replaceState({ __noteEditorMediaDock: token }, '');
+			didPush = true;
+		} else if (currentState?.__noteEditorMediaDock !== token) {
 			window.history.pushState({ __noteEditorMediaDock: token }, '');
 			didPush = true;
 			(window as any).__debugLog?.('HISTORY', `mediaDock pushState token=${token} histLen=${window.history.length}`);
@@ -1551,10 +1537,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		suppressNextDocumentCompatibilityMouseEvents();
 		closeMediaDock();
 	}, [closeMediaDock, isCoarsePointer]);
-	const handleSelectMediaDockTabFromTouch = React.useCallback((tab: 0 | 1 | 2, event: React.TouchEvent<HTMLButtonElement>): void => {
-		if (event.cancelable) event.preventDefault();
-		event.stopPropagation();
+	const handleSelectMediaDockTabFromTouch = React.useCallback((tab: MediaDockTab, event: React.TouchEvent<HTMLButtonElement>): void => {
+		const start = dockTouchStartRef.current;
 		dockTouchStartRef.current = null;
+		event.stopPropagation();
+		// The tab strip scrolls sideways, so a finger that travelled was scrolling it, not
+		// picking a tab. Let the browser finish the scroll and change nothing.
+		if (!isMediaDockTabTap(start, event.changedTouches[0])) return;
+		if (event.cancelable) event.preventDefault();
 		setMediaDockTab(tab);
 	}, []);
 	const handleOpenImageFromMediaDock = React.useCallback((): void => {
@@ -1568,6 +1558,18 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		}
 		props.onAddImage?.();
 	}, [isCoarsePointer, props.onAddImage]);
+	// More-menu "Add Document": documents live in the attachment sheet's Documents tab (with
+	// its own Add button and file picker), so open straight to it rather than a separate modal.
+	const handleOpenDocumentsFromMoreMenu = React.useCallback((): void => {
+		setIsMoreMenuOpen(false);
+		setMoreMenuAnchorRect(null);
+		setMediaDockTab(3);
+		// Landscape phones keep the sheet closed; there's nowhere to show it.
+		if (isMobileLandscapeRef.current) return;
+		setIsMediaSheetClosing(false);
+		setMediaDockOpen(true);
+		if (isCoarsePointer) setMediaSheetProgress(1);
+	}, [isCoarsePointer]);
 	const handleMediaSheetTouchStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
 		if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageViewerOpen === 'true') {
 			mediaSheetSwipeStartRef.current = null;
@@ -1593,8 +1595,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (!scrolledToTop) return;
 		if (Math.abs(dx) > 28 && Math.abs(dx) > Math.abs(dy)) {
 			setMediaDockTab((prev) => {
-				if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
-				return Math.max(prev - 1, 0) as 0 | 1 | 2;
+				if (dx < 0) return Math.min(prev + 1, MEDIA_DOCK_LAST_TAB) as MediaDockTab;
+				return Math.max(prev - 1, 0) as MediaDockTab;
 			});
 		}
 	}, []);
@@ -1635,17 +1637,28 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				/>
 			);
 		}
+		if (mediaDockTab === 3) {
+			return (
+				<DocumentsPanel
+					docId={props.docId}
+					authUserId={props.authUserId}
+					canEdit={!readOnly}
+					isPendingNew={props.isPendingNew}
+					onShowBriefDialog={props.onShowBriefDialog}
+				/>
+			);
+		}
 		return (
 			<DrawingsPanel
 				doc={props.doc}
 				canEdit={!readOnly}
-				onAddDrawing={props.onAddDocument}
+				onAddDrawing={props.onAddDrawing}
 				onOpenDrawing={props.onOpenDrawing}
 				onDeleteDrawing={props.onDeleteDrawing}
 				loadDrawingDoc={props.loadDrawingDoc}
 			/>
 		);
-	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, handleOpenImageFromMediaDock, mediaDockTab, props.doc, props.loadDrawingDoc, props.onAddDocument, props.onAddImage, props.onDeleteDrawing, props.onOpenDrawing, props.onShowBriefDialog, props.isPendingNew, readOnly]);
+	}, [extractedLinks, handleCreateUrlPreview, handleDeleteUrlPreview, handleOpenImageFromMediaDock, mediaDockTab, props.authUserId, props.doc, props.docId, props.loadDrawingDoc, props.onAddDrawing, props.onAddImage, props.onDeleteDrawing, props.onOpenDrawing, props.onShowBriefDialog, props.isPendingNew, readOnly]);
 	const [showCompleted, setShowCompleted] = React.useState(() => Boolean(props.initialShowCompleted));
 	React.useEffect(() => {
 		setShowCompleted(Boolean(props.initialShowCompleted));
@@ -3553,7 +3566,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									</button>
 
 									<header className={styles.mediaSheetHeader}>
-										<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabTouchStart} onTouchEnd={handleDockSwipeEnd}>
+										<div className={styles.mediaTabs} data-media-dock-tabs="true" role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabTouchStart}>
 											<button
 												type="button"
 												role="tab"
@@ -3581,6 +3594,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 												className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
 												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
 												onClick={() => setMediaDockTab(2)}
+											>
+												{t('editors.mediaTabDrawings')}
+											</button>
+											<button
+												type="button"
+												role="tab"
+												aria-selected={mediaDockTab === 3}
+												className={`${styles.mediaTab}${mediaDockTab === 3 ? ` ${styles.mediaTabActive}` : ''}`}
+												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(3, event)}
+												onClick={() => setMediaDockTab(3)}
 											>
 												{t('editors.mediaTabDocuments')}
 											</button>
@@ -3630,7 +3653,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					style={mediaDockThemeStyle}
 				>
 					<header className={styles.mediaFlyoutHeader}>
-						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')}>
+						<div className={styles.mediaTabs} data-media-dock-tabs="true" role="tablist" aria-label={t('editors.mediaDockTabs')}>
 							<button
 								type="button"
 								role="tab"
@@ -3658,6 +3681,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
 								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
 								onClick={() => setMediaDockTab(2)}
+							>
+								{t('editors.mediaTabDrawings')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 3}
+								className={`${styles.mediaTab}${mediaDockTab === 3 ? ` ${styles.mediaTabActive}` : ''}`}
+								onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(3, event)}
+								onClick={() => setMediaDockTab(3)}
 							>
 								{t('editors.mediaTabDocuments')}
 							</button>
@@ -4222,7 +4255,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									</button>
 
 									<header className={styles.mediaSheetHeader}>
-										<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabTouchStart} onTouchEnd={handleDockSwipeEnd}>
+										<div className={styles.mediaTabs} data-media-dock-tabs="true" role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabTouchStart}>
 											<button
 												type="button"
 												role="tab"
@@ -4250,6 +4283,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 												className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
 												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
 												onClick={() => setMediaDockTab(2)}
+											>
+												{t('editors.mediaTabDrawings')}
+											</button>
+											<button
+												type="button"
+												role="tab"
+												aria-selected={mediaDockTab === 3}
+												className={`${styles.mediaTab}${mediaDockTab === 3 ? ` ${styles.mediaTabActive}` : ''}`}
+												onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(3, event)}
+												onClick={() => setMediaDockTab(3)}
 											>
 												{t('editors.mediaTabDocuments')}
 											</button>
@@ -4391,7 +4434,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				style={mediaDockThemeStyle}
 			>
 					<header className={styles.mediaFlyoutHeader}>
-						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')}>
+						<div className={styles.mediaTabs} data-media-dock-tabs="true" role="tablist" aria-label={t('editors.mediaDockTabs')}>
 							<button
 								type="button"
 								role="tab"
@@ -4417,6 +4460,15 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								aria-selected={mediaDockTab === 2}
 								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
 								onClick={() => setMediaDockTab(2)}
+							>
+								{t('editors.mediaTabDrawings')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 3}
+								className={`${styles.mediaTab}${mediaDockTab === 3 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(3)}
 							>
 								{t('editors.mediaTabDocuments')}
 							</button>
@@ -4469,10 +4521,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setMoreMenuAnchorRect(null);
 					setIsBannerPickerOpen(true);
 				} : undefined}
-				onAddDocument={props.onAddDocument ? () => {
+				onAddDocument={!readOnly ? handleOpenDocumentsFromMoreMenu : undefined}
+				onAddDrawing={props.onAddDrawing ? () => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
-					props.onAddDocument?.();
+					props.onAddDrawing?.();
 				} : undefined}
 				onAddReminder={props.onAddReminder ? () => {
 					setIsMoreMenuOpen(false);

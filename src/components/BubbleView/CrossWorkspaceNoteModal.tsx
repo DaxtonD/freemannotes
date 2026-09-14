@@ -48,7 +48,7 @@ export type CrossWorkspaceNoteModalProps = {
 	readOnly?: boolean;
 	onAddCollaborator?: (args: { noteId: string; docId: string; title: string }) => void;
 	onAddImage?: (args: { noteId: string; docId: string; title: string }) => void;
-	onAddDocument?: (args: { noteId: string; docId: string; title: string }) => void;
+	onAddDrawing?: (args: { noteId: string; docId: string; title: string }) => void;
 	onAddReminder?: (args: { noteId: string; docId: string; title: string }) => void;
 	onAddToCollection?: (args: { noteId: string; doc: Y.Doc; docId: string; title: string }) => void;
 	onAddLabels?: (args: { noteId: string; doc: Y.Doc; docId: string; title: string }) => void;
@@ -70,7 +70,7 @@ export function CrossWorkspaceNoteModal({
 	readOnly = false,
 	onAddCollaborator,
 	onAddImage,
-	onAddDocument,
+	onAddDrawing,
 	onAddReminder,
 	onAddToCollection,
 	onAddLabels,
@@ -232,7 +232,7 @@ export function CrossWorkspaceNoteModal({
 			onClose={onClose}
 			onAddCollaborator={onAddCollaborator ? () => onAddCollaborator({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
 			onAddImage={onAddImage ? () => onAddImage({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
-			onAddDocument={onAddDocument ? () => onAddDocument({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
+			onAddDrawing={onAddDrawing ? () => onAddDrawing({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
 			onAddReminder={onAddReminder ? () => onAddReminder({ noteId, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
 			onAddToCollection={onAddToCollection ? () => onAddToCollection({ noteId, doc, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}
 			onAddLabels={onAddLabels ? () => onAddLabels({ noteId, doc, docId, title: readNoteFromDoc(doc, noteId).title.trim() }) : undefined}

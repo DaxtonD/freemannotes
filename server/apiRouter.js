@@ -1097,6 +1097,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						dbStateBytesRows,
 						noteImageAgg,
 						noteDocumentAgg,
+						noteDocumentVersionAgg,
 					] = await Promise.all([
 						prisma.user.count(),
 						prisma.workspace.count({ where: { deletedAt: null } }),
@@ -1124,6 +1125,10 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 						prisma.noteDocument.aggregate({
 							where: { deletedAt: null },
 							_count: { _all: true },
+						}),
+						// File sizes live on versions; every kept version is real disk use.
+						prisma.noteDocumentVersion.aggregate({
+							where: { deletedAt: null, noteDocument: { deletedAt: null } },
 							_sum: { byteSize: true },
 						}),
 					]);
@@ -1131,7 +1136,7 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 					const dbStateBytesRow = Array.isArray(dbStateBytesRows) ? dbStateBytesRows[0] : dbStateBytesRows;
 					const dbStateBytes = Number(dbStateBytesRow?.bytes || 0);
 					const noteImagesBytes = Number(noteImageAgg?._sum?.byteSize || 0);
-					const noteDocumentsBytes = Number(noteDocumentAgg?._sum?.byteSize || 0);
+					const noteDocumentsBytes = Number(noteDocumentVersionAgg?._sum?.byteSize || 0);
 					const uploadBytes = noteImagesBytes + noteDocumentsBytes;
 
 					const memory = process.memoryUsage();

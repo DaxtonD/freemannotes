@@ -478,6 +478,28 @@ function registerAppServiceWorker(): void {
 	});
 }
 
+// Service worker caches that hold one user's private stuff: note photos, avatars and
+// cached API responses. Logging out has to throw these away, or the next person on a
+// shared device can open the app offline and get the previous user's photos served
+// straight out of the cache (the server's login check never even sees the request).
+// The app shell and static bundles are left alone so the login screen still loads
+// offline.
+const PRIVATE_SERVICE_WORKER_CACHE_PREFIXES = ['freemannotes-images-', 'freemannotes-api-'];
+
+export async function clearPrivateServiceWorkerCaches(): Promise<void> {
+	if (typeof window === 'undefined' || !('caches' in window)) return;
+	try {
+		const names = await window.caches.keys();
+		await Promise.all(
+			names
+				.filter((name) => PRIVATE_SERVICE_WORKER_CACHE_PREFIXES.some((prefix) => name.startsWith(prefix)))
+				.map((name) => window.caches.delete(name)),
+		);
+	} catch (error) {
+		console.warn('[PWA] clearing private caches on logout failed:', error);
+	}
+}
+
 export function initPwa(): void {
 	if (initialized || typeof window === 'undefined') return;
 	initialized = true;

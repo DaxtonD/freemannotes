@@ -91,6 +91,7 @@ const { canEditWorkspaceContent, normalizeWorkspaceRole } = require('./server/wo
 
 // ── Phase 11 auth helpers (JWT cookie sessions) ───────────────────────
 const { getSessionFromRequest } = require('./server/auth');
+const { createUploadAccessResolver } = require('./server/uploadAccess');
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -261,6 +262,10 @@ function setupRoleAwareWSConnection(conn, req, { docName = (req.url || '').slice
 
 /** @type {import('@prisma/client').PrismaClient | null} */
 let prisma = null;
+
+// Gatekeeper for /uploads/. Takes a getter because prisma is only assigned once the
+// database connects, well after this module-level code runs.
+const uploadAccess = createUploadAccessResolver({ getPrisma: () => prisma });
 
 /** @type {import('ioredis').Redis | null} */
 let redis = null;
@@ -994,38 +999,78 @@ const server = http.createServer((req, res) => {
 		// replacing the live dist/ contents when diagnosing Windows file-lock or
 		// deployment issues.
 		if (url.pathname.startsWith('/uploads/')) {
-			// Serve uploaded profile images from UPLOAD_DIR.
-			const resolved = path.resolve(UPLOAD_DIR, '.' + decodeURIComponent(url.pathname.slice('/uploads'.length)));
-			const base = path.resolve(UPLOAD_DIR);
-			if (!resolved.startsWith(base + path.sep) && resolved !== base) {
+			// Uploaded avatars, note photos and note documents. These used to be served to
+			// anyone holding the URL, with a public cache header on top. Now every request
+			// goes through uploadAccess (server/uploadAccess.js): avatars need a login,
+			// note media needs access to the note. Refusals are 404, never 403, so nobody
+			// can probe for which files exist.
+			let requestedRelativePath;
+			try {
+				requestedRelativePath = decodeURIComponent(url.pathname.slice('/uploads/'.length));
+			} catch {
 				res.writeHead(400);
 				res.end('Bad Request');
 				return;
 			}
-			if (!fs.existsSync(resolved)) {
-				res.writeHead(404);
-				res.end('Not Found');
+			const resolved = path.resolve(UPLOAD_DIR, '.' + path.sep + requestedRelativePath);
+			const base = path.resolve(UPLOAD_DIR);
+			if (!resolved.startsWith(base + path.sep)) {
+				res.writeHead(400);
+				res.end('Bad Request');
 				return;
 			}
-			const stat = fs.statSync(resolved);
-			if (!stat.isFile()) {
-				res.writeHead(404);
+			const sendNotFound = () => {
+				if (res.headersSent) return;
+				res.writeHead(404, { 'Cache-Control': 'no-store' });
 				res.end('Not Found');
-				return;
-			}
-			res.setHeader('Content-Type', contentTypeFor(resolved));
-			res.setHeader('Cache-Control', 'public, max-age=86400');
-			if (req.method === 'HEAD') {
-				res.writeHead(200);
+			};
+			(async () => {
+				const decision = await uploadAccess.resolve(req.auth, requestedRelativePath);
+				if (!decision.allowed) {
+					sendNotFound();
+					return;
+				}
+				let stat;
+				try {
+					stat = await fs.promises.stat(resolved);
+				} catch {
+					sendNotFound();
+					return;
+				}
+				if (!stat.isFile()) {
+					sendNotFound();
+					return;
+				}
+				res.setHeader('Content-Type', contentTypeFor(resolved));
+				// private: the browser and the service worker may keep a copy, but Cloudflare
+				// and any other shared cache in between must not.
+				res.setHeader('Cache-Control', 'private, max-age=86400');
+				res.setHeader('X-Content-Type-Options', 'nosniff');
+				if (decision.kind === 'document-original') {
+					// Never let an uploaded document render as a page on our own origin. Today
+					// only pdf/office types get through upload validation, but txt/csv/md are
+					// coming, and "attachment" keeps the browser from getting creative.
+					const downloadName = String(decision.fileName || path.basename(resolved)).replace(/[\r\n"]/g, '');
+					res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}`);
+				}
+				if (req.method === 'HEAD') {
+					res.writeHead(200);
+					res.end();
+					return;
+				}
+				fs.createReadStream(resolved)
+					.on('error', () => {
+						if (!res.headersSent) res.writeHead(500);
+						res.end();
+					})
+					.pipe(res);
+			})().catch((err) => {
+				console.error('[uploads] access check failed:', err && err.message ? err.message : String(err));
+				if (!res.headersSent) {
+					res.writeHead(500, { 'Cache-Control': 'no-store' });
+				}
 				res.end();
-				return;
-			}
-			fs.createReadStream(resolved)
-				.on('error', () => {
-					res.writeHead(500);
-					res.end('Internal Server Error');
-				})
-				.pipe(res);
+			});
 			return;
 		}
 

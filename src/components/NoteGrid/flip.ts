@@ -18,7 +18,10 @@ const FLIP_ANIMATION_MS = 140;
 const FLIP_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)';
 const flipCleanupTimers = new WeakMap<HTMLElement, number>();
 
-function clearFlipStyles(container: HTMLElement): void {
+/** How long a FLIP animation plus its style cleanup takes; measuring rows before then reads transforms as movement. */
+export const FLIP_SETTLE_MS = FLIP_ANIMATION_MS + 60;
+
+export function clearFlipStyles(container: HTMLElement): void {
 	for (const node of Array.from(container.querySelectorAll<HTMLElement>('[data-note-id]'))) {
 		const content = (node.querySelector('[data-note-content="true"]') as HTMLElement | null) ?? node;
 		content.style.transition = '';
@@ -144,6 +147,34 @@ export function applyFlipAnimations(args: {
 	return runFlipAnimations({
 		...args,
 		measureRects: measureViewportRects,
+	});
+}
+
+/**
+ * Animates rows from viewport positions captured earlier (before a list ↔ strip switch)
+ * to wherever they are now. Viewport space, not document space, because the switch also
+ * scrolls the page to keep the top note in place: relative to the screen, that note
+ * stays put and everything else grows or shrinks around it.
+ */
+export function applyFlipFromViewportSnapshot(args: {
+	container: HTMLElement;
+	previousRects: Record<string, RectSnapshot>;
+	activeId: string | null;
+}): void {
+	runFlipAnimations<RectSnapshot>({
+		container: args.container,
+		previousRects: new Map(Object.entries(args.previousRects)),
+		measureRects: (container) => {
+			const rects = new Map<string, RectSnapshot>();
+			for (const [id, rect] of measureViewportRects(container)) {
+				rects.set(id, { left: rect.left, top: rect.top });
+			}
+			return rects;
+		},
+		activeId: args.activeId,
+		suppressAnimations: false,
+		skipForScroll: false,
+		suppressUniformGlobalShift: true,
 	});
 }
 

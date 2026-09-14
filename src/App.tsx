@@ -60,6 +60,7 @@ import { CollaboratorModal } from './components/Share/CollaboratorModal';
 import { NoteAccessLostOverlay } from './components/Editors/NoteAccessLostOverlay';
 import { ShareNotificationsModal } from './components/Share/ShareNotificationsModal';
 import { NoteDrawingBrowserModal } from './components/NoteAttachments/NoteDrawingBrowserModal';
+import { NoteDocumentBrowserModal } from './components/NoteAttachments/NoteDocumentBrowserModal';
 import { NoteLinkBrowserModal } from './components/NoteAttachments/NoteLinkBrowserModal';
 import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModal';
 import { MobileFab } from './components/MobileFab/MobileFab';
@@ -173,7 +174,7 @@ import {
 	scheduleQueuedNoteDocumentFlush,
 } from './core/noteDocumentStore';
 import { searchOfflineNotes, searchLoadedNotes } from './core/offlineSearch';
-import { acknowledgePwaUpdated, applyPwaUpdate, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
+import { acknowledgePwaUpdated, applyPwaUpdate, clearPrivateServiceWorkerCaches, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { clearSessionRestoreNote, readSessionRestoreNote, setSessionRestoreNote } from './core/sessionRestore';
 import { onPushReceived } from './core/pushManager';
 import { acknowledgeReminderNotifications, fetchFiredReminders, fetchNoteReminderStates, fetchPendingReminderCount, syncNoteReminder, type FiredReminder, type NoteReminderState } from './core/pushApi';
@@ -2850,7 +2851,13 @@ export function App(): React.JSX.Element {
 				isMobileSidebarOpen: false,
 				isFabOpen: false,
 			},
-			'push'
+			// Opened from the more-menu ("Add Document"): the menu leaves its history entry
+			// behind for child overlays to take over. Pushing on top of it would make the first
+			// Back press land on that leftover entry (a dismiss layer App ignores) and leave the
+			// browser open. Take it over instead, same as the menu's other child modals.
+			typeof window !== 'undefined' && (window.history.state as { __moreMenu?: boolean } | null)?.__moreMenu === true
+				? 'replace'
+				: 'push'
 		);
 		if (typeof window !== 'undefined') {
 			// Opening the attachment browser should not change the user's place in the
@@ -5139,6 +5146,7 @@ export function App(): React.JSX.Element {
 		clearUserAvatarCache();
 		clearDrawingThumbnailLocalCache();
 		clearAdminUserCache();
+		void clearPrivateServiceWorkerCaches();
 		setSharedPlacements([]);
 		setActiveWorkspaceSharedPlacements([]);
 		setActiveSharedFolder(null);
@@ -11453,7 +11461,7 @@ export function App(): React.JSX.Element {
 						showArchived={sidebarView === 'archive'}
 						onAddCollaborator={canEditActiveWorkspace ? openCollaboratorModalForNote : undefined}
 						onAddImage={openNoteImageModal}
-						onAddDocument={(noteId) => {
+						onAddDrawing={(noteId) => {
 							void createAttachedDrawing(noteId);
 						}}
 						onAddReminder={openNoteReminderModal}
@@ -11728,7 +11736,7 @@ export function App(): React.JSX.Element {
 					readOnly={crossWorkspaceReadOnly}
 					onAddCollaborator={canOpenCrossWorkspaceCollaboratorModal ? ({ noteId, docId, title }) => openCollaboratorModalForNote(noteId, title, { docId, canManage: true }) : undefined}
 					onAddImage={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteImageModal(noteId, docId, title)}
-					onAddDocument={undefined}
+					onAddDrawing={undefined}
 					onAddReminder={crossWorkspaceReadOnly ? undefined : ({ noteId, docId, title }) => openNoteReminderModal(noteId, docId, title)}
 					onAddToCollection={crossWorkspaceReadOnly ? undefined : ({ noteId, doc, docId, title }) => openNoteCollectionModal(noteId, title, { docId, doc })}
 					onAddLabels={crossWorkspaceReadOnly ? undefined : ({ noteId, doc, docId, title }) => openNoteLabelsModal(noteId, title, { docId, doc })}
@@ -11820,6 +11828,15 @@ export function App(): React.JSX.Element {
 				onOpenDrawing={noteAttachmentBrowserState?.kind === 'drawings' ? (drawingId) => openAttachedDrawing(noteAttachmentBrowserState.noteId, drawingId) : undefined}
 				onDeleteDrawing={noteAttachmentBrowserState?.kind === 'drawings' && noteAttachmentBrowserState.canEdit ? (drawingId) => deleteAttachedDrawing(noteAttachmentBrowserState.noteId, drawingId) : undefined}
 				loadDrawingDoc={noteAttachmentBrowserState?.kind === 'drawings' ? drawingBrowserLoadDoc : undefined}
+			/>
+			<NoteDocumentBrowserModal
+				isOpen={noteAttachmentBrowserState?.kind === 'documents'}
+				docId={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.docId : null}
+				authUserId={authUserId}
+				canEdit={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.canEdit : false}
+				noteTitle={noteAttachmentBrowserState?.kind === 'documents' ? noteAttachmentBrowserState.title : null}
+				onClose={closeNoteAttachmentBrowser}
+				onShowBriefDialog={showBriefDialog}
 			/>
 			<NoteImageUploadModal
 				isOpen={Boolean(noteImageModalState)}
@@ -11972,7 +11989,7 @@ export function App(): React.JSX.Element {
 							const noteType = rawType === 'checklist' ? 'checklist' : rawType === 'drawing' ? 'drawing' : 'text' as const;
 							openNoteImageModal(selectedNoteId, selectedNoteDocId, openDoc.getText('title').toString(), noteType);
 						}}
-						onAddDocument={selectedNoteReadOnly ? undefined : () => {
+						onAddDrawing={selectedNoteReadOnly ? undefined : () => {
 							void createAttachedDrawing(selectedNoteId);
 						}}
 						onOpenDrawing={(drawingId) => openAttachedDrawing(selectedNoteId, drawingId)}

@@ -26,6 +26,12 @@
 .sheet {
 	width: 100%;
 	max-width: 420px;
+	/* The menu outgrew short phones (and every phone in landscape). Cap the sheet to the
+	   screen and let the item list scroll; the handle and close button stay put. */
+	max-height: calc(100vh - 24px);
+	max-height: calc(100dvh - 24px);
+	display: flex;
+	flex-direction: column;
 	background: var(--color-surface);
 	border-radius: var(--radius-md) var(--radius-md) 0 0;
 	padding: 0 0 calc(var(--space-4) + env(safe-area-inset-bottom, 0px));
@@ -34,6 +40,17 @@
 	user-select: none;
 	-webkit-user-select: none;
 	-webkit-touch-callout: none;
+}
+
+.sheet .menuList {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	/* The overlay blocks touch gestures so the page behind can't scroll. The list is its
+	   own scroll container, so it can still allow vertical panning inside itself. */
+	touch-action: pan-y;
 }
 
 /* Desktop popover: compact dropdown anchored near the card */

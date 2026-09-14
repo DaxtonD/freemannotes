@@ -24,6 +24,9 @@ export function SupportSection({ t, isSupporter, supporterShowPublic, onVisibili
 	const [supporters, setSupporters] = React.useState<Supporter[]>([]);
 	const [loading, setLoading] = React.useState(true);
 	const [visibilityBusy, setVisibilityBusy] = React.useState(false);
+	// Avatars need a login now, so a guest (or an offline device without the image
+	// cached) gets a refused image. Fall back to the initial instead of a broken icon.
+	const [failedAvatarIds, setFailedAvatarIds] = React.useState<ReadonlySet<string>>(() => new Set());
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -108,8 +111,15 @@ export function SupportSection({ t, isSupporter, supporterShowPublic, onVisibili
 						{supporters.map((s) => (
 							<li key={s.id} className={styles.contributorRow}>
 								<div className={styles.contributorAvatar}>
-									{s.avatarUrl
-										? <img src={s.avatarUrl} alt="" className={styles.contributorAvatarImg} />
+									{s.avatarUrl && !failedAvatarIds.has(s.id)
+										? (
+											<img
+												src={s.avatarUrl}
+												alt=""
+												className={styles.contributorAvatarImg}
+												onError={() => setFailedAvatarIds((prev) => new Set(prev).add(s.id))}
+											/>
+										)
 										: <span className={styles.contributorAvatarFallback}>{s.name.slice(0, 1).toUpperCase()}</span>
 									}
 								</div>

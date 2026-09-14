@@ -7,7 +7,7 @@
  */
 
 import React from 'react';
-import { useWindowVirtualizer } from '@tanstack/react-virtual';
+import { defaultRangeExtractor, useWindowVirtualizer, type Range } from '@tanstack/react-virtual';
 import * as Y from 'yjs';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
@@ -29,8 +29,8 @@ import type { ThemeId } from '../../core/theme';
 import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import type { VisibleNoteSnapshot } from '../../utilities/getVisibleNotes';
 import type { LabelRecord } from '../../services/labelService';
-import { applyDocumentFlipAnimations, measureDocumentRects, type DocumentRectMap } from './flip';
-import { applyListScrollAnchorToRow, type ListScrollAnchor } from './listScrollAnchor';
+import { FLIP_SETTLE_MS, applyDocumentFlipAnimations, applyFlipFromViewportSnapshot, clearFlipStyles, measureDocumentRects, type DocumentRectMap } from './flip';
+import { applyListScrollAnchorOnce, applyListScrollAnchorToRow, findListRowByNoteId, type ListScrollAnchor } from './listScrollAnchor';
 import styles from './NoteListView.module.css';
 
 const LIST_ROW_GAP_PX = 2;
@@ -371,6 +371,26 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 		};
 	}, [props.variant, props.orderedIds.length]);
 
+	const anchor = props.scrollAnchor ?? null;
+	const anchorIndex = anchor ? props.orderedIds.indexOf(anchor.noteId) : -1;
+	const rowStride = estimatedRowHeight + LIST_ROW_GAP_PX;
+	// During a list ↔ strip switch, keep the rows around the anchor note mounted in this very
+	// render. The virtualizer still thinks the page is scrolled where it was before the switch
+	// (it only hears about the scroll a frame later), so without this the synchronous scroll in
+	// the anchor effect below would land on rows that don't exist yet and flash an empty list.
+	// The range stays contiguous because rows are laid out in normal flow with padding.
+	const rangeExtractor = React.useCallback((range: Range): number[] => {
+		const base = defaultRangeExtractor(range);
+		if (anchorIndex < 0 || range.count === 0) return base;
+		const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 800;
+		const span = Math.ceil(viewportHeight / rowStride) + range.overscan;
+		const start = Math.max(0, Math.min(base.length > 0 ? base[0] : anchorIndex, anchorIndex - span));
+		const end = Math.min(range.count - 1, Math.max(base.length > 0 ? base[base.length - 1] : anchorIndex, anchorIndex + span));
+		const indexes: number[] = [];
+		for (let index = start; index <= end; index += 1) indexes.push(index);
+		return indexes;
+	}, [anchorIndex, rowStride]);
+
 	const virtualizer = useWindowVirtualizer<HTMLDivElement>({
 		count: props.orderedIds.length,
 		estimateSize: () => estimatedRowHeight,
@@ -381,74 +401,74 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 		getItemKey: (index) => props.orderedIds[index] ?? index,
 		enabled: shouldVirtualize,
 		useFlushSync: false,
-		// List/strip rows are intentionally fixed-height. Letting recycled rows re-measure
-		// after mount makes the window virtualizer keep correcting offsets mid-scroll,
-		// which shows up as jitter once virtualization starts recycling beyond page one.
-		shouldAdjustScrollPositionOnItemSizeChange: () => false,
+		rangeExtractor,
 	});
+	// List/strip rows are intentionally fixed-height. Letting recycled rows re-measure after
+	// mount makes the window virtualizer keep correcting offsets mid-scroll, which shows up as
+	// jitter once virtualization starts recycling beyond page one. This has to be set on the
+	// instance: virtual-core only reads it from the virtualizer object, never from the options
+	// passed to the hook, so as an option it silently did nothing (same trap the grid's
+	// columns fell into before 1.13.2).
+	virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
 
 	React.useEffect(() => {
 		if (!shouldVirtualize) return;
 		virtualizer.measure();
 	}, [scrollMargin, shouldVirtualize, virtualizer]);
 
+	// A list ↔ strip switch. Put the note that was at the top of the screen back exactly where
+	// it was, then animate every row from where it sat on screen before the switch. Both happen
+	// here, after the new layout commits but before the browser paints it.
+	//
+	// This used to wait two frames and then chase the anchor row while the rows were already
+	// mid-animation. The measured position included the animation's transform, so the scroll
+	// "corrected" to a moving target and the top note ended up somewhere else. And once a column
+	// held 30+ notes the list was virtualized, which skipped the animation entirely: the view
+	// just snapped. Hence "the animation was lovely until we had more notes".
+	const anchorAnimationUntilRef = React.useRef(0);
 	React.useLayoutEffect(() => {
-		const anchor = props.scrollAnchor;
 		if (!anchor) return;
-		const index = props.orderedIds.indexOf(anchor.noteId);
-		if (index < 0) return;
-
+		const container = containerRef.current;
+		if (!container || typeof window === 'undefined') return;
+		if (!isDragSession) clearFlipStyles(container);
+		// Whichever column commits first scrolls for all of them.
+		applyListScrollAnchorOnce(anchor);
+		if (!isDragSession) {
+			// Settled layout, no transforms: the baseline later drag animations measure against.
+			previousRectsRef.current = measureDocumentRects(container);
+			hasMeasuredRef.current = true;
+			if (anchor.rowViewportRects) {
+				applyFlipFromViewportSnapshot({ container, previousRects: anchor.rowViewportRects, activeId: props.activeDragId });
+				anchorAnimationUntilRef.current = performance.now() + FLIP_SETTLE_MS;
+			}
+		}
+		// Only the column that holds the anchor note reports back. It waits a few frames so the
+		// virtualizer has seen the scroll before the extra rows above are dropped, and nudges the
+		// anchor back if a late layout change (e.g. a section above resizing) moved it. The anchor
+		// row itself doesn't animate (it didn't move on screen), so measuring it here is safe.
+		if (anchorIndex < 0) return;
 		let cancelled = false;
+		let frame = 0;
 		let attempts = 0;
-		const stride = estimatedRowHeight + LIST_ROW_GAP_PX;
-
-		const tryAnchor = (): void => {
+		const settle = (): void => {
 			if (cancelled) return;
 			attempts += 1;
-
-			const row = containerRef.current?.querySelector<HTMLElement>(
-				`[data-note-list-row="true"][data-note-id="${CSS.escape(anchor.noteId)}"]`,
-			);
-
-			if (!row && shouldVirtualize) {
-				// Rough scroll so the virtualizer mounts the anchor row; fine-tune below.
-				const targetScrollY = scrollMargin + index * stride - anchor.viewportTopPx;
-				window.scrollTo({ left: 0, top: Math.max(0, Math.round(targetScrollY)), behavior: 'auto' });
-				if (attempts < 8) {
-					window.requestAnimationFrame(tryAnchor);
-				} else {
-					props.onScrollAnchorApplied?.();
-				}
-				return;
-			}
-
-			if (!row) {
-				if (attempts < 8) {
-					window.requestAnimationFrame(tryAnchor);
-				} else {
-					props.onScrollAnchorApplied?.();
-				}
-				return;
-			}
-
-			const settled = applyListScrollAnchorToRow(row, anchor);
-			if (!settled && attempts < 8) {
-				window.requestAnimationFrame(tryAnchor);
+			const row = findListRowByNoteId(anchor.noteId);
+			const inPlace = row ? applyListScrollAnchorToRow(row, anchor) : false;
+			if ((!inPlace || attempts < 3) && attempts < 8) {
+				frame = window.requestAnimationFrame(settle);
 				return;
 			}
 			props.onScrollAnchorApplied?.();
 		};
-
-		let raf2 = 0;
-		const raf1 = window.requestAnimationFrame(() => {
-			raf2 = window.requestAnimationFrame(tryAnchor);
-		});
+		frame = window.requestAnimationFrame(settle);
 		return () => {
 			cancelled = true;
-			window.cancelAnimationFrame(raf1);
-			window.cancelAnimationFrame(raf2);
+			window.cancelAnimationFrame(frame);
 		};
-	}, [estimatedRowHeight, props.onScrollAnchorApplied, props.orderedIds, props.scrollAnchor, props.variant, scrollMargin, shouldVirtualize]);
+		// Runs once per anchor; everything else it reads is current for that commit.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [anchor]);
 
 	const virtualItems = shouldVirtualize ? virtualizer.getVirtualItems() : [];
 	const leadingPaddingPx = shouldVirtualize && virtualItems.length > 0
@@ -470,6 +490,13 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 	React.useLayoutEffect(() => {
 		const container = containerRef.current;
 		if (!container) return;
+		if (!isDragSession) {
+			// A list ↔ strip switch is handled by the anchor effect above (it measures and
+			// animates). While that animation runs, measuring here would read its transforms
+			// as real movement and kick off a second, wrong animation.
+			if (anchor) return;
+			if (performance.now() < anchorAnimationUntilRef.current) return;
+		}
 		// Idle virtualized lists only snapshot rects; flip runs during drag sessions.
 		if (shouldVirtualize && !isDragSession) {
 			previousRectsRef.current = measureDocumentRects(container);
@@ -489,7 +516,7 @@ export function NoteListView(props: NoteListViewProps): React.JSX.Element {
 			skipForScroll: false,
 			suppressUniformGlobalShift: true,
 		});
-	}, [isDragSession, props.activeDragId, renderedIdsSignature, shouldVirtualize, showPreview]);
+	}, [anchor, isDragSession, props.activeDragId, renderedIdsSignature, shouldVirtualize, showPreview]);
 
 	return (
 		<div

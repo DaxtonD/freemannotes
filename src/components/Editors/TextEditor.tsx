@@ -21,7 +21,9 @@ import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
-import { DocumentsPanel } from './DocumentsPanel';
+import { DrawingsComingSoonPanel } from './DrawingsPanel';
+import { DocumentsUnsavedNotePanel } from '../NoteDocuments/DocumentsPanel';
+import { MEDIA_DOCK_LAST_TAB, isMediaDockTabTap, useMediaDockTabAutoScroll, type MediaDockTab } from './mediaDockTabs';
 import { RichTextEditor, RichTextToolbar } from './RichTextEditor';
 import styles from './Editors.module.css';
 
@@ -86,7 +88,8 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const [mediaSheetProgress, setMediaSheetProgress] = React.useState(0);
 	const [isMediaSheetDragging, setIsMediaSheetDragging] = React.useState(false);
 	const [isMediaSheetClosing, setIsMediaSheetClosing] = React.useState(false);
-	const [mediaDockTab, setMediaDockTab] = React.useState<0 | 1 | 2>(0);
+	const [mediaDockTab, setMediaDockTab] = React.useState<MediaDockTab>(0);
+	useMediaDockTabAutoScroll(mediaDockTab, mediaDockOpen);
 	// More-menu state (editor 3-dot button):
 	// - Desktop: anchored popover positioned using the trigger button rect.
 	// - Mobile: bottom-sheet menu (anchor rect is ignored).
@@ -347,22 +350,6 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		setMediaDockOpen(shouldOpen);
 	}, [isMediaSheetGestureSuppressed, mediaDockOpen, mediaSheetProgress]);
 
-	const handleDockSwipeEnd = React.useCallback((event: React.TouchEvent): void => {
-		// Landscape branch: tab-swipe is disabled when media dock is force-closed.
-		if (isMobileLandscapeRef.current) return;
-		const start = dockTouchStartRef.current;
-		const t0 = event.changedTouches[0];
-		if (!start || !t0) return;
-		event.stopPropagation();
-		dockTouchStartRef.current = null;
-		const dx = t0.clientX - start.x;
-		const dy = t0.clientY - start.y;
-		if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
-		setMediaDockTab((prev) => {
-			if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
-			return Math.max(prev - 1, 0) as 0 | 1 | 2;
-		});
-	}, []);
 
 	const handleMediaSheetTouchStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
 		const touch = event.touches[0];
@@ -382,8 +369,8 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		if (!scrolledToTop) return;
 		if (Math.abs(dx) < 28 || Math.abs(dx) < Math.abs(dy)) return;
 		setMediaDockTab((prev) => {
-			if (dx < 0) return Math.min(prev + 1, 2) as 0 | 1 | 2;
-			return Math.max(prev - 1, 0) as 0 | 1 | 2;
+			if (dx < 0) return Math.min(prev + 1, MEDIA_DOCK_LAST_TAB) as MediaDockTab;
+			return Math.max(prev - 1, 0) as MediaDockTab;
 		});
 	}, []);
 	const handleMediaSheetTransitionEnd = React.useCallback((event: React.TransitionEvent<HTMLElement>): void => {
@@ -392,10 +379,14 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 		if (mediaDockOpen || mediaSheetProgress > 0.001) return;
 		setIsMediaSheetClosing(false);
 	}, [mediaDockOpen, mediaSheetProgress]);
-	const handleSelectMediaDockTabFromTouch = React.useCallback((tab: 0 | 1 | 2, event: React.TouchEvent<HTMLButtonElement>): void => {
-		if (event.cancelable) event.preventDefault();
-		event.stopPropagation();
+	const handleSelectMediaDockTabFromTouch = React.useCallback((tab: MediaDockTab, event: React.TouchEvent<HTMLButtonElement>): void => {
+		const start = dockTouchStartRef.current;
 		dockTouchStartRef.current = null;
+		event.stopPropagation();
+		// The tab strip scrolls sideways, so a finger that travelled was scrolling it, not
+		// picking a tab. Let the browser finish the scroll and change nothing.
+		if (!isMediaDockTabTap(start, event.changedTouches[0])) return;
+		if (event.cancelable) event.preventDefault();
 		setMediaDockTab(tab);
 	}, []);
 
@@ -470,7 +461,8 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	// note on why this waits.
 
 	const renderMediaDockPanel = React.useCallback((): React.JSX.Element => {
-		if (mediaDockTab === 2) return <DocumentsPanel showComingSoonPlaceholder />;
+		if (mediaDockTab === 2) return <DrawingsComingSoonPanel />;
+		if (mediaDockTab === 3) return <DocumentsUnsavedNotePanel />;
 		return <div className={styles.mediaPanelPlaceholder} aria-hidden="true" />;
 	}, [mediaDockTab]);
 	const mediaSheetVisualProgress = clampMediaSheetProgress(mediaSheetProgress);
@@ -588,7 +580,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 								</button>
 
 								<header className={styles.mediaSheetHeader}>
-									<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabTouchStart} onTouchEnd={handleDockSwipeEnd}>
+									<div className={styles.mediaTabs} data-media-dock-tabs="true" role="tablist" aria-label={t('editors.mediaDockTabs')} onTouchStart={handleDockTabTouchStart}>
 										<button
 											type="button"
 											role="tab"
@@ -616,6 +608,16 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 											className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
 											onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(2, event)}
 											onClick={() => setMediaDockTab(2)}
+										>
+											{t('editors.mediaTabDrawings')}
+										</button>
+										<button
+											type="button"
+											role="tab"
+											aria-selected={mediaDockTab === 3}
+											className={`${styles.mediaTab}${mediaDockTab === 3 ? ` ${styles.mediaTabActive}` : ''}`}
+											onTouchEnd={(event) => handleSelectMediaDockTabFromTouch(3, event)}
+											onClick={() => setMediaDockTab(3)}
 										>
 											{t('editors.mediaTabDocuments')}
 										</button>
@@ -720,7 +722,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 				aria-hidden={!mediaDockOpen}
 			>
 					<header className={styles.mediaFlyoutHeader}>
-						<div className={styles.mediaTabs} role="tablist" aria-label={t('editors.mediaDockTabs')}>
+						<div className={styles.mediaTabs} data-media-dock-tabs="true" role="tablist" aria-label={t('editors.mediaDockTabs')}>
 							<button
 								type="button"
 								role="tab"
@@ -745,6 +747,15 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 								aria-selected={mediaDockTab === 2}
 								className={`${styles.mediaTab}${mediaDockTab === 2 ? ` ${styles.mediaTabActive}` : ''}`}
 								onClick={() => setMediaDockTab(2)}
+							>
+								{t('editors.mediaTabDrawings')}
+							</button>
+							<button
+								type="button"
+								role="tab"
+								aria-selected={mediaDockTab === 3}
+								className={`${styles.mediaTab}${mediaDockTab === 3 ? ` ${styles.mediaTabActive}` : ''}`}
+								onClick={() => setMediaDockTab(3)}
 							>
 								{t('editors.mediaTabDocuments')}
 							</button>

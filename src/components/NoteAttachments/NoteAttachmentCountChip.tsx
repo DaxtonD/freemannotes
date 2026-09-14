@@ -3,22 +3,33 @@ import type * as Y from 'yjs';
 import { createPortal } from 'react-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faImage, faLink, faPaperclip, faPenNib } from '@fortawesome/free-solid-svg-icons';
+import { faFileLines, faImage, faLink, faPaperclip, faPenNib } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
+import { readInheritedNoteColorVars } from '../../core/noteChipOverlayColors';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { MOBILE_GRID_EDGE_MARGIN_PX } from '../NoteGrid/layout';
 import { readDrawingLinkState } from '../../core/noteModel';
 import { extractNoteLinksFromDoc } from '../../core/noteLinks';
 import { getCachedRemoteNoteLinks, getNoteLinksChangedEventName, readStoredNoteLinks, refreshRemoteNoteLinks } from '../../core/noteLinkStore';
 import { filterQueuedUploadsNotYetRemote, filterRemoteNoteImagesByPendingDeletes, getCachedRemoteNoteImages, getNoteMediaChangedEventName, readQueuedNoteImageDeletions, readQueuedNoteImages, readStoredRemoteNoteImages, refreshRemoteNoteImages } from '../../core/noteMediaStore';
+import {
+	getCachedNoteDocuments,
+	getNoteDocumentsChangedEventName,
+	hasCachedRemoteNoteDocuments,
+	readQueuedNoteDocumentDeletions,
+	readQueuedNoteDocuments,
+	readStoredRemoteNoteDocuments,
+	refreshRemoteNoteDocuments,
+} from '../../core/noteDocumentStore';
 import styles from './NoteAttachmentCountChip.module.css';
 
-export type NoteAttachmentBrowserKind = 'images' | 'links' | 'drawings';
+export type NoteAttachmentBrowserKind = 'images' | 'links' | 'drawings' | 'documents';
 
 type AttachmentCounts = {
 	images: number;
 	links: number;
 	drawings: number;
+	documents: number;
 };
 
 type NoteAttachmentCountChipProps = {
@@ -70,28 +81,36 @@ function stopAttachmentOverlayPressBubble(event: React.SyntheticEvent): void {
 	event.stopPropagation();
 }
 
+function readInitialCount(value: number | undefined): number {
+	return Math.max(0, Number(value ?? 0) || 0);
+}
+
 export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): React.JSX.Element | null {
 	const { t } = useI18n();
 	const isCoarsePointer = useIsCoarsePointer();
 	const allowedKinds = React.useMemo<readonly NoteAttachmentBrowserKind[]>(() => (
 		props.allowedKinds && props.allowedKinds.length > 0
 			? props.allowedKinds
-			: ['images', 'links', 'drawings']
+			: ['images', 'links', 'drawings', 'documents']
 	), [props.allowedKinds]);
 	const allowsImages = allowedKinds.includes('images');
 	const allowsLinks = allowedKinds.includes('links');
 	const allowsDrawings = allowedKinds.includes('drawings');
+	const allowsDocuments = allowedKinds.includes('documents');
 	const buttonRef = React.useRef<HTMLButtonElement | null>(null);
 	const overlayPanelRef = React.useRef<HTMLDivElement | null>(null);
 	const backStatePushedRef = React.useRef(false);
 	const [counts, setCounts] = React.useState<AttachmentCounts>(() => ({
-		images: Math.max(getCachedRemoteNoteImages(props.docId).length, Math.max(0, Number(props.initialCounts?.images ?? 0) || 0)),
-		links: Math.max(getCachedRemoteNoteLinks(props.docId).length, extractNoteLinksFromDoc(props.doc).length, Math.max(0, Number(props.initialCounts?.links ?? 0) || 0)),
-		drawings: Math.max(readDrawingLinkState(props.doc).drawingIds.length, Math.max(0, Number(props.initialCounts?.drawings ?? 0) || 0)),
+		images: Math.max(getCachedRemoteNoteImages(props.docId).length, readInitialCount(props.initialCounts?.images)),
+		links: Math.max(getCachedRemoteNoteLinks(props.docId).length, extractNoteLinksFromDoc(props.doc).length, readInitialCount(props.initialCounts?.links)),
+		drawings: Math.max(readDrawingLinkState(props.doc).drawingIds.length, readInitialCount(props.initialCounts?.drawings)),
+		documents: Math.max(getCachedNoteDocuments(props.docId).length, readInitialCount(props.initialCounts?.documents)),
 	}));
 	const countsRef = React.useRef(counts);
 	const [isOpen, setIsOpen] = React.useState(false);
 	const [anchorRect, setAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
+	// The card's real colors (banner-derived included), captured when the dropdown opens.
+	const [overlayColorStyle, setOverlayColorStyle] = React.useState<React.CSSProperties | undefined>(undefined);
 	const onOpenStateChangeRef = React.useRef(props.onOpenStateChange);
 
 	React.useEffect(() => {
@@ -115,14 +134,15 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 
 	React.useEffect(() => {
 		setCounts((current) => ({
-			images: Math.max(current.images, Math.max(0, Number(props.initialCounts?.images ?? 0) || 0)),
-			links: Math.max(current.links, Math.max(0, Number(props.initialCounts?.links ?? 0) || 0)),
-			drawings: Math.max(current.drawings, Math.max(0, Number(props.initialCounts?.drawings ?? 0) || 0)),
+			images: Math.max(current.images, readInitialCount(props.initialCounts?.images)),
+			links: Math.max(current.links, readInitialCount(props.initialCounts?.links)),
+			drawings: Math.max(current.drawings, readInitialCount(props.initialCounts?.drawings)),
+			documents: Math.max(current.documents, readInitialCount(props.initialCounts?.documents)),
 		}));
-	}, [props.initialCounts?.drawings, props.initialCounts?.images, props.initialCounts?.links]);
+	}, [props.initialCounts?.documents, props.initialCounts?.drawings, props.initialCounts?.images, props.initialCounts?.links]);
 
 	const refresh = React.useCallback(async (options?: {
-		scope?: 'all' | 'media' | 'drawings' | 'links';
+		scope?: 'all' | 'media' | 'drawings' | 'links' | 'documents';
 		syncRemote?: boolean;
 		forceRemote?: boolean;
 	}): Promise<AttachmentCounts> => {
@@ -130,13 +150,28 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		const includeMedia = scope === 'all' || scope === 'media';
 		const includeDrawings = scope === 'all' || scope === 'drawings';
 		const includeLinks = scope === 'all' || scope === 'links';
+		const includeDocuments = scope === 'all' || scope === 'documents';
 		// Combine queued + cached + remote counts so the chip reflects the user's intent
 		// immediately, even while uploads/deletes are still in flight or offline.
-		const [queuedImages, queuedDeletes, storedRemoteImages, storedRemoteLinks] = await Promise.all([
+		const [queuedImages, queuedDeletes, storedRemoteImages, storedRemoteLinks, localDocumentCount] = await Promise.all([
 			props.authUserId ? readQueuedNoteImages(props.authUserId, props.docId) : Promise.resolve([]),
 			props.authUserId ? readQueuedNoteImageDeletions(props.authUserId, props.docId) : Promise.resolve([]),
 			includeMedia ? readStoredRemoteNoteImages(props.docId) : Promise.resolve([]),
 			includeLinks ? readStoredNoteLinks(props.docId) : Promise.resolve([]),
+			includeDocuments
+				? (async () => {
+					// Documents: the store's merged view already means "server list − pending
+					// deletes + queued uploads". Only pull the server list from IndexedDB when
+					// nothing has loaded it this session, so a stale stored copy can't
+					// overwrite a fresher one a panel just fetched.
+					await Promise.all([
+						hasCachedRemoteNoteDocuments(props.docId) ? Promise.resolve([]) : readStoredRemoteNoteDocuments(props.docId).catch(() => []),
+						props.authUserId ? readQueuedNoteDocuments(props.authUserId, props.docId).catch(() => []) : Promise.resolve([]),
+						props.authUserId ? readQueuedNoteDocumentDeletions(props.authUserId, props.docId).catch(() => []) : Promise.resolve([]),
+					]);
+					return getCachedNoteDocuments(props.docId).length;
+				})()
+				: Promise.resolve(countsRef.current.documents),
 		]);
 		const extractedLinkCount = extractNoteLinksFromDoc(props.doc).length;
 		const drawingCount = readDrawingLinkState(props.doc).drawingIds.length;
@@ -152,17 +187,19 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 				: countsRef.current.images,
 			links: includeLinks ? Math.max(storedRemoteLinks.length, extractedLinkCount) : countsRef.current.links,
 			drawings: includeDrawings ? drawingCount : countsRef.current.drawings,
+			documents: localDocumentCount,
 		};
 		setCounts((current) => ({
 			images: includeMedia ? localCounts.images : current.images,
 			links: includeLinks ? localCounts.links : current.links,
 			drawings: includeDrawings ? localCounts.drawings : current.drawings,
+			documents: includeDocuments ? localCounts.documents : current.documents,
 		}));
 
 		if (!options?.syncRemote) return localCounts;
 
 		try {
-			const [remoteImages, remoteLinks] = await Promise.all([
+			const [remoteImages, remoteLinks, remoteDocumentCount] = await Promise.all([
 				includeMedia
 					? refreshRemoteNoteImages(props.docId, {
 						force: options.forceRemote,
@@ -174,6 +211,11 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 						force: options.forceRemote,
 					})
 					: Promise.resolve<readonly ReturnType<typeof getCachedRemoteNoteLinks>[number][]>([]),
+				includeDocuments
+					? refreshRemoteNoteDocuments(props.docId, { userId: props.authUserId })
+						.then((documents) => documents.length)
+						.catch(() => localCounts.documents)
+					: Promise.resolve(localCounts.documents),
 			]);
 			const visibleRemoteSync = filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletes);
 			const remoteCounts: AttachmentCounts = {
@@ -182,11 +224,13 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 					: localCounts.images,
 				links: includeLinks ? Math.max(remoteLinks.length, extractedLinkCount) : localCounts.links,
 				drawings: includeDrawings ? drawingCount : localCounts.drawings,
+				documents: remoteDocumentCount,
 			};
 			setCounts((current) => ({
 				images: includeMedia ? remoteCounts.images : current.images,
 				links: includeLinks ? remoteCounts.links : current.links,
 				drawings: includeDrawings ? remoteCounts.drawings : current.drawings,
+				documents: includeDocuments ? remoteCounts.documents : current.documents,
 			}));
 			return remoteCounts;
 		} catch {
@@ -227,6 +271,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		if (props.suspendRemoteRefresh) return () => {};
 		const mediaEventName = getNoteMediaChangedEventName();
 		const linksEventName = getNoteLinksChangedEventName();
+		const documentsEventName = getNoteDocumentsChangedEventName();
 		const onMediaChanged = (event: Event): void => {
 			const detail = (event as CustomEvent<{ docId?: string }>).detail;
 			if (!detail?.docId || detail.docId === props.docId) {
@@ -245,15 +290,25 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 				void refresh({ scope: 'links', syncRemote: true, forceRemote: true });
 			}
 		};
+		const onDocumentsChanged = (event: Event): void => {
+			const detail = (event as CustomEvent<{ docId?: string }>).detail;
+			if (!detail?.docId || detail.docId === props.docId) {
+				// Fires for local queue changes and, via App, for changes made on other
+				// devices. Concurrent refreshes for the same note share one request in the store.
+				void refresh({ scope: 'documents', syncRemote: true });
+			}
+		};
 		const onOnline = (): void => {
 			void refresh({ scope: 'all', syncRemote: true, forceRemote: true });
 		};
 		window.addEventListener(mediaEventName, onMediaChanged as EventListener);
 		window.addEventListener(linksEventName, onLinksChanged as EventListener);
+		window.addEventListener(documentsEventName, onDocumentsChanged as EventListener);
 		window.addEventListener('online', onOnline);
 		return () => {
 			window.removeEventListener(mediaEventName, onMediaChanged as EventListener);
 			window.removeEventListener(linksEventName, onLinksChanged as EventListener);
+			window.removeEventListener(documentsEventName, onDocumentsChanged as EventListener);
 			window.removeEventListener('online', onOnline);
 		};
 	}, [props.docId, props.suspendRemoteRefresh, refresh]);
@@ -265,6 +320,8 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 		// does not leave the dropdown stranded somewhere unrelated on screen.
 		const syncPosition = (): void => {
 			setAnchorRect(readAnchorRect(buttonRef.current));
+			// A banner's sampled colors can land a moment after the card renders.
+			setOverlayColorStyle(readInheritedNoteColorVars(buttonRef.current));
 		};
 
 		const onKeyDown = (event: KeyboardEvent): void => {
@@ -377,8 +434,9 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	const visibleItems = React.useMemo(() => ([
 		allowsImages ? { kind: 'images', icon: faImage, label: t('app.sidebarImages'), count: counts.images } : null,
 		allowsLinks ? { kind: 'links', icon: faLink, label: t('editors.mediaTabLinks'), count: counts.links } : null,
-		allowsDrawings ? { kind: 'drawings', icon: faPenNib, label: t('editors.mediaTabDocuments'), count: counts.drawings } : null,
-	].filter((item): item is { kind: NoteAttachmentBrowserKind; icon: typeof faImage; label: string; count: number } => Boolean(item))), [allowsDrawings, allowsImages, allowsLinks, counts.drawings, counts.images, counts.links, t]);
+		allowsDrawings ? { kind: 'drawings', icon: faPenNib, label: t('editors.mediaTabDrawings'), count: counts.drawings } : null,
+		allowsDocuments ? { kind: 'documents', icon: faFileLines, label: t('editors.mediaTabDocuments'), count: counts.documents } : null,
+	].filter((item): item is { kind: NoteAttachmentBrowserKind; icon: typeof faImage; label: string; count: number } => Boolean(item))), [allowsDocuments, allowsDrawings, allowsImages, allowsLinks, counts.documents, counts.drawings, counts.images, counts.links, t]);
 	const totalCount = visibleItems.reduce((sum, item) => sum + item.count, 0);
 	const overlayPosition = React.useMemo(() => {
 		if (!anchorRect || typeof window === 'undefined') return null;
@@ -396,7 +454,8 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 			Math.max(horizontalViewportInset, centeredLeft),
 			Math.max(horizontalViewportInset, window.innerWidth - overlayWidth - horizontalViewportInset)
 		);
-		const estimatedHeight = 156;
+		// About 52px per row; four rows now that documents are listed.
+		const estimatedHeight = 208;
 		const preferredTop = anchorRect.top + anchorRect.height + 8;
 		const top = preferredTop + estimatedHeight <= window.innerHeight - 12
 			? preferredTop
@@ -407,6 +466,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 	const handleToggle = React.useCallback((event: React.MouseEvent<HTMLButtonElement>) => {
 		event.stopPropagation();
 		setAnchorRect(readAnchorRect(buttonRef.current));
+		setOverlayColorStyle(readInheritedNoteColorVars(buttonRef.current));
 		setIsOpen((current) => !current);
 	}, []);
 
@@ -462,6 +522,7 @@ export function NoteAttachmentCountChip(props: NoteAttachmentCountChipProps): Re
 									onClick={(event) => event.stopPropagation()}
 									style={{
 										...(props.colorStyle ?? {}),
+										...(overlayColorStyle ?? {}),
 										...overlayPosition,
 									}}
 									initial={{ opacity: 0 }}

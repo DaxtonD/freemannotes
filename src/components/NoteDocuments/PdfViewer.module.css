@@ -1,0 +1,182 @@
+.backdrop {
+	position: fixed;
+	inset: 0;
+	/* Above the attachment browser modal and the photo viewer it can be opened next to. */
+	z-index: 10040;
+	background: color-mix(in srgb, var(--color-app-bg) 32%, rgba(6, 8, 12, 0.9));
+	backdrop-filter: blur(18px);
+	-webkit-backdrop-filter: blur(18px);
+	display: flex;
+	align-items: stretch;
+	justify-content: center;
+	padding: 18px;
+}
+
+.viewer {
+	width: min(1120px, 100%);
+	border-radius: 28px;
+	background: color-mix(in srgb, var(--color-surface) 94%, rgba(8, 10, 16, 0.22));
+	border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
+	box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	min-height: 0;
+}
+
+.header {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 96%, transparent);
+	flex: 0 0 auto;
+}
+
+.titleWrap {
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+.title {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 700;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	color: var(--color-text);
+}
+
+.subtitle {
+	margin: 2px 0 0;
+	font-size: 12px;
+	color: var(--color-text-muted);
+	font-variant-numeric: tabular-nums;
+}
+
+.toolbar {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.button {
+	border: 0;
+	border-radius: 999px;
+	padding: 9px 12px;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	cursor: pointer;
+	font-weight: 700;
+	font-size: 12px;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+.iconButton {
+	border: 0;
+	border-radius: 999px;
+	width: 36px;
+	height: 36px;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 14px;
+}
+
+.button:hover,
+.button:focus-visible,
+.iconButton:hover,
+.iconButton:focus-visible {
+	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-2));
+}
+
+.scroller {
+	position: relative;
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
+	/* The page body blocks touch gestures while an overlay is open; the scroller is its own
+	   scroll container, so it can still allow panning inside itself. */
+	touch-action: pan-x pan-y;
+	background: color-mix(in srgb, var(--color-surface-2) 70%, #1b1e24);
+}
+
+.pages {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	box-sizing: border-box;
+	min-height: 100%;
+}
+
+.page {
+	position: relative;
+	flex: 0 0 auto;
+	background: #fff;
+	border-radius: 4px;
+	box-shadow: 0 2px 12px rgba(0, 0, 0, 0.22);
+	overflow: hidden;
+}
+
+.canvas {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	display: block;
+}
+
+.pagePlaceholder {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: #94a3b8;
+	font-size: 14px;
+	font-weight: 700;
+	font-variant-numeric: tabular-nums;
+}
+
+.status {
+	margin: 0;
+	position: absolute;
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 24px;
+	text-align: center;
+	font-size: 14px;
+	color: var(--color-text-muted);
+}
+
+@media (pointer: coarse) {
+	.backdrop {
+		/* Standalone iOS PWAs don't reserve the status bar, so pad for the safe areas. */
+		padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+	}
+
+	.viewer {
+		width: 100%;
+		height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+		max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+		border-radius: 0;
+		border: 0;
+	}
+
+	.buttonLabel {
+		display: none;
+	}
+}

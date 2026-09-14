@@ -1,8 +1,6 @@
 import React from 'react';
 import { getConnectionQuality, reportImageLoadTiming, subscribeConnectionQualityChange } from '../../core/networkQuality';
 
-const NOTE_IMAGE_CACHE_NAME = 'freemannotes-images-v1';
-
 // How long a network image attempt gets before we give up and show the cached preview
 // instead, when one is available. Thumbnails should be small — if a "thumbnail" is
 // taking this long, the connection is bad, not the file. Viewer gets more rope since a
@@ -33,8 +31,12 @@ export type ResolvedNoteImageSourceState = {
 async function hasCachedImage(url: string): Promise<boolean> {
 	if (!url || typeof window === 'undefined' || !('caches' in window)) return false;
 	try {
-		const cache = await window.caches.open(NOTE_IMAGE_CACHE_NAME);
-		return Boolean(await cache.match(url));
+		// This used to open a hardcoded 'freemannotes-images-v1' cache. The service worker
+		// names its image cache after the app version ('freemannotes-images-1.14.0'), so
+		// that bucket never existed and this check has quietly said "not cached" for every
+		// image since the version scheme changed. caches.match searches every bucket, so it
+		// keeps working no matter what the service worker calls its caches next release.
+		return Boolean(await window.caches.match(url));
 	} catch {
 		return false;
 	}
@@ -132,6 +134,11 @@ export function useResolvedNoteImageSource(options: ResolvedNoteImageSourceOptio
 	React.useEffect(() => {
 		let cancelled = false;
 		setIsUsingCachedFullImage(false);
+		// Viewer only. While the cache check above was broken this never fired anywhere,
+		// so nobody noticed that thumbnail mode would also "upgrade" to the full photo.
+		// Swapping every grid tile to a 2560px original the moment it's cached is a great
+		// way to run a phone out of memory, so thumbnails stay thumbnails.
+		if (mode !== 'viewer') return;
 		(async () => {
 			// Prefer a full image already stored by the service worker so viewer opens
 			// at full fidelity offline without duplicating large blobs into IndexedDB.
@@ -146,7 +153,7 @@ export function useResolvedNoteImageSource(options: ResolvedNoteImageSourceOptio
 		return () => {
 			cancelled = true;
 		};
-	}, [fullUrl]);
+	}, [fullUrl, mode]);
 
 	const fallbackPreviewSrc = objectUrl || null;
 	// Once the service worker confirms a cached full asset exists, upgrade from

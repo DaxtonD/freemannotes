@@ -311,9 +311,9 @@ function createAdminRouter({ prisma }) {
 									_count: { _all: true },
 									_sum: { byteSize: true },
 								}),
-								prisma.noteDocument.aggregate({
-									where: { sourceWorkspaceId: { in: workspaceIds }, deletedAt: null },
-									_count: { _all: true },
+								// Bytes live on versions now; every kept version is real disk use.
+								prisma.noteDocumentVersion.aggregate({
+									where: { deletedAt: null, noteDocument: { sourceWorkspaceId: { in: workspaceIds }, deletedAt: null } },
 									_sum: { byteSize: true },
 								}),
 							]);

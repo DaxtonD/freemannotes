@@ -1,5 +1,15 @@
 import { fetchWithTimeout } from './network';
 
+/** Carries the HTTP status so callers can tell "the server said no" from "the network fell over". */
+export class NoteDocumentApiError extends Error {
+	readonly status: number;
+	constructor(message: string, status: number) {
+		super(message);
+		this.name = 'NoteDocumentApiError';
+		this.status = status;
+	}
+}
+
 async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}, options: { timeoutMs?: number } = {}): Promise<T> {
 	// Small local wrapper so all document endpoints share cookie auth and error shaping.
 	// Default timeout suits the list/delete reads; uploadNoteDocuments overrides it below
@@ -13,16 +23,30 @@ async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}, op
 	const body = contentType.includes('application/json') ? await response.json().catch(() => null) : null;
 	if (!response.ok) {
 		const message = body && typeof body.error === 'string' ? body.error : `Request failed (${response.status})`;
-		throw new Error(message);
+		throw new NoteDocumentApiError(message, response.status);
 	}
 	return body as T;
 }
 
+export type NoteDocumentConversionStatus = 'NOT_NEEDED' | 'PENDING' | 'COMPLETE' | 'FAILED';
+
+/**
+ * One document on a note, as the list endpoint returns it. The file fields
+ * (fileName, byteSize, originalUrl, …) describe the latest version; older versions
+ * come from their own endpoint in a later stage.
+ */
 export type NoteDocumentRecord = {
 	id: string;
 	docId: string;
 	sourceWorkspaceId: string;
 	sourceNoteId: string;
+	versionCount?: number;
+	latestVersionId?: string;
+	latestVersionNumber?: number;
+	uploadedByUserId?: string;
+	versionCreatedAt?: string;
+	conversionStatus?: NoteDocumentConversionStatus;
+	viewPdfUrl?: string | null;
 	fileName: string;
 	fileExtension: string;
 	mimeType: string;
@@ -43,6 +67,8 @@ export type NoteDocumentRecord = {
 	isLocal?: boolean;
 	syncStatus?: 'synced' | 'queued' | 'failed';
 	lastSyncError?: string | null;
+	/** The server rejected this upload outright (bad type, too big) — retrying won't help. */
+	syncPermanentFailure?: boolean;
 };
 
 export type NoteDocumentListResponse = {

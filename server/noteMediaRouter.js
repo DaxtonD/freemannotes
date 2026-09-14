@@ -327,29 +327,57 @@ function mapNoteLink(link) {
 	};
 }
 
+// Every document query that feeds mapNoteDocument must include this, so the mapper
+// always has the newest live version and a count of the live ones.
+const LATEST_DOCUMENT_VERSION_INCLUDE = {
+	versions: {
+		where: { deletedAt: null },
+		orderBy: { versionNumber: 'desc' },
+		take: 1,
+	},
+	_count: {
+		select: { versions: { where: { deletedAt: null } } },
+	},
+};
+
+// The document list keeps the old flat shape (fileName, ocrText, originalUrl, …) filled
+// from the latest version, plus version info on top. The client stores and search code
+// read those flat fields today, so they keep working while the new Documents tab is
+// built on top of the same payload.
 function mapNoteDocument(document) {
+	const latest = Array.isArray(document.versions) ? document.versions[0] : null;
+	// A document with no live version has nothing to show or download. Upload never
+	// leaves one behind (it cleans up after itself), so this is belt and braces.
+	if (!latest) return null;
 	return {
 		id: document.id,
 		docId: document.docId,
 		sourceWorkspaceId: document.sourceWorkspaceId,
 		sourceNoteId: document.sourceNoteId,
-		fileName: document.fileName,
-		fileExtension: document.fileExtension,
-		mimeType: document.mimeType,
-		byteSize: document.byteSize,
-		pageCount: document.pageCount,
-		previewWidth: document.previewWidth,
-		previewHeight: document.previewHeight,
-		thumbnailWidth: document.thumbnailWidth,
-		thumbnailHeight: document.thumbnailHeight,
-		ocrStatus: document.ocrStatus,
-		ocrText: document.ocrText || '',
-		ocrError: document.ocrError || null,
+		versionCount: Number(document._count?.versions || 1),
+		latestVersionId: latest.id,
+		latestVersionNumber: latest.versionNumber,
+		uploadedByUserId: latest.uploadedByUserId,
+		fileName: latest.fileName,
+		fileExtension: latest.fileExtension,
+		mimeType: latest.mimeType,
+		byteSize: latest.byteSize,
+		pageCount: latest.pageCount,
+		previewWidth: latest.previewWidth,
+		previewHeight: latest.previewHeight,
+		thumbnailWidth: latest.thumbnailWidth,
+		thumbnailHeight: latest.thumbnailHeight,
+		ocrStatus: latest.ocrStatus,
+		ocrText: latest.ocrText || '',
+		ocrError: latest.ocrError || null,
 		createdAt: document.createdAt.toISOString(),
 		updatedAt: document.updatedAt.toISOString(),
-		originalUrl: toPublicUploadPath(document.originalPath),
-		previewUrl: toPublicUploadPath(document.previewPath),
-		thumbnailUrl: toPublicUploadPath(document.thumbnailPath),
+		versionCreatedAt: latest.createdAt.toISOString(),
+		conversionStatus: latest.conversionStatus,
+		viewPdfUrl: latest.viewPdfPath ? toPublicUploadPath(latest.viewPdfPath) : null,
+		originalUrl: toPublicUploadPath(latest.originalPath),
+		previewUrl: toPublicUploadPath(latest.previewPath),
+		thumbnailUrl: toPublicUploadPath(latest.thumbnailPath),
 	};
 }
 
@@ -409,18 +437,16 @@ async function hydrateNoteLinkRows(prisma, rows) {
 	});
 }
 
-async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourceBuffer, fileName, mimeType }) {
+// Writes one version's files and fills in its row. Files live in their own folder per
+// version (users/<uploader>/documents/<versionId>/), which is also how /uploads/ access
+// checks find the row again (see server/uploadAccess.js).
+async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versionNumber, userId, sourceBuffer, fileName, mimeType }) {
 	const fileExtension = getNormalizedDocumentExtension(fileName, mimeType);
-	if (!isSupportedNoteDocument(fileName, mimeType)) {
-		throw new Error('Unsupported document type');
-	}
-	const noteDocument = await prisma.noteDocument.create({
+	const version = await prisma.noteDocumentVersion.create({
 		data: {
-			docId: access.docId,
-			sourceWorkspaceId: access.sourceWorkspaceId,
-			sourceNoteId: access.sourceNoteId,
+			noteDocumentId,
+			versionNumber,
 			uploadedByUserId: userId,
-			storageKey: '',
 			originalPath: '',
 			previewPath: '',
 			thumbnailPath: '',
@@ -431,50 +457,89 @@ async function persistDocumentRecord({ prisma, uploadDir, access, userId, source
 		},
 	});
 
+	const baseRelativeDir = ['users', userId, 'documents', version.id].join('/');
 	const fileBaseName = sanitizeBaseName(fileName);
-	const baseRelativeDir = path.join('users', userId, 'notes', noteDocument.id, 'documents');
-	const absoluteDir = path.join(uploadDir, baseRelativeDir);
-	await fs.promises.mkdir(absoluteDir, { recursive: true });
-
-	const originalRelativePath = path.join(baseRelativeDir, `${fileBaseName || 'document'}.${fileExtension}`).replace(/\\/g, '/');
-	const previewRelativePath = path.join(baseRelativeDir, 'preview.webp').replace(/\\/g, '/');
-	const thumbnailRelativePath = path.join(baseRelativeDir, 'thumb.webp').replace(/\\/g, '/');
+	const originalRelativePath = `${baseRelativeDir}/${fileBaseName || 'document'}.${fileExtension}`;
+	const previewRelativePath = `${baseRelativeDir}/preview.webp`;
+	const thumbnailRelativePath = `${baseRelativeDir}/thumb.webp`;
 	const absoluteOriginalPath = path.join(uploadDir, originalRelativePath);
 
-	await fs.promises.writeFile(absoluteOriginalPath, sourceBuffer);
+	try {
+		await fs.promises.mkdir(path.join(uploadDir, baseRelativeDir), { recursive: true });
+		await fs.promises.writeFile(absoluteOriginalPath, sourceBuffer);
 
-	const extracted = await extractDocumentText({
-		buffer: sourceBuffer,
-		extension: fileExtension,
-		sourcePath: absoluteOriginalPath,
-	});
-	const preview = await createDocumentPreviewBuffers({
-		fileName,
-		extension: fileExtension,
-		extractedText: extracted.text,
-	});
+		const extracted = await extractDocumentText({
+			buffer: sourceBuffer,
+			extension: fileExtension,
+			sourcePath: absoluteOriginalPath,
+		});
+		const preview = await createDocumentPreviewBuffers({
+			fileName,
+			extension: fileExtension,
+			extractedText: extracted.text,
+		});
 
-	await Promise.all([
-		fs.promises.writeFile(path.join(uploadDir, previewRelativePath), preview.previewBuffer),
-		fs.promises.writeFile(path.join(uploadDir, thumbnailRelativePath), preview.thumbnailBuffer),
-	]);
+		await Promise.all([
+			fs.promises.writeFile(path.join(uploadDir, previewRelativePath), preview.previewBuffer),
+			fs.promises.writeFile(path.join(uploadDir, thumbnailRelativePath), preview.thumbnailBuffer),
+		]);
 
-	return prisma.noteDocument.update({
-		where: { id: noteDocument.id },
+		return await prisma.noteDocumentVersion.update({
+			where: { id: version.id },
+			data: {
+				originalPath: originalRelativePath,
+				previewPath: previewRelativePath,
+				thumbnailPath: thumbnailRelativePath,
+				pageCount: extracted.pageCount,
+				previewWidth: preview.previewWidth,
+				previewHeight: preview.previewHeight,
+				thumbnailWidth: preview.thumbnailWidth,
+				thumbnailHeight: preview.thumbnailHeight,
+				ocrStatus: extracted.errorMessage ? 'FAILED' : 'COMPLETE',
+				ocrText: extracted.text || '',
+				ocrError: extracted.errorMessage ? String(extracted.errorMessage).slice(0, 2000) : null,
+			},
+		});
+	} catch (error) {
+		// Half-written versions are worse than none: a row pointing at missing files
+		// shows up as a broken download on every device. Undo and let the caller report.
+		await prisma.noteDocumentVersion.delete({ where: { id: version.id } }).catch(() => undefined);
+		await fs.promises.rm(path.join(uploadDir, baseRelativeDir), { recursive: true, force: true }).catch(() => undefined);
+		throw error;
+	}
+}
+
+async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourceBuffer, fileName, mimeType }) {
+	if (!isSupportedNoteDocument(fileName, mimeType)) {
+		throw new Error('Unsupported document type');
+	}
+	const noteDocument = await prisma.noteDocument.create({
 		data: {
-			storageKey: noteDocument.id,
-			originalPath: originalRelativePath,
-			previewPath: previewRelativePath,
-			thumbnailPath: thumbnailRelativePath,
-			pageCount: extracted.pageCount,
-			previewWidth: preview.previewWidth,
-			previewHeight: preview.previewHeight,
-			thumbnailWidth: preview.thumbnailWidth,
-			thumbnailHeight: preview.thumbnailHeight,
-			ocrStatus: extracted.errorMessage ? 'FAILED' : 'COMPLETE',
-			ocrText: extracted.text || '',
-			ocrError: extracted.errorMessage ? String(extracted.errorMessage).slice(0, 2000) : null,
+			docId: access.docId,
+			sourceWorkspaceId: access.sourceWorkspaceId,
+			sourceNoteId: access.sourceNoteId,
+			uploadedByUserId: userId,
+			latestVersionNumber: 1,
 		},
+	});
+	try {
+		await createDocumentVersion({
+			prisma,
+			uploadDir,
+			noteDocumentId: noteDocument.id,
+			versionNumber: 1,
+			userId,
+			sourceBuffer,
+			fileName,
+			mimeType,
+		});
+	} catch (error) {
+		await prisma.noteDocument.delete({ where: { id: noteDocument.id } }).catch(() => undefined);
+		throw error;
+	}
+	return prisma.noteDocument.findUnique({
+		where: { id: noteDocument.id },
+		include: LATEST_DOCUMENT_VERSION_INCLUDE,
 	});
 }
 
@@ -743,14 +808,16 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						jsonResponse(res, accessResult.error.status, accessResult.error.body);
 						return;
 					}
-					const documents = await prisma.noteDocument.findMany({
+					const rows = await prisma.noteDocument.findMany({
 						where: {
 							docId: accessResult.access.docId,
 							deletedAt: null,
 						},
 						orderBy: { createdAt: 'asc' },
+						include: LATEST_DOCUMENT_VERSION_INCLUDE,
 					});
-					jsonResponse(res, 200, { documents: documents.map(mapNoteDocument), count: documents.length });
+					const documents = rows.map(mapNoteDocument).filter(Boolean);
+					jsonResponse(res, 200, { documents, count: documents.length });
 				} catch (err) {
 					console.error('[note-documents] list error:', err.message);
 					jsonResponse(res, 500, { error: 'Internal server error' });
@@ -1166,7 +1233,8 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							fileName: entry.fileName,
 							mimeType: entry.mimeType,
 						});
-						documents.push(mapNoteDocument(documentRecord));
+						const mapped = mapNoteDocument(documentRecord);
+						if (mapped) documents.push(mapped);
 					}
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-created');
 					jsonResponse(res, 201, { documents, count: documents.length });
@@ -1225,7 +1293,10 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					const session = requireAuth(req, res);
 					if (!session) return;
 					const documentId = decodeURIComponent(deleteDocumentMatch[1]);
-					const noteDocument = await prisma.noteDocument.findUnique({ where: { id: documentId } });
+					const noteDocument = await prisma.noteDocument.findUnique({
+					where: { id: documentId },
+					include: { versions: { where: { deletedAt: null } } },
+				});
 					if (!noteDocument || noteDocument.deletedAt) {
 						jsonResponse(res, 404, { error: 'Document not found' });
 						return;
@@ -1235,15 +1306,25 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						jsonResponse(res, accessResult.error.status, accessResult.error.body);
 						return;
 					}
-					await prisma.noteDocument.update({
-						where: { id: noteDocument.id },
-						data: { deletedAt: new Date() },
-					});
-					await Promise.allSettled([
-						fs.promises.rm(path.join(uploadDir, noteDocument.originalPath), { force: true }),
-						fs.promises.rm(path.join(uploadDir, noteDocument.previewPath), { force: true }),
-						fs.promises.rm(path.join(uploadDir, noteDocument.thumbnailPath), { force: true }),
+					const deletedAt = new Date();
+					await prisma.$transaction([
+						prisma.noteDocumentVersion.updateMany({
+							where: { noteDocumentId: noteDocument.id, deletedAt: null },
+							data: { deletedAt },
+						}),
+						prisma.noteDocument.update({
+							where: { id: noteDocument.id },
+							data: { deletedAt },
+						}),
 					]);
+					// Deleting the document takes every version with it. Stage 5 adds deleting a
+					// single old version; this route is the "remove it from the note" button.
+					await Promise.allSettled(noteDocument.versions.flatMap((version) => [
+						version.originalPath,
+						version.previewPath,
+						version.thumbnailPath,
+						version.viewPdfPath,
+					].filter(Boolean).map((relativePath) => fs.promises.rm(path.join(uploadDir, relativePath), { force: true }))));
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-deleted');
 					jsonResponse(res, 200, { ok: true, documentId: noteDocument.id });
 				} catch (err) {
@@ -1345,10 +1426,18 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							},
 							select: {
 								docId: true,
-								fileName: true,
-								fileExtension: true,
-								ocrText: true,
-								thumbnailPath: true,
+								// Search looks at the latest version only; older versions are history.
+								versions: {
+									where: { deletedAt: null },
+									orderBy: { versionNumber: 'desc' },
+									take: 1,
+									select: {
+										fileName: true,
+										fileExtension: true,
+										ocrText: true,
+										thumbnailPath: true,
+									},
+								},
 							},
 						}),
 						prisma.noteShareInvitation.findMany({
@@ -1410,8 +1499,10 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						linksByDocId.set(link.docId, next);
 					}
 					for (const noteDocument of noteDocuments) {
+						const latest = noteDocument.versions && noteDocument.versions[0];
+						if (!latest) continue;
 						const next = documentsByDocId.get(noteDocument.docId) || [];
-						next.push(noteDocument);
+						next.push({ docId: noteDocument.docId, ...latest });
 						documentsByDocId.set(noteDocument.docId, next);
 					}
 					const normalizedQuery = query.toLowerCase();

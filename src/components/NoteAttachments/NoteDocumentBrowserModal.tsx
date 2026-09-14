@@ -1,6 +1,6 @@
 import React from 'react';
 import { useI18n } from '../../core/i18n';
-import { DocumentsPanel } from '../Editors/DocumentsPanel';
+import { DocumentsPanel } from '../NoteDocuments/DocumentsPanel';
 import { AttachmentBrowserModalFrame } from './AttachmentBrowserModalFrame';
 
 type NoteDocumentBrowserModalProps = {
@@ -10,16 +10,16 @@ type NoteDocumentBrowserModalProps = {
 	canEdit: boolean;
 	noteTitle?: string | null;
 	onClose: () => void;
-	onAddDocument?: (() => void) | undefined;
+	onShowBriefDialog?: ((message: string) => void) | undefined;
 };
 
+// Opened from a note card's attachment chip. Deliberately thin: DocumentsPanel owns all
+// document behaviour, so the card browser and the editor's Documents tab can't drift apart.
 export function NoteDocumentBrowserModal(props: NoteDocumentBrowserModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
 
 	if (!props.isOpen || !props.docId) return null;
 
-	// The browser modal is intentionally thin: DocumentsPanel owns document behavior,
-	// while this wrapper only maps it into the shared attachment modal shell.
 	return (
 		<AttachmentBrowserModalFrame
 			isOpen={props.isOpen}
@@ -32,7 +32,7 @@ export function NoteDocumentBrowserModal(props: NoteDocumentBrowserModalProps): 
 				docId={props.docId}
 				authUserId={props.authUserId}
 				canEdit={props.canEdit}
-				onAddDocument={props.onAddDocument}
+				onShowBriefDialog={props.onShowBriefDialog}
 			/>
 		</AttachmentBrowserModalFrame>
 	);

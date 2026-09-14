@@ -4,6 +4,33 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.14.1 - 2026-09-13
+
+A "patch" release in the same way a moving truck is a "bag". The headline is the first real slice of Documents — the third attempt at that feature, and the first one where markup isn't secretly trapped on a single device — plus a security hole we'd have been embarrassed to still have at beta, plus a pile of fixes we tripped over on the way.
+
+**If you self-host behind Cloudflare or another caching proxy, purge its cache after upgrading** (see Changed). A database migration also runs automatically on startup.
+
+### Added
+- **Documents.** Notes get a fourth attachments tab for PDFs, Word/Excel/PowerPoint, OpenDocument, RTF, TXT, CSV and Markdown (up to 40 MB each). Upload, download and delete all work offline and sync when you're back — including deleting the *last* document on a note, which the old store would never have told your other devices about, because it treated "the server says zero documents" as "the server must be having a moment." Documents also show up in the note card's attachment chip (with their own browser window) and there's an "Add Document" entry in the more-menu (not on drawings).
+- **A PDF viewer.** Tap a PDF to scroll through it full-screen with a page counter and download button. Only the pages near the screen get drawn and far-away pages hand their memory back, so a 114-page inspection guide scrolls fine on a phone. It opens from the copy already on your device, so it works offline. Pinch-to-zoom is next; for now it's scroll-only.
+- **Versions under the hood.** Every document is now a document plus a list of versions, so "replace with a newer copy" (coming later) will be one item with history instead of ten slightly different blueprints floating around. The migration turns any existing document into version 1 before dropping the old columns, so nothing is lost. Office files also get fields for a server-made PDF copy, for a converter that doesn't exist yet.
+- **Search finds notes by the text inside their documents**, and that keeps working after moving a note to another workspace.
+- **Card/list toggle for Images, Drawings and Documents**, same as Links already had, remembered per device. Each keeps the look it had until you tap it.
+- **The attachments sheet's tabs now scroll sideways** instead of chopping their labels in half, and slide the active tab into view as you swipe between them.
+
+### Changed
+- **Uploaded files are no longer public.** Until now, anyone with a photo or document URL could download it — no login, and a `public` cache header so Cloudflare could helpfully keep copies too. Photos and documents now require access to the note they belong to, avatars require a login, everything is `private`, and every refusal is a plain 404 so nobody can even probe for which files exist. URLs didn't change, so nothing on your devices needs migrating. Contributor avatars show initials to logged-out visitors.
+- **Logging out now clears cached photos and API responses** from the device, so the next person on a shared phone can't open the app offline and see the previous user's pictures.
+- Removed the third-party document viewer package and its device-only markup storage (plus the database table nothing ever read or wrote). The code that was called "documents" but actually handled drawings is now called drawings. Nothing you can see changed there.
+
+### Fixed
+- **PDF text extraction had been silently broken for every PDF, forever.** `pdf-parse` 2.x replaced its function with a class, the old call threw on every single file, and the fallback (LibreOffice, which isn't installed) swallowed the error and returned "no text." No page counts, no searchable text, not one log line. Fixed, and a failed extraction now records its actual error instead of pretending the PDF was blank.
+- **Chip dropdowns ignored banner colors.** A banner-only card paints itself with colors sampled from its banner, but its collection/label, collaborator and attachment dropdowns opened in plain theme colors. They now read the colors the card is actually showing.
+- **List view's compact ↔ detailed animation died once a column held 30 notes**, and switching views lost your place. Past 30 notes the list only renders rows near the screen, and the animation code just… didn't run in that mode. Separately, the "keep your place" code waited two frames and then chased the top note while it was still mid-animation, so it landed somewhere else entirely. Now your top note is put back exactly where it was before the screen repaints, and every row animates from where it was on screen, at any note count.
+- **List view's "don't scroll the page when a row changes size" setting did nothing** — the exact same wrong-place-for-the-option mistake the grid had in 1.13.2. We apparently needed to make it twice.
+- **The more-menu ran off the bottom of short phones.** It now fits the screen and its list scrolls.
+- **The "is the full photo already cached?" check never said yes**, because it looked for a cache name that stopped existing several versions ago. Fixed, and deliberately limited to the photo viewer — fixing it everywhere would have swapped every grid thumbnail for a 2560px original the moment it was cached.
+
 ## 1.14.0 - 2026-09-13
 
 A grab bag today: a notification fix, a genuinely new feature (with a correction mid-flight, courtesy of good testing), and a PWA bug that's been quietly refreshing the app out from under people.

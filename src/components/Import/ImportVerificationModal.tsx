@@ -41,7 +41,7 @@ function buildImportSnapshotNote(note: ParsedNote, labelIdsByName: Record<string
 		bannerFile: null,
 		hasSharedBannerPreference: false,
 		collaboratorCount: 0,
-		attachmentCounts: { images: 0, links: 0, drawings: 0 },
+		attachmentCounts: { images: 0, links: 0, drawings: 0, documents: 0 },
 		previewLinks: [],
 		previewCards: [],
 	};

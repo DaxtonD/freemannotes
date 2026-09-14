@@ -1867,10 +1867,34 @@
 	gap: 8px;
 	padding: 8px;
 	border-top: 1px solid var(--note-editor-border, var(--color-border));
+	/* A sideways-scrolling tab strip: every label stays whole and tabs slide into view
+	   (useMediaDockTabAutoScroll in mediaDockTabs.ts centres the active one).
+	   position: relative makes this the offsetParent that centring maths measures from. */
+	position: relative;
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow-x: auto;
+	overflow-y: hidden;
+	overscroll-behavior-x: contain;
+	scroll-snap-type: x proximity;
+	scrollbar-width: none;
+	-webkit-overflow-scrolling: touch;
+	/* The sheet header blocks touch gestures so the page behind stays put. The strip is
+	   its own scroll container, so it can still allow sideways panning inside itself. */
+	touch-action: pan-x;
+}
+
+.mediaTabs::-webkit-scrollbar {
+	display: none;
 }
 
 .mediaTab {
-	flex: 1;
+	/* Grow to fill a wide flyout, but never shrink below the label. */
+	flex: 1 0 auto;
+	padding: 0 14px;
+	white-space: nowrap;
+	scroll-snap-align: center;
+	touch-action: pan-x;
 	border: 0;
 	background: transparent;
 	color: var(--note-editor-muted, var(--color-text-muted));

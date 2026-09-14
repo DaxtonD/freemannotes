@@ -31,6 +31,7 @@ export type WorkspaceRenderSnapshotAttachmentCounts = {
 	images: number;
 	links: number;
 	drawings: number;
+	documents: number;
 };
 
 export type WorkspaceRenderSnapshotPreviewCard = {
@@ -212,6 +213,8 @@ function sanitizeNotes(value: unknown): WorkspaceRenderSnapshotNote[] {
 				images: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { images?: unknown } }).attachmentCounts?.images))),
 				links: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { links?: unknown } }).attachmentCounts?.links))),
 				drawings: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { drawings?: unknown } }).attachmentCounts?.drawings))),
+				// Snapshots saved before documents existed have no count; asNumber turns that into 0.
+				documents: Math.max(0, Math.floor(asNumber((note as { attachmentCounts?: { documents?: unknown } }).attachmentCounts?.documents))),
 			},
 			previewLinks: Array.isArray((note as { previewLinks?: unknown }).previewLinks)
 				? ((note as { previewLinks?: unknown[] }).previewLinks ?? [])
@@ -410,6 +413,7 @@ export function buildWorkspaceRenderSnapshotNote(args: {
 			images: Math.max(0, Math.floor(Number(args.attachmentCounts?.images ?? 0) || 0)),
 			links: Math.max(0, Math.floor(Number(args.attachmentCounts?.links ?? previewLinks.length) || 0)),
 			drawings: Math.max(0, Math.floor(Number(args.attachmentCounts?.drawings ?? 0) || 0)),
+			documents: Math.max(0, Math.floor(Number(args.attachmentCounts?.documents ?? 0) || 0)),
 		},
 		previewLinks,
 		previewCards: sanitizePreviewCards(args.previewCards ?? []),

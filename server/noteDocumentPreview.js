@@ -10,7 +10,7 @@ const path = require('path');
 const { spawn } = require('child_process');
 const JSZip = require('jszip');
 const mammoth = require('mammoth');
-const pdfParse = require('pdf-parse');
+const { PDFParse } = require('pdf-parse');
 const sharp = require('sharp');
 const XLSX = require('xlsx');
 
@@ -31,9 +31,26 @@ const MIME_EXTENSION_MAP = {
 	'application/vnd.oasis.opendocument.presentation': 'odp',
 	'application/rtf': 'rtf',
 	'text/rtf': 'rtf',
+	'application/vnd.ms-powerpoint': 'ppt',
+	'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+	'text/plain': 'txt',
+	'text/csv': 'csv',
+	'text/markdown': 'md',
+	'text/x-markdown': 'md',
 };
 
-const SUPPORTED_NOTE_DOCUMENT_EXTENSIONS = new Set(['pdf', 'doc', 'docx', 'xls', 'xlsx', 'odt', 'ods', 'odp', 'rtf']);
+const SUPPORTED_NOTE_DOCUMENT_EXTENSIONS = new Set([
+	'pdf',
+	'doc', 'docx', 'odt', 'rtf',
+	'xls', 'xlsx', 'ods', 'csv',
+	'ppt', 'pptx', 'odp',
+	'txt', 'md',
+]);
+
+// Extracted text only exists for search and the little preview snippet. A 40 MB text
+// file would otherwise land in one database row and ride along in every document list
+// response, so keep the first chunk and call it a day.
+const MAX_EXTRACTED_TEXT_CHARS = 100_000;
 
 function inferExtensionFromMimeType(mimeType) {
 	return MIME_EXTENSION_MAP[String(mimeType || '').toLowerCase()] || '';
@@ -116,9 +133,15 @@ function getDocumentDescriptor(extension) {
 		case 'xls':
 		case 'xlsx':
 		case 'ods':
+		case 'csv':
 			return { label: extension.toUpperCase(), accent: '#15803d', surface: '#f0fdf4' };
+		case 'ppt':
+		case 'pptx':
 		case 'odp':
-			return { label: 'ODP', accent: '#9a3412', surface: '#fff7ed' };
+			return { label: extension.toUpperCase(), accent: '#9a3412', surface: '#fff7ed' };
+		case 'txt':
+		case 'md':
+			return { label: extension.toUpperCase(), accent: '#334155', surface: '#f8fafc' };
 		default:
 			return { label: extension ? extension.toUpperCase() : 'DOC', accent: '#334155', surface: '#f8fafc' };
 	}
@@ -144,11 +167,28 @@ function wrapTextLines(value, maxLines = DEFAULT_PREVIEW_LINES) {
 }
 
 async function extractPdfText(buffer) {
-	const parsed = await pdfParse(buffer);
-	return {
-		text: normalizeExtractedText(parsed && typeof parsed.text === 'string' ? parsed.text : ''),
-		pageCount: Number.isFinite(parsed?.numpages) ? parsed.numpages : null,
-	};
+	// pdf-parse 2.x swapped the old `pdfParse(buffer)` function for a class. The old call
+	// threw "not a function" on every single PDF, the LibreOffice fallback below then
+	// quietly found nothing (LibreOffice isn't installed), and every PDF ever uploaded got
+	// stored with no text and no page count. No error anywhere. Lovely.
+	const parser = new PDFParse({ data: buffer });
+	try {
+		const parsed = await parser.getText();
+		// Join the per-page text ourselves: the combined `text` has "-- 1 of 2 --" page
+		// markers baked in, which we don't want in search results or snippets.
+		const pages = Array.isArray(parsed?.pages) ? parsed.pages : [];
+		const pageText = pages.map((page) => (page && typeof page.text === 'string' ? page.text : '')).join('\n\n');
+		const fallbackText = typeof parsed?.text === 'string'
+			? parsed.text.replace(/^-- \d+ of \d+ --$/gm, '')
+			: '';
+		const total = Number(parsed?.total);
+		return {
+			text: normalizeExtractedText(pageText.trim() ? pageText : fallbackText),
+			pageCount: Number.isFinite(total) && total > 0 ? total : (pages.length || null),
+		};
+	} finally {
+		await parser.destroy().catch(() => undefined);
+	}
 }
 
 async function extractDocxText(buffer) {
@@ -179,6 +219,39 @@ async function extractOpenDocumentText(buffer) {
 	const rawXml = contentXml ? await contentXml.async('string') : '';
 	return {
 		text: stripMarkup(rawXml),
+		pageCount: null,
+	};
+}
+
+async function extractPresentationText(buffer) {
+	// A .pptx is a zip with one XML file per slide; the visible words sit in <a:t> runs.
+	// Sort numerically or slide10 lands between slide1 and slide2.
+	const zip = await JSZip.loadAsync(buffer);
+	const slideFiles = Object.keys(zip.files)
+		.map((name) => ({ name, match: /^ppt\/slides\/slide(\d+)\.xml$/.exec(name) }))
+		.filter((entry) => entry.match)
+		.sort((a, b) => Number(a.match[1]) - Number(b.match[1]));
+	const slides = [];
+	for (const entry of slideFiles) {
+		const xml = await zip.file(entry.name).async('string');
+		const runs = [];
+		const runPattern = /<a:t>([\s\S]*?)<\/a:t>/g;
+		let run;
+		while ((run = runPattern.exec(xml)) !== null) {
+			runs.push(decodeHtmlEntities(run[1]));
+		}
+		if (runs.length > 0) slides.push(runs.join(' '));
+	}
+	return {
+		text: normalizeExtractedText(slides.join('\n\n')),
+		pageCount: slideFiles.length || null,
+	};
+}
+
+function extractPlainText(buffer) {
+	// Strip a UTF-8 byte order mark so it doesn't show up as junk in the preview.
+	return {
+		text: normalizeExtractedText(buffer.toString('utf8').replace(/^﻿/, '')),
 		pageCount: null,
 	};
 }
@@ -222,14 +295,26 @@ async function runLibreOfficeConversion(sourcePath, args) {
 }
 
 async function extractDocumentText(args) {
+	const result = await extractDocumentTextUncapped(args);
+	if (result && typeof result.text === 'string' && result.text.length > MAX_EXTRACTED_TEXT_CHARS) {
+		return { ...result, text: result.text.slice(0, MAX_EXTRACTED_TEXT_CHARS) };
+	}
+	return result;
+}
+
+async function extractDocumentTextUncapped(args) {
 	const extension = String(args.extension || '').toLowerCase();
+	let extractorError = null;
 	try {
 		if (extension === 'pdf') return await extractPdfText(args.buffer);
 		if (extension === 'docx') return await extractDocxText(args.buffer);
 		if (extension === 'xls' || extension === 'xlsx' || extension === 'ods') return extractWorkbookText(args.buffer);
 		if (extension === 'odt' || extension === 'odp') return await extractOpenDocumentText(args.buffer);
+		if (extension === 'pptx') return await extractPresentationText(args.buffer);
+		if (extension === 'txt' || extension === 'md' || extension === 'csv') return extractPlainText(args.buffer);
 		if (extension === 'rtf') return { text: stripRtfText(args.buffer.toString('utf8')), pageCount: null };
 	} catch (error) {
+		extractorError = error;
 		if (!args.sourcePath) {
 			return {
 				text: '',
@@ -254,6 +339,16 @@ async function extractDocumentText(args) {
 		}
 	}
 
+	// If the real extractor blew up and the LibreOffice fallback found nothing, report the
+	// original error. Returning a clean "no text" here is exactly how the pdf-parse break
+	// hid for so long.
+	if (extractorError) {
+		return {
+			text: '',
+			pageCount: null,
+			errorMessage: extractorError.message ? extractorError.message : 'Text extraction failed',
+		};
+	}
 	return { text: '', pageCount: null };
 }
 
@@ -288,6 +383,7 @@ async function createDocumentPreviewBuffers(args) {
 }
 
 module.exports = {
+	MAX_EXTRACTED_TEXT_CHARS,
 	SUPPORTED_NOTE_DOCUMENT_EXTENSIONS,
 	createDocumentPreviewBuffers,
 	extractDocumentText,

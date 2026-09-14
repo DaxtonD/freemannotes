@@ -1,7 +1,8 @@
 import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faImage, faPlus, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faImage, faListUl, faPlus, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
+import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
 import { getConnectionQuality, subscribeConnectionQualityChange } from '../../core/networkQuality';
 import { deleteNoteImage, type NoteImageRecord } from '../../core/noteMediaApi';
 import {
@@ -133,6 +134,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 	const tileTouchStartRef = React.useRef<{ index: number; x: number; y: number } | null>(null);
 	const lastTouchOpenRef = React.useRef<{ index: number; at: number } | null>(null);
 	const deleteTouchHandledRef = React.useRef<{ id: string; at: number } | null>(null);
+	const [viewMode, toggleViewMode] = usePanelViewMode(PANEL_VIEW_MODE_STORAGE_KEYS.images, 'card');
 
 	const refresh = React.useCallback(async (options?: { silent?: boolean }) => {
 		if (!options?.silent) setLoading(true);
@@ -494,6 +496,15 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 								{t('media.retryUploads')}
 							</button>
 						) : null}
+						<button
+							type="button"
+							className={styles.iconButton}
+							onClick={toggleViewMode}
+							aria-label={viewMode === 'card' ? t('common.viewAsList') : t('common.viewAsCards')}
+							title={viewMode === 'card' ? t('common.viewAsList') : t('common.viewAsCards')}
+						>
+							<FontAwesomeIcon icon={viewMode === 'card' ? faListUl : faTableCellsLarge} />
+						</button>
 						{props.canEdit && props.onAddImage ? (
 							<button
 								type="button"
@@ -525,11 +536,11 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 				) : null}
 
 				{totalCount === 0 ? null : (
-					<div className={styles.grid}>
+					<div className={viewMode === 'list' ? styles.listView : styles.grid}>
 						{visibleRemoteImages.map((image, index) => (
 							<div
 								key={image.id}
-								className={styles.tile}
+								className={`${styles.tile}${viewMode === 'list' ? ` ${styles.tileListRow}` : ''}`}
 							>
 								{props.canEdit ? (
 									<button
@@ -567,7 +578,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 							<div
 								key={item.id}
 								ref={index === localPreviewItems.length - 1 ? newestQueuedTileRef : null}
-								className={styles.tile}
+								className={`${styles.tile}${viewMode === 'list' ? ` ${styles.tileListRow}` : ''}`}
 							>
 								{props.canEdit ? (
 									<button

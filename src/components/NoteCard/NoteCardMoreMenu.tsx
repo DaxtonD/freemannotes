@@ -16,6 +16,7 @@ import {
 	faSquare,
 	faXmark,
 	faFileExport,
+	faFileLines,
 	faBroom,
 } from '@fortawesome/free-solid-svg-icons';
 import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
@@ -35,6 +36,8 @@ export type NoteCardMoreMenuProps = {
 	onAddCollaborator?: (() => void) | undefined;
 	onAddImage?: (() => void) | undefined;
 	onSelectBannerImage?: (() => void) | undefined;
+	onAddDrawing?: (() => void) | undefined;
+	/** Opens the note's Documents. Omit to hide the item (e.g. new-note screens, read-only). */
 	onAddDocument?: (() => void) | undefined;
 	onAddUrlPreview?: (() => void) | undefined;
 	onAddReminder?: (() => void) | undefined;
@@ -47,6 +50,8 @@ export type NoteCardMoreMenuProps = {
 	onExportNote?: (() => void) | undefined;
 	isTrashView?: boolean;
 	showAddImage?: boolean;
+	showAddDrawing?: boolean;
+	/** Drawing notes don't take documents. */
 	showAddDocument?: boolean;
 	/** Bounding rect of the anchor element (e.g. note card). On desktop the
 	 *  menu renders as a popover positioned relative to this rect. */
@@ -93,6 +98,7 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 	const anchor = isDesktop ? props.anchorRect ?? null : null;
 	const useInitialTouchGuard = !isDesktop && props.openedByLongPress === true;
 	const showAddImage = props.showAddImage !== false;
+	const showAddDrawing = props.showAddDrawing !== false;
 	const showAddDocument = props.showAddDocument !== false;
 
 	// Close on overlay click (but NOT clicks inside the sheet/popover body).
@@ -388,20 +394,35 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 				},
 			}]
 			: []),
-		...(showAddDocument
-			? (props.onAddDocument
+		...(showAddDrawing
+			? (props.onAddDrawing
 				? [{
-					key: 'document',
-					labelKey: 'noteMenu.addDocument',
+					key: 'drawing',
+					labelKey: 'noteMenu.addDrawing',
 					icon: faPenNib,
 					disabled: isTrashView,
 					action: () => {
 						closeForChildOverlay(() => {
-							props.onAddDocument?.();
+							props.onAddDrawing?.();
 						});
 					},
 				}]
-				: [{ key: 'document', labelKey: 'noteMenu.addDocument', icon: faPenNib, disabled: isTrashView, action: noop }])
+				: [{ key: 'drawing', labelKey: 'noteMenu.addDrawing', icon: faPenNib, disabled: isTrashView, action: noop }])
+			: []),
+		// No disabled placeholder when there's no handler (unlike image/drawing above): a
+		// dead "Add Document" row is just confusing.
+		...(showAddDocument && props.onAddDocument
+			? [{
+				key: 'document',
+				labelKey: 'noteMenu.addDocument',
+				icon: faFileLines,
+				disabled: isTrashView,
+				action: () => {
+					closeForChildOverlay(() => {
+						props.onAddDocument?.();
+					});
+				},
+			}]
 			: []),
 		...(props.onAddUrlPreview
 			? [{
