@@ -205,6 +205,8 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 		if (!shouldRender) {
 			releaseCanvas();
 			setDrawn(false);
+			// Scrolled out of range: now pdf.js can drop this page's parsed drawing instructions.
+			void pdf.getPage(pageNumber).then((page) => page.cleanup()).catch(() => undefined);
 			return;
 		}
 		const host = hostRef.current;
@@ -248,7 +250,9 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 		return () => {
 			cancelled = true;
 			task?.cancel();
-			page?.cleanup();
+			// No page.cleanup() here. This runs on every zoom change too, and cleaning up threw away
+			// the parsed page, so each redraw after a pinch re-read every line of a busy plan first.
+			// The page is cleaned up when it scrolls out of range instead (above).
 			if (nextCanvas) {
 				nextCanvas.width = 0;
 				nextCanvas.height = 0;
@@ -1337,6 +1341,15 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			focusY: gesture.focusY,
 		};
 		setZoom(clampZoom(gesture.baseZoom * gesture.scale, maxZoomRef.current));
+		// Land the scroll state in the same render as the zoom. Without this, that render worked out
+		// which pages to draw from the old scroll position against the new, bigger layout: the page
+		// under your fingers counted as off screen, lost its canvas, and went blank until the layout
+		// effect below fixed the scroll and it was drawn again from scratch. Same sum as that effect.
+		const scroller = scrollerRef.current;
+		const pages = pagesRef.current;
+		if (scroller && pages) {
+			setScroll({ top: Math.max(0, pages.offsetTop + gesture.localY * gesture.scale - gesture.focusY), height: scroller.clientHeight });
+		}
 		// Even a pinch that ends back at the same zoom (a pure two-finger pan) has to commit,
 		// so the pan becomes a real scroll and the transform comes off.
 		setZoomCommitTick((tick) => tick + 1);

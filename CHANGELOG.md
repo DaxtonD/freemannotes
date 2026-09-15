@@ -4,6 +4,40 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.15.0 - 2026-09-15
+
+Documents grew up. 1.14.1 could open a PDF; this one lets a crew mark up a plan set together, measure off it, and send it back out. It also turns out "open a 60 MB plan set on a phone" is an entire genre of bug all by itself, so there's a healthy Fixed section too.
+
+**If you self-host:** a database migration runs automatically on startup (markup storage). Two new optional settings: `GOTENBERG_URL` turns office files into PDFs (see the README), and `DOCUMENT_UPLOAD_MAX_MB` sets the largest document upload (default 100, was a hard-coded 40). If you raise the limit, raise your reverse proxy's too. Cloudflare's free plan stops at 100 MB no matter what we tell it.
+
+### Added
+- **PDF markup.** Tap Markup in the viewer and draw right on the page: pen, highlighter, eraser, lines, arrows, boxes, ellipses, text, revision clouds (rectangle or freehand), callouts with a leader, move markers, and stamps: Approved, Revise & Resubmit, Void and friends, plus RFI with a number you type (your RFI system hands out numbers, not us). Select moves, resizes, rotates and nudges, undo/redo work, and desktop gets a shortcut letter for every tool. One finger draws, two fingers still pinch, and once you've used a stylus your palm stops counting as a pen.
+- **A symbol library:** 89 electrical, plumbing, HVAC, IT, fire and general symbols, with search and recently used. Symbol ids are stored in the markup, so none of them will ever be renamed or removed.
+- **Comment pins and a Comments panel.** Numbered pins that stay the same size at any zoom, replies, open/resolved, and a panel listing every comment on the set with filters, search and jump-to-page. An All markup tab lists everything else by page. Comment numbers are never reused, so "comment 4" still means comment 4 after someone deletes comment 3.
+- **Markup syncs between devices and collaborators** through the server. Offline changes merge when you reconnect and upload in the background, and a small indicator says whether you're synced, waiting or offline. Editors mark up; viewers can look and read but not touch. If two people offline both post "comment #5", the newer one quietly takes the next free number once they sync.
+- **Measuring.** Give each sheet a scale (a standard architectural, engineering or metric one, or calibrate by drawing over a dimension you know and typing its real length), then measure lengths, paths and areas in feet and inches, millimetres or metres. The calibration line stays on the page with crosshair ends you can drag until it sits exactly on the scale bar. No scale yet? You still get the size on the paper, labelled "no scale".
+- **Download with markup, and sharing from the viewer.** Download the PDF with every markup drawn in (plus a comment summary page), or send the original or the marked-up copy straight to email, WhatsApp and friends through the phone's own share sheet. It's all built on the device, so it works offline.
+- **The rest of the PDF viewer:** pinch and double-tap zoom, a page panel with thumbnails, search inside the PDF (Ctrl+F on desktop), keyboard navigation, it reopens where you left off, and desktop can grab the page and drag it around.
+- **Zoom much further into big sheets.** The zoom limit now follows the sheet (up to 64×), and past the point where a page's canvas would go soft, the part you're looking at gets redrawn sharp.
+- **Every document is kept on every device**, so plans open with no signal on a job site. Preferences → Storage shows how much space they take, can keep only the ones you've opened, and clears them.
+- **Office files open as PDFs** when the server has Gotenberg set up (optional, like Redis), markup included. Without it they open as a plain text view. Preferences → Storage shows whether the converter is reachable.
+- **Real first-page thumbnails** for PDFs and converted office files, including everything uploaded before this release.
+
+### Changed
+- **The document upload limit is a setting** (`DOCUMENT_UPLOAD_MAX_MB`, default 100 MB) instead of a hard-coded 40 MB. The upload timeout also grows with the file now; a flat 90 seconds used to cut big prints off halfway on a slow connection, and the queue then started them over from zero. Forever.
+- **Big uploads no longer stall the server.** Uploads stream straight to disk instead of sitting in memory (a 250 MB plan set used to be 250 MB of RAM, twice over for a moment), and reading a document's text happens in a worker thread. Before, one person uploading a big print froze sync for everybody while pdf.js chewed through it. After: a 32 MB, 2,000-page PDF went in with the server's slowest reply at 86 ms.
+- **Signing out clears downloaded documents, photos, link previews and markup** from the device, and warns first if uploads or markup haven't reached the server yet. Photos and previews were never cleared before, which on a shared phone was not great.
+- The welcome note has a Documents & PDF Markup section.
+
+### Fixed
+- **Notes and markup could take 30 seconds to sync after connecting.** The server finished its access checks before it started listening to the socket, so the client's first sync message fell on the floor and nothing arrived until the next resync. Messages are now held until the room has loaded, then replayed. (Replaying them the moment the connection attached wasn't enough: the client got an empty "synced" doc before the saved one had loaded. Ask us how we know.)
+- **Pinch-zooming a PDF blanked the page when you let go**, then redrew it from nothing, slower the busier the sheet. For one render the new zoom got paired with the old scroll position, so the page under your fingers counted as off screen and lost its canvas. Every zoom also threw away the page's parsed drawing, so each redraw re-read every line of the plan first. Both fixed: the page stays up, briefly soft, and sharpens sooner.
+- **Android Back sometimes closed the whole app from the PDF viewer.** We were adding history entries from inside the Back handler, and Chrome quietly skips entries added without a tap. Now each open layer gets one entry when it opens.
+- **Comment pins showed through the comments panel** on phones.
+- **The phone PDF header was squished.** The page count and zoom now live in a small floating pill.
+- **Read-only viewers couldn't use the attachments flyout** on desktop.
+- **The first tap on a PDF was ignored**, the attachments chip on a card missed the first document, and opening the page panel closed the editor.
+
 ## 1.14.1 - 2026-09-13
 
 A "patch" release in the same way a moving truck is a "bag". The headline is the first real slice of Documents — the third attempt at that feature, and the first one where markup isn't secretly trapped on a single device — plus a security hole we'd have been embarrassed to still have at beta, plus a pile of fixes we tripped over on the way.
