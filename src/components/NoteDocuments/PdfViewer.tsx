@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faChevronDown, faChevronUp, faCommentDots, faDownload, faMagnifyingGlass, faMagnifyingGlassMinus, faMagnifyingGlassPlus, faPen, faTableColumns, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faArrowsRotate, faChevronDown, faChevronUp, faCloud, faCloudArrowUp, faCommentDots, faDownload, faTriangleExclamation, faMagnifyingGlass, faMagnifyingGlassMinus, faMagnifyingGlassPlus, faPen, faTableColumns, faXmark } from '@fortawesome/free-solid-svg-icons';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -37,6 +37,7 @@ import { createMarkupDraftStore, usePdfMarkup, type MarkupDraftStore } from './m
 import { createMarkupId, stampDefinition, type CommentMarkup, type Markup, type MarkupAuthor, type MarkupTool, type TypedMarkup } from './markup/markupTypes';
 import { useMarkupDrawing, type MarkupStampChoice } from './markup/useMarkupDrawing';
 import { resolveKnownUserById } from '../../core/userIdentityCache';
+import { useDocumentManager } from '../../core/DocumentManagerContext';
 import styles from './PdfViewer.module.css';
 
 // This whole module is lazy-loaded from DocumentsPanel, so pdf.js (and its ~1 MB worker)
@@ -360,7 +361,9 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	// Markup belongs to a server version (D7). A file still waiting to upload has no version yet.
 	const markupVersionId = !noteDocument.isLocal && noteDocument.latestVersionId ? noteDocument.latestVersionId : null;
 	const canMarkup = props.canEdit === true && Boolean(markupVersionId);
-	const markup = usePdfMarkup(markupVersionId);
+	// Markup syncs through the same server address as notes (the server checks access per room).
+	const documentManager = useDocumentManager();
+	const markup = usePdfMarkup(markupVersionId, { websocketUrl: documentManager.getWebsocketUrl(), canEdit: canMarkup });
 	const [markupPrefs, updateMarkupPrefs] = useMarkupPrefs();
 	const [markupTool, setMarkupTool] = React.useState<MarkupTool | null>(null);
 	const markupToolRef = React.useRef(markupTool);
@@ -414,6 +417,18 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	onCloseRef.current = props.onClose;
 	const historyTokenRef = React.useRef(`note-pdf-viewer:${Math.random().toString(36).slice(2, 10)}`);
 	const pendingHistoryCleanupRef = React.useRef<number | null>(null);
+	// Phones: every open layer (markup mode, search, the page panel sheet, the comments sheet) has its
+	// own history entry above the viewer's, added when the layer opens (see the layer effect below).
+	// How many of those entries are on the stack right now:
+	const layerEntryCountRef = React.useRef(0);
+	// The open layers, oldest first, so Back closes the most recent one.
+	const layerOrderRef = React.useRef<string[]>([]);
+	// Layers Back just closed: their entry is already gone, so the layer effect mustn't step back for them.
+	const closedByBackRef = React.useRef(new Set<string>());
+	// Our own history.go() after a layer closed on screen lands on one of our entries; that pop isn't Back.
+	const ignoredPopsRef = React.useRef(0);
+	// Closing the whole viewer: the layer effect leaves history alone while it happens.
+	const viewerClosingRef = React.useRef(false);
 	const [isCoarsePointer] = React.useState(() => typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches);
 	// One remembered position per version: a new version starts back at page 1.
 	const positionKey = `${noteDocument.id}:${noteDocument.latestVersionId ?? noteDocument.originalUrl}`;
@@ -518,29 +533,43 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		let active = true;
 		let didPush = false;
 		const token = historyTokenRef.current;
+		const closeLayer = (name: string): void => {
+			if (name === 'panel') {
+				closeMarkupPanelRef.current();
+			} else if (name === 'markup') {
+				markupToolRef.current = null;
+				setMarkupTool(null);
+			} else if (name === 'search') {
+				searchOpenRef.current = false;
+				setSearchOpen(false);
+			} else if (name === 'navigator') {
+				navigatorOpenRef.current = false;
+				setNavigatorOpen(false);
+			}
+		};
 		const onPopState = (event: PopStateEvent): void => {
 			if (!active) return;
-			if ((event.state as { __notePdfViewer?: string } | null)?.__notePdfViewer === token) return;
-			// The search bar and the phone page panel ride on this same entry. The panel used to
-			// push its own, and every history.back() it did landed on this entry, which App and
-			// the media sheet didn't recognise, so they helpfully closed the whole editor. Now
-			// Back shuts the top layer (search first, then the panel) and puts our entry back.
-			if (markupPanelOpenRef.current || markupToolRef.current || searchOpenRef.current || navigatorOpenRef.current) {
-				if (markupPanelOpenRef.current) {
-					closeMarkupPanelRef.current();
-				} else if (markupToolRef.current) {
-					markupToolRef.current = null;
-					setMarkupTool(null);
-				} else if (searchOpenRef.current) {
-					searchOpenRef.current = false;
-					setSearchOpen(false);
-				} else {
-					navigatorOpenRef.current = false;
-					setNavigatorOpen(false);
+			if ((event.state as { __notePdfViewer?: string } | null)?.__notePdfViewer === token) {
+				// Landed on one of this viewer's own entries.
+				if (ignoredPopsRef.current > 0) {
+					// Our own history.go() after a layer was closed on screen, not the Back button.
+					ignoredPopsRef.current -= 1;
+					return;
 				}
-				window.history.pushState({ __notePdfViewer: token }, '');
+				// Back popped a layer's entry: close the most recently opened layer. Nothing is pushed
+				// back. Layers used to share the viewer's single entry and re-push it here, but an
+				// entry pushed while handling Back (no tap involved) is one Chrome on Android marks as
+				// skippable, so a later Back jumped straight past it, sometimes right out of the app.
+				layerEntryCountRef.current = Math.max(0, layerEntryCountRef.current - 1);
+				const top = layerOrderRef.current[layerOrderRef.current.length - 1];
+				if (top) {
+					closedByBackRef.current.add(top);
+					closeLayer(top);
+				}
 				return;
 			}
+			// Back went below the viewer's own entry: close the viewer.
+			layerEntryCountRef.current = 0;
 			onCloseRef.current();
 		};
 		window.addEventListener('popstate', onPopState);
@@ -559,16 +588,64 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			pendingHistoryCleanupRef.current = window.setTimeout(() => {
 				pendingHistoryCleanupRef.current = null;
 				const state = window.history.state as { __notePdfViewer?: string } | null;
-				if (state?.__notePdfViewer === token) window.history.back();
+				// Closed some other way while our entries are still current: remove them all, layers included.
+				if (state?.__notePdfViewer === token) window.history.go(-(layerEntryCountRef.current + 1));
+				layerEntryCountRef.current = 0;
+				layerOrderRef.current = [];
 			}, 0);
 		};
 	}, [isCoarsePointer]);
+
+	// Phones: one history entry per open layer, added when the layer opens. Opening is a tap, so the
+	// entry counts as user-made and Back stops at it. A layer closed on screen (its X, Done, a tap on
+	// the dimmed page) steps back over its entry; a layer closed by Back already lost its entry.
+	// Entries are interchangeable, so when one tap closes a layer and opens another (Add comment
+	// closes the sheet and turns on the comment tool) the entry is reused instead of racing a
+	// history.go() against a pushState().
+	const openLayerKey = isCoarsePointer
+		? [markupTool ? 'markup' : '', searchOpen ? 'search' : '', navigatorOpen ? 'navigator' : '', markupPanelOpen ? 'panel' : '']
+			.filter(Boolean)
+			.join(',')
+		: '';
+	React.useEffect(() => {
+		if (!isCoarsePointer || typeof window === 'undefined') return;
+		const open = openLayerKey ? openLayerKey.split(',') : [];
+		const previous = layerOrderRef.current;
+		const closed = previous.filter((name) => !open.includes(name));
+		const opened = open.filter((name) => !previous.includes(name));
+		if (closed.length === 0 && opened.length === 0) return;
+		layerOrderRef.current = [...previous.filter((name) => open.includes(name)), ...opened];
+		let closedOnScreen = 0;
+		for (const name of closed) {
+			if (closedByBackRef.current.has(name)) closedByBackRef.current.delete(name);
+			else closedOnScreen += 1;
+		}
+		if (viewerClosingRef.current) return;
+		const state = window.history.state as { __notePdfViewer?: string } | null;
+		if (state?.__notePdfViewer !== historyTokenRef.current) return;
+		const net = opened.length - closedOnScreen;
+		if (net > 0) {
+			for (let index = 0; index < net; index += 1) {
+				window.history.pushState({ __notePdfViewer: historyTokenRef.current, __pdfLayer: true }, '');
+			}
+			layerEntryCountRef.current += net;
+		} else if (net < 0) {
+			const steps = Math.min(-net, layerEntryCountRef.current);
+			if (steps > 0) {
+				layerEntryCountRef.current -= steps;
+				ignoredPopsRef.current += 1;
+				window.history.go(-steps);
+			}
+		}
+	}, [isCoarsePointer, openLayerKey]);
 
 	const closeNavigator = React.useCallback((): void => {
 		setNavigatorOpen(false);
 	}, []);
 
 	const requestClose = React.useCallback((): void => {
+		// Before anything closes its layers, so the layer effect doesn't step back through history too.
+		viewerClosingRef.current = true;
 		// A text note still being typed gets saved, not thrown away with the viewer (same for a comment edit).
 		commitTextEditRef.current();
 		closeMarkupPanelRef.current();
@@ -576,15 +653,18 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			? (window.history.state as { __notePdfViewer?: string } | null)
 			: null;
 		if (isCoarsePointer && state?.__notePdfViewer === historyTokenRef.current) {
-			// Drop the layer flags first, or the popstate handler reads this as "Back with the
-			// page panel or search open" and keeps the viewer.
 			navigatorOpenRef.current = false;
 			setNavigatorOpen(false);
 			searchOpenRef.current = false;
 			setSearchOpen(false);
 			markupToolRef.current = null;
 			setMarkupTool(null);
-			window.history.back();
+			// One jump over the viewer's entry and any layer entries above it; the pop lands below the
+			// viewer and the popstate handler closes it.
+			const steps = layerEntryCountRef.current + 1;
+			layerEntryCountRef.current = 0;
+			layerOrderRef.current = [];
+			window.history.go(-steps);
 			return;
 		}
 		onCloseRef.current();
@@ -708,7 +788,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 
 	// ── Comments and the markup panel ───────────────────────────────────────
 
-	const { addComment, peekCommentNumber } = markup;
+	const { addComment, peekCommentNumber, addReply, removeReply } = markup;
 
 	/**
 	 * Scrolls a markup into view. On phones it lands in the top part, above the panel sheet.
@@ -877,6 +957,18 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		setOpenComment(null);
 		setSelectedMarkupId((current) => (current === id ? null : current));
 	}, [canMarkup, removeMarkups, setOpenComment]);
+
+	const addReplyToOpenComment = React.useCallback((text: string): void => {
+		const commentId = openCommentIdRef.current;
+		const trimmed = text.trim();
+		if (!canMarkup || !commentId || !trimmed) return;
+		const now = Date.now();
+		addReply({ id: createMarkupId(), commentId, text: trimmed, createdAt: now, updatedAt: now, ...(markupAuthor ? { author: markupAuthor } : {}) });
+	}, [addReply, canMarkup, markupAuthor]);
+
+	const deleteReply = React.useCallback((replyId: string): void => {
+		if (canMarkup) removeReply(replyId);
+	}, [canMarkup, removeReply]);
 
 	/** "Add comment" in the panel: turn on the comment tool; the next tap on the page places it. */
 	const startAddingComment = React.useCallback((): void => {
@@ -1814,6 +1906,9 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			onTabChange={setMarkupPanelTab}
 			onAddComment={startAddingComment}
 			onToggleResolvedFor={toggleResolvedFromList}
+			currentUserId={props.authUserId ?? null}
+			onAddReply={addReplyToOpenComment}
+			onDeleteReply={deleteReply}
 			items={markup.items}
 			replies={markup.replies}
 			selectedId={selectedMarkupId ?? openCommentId}
@@ -1834,6 +1929,22 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	) : null;
 	const showMarkupListButton = load.status === 'ready' && (canMarkup || markup.items.length > 0);
 	const openCommentCount = markup.items.reduce((count, item) => count + (item.kind === 'comment' && item.status === 'open' ? 1 : 0), 0);
+	// Sync status for this version's markup: always on desktop, only when something's not right on phones.
+	const showSyncIndicator = load.status === 'ready' && Boolean(markupVersionId) && (canMarkup || markup.items.length > 0);
+	const syncTone: 'synced' | 'connecting' | 'waiting' | 'offline' | 'denied' = markup.syncState === 'synced'
+		? 'synced'
+		: markup.syncState === 'denied'
+			? 'denied'
+			: markup.syncState === 'offline' || markup.syncState === 'local'
+				? (markup.unsynced ? 'waiting' : 'offline')
+				: 'connecting';
+	const syncLabel = t({
+		synced: 'documents.markupSyncSynced',
+		connecting: 'documents.markupSyncConnecting',
+		waiting: 'documents.markupSyncWaiting',
+		offline: 'documents.markupSyncOffline',
+		denied: 'documents.markupSyncDenied',
+	}[syncTone]);
 
 	const markupBar = canMarkup && markupTool && load.status === 'ready' ? (
 		<MarkupToolbar
@@ -1902,6 +2013,20 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 									>
 										<FontAwesomeIcon icon={faPen} />
 									</button>
+								) : null}
+								{showSyncIndicator ? (
+									<span
+										className={`${styles.syncIndicator}${syncTone === 'synced' ? ` ${styles.desktopOnly}` : ''}`}
+										data-tone={syncTone}
+										role="status"
+										aria-label={syncLabel}
+										title={syncLabel}
+									>
+										<FontAwesomeIcon
+											icon={syncTone === 'synced' ? faCloud : syncTone === 'connecting' ? faArrowsRotate : syncTone === 'denied' ? faTriangleExclamation : faCloudArrowUp}
+											spin={syncTone === 'connecting'}
+										/>
+									</span>
 								) : null}
 								{showMarkupListButton ? (
 									<button

@@ -115,6 +115,7 @@
     "storageConversionOffline": "No se puede comprobar sin conexión.",
     "storageConversionError": "No se pudo comprobar ahora.",
     "storageConversionCheck": "Comprobar de nuevo",
+    "signOutUnsyncedMarkupConfirm": "Algunas marcas de PDF aún no se han subido y las marcas se eliminan de este dispositivo al cerrar sesión. ¿Cerrar sesión igualmente y perderlas?",
     "signOutPendingUploadsConfirm": "Algunas fotos, documentos o enlaces no han terminado de subirse. Se quedarán en este dispositivo y se subirán la próxima vez que inicies sesión. ¿Cerrar sesión de todos modos?",
     "support": "Apoyar",
     "collaborators": "Colaboradores",
@@ -659,7 +660,15 @@
     "markupCommentsSearch": "Buscar comentarios",
     "markupCommentsEmpty": "Este documento aún no tiene comentarios.",
     "markupCommentsAddHint": "Toca «Añadir comentario» y luego la página donde va.",
-    "markupCommentsNoMatches": "Ningún comentario coincide."
+    "markupCommentsNoMatches": "Ningún comentario coincide.",
+    "markupSyncSynced": "Marcas sincronizadas",
+    "markupSyncConnecting": "Sincronizando marcas…",
+    "markupSyncOffline": "Sin conexión. Las marcas se guardan en este dispositivo.",
+    "markupSyncWaiting": "Hay cambios en las marcas pendientes de subir. Están guardados en este dispositivo.",
+    "markupSyncDenied": "Las marcas no se pueden sincronizar: sin acceso a este documento.",
+    "markupReplyPlaceholder": "Escribe una respuesta…",
+    "markupReplySend": "Responder",
+    "markupReplyDelete": "Eliminar respuesta"
   },
   "media": {
     "summaryEmpty": "Todavía no hay imágenes adjuntas",

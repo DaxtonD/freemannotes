@@ -180,6 +180,13 @@ import {
 	stopNoteDocumentBackgroundSync,
 	syncAllNoteDocuments,
 } from './core/noteDocumentStore';
+import {
+	clearMarkupDeviceDataForLogout,
+	flushUnsyncedMarkup,
+	hasUnsyncedMarkup,
+	startMarkupBackgroundSync,
+	stopMarkupBackgroundSync,
+} from './core/markupSync';
 import { searchOfflineNotes, searchLoadedNotes } from './core/offlineSearch';
 import { acknowledgePwaUpdated, applyPwaUpdate, clearPrivateServiceWorkerCaches, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { clearSessionRestoreNote, readSessionRestoreNote, setSessionRestoreNote } from './core/sessionRestore';
@@ -5169,6 +5176,8 @@ export function App(): React.JSX.Element {
 		// Downloaded document files, photo thumbnails, link previews and their cached lists used
 		// to survive sign-out, sitting in storage for whoever signed in next. Unsent uploads stay put.
 		void clearNoteDocumentDeviceDataForLogout();
+		// PDF markup copies (and their waiting-to-upload flags) go too; the server has the real copy.
+		void clearMarkupDeviceDataForLogout();
 		void clearNoteMediaDeviceDataForLogout();
 		void clearNoteLinkDeviceDataForLogout();
 		setSharedPlacements([]);
@@ -5191,6 +5200,16 @@ export function App(): React.JSX.Element {
 				hasQueuedNoteLinkSync(authUserId).catch(() => false),
 			]);
 			if (waiting.some(Boolean) && !window.confirm(t('prefs.signOutPendingUploadsConfirm'))) return;
+			// Unlike uploads, PDF markup doesn't wait on the device for next time: sign-out removes it
+			// (the server holds the real copy). Anything that hasn't gone up would be lost, so try once,
+			// then say so plainly if it's still waiting.
+			if (hasUnsyncedMarkup()) {
+				await Promise.race([
+					flushUnsyncedMarkup().catch(() => undefined),
+					new Promise((resolve) => setTimeout(resolve, 5000)),
+				]);
+				if (hasUnsyncedMarkup() && !window.confirm(t('prefs.signOutUnsyncedMarkupConfirm'))) return;
+			}
 		}
 		await signOut();
 	}, [authUserId, signOut, t]);
@@ -9940,6 +9959,8 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId) return;
 		startNoteDocumentBackgroundSync(authUserId);
+		// Markup drawn offline uploads without anyone reopening the PDF (now, and when the network's back).
+		startMarkupBackgroundSync(manager.getWebsocketUrl());
 		let onlineTimer: ReturnType<typeof setTimeout> | null = null;
 		const onOnline = (): void => {
 			// Same settle delay as the upload flush below: DNS/TLS can lag the online event.
@@ -9959,6 +9980,7 @@ export function App(): React.JSX.Element {
 			window.removeEventListener('online', onOnline);
 			document.removeEventListener('visibilitychange', onVisibilityChange);
 			stopNoteDocumentBackgroundSync(authUserId);
+			stopMarkupBackgroundSync();
 		};
 	}, [authStatus, authUserId]);
 

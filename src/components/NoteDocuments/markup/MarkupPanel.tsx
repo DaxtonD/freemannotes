@@ -134,6 +134,10 @@ type MarkupPanelProps = {
 	/** Turns on the comment tool so the next tap on the page places a comment. */
 	onAddComment: () => void;
 	onToggleResolvedFor: (comment: CommentMarkup) => void;
+	/** Who's looking, so they can delete their own replies. */
+	currentUserId: string | null;
+	onAddReply: (text: string) => void;
+	onDeleteReply: (replyId: string) => void;
 	onBackToList: () => void;
 	onCommentChange: (text: string) => void;
 	/** Saves edits to an existing comment. */
@@ -176,6 +180,38 @@ function PanelHeader(props: MarkupPanelProps & { openCount: number }): React.JSX
 			</div>
 			<button type="button" className={styles.iconButton} onClick={props.onClose} aria-label={t('documents.markupListClose')} title={t('documents.markupListClose')}>
 				<FontAwesomeIcon icon={faXmark} />
+			</button>
+		</div>
+	);
+}
+
+function ReplyComposer(props: { t: Translate; onSend: (text: string) => void }): React.JSX.Element {
+	const [text, setText] = React.useState('');
+	const send = (): void => {
+		if (!text.trim()) return;
+		props.onSend(text);
+		setText('');
+	};
+	return (
+		<div className={styles.replyComposer}>
+			<textarea
+				className={`${styles.textarea} ${styles.replyInput}`}
+				value={text}
+				rows={2}
+				placeholder={props.t('documents.markupReplyPlaceholder')}
+				onChange={(event) => setText(event.target.value)}
+				onKeyDown={(event) => {
+					if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+						event.preventDefault();
+						send();
+					} else if (event.key === 'Escape') {
+						// Don't let the viewer take Escape as "close" while typing a reply.
+						event.stopPropagation();
+					}
+				}}
+			/>
+			<button type="button" className={`${styles.action} ${styles.actionPrimary}`} onClick={send} disabled={!text.trim()}>
+				{props.t('documents.markupReplySend')}
 			</button>
 		</div>
 	);
@@ -244,15 +280,29 @@ function CommentView(props: MarkupPanelProps & { comment: NonNullable<MarkupPane
 				{resolved && markup.resolvedAt ? (
 					<p className={styles.meta}>{`${t('documents.markupCommentResolvedBy')} ${markupFooterText(markup.resolvedBy, markup.resolvedAt)}`}</p>
 				) : null}
-				{replies.length > 0 ? (
+				{!isNew && (replies.length > 0 || canEdit) ? (
 					<section className={styles.replies}>
 						<h4 className={styles.repliesTitle}>{t('documents.markupCommentReplies')}</h4>
 						{replies.map((reply) => (
 							<div key={reply.id} className={styles.reply}>
-								<p className={styles.meta}>{markupFooterText(reply.author, reply.createdAt)}</p>
+								<div className={styles.replyHeader}>
+									<p className={styles.meta}>{markupFooterText(reply.author, reply.createdAt)}</p>
+									{canEdit && reply.author && props.currentUserId && reply.author.id === props.currentUserId ? (
+										<button
+											type="button"
+											className={`${styles.iconButton} ${styles.replyDelete}`}
+											onClick={() => props.onDeleteReply(reply.id)}
+											aria-label={t('documents.markupReplyDelete')}
+											title={t('documents.markupReplyDelete')}
+										>
+											<FontAwesomeIcon icon={faTrashCan} />
+										</button>
+									) : null}
+								</div>
 								<p className={styles.replyText}>{reply.text}</p>
 							</div>
 						))}
+						{canEdit ? <ReplyComposer t={t} onSend={props.onAddReply} /> : null}
 					</section>
 				) : null}
 			</div>

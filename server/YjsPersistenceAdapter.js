@@ -40,6 +40,8 @@ const { emitActivity } = require('./activityEmitter');
 const RICH_TEXT_FRAGMENT_KEY = 'contentRich';
 /** Yjs room suffix for registry docs — skip reference extraction for these. */
 const REGISTRY_SUFFIX_RE = /^__|__$/;
+// PDF markup rooms ("markup:<versionId>") are saved in their own table, not the `document` table.
+const { isMarkupRoomName, parseMarkupRoomName, loadMarkupState, saveMarkupState } = require('./markupRooms');
 
 // ─── Configuration constants ────────────────────────────────────────────────
 
@@ -332,6 +334,8 @@ class YjsPersistenceAdapter {
 	 * @returns {Promise<void>}
 	 */
 	async bindState(docName, yDoc) {
+		// Markup rooms have no workspace; resolving one here would fall back to the legacy default workspace.
+		if (isMarkupRoomName(docName)) return this._bindMarkupState(docName, yDoc);
 		const workspaceId = await this._workspaceIdForDocName(docName);
 
 		// Track the active doc for debounced writes.
@@ -483,6 +487,15 @@ class YjsPersistenceAdapter {
 		// Flush to durable storage.
 		await this._persistDoc(docName, yDoc);
 
+		// Markup rooms have no mentions, references or workspace to clean up after.
+		if (isMarkupRoomName(docName)) {
+			this._activeDocs.delete(docName);
+			this._lastPersistedStateVector.delete(docName);
+			this._docActors.delete(docName);
+			if (this._markupLoadFailed) this._markupLoadFailed.delete(docName);
+			return;
+		}
+
 		// _persistDoc fires _syncEntityReferences fire-and-forget so it never
 		// delays document saves. For the final disconnect write we need the ref
 		// sync fully committed before flushing notifications, so we await it
@@ -505,6 +518,67 @@ class YjsPersistenceAdapter {
 		this._activeDocs.delete(docName);
 		this._docWorkspaceId.delete(docName);
 		this._lastPersistedStateVector.delete(docName);
+	}
+
+	/**
+	 * bindState for a PDF markup room ("markup:<versionId>"). Markup lives in its own table keyed by
+	 * document version: no workspace scoping (the WebSocket layer already checked access through the
+	 * document's note) and no Redis cache (markup rooms open far less often than notes).
+	 *
+	 * If the saved state can't be read, the room is never written back. Otherwise the first client to
+	 * connect would sync its own (possibly partial) copy into an empty server doc, and the next save
+	 * would overwrite everyone's markup with it.
+	 *
+	 * @param {string} docName
+	 * @param {import('yjs').Doc} yDoc
+	 */
+	async _bindMarkupState(docName, yDoc) {
+		this._activeDocs.set(docName, yDoc);
+		const versionId = parseMarkupRoomName(docName);
+		if (versionId) {
+			try {
+				const saved = await loadMarkupState(this._prisma, versionId);
+				if (saved) {
+					Y.applyUpdate(yDoc, new Uint8Array(saved.state));
+					if (saved.stateVector) this._lastPersistedStateVector.set(docName, Buffer.from(saved.stateVector));
+					console.info(`[persist] loaded markup: room=${docName} bytes=${saved.state.length}`);
+				}
+			} catch (err) {
+				if (!this._markupLoadFailed) this._markupLoadFailed = new Set();
+				this._markupLoadFailed.add(docName);
+				console.error(`[persist] markup read failed for room=${docName}; not saving this room until it reopens:`, err.message);
+			}
+		}
+		const onUpdate = () => this._scheduleDebouncedWrite(docName);
+		yDoc.on('update', onUpdate);
+		yDoc.__fnPersistCleanup = () => {
+			yDoc.off('update', onUpdate);
+		};
+	}
+
+	/**
+	 * _persistDoc for a PDF markup room: upsert into note_document_markup.
+	 *
+	 * @param {string} docName
+	 * @param {import('yjs').Doc} yDoc
+	 */
+	async _persistMarkupDoc(docName, yDoc) {
+		const versionId = parseMarkupRoomName(docName);
+		if (!versionId || (this._markupLoadFailed && this._markupLoadFailed.has(docName))) return;
+		const state = Buffer.from(Y.encodeStateAsUpdate(yDoc));
+		const stateVector = Buffer.from(Y.encodeStateVector(yDoc));
+		const previousStateVector = this._lastPersistedStateVector.get(docName);
+		if (previousStateVector && previousStateVector.equals(stateVector)) return;
+		// Someone opened a document and nobody drew anything: no row for an empty doc.
+		if (!previousStateVector && state.length <= 2) return;
+		try {
+			await saveMarkupState(this._prisma, versionId, state, stateVector);
+			this._lastPersistedStateVector.set(docName, stateVector);
+			console.info(`[persist] saved markup: room=${docName} bytes=${state.length}`);
+		} catch (err) {
+			// Most likely the version was deleted while the room was open, taking its markup with it.
+			console.error(`[persist] markup write failed for room=${docName}:`, err.message);
+		}
 	}
 
 	/**
@@ -579,6 +653,7 @@ class YjsPersistenceAdapter {
 	 * @returns {Promise<void>}
 	 */
 	async _persistDoc(docName, yDoc) {
+		if (isMarkupRoomName(docName)) return this._persistMarkupDoc(docName, yDoc);
 		const workspaceId = await this._workspaceIdForDocName(docName);
 
 		// Encode the full document state as a single binary blob.
@@ -671,6 +746,8 @@ class YjsPersistenceAdapter {
 	 * @param {string} workspaceId
 	 */
 	async _syncEntityReferences(docName, yDoc, workspaceId) {
+		// "markup:<id>" has a colon like a note room; it isn't one.
+		if (isMarkupRoomName(docName)) return;
 		try {
 			// Only process note docs, not registry docs.
 			const colonIdx = docName.indexOf(':');

@@ -281,3 +281,34 @@ export function isMarkupReply(value: unknown): value is MarkupReply {
 		&& isNumber(reply.createdAt)
 		&& isAuthor(reply.author);
 }
+
+/**
+ * Two people offline can both post "comment #5" (plan decision 1a). Once synced, every device sees
+ * the same comments and the same counter, so every device reaches the same answer here: in each
+ * clash the oldest comment (createdAt, then id) keeps its number and the others get the next free
+ * numbers, clashes handled lowest number first. Devices applying it at the same time write the same
+ * values, so they agree instead of fighting.
+ *
+ * @returns the comments to renumber and their new numbers (empty when there's no clash).
+ */
+export function planCommentRenumbering(comments: readonly CommentMarkup[], counter: number): Array<{ id: string; number: number }> {
+	const byNumber = new Map<number, CommentMarkup[]>();
+	let highest = Number.isFinite(counter) ? counter : 0;
+	for (const comment of comments) {
+		highest = Math.max(highest, comment.number);
+		const group = byNumber.get(comment.number) ?? [];
+		group.push(comment);
+		byNumber.set(comment.number, group);
+	}
+	const changes: Array<{ id: string; number: number }> = [];
+	for (const number of Array.from(byNumber.keys()).sort((left, right) => left - right)) {
+		const group = byNumber.get(number) ?? [];
+		if (group.length < 2) continue;
+		group.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+		for (const comment of group.slice(1)) {
+			highest += 1;
+			changes.push({ id: comment.id, number: highest });
+		}
+	}
+	return changes;
+}

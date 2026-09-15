@@ -100,6 +100,30 @@
 	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface-2));
 }
 
+/* Markup sync status in the header: green when synced, orange when changes are waiting to upload. */
+.syncIndicator {
+	flex-shrink: 0;
+	width: 28px;
+	height: 36px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 14px;
+	color: var(--color-text-muted);
+}
+
+.syncIndicator[data-tone='synced'] {
+	color: #0e9f6e;
+}
+
+.syncIndicator[data-tone='waiting'] {
+	color: #ff8a00;
+}
+
+.syncIndicator[data-tone='denied'] {
+	color: #e02424;
+}
+
 /* Count of open comments on the header's Comments button. */
 .iconBadge {
 	position: absolute;
@@ -227,6 +251,11 @@
 
 .page {
 	position: relative;
+	/* Each page is its own stacking layer, so markup on it (comment pins, the text being typed,
+	   selection handles) can never rise above the viewer's own panels and sheets. Without this
+	   the pins sat on top of the phone's comments sheet. Highlighter blending still works: the
+	   white page and its drawing are inside the same layer. */
+	isolation: isolate;
 	flex: 0 0 auto;
 	background: #fff;
 	border-radius: 4px;

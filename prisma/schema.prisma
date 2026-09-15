@@ -654,11 +654,29 @@ model NoteDocumentVersion {
 
   noteDocument NoteDocument @relation(fields: [noteDocumentId], references: [id], onDelete: Cascade)
   uploader User @relation(fields: [uploadedByUserId], references: [id], onDelete: Cascade)
+  markup NoteDocumentMarkup?
 
   @@unique([noteDocumentId, versionNumber])
   @@index([noteDocumentId, deletedAt])
   @@index([uploadedByUserId])
   @@map("note_document_version")
+}
+
+/// PDF markup for one document version: the saved Yjs state of its "markup:<versionId>" room
+/// (drawings, stamps, symbols, comment pins and replies). Kept apart from the `document` table so
+/// note listings, trash cleanup and @mention detection never see it, and deleted with its version.
+/// Read and written with plain SQL in server/markupRooms.js.
+model NoteDocumentMarkup {
+  versionId String @id @map("version_id") @db.Uuid
+  state Bytes
+  stateVector Bytes? @map("state_vector")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at")
+
+  version NoteDocumentVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@map("note_document_markup")
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -1,46 +1,176 @@
 import React from 'react';
 import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
-import { isMarkup, isMarkupReply, type CommentMarkup, type Markup, type MarkupReply } from './markupTypes';
+import { WebsocketProvider } from 'y-websocket';
+import {
+	isMarkupUnsynced,
+	MARKUP_LOGOUT_EVENT,
+	markupDatabaseName,
+	rememberMarkupVersion,
+	setMarkupUnsynced,
+	subscribeMarkupRegistry,
+} from '../../../core/markupSync';
+import { isMarkup, isMarkupReply, planCommentRenumbering, type CommentMarkup, type Markup, type MarkupReply } from './markupTypes';
 
-// One Yjs doc per document version holds its markup: a map of markup id → plain object.
-// Markup stays with the version it was drawn on (D7), so a new version starts clean.
+// One Yjs doc per document version holds its markup: a map of markup id → plain object, comment
+// replies in a map of their own (so two people replying at once both land), and a small "meta" map
+// with the comment number counter. Markup stays with the version it was drawn on (D7).
 //
-// For now the doc lives on this device only (IndexedDB, same library the notes use). Stage 4
-// connects the very same doc to the server, so the shape of the data doesn't change when sync
-// arrives, and each markup is its own map entry so two people editing different markups merge.
-// Comment replies get a map of their own for the same reason, and a small "meta" map keeps the
-// comment number counter.
+// The doc is saved on this device (IndexedDB, same library the notes use) and, once that copy has
+// loaded, connected to the server's "markup:<versionId>" room. The server decides who may join and
+// who may only read (server/markupRooms.js). Offline, everything keeps working on the device copy
+// and merges when the connection comes back; changes made while not synced are flagged in
+// core/markupSync.ts so they upload in the background and sign-out can warn about them.
 
-const MARKUP_DB_PREFIX = 'freemannotes-markup:';
 const LOCAL_ORIGIN = Symbol('pdf-markup-local');
+// Renumbering duplicate comments after a sync is housekeeping every device does the same way,
+// not something to undo.
+const RENUMBER_ORIGIN = Symbol('pdf-markup-renumber');
 // Closing and reopening the viewer quickly (or React's development double-mount) shouldn't tear
-// the doc down and reload it from IndexedDB.
+// the doc down and reload it from IndexedDB. Also gives the socket a moment to finish sending.
 const RELEASE_DELAY_MS = 1500;
 const LAST_COMMENT_NUMBER = 'lastCommentNumber';
+const BACKGROUND_SYNC_TIMEOUT_MS = 20_000;
+const MARKUP_ROOM_PREFIX = 'markup:';
+
+/**
+ * local: not connecting (no server address yet); connecting: reaching the server or waiting for
+ * its copy; synced: up to date with the server; offline: connection lost, retrying; denied: the
+ * server refused this room (no access, signed out, or the document was deleted).
+ */
+export type MarkupSyncState = 'local' | 'connecting' | 'synced' | 'offline' | 'denied';
 
 type MarkupDocHandle = {
+	versionId: string;
 	doc: Y.Doc;
 	items: Y.Map<Markup>;
 	replies: Y.Map<MarkupReply>;
 	meta: Y.Map<unknown>;
 	undo: Y.UndoManager;
 	persistence: IndexeddbPersistence | null;
+	provider: WebsocketProvider | null;
+	websocketUrl: string | null;
 	ready: boolean;
 	whenReady: Promise<void>;
 	refs: number;
+	/** How many of the current users can edit: only editors renumber duplicate comments. */
+	editors: number;
 	releaseTimer: ReturnType<typeof setTimeout> | null;
+	syncState: MarkupSyncState;
+	listeners: Set<() => void>;
+	renumberScheduled: boolean;
+	destroyed: boolean;
 };
 
 const handles = new Map<string, MarkupDocHandle>();
 
-function acquireMarkupDoc(versionId: string): MarkupDocHandle {
+function notify(handle: MarkupDocHandle): void {
+	for (const listener of Array.from(handle.listeners)) listener();
+}
+
+function setSyncState(handle: MarkupDocHandle, next: MarkupSyncState): void {
+	if (handle.syncState === next) return;
+	handle.syncState = next;
+	notify(handle);
+}
+
+/** The comment number counter, or the highest number actually in use if that's somehow higher. */
+function nextCommentNumber(handle: MarkupDocHandle): number {
+	let highest = Number(handle.meta.get(LAST_COMMENT_NUMBER)) || 0;
+	for (const item of handle.items.values()) {
+		if (item && item.kind === 'comment' && Number.isFinite(item.number)) highest = Math.max(highest, item.number);
+	}
+	return highest + 1;
+}
+
+function renumberDuplicateComments(handle: MarkupDocHandle): void {
+	const comments = Array.from(handle.items.values()).filter(isMarkup).filter((item): item is CommentMarkup => item.kind === 'comment');
+	const counter = Number(handle.meta.get(LAST_COMMENT_NUMBER)) || 0;
+	const changes = planCommentRenumbering(comments, counter);
+	if (changes.length === 0) return;
+	handle.doc.transact(() => {
+		for (const change of changes) {
+			const current = handle.items.get(change.id);
+			// updatedAt is left alone so two devices renumbering at once write identical entries.
+			if (current && current.kind === 'comment') handle.items.set(change.id, { ...current, number: change.number });
+		}
+		handle.meta.set(LAST_COMMENT_NUMBER, Math.max(counter, ...changes.map((change) => change.number)));
+	}, RENUMBER_ORIGIN);
+}
+
+function scheduleRenumber(handle: MarkupDocHandle): void {
+	if (handle.renumberScheduled || handle.editors <= 0) return;
+	handle.renumberScheduled = true;
+	queueMicrotask(() => {
+		handle.renumberScheduled = false;
+		// Only with the server's full copy in hand; a half-synced doc could "fix" a clash that isn't one.
+		if (handle.destroyed || !handle.provider || !handle.provider.synced || handle.editors <= 0) return;
+		renumberDuplicateComments(handle);
+	});
+}
+
+function connectMarkupDoc(handle: MarkupDocHandle): void {
+	if (handle.destroyed || handle.provider || !handle.websocketUrl || !handle.ready) return;
+	if (typeof (globalThis as { WebSocket?: unknown }).WebSocket === 'undefined') return;
+	// Same settings the note rooms use (DocumentManager): resync every 30 s against silently dropped
+	// frames on flaky mobile networks, and a short reconnect backoff.
+	const provider = new WebsocketProvider(handle.websocketUrl, `${MARKUP_ROOM_PREFIX}${handle.versionId}`, handle.doc, {
+		connect: true,
+		resyncInterval: 30_000,
+		maxBackoffTime: 5_000,
+	});
+	handle.provider = provider;
+	setSyncState(handle, 'connecting');
+	provider.on('status', (event: { status: string }) => {
+		if (handle.syncState === 'denied') return;
+		if (event.status === 'disconnected') setSyncState(handle, 'offline');
+		else if (event.status === 'connected' && !provider.synced) setSyncState(handle, 'connecting');
+	});
+	provider.on('sync', (synced: boolean) => {
+		if (!synced || handle.syncState === 'denied') return;
+		setSyncState(handle, 'synced');
+		// By now this device's changes have gone to the server in the sync handshake.
+		setMarkupUnsynced(handle.versionId, false);
+		scheduleRenumber(handle);
+	});
+	provider.on('connection-close', (event: CloseEvent | null) => {
+		// 1008 is the server refusing the room: no access, not signed in, or the document is gone.
+		// "read-only" is a viewer's device trying to write, which is only ever a stray change; the
+		// provider can reconnect from that one.
+		if (event && event.code === 1008 && event.reason !== 'read-only') {
+			provider.disconnect();
+			setSyncState(handle, 'denied');
+			// Nothing waiting here can ever upload, so don't keep warning about it at sign-out.
+			setMarkupUnsynced(handle.versionId, false);
+		}
+	});
+}
+
+function destroyHandle(handle: MarkupDocHandle): void {
+	if (handle.destroyed) return;
+	handle.destroyed = true;
+	if (handle.releaseTimer != null) clearTimeout(handle.releaseTimer);
+	handle.releaseTimer = null;
+	handle.provider?.destroy();
+	handle.provider = null;
+	handle.undo.destroy();
+	void handle.persistence?.destroy();
+	handle.doc.destroy();
+	notify(handle);
+}
+
+function acquireMarkupDoc(versionId: string, options: { websocketUrl: string | null; canEdit: boolean }): MarkupDocHandle {
 	const existing = handles.get(versionId);
-	if (existing) {
+	if (existing && !existing.destroyed) {
 		existing.refs += 1;
+		if (options.canEdit) existing.editors += 1;
 		if (existing.releaseTimer != null) {
 			clearTimeout(existing.releaseTimer);
 			existing.releaseTimer = null;
+		}
+		if (!existing.websocketUrl && options.websocketUrl) {
+			existing.websocketUrl = options.websocketUrl;
+			connectMarkupDoc(existing);
 		}
 		return existing;
 	}
@@ -54,55 +184,109 @@ function acquireMarkupDoc(versionId: string): MarkupDocHandle {
 	const undo = new Y.UndoManager([items, replies], { trackedOrigins: new Set([LOCAL_ORIGIN]), captureTimeout: 0 });
 	let persistence: IndexeddbPersistence | null = null;
 	try {
-		persistence = new IndexeddbPersistence(`${MARKUP_DB_PREFIX}${versionId}`, doc);
+		persistence = new IndexeddbPersistence(markupDatabaseName(versionId), doc);
 	} catch {
 		// Private browsing with storage blocked: markup still works for this session.
 	}
 	const handle: MarkupDocHandle = {
+		versionId,
 		doc,
 		items,
 		replies,
 		meta,
 		undo,
 		persistence,
+		provider: null,
+		websocketUrl: options.websocketUrl,
 		ready: !persistence,
 		whenReady: Promise.resolve(),
 		refs: 1,
+		editors: options.canEdit ? 1 : 0,
 		releaseTimer: null,
+		syncState: 'local',
+		listeners: new Set(),
+		renumberScheduled: false,
+		destroyed: false,
+	};
+	handles.set(versionId, handle);
+	rememberMarkupVersion(versionId);
+
+	doc.on('update', (_update: Uint8Array, origin: unknown) => {
+		if (origin === handle.persistence) return;
+		if (origin === handle.provider) {
+			// Someone else's markup arrived: maybe a comment number clash with one made here offline.
+			scheduleRenumber(handle);
+			return;
+		}
+		// A change made on this device. Connected and synced, it's already on its way to the server.
+		const provider = handle.provider;
+		if (!provider || !provider.wsconnected || !provider.synced) setMarkupUnsynced(versionId, true);
+	});
+
+	// The device copy loads first, then the server connection opens, so offline work is part of the
+	// very first sync instead of racing it.
+	const markReady = (): void => {
+		handle.ready = true;
+		connectMarkupDoc(handle);
+		notify(handle);
 	};
 	if (persistence) {
 		handle.whenReady = persistence.whenSynced
 			.then(() => undefined)
 			.catch(() => undefined)
-			.finally(() => {
-				handle.ready = true;
-			});
+			.finally(markReady);
+	} else {
+		markReady();
 	}
-	handles.set(versionId, handle);
 	return handle;
 }
 
-function releaseMarkupDoc(versionId: string): void {
+function releaseMarkupDoc(versionId: string, canEdit: boolean): void {
 	const handle = handles.get(versionId);
-	if (!handle) return;
+	if (!handle || handle.destroyed) return;
 	handle.refs -= 1;
+	if (canEdit) handle.editors = Math.max(0, handle.editors - 1);
 	if (handle.refs > 0) return;
 	handle.releaseTimer = setTimeout(() => {
 		if (handle.refs > 0) return;
-		handles.delete(versionId);
-		handle.undo.destroy();
-		void handle.persistence?.destroy();
-		handle.doc.destroy();
+		if (handles.get(versionId) === handle) handles.delete(versionId);
+		destroyHandle(handle);
 	}, RELEASE_DELAY_MS);
 }
 
-/** The counter, or the highest number actually in use if that's somehow higher (belt and braces). */
-function nextCommentNumber(handle: MarkupDocHandle): number {
-	let highest = Number(handle.meta.get(LAST_COMMENT_NUMBER)) || 0;
-	for (const item of handle.items.values()) {
-		if (item && item.kind === 'comment' && Number.isFinite(item.number)) highest = Math.max(highest, item.number);
-	}
-	return highest + 1;
+// Sign-out: close every open markup doc now, so the IndexedDB deletes in core/markupSync.ts go through.
+if (typeof window !== 'undefined') {
+	window.addEventListener(MARKUP_LOGOUT_EVENT, () => {
+		for (const handle of Array.from(handles.values())) destroyHandle(handle);
+		handles.clear();
+	});
+}
+
+/**
+ * Background upload of one version's waiting markup (core/markupSync.ts): open the doc from the
+ * device copy, let it sync, and close it again. Resolves true once the server has it.
+ */
+export function syncMarkupVersionInBackground(versionId: string, websocketUrl: string): Promise<boolean> {
+	const handle = acquireMarkupDoc(versionId, { websocketUrl, canEdit: false });
+	return new Promise((resolve) => {
+		let finished = false;
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const finish = (synced: boolean): void => {
+			if (finished) return;
+			finished = true;
+			handle.listeners.delete(check);
+			if (timer != null) clearTimeout(timer);
+			releaseMarkupDoc(versionId, false);
+			resolve(synced);
+		};
+		function check(): void {
+			if (handle.syncState === 'synced') finish(true);
+			else if (handle.syncState === 'denied' || handle.destroyed) finish(false);
+		}
+		handle.listeners.add(check);
+		timer = setTimeout(() => finish(false), BACKGROUND_SYNC_TIMEOUT_MS);
+		check();
+	});
 }
 
 export type PdfMarkup = {
@@ -113,6 +297,9 @@ export type PdfMarkup = {
 	replies: readonly MarkupReply[];
 	canUndo: boolean;
 	canRedo: boolean;
+	syncState: MarkupSyncState;
+	/** This device has changes the server hasn't had yet. */
+	unsynced: boolean;
 	/** Adds a markup, or replaces the one with the same id (moves, resizes, recolours, text edits). */
 	add: (markup: Markup) => void;
 	/** Saves a new comment with the next number. Returns it as saved. */
@@ -120,66 +307,82 @@ export type PdfMarkup = {
 	/** The number the next new comment will get. */
 	peekCommentNumber: () => number;
 	addReply: (reply: MarkupReply) => void;
+	removeReply: (replyId: string) => void;
 	/** Removes markups (and the replies of any comments among them). */
 	removeMany: (ids: readonly string[]) => void;
 	undo: () => void;
 	redo: () => void;
 };
 
-type MarkupSnapshot = Pick<PdfMarkup, 'ready' | 'items' | 'replies' | 'canUndo' | 'canRedo'>;
+type MarkupSnapshot = Pick<PdfMarkup, 'ready' | 'items' | 'replies' | 'canUndo' | 'canRedo' | 'syncState' | 'unsynced'>;
 
-const EMPTY_SNAPSHOT: MarkupSnapshot = { ready: false, items: [], replies: [], canUndo: false, canRedo: false };
+const EMPTY_SNAPSHOT: MarkupSnapshot = { ready: false, items: [], replies: [], canUndo: false, canRedo: false, syncState: 'local', unsynced: false };
 
-export function usePdfMarkup(versionId: string | null): PdfMarkup {
+export function usePdfMarkup(versionId: string | null, options: { websocketUrl: string | null; canEdit: boolean }): PdfMarkup {
 	const [snapshot, setSnapshot] = React.useState<MarkupSnapshot>(EMPTY_SNAPSHOT);
 	const handleRef = React.useRef<MarkupDocHandle | null>(null);
+	const { websocketUrl, canEdit } = options;
 
 	React.useEffect(() => {
 		if (!versionId) {
 			setSnapshot(EMPTY_SNAPSHOT);
 			return;
 		}
-		const handle = acquireMarkupDoc(versionId);
+		const handle = acquireMarkupDoc(versionId, { websocketUrl, canEdit });
 		handleRef.current = handle;
 		let active = true;
 		const publish = (): void => {
-			if (!active) return;
+			if (!active || handle.destroyed) return;
 			const items = Array.from(handle.items.values())
 				.filter(isMarkup)
 				.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : 1));
 			const replies = Array.from(handle.replies.values())
 				.filter(isMarkupReply)
 				.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : 1));
-			setSnapshot({ ready: handle.ready, items, replies, canUndo: handle.undo.canUndo(), canRedo: handle.undo.canRedo() });
+			setSnapshot({
+				ready: handle.ready,
+				items,
+				replies,
+				canUndo: handle.undo.canUndo(),
+				canRedo: handle.undo.canRedo(),
+				syncState: handle.syncState,
+				unsynced: isMarkupUnsynced(versionId),
+			});
 		};
 		handle.items.observe(publish);
 		handle.replies.observe(publish);
 		handle.undo.on('stack-item-added', publish);
 		handle.undo.on('stack-item-popped', publish);
 		handle.undo.on('stack-cleared', publish);
+		handle.listeners.add(publish);
+		const unsubscribeRegistry = subscribeMarkupRegistry(publish);
 		void handle.whenReady.then(publish);
 		publish();
 		return () => {
 			active = false;
-			handle.items.unobserve(publish);
-			handle.replies.unobserve(publish);
-			handle.undo.off('stack-item-added', publish);
-			handle.undo.off('stack-item-popped', publish);
-			handle.undo.off('stack-cleared', publish);
+			if (!handle.destroyed) {
+				handle.items.unobserve(publish);
+				handle.replies.unobserve(publish);
+				handle.undo.off('stack-item-added', publish);
+				handle.undo.off('stack-item-popped', publish);
+				handle.undo.off('stack-cleared', publish);
+			}
+			handle.listeners.delete(publish);
+			unsubscribeRegistry();
 			if (handleRef.current === handle) handleRef.current = null;
-			releaseMarkupDoc(versionId);
+			releaseMarkupDoc(versionId, canEdit);
 		};
-	}, [versionId]);
+	}, [canEdit, versionId, websocketUrl]);
 
 	const add = React.useCallback((markup: Markup): void => {
 		const handle = handleRef.current;
-		if (!handle) return;
+		if (!handle || handle.destroyed) return;
 		handle.doc.transact(() => handle.items.set(markup.id, markup), LOCAL_ORIGIN);
 	}, []);
 
 	const addComment = React.useCallback((comment: CommentMarkup): CommentMarkup | null => {
 		const handle = handleRef.current;
-		if (!handle) return null;
+		if (!handle || handle.destroyed) return null;
 		const saved: CommentMarkup = { ...comment, number: nextCommentNumber(handle) };
 		handle.doc.transact(() => {
 			handle.meta.set(LAST_COMMENT_NUMBER, saved.number);
@@ -190,18 +393,24 @@ export function usePdfMarkup(versionId: string | null): PdfMarkup {
 
 	const peekCommentNumber = React.useCallback((): number => {
 		const handle = handleRef.current;
-		return handle ? nextCommentNumber(handle) : 1;
+		return handle && !handle.destroyed ? nextCommentNumber(handle) : 1;
 	}, []);
 
 	const addReply = React.useCallback((reply: MarkupReply): void => {
 		const handle = handleRef.current;
-		if (!handle) return;
+		if (!handle || handle.destroyed) return;
 		handle.doc.transact(() => handle.replies.set(reply.id, reply), LOCAL_ORIGIN);
+	}, []);
+
+	const removeReply = React.useCallback((replyId: string): void => {
+		const handle = handleRef.current;
+		if (!handle || handle.destroyed) return;
+		handle.doc.transact(() => handle.replies.delete(replyId), LOCAL_ORIGIN);
 	}, []);
 
 	const removeMany = React.useCallback((ids: readonly string[]): void => {
 		const handle = handleRef.current;
-		if (!handle || ids.length === 0) return;
+		if (!handle || handle.destroyed || ids.length === 0) return;
 		const removed = new Set(ids);
 		// One transaction, so an eraser swipe across five markups is one undo step.
 		handle.doc.transact(() => {
@@ -213,14 +422,16 @@ export function usePdfMarkup(versionId: string | null): PdfMarkup {
 	}, []);
 
 	const undo = React.useCallback((): void => {
-		handleRef.current?.undo.undo();
+		const handle = handleRef.current;
+		if (handle && !handle.destroyed) handle.undo.undo();
 	}, []);
 
 	const redo = React.useCallback((): void => {
-		handleRef.current?.undo.redo();
+		const handle = handleRef.current;
+		if (handle && !handle.destroyed) handle.undo.redo();
 	}, []);
 
-	return { ...snapshot, add, addComment, peekCommentNumber, addReply, removeMany, undo, redo };
+	return { ...snapshot, add, addComment, peekCommentNumber, addReply, removeReply, removeMany, undo, redo };
 }
 
 /** The shape being drawn right now. Kept out of React state so a stroke doesn't re-render the viewer. */

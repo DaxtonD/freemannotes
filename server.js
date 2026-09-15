@@ -92,6 +92,7 @@ const { canEditWorkspaceContent, normalizeWorkspaceRole } = require('./server/wo
 // ── Phase 11 auth helpers (JWT cookie sessions) ───────────────────────
 const { getSessionFromRequest } = require('./server/auth');
 const { createUploadAccessResolver } = require('./server/uploadAccess');
+const { markupRoomName, parseMarkupRoomName, resolveMarkupRoomAccess } = require('./server/markupRooms');
 
 const MESSAGE_SYNC = 0;
 const MESSAGE_AWARENESS = 1;
@@ -771,7 +772,13 @@ if (persistAdapter) {
 	try {
 		const { setPersistence } = require('y-websocket/bin/utils');
 		setPersistence({
-			bindState: (docName, yDoc) => persistAdapter.bindState(docName, yDoc),
+			bindState: (docName, yDoc) => {
+				// Kept on the room so a new connection can wait for the saved copy to load before
+				// answering its client (see attachRoomConnection in the /yjs connection handler).
+				const loaded = persistAdapter.bindState(docName, yDoc);
+				yDoc.__fnLoaded = Promise.resolve(loaded).catch(() => undefined);
+				return loaded;
+			},
 			writeState: (docName, yDoc) => persistAdapter.writeState(docName, yDoc),
 		});
 		console.info('[server] y-websocket persistence bound to PostgreSQL adapter');
@@ -1296,6 +1303,12 @@ metadataWss.on('connection', (conn, req) => {
 	}
 });
 
+// How much a client may send before its room is ready (see pendingMessages below). A reconnecting
+// client's first sync reply can carry a lot of offline work, so this is generous; anything past it
+// is a client that isn't waiting its turn.
+const MAX_PENDING_WS_MESSAGES = 256;
+const MAX_PENDING_WS_BYTES = 16 * 1024 * 1024;
+
 wss.on('connection', (conn, req) => {
 	// ── Ping/pong liveness tracking ──────────────────────────────────────
 	// Mark this connection as alive. The wsPingInterval periodically sets
@@ -1305,6 +1318,59 @@ wss.on('connection', (conn, req) => {
 	conn.on('pong', () => {
 		wsAliveMap.set(conn, true);
 	});
+
+	// ── Hold messages until the room is ready ────────────────────────────
+	// Nothing listened for messages until setupRoleAwareWSConnection ran, and that only happens after
+	// the access checks below have awaited the database. A y-websocket client sends its sync step 1
+	// the moment the socket opens, so it arrived during those checks and was silently dropped: the
+	// client then never got the server's copy of the room until its next resync (30 s for notes,
+	// never for a client without one). Caught by the markup live check: connected at 4 ms, synced
+	// at 1 s, exactly on the first resend, every time. Hold what arrives early and hand it to the
+	// room's own handler once that's attached, so access checks and read-only rules still apply to
+	// every message.
+	const pendingMessages = [];
+	let pendingBytes = 0;
+	const holdMessage = (message) => {
+		pendingMessages.push(message);
+		pendingBytes += message ? message.length ?? message.byteLength ?? 0 : 0;
+		if (pendingMessages.length > MAX_PENDING_WS_MESSAGES || pendingBytes > MAX_PENDING_WS_BYTES) {
+			conn.off('message', holdMessage);
+			pendingMessages.length = 0;
+			conn.close(1009, 'too much data before the room was ready');
+		}
+	};
+	conn.on('message', holdMessage);
+	const attachRoomConnection = async (options) => {
+		// Find (or create) the room and wait for its saved copy to load, still holding the client's
+		// messages. Answering its sync step 1 any earlier hands it an empty document and marks it
+		// synced; the app treats "synced" as "I have the server's copy". (Before messages were held,
+		// that reply only ever came from a resend, after loading, so waiting keeps the same promise.)
+		const docName = (req.url || '').slice(1).split('?')[0];
+		let doc = getYDoc(docName, options.gc);
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			if (doc.__fnLoaded) await doc.__fnLoaded;
+			// The last client leaving can save and release a room while this waited; then a fresh one
+			// (with its own load) takes its place.
+			const current = getYDoc(docName, options.gc);
+			if (current === doc) break;
+			doc = current;
+		}
+		if (conn.readyState !== WS_READY_STATE_OPEN) {
+			// The client left while the room was loading. If nobody else is in it, save and release it
+			// the way the last connection leaving does (closeRoleAwareConn).
+			const persistence = getPersistence();
+			if (doc.conns.size === 0 && persistence !== null && docs.get(docName) === doc) {
+				persistence.writeState(doc.name, doc).then(() => {
+					doc.destroy();
+				});
+				docs.delete(doc.name);
+			}
+			return;
+		}
+		conn.off('message', holdMessage);
+		setupRoleAwareWSConnection(conn, req, { ...options, docName });
+		for (const message of pendingMessages.splice(0)) conn.emit('message', message, true);
+	};
 
 	// ── Yjs WebSocket setup (Phase 11: auth + workspace isolation) ───────
 	(async () => {
@@ -1379,6 +1445,35 @@ wss.on('connection', (conn, req) => {
 					path: String(req.url || ''),
 				});
 				conn.close(1008, 'invalid room');
+				return;
+			}
+
+			// PDF markup rooms ("markup:<versionId>") belong to a document version, not a workspace
+			// note, so they skip the namespacing below and get their own access check: the note the
+			// document is attached to decides, EDITOR access draws, VIEWER access is read-only, and a
+			// deleted version or document is refused (see server/markupRooms.js).
+			const markupVersionId = parseMarkupRoomName(raw);
+			if (markupVersionId !== undefined) {
+				const markupAccess = markupVersionId ? await resolveMarkupRoomAccess(prisma, session, markupVersionId) : null;
+				if (!markupAccess) {
+					console.warn('[ws] close forbidden markup room', JSON.stringify({ userId: session.userId, rawRoom: raw }));
+					logEvent('WS_EVENT', {
+						...getRoomDebugContext(raw, { userId: session.userId, workspaceId: session.workspaceId }),
+						event: 'connection-close',
+						reason: 'forbidden markup room',
+						code: 1008,
+					});
+					conn.close(1008, 'forbidden');
+					return;
+				}
+				const markupRoom = markupRoomName(markupAccess.versionId);
+				logEvent('WS_EVENT', {
+					...getRoomDebugContext(markupRoom, { sessionId: clientSessionId || null, userId: session.userId }),
+					event: 'connection-open',
+					readOnly: markupAccess.readOnly,
+				});
+				req.url = `/${markupRoom}`;
+				await attachRoomConnection({ gc: true, readOnly: markupAccess.readOnly, userId: session.userId });
 				return;
 			}
 
@@ -1505,7 +1600,7 @@ wss.on('connection', (conn, req) => {
 
 			// y-websocket expects req.url === '/<room>'
 			req.url = `/${docName}`;
-			setupRoleAwareWSConnection(conn, req, { gc: true, readOnly, userId: session.userId });
+			await attachRoomConnection({ gc: true, readOnly, userId: session.userId });
 		} catch (err) {
 			console.error('[ws] connection setup error:', err.message);
 			logEvent('WS_EVENT', {
