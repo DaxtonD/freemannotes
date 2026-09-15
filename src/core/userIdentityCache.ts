@@ -113,6 +113,13 @@ export function resolveKnownUser(identifier: string | null | undefined): KnownUs
 	return nameMatch ? { ...nameMatch } : null;
 }
 
+export function resolveKnownUserById(userId: string | null | undefined): KnownUserIdentity | null {
+	const normalizedId = normalizeText(userId);
+	if (!normalizedId) return null;
+	const match = getCache().find((entry) => entry.userId === normalizedId);
+	return match ? { ...match } : null;
+}
+
 export function resolveKnownUserProfileImage(identifier: string | null | undefined): string | null {
 	const knownUser = resolveKnownUser(identifier);
 	if (!knownUser) return null;

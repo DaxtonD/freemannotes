@@ -3635,6 +3635,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 								<button
 									type="button"
 									className={styles.mediaDockText}
+									data-note-editor-media-dock-trigger="true"
 									onClick={handleToggleMediaDock}
 									aria-label={t('editors.mediaDock')}
 								>
@@ -3648,7 +3649,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					</div>}
 				</section>
 
+				{/* The ref matters: the desktop flyout closes on any press outside mediaFlyoutRef. The
+				    read-only copy of this flyout never had it, so for viewers every click on a tab or an
+				    item counted as "outside" and slammed the sheet shut. */}
 				{!isCoarsePointer ? <aside
+					ref={mediaFlyoutRef}
 					className={`${styles.mediaFlyout}${mediaDockOpen ? ` ${styles.mediaFlyoutOpen}` : ''}`}
 					onClick={(e) => e.stopPropagation()}
 					aria-hidden={!mediaDockOpen}

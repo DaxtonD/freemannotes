@@ -551,6 +551,7 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 					<PdfViewer
 						document={viewerDocument}
 						authUserId={authUserId}
+						canEdit={canEdit}
 						onClose={closeViewer}
 						onDownload={(target) => void handleDownload(target)}
 					/>

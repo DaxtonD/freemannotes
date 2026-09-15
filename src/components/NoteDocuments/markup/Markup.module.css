@@ -1,0 +1,601 @@
+/* Markup drawn over a page. The SVG's viewBox is the page in page units, stretched to the page's
+   on-screen size, so markup scales with zoom for free. Never takes pointer events itself: input
+   is handled on the scroller (see useMarkupDrawing.ts). */
+.layer {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	z-index: 3;
+	pointer-events: none;
+	overflow: visible;
+}
+
+/* Highlighter: multiplies with the page so the linework under it stays readable. */
+.layerHighlight {
+	z-index: 2;
+	mix-blend-mode: multiply;
+}
+
+.layerDraft {
+	z-index: 4;
+}
+
+.layerDraftText {
+	position: absolute;
+	inset: 0;
+	z-index: 4;
+	pointer-events: none;
+}
+
+.layerSelection {
+	z-index: 5;
+}
+
+.selectionOutline {
+	fill: none;
+	stroke: #2563eb;
+	stroke-width: 1.5;
+	stroke-dasharray: 6 4;
+}
+
+.selectionHandle {
+	fill: #ffffff;
+	stroke: #2563eb;
+	stroke-width: 1.5;
+}
+
+/* Text markup. Sizes are page units multiplied by --markup-scale (the page's zoom), so the box
+   wraps at the same words at every zoom. Keep the padding in step with TEXT_PADDING_UNITS. */
+.textItem {
+	position: absolute;
+	z-index: 3;
+	box-sizing: border-box;
+	margin: 0;
+	padding: calc(var(--markup-scale, 1) * 3px);
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	line-height: 1.25;
+	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+	font-weight: 600;
+	pointer-events: none;
+	border-radius: calc(var(--markup-scale, 1) * 2px);
+}
+
+.textItemBackground {
+	background: rgba(255, 255, 255, 0.88);
+	box-shadow: 0 0 0 calc(var(--markup-scale, 1) * 0.75px) rgba(0, 0, 0, 0.22);
+}
+
+.textEditor {
+	z-index: 6;
+	display: block;
+	border: 0;
+	outline: 2px dashed #2563eb;
+	outline-offset: 1px;
+	resize: none;
+	overflow: hidden;
+	pointer-events: auto;
+	touch-action: manipulation;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.textEditor::placeholder {
+	color: rgba(0, 0, 0, 0.4);
+}
+
+/* Comment pins: fixed screen size (not scaled with --markup-scale), centred on their point. */
+.pin {
+	position: absolute;
+	z-index: 5;
+	box-sizing: border-box;
+	min-width: 24px;
+	height: 24px;
+	padding: 0 6px;
+	transform: translate(-50%, -50%);
+	border-radius: 999px;
+	border: 2px solid #ffffff;
+	box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+	color: #ffffff;
+	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+	font-size: 12px;
+	font-weight: 700;
+	line-height: 20px;
+	text-align: center;
+	font-variant-numeric: tabular-nums;
+	pointer-events: none;
+}
+
+.pinResolved {
+	opacity: 0.5;
+}
+
+.pinActive {
+	box-shadow: 0 0 0 3px #2563eb, 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+/* The leader or stamp frame drawn under the box being typed in. */
+.layerEditorShape {
+	z-index: 5;
+}
+
+/* Callout box: bordered in its colour, author line underneath. Border width is set inline
+   (page units × --markup-scale). The one-line height estimate in useMarkupDrawing.ts
+   (calloutBoxHeight) follows this padding, line height and footer size. */
+.calloutBox {
+	background: rgba(255, 255, 255, 0.94);
+	border-style: solid;
+}
+
+.calloutText {
+	min-height: 1.25em;
+}
+
+.markupFooter {
+	margin-top: calc(var(--markup-scale, 1) * 2px);
+	font-size: 0.66em;
+	line-height: 1.25;
+	font-weight: 500;
+	color: #4b5563;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.boxEditor {
+	z-index: 6;
+	outline: 2px dashed #2563eb;
+	outline-offset: 1px;
+	pointer-events: auto;
+	touch-action: manipulation;
+}
+
+.calloutTextarea {
+	display: block;
+	box-sizing: border-box;
+	width: 100%;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	outline: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	line-height: inherit;
+	resize: none;
+	overflow: hidden;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.calloutTextarea::placeholder {
+	color: rgba(0, 0, 0, 0.4);
+}
+
+/* Typing a stamp's number or wording, over the stamp's big line. */
+.stampEditor {
+	position: absolute;
+	z-index: 6;
+	box-sizing: border-box;
+	outline: 2px dashed #2563eb;
+	outline-offset: 2px;
+	pointer-events: auto;
+	touch-action: manipulation;
+	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+	font-weight: 800;
+	line-height: 1;
+}
+
+.stampEditorLine {
+	height: 68%;
+	padding: 0 6%;
+	box-sizing: border-box;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+}
+
+.stampEditorPrefix {
+	flex: 0 0 auto;
+	white-space: pre;
+}
+
+.stampEditorInput {
+	flex: 0 1 auto;
+	min-width: 2ch;
+	max-width: 100%;
+	field-sizing: content;
+	margin: 0;
+	padding: 0;
+	border: 0;
+	outline: none;
+	background: transparent;
+	color: inherit;
+	font: inherit;
+	text-align: center;
+	user-select: text;
+	-webkit-user-select: text;
+}
+
+.stampEditorInput::placeholder {
+	color: currentColor;
+	opacity: 0.4;
+}
+
+/* Stamp picker chips in the tool bar, each in its stamp's colour (set inline). */
+.stampChip {
+	flex: 0 0 auto;
+	height: 30px;
+	padding: 0 9px;
+	border: 2px solid currentColor;
+	border-radius: 6px;
+	background: transparent;
+	font: inherit;
+	font-size: 11px;
+	font-weight: 800;
+	letter-spacing: 0.03em;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.stampChipActive {
+	background: color-mix(in srgb, currentColor 18%, transparent);
+	box-shadow: inset 0 0 0 1px currentColor;
+}
+
+/* Symbol library: a button in the options row, and a panel floating over the page beside the bar. */
+.libraryButton {
+	flex: 0 0 auto;
+	height: 36px;
+	padding: 0 12px;
+	border: 0;
+	border-radius: 10px;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	font: inherit;
+	font-size: 13px;
+	font-weight: 700;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.libraryButtonActive {
+	background: color-mix(in srgb, var(--color-accent) 24%, var(--color-surface-2));
+}
+
+.library {
+	position: absolute;
+	left: 12px;
+	z-index: 20;
+	width: min(440px, calc(100% - 24px));
+	max-height: min(62vh, 540px);
+	display: flex;
+	flex-direction: column;
+	border-radius: 16px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	background: var(--color-surface);
+	box-shadow: 0 16px 48px rgba(0, 0, 0, 0.32);
+	overflow: hidden;
+}
+
+.libraryTop {
+	top: calc(100% + 6px);
+}
+
+.libraryBottom {
+	bottom: calc(100% + 6px);
+}
+
+.libraryHeader {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px;
+	flex: 0 0 auto;
+}
+
+.librarySearchField {
+	position: relative;
+	flex: 1 1 auto;
+	min-width: 0;
+	display: flex;
+	align-items: center;
+}
+
+.librarySearchIcon {
+	position: absolute;
+	left: 13px;
+	font-size: 13px;
+	color: var(--color-text-muted);
+	pointer-events: none;
+}
+
+.librarySearch {
+	width: 100%;
+	min-width: 0;
+	height: 36px;
+	box-sizing: border-box;
+	border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+	border-radius: 999px;
+	padding: 0 12px 0 34px;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	font: inherit;
+	font-size: 14px;
+	outline: none;
+}
+
+.librarySearch:focus {
+	border-color: var(--color-accent);
+}
+
+.libraryCategories {
+	display: flex;
+	gap: 6px;
+	padding: 0 10px 10px;
+	flex: 0 0 auto;
+	overflow-x: auto;
+	scrollbar-width: none;
+	touch-action: pan-x;
+}
+
+.libraryCategories::-webkit-scrollbar {
+	display: none;
+}
+
+.libraryCategory {
+	flex: 0 0 auto;
+	height: 30px;
+	padding: 0 12px;
+	border: 0;
+	border-radius: 999px;
+	background: var(--color-surface-2);
+	color: var(--color-text);
+	font: inherit;
+	font-size: 12px;
+	font-weight: 700;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.libraryCategoryActive {
+	background: var(--color-accent);
+	color: var(--color-on-accent, #fff);
+}
+
+.libraryBody {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	touch-action: pan-y;
+	padding: 0 10px 12px;
+}
+
+.librarySectionTitle {
+	margin: 10px 2px 6px;
+	font-size: 11px;
+	font-weight: 800;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--color-text-muted);
+}
+
+.libraryGrid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+	gap: 6px;
+}
+
+.libraryTile {
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	padding: 8px 4px;
+	border: 1px solid transparent;
+	border-radius: 10px;
+	background: transparent;
+	color: var(--color-text);
+	font: inherit;
+	cursor: pointer;
+}
+
+.libraryTile:hover,
+.libraryTile:focus-visible {
+	background: var(--color-surface-2);
+}
+
+.libraryTileActive {
+	border-color: var(--color-accent);
+	background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.libraryTileName {
+	font-size: 11px;
+	line-height: 1.2;
+	text-align: center;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.libraryEmpty {
+	margin: 0;
+	padding: 24px 8px;
+	text-align: center;
+	font-size: 13px;
+	color: var(--color-text-muted);
+}
+
+@media (pointer: coarse) {
+	/* Phones: full width above the bottom bars, and 16px text so iOS doesn't zoom into the search. */
+	.library {
+		left: 8px;
+		right: 8px;
+		width: auto;
+		max-height: 55dvh;
+	}
+
+	.librarySearch {
+		font-size: 16px;
+	}
+}
+
+/* Desktop: a mouse can't swipe sideways and the scrollbars are hidden, so every row wraps onto
+   more lines instead of running off the edge (tool bar rows, the groups inside them, and the
+   library's category chips). Kept at the end of the file so it wins over the base rules above.
+   Phones keep single rows and swipe them. */
+@media (pointer: fine) {
+	.bar {
+		flex-wrap: wrap;
+		overflow-x: visible;
+		row-gap: 6px;
+	}
+
+	.group {
+		flex-wrap: wrap;
+		flex: 0 1 auto;
+	}
+
+	.libraryCategories {
+		flex-wrap: wrap;
+		overflow-x: visible;
+	}
+}
+
+.sizeGlyph {
+	font-weight: 700;
+	line-height: 1;
+}
+
+/* Tool bar: under the header on desktop, along the bottom (thumb reach) on phones. */
+.bar {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 12px;
+	flex: 0 0 auto;
+	overflow-x: auto;
+	scrollbar-width: none;
+	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	background: color-mix(in srgb, var(--color-surface) 96%, transparent);
+	/* The page body blocks touch gestures while a viewer is open; the bar scrolls sideways. */
+	touch-action: pan-x;
+}
+
+.bar::-webkit-scrollbar {
+	display: none;
+}
+
+/* Main row plus, when the tool has any, an options row (group choices, stamps, colours, sizes). */
+.barStack {
+	position: relative;
+	display: flex;
+	flex-direction: column;
+	flex: 0 0 auto;
+	min-width: 0;
+}
+
+.barOptions {
+	padding-top: 6px;
+	padding-bottom: 6px;
+}
+
+
+.barBottom {
+	border-bottom: 0;
+	border-top: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+.group {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	flex: 0 0 auto;
+}
+
+.divider {
+	flex: 0 0 auto;
+	width: 1px;
+	height: 24px;
+	margin: 0 2px;
+	background: color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.tool {
+	flex: 0 0 auto;
+	width: 36px;
+	height: 36px;
+	border: 0;
+	border-radius: 10px;
+	background: transparent;
+	color: var(--color-text);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 15px;
+	cursor: pointer;
+}
+
+.tool:hover,
+.tool:focus-visible {
+	background: var(--color-surface-2);
+}
+
+.tool:disabled {
+	opacity: 0.4;
+	cursor: default;
+	background: transparent;
+}
+
+.toolActive,
+.toolActive:hover {
+	background: color-mix(in srgb, var(--color-accent) 24%, var(--color-surface-2));
+	color: var(--color-text);
+}
+
+.swatch {
+	flex: 0 0 auto;
+	width: 26px;
+	height: 26px;
+	padding: 0;
+	border-radius: 50%;
+	border: 2px solid transparent;
+	box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+	cursor: pointer;
+}
+
+.swatchActive {
+	border-color: var(--color-text);
+	box-shadow: inset 0 0 0 2px var(--color-surface);
+}
+
+.widthDot {
+	display: block;
+	border-radius: 50%;
+}
+
+.done {
+	flex: 0 0 auto;
+	margin-left: auto;
+	height: 36px;
+	padding: 0 14px;
+	border: 0;
+	border-radius: 999px;
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	background: var(--color-accent);
+	color: var(--color-on-accent, #fff);
+	font-weight: 700;
+	font-size: 13px;
+	cursor: pointer;
+}

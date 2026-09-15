@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faChevronDown, faChevronUp, faDownload, faMagnifyingGlass, faMagnifyingGlassMinus, faMagnifyingGlassPlus, faTableColumns, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faChevronDown, faChevronUp, faCommentDots, faDownload, faMagnifyingGlass, faMagnifyingGlassMinus, faMagnifyingGlassPlus, faPen, faTableColumns, faXmark } from '@fortawesome/free-solid-svg-icons';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
@@ -20,6 +20,23 @@ import {
 	type PdfPageText,
 	type PdfSearchMatch,
 } from './pdfTextSearch';
+import {
+	MarkupDraftLayer,
+	MarkupLayer,
+	MarkupPinLayer,
+	MarkupSelectionLayer,
+	MarkupTextEditor,
+	MarkupTextLayer,
+	type MarkupTextEditorHandlers,
+} from './markup/MarkupLayer';
+import { MarkupToolbar, type MarkupStyleControls } from './markup/MarkupToolbar';
+import { calloutStrokeWidth, fitStampWidth, markupBounds, rotateSymbol, roundUnit, translateMarkup } from './markup/markupGeometry';
+import { MarkupPanel, type MarkupPanelTab } from './markup/MarkupPanel';
+import { MAX_RECENT_SYMBOLS, styleForTool, useMarkupPrefs } from './markup/markupPrefs';
+import { createMarkupDraftStore, usePdfMarkup, type MarkupDraftStore } from './markup/markupStore';
+import { createMarkupId, stampDefinition, type CommentMarkup, type Markup, type MarkupAuthor, type MarkupTool, type TypedMarkup } from './markup/markupTypes';
+import { useMarkupDrawing, type MarkupStampChoice } from './markup/useMarkupDrawing';
+import { resolveKnownUserById } from '../../core/userIdentityCache';
 import styles from './PdfViewer.module.css';
 
 // This whole module is lazy-loaded from DocumentsPanel, so pdf.js (and its ~1 MB worker)
@@ -30,6 +47,8 @@ type PdfViewerProps = {
 	document: NoteDocumentRecord;
 	/** Scopes the remembered reading position to this login. */
 	authUserId?: string | null;
+	/** Editors can mark up; everyone else sees the markup read-only (D4). */
+	canEdit?: boolean;
 	onClose: () => void;
 	onDownload: (document: NoteDocumentRecord) => void;
 };
@@ -46,6 +65,8 @@ type LoadState =
 const PAGE_GAP_PX = 12;
 const PAGES_PADDING_PX = 12;
 const MAX_PAGE_WIDTH_PX = 1000;
+// Phones: room under the last page so the floating page pill never sits on top of its bottom edge.
+const PAGE_PILL_CLEARANCE_PX = 56;
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 5;
 const ZOOM_BUTTON_STEP = 1.25;
@@ -79,6 +100,33 @@ type SearchState = {
 };
 
 const EMPTY_SEARCH: SearchState = { needle: '', matches: [], searchedPages: 0, hasText: false };
+const NO_MARKUP_IDS: ReadonlySet<string> = new Set();
+const NO_MARKUPS: readonly Markup[] = [];
+const NO_PAGE_SIZES: readonly PageSize[] = [];
+// Desktop tool shortcuts while marking up (shown in the tool tooltips).
+const MARKUP_TOOL_KEYS: Record<string, MarkupTool | undefined> = {
+	v: 'select',
+	p: 'pen',
+	h: 'highlighter',
+	e: 'eraser',
+	l: 'line',
+	a: 'arrow',
+	r: 'rect',
+	o: 'ellipse',
+	t: 'text',
+	c: 'cloud',
+	k: 'callout',
+	m: 'move',
+	s: 'stamp',
+	y: 'symbol',
+	n: 'comment',
+};
+const MARKUP_NUDGE: Record<string, [number, number] | undefined> = {
+	ArrowLeft: [-1, 0],
+	ArrowRight: [1, 0],
+	ArrowUp: [0, -1],
+	ArrowDown: [0, 1],
+};
 
 function clampZoom(value: number): number {
 	return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
@@ -94,6 +142,20 @@ type PdfPageProps = {
 	highlights?: readonly PdfPageHighlight[];
 	/** Index of the current hit if it's on this page, otherwise -1. */
 	activeHighlight: number;
+	/** The page's size in page units (pdf.js viewport at scale 1): the markup coordinate system. */
+	pageWidth: number;
+	pageHeight: number;
+	markups: readonly Markup[];
+	draftStore: MarkupDraftStore;
+	/** The selected markup, when it's on this page. */
+	selectedMarkup: Markup | null;
+	/** The text note, callout or stamp being typed, when it's on this page. */
+	textEdit: TypedMarkup | null;
+	textEditor: MarkupTextEditorHandlers;
+	/** A comment being written on this page, not saved yet. */
+	pendingComment: CommentMarkup | null;
+	/** The comment open in the markup panel, highlighted on its pin. */
+	activeCommentId: string | null;
 };
 
 const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Element {
@@ -170,7 +232,13 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 	React.useEffect(() => releaseCanvas, [releaseCanvas]);
 
 	return (
-		<div ref={hostRef} className={styles.page} style={{ width: props.cssWidth, height: props.cssHeight }} data-pdf-page={pageNumber}>
+		<div
+			ref={hostRef}
+			className={styles.page}
+			// --markup-scale: screen pixels per page unit, which text markup sizes itself with.
+			style={{ width: props.cssWidth, height: props.cssHeight, '--markup-scale': props.pageWidth > 0 ? props.cssWidth / props.pageWidth : 1 } as React.CSSProperties}
+			data-pdf-page={pageNumber}
+		>
 			{!drawn ? <span className={styles.pagePlaceholder}>{pageNumber}</span> : null}
 			{shouldRender && props.highlights ? props.highlights.map((highlight) => highlight.rects.map((rect, rectIndex) => (
 				<span
@@ -180,6 +248,18 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 					aria-hidden="true"
 				/>
 			))) : null}
+			{shouldRender ? <MarkupLayer items={props.markups} pageWidth={props.pageWidth} pageHeight={props.pageHeight} /> : null}
+			{shouldRender ? <MarkupTextLayer items={props.markups} pageWidth={props.pageWidth} pageHeight={props.pageHeight} /> : null}
+			{shouldRender ? (
+				<MarkupPinLayer items={props.markups} pending={props.pendingComment} activeId={props.activeCommentId} pageWidth={props.pageWidth} pageHeight={props.pageHeight} />
+			) : null}
+			{shouldRender ? <MarkupDraftLayer store={props.draftStore} page={pageNumber} pageWidth={props.pageWidth} pageHeight={props.pageHeight} /> : null}
+			{shouldRender && props.selectedMarkup ? (
+				<MarkupSelectionLayer markup={props.selectedMarkup} pageWidth={props.pageWidth} pageHeight={props.pageHeight} cssWidth={props.cssWidth} />
+			) : null}
+			{props.textEdit ? (
+				<MarkupTextEditor key={props.textEdit.id} markup={props.textEdit} pageWidth={props.pageWidth} pageHeight={props.pageHeight} handlers={props.textEditor} />
+			) : null}
 		</div>
 	);
 });
@@ -277,6 +357,46 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const pageTextsRef = React.useRef<PdfPageText[]>([]);
 	const searchStartPageRef = React.useRef(0);
 	const searchInputRef = React.useRef<HTMLInputElement | null>(null);
+	// Markup belongs to a server version (D7). A file still waiting to upload has no version yet.
+	const markupVersionId = !noteDocument.isLocal && noteDocument.latestVersionId ? noteDocument.latestVersionId : null;
+	const canMarkup = props.canEdit === true && Boolean(markupVersionId);
+	const markup = usePdfMarkup(markupVersionId);
+	const [markupPrefs, updateMarkupPrefs] = useMarkupPrefs();
+	const [markupTool, setMarkupTool] = React.useState<MarkupTool | null>(null);
+	const markupToolRef = React.useRef(markupTool);
+	markupToolRef.current = markupTool;
+	const spaceHeldRef = React.useRef(false);
+	const [markupDraftStore] = React.useState(createMarkupDraftStore);
+	const [erasingMarkupIds, setErasingMarkupIds] = React.useState<ReadonlySet<string>>(NO_MARKUP_IDS);
+	const [selectedMarkupId, setSelectedMarkupId] = React.useState<string | null>(null);
+	const selectedMarkupIdRef = React.useRef(selectedMarkupId);
+	selectedMarkupIdRef.current = selectedMarkupId;
+	// The markup being dragged: hidden on its page while its preview follows the pointer.
+	const [previewMarkupId, setPreviewMarkupId] = React.useState<string | null>(null);
+	const [textEdit, setTextEdit] = React.useState<{ markup: TypedMarkup; isNew: boolean } | null>(null);
+	const textEditRef = React.useRef(textEdit);
+	textEditRef.current = textEdit;
+	const textEditorElementRef = React.useRef<HTMLElement | null>(null);
+	// Assigned once commitTextEdit exists further down; closing the viewer calls it first.
+	const commitTextEditRef = React.useRef<() => void>(() => undefined);
+	// Markup list and comments panel (beside the pages on desktop, a sheet on phones). Everyone can
+	// open it; only editors can change anything in it.
+	const [markupPanelOpen, setMarkupPanelOpen] = React.useState(false);
+	const markupPanelOpenRef = React.useRef(markupPanelOpen);
+	markupPanelOpenRef.current = markupPanelOpen;
+	const [openCommentId, setOpenCommentId] = React.useState<string | null>(null);
+	const openCommentIdRef = React.useRef(openCommentId);
+	const [pendingComment, setPendingComment] = React.useState<CommentMarkup | null>(null);
+	const pendingCommentRef = React.useRef(pendingComment);
+	pendingCommentRef.current = pendingComment;
+	const [commentText, setCommentText] = React.useState('');
+	const commentTextRef = React.useRef(commentText);
+	// The panel was opened just to write a new comment: cancelling closes it again.
+	const panelOpenedForCommentRef = React.useRef(false);
+	// Assigned once closeMarkupPanel exists further down; Back and Escape call it.
+	const closeMarkupPanelRef = React.useRef<() => void>(() => undefined);
+	// Comments first: it's what people open the panel for.
+	const [markupPanelTab, setMarkupPanelTab] = React.useState<MarkupPanelTab>('comments');
 	const zoomRef = React.useRef(zoom);
 	zoomRef.current = zoom;
 	const scrollerRef = React.useRef<HTMLDivElement | null>(null);
@@ -405,8 +525,13 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			// push its own, and every history.back() it did landed on this entry, which App and
 			// the media sheet didn't recognise, so they helpfully closed the whole editor. Now
 			// Back shuts the top layer (search first, then the panel) and puts our entry back.
-			if (searchOpenRef.current || navigatorOpenRef.current) {
-				if (searchOpenRef.current) {
+			if (markupPanelOpenRef.current || markupToolRef.current || searchOpenRef.current || navigatorOpenRef.current) {
+				if (markupPanelOpenRef.current) {
+					closeMarkupPanelRef.current();
+				} else if (markupToolRef.current) {
+					markupToolRef.current = null;
+					setMarkupTool(null);
+				} else if (searchOpenRef.current) {
 					searchOpenRef.current = false;
 					setSearchOpen(false);
 				} else {
@@ -444,6 +569,9 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	}, []);
 
 	const requestClose = React.useCallback((): void => {
+		// A text note still being typed gets saved, not thrown away with the viewer (same for a comment edit).
+		commitTextEditRef.current();
+		closeMarkupPanelRef.current();
 		const state = typeof window !== 'undefined'
 			? (window.history.state as { __notePdfViewer?: string } | null)
 			: null;
@@ -454,11 +582,385 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			setNavigatorOpen(false);
 			searchOpenRef.current = false;
 			setSearchOpen(false);
+			markupToolRef.current = null;
+			setMarkupTool(null);
 			window.history.back();
 			return;
 		}
 		onCloseRef.current();
 	}, [isCoarsePointer]);
+
+	const openMarkup = React.useCallback((): void => {
+		setMarkupTool(markupPrefs.tool);
+		// On a phone the page panel covers the page you're about to draw on.
+		if (isCoarsePointer) closeNavigator();
+	}, [closeNavigator, isCoarsePointer, markupPrefs.tool]);
+
+	const selectMarkupTool = React.useCallback((tool: MarkupTool): void => {
+		setMarkupTool(tool);
+		updateMarkupPrefs({ tool });
+	}, [updateMarkupPrefs]);
+
+	const { removeMany: removeMarkups, add: putMarkup } = markup;
+	const handleEraseCommit = React.useCallback((ids: readonly string[]): void => {
+		removeMarkups(ids);
+		setErasingMarkupIds(NO_MARKUP_IDS);
+	}, [removeMarkups]);
+
+	const pageSizesRef = React.useRef<readonly PageSize[]>(NO_PAGE_SIZES);
+	pageSizesRef.current = load.status === 'ready' ? load.pageSizes : NO_PAGE_SIZES;
+	const markupItemsRef = React.useRef(markup.items);
+	markupItemsRef.current = markup.items;
+
+	const commitTextEdit = React.useCallback((): void => {
+		const current = textEditRef.current;
+		if (!current) return;
+		textEditRef.current = null;
+		setTextEdit(null);
+		const target = current.markup;
+		if (target.kind === 'stamp') {
+			const typed = target.text.trim();
+			// A custom stamp is nothing but its wording; an RFI stamp still says RFI without a number.
+			if (!typed && stampDefinition(target.stamp).input === 'label') {
+				if (!current.isNew) removeMarkups([target.id]);
+				return;
+			}
+			putMarkup(fitStampWidth({ ...target, text: typed, updatedAt: Date.now() }));
+			return;
+		}
+		const text = target.text.replace(/\s+$/, '');
+		if (!text.trim()) {
+			// Emptied out: an existing note goes away, and a new one was never really there.
+			if (!current.isNew) removeMarkups([target.id]);
+			return;
+		}
+		// Store the height it actually took up (a callout's author line included), so selecting and
+		// erasing it hit the whole box.
+		const size = pageSizesRef.current[target.page - 1];
+		const scale = size && size.width > 0 ? layoutRef.current.pageWidth / size.width : 0;
+		const element = textEditorElementRef.current;
+		const measured = element && scale > 0 ? element.offsetHeight / scale : target.h;
+		putMarkup({ ...target, text, h: roundUnit(Math.max(measured, target.fontSize)), updatedAt: Date.now() });
+	}, [putMarkup, removeMarkups]);
+	commitTextEditRef.current = commitTextEdit;
+
+	const startTextEdit = React.useCallback((target: TypedMarkup, isNew: boolean): void => {
+		commitTextEditRef.current();
+		setSelectedMarkupId(null);
+		const next = { markup: target, isNew };
+		textEditRef.current = next;
+		setTextEdit(next);
+	}, []);
+
+	// Callouts and stamps are signed with your name (remembered from sign-in, so it works offline).
+	const markupAuthor = React.useMemo<MarkupAuthor | null>(() => {
+		const userId = props.authUserId;
+		if (!userId) return null;
+		return { id: userId, name: resolveKnownUserById(userId)?.name?.trim() ?? '' };
+	}, [props.authUserId]);
+
+	const stampChoice = React.useMemo<MarkupStampChoice>(() => {
+		const definition = stampDefinition(markupPrefs.stampPreset);
+		return { preset: definition.preset, label: t(definition.labelKey), color: definition.color };
+	}, [markupPrefs.stampPreset, t]);
+
+	const textEditorHandlers = React.useMemo<MarkupTextEditorHandlers>(() => ({
+		placeholders: {
+			text: t('documents.markupTextPlaceholder'),
+			stampNumber: t('documents.markupStampNumberPlaceholder'),
+			stampLabel: t('documents.markupStampLabelPlaceholder'),
+		},
+		onChange: (text) => {
+			const current = textEditRef.current;
+			if (!current) return;
+			// A stamp widens as its number is typed, so the frame always fits the wording.
+			const edited: TypedMarkup = current.markup.kind === 'stamp' ? fitStampWidth({ ...current.markup, text }) : { ...current.markup, text };
+			const next = { ...current, markup: edited };
+			textEditRef.current = next;
+			setTextEdit(next);
+		},
+		onCommit: () => commitTextEditRef.current(),
+		setElement: (element) => {
+			textEditorElementRef.current = element;
+		},
+	}), [t]);
+
+	const deleteSelectedMarkup = React.useCallback((): void => {
+		const id = selectedMarkupIdRef.current;
+		if (!id) return;
+		removeMarkups([id]);
+		setSelectedMarkupId(null);
+	}, [removeMarkups]);
+
+	const nudgeSelectedMarkup = React.useCallback((dx: number, dy: number): void => {
+		const id = selectedMarkupIdRef.current;
+		const target = id ? markupItemsRef.current.find((item) => item.id === id) : undefined;
+		if (!target) return;
+		putMarkup({ ...translateMarkup(target, dx, dy), updatedAt: Date.now() });
+	}, [putMarkup]);
+
+	const rotateSelectedMarkup = React.useCallback((): void => {
+		const id = selectedMarkupIdRef.current;
+		const target = id ? markupItemsRef.current.find((item) => item.id === id) : undefined;
+		if (target?.kind !== 'symbol') return;
+		putMarkup({ ...rotateSymbol(target), updatedAt: Date.now() });
+	}, [putMarkup]);
+
+	// ── Comments and the markup panel ───────────────────────────────────────
+
+	const { addComment, peekCommentNumber } = markup;
+
+	/**
+	 * Scrolls a markup into view. On phones it lands in the top part, above the panel sheet.
+	 * onlyIfHidden: leave the page alone when it's already in that visible part.
+	 */
+	const revealMarkup = React.useCallback((target: Markup, onlyIfHidden = false): void => {
+		const scroller = scrollerRef.current;
+		const pages = pagesRef.current;
+		const layout = layoutRef.current;
+		const size = pageSizesRef.current[target.page - 1];
+		const pageTop = layout.offsets[target.page - 1];
+		const pageHeight = layout.heights[target.page - 1];
+		if (!scroller || !pages || !size || pageTop === undefined || !pageHeight || size.width <= 0 || size.height <= 0) return;
+		const bounds = markupBounds(target);
+		const centreX = (bounds.x + bounds.w / 2) / size.width;
+		const centreY = (bounds.y + bounds.h / 2) / size.height;
+		const top = pages.offsetTop + pageTop + centreY * pageHeight;
+		const left = pages.offsetLeft + layout.padding + centreX * layout.pageWidth;
+		if (onlyIfHidden) {
+			// The phone sheet covers the lower ~62% of the page area.
+			const visibleTop = scroller.scrollTop + scroller.clientHeight * 0.06;
+			const visibleBottom = scroller.scrollTop + scroller.clientHeight * (isCoarsePointer ? 0.36 : 0.9);
+			const inViewX = left >= scroller.scrollLeft + 16 && left <= scroller.scrollLeft + scroller.clientWidth - 16;
+			if (top >= visibleTop && top <= visibleBottom && inViewX) return;
+		}
+		scroller.scrollTop = Math.max(0, top - scroller.clientHeight * (isCoarsePointer ? 0.2 : 0.4));
+		scroller.scrollLeft = Math.max(0, left - scroller.clientWidth / 2);
+	}, [isCoarsePointer]);
+
+	const setCommentBuffer = React.useCallback((text: string): void => {
+		commentTextRef.current = text;
+		setCommentText(text);
+	}, []);
+
+	const setOpenComment = React.useCallback((id: string | null): void => {
+		openCommentIdRef.current = id;
+		setOpenCommentId(id);
+	}, []);
+
+	/** Saves what's typed into an open (already posted) comment. An emptied comment keeps its text; deleting is explicit. */
+	const saveOpenComment = React.useCallback((): void => {
+		const id = openCommentIdRef.current;
+		const target = id ? markupItemsRef.current.find((item) => item.id === id) : undefined;
+		if (!canMarkup || !target || target.kind !== 'comment') return;
+		const text = commentTextRef.current.trim();
+		if (!text || text === target.text) return;
+		putMarkup({ ...target, text, updatedAt: Date.now() });
+	}, [canMarkup, putMarkup]);
+
+	const openComment = React.useCallback((target: CommentMarkup): void => {
+		if (openCommentIdRef.current !== target.id) saveOpenComment();
+		setPendingComment(null);
+		setOpenComment(target.id);
+		setCommentBuffer(target.text);
+		if (isCoarsePointer) closeNavigator();
+		setMarkupPanelOpen(true);
+	}, [closeNavigator, isCoarsePointer, saveOpenComment, setCommentBuffer, setOpenComment]);
+
+	const showMarkupList = React.useCallback((): void => {
+		saveOpenComment();
+		setPendingComment(null);
+		setOpenComment(null);
+	}, [saveOpenComment, setOpenComment]);
+
+	const closeMarkupPanel = React.useCallback((): void => {
+		saveOpenComment();
+		setPendingComment(null);
+		setOpenComment(null);
+		panelOpenedForCommentRef.current = false;
+		markupPanelOpenRef.current = false;
+		setMarkupPanelOpen(false);
+	}, [saveOpenComment, setOpenComment]);
+	closeMarkupPanelRef.current = closeMarkupPanel;
+
+	const toggleMarkupPanel = React.useCallback((): void => {
+		if (markupPanelOpenRef.current) {
+			closeMarkupPanel();
+			return;
+		}
+		if (isCoarsePointer) closeNavigator();
+		setMarkupPanelOpen(true);
+	}, [closeMarkupPanel, closeNavigator, isCoarsePointer]);
+
+	const placeComment = React.useCallback((point: { page: number; x: number; y: number }): void => {
+		commitTextEditRef.current();
+		saveOpenComment();
+		const now = Date.now();
+		setOpenComment(null);
+		setCommentBuffer('');
+		setSelectedMarkupId(null);
+		setPendingComment({
+			id: createMarkupId(),
+			kind: 'comment',
+			page: point.page,
+			x: point.x,
+			y: point.y,
+			color: markupPrefs.commentColor,
+			width: 0,
+			// A preview; the real number is taken when it's posted, so a cancelled comment doesn't use one up.
+			number: peekCommentNumber(),
+			text: '',
+			status: 'open',
+			createdAt: now,
+			updatedAt: now,
+			...(markupAuthor ? { author: markupAuthor } : {}),
+		});
+		if (!markupPanelOpenRef.current) panelOpenedForCommentRef.current = true;
+		// Back from the new comment lands on the comments list.
+		setMarkupPanelTab('comments');
+		if (isCoarsePointer) closeNavigator();
+		setMarkupPanelOpen(true);
+	}, [closeNavigator, isCoarsePointer, markupAuthor, markupPrefs.commentColor, peekCommentNumber, saveOpenComment, setCommentBuffer, setOpenComment]);
+
+	const postComment = React.useCallback((): void => {
+		const draft = pendingCommentRef.current;
+		const text = commentTextRef.current.trim();
+		if (!draft || !text) return;
+		const now = Date.now();
+		const saved = addComment({ ...draft, text, createdAt: now, updatedAt: now });
+		setPendingComment(null);
+		panelOpenedForCommentRef.current = false;
+		if (saved) setOpenComment(saved.id);
+	}, [addComment, setOpenComment]);
+
+	const cancelComment = React.useCallback((): void => {
+		setPendingComment(null);
+		setCommentBuffer('');
+		if (panelOpenedForCommentRef.current) {
+			panelOpenedForCommentRef.current = false;
+			markupPanelOpenRef.current = false;
+			setMarkupPanelOpen(false);
+		}
+	}, [setCommentBuffer]);
+
+	/** Flips a comment between Open and Resolved, recording who resolved it and when. */
+	const setCommentResolved = React.useCallback((target: CommentMarkup, text: string): void => {
+		if (!canMarkup) return;
+		const now = Date.now();
+		if (target.status === 'resolved') {
+			const reopened: CommentMarkup = { ...target, text, status: 'open', updatedAt: now };
+			delete reopened.resolvedAt;
+			delete reopened.resolvedBy;
+			putMarkup(reopened);
+			return;
+		}
+		putMarkup({ ...target, text, status: 'resolved', resolvedAt: now, ...(markupAuthor ? { resolvedBy: markupAuthor } : {}), updatedAt: now });
+	}, [canMarkup, markupAuthor, putMarkup]);
+
+	const toggleCommentResolved = React.useCallback((): void => {
+		const id = openCommentIdRef.current;
+		const target = id ? markupItemsRef.current.find((item) => item.id === id) : undefined;
+		if (!target || target.kind !== 'comment') return;
+		// Keep any unsaved typing along with the status change.
+		setCommentResolved(target, commentTextRef.current.trim() || target.text);
+	}, [setCommentResolved]);
+
+	/** The quick ✓ on a row in the Comments list. */
+	const toggleResolvedFromList = React.useCallback((target: CommentMarkup): void => {
+		setCommentResolved(target, target.text);
+	}, [setCommentResolved]);
+
+	const deleteOpenComment = React.useCallback((): void => {
+		const id = openCommentIdRef.current;
+		if (!id || !canMarkup) return;
+		removeMarkups([id]);
+		setOpenComment(null);
+		setSelectedMarkupId((current) => (current === id ? null : current));
+	}, [canMarkup, removeMarkups, setOpenComment]);
+
+	/** "Add comment" in the panel: turn on the comment tool; the next tap on the page places it. */
+	const startAddingComment = React.useCallback((): void => {
+		if (!canMarkup) return;
+		setMarkupTool('comment');
+		// On a phone the sheet covers the page you're about to tap.
+		if (isCoarsePointer) closeMarkupPanel();
+	}, [canMarkup, closeMarkupPanel, isCoarsePointer]);
+
+	/** Tapping a pin on the page opens its comment, in the Comments tab. */
+	const openCommentFromPin = React.useCallback((target: CommentMarkup): void => {
+		setMarkupPanelTab('comments');
+		openComment(target);
+	}, [openComment]);
+
+	/** Tapping a row in the list: go to it, and select it if marking up. */
+	const handleRevealFromList = React.useCallback((target: Markup): void => {
+		revealMarkup(target);
+		if (target.kind === 'comment') {
+			openComment(target);
+			return;
+		}
+		if (markupToolRef.current) {
+			setMarkupTool('select');
+			setSelectedMarkupId(target.id);
+		}
+		// On a phone the sheet would cover it.
+		if (isCoarsePointer) closeMarkupPanel();
+	}, [closeMarkupPanel, isCoarsePointer, openComment, revealMarkup]);
+
+	// Phones have room for one sheet at a time.
+	React.useEffect(() => {
+		if (isCoarsePointer && navigatorOpen) closeMarkupPanelRef.current();
+	}, [isCoarsePointer, navigatorOpen]);
+
+	// Phones: the keyboard slides over the lower part of the screen without resizing the page (and the
+	// browser pans to show the text box), which buried the comment's pin under the keyboard. While the
+	// keyboard is up, the viewer is fitted to the part of the screen that's still visible instead.
+	const [visibleViewport, setVisibleViewport] = React.useState<{ top: number; height: number } | null>(null);
+	React.useEffect(() => {
+		if (!isCoarsePointer || typeof window === 'undefined' || !window.visualViewport) return;
+		const viewport = window.visualViewport;
+		const measure = (): void => {
+			const keyboardUp = window.innerHeight - viewport.height > 80;
+			const next = keyboardUp ? { top: Math.round(viewport.offsetTop), height: Math.round(viewport.height) } : null;
+			setVisibleViewport((current) => (
+				current?.top === next?.top && current?.height === next?.height ? current : next
+			));
+		};
+		measure();
+		viewport.addEventListener('resize', measure);
+		viewport.addEventListener('scroll', measure);
+		return () => {
+			viewport.removeEventListener('resize', measure);
+			viewport.removeEventListener('scroll', measure);
+		};
+	}, [isCoarsePointer]);
+
+	// Phones: keep the comment being written or read in sight above the panel sheet (and the keyboard),
+	// without moving the page when its pin is already visible.
+	const pendingCommentId = pendingComment?.id ?? null;
+	React.useEffect(() => {
+		if (!isCoarsePointer || !markupPanelOpen) return;
+		const openId = openCommentIdRef.current;
+		const target = pendingCommentRef.current ?? (openId ? markupItemsRef.current.find((item) => item.id === openId) : undefined);
+		if (!target) return;
+		// Two frames: the sheet and a resized viewer have to be laid out before measuring.
+		let second = 0;
+		const first = window.requestAnimationFrame(() => {
+			second = window.requestAnimationFrame(() => revealMarkup(target, true));
+		});
+		return () => {
+			window.cancelAnimationFrame(first);
+			window.cancelAnimationFrame(second);
+		};
+	}, [isCoarsePointer, markupPanelOpen, openCommentId, pendingCommentId, revealMarkup, visibleViewport?.height]);
+
+	// Switching away from the select tool drops the selection. Switching to anything other than select
+	// or the tool that made the thing being typed (another tool, Done, Escape, Back) saves it.
+	React.useEffect(() => {
+		if (markupTool !== 'select') setSelectedMarkupId(null);
+		const typingKind = textEditRef.current?.markup.kind;
+		if (markupTool !== 'select' && markupTool !== typingKind) commitTextEditRef.current();
+	}, [markupTool]);
 
 	// ── Reading position ────────────────────────────────────────────────────
 
@@ -664,6 +1166,11 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			if (event.touches.length !== 0 || event.changedTouches.length !== 1 || !singleTouchStart) return;
 			const touch = event.changedTouches[0];
 			singleTouchStart = null;
+			// While marking up, a quick second tap is the next dot or stroke, not a zoom.
+			if (markupToolRef.current) {
+				lastTap = null;
+				return;
+			}
 			const now = performance.now();
 			if (lastTap && now - lastTap.time < DOUBLE_TAP_WINDOW_MS && Math.hypot(touch.clientX - lastTap.x, touch.clientY - lastTap.y) < TAP_SLOP_PX) {
 				if (event.cancelable) event.preventDefault();
@@ -732,7 +1239,10 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		let drag: { pointerId: number; x: number; y: number; left: number; top: number } | null = null;
 
 		const onPointerDown = (event: PointerEvent): void => {
-			if (event.pointerType !== 'mouse' || event.button !== 0 || gestureRef.current) return;
+			if (event.pointerType !== 'mouse' || gestureRef.current) return;
+			// While marking up, the left button draws; Space + drag or the middle button still pans.
+			const pans = event.button === 1 || (event.button === 0 && (!markupToolRef.current || spaceHeldRef.current));
+			if (!pans) return;
 			// A press on the scrollbars themselves still works the normal way.
 			const rect = scroller.getBoundingClientRect();
 			if (event.clientX - rect.left >= scroller.clientWidth || event.clientY - rect.top >= scroller.clientHeight) return;
@@ -766,6 +1276,65 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			delete scroller.dataset.dragging;
 		};
 	}, [load.status]);
+
+	useMarkupDrawing({
+		scrollerRef,
+		tool: load.status === 'ready' && canMarkup ? markupTool : null,
+		style: styleForTool(markupPrefs, markupTool),
+		textStyle: { color: markupPrefs.textColor, fontSize: markupPrefs.textSize },
+		cloudShape: markupPrefs.cloudShape,
+		stamp: stampChoice,
+		symbolId: markupPrefs.symbolId,
+		onPlaceComment: placeComment,
+		onOpenComment: openCommentFromPin,
+		author: markupAuthor,
+		pageSizes: load.status === 'ready' ? load.pageSizes : NO_PAGE_SIZES,
+		items: markup.items,
+		selectedId: selectedMarkupId,
+		editingText: textEdit !== null,
+		draftStore: markupDraftStore,
+		spaceHeldRef,
+		onCommit: putMarkup,
+		onEraseProgress: setErasingMarkupIds,
+		onEraseCommit: handleEraseCommit,
+		onSelect: setSelectedMarkupId,
+		onPreview: setPreviewMarkupId,
+		onUpdate: putMarkup,
+		onStartText: startTextEdit,
+		onCommitText: commitTextEdit,
+	});
+
+	// Hidden from the page: markups mid-erase, the one being dragged (its preview is drawn instead),
+	// and a text note being edited (the editor shows it).
+	const editingMarkupId = textEdit && !textEdit.isNew ? textEdit.markup.id : null;
+	const hiddenMarkupIds = React.useMemo<ReadonlySet<string>>(() => {
+		if (!previewMarkupId && !editingMarkupId) return erasingMarkupIds;
+		const hidden = new Set(erasingMarkupIds);
+		if (previewMarkupId) hidden.add(previewMarkupId);
+		if (editingMarkupId) hidden.add(editingMarkupId);
+		return hidden;
+	}, [editingMarkupId, erasingMarkupIds, previewMarkupId]);
+
+	// Per-page markup lists. A page whose markup didn't change keeps the same array, so drawing on
+	// page 3 doesn't re-render every other page.
+	const markupsByPageRef = React.useRef(new Map<number, readonly Markup[]>());
+	const markupsByPage = React.useMemo(() => {
+		const grouped = new Map<number, Markup[]>();
+		for (const item of markup.items) {
+			if (hiddenMarkupIds.has(item.id)) continue;
+			const list = grouped.get(item.page);
+			if (list) list.push(item);
+			else grouped.set(item.page, [item]);
+		}
+		const previous = markupsByPageRef.current;
+		const stable = new Map<number, readonly Markup[]>();
+		for (const [page, list] of grouped) {
+			const old = previous.get(page);
+			stable.set(page, old && old.length === list.length && old.every((item, index) => item === list[index]) ? old : list);
+		}
+		markupsByPageRef.current = stable;
+		return stable;
+	}, [hiddenMarkupIds, markup.items]);
 
 	// ── Layout ──────────────────────────────────────────────────────────────
 
@@ -986,6 +1555,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		return byPage;
 	}, [search.matches, searchOpen]);
 	const activeMatchPageIndex = searchOpen ? (search.matches[activeMatch]?.pageIndex ?? -1) : -1;
+	const { undo: markupUndo, redo: markupRedo } = markup;
 
 	// Keyboard: Ctrl+F searches (instead of the browser's find, which can't see inside a canvas),
 	// Enter/F3 step through hits, Escape closes (search, then the page panel, then the viewer),
@@ -994,6 +1564,45 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	React.useEffect(() => {
 		const onKeyDown = (event: KeyboardEvent): void => {
 			const key = event.key.toLowerCase();
+			if (markupToolRef.current) {
+				const typing = event.target instanceof HTMLElement && (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA' || event.target.isContentEditable);
+				// Escape peels one layer at a time: finish the text being typed, then drop the
+				// selection, then leave markup mode, all before it does anything else.
+				if (event.key === 'Escape') {
+					event.preventDefault();
+					if (textEditRef.current) commitTextEditRef.current();
+					else if (selectedMarkupIdRef.current) setSelectedMarkupId(null);
+					else if (markupPanelOpenRef.current) closeMarkupPanelRef.current();
+					else setMarkupTool(null);
+					return;
+				}
+				if (!typing && (event.ctrlKey || event.metaKey) && !event.altKey && (key === 'z' || key === 'y')) {
+					event.preventDefault();
+					if (key === 'y' || event.shiftKey) markupRedo();
+					else markupUndo();
+					return;
+				}
+				if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
+					if ((event.key === 'Delete' || event.key === 'Backspace') && selectedMarkupIdRef.current) {
+						event.preventDefault();
+						deleteSelectedMarkup();
+						return;
+					}
+					const nudge = MARKUP_NUDGE[event.key];
+					if (nudge && selectedMarkupIdRef.current) {
+						event.preventDefault();
+						const step = event.shiftKey ? 10 : 1;
+						nudgeSelectedMarkup(nudge[0] * step, nudge[1] * step);
+						return;
+					}
+					const shortcutTool = MARKUP_TOOL_KEYS[key];
+					if (shortcutTool) {
+						event.preventDefault();
+						selectMarkupTool(shortcutTool);
+						return;
+					}
+				}
+			}
 			if ((event.ctrlKey || event.metaKey) && !event.altKey && key === 'f') {
 				event.preventDefault();
 				openSearch();
@@ -1007,6 +1616,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			}
 			if (event.key === 'Escape') {
 				if (searchOpenRef.current) closeSearch();
+				else if (markupPanelOpenRef.current) closeMarkupPanelRef.current();
 				else if (navigatorOpenRef.current) closeNavigator();
 				else requestClose();
 				return;
@@ -1047,7 +1657,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		};
 		window.addEventListener('keydown', onKeyDown);
 		return () => window.removeEventListener('keydown', onKeyDown);
-	}, [closeNavigator, closeSearch, goToPage, openSearch, requestClose, stepMatch]);
+	}, [closeNavigator, closeSearch, deleteSelectedMarkup, goToPage, markupRedo, markupUndo, nudgeSelectedMarkup, openSearch, requestClose, selectMarkupTool, stepMatch]);
 
 	const searchTotal = search.matches.length;
 	const readingText = textWanted && pageTextsRead < pageCount;
@@ -1096,10 +1706,172 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		/>
 	) : null;
 
+	const selectedMarkup = selectedMarkupId ? markup.items.find((item) => item.id === selectedMarkupId) ?? null : null;
+	// What the colour and size controls act on: the selected markup when using Select, the note or
+	// callout being typed when using Text or Callout, otherwise the current tool's defaults.
+	let styleControls: MarkupStyleControls | null = null;
+	if (markupTool === 'select') {
+		if (selectedMarkup) {
+			if (selectedMarkup.kind === 'text' || selectedMarkup.kind === 'callout') {
+				styleControls = { family: 'text', color: selectedMarkup.color, size: selectedMarkup.fontSize };
+			} else if (selectedMarkup.kind === 'stamp' || selectedMarkup.kind === 'symbol' || selectedMarkup.kind === 'comment') {
+				styleControls = { family: 'colors', color: selectedMarkup.color, size: 0 };
+			} else {
+				styleControls = {
+					family: selectedMarkup.kind === 'ink' && selectedMarkup.highlighter ? 'highlighter' : 'pen',
+					color: selectedMarkup.color,
+					size: selectedMarkup.width,
+				};
+			}
+		}
+	} else if (markupTool === 'text' || markupTool === 'callout') {
+		const typing = textEdit && textEdit.markup.kind !== 'stamp' ? textEdit.markup : null;
+		styleControls = { family: 'text', color: typing?.color ?? markupPrefs.textColor, size: typing?.fontSize ?? markupPrefs.textSize };
+	} else if (markupTool === 'comment') {
+		styleControls = { family: 'colors', color: pendingComment?.color ?? markupPrefs.commentColor, size: 0 };
+	} else if (markupTool === 'symbol') {
+		// Symbols are placed in the pen colour.
+		styleControls = { family: 'colors', color: markupPrefs.penColor, size: 0 };
+	} else if (markupTool && markupTool !== 'eraser' && markupTool !== 'stamp') {
+		const toolStyle = styleForTool(markupPrefs, markupTool);
+		styleControls = { family: markupTool === 'highlighter' ? 'highlighter' : 'pen', color: toolStyle.color, size: toolStyle.width };
+	}
+
+	const handleMarkupStyleChange = (patch: { color?: string; size?: number }): void => {
+		if (markupTool === 'select' && selectedMarkup) {
+			const next = { ...selectedMarkup, updatedAt: Date.now() } as Markup;
+			if (patch.color) next.color = patch.color;
+			if (patch.size !== undefined) {
+				if ((next.kind === 'text' || next.kind === 'callout') && (selectedMarkup.kind === 'text' || selectedMarkup.kind === 'callout')) {
+					next.fontSize = patch.size;
+					// Keep the stored height roughly right until it's next edited and re-measured.
+					next.h = roundUnit((selectedMarkup.h * patch.size) / selectedMarkup.fontSize);
+					if (next.kind === 'callout') next.width = calloutStrokeWidth(patch.size);
+				} else if (next.kind !== 'text' && next.kind !== 'callout' && next.kind !== 'stamp' && next.kind !== 'symbol' && next.kind !== 'comment') {
+					next.width = patch.size;
+				}
+			}
+			putMarkup(next);
+			return;
+		}
+		if (markupTool === 'text' || markupTool === 'callout') {
+			updateMarkupPrefs({
+				...(patch.color ? { textColor: patch.color } : {}),
+				...(patch.size !== undefined ? { textSize: patch.size } : {}),
+			});
+			const current = textEditRef.current;
+			if (current && current.markup.kind !== 'stamp') {
+				const edited: TypedMarkup = current.markup.kind === 'callout'
+					? {
+						...current.markup,
+						...(patch.color ? { color: patch.color } : {}),
+						...(patch.size !== undefined ? { fontSize: patch.size, width: calloutStrokeWidth(patch.size) } : {}),
+					}
+					: {
+						...current.markup,
+						...(patch.color ? { color: patch.color } : {}),
+						...(patch.size !== undefined ? { fontSize: patch.size } : {}),
+					};
+				const next = { ...current, markup: edited };
+				textEditRef.current = next;
+				setTextEdit(next);
+			}
+			return;
+		}
+		if (markupTool === 'comment') {
+			const color = patch.color;
+			if (color) {
+				updateMarkupPrefs({ commentColor: color });
+				setPendingComment((current) => (current ? { ...current, color } : current));
+			}
+			return;
+		}
+		if (markupTool === 'highlighter') {
+			updateMarkupPrefs({
+				...(patch.color ? { highlighterColor: patch.color } : {}),
+				...(patch.size !== undefined ? { highlighterWidth: patch.size } : {}),
+			});
+			return;
+		}
+		updateMarkupPrefs({
+			...(patch.color ? { penColor: patch.color } : {}),
+			...(patch.size !== undefined ? { penWidth: patch.size } : {}),
+		});
+	};
+
+	const openCommentMarkup = openCommentId
+		? markup.items.find((item): item is CommentMarkup => item.id === openCommentId && item.kind === 'comment') ?? null
+		: null;
+	const panelComment = pendingComment
+		? { markup: pendingComment, isNew: true }
+		: openCommentMarkup
+			? { markup: openCommentMarkup, isNew: false }
+			: null;
+	const markupPanel = markupPanelOpen && load.status === 'ready' ? (
+		<MarkupPanel
+			variant={isCoarsePointer ? 'sheet' : 'side'}
+			tab={markupPanelTab}
+			onTabChange={setMarkupPanelTab}
+			onAddComment={startAddingComment}
+			onToggleResolvedFor={toggleResolvedFromList}
+			items={markup.items}
+			replies={markup.replies}
+			selectedId={selectedMarkupId ?? openCommentId}
+			comment={panelComment}
+			commentText={commentText}
+			canEdit={canMarkup}
+			t={t}
+			onReveal={handleRevealFromList}
+			onBackToList={showMarkupList}
+			onCommentChange={setCommentBuffer}
+			onCommentSave={saveOpenComment}
+			onCommentPost={postComment}
+			onCommentCancel={cancelComment}
+			onToggleResolved={toggleCommentResolved}
+			onDeleteComment={deleteOpenComment}
+			onClose={closeMarkupPanel}
+		/>
+	) : null;
+	const showMarkupListButton = load.status === 'ready' && (canMarkup || markup.items.length > 0);
+	const openCommentCount = markup.items.reduce((count, item) => count + (item.kind === 'comment' && item.status === 'open' ? 1 : 0), 0);
+
+	const markupBar = canMarkup && markupTool && load.status === 'ready' ? (
+		<MarkupToolbar
+			placement={isCoarsePointer ? 'bottom' : 'top'}
+			tool={markupTool}
+			styleControls={styleControls}
+			cloudShape={markupPrefs.cloudShape}
+			stampPreset={markupPrefs.stampPreset}
+			onCloudShapeChange={(cloudShape) => updateMarkupPrefs({ cloudShape })}
+			onStampPresetChange={(stampPreset) => updateMarkupPrefs({ stampPreset })}
+			symbolId={markupPrefs.symbolId}
+			recentSymbols={markupPrefs.recentSymbols}
+			onSymbolChange={(symbolId) => updateMarkupPrefs({
+				symbolId,
+				recentSymbols: [symbolId, ...markupPrefs.recentSymbols.filter((id) => id !== symbolId)].slice(0, MAX_RECENT_SYMBOLS),
+			})}
+			canRotate={markupTool === 'select' && selectedMarkup?.kind === 'symbol'}
+			onRotateSelection={rotateSelectedMarkup}
+			hasSelection={markupTool === 'select' && Boolean(selectedMarkup)}
+			canUndo={markup.canUndo}
+			canRedo={markup.canRedo}
+			isCoarsePointer={isCoarsePointer}
+			t={t}
+			onToolChange={selectMarkupTool}
+			onStyleChange={handleMarkupStyleChange}
+			onDeleteSelection={deleteSelectedMarkup}
+			onUndo={markupUndo}
+			onRedo={markupRedo}
+			onDone={() => setMarkupTool(null)}
+		/>
+	) : null;
+
 	const content = (
 		<div
 			className={styles.backdrop}
 			role="presentation"
+			data-keyboard={visibleViewport ? 'open' : undefined}
+			style={visibleViewport ? { top: visibleViewport.top, height: visibleViewport.height, bottom: 'auto' } : undefined}
 			onClick={stopPropagation}
 			onPointerDown={stopPropagation}
 			onTouchStart={stopPropagation}
@@ -1114,11 +1886,37 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 					</button>
 					<div className={styles.titleWrap}>
 						<h2 className={styles.title} title={noteDocument.fileName}>{noteDocument.fileName}</h2>
-						{subtitle ? <p className={styles.subtitle}>{subtitle}</p> : null}
+						{subtitle ? <p className={`${styles.subtitle}${load.status === 'ready' ? ` ${styles.desktopOnly}` : ''}`}>{subtitle}</p> : null}
 					</div>
 					<div className={styles.toolbar}>
 						{load.status === 'ready' ? (
 							<>
+								{canMarkup ? (
+									<button
+										type="button"
+										className={`${styles.iconButton}${markupTool ? ` ${styles.iconButtonActive}` : ''}`}
+										onClick={() => (markupTool ? setMarkupTool(null) : openMarkup())}
+										aria-label={t('documents.markup')}
+										aria-pressed={Boolean(markupTool)}
+										title={t('documents.markup')}
+									>
+										<FontAwesomeIcon icon={faPen} />
+									</button>
+								) : null}
+								{showMarkupListButton ? (
+									<button
+										type="button"
+										className={`${styles.iconButton}${markupPanelOpen ? ` ${styles.iconButtonActive}` : ''}`}
+										onClick={toggleMarkupPanel}
+										aria-label={openCommentCount > 0 ? `${t('documents.markupComments')}: ${openCommentCount} ${t('documents.markupCommentOpen')}` : t('documents.markupComments')}
+										aria-pressed={markupPanelOpen}
+										title={t('documents.markupComments')}
+									>
+										<FontAwesomeIcon icon={faCommentDots} />
+										{/* Open comments at a glance, without scrolling the set looking for pins. */}
+										{openCommentCount > 0 ? <span className={styles.iconBadge} aria-hidden="true">{openCommentCount > 99 ? '99+' : openCommentCount}</span> : null}
+									</button>
+								) : null}
 								<button
 									type="button"
 									className={`${styles.iconButton}${searchOpen ? ` ${styles.iconButtonActive}` : ''}`}
@@ -1131,7 +1929,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 								</button>
 								<button
 									type="button"
-									className={`${styles.iconButton}${navigatorOpen ? ` ${styles.iconButtonActive}` : ''}`}
+									className={`${styles.iconButton} ${styles.desktopOnly}${navigatorOpen ? ` ${styles.iconButtonActive}` : ''}`}
 									onClick={() => (navigatorOpen ? closeNavigator() : setNavigatorOpen(true))}
 									aria-label={t('documents.pagesPanel')}
 									aria-pressed={navigatorOpen}
@@ -1139,7 +1937,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 								>
 									<FontAwesomeIcon icon={faTableColumns} />
 								</button>
-								<div className={styles.zoomControls}>
+								<div className={`${styles.zoomControls} ${styles.desktopOnly}`}>
 									<button
 										type="button"
 										className={`${styles.iconButton} ${styles.zoomStep}`}
@@ -1183,7 +1981,8 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 						</button>
 						<button
 							type="button"
-							className={styles.iconButton}
+							// Phones already have Back at the other end of the header, and the room is better spent on the title.
+							className={`${styles.iconButton} ${styles.desktopOnly}`}
 							onClick={requestClose}
 							aria-label={t('common.close')}
 							title={t('common.close')}
@@ -1192,6 +1991,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 						</button>
 					</div>
 				</header>
+				{!isCoarsePointer ? markupBar : null}
 				{searchOpen && load.status === 'ready' ? (
 					<div className={styles.searchBar} role="search">
 						<div className={styles.searchField}>
@@ -1251,7 +2051,9 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 							<div
 								ref={pagesRef}
 								className={styles.pages}
-								style={{ width: pageCssWidth + padding * 2, padding, gap }}
+								// Only the very bottom gets the extra room, after the last page, so pinch maths (which
+								// relies on padding and gaps scaling with the zoom) is untouched for every page.
+								style={{ width: pageCssWidth + padding * 2, padding: `${padding}px ${padding}px ${padding + (isCoarsePointer ? PAGE_PILL_CLEARANCE_PX : 0)}px`, gap }}
 							>
 								{pageSizes.map((_size, index) => (
 									<PdfPage
@@ -1263,6 +2065,15 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 										shouldRender={index >= renderFrom && index <= renderTo}
 										highlights={highlightsByPage.get(index)}
 										activeHighlight={index === activeMatchPageIndex ? activeMatch : -1}
+										pageWidth={pageSizes[index].width}
+										pageHeight={pageSizes[index].height}
+										markups={markupsByPage.get(index + 1) ?? NO_MARKUPS}
+										draftStore={markupDraftStore}
+										selectedMarkup={selectedMarkup && selectedMarkup.page === index + 1 && previewMarkupId !== selectedMarkup.id ? selectedMarkup : null}
+										textEdit={textEdit && textEdit.markup.page === index + 1 ? textEdit.markup : null}
+										textEditor={textEditorHandlers}
+										pendingComment={pendingComment && pendingComment.page === index + 1 ? pendingComment : null}
+										activeCommentId={openCommentId}
 									/>
 								))}
 							</div>
@@ -1270,6 +2081,36 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 						{load.status === 'loading' ? <p className={styles.status}>{t('documents.viewerLoading')}</p> : null}
 						{errorMessage ? <p className={styles.status}>{errorMessage}</p> : null}
 					</div>
+					{!isCoarsePointer ? markupPanel : null}
+					{/* Phones: page number and zoom live in a small pill over the page instead of squeezing the
+					    title out of the header. Tap the page count for the page panel; the zoom part only shows
+					    once zoomed, and tapping it goes back to fit-width. */}
+					{isCoarsePointer && load.status === 'ready' && !navigatorOpen && !markupPanelOpen ? (
+						<div className={styles.pagePill}>
+							<button
+								type="button"
+								className={styles.pagePillButton}
+								onClick={() => setNavigatorOpen(true)}
+								aria-label={`${t('documents.pagesPanel')}: ${t('documents.pageLabel')} ${currentPage} / ${pageCount}`}
+							>
+								<FontAwesomeIcon icon={faTableColumns} />
+								<span>{currentPage} / {pageCount}</span>
+							</button>
+							{zoom > MIN_ZOOM + 0.001 ? (
+								<>
+									<span className={styles.pagePillDivider} aria-hidden="true" />
+									<button
+										type="button"
+										className={styles.pagePillButton}
+										onClick={() => zoomAroundCenter(MIN_ZOOM)}
+										aria-label={t('documents.zoomReset')}
+									>
+										{Math.round(zoom * 100)}%
+									</button>
+								</>
+							) : null}
+						</div>
+					) : null}
 					{isCoarsePointer && pageNavigator ? (
 						<div
 							className={styles.sheetBackdrop}
@@ -1280,7 +2121,18 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 							{pageNavigator}
 						</div>
 					) : null}
+					{isCoarsePointer && markupPanel ? (
+						<div
+							className={styles.sheetBackdrop}
+							onClick={(event) => {
+								if (event.target === event.currentTarget) closeMarkupPanel();
+							}}
+						>
+							{markupPanel}
+						</div>
+					) : null}
 				</div>
+				{isCoarsePointer ? markupBar : null}
 			</section>
 		</div>
 	);

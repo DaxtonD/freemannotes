@@ -245,7 +245,7 @@ import { refreshUserAvatarsCache, invalidateWorkspaceMembersCache, initWorkspace
 import { isNoteDenied, markNoteDenied } from './core/references/noteAccessCache';
 import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache, refreshPriorCollaboratorsCache } from './core/priorCollaboratorsApi';
 import { addPendingSelfMention, clearMatchedPendingSelfMentions, clearPendingSelfMentionsStore, dismissPendingSelfMention, getPendingSelfMentions, initPendingSelfMentionsForUser, type PendingSelfMention } from './core/pendingSelfMentions';
-import { clearUserIdentityCache } from './core/userIdentityCache';
+import { clearUserIdentityCache, updateKnownUserCache } from './core/userIdentityCache';
 import { clearUserAvatarCache } from './core/userAvatarCache';
 import { clearPdfViewerPositions } from './core/pdfViewerPositions';
 import { clearDrawingThumbnailLocalCache } from './core/drawingThumbnailStore';
@@ -4377,6 +4377,8 @@ export function App(): React.JSX.Element {
 				setAuthWorkspaceId(effectiveWorkspaceId);
 				setAuthOfflineMode(false);
 				writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage, role });
+				// Your own name, for things that carry an author offline (PDF callouts and stamps).
+				updateKnownUserCache([body.user]);
 				// Keep the local workspace-selection cache warm even when the user never
 				// explicitly switches workspaces on this device. Refresh bootstrap may
 				// otherwise fall back to a transient server-side workspace cookie.
@@ -4611,6 +4613,7 @@ export function App(): React.JSX.Element {
 			manager.setWebsocketEnabled(Boolean(effectiveWorkspaceId) && effectiveWorkspaceId === workspaceId);
 			writeAuthCache({ v: 1, userId, workspaceId: effectiveWorkspaceId, profileImage, role });
 			writeWorkspaceSelectionCache({ userId, workspaceId: effectiveWorkspaceId });
+			updateKnownUserCache([body.user]);
 			return profileImage;
 		} catch {
 			return null;
@@ -7826,6 +7829,7 @@ export function App(): React.JSX.Element {
 						resolvedUserRole = role;
 						resolvedProfileImage = profileImage;
 						sessionEstablished = true;
+						updateKnownUserCache([meBody.user]);
 					}
 				}
 			} catch {

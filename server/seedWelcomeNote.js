@@ -112,6 +112,7 @@ function buildWelcomeContentEn(fragment) {
 		'🗂️ Workspaces',
 		'📁 Collections & Labels',
 		'📝 Note Types',
+		'📄 Documents & PDF Markup',
 		'📖 Rich Text Features',
 		'📌 Collapsible Headings',
 		'💬 @Mentions & Inbox',
@@ -146,6 +147,26 @@ function buildWelcomeContentEn(fragment) {
 
 		h3('✏️ Drawing Notes'),
 		para(t('A full Excalidraw canvas is built in: shapes, freehand drawing, text, arrows. If you\'ve got collaborators in the note, it syncs live while you draw.')),
+		hr(),
+
+		h2Collapsible('📄 Documents & PDF Markup'),
+		para(t('Attach PDFs, Word, Excel and PowerPoint files to any note from the '), b('Documents'), t(' tab in the media sheet, or '), b('Add Document'), t(' in the 3-dot menu. Every document gets saved on each of your devices, so it still opens with no signal, which is exactly when you need the drawings on a job site. If your phone is short on space, Preferences → Storage can keep only the ones you open, or clear them.')),
+
+		h3('The PDF Viewer'),
+		para(t('Pinch to zoom, double-tap to zoom in, and use the page panel to jump around a 200-page set without losing your mind. There\'s search inside the PDF (Ctrl+F on desktop), it remembers where you left off, and on desktop you can grab the page and drag it around. Office files open as PDFs when the server has the optional document converter set up; otherwise they open as plain text.')),
+
+		h3('Markup'),
+		para(t('Tap '), b('Markup'), t(' in the viewer and draw right on the page: pen, highlighter, eraser, lines, arrows, boxes, circles, text, revision clouds, callouts that point at things, move markers (from here to there), and stamps: RFI with your own number, Approved, Revise & Resubmit and friends. The Select tool moves and resizes anything you\'ve drawn. Callouts and stamps are signed with your name and the date. I built it for blueprints and electrical plans, but it works on any PDF.')),
+
+		h3('Coming before beta'),
+		ul(
+			'Markup syncing live between collaborators and devices, with offline edits merging when you reconnect',
+			'A markup list and comment pins, so you can see every note on a set at a glance',
+			'A symbol library with electrical, plumbing, HVAC, IT, fire and general symbols',
+			'Measuring and counting, with feet/inches or millimetres chosen per sheet',
+			'Download with markup, to send a marked-up PDF to anyone',
+			'Versions: upload a new revision and the old one keeps its markup',
+		),
 		hr(),
 
 		h2Collapsible('📖 Rich Text Features'),
@@ -206,6 +227,7 @@ function buildWelcomeContentEs(fragment) {
 		'🗂️ Espacios de trabajo',
 		'📁 Colecciones y etiquetas',
 		'📝 Tipos de notas',
+		'📄 Documentos y marcado de PDF',
 		'📖 Funciones de texto enriquecido',
 		'📌 Encabezados contraíbles',
 		'💬 @Menciones e Inbox',
@@ -240,6 +262,26 @@ function buildWelcomeContentEs(fragment) {
 
 		h3('✏️ Notas de dibujo'),
 		para(t('Un lienzo Excalidraw completo integrado: formas, dibujo a mano alzada, texto, flechas. Si tienes colaboradores en la nota, se sincroniza en tiempo real mientras dibujas.')),
+		hr(),
+
+		h2Collapsible('📄 Documentos y marcado de PDF'),
+		para(t('Adjunta PDF, Word, Excel y PowerPoint a cualquier nota desde la pestaña '), b('Documentos'), t(' de la hoja de medios, o con '), b('Añadir documento'), t(' en el menú de tres puntos. Cada documento se guarda en todos tus dispositivos, así que se abre aunque no haya señal, que es justo cuando necesitas los planos en obra. Si tu teléfono va corto de espacio, Preferencias → Almacenamiento puede guardar solo los que abras, o borrarlos.')),
+
+		h3('El visor de PDF'),
+		para(t('Pellizca para hacer zoom, toca dos veces para acercar y usa el panel de páginas para moverte por un juego de 200 páginas sin volverte loco. Tiene búsqueda dentro del PDF (Ctrl+F en escritorio), recuerda dónde te quedaste y en escritorio puedes agarrar la página y arrastrarla. Los archivos de Office se abren como PDF si el servidor tiene configurado el conversor de documentos opcional; si no, se abren como texto.')),
+
+		h3('Marcado'),
+		para(t('Toca '), b('Marcado'), t(' en el visor y dibuja directamente sobre la página: bolígrafo, resaltador, borrador, líneas, flechas, rectángulos, elipses, texto, nubes de revisión, llamadas que señalan cosas, marcadores de traslado (de aquí a allá) y sellos: RFI con tu propio número, Aprobado, Corregir y reenviar y compañía. La herramienta Seleccionar mueve y redimensiona todo lo que hayas dibujado. Las llamadas y los sellos llevan tu nombre y la fecha. Lo hice pensando en planos y esquemas eléctricos, pero funciona con cualquier PDF.')),
+
+		h3('Llega antes de la beta'),
+		ul(
+			'El marcado sincronizado en tiempo real entre colaboradores y dispositivos, con los cambios sin conexión fusionándose al reconectar',
+			'Una lista de marcas y chinchetas de comentarios, para ver todas las notas de un juego de planos de un vistazo',
+			'Una biblioteca de símbolos: electricidad, fontanería, climatización, redes, incendios y generales',
+			'Medir y contar, eligiendo pies/pulgadas o milímetros en cada plano',
+			'Descargar con marcado, para enviar un PDF marcado a quien sea',
+			'Versiones: sube una nueva revisión y la anterior conserva su marcado',
+		),
 		hr(),
 
 		h2Collapsible('📖 Funciones de texto enriquecido'),
