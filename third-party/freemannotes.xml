@@ -430,7 +430,11 @@
 
   <!-- ═══════════════════════════════════════════════════════════════════════
        PUSH NOTIFICATIONS — FCM (iOS via Firebase / Capacitor)
-       Download the service-account JSON from Firebase Console → Service Accounts.
+       First, pay Apple their annual ransom for the privilege of sending push
+       notifications. Because apparently sending a notification to your own device 
+       is a premium feature. Once you've paid the Apple tax go to your Firebase 
+       Console - Service Accounts and download the service-account JSON. 
+       Congratulations. You may now continue.
        ═══════════════════════════════════════════════════════════════════════ -->
 
   <Config
