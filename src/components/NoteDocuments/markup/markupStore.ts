@@ -10,7 +10,7 @@ import {
 	setMarkupUnsynced,
 	subscribeMarkupRegistry,
 } from '../../../core/markupSync';
-import { isMarkup, isMarkupReply, planCommentRenumbering, type CommentMarkup, type Markup, type MarkupReply } from './markupTypes';
+import { isMarkup, isMarkupReply, isPageScale, planCommentRenumbering, type CommentMarkup, type Markup, type MarkupReply, type PageScale } from './markupTypes';
 
 // One Yjs doc per document version holds its markup: a map of markup id → plain object, comment
 // replies in a map of their own (so two people replying at once both land), and a small "meta" map
@@ -45,6 +45,8 @@ type MarkupDocHandle = {
 	doc: Y.Doc;
 	items: Y.Map<Markup>;
 	replies: Y.Map<MarkupReply>;
+	/** Page number (as text) → that page's scale, for measurements. */
+	scales: Y.Map<PageScale>;
 	meta: Y.Map<unknown>;
 	undo: Y.UndoManager;
 	persistence: IndexeddbPersistence | null;
@@ -177,11 +179,12 @@ function acquireMarkupDoc(versionId: string, options: { websocketUrl: string | n
 	const doc = new Y.Doc();
 	const items = doc.getMap<Markup>('markups');
 	const replies = doc.getMap<MarkupReply>('replies');
+	const scales = doc.getMap<PageScale>('scales');
 	const meta = doc.getMap<unknown>('meta');
 	// captureTimeout 0: every stroke is its own undo step, however quickly you draw the next one.
 	// The comment counter (meta) is deliberately not undoable: undoing a new comment must not hand
 	// its number to the next one.
-	const undo = new Y.UndoManager([items, replies], { trackedOrigins: new Set([LOCAL_ORIGIN]), captureTimeout: 0 });
+	const undo = new Y.UndoManager([items, replies, scales], { trackedOrigins: new Set([LOCAL_ORIGIN]), captureTimeout: 0 });
 	let persistence: IndexeddbPersistence | null = null;
 	try {
 		persistence = new IndexeddbPersistence(markupDatabaseName(versionId), doc);
@@ -193,6 +196,7 @@ function acquireMarkupDoc(versionId: string, options: { websocketUrl: string | n
 		doc,
 		items,
 		replies,
+		scales,
 		meta,
 		undo,
 		persistence,
@@ -300,6 +304,10 @@ export type PdfMarkup = {
 	syncState: MarkupSyncState;
 	/** This device has changes the server hasn't had yet. */
 	unsynced: boolean;
+	/** Each page's scale for measurements (pages without one aren't in the map). */
+	pageScales: ReadonlyMap<number, PageScale>;
+	/** Sets a page's scale, or clears it with null. Undoable, and synced like the markup. */
+	setPageScale: (page: number, scale: PageScale | null) => void;
 	/** Adds a markup, or replaces the one with the same id (moves, resizes, recolours, text edits). */
 	add: (markup: Markup) => void;
 	/** Saves a new comment with the next number. Returns it as saved. */
@@ -314,9 +322,10 @@ export type PdfMarkup = {
 	redo: () => void;
 };
 
-type MarkupSnapshot = Pick<PdfMarkup, 'ready' | 'items' | 'replies' | 'canUndo' | 'canRedo' | 'syncState' | 'unsynced'>;
+type MarkupSnapshot = Pick<PdfMarkup, 'ready' | 'items' | 'replies' | 'canUndo' | 'canRedo' | 'syncState' | 'unsynced' | 'pageScales'>;
 
-const EMPTY_SNAPSHOT: MarkupSnapshot = { ready: false, items: [], replies: [], canUndo: false, canRedo: false, syncState: 'local', unsynced: false };
+const NO_SCALES: ReadonlyMap<number, PageScale> = new Map();
+const EMPTY_SNAPSHOT: MarkupSnapshot = { ready: false, items: [], replies: [], canUndo: false, canRedo: false, syncState: 'local', unsynced: false, pageScales: NO_SCALES };
 
 export function usePdfMarkup(versionId: string | null, options: { websocketUrl: string | null; canEdit: boolean }): PdfMarkup {
 	const [snapshot, setSnapshot] = React.useState<MarkupSnapshot>(EMPTY_SNAPSHOT);
@@ -339,10 +348,15 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 			const replies = Array.from(handle.replies.values())
 				.filter(isMarkupReply)
 				.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : 1));
+			const pageScales = new Map<number, PageScale>();
+			for (const scale of handle.scales.values()) {
+				if (isPageScale(scale)) pageScales.set(scale.page, scale);
+			}
 			setSnapshot({
 				ready: handle.ready,
 				items,
 				replies,
+				pageScales,
 				canUndo: handle.undo.canUndo(),
 				canRedo: handle.undo.canRedo(),
 				syncState: handle.syncState,
@@ -351,6 +365,7 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		};
 		handle.items.observe(publish);
 		handle.replies.observe(publish);
+		handle.scales.observe(publish);
 		handle.undo.on('stack-item-added', publish);
 		handle.undo.on('stack-item-popped', publish);
 		handle.undo.on('stack-cleared', publish);
@@ -363,6 +378,7 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 			if (!handle.destroyed) {
 				handle.items.unobserve(publish);
 				handle.replies.unobserve(publish);
+				handle.scales.unobserve(publish);
 				handle.undo.off('stack-item-added', publish);
 				handle.undo.off('stack-item-popped', publish);
 				handle.undo.off('stack-cleared', publish);
@@ -408,6 +424,15 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		handle.doc.transact(() => handle.replies.delete(replyId), LOCAL_ORIGIN);
 	}, []);
 
+	const setPageScale = React.useCallback((page: number, scale: PageScale | null): void => {
+		const handle = handleRef.current;
+		if (!handle || handle.destroyed) return;
+		handle.doc.transact(() => {
+			if (scale) handle.scales.set(String(page), { ...scale, page });
+			else handle.scales.delete(String(page));
+		}, LOCAL_ORIGIN);
+	}, []);
+
 	const removeMany = React.useCallback((ids: readonly string[]): void => {
 		const handle = handleRef.current;
 		if (!handle || handle.destroyed || ids.length === 0) return;
@@ -431,7 +456,7 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		if (handle && !handle.destroyed) handle.undo.redo();
 	}, []);
 
-	return { ...snapshot, add, addComment, peekCommentNumber, addReply, removeReply, removeMany, undo, redo };
+	return { ...snapshot, add, addComment, peekCommentNumber, addReply, removeReply, removeMany, setPageScale, undo, redo };
 }
 
 /** The shape being drawn right now. Kept out of React state so a stroke doesn't re-render the viewer. */

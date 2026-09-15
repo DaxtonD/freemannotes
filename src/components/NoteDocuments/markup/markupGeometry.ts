@@ -1,7 +1,8 @@
 import type { CalloutMarkup, CloudMarkup, Markup, MarkupAuthor, StampMarkup, SymbolMarkup } from './markupTypes';
 
 export type MarkupBounds = { x: number; y: number; w: number; h: number };
-export type MarkupHandle = 'start' | 'end' | 'nw' | 'ne' | 'sw' | 'se' | 'w' | 'e' | 'tip';
+/** `v0`, `v1`…: a point of a measurement, dragged on its own. */
+export type MarkupHandle = 'start' | 'end' | 'nw' | 'ne' | 'sw' | 'se' | 'w' | 'e' | 'tip' | `v${number}`;
 
 /** Narrowest a text box can be dragged, in page units. */
 const MIN_TEXT_WIDTH = 24;
@@ -340,6 +341,8 @@ export function hitTestMarkup(markup: Markup, px: number, py: number, tolerance:
 		case 'cloud':
 			// The scallops wander a little either side of the corner-to-corner edges.
 			return polylineHit(markup.points, true, px, py, reach + markup.arc * CLOUD_BULGE);
+		case 'measure':
+			return polylineHit(markup.points, markup.mode === 'area', px, py, reach);
 		case 'callout': {
 			// The box is solid; the leader is a line.
 			if (insideBox(markup, px, py, tolerance)) return true;
@@ -382,6 +385,7 @@ function padBounds(box: MarkupBounds, pad: number): MarkupBounds {
 export function markupBounds(markup: Markup): MarkupBounds {
 	switch (markup.kind) {
 		case 'ink':
+		case 'measure':
 			return padBounds(pointExtents(markup.points), markup.width / 2);
 		case 'line':
 		case 'arrow':
@@ -421,6 +425,7 @@ export function pickMarkup(items: readonly Markup[], px: number, py: number, tol
 		const item = items[index];
 		if ((item.kind === 'rect' || item.kind === 'ellipse') && insideBox(item, px, py, 0)) return item;
 		if (item.kind === 'cloud' && pointInPolygon(item.points, px, py)) return item;
+		if (item.kind === 'measure' && item.mode === 'area' && pointInPolygon(item.points, px, py)) return item;
 	}
 	return null;
 }
@@ -433,6 +438,7 @@ export function translateMarkup<T extends Markup>(markup: T, dx: number, dy: num
 	switch (markup.kind) {
 		case 'ink':
 		case 'cloud':
+		case 'measure':
 			return { ...markup, points: shiftPoints(markup.points, dx, dy) };
 		case 'line':
 		case 'arrow':
@@ -478,6 +484,14 @@ export function markupHandles(markup: Markup): Array<{ handle: MarkupHandle; x: 
 		case 'ink':
 		case 'cloud':
 			return cornerHandles(pointExtents(markup.points));
+		case 'measure': {
+			// Every point can be dragged, so a measurement can be nudged onto the exact corner.
+			const handles: Array<{ handle: MarkupHandle; x: number; y: number }> = [];
+			for (let index = 0; index + 1 < markup.points.length; index += 2) {
+				handles.push({ handle: `v${index / 2}`, x: markup.points[index], y: markup.points[index + 1] });
+			}
+			return handles;
+		}
 		case 'comment':
 			// Pins are dragged, not resized.
 			return [];
@@ -546,6 +560,21 @@ export function resizeMarkup(original: Markup, handle: MarkupHandle, px: number,
 			return { ...original, points: scalePointsFromCorner(original.points, handle, px, py, shift) };
 		case 'cloud':
 			return { ...original, points: scalePointsFromCorner(original.points, handle, px, py, shift) } satisfies CloudMarkup;
+		case 'measure': {
+			if (typeof handle !== 'string' || handle.charAt(0) !== 'v') return original;
+			const index = Number(handle.slice(1));
+			const count = original.points.length / 2;
+			if (!Number.isInteger(index) || index < 0 || index >= count) return original;
+			// Shift keeps the dragged point at a 45° step from its neighbour.
+			const neighbour = index > 0 ? index - 1 : 1;
+			const point = shift && count > 1
+				? snapSegmentEnd(original.points[neighbour * 2], original.points[neighbour * 2 + 1], px, py)
+				: { x: roundUnit(px), y: roundUnit(py) };
+			const points = original.points.slice();
+			points[index * 2] = point.x;
+			points[index * 2 + 1] = point.y;
+			return { ...original, points };
+		}
 		case 'stamp':
 		case 'symbol': {
 			// Stamps and symbols keep their proportions: wording has to keep fitting, and a squashed

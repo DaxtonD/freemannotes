@@ -208,6 +208,7 @@ Optional:
 * `SMTP_*` settings
 * `OCR_DISABLED=1`
 * `IMAGE_CAPTURE_MAX_DIMENSION_PX` / `IMAGE_CAPTURE_JPEG_QUALITY` — image quality ceiling for uploads and in-app camera capture. Defaults to 2560px / 0.82 (~0.5MB per photo — budget that × images-per-user × user-count for your uploads volume). Raise or lower to trade image sharpness against storage/bandwidth for your deployment's size. Only affects new uploads.
+* `DOCUMENT_UPLOAD_MAX_MB` — largest document upload in MB (default 100). Raise it for big print sets, and raise your reverse proxy's upload limit to match (Cloudflare's free plan caps requests at 100 MB).
 
 ---
 

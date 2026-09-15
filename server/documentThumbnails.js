@@ -4,6 +4,9 @@ const fs = require('fs');
 const path = require('path');
 const { Worker } = require('worker_threads');
 const sharp = require('sharp');
+// Loaded here before any worker loads it: a worker being first to load pdf-parse's native canvas
+// library crashes the process when the next worker starts (see documentTextExtraction.js).
+require('pdf-parse');
 
 // Real first-page previews for documents: page 1 of a PDF, or of the PDF copy Gotenberg made of
 // an office file. Until one exists (or when rendering fails) the generated text card from upload

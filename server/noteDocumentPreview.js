@@ -9,7 +9,13 @@ const path = require('path');
 const JSZip = require('jszip');
 const mammoth = require('mammoth');
 const { PDFParse } = require('pdf-parse');
-const sharp = require('sharp');
+// Loaded on first use: the text-reading worker (documentTextWorker.js) imports this module and
+// never makes preview images, so it has no reason to load sharp's native library in its thread.
+let sharpModule = null;
+const loadSharp = () => {
+	if (!sharpModule) sharpModule = require('sharp');
+	return sharpModule;
+};
 const XLSX = require('xlsx');
 
 const PREVIEW_WIDTH = 960;
@@ -305,8 +311,8 @@ async function createDocumentPreviewBuffers(args) {
 			<text x="96" y="${PREVIEW_HEIGHT - 120}" font-family="Georgia, serif" font-size="24" fill="#64748B">Freeman Notes document preview</text>
 		</svg>
 	`;
-	const previewBuffer = await sharp(Buffer.from(svg)).webp({ quality: 88 }).toBuffer();
-	const thumbnailBuffer = await sharp(previewBuffer).resize(THUMB_SIZE_PX, THUMB_SIZE_PX, { fit: 'cover' }).webp({ quality: 80 }).toBuffer();
+	const previewBuffer = await loadSharp()(Buffer.from(svg)).webp({ quality: 88 }).toBuffer();
+	const thumbnailBuffer = await loadSharp()(previewBuffer).resize(THUMB_SIZE_PX, THUMB_SIZE_PX, { fit: 'cover' }).webp({ quality: 80 }).toBuffer();
 	return {
 		previewBuffer,
 		thumbnailBuffer,

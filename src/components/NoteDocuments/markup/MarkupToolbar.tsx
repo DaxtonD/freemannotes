@@ -4,6 +4,7 @@ import {
 	faArrowPointer,
 	faCheck,
 	faCommentDots,
+	faDeleteLeft,
 	faEraser,
 	faFont,
 	faHighlighter,
@@ -11,6 +12,7 @@ import {
 	faRotate,
 	faRotateLeft,
 	faRotateRight,
+	faRulerCombined,
 	faShapes,
 	faStamp,
 	faTrashCan,
@@ -31,7 +33,7 @@ import { MarkupSymbolLibrary } from './MarkupSymbolLibrary';
 import { SymbolGlyph, symbolById, type SymbolDefinition } from './markupSymbols';
 import styles from './Markup.module.css';
 
-type IconKind = 'line' | 'arrow' | 'rect' | 'ellipse' | 'cloudRect' | 'cloudFreeform' | 'callout' | 'move';
+type IconKind = 'line' | 'arrow' | 'rect' | 'ellipse' | 'cloudRect' | 'cloudFreeform' | 'callout' | 'move' | 'measureLength' | 'measurePath' | 'measureArea';
 
 // The cloud icons are drawn with the same scallop code as the real thing.
 const CLOUD_RECT_ICON = cloudPath(rectCloudPoints({ x: 2.5, y: 3.5, w: 11, h: 9 }), 3.2);
@@ -59,6 +61,21 @@ function ShapeIcon(props: { kind: IconKind }): React.JSX.Element {
 					<polyline points="2.5,10.2 2.5,13.5 5.8,13.5" />
 				</>
 			) : null}
+			{kind === 'measureLength' ? (
+				<>
+					<line x1="2.5" y1="9.5" x2="13.5" y2="9.5" />
+					<line x1="2.5" y1="6.5" x2="2.5" y2="12.5" />
+					<line x1="13.5" y1="6.5" x2="13.5" y2="12.5" />
+				</>
+			) : null}
+			{kind === 'measurePath' ? (
+				<>
+					<polyline points="2.5,12.5 6,5 10,10 13.5,3.5" />
+					<circle cx="6" cy="5" r="1.2" fill="currentColor" />
+					<circle cx="10" cy="10" r="1.2" fill="currentColor" />
+				</>
+			) : null}
+			{kind === 'measureArea' ? <polygon points="3,12.5 4.5,4 12,3 13.5,11" fill="currentColor" fillOpacity="0.25" /> : null}
 			{kind === 'move' ? (
 				<>
 					<circle cx="4" cy="12" r="2.2" />
@@ -89,15 +106,18 @@ const TOOLS: readonly ToolEntry[] = [
 	{ tool: 'move', labelKey: 'documents.markupMove', shortcut: 'M', icon: <ShapeIcon kind="move" /> },
 	{ tool: 'stamp', labelKey: 'documents.markupStamp', shortcut: 'S', icon: <FontAwesomeIcon icon={faStamp} /> },
 	{ tool: 'symbol', labelKey: 'documents.markupSymbol', shortcut: 'Y', icon: <FontAwesomeIcon icon={faShapes} /> },
+	{ tool: 'length', labelKey: 'documents.markupLength', shortcut: 'D', icon: <ShapeIcon kind="measureLength" /> },
+	{ tool: 'path', labelKey: 'documents.markupPath', shortcut: 'W', icon: <ShapeIcon kind="measurePath" /> },
+	{ tool: 'area', labelKey: 'documents.markupArea', shortcut: 'Q', icon: <ShapeIcon kind="measureArea" /> },
 ];
 
 // Phones: related tools share one button, and the choices inside the group show in the options
 // row above it, so the main row fits a phone's width instead of scrolling.
 const TOOL_GROUPS: ReadonlyArray<{ id: string; tools: readonly MarkupTool[] }> = [
 	{ id: 'select', tools: ['select'] },
-	{ id: 'draw', tools: ['pen', 'highlighter'] },
-	{ id: 'eraser', tools: ['eraser'] },
+	{ id: 'draw', tools: ['pen', 'highlighter', 'eraser'] },
 	{ id: 'shapes', tools: ['line', 'arrow', 'rect', 'ellipse', 'cloud', 'move'] },
+	{ id: 'measure', tools: ['length', 'path', 'area'] },
 	{ id: 'notes', tools: ['text', 'callout', 'comment'] },
 	{ id: 'stamp', tools: ['stamp'] },
 	{ id: 'symbol', tools: ['symbol'] },
@@ -126,6 +146,17 @@ export type MarkupStyleControls = {
 	size: number;
 };
 
+/** Measuring tools' extras in the options row: the page's scale, and a path or area in progress. */
+export type MarkupMeasureControls = {
+	scaleLabel: string;
+	hasScale: boolean;
+	scaleOpen: boolean;
+	onToggleScale: () => void;
+	polyPoints: number;
+	onFinishPoly: () => void;
+	onUndoPolyPoint: () => void;
+};
+
 type MarkupToolbarProps = {
 	placement: 'top' | 'bottom';
 	tool: MarkupTool;
@@ -147,6 +178,9 @@ type MarkupToolbarProps = {
 	onStampPresetChange: (preset: StampPreset) => void;
 	onSymbolChange: (id: string) => void;
 	onRotateSelection: () => void;
+	measure: MarkupMeasureControls | null;
+	/** A floating panel shown next to the bar (the scale settings). */
+	panel?: React.ReactNode;
 	onDeleteSelection: () => void;
 	onUndo: () => void;
 	onRedo: () => void;
@@ -162,8 +196,10 @@ export function MarkupToolbar(props: MarkupToolbarProps): React.JSX.Element {
 	const label = (key: string, shortcut: string): string => (isCoarsePointer ? t(key) : `${t(key)} (${shortcut})`);
 	// The last tool used in each group, so tapping the group button comes back to it.
 	const lastInGroupRef = React.useRef<Record<string, MarkupTool>>({});
-	const activeGroup = TOOL_GROUPS.find((group) => group.tools.includes(tool)) ?? TOOL_GROUPS[0];
-	lastInGroupRef.current[activeGroup.id] = tool;
+	// Calibrating is part of measuring: its group is the measure group, showing Length.
+	const groupTool: MarkupTool = tool === 'calibrate' ? 'length' : tool;
+	const activeGroup = TOOL_GROUPS.find((group) => group.tools.includes(groupTool)) ?? TOOL_GROUPS[0];
+	lastInGroupRef.current[activeGroup.id] = groupTool;
 	const [libraryOpen, setLibraryOpen] = React.useState(false);
 	React.useEffect(() => {
 		if (tool !== 'symbol') setLibraryOpen(false);
@@ -189,7 +225,7 @@ export function MarkupToolbar(props: MarkupToolbarProps): React.JSX.Element {
 		if (options.length > 0) options.push(<span key={`divider-${options.length}`} className={styles.divider} aria-hidden="true" />);
 	};
 	if (isCoarsePointer && activeGroup.tools.length > 1) {
-		options.push(<div key="subtools" className={styles.group}>{activeGroup.tools.map((entry) => toolButton(toolEntry(entry), entry === tool))}</div>);
+		options.push(<div key="subtools" className={styles.group}>{activeGroup.tools.map((entry) => toolButton(toolEntry(entry), entry === groupTool))}</div>);
 	}
 	if (tool === 'cloud') {
 		addDivider();
@@ -267,6 +303,38 @@ export function MarkupToolbar(props: MarkupToolbarProps): React.JSX.Element {
 			</div>,
 		);
 	}
+	if (props.measure) {
+		const measure = props.measure;
+		const needed = tool === 'area' ? 3 : 2;
+		addDivider();
+		options.push(
+			<div key="measure" className={styles.group}>
+				<button
+					type="button"
+					data-scale-panel-toggle="true"
+					className={`${styles.libraryButton}${measure.scaleOpen ? ` ${styles.libraryButtonActive}` : ''}${measure.hasScale ? '' : ` ${styles.scaleButtonUnset}`}`}
+					onClick={measure.onToggleScale}
+					aria-expanded={measure.scaleOpen}
+					title={t('documents.markupScale')}
+				>
+					<FontAwesomeIcon icon={faRulerCombined} />
+					<span>{measure.scaleLabel}</span>
+				</button>
+				{tool === 'calibrate' ? <span className={styles.measureHint}>{t('documents.markupScaleCalibrateHint')}</span> : null}
+				{(tool === 'path' || tool === 'area') && measure.polyPoints > 0 ? (
+					<>
+						<button type="button" className={styles.tool} onClick={measure.onUndoPolyPoint} aria-label={t('documents.markupMeasureUndoPoint')} title={label('documents.markupMeasureUndoPoint', 'Backspace')}>
+							<FontAwesomeIcon icon={faDeleteLeft} />
+						</button>
+						<button type="button" className={styles.libraryButton} onClick={measure.onFinishPoly} disabled={measure.polyPoints < needed} title={label('documents.markupMeasureFinish', 'Enter')}>
+							<FontAwesomeIcon icon={faCheck} />
+							<span>{t('documents.markupMeasureFinish')}</span>
+						</button>
+					</>
+				) : null}
+			</div>,
+		);
+	}
 	if (styleControls) {
 		addDivider();
 		options.push(
@@ -334,7 +402,7 @@ export function MarkupToolbar(props: MarkupToolbarProps): React.JSX.Element {
 						const entry = toolEntry(shown);
 						return <React.Fragment key={group.id}>{toolButton(entry, group.id === activeGroup.id)}</React.Fragment>;
 					})
-					: TOOLS.map((entry) => toolButton(entry, entry.tool === tool))}
+					: TOOLS.map((entry) => toolButton(entry, entry.tool === groupTool))}
 			</div>
 			{props.hasSelection ? (
 				<>
@@ -388,6 +456,7 @@ export function MarkupToolbar(props: MarkupToolbarProps): React.JSX.Element {
 					onClose={closeLibrary}
 				/>
 			) : null}
+			{props.panel ?? null}
 		</div>
 	);
 }

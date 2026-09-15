@@ -137,6 +137,18 @@
     Required="false"
     Mask="false">0.82</Config>
 
+  <!-- Largest document (PDF or office file) a user can upload, in MB. Print sets often pass
+       40 MB. A reverse proxy in front has its own upload size limit that must allow it too. -->
+  <Config
+    Name="Document Upload Limit (MB)"
+    Target="DOCUMENT_UPLOAD_MAX_MB"
+    Default="100"
+    Description="Largest document a user can upload, in MB. Raise it for big print sets. Each upload is held in memory while it saves, and your reverse proxy's upload limit must allow it too (Cloudflare's free plan stops at 100 MB)."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">100</Config>
+
   <!-- ═══════════════════════════════════════════════════════════════════════
        DATABASE
        ═══════════════════════════════════════════════════════════════════════ -->

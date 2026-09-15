@@ -30,6 +30,7 @@ import {
 	type CommentMarkup,
 	type Markup,
 	type MarkupAuthor,
+	type MeasureMarkup,
 	type MarkupTool,
 	type StampMarkup,
 	type StampPreset,
@@ -74,7 +75,9 @@ const DOUBLE_TAP_MS = 350;
 // A tap-to-place press that moves further than this isn't a tap, so it doesn't place anything.
 const TAP_MOVE_PX = 10;
 // Placed with a tap, so one finger is free to scroll the page with these (see PdfViewer.module.css).
-const TAP_TOOLS: ReadonlySet<MarkupTool> = new Set<MarkupTool>(['text', 'stamp', 'symbol', 'comment']);
+const TAP_TOOLS: ReadonlySet<MarkupTool> = new Set<MarkupTool>(['text', 'stamp', 'symbol', 'comment', 'path', 'area']);
+// Path and area: a tap this close (screen pixels) to the last point, or an area's first, finishes it.
+const POLY_CLOSE_PX = 14;
 // Select-tool panning with a finger keeps gliding after the finger lifts, like native scrolling.
 const VELOCITY_WINDOW_MS = 100;
 const MOMENTUM_MIN_START_PX_PER_MS = 0.15;
@@ -139,6 +142,12 @@ type EditDrag = {
 	preview: Markup | null;
 };
 
+/**
+ * Dragging one end of the calibration line. The pointer keeps the offset it grabbed at, so a finger
+ * beside the crosshair moves it without hiding the exact spot underneath.
+ */
+type CalibrationDrag = { pointerId: number; host: HTMLElement; size: PageSize; original: MeasureMarkup; end: 0 | 1; grabX: number; grabY: number };
+
 /** A press with a tap-to-place tool, placed when it's released as a tap. */
 type PlaceTap = { pointerId: number; tool: MarkupTool; point: PagePoint; clientX: number; clientY: number };
 
@@ -154,6 +163,9 @@ type Pan = {
 };
 
 export type MarkupStampChoice = { preset: StampPreset; label: string; color: string };
+
+/** A path or area being built tap by tap, from the viewer's buttons and keys. */
+export type PolyControls = { finish: () => void; undoPoint: () => void; cancel: () => void; count: () => number };
 
 type UseMarkupDrawingOptions = {
 	scrollerRef: React.RefObject<HTMLDivElement | null>;
@@ -186,6 +198,14 @@ type UseMarkupDrawingOptions = {
 	onPlaceComment: (point: { page: number; x: number; y: number }) => void;
 	/** A pin was tapped (not dragged) with the select tool. */
 	onOpenComment: (comment: CommentMarkup) => void;
+	/** Calibrate tool: the line over a known dimension. It stays up, ends draggable, until the scale is set. */
+	calibrationStore: MarkupDraftStore;
+	/** A calibration line was drawn on this page. */
+	onCalibrate: (page: number) => void;
+	/** Path and area in progress: how many points so far (0 when none). */
+	onPolyChange: (points: number) => void;
+	/** Lets the viewer finish, step back or cancel a path or area from its buttons and keys. */
+	polyControlsRef: React.MutableRefObject<PolyControls | null>;
 };
 
 const clamp = (value: number, min: number, max: number): number => Math.max(min, Math.min(max, value));
@@ -256,6 +276,11 @@ function buildMarkup(stroke: Stroke, id: string, final: boolean, author: MarkupA
 			if (!final) return { ...base, kind: 'ink', points: stroke.points.slice() };
 			return { ...base, kind: 'cloud', points: tidyCloudPoints(stroke.points, arc), arc };
 		}
+		case 'length':
+		case 'calibrate': {
+			const end = stroke.shift ? snapSegmentEnd(stroke.startX, stroke.startY, stroke.lastX, stroke.lastY) : { x: stroke.lastX, y: stroke.lastY };
+			return { ...base, kind: 'measure', mode: 'length', points: [stroke.startX, stroke.startY, end.x, end.y] };
+		}
 		case 'callout':
 			return placeCallout(stroke, id, author);
 		default:
@@ -279,6 +304,8 @@ function isWorthKeeping(markup: Markup, unitsPerPx: number): boolean {
 			const ys = markup.points.filter((_, index) => index % 2 === 1);
 			return Math.max(...xs) - Math.min(...xs) >= minimum && Math.max(...ys) - Math.min(...ys) >= minimum;
 		}
+		case 'measure':
+			return markup.points.length >= 4 && Math.hypot(markup.points[2] - markup.points[0], markup.points[3] - markup.points[1]) >= minimum;
 		case 'ink':
 			// Even a single tap with the pen is a deliberate dot.
 			return markup.points.length >= 2;
@@ -393,8 +420,13 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 		let edit: EditDrag | null = null;
 		let pan: Pan | null = null;
 		let placeTap: PlaceTap | null = null;
+		let calibrationDrag: CalibrationDrag | null = null;
+		// The calibration line from before a new one started, put back if the new one is only a slip.
+		let calibrationBefore: Markup | null = null;
 		let momentumFrame = 0;
 		let lastTap: { id: string; time: number } | null = null;
+		// A path or area being built tap by tap. Lives until it's finished or cancelled; changing tool finishes it.
+		let poly: { tool: 'path' | 'area'; page: number; host: HTMLElement; size: PageSize; points: number[]; hover: { x: number; y: number } | null } | null = null;
 		// After a touch release opens the comment panel, the phone still sends its own click (and the
 		// mousedown before it) to whatever is now under the finger: the panel's text box, which popped
 		// the keyboard, or the dimmed backdrop, which closed the panel straight away. Cancelling the
@@ -418,8 +450,10 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 
 		const publishDraft = (): void => {
 			frame = 0;
-			if (stroke && stroke.tool !== 'eraser') draftStore.set(buildMarkup(stroke, 'draft', false, latest.current.author));
+			if (stroke && stroke.tool === 'calibrate') latest.current.calibrationStore.set(buildMarkup(stroke, 'calibration', false, null));
+			else if (stroke && stroke.tool !== 'eraser') draftStore.set(buildMarkup(stroke, 'draft', false, latest.current.author));
 			else if (edit?.preview) draftStore.set(edit.preview);
+			else if (poly) draftStore.set(polyDraft());
 		};
 		const scheduleDraft = (): void => {
 			if (frame) return;
@@ -460,6 +494,7 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 		const cancelGesture = (): void => {
 			if (stroke) {
 				if (stroke.tool === 'eraser' && stroke.erased.size > 0) latest.current.onEraseProgress(NO_IDS);
+				if (stroke.tool === 'calibrate') latest.current.calibrationStore.set(calibrationBefore);
 				release(stroke.pointerId);
 				stroke = null;
 			}
@@ -476,6 +511,11 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 			if (placeTap) {
 				release(placeTap.pointerId);
 				placeTap = null;
+			}
+			if (calibrationDrag) {
+				release(calibrationDrag.pointerId);
+				latest.current.calibrationStore.set(calibrationDrag.original);
+				calibrationDrag = null;
 			}
 			clearDraft();
 		};
@@ -504,6 +544,78 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 			momentumFrame = window.requestAnimationFrame(step);
 		};
 
+		// ── Path and area, one tap per point ──
+		const polyDraft = (): MeasureMarkup | null => {
+			if (!poly) return null;
+			const { style } = latest.current;
+			// On desktop the next segment follows the cursor until the next click.
+			const points = poly.hover ? [...poly.points, poly.hover.x, poly.hover.y] : poly.points.slice();
+			return { id: 'draft', kind: 'measure', mode: poly.tool, page: poly.page, color: style.color, width: style.width, points, createdAt: 0, updatedAt: 0 };
+		};
+		const notifyPoly = (): void => latest.current.onPolyChange(poly ? poly.points.length / 2 : 0);
+		const finishPoly = (): void => {
+			const done = poly;
+			poly = null;
+			clearDraft();
+			notifyPoly();
+			if (!done || done.points.length / 2 < (done.tool === 'area' ? 3 : 2)) return;
+			const now = Date.now();
+			const { style } = latest.current;
+			latest.current.onCommit({
+				id: createMarkupId(),
+				kind: 'measure',
+				mode: done.tool,
+				page: done.page,
+				color: style.color,
+				width: style.width,
+				points: done.points.slice(),
+				createdAt: now,
+				updatedAt: now,
+			});
+		};
+		const cancelPoly = (): void => {
+			poly = null;
+			clearDraft();
+			notifyPoly();
+		};
+		const undoPolyPoint = (): void => {
+			if (!poly) return;
+			poly.points.splice(-2, 2);
+			if (poly.points.length === 0) {
+				cancelPoly();
+				return;
+			}
+			notifyPoly();
+			scheduleDraft();
+		};
+		const addPolyPoint = (polyTool: 'path' | 'area', point: PagePoint): void => {
+			// A path or area stays on the page it was started on.
+			if (poly && poly.page !== point.page) return;
+			if (!poly || poly.tool !== polyTool) poly = { tool: polyTool, page: point.page, host: point.host, size: point.size, points: [], hover: null };
+			const count = poly.points.length / 2;
+			const reach = POLY_CLOSE_PX * point.unitsPerPx;
+			const lastX = poly.points[poly.points.length - 2];
+			const lastY = poly.points[poly.points.length - 1];
+			// Tapping the last point again (a double-tap or double-click), or an area's first point, finishes it.
+			if (count >= 2 && Math.hypot(point.x - lastX, point.y - lastY) <= reach) {
+				finishPoly();
+				return;
+			}
+			if (polyTool === 'area' && count >= 3 && Math.hypot(point.x - poly.points[0], point.y - poly.points[1]) <= reach) {
+				finishPoly();
+				return;
+			}
+			poly.points.push(point.x, point.y);
+			notifyPoly();
+			scheduleDraft();
+		};
+		latest.current.polyControlsRef.current = {
+			finish: finishPoly,
+			undoPoint: undoPolyPoint,
+			cancel: cancelPoly,
+			count: () => (poly ? poly.points.length / 2 : 0),
+		};
+
 		/** Puts down the thing a tap-to-place tool makes, where the tap was. */
 		const placeAt = (placeTool: MarkupTool, point: PagePoint): void => {
 			const current = latest.current;
@@ -530,6 +642,10 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				}
 				case 'comment':
 					current.onPlaceComment({ page: point.page, x: point.x, y: point.y });
+					return;
+				case 'path':
+				case 'area':
+					addPolyPoint(placeTool, point);
 					return;
 				default:
 			}
@@ -674,6 +790,31 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				placeTap = { pointerId: event.pointerId, tool, point, clientX: event.clientX, clientY: event.clientY };
 				return;
 			}
+			if (tool === 'calibrate') {
+				// Grabbing an end of the line already drawn fine-tunes it; pressing anywhere else draws a new one.
+				const line = latest.current.calibrationStore.get();
+				if (line && line.kind === 'measure' && line.page === point.page && line.points.length >= 4) {
+					const reach = (event.pointerType === 'mouse' ? HANDLE_HIT_MOUSE_PX : HANDLE_HIT_TOUCH_PX) * point.unitsPerPx;
+					const toStart = Math.hypot(point.x - line.points[0], point.y - line.points[1]);
+					const toEnd = Math.hypot(point.x - line.points[2], point.y - line.points[3]);
+					if (Math.min(toStart, toEnd) <= reach) {
+						event.preventDefault();
+						scroller.setPointerCapture(event.pointerId);
+						const end = toStart <= toEnd ? 0 : 1;
+						calibrationDrag = {
+							pointerId: event.pointerId,
+							host: point.host,
+							size: point.size,
+							original: line,
+							end,
+							grabX: line.points[end * 2] - point.x,
+							grabY: line.points[end * 2 + 1] - point.y,
+						};
+						return;
+					}
+				}
+				calibrationBefore = line;
+			}
 			event.preventDefault();
 			scroller.setPointerCapture(event.pointerId);
 			const { style, textStyle } = latest.current;
@@ -709,6 +850,19 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				while (pan.samples.length > 2 && now - pan.samples[0].time > VELOCITY_WINDOW_MS) pan.samples.shift();
 				return;
 			}
+			if (calibrationDrag && event.pointerId === calibrationDrag.pointerId) {
+				const drag = calibrationDrag;
+				const point = toPage(drag.host, drag.size, event.clientX, event.clientY);
+				const other = drag.end === 0 ? 1 : 0;
+				const target = { x: roundUnit(point.x + drag.grabX), y: roundUnit(point.y + drag.grabY) };
+				// Shift keeps the line level, plumb or at 45°, like drawing it.
+				const moved = event.shiftKey ? snapSegmentEnd(drag.original.points[other * 2], drag.original.points[other * 2 + 1], target.x, target.y) : target;
+				const points = drag.original.points.slice();
+				points[drag.end * 2] = moved.x;
+				points[drag.end * 2 + 1] = moved.y;
+				latest.current.calibrationStore.set({ ...drag.original, points });
+				return;
+			}
 			if (edit && event.pointerId === edit.pointerId) {
 				const moving = edit.handle === null || edit.handle === 'box';
 				if (!edit.preview && moving && Math.hypot(event.clientX - edit.startClientX, event.clientY - edit.startClientY) < DRAG_SLOP_PX) return;
@@ -731,6 +885,12 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 						edit.preview = resizeMarkup(edit.original, edit.handle, point.x, point.y, event.shiftKey);
 					}
 				}
+				scheduleDraft();
+				return;
+			}
+			if (poly && !stroke && event.pointerType === 'mouse') {
+				const point = toPage(poly.host, poly.size, event.clientX, event.clientY);
+				poly.hover = { x: point.x, y: point.y };
 				scheduleDraft();
 				return;
 			}
@@ -776,6 +936,12 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				}
 				return;
 			}
+			if (calibrationDrag && event.pointerId === calibrationDrag.pointerId) {
+				// The line stays where it was let go; the scale panel reads its length from the store.
+				calibrationDrag = null;
+				release(event.pointerId);
+				return;
+			}
 			if (placeTap && event.pointerId === placeTap.pointerId) {
 				const tap = placeTap;
 				placeTap = null;
@@ -809,6 +975,18 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				if (finished.erased.size > 0) latest.current.onEraseCommit(Array.from(finished.erased));
 				return;
 			}
+			if (finished.tool === 'calibrate') {
+				// Nothing is saved as markup: the line stays up for fine-tuning while the viewer asks how
+				// long it really is. A slip keeps whatever line was there before.
+				const line = buildMarkup(finished, 'calibration', true, null);
+				if (isWorthKeeping(line, finished.unitsPerPx)) {
+					latest.current.calibrationStore.set(line);
+					latest.current.onCalibrate(finished.page);
+				} else {
+					latest.current.calibrationStore.set(calibrationBefore);
+				}
+				return;
+			}
 			if (finished.tool === 'callout') {
 				// Placed, then straight into typing; an empty callout isn't kept.
 				latest.current.onStartText(placeCallout(finished, createMarkupId(), latest.current.author), true);
@@ -825,7 +1003,8 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 			const owns = (stroke && stroke.pointerId === event.pointerId)
 				|| (edit && edit.pointerId === event.pointerId)
 				|| (pan && pan.pointerId === event.pointerId)
-				|| (placeTap && placeTap.pointerId === event.pointerId);
+				|| (placeTap && placeTap.pointerId === event.pointerId)
+				|| (calibrationDrag && calibrationDrag.pointerId === event.pointerId);
 			if (owns) cancelGesture();
 		};
 
@@ -871,6 +1050,9 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 			window.removeEventListener('keydown', onKeyDown);
 			window.removeEventListener('keyup', onKeyUp);
 			stopMomentum();
+			// Switching tool (or closing) keeps a path or area that's far enough along.
+			finishPoly();
+			latest.current.polyControlsRef.current = null;
 			cancelGesture();
 			latest.current.spaceHeldRef.current = false;
 			delete scroller.dataset.markupTool;

@@ -1,5 +1,5 @@
 // Instance-wide settings a self-hosted deployment's admin controls via env
-// vars (IMAGE_CAPTURE_MAX_DIMENSION_PX / IMAGE_CAPTURE_JPEG_QUALITY — see
+// vars (IMAGE_CAPTURE_MAX_DIMENSION_PX / IMAGE_CAPTURE_JPEG_QUALITY / DOCUMENT_UPLOAD_MAX_MB — see
 // server/noteMediaRouter.js). There's no DB row or admin UI for these by
 // design: a deployment sizes them once for its own storage/bandwidth budget
 // and user count, not something that needs to change at runtime. The client
@@ -11,19 +11,28 @@ const INSTANCE_CONFIG_CACHE_KEY = 'freemannotes.instanceConfig.v1';
 
 const DEFAULT_IMAGE_CAPTURE_MAX_DIMENSION_PX = 2560;
 const DEFAULT_IMAGE_CAPTURE_JPEG_QUALITY = 0.82;
+// The server's own default for DOCUMENT_UPLOAD_MAX_MB, until /api/config says otherwise.
+const DEFAULT_DOCUMENT_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
 
 type InstanceConfig = {
 	imageCaptureMaxDimensionPx: number;
 	imageCaptureJpegQuality: number;
 	/** The server has Gotenberg (GOTENBERG_URL), so office files get a PDF copy. */
 	documentConversion: boolean;
+	/** Largest document the server accepts (DOCUMENT_UPLOAD_MAX_MB). */
+	documentUploadMaxBytes: number;
 };
 
 const defaultConfig: InstanceConfig = {
 	imageCaptureMaxDimensionPx: DEFAULT_IMAGE_CAPTURE_MAX_DIMENSION_PX,
 	imageCaptureJpegQuality: DEFAULT_IMAGE_CAPTURE_JPEG_QUALITY,
 	documentConversion: false,
+	documentUploadMaxBytes: DEFAULT_DOCUMENT_UPLOAD_MAX_BYTES,
 };
+
+const positiveNumber = (value: unknown, fallback: number): number => (
+	typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback
+);
 
 function readPersistedConfig(): InstanceConfig | null {
 	try {
@@ -38,6 +47,7 @@ function readPersistedConfig(): InstanceConfig | null {
 			imageCaptureMaxDimensionPx,
 			imageCaptureJpegQuality,
 			documentConversion: (parsed as { documentConversion?: unknown }).documentConversion === true,
+			documentUploadMaxBytes: positiveNumber((parsed as { documentUploadMaxBytes?: unknown }).documentUploadMaxBytes, DEFAULT_DOCUMENT_UPLOAD_MAX_BYTES),
 		};
 	} catch {
 		return null;
@@ -74,6 +84,7 @@ function ensureInstanceConfigLoaded(): void {
 					? imageCaptureJpegQuality
 					: defaultConfig.imageCaptureJpegQuality,
 				documentConversion: (data as { documentConversion?: unknown }).documentConversion === true,
+				documentUploadMaxBytes: positiveNumber((data as { documentUploadMaxBytes?: unknown }).documentUploadMaxBytes, DEFAULT_DOCUMENT_UPLOAD_MAX_BYTES),
 			};
 			cachedConfig = next;
 			writePersistedConfig(next);
@@ -99,4 +110,9 @@ export function getImageCaptureJpegQuality(): number {
 export function getDocumentConversionEnabled(): boolean {
 	ensureInstanceConfigLoaded();
 	return cachedConfig.documentConversion;
+}
+
+export function getDocumentUploadMaxBytes(): number {
+	ensureInstanceConfigLoaded();
+	return cachedConfig.documentUploadMaxBytes;
 }

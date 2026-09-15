@@ -1,12 +1,14 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faArrowsRotate, faChevronDown, faChevronUp, faCloud, faCloudArrowUp, faCommentDots, faDownload, faTriangleExclamation, faMagnifyingGlass, faMagnifyingGlassMinus, faMagnifyingGlassPlus, faPen, faTableColumns, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faArrowsRotate, faChevronDown, faChevronUp, faCloud, faCloudArrowUp, faCommentDots, faDownload, faFile, faShareNodes, faTriangleExclamation, faMagnifyingGlass, faMagnifyingGlassMinus, faMagnifyingGlassPlus, faPen, faTableColumns, faXmark } from '@fortawesome/free-solid-svg-icons';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
-import { resolveNoteDocumentViewBlob } from '../../core/noteDocumentStore';
+import { resolveNoteDocumentBlob, resolveNoteDocumentViewBlob } from '../../core/noteDocumentStore';
+import { saveBlobToDevice } from './saveBlobToDevice';
+import { canShareFileType, shareFile } from './shareFile';
 import { readPdfViewerPosition, writePdfViewerPosition } from '../../core/pdfViewerPositions';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
@@ -21,6 +23,7 @@ import {
 	type PdfSearchMatch,
 } from './pdfTextSearch';
 import {
+	MarkupCalibrationLayer,
 	MarkupDraftLayer,
 	MarkupLayer,
 	MarkupPinLayer,
@@ -29,13 +32,15 @@ import {
 	MarkupTextLayer,
 	type MarkupTextEditorHandlers,
 } from './markup/MarkupLayer';
+import { scaleLabel, type MeasureContext } from './markup/markupMeasure';
+import { MarkupScalePanel } from './markup/MarkupScalePanel';
 import { MarkupToolbar, type MarkupStyleControls } from './markup/MarkupToolbar';
 import { calloutStrokeWidth, fitStampWidth, markupBounds, rotateSymbol, roundUnit, translateMarkup } from './markup/markupGeometry';
 import { MarkupPanel, type MarkupPanelTab } from './markup/MarkupPanel';
 import { MAX_RECENT_SYMBOLS, styleForTool, useMarkupPrefs } from './markup/markupPrefs';
 import { createMarkupDraftStore, usePdfMarkup, type MarkupDraftStore } from './markup/markupStore';
 import { createMarkupId, stampDefinition, type CommentMarkup, type Markup, type MarkupAuthor, type MarkupTool, type TypedMarkup } from './markup/markupTypes';
-import { useMarkupDrawing, type MarkupStampChoice } from './markup/useMarkupDrawing';
+import { useMarkupDrawing, type MarkupStampChoice, type PolyControls } from './markup/useMarkupDrawing';
 import { resolveKnownUserById } from '../../core/userIdentityCache';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import styles from './PdfViewer.module.css';
@@ -69,7 +74,11 @@ const MAX_PAGE_WIDTH_PX = 1000;
 // Phones: room under the last page so the floating page pill never sits on top of its bottom edge.
 const PAGE_PILL_CLEARANCE_PX = 56;
 const MIN_ZOOM = 1;
-const MAX_ZOOM = 5;
+// How far you can zoom in: at least 5×, and on a big sheet far enough that one PDF point (1/72")
+// is MAX_ZOOM_PX_PER_POINT screen pixels, so a 1" scale bar on a 36" plan can be picked out exactly.
+const MIN_MAX_ZOOM = 5;
+const MAX_ZOOM_LIMIT = 64;
+const MAX_ZOOM_PX_PER_POINT = 10;
 const ZOOM_BUTTON_STEP = 1.25;
 const DOUBLE_TAP_ZOOM = 2.5;
 const DOUBLE_TAP_WINDOW_MS = 300;
@@ -81,6 +90,10 @@ const POSITION_SAVE_DELAY_MS = 500;
 // Canvas memory is 4 bytes a pixel, and mobile browsers kill the tab well before desktop
 // ones would. Cap each page's backing canvas; past this a page just gets slightly softer.
 const MAX_CANVAS_PIXELS = 8_000_000;
+// Zoomed in past that cap, the on-screen part of a page is redrawn sharp once scrolling has been
+// still this long, with this share of the view added on each side so small pans stay sharp.
+const DETAIL_SETTLE_MS = 150;
+const DETAIL_MARGIN = 0.25;
 // Shared with the photo viewer: the editor's attachment sheet ignores its own swipe gestures
 // while a full-screen viewer is open.
 const VIEWER_BODY_FLAG = 'freemannotesNoteImageViewerOpen';
@@ -121,7 +134,12 @@ const MARKUP_TOOL_KEYS: Record<string, MarkupTool | undefined> = {
 	s: 'stamp',
 	y: 'symbol',
 	n: 'comment',
+	d: 'length',
+	w: 'path',
+	q: 'area',
 };
+// The tools that show the page's scale in the options row.
+const MEASURE_TOOLS: ReadonlySet<MarkupTool> = new Set<MarkupTool>(['length', 'path', 'area', 'calibrate']);
 const MARKUP_NUDGE: Record<string, [number, number] | undefined> = {
 	ArrowLeft: [-1, 0],
 	ArrowRight: [1, 0],
@@ -129,8 +147,8 @@ const MARKUP_NUDGE: Record<string, [number, number] | undefined> = {
 	ArrowDown: [0, 1],
 };
 
-function clampZoom(value: number): number {
-	return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
+function clampZoom(value: number, maxZoom: number): number {
+	return Math.min(maxZoom, Math.max(MIN_ZOOM, value));
 }
 
 type PdfPageProps = {
@@ -157,6 +175,13 @@ type PdfPageProps = {
 	pendingComment: CommentMarkup | null;
 	/** The comment open in the markup panel, highlighted on its pin. */
 	activeCommentId: string | null;
+	/** This page's scale for measurement labels (null: not set). */
+	pageScale: MeasureContext['scale'];
+	noScaleLabel: string;
+	/** The calibration line while a scale is being calibrated (drawn on its own page). */
+	calibrationStore: MarkupDraftStore;
+	/** The viewer's scroll box, for working out which part of a zoomed-in page is on screen. */
+	scrollerRef: React.RefObject<HTMLDivElement | null>;
 };
 
 const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Element {
@@ -164,6 +189,7 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 	const hostRef = React.useRef<HTMLDivElement | null>(null);
 	const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
 	const [drawn, setDrawn] = React.useState(false);
+	const measure = React.useMemo<MeasureContext>(() => ({ scale: props.pageScale, noScale: props.noScaleLabel }), [props.noScaleLabel, props.pageScale]);
 
 	const releaseCanvas = React.useCallback((): void => {
 		const canvas = canvasRef.current;
@@ -232,6 +258,112 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 
 	React.useEffect(() => releaseCanvas, [releaseCanvas]);
 
+	// Past MAX_CANVAS_PIXELS the page's own canvas is softer than the screen: fine for reading,
+	// useless for picking out a 1" scale bar at 3000%. So when the cap is in play, the part of the
+	// page on screen is drawn again at full sharpness on top, whenever scrolling or zooming settles.
+	const detailRef = React.useRef<HTMLCanvasElement | null>(null);
+	const releaseDetail = React.useCallback((): void => {
+		const canvas = detailRef.current;
+		if (!canvas) return;
+		canvas.remove();
+		canvas.width = 0;
+		canvas.height = 0;
+		detailRef.current = null;
+	}, []);
+	const { scrollerRef, pageWidth, pageHeight } = props;
+	React.useEffect(() => {
+		const host = hostRef.current;
+		const scroller = scrollerRef.current;
+		const pixelRatio = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 3);
+		const fullWidthPx = cssWidth * pixelRatio;
+		const capped = pageWidth > 0 && fullWidthPx * fullWidthPx * (pageHeight / pageWidth) > MAX_CANVAS_PIXELS * 1.1;
+		if (!shouldRender || !capped || !host || !scroller) {
+			releaseDetail();
+			return;
+		}
+		let cancelled = false;
+		let timer = 0;
+		let task: ReturnType<PDFPageProxy['render']> | null = null;
+		let pending: HTMLCanvasElement | null = null;
+		const clamp01 = (value: number): number => Math.min(1, Math.max(0, value));
+
+		const draw = async (): Promise<void> => {
+			timer = 0;
+			// A pinch in progress moves the whole page stack with a transform; wait until it lands.
+			if (host.parentElement?.style.transform) {
+				timer = window.setTimeout(() => void draw(), DETAIL_SETTLE_MS);
+				return;
+			}
+			const pageRect = host.getBoundingClientRect();
+			const viewRect = scroller.getBoundingClientRect();
+			if (pageRect.width <= 0 || pageRect.height <= 0) return;
+			const marginX = viewRect.width * DETAIL_MARGIN;
+			const marginY = viewRect.height * DETAIL_MARGIN;
+			const left = clamp01((viewRect.left - marginX - pageRect.left) / pageRect.width);
+			const right = clamp01((viewRect.right + marginX - pageRect.left) / pageRect.width);
+			const top = clamp01((viewRect.top - marginY - pageRect.top) / pageRect.height);
+			const bottom = clamp01((viewRect.bottom + marginY - pageRect.top) / pageRect.height);
+			if (right <= left || bottom <= top) {
+				releaseDetail();
+				return;
+			}
+			task?.cancel();
+			try {
+				const page = await pdf.getPage(pageNumber);
+				if (cancelled) return;
+				const base = page.getViewport({ scale: 1 });
+				let scale = (cssWidth / base.width) * pixelRatio;
+				const regionPixels = (right - left) * base.width * scale * (bottom - top) * base.height * scale;
+				if (regionPixels > MAX_CANVAS_PIXELS) scale *= Math.sqrt(MAX_CANVAS_PIXELS / regionPixels);
+				const viewport = page.getViewport({ scale });
+				const x = Math.floor(left * viewport.width);
+				const y = Math.floor(top * viewport.height);
+				const canvas = document.createElement('canvas');
+				pending = canvas;
+				canvas.className = `${styles.canvas} ${styles.canvasDetail}`;
+				canvas.setAttribute('aria-hidden', 'true');
+				canvas.width = Math.max(1, Math.ceil(right * viewport.width) - x);
+				canvas.height = Math.max(1, Math.ceil(bottom * viewport.height) - y);
+				// Shift the drawing so the canvas holds just this piece of the page.
+				task = page.render({ canvas, viewport, transform: [1, 0, 0, 1, -x, -y] });
+				await task.promise;
+				task = null;
+				if (cancelled) return;
+				canvas.style.left = `${(x / viewport.width) * 100}%`;
+				canvas.style.top = `${(y / viewport.height) * 100}%`;
+				canvas.style.width = `${(canvas.width / viewport.width) * 100}%`;
+				canvas.style.height = `${(canvas.height / viewport.height) * 100}%`;
+				releaseDetail();
+				host.appendChild(canvas);
+				detailRef.current = canvas;
+				pending = null;
+			} catch (error) {
+				if ((error as { name?: string } | null)?.name === 'RenderingCancelledException') return;
+				console.error(`[pdf-viewer] failed to sharpen page ${pageNumber}`, error);
+			} finally {
+				if (pending && pending !== detailRef.current) {
+					pending.width = 0;
+					pending.height = 0;
+					pending = null;
+				}
+			}
+		};
+		const schedule = (): void => {
+			if (timer) window.clearTimeout(timer);
+			timer = window.setTimeout(() => void draw(), DETAIL_SETTLE_MS);
+		};
+		schedule();
+		scroller.addEventListener('scroll', schedule, { passive: true });
+		return () => {
+			cancelled = true;
+			if (timer) window.clearTimeout(timer);
+			task?.cancel();
+			scroller.removeEventListener('scroll', schedule);
+		};
+	}, [cssWidth, pageHeight, pageNumber, pageWidth, pdf, releaseDetail, scrollerRef, shouldRender]);
+
+	React.useEffect(() => releaseDetail, [releaseDetail]);
+
 	return (
 		<div
 			ref={hostRef}
@@ -249,12 +381,15 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 					aria-hidden="true"
 				/>
 			))) : null}
-			{shouldRender ? <MarkupLayer items={props.markups} pageWidth={props.pageWidth} pageHeight={props.pageHeight} /> : null}
+			{shouldRender ? <MarkupLayer items={props.markups} pageWidth={props.pageWidth} pageHeight={props.pageHeight} measure={measure} /> : null}
 			{shouldRender ? <MarkupTextLayer items={props.markups} pageWidth={props.pageWidth} pageHeight={props.pageHeight} /> : null}
 			{shouldRender ? (
 				<MarkupPinLayer items={props.markups} pending={props.pendingComment} activeId={props.activeCommentId} pageWidth={props.pageWidth} pageHeight={props.pageHeight} />
 			) : null}
-			{shouldRender ? <MarkupDraftLayer store={props.draftStore} page={pageNumber} pageWidth={props.pageWidth} pageHeight={props.pageHeight} /> : null}
+			{shouldRender ? <MarkupDraftLayer store={props.draftStore} page={pageNumber} pageWidth={props.pageWidth} pageHeight={props.pageHeight} measure={measure} /> : null}
+			{shouldRender ? (
+				<MarkupCalibrationLayer store={props.calibrationStore} page={pageNumber} pageWidth={props.pageWidth} pageHeight={props.pageHeight} cssWidth={props.cssWidth} />
+			) : null}
 			{shouldRender && props.selectedMarkup ? (
 				<MarkupSelectionLayer markup={props.selectedMarkup} pageWidth={props.pageWidth} pageHeight={props.pageHeight} cssWidth={props.cssWidth} />
 			) : null}
@@ -400,8 +535,29 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const closeMarkupPanelRef = React.useRef<() => void>(() => undefined);
 	// Comments first: it's what people open the panel for.
 	const [markupPanelTab, setMarkupPanelTab] = React.useState<MarkupPanelTab>('comments');
+	// Measuring: the scale panel, a calibration line waiting for its real length, and a path or area in progress.
+	const [scalePanelOpen, setScalePanelOpen] = React.useState(false);
+	const [calibrationPage, setCalibrationPage] = React.useState<number | null>(null);
+	// The calibration line itself moves with every pointer event while its ends are dragged, so it
+	// lives in a small store the line and the scale panel subscribe to, not in the viewer's state.
+	const [calibrationStore] = React.useState(createMarkupDraftStore);
+	const [polyPoints, setPolyPoints] = React.useState(0);
+	const polyControlsRef = React.useRef<PolyControls | null>(null);
+	// The measuring tool to go back to once a calibration is set or cancelled.
+	const toolBeforeCalibrateRef = React.useRef<MarkupTool>('length');
+	// Download menu (Original file / With markup), shown once the document has markup.
+	const [downloadMenuOpen, setDownloadMenuOpen] = React.useState(false);
+	const [includeResolvedInExport, setIncludeResolvedInExport] = React.useState(true);
+	// Which menu action is working (only one at a time).
+	const [busyExport, setBusyExport] = React.useState<'share-original' | 'share-markup' | 'download-markup' | null>(null);
+	// A file ready to share whose tap wore off while it was being built: one more tap shares it.
+	const [pendingShare, setPendingShare] = React.useState<{ blob: Blob; fileName: string } | null>(null);
+	const [exportError, setExportError] = React.useState<string | null>(null);
+	const downloadMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const zoomRef = React.useRef(zoom);
 	zoomRef.current = zoom;
+	// Set during layout below (it depends on the page sizes); the zoom gesture callbacks read it.
+	const maxZoomRef = React.useRef(MIN_MAX_ZOOM);
 	const scrollerRef = React.useRef<HTMLDivElement | null>(null);
 	const pagesRef = React.useRef<HTMLDivElement | null>(null);
 	const scrollFrameRef = React.useRef(0);
@@ -681,7 +837,41 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		updateMarkupPrefs({ tool });
 	}, [updateMarkupPrefs]);
 
-	const { removeMany: removeMarkups, add: putMarkup } = markup;
+	// Leaving the measuring tools puts the scale panel and any half-done calibration away.
+	React.useEffect(() => {
+		if (markupTool && MEASURE_TOOLS.has(markupTool)) return;
+		setScalePanelOpen(false);
+		calibrationStore.set(null);
+		setCalibrationPage(null);
+		setPolyPoints(0);
+	}, [calibrationStore, markupTool]);
+
+	const startCalibrating = React.useCallback((): void => {
+		const current = markupToolRef.current;
+		if (current && current !== 'calibrate' && MEASURE_TOOLS.has(current)) toolBeforeCalibrateRef.current = current;
+		calibrationStore.set(null);
+		setCalibrationPage(null);
+		setScalePanelOpen(false);
+		// Not saved as the remembered tool: calibrating is a one-off.
+		setMarkupTool('calibrate');
+	}, [calibrationStore]);
+
+	// A calibration line was drawn: it stays up for fine-tuning while the panel asks for its real length.
+	const handleCalibrate = React.useCallback((page: number): void => {
+		setCalibrationPage(page);
+		setScalePanelOpen(true);
+	}, []);
+
+	const closeScalePanel = React.useCallback((): void => {
+		setScalePanelOpen(false);
+		calibrationStore.set(null);
+		setCalibrationPage(null);
+		if (markupToolRef.current === 'calibrate') setMarkupTool(toolBeforeCalibrateRef.current);
+	}, [calibrationStore]);
+	const closeScalePanelRef = React.useRef(closeScalePanel);
+	closeScalePanelRef.current = closeScalePanel;
+
+	const { removeMany: removeMarkups, add: putMarkup, setPageScale } = markup;
 	const handleEraseCommit = React.useCallback((ids: readonly string[]): void => {
 		removeMarkups(ids);
 		setErasingMarkupIds(NO_MARKUP_IDS);
@@ -1122,7 +1312,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		const scroller = scrollerRef.current;
 		const pages = pagesRef.current;
 		if (!gesture || !scroller || !pages) return;
-		const clampedScale = clampZoom(gesture.baseZoom * scale) / gesture.baseZoom;
+		const clampedScale = clampZoom(gesture.baseZoom * scale, maxZoomRef.current) / gesture.baseZoom;
 		gesture.scale = clampedScale;
 		gesture.focusX = focusX;
 		gesture.focusY = focusY;
@@ -1146,7 +1336,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			focusX: gesture.focusX,
 			focusY: gesture.focusY,
 		};
-		setZoom(clampZoom(gesture.baseZoom * gesture.scale));
+		setZoom(clampZoom(gesture.baseZoom * gesture.scale, maxZoomRef.current));
 		// Even a pinch that ends back at the same zoom (a pure two-finger pan) has to commit,
 		// so the pan becomes a real scroll and the transform comes off.
 		setZoomCommitTick((tick) => tick + 1);
@@ -1177,7 +1367,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		if (!gesture || !pages) return;
 		const reduceMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 		if (!reduceMotion) pages.style.transition = `transform ${ZOOM_ANIMATION_MS}ms ease-out`;
-		updateZoomGesture(clampZoom(targetZoom) / gesture.baseZoom, focusX, focusY);
+		updateZoomGesture(clampZoom(targetZoom, maxZoomRef.current) / gesture.baseZoom, focusX, focusY);
 		window.setTimeout(() => {
 			if (gestureRef.current !== gesture) return;
 			commitZoomGesture();
@@ -1394,6 +1584,10 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		onUpdate: putMarkup,
 		onStartText: startTextEdit,
 		onCommitText: commitTextEdit,
+		onCalibrate: handleCalibrate,
+		calibrationStore,
+		onPolyChange: setPolyPoints,
+		polyControlsRef,
 	});
 
 	// Hidden from the page: markups mid-erase, the one being dragged (its preview is drawn instead),
@@ -1432,6 +1626,13 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 
 	const pageSizes = load.status === 'ready' ? load.pageSizes : [];
 	const fitPageWidth = Math.max(0, Math.min(MAX_PAGE_WIDTH_PX, containerWidth - PAGES_PADDING_PX * 2));
+	// Every page is laid out at the same width, so the widest sheet (in points) is the one that
+	// needs the most zoom to get MAX_ZOOM_PX_PER_POINT.
+	const widestPagePoints = pageSizes.reduce((widest, size) => Math.max(widest, size.width), 0);
+	const maxZoom = widestPagePoints > 0 && fitPageWidth > 0
+		? Math.min(MAX_ZOOM_LIMIT, Math.max(MIN_MAX_ZOOM, (MAX_ZOOM_PX_PER_POINT * widestPagePoints) / fitPageWidth))
+		: MIN_MAX_ZOOM;
+	maxZoomRef.current = maxZoom;
 	const pageCssWidth = fitPageWidth * zoom;
 	const padding = PAGES_PADDING_PX * zoom;
 	const gap = PAGE_GAP_PX * zoom;
@@ -1658,6 +1859,22 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			const key = event.key.toLowerCase();
 			if (markupToolRef.current) {
 				const typing = event.target instanceof HTMLElement && (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA' || event.target.isContentEditable);
+				// A path or area in progress: Enter finishes it, Backspace takes back a point, Escape drops it.
+				const poly = polyControlsRef.current;
+				if (poly && poly.count() > 0 && !typing) {
+					if (event.key === 'Escape' || event.key === 'Enter' || event.key === 'Backspace' || event.key === 'Delete') {
+						event.preventDefault();
+						if (event.key === 'Escape') poly.cancel();
+						else if (event.key === 'Enter') poly.finish();
+						else poly.undoPoint();
+						return;
+					}
+				}
+				if (event.key === 'Escape' && markupToolRef.current === 'calibrate') {
+					event.preventDefault();
+					closeScalePanelRef.current();
+					return;
+				}
 				// Escape peels one layer at a time: finish the text being typed, then drop the
 				// selection, then leave markup mode, all before it does anything else.
 				if (event.key === 'Escape') {
@@ -1824,7 +2041,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	} else if (markupTool === 'symbol') {
 		// Symbols are placed in the pen colour.
 		styleControls = { family: 'colors', color: markupPrefs.penColor, size: 0 };
-	} else if (markupTool && markupTool !== 'eraser' && markupTool !== 'stamp') {
+	} else if (markupTool && markupTool !== 'eraser' && markupTool !== 'stamp' && markupTool !== 'calibrate') {
 		const toolStyle = styleForTool(markupPrefs, markupTool);
 		styleControls = { family: markupTool === 'highlighter' ? 'highlighter' : 'pen', color: toolStyle.color, size: toolStyle.width };
 	}
@@ -1891,6 +2108,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		});
 	};
 
+	const noScaleLabel = t('documents.markupNoScale');
 	const openCommentMarkup = openCommentId
 		? markup.items.find((item): item is CommentMarkup => item.id === openCommentId && item.kind === 'comment') ?? null
 		: null;
@@ -1925,9 +2143,114 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			onToggleResolved={toggleCommentResolved}
 			onDeleteComment={deleteOpenComment}
 			onClose={closeMarkupPanel}
+			pageScales={markup.pageScales}
+			noScaleLabel={noScaleLabel}
 		/>
 	) : null;
 	const showMarkupListButton = load.status === 'ready' && (canMarkup || markup.items.length > 0);
+	const hasMarkupToExport = load.status === 'ready' && markup.items.length > 0;
+	const hasResolvedComments = markup.items.some((item) => item.kind === 'comment' && item.status === 'resolved');
+
+	// Share options only appear where they'll work: the browser can share files at all, and this file
+	// type in particular (a marked-up export is always a PDF, so office files can still go out that way).
+	const canShareOriginal = React.useMemo(() => canShareFileType(noteDocument.fileName, noteDocument.mimeType), [noteDocument.fileName, noteDocument.mimeType]);
+	const canSharePdf = React.useMemo(() => canShareFileType('markup.pdf', 'application/pdf'), []);
+	const canShareMarkup = hasMarkupToExport && canSharePdf;
+	// No markup and nothing to share: Download stays a plain download, as it always was.
+	const downloadMenuHasChoices = hasMarkupToExport || canShareOriginal;
+
+	// "With markup": the PDF this viewer shows (the converted copy for office files) with the markup
+	// drawn in and a comment summary at the end, built on the device so it works offline.
+	const buildMarkedUpFile = async (): Promise<{ blob: Blob; fileName: string } | null> => {
+		if (load.status !== 'ready') return null;
+		const source = await resolveNoteDocumentViewBlob(noteDocument);
+		if (!source) {
+			setExportError(t('documents.downloadOffline'));
+			return null;
+		}
+		const { buildMarkedUpPdf, markedUpFileName } = await import('./markup/exportMarkupPdf');
+		const bytes = await buildMarkedUpPdf({
+			pdfBytes: new Uint8Array(await source.arrayBuffer()),
+			pages: load.pdf,
+			items: markup.items,
+			replies: markup.replies,
+			includeResolved: includeResolvedInExport,
+			fileName: noteDocument.fileName,
+			t,
+			pageScales: markup.pageScales,
+			noScaleLabel,
+		});
+		const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+		return { blob: new Blob([buffer], { type: 'application/pdf' }), fileName: markedUpFileName(noteDocument.fileName, new Date(), t) };
+	};
+
+	const finishShare = async (blob: Blob, fileName: string): Promise<void> => {
+		const outcome = await shareFile(blob, fileName);
+		if (outcome === 'shared' || outcome === 'cancelled') {
+			setDownloadMenuOpen(false);
+			return;
+		}
+		if (outcome === 'needs-tap') {
+			// Building took longer than the browser lets a tap count for; the next tap shares it.
+			setPendingShare({ blob, fileName });
+			return;
+		}
+		setExportError(t('documents.shareFailed'));
+	};
+
+	const runExport = async (action: 'share-original' | 'share-markup' | 'download-markup'): Promise<void> => {
+		if (busyExport) return;
+		setBusyExport(action);
+		setExportError(null);
+		setPendingShare(null);
+		try {
+			if (action === 'share-original') {
+				const blob = await resolveNoteDocumentBlob(noteDocument);
+				if (!blob) {
+					setExportError(t(typeof navigator !== 'undefined' && navigator.onLine === false ? 'documents.downloadOffline' : 'documents.downloadFailed'));
+					return;
+				}
+				const typed = blob.type ? blob : new Blob([blob], { type: noteDocument.mimeType || 'application/octet-stream' });
+				await finishShare(typed, noteDocument.fileName);
+				return;
+			}
+			const built = await buildMarkedUpFile();
+			if (!built) return;
+			if (action === 'download-markup') {
+				saveBlobToDevice(built.blob, built.fileName);
+				setDownloadMenuOpen(false);
+				return;
+			}
+			await finishShare(built.blob, built.fileName);
+		} catch (error) {
+			console.error(`[pdf-viewer] ${action} failed`, error);
+			setExportError(t(action === 'download-markup' ? 'documents.downloadMarkupFailed' : 'documents.shareFailed'));
+		} finally {
+			setBusyExport(null);
+		}
+	};
+
+	// The download menu closes on a press anywhere else, and Escape closes it before the viewer.
+	React.useEffect(() => {
+		if (!downloadMenuOpen) return;
+		const onPointerDown = (event: PointerEvent): void => {
+			if (downloadMenuRef.current && event.target instanceof Node && downloadMenuRef.current.contains(event.target)) return;
+			setDownloadMenuOpen(false);
+		};
+		const onKeyDown = (event: KeyboardEvent): void => {
+			if (event.key !== 'Escape') return;
+			event.preventDefault();
+			event.stopPropagation();
+			setDownloadMenuOpen(false);
+		};
+		document.addEventListener('pointerdown', onPointerDown, true);
+		document.addEventListener('keydown', onKeyDown, true);
+		return () => {
+			document.removeEventListener('pointerdown', onPointerDown, true);
+			document.removeEventListener('keydown', onKeyDown, true);
+		};
+	}, [downloadMenuOpen]);
+
 	const openCommentCount = markup.items.reduce((count, item) => count + (item.kind === 'comment' && item.status === 'open' ? 1 : 0), 0);
 	// Sync status for this version's markup: always on desktop, only when something's not right on phones.
 	const showSyncIndicator = load.status === 'ready' && Boolean(markupVersionId) && (canMarkup || markup.items.length > 0);
@@ -1946,8 +2269,38 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		denied: 'documents.markupSyncDenied',
 	}[syncTone]);
 
+	// The scale shown and set is the page being calibrated, otherwise the page in view.
+	const scalePage = calibrationPage ?? Math.max(1, currentPage);
+	const scaleForPage = markup.pageScales.get(scalePage) ?? null;
 	const markupBar = canMarkup && markupTool && load.status === 'ready' ? (
 		<MarkupToolbar
+			measure={MEASURE_TOOLS.has(markupTool) ? {
+				scaleLabel: scaleLabel(scaleForPage, t),
+				hasScale: scaleForPage !== null,
+				scaleOpen: scalePanelOpen,
+				onToggleScale: () => (scalePanelOpen ? closeScalePanel() : setScalePanelOpen(true)),
+				polyPoints,
+				onFinishPoly: () => polyControlsRef.current?.finish(),
+				onUndoPolyPoint: () => polyControlsRef.current?.undoPoint(),
+			} : null}
+			panel={scalePanelOpen && MEASURE_TOOLS.has(markupTool) ? (
+				<MarkupScalePanel
+					key={`${scalePage}:${calibrationPage !== null ? 'calibrate' : 'set'}`}
+					placement={isCoarsePointer ? 'bottom' : 'top'}
+					page={scalePage}
+					scale={scaleForPage}
+					calibration={calibrationPage !== null ? calibrationStore : null}
+					t={t}
+					onApply={(fields) => setPageScale(scalePage, { ...fields, page: scalePage, updatedAt: Date.now() })}
+					onApplyCalibration={(fields) => {
+						setPageScale(scalePage, { ...fields, page: scalePage, updatedAt: Date.now() });
+						closeScalePanel();
+					}}
+					onStartCalibrate={startCalibrating}
+					onRemove={() => setPageScale(scalePage, null)}
+					onClose={closeScalePanel}
+				/>
+			) : null}
 			placement={isCoarsePointer ? 'bottom' : 'top'}
 			tool={markupTool}
 			styleControls={styleControls}
@@ -2086,7 +2439,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 										type="button"
 										className={`${styles.iconButton} ${styles.zoomStep}`}
 										onClick={() => zoomAroundCenter(zoomRef.current * ZOOM_BUTTON_STEP)}
-										disabled={zoom >= MAX_ZOOM}
+										disabled={zoom >= maxZoom - 0.001}
 										aria-label={t('documents.zoomIn')}
 										title={t('documents.zoomIn')}
 									>
@@ -2095,15 +2448,108 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 								</div>
 							</>
 						) : null}
-						<button
-							type="button"
-							className={styles.iconButton}
-							onClick={() => props.onDownload(noteDocument)}
-							aria-label={t('documents.download')}
-							title={t('documents.download')}
-						>
-							<FontAwesomeIcon icon={faDownload} />
-						</button>
+						<div className={styles.downloadWrap} ref={downloadMenuRef}>
+							<button
+								type="button"
+								className={`${styles.iconButton}${downloadMenuOpen ? ` ${styles.iconButtonActive}` : ''}`}
+								onClick={() => {
+									// Nothing drawn on it and nothing to share to: Download is just the file, as it always was.
+									if (!downloadMenuHasChoices) {
+										props.onDownload(noteDocument);
+										return;
+									}
+									setExportError(null);
+									setPendingShare(null);
+									setDownloadMenuOpen((open) => !open);
+								}}
+								aria-label={downloadMenuHasChoices ? t('documents.shareMenuLabel') : t('documents.download')}
+								aria-haspopup={downloadMenuHasChoices ? 'menu' : undefined}
+								aria-expanded={downloadMenuHasChoices ? downloadMenuOpen : undefined}
+								title={downloadMenuHasChoices ? t('documents.shareMenuLabel') : t('documents.download')}
+							>
+								<FontAwesomeIcon icon={faDownload} />
+							</button>
+							{downloadMenuOpen && downloadMenuHasChoices ? (
+								<div className={styles.downloadMenu} role="menu">
+									{canShareOriginal ? (
+										<button
+											type="button"
+											role="menuitem"
+											className={styles.downloadMenuItem}
+											onClick={() => void runExport('share-original')}
+											disabled={busyExport !== null}
+										>
+											<FontAwesomeIcon icon={busyExport === 'share-original' ? faArrowsRotate : faShareNodes} spin={busyExport === 'share-original'} />
+											<span>{t('documents.shareOriginal')}</span>
+										</button>
+									) : null}
+									{canShareMarkup ? (
+										<button
+											type="button"
+											role="menuitem"
+											className={styles.downloadMenuItem}
+											onClick={() => void runExport('share-markup')}
+											disabled={busyExport !== null}
+										>
+											<FontAwesomeIcon icon={busyExport === 'share-markup' ? faArrowsRotate : faShareNodes} spin={busyExport === 'share-markup'} />
+											<span>{busyExport === 'share-markup' ? t('documents.preparingPdf') : t('documents.shareWithMarkup')}</span>
+										</button>
+									) : null}
+									{pendingShare ? (
+										<button
+											type="button"
+											role="menuitem"
+											className={`${styles.downloadMenuItem} ${styles.downloadMenuReady}`}
+											onClick={() => {
+												// Straight from this tap, so the browser allows the share sheet.
+												const ready = pendingShare;
+												setPendingShare(null);
+												void finishShare(ready.blob, ready.fileName);
+											}}
+										>
+											<FontAwesomeIcon icon={faShareNodes} />
+											<span>{t('documents.shareReadyTap')}</span>
+										</button>
+									) : null}
+									{canShareOriginal || canShareMarkup ? <span className={styles.downloadMenuDivider} aria-hidden="true" /> : null}
+									<button
+										type="button"
+										role="menuitem"
+										className={styles.downloadMenuItem}
+										onClick={() => {
+											setDownloadMenuOpen(false);
+											props.onDownload(noteDocument);
+										}}
+									>
+										<FontAwesomeIcon icon={faFile} />
+										<span>{t('documents.downloadOriginal')}</span>
+									</button>
+									{hasMarkupToExport ? (
+										<button
+											type="button"
+											role="menuitem"
+											className={styles.downloadMenuItem}
+											onClick={() => void runExport('download-markup')}
+											disabled={busyExport !== null}
+										>
+											<FontAwesomeIcon icon={busyExport === 'download-markup' ? faArrowsRotate : faPen} spin={busyExport === 'download-markup'} />
+											<span>{busyExport === 'download-markup' ? t('documents.preparingPdf') : t('documents.downloadWithMarkup')}</span>
+										</button>
+									) : null}
+									{hasMarkupToExport && hasResolvedComments ? (
+										<label className={styles.downloadMenuCheck}>
+											<input
+												type="checkbox"
+												checked={includeResolvedInExport}
+												onChange={(event) => setIncludeResolvedInExport(event.target.checked)}
+											/>
+											<span>{t('documents.downloadIncludeResolved')}</span>
+										</label>
+									) : null}
+									{exportError ? <p className={styles.downloadMenuError} role="alert">{exportError}</p> : null}
+								</div>
+							) : null}
+						</div>
 						<button
 							type="button"
 							// Phones already have Back at the other end of the header, and the room is better spent on the title.
@@ -2199,6 +2645,10 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 										textEditor={textEditorHandlers}
 										pendingComment={pendingComment && pendingComment.page === index + 1 ? pendingComment : null}
 										activeCommentId={openCommentId}
+										pageScale={markup.pageScales.get(index + 1) ?? null}
+										noScaleLabel={noScaleLabel}
+										calibrationStore={calibrationStore}
+										scrollerRef={scrollerRef}
 									/>
 								))}
 							</div>

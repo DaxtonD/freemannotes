@@ -158,13 +158,14 @@ function buildWelcomeContentEn(fragment) {
 		h3('Markup'),
 		para(t('Tap '), b('Markup'), t(' in the viewer and draw right on the page: pen, highlighter, eraser, lines, arrows, boxes, circles, text, revision clouds, callouts that point at things, move markers (from here to there), and stamps: RFI with your own number, Approved, Revise & Resubmit and friends. The Select tool moves and resizes anything you\'ve drawn. Callouts and stamps are signed with your name and the date. I built it for blueprints and electrical plans, but it works on any PDF.')),
 
+		h3('Measuring'),
+		para(t('Give each sheet its scale (pick a standard one like 1/4" = 1\'-0" or 1:100, or calibrate by drawing over a dimension you know), then measure lengths, runs and areas right on the plan in feet and inches or metric. Zoom in as far as you need to line the ends up exactly.')),
+
+		h3('Comments, symbols & sharing'),
+		para(t('Drop numbered comment pins and reply to them, and the Comments list shows every open question on a set without scrolling through it. There\'s a symbol library with electrical, plumbing, HVAC, IT, fire and general symbols. Markup syncs live between collaborators and devices, and anything you mark up with no signal merges in when you reconnect. When you\'re done, download or share the PDF with the markup drawn in.')),
+
 		h3('Coming before beta'),
 		ul(
-			'Markup syncing live between collaborators and devices, with offline edits merging when you reconnect',
-			'A markup list and comment pins, so you can see every note on a set at a glance',
-			'A symbol library with electrical, plumbing, HVAC, IT, fire and general symbols',
-			'Measuring and counting, with feet/inches or millimetres chosen per sheet',
-			'Download with markup, to send a marked-up PDF to anyone',
 			'Versions: upload a new revision and the old one keeps its markup',
 		),
 		hr(),
@@ -273,13 +274,14 @@ function buildWelcomeContentEs(fragment) {
 		h3('Marcado'),
 		para(t('Toca '), b('Marcado'), t(' en el visor y dibuja directamente sobre la página: bolígrafo, resaltador, borrador, líneas, flechas, rectángulos, elipses, texto, nubes de revisión, llamadas que señalan cosas, marcadores de traslado (de aquí a allá) y sellos: RFI con tu propio número, Aprobado, Corregir y reenviar y compañía. La herramienta Seleccionar mueve y redimensiona todo lo que hayas dibujado. Las llamadas y los sellos llevan tu nombre y la fecha. Lo hice pensando en planos y esquemas eléctricos, pero funciona con cualquier PDF.')),
 
+		h3('Medición'),
+		para(t('Dale a cada plano su escala (elige una estándar como 1/4" = 1\'-0" o 1:100, o calíbrala dibujando sobre una medida conocida) y mide longitudes, recorridos y áreas directamente sobre el plano, en pies y pulgadas o en sistema métrico. Acerca todo lo que haga falta para ajustar los extremos con precisión.')),
+
+		h3('Comentarios, símbolos y compartir'),
+		para(t('Coloca chinchetas de comentarios numeradas y respóndelas, y la lista de Comentarios muestra todas las dudas abiertas de un juego de planos sin tener que recorrerlo. Hay una biblioteca de símbolos: electricidad, fontanería, climatización, redes, incendios y generales. El marcado se sincroniza en tiempo real entre colaboradores y dispositivos, y lo que marques sin señal se fusiona al reconectar. Cuando termines, descarga o comparte el PDF con el marcado incluido.')),
+
 		h3('Llega antes de la beta'),
 		ul(
-			'El marcado sincronizado en tiempo real entre colaboradores y dispositivos, con los cambios sin conexión fusionándose al reconectar',
-			'Una lista de marcas y chinchetas de comentarios, para ver todas las notas de un juego de planos de un vistazo',
-			'Una biblioteca de símbolos: electricidad, fontanería, climatización, redes, incendios y generales',
-			'Medir y contar, eligiendo pies/pulgadas o milímetros en cada plano',
-			'Descargar con marcado, para enviar un PDF marcado a quien sea',
 			'Versiones: sube una nueva revisión y la anterior conserva su marcado',
 		),
 		hr(),

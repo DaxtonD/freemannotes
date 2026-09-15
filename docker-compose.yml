@@ -40,6 +40,8 @@ services:
       # the defaults below — budget that x images-per-user x user-count).
       IMAGE_CAPTURE_MAX_DIMENSION_PX: ${IMAGE_CAPTURE_MAX_DIMENSION_PX:-2560}
       IMAGE_CAPTURE_JPEG_QUALITY: ${IMAGE_CAPTURE_JPEG_QUALITY:-0.82}
+      # Largest document upload in MB (see .env.example).
+      DOCUMENT_UPLOAD_MAX_MB: ${DOCUMENT_UPLOAD_MAX_MB:-100}
 
       # Authentication
       AUTH_JWT_SECRET: ${AUTH_JWT_SECRET:-change-me-before-beta}

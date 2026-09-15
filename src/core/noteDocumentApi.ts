@@ -107,6 +107,13 @@ export async function fetchDocumentConversionStatus(refresh = false): Promise<Do
 	return fetchJson(`/api/document-conversion/status${refresh ? '?refresh=1' : ''}`, {}, { timeoutMs: 10000 });
 }
 
+// A flat 90 s cut big prints off halfway on a slow connection, and the queue then started them
+// again from zero, forever. Allow 90 s plus a second for every 128 KB (a 1 Mbps floor).
+function uploadTimeoutMs(files: readonly File[]): number {
+	const bytes = files.reduce((total, file) => total + file.size, 0);
+	return 90_000 + Math.ceil(bytes / (128 * 1024)) * 1000;
+}
+
 export async function uploadNoteDocuments(docId: string, files: readonly File[]): Promise<NoteDocumentListResponse> {
 	const formData = new FormData();
 	formData.append('docId', docId);
@@ -116,7 +123,7 @@ export async function uploadNoteDocuments(docId: string, files: readonly File[])
 	return fetchJson('/api/note-documents', {
 		method: 'POST',
 		body: formData,
-	}, { timeoutMs: 90000 });
+	}, { timeoutMs: uploadTimeoutMs(files) });
 }
 
 export async function deleteNoteDocument(documentId: string): Promise<{ ok: true; documentId: string }> {

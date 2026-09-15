@@ -18,8 +18,6 @@ import { requestPwaBackgroundSync } from './pwa';
 
 const NOTE_DOCUMENT_CHANGED_EVENT = 'freemannotes:note-documents-changed';
 
-/** Mirrors the server's per-file limit (MAX_DOCUMENT_FILE_BYTES in noteMediaRouter.js). */
-export const NOTE_DOCUMENT_MAX_FILE_BYTES = 40 * 1024 * 1024;
 
 /** Mirrors SUPPORTED_NOTE_DOCUMENT_EXTENSIONS in server/noteDocumentPreview.js. */
 export const NOTE_DOCUMENT_EXTENSIONS: readonly string[] = [
@@ -799,7 +797,7 @@ export async function queueNoteDocumentsForUpload(args: {
 	emitNoteDocumentsChanged(docId);
 	void requestPwaBackgroundSync();
 	// Not awaited: the rows are already safe in IndexedDB and on screen. Waiting here would
-	// hold the caller until a 40 MB upload finishes.
+	// hold the caller until a big upload finishes.
 	void scheduleQueuedNoteDocumentFlush(userId);
 	return queuedDocuments;
 }

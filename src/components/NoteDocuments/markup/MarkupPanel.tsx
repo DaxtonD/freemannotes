@@ -3,7 +3,8 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faArrowLeft, faCheck, faMagnifyingGlass, faPlus, faRotateLeft, faTrashCan, faXmark } from '@fortawesome/free-solid-svg-icons';
 import { markupFooterText, stampMainText } from './markupGeometry';
 import { SymbolGlyph, symbolById } from './markupSymbols';
-import type { CommentMarkup, Markup, MarkupReply } from './markupTypes';
+import { formatMeasure } from './markupMeasure';
+import type { CommentMarkup, Markup, MarkupReply, PageScale } from './markupTypes';
 import styles from './MarkupPanel.module.css';
 
 // The markup panel, beside the pages on desktop and a sheet on phones. Two tabs:
@@ -18,7 +19,7 @@ type Translate = (key: string) => string;
 
 export type MarkupPanelTab = 'comments' | 'markup';
 
-type Filter = 'all' | 'comments' | 'stamps' | 'symbols' | 'text' | 'shapes' | 'drawing';
+type Filter = 'all' | 'comments' | 'stamps' | 'symbols' | 'text' | 'shapes' | 'measure' | 'drawing';
 type StatusFilter = 'any' | 'open' | 'resolved';
 type CommentStatusFilter = 'open' | 'resolved' | 'all';
 
@@ -33,6 +34,7 @@ const FILTERS: ReadonlyArray<{ id: Filter; labelKey: string; test: (markup: Mark
 		labelKey: 'documents.markupFilterShapes',
 		test: (markup) => ['line', 'arrow', 'rect', 'ellipse', 'cloud', 'move'].includes(markup.kind),
 	},
+	{ id: 'measure', labelKey: 'documents.markupFilterMeasure', test: (markup) => markup.kind === 'measure' },
 	{ id: 'drawing', labelKey: 'documents.markupFilterDrawing', test: (markup) => markup.kind === 'ink' },
 ];
 
@@ -49,6 +51,7 @@ const KIND_LABEL_KEYS: Record<Markup['kind'], string> = {
 	stamp: 'documents.markupStamp',
 	symbol: 'documents.markupSymbol',
 	comment: 'documents.markupComment',
+	measure: 'documents.markupMeasurement',
 };
 
 const fold = (value: string): string => value.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -138,6 +141,9 @@ type MarkupPanelProps = {
 	currentUserId: string | null;
 	onAddReply: (text: string) => void;
 	onDeleteReply: (replyId: string) => void;
+	/** For measurement titles in the list: each page's scale, and the "no scale" wording. */
+	pageScales: ReadonlyMap<number, PageScale>;
+	noScaleLabel: string;
 	onBackToList: () => void;
 	onCommentChange: (text: string) => void;
 	/** Saves edits to an existing comment. */
@@ -475,6 +481,10 @@ function CommentsTab(props: MarkupPanelProps & { comments: readonly CommentMarku
 
 function AllMarkupTab(props: MarkupPanelProps & { openCount: number }): React.JSX.Element {
 	const { t, items } = props;
+	// A measurement's title is its reading ("12'-6 1/2"", "124 sq ft"), at its page's scale.
+	const title = (item: Markup): string => (item.kind === 'measure'
+		? formatMeasure(item, props.pageScales.get(item.page) ?? null, props.noScaleLabel)
+		: markupTitle(item, t));
 	const [listState, setListState] = React.useState<ListState>(rememberedListState);
 	const update = (patch: Partial<ListState>): void => {
 		setListState((current) => {
@@ -503,7 +513,7 @@ function AllMarkupTab(props: MarkupPanelProps & { openCount: number }): React.JS
 		if (!filterTest(item)) return false;
 		if (listState.filter === 'comments' && listState.status !== 'any' && item.kind === 'comment' && item.status !== listState.status) return false;
 		if (listState.author && markupAuthorName(item) !== listState.author) return false;
-		return matchesWords(`${markupTitle(item, t)} ${markupMeta(item, t)}`, words);
+		return matchesWords(`${title(item)} ${markupMeta(item, t)}`, words);
 	});
 
 	const byPage = new Map<number, Markup[]>();
@@ -613,7 +623,7 @@ function AllMarkupTab(props: MarkupPanelProps & { openCount: number }): React.JS
 									>
 										<RowIcon markup={item} />
 										<span className={styles.rowText}>
-											<span className={styles.rowTitle}>{markupTitle(item, t)}</span>
+											<span className={styles.rowTitle}>{title(item)}</span>
 											<span className={styles.rowMeta}>{markupMeta(item, t)}</span>
 										</span>
 										{item.kind === 'comment' ? (

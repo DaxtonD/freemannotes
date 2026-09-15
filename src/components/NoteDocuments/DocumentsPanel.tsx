@@ -4,12 +4,11 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faArrowLeft, faDownload, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
 import { useI18n } from '../../core/i18n';
-import { getDocumentConversionEnabled } from '../../core/instanceConfig';
+import { getDocumentConversionEnabled, getDocumentUploadMaxBytes } from '../../core/instanceConfig';
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
 import { DocumentTextViewer } from './DocumentTextViewer';
 import {
 	NOTE_DOCUMENT_ACCEPT,
-	NOTE_DOCUMENT_MAX_FILE_BYTES,
 	getCachedNoteDocuments,
 	getNoteDocumentExtension,
 	getNoteDocumentsChangedEventName,
@@ -26,6 +25,7 @@ import {
 } from '../../core/noteDocumentStore';
 import styles from './DocumentsPanel.module.css';
 import viewerStyles from './PdfViewer.module.css';
+import { saveBlobToDevice } from './saveBlobToDevice';
 
 // Lazy: pdf.js is big, and most visits to the Documents tab never open a PDF.
 const loadPdfViewer = () => import('./PdfViewer');
@@ -106,19 +106,6 @@ function formatBytes(bytes: number): string {
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function saveBlobToDevice(blob: Blob, fileName: string): void {
-	const url = URL.createObjectURL(blob);
-	const anchor = document.createElement('a');
-	anchor.href = url;
-	anchor.download = fileName || 'document';
-	anchor.rel = 'noopener';
-	document.body.appendChild(anchor);
-	anchor.click();
-	anchor.remove();
-	// Some mobile browsers start reading the blob after click() returns. Give them a
-	// generous head start before pulling the URL out from under them.
-	window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
 
 function readIsOnline(): boolean {
 	return typeof navigator === 'undefined' || navigator.onLine !== false;
@@ -387,11 +374,12 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 		event.target.value = '';
 		if (picked.length === 0 || !authUserId || !docId) return;
 		const supported = picked.filter((file) => isSupportedNoteDocumentFile(file));
-		const accepted = supported.filter((file) => file.size <= NOTE_DOCUMENT_MAX_FILE_BYTES);
+		const maxBytes = getDocumentUploadMaxBytes();
+		const accepted = supported.filter((file) => file.size <= maxBytes);
 		if (supported.length < picked.length) {
 			onShowBriefDialog?.(t('documents.skippedUnsupported'));
 		} else if (accepted.length < supported.length) {
-			onShowBriefDialog?.(t('documents.skippedTooLarge'));
+			onShowBriefDialog?.(t('documents.skippedTooLarge').replace('{size}', `${Math.round(maxBytes / (1024 * 1024))} MB`));
 		}
 		if (accepted.length === 0) return;
 		// Confirm first, then queue: the queue write is fast, but the toast shouldn't wait on IndexedDB.

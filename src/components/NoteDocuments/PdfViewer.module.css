@@ -124,6 +124,83 @@
 	color: #e02424;
 }
 
+/* Download menu: Original file / With markup, under the header's download button. */
+.downloadWrap {
+	position: relative;
+	display: inline-flex;
+	flex-shrink: 0;
+}
+
+.downloadMenu {
+	position: absolute;
+	top: calc(100% + 6px);
+	right: 0;
+	z-index: 30;
+	min-width: 230px;
+	padding: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	border-radius: 12px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	background: var(--color-surface);
+	box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.downloadMenuItem {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--color-text);
+	font: inherit;
+	font-size: 14px;
+	font-weight: 600;
+	text-align: left;
+	cursor: pointer;
+}
+
+.downloadMenuItem:hover,
+.downloadMenuItem:focus-visible {
+	background: var(--color-surface-2);
+}
+
+.downloadMenuItem:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.downloadMenuCheck {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	font-size: 13px;
+	color: var(--color-text-muted);
+	cursor: pointer;
+}
+
+.downloadMenuDivider {
+	height: 1px;
+	margin: 4px 8px;
+	background: color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+/* "Ready. Tap to share": a big export finished after the tap stopped counting. */
+.downloadMenuReady {
+	background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+.downloadMenuError {
+	margin: 4px 12px 6px;
+	font-size: 12px;
+	color: #e02424;
+}
+
 /* Count of open comments on the header's Comments button. */
 .iconBadge {
 	position: absolute;
@@ -204,7 +281,7 @@
 /* Markup mode: one finger draws instead of scrolling. Two fingers still pan and pinch through the
    viewer's own touch handling. Tools that are placed with a tap (text, stamps, symbols, comments)
    leave one-finger scrolling (with its fling) to the browser: a tap places, a swipe scrolls. */
-.scroller[data-markup-tool]:not([data-markup-tool='text']):not([data-markup-tool='stamp']):not([data-markup-tool='symbol']):not([data-markup-tool='comment']) {
+.scroller[data-markup-tool]:not([data-markup-tool='text']):not([data-markup-tool='stamp']):not([data-markup-tool='symbol']):not([data-markup-tool='comment']):not([data-markup-tool='path']):not([data-markup-tool='area']) {
 	touch-action: none;
 }
 
@@ -456,4 +533,12 @@
 	.zoomStep {
 		display: none;
 	}
+}
+
+/* The sharp redraw of the on-screen part of a page zoomed past the canvas cap (see PdfPage).
+   Positioned by inline left/top/width/height in page percentages, above the soft full page. */
+.canvasDetail {
+	right: auto;
+	bottom: auto;
+	z-index: 1;
 }

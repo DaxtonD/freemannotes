@@ -1,6 +1,7 @@
 'use strict';
 
 const Y = require('yjs');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const Busboy = require('busboy');
@@ -9,11 +10,11 @@ const heicConvert = require('heic-convert');
 const { enforceSameOrigin } = require('./auth');
 const {
 	createDocumentPreviewBuffers,
-	extractDocumentText,
 	getNormalizedDocumentExtension,
 	isSupportedNoteDocument,
 	sanitizeBaseName,
 } = require('./noteDocumentPreview');
+const { extractDocumentTextInWorker } = require('./documentTextExtraction');
 const { buildLinkSeed, isLikelyBadPreviewImageUrl, resolveNoteLinkPreview } = require('./noteLinkPreview');
 const { resolveDocAccess } = require('./noteShareRouter');
 const { listManifestDocuments } = require('./noteDocumentManifest');
@@ -30,7 +31,47 @@ const MAX_FILES_PER_UPLOAD = 12;
 // arrive in rapid succession during reconnect (which would rate-limit the URLs).
 const activeHydrations = new Set();
 const MAX_SOURCE_FILE_BYTES = 32 * 1024 * 1024;
-const MAX_DOCUMENT_FILE_BYTES = 40 * 1024 * 1024;
+// Largest document a user can upload (DOCUMENT_UPLOAD_MAX_MB, default 100). Print sets blow past
+// 40 MB all the time. The file sits in memory while it saves, so this is also roughly how much RAM
+// one upload can take. Clamped so a typo can't switch uploads off or ask for 50 GB.
+const DOCUMENT_UPLOAD_MAX_MB = Math.round(clampNumber(process.env.DOCUMENT_UPLOAD_MAX_MB, 1, 2048, 100));
+const MAX_DOCUMENT_FILE_BYTES = DOCUMENT_UPLOAD_MAX_MB * 1024 * 1024;
+// Document uploads stream in here, then move into their version folder once they've fully arrived.
+// It's inside the uploads folder so that move is a rename on the same disk, and /uploads/ never
+// serves it (uploadAccess.js only knows avatars and users/… paths).
+const INCOMING_DIR_NAME = '.incoming';
+// A server stopped mid-upload leaves its half-written file behind; anything this old gets swept.
+const STALE_INCOMING_MS = 24 * 60 * 60 * 1000;
+
+async function moveFile(from, to) {
+	try {
+		await fs.promises.rename(from, to);
+	} catch (error) {
+		// Different disks (say, a subfolder mounted separately): copy, then remove the original.
+		if (!error || error.code !== 'EXDEV') throw error;
+		await fs.promises.copyFile(from, to);
+		await fs.promises.rm(from, { force: true });
+	}
+}
+
+async function sweepStaleIncomingUploads(incomingDir) {
+	let names;
+	try {
+		names = await fs.promises.readdir(incomingDir);
+	} catch {
+		return;
+	}
+	const cutoff = Date.now() - STALE_INCOMING_MS;
+	for (const name of names) {
+		const filePath = path.join(incomingDir, name);
+		try {
+			const stat = await fs.promises.stat(filePath);
+			if (stat.isFile() && stat.mtimeMs < cutoff) await fs.promises.rm(filePath, { force: true });
+		} catch {
+			// Already gone (another sweep, or the upload finished and moved it).
+		}
+	}
+}
 const MAX_COMPRESSED_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_IMPORT_URL_BYTES = 32 * 1024 * 1024;
 const THUMB_SIZE_PX = 360;
@@ -444,7 +485,7 @@ async function hydrateNoteLinkRows(prisma, rows) {
 // Writes one version's files and fills in its row. Files live in their own folder per
 // version (users/<uploader>/documents/<versionId>/), which is also how /uploads/ access
 // checks find the row again (see server/uploadAccess.js).
-async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versionNumber, userId, sourceBuffer, fileName, mimeType, convertOffice = false }) {
+async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versionNumber, userId, sourcePath, byteSize, fileName, mimeType, convertOffice = false }) {
 	const fileExtension = getNormalizedDocumentExtension(fileName, mimeType);
 	const version = await prisma.noteDocumentVersion.create({
 		data: {
@@ -457,7 +498,7 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 			fileName: path.basename(String(fileName || `document.${fileExtension || 'bin'}`)),
 			fileExtension,
 			mimeType,
-			byteSize: sourceBuffer.length,
+			byteSize,
 			// Office files wait for a PDF copy only when Gotenberg is set up; the queue picks them up.
 			conversionStatus: convertOffice && isConvertibleDocumentExtension(fileExtension) ? 'PENDING' : 'NOT_NEEDED',
 		},
@@ -472,10 +513,12 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 
 	try {
 		await fs.promises.mkdir(path.join(uploadDir, baseRelativeDir), { recursive: true });
-		await fs.promises.writeFile(absoluteOriginalPath, sourceBuffer);
+		// The upload is already on disk: move it into place instead of reading it back into memory.
+		await moveFile(sourcePath, absoluteOriginalPath);
 
-		const extracted = await extractDocumentText({
-			buffer: sourceBuffer,
+		// In a worker thread, straight from the file, so a big print set doesn't stall the server.
+		const extracted = await extractDocumentTextInWorker({
+			filePath: absoluteOriginalPath,
 			extension: fileExtension,
 		});
 		const preview = await createDocumentPreviewBuffers({
@@ -514,7 +557,7 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 	}
 }
 
-async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourceBuffer, fileName, mimeType, convertOffice = false }) {
+async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourcePath, byteSize, fileName, mimeType, convertOffice = false }) {
 	if (!isSupportedNoteDocument(fileName, mimeType)) {
 		throw new Error('Unsupported document type');
 	}
@@ -534,7 +577,8 @@ async function persistDocumentRecord({ prisma, uploadDir, access, userId, source
 			noteDocumentId: noteDocument.id,
 			versionNumber: 1,
 			userId,
-			sourceBuffer,
+			sourcePath,
+			byteSize,
 			fileName,
 			mimeType,
 			convertOffice,
@@ -711,6 +755,7 @@ async function buildAccessibleDocContext(prisma, userId) {
 
 function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged = null, documentConverter = null }) {
 	if (!uploadDir) throw new Error('uploadDir is required');
+	void sweepStaleIncomingUploads(path.join(uploadDir, INCOMING_DIR_NAME));
 
 	// Office → PDF only when a Gotenberg container is configured (GOTENBERG_URL). Optional like Redis.
 	const converter = documentConverter || createGotenbergConverter({
@@ -728,7 +773,8 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 		prisma,
 		uploadDir,
 		converter,
-		extractDocumentText,
+		// The PDF copy of an office file can be huge too; read its text off the main thread.
+		extractDocumentText: ({ buffer, extension }) => extractDocumentTextInWorker({ buffer, extension }),
 		// Same event as upload/delete, so every device refreshes that note's documents and the
 		// background download fetches the new PDF copy. A finished copy also has a first page to show.
 		onConverted: (target) => {
@@ -1245,6 +1291,17 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 			const session = requireAuth(req, res);
 			if (!session) return true;
 
+			// Each file streams straight to disk as it arrives. Buffering it meant a 250 MB print set
+			// was 250 MB of server memory (twice over, briefly, while the pieces were joined).
+			const incomingDir = path.join(uploadDir, INCOMING_DIR_NAME);
+			try {
+				fs.mkdirSync(incomingDir, { recursive: true });
+			} catch (err) {
+				console.error('[note-documents] cannot create the incoming upload folder:', err.message);
+				jsonResponse(res, 500, { error: 'Upload failed' });
+				return true;
+			}
+
 			const bb = Busboy({
 				headers: req.headers,
 				limits: { files: MAX_FILES_PER_UPLOAD, fileSize: MAX_DOCUMENT_FILE_BYTES, fields: 8 },
@@ -1252,7 +1309,17 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 
 			let docId = '';
 			let fileError = null;
+			let responded = false;
 			const files = [];
+			// One per file: settles once that file is completely on disk and its handle is closed
+			// (Windows won't move a file that's still open).
+			const writes = [];
+			const removeIncoming = () => Promise.all(files.map((entry) => fs.promises.rm(entry.tempPath, { force: true }).catch(() => undefined)));
+			const respond = (status, body) => {
+				if (responded) return;
+				responded = true;
+				jsonResponse(res, status, body);
+			};
 
 			bb.on('field', (name, value) => {
 				if (name === 'docId') docId = String(value || '').trim();
@@ -1266,43 +1333,57 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					file.resume();
 					return;
 				}
-				const chunks = [];
-				file.on('data', (chunk) => chunks.push(chunk));
-				file.on('limit', () => {
-					fileError = 'File too large';
-				});
-				file.on('end', () => {
-					if (!fileError) {
-						files.push({
-							fileName,
-							mimeType,
-							buffer: Buffer.concat(chunks),
-						});
-					}
-				});
+				const entry = { fileName, mimeType, tempPath: path.join(incomingDir, `${crypto.randomUUID()}.part`), byteSize: 0 };
+				files.push(entry);
+				writes.push(new Promise((resolve) => {
+					const out = fs.createWriteStream(entry.tempPath);
+					file.on('data', (chunk) => {
+						entry.byteSize += chunk.length;
+					});
+					file.on('limit', () => {
+						fileError = 'File too large';
+					});
+					out.on('close', resolve);
+					out.on('error', (err) => {
+						fileError = fileError || err.message || 'Upload failed';
+						file.unpipe(out);
+						file.resume();
+						resolve();
+					});
+					file.pipe(out);
+				}));
+			});
+
+			// Signal lost or the tab closed mid-upload: the form never finishes, so tidy up after it.
+			req.on('close', () => {
+				if (req.complete) return;
+				void Promise.all(writes).then(removeIncoming);
 			});
 
 			bb.on('error', (err) => {
 				fileError = err.message || 'Upload failed';
+				void Promise.all(writes).then(removeIncoming).then(() => respond(400, { error: fileError }));
 			});
 
 			bb.on('finish', async () => {
 				try {
+					// Busboy has read the whole form; wait for every file to finish reaching the disk too.
+					await Promise.all(writes);
 					if (!docId) {
-						jsonResponse(res, 400, { error: 'docId is required' });
+						respond(400, { error: 'docId is required' });
 						return;
 					}
 					if (fileError) {
-						jsonResponse(res, fileError === 'File too large' ? 413 : 400, { error: fileError });
+						respond(fileError === 'File too large' ? 413 : 400, { error: fileError });
 						return;
 					}
 					if (files.length === 0) {
-						jsonResponse(res, 400, { error: 'No files uploaded' });
+						respond(400, { error: 'No files uploaded' });
 						return;
 					}
 					const accessResult = await ensureMediaAccess(prisma, session, docId, { requireEdit: true });
 					if (accessResult.error) {
-						jsonResponse(res, accessResult.error.status, accessResult.error.body);
+						respond(accessResult.error.status, accessResult.error.body);
 						return;
 					}
 					const documents = [];
@@ -1312,7 +1393,8 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							uploadDir,
 							access: accessResult.access,
 							userId: session.userId,
-							sourceBuffer: entry.buffer,
+							sourcePath: entry.tempPath,
+							byteSize: entry.byteSize,
 							fileName: entry.fileName,
 							convertOffice: conversionQueue.enabled,
 							mimeType: entry.mimeType,
@@ -1323,10 +1405,13 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-created');
 					conversionQueue.notify();
 					thumbnailQueue.scanSoon();
-					jsonResponse(res, 201, { documents, count: documents.length });
+					respond(201, { documents, count: documents.length });
 				} catch (err) {
 					console.error('[note-documents] upload error:', err.message);
-					jsonResponse(res, 400, { error: err.message || 'Upload failed' });
+					respond(400, { error: err.message || 'Upload failed' });
+				} finally {
+					// Files that made it were moved out already; this clears whatever didn't.
+					await removeIncoming();
 				}
 			});
 
@@ -1443,6 +1528,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 			jsonResponse(res, 200, {
 				imageCaptureMaxDimensionPx: IMAGE_CAPTURE_MAX_DIMENSION_PX,
 				imageCaptureJpegQuality: IMAGE_CAPTURE_JPEG_QUALITY,
+				documentUploadMaxBytes: MAX_DOCUMENT_FILE_BYTES,
 				// Whether office files will get a PDF copy (Gotenberg configured). Clients use it to
 				// choose between "preparing PDF" and the text view.
 				documentConversion: conversionQueue.enabled,

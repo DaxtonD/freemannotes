@@ -37,7 +37,7 @@ export type MarkupPrefs = {
 };
 
 const STORAGE_KEY = 'freemannotes.markupPrefs.v1';
-const TOOLS: readonly MarkupTool[] = ['select', 'pen', 'highlighter', 'eraser', 'line', 'arrow', 'rect', 'ellipse', 'text', 'cloud', 'callout', 'move', 'stamp', 'symbol', 'comment'];
+const TOOLS: readonly MarkupTool[] = ['select', 'pen', 'highlighter', 'eraser', 'line', 'arrow', 'rect', 'ellipse', 'text', 'cloud', 'callout', 'move', 'stamp', 'symbol', 'comment', 'length', 'path', 'area'];
 const CLOUD_SHAPES: readonly CloudShape[] = ['rect', 'freeform'];
 const STAMP_PRESETS: readonly StampPreset[] = MARKUP_STAMPS.map((entry) => entry.preset);
 

@@ -13,6 +13,15 @@ import {
 	stampMainText,
 	stampWidestLine,
 } from './markupGeometry';
+import {
+	formatMeasure,
+	lengthTicks,
+	measureLabelPoint,
+	measureLabelSize,
+	pathVertexRadius,
+	pointsPath,
+	type MeasureContext,
+} from './markupMeasure';
 import type { MarkupDraftStore } from './markupStore';
 import { SymbolParts, symbolById } from './markupSymbols';
 import {
@@ -91,7 +100,7 @@ function StampShape(props: { markup: StampMarkup; hideMainText?: boolean }): Rea
 	);
 }
 
-export function MarkupShape(props: { markup: Markup }): React.JSX.Element | null {
+export function MarkupShape(props: { markup: Markup; measure?: MeasureContext }): React.JSX.Element | null {
 	const { markup } = props;
 	if (markup.kind === 'text') return null;
 	const stroke = {
@@ -166,6 +175,46 @@ export function MarkupShape(props: { markup: Markup }): React.JSX.Element | null
 		}
 		case 'stamp':
 			return <StampShape markup={markup} />;
+		case 'measure': {
+			const { points } = markup;
+			if (points.length < 4) {
+				// The first point of a path or area, before the second tap.
+				return <circle cx={points[0]} cy={points[1]} r={pathVertexRadius(markup.width) * 1.4} fill={markup.color} />;
+			}
+			const d = pointsPath(points, markup.mode === 'area');
+			const label = formatMeasure(markup, props.measure?.scale ?? null, props.measure?.noScale ?? 'no scale');
+			const at = measureLabelPoint(markup);
+			const size = measureLabelSize(markup.width);
+			// A rough width for the label's backing; the text itself is centred on the same point.
+			const labelWidth = label.length * size * 0.58 + size;
+			return (
+				<g>
+					{markup.mode === 'area' ? <path d={d} fill={markup.color} fillOpacity={0.12} stroke="none" /> : null}
+					<path d={d} {...stroke} />
+					{markup.mode === 'length'
+						? lengthTicks(points, markup.width).map((tick, index) => <line key={index} x1={tick[0]} y1={tick[1]} x2={tick[2]} y2={tick[3]} {...stroke} />)
+						: null}
+					{markup.mode === 'path'
+						? Array.from({ length: points.length / 2 }, (_, index) => (
+							<circle key={index} cx={points[index * 2]} cy={points[index * 2 + 1]} r={pathVertexRadius(markup.width)} fill={markup.color} />
+						))
+						: null}
+					<rect
+						x={at.x - labelWidth / 2}
+						y={at.y - size * 0.75}
+						width={labelWidth}
+						height={size * 1.5}
+						rx={size * 0.3}
+						fill="rgba(255, 255, 255, 0.9)"
+						stroke={markup.color}
+						strokeWidth={Math.max(0.5, markup.width * 0.3)}
+					/>
+					<text x={at.x} y={at.y} fontSize={size} fontWeight={700} fontFamily={MARKUP_FONT} textAnchor="middle" dominantBaseline="central" fill={markup.color}>
+						{label}
+					</text>
+				</g>
+			);
+		}
 		case 'symbol': {
 			// The stored box is the turned one; draw the symbol upright in the unturned box, then turn it.
 			const definition = symbolById(markup.symbol);
@@ -253,6 +302,8 @@ type PageLayerProps = {
 	/** The page's size in page units; the SVG's coordinate system. */
 	pageWidth: number;
 	pageHeight: number;
+	/** The page's scale, for measurement labels. */
+	measure?: MeasureContext;
 };
 
 /**
@@ -275,7 +326,7 @@ export const MarkupLayer = React.memo(function MarkupLayer(props: PageLayerProps
 			) : null}
 			{others.length > 0 ? (
 				<svg className={styles.layer} viewBox={viewBox} preserveAspectRatio="none" aria-hidden="true">
-					{others.map((item) => <MarkupShape key={item.id} markup={item} />)}
+					{others.map((item) => <MarkupShape key={item.id} markup={item} measure={props.measure} />)}
 				</svg>
 			) : null}
 		</>
@@ -323,7 +374,7 @@ export const MarkupPinLayer = React.memo(function MarkupPinLayer(props: PageLaye
 });
 
 /** The shape being drawn, moved or resized on this page. Only this re-renders while a pointer drags. */
-export function MarkupDraftLayer(props: { store: MarkupDraftStore; page: number; pageWidth: number; pageHeight: number }): React.JSX.Element | null {
+export function MarkupDraftLayer(props: { store: MarkupDraftStore; page: number; pageWidth: number; pageHeight: number; measure?: MeasureContext }): React.JSX.Element | null {
 	const draft = React.useSyncExternalStore(props.store.subscribe, props.store.get, props.store.get);
 	if (!draft || draft.page !== props.page) return null;
 	const viewBox = `0 0 ${props.pageWidth} ${props.pageHeight}`;
@@ -351,7 +402,7 @@ export function MarkupDraftLayer(props: { store: MarkupDraftStore; page: number;
 			preserveAspectRatio="none"
 			aria-hidden="true"
 		>
-			<MarkupShape markup={draft} />
+			<MarkupShape markup={draft} measure={props.measure} />
 		</svg>
 	);
 }
@@ -370,11 +421,39 @@ export function MarkupSelectionLayer(props: { markup: Markup; pageWidth: number;
 		<svg className={`${styles.layer} ${styles.layerSelection}`} viewBox={`0 0 ${props.pageWidth} ${props.pageHeight}`} preserveAspectRatio="none" aria-hidden="true">
 			{segment ? (
 				<line x1={markup.x1} y1={markup.y1} x2={markup.x2} y2={markup.y2} className={styles.selectionOutline} vectorEffect="non-scaling-stroke" />
+			) : markup.kind === 'measure' ? (
+				<path d={pointsPath(markup.points, markup.mode === 'area')} className={styles.selectionOutline} vectorEffect="non-scaling-stroke" />
 			) : (
 				<rect x={bounds.x - pad} y={bounds.y - pad} width={bounds.w + pad * 2} height={bounds.h + pad * 2} className={styles.selectionOutline} vectorEffect="non-scaling-stroke" />
 			)}
 			{markupHandles(markup).map((handle) => (
 				<circle key={handle.handle} cx={handle.x} cy={handle.y} r={radius} className={styles.selectionHandle} vectorEffect="non-scaling-stroke" />
+			))}
+		</svg>
+	);
+}
+
+/**
+ * The line being calibrated against a known dimension. Unlike markup it stays the same thin line at
+ * any zoom, with crosshair ends of a fixed on-screen size, so it can be set to the exact ends of a
+ * scale bar. Dragging an end fine-tunes it (see useMarkupDrawing).
+ */
+export function MarkupCalibrationLayer(props: { store: MarkupDraftStore; page: number; pageWidth: number; pageHeight: number; cssWidth: number }): React.JSX.Element | null {
+	const line = React.useSyncExternalStore(props.store.subscribe, props.store.get, props.store.get);
+	if (!line || line.page !== props.page || line.kind !== 'measure' || line.points.length < 4) return null;
+	const unitsPerPx = props.pageWidth / Math.max(1, props.cssWidth);
+	const radius = 9 * unitsPerPx;
+	const [x1, y1, x2, y2] = line.points;
+	return (
+		<svg className={`${styles.layer} ${styles.layerSelection}`} viewBox={`0 0 ${props.pageWidth} ${props.pageHeight}`} preserveAspectRatio="none" aria-hidden="true">
+			<line x1={x1} y1={y1} x2={x2} y2={y2} className={styles.calibrationHalo} vectorEffect="non-scaling-stroke" />
+			<line x1={x1} y1={y1} x2={x2} y2={y2} className={styles.calibrationLine} vectorEffect="non-scaling-stroke" />
+			{[[x1, y1], [x2, y2]].map(([x, y], index) => (
+				<g key={index}>
+					<circle cx={x} cy={y} r={radius} className={styles.calibrationHandle} vectorEffect="non-scaling-stroke" />
+					<line x1={x - radius} y1={y} x2={x + radius} y2={y} className={styles.calibrationCross} vectorEffect="non-scaling-stroke" />
+					<line x1={x} y1={y - radius} x2={x} y2={y + radius} className={styles.calibrationCross} vectorEffect="non-scaling-stroke" />
+				</g>
 			))}
 		</svg>
 	);

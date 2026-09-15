@@ -18,6 +18,10 @@ export type MarkupTool =
 	| 'stamp'
 	| 'symbol'
 	| 'comment'
+	| 'length'
+	| 'path'
+	| 'area'
+	| 'calibrate'
 	| 'text';
 
 type MarkupBase = {
@@ -155,7 +159,33 @@ export type MarkupReply = {
 	updatedAt: number;
 };
 
-export type Markup = InkMarkup | SegmentMarkup | BoxMarkup | CloudMarkup | TextMarkup | CalloutMarkup | StampMarkup | SymbolMarkup | CommentMarkup;
+export type MeasureSystem = 'imperial' | 'metric';
+
+/**
+ * A page's scale, so measurements read in real units. Kept per page: a plan set mixes 1/4" floor
+ * plans, 1-1/2" details and 1:100 site plans. Synced with the rest of the markup.
+ */
+export type PageScale = {
+	page: number;
+	system: MeasureSystem;
+	/** Real inches (imperial) or real millimetres (metric) that one page unit (a PDF point) stands for. */
+	realPerUnit: number;
+	/** Metric only: show millimetres or metres. */
+	metricUnit?: 'mm' | 'm';
+	/** The standard scale it was picked from; absent when calibrated from a known dimension. */
+	preset?: string;
+	updatedAt: number;
+};
+
+/** A measurement: a length (two points), a path (a run of points) or an area (a closed outline). */
+export type MeasureMarkup = MarkupBase & {
+	kind: 'measure';
+	mode: 'length' | 'path' | 'area';
+	/** Flat [x0, y0, x1, y1, …] in page units. */
+	points: number[];
+};
+
+export type Markup = InkMarkup | SegmentMarkup | BoxMarkup | CloudMarkup | TextMarkup | CalloutMarkup | StampMarkup | SymbolMarkup | CommentMarkup | MeasureMarkup;
 
 /** Markups that are typed into after they're placed. */
 export type TypedMarkup = TextMarkup | CalloutMarkup | StampMarkup;
@@ -267,9 +297,28 @@ export function isMarkup(value: unknown): value is Markup {
 				&& isAuthor(comment.author)
 				&& isAuthor(comment.resolvedBy);
 		}
+		case 'measure': {
+			const measure = candidate as MeasureMarkup;
+			const minimum = measure.mode === 'area' ? 6 : 4;
+			return (measure.mode === 'length' || measure.mode === 'path' || measure.mode === 'area')
+				&& Array.isArray(measure.points)
+				&& measure.points.length >= minimum
+				&& measure.points.length % 2 === 0
+				&& measure.points.every(isNumber);
+		}
 		default:
 			return false;
 	}
+}
+
+export function isPageScale(value: unknown): value is PageScale {
+	if (!value || typeof value !== 'object') return false;
+	const scale = value as Partial<PageScale>;
+	return isNumber(scale.page)
+		&& (scale.system === 'imperial' || scale.system === 'metric')
+		&& isNumber(scale.realPerUnit)
+		&& (scale.realPerUnit as number) > 0
+		&& (scale.metricUnit === undefined || scale.metricUnit === 'mm' || scale.metricUnit === 'm');
 }
 
 export function isMarkupReply(value: unknown): value is MarkupReply {
