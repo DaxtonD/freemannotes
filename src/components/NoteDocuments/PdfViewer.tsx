@@ -1,14 +1,13 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faArrowsRotate, faChevronDown, faChevronUp, faCloud, faCloudArrowUp, faCommentDots, faDownload, faFile, faShareNodes, faTriangleExclamation, faMagnifyingGlass, faMagnifyingGlassMinus, faMagnifyingGlassPlus, faPen, faTableColumns, faXmark } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faArrowsRotate, faChevronDown, faChevronUp, faCloud, faCloudArrowUp, faCommentDots, faTriangleExclamation, faMagnifyingGlass, faMagnifyingGlassMinus, faMagnifyingGlassPlus, faPen, faTableColumns, faXmark } from '@fortawesome/free-solid-svg-icons';
 import * as pdfjsLib from 'pdfjs-dist';
 import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
-import { resolveNoteDocumentBlob, resolveNoteDocumentViewBlob } from '../../core/noteDocumentStore';
-import { saveBlobToDevice } from './saveBlobToDevice';
-import { canShareFileType, shareFile } from './shareFile';
+import { resolveNoteDocumentViewBlob } from '../../core/noteDocumentStore';
+import { DocumentShareMenu } from './DocumentShareMenu';
 import { readPdfViewerPosition, writePdfViewerPosition } from '../../core/pdfViewerPositions';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
@@ -70,7 +69,10 @@ type LoadState =
 // what lets a pinch be an exact transform: every point on the stack moves by the same factor.
 const PAGE_GAP_PX = 12;
 const PAGES_PADDING_PX = 12;
-const MAX_PAGE_WIDTH_PX = 1000;
+// Fit-to-width fills the viewer, but never past this many screen pixels per PDF point (about 150%
+// of printed size). A 36" plan fills a big monitor; a letter page stops at a comfortable reading
+// size instead of stretching to 2500px of giant text. Zooming in still goes as far as it ever did.
+const MAX_FIT_PX_PER_POINT = 2;
 // Phones: room under the last page so the floating page pill never sits on top of its bottom edge.
 const PAGE_PILL_CLEARANCE_PX = 56;
 const MIN_ZOOM = 1;
@@ -549,15 +551,6 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const polyControlsRef = React.useRef<PolyControls | null>(null);
 	// The measuring tool to go back to once a calibration is set or cancelled.
 	const toolBeforeCalibrateRef = React.useRef<MarkupTool>('length');
-	// Download menu (Original file / With markup), shown once the document has markup.
-	const [downloadMenuOpen, setDownloadMenuOpen] = React.useState(false);
-	const [includeResolvedInExport, setIncludeResolvedInExport] = React.useState(true);
-	// Which menu action is working (only one at a time).
-	const [busyExport, setBusyExport] = React.useState<'share-original' | 'share-markup' | 'download-markup' | null>(null);
-	// A file ready to share whose tap wore off while it was being built: one more tap shares it.
-	const [pendingShare, setPendingShare] = React.useState<{ blob: Blob; fileName: string } | null>(null);
-	const [exportError, setExportError] = React.useState<string | null>(null);
-	const downloadMenuRef = React.useRef<HTMLDivElement | null>(null);
 	const zoomRef = React.useRef(zoom);
 	zoomRef.current = zoom;
 	// Set during layout below (it depends on the page sizes); the zoom gesture callbacks read it.
@@ -1638,10 +1631,11 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	// ── Layout ──────────────────────────────────────────────────────────────
 
 	const pageSizes = load.status === 'ready' ? load.pageSizes : [];
-	const fitPageWidth = Math.max(0, Math.min(MAX_PAGE_WIDTH_PX, containerWidth - PAGES_PADDING_PX * 2));
-	// Every page is laid out at the same width, so the widest sheet (in points) is the one that
-	// needs the most zoom to get MAX_ZOOM_PX_PER_POINT.
+	// Every page is laid out at the same width, so the widest sheet (in points) sets both the fit
+	// width's ceiling and how much zoom it takes to reach MAX_ZOOM_PX_PER_POINT.
 	const widestPagePoints = pageSizes.reduce((widest, size) => Math.max(widest, size.width), 0);
+	const availablePageWidth = Math.max(0, containerWidth - PAGES_PADDING_PX * 2);
+	const fitPageWidth = widestPagePoints > 0 ? Math.min(availablePageWidth, widestPagePoints * MAX_FIT_PX_PER_POINT) : availablePageWidth;
 	const maxZoom = widestPagePoints > 0 && fitPageWidth > 0
 		? Math.min(MAX_ZOOM_LIMIT, Math.max(MIN_MAX_ZOOM, (MAX_ZOOM_PX_PER_POINT * widestPagePoints) / fitPageWidth))
 		: MIN_MAX_ZOOM;
@@ -2161,109 +2155,6 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		/>
 	) : null;
 	const showMarkupListButton = load.status === 'ready' && (canMarkup || markup.items.length > 0);
-	const hasMarkupToExport = load.status === 'ready' && markup.items.length > 0;
-	const hasResolvedComments = markup.items.some((item) => item.kind === 'comment' && item.status === 'resolved');
-
-	// Share options only appear where they'll work: the browser can share files at all, and this file
-	// type in particular (a marked-up export is always a PDF, so office files can still go out that way).
-	const canShareOriginal = React.useMemo(() => canShareFileType(noteDocument.fileName, noteDocument.mimeType), [noteDocument.fileName, noteDocument.mimeType]);
-	const canSharePdf = React.useMemo(() => canShareFileType('markup.pdf', 'application/pdf'), []);
-	const canShareMarkup = hasMarkupToExport && canSharePdf;
-	// No markup and nothing to share: Download stays a plain download, as it always was.
-	const downloadMenuHasChoices = hasMarkupToExport || canShareOriginal;
-
-	// "With markup": the PDF this viewer shows (the converted copy for office files) with the markup
-	// drawn in and a comment summary at the end, built on the device so it works offline.
-	const buildMarkedUpFile = async (): Promise<{ blob: Blob; fileName: string } | null> => {
-		if (load.status !== 'ready') return null;
-		const source = await resolveNoteDocumentViewBlob(noteDocument);
-		if (!source) {
-			setExportError(t('documents.downloadOffline'));
-			return null;
-		}
-		const { buildMarkedUpPdf, markedUpFileName } = await import('./markup/exportMarkupPdf');
-		const bytes = await buildMarkedUpPdf({
-			pdfBytes: new Uint8Array(await source.arrayBuffer()),
-			pages: load.pdf,
-			items: markup.items,
-			replies: markup.replies,
-			includeResolved: includeResolvedInExport,
-			fileName: noteDocument.fileName,
-			t,
-			pageScales: markup.pageScales,
-			noScaleLabel,
-		});
-		const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-		return { blob: new Blob([buffer], { type: 'application/pdf' }), fileName: markedUpFileName(noteDocument.fileName, new Date(), t) };
-	};
-
-	const finishShare = async (blob: Blob, fileName: string): Promise<void> => {
-		const outcome = await shareFile(blob, fileName);
-		if (outcome === 'shared' || outcome === 'cancelled') {
-			setDownloadMenuOpen(false);
-			return;
-		}
-		if (outcome === 'needs-tap') {
-			// Building took longer than the browser lets a tap count for; the next tap shares it.
-			setPendingShare({ blob, fileName });
-			return;
-		}
-		setExportError(t('documents.shareFailed'));
-	};
-
-	const runExport = async (action: 'share-original' | 'share-markup' | 'download-markup'): Promise<void> => {
-		if (busyExport) return;
-		setBusyExport(action);
-		setExportError(null);
-		setPendingShare(null);
-		try {
-			if (action === 'share-original') {
-				const blob = await resolveNoteDocumentBlob(noteDocument);
-				if (!blob) {
-					setExportError(t(typeof navigator !== 'undefined' && navigator.onLine === false ? 'documents.downloadOffline' : 'documents.downloadFailed'));
-					return;
-				}
-				const typed = blob.type ? blob : new Blob([blob], { type: noteDocument.mimeType || 'application/octet-stream' });
-				await finishShare(typed, noteDocument.fileName);
-				return;
-			}
-			const built = await buildMarkedUpFile();
-			if (!built) return;
-			if (action === 'download-markup') {
-				saveBlobToDevice(built.blob, built.fileName);
-				setDownloadMenuOpen(false);
-				return;
-			}
-			await finishShare(built.blob, built.fileName);
-		} catch (error) {
-			console.error(`[pdf-viewer] ${action} failed`, error);
-			setExportError(t(action === 'download-markup' ? 'documents.downloadMarkupFailed' : 'documents.shareFailed'));
-		} finally {
-			setBusyExport(null);
-		}
-	};
-
-	// The download menu closes on a press anywhere else, and Escape closes it before the viewer.
-	React.useEffect(() => {
-		if (!downloadMenuOpen) return;
-		const onPointerDown = (event: PointerEvent): void => {
-			if (downloadMenuRef.current && event.target instanceof Node && downloadMenuRef.current.contains(event.target)) return;
-			setDownloadMenuOpen(false);
-		};
-		const onKeyDown = (event: KeyboardEvent): void => {
-			if (event.key !== 'Escape') return;
-			event.preventDefault();
-			event.stopPropagation();
-			setDownloadMenuOpen(false);
-		};
-		document.addEventListener('pointerdown', onPointerDown, true);
-		document.addEventListener('keydown', onKeyDown, true);
-		return () => {
-			document.removeEventListener('pointerdown', onPointerDown, true);
-			document.removeEventListener('keydown', onKeyDown, true);
-		};
-	}, [downloadMenuOpen]);
-
 	const openCommentCount = markup.items.reduce((count, item) => count + (item.kind === 'comment' && item.status === 'open' ? 1 : 0), 0);
 	// Sync status for this version's markup: always on desktop, only when something's not right on phones.
 	const showSyncIndicator = load.status === 'ready' && Boolean(markupVersionId) && (canMarkup || markup.items.length > 0);
@@ -2461,108 +2352,14 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 								</div>
 							</>
 						) : null}
-						<div className={styles.downloadWrap} ref={downloadMenuRef}>
-							<button
-								type="button"
-								className={`${styles.iconButton}${downloadMenuOpen ? ` ${styles.iconButtonActive}` : ''}`}
-								onClick={() => {
-									// Nothing drawn on it and nothing to share to: Download is just the file, as it always was.
-									if (!downloadMenuHasChoices) {
-										props.onDownload(noteDocument);
-										return;
-									}
-									setExportError(null);
-									setPendingShare(null);
-									setDownloadMenuOpen((open) => !open);
-								}}
-								aria-label={downloadMenuHasChoices ? t('documents.shareMenuLabel') : t('documents.download')}
-								aria-haspopup={downloadMenuHasChoices ? 'menu' : undefined}
-								aria-expanded={downloadMenuHasChoices ? downloadMenuOpen : undefined}
-								title={downloadMenuHasChoices ? t('documents.shareMenuLabel') : t('documents.download')}
-							>
-								<FontAwesomeIcon icon={faDownload} />
-							</button>
-							{downloadMenuOpen && downloadMenuHasChoices ? (
-								<div className={styles.downloadMenu} role="menu">
-									{canShareOriginal ? (
-										<button
-											type="button"
-											role="menuitem"
-											className={styles.downloadMenuItem}
-											onClick={() => void runExport('share-original')}
-											disabled={busyExport !== null}
-										>
-											<FontAwesomeIcon icon={busyExport === 'share-original' ? faArrowsRotate : faShareNodes} spin={busyExport === 'share-original'} />
-											<span>{t('documents.shareOriginal')}</span>
-										</button>
-									) : null}
-									{canShareMarkup ? (
-										<button
-											type="button"
-											role="menuitem"
-											className={styles.downloadMenuItem}
-											onClick={() => void runExport('share-markup')}
-											disabled={busyExport !== null}
-										>
-											<FontAwesomeIcon icon={busyExport === 'share-markup' ? faArrowsRotate : faShareNodes} spin={busyExport === 'share-markup'} />
-											<span>{busyExport === 'share-markup' ? t('documents.preparingPdf') : t('documents.shareWithMarkup')}</span>
-										</button>
-									) : null}
-									{pendingShare ? (
-										<button
-											type="button"
-											role="menuitem"
-											className={`${styles.downloadMenuItem} ${styles.downloadMenuReady}`}
-											onClick={() => {
-												// Straight from this tap, so the browser allows the share sheet.
-												const ready = pendingShare;
-												setPendingShare(null);
-												void finishShare(ready.blob, ready.fileName);
-											}}
-										>
-											<FontAwesomeIcon icon={faShareNodes} />
-											<span>{t('documents.shareReadyTap')}</span>
-										</button>
-									) : null}
-									{canShareOriginal || canShareMarkup ? <span className={styles.downloadMenuDivider} aria-hidden="true" /> : null}
-									<button
-										type="button"
-										role="menuitem"
-										className={styles.downloadMenuItem}
-										onClick={() => {
-											setDownloadMenuOpen(false);
-											props.onDownload(noteDocument);
-										}}
-									>
-										<FontAwesomeIcon icon={faFile} />
-										<span>{t('documents.downloadOriginal')}</span>
-									</button>
-									{hasMarkupToExport ? (
-										<button
-											type="button"
-											role="menuitem"
-											className={styles.downloadMenuItem}
-											onClick={() => void runExport('download-markup')}
-											disabled={busyExport !== null}
-										>
-											<FontAwesomeIcon icon={busyExport === 'download-markup' ? faArrowsRotate : faPen} spin={busyExport === 'download-markup'} />
-											<span>{busyExport === 'download-markup' ? t('documents.preparingPdf') : t('documents.downloadWithMarkup')}</span>
-										</button>
-									) : null}
-									{hasMarkupToExport && hasResolvedComments ? (
-										<label className={styles.downloadMenuCheck}>
-											<input
-												type="checkbox"
-												checked={includeResolvedInExport}
-												onChange={(event) => setIncludeResolvedInExport(event.target.checked)}
-											/>
-											<span>{t('documents.downloadIncludeResolved')}</span>
-										</label>
-									) : null}
-									{exportError ? <p className={styles.downloadMenuError} role="alert">{exportError}</p> : null}
-								</div>
-							) : null}
-						</div>
+						<DocumentShareMenu
+							document={noteDocument}
+							t={t}
+							live={load.status === 'ready' ? { pdf: load.pdf, items: markup.items, replies: markup.replies, pageScales: markup.pageScales } : null}
+							onDownloadOriginal={props.onDownload}
+							buttonClassName={styles.iconButton}
+							buttonActiveClassName={styles.iconButtonActive}
+						/>
 						<button
 							type="button"
 							// Phones already have Back at the other end of the header, and the room is better spent on the title.

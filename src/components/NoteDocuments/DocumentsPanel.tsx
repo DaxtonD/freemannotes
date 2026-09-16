@@ -1,11 +1,13 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faDownload, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
+import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { useI18n } from '../../core/i18n';
 import { getDocumentConversionEnabled, getDocumentUploadMaxBytes } from '../../core/instanceConfig';
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
+import { DocumentShareMenu } from './DocumentShareMenu';
 import { DocumentTextViewer } from './DocumentTextViewer';
 import {
 	NOTE_DOCUMENT_ACCEPT,
@@ -178,6 +180,8 @@ type DocumentItemProps = {
 	canEdit: boolean;
 	isOnline: boolean;
 	busy: boolean;
+	/** For the download menu's markup lookup, so markup drawn on another device counts. */
+	websocketUrl: string | null;
 	t: Translate;
 	onOpen: (document: NoteDocumentRecord) => void;
 	onDownload: (document: NoteDocumentRecord) => void;
@@ -205,16 +209,18 @@ function DocumentActions(props: DocumentItemProps): React.JSX.Element {
 					<FontAwesomeIcon icon={faRotateRight} />
 				</button>
 			) : null}
-			<button
-				type="button"
-				className={styles.iconButton}
-				onClick={() => props.onDownload(document)}
+			{/* Same menu as the PDF viewer's: share or download, with or without markup. */}
+			<DocumentShareMenu
+				document={document}
+				t={t}
+				floating
+				markupVersionId={!document.isLocal && hasPdfView(document) ? document.latestVersionId ?? null : null}
+				websocketUrl={props.websocketUrl}
+				onDownloadOriginal={props.onDownload}
+				buttonClassName={styles.iconButton}
+				buttonActiveClassName={styles.iconButtonActive}
 				disabled={props.busy}
-				aria-label={t('documents.download')}
-				title={t('documents.download')}
-			>
-				<FontAwesomeIcon icon={faDownload} />
-			</button>
+			/>
 			{props.canEdit ? (
 				<button
 					type="button"
@@ -305,6 +311,7 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 	const { t } = useI18n();
 	const { docId, authUserId, isPendingNew, onShowBriefDialog } = props;
 	const canEdit = props.canEdit === true;
+	const websocketUrl = useDocumentManager().getWebsocketUrl();
 	const [documents, setDocuments] = React.useState<readonly NoteDocumentRecord[]>(() => getCachedNoteDocuments(docId));
 	const [isOnline, setIsOnline] = React.useState(readIsOnline);
 	const [busyId, setBusyId] = React.useState<string | null>(null);
@@ -471,6 +478,7 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 		canEdit,
 		isOnline,
 		busy: busyId === document.id,
+		websocketUrl,
 		t,
 		onOpen: handleOpen,
 		onDownload: (target) => void handleDownload(target),

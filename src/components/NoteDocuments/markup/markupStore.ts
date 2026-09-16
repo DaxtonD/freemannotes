@@ -31,6 +31,8 @@ const RENUMBER_ORIGIN = Symbol('pdf-markup-renumber');
 const RELEASE_DELAY_MS = 1500;
 const LAST_COMMENT_NUMBER = 'lastCommentNumber';
 const BACKGROUND_SYNC_TIMEOUT_MS = 20_000;
+// How long the document list's download menu waits for the server's copy of a version's markup.
+const SNAPSHOT_SYNC_TIMEOUT_MS = 6_000;
 const MARKUP_ROOM_PREFIX = 'markup:';
 
 /**
@@ -266,6 +268,56 @@ if (typeof window !== 'undefined') {
 	});
 }
 
+/** What a doc holds right now: markup and replies checked and in the order they were made, plus page scales. */
+function readHandleContents(handle: MarkupDocHandle): { items: Markup[]; replies: MarkupReply[]; pageScales: Map<number, PageScale> } {
+	const items = Array.from(handle.items.values())
+		.filter(isMarkup)
+		.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : 1));
+	const replies = Array.from(handle.replies.values())
+		.filter(isMarkupReply)
+		.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : 1));
+	const pageScales = new Map<number, PageScale>();
+	for (const scale of handle.scales.values()) {
+		if (isPageScale(scale)) pageScales.set(scale.page, scale);
+	}
+	return { items, replies, pageScales };
+}
+
+/**
+ * One version's markup, read once without opening the viewer (the document list's download menu).
+ * The device copy loads first; with a server address and a connection it then waits up to
+ * `timeoutMs` for the server's copy too, so markup drawn on another device counts. Offline, refused
+ * or slow, it answers with what this device has.
+ */
+export async function readMarkupSnapshot(
+	versionId: string,
+	options: { websocketUrl: string | null; timeoutMs?: number },
+): Promise<{ items: readonly Markup[]; replies: readonly MarkupReply[]; pageScales: ReadonlyMap<number, PageScale> }> {
+	const handle = acquireMarkupDoc(versionId, { websocketUrl: options.websocketUrl, canEdit: false });
+	try {
+		await handle.whenReady;
+		const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+		if (options.websocketUrl && online && !handle.destroyed && handle.syncState !== 'synced' && handle.syncState !== 'denied') {
+			await new Promise<void>((resolve) => {
+				const timer = setTimeout(done, options.timeoutMs ?? SNAPSHOT_SYNC_TIMEOUT_MS);
+				function done(): void {
+					clearTimeout(timer);
+					handle.listeners.delete(check);
+					resolve();
+				}
+				function check(): void {
+					if (handle.syncState === 'synced' || handle.syncState === 'denied' || handle.destroyed) done();
+				}
+				handle.listeners.add(check);
+				check();
+			});
+		}
+		return readHandleContents(handle);
+	} finally {
+		releaseMarkupDoc(versionId, false);
+	}
+}
+
 /**
  * Background upload of one version's waiting markup (core/markupSync.ts): open the doc from the
  * device copy, let it sync, and close it again. Resolves true once the server has it.
@@ -342,16 +394,7 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		let active = true;
 		const publish = (): void => {
 			if (!active || handle.destroyed) return;
-			const items = Array.from(handle.items.values())
-				.filter(isMarkup)
-				.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : 1));
-			const replies = Array.from(handle.replies.values())
-				.filter(isMarkupReply)
-				.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : 1));
-			const pageScales = new Map<number, PageScale>();
-			for (const scale of handle.scales.values()) {
-				if (isPageScale(scale)) pageScales.set(scale.page, scale);
-			}
+			const { items, replies, pageScales } = readHandleContents(handle);
 			setSnapshot({
 				ready: handle.ready,
 				items,

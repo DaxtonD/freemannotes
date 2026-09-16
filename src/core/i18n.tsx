@@ -717,6 +717,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		shareOriginal: 'Share original file',
 		shareWithMarkup: 'Share with markup',
 		shareReadyTap: 'Ready. Tap to share',
+		checkingMarkup: 'Checking for markup…',
 		shareFailed: "Couldn't share this file.",
 	},
 	media: {

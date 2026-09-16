@@ -326,3 +326,9 @@
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 }
+
+/* The download button while its menu is open. */
+.iconButtonActive {
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-accent) 24%, var(--color-surface-2));
+}

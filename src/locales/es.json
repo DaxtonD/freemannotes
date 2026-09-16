@@ -712,6 +712,7 @@
     "shareOriginal": "Compartir archivo original",
     "shareWithMarkup": "Compartir con marcas",
     "shareReadyTap": "Listo. Toca para compartir",
+    "checkingMarkup": "Buscando marcado…",
     "shareFailed": "No se pudo compartir el archivo."
   },
   "media": {

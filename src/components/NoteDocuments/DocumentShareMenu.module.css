@@ -1,0 +1,104 @@
+/* "Download or share" menu, shared by the PDF viewer header and the document list. */
+
+.wrap {
+	position: relative;
+	display: inline-flex;
+	flex-shrink: 0;
+}
+
+/* Inline: under its button (the viewer header). */
+.menu {
+	position: absolute;
+	top: calc(100% + 6px);
+	right: 0;
+	z-index: 30;
+	min-width: 230px;
+	padding: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	border-radius: 12px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+	background: var(--color-surface);
+	box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+	text-align: left;
+}
+
+/* Floating: pinned to the viewport next to its button, placed by inline top/bottom/right. Above the
+   chip's document browser (9500) and the PDF viewer (10040), below toasts. */
+.menuFloating {
+	position: fixed;
+	top: auto;
+	right: auto;
+	z-index: 10050;
+	max-width: calc(100vw - 16px);
+	box-sizing: border-box;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+}
+
+.menuItem {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--color-text);
+	font: inherit;
+	font-size: 14px;
+	font-weight: 600;
+	text-align: left;
+	white-space: nowrap;
+	cursor: pointer;
+}
+
+.menuItem:hover,
+.menuItem:focus-visible {
+	background: var(--color-surface-2);
+}
+
+.menuItem:disabled {
+	opacity: 0.6;
+	cursor: default;
+}
+
+.menuCheck {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 12px;
+	font-size: 13px;
+	color: var(--color-text-muted);
+	cursor: pointer;
+}
+
+/* "Checking for markup…" while the document list looks it up. */
+.menuNote {
+	margin: 0;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	font-size: 13px;
+	color: var(--color-text-muted);
+}
+
+.menuDivider {
+	height: 1px;
+	margin: 4px 8px;
+	background: color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+/* "Ready. Tap to share": a big export finished after the tap stopped counting. */
+.menuReady {
+	background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+
+.menuError {
+	margin: 4px 12px 6px;
+	font-size: 12px;
+	color: #e02424;
+}

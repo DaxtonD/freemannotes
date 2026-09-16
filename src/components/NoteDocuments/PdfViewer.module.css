@@ -1,23 +1,23 @@
+/* Full screen on every device: the viewer fills the browser window and follows it as it resizes.
+   It used to be a rounded 1120px window floating over a blurred backdrop on desktop, which left a
+   36" plan sheet squeezed into the middle of a big monitor. Nothing shows behind it now, so no blur. */
 .backdrop {
 	position: fixed;
 	inset: 0;
 	/* Above the attachment browser modal and the photo viewer it can be opened next to. */
 	z-index: 10040;
 	background: color-mix(in srgb, var(--color-app-bg) 32%, rgba(6, 8, 12, 0.9));
-	backdrop-filter: blur(18px);
-	-webkit-backdrop-filter: blur(18px);
 	display: flex;
 	align-items: stretch;
 	justify-content: center;
-	padding: 18px;
+	padding: 0;
 }
 
 .viewer {
-	width: min(1120px, 100%);
-	border-radius: 28px;
+	width: 100%;
+	border-radius: 0;
 	background: color-mix(in srgb, var(--color-surface) 94%, rgba(8, 10, 16, 0.22));
-	border: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
-	box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+	border: 0;
 	display: flex;
 	flex-direction: column;
 	overflow: hidden;
@@ -125,82 +125,6 @@
 }
 
 /* Download menu: Original file / With markup, under the header's download button. */
-.downloadWrap {
-	position: relative;
-	display: inline-flex;
-	flex-shrink: 0;
-}
-
-.downloadMenu {
-	position: absolute;
-	top: calc(100% + 6px);
-	right: 0;
-	z-index: 30;
-	min-width: 230px;
-	padding: 6px;
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
-	border-radius: 12px;
-	border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
-	background: var(--color-surface);
-	box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
-}
-
-.downloadMenuItem {
-	width: 100%;
-	display: flex;
-	align-items: center;
-	gap: 10px;
-	padding: 10px 12px;
-	border: 0;
-	border-radius: 8px;
-	background: transparent;
-	color: var(--color-text);
-	font: inherit;
-	font-size: 14px;
-	font-weight: 600;
-	text-align: left;
-	cursor: pointer;
-}
-
-.downloadMenuItem:hover,
-.downloadMenuItem:focus-visible {
-	background: var(--color-surface-2);
-}
-
-.downloadMenuItem:disabled {
-	opacity: 0.6;
-	cursor: default;
-}
-
-.downloadMenuCheck {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	padding: 8px 12px;
-	font-size: 13px;
-	color: var(--color-text-muted);
-	cursor: pointer;
-}
-
-.downloadMenuDivider {
-	height: 1px;
-	margin: 4px 8px;
-	background: color-mix(in srgb, var(--color-border) 70%, transparent);
-}
-
-/* "Ready. Tap to share": a big export finished after the tap stopped counting. */
-.downloadMenuReady {
-	background: color-mix(in srgb, var(--color-accent) 16%, transparent);
-}
-
-.downloadMenuError {
-	margin: 4px 12px 6px;
-	font-size: 12px;
-	color: #e02424;
-}
-
 /* Count of open comments on the header's Comments button. */
 .iconBadge {
 	position: absolute;
