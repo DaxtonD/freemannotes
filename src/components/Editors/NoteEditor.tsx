@@ -1309,10 +1309,17 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (!mediaDockOpen || isCoarsePointer || typeof document === 'undefined') return;
 		const handlePointerDown = (event: PointerEvent): void => {
 			if (document.body.dataset.freemannotesNoteImageUploadOpen === 'true') return;
+			// A document or photo viewer opened from in here draws at the page root, so every click
+			// inside it counted as "outside the flyout" and closed the sheet behind it — including the
+			// viewer's own close button, which then dropped the reader back into a bare editor.
+			if (document.body.dataset.freemannotesNoteImageViewerOpen === 'true') return;
 			const target = event.target;
 			if (!(target instanceof Element)) return;
 			if (mediaFlyoutRef.current?.contains(target)) return;
 			if (target.closest('[data-note-editor-media-dock-trigger="true"]')) return;
+			// Menus and windows this sheet opens live at the page root too (the download menu, the
+			// version history). They mark themselves so using them doesn't close the sheet underneath.
+			if (target.closest('[data-note-editor-overlay="true"]')) return;
 			setMediaDockOpen(false);
 		};
 		document.addEventListener('pointerdown', handlePointerDown, true);
@@ -1492,6 +1499,11 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			if (isMediaDockHistoryEntry(event.state)) return;
 			// The PDF viewer opens inside this sheet; its entry isn't a reason to close it.
 			if (typeof (event.state as { __notePdfViewer?: unknown } | null)?.__notePdfViewer === 'string') return;
+			// A document or photo viewer is open on top of the sheet: this Back belongs to it, and it
+			// closes itself. Don't work that out from which entry was popped — Chrome on Android skips
+			// entries it decides weren't user-made, so Back can land below both the viewer's entry and
+			// ours, which used to close the sheet as well and drop the reader back into the editor.
+			if (typeof document !== 'undefined' && document.body.dataset.freemannotesNoteImageViewerOpen === 'true') return;
 			setMediaDockOpen(false);
 		};
 		window.addEventListener('popstate', onPopState);

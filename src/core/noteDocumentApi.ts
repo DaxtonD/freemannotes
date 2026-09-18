@@ -69,6 +69,12 @@ export type NoteDocumentRecord = {
 	lastSyncError?: string | null;
 	/** The server rejected this upload outright (bad type, too big) — retrying won't help. */
 	syncPermanentFailure?: boolean;
+	/**
+	 * A record built for an older version rather than the document's current one. Only the latest
+	 * version is kept on the device (D3), so these are fetched when opened and never cached — saving
+	 * one would overwrite the offline copy of the version everyone else is actually working on.
+	 */
+	isOlderVersion?: boolean;
 };
 
 export type NoteDocumentListResponse = {
@@ -124,6 +130,58 @@ export async function uploadNoteDocuments(docId: string, files: readonly File[])
 		method: 'POST',
 		body: formData,
 	}, { timeoutMs: uploadTimeoutMs(files) });
+}
+
+/** One revision of a document. Markup belongs to the version it was drawn on (D7). */
+export type NoteDocumentVersionRecord = {
+	id: string;
+	versionNumber: number;
+	uploadedByUserId: string;
+	fileName: string;
+	fileExtension: string;
+	mimeType: string;
+	byteSize: number;
+	pageCount: number | null;
+	createdAt: string;
+	conversionStatus: NoteDocumentConversionStatus;
+	/** Someone has marked this version up, so housekeeping will never remove it on its own. */
+	hasMarkup: boolean;
+	viewPdfUrl: string | null;
+	originalUrl: string;
+	previewUrl: string;
+	thumbnailUrl: string;
+};
+
+export type NoteDocumentVersionListResponse = {
+	documentId: string;
+	latestVersionNumber: number;
+	/** How many recent versions are kept automatically. */
+	keepAutomatically: number;
+	/** Newest first. */
+	versions: NoteDocumentVersionRecord[];
+};
+
+export async function listNoteDocumentVersions(documentId: string): Promise<NoteDocumentVersionListResponse> {
+	return fetchJson(`/api/note-documents/${encodeURIComponent(documentId)}/versions`, {}, { timeoutMs: 15000 });
+}
+
+/** Replaces a document with a new revision. The old versions (and their markup) stay in the history. */
+export async function uploadNoteDocumentVersion(
+	documentId: string,
+	file: File,
+): Promise<NoteDocumentVersionListResponse & { document: NoteDocumentRecord; prunedVersionIds: string[] }> {
+	const formData = new FormData();
+	formData.append('file', file);
+	return fetchJson(`/api/note-documents/${encodeURIComponent(documentId)}/versions`, {
+		method: 'POST',
+		body: formData,
+	}, { timeoutMs: uploadTimeoutMs([file]) });
+}
+
+export async function deleteNoteDocumentVersion(documentId: string, versionId: string): Promise<NoteDocumentVersionListResponse & { ok: true }> {
+	return fetchJson(`/api/note-documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionId)}`, {
+		method: 'DELETE',
+	}, { timeoutMs: 15000 });
 }
 
 export async function deleteNoteDocument(documentId: string): Promise<{ ok: true; documentId: string }> {

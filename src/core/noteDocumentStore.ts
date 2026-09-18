@@ -717,6 +717,9 @@ export async function readStoredRemoteNoteDocumentBlob(documentId: string): Prom
 export async function resolveNoteDocumentBlob(document: NoteDocumentRecord): Promise<Blob | null> {
 	if (!document || !document.id) return null;
 	if (document.isLocal) return readQueuedNoteDocumentBlob(document.id);
+	// An older version: fetch it for this look and keep nothing. The stored copy belongs to the
+	// latest version, and overwriting it would take the current file away from an offline device.
+	if (document.isOlderVersion) return fetchBlob(document.originalUrl);
 	const cachedRow = await readRemoteAssetRow(document.id);
 	if (cachedRow?.blob && cachedRow.originalUrl === document.originalUrl) return cachedRow.blob;
 	const blob = await fetchBlob(document.originalUrl);
@@ -743,6 +746,7 @@ export async function resolveNoteDocumentViewBlob(document: NoteDocumentRecord):
 	if (!document || !document.id) return null;
 	const isPdf = (document.fileExtension || getNoteDocumentExtension(document.fileName, document.mimeType)) === 'pdf';
 	if (isPdf || document.isLocal || !document.viewPdfUrl) return resolveNoteDocumentBlob(document);
+	if (document.isOlderVersion) return fetchBlob(document.viewPdfUrl);
 	const cachedRow = await readRemoteAssetRow(document.id);
 	if (cachedRow?.viewBlob && cachedRow.viewPdfUrl === document.viewPdfUrl) return cachedRow.viewBlob;
 	const viewBlob = await fetchBlob(document.viewPdfUrl);
@@ -961,10 +965,10 @@ export async function flushQueuedNoteDocuments(userId: string): Promise<void> {
 					// Leave it waiting and stop; the next flush picks it up.
 					return;
 				}
-				// 400/413/415: the server looked at the file and said no. Retrying the same
-				// bytes forever would just burn data. 403/404 (e.g. the note isn't on the
-				// server yet) may sort itself out, so those keep retrying.
-				const permanent = status === 400 || status === 413 || status === 415;
+				// 400/409/413/415: the server looked at the file and said no (409 = that document is
+				// already on the note). Retrying the same bytes forever would just burn data. 403/404
+				// (e.g. the note isn't on the server yet) may sort itself out, so those keep retrying.
+				const permanent = status === 400 || status === 409 || status === 413 || status === 415;
 				await updateQueuedRow(row.id, (current) => ({
 					...current,
 					updatedAt: nowIso(),

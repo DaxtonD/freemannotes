@@ -55,9 +55,21 @@ function buildSearchSnippet(haystack, query) {
 	if (idx === -1) return normalizedHaystack.slice(0, 180);
 	const start = Math.max(0, idx - 48);
 	const end = Math.min(normalizedHaystack.length, idx + normalizedQuery.length + 96);
-	const prefix = start > 0 ? '... ' : '';
-	const suffix = end < normalizedHaystack.length ? ' ...' : '';
-	return `${prefix}${normalizedHaystack.slice(start, end)}${suffix}`;
+	// Trim to whole words where we can, so snippets don't start or end mid-word, and use a real
+	// ellipsis rather than three dots: a row of "... " made the results list look ragged.
+	let sliceStart = start;
+	if (sliceStart > 0) {
+		const space = normalizedHaystack.indexOf(' ', sliceStart);
+		if (space >= 0 && space - sliceStart <= 12) sliceStart = space + 1;
+	}
+	let sliceEnd = end;
+	if (sliceEnd < normalizedHaystack.length) {
+		const space = normalizedHaystack.lastIndexOf(' ', sliceEnd);
+		if (space > idx + normalizedQuery.length) sliceEnd = space;
+	}
+	const prefix = sliceStart > 0 ? '…' : '';
+	const suffix = sliceEnd < normalizedHaystack.length ? '…' : '';
+	return `${prefix}${normalizedHaystack.slice(sliceStart, sliceEnd).trim()}${suffix}`;
 }
 
 module.exports = {

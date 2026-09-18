@@ -56,6 +56,11 @@ type PdfViewerProps = {
 	canEdit?: boolean;
 	onClose: () => void;
 	onDownload: (document: NoteDocumentRecord) => void;
+	/**
+	 * Opened from a search result: the viewer starts with its own search on this text, which jumps to
+	 * the first hit from the page you'd be on — the same behaviour as typing it into the search box.
+	 */
+	initialSearch?: string;
 };
 
 type PageSize = { width: number; height: number };
@@ -484,10 +489,10 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const [navigatorOpen, setNavigatorOpen] = React.useState(false);
 	const navigatorOpenRef = React.useRef(navigatorOpen);
 	navigatorOpenRef.current = navigatorOpen;
-	const [searchOpen, setSearchOpen] = React.useState(false);
+	const [searchOpen, setSearchOpen] = React.useState(Boolean(props.initialSearch));
 	const searchOpenRef = React.useRef(searchOpen);
 	searchOpenRef.current = searchOpen;
-	const [searchQuery, setSearchQuery] = React.useState('');
+	const [searchQuery, setSearchQuery] = React.useState(props.initialSearch ?? '');
 	const [searchNeedle, setSearchNeedle] = React.useState('');
 	const searchNeedleRef = React.useRef('');
 	const [search, setSearch] = React.useState<SearchState>(EMPTY_SEARCH);
@@ -675,10 +680,12 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		};
 	}, []);
 
-	// Mobile Back closes the viewer first, leaving the sheet or browser underneath open.
-	// Same pattern as the photo viewer.
+	// Back closes the viewer first, leaving the sheet or browser underneath open. On phones that's the
+	// system Back button; on desktop it's the browser's Back, which used to fall through to the app's
+	// own history and shut the attachments sheet, dropping the reader back into the editor.
+	// (The per-layer entries below stay a phone thing: on desktop the panels sit beside the page.)
 	React.useEffect(() => {
-		if (!isCoarsePointer || typeof window === 'undefined') return;
+		if (typeof window === 'undefined') return;
 		if (pendingHistoryCleanupRef.current != null) {
 			window.clearTimeout(pendingHistoryCleanupRef.current);
 			pendingHistoryCleanupRef.current = null;
@@ -805,7 +812,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		const state = typeof window !== 'undefined'
 			? (window.history.state as { __notePdfViewer?: string } | null)
 			: null;
-		if (isCoarsePointer && state?.__notePdfViewer === historyTokenRef.current) {
+		if (state?.__notePdfViewer === historyTokenRef.current) {
 			navigatorOpenRef.current = false;
 			setNavigatorOpen(false);
 			searchOpenRef.current = false;

@@ -50,6 +50,31 @@ export type NoteSearchGroup = {
 
 export type NoteSearchMatchKind = 'note' | 'ocr' | 'imageName' | 'collaborator' | 'link' | 'document' | 'collection' | 'label';
 
+/** A document a search matched, with enough of it to open on the spot. */
+import type { NoteDocumentRecord } from './noteDocumentApi';
+
+export type NoteSearchDocumentMatch = {
+	document: NoteDocumentRecord;
+	snippet: string;
+	/** The query was found in the document's text rather than its name, so the viewer jumps to it. */
+	matchedText: boolean;
+};
+
+export type NoteSearchImageMatch = {
+	id: string;
+	fileName: string;
+	originalUrl: string;
+	thumbnailUrl: string;
+	snippet: string;
+};
+
+export type NoteSearchLinkMatch = {
+	url: string;
+	title: string;
+	hostname: string;
+	imageUrl: string | null;
+};
+
 export type NoteSearchResult = {
 	docId: string;
 	noteId: string;
@@ -61,6 +86,9 @@ export type NoteSearchResult = {
 	collectionMatches: string[];
 	labelMatches: string[];
 	snippet: string;
+	documentMatches?: NoteSearchDocumentMatch[];
+	imageMatches?: NoteSearchImageMatch[];
+	linkMatches?: NoteSearchLinkMatch[];
 	imageCount: number;
 	thumbnailUrl: string | null;
 	updatedAt: string;

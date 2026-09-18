@@ -90,8 +90,24 @@ async function saveMarkupState(prisma, versionId, state, stateVector) {
 	`;
 }
 
+/**
+ * Which of these versions have markup saved on the server. Used to decide what version housekeeping
+ * may quietly delete, and to warn before a person deletes a version by hand.
+ */
+async function listVersionsWithMarkup(prisma, versionIds) {
+	const ids = Array.from(new Set(Array.from(versionIds || [], (id) => String(id)).filter((id) => UUID_PATTERN.test(id))));
+	if (ids.length === 0) return [];
+	const rows = await prisma.$queryRaw`
+		SELECT "version_id"
+		FROM "note_document_markup"
+		WHERE "version_id" = ANY(${ids}::uuid[])
+	`;
+	return rows.map((row) => String(row.version_id));
+}
+
 module.exports = {
 	MARKUP_ROOM_PREFIX,
+	listVersionsWithMarkup,
 	isMarkupRoomName,
 	parseMarkupRoomName,
 	markupRoomName,

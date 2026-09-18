@@ -9,6 +9,7 @@ import {
 	faBarsStaggered,
 	faBell,
 	faCircleDot,
+	faArrowUpRightFromSquare,
 	faFileLines,
 	faFolder,
 	faGrip,
@@ -66,6 +67,13 @@ import { NoteImageUploadModal } from './components/NoteMedia/NoteImageUploadModa
 import { MobileFab } from './components/MobileFab/MobileFab';
 import { NoteMediaBrowserModal } from './components/NoteMedia/NoteMediaBrowserModal';
 import { WorkspaceImagesGallery } from './components/NoteMedia/WorkspaceImagesGallery';
+import { WorkspaceDocumentsGallery } from './components/NoteDocuments/WorkspaceDocumentsGallery';
+import { DocumentTextViewer } from './components/NoteDocuments/DocumentTextViewer';
+import { SearchResultThumb } from './components/Search/SearchResultThumb';
+import { saveBlobToDevice } from './components/NoteDocuments/saveBlobToDevice';
+import type { NoteDocumentRecord } from './core/noteDocumentApi';
+import { getNoteDocumentExtension, resolveNoteDocumentBlob } from './core/noteDocumentStore';
+import { getDocumentConversionEnabled } from './core/instanceConfig';
 import { MoveNoteModal } from './components/Workspaces/MoveNoteModal';
 import { CollectionManagementModal } from './components/Workspaces/CollectionManagementModal';
 import { NoteCollectionModal } from './components/Workspaces/NoteCollectionModal';
@@ -143,7 +151,7 @@ import {
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, getNotePreviewLinksFromDoc, removeNotePreviewLinkFromDoc } from './core/noteLinks';
 import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
 import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkApi';
-import { searchNotes, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
+import { searchNotes, type NoteSearchDocumentMatch, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
 import { emptyTrashNow, moveNoteToWorkspace } from './core/noteManagementApi';
 import { getAppDebugSessionId, logClientEvent } from './core/debugLogger';
 import { beginMoveDebugTrace, logMoveDebugClient } from './core/moveDebugTrace';
@@ -276,6 +284,15 @@ type NoteImageModalState = {
 	docId: string;
 	title: string;
 	noteType?: 'text' | 'checklist' | 'drawing';
+};
+
+// Opening a document straight from a search result, without going through its note first.
+const SearchResultPdfViewer = React.lazy(() => import('./components/NoteDocuments/PdfViewer').then((module) => ({ default: module.PdfViewer })));
+
+type SearchDocumentView = {
+	document: NoteDocumentRecord;
+	/** What was searched for, so the viewer can jump to it inside the file. */
+	query: string;
 };
 
 type NoteAttachmentBrowserState = {
@@ -693,7 +710,7 @@ type PendingReminderSync = {
 	updatedAt: string;
 };
 
-type SidebarView = 'notes' | 'images' | 'archive' | 'trash';
+type SidebarView = 'notes' | 'images' | 'documents' | 'archive' | 'trash';
 
 type OverlaySnapshot = {
 	sidebarView: SidebarView;
@@ -1950,6 +1967,9 @@ export function App(): React.JSX.Element {
 	const deferredSearchQuery = React.useDeferredValue(searchQuery.trim());
 	const [searchResults, setSearchResults] = React.useState<readonly NoteSearchResult[]>([]);
 	const [searchResultsBusy, setSearchResultsBusy] = React.useState(false);
+	// A document opened straight from a search result, with the text that was searched for.
+	const [searchDocumentView, setSearchDocumentView] = React.useState<SearchDocumentView | null>(null);
+	const previousMobileSearchOpenRef = React.useRef(false);
 	const [searchResultsError, setSearchResultsError] = React.useState<string | null>(null);
 	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
 	const [workspaceCollaborators, setWorkspaceCollaborators] = React.useState<SidebarCollaboratorEntry[]>([]);
@@ -2217,7 +2237,7 @@ export function App(): React.JSX.Element {
 		// Leaving sidebarView on 'images' either overlaps it with the new view or
 		// silently blocks the new view from ever appearing, depending on render
 		// order — reset back to Notes so the switch actually takes effect.
-		if ((nextMode === 'inbox' || nextMode === 'bubble') && sidebarView === 'images') {
+		if ((nextMode === 'inbox' || nextMode === 'bubble') && (sidebarView === 'images' || sidebarView === 'documents')) {
 			setSidebarView('notes');
 		}
 		setViewMode(nextMode);
@@ -2352,7 +2372,7 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (viewMode !== 'bubble') return;
-		if (sidebarView !== 'images' && sidebarView !== 'trash') return;
+		if (sidebarView !== 'images' && sidebarView !== 'documents' && sidebarView !== 'trash') return;
 		setActiveSharedFolder(null);
 		setSidebarView('notes');
 	}, [sidebarView, viewMode]);
@@ -2529,7 +2549,7 @@ export function App(): React.JSX.Element {
 		return true;
 	}, [isMobileViewport]);
 
-	const openMobileSidebarHistoryView = React.useCallback((nextSidebarView: Extract<SidebarView, 'images' | 'trash' | 'archive'>) => {
+	const openMobileSidebarHistoryView = React.useCallback((nextSidebarView: Extract<SidebarView, 'images' | 'documents' | 'trash' | 'archive'>) => {
 		// When a special sidebar view is opened from the mobile drawer, reuse that
 		// top history entry so Back returns directly to the prior notes state.
 		const current = getOverlaySnapshot();
@@ -6055,6 +6075,9 @@ export function App(): React.JSX.Element {
 		if (sidebarView === 'images') {
 			return `${t('app.sidebarImages')} / ${activeWorkspaceSidebarPath}`;
 		}
+		if (sidebarView === 'documents') {
+			return `${t('app.sidebarDocuments')} / ${activeWorkspaceSidebarPath}`;
+		}
 		if (viewMode === 'bubble') {
 			return 'All Workspaces';
 		}
@@ -8543,6 +8566,7 @@ export function App(): React.JSX.Element {
 			{ id: 'sorting', label: t('app.sidebarSorting'), icon: faArrowDownWideShort, kind: 'group' },
 			{ id: 'reminders', label: t('app.sidebarReminders'), icon: faBell, kind: 'group' },
 			{ id: 'images', label: t('app.sidebarImages'), icon: faImage, kind: 'link' },
+			{ id: 'documents', label: t('app.sidebarDocuments'), icon: faFileLines, kind: 'link' },
 			{ id: 'trash', label: t('app.sidebarTrash'), icon: faTrash, kind: 'link' },
 		] as SidebarEntry[]).filter((entry) => {
 			if (viewMode !== 'bubble') return true;
@@ -8551,12 +8575,14 @@ export function App(): React.JSX.Element {
 				&& entry.id !== 'collaborators'
 				&& entry.id !== 'sorting'
 				&& entry.id !== 'images'
+				&& entry.id !== 'documents'
 				&& entry.id !== 'trash';
 		}),
 		[resolvedActiveWorkspaceName, sidebarView, t, viewMode]
 	);
 	const sidebarUsesBubbleSummaryMenus = viewMode === 'bubble';
-	const filterSidebarView = sidebarView === 'images' ? 'images' : 'notes';
+	// The galleries answer the same filters as the grid, so they share its filter sidebar.
+	const filterSidebarView = sidebarView === 'images' || sidebarView === 'documents' ? 'images' : 'notes';
 
 	const bubbleWorkspaceLegend = React.useMemo(() => {
 		return sidebarWorkspacesSorted.map((workspace) => ({
@@ -10025,7 +10051,7 @@ export function App(): React.JSX.Element {
 
 	React.useEffect(() => {
 		if (authStatus !== 'authed') return;
-		if (viewMode === 'bubble' || sidebarView === 'images') {
+		if (viewMode === 'bubble' || sidebarView === 'images' || sidebarView === 'documents') {
 			setSearchResults([]);
 			setSearchResultsBusy(false);
 			setSearchResultsError(null);
@@ -10155,7 +10181,7 @@ export function App(): React.JSX.Element {
 		if (kind === 'label') return t('search.matchLabel');
 		return t('search.matchNote');
 	}, [t]);
-	const canShowGlobalSearchResults = viewMode !== 'bubble' && sidebarView !== 'images';
+	const canShowGlobalSearchResults = viewMode !== 'bubble' && sidebarView !== 'images' && sidebarView !== 'documents';
 	const hasGlobalSearchResults = canShowGlobalSearchResults && Boolean(deferredSearchQuery);
 	function renderGlobalSearchResults(variantClassName: string): React.ReactNode {
 		return (
@@ -10187,20 +10213,19 @@ export function App(): React.JSX.Element {
 					<section key={group.label} className="global-search-results-group">
 						<header className="global-search-results-group-header">{formatSearchGroupLabel(group.items[0].group)}</header>
 						<div className="global-search-results-list">
-							{group.items.map((result) => (
+							{group.items.map((result) => {
+								const documentMatches = result.documentMatches ?? [];
+								const imageMatches = result.imageMatches ?? [];
+								const linkMatches = result.linkMatches ?? [];
+								const hasOpenableMatches = documentMatches.length > 0 || imageMatches.length > 0 || linkMatches.length > 0;
+								return (
+								<div key={`${result.docId}:${result.openNoteId || result.noteId}`} className="global-search-result-card-wrap">
 								<button
-									key={`${result.docId}:${result.openNoteId || result.noteId}`}
 									type="button"
 									className="global-search-result-card"
 									onClick={() => void handleSearchResultSelect(result)}
 								>
-									{result.thumbnailUrl ? <img className="global-search-result-thumb" src={result.thumbnailUrl} alt="" /> : (
-										<div className="global-search-result-thumb global-search-result-thumb-placeholder" aria-hidden="true">
-											<span className="global-search-result-thumb-title">{result.title}</span>
-											<span className="global-search-result-thumb-snippet">{result.snippet || t('note.untitled')}</span>
-											<span className="global-search-result-thumb-line global-search-result-thumb-line-short" />
-										</div>
-									)}
+									<SearchResultThumb thumbnailUrl={result.thumbnailUrl} title={result.title} matchKinds={result.matchKinds} />
 									<div className="global-search-result-copy">
 										<div className="global-search-result-topline">
 											<span className="global-search-result-title">{result.title}</span>
@@ -10218,7 +10243,55 @@ export function App(): React.JSX.Element {
 										<div className="global-search-result-meta">{result.imageCount > 0 ? `${result.imageCount} ${result.imageCount === 1 ? t('media.imageSingular') : t('media.imagePlural')} · ` : ''}{new Date(result.updatedAt).toLocaleString(locale)}</div>
 									</div>
 								</button>
-							))}
+								{hasOpenableMatches ? (
+									<div className="global-search-result-matches">
+										{documentMatches.map((match) => (
+											<button
+												key={`document:${match.document.id}`}
+												type="button"
+												className="global-search-result-match"
+												onClick={() => openSearchDocumentMatch(match, deferredSearchQuery)}
+											>
+												<FontAwesomeIcon icon={faFileLines} />
+												<span className="global-search-result-match-name">{match.document.fileName}</span>
+												<span className="global-search-result-match-snippet">{match.snippet}</span>
+											</button>
+										))}
+										{imageMatches.map((match) => (
+											<button
+												key={`image:${match.id}`}
+												type="button"
+												className="global-search-result-match"
+												onClick={() => {
+													clearSearchAfterOpening();
+													openNoteAttachmentBrowser('images', result.openNoteId || result.noteId, result.docId, result.title, false);
+												}}
+											>
+												<FontAwesomeIcon icon={faImage} />
+												<span className="global-search-result-match-name">{match.fileName || t('media.imageLabel')}</span>
+												<span className="global-search-result-match-snippet">{match.snippet}</span>
+											</button>
+										))}
+										{linkMatches.map((match) => (
+											<button
+												key={`link:${match.url}`}
+												type="button"
+												className="global-search-result-match"
+												onClick={() => {
+													clearSearchAfterOpening();
+													window.open(match.url, '_blank', 'noopener,noreferrer');
+												}}
+											>
+												<FontAwesomeIcon icon={faArrowUpRightFromSquare} />
+												<span className="global-search-result-match-name">{match.title}</span>
+												<span className="global-search-result-match-snippet">{match.hostname}</span>
+											</button>
+										))}
+									</div>
+								) : null}
+								</div>
+								);
+							})}
 						</div>
 					</section>
 				))}
@@ -10226,6 +10299,32 @@ export function App(): React.JSX.Element {
 		</section>
 		);
 	}
+	const clearSearchAfterOpening = React.useCallback((): void => {
+		setSearchQuery('');
+		setSearchResults([]);
+		setSearchResultsError(null);
+	}, []);
+
+	// Back closes the mobile search bar. The results it produced used to stay on screen behind it,
+	// covering the grid with a list you could no longer see the query for.
+	React.useEffect(() => {
+		const wasOpen = previousMobileSearchOpenRef.current;
+		previousMobileSearchOpenRef.current = isMobileSearchOpen;
+		if (wasOpen && !isMobileSearchOpen) clearSearchAfterOpening();
+	}, [clearSearchAfterOpening, isMobileSearchOpen]);
+
+	const downloadSearchDocument = React.useCallback(async (document: NoteDocumentRecord): Promise<void> => {
+		const blob = await resolveNoteDocumentBlob(document).catch(() => null);
+		if (blob) saveBlobToDevice(blob, document.fileName);
+	}, []);
+
+	// A document hit opens the file itself. When the words were found inside it (rather than in its
+	// name), the viewer starts on its own search so it lands on the page that says them.
+	const openSearchDocumentMatch = React.useCallback((match: NoteSearchDocumentMatch, query: string): void => {
+		clearSearchAfterOpening();
+		setSearchDocumentView({ document: match.document, query: match.matchedText ? query : '' });
+	}, [clearSearchAfterOpening]);
+
 	const handleSearchResultSelect = React.useCallback(async (result: NoteSearchResult) => {
 		setSearchQuery('');
 		setSearchResults([]);
@@ -10766,6 +10865,7 @@ export function App(): React.JSX.Element {
 							const isEntryActive =
 								(entry.id === 'trash' && sidebarView === 'trash') ||
 								(entry.id === 'images' && sidebarView === 'images') ||
+								(entry.id === 'documents' && sidebarView === 'documents') ||
 								(entry.id === 'notes' && sidebarView === 'notes');
 							return (
 								<div key={entry.id}>
@@ -10819,16 +10919,17 @@ export function App(): React.JSX.Element {
 												}
 												return;
 											}
-											if (entry.id === 'images') {
+											if (entry.id === 'images' || entry.id === 'documents') {
+												const nextView = entry.id === 'documents' ? 'documents' : 'images';
 												setActiveSharedFolder(null);
 												if (isMobileViewport) {
-													if (sidebarView !== 'images') {
-														openMobileSidebarHistoryView('images');
+													if (sidebarView !== nextView) {
+														openMobileSidebarHistoryView(nextView);
 													} else {
 														closeMobileSidebar();
 													}
 												} else {
-													setSidebarView('images');
+													setSidebarView(nextView);
 												}
 												return;
 											}
@@ -10983,7 +11084,7 @@ export function App(): React.JSX.Element {
 																	if (ws.id !== authWorkspaceId) {
 																		setSidebarView('notes');
 																		void activateWorkspaceFromSidebar(ws.id, { activeSharedFolder: null });
-																	} else if (sidebarView === 'trash' || sidebarView === 'archive' || sidebarView === 'images') {
+																	} else if (sidebarView === 'trash' || sidebarView === 'archive' || sidebarView === 'images' || sidebarView === 'documents') {
 																		setActiveSharedFolder(null);
 																		setSidebarView('notes');
 																		if (isMobileViewport) closeMobileSidebar();
@@ -11361,7 +11462,7 @@ export function App(): React.JSX.Element {
 
 				<main className="app-main">
 					{/* Inbox now supports quick-create via the same sticky bar; bubble view keeps its scope/zoom chip but hides create buttons via the inner condition. */}
-					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images') ? (
+					{(sidebarView === 'notes' || sidebarView === 'trash' || sidebarView === 'images' || sidebarView === 'documents') ? (
 						<div ref={topControlsRef} className="app-main-sticky">
 							{sidebarView === 'notes' && viewMode !== 'bubble' && activeWorkspaceSystemKind !== 'SHARED_WITH_ME' ? (
 						// Reserve the button-row height unconditionally so the grid
@@ -11420,7 +11521,7 @@ export function App(): React.JSX.Element {
 							) : null}
 
 							<div className="note-grid-scope" aria-live="polite">
-								{viewMode === 'bubble' && sidebarView !== 'images' ? (
+								{viewMode === 'bubble' && sidebarView !== 'images' && sidebarView !== 'documents' ? (
 									<div className="note-grid-scope-chip">
 										<ScrollingScopeChipLabel value="All Workspaces" />
 										<BubbleZoomSlider
@@ -11432,7 +11533,7 @@ export function App(): React.JSX.Element {
 										/>
 									</div>
 								) : activeFilterChips.length === 0 ? (
-									(sidebarView === 'trash' || sidebarView === 'archive' || sidebarView === 'images') ? (
+									(sidebarView === 'trash' || sidebarView === 'archive' || sidebarView === 'images' || sidebarView === 'documents') ? (
 										<div className="note-grid-scope-chip is-clearable">
 											<ScrollingScopeChipLabel value={noteGridScopeLabel} />
 											<button
@@ -11450,7 +11551,7 @@ export function App(): React.JSX.Element {
 										</div>
 									)
 								) : null}
-								{viewMode !== 'bubble' || sidebarView === 'images' ? activeFilterChips.map((chip) => (
+								{viewMode !== 'bubble' || sidebarView === 'images' || sidebarView === 'documents' ? activeFilterChips.map((chip) => (
 									<div
 										key={chip.key}
 										className={`note-grid-scope-chip is-clearable${chip.onPrimaryAction ? ' is-interactive' : ''}`}
@@ -11519,7 +11620,7 @@ export function App(): React.JSX.Element {
 					</section>
 
 				{/* NoteGrid stays mounted in bubble/inbox mode (display:none) so DocumentManager keeps docs loaded. */}
-				<div style={{ display: viewMode === 'bubble' || viewMode === 'inbox' || sidebarView === 'images' ? 'none' : undefined, position: 'relative' }}>
+				<div style={{ display: viewMode === 'bubble' || viewMode === 'inbox' || sidebarView === 'images' || sidebarView === 'documents' ? 'none' : undefined, position: 'relative' }}>
 					<NoteGrid
 						key={stableWorkspaceKeyRef.current}
 						// Width behavior (desktop vs mobile, portrait/landscape) is centralized in NoteGrid.
@@ -11619,7 +11720,7 @@ export function App(): React.JSX.Element {
 						viewMode={viewMode === 'bubble' ? 'card' : viewMode}
 						debugHostViewMode={viewMode}
 						debugTransitionTraceId={viewTransitionTraceId}
-						isVisible={viewMode !== 'bubble' && sidebarView !== 'images'}
+						isVisible={viewMode !== 'bubble' && sidebarView !== 'images' && sidebarView !== 'documents'}
 						hiddenNoteId={draftNoteId}
 						listScrollAnchor={listScrollAnchor}
 						onListScrollAnchorApplied={handleListScrollAnchorApplied}
@@ -11654,6 +11755,25 @@ export function App(): React.JSX.Element {
 						refreshCollaboratorsToken={collaborationRefreshToken}
 						sharedNotes={visibleSharedPlacements}
 						searchQuery={deferredSearchQuery}
+					/>
+				) : null}
+				{sidebarView === 'documents' && viewMode !== 'bubble' && viewMode !== 'inbox' ? (
+					<WorkspaceDocumentsGallery
+						authUserId={authUserId}
+						collections={collections}
+						labels={labels}
+						activeCollectionId={activeCollectionId}
+						activeLabelIds={activeLabelIds}
+						activeCollaboratorFilter={noteGridCollaboratorFilter}
+						reminderFilter={activeReminderFilter}
+						noteReminderByDocId={noteReminderByDocId}
+						sortMode={activeSortMode}
+						sortDirection={activeSortDirection}
+						sortGrouping={activeSortGrouping}
+						refreshCollaboratorsToken={collaborationRefreshToken}
+						sharedNotes={visibleSharedPlacements}
+						searchQuery={deferredSearchQuery}
+						canEdit={canCreateNotesInCurrentContext}
 					/>
 				) : null}
 				{/* InboxView — activity feed for mentions and assignments */}
@@ -11883,6 +12003,30 @@ export function App(): React.JSX.Element {
 					})}
 				</div>,
 				document.body,
+			) : null}
+			{/* A document opened from a search result, without opening its note first. */}
+			{searchDocumentView ? (
+				(searchDocumentView.document.fileExtension || getNoteDocumentExtension(searchDocumentView.document.fileName, searchDocumentView.document.mimeType)) === 'pdf'
+					|| (searchDocumentView.document.conversionStatus === 'COMPLETE' && Boolean(searchDocumentView.document.viewPdfUrl))
+					? (
+						<React.Suspense fallback={null}>
+							<SearchResultPdfViewer
+								document={searchDocumentView.document}
+								authUserId={authUserId}
+								canEdit={false}
+								initialSearch={searchDocumentView.query}
+								onClose={() => setSearchDocumentView(null)}
+								onDownload={(target) => void downloadSearchDocument(target)}
+							/>
+						</React.Suspense>
+					) : (
+						<DocumentTextViewer
+							document={searchDocumentView.document}
+							conversionEnabled={getDocumentConversionEnabled()}
+							onClose={() => setSearchDocumentView(null)}
+							onDownload={(target) => void downloadSearchDocument(target)}
+						/>
+					)
 			) : null}
 			<NoteMediaBrowserModal
 				isOpen={noteAttachmentBrowserState?.kind === 'images'}

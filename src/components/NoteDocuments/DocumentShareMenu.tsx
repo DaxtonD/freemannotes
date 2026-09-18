@@ -288,6 +288,9 @@ export function DocumentShareMenu(props: DocumentShareMenuProps): React.JSX.Elem
 			ref={menuRef}
 			className={`${styles.menu}${floating ? ` ${styles.menuFloating}` : ''}`}
 			role="menu"
+			// Rendered at the page root: tells the editor's attachments sheet not to treat a click in
+			// here as a click outside itself.
+			data-note-editor-overlay={floating ? 'true' : undefined}
 			style={floating && position ? { right: position.right, top: position.top, bottom: position.bottom, maxHeight: position.maxHeight } : undefined}
 			onClick={floating ? stopPropagation : undefined}
 			onPointerDown={floating ? stopPropagation : undefined}

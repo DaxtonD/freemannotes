@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faCamera, faClockRotateLeft, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { useI18n } from '../../core/i18n';
@@ -9,6 +9,10 @@ import { getDocumentConversionEnabled, getDocumentUploadMaxBytes } from '../../c
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
 import { DocumentShareMenu } from './DocumentShareMenu';
 import { DocumentTextViewer } from './DocumentTextViewer';
+import { DocumentVersionsModal } from './DocumentVersionsModal';
+
+// The scanner brings its own image processing along, so it only loads when someone scans something.
+const ScanModal = React.lazy(() => import('./scan/ScanModal').then((module) => ({ default: module.ScanModal })));
 import {
 	NOTE_DOCUMENT_ACCEPT,
 	getCachedNoteDocuments,
@@ -124,8 +128,11 @@ type DocumentDisplay = {
 function describeDocument(document: NoteDocumentRecord, isOnline: boolean, t: Translate): DocumentDisplay {
 	const extension = document.fileExtension || getNoteDocumentExtension(document.fileName, document.mimeType) || 'doc';
 	const pages = Number(document.pageCount || 0);
+	const versionNumber = Number(document.latestVersionNumber || 0);
 	const meta = [
 		extension.toUpperCase(),
+		// Only worth saying once there's more than one revision.
+		(document.versionCount ?? 1) > 1 && versionNumber > 0 ? `v${versionNumber}` : null,
 		formatBytes(document.byteSize),
 		pages > 0 ? `${pages} ${t(pages === 1 ? 'documents.pageSingular' : 'documents.pagePlural')}` : null,
 	].filter(Boolean).join(' · ');
@@ -184,6 +191,7 @@ type DocumentItemProps = {
 	websocketUrl: string | null;
 	t: Translate;
 	onOpen: (document: NoteDocumentRecord) => void;
+	onVersions: (document: NoteDocumentRecord) => void;
 	onDownload: (document: NoteDocumentRecord) => void;
 	onDelete: (document: NoteDocumentRecord) => void;
 	onRetry: (document: NoteDocumentRecord) => void;
@@ -207,6 +215,19 @@ function DocumentActions(props: DocumentItemProps): React.JSX.Element {
 					title={t('documents.retry')}
 				>
 					<FontAwesomeIcon icon={faRotateRight} />
+				</button>
+			) : null}
+			{/* Versions: the history, and "replace with a new revision" for editors. An upload that
+			    hasn't reached the server yet has no history to show. */}
+			{!document.isLocal && (props.canEdit || (document.versionCount ?? 1) > 1) ? (
+				<button
+					type="button"
+					className={styles.iconButton}
+					onClick={() => props.onVersions(document)}
+					aria-label={t('documents.versionHistory')}
+					title={t('documents.versionHistory')}
+				>
+					<FontAwesomeIcon icon={faClockRotateLeft} />
 				</button>
 			) : null}
 			{/* Same menu as the PDF viewer's: share or download, with or without markup. */}
@@ -316,6 +337,8 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 	const [isOnline, setIsOnline] = React.useState(readIsOnline);
 	const [busyId, setBusyId] = React.useState<string | null>(null);
 	const [viewerDocument, setViewerDocument] = React.useState<NoteDocumentRecord | null>(null);
+	const [versionsDocument, setVersionsDocument] = React.useState<NoteDocumentRecord | null>(null);
+	const [scanOpen, setScanOpen] = React.useState(false);
 	const [textViewerDocument, setTextViewerDocument] = React.useState<NoteDocumentRecord | null>(null);
 	// Documents open as a list by default: for files, name/type/size reads better than a preview.
 	const [viewMode, toggleViewMode] = usePanelViewMode(PANEL_VIEW_MODE_STORAGE_KEYS.documents, 'list');
@@ -382,15 +405,21 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 		if (picked.length === 0 || !authUserId || !docId) return;
 		const supported = picked.filter((file) => isSupportedNoteDocumentFile(file));
 		const maxBytes = getDocumentUploadMaxBytes();
-		const accepted = supported.filter((file) => file.size <= maxBytes);
+		const sized = supported.filter((file) => file.size <= maxBytes);
+		// Picking the same file again would leave two identical documents on the note that then drift
+		// apart as people mark them up. The server refuses these too (409), for other devices.
+		const existing = getCachedNoteDocuments(docId);
+		const accepted = sized.filter((file) => !existing.some((document) => document.fileName === file.name && document.byteSize === file.size));
 		if (supported.length < picked.length) {
 			onShowBriefDialog?.(t('documents.skippedUnsupported'));
-		} else if (accepted.length < supported.length) {
+		} else if (sized.length < supported.length) {
 			onShowBriefDialog?.(t('documents.skippedTooLarge').replace('{size}', `${Math.round(maxBytes / (1024 * 1024))} MB`));
+		} else if (accepted.length < sized.length) {
+			onShowBriefDialog?.(t(accepted.length === 0 && sized.length === 1 ? 'documents.duplicateSkipped' : 'documents.duplicatesSkipped'));
 		}
 		if (accepted.length === 0) return;
 		// Confirm first, then queue: the queue write is fast, but the toast shouldn't wait on IndexedDB.
-		if (supported.length === picked.length && accepted.length === supported.length) {
+		if (supported.length === picked.length && accepted.length === sized.length) {
 			onShowBriefDialog?.(readIsOnline() ? t('documents.uploadingToast') : t('documents.queuedOfflineToast'));
 		}
 		void queueNoteDocumentsForUpload({ userId: authUserId, docId, files: accepted })
@@ -481,6 +510,7 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 		websocketUrl,
 		t,
 		onOpen: handleOpen,
+		onVersions: setVersionsDocument,
 		onDownload: (target) => void handleDownload(target),
 		onDelete: (target) => void handleDelete(target),
 		onRetry: handleRetry,
@@ -505,6 +535,15 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 					</button>
 					{canAdd ? (
 						<>
+							<button
+								type="button"
+								className={styles.iconButton}
+								onClick={() => setScanOpen(true)}
+								aria-label={t('scan.title')}
+								title={t('scan.title')}
+							>
+								<FontAwesomeIcon icon={faCamera} />
+							</button>
 							<button
 								type="button"
 								className={styles.addButton}
@@ -552,6 +591,34 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 						onDownload={(target) => void handleDownload(target)}
 					/>
 				</React.Suspense>
+			) : null}
+			{scanOpen ? (
+				<React.Suspense fallback={null}>
+					<ScanModal
+						onClose={() => setScanOpen(false)}
+						onSave={async (file) => {
+							if (!authUserId || !docId) return;
+							// Straight into the same upload queue as any other document, so a scan taken
+							// with no signal waits its turn like everything else.
+							onShowBriefDialog?.(readIsOnline() ? t('documents.uploadingToast') : t('documents.queuedOfflineToast'));
+							await queueNoteDocumentsForUpload({ userId: authUserId, docId, files: [file] });
+							if (docIdRef.current === docId) setDocuments(getCachedNoteDocuments(docId));
+						}}
+					/>
+				</React.Suspense>
+			) : null}
+			{versionsDocument ? (
+				<DocumentVersionsModal
+					document={versionsDocument}
+					canEdit={canEdit}
+					onClose={() => setVersionsDocument(null)}
+					onOpenVersion={(record) => {
+						setVersionsDocument(null);
+						handleOpen(record);
+					}}
+					onDownloadVersion={(record) => void handleDownload(record)}
+					onChanged={() => void refresh()}
+				/>
 			) : null}
 			{liveTextDocument && !liveTextDocumentHasPdf ? (
 				<DocumentTextViewer

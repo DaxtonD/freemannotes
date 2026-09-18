@@ -1,0 +1,78 @@
+/* The square at the left of a search result: a real picture, or a tile saying what the result is. */
+
+.thumb {
+	width: 66px;
+	height: 66px;
+	border-radius: 14px;
+	object-fit: cover;
+	background: color-mix(in srgb, var(--color-surface-2) 70%, transparent);
+}
+
+.fallback {
+	position: relative;
+	width: 66px;
+	height: 66px;
+	border-radius: 14px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	overflow: hidden;
+	background:
+		linear-gradient(140deg, color-mix(in srgb, var(--color-accent) 22%, transparent), transparent 62%),
+		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+	border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.initial {
+	font-size: 26px;
+	font-weight: 700;
+	line-height: 1;
+	color: color-mix(in srgb, var(--color-text) 72%, transparent);
+	font-variant-numeric: tabular-nums;
+}
+
+/* The kind badge sits in the corner so the letter stays the thing you read first. */
+.kindIcon {
+	position: absolute;
+	right: 6px;
+	bottom: 5px;
+	font-size: 11px;
+	color: color-mix(in srgb, var(--color-text) 54%, transparent);
+}
+
+.fallback[data-kind='document'] {
+	background:
+		linear-gradient(140deg, color-mix(in srgb, #2563eb 24%, transparent), transparent 62%),
+		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+}
+
+.fallback[data-kind='image'] {
+	background:
+		linear-gradient(140deg, color-mix(in srgb, #0e9f6e 24%, transparent), transparent 62%),
+		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+}
+
+.fallback[data-kind='link'] {
+	background:
+		linear-gradient(140deg, color-mix(in srgb, #7c3aed 24%, transparent), transparent 62%),
+		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+}
+
+.fallback[data-kind='collaborator'] {
+	background:
+		linear-gradient(140deg, color-mix(in srgb, #ea580c 24%, transparent), transparent 62%),
+		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+}
+
+@media (max-width: 767px) {
+	.thumb,
+	.fallback {
+		width: 54px;
+		height: 54px;
+		border-radius: 12px;
+	}
+
+	.initial {
+		font-size: 21px;
+	}
+}

@@ -24,7 +24,7 @@ type CameraZoomCapability = {
 	step?: number;
 };
 
-type AppliedCameraTrackState = {
+export type AppliedCameraTrackState = {
 	zoomRange: CameraZoomRange | null;
 	zoomValue: number | null;
 	torchSupported: boolean;
@@ -32,19 +32,19 @@ type AppliedCameraTrackState = {
 	deviceId: string | null;
 };
 
-type RearCameraOption = {
+export type RearCameraOption = {
 	deviceId: string;
 	label: string;
 	shortLabel: string;
 };
 
-type CameraTrack = MediaStreamTrack & {
+export type CameraTrack = MediaStreamTrack & {
 	getCapabilities?: () => MediaTrackCapabilities & { torch?: boolean; zoom?: CameraZoomCapability; focusMode?: string[] };
 	getSettings?: () => MediaTrackSettings & { zoom?: number; torch?: boolean; deviceId?: string; focusMode?: string };
 	applyConstraints?: (constraints: MediaTrackConstraints) => Promise<void>;
 };
 
-type CameraZoomRange = {
+export type CameraZoomRange = {
 	min: number;
 	max: number;
 	step: number;
@@ -120,13 +120,15 @@ function roundToStep(value: number, min: number, max: number, step: number): num
 	return clampNumber(next, min, max);
 }
 
-function getZoomPrecision(step: number): number {
+export function getZoomPrecision(step: number): number {
 	if (step >= 1) return 0;
 	if (step >= 0.1) return 1;
 	return 2;
 }
 
-function getPrimaryVideoTrack(stream: MediaStream | null): CameraTrack | null {
+// The camera engine below (stream, capabilities, capture) is exported for the document scanner
+// in NoteDocuments/scan, so both use the same camera. The UI stays with each caller.
+export function getPrimaryVideoTrack(stream: MediaStream | null): CameraTrack | null {
 	const track = stream?.getVideoTracks?.()[0] ?? null;
 	return track as CameraTrack | null;
 }
@@ -137,7 +139,7 @@ function getCameraCapabilities(track: CameraTrack | null): ReturnType<NonNullabl
 	return track?.getCapabilities?.() ?? null;
 }
 
-function getCameraZoomRange(track: CameraTrack | null): CameraZoomRange | null {
+export function getCameraZoomRange(track: CameraTrack | null): CameraZoomRange | null {
 	const capability = getCameraCapabilities(track)?.zoom;
 	const min = capability?.min;
 	const max = capability?.max;
@@ -158,7 +160,7 @@ function getCameraZoomRange(track: CameraTrack | null): CameraZoomRange | null {
 	};
 }
 
-function readCameraTrackState(track: CameraTrack | null): AppliedCameraTrackState {
+export function readCameraTrackState(track: CameraTrack | null): AppliedCameraTrackState {
 	const zoomRange = getCameraZoomRange(track);
 	const settings = track?.getSettings?.();
 	const capabilities = getCameraCapabilities(track);
@@ -206,7 +208,7 @@ function getRearCameraShortLabel(label: string, index: number): string {
 	return index === 0 ? '1x' : `Lens ${index + 1}`;
 }
 
-function getRearCameraOptions(devices: MediaDeviceInfo[], activeDeviceId: string | null, activeLabel: string): RearCameraOption[] {
+export function getRearCameraOptions(devices: MediaDeviceInfo[], activeDeviceId: string | null, activeLabel: string): RearCameraOption[] {
 	// Many Android devices expose ultrawide and telephoto lenses as separate rear
 	// cameras rather than as one camera with a larger zoom range.
 	const videoInputs = devices.filter((device) => device.kind === 'videoinput');
@@ -253,7 +255,7 @@ function suppressNextDocumentCompatibilityMouseEvents(): void {
 	timeoutId = window.setTimeout(() => cleanup(), 500);
 }
 
-async function applyCameraTrackSettings(stream: MediaStream | null, options: { zoom?: number; torch?: boolean }): Promise<AppliedCameraTrackState> {
+export async function applyCameraTrackSettings(stream: MediaStream | null, options: { zoom?: number; torch?: boolean }): Promise<AppliedCameraTrackState> {
 	const track = getPrimaryVideoTrack(stream);
 	if (!track) {
 		throw new Error('camera-unavailable');
@@ -286,7 +288,7 @@ async function applyCameraTrackSettings(stream: MediaStream | null, options: { z
 	return readCameraTrackState(track);
 }
 
-async function setCameraZoom(stream: MediaStream | null, requestedValue: number): Promise<number> {
+export async function setCameraZoom(stream: MediaStream | null, requestedValue: number): Promise<number> {
 	const track = getPrimaryVideoTrack(stream);
 	const zoomRange = getCameraZoomRange(track);
 	if (!track || !zoomRange) {
@@ -470,13 +472,13 @@ async function createCapturedPhotoFileFromVideoFrame(video: HTMLVideoElement, ph
 	}
 }
 
-async function createCapturedPhotoFile(video: HTMLVideoElement, photoIndex: number, stream: MediaStream | null): Promise<File> {
+export async function createCapturedPhotoFile(video: HTMLVideoElement, photoIndex: number, stream: MediaStream | null): Promise<File> {
 	const viaImageCapture = await createCapturedPhotoFileViaImageCapture(stream, photoIndex);
 	if (viaImageCapture) return viaImageCapture;
 	return createCapturedPhotoFileFromVideoFrame(video, photoIndex);
 }
 
-async function requestCameraStream(preferredDeviceId?: string | null): Promise<MediaStream> {
+export async function requestCameraStream(preferredDeviceId?: string | null): Promise<MediaStream> {
 	if (!navigator.mediaDevices?.getUserMedia) {
 		throw new Error('unavailable');
 	}
@@ -543,7 +545,7 @@ async function requestCameraStream(preferredDeviceId?: string | null): Promise<M
 	throw lastError ?? new Error('unavailable');
 }
 
-function getCameraErrorMessage(error: unknown, t: (key: string) => string): string {
+export function getCameraErrorMessage(error: unknown, t: (key: string) => string): string {
 	const name = error instanceof DOMException ? error.name : '';
 	if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
 		return t('media.cameraPermissionDenied');
