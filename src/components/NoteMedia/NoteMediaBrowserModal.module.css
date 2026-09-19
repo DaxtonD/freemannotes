@@ -2,6 +2,10 @@
 	position: fixed;
 	inset: 0;
 	z-index: 9500;
+	/* Stops a drag that reaches the end of anything in here from continuing into the
+	   note grid behind the modal. See .body's overscroll-behavior for the real fix;
+	   this is the backstop for drags that land on the backdrop itself. */
+	overscroll-behavior: none;
 	display: flex;
 	align-items: center;
 	justify-content: center;
@@ -12,6 +16,10 @@
 }
 
 .dialog {
+	/* overflow:hidden below makes this a scroll container too, so a drag that lands on
+	   the header (or anywhere outside .body) would otherwise chain straight into the
+	   note grid behind the modal. */
+	overscroll-behavior: contain;
 	width: min(880px, 100%);
 	max-height: min(88vh, 920px);
 	display: flex;
@@ -48,11 +56,9 @@
 	justify-content: space-between;
 	gap: 16px;
 	padding: 20px 20px 12px;
-	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 76%, transparent);
-}
-
-.headerNoDivider {
-	border-bottom: 0;
+	/* No divider, and .body has no top padding, so the panel's own sticky header can sit
+	   flush against this one. A gap between the two — even 18px of padding — is a strip
+	   the sticky header doesn't cover, and the list scrolls through it in full view. */
 }
 
 .headerCopy {
@@ -84,11 +90,15 @@
 .body {
 	min-height: 0;
 	overflow: auto;
-	padding: 18px 20px 20px;
-}
-
-.bodyFlushTop {
-	padding-top: 0;
+	/* contain, not none: this scroller may still bounce at its own edges, it just must
+	   not hand the leftover scroll to the page. On touch the page is NOT covered by
+	   useBodyScrollLock's touch-action:none in this case — once a gesture starts inside
+	   a scroll container, overscroll chaining carries it to the grid regardless — which
+	   is why every scrollable thing inside a modal needs this line. */
+	overscroll-behavior: contain;
+	/* Top padding here is a strip the panel's sticky header cannot cover; the panel
+	   supplies its own breathing room instead. */
+	padding: 0 20px 20px;
 }
 
 @media (pointer: coarse) {

@@ -5,6 +5,7 @@ import { faArrowLeft, faCamera, faClockRotateLeft, faListUl, faPlus, faRotateRig
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { useI18n } from '../../core/i18n';
+import { useIsInsideAttachmentBrowser } from '../NoteAttachments/attachmentBrowserContext';
 import { getDocumentConversionEnabled, getDocumentUploadMaxBytes } from '../../core/instanceConfig';
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
 import { DocumentShareMenu } from './DocumentShareMenu';
@@ -329,6 +330,7 @@ function DocumentCard(props: DocumentItemProps): React.JSX.Element {
 }
 
 export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
+	const insideAttachmentBrowser = useIsInsideAttachmentBrowser();
 	const { t } = useI18n();
 	const { docId, authUserId, isPendingNew, onShowBriefDialog } = props;
 	const canEdit = props.canEdit === true;
@@ -520,8 +522,8 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 		<section className={styles.panel} aria-label={t('editors.mediaTabDocuments')}>
 			<div className={styles.header}>
 				<div>
-					<p className={styles.eyebrow}>{t('editors.mediaTabDocuments')}</p>
-					<p className={styles.summary}>{summary}</p>
+					{insideAttachmentBrowser ? null : <p className={styles.eyebrow}>{t('editors.mediaTabDocuments')}</p>}
+					<p className={insideAttachmentBrowser ? `${styles.summary} ${styles.summaryWithoutEyebrow}` : styles.summary}>{summary}</p>
 				</div>
 				<div className={styles.headerActions}>
 					<button

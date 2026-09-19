@@ -216,20 +216,18 @@ export function MarkupShape(props: { markup: Markup; measure?: MeasureContext })
 			);
 		}
 		case 'symbol': {
-			// The stored box is the turned one; draw the symbol upright in the unturned box, then turn it.
+			// Drawn upright in its own unrotated box, then turned about its centre — the box itself
+			// never changes shape for a rotation, see SymbolMarkup's own comment.
 			const definition = symbolById(markup.symbol);
-			const quarterTurn = markup.rotation === 90 || markup.rotation === 270;
-			const innerW = quarterTurn ? markup.h : markup.w;
-			const innerH = quarterTurn ? markup.w : markup.h;
 			const centreX = markup.x + markup.w / 2;
 			const centreY = markup.y + markup.h / 2;
 			return (
 				<g transform={markup.rotation ? `rotate(${markup.rotation} ${centreX} ${centreY})` : undefined}>
 					<svg
-						x={centreX - innerW / 2}
-						y={centreY - innerH / 2}
-						width={innerW}
-						height={innerH}
+						x={markup.x}
+						y={markup.y}
+						width={markup.w}
+						height={markup.h}
 						viewBox={definition ? `0 0 ${definition.w} ${definition.h}` : '0 0 100 100'}
 						preserveAspectRatio="none"
 						overflow="visible"
@@ -417,6 +415,13 @@ export function MarkupSelectionLayer(props: { markup: Markup; pageWidth: number;
 	const pad = 4 * unitsPerPx;
 	const radius = 5.5 * unitsPerPx;
 	const segment = markup.kind === 'line' || markup.kind === 'arrow' || markup.kind === 'move';
+	// Handle positions come back already turned to match a rotated symbol (see markupHandles) — the
+	// dashed outline has to turn with them, or the box would visibly disagree with its own handles.
+	const rotation = markup.kind === 'symbol' ? markup.rotation : 0;
+	const handles = markupHandles(markup, unitsPerPx);
+	const rotateHandle = handles.find((handle) => handle.handle === 'rotate');
+	const topLeft = handles.find((handle) => handle.handle === 'nw');
+	const topRight = handles.find((handle) => handle.handle === 'ne');
 	return (
 		<svg className={`${styles.layer} ${styles.layerSelection}`} viewBox={`0 0 ${props.pageWidth} ${props.pageHeight}`} preserveAspectRatio="none" aria-hidden="true">
 			{segment ? (
@@ -424,10 +429,35 @@ export function MarkupSelectionLayer(props: { markup: Markup; pageWidth: number;
 			) : markup.kind === 'measure' ? (
 				<path d={pointsPath(markup.points, markup.mode === 'area')} className={styles.selectionOutline} vectorEffect="non-scaling-stroke" />
 			) : (
-				<rect x={bounds.x - pad} y={bounds.y - pad} width={bounds.w + pad * 2} height={bounds.h + pad * 2} className={styles.selectionOutline} vectorEffect="non-scaling-stroke" />
+				<rect
+					x={bounds.x - pad}
+					y={bounds.y - pad}
+					width={bounds.w + pad * 2}
+					height={bounds.h + pad * 2}
+					className={styles.selectionOutline}
+					vectorEffect="non-scaling-stroke"
+					transform={rotation ? `rotate(${rotation} ${bounds.x + bounds.w / 2} ${bounds.y + bounds.h / 2})` : undefined}
+				/>
 			)}
-			{markupHandles(markup).map((handle) => (
-				<circle key={handle.handle} cx={handle.x} cy={handle.y} r={radius} className={styles.selectionHandle} vectorEffect="non-scaling-stroke" />
+			{rotateHandle && topLeft && topRight ? (
+				<line
+					x1={(topLeft.x + topRight.x) / 2}
+					y1={(topLeft.y + topRight.y) / 2}
+					x2={rotateHandle.x}
+					y2={rotateHandle.y}
+					className={styles.selectionOutline}
+					vectorEffect="non-scaling-stroke"
+				/>
+			) : null}
+			{handles.map((handle) => (
+				<circle
+					key={handle.handle}
+					cx={handle.x}
+					cy={handle.y}
+					r={handle.handle === 'rotate' ? radius * 1.15 : radius}
+					className={handle.handle === 'rotate' ? `${styles.selectionHandle} ${styles.rotateHandle}` : styles.selectionHandle}
+					vectorEffect="non-scaling-stroke"
+				/>
 			))}
 		</svg>
 	);

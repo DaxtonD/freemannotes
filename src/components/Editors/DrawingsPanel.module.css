@@ -6,6 +6,15 @@
 }
 
 .header {
+	/* Sticky with an opaque background and its own top padding: the attachment browser's
+	   scroll container deliberately has no top padding, so this has to cover every pixel
+	   above the list. Leave a gap and the list scrolls through it in plain view. */
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	background: var(--color-surface);
+	padding: 12px 0 6px;
+	margin-bottom: -6px;
 	display: flex;
 	justify-content: space-between;
 	align-items: center;
@@ -19,6 +28,12 @@
 	letter-spacing: 0.08em;
 	text-transform: uppercase;
 	color: var(--color-text-muted);
+}
+
+/* No section label above it (inside the attachment browser the modal subtitle already
+   says "Drawings"), so it doesn't need the gap that separated the two. */
+.summaryWithoutEyebrow {
+	margin-top: 0;
 }
 
 .summary,

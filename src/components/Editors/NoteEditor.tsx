@@ -41,7 +41,7 @@ import { autoLinkifyRichContentJson, collectLinkedUrlsFromRichContentJson } from
 import { yXmlFragmentToProsemirrorJSON } from 'y-prosemirror';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
-import { getUserNoteBannerFile, saveUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
+import { getUserNoteBannerFile, hasUserNoteBannerPref, saveUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { getNotePinPrefsSnapshot, resolveUserNotePinned, subscribeNotePinPrefs } from '../../core/notePinPreferences';
 import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
 import {
@@ -91,7 +91,6 @@ import { RichTextEditor, RichTextToolbar, ensureEditorSelectionVisible, focusRic
 import { ChecklistProgressBar } from './ChecklistProgressBar';
 import styles from './Editors.module.css';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
-import { assignNoteBannerFile } from '../../services/noteService';
 import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
 import { closeReferenceSuggestion } from '../../core/extensions/ReferenceExtension';
 import { syncNoteShareCollaborators } from '../../core/noteShareApi';
@@ -1844,8 +1843,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				metadata.unobserve(observer);
 			};
 		},
-		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId)),
-		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId))
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId), hasUserNoteBannerPref(props.noteId)),
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId), hasUserNoteBannerPref(props.noteId))
 	);
 	const typeValue = useMetadataString(metadata, 'type');
 	const type: NoteType = typeValue === 'checklist' ? 'checklist' : 'text';
@@ -3174,6 +3173,20 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		// insertChecklistItemAfter handles for manually-typed text — merge into the
 		// existing completed row instead of keeping this one as a separate active row.
 		const matchedCompleted = findMostRecentCompletedChecklistMatch(checklistArray, suggestion, rowId);
+		// The merge deletes the row you're typing in, which unmounts its editor. On mobile
+		// that dropped focus, so the keyboard closed, the keyboard-close de-selection
+		// effect cleared the active row, and the list reflowed twice over (a row gone AND
+		// the keyboard's space handed back) — which reads as "the checklist scrolled away
+		// on its own the moment I tapped the suggestion". Hand focus to the proxy textarea
+		// first and straight on to the revived row afterwards — the same handoff deleting
+		// a row already does — so the caret just moves to the row it merged into and the
+		// keyboard never leaves. A plain (non-merge) accept keeps its editor mounted and
+		// needs none of this.
+		const revivedRowId = matchedCompleted ? String(matchedCompleted.get('id') ?? '') : '';
+		if (revivedRowId) {
+			suppressAutoActivateAfterDeleteRef.current = false;
+			prepareChecklistRowFocusHandoff();
+		}
 		const apply = (): void => {
 			if (matchedCompleted) {
 				matchedCompleted.set('completed', false);
@@ -3188,8 +3201,14 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		};
 		if (doc) doc.transact(apply);
 		else apply();
+		if (revivedRowId) {
+			// The revived row remounts (it moves out of the completed list and into the
+			// active one), so autoFocus on the new mount is what actually lands the caret.
+			setActiveChecklistRowId(revivedRowId);
+			setFocusRowId(revivedRowId);
+		}
 		setActiveChecklistAutocompleteText(suggestion);
-	}, [checklistArray, type]);
+	}, [checklistArray, prepareChecklistRowFocusHandoff, type]);
 
 	const incrementActiveChecklistCount = React.useCallback((): void => {
 		if (type !== 'checklist' || !activeChecklistCountItem || !isChecklistCountItem(activeChecklistCountItem)) return;
@@ -4581,6 +4600,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					setMoreMenuAnchorRect(null);
 					removeCompletedItems();
 				} : undefined}
+				isSharedWithMe={props.noteId.startsWith('shared-placement:')}
 				onTrash={!readOnly ? () => {
 					setIsMoreMenuOpen(false);
 					setMoreMenuAnchorRect(null);
@@ -4602,7 +4622,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			selectedFileName={noteBannerFile}
 			onClose={() => setIsBannerPickerOpen(false)}
 			onSelect={(fileName) => {
-				assignNoteBannerFile(props.doc, fileName);
+				// Per-user, never into the note's shared metadata — see readEffectiveNoteBannerFile.
+				saveUserNoteBannerFile(getDeviceId(), props.noteId, fileName);
 				writeNoteBannerWarmCacheFile(props.noteId, fileName);
 				setIsBannerPickerOpen(false);
 			}}

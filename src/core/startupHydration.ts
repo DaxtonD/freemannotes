@@ -255,17 +255,19 @@ export function readSynchronousWarmStartupBannerUrls(themeId: ThemeId | null | u
 		if (noteId.startsWith('shared-placement:')) continue;
 		const snapshotNote = renderSnapshotNotesById.get(noteId);
 
-		// Warm cache takes priority over the render snapshot (it may reflect a recent
-		// pick not yet saved). Falls back to shared-banner render-snapshot entry then
-		// to legacy user prefs. This path is only reached when noteBannerPrefs is
-		// non-empty, so the user has legacy prefs and banners are likely HTTP-cached.
+		// Warm cache takes priority over everything (it may reflect a pick made just
+		// before the app closed, before the debounced snapshot saved). After that, the
+		// same precedence the rendering code uses: this user's own banner choice first,
+		// the note's shared starting point only where they've never chosen one. This
+		// path is only reached when noteBannerPrefs is non-empty, so the user has picked
+		// banners before and they're likely HTTP-cached already.
 		let fileName: string | null;
 		if (noteId in noteBannerWarmCache) {
 			fileName = noteBannerWarmCache[noteId];
-		} else if (snapshotNote?.hasSharedBannerPreference) {
-			fileName = snapshotNote.bannerFile ?? null;
-		} else {
+		} else if (noteId in noteBannerPrefs) {
 			fileName = noteBannerPrefs[noteId] ?? null;
+		} else {
+			fileName = snapshotNote?.hasSharedBannerPreference ? snapshotNote.bannerFile ?? null : null;
 		}
 		if (!fileName) continue;
 		const url = getNoteBannerAssetUrl(fileName, themeId, viewMode === 'card' ? 'card' : 'list');

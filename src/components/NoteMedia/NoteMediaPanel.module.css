@@ -14,7 +14,9 @@
 	top: 0;
 	z-index: 2;
 	background: var(--color-surface);
-	padding-bottom: 6px;
+	/* See NoteLinkPanel.module.css's .header — the top padding has to live on the sticky
+	   element, not on the scroll container above it. */
+	padding: 12px 0 6px;
 	margin-bottom: -6px;
 }
 

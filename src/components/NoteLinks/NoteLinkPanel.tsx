@@ -2,6 +2,7 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faBroom, faLink, faListUl, faPlus, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
+import { useIsInsideAttachmentBrowser } from '../NoteAttachments/attachmentBrowserContext';
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
 import {
 	flushQueuedNoteLinkSync,
@@ -152,6 +153,7 @@ function mergeResolvedLinks(
 }
 
 export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | null {
+	const insideAttachmentBrowser = useIsInsideAttachmentBrowser();
 	const { t } = useI18n();
 	const variant = props.variant || 'panel';
 	const maxItems = Number.isFinite(props.maxItems) ? Math.max(1, Number(props.maxItems)) : (variant === 'rail' ? 3 : 100);
@@ -394,8 +396,8 @@ export function NoteLinkPanel(props: NoteLinkPanelProps): React.JSX.Element | nu
 			{variant === 'panel' ? (
 				<div className={styles.header}>
 					<div>
-						<p className={styles.eyebrow}>{t('editors.mediaTabLinks')}</p>
-						<p className={styles.summary}>
+						{insideAttachmentBrowser ? null : <p className={styles.eyebrow}>{t('editors.mediaTabLinks')}</p>}
+						<p className={insideAttachmentBrowser ? `${styles.summary} ${styles.summaryWithoutEyebrow}` : styles.summary}>
 							{visibleLinks.length === 0 ? t('links.emptyTitle') : summaryLabel}
 						</p>
 					</div>

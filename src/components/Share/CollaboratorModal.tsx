@@ -516,6 +516,8 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 
 	const handleRemove = React.useCallback(async () => {
 		if (!snapshot.selfCollaboratorId || !props.authUserId || !props.docId) return;
+		// Same one-way act as the grid/editor menu entry, so it asks the same question.
+		if (typeof window !== 'undefined' && !window.confirm(t('share.leaveNoteConfirm'))) return;
 		setBusy(true);
 		setError(null);
 		try {

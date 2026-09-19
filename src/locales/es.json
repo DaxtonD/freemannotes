@@ -1039,6 +1039,8 @@
     "removeFailed": "No se pudo eliminar el acceso a la nota compartida",
     "leftNoteToast": "Has salido de la nota",
     "accessRemovedToast": "Ya no tienes acceso a esta nota",
+    "leaveNoteConfirm": "¿Salir de esta nota? Seguirá siendo de su propietario, pero necesitarás una nueva invitación para volver a abrirla.",
+    "mentionNeedsAcceptToast": "Acepta primero la invitación a esta nota y se abrirá aquí.",
     "accessLostOverlayBody": "Es posible que el propietario haya eliminado tu acceso, o que el espacio de trabajo de la nota ya no esté disponible. No has perdido nada de tu parte — contacta al propietario si crees que se trata de un error.",
     "accessLostOverlayDismiss": "Entendido",
     "offlineCollaborators": "Mostrando colaboradores almacenados mientras no hay conexión. Los cambios se sincronizarán cuando vuelva la conexión.",

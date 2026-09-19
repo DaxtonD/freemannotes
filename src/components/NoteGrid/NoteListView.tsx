@@ -20,7 +20,7 @@ import {
 import { useI18n } from '../../core/i18n';
 import { getNoteBannerPresentationStyle, useThemedNoteBannerImageUrl } from '../../core/noteBannerTheme';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
-import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
+import { getUserNoteBannerFile, hasUserNoteBannerPref, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { getUserNoteColorPrefsSnapshot, getUserNoteColorToken, hasUserNoteColorPref, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
 import { useNoteBannerReadableColors } from '../../core/noteBannerReadability';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
@@ -166,8 +166,8 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 				metadata.unobserve(observer);
 			};
 		},
-		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(noteId)),
-		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(noteId))
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(noteId), hasUserNoteBannerPref(noteId)),
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(noteId), hasUserNoteBannerPref(noteId))
 	);
 	const noteBannerUrl = useThemedNoteBannerImageUrl(noteBannerFile, props.themeId, {
 		surface: colorVarMap?.['--list-row-bg'],

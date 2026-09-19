@@ -48,6 +48,7 @@ const {
 } = require('./auth');
 const {
 	findFirstLiveWorkspaceMembership,
+	findLastActiveWorkspaceId,
 	resolveLiveWorkspaceId,
 } = require('./workspaceAccess');
 const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
@@ -397,7 +398,15 @@ function createApiAuthRouter({ prisma }) {
 
 					await ensureSharedWithMeWorkspace(prisma, user.id);
 
-					const membership = await findFirstLiveWorkspaceMembership(prisma, user.id, { workspaceId: true });
+					// Land them where they were, not in whichever workspace sorts first. The
+					// cookie minted here is what the client boots with, so getting it right also
+					// spares them a flash of the wrong workspace before /api/auth/me applies the
+					// device preference. Login carries no device id, hence "last active
+					// anywhere" rather than "last active on this device".
+					const lastActiveWorkspaceId = await findLastActiveWorkspaceId(prisma, user.id);
+					const membership = lastActiveWorkspaceId
+						? { workspaceId: lastActiveWorkspaceId }
+						: await findFirstLiveWorkspaceMembership(prisma, user.id, { workspaceId: true });
 
 					if (!membership) {
 						jsonResponse(res, 403, { error: 'User has no workspace' });
@@ -610,30 +619,25 @@ function createApiAuthRouter({ prisma }) {
 					// This keeps long-lived sessions consistent after admin promotion/demotion.
 					let preferredWorkspaceId = session.workspaceId || null;
 					if (deviceId) {
-						// Ensure a device preference row exists; if missing, seed it with current session workspace.
 						try {
-							await prisma.userDevicePreference.upsert({
-								where: { userId_deviceId: { userId: user.id, deviceId } },
-								update: {},
-								create: {
-									userId: user.id,
-									deviceId,
-									activeWorkspaceId: preferredWorkspaceId,
-									noteCardFontScale: 0.85,
-									noteEditorFontScale: 0.85,
-									noteCardMaxHeightPx: 400,
-									editorToolbarMode: 'condensed',
-									checklistShowCompleted: false,
-									quickDeleteChecklist: false,
-									noteCardCompletedExpandedByNoteId: {},
-								},
-							});
+							// Read before writing. This used to upsert the row FIRST, seeding it with
+							// the session's workspace, and only then read it back — so a device we'd
+							// never seen always came back looking like it had a remembered preference
+							// (the session default), and the fallback below could never fire. The
+							// repair upsert further down creates the row anyway, with identical
+							// defaults, so nothing is lost by not creating it here.
 							const pref = await prisma.userDevicePreference.findUnique({
 								where: { userId_deviceId: { userId: user.id, deviceId } },
 								select: { activeWorkspaceId: true },
 							});
 							if (pref && pref.activeWorkspaceId) {
 								preferredWorkspaceId = String(pref.activeWorkspaceId);
+							} else {
+								// A device with nothing stored — including "same device, cleared site
+								// data" (see findLastActiveWorkspaceId). Their last active workspace
+								// beats the session's first-sorted default.
+								const lastActiveWorkspaceId = await findLastActiveWorkspaceId(prisma, user.id);
+								if (lastActiveWorkspaceId) preferredWorkspaceId = lastActiveWorkspaceId;
 							}
 						} catch (err) {
 							console.warn('[auth] me: device preference lookup failed:', err.message);

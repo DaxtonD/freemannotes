@@ -6,6 +6,15 @@
 }
 
 .header {
+	/* Sticky with an opaque background and its own top padding: the modal body has no
+	   top padding precisely so this covers every pixel above the list. Leave a gap here
+	   and content scrolls through it. */
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	background: var(--color-surface);
+	padding: 12px 0 6px;
+	margin-bottom: -6px;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -19,6 +28,10 @@
 	text-transform: uppercase;
 	letter-spacing: 0.08em;
 	color: var(--color-text-muted);
+}
+
+.summaryWithoutEyebrow {
+	margin-top: 0;
 }
 
 .summary {

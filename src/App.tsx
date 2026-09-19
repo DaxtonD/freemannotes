@@ -1099,6 +1099,11 @@ function writeSharedWorkspacesPrefetchInformedCache(userId: string | null | unde
 	}
 }
 
+// How long an open shared note has to look revoked before we say so out loud. Long
+// enough to outlast any open-a-note-then-load-its-placement ordering, short enough that
+// a real revoke doesn't leave someone typing into a note they've lost.
+const NOTE_ACCESS_LOST_CONFIRM_DELAY_MS = 1500;
+
 const SHARED_PLACEMENTS_CACHE_KEY_PREFIX = 'freemannotes.sharedPlacements.v1:';
 
 // sharedWorkspacesPrefetchInformed's own synchronous seed (above) turned out to
@@ -1605,6 +1610,22 @@ export function App(): React.JSX.Element {
 	const [sharedPlacementsHydrated, setSharedPlacementsHydrated] = React.useState(
 		() => readSharedPlacementsCache(cachedAuth?.userId) !== null
 	);
+	// "The last refresh actually failed", as opposed to "the server told us you have no
+	// shares". Every fetch in refreshNoteShareState swallows its own error and returns an
+	// empty list, so an unreachable or flaky server is shape-identical to a genuine zero —
+	// which means anything reading "this shared note has no placement" as "your access was
+	// revoked" (the blocking NoteAccessLostOverlay) ends up accusing the owner of something
+	// the server never said. The overlay must mean "we asked, and it's gone", never "we
+	// couldn't ask", so it gates on this too.
+	const [sharedPlacementsRefreshFailed, setSharedPlacementsRefreshFailed] = React.useState(false);
+	// How many refreshNoteShareState calls are still running. "We haven't finished
+	// asking" is a third answer, distinct from both "the server said no shares" and
+	// "the request failed", and the access-lost overlay needs it: on a slow connection
+	// a refresh can easily outlive any confirm delay, so without this the overlay would
+	// go off mid-request and be corrected a second later — the flash all over again.
+	// A counter, not a boolean: several triggers (mount, workspace switch, WS metadata
+	// events, the online listener) legitimately overlap.
+	const [sharedPlacementsRefreshInFlight, setSharedPlacementsRefreshInFlight] = React.useState(0);
 	// Stronger than sharedPlacementsHydrated above: that flag flips true on the very
 	// first placements read regardless of whether the broader workspace list was known
 	// yet, so it can't by itself distinguish "we searched every Shared-With-Me workspace
@@ -2828,6 +2849,11 @@ export function App(): React.JSX.Element {
 	// offline replay) without requiring that modal to be open first.
 	const leaveSharedNoteFromMenu = React.useCallback((noteAliasId: string, docId: string) => {
 		if (!authUserId) return;
+		// Leaving is one-way — only the owner can invite you back — and it's reached from
+		// a menu entry that sits exactly where "Move to trash" sits on your own notes.
+		// Worth one question. Both entry points (grid menu, editor menu) funnel through
+		// here, so this is the only place it has to be asked.
+		if (typeof window !== 'undefined' && !window.confirm(t('share.leaveNoteConfirm'))) return;
 		void (async () => {
 			try {
 				const snapshot = await syncNoteShareCollaborators(authUserId, docId, { suppressError: true })
@@ -6561,7 +6587,7 @@ export function App(): React.JSX.Element {
 		};
 	}, [authOfflineMode]);
 
-	const refreshNoteShareState = React.useCallback(async (): Promise<void> => {
+	const refreshNoteShareStateImpl = React.useCallback(async (): Promise<void> => {
 		// This is the single reconciliation point for collaboration UI state:
 		// - replay queued accept/decline actions once connectivity returns
 		// - refresh the notification badge/modal contents
@@ -6570,6 +6596,7 @@ export function App(): React.JSX.Element {
 			setSharedPlacements([]);
 			setActiveWorkspaceSharedPlacements([]);
 			setSharedPlacementsHydrated(false);
+			setSharedPlacementsRefreshFailed(false);
 			setSharedWorkspacesPrefetchInformed(false);
 			setFailedLinkNotifications([]);
 			setPendingShareNotificationCount(0);
@@ -6765,6 +6792,7 @@ export function App(): React.JSX.Element {
 			// the underlying fetch always had the right data (verified directly against
 			// the API), but a superseded call's worse result kept winning the race.
 			if (!superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
+				setSharedPlacementsRefreshFailed(anyPlacementFetchFailed);
 				setSharedPlacements(resolvedAllPlacements);
 				writeSharedPlacementsCache(authUserId, resolvedAllPlacements);
 				setActiveWorkspaceSharedPlacements(resolvedActiveWorkspacePlacements);
@@ -6863,17 +6891,34 @@ export function App(): React.JSX.Element {
 		} catch {
 			// A stale call's failure must not wipe out state a newer, already-
 			// resolved call for the current workspace has since populated.
-			if (!offline && !superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
-				setSharedPlacements([]);
-				setActiveWorkspaceSharedPlacements([]);
-				setFailedLinkNotifications([]);
-				setPendingShareNotificationCount(0);
-				setPendingReminderNotificationCount(0);
-				setFiredReminders([]);
-				manager.setExternalRoomAliases({});
+			if (!superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
+				// Deliberately keeps the last known placements, their room aliases and the
+				// notification counts rather than clearing them. This block used to blank all
+				// of it whenever navigator.onLine still read true — which is exactly the
+				// poor-signal case — and since an open shared note with no placement reads as
+				// "revoked", the user got a full-screen "you no longer have access to this
+				// note" for a note they still have, because one request threw. Same mistake
+				// class CLAUDE.md records for shared notes vanishing from the grid offline.
+				// Every fetch inside the try already degrades to an empty result on its own,
+				// so landing here means something unexpected threw and we know nothing at
+				// all; the honest answer is to keep what we had and retry on the next trigger.
+				setSharedPlacementsRefreshFailed(true);
 			}
 		}
 	}, [authStatus, authUserId, authWorkspaceId, manager]);
+
+	// Thin wrapper purely so the in-flight count is exact — try/finally rather than
+	// bookkeeping at each exit, because a throw anywhere above must not leave the count
+	// stuck above zero (that would suppress the access-lost overlay for the rest of the
+	// session).
+	const refreshNoteShareState = React.useCallback(async (): Promise<void> => {
+		setSharedPlacementsRefreshInFlight((count) => count + 1);
+		try {
+			await refreshNoteShareStateImpl();
+		} finally {
+			setSharedPlacementsRefreshInFlight((count) => Math.max(0, count - 1));
+		}
+	}, [refreshNoteShareStateImpl]);
 
 	const flushPwaOfflineQueues = React.useCallback(async (): Promise<void> => {
 		if (authStatus !== 'authed' || !authUserId || authOfflineMode) return;
@@ -9534,6 +9579,17 @@ export function App(): React.JSX.Element {
 				showBriefDialog(t('share.roleViewer'));
 				return;
 			}
+			if (placement) {
+				// A shared note isn't yours to trash. manager.trashNote() writes trashed:true
+				// into the note's own Yjs metadata — which for an alias is the OWNER's
+				// document, so an editor-role recipient hitting delete here put the note in
+				// the owner's trash (and everyone else's), while staying listed as a
+				// collaborator on it. The grid's more menu has always routed a shared note's
+				// "Move to trash" to leaving it instead (see leaveSharedNoteFromMenu); the
+				// editor just never got the same treatment.
+				leaveSharedNoteFromMenu(noteId, placement.roomId);
+				return;
+			}
 			// Soft-delete: mark as trashed in the Yjs metadata. The note stays
 			// in the registry and order arrays but is hidden from the main grid.
 			// Server-side cleanup permanently removes it after deleteAfterDays.
@@ -9552,7 +9608,7 @@ export function App(): React.JSX.Element {
 				await closeNoteEditor();
 			}
 		},
-		[authWorkspaceId, canEditActiveWorkspace, closeNoteEditor, manager, persistNoteReminderState, sharedPlacements, showBriefDialog, t]
+		[authWorkspaceId, canEditActiveWorkspace, closeNoteEditor, leaveSharedNoteFromMenu, manager, persistNoteReminderState, sharedPlacements, showBriefDialog, t]
 	);
 
 	const closeMoveNoteModal = React.useCallback(() => {
@@ -9846,12 +9902,35 @@ export function App(): React.JSX.Element {
 		// window looked identical to a real revoke and fired the overlay below on totally
 		// ordinary mobile app-resume.
 		if (!sharedPlacementsHydrated) return;
-		// Used to tear the editor down immediately here. Now surfaces the blocking
-		// "you lost access" overlay instead — see noteAccessLostState's own comment for
-		// why, and handleAcknowledgeNoteAccessLost for the actual teardown, deferred until
-		// the user acknowledges it.
-		setNoteAccessLostState((current) => current?.noteId === selectedNoteId ? current : { noteId: selectedNoteId });
-	}, [selectedNoteId, selectedNoteSharedPlacement, sharedPlacementsHydrated]);
+		// The same rule one step stronger: hydrated only means "we read something once",
+		// and it stays true forever afterwards. If the most recent refresh failed outright,
+		// a missing placement is an unanswered question, not a revoke — don't tell someone
+		// their access was removed because their signal dropped.
+		if (sharedPlacementsRefreshFailed) return;
+		// Never while we're still asking. This is what keeps the confirm delay below from
+		// being a bet on the network being fast: a refresh that takes longer than the
+		// delay (poor signal, 8s fetch timeouts) cancels the timer instead of racing it,
+		// and re-arms it when the refresh settles — at which point either the placement
+		// arrived (this effect returns above) or the request failed (returns just above).
+		if (sharedPlacementsRefreshInFlight > 0) return;
+		// ...and even then, not on the strength of a single render. Every "open a shared
+		// note" path commits the note id and the placements list through different code —
+		// accepting an invitation from the inbox, restoring a backgrounded PWA, opening a
+		// search hit in another workspace — so there is routinely a render or two where
+		// the note is open and its placement hasn't landed yet. Firing immediately meant
+		// accepting a share flashed "you no longer have access to this note" at the user a
+		// beat before the note opened perfectly fine. A revoke is permanent, so nothing is
+		// lost by insisting the condition still holds a moment later; the timer is torn
+		// down the instant the placement arrives (this effect re-runs and returns early).
+		const timer = window.setTimeout(() => {
+			// Used to tear the editor down immediately here. Now surfaces the blocking
+			// "you lost access" overlay instead — see noteAccessLostState's own comment for
+			// why, and handleAcknowledgeNoteAccessLost for the actual teardown, deferred until
+			// the user acknowledges it.
+			setNoteAccessLostState((current) => current?.noteId === selectedNoteId ? current : { noteId: selectedNoteId });
+		}, NOTE_ACCESS_LOST_CONFIRM_DELAY_MS);
+		return () => window.clearTimeout(timer);
+	}, [selectedNoteId, selectedNoteSharedPlacement, sharedPlacementsHydrated, sharedPlacementsRefreshFailed, sharedPlacementsRefreshInFlight]);
 
 	// Tidy up if the editor moved on for some other reason while the overlay's state was
 	// still set (e.g. back-button navigation away from it) — the overlay itself already
@@ -11785,6 +11864,11 @@ export function App(): React.JSX.Element {
 						refreshToken={inboxRefreshToken}
 						onMarkReminderDone={handleMarkReminderDone}
 						onOpenReminderModal={openNoteReminderModal}
+						onLeaveInboxView={() => {
+							const target = lastContentViewModeRef.current;
+							setViewMode(target);
+							saveViewMode(target);
+						}}
 						onOpenNote={async (noteId, workspaceId, roomId, scrollToNodeId) => {
 							const callId = ++openNoteFromActivityCallIdRef.current;
 							const superseded = (): boolean => openNoteFromActivityCallIdRef.current !== callId;
@@ -11828,8 +11912,20 @@ export function App(): React.JSX.Element {
 								// Confirm access first when online (also catches trashed/deleted),
 								// then switch the active workspace to the note's owner before
 								// opening it — mirrors clicking that workspace in the sidebar.
+								//
+								// ...but ONLY if the reader is genuinely a member of that
+								// workspace. access-check grants access for either membership or
+								// an accepted share, and this branch used to treat both the same
+								// and switch regardless. A share recipient isn't a member of the
+								// sharer's workspace, so the switch landed them in a workspace
+								// that the next /api/workspaces refresh didn't list — read as a
+								// deleted workspace, which cleared the active workspace, showed
+								// the "workspace no longer exists" notice and blanked the UI
+								// (inbox cards included) until a manual reload. That's the whole
+								// reason the server now says HOW access was granted.
 								if (isNoteDenied(noteId)) return;
 								let trashed = false;
+								let accessVia: 'member' | 'collaborator' | null = null;
 								try {
 									const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`);
 									if (superseded()) return;
@@ -11841,8 +11937,9 @@ export function App(): React.JSX.Element {
 										markNoteDenied(noteId);
 										return;
 									}
-									const body: { access?: boolean; trashed?: boolean } = await res.json();
+									const body: { access?: boolean; trashed?: boolean; via?: string } = await res.json();
 									trashed = Boolean(body?.trashed);
+									if (body?.via === 'member' || body?.via === 'collaborator') accessVia = body.via;
 								} catch {
 									// Offline / network error: no reliable local signal exists for a
 									// note whose room lives under a workspace that isn't currently
@@ -11853,6 +11950,49 @@ export function App(): React.JSX.Element {
 									// offline-safe (switches locally first).
 								}
 								if (superseded()) return;
+								// Offline, or an older server that doesn't report `via` yet: the
+								// workspace list we already hold is itself the membership answer,
+								// since it only ever contains workspaces this user belongs to. An EMPTY
+								// list means it hasn't loaded, not that the user belongs to nothing —
+								// answering "not a member" off that would be guessing, so that one case
+								// keeps the old behaviour.
+								const knownWorkspaces = sidebarWorkspacesRef.current;
+								const isWorkspaceMember = accessVia === 'member'
+									|| (accessVia === null && (knownWorkspaces.length === 0 || knownWorkspaces.some((workspace) => workspace.id === workspaceId)));
+								if (!isWorkspaceMember) {
+									// Reached through the share system, not membership. The note has
+									// to be opened as the alias sitting in the reader's OWN
+									// workspace; there is no version of this where we send them
+									// into someone else's workspace.
+									const { placements } = await listSharedNotePlacements(authWorkspaceId ?? '')
+										.catch(() => ({ placements: [] as SharedNotePlacement[] }));
+									if (superseded()) return;
+									const placementForNote = placements.find((p) => p.sourceNoteId === noteId && p.sourceWorkspaceId === workspaceId)
+										?? placements.find((p) => p.sourceNoteId === noteId)
+										?? sharedPlacementsRef.current.find((p) => p.sourceNoteId === noteId && p.sourceWorkspaceId === workspaceId)
+										?? null;
+									if (!placementForNote) {
+										// Access exists but nothing has been placed in this workspace
+										// yet — i.e. the invitation is still sitting unaccepted.
+										showBriefDialog(t('share.mentionNeedsAcceptToast'));
+										return;
+									}
+									if (trashed) {
+										showTrashedNoteLinkToast(noteId);
+										return;
+									}
+									// Same order as the alias branch above: register the alias so
+									// DocumentManager can route immediately, then let the refresh
+									// land the placement in state so the access-lost guard effect
+									// doesn't mistake it for a revoke.
+									ensureManualRoomAlias(placementForNote.aliasId, placementForNote.roomId);
+									await refreshNoteShareStateRef.current();
+									if (superseded()) return;
+									try { await manager.getDocWithSync(placementForNote.aliasId); } catch {}
+									if (superseded()) return;
+									openNoteEditor(placementForNote.aliasId);
+									return;
+								}
 								await activateWorkspaceFromSidebar(workspaceId);
 								if (superseded()) return;
 								if (trashed) {

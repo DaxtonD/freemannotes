@@ -71,6 +71,10 @@ interface Props {
 	onMarkReminderDone?: (noteId: string, docId: string, title: string) => void;
 	/** Opens the reminder date-picker modal for a note, pre-filled with its current value. */
 	onOpenReminderModal?: (noteId: string, docId: string, title: string) => void;
+	/** Leaves the inbox for whichever note view the user was last in. Called when accepting
+	 *  a share, which consumes the card and hands the user a note — staying in a now-empty
+	 *  inbox made that read as "nothing happened". */
+	onLeaveInboxView?: () => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -200,7 +204,7 @@ interface FilterCache {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal }: Props) {
+export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal, onLeaveInboxView }: Props) {
 	const { t } = useI18n();
 	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	const [filter, setFilter] = useState<FilterTab>('all');
@@ -634,13 +638,18 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 			// an inbox card was left out of collaborator suggestions until app restart.
 			void refreshPriorCollaboratorsCache();
 			invalidateWorkspaceMembersCache();
+			// Out of the inbox before the note opens: accepting is the end of this card's
+			// life, so leaving the user staring at the feed it just vanished from looks
+			// like the button did nothing. Card CLICKS deliberately don't do this — you're
+			// still triaging there, and closing the note should put you back in the list.
+			onLeaveInboxView?.();
 			void guardedOpenNote(noteId, activity.subject.workspaceId, roomId);
 		} catch {
 			// non-fatal — let user retry
 		} finally {
 			setAcceptingIds((prev) => { const n = new Set(prev); n.delete(activity.id); return n; });
 		}
-	}, [authUserId, folderName, markRead, guardedOpenNote, placementChoice, removeFromCache]);
+	}, [authUserId, folderName, markRead, guardedOpenNote, onLeaveInboxView, placementChoice, removeFromCache]);
 
 	const reminderTabCount = overdueReminders.length + dueSoonReminders.length;
 	const tabs: { key: FilterTab; label: string; count?: number }[] = [

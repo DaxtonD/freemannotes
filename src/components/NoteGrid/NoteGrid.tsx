@@ -16,7 +16,7 @@ import { getNoteBannerPresentationStyle, useThemedNoteBannerImageUrl } from '../
 import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorPrefsSnapshot, getUserNoteColorToken, hasUserNoteColorPref, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
-import { getUserNoteBannerPrefsSnapshot, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
+import { getUserNoteBannerPrefsSnapshot, saveUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { runNoteGuards } from '../../core/devGuards';
 import { useI18n } from '../../core/i18n';
@@ -28,7 +28,7 @@ import { getNotePinPrefsSnapshot, resolveUserNotePinned, setUserNotePinnedOnDoc,
 import { resolveNoteReminderAt } from '../../core/reminderLookup';
 import { buildCollectionPathMap, formatCompactCollectionPath, type CollectionRecord } from '../../services/collectionService';
 import type { LabelRecord } from '../../services/labelService';
-import { assignNoteBannerFile } from '../../services/noteService';
+import { getDeviceId } from '../../core/deviceId';
 import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
 import type { ViewMode } from '../../core/viewMode';
 import type { ListScrollAnchor } from './listScrollAnchor';
@@ -3090,7 +3090,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		for (const noteId of layoutMeasurementTargetIds) {
 			const doc = docsById[noteId];
 			const fileName = doc
-				? readEffectiveNoteBannerFile(doc.getMap<any>('metadata'), noteBannerPrefsSnapshot[noteId] ?? null)
+				? readEffectiveNoteBannerFile(doc.getMap<any>('metadata'), noteBannerPrefsSnapshot[noteId] ?? null, noteId in noteBannerPrefsSnapshot)
 				: (noteBannerPrefsSnapshot[noteId] ?? null);
 			if (!fileName) continue;
 			const url = getNoteBannerAssetUrl(fileName, props.themeId, 'card');
@@ -3913,7 +3913,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const activeIsDrawing = activeRawNoteType === 'drawing';
 	const activeNoteBannerFile = activeNote
 		? (activeDoc
-			? readEffectiveNoteBannerFile(activeDoc.getMap<any>('metadata'), noteBannerPrefsSnapshot[activeNote.id] ?? null)
+			? readEffectiveNoteBannerFile(activeDoc.getMap<any>('metadata'), noteBannerPrefsSnapshot[activeNote.id] ?? null, activeNote.id in noteBannerPrefsSnapshot)
 			: (noteBannerPrefsSnapshot[activeNote.id] ?? null))
 		: null;
 	const activeBaseGhostStyle = React.useMemo(() => {
@@ -5201,6 +5201,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 						setMoreMenuAnchorRect(null);
 						props.onExportNote?.(noteId);
 					} : undefined}
+					isSharedWithMe={sharedNoteIdSet.has(moreMenuNoteId)}
 					onTrash={sharedNoteIdSet.has(moreMenuNoteId) ? (
 						// Shared aliases are projections of another workspace's document — a
 						// recipient can't locally trash the source note, only leave it (see
@@ -5236,18 +5237,22 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					themeId={props.themeId}
 					selectedFileName={(() => {
 						const pickerDoc = docsById[bannerPickerNoteId];
-						const legacyFallback = noteBannerPrefsSnapshot[bannerPickerNoteId] ?? null;
-						return pickerDoc ? readEffectiveNoteBannerFile(pickerDoc.getMap<any>('metadata'), legacyFallback) : legacyFallback;
+						const userPreference = noteBannerPrefsSnapshot[bannerPickerNoteId] ?? null;
+						const hasUserPreference = bannerPickerNoteId in noteBannerPrefsSnapshot;
+						return pickerDoc
+							? readEffectiveNoteBannerFile(pickerDoc.getMap<any>('metadata'), userPreference, hasUserPreference)
+							: userPreference;
 					})()}
 					onClose={() => setBannerPickerNoteId(null)}
 				onSelect={(fileName) => {
-					const pickerDoc = docsById[bannerPickerNoteId];
-					if (pickerDoc) {
-						assignNoteBannerFile(pickerDoc, fileName);
-						// Persist immediately so warm-start reads the correct banner
-						// even if the render snapshot hasn't been flushed yet.
-						writeNoteBannerWarmCacheFile(bannerPickerNoteId, fileName);
-					}
+					// Per-user, never into the note's shared metadata — see
+					// readEffectiveNoteBannerFile. Unlike the old shared write this doesn't
+					// need the note's doc to be loaded at all, so the card menu now works on
+					// a card that's still rendering from its snapshot.
+					saveUserNoteBannerFile(getDeviceId(), bannerPickerNoteId, fileName);
+					// Persist immediately so warm-start reads the correct banner
+					// even if the render snapshot hasn't been flushed yet.
+					writeNoteBannerWarmCacheFile(bannerPickerNoteId, fileName);
 					setBannerPickerNoteId(null);
 				}}
 				/>

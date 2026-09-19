@@ -42,7 +42,10 @@ const CLOUD_SHAPES: readonly CloudShape[] = ['rect', 'freeform'];
 const STAMP_PRESETS: readonly StampPreset[] = MARKUP_STAMPS.map((entry) => entry.preset);
 
 const DEFAULT_PREFS: MarkupPrefs = {
-	tool: 'pen',
+	// Select, not a drawing tool: opening markup for the first time (or on a device that
+	// hasn't saved a preference yet) should let you look around and pick things, not start
+	// inking on your first tap.
+	tool: 'select',
 	penColor: MARKUP_PEN_COLORS[0],
 	penWidth: MARKUP_PEN_WIDTHS[1],
 	highlighterColor: MARKUP_HIGHLIGHTER_COLORS[0],

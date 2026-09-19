@@ -16,11 +16,11 @@ import { useI18n } from '../../core/i18n';
 import { readEffectiveNoteBannerFile } from '../../core/noteBanners';
 import { readEffectiveNoteColorToken, resolveThemeNoteColorModel } from '../../core/noteColors';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
-import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
+import { getUserNoteBannerFile, hasUserNoteBannerPref, saveUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { isLightTheme, type ThemeId } from '../../core/theme';
 import { consumeStoredLibraryImport, subscribeLibraryImport } from '../../core/excalidrawLibraryImport';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
-import { assignDrawingBackgroundColor, assignNoteBannerFile, readNoteMetadataState } from '../../services/noteService';
+import { assignDrawingBackgroundColor, readNoteMetadataState } from '../../services/noteService';
 import { writeNoteBannerWarmCacheFile } from '../../core/noteBannerWarmCache';
 import { NoteCardMoreMenu } from '../NoteCard/NoteCardMoreMenu';
 import { NoteColorPickerModal } from '../NoteCard/NoteColorPickerModal';
@@ -374,8 +374,8 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 				unsubscribePrefs();
 			};
 		},
-		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId)),
-		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId))
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId), hasUserNoteBannerPref(props.noteId)),
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId), hasUserNoteBannerPref(props.noteId))
 	);
 	const resolvedNoteColor = React.useMemo(
 		() => (colorToken ? resolveThemeNoteColorModel(props.themeId).tokens[colorToken] : null),
@@ -1583,6 +1583,7 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 						setMoreMenuAnchorRect(null);
 						props.onAddLabels?.();
 					} : undefined}
+					isSharedWithMe={props.noteId.startsWith('shared-placement:')}
 					onTrash={!readOnly && props.onDelete ? () => {
 						setIsMoreMenuOpen(false);
 						setMoreMenuAnchorRect(null);
@@ -1603,7 +1604,8 @@ export function DrawingEditor(props: DrawingEditorProps): React.JSX.Element {
 				selectedFileName={noteBannerFile}
 				onClose={() => setIsBannerPickerOpen(false)}
 				onSelect={(fileName) => {
-					assignNoteBannerFile(props.doc, fileName);
+					// Per-user, never into the note's shared metadata — see readEffectiveNoteBannerFile.
+					saveUserNoteBannerFile(getDeviceId(), props.noteId, fileName);
 					writeNoteBannerWarmCacheFile(props.noteId, fileName);
 					setIsBannerPickerOpen(false);
 				}}

@@ -21,9 +21,23 @@ export function readSharedNoteBannerFile(metadata: MetadataLike): string | null 
 	return normalizeNoteBannerFile(metadata.get(NOTE_BANNER_METADATA_FIELD));
 }
 
-export function readEffectiveNoteBannerFile(metadata: MetadataLike, legacyFallback: string | null): string | null {
-	if (hasSharedNoteBannerPreference(metadata)) {
-		return readSharedNoteBannerFile(metadata);
-	}
-	return normalizeNoteBannerFile(legacyFallback);
+/**
+ * A banner is now the reader's own choice, not the note's — same model as note colours
+ * (see readEffectiveNoteColorToken, which this deliberately mirrors). Picking one used to
+ * write shared Yjs metadata, so changing the banner on a note you collaborate on changed
+ * it on everyone else's screen too.
+ *
+ * The shared value is kept as the starting point rather than thrown away: a note that
+ * already carries one still shows it to everybody, and nothing visually disappears. The
+ * moment THIS user picks something, their choice wins for them alone — including picking
+ * "no banner", which is why an explicit preference has to stay distinguishable from having
+ * no preference at all instead of both collapsing to null.
+ */
+export function readEffectiveNoteBannerFile(
+	metadata: MetadataLike,
+	localPreference: string | null,
+	hasLocalPreference: boolean
+): string | null {
+	if (hasLocalPreference) return normalizeNoteBannerFile(localPreference);
+	return readSharedNoteBannerFile(metadata);
 }

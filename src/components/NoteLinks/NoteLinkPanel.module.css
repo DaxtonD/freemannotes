@@ -14,7 +14,9 @@
 	top: 0;
 	z-index: 2;
 	background: var(--color-surface);
-	padding-bottom: 6px;
+	/* Top padding belongs to the sticky element, not the scroll container: the modal
+	   body's padding would be a strip this can't cover, and the list scrolls through it. */
+	padding: 12px 0 6px;
 	margin-bottom: -6px;
 }
 
@@ -40,6 +42,12 @@
 .error,
 .errorInline {
 	margin: 0;
+}
+
+/* No section label above it (inside the attachment browser, where the modal subtitle
+   already says "Links"), so it doesn't need the gap that separated the two. */
+.summaryWithoutEyebrow {
+	margin-top: 0;
 }
 
 .summary {

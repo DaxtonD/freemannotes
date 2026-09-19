@@ -2,7 +2,7 @@ import type { CalloutMarkup, CloudMarkup, Markup, MarkupAuthor, StampMarkup, Sym
 
 export type MarkupBounds = { x: number; y: number; w: number; h: number };
 /** `v0`, `v1`…: a point of a measurement, dragged on its own. */
-export type MarkupHandle = 'start' | 'end' | 'nw' | 'ne' | 'sw' | 'se' | 'w' | 'e' | 'tip' | `v${number}`;
+export type MarkupHandle = 'start' | 'end' | 'nw' | 'ne' | 'sw' | 'se' | 'w' | 'e' | 'tip' | 'rotate' | `v${number}`;
 
 /** Narrowest a text box can be dragged, in page units. */
 const MIN_TEXT_WIDTH = 24;
@@ -10,6 +10,33 @@ const MIN_TEXT_WIDTH = 24;
 const MIN_STAMP_HEIGHT = 8;
 /** How far a scallop bulges out, as a share of its length (radius 0.6 × chord gives ~0.27). */
 const CLOUD_BULGE = 0.27;
+/** Screen distance from a symbol's top edge to its rotate handle, independent of zoom. */
+const ROTATE_HANDLE_OFFSET_PX = 28;
+
+/**
+ * (px, py) turned `degrees` clockwise about (cx, cy) — the same sense as the SVG `rotate()`
+ * transform a symbol is drawn with, so a page-space point and a symbol's own unrotated box stay
+ * on speaking terms in both directions: rotate a LOCAL (unrotated) point by +rotation to place it
+ * on the page: rotate a PAGE-space point by -rotation to read it as if the symbol were unrotated.
+ */
+function rotatePoint(px: number, py: number, cx: number, cy: number, degrees: number): { x: number; y: number } {
+	if (!degrees) return { x: px, y: py };
+	const rad = (degrees * Math.PI) / 180;
+	const cos = Math.cos(rad);
+	const sin = Math.sin(rad);
+	const dx = px - cx;
+	const dy = py - cy;
+	return { x: cx + dx * cos - dy * sin, y: cy + dx * sin + dy * cos };
+}
+
+/** Degrees clockwise from north (straight up) to (px, py) as seen from (cx, cy) — 0-360. */
+function angleFromCentre(cx: number, cy: number, px: number, py: number): number {
+	const dx = px - cx;
+	const dy = py - cy;
+	if (dx === 0 && dy === 0) return 0;
+	const degrees = (Math.atan2(dx, -dy) * 180) / Math.PI;
+	return degrees < 0 ? degrees + 360 : degrees;
+}
 
 /** Two decimals of a PDF point is far finer than anyone can draw, and keeps stored markup small. */
 export function roundUnit(value: number): number {
@@ -265,18 +292,9 @@ export function fitStampWidth(stamp: StampMarkup): StampMarkup {
 	return { ...stamp, x: roundUnit(stamp.x + (stamp.w - w) / 2), w };
 }
 
-/** A quarter turn clockwise about the symbol's centre: its box swaps width and height. */
+/** A quarter turn clockwise. The box itself never moves — see SymbolMarkup's own rotation comment. */
 export function rotateSymbol(symbol: SymbolMarkup): SymbolMarkup {
-	const centreX = symbol.x + symbol.w / 2;
-	const centreY = symbol.y + symbol.h / 2;
-	return {
-		...symbol,
-		x: roundUnit(centreX - symbol.h / 2),
-		y: roundUnit(centreY - symbol.w / 2),
-		w: symbol.h,
-		h: symbol.w,
-		rotation: ((symbol.rotation + 90) % 360) as SymbolMarkup['rotation'],
-	};
+	return { ...symbol, rotation: ((symbol.rotation + 90) % 360) as SymbolMarkup['rotation'] };
 }
 
 // ── Author line (callouts and stamps) ───────────────────────────────────────
@@ -355,9 +373,15 @@ export function hitTestMarkup(markup: Markup, px: number, py: number, tolerance:
 			return Math.hypot(px - markup.x, py - markup.y) <= tolerance * 2;
 		case 'text':
 		case 'stamp':
-		case 'symbol':
 			// Solid: anywhere on the box counts.
 			return insideBox(markup, px, py, tolerance);
+		case 'symbol': {
+			if (!markup.rotation) return insideBox(markup, px, py, tolerance);
+			const cx = markup.x + markup.w / 2;
+			const cy = markup.y + markup.h / 2;
+			const local = rotatePoint(px, py, cx, cy, -markup.rotation);
+			return insideBox(markup, local.x, local.y, tolerance);
+		}
 		default:
 			return false;
 	}
@@ -460,9 +484,26 @@ function cornerHandles(box: MarkupBounds): Array<{ handle: MarkupHandle; x: numb
 	];
 }
 
-/** Where the drag handles sit for a selected markup. */
-export function markupHandles(markup: Markup): Array<{ handle: MarkupHandle; x: number; y: number }> {
+/**
+ * Where the drag handles sit for a selected markup, in page space. `unitsPerPx` sizes the
+ * rotate handle's offset from the box so it sits a constant distance away on screen at any zoom
+ * — the same reasoning MarkupSelectionLayer already applies to the handle circles themselves.
+ */
+export function markupHandles(markup: Markup, unitsPerPx = 1): Array<{ handle: MarkupHandle; x: number; y: number }> {
 	switch (markup.kind) {
+		case 'symbol': {
+			const cx = markup.x + markup.w / 2;
+			const cy = markup.y + markup.h / 2;
+			const local: Array<{ handle: MarkupHandle; x: number; y: number }> = [
+				{ handle: 'nw', x: markup.x, y: markup.y },
+				{ handle: 'ne', x: markup.x + markup.w, y: markup.y },
+				{ handle: 'sw', x: markup.x, y: markup.y + markup.h },
+				{ handle: 'se', x: markup.x + markup.w, y: markup.y + markup.h },
+				{ handle: 'rotate', x: cx, y: markup.y - ROTATE_HANDLE_OFFSET_PX * unitsPerPx },
+			];
+			if (!markup.rotation) return local;
+			return local.map((handle) => ({ handle: handle.handle, ...rotatePoint(handle.x, handle.y, cx, cy, markup.rotation) }));
+		}
 		case 'line':
 		case 'arrow':
 		case 'move':
@@ -575,15 +616,35 @@ export function resizeMarkup(original: Markup, handle: MarkupHandle, px: number,
 			points[index * 2 + 1] = point.y;
 			return { ...original, points };
 		}
-		case 'stamp':
-		case 'symbol': {
+		case 'symbol':
+			if (handle === 'rotate') {
+				// Drag it around like a clock hand; it always lands on a compass point. Free rotation
+				// was never the ask — a visible handle for the same quarter turns the toolbar button
+				// already does was.
+				const centreX = original.x + original.w / 2;
+				const centreY = original.y + original.h / 2;
+				const angle = angleFromCentre(centreX, centreY, px, py);
+				const rotation = (Math.round(angle / 90) * 90) % 360;
+				return { ...original, rotation: rotation as SymbolMarkup['rotation'] };
+			}
+		// eslint-disable-next-line no-fallthrough
+		case 'stamp': {
 			// Stamps and symbols keep their proportions: wording has to keep fitting, and a squashed
 			// receptacle stops looking like one.
+			const rotation = original.kind === 'symbol' ? original.rotation : 0;
+			const centreX = original.x + original.w / 2;
+			const centreY = original.y + original.h / 2;
+			// A rotated symbol's corner handles were themselves rotated into page space (see
+			// markupHandles), so the drag lands somewhere on the page that doesn't correspond
+			// directly to the unrotated box's own coordinates. Un-rotate it first — same
+			// correspondence the rendered symbol uses, just run backwards — and every line below
+			// reads exactly like the unrotated case it always was.
+			const local = rotation ? rotatePoint(px, py, centreX, centreY, -rotation) : { x: px, y: py };
 			const left = handle === 'nw' || handle === 'sw';
 			const top = handle === 'nw' || handle === 'ne';
 			const anchorX = left ? original.x + original.w : original.x;
 			const anchorY = top ? original.y + original.h : original.y;
-			const scale = Math.max(Math.abs(px - anchorX) / original.w, Math.abs(py - anchorY) / original.h, MIN_STAMP_HEIGHT / original.h);
+			const scale = Math.max(Math.abs(local.x - anchorX) / original.w, Math.abs(local.y - anchorY) / original.h, MIN_STAMP_HEIGHT / original.h);
 			const w = original.w * scale;
 			const h = original.h * scale;
 			return {

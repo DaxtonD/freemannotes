@@ -45,6 +45,13 @@
 	stroke-width: 1.5;
 }
 
+/* A symbol's rotate handle: same shape as a resize handle, tinted so it reads as a different
+   kind of drag at a glance rather than a fifth corner. */
+.rotateHandle {
+	fill: #2563eb;
+	stroke: #ffffff;
+}
+
 /* Text markup. Sizes are page units multiplied by --markup-scale (the page's zoom), so the box
    wraps at the same words at every zoom. Keep the padding in step with TEXT_PADDING_UNITS. */
 .textItem {

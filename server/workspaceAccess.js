@@ -109,6 +109,42 @@ async function resolveLiveWorkspaceId(prisma, userId, preferredWorkspaceId = nul
 }
 
 /**
+ * The workspace this user was most recently in on ANY of their devices.
+ *
+ * For when a device has no preference of its own to read. Device preferences are
+ * keyed by a client-generated device id kept in localStorage, so clearing site data
+ * can hand us an id we've never seen — same physical device, brand new row — and for
+ * anyone whose id pre-dates the fingerprint scheme in src/core/deviceId.ts the
+ * recomputed id will never match the row they had. Without this, those sessions fell
+ * back to "whichever workspace sorts first", which is how clearing the cache used to
+ * drop people somewhere they'd never chosen.
+ *
+ * Walks a few rows rather than taking the single newest, so a stale pointer at a
+ * workspace they've since left or deleted doesn't veto the whole fallback.
+ */
+async function findLastActiveWorkspaceId(prisma, userId) {
+	if (!prisma || !userId) return null;
+	let rows;
+	try {
+		rows = await prisma.userDevicePreference.findMany({
+			where: { userId, activeWorkspaceId: { not: null } },
+			orderBy: { updatedAt: 'desc' },
+			select: { activeWorkspaceId: true },
+			take: 5,
+		});
+	} catch {
+		return null;
+	}
+	for (const row of rows) {
+		const candidate = row && row.activeWorkspaceId ? String(row.activeWorkspaceId) : null;
+		if (!candidate) continue;
+		const membership = await findLiveWorkspaceMembership(prisma, userId, candidate, { workspaceId: true });
+		if (membership && membership.workspaceId) return String(membership.workspaceId);
+	}
+	return null;
+}
+
+/**
  * Fetch a workspace only when it has not been tombstoned.
  * This keeps callers from branching on deletedAt themselves in every route.
  */
@@ -122,6 +158,7 @@ async function findLiveWorkspace(prisma, workspaceId, select = undefined) {
 
 module.exports = {
 	findFirstLiveWorkspaceMembership,
+	findLastActiveWorkspaceId,
 	findLiveWorkspace,
 	findLiveWorkspaceMembership,
 	invalidateMembershipCache,

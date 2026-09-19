@@ -9,6 +9,7 @@ import {
 	faLink,
 	faBell,
 	faTrash,
+	faRightFromBracket,
 	faArrowRotateLeft,
 	faFolderPlus,
 	faTag,
@@ -33,6 +34,10 @@ export type NoteCardMoreMenuProps = {
 	isPinned?: boolean;
 	onTogglePin?: (() => void) | undefined;
 	onTrash?: (() => void) | undefined;
+	/** A note shared WITH this user. There's no trash of their own to move it to — the
+	 *  entry removes their access instead (see App.tsx's leaveSharedNoteFromMenu), so it
+	 *  shouldn't keep claiming to be a trash action. */
+	isSharedWithMe?: boolean;
 	onAddCollaborator?: (() => void) | undefined;
 	onAddImage?: (() => void) | undefined;
 	onSelectBannerImage?: (() => void) | undefined;
@@ -476,8 +481,14 @@ export function NoteCardMoreMenu(props: NoteCardMoreMenuProps): React.JSX.Elemen
 		...(props.onTrash
 			? [{
 				key: 'trash',
-				labelKey: isTrashView ? 'noteMenu.restoreNote' : 'noteMenu.moveToTrash',
-				icon: isTrashView ? faArrowRotateLeft : faTrash,
+				labelKey: isTrashView
+					? 'noteMenu.restoreNote'
+					// Deliberately the Collaborators modal's own string, not a menu-local copy:
+					// it's the same act in both places and they must never drift apart.
+					: props.isSharedWithMe ? 'share.leaveNote' : 'noteMenu.moveToTrash',
+				icon: isTrashView
+					? faArrowRotateLeft
+					: props.isSharedWithMe ? faRightFromBracket : faTrash,
 				danger: true,
 				action: props.onTrash,
 			}]

@@ -72,7 +72,7 @@ import { resolveNoteBannerReadableColors, useNoteBannerReadableColors } from '..
 import { getNoteBannerPresentationStyle, transformNoteBannerSampleColor, useThemedNoteBannerImageUrl } from '../../core/noteBannerTheme';
 import type { NoteLinkRecord } from '../../core/noteLinkApi';
 import { getUserNoteColorToken, hasUserNoteColorPref, saveUserNoteColorToken, subscribeNoteColorPrefs } from '../../core/noteColorPreferences';
-import { getUserNoteBannerFile, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
+import { getUserNoteBannerFile, hasUserNoteBannerPref, subscribeNoteBannerPrefs } from '../../core/noteBannerPreferences';
 import { readDrawingLinkState, type NoteType } from '../../core/noteModel';
 import type { ThemeId } from '../../core/theme';
 import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
@@ -1227,8 +1227,8 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 				metadata.unobserve(observer);
 			};
 		},
-		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId)),
-		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId))
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId), hasUserNoteBannerPref(props.noteId)),
+		() => readEffectiveNoteBannerFile(metadata, getUserNoteBannerFile(props.noteId), hasUserNoteBannerPref(props.noteId))
 	);
 	const resolvedColor = React.useMemo(
 		() => (colorToken ? resolveThemeNoteColorModel(props.themeId).tokens[colorToken] : null),

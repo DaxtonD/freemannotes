@@ -2,6 +2,7 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faImage, faListUl, faPlus, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import { useI18n } from '../../core/i18n';
+import { useIsInsideAttachmentBrowser } from '../NoteAttachments/attachmentBrowserContext';
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
 import { getConnectionQuality, subscribeConnectionQualityChange } from '../../core/networkQuality';
 import { deleteNoteImage, type NoteImageRecord } from '../../core/noteMediaApi';
@@ -109,8 +110,10 @@ function getDisplayImageTitle(fileName: string | null | undefined, fallback: str
 }
 
 export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
+	const insideAttachmentBrowser = useIsInsideAttachmentBrowser();
 	const { t, locale } = useI18n();
-	const showEyebrow = props.showEyebrow !== false;
+	// The browser modal's subtitle already says "Images"; see attachmentBrowserContext.
+	const showEyebrow = props.showEyebrow !== false && !insideAttachmentBrowser;
 	const [remoteImages, setRemoteImages] = React.useState<readonly NoteImageRecord[]>(() => getCachedRemoteNoteImages(props.docId));
 	const [queuedImages, setQueuedImages] = React.useState<readonly QueuedNoteImageRow[]>([]);
 	const [queuedDeletions, setQueuedDeletions] = React.useState<readonly QueuedNoteImageRow[]>([]);

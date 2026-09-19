@@ -34,6 +34,7 @@ const {
 	enforceSameOrigin,
 } = require('./auth');
 const {
+	findLastActiveWorkspaceId,
 	findLiveWorkspaceMembership,
 	resolveLiveWorkspaceId,
 } = require('./workspaceAccess');
@@ -139,6 +140,13 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						});
 						if (pref && pref.activeWorkspaceId) {
 							preferredWorkspaceId = String(pref.activeWorkspaceId);
+						} else {
+							// Nothing stored for this device — often "same device, cleared site data"
+							// handing us an unrecognised device id. Their last active workspace on any
+							// device beats the session cookie's first-sorted default. See
+							// findLastActiveWorkspaceId.
+							const lastActiveWorkspaceId = await findLastActiveWorkspaceId(prisma, session.userId);
+							if (lastActiveWorkspaceId) preferredWorkspaceId = lastActiveWorkspaceId;
 						}
 					} catch {
 						// Ignore preference lookup failure; fallback to session cookie.

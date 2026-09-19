@@ -694,7 +694,7 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 			const selected = selectedId ? pageItems.find((item) => item.id === selectedId) : undefined;
 			if (selected) {
 				const reach = (event.pointerType === 'mouse' ? HANDLE_HIT_MOUSE_PX : HANDLE_HIT_TOUCH_PX) * point.unitsPerPx;
-				const handle = markupHandles(selected).find((candidate) => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= reach);
+				const handle = markupHandles(selected, point.unitsPerPx).find((candidate) => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= reach);
 				if (handle) {
 					event.preventDefault();
 					scroller.setPointerCapture(event.pointerId);
@@ -721,15 +721,30 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				startPan(event);
 				return;
 			}
-			event.preventDefault();
 			const now = performance.now();
 			if (isTypedMarkup(target) && lastTap && lastTap.id === target.id && now - lastTap.time < DOUBLE_TAP_MS) {
+				event.preventDefault();
 				lastTap = null;
 				latest.current.onStartText(target, false);
 				return;
 			}
 			lastTap = { id: target.id, time: now };
 			latest.current.onSelect(target.id);
+			// A finger landing on an item that wasn't already selected almost always means "I'm
+			// scrolling through the page, which happens to have markup on it" rather than "grab this."
+			// Select it (so it's visibly picked and its handles are ready) but let the gesture pan like
+			// it would over blank page — only a drag that starts on an ALREADY-selected item moves it,
+			// the same "select first" step its resize handles already require above. Mouse and pen have
+			// no such ambiguity (nothing else a mouse-drag on a shape could mean), so they still grab
+			// and move on the very first press. Comment pins are excluded: they're small, rarely grazed
+			// by accident, and a single tap has to open one straight away — gating that behind a
+			// second touch (this fix's whole point for everything else) would make replying slower for
+			// no real benefit.
+			if (event.pointerType === 'touch' && target.id !== selectedId && target.kind !== 'comment') {
+				startPan(event);
+				return;
+			}
+			event.preventDefault();
 			scroller.setPointerCapture(event.pointerId);
 			const onCalloutBox = target.kind === 'callout'
 				&& point.x >= target.x && point.x <= target.x + target.w && point.y >= target.y && point.y <= target.y + target.h;

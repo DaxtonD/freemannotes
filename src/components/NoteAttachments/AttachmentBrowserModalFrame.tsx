@@ -3,6 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faXmark } from '@fortawesome/free-solid-svg-icons';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
+import { AttachmentBrowserContext } from './attachmentBrowserContext';
 import styles from '../NoteMedia/NoteMediaBrowserModal.module.css';
 
 type AttachmentBrowserModalFrameProps = {
@@ -139,7 +140,9 @@ export function AttachmentBrowserModalFrame(props: AttachmentBrowserModalFramePr
 						<FontAwesomeIcon icon={faXmark} />
 					</button>
 				</header>
-				<div className={props.bodyClassName ? `${styles.body} ${props.bodyClassName}` : styles.body}>{props.children}</div>
+				<div className={props.bodyClassName ? `${styles.body} ${props.bodyClassName}` : styles.body}>
+					<AttachmentBrowserContext.Provider value={true}>{props.children}</AttachmentBrowserContext.Provider>
+				</div>
 			</section>
 		</div>
 	);

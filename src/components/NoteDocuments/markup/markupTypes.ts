@@ -119,7 +119,12 @@ export type StampMarkup = MarkupBase & {
 /** A symbol from the library (markupSymbols.tsx), placed as a box and turned in quarter steps. */
 export type SymbolMarkup = MarkupBase & {
 	kind: 'symbol';
-	/** The box it covers on the page, after turning. */
+	/**
+	 * The box is always the symbol's own unrotated footprint — rotation is applied as a transform
+	 * around its centre at render, hit-test and resize time, never baked into x/y/w/h. (An earlier
+	 * version pre-rotated the box and swapped w/h on each turn; decoupling it made drawing a
+	 * selection rotate handle straightforward without touching every other quarter-turn case.)
+	 */
 	x: number;
 	y: number;
 	w: number;

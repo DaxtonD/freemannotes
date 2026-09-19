@@ -5,6 +5,7 @@ import * as Y from 'yjs';
 import { buildDrawingPlaceholderDataUrl, getDrawingThumbnailVersion, renderDrawingThumbnail } from '../../core/drawingThumbnails';
 import { readDrawingLinkState } from '../../core/noteModel';
 import { useI18n } from '../../core/i18n';
+import { useIsInsideAttachmentBrowser } from '../NoteAttachments/attachmentBrowserContext';
 import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panelViewMode';
 import styles from './DrawingsPanel.module.css';
 
@@ -96,6 +97,7 @@ export function DrawingsComingSoonPanel(): React.JSX.Element {
 }
 
 export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
+	const insideAttachmentBrowser = useIsInsideAttachmentBrowser();
 	const { t, locale } = useI18n();
 	const canEdit = props.canEdit === true;
 	const drawingIds = useDrawingIds(props.doc);
@@ -172,8 +174,10 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 		<section className={styles.panel} aria-label={t('editors.mediaTabDrawings')}>
 			<div className={styles.header}>
 				<div>
-					<p className={styles.eyebrow}>{t('editors.mediaTabDrawings')}</p>
-					<p className={styles.summary}>{drawings.length === 0 ? t('drawings.emptyTitle') : summaryLabel}</p>
+					{insideAttachmentBrowser ? null : <p className={styles.eyebrow}>{t('editors.mediaTabDrawings')}</p>}
+					<p className={insideAttachmentBrowser ? `${styles.summary} ${styles.summaryWithoutEyebrow}` : styles.summary}>
+						{drawings.length === 0 ? t('drawings.emptyTitle') : summaryLabel}
+					</p>
 				</div>
 				<div className={styles.toolbar}>
 					<button
