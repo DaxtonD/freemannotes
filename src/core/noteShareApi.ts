@@ -141,6 +141,15 @@ function isMissingAccessError(error: unknown): boolean {
 // so a stalled fetch dies fast instead of leaving the UI hanging forever.
 const NOTE_SHARE_FETCH_TIMEOUT_MS = 8000;
 
+// Deadlines are not one-size-fits-all. 8s is right for a read: if the invitation list
+// is slow we show cached state and move on, and a fast failure is better than a spinner.
+// A user-initiated accept/decline is different — they pressed a button and are waiting
+// for it, and on a genuinely slow link (a throttled mobile connection, say) the round
+// trip can easily outlast 8s while working perfectly well. Timing those out dumped the
+// action into the offline queue and told the user it failed, on a network that would
+// have completed it. Give the mutations room before falling back.
+const NOTE_SHARE_MUTATION_TIMEOUT_MS = 45000;
+
 // Everything this catches means the same thing: "we couldn't reach the server," not
 // "the server said no." Callers should treat all of it as offline (queue for retry),
 // not surface it as a real error. Started as a narrow 502/503/504 gateway check, which
@@ -151,14 +160,22 @@ const NOTE_SHARE_FETCH_TIMEOUT_MS = 8000;
 // the same treatment now.
 export function isNetworkUnavailableError(error: unknown): boolean {
 	if (error instanceof DOMException && error.name === 'AbortError') return true;
+	if (error instanceof Error && error.name === 'AbortError') return true;
 	if (error instanceof TypeError) return true;
 	const status = (error as { status?: number } | null)?.status;
-	return status === 502 || status === 503 || status === 504;
+	if (typeof status === 'number' && status >= 500) return true;
+	// Not every API in this codebase attaches .status. workspaceInviteApi, for one,
+	// throws a bare Error("Request failed (503)"), and a Promise.all over both surfaces
+	// whichever rejected first — so the message form has to be recognised too, or this
+	// works only half the time depending on which request lost the race.
+	const message = error instanceof Error ? error.message : String(error ?? '');
+	if (/request failed \(5\d\d\)/i.test(message)) return true;
+	return /failed to fetch|networkerror|load failed|aborted|timed? ?out/i.test(message);
 }
 
-async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}): Promise<T> {
+async function fetchJson<T>(input: RequestInfo | URL, init: RequestInit = {}, timeoutMs: number = NOTE_SHARE_FETCH_TIMEOUT_MS): Promise<T> {
 	const controller = new AbortController();
-	const timeoutId = window.setTimeout(() => controller.abort(), NOTE_SHARE_FETCH_TIMEOUT_MS);
+	const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
 	let response: Response;
 	try {
 		response = await fetch(input, {
@@ -351,13 +368,25 @@ export async function flushPendingNoteShareActions(userId: string): Promise<void
 		// Replay in insertion order so the queued local view converges with the server
 		// in the same order the user acted on invitations while offline.
 		for (const action of pending) {
-			if (action.action === 'decline') {
-				await declineNoteShareInvitation(action.invitationId);
-			} else {
-				await acceptNoteShareInvitation(action.invitationId, {
-					target: action.target,
-					folderName: action.folderName || undefined,
-				});
+			try {
+				if (action.action === 'decline') {
+					await declineNoteShareInvitation(action.invitationId);
+				} else {
+					await acceptNoteShareInvitation(action.invitationId, {
+						target: action.target,
+						folderName: action.folderName || undefined,
+					});
+				}
+			} catch (err) {
+				// Still unreachable: stop here and keep everything queued, including this
+				// one. Order matters, so don't skip ahead to later actions.
+				if (isNetworkUnavailableError(err)) return;
+				// Anything else is the server's final answer — the invitation was revoked,
+				// already answered from another device, or the note is gone. Retrying can
+				// never succeed, and an entry that throws forever used to abort the whole
+				// loop on every future flush, so one dead invitation silently froze every
+				// accept queued behind it. Drop it and carry on.
+				console.warn('[note-share] dropping unreplayable queued action:', action.action, action.invitationId, err instanceof Error ? err.message : err);
 			}
 			removePendingNoteShareAction(userId, action.invitationId);
 		}
@@ -420,7 +449,7 @@ export async function acceptNoteShareInvitation(invitationId: string, args: { ta
 	return fetchJson(`/api/note-shares/invitations/${encodeURIComponent(invitationId)}/accept`, {
 		method: 'POST',
 		body: JSON.stringify(args),
-	});
+	}, NOTE_SHARE_MUTATION_TIMEOUT_MS);
 }
 
 export async function updateSharedNotePlacementMetadata(args: { placementId: string; collectionId?: string | null; labelIds?: readonly string[] }): Promise<{ placement: SharedNotePlacement }> {
@@ -548,7 +577,7 @@ export async function declineNoteShareInvitation(invitationId: string): Promise<
 	return fetchJson(`/api/note-shares/invitations/${encodeURIComponent(invitationId)}/decline`, {
 		method: 'POST',
 		body: JSON.stringify({}),
-	});
+	}, NOTE_SHARE_MUTATION_TIMEOUT_MS);
 }
 
 export async function cancelNoteShareInvitation(args: { userId?: string | null; docId: string; invitationId: string }): Promise<{ invitation?: NoteShareInvitation; invitationId: string; localOnly: boolean }> {

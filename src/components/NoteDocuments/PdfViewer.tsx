@@ -2024,6 +2024,9 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			variant={isCoarsePointer ? 'sheet' : 'side'}
 			cache={thumbnailCacheRef.current}
 			t={t}
+			pageNames={markup.pageNames}
+			canRename={canMarkup}
+			onRenamePage={markup.setPageName}
 			onSelectPage={handleSelectPage}
 			onClose={closeNavigator}
 		/>

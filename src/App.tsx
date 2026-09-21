@@ -261,7 +261,7 @@ import { refreshUserAvatarsCache, invalidateWorkspaceMembersCache, initWorkspace
 import { isNoteDenied, markNoteDenied } from './core/references/noteAccessCache';
 import { initPriorCollaboratorsForUser, clearPriorCollaboratorsCache, refreshPriorCollaboratorsCache } from './core/priorCollaboratorsApi';
 import { addPendingSelfMention, clearMatchedPendingSelfMentions, clearPendingSelfMentionsStore, dismissPendingSelfMention, getPendingSelfMentions, initPendingSelfMentionsForUser, type PendingSelfMention } from './core/pendingSelfMentions';
-import { clearUserIdentityCache, updateKnownUserCache } from './core/userIdentityCache';
+import { clearUserIdentityCache, resolveKnownUserById, updateKnownUserCache } from './core/userIdentityCache';
 import { clearUserAvatarCache } from './core/userAvatarCache';
 import { clearPdfViewerPositions } from './core/pdfViewerPositions';
 import { clearDrawingThumbnailLocalCache } from './core/drawingThumbnailStore';
@@ -1881,6 +1881,14 @@ export function App(): React.JSX.Element {
 	const splashGoneRef = React.useRef(splashGone);
 	splashGoneRef.current = splashGone;
 	const isGlobalAdmin = authUserRole === 'ADMIN';
+	// Your own name and email for the Preferences → User panel. The identity cache is
+	// written from /api/auth/me and persisted to localStorage, so this survives offline.
+	// Keyed on isUserOpen as well as the user id so reopening the panel re-reads a value
+	// an admin may have changed since, without needing a reload.
+	const authIdentity = React.useMemo(
+		() => (authUserId ? resolveKnownUserById(authUserId) : null),
+		[authUserId, isUserOpen]
+	);
 	const isUserManagementOffline = authOfflineMode || connection.state === 'offline' || (typeof navigator !== 'undefined' && navigator.onLine === false);
 	const cachedDeviceAppearancePrefs = React.useMemo(
 		() => {
@@ -12481,6 +12489,7 @@ export function App(): React.JSX.Element {
 				connectionState={connection.state}
 				deviceId={deviceId}
 				onUserManagement={openUserManagementFromPreferences}
+				isGlobalAdmin={isGlobalAdmin}
 				showUserManagement={isGlobalAdmin}
 				userManagementDisabled={isGlobalAdmin && isUserManagementOffline}
 				showSendInvite={isGlobalAdmin}
@@ -12620,6 +12629,8 @@ export function App(): React.JSX.Element {
 				onBack={backToPreferencesFromUser}
 				t={t}
 				currentProfileImage={authProfileImage}
+				displayName={authIdentity?.name ?? null}
+				email={authIdentity?.email ?? null}
 				busy={userModalBusy}
 				error={userModalError}
 				onSave={handleSaveUserAvatar}

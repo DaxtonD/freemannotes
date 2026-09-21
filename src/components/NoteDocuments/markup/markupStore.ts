@@ -49,6 +49,11 @@ type MarkupDocHandle = {
 	replies: Y.Map<MarkupReply>;
 	/** Page number (as text) → that page's scale, for measurements. */
 	scales: Y.Map<PageScale>;
+	/** Page number (as text) → a human label for that page ("Level 2 Electrical"). Lives
+	 *  here with the markup rather than on the document row so it syncs live to everyone
+	 *  and works offline, and so it's scoped to THIS version — page 12 of revision B is
+	 *  rarely page 12 of revision A. */
+	pageNames: Y.Map<string>;
 	meta: Y.Map<unknown>;
 	undo: Y.UndoManager;
 	persistence: IndexeddbPersistence | null;
@@ -182,11 +187,12 @@ function acquireMarkupDoc(versionId: string, options: { websocketUrl: string | n
 	const items = doc.getMap<Markup>('markups');
 	const replies = doc.getMap<MarkupReply>('replies');
 	const scales = doc.getMap<PageScale>('scales');
+	const pageNames = doc.getMap<string>('pageNames');
 	const meta = doc.getMap<unknown>('meta');
 	// captureTimeout 0: every stroke is its own undo step, however quickly you draw the next one.
 	// The comment counter (meta) is deliberately not undoable: undoing a new comment must not hand
 	// its number to the next one.
-	const undo = new Y.UndoManager([items, replies, scales], { trackedOrigins: new Set([LOCAL_ORIGIN]), captureTimeout: 0 });
+	const undo = new Y.UndoManager([items, replies, scales, pageNames], { trackedOrigins: new Set([LOCAL_ORIGIN]), captureTimeout: 0 });
 	let persistence: IndexeddbPersistence | null = null;
 	try {
 		persistence = new IndexeddbPersistence(markupDatabaseName(versionId), doc);
@@ -199,6 +205,7 @@ function acquireMarkupDoc(versionId: string, options: { websocketUrl: string | n
 		items,
 		replies,
 		scales,
+		pageNames,
 		meta,
 		undo,
 		persistence,
@@ -269,7 +276,7 @@ if (typeof window !== 'undefined') {
 }
 
 /** What a doc holds right now: markup and replies checked and in the order they were made, plus page scales. */
-function readHandleContents(handle: MarkupDocHandle): { items: Markup[]; replies: MarkupReply[]; pageScales: Map<number, PageScale> } {
+function readHandleContents(handle: MarkupDocHandle): { items: Markup[]; replies: MarkupReply[]; pageScales: Map<number, PageScale>; pageNames: Map<number, string> } {
 	const items = Array.from(handle.items.values())
 		.filter(isMarkup)
 		.sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : 1));
@@ -280,7 +287,15 @@ function readHandleContents(handle: MarkupDocHandle): { items: Markup[]; replies
 	for (const scale of handle.scales.values()) {
 		if (isPageScale(scale)) pageScales.set(scale.page, scale);
 	}
-	return { items, replies, pageScales };
+	const pageNames = new Map<number, string>();
+	for (const [key, label] of handle.pageNames.entries()) {
+		const page = Number(key);
+		if (!Number.isInteger(page) || page < 1) continue;
+		if (typeof label !== 'string') continue;
+		const trimmed = label.trim();
+		if (trimmed) pageNames.set(page, trimmed);
+	}
+	return { items, replies, pageScales, pageNames };
 }
 
 /**
@@ -360,6 +375,10 @@ export type PdfMarkup = {
 	pageScales: ReadonlyMap<number, PageScale>;
 	/** Sets a page's scale, or clears it with null. Undoable, and synced like the markup. */
 	setPageScale: (page: number, scale: PageScale | null) => void;
+	/** Each page's label (pages without one aren't in the map). */
+	pageNames: ReadonlyMap<number, string>;
+	/** Renames a page for everyone, or clears the name with an empty string. */
+	setPageName: (page: number, name: string) => void;
 	/** Adds a markup, or replaces the one with the same id (moves, resizes, recolours, text edits). */
 	add: (markup: Markup) => void;
 	/** Saves a new comment with the next number. Returns it as saved. */
@@ -374,10 +393,14 @@ export type PdfMarkup = {
 	redo: () => void;
 };
 
-type MarkupSnapshot = Pick<PdfMarkup, 'ready' | 'items' | 'replies' | 'canUndo' | 'canRedo' | 'syncState' | 'unsynced' | 'pageScales'>;
+type MarkupSnapshot = Pick<PdfMarkup, 'ready' | 'items' | 'replies' | 'canUndo' | 'canRedo' | 'syncState' | 'unsynced' | 'pageScales' | 'pageNames'>;
+
+/** Long enough for "Level 3 — Mechanical (Rev C)", short enough not to wreck the list. */
+export const MAX_PAGE_NAME_LENGTH = 80;
 
 const NO_SCALES: ReadonlyMap<number, PageScale> = new Map();
-const EMPTY_SNAPSHOT: MarkupSnapshot = { ready: false, items: [], replies: [], canUndo: false, canRedo: false, syncState: 'local', unsynced: false, pageScales: NO_SCALES };
+const NO_PAGE_NAMES: ReadonlyMap<number, string> = new Map();
+const EMPTY_SNAPSHOT: MarkupSnapshot = { ready: false, items: [], replies: [], canUndo: false, canRedo: false, syncState: 'local', unsynced: false, pageScales: NO_SCALES, pageNames: NO_PAGE_NAMES };
 
 export function usePdfMarkup(versionId: string | null, options: { websocketUrl: string | null; canEdit: boolean }): PdfMarkup {
 	const [snapshot, setSnapshot] = React.useState<MarkupSnapshot>(EMPTY_SNAPSHOT);
@@ -394,12 +417,13 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		let active = true;
 		const publish = (): void => {
 			if (!active || handle.destroyed) return;
-			const { items, replies, pageScales } = readHandleContents(handle);
+			const { items, replies, pageScales, pageNames } = readHandleContents(handle);
 			setSnapshot({
 				ready: handle.ready,
 				items,
 				replies,
 				pageScales,
+				pageNames,
 				canUndo: handle.undo.canUndo(),
 				canRedo: handle.undo.canRedo(),
 				syncState: handle.syncState,
@@ -409,6 +433,7 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		handle.items.observe(publish);
 		handle.replies.observe(publish);
 		handle.scales.observe(publish);
+		handle.pageNames.observe(publish);
 		handle.undo.on('stack-item-added', publish);
 		handle.undo.on('stack-item-popped', publish);
 		handle.undo.on('stack-cleared', publish);
@@ -422,6 +447,7 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 				handle.items.unobserve(publish);
 				handle.replies.unobserve(publish);
 				handle.scales.unobserve(publish);
+				handle.pageNames.unobserve(publish);
 				handle.undo.off('stack-item-added', publish);
 				handle.undo.off('stack-item-popped', publish);
 				handle.undo.off('stack-cleared', publish);
@@ -476,6 +502,16 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		}, LOCAL_ORIGIN);
 	}, []);
 
+	const setPageName = React.useCallback((page: number, name: string): void => {
+		const handle = handleRef.current;
+		if (!handle || handle.destroyed) return;
+		const trimmed = name.trim().slice(0, MAX_PAGE_NAME_LENGTH);
+		handle.doc.transact(() => {
+			if (trimmed) handle.pageNames.set(String(page), trimmed);
+			else handle.pageNames.delete(String(page));
+		}, LOCAL_ORIGIN);
+	}, []);
+
 	const removeMany = React.useCallback((ids: readonly string[]): void => {
 		const handle = handleRef.current;
 		if (!handle || handle.destroyed || ids.length === 0) return;
@@ -499,7 +535,7 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		if (handle && !handle.destroyed) handle.undo.redo();
 	}, []);
 
-	return { ...snapshot, add, addComment, peekCommentNumber, addReply, removeReply, removeMany, setPageScale, undo, redo };
+	return { ...snapshot, add, addComment, peekCommentNumber, addReply, removeReply, removeMany, setPageScale, setPageName, undo, redo };
 }
 
 /** The shape being drawn right now. Kept out of React state so a stroke doesn't re-render the viewer. */

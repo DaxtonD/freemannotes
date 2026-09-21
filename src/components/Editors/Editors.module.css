@@ -2507,6 +2507,12 @@
 	min-height: 100%;
 	outline: none;
 	position: relative;
+	/* The viewport is `overflow-x: hidden`, so anything too wide to wrap isn't merely ugly —
+	   it's clipped and unreachable. A long unbroken string (a URL, a file path, a hash) has
+	   no wrap opportunity by default and would vanish off the right edge. Code blocks keep
+	   their own horizontal scroll: `pre` is `white-space: pre`, which takes no wrap
+	   opportunities, so this doesn't reach them. */
+	overflow-wrap: break-word;
 }
 
 .richEditorContent:global(.ProseMirror) p.is-editor-empty:first-child::before {
@@ -2559,13 +2565,17 @@
 	padding-inline-start: 1.5em;
 }
 
-.richEditorContent:global(.ProseMirror) ul ul,
-.richEditorContent:global(.ProseMirror) ul ol,
-.richEditorContent:global(.ProseMirror) ol ul,
-.richEditorContent:global(.ProseMirror) ol ol {
-	width: max-content;
-	min-width: 100%;
-}
+/* Nested lists wrap like everything else. They used to carry
+   `width: max-content; min-width: 100%`, which sizes the list to its longest
+   unbroken line — a leftover from v1.2.27 when `.richEditorViewport` was
+   `overflow-x: auto` and you could scroll sideways to reach the overflow. The
+   viewport went back to `overflow-x: hidden` (see the long note on it above:
+   horizontal scrolling at this level was causing a flashing scrollbar), and
+   nobody removed this, so from then on an indented list item simply refused to
+   wrap and ran off the right edge into the clip — invisible and unreachable,
+   with no scrollbar to get it back. Paste any markdown doc with a sub-list to
+   see it. There is nothing to restore here: block-level lists are already full
+   width, so the correct rule is no rule. */
 
 /* Highlight marks: use the inline style background set by TipTap, with a
    slight border-radius so the highlight looks polished. */

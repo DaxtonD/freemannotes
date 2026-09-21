@@ -9,6 +9,11 @@ export type UserModalProps = {
 	onBack: () => void;
 	t: (key: string) => string;
 	currentProfileImage: string | null;
+	/** Who you're signed in as. Read from the identity cache (localStorage-backed), so it
+	 *  still shows correctly with no connection. Display only — changing either is an
+	 *  admin action in User Management, not a self-service one. */
+	displayName?: string | null;
+	email?: string | null;
 	busy?: boolean;
 	error?: string | null;
 	onSave: (args: { imageUrl: string; crop: CropAreaPixels | null }) => Promise<void> | void;
@@ -52,6 +57,22 @@ export function UserModal(props: UserModalProps): React.JSX.Element | null {
 				</header>
 
 				<div className={styles.subBody}>
+					{(props.displayName || props.email) ? (
+						<dl className={styles.userIdentity}>
+							{props.displayName ? (
+								<div className={styles.userIdentityRow}>
+									<dt className={styles.userIdentityLabel}>{props.t('prefs.userNameLabel')}</dt>
+									<dd className={styles.userIdentityValue}>{props.displayName}</dd>
+								</div>
+							) : null}
+							{props.email ? (
+								<div className={styles.userIdentityRow}>
+									<dt className={styles.userIdentityLabel}>{props.t('prefs.userEmailLabel')}</dt>
+									<dd className={styles.userIdentityValue}>{props.email}</dd>
+								</div>
+							) : null}
+						</dl>
+					) : null}
 					<div className={styles.userSection}>
 						<div className={styles.userAvatarPreview}>
 							{previewImageUrl ? (

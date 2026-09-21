@@ -46,6 +46,13 @@ COPY --from=build --chown=node:node /app/dist ./dist
 COPY --from=build --chown=node:node /app/server.js ./server.js
 COPY --from=build --chown=node:node /app/server ./server
 COPY --from=build --chown=node:node /app/prisma ./prisma
+# Custom Excalidraw libraries are read from this directory at request time
+# (readCustomExcalidrawLibraryDefinitions in server/apiRouter.js). It wasn't copied
+# into the runtime image, so the directory simply didn't exist in a container and the
+# scan returned nothing — the feature was quietly dead in the recommended install, with
+# no error to explain it. Copying it means a library committed to the repo actually
+# ships; operators adding their own still bind-mount over this path (see CONTRIBUTING).
+COPY --from=build --chown=node:node /app/third-party ./third-party
 COPY --chown=node:node docker-entrypoint.sh ./docker-entrypoint.sh
 
 RUN chmod +x /app/docker-entrypoint.sh

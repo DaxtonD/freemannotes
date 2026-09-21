@@ -207,7 +207,9 @@
     "updateLater": "Later",
     "updatedBadge": "Updated",
     "updatedNotificationTitle": "Application updated",
-    "updatedNotificationBody": "FreemanNotes has been updated successfully and the latest version is now active."
+    "updatedNotificationBody": "FreemanNotes has been updated successfully and the latest version is now active.",
+    "userNameLabel": "Name",
+    "userEmailLabel": "Email"
   },
   "auth": {
     "language": "Language",
@@ -737,7 +739,9 @@
     "galleryEmptyTitle": "No documents yet.",
     "galleryMarkableStat": "Openable",
     "galleryNotesStat": "Notes",
-    "shareFailed": "Couldn't share this file."
+    "shareFailed": "Couldn't share this file.",
+    "renamePage": "Rename page",
+    "pageNamePlaceholder": "Name this page"
   },
   "scan": {
     "title": "Scan a document",
@@ -1093,7 +1097,10 @@
     "loadFailed": "Failed to load shared note",
     "publicTitle": "Shared note",
     "backToApp": "Back to app",
-    "viewAllActivity": "View all activity"
+    "viewAllActivity": "View all activity",
+    "acceptQueuedOffline": "Accepted. We couldn't reach the server, so the note will appear as soon as you're back online.",
+    "declineQueuedOffline": "Declined. We couldn't reach the server, so this will be sent as soon as you're back online.",
+    "notificationsDisabledOffline": "You're offline. This list may be out of date, but accepting and declining still work — we'll sync as soon as you reconnect."
   },
   "theme": {
     "light": "Light",

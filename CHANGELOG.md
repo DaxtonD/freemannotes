@@ -4,6 +4,30 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.16.0 - 2026-09-21
+
+Some new things you can actually use, and a pile of "how long has THAT been broken".
+
+### Added
+- **PDF pages can be named.** Click the label under a page's thumbnail and give it one — "Level 2 — Electrical" beats hunting for page 47 of a plan set. Everyone working on the document sees the same names, live, and they work offline like the rest of the markup. They belong to the *version* you named them on, same as your measurement scales: page 12 of revision B is rarely page 12 of revision A, and carrying names across a re-upload would mislabel pages rather than save you work.
+- **Admins can fix a user's name and email** from User Management. People mistype their address when they register and then can't receive anything, and the only fix used to be deleting the account and starting again. Changing an address does not sign anyone out (sessions were never keyed on email), no confirmation email is sent, and duplicates are refused. The server admin's own address can only be changed by the server admin — that one's the way back into your own instance, and an admin fat-fingering it locks you out.
+- **Preferences → User now tells you who you're signed in as** — name and email. Read from the local identity cache, so it's still right with no connection.
+
+### Changed
+- **The server HUD in About is admin-only now.** Total users, disk and database usage, process memory, uptime — that's operator information, not something a notes app needs to show everyone who opens the About screen. The endpoint enforces it too; hiding the panel alone would have left the numbers one fetch away for anyone with an account. The version and build tag stay visible for everybody, because that's how you tell us what you're running.
+- **"Clear notifications" only clears what you can actually see.** It used to sweep up every answered invitation the API returned, which was fine back when they were listed with an Accepted/Declined badge and wrong the moment the bell went pending-only — the button sat there enabled with nothing visibly clearable, quietly dismissing rows you couldn't see. The whole share-invitation dismissal mechanism went with it: a pending invitation is answered, not dismissed.
+
+### Fixed
+- **Indented list items never wrapped.** Paste any markdown doc with a sub-list and the text ran straight off the right edge, clipped, with no scrollbar to go get it. Nested lists carried `width: max-content` from back when the editor scrolled sideways; the editor stopped scrolling sideways in a later release and nobody removed it. Long unbroken strings (a URL, a file path) could vanish the same way and now wrap too. Code blocks keep their own horizontal scroll, as intended.
+- **Accepting a shared note on a bad connection failed with "signal is aborted without reason".** `navigator.onLine` only knows whether an interface is up, so a throttled connection took the online path, blew the 8-second deadline and threw a raw abort error at someone who had simply tapped Accept. Answering an invitation is never blocked by the network now: it queues exactly like a deliberate offline accept and tells you the note will appear when you're back. Reads keep the short deadline; a button you're waiting on gets 45 seconds, because a slow link that would have worked shouldn't be called a failure.
+- **One dead invitation could freeze every queued accept behind it.** The replay loop aborted on any error, so an invitation that had been revoked or already answered elsewhere threw forever and silently blocked everything queued after it. Network errors still stop the loop (order matters); anything the server refuses outright is dropped.
+- **The notifications panel showed a raw "Request failed (502)" when the server was down.** A self-hosted instance behind a reverse proxy answers with a gateway error while the browser is perfectly online, and a 502 is not a transport error, so it sailed past both offline checks into a red banner. It also stopped blanking the invitation list on every offline path — telling you confidently that you have no invitations is worse than saying you can't check.
+- **Custom Excalidraw libraries did nothing in Docker** — which is to say, in the recommended install. `third-party/` was never copied into the runtime image, so the scan found no directory and silently returned nothing. No error, no log, just a feature that wasn't there. The directory ships now, and CONTRIBUTING documents the bind mount you need to actually drop your own files in.
+- **The README's install instructions didn't work.** `npm install` aborts on the Excalidraw peer conflict (it needs `--legacy-peer-deps`), and the Compose postgres service publishes no host port, so the documented local-dev database was unreachable from a dev server running outside Docker. Both fixed, along with `ghcr.io/daxtond/freemannotes:1.3.3` still being the pinned example about thirty releases later.
+
+### Security
+- The example env files and a script's preview HTML had a real dev hostname baked in across five places. Replaced with placeholders. Not a credential, but it advertised a personal server in a public repo.
+
 ## 1.15.2 - 2026-09-20
 
 The inbox got taken apart and put back together. The short version: the notification bell and the Inbox were quietly two lists of the same events, so being @mentioned once could produce a bell entry, an inbox card, AND a third row inside the bell telling you about the inbox. Three notifications, one thing happening. Now each surface has exactly one job — **the bell is things you owe someone an answer to, the Inbox is the log of what already happened** — and nothing disappears from the log on its own any more.

@@ -399,6 +399,112 @@ function createAdminRouter({ prisma }) {
 			return true;
 		}
 
+		// PATCH /api/admin/users/:id/profile — correct a user's name and/or email.
+		//
+		// Exists because people fat-finger their address at registration and then can't
+		// receive anything, and until now the only fix was deleting the account and
+		// starting over. Sessions are keyed on userId (the JWT carries userId/role/
+		// workspaceId, never the email), so changing an address does NOT sign anyone out.
+		const profileMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)\/profile$/);
+		if (profileMatch && method === 'PATCH') {
+			const userId = decodeURIComponent(profileMatch[1]);
+			(async () => {
+				try {
+					const adminUserId = await requireAdmin(req, res);
+					if (!adminUserId) return;
+					if (!isUuid(userId)) {
+						jsonResponse(res, 400, { error: 'Invalid user id' });
+						return;
+					}
+
+					const body = await readJsonBody(req);
+					if (!body || typeof body !== 'object') {
+						jsonResponse(res, 400, { error: 'Request body must be a JSON object' });
+						return;
+					}
+
+					const target = await prisma.user.findUnique({
+						where: { id: userId },
+						select: { id: true, email: true, name: true },
+					});
+					if (!target) {
+						jsonResponse(res, 404, { error: 'User not found' });
+						return;
+					}
+
+					const data = {};
+
+					if (body.name !== undefined) {
+						const name = String(body.name || '').trim();
+						if (!name) {
+							jsonResponse(res, 400, { error: 'Name is required' });
+							return;
+						}
+						if (name.length > 120) {
+							jsonResponse(res, 400, { error: 'Name is too long' });
+							return;
+						}
+						if (name !== target.name) data.name = name;
+					}
+
+					if (body.email !== undefined) {
+						const email = normalizeEmail(body.email);
+						if (!email || !isValidEmail(email)) {
+							jsonResponse(res, 400, { error: 'Invalid email' });
+							return;
+						}
+						if (email !== normalizeEmail(target.email)) {
+							// The server admin's address is the operator's way back in. Another
+							// admin mistyping it locks them out of their own instance, so only
+							// the server admin may change the server admin's email. Their name
+							// stays editable by anyone with the role — it isn't a credential.
+							const serverAdminUserId = await getServerAdminUserId();
+							if (serverAdminUserId && userId === serverAdminUserId && adminUserId !== serverAdminUserId) {
+								jsonResponse(res, 400, { error: 'Only the server admin can change the server admin email' });
+								return;
+							}
+							const clash = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+							if (clash && clash.id !== userId) {
+								jsonResponse(res, 409, { error: 'Email already registered' });
+								return;
+							}
+							data.email = email;
+						}
+					}
+
+					if (Object.keys(data).length === 0) {
+						jsonResponse(res, 200, { ok: true, unchanged: true });
+						return;
+					}
+
+					const updated = await prisma.user.update({
+						where: { id: userId },
+						data,
+						select: { id: true, email: true, name: true },
+					});
+
+					// Note-share invitations carry the invitee's address as well as their id,
+					// and the bell matches unclaimed ones by email. Leaving the old address on
+					// this user's rows would strand any invitation that hadn't resolved to an
+					// id yet, so move them across with the account.
+					if (data.email) {
+						await prisma.noteShareInvitation.updateMany({
+							where: { inviteeUserId: userId },
+							data: { inviteeEmail: data.email },
+						}).catch((err) => {
+							console.warn('[admin] invitation email re-point failed:', err.message);
+						});
+					}
+
+					jsonResponse(res, 200, { ok: true, user: { id: updated.id, email: updated.email, name: updated.name } });
+				} catch (err) {
+					console.error('[admin] update profile error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		// POST /api/admin/users/:id/reset-password
 		const resetMatch = pathname.match(/^\/api\/admin\/users\/([^/]+)\/reset-password$/);
 		if (resetMatch && method === 'POST') {

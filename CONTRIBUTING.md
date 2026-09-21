@@ -29,6 +29,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [12. Grid Scroll Recorder](#12-grid-scroll-recorder)
 - [Documents and Uploaded Files](#documents-and-uploaded-files)
 - [Notifications, the Inbox and the Bell](#notifications-the-inbox-and-the-bell)
+- [Custom Drawing Libraries](#custom-drawing-libraries)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
 - [PWA Version Changes](#pwa-version-changes)
 - [Native Platform Companions](#native-platform-companions)
@@ -757,6 +758,8 @@ Rows are looked up by the id in the path, never the uploader folder, because mov
 
 **Offline store:** `src/core/noteDocumentStore.ts` keeps the server list, a copy of each file, an upload queue and a **delete queue** in IndexedDB. Deletes flush before uploads. An empty server list is trusted, except for 15 seconds after a note move. Uploads the server rejects (400/413/415) stop retrying until the user retries; a dropped connection just leaves them waiting.
 
+**Page names live with the markup, not on the document.** A PDF page can be labelled ("Level 2 — Electrical") and everyone sees it. The names are a `pageNames` Y.Map in the version's `markup:<versionId>` room, alongside `markups`, `replies` and `scales` — so they sync live, work offline, are persisted in `note_document_markup`, and inherit the same access rules (anyone who can open the note reads them, EDITOR renames). Deliberately scoped to the **version**, like the markup and the measurement scales: page 12 of revision B is rarely page 12 of revision A, so carrying names across a re-upload would mislabel pages rather than save work.
+
 **Upload size and streaming:** the limit is `DOCUMENT_UPLOAD_MAX_MB` (default 100, clamped 1–2048), sent to clients as `documentUploadMaxBytes` in `/api/config` (`getDocumentUploadMaxBytes()` in `src/core/instanceConfig.ts`). Uploads stream to `<UPLOAD_DIR>/.incoming/<uuid>.part` and are renamed into their version folder (copy and delete across disks). `.incoming` isn't a path `uploadAccess.js` knows, so it's never served, and parts older than a day are swept at startup. Wait for the write stream's `close`, not `finish`, before moving the file: Windows won't rename a file that's still open. The client's upload timeout is 90 s plus 1 s per 128 KB.
 
 **PDF viewer:** `src/components/NoteDocuments/PdfViewer.tsx` is lazy-loaded and uses `pdfjs-dist`. Its worker is an `.mjs` file, which is why `mjs` is in the PWA precache glob in `vite.config.ts` — take it out and the viewer still works online but can't open anything offline. Failures log `[pdf-viewer] failed while <step>` with the real error.
@@ -809,7 +812,43 @@ Rules that follow from that, all load-bearing:
 
 Workspace admins are **not** notified about @mentions of existing members; a mention is addressed to a person, not broadcast to a workspace. Granting a non-member access to workspace content is a genuine access-control event and an admin may reasonably want to see it, but that belongs in a workspace audit view, not a personal inbox. Neither is built — don't bolt either onto the inbox.
 
+**Answering an invitation must never be blocked by the network.** `navigator.onLine` only tells you an interface is up, so a throttled or half-dead connection takes the online path, times out, and would otherwise throw a raw `AbortError` at someone who just tapped Accept. Accept and decline catch anything `isNetworkUnavailableError()` recognises — timeouts, fetch-layer failures, 5xx — and put the action in the same localStorage queue a deliberate offline accept uses, telling the user the note will appear once they reconnect. The endpoints upsert, so an action that actually reached the server before the client gave up replays harmlessly. Reads get an 8s deadline (`NOTE_SHARE_FETCH_TIMEOUT_MS`); user-initiated mutations get 45s (`NOTE_SHARE_MUTATION_TIMEOUT_MS`), because a slow link that would have succeeded shouldn't be treated as a failure.
+
+`flushPendingNoteShareActions()` stops on a network error (keeping order) but **drops** an action the server rejects outright — a revoked or already-answered invitation throws forever, and one of those used to abort the loop on every future flush, freezing every accept queued behind it.
+
 **Known duplication, deliberate:** fired reminders appear in both the bell and the inbox's Reminders tab (both read `fetchFiredReminders()`). This is accepted, not an oversight.
+
+---
+
+## Custom Drawing Libraries
+
+Freeman Notes serves two kinds of Excalidraw library through `GET /api/excalidraw-libraries`, and the drawing editor merges everything that endpoint returns into the user's library automatically.
+
+**Bundled** libraries are a frozen list in `server/apiRouter.js` (`EXCALIDRAW_BUNDLED_LIBRARY_DEFINITIONS`), each pointing at a remote `downloadUrl`. Nothing about them lives in the repo.
+
+**Custom** libraries are files in `third-party/excalidraw-libraries/`, read by `readCustomExcalidrawLibraryDefinitions()` in the same file. Worth knowing before you go looking: this lives in `apiRouter.js`, *not* in `server/drawingLibraryRouter.js` — that router is a different feature (it persists each user's own Excalidraw library server-side, `/api/drawing-library`).
+
+The contract:
+
+- Any file ending `.excalidrawlib` (case-insensitive) in that directory becomes a library. Loose `.png`/`.svg` files are ignored — package them into a library file first.
+- The id is `custom-<slugified basename>`, so `my-icons.excalidrawlib` becomes `custom-my-icons`.
+- An optional same-basename `.json` sidecar overrides `name`, `author` and `description`. Invalid JSON is warned about and skipped, not fatal.
+- The directory is re-scanned **on every request**, so adding a file needs no server restart. Excalidraw persists library state in the browser, so an already-open drawing needs reopening to pick it up.
+
+**In Docker, this needs a bind mount.** The directory is now copied into the runtime image (it wasn't before — the scan found no directory and silently returned nothing, so the whole feature was dead in the recommended install), but a container filesystem isn't where an operator can drop files. Mount over it:
+
+```bash
+-v /srv/freemannotes/excalidraw-libraries:/app/third-party/excalidraw-libraries
+```
+
+or in Compose:
+
+```yaml
+volumes:
+  - ./excalidraw-libraries:/app/third-party/excalidraw-libraries
+```
+
+The operator-facing workflow and the sidecar format with examples are documented in `third-party/excalidraw-libraries/README.md`.
 
 ---
 

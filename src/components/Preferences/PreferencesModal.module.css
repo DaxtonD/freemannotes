@@ -432,6 +432,44 @@
 	font-size: 14px;
 }
 
+/* Who you're signed in as, above the avatar picker. Read-only: a definition list
+   rather than disabled inputs, because disabled inputs read as "you could change this
+   if something were different" when in fact this is an admin-only change. */
+.userIdentity {
+	margin: 0 0 4px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.userIdentityRow {
+	display: flex;
+	align-items: baseline;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
+.userIdentityLabel {
+	margin: 0;
+	flex: 0 0 auto;
+	min-width: 4.5rem;
+	font-size: 0.78rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--color-text-muted);
+}
+
+.userIdentityValue {
+	margin: 0;
+	flex: 1 1 12rem;
+	min-width: 0;
+	font-size: 0.95rem;
+	color: var(--color-text);
+	/* Long addresses wrap instead of stretching the modal. */
+	overflow-wrap: anywhere;
+}
+
 .userSection {
 	display: flex;
 	align-items: center;

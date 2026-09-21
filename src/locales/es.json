@@ -207,7 +207,9 @@
     "updateLater": "Más tarde",
     "updatedBadge": "Actualizada",
     "updatedNotificationTitle": "Aplicación actualizada",
-    "updatedNotificationBody": "FreemanNotes se ha actualizado correctamente y la versión más reciente ya está activa."
+    "updatedNotificationBody": "FreemanNotes se ha actualizado correctamente y la versión más reciente ya está activa.",
+    "userNameLabel": "Nombre",
+    "userEmailLabel": "Correo electrónico"
   },
   "auth": {
     "language": "Idioma",
@@ -737,7 +739,9 @@
     "galleryEmptyTitle": "Todavía no hay documentos.",
     "galleryMarkableStat": "Se pueden abrir",
     "galleryNotesStat": "Notas",
-    "shareFailed": "No se pudo compartir el archivo."
+    "shareFailed": "No se pudo compartir el archivo.",
+    "renamePage": "Renombrar página",
+    "pageNamePlaceholder": "Nombra esta página"
   },
   "scan": {
     "title": "Escanear un documento",
@@ -1089,7 +1093,10 @@
     "loadFailed": "No se pudo cargar la nota compartida",
     "publicTitle": "Nota compartida",
     "backToApp": "Volver a la app",
-    "viewAllActivity": "Ver toda la actividad"
+    "viewAllActivity": "Ver toda la actividad",
+    "acceptQueuedOffline": "Aceptada. No pudimos conectar con el servidor, así que la nota aparecerá en cuanto vuelvas a estar en línea.",
+    "declineQueuedOffline": "Rechazada. No pudimos conectar con el servidor, así que se enviará en cuanto vuelvas a estar en línea.",
+    "notificationsDisabledOffline": "Estás sin conexión. Esta lista puede estar desactualizada, pero aceptar y rechazar sigue funcionando: lo sincronizaremos en cuanto te reconectes."
   },
   "theme": {
     "light": "Claro",

@@ -3,6 +3,7 @@ import {
 	acceptNoteShareInvitation,
 	declineNoteShareInvitation,
 	enqueuePendingNoteShareAction,
+	isNetworkUnavailableError,
 	listNoteShareInvitations,
 	type NoteShareInvitation,
 	type PendingNoteShareAction,
@@ -47,26 +48,6 @@ type Props = {
 };
 
 type PlacementChoice = 'personal' | 'shared-root' | 'shared-folder';
-
-// "Offline" is not just navigator.onLine === false. A self-hosted instance behind a
-// reverse proxy answers with a 502/503/504 while the app server is down or restarting —
-// the browser is perfectly online, the request completed, and it isn't a transport
-// error at all. Treating that as a hard failure surfaced a raw "Request failed (502)"
-// in the notifications panel instead of the quiet offline notice the same situation
-// gets everywhere else. Timeouts (AbortError) belong here too: a request that never
-// came back tells us nothing except that the server is unreachable right now.
-function isServerUnreachableError(error: unknown): boolean {
-	const status = (error as { status?: number } | null)?.status;
-	if (typeof status === 'number' && status >= 500) return true;
-	if (error instanceof Error && error.name === 'AbortError') return true;
-	const message = error instanceof Error ? error.message : String(error ?? '');
-	// The two APIs this panel calls don't report failures the same way: noteShareApi
-	// attaches .status to the error, workspaceInviteApi throws a bare
-	// Error("Request failed (503)"). Promise.all surfaces whichever rejected first,
-	// so both shapes have to be recognised or the fix works only half the time.
-	if (/request failed \(5\d\d\)/i.test(message)) return true;
-	return /failed to fetch|networkerror|load failed|aborted|timed? ?out/i.test(message);
-}
 
 function normalizeInvitation(invitation: NoteShareInvitation): NoteShareInvitation {
 	return {
@@ -134,7 +115,7 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 			);
 			setWorkspaceInvites(workspaceData.invites);
 		} catch (err) {
-			if (isServerUnreachableError(err)) {
+			if (isNetworkUnavailableError(err)) {
 				setNotice(t('share.notificationsDisabledOffline'));
 				return;
 			}
@@ -254,24 +235,33 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 		if (!props.authUserId) return;
 		setBusyId(invitation.id);
 		setError(null);
+		const queueThisDecline = () => {
+			queueAction({
+				id: `decline:${invitation.id}`,
+				userId: props.authUserId as string,
+				invitationId: invitation.id,
+				action: 'decline',
+				target: 'personal',
+				folderName: null,
+				createdAt: new Date().toISOString(),
+			});
+			setNotice(t('share.acceptQueuedOffline'));
+		};
 		const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
 		try {
 			if (isOffline) {
-				queueAction({
-					id: `decline:${invitation.id}`,
-					userId: props.authUserId,
-					invitationId: invitation.id,
-					action: 'decline',
-					target: 'personal',
-					folderName: null,
-					createdAt: new Date().toISOString(),
-				});
+				queueThisDecline();
 				return;
 			}
 			const result = await declineNoteShareInvitation(invitation.id);
 			updateInvitation(invitation.id, () => result.invitation);
 			props.onChanged?.();
 		} catch (err) {
+			// Same reasoning as handleAccept: a bad network is not a refusal.
+			if (isNetworkUnavailableError(err)) {
+				queueThisDecline();
+				return;
+			}
 			setError(err instanceof Error ? err.message : t('share.declineFailed'));
 		} finally {
 			setBusyId(null);
@@ -285,19 +275,23 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 		const placementChoice = placementChoiceByInvitationId[invitation.id] || 'personal';
 		const target = placementChoice === 'personal' ? 'personal' : 'shared';
 		const folderName = placementChoice === 'shared-folder' ? (folderByInvitationId[invitation.id] || '').trim() : '';
+		const queueThisAccept = () => {
+			queueAction({
+				id: `accept:${invitation.id}`,
+				userId: props.authUserId as string,
+				invitationId: invitation.id,
+				action: 'accept',
+				target,
+				folderName: folderName || null,
+				createdAt: new Date().toISOString(),
+			});
+			setAcceptingId(null);
+			setNotice(t('share.declineQueuedOffline'));
+		};
 		const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
 		try {
 			if (isOffline) {
-				queueAction({
-					id: `accept:${invitation.id}`,
-					userId: props.authUserId,
-					invitationId: invitation.id,
-					action: 'accept',
-					target,
-					folderName: folderName || null,
-					createdAt: new Date().toISOString(),
-				});
-				setAcceptingId(null);
+				queueThisAccept();
 				return;
 			}
 			const result = await acceptNoteShareInvitation(invitation.id, { target, folderName: folderName || undefined });
@@ -310,6 +304,17 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 			});
 			props.onChanged?.();
 		} catch (err) {
+			// Accepting is not allowed to fail just because the network is bad. navigator.onLine
+			// only knows about having *an* interface up, so a throttled or half-dead connection
+			// took the online path, timed out, and threw a raw "signal is aborted without reason"
+			// at someone who had simply tapped Accept. Anything that means "couldn't reach the
+			// server" now lands in the same queue as a deliberate offline accept and replays on
+			// reconnect. The endpoint upserts the collaborator and placement, so a request that
+			// actually did land before the client gave up replays harmlessly.
+			if (isNetworkUnavailableError(err)) {
+				queueThisAccept();
+				return;
+			}
 			setError(err instanceof Error ? err.message : t('share.acceptFailed'));
 		} finally {
 			setBusyId(null);

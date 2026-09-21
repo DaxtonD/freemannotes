@@ -1076,8 +1076,13 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 		}
 
 		// ── About HUD metrics ─────────────────────────────────────────────
-		// GET /api/system/hud-stats — lightweight server/app metrics for the
-		// in-app About panel HUD. Available to all authenticated users.
+		// GET /api/system/hud-stats — server/app metrics for the About panel HUD.
+		//
+		// Admins only. These are whole-instance figures — total registered users, total
+		// storage on disk and in the database, process memory, uptime — which is operator
+		// information, not something a regular user of a notes app has any use for. Hiding
+		// the panel in the client alone would have left the numbers a fetch away for
+		// anyone with an account, so the gate lives here and the UI just mirrors it.
 		if (pathname === '/api/system/hud-stats' && method === 'GET') {
 			(async () => {
 				try {
@@ -1086,6 +1091,15 @@ function createApiRouter({ prisma, adapter, timezone = null, onWorkspaceMetadata
 
 					const member = await findLiveWorkspaceMembership(prisma, req.auth.userId, workspaceId, { role: true });
 					if (!member) {
+						jsonResponse(res, 403, { error: 'Forbidden' });
+						return;
+					}
+
+					const requester = await prisma.user.findUnique({
+						where: { id: req.auth.userId },
+						select: { role: true, disabled: true },
+					});
+					if (!requester || requester.disabled || String(requester.role || '').toUpperCase() !== 'ADMIN') {
 						jsonResponse(res, 403, { error: 'Forbidden' });
 						return;
 					}

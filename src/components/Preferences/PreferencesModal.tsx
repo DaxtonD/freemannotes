@@ -77,6 +77,10 @@ export type PreferencesModalProps = {
 	// component and not depend directly on auth/admin service logic.
 	onUserManagement?: () => void;
 	showUserManagement?: boolean;
+	/** True for GlobalRole ADMIN. Distinct from showUserManagement on purpose: that one
+	 *  controls a footer button, this one controls who sees instance telemetry, and
+	 *  tying the two together means a change to either silently moves the other. */
+	isGlobalAdmin?: boolean;
 	userManagementDisabled?: boolean;
 	showSendInvite?: boolean;
 	onSendInvite?: () => void;
@@ -93,6 +97,8 @@ export type PreferencesModalProps = {
 type SectionModalProps = {
 	section: PreferencesSection;
 	authUserId?: string | null;
+	/** Gates the About panel's instance telemetry. See AboutSectionContent. */
+	isGlobalAdmin?: boolean;
 	onClose: () => void;
 	/** Closes the whole preferences modal, not just the sub-section. */
 	onCloseAll?: () => void;
@@ -167,6 +173,11 @@ function AboutSectionContent(props: {
 	isLightTheme: boolean;
 	connectionState: ConnectionState;
 	deviceId: string;
+	/** Whole-instance telemetry (the Half-Life HUD) is operator information: total users,
+	 *  disk and database usage, process memory, uptime. Admins only. The server enforces
+	 *  this too — /api/system/hud-stats 403s for everyone else — so this flag is about not
+	 *  showing a panel of dashes to people who can't have the numbers, not about secrecy. */
+	isGlobalAdmin: boolean;
 	onInboxCleared?: () => void;
 }): React.JSX.Element {
 	const [hud, setHud] = React.useState<AboutHudStatsResponse | null>(null);
@@ -306,6 +317,7 @@ function AboutSectionContent(props: {
 	}, []);
 
 	React.useEffect(() => {
+		if (!props.isGlobalAdmin) return;
 		if (props.connectionState === 'offline') {
 			setHudLoading(false);
 			setHudError('Telemetry unavailable');
@@ -315,9 +327,10 @@ function AboutSectionContent(props: {
 		if (props.connectionState === 'connected') {
 			void fetchHud();
 		}
-	}, [fetchHud, props.connectionState]);
+	}, [fetchHud, props.connectionState, props.isGlobalAdmin]);
 
 	React.useEffect(() => {
+		if (!props.isGlobalAdmin) return;
 		if (props.connectionState !== 'connected') return;
 		const timer = window.setInterval(() => {
 			void fetchHud();
@@ -325,7 +338,7 @@ function AboutSectionContent(props: {
 		return () => {
 			window.clearInterval(timer);
 		};
-	}, [fetchHud, props.connectionState]);
+	}, [fetchHud, props.connectionState, props.isGlobalAdmin]);
 
 	React.useEffect(() => {
 		if (props.connectionState !== 'connected') return;
@@ -401,6 +414,7 @@ function AboutSectionContent(props: {
 						{__IS_DEV_BUILD__ ? ' (dev)' : ''}
 					</span>
 				</div>
+				{props.isGlobalAdmin ? (
 				<div className={styles.aboutHudWrap}>
 					<div className={styles.aboutHudGrid} role="status" aria-live="polite">
 						{hudItems.map((item) => (
@@ -412,6 +426,7 @@ function AboutSectionContent(props: {
 					</div>
 					{hudError ? <div className={styles.aboutHudMeta}>{hudError}</div> : null}
 				</div>
+				) : null}
 			</div>
 			<div className={styles.aboutDescription}>
 				<p>{props.t('prefs.aboutBodyLine1')}</p>
@@ -420,6 +435,7 @@ function AboutSectionContent(props: {
 				<p>{props.t('prefs.aboutBodyLine4')}</p>
 				<p className={styles.aboutQuote}>{props.t('prefs.aboutBodyLine5')}</p>
 			</div>
+			{props.isGlobalAdmin ? (
 			<div className={styles.aboutFooterStats} aria-live="polite">
 				<div className={styles.aboutFooterGroup}>
 					<div className={styles.aboutFooterCell}>
@@ -442,6 +458,7 @@ function AboutSectionContent(props: {
 					</div>
 				</div>
 			</div>
+			) : null}
 			{devToolsUnlocked ? (
 				<div style={{ marginTop: '20px', padding: '12px 14px', border: '1px solid rgba(128,128,128,0.25)', borderRadius: '8px', background: 'rgba(0,0,0,0.03)' }}>
 					<p style={{ margin: '0 0 10px', fontSize: '11px', fontWeight: 600, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.5 }}>{props.t('prefs.devToolsSection')}</p>
@@ -743,6 +760,7 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 							isLightTheme={props.isLightTheme}
 							connectionState={props.connectionState}
 							deviceId={props.deviceId}
+							isGlobalAdmin={props.isGlobalAdmin === true}
 							onInboxCleared={props.onInboxCleared}
 						/>
 					) : props.section === 'notifications' ? (
@@ -866,6 +884,7 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 				<SectionModal
 					section={activeSection}
 					authUserId={props.authUserId}
+					isGlobalAdmin={props.isGlobalAdmin === true}
 					onClose={() => setActiveSection(null)}
 					onCloseAll={props.onCloseDirect ?? props.onClose}
 					t={props.t}

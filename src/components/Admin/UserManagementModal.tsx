@@ -12,6 +12,7 @@ import styles from './UserManagementModal.module.css';
 // This modal is a thin client for the server's admin endpoints:
 //   - GET    /api/admin/users
 //   - PATCH  /api/admin/users/:id/role
+//   - PATCH  /api/admin/users/:id/profile
 //   - POST   /api/admin/users/:id/reset-password
 //   - DELETE /api/admin/users/:id
 //   - POST   /api/admin/users
@@ -135,6 +136,11 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 	const [createName, setCreateName] = React.useState('');
 	const [createPassword, setCreatePassword] = React.useState('');
 	const [createRole, setCreateRole] = React.useState<'USER' | 'ADMIN'>('USER');
+	// People mistype their address at registration and then can't receive anything.
+	// Sessions are keyed on userId, never email, so fixing it doesn't sign them out.
+	const [editTarget, setEditTarget] = React.useState<{ userId: string; email: string; name: string; isServerAdmin: boolean } | null>(null);
+	const [editEmail, setEditEmail] = React.useState('');
+	const [editName, setEditName] = React.useState('');
 	const [resetPasswordTarget, setResetPasswordTarget] = React.useState<{ userId: string; email: string } | null>(null);
 	const [resetPasswordValue, setResetPasswordValue] = React.useState('');
 	const [resetPasswordConfirm, setResetPasswordConfirm] = React.useState('');
@@ -261,6 +267,45 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 			setBusy(false);
 		}
 	}, [resetPasswordConfirm, resetPasswordStrengthScore, resetPasswordTarget, resetPasswordValue]);
+
+	const openEditModal = React.useCallback((row: AdminUserRow, isServerAdmin: boolean) => {
+		setError(null);
+		setEditTarget({ userId: row.id, email: row.email, name: row.name, isServerAdmin });
+		setEditEmail(row.email);
+		setEditName(row.name);
+	}, []);
+
+	const submitEditProfile = React.useCallback(async () => {
+		if (!editTarget) return;
+		const nextName = editName.trim();
+		const nextEmail = editEmail.trim().toLowerCase();
+		if (!nextName) {
+			setError('Name is required');
+			return;
+		}
+		if (!nextEmail || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(nextEmail)) {
+			setError('Enter a valid email address');
+			return;
+		}
+		setBusy(true);
+		setError(null);
+		try {
+			await fetchJson(`/api/admin/users/${encodeURIComponent(editTarget.userId)}/profile`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: nextName, email: nextEmail }),
+			});
+			// Reflect it locally rather than refetching the whole list for two fields.
+			setUsers((current) => current.map((row) => (
+				row.id === editTarget.userId ? { ...row, name: nextName, email: nextEmail } : row
+			)));
+			setEditTarget(null);
+		} catch (err) {
+			setError(err instanceof Error ? err.message : 'Failed to update user');
+		} finally {
+			setBusy(false);
+		}
+	}, [editEmail, editName, editTarget]);
 
 	const deleteUser = React.useCallback(async (userId: string, email: string) => {
 		// Destructive action: confirm first.
@@ -409,6 +454,14 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 										<option value="ADMIN">Admin</option>
 										<option value="USER">User</option>
 									</select>
+									<button
+										type="button"
+										className={`${styles.actionButton} ${styles.compactControl}`}
+										onClick={() => openEditModal(u, Boolean(isServerAdmin))}
+										disabled={busy}
+									>
+										Edit
+									</button>
 									<button type="button" className={`${styles.actionButton} ${styles.compactControl} ${styles.mobileTwoLineButton}`} onClick={() => openResetPasswordModal(u.id, u.email)} disabled={busy}>
 										<span>Reset<br />password</span>
 									</button>
@@ -489,6 +542,53 @@ export function UserManagementModal(props: Props): React.JSX.Element | null {
 					</button>
 				</footer>
 			</section>
+			{editTarget ? (
+				<div className={styles.resetPasswordOverlay} role="presentation" onClick={(event) => {
+					event.stopPropagation();
+					setEditTarget(null);
+				}}>
+					<section className={styles.resetPasswordModal} role="dialog" aria-modal="true" aria-label="Edit user" onClick={(e) => e.stopPropagation()}>
+						<header className={styles.header}>
+							<div>
+								<h3 className={styles.sectionTitle}>Edit user</h3>
+							</div>
+							<button type="button" className={styles.iconButton} onClick={() => setEditTarget(null)} aria-label="Close">
+								<FontAwesomeIcon icon={faXmark} />
+							</button>
+						</header>
+						<form onSubmit={(e) => e.preventDefault()}>
+						<div className={styles.resetPasswordBody}>
+							<label className={styles.fieldLabel}>
+								<span>Name</span>
+								<input className={styles.input} type="text" value={editName} onChange={(e) => setEditName(e.target.value)} disabled={busy} maxLength={120} />
+							</label>
+							<label className={styles.fieldLabel}>
+								<span>Email</span>
+								<input
+									className={styles.input}
+									type="email"
+									autoComplete="off"
+									value={editEmail}
+									onChange={(e) => setEditEmail(e.target.value)}
+									disabled={busy || editTarget.isServerAdmin}
+									title={editTarget.isServerAdmin ? 'Only the server admin can change the server admin email' : undefined}
+								/>
+							</label>
+							<div className={styles.usageLabel}>
+								{editTarget.isServerAdmin
+									? 'The server admin address is how you get back in, so only that account can change it.'
+									: 'Changing the email changes how they sign in. It does not sign them out, and no confirmation email is sent.'}
+							</div>
+						</div>
+						<footer className={styles.footer}>
+							<button type="button" className={styles.closeButton} onClick={() => setEditTarget(null)} disabled={busy}>Cancel</button>
+							<button type="button" className={styles.refreshButton} onClick={() => void submitEditProfile()} disabled={busy}>Save changes</button>
+						</footer>
+						</form>
+					</section>
+				</div>
+			) : null}
+
 			{resetPasswordTarget ? (
 				<div className={styles.resetPasswordOverlay} role="presentation" onClick={(event) => {
 					event.stopPropagation();

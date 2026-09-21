@@ -13,7 +13,7 @@ It started out a making a simple Google Keep clone. Then exploded to include all
 
 Two reasons:
 
-* **Free** — notes should be simple, fast, and yours
+* **Free** — Apps should be free, simple, fast, and yours
 * **Freeman** — My love for Half-Life and because sometimes the right answer is:
   *"fine… I’ll solve it myself."*
 
@@ -31,6 +31,7 @@ Built with:
 * React + TypeScript
 * Yjs (real-time + offline sync)
 * PostgreSQL + Prisma
+* Gotenberg for document conversion
 * Docker / Unraid-friendly setup
 
 And a lot of persistence.
@@ -56,7 +57,7 @@ And a lot of persistence.
 
 ## Why I’m Sharing This
 
-This started as a personal project and then it turned into a year of work and a lot of time.
+This started as a small personal project and then it turned into a year of work and endless nights. 
 
 Time away from other projects, work, family..
 And I’m still going because I think this can be something genuinely solid.
@@ -127,6 +128,7 @@ What you get:
 * Persistent uploads (images + docs)
 * Auto database migrations
 * OCR support built-in
+* Gotenberg available as an opt-in profile for office-to-PDF (see [Document Conversion](#document-conversion-optional))
 
 Before first boot you can validate the rendered stack config with:
 
@@ -166,7 +168,7 @@ docker run -d \
   -e AUTH_JWT_SECRET=replace-this \
   -e AUTH_COOKIE_SECURE=true \
   -e DATABASE_URL=postgresql://user:password@host:5432/freemannotes?schema=public \
-  ghcr.io/daxtond/freemannotes:1.3.3
+  ghcr.io/daxtond/freemannotes:latest
 ```
 
 Optional:
@@ -184,7 +186,7 @@ Optional:
 
 Works as a standard custom container:
 
-* Repository: `ghcr.io/daxtond/freemannotes:1.3.3` or `ghcr.io/daxtond/freemannotes:latest`
+* Repository: `ghcr.io/daxtond/freemannotes:latest` (or pin a release, e.g. `ghcr.io/daxtond/freemannotes:1.16.0`)
 * Port: `27015`
 * AppData: `/app/uploads`
 * Set:
@@ -243,7 +245,7 @@ Supports:
 
 * Web push
 * Android PWA push
-* iOS push (via FCM)
+* iOS push (via FCM) + a annual monetary fee because this is Apple.
 * Email fallback
 
 Modes:
@@ -279,6 +281,8 @@ VAPID_SUBJECT=mailto:you@example.com
 ```
 
 ### iOS Push (FCM)
+Easy. Set up a developer account and pay Apple a bunch of money every year
+just so you can send a notification to your device. 
 
 ```
 FCM_PROJECT_ID=...
@@ -290,12 +294,41 @@ FCM_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-
 
 ## Local Development
 
+Requires **Node 20+**, **PostgreSQL 14+**, and Docker if you want the database in a container. Python 3 is only needed for OCR.
+
 ```bash
-npm install
-docker compose up postgres -d
+git clone https://github.com/DaxtonD/freemannotes.git
+cd freemannotes
+
+# --legacy-peer-deps is required, not optional: y-excalidraw pins an older
+# @excalidraw/excalidraw than this project uses, and a plain `npm install` aborts.
+npm ci --legacy-peer-deps
+
+# A throwaway database matching the defaults in .env.example. The Compose
+# postgres service deliberately publishes no host port, so it can't be reached
+# from a dev server running outside Docker — use this instead.
+docker run -d \
+  --name freemannotes-dev-db \
+  -p 5432:5432 \
+  -e POSTGRES_USER=freemannotes \
+  -e POSTGRES_PASSWORD=freemannotes \
+  -e POSTGRES_DB=freemannotes \
+  postgres:16-alpine
+
 cp .env.example .env
+cp env.vite/.env.example env.vite/.env.development   # optional
+
 npm run dev
 ```
+
+That gives you:
+
+* Vite dev server on **http://localhost:5173**
+* API + Yjs WebSocket on **http://localhost:27016**, which Vite proxies to, exactly as production does
+
+The schema is created and migrated automatically on startup — `npm run dev` runs the database init itself, and `postinstall` generates the Prisma client. You only need `npm run db:migrate` by hand after pulling changes that add a migration while the server is already running.
+
+To run the production build locally instead, `npm start` builds the frontend and serves everything from **http://localhost:27015**.
 
 ---
 
@@ -303,10 +336,6 @@ npm run dev
 
 A notes app that feels effortless at first but doesn’t fall apart when you expect more from it.
 
-Simple.
-Fast.
-Capable.
-Yours.
 
 ---
 

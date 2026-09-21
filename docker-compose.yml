@@ -4,7 +4,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: freemannotes:1.3.3
+    # Name for the locally built image. Deliberately not a version number — it was
+    # pinned at 1.3.3 for ~30 releases and every `up --build` silently relabelled a
+    # current build with a long-dead version. Pull a real release from
+    # ghcr.io/daxtond/freemannotes:<version> if you want a pinned image.
+    image: freemannotes:local
     container_name: freemannotes
     init: true
     restart: unless-stopped

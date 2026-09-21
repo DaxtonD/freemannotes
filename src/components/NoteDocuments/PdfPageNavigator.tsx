@@ -2,6 +2,7 @@ import React from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faXmark } from '@fortawesome/free-solid-svg-icons';
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
+import { MAX_PAGE_NAME_LENGTH } from './markup/markupStore';
 import styles from './PdfPageNavigator.module.css';
 
 type Translate = (key: string) => string;
@@ -17,6 +18,11 @@ type PdfPageNavigatorProps = {
 	variant: 'side' | 'sheet';
 	cache: PdfThumbnailCache;
 	t: Translate;
+	/** Page number → its label. Synced with the markup, so everyone sees the same names. */
+	pageNames: ReadonlyMap<number, string>;
+	/** Renaming is an edit to shared state, so it follows markup edit rights. */
+	canRename: boolean;
+	onRenamePage: (pageNumber: number, name: string) => void;
 	onSelectPage: (pageNumber: number) => void;
 	onClose: () => void;
 };
@@ -50,7 +56,9 @@ async function renderThumbnailUrl(pdf: PDFDocumentProxy, pageNumber: number): Pr
 }
 
 export function PdfPageNavigator(props: PdfPageNavigatorProps): React.JSX.Element {
-	const { pdf, pageSizes, currentPage, cache, t, onSelectPage } = props;
+	const { pdf, pageSizes, currentPage, cache, t, onSelectPage, pageNames, canRename, onRenamePage } = props;
+	const [editingPage, setEditingPage] = React.useState<number | null>(null);
+	const [draftName, setDraftName] = React.useState('');
 	const pageCount = pageSizes.length;
 	const listRef = React.useRef<HTMLDivElement | null>(null);
 	const [, setThumbnailVersion] = React.useState(0);
@@ -136,6 +144,19 @@ export function PdfPageNavigator(props: PdfPageNavigatorProps): React.JSX.Elemen
 		userScrolledAtRef.current = performance.now();
 	};
 
+	const beginRename = (pageNumber: number): void => {
+		if (!canRename) return;
+		setEditingPage(pageNumber);
+		setDraftName(pageNames.get(pageNumber) ?? '');
+	};
+
+	const commitRename = (pageNumber: number): void => {
+		setEditingPage(null);
+		const next = draftName.trim();
+		if (next === (pageNames.get(pageNumber) ?? '')) return;
+		onRenamePage(pageNumber, next);
+	};
+
 	const handleGoToPage = (event: React.FormEvent): void => {
 		event.preventDefault();
 		const pageNumber = Number.parseInt(pageInput, 10);
@@ -177,22 +198,58 @@ export function PdfPageNavigator(props: PdfPageNavigatorProps): React.JSX.Elemen
 					const pageNumber = index + 1;
 					const url = cache.get(pageNumber);
 					const isCurrent = pageNumber === currentPage;
-					return (
-						<button
+					// A wrapper rather than one big button: a text input can't live inside a
+						// <button>, and a rename control nested in the select control would make
+						// every rename click also jump the page.
+						const name = pageNames.get(pageNumber) ?? '';
+						const isEditing = editingPage === pageNumber;
+						return (
+						<div
 							key={pageNumber}
-							type="button"
 							data-page-number={pageNumber}
 							className={`${styles.item}${isCurrent ? ` ${styles.itemCurrent}` : ''}`}
-							onClick={() => onSelectPage(pageNumber)}
-							aria-label={`${t('documents.pageLabel')} ${pageNumber}`}
-							aria-current={isCurrent ? 'page' : undefined}
 						>
-							<span className={styles.thumb} style={{ aspectRatio: `${size.width} / ${size.height}` }}>
-								{url ? <img className={styles.thumbImage} src={url} alt="" draggable={false} /> : null}
-							</span>
-							<span className={styles.itemLabel}>{pageNumber}</span>
-						</button>
-					);
+							<button
+								type="button"
+								className={styles.itemSelect}
+								onClick={() => onSelectPage(pageNumber)}
+								aria-label={name ? `${t('documents.pageLabel')} ${pageNumber}: ${name}` : `${t('documents.pageLabel')} ${pageNumber}`}
+								aria-current={isCurrent ? 'page' : undefined}
+							>
+								<span className={styles.thumb} style={{ aspectRatio: `${size.width} / ${size.height}` }}>
+									{url ? <img className={styles.thumbImage} src={url} alt="" draggable={false} /> : null}
+								</span>
+								<span className={styles.itemLabel}>{pageNumber}</span>
+							</button>
+							{isEditing ? (
+								<input
+									className={styles.itemNameInput}
+									value={draftName}
+									autoFocus
+									maxLength={MAX_PAGE_NAME_LENGTH}
+									placeholder={t('documents.pageNamePlaceholder')}
+									aria-label={`${t('documents.renamePage')} ${pageNumber}`}
+									onChange={(event) => setDraftName(event.target.value)}
+									onBlur={() => commitRename(pageNumber)}
+									onKeyDown={(event) => {
+										if (event.key === 'Enter') { event.preventDefault(); commitRename(pageNumber); }
+										else if (event.key === 'Escape') { event.preventDefault(); setEditingPage(null); }
+									}}
+								/>
+							) : canRename ? (
+								<button
+									type="button"
+									className={`${styles.itemName}${name ? '' : ` ${styles.itemNameEmpty}`}`}
+									onClick={() => beginRename(pageNumber)}
+									title={t('documents.renamePage')}
+								>
+									{name || t('documents.pageNamePlaceholder')}
+								</button>
+							) : name ? (
+								<span className={styles.itemName}>{name}</span>
+							) : null}
+						</div>
+						);
 				})}
 			</div>
 		</div>
