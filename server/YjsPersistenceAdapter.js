@@ -823,40 +823,25 @@ class YjsPersistenceAdapter {
 							console.warn(`[references] mention invitation revoke failed for ${docName}:`, err.message);
 						});
 
-						// Archive the inbox activity for removed users so the card disappears
-						// regardless of whether the invitation was already accepted.
-						try {
-							const activitiesToArchive = await this._prisma.activity.findMany({
-								where: {
-									kind: 'mention',
-									sourceDocId: docName,
-									targets: { some: { userId: { in: emittedRemovedUserTargetIds } } },
-								},
-								include: {
-									targets: {
-										where: { userId: { in: emittedRemovedUserTargetIds } },
-										select: { userId: true },
-									},
-								},
-							});
-							if (activitiesToArchive.length > 0) {
-								const now = new Date();
-								await this._prisma.$transaction(
-									activitiesToArchive.flatMap((a) =>
-										a.targets.map((t) =>
-											this._prisma.activityRead.upsert({
-												where: { userId_activityId: { userId: t.userId, activityId: a.id } },
-												update: { archived: true, archivedAt: now },
-												create: { userId: t.userId, activityId: a.id, archived: true, archivedAt: now },
-											})
-										)
-									)
-								);
-							}
-						} catch (err) {
-							console.warn(`[references] mention activity archive failed for ${docName}:`, err.message);
-						}
-
+						// Deleting the @mention chip revokes the invitation (above) but does NOT
+						// touch the recipient's inbox card. It used to archive it, so an author
+						// tidying up their own note silently deleted a notification out of
+						// someone else's inbox — the one thing the inbox is not allowed to do.
+						// "Alice mentioned you on Tuesday" stays true after Alice edits the
+						// sentence; the card is a record of what happened, not a live mirror of
+						// the note's current text.
+						//
+						// Note this only ever affected cards that were actually on screen. A
+						// mention whose invitation is still unanswered is held at
+						// visible: false anyway (see activityEmitter), so revoking it removes
+						// nothing the recipient could see. The cards this used to delete were
+						// precisely the ones belonging to people who already had access — the
+						// ones with the strongest claim to keep them. And since the revoke above
+						// only touches PENDING invitations, a recipient who already accepted
+						// keeps their access, so their card still opens the note perfectly well.
+						//
+						// The refresh nudge below stays: the revoke can change what the
+						// recipient may open, so their client should re-check.
 						this._onMentionRevoked?.({ revokedUserIds: emittedRemovedUserTargetIds });
 					}
 				}
@@ -1017,7 +1002,15 @@ class YjsPersistenceAdapter {
 					assigneeLabel: ref.label,
 					invitationId,
 				},
-				targetUserIds: [ref.targetId],
+				// A mention of someone who already has access is just a mention: it lands in
+				// their inbox immediately, nothing to accept. A mention that had to invent an
+				// invitation to grant access is a request first — that lives in their
+				// notification bell until they answer it, and the card is held back until
+				// then so the same event doesn't show up as two notifications at once. The
+				// nodeId in the deep link above is why the row is written now rather than on
+				// acceptance: it's the only moment we know which chip to scroll to.
+				targetUserIds: invitationId ? [] : [ref.targetId],
+				hiddenTargetUserIds: invitationId ? [ref.targetId] : [],
 			}).then(() => {
 				this._onActivityEmitted?.({ targetUserIds: [ref.targetId] });
 				if (actorId) {

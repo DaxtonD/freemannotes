@@ -357,6 +357,18 @@
 	box-shadow: 0 0 0 2px var(--color-app-bg);
 }
 
+/* The inbox badge is deliberately NOT the bell's alarm red. Red says "answer me";
+   the inbox never asks for anything, it only reports that something happened. Same
+   shape so it still reads as a count, different colour so the two don't blur into
+   one undifferentiated pile of "stuff". */
+.app-inbox-badge {
+	/* Themes are free to pick a pale accent (#c7a07a and friends), and white on that
+	   is unreadable at 11px — so darken whatever the accent is rather than trusting it. */
+	background: color-mix(in srgb, var(--color-accent) 76%, #16181d);
+	color: #fff;
+	font-weight: 600;
+}
+
 .app-icon-button svg {
 	width: 18px;
 	height: 18px;

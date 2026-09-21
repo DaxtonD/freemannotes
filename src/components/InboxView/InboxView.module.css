@@ -144,6 +144,24 @@
 	background: var(--color-surface-2);
 }
 
+/* Some cards genuinely have nothing to open: a share you declined, a note someone
+   revoked from you. They stay in the log — that's the point — but they shouldn't
+   invite a click that can't go anywhere. No pointer, no hover lift. */
+.cardInert {
+	cursor: default;
+}
+
+.cardInert:hover {
+	background: var(--color-surface);
+}
+
+.unavailableNote {
+	margin: 2px 0 0;
+	font-size: 0.78rem;
+	color: var(--color-text-muted);
+	font-style: italic;
+}
+
 .card:hover .archiveBtn {
 	opacity: 1;
 }
@@ -326,130 +344,6 @@
 	font-size: 0.76rem;
 	color: var(--color-text-muted);
 	margin-top: 2px;
-}
-
-.acceptBtn {
-	display: inline-flex;
-	align-items: center;
-	gap: 5px;
-	margin-top: 6px;
-	padding: 4px 10px;
-	border-radius: var(--radius-sm, 6px);
-	border: 1px solid var(--color-accent);
-	background: color-mix(in srgb, var(--color-accent) 12%, transparent);
-	color: var(--color-accent);
-	font-size: 0.8rem;
-	font-weight: 600;
-	cursor: pointer;
-	transition: background 80ms;
-}
-
-.acceptBtn:hover:not(:disabled) {
-	background: color-mix(in srgb, var(--color-accent) 22%, transparent);
-}
-
-.acceptBtn:disabled {
-	opacity: 0.6;
-	cursor: default;
-}
-
-/* ── Placement picker ────────────────────────────────────────────────────── */
-
-.cardPickerOpen {
-	cursor: default;
-}
-
-.placementPicker {
-	margin-top: 10px;
-	padding: 12px 14px;
-	border-radius: var(--radius-md);
-	background: var(--color-surface-2);
-	border: 1px solid var(--color-border);
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
-}
-
-.placementLabel {
-	margin: 0 0 2px;
-	font-size: 0.82rem;
-	font-weight: 600;
-	color: var(--color-text);
-}
-
-.radioLabel {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	font-size: 0.84rem;
-	color: var(--color-text);
-	cursor: pointer;
-}
-
-.radioLabel input[type="radio"] {
-	accent-color: var(--color-accent);
-	width: 15px;
-	height: 15px;
-	flex-shrink: 0;
-	cursor: pointer;
-}
-
-.folderInput {
-	margin-left: 23px;
-	padding: 5px 8px;
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-sm);
-	background: var(--color-surface);
-	color: var(--color-text);
-	font-size: 0.82rem;
-	outline: none;
-}
-
-.folderInput:focus {
-	border-color: var(--color-accent);
-}
-
-.placementActions {
-	display: flex;
-	gap: 8px;
-	margin-top: 4px;
-}
-
-.confirmBtn {
-	padding: 5px 14px;
-	border-radius: var(--radius-sm);
-	border: none;
-	background: var(--color-accent);
-	color: #fff;
-	font-size: 0.82rem;
-	font-weight: 600;
-	cursor: pointer;
-	transition: opacity 80ms;
-}
-
-.confirmBtn:disabled {
-	opacity: 0.6;
-	cursor: default;
-}
-
-.confirmBtn:not(:disabled):hover {
-	opacity: 0.88;
-}
-
-.cancelBtn {
-	padding: 5px 12px;
-	border-radius: var(--radius-sm);
-	border: 1px solid var(--color-border);
-	background: transparent;
-	color: var(--color-text-muted);
-	font-size: 0.82rem;
-	cursor: pointer;
-	transition: background 80ms, color 80ms;
-}
-
-.cancelBtn:not(:disabled):hover {
-	background: var(--color-surface);
-	color: var(--color-text);
 }
 
 /* ── Archive button ──────────────────────────────────────────────────────── */

@@ -44,45 +44,28 @@ type Props = {
 	onOpenFailedLink?: (failure: FailedNoteLinkRecord) => void;
 	inboxUnreadCount?: number;
 	onOpenInbox?: () => void;
-	/** Server-persisted "cleared" invitation notification IDs (UserPreference.dismissedShareInvitationIds), merged into the local hidden set so a cleared notification stays cleared even after a cache clear or on a different device. */
-	serverDismissedInvitationIds?: Record<string, boolean>;
-	/** Called with the invitation IDs just cleared so the parent can persist them server-side. */
-	onPersistDismissedInvitationIds?: (ids: readonly string[]) => void;
 };
 
 type PlacementChoice = 'personal' | 'shared-root' | 'shared-folder';
 
-const HIDDEN_NOTIFICATIONS_KEY_PREFIX = 'freemannotes.shareNotifications.hidden.v1:';
-
-function isTransportLikeError(error: unknown): boolean {
+// "Offline" is not just navigator.onLine === false. A self-hosted instance behind a
+// reverse proxy answers with a 502/503/504 while the app server is down or restarting —
+// the browser is perfectly online, the request completed, and it isn't a transport
+// error at all. Treating that as a hard failure surfaced a raw "Request failed (502)"
+// in the notifications panel instead of the quiet offline notice the same situation
+// gets everywhere else. Timeouts (AbortError) belong here too: a request that never
+// came back tells us nothing except that the server is unreachable right now.
+function isServerUnreachableError(error: unknown): boolean {
+	const status = (error as { status?: number } | null)?.status;
+	if (typeof status === 'number' && status >= 500) return true;
+	if (error instanceof Error && error.name === 'AbortError') return true;
 	const message = error instanceof Error ? error.message : String(error ?? '');
-	return /failed to fetch|networkerror|load failed/i.test(message);
-}
-
-function hiddenNotificationsKey(userId: string): string {
-	return `${HIDDEN_NOTIFICATIONS_KEY_PREFIX}${userId}`;
-}
-
-function readHiddenNotificationIds(userId: string | null): Set<string> {
-	if (!userId || typeof window === 'undefined') return new Set();
-	try {
-		const raw = window.localStorage.getItem(hiddenNotificationsKey(userId));
-		if (!raw) return new Set();
-		const parsed = JSON.parse(raw);
-		if (!Array.isArray(parsed)) return new Set();
-		return new Set(parsed.filter((value): value is string => typeof value === 'string' && value.length > 0));
-	} catch {
-		return new Set();
-	}
-}
-
-function writeHiddenNotificationIds(userId: string | null, ids: ReadonlySet<string>): void {
-	if (!userId || typeof window === 'undefined') return;
-	try {
-		window.localStorage.setItem(hiddenNotificationsKey(userId), JSON.stringify(Array.from(ids)));
-	} catch {
-		// Best effort only.
-	}
+	// The two APIs this panel calls don't report failures the same way: noteShareApi
+	// attaches .status to the error, workspaceInviteApi throws a bare
+	// Error("Request failed (503)"). Promise.all surfaces whichever rejected first,
+	// so both shapes have to be recognised or the fix works only half the time.
+	if (/request failed \(5\d\d\)/i.test(message)) return true;
+	return /failed to fetch|networkerror|load failed|aborted|timed? ?out/i.test(message);
 }
 
 function normalizeInvitation(invitation: NoteShareInvitation): NoteShareInvitation {
@@ -115,45 +98,28 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	};
 	const [busyId, setBusyId] = React.useState<string | null>(null);
 	const [error, setError] = React.useState<string | null>(null);
+	// Rendered as an info strip, not a red error: being unable to reach the server is a
+	// state the app is designed for, not a fault the user needs to act on.
+	const [notice, setNotice] = React.useState<string | null>(null);
 	const [invitations, setInvitations] = React.useState<NoteShareInvitation[]>([]);
 	const [workspaceInvites, setWorkspaceInvites] = React.useState<WorkspacePendingInvite[]>([]);
 	const [acceptingId, setAcceptingId] = React.useState<string | null>(null);
 	const [placementChoiceByInvitationId, setPlacementChoiceByInvitationId] = React.useState<Record<string, PlacementChoice>>({});
 	const [folderByInvitationId, setFolderByInvitationId] = React.useState<Record<string, string>>({});
-	const [hiddenInvitationIds, setHiddenInvitationIds] = React.useState<Set<string>>(() => readHiddenNotificationIds(props.authUserId));
 	const failedLinkNotifications = React.useMemo(() => Array.isArray(props.failedLinkNotifications) ? props.failedLinkNotifications : [], [props.failedLinkNotifications]);
 	const firedReminders = React.useMemo(() => Array.isArray(props.firedReminders) ? props.firedReminders : [], [props.firedReminders]);
 	const hasAppUpdate = props.hasAppUpdateNotification === true;
 	const hasAppUpdated = props.hasAppUpdatedNotification === true;
 
-	React.useEffect(() => {
-		// "Clear notifications" used to only ever write to localStorage. Clear your browser
-		// cache (or just get unlucky with storage eviction) and every notification you'd
-		// already dismissed comes back from the dead like nothing happened — because as far
-		// as the server was concerned, nothing HAD happened, we never told it. Merge in the
-		// server-persisted dismissed set (UserPreference.dismissedShareInvitationIds)
-		// alongside the local localStorage cache, so a notification cleared on this device
-		// (or a different one entirely) actually stays cleared.
-		const local = readHiddenNotificationIds(props.authUserId);
-		const serverIds = props.serverDismissedInvitationIds;
-		if (serverIds && Object.keys(serverIds).length > 0) {
-			const merged = new Set(local);
-			for (const id of Object.keys(serverIds)) merged.add(id);
-			if (merged.size !== local.size) {
-				writeHiddenNotificationIds(props.authUserId, merged);
-			}
-			setHiddenInvitationIds(merged);
-			return;
-		}
-		setHiddenInvitationIds(local);
-	}, [props.authUserId, props.serverDismissedInvitationIds]);
-
 	const load = React.useCallback(async () => {
 		setError(null);
+		setNotice(null);
+		// Whatever we already have on screen is the best answer available when the
+		// server can't be reached — so never blank the lists out. They used to be
+		// cleared to [] on every offline path, which turned "we can't check right now"
+		// into a confident and wrong "you have no invitations".
 		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-			setInvitations([]);
-			setWorkspaceInvites([]);
-			setError(t('share.notificationsDisabledOffline'));
+			setNotice(t('share.notificationsDisabledOffline'));
 			return;
 		}
 		try {
@@ -168,10 +134,8 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 			);
 			setWorkspaceInvites(workspaceData.invites);
 		} catch (err) {
-			if (isTransportLikeError(err)) {
-				setInvitations([]);
-				setWorkspaceInvites([]);
-				setError(t('share.notificationsDisabledOffline'));
+			if (isServerUnreachableError(err)) {
+				setNotice(t('share.notificationsDisabledOffline'));
 				return;
 			}
 			setError(err instanceof Error ? err.message : t('share.loadFailed'));
@@ -216,31 +180,40 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 		setInvitations((current) => current.map((invitation) => invitation.id === invitationId ? normalizeInvitation(updater(invitation)) : invitation));
 	}, []);
 
+	// Pending only. This panel is the list of things you owe someone an answer to, so
+	// answering one is what removes it — an accepted/declined row lingering here with a
+	// status badge is the inbox's job now, and having both was the whole complaint:
+	// one event, two notifications, side by side.
 	const visibleInvitations = React.useMemo(() => {
-		return invitations.filter((invitation) => invitation.status === 'PENDING' || !hiddenInvitationIds.has(invitation.id));
-	}, [hiddenInvitationIds, invitations]);
+		return invitations.filter((invitation) => invitation.status === 'PENDING');
+	}, [invitations]);
 	const hasWorkspaceInvites = workspaceInvites.length > 0;
 	const hasNoteInvites = visibleInvitations.length > 0;
 	const hasFailedLinks = failedLinkNotifications.length > 0;
 	const hasFiredReminders = firedReminders.length > 0;
+	// Read for the footer link only. The inbox is a separate surface with its own
+	// badge; counting it here made one event show up as two notifications side by side.
 	const inboxUnreadCount = props.inboxUnreadCount ?? 0;
-	const hasInboxUnread = inboxUnreadCount > 0;
 	// Use the authoritative pending count too, because reminder rows can be stale
 	// on mobile/PWA while the badge count is already non-zero.
 	const hasPendingReminderNotifications = (props.pendingReminderCount ?? 0) > 0;
 	const hasImportCompleted = Boolean(props.importCompletedNotification);
-	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders || hasPendingReminderNotifications || hasInboxUnread;
+	const hasAnyShareNotifications = hasWorkspaceInvites || hasNoteInvites || hasFailedLinks || hasFiredReminders || hasPendingReminderNotifications;
 	const hasAppNotification = hasAppUpdate || hasAppUpdated || hasImportCompleted;
 	const modalTitle = t('share.notifications');
 	const modalSubtitle = hasAppNotification ? t('prefs.notificationsSubtitle') : t('share.notificationsSubtitle');
 	const emptyStateLabel = t('share.noNotifications');
 
-	const clearableInvitationIds = React.useMemo(() => {
-		return visibleInvitations.filter((invitation) => invitation.status !== 'PENDING').map((invitation) => invitation.id);
-	}, [visibleInvitations]);
-	// Failed link-preview notifications are now treated as clearable items so the
-	// "Clear notifications" footer button is enabled when they are the only content.
-	const canClearNotifications = clearableInvitationIds.length > 0 || firedReminders.length > 0 || hasPendingReminderNotifications || hasFailedLinks;
+	// "Clear notifications" may only act on what is actually on screen.
+	//
+	// It used to sweep up every answered invitation the API returned. That was fine when
+	// the panel listed them with an Accepted/Declined badge; it stopped being fine when
+	// the bell became pending-only, because listNoteShareInvitations still returns those
+	// answered rows. The button then sat enabled with nothing visibly clearable, and
+	// pressing it silently marked invitations dismissed that the user could not see —
+	// and their record lives in the inbox now regardless, so hiding them here achieved
+	// nothing except a button that lies about what it does.
+	const canClearNotifications = firedReminders.length > 0 || hasPendingReminderNotifications || hasFailedLinks;
 
 	const getWorkspaceRoleLabel = React.useCallback((role: WorkspacePendingInvite['role']): string => {
 		if (role === 'ADMIN') return t('invite.roleAdmin');
@@ -249,18 +222,6 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 	}, [t]);
 
 	const handleClearNotifications = React.useCallback(() => {
-		if (props.authUserId && clearableInvitationIds.length > 0) {
-			setHiddenInvitationIds((current) => {
-				const next = new Set(current);
-				for (const id of clearableInvitationIds) next.add(id);
-				writeHiddenNotificationIds(props.authUserId, next);
-				return next;
-			});
-			// Also persist server-side (UserPreference.dismissedShareInvitationIds) so this
-			// stays cleared across a cache clear or on a different device — see the merge
-			// effect above.
-			props.onPersistDismissedInvitationIds?.(clearableInvitationIds);
-		}
 		if (firedReminders.length > 0 || hasPendingReminderNotifications) {
 			props.onClearReminders?.();
 		}
@@ -269,7 +230,7 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 			// which removes the notification badge and hides the failed items.
 			props.onClearFailedLinks?.();
 		}
-	}, [clearableInvitationIds, firedReminders.length, hasFailedLinks, hasPendingReminderNotifications, props]);
+	}, [firedReminders.length, hasFailedLinks, hasPendingReminderNotifications, props]);
 
 	const queueAction = React.useCallback((action: PendingNoteShareAction) => {
 		enqueuePendingNoteShareAction(action);
@@ -401,40 +362,8 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 
 				<div className={styles.modalBody}>
 					{error ? <div className={styles.error}>{error}</div> : null}
+					{notice ? <div className={styles.info}>{notice}</div> : null}
 				{visibleInvitations.length === 0 && workspaceInvites.length === 0 && failedLinkNotifications.length === 0 && firedReminders.length === 0 && !hasAppNotification ? <div className={styles.empty}>{emptyStateLabel}</div> : null}
-
-				{hasInboxUnread ? (
-					<div className={`${styles.section} ${styles.notificationList} ${styles.inboxSummarySection}`}>
-						<div className={`${styles.notificationCard} ${styles.notificationCardCompact}`}>
-							<div className={styles.notificationHeader}>
-								<div className={`${styles.notificationAvatarFallback} ${styles.notificationAvatarCompact}`} aria-hidden="true">
-									@
-								</div>
-								<div className={styles.notificationCopy}>
-									<div className={`${styles.rowMessage} ${styles.notificationMessageCompact}`}>
-										<strong>
-											{inboxUnreadCount === 1
-												? t('share.inboxUnreadOne')
-												: t('share.inboxUnreadMany').replace('{count}', String(inboxUnreadCount))}
-										</strong>
-									</div>
-									<div className={`${styles.rowMeta} ${styles.notificationMetaCompact}`}>
-										{t('share.inboxUnreadSubtitle')}
-									</div>
-								</div>
-							</div>
-							<div className={styles.actionRow}>
-								<button
-									type="button"
-									className={styles.primaryButton}
-									onClick={() => { props.onOpenInbox?.(); props.onClose(); }}
-								>
-									{t('share.openInbox')}
-								</button>
-							</div>
-						</div>
-					</div>
-				) : null}
 
 				{hasFiredReminders ? (
 					<div className={`${styles.section} ${styles.notificationList}`}>
@@ -683,13 +612,25 @@ export function ShareNotificationsModal(props: Props): React.JSX.Element | null 
 					</div>
 				</div>
 
-				{hasAnyShareNotifications ? (
-					<div className={styles.modalFooter}>
+				<div className={styles.modalFooter}>
+					{props.onOpenInbox ? (
+						<button
+							type="button"
+							className={styles.footerLink}
+							onClick={() => { props.onOpenInbox?.(); props.onClose(); }}
+						>
+							{t('share.viewAllActivity')}
+							{inboxUnreadCount > 0 ? (
+								<> <span className={styles.footerLinkCount}>{inboxUnreadCount > 99 ? '99+' : inboxUnreadCount}</span></>
+							) : null}
+						</button>
+					) : <span />}
+					{hasAnyShareNotifications ? (
 						<button type="button" className={styles.secondaryButton} onClick={handleClearNotifications} disabled={!canClearNotifications}>
 							{t('share.clearNotifications')}
 						</button>
-					</div>
-				) : null}
+					) : null}
+				</div>
 			</section>
 		</div>
 	);

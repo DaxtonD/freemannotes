@@ -601,6 +601,11 @@ type ChecklistRowContentProps = {
 	scrollToMentionNodeId?: string | null;
 	onScrollToMentionComplete?: (nodeId: string) => void;
 	mentionRoleCache?: Map<string, 'VIEWER' | 'EDITOR'> | null;
+	/** Checklist rows carry @mentions exactly like body text does, but this callback was
+	 *  only ever wired into the note-body editor — so tagging yourself in a checklist item
+	 *  produced no immediate inbox card, and nothing appeared until the server flushed the
+	 *  mention (editor close / socket drop). Looked like checklists just didn't notify. */
+	onSelfMentionInserted?: (nodeId: string) => void;
 };
 
 const ChecklistRowContent = React.memo(function ChecklistRowContent(props: ChecklistRowContentProps): React.JSX.Element {
@@ -875,6 +880,7 @@ const ChecklistRowContent = React.memo(function ChecklistRowContent(props: Check
 							scrollToMentionNodeId={props.scrollToMentionNodeId}
 							onScrollToMentionComplete={props.onScrollToMentionComplete}
 							mentionRoleCache={props.mentionRoleCache}
+							onSelfMentionInserted={props.onSelfMentionInserted}
 						/>
 						{autocompleteSuffix ? (
 							<div className={styles.checklistAutocompleteOverlay}>
@@ -3297,6 +3303,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const handleMentionScrollComplete = React.useCallback((nodeId: string) => {
 		mentionScrollFiredRef.current = nodeId;
 	}, []);
+	// Same optimistic-inbox-card hop the note body does, for checklist rows. Must be a
+	// stable callback: ChecklistRowContent is React.memo, and an inline arrow here would
+	// re-render every row on every keystroke.
+	const selfMentionInsertedRef = React.useRef(props.onSelfMentionInserted);
+	selfMentionInsertedRef.current = props.onSelfMentionInserted;
+	const handleChecklistSelfMentionInserted = React.useCallback((nodeId: string) => {
+		const workspaceId = props.docId.split(':')[0] ?? '';
+		const noteTitle = props.doc.getText('title').toString() || null;
+		selfMentionInsertedRef.current?.(props.noteId, workspaceId, nodeId, noteTitle);
+	}, [props.doc, props.docId, props.noteId]);
 	// Only forward the scroll prop to the active row when the pulse hasn't fired yet for this nodeId.
 	const shouldForwardMentionScroll = props.scrollToMentionNodeId != null && mentionScrollFiredRef.current !== props.scrollToMentionNodeId;
 	const activateChecklistRowRef = React.useRef(activateChecklistRow);
@@ -4122,6 +4138,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 																scrollToMentionNodeId={activeChecklistRowId === item.id && shouldForwardMentionScroll ? props.scrollToMentionNodeId : null}
 																onScrollToMentionComplete={handleMentionScrollComplete}
 																mentionRoleCache={mentionRoleCache}
+																onSelfMentionInserted={handleChecklistSelfMentionInserted}
 															/>
 														</li>
 															);
@@ -4223,6 +4240,7 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 															scrollToMentionNodeId={activeChecklistRowId === item.id && shouldForwardMentionScroll ? props.scrollToMentionNodeId : null}
 															onScrollToMentionComplete={handleMentionScrollComplete}
 															mentionRoleCache={mentionRoleCache}
+															onSelfMentionInserted={handleChecklistSelfMentionInserted}
 													/>
 												</li>
 											))}

@@ -858,7 +858,7 @@ model NoteReminder {
 // ─────────────────────────────────────────────────────────────────────────
 model Activity {
   id                String   @id @default(uuid()) @db.Uuid
-  kind              String   // 'mention' | 'assignment_created' | 'assignment_completed' | 'note_shared' | 'note_share_accepted'
+  kind              String   // 'mention' | 'assignment_created' | 'assignment_completed' | 'note_shared' | 'note_share_accepted' | 'note_share_declined' | 'note_share_revoked' | 'note_share_left'
   actorId           String?  @map("actor_id") @db.Uuid
   sourceDocId       String   @map("source_doc_id")
   sourceWorkspaceId String   @map("source_workspace_id") @db.Uuid
@@ -882,12 +882,17 @@ model Activity {
 model ActivityTarget {
   activityId String   @map("activity_id") @db.Uuid
   userId     String   @map("user_id") @db.Uuid
+  /// False while the event exists but this recipient isn't allowed to see it yet —
+  /// today that means an @mention or share whose invitation is still sitting
+  /// unanswered in their notification bell. Flipped true when they accept.
+  visible    Boolean  @default(true)
 
   activity Activity @relation(fields: [activityId], references: [id], onDelete: Cascade)
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([activityId, userId])
   @@index([userId])
+  @@index([userId, visible])
   @@map("activity_target")
 }
 

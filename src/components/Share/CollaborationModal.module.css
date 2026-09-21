@@ -100,9 +100,38 @@
 .modalFooter {
 	flex: 0 0 auto;
 	display: flex;
-	justify-content: flex-end;
+	align-items: center;
+	justify-content: space-between;
+	gap: 0.6rem;
 	padding-top: 0.25rem;
 	border-top: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+}
+
+/* Deliberately NOT a notification. This panel holds things you owe an answer to;
+   the inbox holds the log of what already happened. A row in the list saying "you
+   have 3 unread over there" was a second notification about the notifications, so
+   it's a quiet footer link now and never counts toward the bell's badge. */
+.footerLink {
+	appearance: none;
+	background: none;
+	border: none;
+	padding: 0.3rem 0.1rem;
+	font: inherit;
+	font-size: 0.85rem;
+	color: var(--color-text-muted);
+	cursor: pointer;
+	white-space: nowrap;
+}
+
+.footerLink:hover {
+	color: var(--color-text);
+	text-decoration: underline;
+}
+
+.footerLinkCount {
+	font-variant-numeric: tabular-nums;
+	font-weight: 600;
+	color: var(--color-text);
 }
 
 .error,
@@ -155,13 +184,6 @@
 .section {
 	min-height: 0;
 	padding: 0 1rem 1rem;
-}
-
-/* The inbox-unread summary is always exactly one short card, never a growing
-   list, so it must never flex-shrink below its natural size the way the
-   other (genuinely list-like) sections below it are allowed to. */
-.inboxSummarySection {
-	flex: 0 0 auto;
 }
 
 .notificationList {

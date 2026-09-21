@@ -1,20 +1,26 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faAt, faListCheck, faCheckDouble, faBoxArchive, faInbox, faCircleCheck, faTrashCan, faBell } from '@fortawesome/free-solid-svg-icons';
-import { acceptNoteShareInvitation, enqueuePendingNoteShareAction } from '../../core/noteShareApi';
+import { faAt, faListCheck, faCheckDouble, faBoxArchive, faInbox, faTrashCan, faBell, faUserPlus, faUserMinus, faBan, faRightFromBracket } from '@fortawesome/free-solid-svg-icons';
 import type { PendingSelfMention } from '../../core/pendingSelfMentions';
 import { useI18n } from '../../core/i18n';
 import { useLiveAvatarUrlLookup } from '../../core/liveUserAvatarCache';
 import { fetchFiredReminders, fetchNoteReminderStates, type FiredReminder, type NoteReminderState } from '../../core/pushApi';
 import { isReminderDueSoon } from '../../core/reminderUrgency';
 import { formatRelativeReminderDate } from '../../core/relativeDate';
-import { refreshPriorCollaboratorsCache } from '../../core/priorCollaboratorsApi';
-import { invalidateWorkspaceMembersCache } from '../../core/references/providers/UserReferenceProvider';
 import styles from './InboxView.module.css';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type ActivityKind = 'mention' | 'assignment_created' | 'note_shared' | 'note_share_accepted';
+// The inbox is a log, not a to-do list. Everything that ever happened to your access
+// to a note gets a kind here — including losing it, which used to leave no trace at all.
+type ActivityKind =
+	| 'mention'
+	| 'assignment_created'
+	| 'note_shared'
+	| 'note_share_accepted'
+	| 'note_share_declined'
+	| 'note_share_revoked'
+	| 'note_share_left';
 
 interface ActivityActor {
 	id: string;
@@ -37,12 +43,9 @@ interface Activity {
 		mentionExcerpt?: string | null;
 		invitationId?: string | null;
 	} | null;
-	/** Current status of the mention invitation, resolved server-side at query time */
-	invitationStatus?: string | null;
 }
 
 type FilterTab = 'all' | 'mentions' | 'assigned' | 'reminders';
-type PlacementChoice = 'shared-root' | 'shared-folder' | 'personal';
 
 interface Props {
 	authUserId: string | null;
@@ -71,10 +74,6 @@ interface Props {
 	onMarkReminderDone?: (noteId: string, docId: string, title: string) => void;
 	/** Opens the reminder date-picker modal for a note, pre-filled with its current value. */
 	onOpenReminderModal?: (noteId: string, docId: string, title: string) => void;
-	/** Leaves the inbox for whichever note view the user was last in. Called when accepting
-	 *  a share, which consumes the card and hands the user a note — staying in a now-empty
-	 *  inbox made that read as "nothing happened". */
-	onLeaveInboxView?: () => void;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -176,6 +175,21 @@ function activityMessage(activity: Activity, authUserId: string | null, t: (key:
 			return t('inbox.sharedNote').replace('{actorName}', actorName);
 		case 'note_share_accepted':
 			return t('inbox.shareAccepted').replace('{actorName}', actorName);
+		// The next three are written from whichever side is reading them. One Activity
+		// row, two targets, two different sentences — "You left" vs "Bob left" — rather
+		// than duplicating the row per recipient just to vary the wording.
+		case 'note_share_declined':
+			return isSelf
+				? t('inbox.shareDeclinedSelf').replace('{inNote}', inNote)
+				: t('inbox.shareDeclinedOther').replace('{actorName}', actorName).replace('{inNote}', inNote);
+		case 'note_share_revoked':
+			return isSelf
+				? t('inbox.shareRevokedSelf').replace('{inNote}', inNote)
+				: t('inbox.shareRevokedOther').replace('{actorName}', actorName).replace('{inNote}', inNote);
+		case 'note_share_left':
+			return isSelf
+				? t('inbox.shareLeftSelf').replace('{inNote}', inNote)
+				: t('inbox.shareLeftOther').replace('{actorName}', actorName).replace('{inNote}', inNote);
 		default:
 			return t('inbox.unknownActivity').replace('{actorName}', actorName);
 	}
@@ -183,9 +197,38 @@ function activityMessage(activity: Activity, authUserId: string | null, t: (key:
 
 function activityIcon(kind: ActivityKind) {
 	switch (kind) {
-		case 'mention':          return faAt;
+		case 'mention':            return faAt;
 		case 'assignment_created': return faListCheck;
-		default:                 return faAt;
+		case 'note_shared':        return faUserPlus;
+		case 'note_share_accepted':return faCheckDouble;
+		case 'note_share_declined':return faBan;
+		case 'note_share_revoked': return faUserMinus;
+		case 'note_share_left':    return faRightFromBracket;
+		default:                   return faAt;
+	}
+}
+
+/**
+ * Whether clicking this card should try to open the note.
+ *
+ * Every card that CAN open something does — an informational card that silently
+ * does nothing when you click it just reads as broken. But some cards are about
+ * access ending, and then it depends on which side of it you were on: the person
+ * who lost access has nothing left to open, while the owner still owns the note.
+ * The server can't encode that in one deep link for a row with two recipients, so
+ * it's decided here, per viewer.
+ */
+function isActivityOpenable(activity: Activity, authUserId: string | null): boolean {
+	if (activity.deepLink?.kind === 'none') return false;
+	const isActor = authUserId != null && activity.actor?.id === authUserId;
+	switch (activity.kind) {
+		// Nobody gained access, and the decliner certainly didn't.
+		case 'note_share_declined': return false;
+		// The revoker is the owner; the person revoked has nothing to open.
+		case 'note_share_revoked':  return isActor;
+		// The leaver walked away from it; the owner still has it.
+		case 'note_share_left':     return !isActor;
+		default:                    return true;
 	}
 }
 
@@ -204,7 +247,7 @@ interface FilterCache {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal, onLeaveInboxView }: Props) {
+export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal }: Props) {
 	const { t } = useI18n();
 	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	const [filter, setFilter] = useState<FilterTab>('all');
@@ -214,7 +257,10 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	const [nextCursor, setNextCursor] = useState<string | null>(null);
 	const [loadingMore, setLoadingMore] = useState(false);
 	const [unreadIds, setUnreadIds] = useState<Set<string>>(new Set());
-	const [acceptingIds, setAcceptingIds] = useState<Set<string>>(new Set());
+	// Notes that turned out to be permanently gone when the card was clicked. The card
+	// stays — nothing leaves this list unless the user clears it — but it stops
+	// pretending it can still take you somewhere.
+	const [unavailableIds, setUnavailableIds] = useState<Set<string>>(new Set());
 
 	// ── Reminders tab ────────────────────────────────────────────────────────
 	// A separate data source from the Activity feed above (different API
@@ -255,12 +301,6 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	const handleRescheduleReminderClick = useCallback((noteId: string, workspaceId: string, title: string | null): void => {
 		onOpenReminderModal?.(noteId, `${workspaceId}:${noteId}`, title || '');
 	}, [onOpenReminderModal]);
-	const [acceptedInvitationIds, setAcceptedInvitationIds] = useState<Set<string>>(new Set());
-
-	// Placement picker state
-	const [placementPickerActivityId, setPlacementPickerActivityId] = useState<string | null>(null);
-	const [placementChoice, setPlacementChoice] = useState<PlacementChoice>('shared-root');
-	const [folderName, setFolderName] = useState('');
 
 	const abortRef = useRef<AbortController | null>(null);
 	// Per-filter in-memory cache. Pre-seeded from localStorage so the inbox
@@ -547,109 +587,40 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 	}, [onOpenNote]);
 
 	const handleActivityClick = useCallback((activity: Activity) => {
-		// Don't navigate if the placement picker is open on this card.
-		if (placementPickerActivityId === activity.id) return;
+		if (!isActivityOpenable(activity, authUserId)) {
+			// Still worth marking read — you looked at it — but there's nowhere to go.
+			if (!activity.id.startsWith('pending-')) markRead(activity.id);
+			return;
+		}
 		const scrollToNodeId =
 			activity.deepLink?.kind === 'prosemirror_node' && typeof activity.deepLink.nodeId === 'string'
 				? activity.deepLink.nodeId
 				: undefined;
 		if (activity.id.startsWith('pending-')) {
-			// Clicking a pending self-mention: open the note and dismiss the pending entry.
-			onPendingDismissed?.(activity.id);
-			onActivityChanged?.();
+			// Opening the note used to dismiss this card outright, which is the one thing
+			// the inbox must never do on its own — click a self-mention to jump to it and
+			// the record of it vanished behind you. The optimistic entry now survives the
+			// click and is retired only when the server's own activity for the same nodeId
+			// shows up (clearMatchedPendingSelfMentions), which is the moment it becomes a
+			// duplicate. Swipe or the archive button still remove it, because that's the
+			// user asking.
 			void guardedOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId);
 			return;
 		}
 		markRead(activity.id);
 		// The target note may have been trashed or permanently deleted since the
-		// mention was created. onOpenNote resolves { noteMissing: true } when it
-		// found the note is gone for good (as opposed to just trashed) — in that
-		// case there's nothing useful left for this card to point at, so archive
-		// it automatically instead of leaving a permanently-dead notification.
+		// mention was created. onOpenNote resolves { noteMissing: true } when the note
+		// is gone for good (as opposed to just trashed). This used to silently archive
+		// the card at that point, which is the one thing the inbox must never do on its
+		// own — the record of "Alice mentioned you" is still true and still yours even
+		// after the note dies. Mark it unavailable and leave it sitting there.
 		void guardedOpenNote(activity.subject.noteId, activity.subject.workspaceId, undefined, scrollToNodeId)
 			.then((outcome) => {
-				if (outcome?.noteMissing) void archiveActivityById(activity.id);
+				if (outcome?.noteMissing) {
+					setUnavailableIds((prev) => (prev.has(activity.id) ? prev : new Set(prev).add(activity.id)));
+				}
 			});
-	}, [markRead, guardedOpenNote, placementPickerActivityId, onPendingDismissed, onActivityChanged, archiveActivityById]);
-
-	const openPlacementPicker = useCallback((e: React.MouseEvent, activity: Activity) => {
-		e.stopPropagation();
-		setPlacementPickerActivityId(activity.id);
-		setPlacementChoice('shared-root');
-		setFolderName('');
-	}, []);
-
-	const closePlacementPicker = useCallback((e: React.MouseEvent) => {
-		e.stopPropagation();
-		setPlacementPickerActivityId(null);
-	}, []);
-
-	const handleConfirmPlacement = useCallback(async (e: React.MouseEvent, activity: Activity) => {
-		e.stopPropagation();
-		const invitationId = activity.snapshot?.invitationId;
-		if (!invitationId) return;
-
-		const target = placementChoice === 'personal' ? 'personal' : 'shared';
-		const folder = placementChoice === 'shared-folder' ? folderName.trim() : '';
-
-		// The Inbox itself renders fine offline (from its own local cache), so this
-		// button is reachable while offline even though the bell dropdown that
-		// normally surfaces the same invitations disables itself entirely in that
-		// state. Unlike ShareNotificationsModal.handleAccept, this had no offline
-		// handling at all — the fetch would just throw into the bare catch below
-		// with no queueing and no feedback, silently discarding the accept attempt.
-		// Same queue, same shape as the bell dropdown so a reconnect flushes either
-		// path identically.
-		if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-			if (!authUserId) return;
-			enqueuePendingNoteShareAction({
-				id: `accept:${invitationId}`,
-				userId: authUserId,
-				invitationId,
-				action: 'accept',
-				target,
-				folderName: folder || null,
-				createdAt: new Date().toISOString(),
-			});
-			setAcceptedInvitationIds((prev) => new Set([...prev, invitationId]));
-			setPlacementPickerActivityId(null);
-			return;
-		}
-
-		setAcceptingIds((prev) => new Set([...prev, activity.id]));
-		try {
-			const result = await acceptNoteShareInvitation(invitationId, {
-				target,
-				folderName: folder || undefined,
-			});
-			const aliasId = result.placement?.aliasId;
-			const roomId = result.invitation?.docId;
-			const noteId: string = (aliasId && typeof aliasId === 'string') ? aliasId : activity.subject.noteId;
-			setAcceptedInvitationIds((prev) => new Set([...prev, invitationId]));
-			setPlacementPickerActivityId(null);
-			// Remove the card immediately and mark as read. The server has already
-			// archived it on the acceptance endpoint, so it won't reappear on
-			// re-login, cache clear, or app update.
-			setActivities((prev) => prev.filter((a) => a.id !== activity.id));
-			removeFromCache(activity.id);
-			markRead(activity.id);
-			// Accept & View here bypasses ShareNotificationsModal entirely (no onChanged
-			// callback wired for this path), so a sharer accepted for the first time from
-			// an inbox card was left out of collaborator suggestions until app restart.
-			void refreshPriorCollaboratorsCache();
-			invalidateWorkspaceMembersCache();
-			// Out of the inbox before the note opens: accepting is the end of this card's
-			// life, so leaving the user staring at the feed it just vanished from looks
-			// like the button did nothing. Card CLICKS deliberately don't do this — you're
-			// still triaging there, and closing the note should put you back in the list.
-			onLeaveInboxView?.();
-			void guardedOpenNote(noteId, activity.subject.workspaceId, roomId);
-		} catch {
-			// non-fatal — let user retry
-		} finally {
-			setAcceptingIds((prev) => { const n = new Set(prev); n.delete(activity.id); return n; });
-		}
-	}, [authUserId, folderName, markRead, guardedOpenNote, onLeaveInboxView, placementChoice, removeFromCache]);
+	}, [authUserId, markRead, guardedOpenNote]);
 
 	const reminderTabCount = overdueReminders.length + dueSoonReminders.length;
 	const tabs: { key: FilterTab; label: string; count?: number }[] = [
@@ -688,14 +659,18 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 				subject: { noteId: p.noteId, workspaceId: p.workspaceId, subjectType: 'note', subjectId: p.noteId },
 				deepLink: { kind: 'prosemirror_node', nodeId: p.nodeId },
 				snapshot: { noteTitle: p.noteTitle },
-				invitationStatus: null,
 			}));
 	}, [pendingSelfMentions, serverNodeIds, filter]);
 
-	const displayActivities = React.useMemo(
-		() => [...pendingAsActivities, ...activities],
-		[pendingAsActivities, activities],
-	);
+	// Newest first, always. Optimistic self-mentions used to be concatenated on top of
+	// the server list wholesale, so a card you created a week ago (still pending because
+	// its note never synced) outranked one from a minute ago, and the feed stopped being
+	// a timeline. Sorting the merged list is also cheap insurance against the server list
+	// and the persisted cache disagreeing about order after a paginated load.
+	const displayActivities = React.useMemo(() => {
+		const merged = [...pendingAsActivities, ...activities];
+		return merged.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+	}, [pendingAsActivities, activities]);
 
 	return (
 		<div className={styles.root}>
@@ -841,22 +816,16 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 						{displayActivities.map((activity) => {
 							// Pending activities are always unread; real ones check the server-driven set.
 							const isUnread = activity.id.startsWith('pending-') || unreadIds.has(activity.id);
-							const isPickerOpen = placementPickerActivityId === activity.id;
-							const isBusy = acceptingIds.has(activity.id);
-							const invitationId = activity.snapshot?.invitationId;
 							const actorId = activity.actor?.id;
 							const actorAvatarUrl = actorId
 								? (liveAvatarLookup.has(actorId) ? liveAvatarLookup.get(actorId) ?? null : activity.actor!.avatarUrl)
 								: null;
-							// Show Accept & View only when a pending invitation exists.
-							// Both mention and assignment_created can carry an invitation —
-							// the button is suppressed if the user already has access (no
-							// invitationId) or has accepted in this session.
-							const showAcceptBtn =
-								(activity.kind === 'mention' || activity.kind === 'assignment_created') &&
-								invitationId &&
-								activity.invitationStatus === 'PENDING' &&
-								!acceptedInvitationIds.has(invitationId);
+							// Accepting a share no longer happens here. A pending invitation is
+							// something you owe an answer to, so it lives in the notification bell
+							// and only there; this view is the log of what already happened. The
+							// card for a share you accepted is created at that moment instead.
+							const isUnavailable = unavailableIds.has(activity.id);
+							const isOpenable = !isUnavailable && isActivityOpenable(activity, authUserId);
 							const swipeOffset = swipeOffsets[activity.id] ?? 0;
 							const isSwiping = swipeOffset !== 0;
 							return (
@@ -873,11 +842,11 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 										onTouchEnd={(e) => handleSwipeTouchEnd(e, activity)}
 									>
 									<div
-										role="button"
-										tabIndex={0}
-										className={`${styles.card}${isUnread ? ` ${styles.cardUnread}` : ''}${isPickerOpen ? ` ${styles.cardPickerOpen}` : ''}`}
-										onClick={() => handleActivityClick(activity)}
-										onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleActivityClick(activity); }}
+										role={isOpenable ? 'button' : undefined}
+										tabIndex={isOpenable ? 0 : undefined}
+										className={`${styles.card}${isUnread ? ` ${styles.cardUnread}` : ''}${isOpenable ? '' : ` ${styles.cardInert}`}`}
+										onClick={isOpenable ? () => handleActivityClick(activity) : undefined}
+										onKeyDown={isOpenable ? (e) => { if (e.key === 'Enter' || e.key === ' ') handleActivityClick(activity); } : undefined}
 								>
 									<div className={styles.cardLeft}>
 										{isUnread && <span className={styles.unreadDot} aria-label={t('inbox.unread')} />}
@@ -904,77 +873,8 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 											<p className={styles.snippet}>"{activity.snapshot.noteTitle}"</p>
 										)}
 
-										{showAcceptBtn && !isPickerOpen && (
-											<button
-												type="button"
-												className={styles.acceptBtn}
-												onMouseDown={(e) => e.stopPropagation()}
-												onClick={(e) => openPlacementPicker(e, activity)}
-											>
-												<FontAwesomeIcon icon={faCircleCheck} />
-												{t('inbox.acceptAndView')}
-											</button>
-										)}
-
-										{showAcceptBtn && isPickerOpen && (
-											<div className={styles.placementPicker} onClick={(e) => e.stopPropagation()}>
-												<p className={styles.placementLabel}>{t('inbox.placementLabel')}</p>
-												<label className={styles.radioLabel}>
-													<input
-														type="radio"
-														name={`placement-${activity.id}`}
-														checked={placementChoice === 'shared-root'}
-														onChange={() => setPlacementChoice('shared-root')}
-													/>
-													{t('inbox.placementSharedRoot')}
-												</label>
-												<label className={styles.radioLabel}>
-													<input
-														type="radio"
-														name={`placement-${activity.id}`}
-														checked={placementChoice === 'shared-folder'}
-														onChange={() => setPlacementChoice('shared-folder')}
-													/>
-													{t('inbox.placementSharedFolder')}
-												</label>
-												{placementChoice === 'shared-folder' && (
-													<input
-														className={styles.folderInput}
-														type="text"
-														value={folderName}
-														onChange={(e) => setFolderName(e.target.value)}
-														placeholder={t('inbox.folderNamePlaceholder')}
-														autoFocus
-													/>
-												)}
-												<label className={styles.radioLabel}>
-													<input
-														type="radio"
-														name={`placement-${activity.id}`}
-														checked={placementChoice === 'personal'}
-														onChange={() => setPlacementChoice('personal')}
-													/>
-													{t('inbox.placementPersonal')}
-												</label>
-												<div className={styles.placementActions}>
-													<button
-														type="button"
-														className={styles.confirmBtn}
-														disabled={isBusy}
-														onClick={(e) => handleConfirmPlacement(e, activity)}
-													>
-														{isBusy ? t('inbox.opening') : t('inbox.confirmAndOpen')}
-													</button>
-													<button
-														type="button"
-														className={styles.cancelBtn}
-														disabled={isBusy}
-														onClick={closePlacementPicker}
-													>
-														{t('common.cancel')}
-													</button>
-												</div>
-											</div>
+										{isUnavailable && (
+											<p className={styles.unavailableNote}>{t('inbox.noteUnavailable')}</p>
 										)}
 
 										<time className={styles.time} dateTime={activity.createdAt}>

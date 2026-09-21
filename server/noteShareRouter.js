@@ -321,6 +321,7 @@ function mapPlacement(placement) {
 		id: placement.id,
 		aliasId: `shared-placement:${placement.id}`,
 		roomId: placement.collaborator.docId,
+		targetWorkspaceId: placement.targetWorkspaceId,
 		sourceWorkspaceId: placement.collaborator.sourceWorkspaceId,
 		sourceNoteId: placement.collaborator.sourceNoteId,
 		role: placement.collaborator.role,
@@ -432,7 +433,12 @@ function dedupeInvitationList(invitations) {
 	});
 }
 
-const { emitNoteSharedActivity, emitNoteShareAcceptedActivity } = require('./activityEmitter');
+const {
+	emitNoteSharedActivity,
+	emitNoteShareAcceptedActivity,
+	emitShareAccessChangedActivity,
+	revealInvitationActivity,
+} = require('./activityEmitter');
 
 function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 	function requireAuth(req, res) {
@@ -488,12 +494,17 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const normalizedInvitations = invitations.map(mapInvitation);
 					const dedupedInvitations = dedupeInvitationList(normalizedInvitations);
 
-					// Mention-sourced invitations are surfaced through the Inbox (activity
-					// feed) rather than the bell notification panel, so exclude them from
-					// pendingCount to prevent double-counting in the badge.
-					const pendingCount = invitations.filter(
-						(inv) => inv.status === 'PENDING' && inv.source !== 'mention'
-					).length;
+					// EVERY pending invitation counts, mention-sourced ones included.
+					//
+					// This used to exclude source === 'mention' to avoid double-counting,
+					// back when a mention ALSO dropped a visible inbox card and both the
+					// invitation and that card's unread state fed the same bell badge.
+					// Since the surfaces were split — bell = things you owe an answer,
+					// inbox = the log — a mention's invitation is the ONLY thing that
+					// reaches the bell, and excluding it meant being @mentioned into a note
+					// you can't see produced no badge at all: the invitation appeared only
+					// if you happened to open the panel by hand.
+					const pendingCount = invitations.filter((inv) => inv.status === 'PENDING').length;
 					jsonResponse(res, 200, {
 						invitations: dedupedInvitations,
 						pendingCount,
@@ -511,6 +522,44 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 				try {
 					const session = requireAuth(req, res);
 					if (!session) return;
+					// scope=all answers "every note shared with me, wherever I put it" in one request.
+					// Asking workspace by workspace meant the client had to already know which
+					// workspaces to ask about, and it only ever asked about the active one plus the
+					// Shared With Me ones — so a note accepted into Personal while working somewhere
+					// else existed, was perfectly accessible, and was invisible to the client. It
+					// couldn't resolve the note's room, so opening it drew a blank screen. Placements
+					// are keyed by userId, so "all of mine" needs no workspace list to be correct.
+					if (String(url.searchParams.get('scope') || '').trim() === 'all') {
+						const allPlacements = await prisma.noteSharePlacement.findMany({
+							where: {
+								userId: session.userId,
+								deletedAt: null,
+								collaborator: { revokedAt: null },
+								// Still gated on live membership: leaving or losing a workspace must drop
+								// its placements out of the list, exactly as the per-workspace branch's
+								// findLiveWorkspaceMembership check below does.
+								targetWorkspace: {
+									is: {
+										deletedAt: null,
+										members: { some: { userId: session.userId } },
+									},
+								},
+							},
+							include: {
+								collaborator: true,
+								invitation: {
+									include: {
+										inviter: { select: { id: true, name: true, email: true } },
+									},
+								},
+							},
+							orderBy: { createdAt: 'desc' },
+						});
+						jsonResponse(res, 200, {
+							placements: allPlacements.map((placement) => mapPlacement(placement)),
+						});
+						return;
+					}
 					const requestedWorkspaceId = typeof url.searchParams.get('workspaceId') === 'string'
 						? String(url.searchParams.get('workspaceId')).trim()
 						: '';
@@ -733,6 +782,8 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							await emitNoteSharedActivity(prisma, {
 								actorId: actor.id,
 								inviteeUserId: invitee.user.id,
+								// Carried so acceptance can find this exact card again and reveal it.
+								invitationId: invitation.id,
 								sourceDocId: access.docId,
 								sourceWorkspaceId: access.sourceWorkspaceId,
 								sourceNoteId: access.sourceNoteId,
@@ -1145,6 +1196,40 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							},
 						});
 						jsonResponse(res, 200, { invitation: mapInvitation(declined) });
+
+						// A decline used to vanish without trace on both sides. Now both get a
+						// card: the inviter needs to know their share went nowhere, and the
+						// decliner's own log should say what they did with it. Neither card
+						// opens the note — nobody involved has anything to open. The withheld
+						// mention/share card stays withheld forever; "Alice mentioned you",
+						// linking into a note you just refused, would be a worse card than none.
+						try {
+							let declinedNoteTitle = null;
+							try {
+								const declinedDoc = await prisma.document.findUnique({ where: { docId: invitation.docId }, select: { state: true } });
+								if (declinedDoc?.state) declinedNoteTitle = readDocumentTitle(declinedDoc.state);
+							} catch { /* non-fatal */ }
+							await emitShareAccessChangedActivity(prisma, {
+								kind: 'note_share_declined',
+								actorId: user.id,
+								otherUserId: invitation.inviterUserId,
+								sourceDocId: invitation.docId,
+								sourceWorkspaceId: invitation.sourceWorkspaceId,
+								sourceNoteId: invitation.sourceNoteId,
+								noteTitle: declinedNoteTitle,
+								openable: false,
+							});
+							if (typeof onWorkspaceMetadataChanged === 'function') {
+								onWorkspaceMetadataChanged({
+									reason: 'inbox_updated',
+									workspaceId: null,
+									userIds: [invitation.inviterUserId, user.id],
+								}).catch(() => {});
+							}
+						} catch (emitErr) {
+							console.warn('[activity] note_share_declined emit failed:', emitErr.message);
+						}
+
 						if (typeof onWorkspaceMetadataChanged === 'function') {
 							try {
 								await onWorkspaceMetadataChanged({
@@ -1241,36 +1326,21 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 						},
 					});
 
-					// Auto-archive inbox cards for the acceptor so they don't reappear after a
-					// cache clear, app update, or fresh login. Two kinds need archiving:
-					//   • note_shared — created when a note is shared directly
-					//   • mention — created when an @mention implicitly invites the user;
-					//     these carry snapshot.invitationId and show the same Accept button
-					// The client calls markRead (not archive) on acceptance, so without this
-					// the card resurfaces on every fresh server fetch.
+					// Accepting used to ARCHIVE the acceptor's card, which is why the inbox
+					// card vanished the moment you hit Accept & View. Now it does the
+					// opposite: the card was being withheld while the invitation sat
+					// unanswered in the bell, and accepting is precisely when it becomes
+					// theirs to keep. A mention card deep-links to its own chip in the note;
+					// a direct-share card opens the note. Either way it stays until the user
+					// clears it themselves — nothing in the inbox disappears on its own.
 					try {
-						const activitiesToArchive = await prisma.activity.findMany({
-							where: {
-								targets: { some: { userId: user.id } },
-								OR: [
-									{ kind: 'note_shared', sourceDocId: invitation.docId },
-									{ snapshot: { path: ['invitationId'], equals: invitation.id } },
-								],
-							},
-							select: { id: true },
+						await revealInvitationActivity(prisma, {
+							userId: user.id,
+							invitationId: invitation.id,
+							docId: invitation.docId,
 						});
-						if (activitiesToArchive.length > 0) {
-							const now = new Date();
-							await Promise.all(activitiesToArchive.map((a) =>
-								prisma.activityRead.upsert({
-									where: { userId_activityId: { userId: user.id, activityId: a.id } },
-									update: { archived: true, archivedAt: now },
-									create: { userId: user.id, activityId: a.id, archived: true, archivedAt: now },
-								})
-							));
-						}
-					} catch (archiveErr) {
-						console.warn('[note-share] auto-archive invitation activity failed:', archiveErr.message);
+					} catch (revealErr) {
+						console.warn('[note-share] reveal invitation activity failed:', revealErr.message);
 					}
 
 					try {
@@ -1287,13 +1357,14 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 							sourceNoteId: invitation.sourceNoteId,
 							noteTitle: acceptedNoteTitle,
 						});
-						// Push a real-time inbox refresh to the inviter so their badge updates
-						// without requiring a manual page reload.
+						// Push a real-time inbox refresh to BOTH sides: the inviter's badge for
+						// the new "they accepted" card, and the acceptor's for the card that
+						// was just revealed to them.
 						if (typeof onWorkspaceMetadataChanged === 'function') {
 							onWorkspaceMetadataChanged({
 								reason: 'inbox_updated',
 								workspaceId: null,
-								userIds: [invitation.inviterUserId],
+								userIds: [invitation.inviterUserId, user.id],
 							}).catch(() => {});
 						}
 					} catch (emitErr) {
@@ -1433,45 +1504,53 @@ function createNoteShareRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 
 					jsonResponse(res, 200, { ok: true, collaboratorId: collaborator.id });
 
-					// Archive the "note share accepted" card the inviter received when this
-					// collaborator first accepted — otherwise it sits in their Inbox forever,
-					// stale and unopenable, after access ends (revoke or the recipient
-					// leaving). Silent removal (no replacement notification), matching how
-					// note_shared/mention invite cards already auto-archive on acceptance.
-					if (collaborator.invitation) {
-						try {
-							const inviterUserId = collaborator.invitation.inviterUserId;
-							const acceptedActivities = await prisma.activity.findMany({
-								where: {
-									kind: 'note_share_accepted',
-									sourceDocId: collaborator.docId,
-									targets: { some: { userId: inviterUserId } },
-								},
-								select: { id: true },
+					// Losing access to a note is an event worth a record on both sides. This
+					// used to quietly ARCHIVE the inviter's old "they accepted" card and leave
+					// nothing behind, which put a hole in the log at exactly the point someone
+					// later asks about ("when did I lose access to this?"). Now the old card
+					// stays put and a new one says what changed.
+					//
+					// Same endpoint serves two very different actions: the owner revoking
+					// someone, or a collaborator leaving a note they were given. isSelf tells
+					// them apart. Either way the person who did it gets their copy pre-read —
+					// no unread badge to announce your own click — and the other person's is
+					// unread, because for them this is news.
+					//
+					// Whether the card opens the note depends on WHICH side is reading it —
+					// the one who lost access has nothing to open, the owner does — so the
+					// deep link stays intact here and the client decides per viewer from the
+					// kind plus who the actor was. A single server-side flag can't express
+					// "openable for one target, inert for the other".
+					try {
+						const otherUserId = isSelf
+							? (collaborator.invitation ? collaborator.invitation.inviterUserId : null)
+							: collaborator.userId;
+						if (otherUserId && otherUserId !== session.userId) {
+							let accessNoteTitle = null;
+							try {
+								const accessDoc = await prisma.document.findUnique({ where: { docId: collaborator.docId }, select: { state: true } });
+								if (accessDoc?.state) accessNoteTitle = readDocumentTitle(accessDoc.state);
+							} catch { /* non-fatal */ }
+							await emitShareAccessChangedActivity(prisma, {
+								kind: isSelf ? 'note_share_left' : 'note_share_revoked',
+								actorId: session.userId,
+								otherUserId,
+								sourceDocId: collaborator.docId,
+								sourceWorkspaceId: collaborator.sourceWorkspaceId,
+								sourceNoteId: collaborator.sourceNoteId,
+								noteTitle: accessNoteTitle,
+								openable: true,
 							});
-							if (acceptedActivities.length > 0) {
-								const now = new Date();
-								await Promise.all(acceptedActivities.map((a) =>
-									prisma.activityRead.upsert({
-										where: { userId_activityId: { userId: inviterUserId, activityId: a.id } },
-										update: { archived: true, archivedAt: now },
-										create: { userId: inviterUserId, activityId: a.id, archived: true, archivedAt: now },
-									})
-								));
-								// Push a real-time inbox refresh so an already-open Inbox on the
-								// inviter's side drops the card immediately, same as the accept
-								// flow's push in the opposite direction.
-								if (typeof onWorkspaceMetadataChanged === 'function') {
-									onWorkspaceMetadataChanged({
-										reason: 'inbox_updated',
-										workspaceId: null,
-										userIds: [inviterUserId],
-									}).catch(() => {});
-								}
+							if (typeof onWorkspaceMetadataChanged === 'function') {
+								onWorkspaceMetadataChanged({
+									reason: 'inbox_updated',
+									workspaceId: null,
+									userIds: [otherUserId, session.userId],
+								}).catch(() => {});
 							}
-						} catch (archiveErr) {
-							console.warn('[note-share] auto-archive accepted activity failed:', archiveErr.message);
 						}
+					} catch (emitErr) {
+						console.warn('[activity] share access-changed emit failed:', emitErr.message);
 					}
 
 					if (typeof onWorkspaceMetadataChanged === 'function') {

@@ -426,6 +426,29 @@ if (DATABASE_URL.length > 0) {
 						userIds,
 					});
 				},
+				// An @mention of someone without access quietly creates a share invitation,
+				// and that invitation is the ONLY thing the recipient can act on — it sits
+				// in their notification bell awaiting an answer. This hook existed on the
+				// adapter but was never wired here, so nothing told the recipient's client
+				// that its pending-invitation count had changed: the bell badge stayed at
+				// zero until something else happened to refresh share state, and the
+				// invitation only appeared once they opened the panel by hand. It went
+				// unnoticed because the mention ALSO used to drop a visible inbox card,
+				// whose unread count was folded into the same badge and covered for it.
+				// Splitting the two surfaces took that cover away and exposed the real gap.
+				//
+				// 'note-share-' prefix matters: the client keys its debounced
+				// refreshNoteShareState() off exactly that prefix (App.tsx,
+				// isNoteShareMetadataEvent). Push is NOT sent from here — onMentionNotification
+				// below already sends one for this same mention, and two would be two buzzes.
+				onMentionInvitationCreated: async ({ targetUserId, docId }) => {
+					broadcastWorkspaceMetadataChanged({
+						reason: 'note-share-invited',
+						workspaceId: null,
+						docId,
+						userIds: [targetUserId],
+					});
+				},
 				onMentionRevoked: ({ revokedUserIds }) => {
 					broadcastWorkspaceMetadataChanged({
 						reason: 'inbox_updated',
@@ -435,6 +458,11 @@ if (DATABASE_URL.length > 0) {
 				},
 				onMentionNotification: async ({ targetUserId, actorId, docId, noteTitle, mentionExcerpt }) => {
 					try {
+						// Don't buzz someone's phone to tell them what they just typed. Mentioning
+						// yourself is a bookmark — it still earns an inbox card, because that's the
+						// point of tagging yourself, but a push is pure noise.
+						if (actorId && targetUserId === actorId) return;
+
 						// Check if the user has opted out of mention push notifications.
 						const pref = await prisma.userPreference.findUnique({
 							where: { userId: targetUserId },

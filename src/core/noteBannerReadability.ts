@@ -204,10 +204,26 @@ export function sampleNoteBannerReadableColors(
 	return resolveNoteBannerReadableColors(backgroundColor);
 }
 
+/** Same colours, to the byte? Then it's the same answer, and nobody needs re-rendering for it. */
+function sameReadableColors(left: NoteBannerReadableColors | null, right: NoteBannerReadableColors | null): boolean {
+	if (left === right) return true;
+	if (!left || !right) return false;
+	return left.backgroundColor === right.backgroundColor
+		&& left.textColor === right.textColor
+		&& left.mutedTextColor === right.mutedTextColor;
+}
+
 export function useNoteBannerReadableColors(
 	bannerUrl: string | null,
 	sampleWindow?: NoteBannerSampleWindow,
 ): NoteBannerReadableColors | null {
+	// Callers pass this as an object literal, so it's a new identity on every render. Keeping it
+	// out of the effect's dependencies (the cache key already encodes startY/endY, which is the
+	// only part of it that changes the answer) is what stops the effect re-running every render —
+	// and re-running every render is what turned a banner url that flips between two cached
+	// values into a synchronous setState cascade and React error #185 (a blank screen).
+	const sampleWindowRef = React.useRef(sampleWindow);
+	sampleWindowRef.current = sampleWindow;
 	const cacheKey = React.useMemo(() => {
 		if (!bannerUrl) return null;
 		const normalizedWindow = normalizeSampleWindow(sampleWindow);
@@ -237,7 +253,7 @@ export function useNoteBannerReadableColors(
 
 		const cachedColor = readableColorCache.get(cacheKey);
 		if (cachedColor) {
-			setColor(cachedColor);
+			setColor((current) => (sameReadableColors(current, cachedColor) ? current : cachedColor));
 			return;
 		}
 
@@ -245,7 +261,7 @@ export function useNoteBannerReadableColors(
 		(async () => {
 			try {
 				const image = await loadImage(bannerUrl);
-				const nextColor = sampleNoteBannerReadableColors(image, sampleWindow);
+				const nextColor = sampleNoteBannerReadableColors(image, sampleWindowRef.current);
 				if (!nextColor) {
 					if (!cancelled) setColor(null);
 					return;
@@ -257,7 +273,7 @@ export function useNoteBannerReadableColors(
 				// asks next. Only the local setColor call needs the cancellation guard.
 				readableColorCache.set(cacheKey, nextColor);
 				writePersistedColor(cacheKey, nextColor);
-				if (!cancelled) setColor(nextColor);
+				if (!cancelled) setColor((current) => (sameReadableColors(current, nextColor) ? current : nextColor));
 			} catch {
 				if (!cancelled) setColor(null);
 			}
@@ -266,7 +282,7 @@ export function useNoteBannerReadableColors(
 		return () => {
 			cancelled = true;
 		};
-	}, [bannerUrl, cacheKey, sampleWindow]);
+	}, [bannerUrl, cacheKey]);
 
 	return color;
 }

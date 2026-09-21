@@ -187,6 +187,30 @@ export const ReferenceExtension = Reference.extend({
 			latestCommand?.(result);
 		};
 
+		// Picking a person from the dropdown has to behave identically whether it came
+		// from a click or from Enter on the keyboard-highlighted row. It didn't: the two
+		// call sites were written separately and drifted, so the mouse path skipped the
+		// role picker for a self-mention while Enter stopped to ask what permissions to
+		// grant you on a note you already own. One function, both callers.
+		const selectReferenceItem = (result: SelectedItem) => {
+			if (result.type !== 'user') {
+				latestCommand?.(result);
+				return;
+			}
+			// Mentioning yourself grants nobody anything — there is no share to configure.
+			if (authUserId && result.id === authUserId) {
+				latestCommand?.({ ...result, editRole: 'EDITOR' });
+				return;
+			}
+			const cached = mentionRoleCache?.get(result.id);
+			if (cached) {
+				latestCommand?.({ ...result, editRole: cached });
+				return;
+			}
+			rolePickState = { result, roleIndex: 1 }; // default: EDITOR
+			rerender();
+		};
+
 		const rerender = () => {
 			root.render(
 				React.createElement(ReferenceDropdown, {
@@ -196,24 +220,7 @@ export const ReferenceExtension = Reference.extend({
 					rolePick: rolePickState,
 					onRoleConfirm: confirmWithRole,
 					onDismiss: forceClose,
-					onSelect: (result: SelectedItem) => {
-						if (result.type === 'user') {
-							if (authUserId && result.id === authUserId) {
-								// Self-mention: skip the role picker and insert directly as EDITOR
-								latestCommand?.({ ...result, editRole: 'EDITOR' });
-							} else {
-								const cached = mentionRoleCache?.get(result.id);
-								if (cached) {
-									latestCommand?.({ ...result, editRole: cached });
-								} else {
-									rolePickState = { result, roleIndex: 1 }; // default: EDITOR
-									rerender();
-								}
-							}
-						} else {
-							latestCommand?.(result);
-						}
-					},
+					onSelect: selectReferenceItem,
 				})
 			);
 		};
@@ -414,18 +421,7 @@ export const ReferenceExtension = Reference.extend({
 							if (event.key === 'Enter') {
 								const selected = allItems[selectedIndex];
 								if (!selected) return true;
-								if (selected.type === 'user') {
-									const cached = mentionRoleCache?.get(selected.id);
-									if (cached) {
-										latestCommand?.({ ...selected, editRole: cached });
-									} else {
-										// Enter on a user: open role picker (default EDITOR)
-										rolePickState = { result: selected, roleIndex: 1 };
-										rerender();
-									}
-								} else {
-									latestCommand?.(selected);
-								}
+								selectReferenceItem(selected);
 								return true;
 							}
 							return false;

@@ -4,6 +4,33 @@ Every notable change to this project, logged here in more or less chronological 
 
 ## Unreleased
 
+## 1.15.2 - 2026-09-20
+
+The inbox got taken apart and put back together. The short version: the notification bell and the Inbox were quietly two lists of the same events, so being @mentioned once could produce a bell entry, an inbox card, AND a third row inside the bell telling you about the inbox. Three notifications, one thing happening. Now each surface has exactly one job — **the bell is things you owe someone an answer to, the Inbox is the log of what already happened** — and nothing disappears from the log on its own any more.
+
+### Changed
+- **The bell only shows pending invitations now.** Accepting or declining is what removes them. An "Accepted" row sitting there afterwards was just duplicating the inbox card the acceptance had already created.
+- **Accepting a share no longer deletes the inbox card.** It does the opposite: the card was being *withheld* while the invitation sat unanswered in the bell, and accepting is the moment it becomes yours. A mention card jumps straight to its own chip in the note; a share card opens the note.
+- **Nothing is ever auto-removed from the Inbox.** Not on accept, not on revoke, not when someone edits the @mention out of their note, and not when the note is deleted for good — that last one now says "This note is no longer available" and stays put. Your own Clear/archive is the only thing that removes a card. An access change with no record is exactly the thing people come back asking about six months later.
+- **Declining, revoking access, and leaving a shared note now leave a record on both sides.** They previously left none at all, which put a hole in the log precisely where "wait, when did I lose access to this?" gets asked. Both people get a card, worded from their own side ("You left" vs "Bob left"), and whoever did it doesn't get an unread badge announcing their own click.
+- **Two badges instead of one**, because they mean genuinely different things: the bell (red) is "you owe an answer", the Inbox (accent) is "something happened". They were one number, which is how an @mention managed to count itself twice.
+- The bell's "N unread — Open Inbox" row is now a quiet **View all activity** link in the footer, where a pointer to another screen belongs, instead of a fake notification about your notifications.
+- **Mentioning yourself no longer sends a push.** You know. You just typed it. You still get the inbox card, because that's the entire point of tagging yourself.
+
+### Fixed
+- **Accept & View from an inbox card blanked the entire app** (React error #185). `readLastAccessedAt()` fell back to `new Date().toISOString()` when a note had no stored value — a *different value every call* — and it feeds a `useSyncExternalStore` snapshot, so React re-rendered, re-read, got a newer clock, and looped until the tree unmounted. It only ever bit accounts with enough notes that a render took longer than a millisecond, which is why brand-new test accounts could never reproduce it and real ones failed every time. Falls back to `createdAt`, then `updatedAt`, then nothing. Never the clock.
+- **Being @mentioned gave you no bell badge at all.** The pending count deliberately skipped mention-sourced invitations to avoid double-counting back when a mention also dropped an inbox card — once the two surfaces were separated, that exclusion meant the only thing reaching the bell wasn't being counted. Also wired up `onMentionInvitationCreated`, which has existed on the persistence adapter this whole time with nothing listening to it, so the badge now appears when the mention happens rather than whenever something else happened to refresh.
+- **@mentions in checklist items produced no inbox card until you closed the note.** The optimistic "you mentioned yourself" hook was only ever threaded into the note body editor, never into checklist rows — despite both using the same editor, and the server having scanned checklist items all along. It read as "checklists don't notify".
+- **Clicking a self-mention card deleted it.** Tap the thing to jump to your own mention and the record of it vanished behind you.
+- **The @ dropdown asked for permissions when you picked someone with Enter, but not with the mouse** — two selection code paths written separately and drifted apart, only one of which knew that mentioning *yourself* doesn't need you to grant yourself access to your own note. One code path now.
+- **Inbox cards weren't in time order.** Optimistic entries were stacked on top of the server list wholesale, so a week-old pending card outranked something from a minute ago.
+- **The notifications panel showed a raw "Request failed (502)" when the server was down.** `navigator.onLine` is perfectly happy while your reverse proxy serves gateway errors, and a 502 isn't a transport error, so it sailed past both offline checks into a red banner. It also stopped blanking the invitation list on every offline path — turning "can't check right now" into a confident "you have no invitations" is worse than saying nothing.
+- **"Clear notifications" acted on things you couldn't see.** It swept up every answered invitation the API returned, which was fine when those were on screen and wrong once the bell went pending-only — the button sat enabled with nothing visibly clearable and silently dismissed rows invisibly. It now covers only what's actually in front of you.
+- `npm run dev` was serving the **production** React build, because `.env` set `NODE_ENV=production` and the dev wrapper handed it to Vite. No component stacks, no hook warnings, and every dev-only diagnostic switched off in the exact mode you want them. This cost about a day on the blank-screen bug above. Removed from `.env`, and the dev wrapper now forces `development` on the Vite child regardless. Schema sync never depended on it.
+
+### Added
+- `ActivityTarget.visible` (migration `20260920120000_activity_target_visibility`) — lets an event exist before its recipient is allowed to see it. An @mention that has to create an invitation writes its activity immediately, because that's the only moment we know which chip to scroll to, but holds the card back until the invitation is answered. **Run `npm run db:migrate` after pulling.**
+
 ## 1.15.1 - 2026-09-19
 
 A bug-fix pass, mostly things you'd only hit if you actually used the app the way people use apps: sharing notes with real other humans, clearing your browser cache, scrolling through a PDF that happens to have a stamp on it. Nothing here is glamorous. All of it was annoying.

@@ -68,6 +68,8 @@ export type SharedNotePlacement = {
 	id: string;
 	aliasId: string;
 	roomId: string;
+	/** The workspace the recipient filed this share into — which is NOT always the active one. */
+	targetWorkspaceId: string;
 	sourceWorkspaceId: string;
 	sourceNoteId: string;
 	role: NoteShareRole;
@@ -387,6 +389,15 @@ export async function listNoteShareInvitations(): Promise<{ invitations: NoteSha
 		updateAvatarCache(result.invitations.map((inv) => inv.inviter).filter(Boolean) as Array<{ id: string; profileImage?: string | null }>);
 	}
 	return result;
+}
+
+/**
+ * Every note shared with this user, in every workspace they filed one into. One request, and no
+ * need to know the workspace list first — which is what made the per-workspace version get this
+ * wrong (see the scope=all branch in server/noteShareRouter.js).
+ */
+export async function listAllSharedNotePlacements(): Promise<{ placements: SharedNotePlacement[] }> {
+	return fetchJson('/api/note-shares/placements?scope=all');
 }
 
 export async function listSharedNotePlacements(workspaceId?: string | null): Promise<{ placements: SharedNotePlacement[] }> {

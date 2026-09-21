@@ -106,56 +106,32 @@ function createActivityRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const cursor = cursorParam ? new Date(cursorParam) : null;
 					const kindParam = url.searchParams.get('kind') || null;
 
+					// `visible: false` targets are events the user isn't allowed to see yet —
+					// an @mention or share whose invitation is still unanswered in their
+					// notification bell. This used to be done by over-fetching and filtering
+					// invitation statuses in JS, which made the page size a guess and left
+					// the badge count (a plain COUNT) disagreeing with the list it counted.
 					const activities = await prisma.activity.findMany({
 						where: {
-							targets: { some: { userId } },
+							targets: { some: { userId, visible: true } },
 							reads: { none: { userId, archived: true } },
 							...(cursor ? { createdAt: { lt: cursor } } : {}),
 							...(kindParam ? { kind: kindParam } : {}),
 						},
 						orderBy: { createdAt: 'desc' },
-						// fetch extra so we can filter out revoked-mention activities
-						take: (limit + 1) * 2,
+						take: limit + 1,
 						include: {
 							actor: { select: { id: true, name: true, profileImage: true } },
 							reads: { where: { userId } },
 						},
 					});
 
-					// Batch-lookup invitation statuses for mention activities
-					const invitationIds = activities
-						.map((a) => a.snapshot?.invitationId)
-						.filter(Boolean);
-					const invitationStatusMap = new Map();
-					if (invitationIds.length > 0) {
-						const invitations = await prisma.noteShareInvitation.findMany({
-							where: { id: { in: invitationIds } },
-							select: { id: true, status: true },
-						});
-						for (const inv of invitations) {
-							invitationStatusMap.set(inv.id, inv.status);
-						}
-					}
-
-					// Filter out mention activities whose invitation has been revoked
-					const filtered = activities.filter((a) => {
-						const invId = a.snapshot?.invitationId;
-						if (!invId) return true;
-						const status = invitationStatusMap.get(invId);
-						return status !== 'REVOKED' && status !== 'DECLINED';
-					});
-
-					const hasMore = filtered.length > limit;
-					const items = hasMore ? filtered.slice(0, limit) : filtered;
+					const hasMore = activities.length > limit;
+					const items = hasMore ? activities.slice(0, limit) : activities;
 					const nextCursor = hasMore ? items[items.length - 1].createdAt.toISOString() : null;
 
 					jsonResponse(res, 200, {
-						items: items.map((a) => ({
-							...mapActivity(a, userId),
-							invitationStatus: a.snapshot?.invitationId
-								? (invitationStatusMap.get(a.snapshot.invitationId) ?? null)
-								: null,
-						})),
+						items: items.map((a) => mapActivity(a, userId)),
 						nextCursor,
 					});
 				} catch (err) {
@@ -173,15 +149,16 @@ function createActivityRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const userId = requireAuth();
 					if (!userId) return;
 
+					// Must match GET /api/inbox's visibility rule exactly, or the badge
+					// promises unread items the list then refuses to show.
+					const unreadWhere = { userId, visible: true, activity: { reads: { none: { userId } } } };
 					const [unread, unreadTargets] = await Promise.all([
-						prisma.activityTarget.count({
-							where: { userId, activity: { reads: { none: { userId } } } },
-						}),
+						prisma.activityTarget.count({ where: unreadWhere }),
 						// Fetch nodeIds of unread prosemirror_node activities so the client
 						// can clear matching optimistic pending-self-mention entries as soon
 						// as the server confirms them, without waiting for InboxView to open.
 						prisma.activityTarget.findMany({
-							where: { userId, activity: { reads: { none: { userId } } } },
+							where: unreadWhere,
 							select: { activity: { select: { deepLink: true } } },
 							take: 50,
 						}),
@@ -305,6 +282,7 @@ function createActivityRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const targets = await prisma.activityTarget.findMany({
 						where: {
 							userId,
+							visible: true,
 							activity: { reads: { none: { userId, archived: true } } },
 						},
 						select: { activityId: true },

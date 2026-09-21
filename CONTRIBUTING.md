@@ -28,6 +28,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [11. Note-Card Height Diagnostics](#11-note-card-height-diagnostics)
   - [12. Grid Scroll Recorder](#12-grid-scroll-recorder)
 - [Documents and Uploaded Files](#documents-and-uploaded-files)
+- [Notifications, the Inbox and the Bell](#notifications-the-inbox-and-the-bell)
 - [Reporting a Layout Bug](#reporting-a-layout-bug)
 - [PWA Version Changes](#pwa-version-changes)
 - [Native Platform Companions](#native-platform-companions)
@@ -779,6 +780,36 @@ Rows are looked up by the id in the path, never the uploader folder, because mov
 - **The server holds WebSocket messages from connection start** (up to 256 messages / 16 MB, then closes with 1009) until the room's saved state has loaded (`yDoc.__fnLoaded`, set in the `bindState` wrapper), then replays them. This covers every room, not just markup: without it the client's first sync step was lost during the async access checks.
 - **Export** (`exportMarkupPdf.ts`) uses `pdf-lib`, lazy-loaded so only that chunk carries it. `localSpaceMatrix(viewport.transform)` maps page units into PDF user space for any rotation or crop box. Helvetica can't draw every character, so text goes through a sanitizer. `shareFile.ts` wraps the Web Share API: files only, `canShare` checked per file type, and a share that outlives the tap's user activation needs a second tap.
 - **Viewer gotchas:** on phones each open layer (markup, search, page panel, markup panel) owns one history entry pushed when it opens. Never `pushState` from a `popstate` handler: Chrome skips entries added without a user activation and Back exits the app. `.page { isolation: isolate }` keeps page markup under the viewer's sheets. Tap-to-place tools place on release and cancel the phone's follow-up click with a time-windowed `touchend` preventDefault. The pinch commit must set the scroll state in the same render as the zoom, or the render window (worked out from the old scroll) unmounts the page under your fingers. Don't call `page.cleanup()` on a zoom change, it throws away the parsed operator list; clean up only when a page leaves the render window. Past `MAX_CANVAS_PIXELS`, a second canvas (`canvasDetail`) redraws just the visible part of the page using a render `transform`.
+
+---
+
+## Notifications, the Inbox and the Bell
+
+There are three places a user can be told something, and each one has exactly one job. An event that lands in two of them reads as duplicate notifications, which is the bug this split exists to prevent.
+
+| Surface | Holds | Badge means | Empties when |
+|---|---|---|---|
+| **Notification bell** (`ShareNotificationsModal`) | only things you owe an answer to: pending note-share and workspace invitations, fired reminders, app-update prompts | you owe someone an answer | you answer |
+| **Inbox** (`InboxView`) | the durable log of everything that already happened | something happened | only when the user clears it |
+| **Push** | addressed to you and worth interrupting for: mentions, shares | — | — |
+
+Rules that follow from that, all load-bearing:
+
+- The bell's badge (`totalNotificationCount`) and the inbox's badge (`inboxBadgeCount`) are separate numbers with separate colours, and neither includes the other. Folding them together is what made one @mention show up as two notifications in the same panel.
+- The bell lists **pending** invitations only. Accepting or declining happens there, never on an inbox card.
+- **Nothing is ever removed from the inbox automatically** — not on accept, not on revoke, not when the note is permanently deleted (the card renders as unavailable instead), and not when the author deletes the @mention chip. Only the user's own archive/clear removes a card. If you find yourself writing `archived: true` outside `/api/inbox/archive`, `/api/inbox/archive-all` or the Preferences dev tools, you are probably about to delete someone's notification for them.
+- An acceptance never sends a push. It's expected news; the inbox badge is the right volume.
+- Mentioning yourself creates an inbox card but sends no push.
+
+**`ActivityTarget.visible`** is how a pending invitation stays out of the inbox without losing the row. An `@mention` that has to create an invitation to grant access writes its `Activity` immediately — that's the only moment the ProseMirror `nodeId` for "scroll to the chip" is known — but the target row is created `visible: false`. `revealInvitationActivity()` (`server/activityEmitter.js`) flips it true on accept, and *that revealed card is the recipient's card*; they get no separate "you accepted" entry. A decline leaves it hidden forever and emits `note_share_declined` instead, because un-hiding "Alice mentioned you" with a link into a note you just refused is worse than showing nothing.
+
+`GET /api/inbox`, `/api/inbox/count` and `/api/inbox/archive-all` must all filter on `visible: true` identically, or the badge promises unread items the list then refuses to show.
+
+**Access-change events** (`note_share_declined`, `note_share_revoked`, `note_share_left`) are one `Activity` row with two targets. The wording is written per viewer from `actor.id === authUserId` ("You left" vs "Bob left"), and whether the card opens the note is decided per viewer in `isActivityOpenable()` — the person who lost access has nothing to open, the owner still does, and one server-side deep link can't express both. The actor's own copy is created pre-read via `readUserIds`.
+
+Workspace admins are **not** notified about @mentions of existing members; a mention is addressed to a person, not broadcast to a workspace. Granting a non-member access to workspace content is a genuine access-control event and an admin may reasonably want to see it, but that belongs in a workspace audit view, not a personal inbox. Neither is built — don't bolt either onto the inbox.
+
+**Known duplication, deliberate:** fired reminders appear in both the bell and the inbox's Reminders tab (both read `fetchFiredReminders()`). This is accepted, not an oversight.
 
 ---
 

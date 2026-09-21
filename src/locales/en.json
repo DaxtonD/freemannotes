@@ -1021,10 +1021,6 @@
     "notificationsSubtitle": "Review your notifications in one place.",
     "clearNotifications": "Clear notifications",
     "noNotifications": "No notifications right now.",
-    "inboxUnreadOne": "1 unread mention or assignment",
-    "inboxUnreadMany": "{count} unread mentions & assignments",
-    "inboxUnreadSubtitle": "Mentions and assignments are in your Inbox.",
-    "openInbox": "Open Inbox",
     "joinNoteLabel": "Join note",
     "fromLabel": "From",
     "sharedAt": "Shared",
@@ -1096,7 +1092,8 @@
     "offlineCached": "Showing the last cached share link while offline",
     "loadFailed": "Failed to load shared note",
     "publicTitle": "Shared note",
-    "backToApp": "Back to app"
+    "backToApp": "Back to app",
+    "viewAllActivity": "View all activity"
   },
   "theme": {
     "light": "Light",
@@ -1519,14 +1516,6 @@
     "clearAll": "Clear all",
     "emptyTitle": "Sector clear.",
     "emptySubtext": "No incoming transmissions. Mentions and assignments will appear here.",
-    "acceptAndView": "Accept & View",
-    "placementLabel": "Where should this note appear?",
-    "placementSharedRoot": "Shared With Me",
-    "placementSharedFolder": "A subfolder within Shared With Me",
-    "folderNamePlaceholder": "Folder name (optional)",
-    "placementPersonal": "Personal workspace",
-    "opening": "Opening…",
-    "confirmAndOpen": "Confirm & Open",
     "archive": "Archive",
     "loadMore": "Load more",
     "unread": "Unread",
@@ -1544,6 +1533,13 @@
     "minsAgo": "{mins}m ago",
     "hoursAgo": "{hrs}h ago",
     "yesterday": "Yesterday",
-    "daysAgo": "{days}d ago"
+    "daysAgo": "{days}d ago",
+    "shareDeclinedSelf": "You declined an invitation {inNote}",
+    "shareDeclinedOther": "{actorName} declined your invitation {inNote}",
+    "shareRevokedSelf": "You removed someone from {inNote}",
+    "shareRevokedOther": "{actorName} removed your access {inNote}",
+    "shareLeftSelf": "You left {inNote}",
+    "shareLeftOther": "{actorName} left {inNote}",
+    "noteUnavailable": "This note is no longer available."
   }
 }

@@ -1020,10 +1020,6 @@
     "notificationsSubtitle": "Revisa tus notificaciones en un solo lugar.",
     "clearNotifications": "Borrar notificaciones",
     "noNotifications": "No hay notificaciones en este momento.",
-    "inboxUnreadOne": "1 mención o tarea sin leer",
-    "inboxUnreadMany": "{count} menciones y tareas sin leer",
-    "inboxUnreadSubtitle": "Las menciones y tareas están en tu Bandeja de entrada.",
-    "openInbox": "Abrir bandeja de entrada",
     "unknownInviter": "Invitador desconocido",
     "wantsToShare": "quiere compartir",
     "withYou": "contigo.",
@@ -1092,7 +1088,8 @@
     "offlineCached": "Mostrando el último enlace compartido almacenado mientras no hay conexión",
     "loadFailed": "No se pudo cargar la nota compartida",
     "publicTitle": "Nota compartida",
-    "backToApp": "Volver a la app"
+    "backToApp": "Volver a la app",
+    "viewAllActivity": "Ver toda la actividad"
   },
   "theme": {
     "light": "Claro",
@@ -1515,14 +1512,6 @@
     "clearAll": "Limpiar todo",
     "emptyTitle": "Sector despejado.",
     "emptySubtext": "Sin transmisiones entrantes. Las menciones y tareas asignadas aparecerán aquí.",
-    "acceptAndView": "Aceptar y ver",
-    "placementLabel": "¿Dónde debe aparecer esta nota?",
-    "placementSharedRoot": "Compartido conmigo",
-    "placementSharedFolder": "Una subcarpeta dentro de Compartido conmigo",
-    "folderNamePlaceholder": "Nombre de carpeta (opcional)",
-    "placementPersonal": "Espacio de trabajo personal",
-    "opening": "Abriendo…",
-    "confirmAndOpen": "Confirmar y abrir",
     "archive": "Archivar",
     "loadMore": "Cargar más",
     "unread": "No leído",
@@ -1540,6 +1529,13 @@
     "minsAgo": "hace {mins}m",
     "hoursAgo": "hace {hrs}h",
     "yesterday": "Ayer",
-    "daysAgo": "hace {days}d"
+    "daysAgo": "hace {days}d",
+    "shareDeclinedSelf": "Rechazaste una invitación {inNote}",
+    "shareDeclinedOther": "{actorName} rechazó tu invitación {inNote}",
+    "shareRevokedSelf": "Quitaste el acceso de alguien {inNote}",
+    "shareRevokedOther": "{actorName} te quitó el acceso {inNote}",
+    "shareLeftSelf": "Saliste de {inNote}",
+    "shareLeftOther": "{actorName} salió de {inNote}",
+    "noteUnavailable": "Esta nota ya no está disponible."
   }
 }

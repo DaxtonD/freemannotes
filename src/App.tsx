@@ -128,6 +128,7 @@ import {
 	flushPendingPlacementMetadataActions,
 	isNetworkUnavailableError,
 	listNoteShareInvitations,
+	listAllSharedNotePlacements,
 	listSharedNotePlacements,
 	moveCachedNoteShareCollaborators,
 	queueNoteShareCollaboratorRevokeAction,
@@ -1618,14 +1619,19 @@ export function App(): React.JSX.Element {
 	// the server never said. The overlay must mean "we asked, and it's gone", never "we
 	// couldn't ask", so it gates on this too.
 	const [sharedPlacementsRefreshFailed, setSharedPlacementsRefreshFailed] = React.useState(false);
-	// How many refreshNoteShareState calls are still running. "We haven't finished
-	// asking" is a third answer, distinct from both "the server said no shares" and
-	// "the request failed", and the access-lost overlay needs it: on a slow connection
-	// a refresh can easily outlive any confirm delay, so without this the overlay would
-	// go off mid-request and be corrected a second later — the flash all over again.
-	// A counter, not a boolean: several triggers (mount, workspace switch, WS metadata
-	// events, the online listener) legitimately overlap.
-	const [sharedPlacementsRefreshInFlight, setSharedPlacementsRefreshInFlight] = React.useState(0);
+	// How many refreshNoteShareState calls are still running. "We haven't finished asking" is a
+	// third answer, distinct from both "the server said no shares" and "the request failed", and
+	// the access-lost overlay needs it: on a slow connection a refresh can easily outlive any
+	// confirm delay, so without this the overlay would go off mid-request and be corrected a
+	// second later — the flash all over again. A counter, not a boolean: several triggers (mount,
+	// workspace switch, WS metadata events, the online listener) legitimately overlap.
+	//
+	// A ref rather than state, deliberately. As state it re-rendered the entire app twice per
+	// refresh — once entering, once leaving — and accepting a share fires several refreshes in a
+	// row. That churn was enough to tip a note card whose banner url flips between two values
+	// into a synchronous re-render cascade (React #185, blank screen). Nothing renders off this;
+	// its only reader is the overlay timer, which checks it at the moment it fires.
+	const sharedPlacementsRefreshInFlightRef = React.useRef(0);
 	// Stronger than sharedPlacementsHydrated above: that flag flips true on the very
 	// first placements read regardless of whether the broader workspace list was known
 	// yet, so it can't by itself distinguish "we searched every Shared-With-Me workspace
@@ -1762,13 +1768,10 @@ export function App(): React.JSX.Element {
 	// user in localStorage as an offline/cache fallback, and mirrored to the
 	// server-backed user preferences row for cross-device persistence.
 	const dismissedFailedLinkIdsRef = React.useRef<Set<string>>(new Set());
-	// Server-known dismissed share-invitation notification IDs (UserPreference.
-	// dismissedShareInvitationIds). ShareNotificationsModal owns the actual
-	// localStorage-cached hidden set and merges this in itself (see its
-	// serverDismissedInvitationIds prop) — this ref just tracks the latest
-	// server-confirmed value so onPersistDismissedInvitationIds below can push a
-	// cumulative (not just newly-added) set on every clear.
-	const dismissedShareInvitationIdsRef = React.useRef<Set<string>>(new Set());
+	// (Share-invitation dismissal used to be tracked here. The bell lists only PENDING
+	// invitations now, and a pending invitation is answered — not dismissed — so there is
+	// nothing left to hide. UserPreference.dismissedShareInvitationIds still exists in the
+	// schema and may hold old ids; nothing reads it.)
 	React.useEffect(() => {
 		if (!authUserId || typeof window === 'undefined') {
 			dismissedFailedLinkIdsRef.current = new Set();
@@ -3118,7 +3121,28 @@ export function App(): React.JSX.Element {
 		Boolean(noteImageModalState) ||
 		Boolean(noteAttachmentBrowserState) ||
 		userModalBusy;
-	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + inboxUnreadCount + pendingSelfMentions.length + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0) + (importCompletedNotification ? 1 : 0);
+	// Two badges, two different promises, and they must not blur together:
+	//
+	//   bell  — you owe someone an answer, or something wants an action from you.
+	//           It drains as you act on it.
+	//   inbox — something happened and is now on the record. Nothing is owed.
+	//
+	// These used to be a single number on the bell, which meant an @mention showed up
+	// as both a pending invitation AND an unread inbox item in the same count, in the
+	// same panel. If you ever find yourself adding one of these to the other, the two
+	// surfaces have stopped meaning different things and the confusion is back.
+	const totalNotificationCount = pendingShareNotificationCount + pendingReminderNotificationCount + ((hasAppUpdateNotification || hasAppUpdatedNotification) ? 1 : 0) + (importCompletedNotification ? 1 : 0);
+	const inboxBadgeCount = inboxUnreadCount + pendingSelfMentions.length;
+	// Rendered in three places (both header variants plus the inbox entry in the view
+	// picker), so it lives here rather than being copy-pasted and drifting apart.
+	const renderInboxBadge = (): React.ReactNode => {
+		if (inboxBadgeCount <= 0) return null;
+		return (
+			<span className="app-notification-badge app-inbox-badge" aria-hidden="true">
+				{inboxBadgeCount > 99 ? '99+' : inboxBadgeCount}
+			</span>
+		);
+	};
 
 	React.useEffect(() => {
 		setPwaUpdateBlocked(isPwaUpdateBlocked);
@@ -4927,11 +4951,6 @@ export function App(): React.JSX.Element {
 				if (!cancelled && mergedDismissedFailedLinkIds.size > 0) {
 					void refreshNoteShareStateRef.current();
 				}
-				dismissedShareInvitationIdsRef.current = new Set(
-					Object.entries(pref.dismissedShareInvitationIds || {})
-						.filter(([, dismissed]) => dismissed)
-						.map(([id]) => id)
-				);
 			}
 			setPrefsHydrationAttempted(true);
 		})();
@@ -6687,78 +6706,52 @@ export function App(): React.JSX.Element {
 			let activePlacementFetchFailed = false;
 			const [invitationData, placementData, workspaceInviteData, failedLinkData, pendingReminderCount, firedRemindersData] = await Promise.all([
 				listNoteShareInvitations().catch(() => ({ invitations: [], pendingCount: 0 })),
-				authWorkspaceId
-					? listSharedNotePlacements(authWorkspaceId).catch(() => {
-						activePlacementFetchFailed = true;
-						return { placements: [] };
-					})
-					: Promise.resolve({ placements: [] }),
+				listAllSharedNotePlacements().catch(() => {
+					activePlacementFetchFailed = true;
+					return { placements: [] as SharedNotePlacement[] };
+				}),
 				listWorkspacePendingInvites().catch(() => ({ invites: [] })),
 				listFailedNoteLinks().catch(() => ({ failures: [], count: 0 })),
 				fetchPendingReminderCount().catch(() => 0),
 				fetchFiredReminders().catch(() => ({ reminders: [] })),
 			]);
 
-			// The primary placement fetch above only queries the active workspace.
-			// When the user is in Bubble View, notes from non-active SHARED_WITH_ME
-			// workspaces can also appear as bubbles.  Without their placements being
-			// loaded here, clicking those bubbles falls back to an incorrect Yjs room
-			// name (workspaceId:noteId instead of the real shared docId), which means
-			// the WebSocket connects to the wrong room and the note never hydrates.
-			// Each SHARED_WITH_ME workspace may have its own set of placements and
-			// sub-folders, so we fetch them all and merge into a single flat list.
-			// sidebarWorkspacesRef may still be empty when this runs for the first time on
-			// an offline load — the loadSidebarWorkspaces effect runs concurrently and may
-			// not have updated the ref yet.  Fall back to the persisted IDB workspace
-			// cache so the SHARED_WITH_ME placements are still fetched.
-			// Tracks whether this attempt had ANY real knowledge of the broader workspace
-			// list to search for Shared-With-Me siblings in — as opposed to running blind
-			// with an empty list and silently finding "zero" only because nothing had
-			// loaded yet. sharedPlacementsHydrated alone can't answer this: it flips true
-			// on the very first IDB read above regardless of whether the workspace list
-			// was known at that point, so a consumer gating on it alone could still treat
-			// a blind, uninformed "zero other workspaces" result as trustworthy. See
-			// sharedWorkspacesPrefetchInformed's own declaration for how it's used.
-			let sharedWithMeWsIds = sidebarWorkspacesRef.current
-				.filter((ws) => ws.systemKind === 'SHARED_WITH_ME' && ws.id !== authWorkspaceId)
-				.map((ws) => ws.id);
-			let hadWorkspaceListKnowledge = sidebarWorkspacesRef.current.length > 0;
-			if (sharedWithMeWsIds.length === 0 && authUserId) {
-				const cachedSnapshot = await readCachedWorkspaceSnapshot(authUserId, deviceId);
-				sharedWithMeWsIds = cachedSnapshot.workspaces
-					.filter((ws) => ws.systemKind === 'SHARED_WITH_ME' && ws.id !== authWorkspaceId)
-					.map((ws) => ws.id);
-				hadWorkspaceListKnowledge = hadWorkspaceListKnowledge || cachedSnapshot.workspaces.length > 0;
-			}
-			if (hadWorkspaceListKnowledge && !superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
+			// One request now returns every placement this user holds, in every workspace they
+			// filed one into (scope=all — see server/noteShareRouter.js). This used to be a walk:
+			// fetch the active workspace, then work out which OTHER workspaces to ask about from
+			// the sidebar list (falling back to the IDB workspace cache when that hadn't loaded
+			// yet), and ask each of them. That walk only ever considered SHARED_WITH_ME
+			// workspaces, so a note accepted into Personal while working elsewhere was fetched by
+			// nobody: present on the server, genuinely accessible, and absent from every list this
+			// client held — which left the viewer unable to resolve its room, and opening it drew a
+			// blank screen. Asking for "all of mine" removes the entire class of bug, because
+			// there is no longer a list of workspaces that can be incomplete.
+			const fetchedAllPlacements: SharedNotePlacement[] = placementData.placements;
+			// "We've seen the whole picture" is now simply "the request worked" — it no longer
+			// depends on the workspace list having loaded first, which is what
+			// sharedWorkspacesPrefetchInformed originally existed to second-guess.
+			if (!activePlacementFetchFailed && !superseded() && authWorkspaceIdRef.current === requestedWorkspaceId) {
 				setSharedWorkspacesPrefetchInformed(true);
 				writeSharedWorkspacesPrefetchInformedCache(authUserId, true);
 			}
-			const extraPlacementEntries = sharedWithMeWsIds.length > 0
-				? await Promise.all(sharedWithMeWsIds.map(async (id) => {
-					let failed = false;
-					const { placements } = await listSharedNotePlacements(id).catch(() => {
-						failed = true;
-						return { placements: [] as SharedNotePlacement[] };
-					});
-					return { workspaceId: id, placements, failed };
-				}))
-				: [];
-			const extraPlacementsResults: SharedNotePlacement[] = extraPlacementEntries.flatMap((entry) => entry.placements);
-			const fetchedAllPlacements: SharedNotePlacement[] = [...placementData.placements, ...extraPlacementsResults];
 			// A `.catch()` above silently turns a failed/timed-out fetch into "zero
 			// placements" — the same shape as a real "you have no shares" response.
 			// navigator.onLine alone isn't reliable enough to distinguish these (it
 			// can still read true during a captive portal, DNS failure, or a
 			// connection that drops mid-request), so also fall back to last-known
 			// state whenever the fetch itself reported failure.
-			const anyPlacementFetchFailed = activePlacementFetchFailed || extraPlacementEntries.some((entry) => entry.failed);
+			const anyPlacementFetchFailed = activePlacementFetchFailed;
 			const resolvedAllPlacements = (offline || anyPlacementFetchFailed) && fetchedAllPlacements.length === 0 && lastKnownSharedPlacements.length > 0
 				? lastKnownSharedPlacements
 				: fetchedAllPlacements;
-			const resolvedActiveWorkspacePlacements = (offline || activePlacementFetchFailed) && placementData.placements.length === 0 && lastKnownActiveWorkspacePlacements.length > 0
+			// The active workspace's own subset is a filter of that same list now, rather than its
+			// own request — one source of truth, so the two can't disagree with each other.
+			const fetchedActiveWorkspacePlacements = requestedWorkspaceId
+				? fetchedAllPlacements.filter((placement) => placement.targetWorkspaceId === requestedWorkspaceId)
+				: [];
+			const resolvedActiveWorkspacePlacements = (offline || activePlacementFetchFailed) && fetchedActiveWorkspacePlacements.length === 0 && lastKnownActiveWorkspacePlacements.length > 0
 				? lastKnownActiveWorkspacePlacements
-				: placementData.placements;
+				: fetchedActiveWorkspacePlacements;
 
 			// Filter out failures the user has already dismissed so they don't
 			// re-appear on every metadata event refresh.
@@ -6879,12 +6872,20 @@ export function App(): React.JSX.Element {
 					// result over a newer call's already-cached correct data.
 					workspacePlacementWrites.push(cacheSharedNotePlacements(authUserId, authWorkspaceId, resolvedActiveWorkspacePlacements));
 				}
-				for (const entry of extraPlacementEntries) {
-					// Same reasoning — skip persisting a workspace's cache entry when
-					// its fetch failed rather than overwriting a possibly-good cache
-					// with an empty result.
-					if (entry.failed) continue;
-					workspacePlacementWrites.push(cacheSharedNotePlacements(authUserId, entry.workspaceId, entry.placements));
+				// Same reasoning as the active workspace above — only persist when the fetch
+				// actually worked, so a failed request can't overwrite a good cache with nothing.
+				if (!activePlacementFetchFailed) {
+					const placementsByWorkspace = new Map<string, SharedNotePlacement[]>();
+					for (const placement of resolvedAllPlacements) {
+						const workspaceId = String(placement.targetWorkspaceId || '').trim();
+						if (!workspaceId || workspaceId === requestedWorkspaceId) continue;
+						const bucket = placementsByWorkspace.get(workspaceId);
+						if (bucket) bucket.push(placement);
+						else placementsByWorkspace.set(workspaceId, [placement]);
+					}
+					for (const [workspaceId, placements] of placementsByWorkspace) {
+						workspacePlacementWrites.push(cacheSharedNotePlacements(authUserId, workspaceId, placements));
+					}
 				}
 				await Promise.all(workspacePlacementWrites).catch(() => undefined);
 			}
@@ -6912,11 +6913,11 @@ export function App(): React.JSX.Element {
 	// stuck above zero (that would suppress the access-lost overlay for the rest of the
 	// session).
 	const refreshNoteShareState = React.useCallback(async (): Promise<void> => {
-		setSharedPlacementsRefreshInFlight((count) => count + 1);
+		sharedPlacementsRefreshInFlightRef.current += 1;
 		try {
 			await refreshNoteShareStateImpl();
 		} finally {
-			setSharedPlacementsRefreshInFlight((count) => Math.max(0, count - 1));
+			sharedPlacementsRefreshInFlightRef.current = Math.max(0, sharedPlacementsRefreshInFlightRef.current - 1);
 		}
 	}, [refreshNoteShareStateImpl]);
 
@@ -9873,7 +9874,17 @@ export function App(): React.JSX.Element {
 	const selectedNoteRoomId = React.useMemo(() => {
 		if (!selectedNoteId) return '';
 		if (selectedNoteSharedPlacement?.roomId) return selectedNoteSharedPlacement.roomId;
-		const manualRoomId = selectedNoteId.startsWith('shared-placement:') ? '' : manualRoomAliases[selectedNoteId];
+		// A manually registered alias counts for shared-placement ids too. It used to be ignored
+		// for them ("only a real placement can name an alias's room"), which quietly guaranteed a
+		// blank editor in one very ordinary case: accept a share into Personal while sitting in
+		// some other workspace, and the placement is in NO list this client fetches
+		// (refreshNoteShareState asks for the active workspace plus sibling Shared-With-Me ones,
+		// and Personal is neither). With no room to resolve, the doc-loading effect below bails
+		// with setOpenDoc(null) and App draws its full-screen placeholder — the "UI goes blank"
+		// on Accept & View. ensureManualRoomAlias has already recorded the real room by then (the
+		// accept response carries it), and DocumentManager routes on exactly that map, so honouring
+		// it here just puts this resolution back in step with the one actually doing the routing.
+		const manualRoomId = manualRoomAliases[selectedNoteId];
 		if (manualRoomId) return manualRoomId;
 		if (selectedNoteId.startsWith('shared-placement:')) return '';
 		try {
@@ -9907,12 +9918,11 @@ export function App(): React.JSX.Element {
 		// a missing placement is an unanswered question, not a revoke — don't tell someone
 		// their access was removed because their signal dropped.
 		if (sharedPlacementsRefreshFailed) return;
-		// Never while we're still asking. This is what keeps the confirm delay below from
-		// being a bet on the network being fast: a refresh that takes longer than the
-		// delay (poor signal, 8s fetch timeouts) cancels the timer instead of racing it,
-		// and re-arms it when the refresh settles — at which point either the placement
-		// arrived (this effect returns above) or the request failed (returns just above).
-		if (sharedPlacementsRefreshInFlight > 0) return;
+		// A note we hold a room alias for isn't a revoked note — it's one whose placement row
+		// simply isn't in any list this client fetches (see selectedNoteRoomId). Without this, a
+		// share accepted into Personal from another workspace opens fine and then gets told, a
+		// second and a half later, that access was removed.
+		if (manualRoomAliasesRef.current[selectedNoteId]) return;
 		// ...and even then, not on the strength of a single render. Every "open a shared
 		// note" path commits the note id and the placements list through different code —
 		// accepting an invitation from the inbox, restoring a backgrounded PWA, opening a
@@ -9922,15 +9932,25 @@ export function App(): React.JSX.Element {
 		// beat before the note opened perfectly fine. A revoke is permanent, so nothing is
 		// lost by insisting the condition still holds a moment later; the timer is torn
 		// down the instant the placement arrives (this effect re-runs and returns early).
-		const timer = window.setTimeout(() => {
+		let timer = 0;
+		const confirm = (): void => {
+			// Never while we're still asking — that's what keeps the delay from being a bet on the
+			// network being fast. A refresh slower than the delay (poor signal, 8s fetch timeouts)
+			// just gets waited out rather than raced; when it lands, either the placement arrived
+			// (this effect re-runs and returns above) or it failed (returns above too).
+			if (sharedPlacementsRefreshInFlightRef.current > 0) {
+				timer = window.setTimeout(confirm, NOTE_ACCESS_LOST_CONFIRM_DELAY_MS);
+				return;
+			}
 			// Used to tear the editor down immediately here. Now surfaces the blocking
 			// "you lost access" overlay instead — see noteAccessLostState's own comment for
 			// why, and handleAcknowledgeNoteAccessLost for the actual teardown, deferred until
 			// the user acknowledges it.
 			setNoteAccessLostState((current) => current?.noteId === selectedNoteId ? current : { noteId: selectedNoteId });
-		}, NOTE_ACCESS_LOST_CONFIRM_DELAY_MS);
+		};
+		timer = window.setTimeout(confirm, NOTE_ACCESS_LOST_CONFIRM_DELAY_MS);
 		return () => window.clearTimeout(timer);
-	}, [selectedNoteId, selectedNoteSharedPlacement, sharedPlacementsHydrated, sharedPlacementsRefreshFailed, sharedPlacementsRefreshInFlight]);
+	}, [selectedNoteId, selectedNoteSharedPlacement, sharedPlacementsHydrated, sharedPlacementsRefreshFailed]);
 
 	// Tidy up if the editor moved on for some other reason while the overlay's state was
 	// still set (e.g. back-button navigation away from it) — the overlay itself already
@@ -10741,6 +10761,7 @@ export function App(): React.JSX.Element {
 								{selectedViewModeOption.imgSrc
 									? <img src={selectedViewModeOption.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
 									: <FontAwesomeIcon icon={viewModeIcon} />}
+								{renderInboxBadge()}
 							</button>
 							<button
 								type="button"
@@ -10865,6 +10886,7 @@ export function App(): React.JSX.Element {
 								{selectedViewModeOption.imgSrc
 									? <img src={selectedViewModeOption.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
 									: <FontAwesomeIcon icon={viewModeIcon} />}
+								{renderInboxBadge()}
 							</button>
 							<button
 								type="button"
@@ -10894,6 +10916,7 @@ export function App(): React.JSX.Element {
 								{option.imgSrc
 									? <img src={option.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
 									: <FontAwesomeIcon icon={option.icon} />}
+								{option.mode === 'inbox' ? renderInboxBadge() : null}
 							</button>
 						))}
 					</div>
@@ -11864,11 +11887,6 @@ export function App(): React.JSX.Element {
 						refreshToken={inboxRefreshToken}
 						onMarkReminderDone={handleMarkReminderDone}
 						onOpenReminderModal={openNoteReminderModal}
-						onLeaveInboxView={() => {
-							const target = lastContentViewModeRef.current;
-							setViewMode(target);
-							saveViewMode(target);
-						}}
 						onOpenNote={async (noteId, workspaceId, roomId, scrollToNodeId) => {
 							const callId = ++openNoteFromActivityCallIdRef.current;
 							const superseded = (): boolean => openNoteFromActivityCallIdRef.current !== callId;
@@ -12688,17 +12706,6 @@ export function App(): React.JSX.Element {
 					}
 					setPendingShareNotificationCount((prev) => Math.max(0, prev - failedLinkNotifications.length));
 					setFailedLinkNotifications([]);
-				}}
-				serverDismissedInvitationIds={Object.fromEntries(
-					[...dismissedShareInvitationIdsRef.current].map((id) => [id, true] as const)
-				)}
-				onPersistDismissedInvitationIds={(ids) => {
-					if (!authUserId || ids.length === 0) return;
-					const next = new Set([...dismissedShareInvitationIdsRef.current, ...ids]);
-					dismissedShareInvitationIdsRef.current = next;
-					void updateUserPreferences(deviceId, {
-						dismissedShareInvitationIds: Object.fromEntries([...next].map((id) => [id, true] as const)),
-					});
 				}}
 				onOpenReminder={(reminder) => {
 					setIsShareNotificationsOpen(false);

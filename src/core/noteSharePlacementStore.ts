@@ -122,6 +122,9 @@ function fromRow(row: PlacementRow): SharedNotePlacement {
 		id: row.placementId,
 		aliasId: row.aliasId,
 		roomId: row.roomId,
+		// The row is already partitioned by the workspace it was cached for, so rows written
+		// before this field existed still answer this correctly.
+		targetWorkspaceId: row.workspaceId,
 		sourceWorkspaceId: row.sourceWorkspaceId,
 		sourceNoteId: row.sourceNoteId,
 		role: row.role === 'VIEWER' ? 'VIEWER' : 'EDITOR',

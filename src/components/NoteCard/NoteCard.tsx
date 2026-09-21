@@ -904,6 +904,29 @@ function useLinkedDrawingThumbnail(
 	);
 	// Stable-ref for the debounce timer so we can cancel it in cleanup.
 	const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+	// The effect below needs both of these, but neither can be a dependency: NoteGrid builds a
+	// fresh `loadDrawingDoc` closure per note every time its card-render memo recomputes, and
+	// placeholderOptions is an object literal, so both get a new identity on essentially every
+	// render. placeholderThemeKey already exists as the stable string that says whether the
+	// placeholder would actually LOOK different — that's the real dependency, and leaving the
+	// object in the array alongside it defeated the whole point of having it.
+	const loadDrawingDocRef = React.useRef(loadDrawingDoc);
+	loadDrawingDocRef.current = loadDrawingDoc;
+	const placeholderOptionsRef = React.useRef(placeholderOptions);
+	placeholderOptionsRef.current = placeholderOptions;
+	// Lets the effect skip a setState that wouldn't change anything. React normally bails on a
+	// same-value update, but only while the fiber has no other work pending — during a burst
+	// (a share being accepted, a workspace refresh) it can't, so an effect re-running on every
+	// render turns "set it to the value it already has" into scheduled render after scheduled
+	// render. One card shrugs that off; a grid full of them hits React's nested-update ceiling
+	// and the whole tree unmounts to a blank screen.
+	const thumbnailUrlRef = React.useRef<string | null>(thumbnailUrl);
+	thumbnailUrlRef.current = thumbnailUrl;
+	const applyThumbnailUrl = React.useCallback((next: string | null): void => {
+		if (thumbnailUrlRef.current === next) return;
+		thumbnailUrlRef.current = next;
+		setThumbnailUrl(next);
+	}, []);
 
 	React.useEffect(() => {
 		let cancelled = false;
@@ -912,22 +935,25 @@ function useLinkedDrawingThumbnail(
 			debounceTimerRef.current = null;
 		}
 
-		if (!firstDrawingId || !loadDrawingDoc) {
-			setThumbnailUrl(null);
+		if (!firstDrawingId || !loadDrawingDocRef.current) {
+			applyThumbnailUrl(null);
 			return () => { cancelled = true; };
 		}
+		// Pinned for the life of this effect run, so the async work below uses the loader that
+		// was current when it started rather than whatever the latest render swapped in.
+		const loadDrawingDocNow = loadDrawingDocRef.current;
 
 		const doRender = async (doc: Y.Doc | null): Promise<void> => {
 			try {
 				const title = doc?.getText('title').toString().trim() || fallbackTitle;
 				const nextUrl = doc
-					? await renderDrawingThumbnail(firstDrawingId, doc, title, getDrawingThumbnailVersion(doc), placeholderOptions)
-					: await buildDrawingPlaceholderDataUrl(title, { ...placeholderOptions, seed: firstDrawingId });
-				if (!cancelled) setThumbnailUrl(nextUrl);
+					? await renderDrawingThumbnail(firstDrawingId, doc, title, getDrawingThumbnailVersion(doc), placeholderOptionsRef.current)
+					: await buildDrawingPlaceholderDataUrl(title, { ...placeholderOptionsRef.current, seed: firstDrawingId });
+				if (!cancelled) applyThumbnailUrl(nextUrl);
 			} catch {
 				if (cancelled) return;
-				const nextUrl = await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: firstDrawingId });
-				if (!cancelled) setThumbnailUrl(nextUrl);
+				const nextUrl = await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptionsRef.current, seed: firstDrawingId });
+				if (!cancelled) applyThumbnailUrl(nextUrl);
 			}
 		};
 
@@ -938,7 +964,7 @@ function useLinkedDrawingThumbnail(
 
 		void (async () => {
 			try {
-				drawingDoc = await loadDrawingDoc(firstDrawingId);
+				drawingDoc = await loadDrawingDocNow(firstDrawingId);
 				if (cancelled) return;
 
 				if (drawingDoc) {
@@ -966,8 +992,8 @@ function useLinkedDrawingThumbnail(
 				await doRender(drawingDoc);
 			} catch {
 				if (cancelled) return;
-				const nextUrl = await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: firstDrawingId });
-				if (!cancelled) setThumbnailUrl(nextUrl);
+				const nextUrl = await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptionsRef.current, seed: firstDrawingId });
+				if (!cancelled) applyThumbnailUrl(nextUrl);
 			}
 		})();
 
@@ -979,7 +1005,7 @@ function useLinkedDrawingThumbnail(
 			}
 			if (unsubscribeDoc) unsubscribeDoc();
 		};
-	}, [fallbackTitle, firstDrawingId, loadDrawingDoc, placeholderOptions, placeholderThemeKey]);
+	}, [applyThumbnailUrl, fallbackTitle, firstDrawingId, placeholderThemeKey]);
 
 	return thumbnailUrl;
 }

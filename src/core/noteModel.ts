@@ -794,9 +794,32 @@ export function setNotePinned(doc: Y.Doc, isPinned: boolean, origin?: symbol): v
 	}
 }
 
+/**
+ * A note that has never been opened has no lastAccessedAt, and this used to answer "right now"
+ * for it — a different string on every single call.
+ *
+ * That made it poison for anything that has to be a stable read, and it is exactly that: it
+ * feeds readNoteMetadataState, which is the getSnapshot of a useSyncExternalStore in App.tsx.
+ * React calls getSnapshot, compares it to the last one, sees a newer clock reading, re-renders,
+ * calls getSnapshot again... until it gives up with "Maximum update depth exceeded" and unmounts
+ * the whole tree to a blank screen. It only bit when a doc was genuinely empty (a shared note
+ * opened the instant it was accepted, before its content had synced) AND renders were slow
+ * enough for the millisecond to tick between two consecutive calls — which is why it reproduced
+ * on accounts with a full note grid and never on a fresh one.
+ *
+ * Falling back to the creation time keeps the meaning ("as far as we know, never opened since
+ * it was made") and is stable for the same doc. Empty string when there is nothing to go on at
+ * all, rather than inventing a value that changes as you look at it.
+ */
 export function readLastAccessedAt(doc: Y.Doc): string {
 	const metadata = doc.getMap<any>('metadata');
-	return normalizeIsoString(metadata.get('lastAccessedAt')) ?? new Date().toISOString();
+	const stored = normalizeIsoString(metadata.get('lastAccessedAt'));
+	if (stored) return stored;
+	const createdAt = Number(metadata.get('createdAt'));
+	if (Number.isFinite(createdAt) && createdAt > 0) return new Date(createdAt).toISOString();
+	const updatedAt = Number(metadata.get('updatedAt'));
+	if (Number.isFinite(updatedAt) && updatedAt > 0) return new Date(updatedAt).toISOString();
+	return '';
 }
 
 export function touchLastAccessedAt(doc: Y.Doc, origin?: symbol): void {
