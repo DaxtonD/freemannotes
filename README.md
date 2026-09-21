@@ -1,23 +1,12 @@
 # Freeman Notes
 
-Freeman Notes exists because I got tired of compromising.
-
-For years I went down the same rabbit hole:
-
-* Try a new notes app
-* Get excited
-* Hit a wall
-* Repeat
-
+Freeman Notes exists because I got tired of trying to find a notes app that I wanted.
 One app forced me into split-pane markdown.
-One was secure, but isolated and didn't allow collaboration.
-Another buried the actual *note-taking* behind forms and setup.
+One was secure, but isolated and didn't allow collaboration. 
 
-I loved Google Keep for one reason:
-open it → write → done.
-
-That feeling stuck with me. Everything else Didn’t, So I stopped looking And built what I actually wanted.
-It started out a making a simple Google Keep clone. Then expanded to include all the features I felt were lacking.
+I've been using Google Keep ever since it was released. I love it. It's so quick and easy to take a note.
+That feeling stuck with me. Everything else didn’t, So I stopped looking And built what I actually wanted.
+It started out a making a simple Google Keep clone. Then exploded to include all the features I felt were lacking.
 ---
 
 ## Why "Freeman"?
@@ -34,11 +23,8 @@ Two reasons:
 
 Freeman Notes is a self-hosted, offline-first notes app that stays out of your way.
 
-You open it.
-You write.
-It works.
-
-Simple if you want,  but a lot of capability underneath.
+You open it. You write. It works.
+Simple when you want it to be, but a TON of capability underneath.
 
 Built with:
 
@@ -62,35 +48,18 @@ And a lot of persistence.
 * Drag-and-drop note layout
 * Image support with previews and OCR search
 * Link previews
+* Documents with sync'd markup
 * Search across *everything*
 * Fully self-hosted
 
 ---
 
-## Custom Drawing Libraries
-
-Freeman Notes can auto-load custom Excalidraw libraries from the project itself.
-
-- Drop `.excalidrawlib` files into `third-party/excalidraw-libraries/`
-- No app restart is required just because a new file is added there
-- The drawing editor picks them up through the existing library API and merges them into the Excalidraw library automatically
-- The expected format is an Excalidraw library file, not a raw image
-
-For the exact workflow and optional metadata sidecar format, see `third-party/excalidraw-libraries/README.md`.
-
----
-
 ## Why I’m Sharing This
 
-This started as a personal project and then it turned into months of work and a lot of time.
+This started as a personal project and then it turned into a year of work and a lot of time.
 
-Time away from other projects.
-Time away from work.
-Time away from family.
-And I’m still going because I think this can be something genuinely solid:
-
-* simple when you need it
-* powerful when you want it
+Time away from other projects, work, family..
+And I’m still going because I think this can be something genuinely solid.
 
 ---
 
@@ -105,7 +74,6 @@ I don’t have:
 * Every edge-case setup
 
 If you can help test, break things, suggest ideas, or contribute — I’d really appreciate it.
-
 Even small feedback helps.
 
 ---
@@ -333,9 +301,7 @@ npm run dev
 
 ## The Goal
 
-A notes app that feels effortless at first…
-
-…but doesn’t fall apart when you expect more from it.
+A notes app that feels effortless at first but doesn’t fall apart when you expect more from it.
 
 Simple.
 Fast.
