@@ -61,8 +61,7 @@ export type WorkspaceRenderSnapshotNote = {
 	collectionId: string | null;
 	labelIds: string[];
 	// The real underlying Yjs room name for a shared note (its aliasId's docId
-	// only resolves via the live placements fetch — see CLAUDE.md's Shared Note
-	// Placement Reconciliation section). Persisted so a shared note's attachment
+	// only resolves via the live placements fetch. Persisted so a shared note's attachment
 	// chip has something to render against before that fetch lands on the next
 	// load, instead of not rendering at all (it's gated on docId being present).
 	// null for an owned note — its id resolves to a docId directly, no fallback needed.
