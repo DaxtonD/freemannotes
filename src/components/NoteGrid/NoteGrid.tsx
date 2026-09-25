@@ -884,8 +884,7 @@ function renderNoteMetaChips(args: {
 }): React.ReactNode | undefined {
 	const note = readNoteFromDoc(args.doc, args.noteId);
 	// A shared note's collectionId/labelIds live on the server-side placement row,
-	// not this note's own Yjs metadata (see CLAUDE.md's Shared Note Placement
-	// Reconciliation section) — args.sharedPlacement only resolves once the async
+	// not this note's own Yjs metadata. args.sharedPlacement only resolves once the async
 	// placements fetch lands. Without a fallback here, a refresh or a WS reconnect
 	// briefly has sharedPlacement=null, collectionId/labelIds silently read from
 	// this note's own (unset, for a shared note) metadata instead, and the chips
