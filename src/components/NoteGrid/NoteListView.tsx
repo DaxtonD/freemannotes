@@ -45,8 +45,7 @@ export type NoteListViewProps = {
 	/** Synthetic Y.Doc built from the persisted render snapshot — see NoteGrid.tsx's
 	 *  renderGridCard for the equivalent grid-view fallback. Without this, a note
 	 *  whose live doc hasn't loaded yet renders nothing at all (a shared note's doc
-	 *  load is gated behind an async placements fetch — see CLAUDE.md's Shared Note
-	 *  Placement Reconciliation section), instead of the last-known content grid
+	 *  load is gated behind an async placements fetch instead of the last-known content grid
 	 *  view already shows immediately in the same situation. */
 	snapshotDocById: Map<string, Y.Doc>;
 	noteSnapshotById: Map<string, VisibleNoteSnapshot>;
