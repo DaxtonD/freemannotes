@@ -29,7 +29,7 @@
 	},
 	"keywords": [],
 	"author": "Daxton Day",
-	"license": "SEE LICENSE IN LICENSE.md",
+	"license": "AGPL-3.0-only",
 	"description": "",
 	"dependencies": {
 		"@atlaskit/pragmatic-drag-and-drop": "^1.7.9",

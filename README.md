@@ -14,7 +14,7 @@ It started out a making a simple Google Keep clone. Then exploded to include all
 Two reasons:
 
 * **Free** — Apps should be free, simple, fast, and yours
-* **Freeman** — My love for Half-Life and because sometimes the right answer is:
+* **Freeman** — Because sometimes the right answer is:
   *"fine… I’ll solve it myself."*
 
 ---
@@ -76,6 +76,26 @@ I don’t have:
 
 If you can help test, break things, suggest ideas, or contribute — I’d really appreciate it.
 Even small feedback helps.
+
+---
+
+## Licence
+
+Freeman Notes is free software under the **GNU Affero General Public License v3.0**
+([LICENSE](LICENSE)).
+
+Self-host it for anything you like, personal or commercial, and your notes are yours alone. If you
+modify it and let other people use your modified version over a network, the AGPL asks you to share
+those changes back. That's the only string attached, and
+[LICENSING.md](LICENSING.md) explains it in plain English — including the part that matters most:
+**every released version stays AGPL forever**, so this project can never be taken away from the
+people running it.
+
+If the AGPL doesn't work for your organisation, a commercial licence is available — open an issue
+and let's talk.
+
+Contributions are welcome and need a one-time [CLA](CLA.md) signature. You keep the copyright in
+your work.
 
 ---
 
@@ -344,8 +364,6 @@ A notes app that feels effortless at first but doesn’t fall apart when you exp
 This isn’t trying to be everything.
 
 It’s trying to be *right*.
-
-And yeah… it ships with a crowbar.
 
 
 ## Star History
