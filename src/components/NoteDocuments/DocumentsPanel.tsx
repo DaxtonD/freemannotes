@@ -82,6 +82,13 @@ type DocumentsPanelProps = {
 	/** A note that hasn't been saved yet has nowhere on the server to put a file. */
 	isPendingNew?: boolean;
 	onShowBriefDialog?: ((message: string) => void) | undefined;
+	/**
+	 * A document to reopen after the OS killed the PWA with this viewer open. Acted on once, as
+	 * soon as the list contains it; call onRestoreDocumentHandled either way so a later reopen
+	 * of the same note doesn't spring the viewer on someone who just wanted the note.
+	 */
+	restoreDocumentId?: string | null;
+	onRestoreDocumentHandled?: (() => void) | undefined;
 };
 
 type DocumentKind = 'pdf' | 'text' | 'sheet' | 'slides' | 'plain';
@@ -474,6 +481,21 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 
 	const closeViewer = React.useCallback((): void => setViewerDocument(null), []);
 	const closeTextViewer = React.useCallback((): void => setTextViewerDocument(null), []);
+
+	// Reopen the document that was on screen when the OS killed the app. The list arrives
+	// asynchronously (and seeds from cache first), so this waits for the document to actually
+	// show up rather than firing once on mount and missing it.
+	const restoreDocumentId = props.restoreDocumentId ?? null;
+	const onRestoreDocumentHandled = props.onRestoreDocumentHandled;
+	const restoreHandledRef = React.useRef(false);
+	React.useEffect(() => {
+		if (!restoreDocumentId || restoreHandledRef.current) return;
+		const match = documents.find((document) => document.id === restoreDocumentId);
+		if (!match) return;
+		restoreHandledRef.current = true;
+		handleOpen(match);
+		onRestoreDocumentHandled?.();
+	}, [restoreDocumentId, documents, handleOpen, onRestoreDocumentHandled]);
 
 	// The text view shows the list's current copy of the document, so "preparing PDF" clears
 	// when conversion finishes. The moment a PDF copy exists, swap to the real viewer.

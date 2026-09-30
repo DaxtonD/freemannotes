@@ -135,6 +135,9 @@ export type NoteEditorProps = {
 	onAddLabels?: () => void;
 	onOpenNote?: (noteId: string) => void;
 	onShowBriefDialog?: (message: string) => void;
+	/** Session restore: a document to reopen once the documents panel has it. See DocumentsPanel. */
+	restoreDocumentId?: string | null;
+	onRestoreDocumentHandled?: (() => void) | undefined;
 	/** Depth in the note-link navigation chain (0 = root note, >0 = linked note). */
 	noteNavDepth?: number;
 	/** Go back one step in the note chain. Available when noteNavDepth > 0. */
@@ -1000,6 +1003,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [isMediaSheetClosing, setIsMediaSheetClosing] = React.useState(false);
 	const [mediaDockTab, setMediaDockTab] = React.useState<MediaDockTab>(() => readStoredMediaDockTab(props.noteId));
 	useMediaDockTabAutoScroll(mediaDockTab, mediaDockOpen);
+	// Session restore: the app died with a document open, so put the attachment sheet back on
+	// the Documents tab. DocumentsPanel only exists while that tab is showing, and it's the one
+	// that actually reopens the file — without this it would never get mounted to do it.
+	const restoreDockOpenedRef = React.useRef(false);
+	React.useEffect(() => {
+		if (!props.restoreDocumentId || restoreDockOpenedRef.current) return;
+		restoreDockOpenedRef.current = true;
+		setMediaDockTab(MEDIA_DOCK_LAST_TAB);
+		setMediaDockOpen(true);
+	}, [props.restoreDocumentId]);
 	// More-menu state (editor 3-dot button):
 	// - Desktop: anchored popover positioned relative to the trigger button rect.
 	// - Mobile: bottom sheet menu (anchor rect is ignored).
@@ -1664,6 +1677,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 					canEdit={!readOnly}
 					isPendingNew={props.isPendingNew}
 					onShowBriefDialog={props.onShowBriefDialog}
+					restoreDocumentId={props.restoreDocumentId}
+					onRestoreDocumentHandled={props.onRestoreDocumentHandled}
 				/>
 			);
 		}

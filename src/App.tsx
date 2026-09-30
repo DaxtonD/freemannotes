@@ -1838,6 +1838,14 @@ export function App(): React.JSX.Element {
 	const selectedNoteIdRef = React.useRef(selectedNoteId);
 	const [pendingMentionScrollNodeId, setPendingMentionScrollNodeId] = React.useState<string | null>(null);
 	selectedNoteIdRef.current = selectedNoteId;
+	// The document currently open in a viewer on top of the note, if any. A ref rather than
+	// state because the only readers are the session-restore writes, which run from event
+	// handlers and must not drag a re-render along with them.
+	const openDocumentIdRef = React.useRef<string | null>(null);
+	// A document the restore effect wants reopened once its note's panel has loaded. Cleared by
+	// the panel the moment it acts on it, so reopening the note later doesn't re-trigger it.
+	const [restoreDocumentId, setRestoreDocumentId] = React.useState<string | null>(null);
+	const clearRestoreDocumentId = React.useCallback((): void => setRestoreDocumentId(null), []);
 	// Note-link navigation history for the current editor session. Index 0 = root note opened
 	// from a grid/inbox/search; each subsequent entry is a note followed via an inline chip.
 	// On mobile, each entry corresponds to a browser history push so system Back unwinds the
@@ -1854,9 +1862,18 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (selectedNoteId === null) setPendingMentionScrollNodeId(null);
 	}, [selectedNoteId]);
+	// Has the restore effect further down had its one shot yet? Declared up here because this
+	// tracking effect runs first on mount and would otherwise wipe the very entry restore is
+	// about to read — which is exactly what it did, silently, from the day it was written:
+	// selectedNoteId is null on a cold boot, so this fired setSessionRestoreNote(null, …),
+	// localStorage.removeItem ran, and the restore effect 1600 lines below always read an empty
+	// key. Session restore has never once worked. Effects run in declaration order; that's the
+	// whole bug.
+	const sessionRestoreAttemptedRef = React.useRef(false);
 	// Mirror the open note to localStorage so it can be restored if the OS kills the PWA process.
 	React.useEffect(() => {
-		setSessionRestoreNote(selectedNoteId, authWorkspaceId);
+		if (!sessionRestoreAttemptedRef.current) return;
+		setSessionRestoreNote(selectedNoteId, authWorkspaceId, openDocumentIdRef.current);
 	}, [selectedNoteId, authWorkspaceId]);
 	// Loaded Y.Doc for the selected note.
 	const [openDoc, setOpenDoc] = React.useState<Y.Doc | null>(null);
@@ -3087,6 +3104,10 @@ export function App(): React.JSX.Element {
 		if (!noteAttachmentBrowserState) return null;
 		return manager.getDoc(noteAttachmentBrowserState.noteId);
 	}, [manager, noteAttachmentBrowserState]);
+	// Mirrors documentViewerOpenRef as render state, because isPwaUpdateBlocked below is a plain
+	// expression and a ref change never re-runs it. Both exist on purpose: the ref is read
+	// synchronously inside WS event handlers, this drives rendering.
+	const [isDocumentViewerOpen, setIsDocumentViewerOpen] = React.useState(false);
 	const isEditorOverlayOpen = editorMode !== 'none' || Boolean(selectedNoteId) || Boolean(crossWorkspaceNote);
 	const isFabBlockedByOverlay =
 		isEditorOverlayOpen ||
@@ -3128,6 +3149,12 @@ export function App(): React.JSX.Element {
 		Boolean(collaboratorModalState) ||
 		Boolean(noteImageModalState) ||
 		Boolean(noteAttachmentBrowserState) ||
+		// A PDF opened from the Documents view or a search result has no selectedNoteId, so
+		// isEditorOverlayOpen is false and nothing here used to stop a service-worker update
+		// claiming the page and reloading it (pwa.ts controllerchange). You'd come back to the
+		// app after a deploy and your markup session was just gone. In-editor was always covered
+		// by isEditorOverlayOpen — standalone was the hole.
+		isDocumentViewerOpen ||
 		userModalBusy;
 	// Two badges, two different promises, and they must not blur together:
 	//
@@ -3486,13 +3513,18 @@ export function App(): React.JSX.Element {
 	// Restore the last open note after an OS-initiated page discard (Android/iOS kills the
 	// PWA process; sessionStorage is gone but localStorage survives). Fires once per session
 	// after auth and workspace are confirmed. Skipped if overlay history already restored a note.
-	const sessionRestoreAttemptedRef = React.useRef(false);
+	// sessionRestoreAttemptedRef is declared next to the tracking effect above — it has to be,
+	// or that effect clears the key before this one reads it.
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authWorkspaceId || sessionRestoreAttemptedRef.current) return;
 		sessionRestoreAttemptedRef.current = true;
 		if (selectedNoteId) return;
-		const noteId = readSessionRestoreNote(authWorkspaceId);
-		if (noteId) openNoteEditor(noteId);
+		const entry = readSessionRestoreNote(authWorkspaceId);
+		if (!entry) return;
+		// The document is handed to the panel as a one-shot request rather than opened from
+		// here: only DocumentsPanel knows when that note's document list has actually loaded.
+		setRestoreDocumentId(entry.documentId);
+		openNoteEditor(entry.noteId);
 	}, [authStatus, authWorkspaceId, openNoteEditor, selectedNoteId]);
 
 	const openAttachedDrawing = React.useCallback(async (parentNoteId: string, drawingId: string) => {
@@ -7104,8 +7136,14 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (typeof window === 'undefined') return;
 		const onViewerState = (event: Event): void => {
-			const open = Boolean((event as CustomEvent<{ open?: boolean }>).detail?.open);
+			const detail = (event as CustomEvent<{ open?: boolean; documentId?: string }>).detail;
+			const open = Boolean(detail?.open);
 			documentViewerOpenRef.current = open;
+			setIsDocumentViewerOpen(open);
+			openDocumentIdRef.current = open ? (detail?.documentId || null) : null;
+			// Rewrite the restore entry straight away: a process kill gives no warning, so
+			// "save it when something else changes" is too late.
+			setSessionRestoreNote(selectedNoteIdRef.current, authWorkspaceIdRef.current, openDocumentIdRef.current);
 			if (open || !pendingViewerRefreshRef.current) return;
 			pendingViewerRefreshRef.current = false;
 			void loadSidebarWorkspacesRef.current();
@@ -12378,6 +12416,8 @@ export function App(): React.JSX.Element {
 						themeId={themeId}
 						doc={openDoc}
 						scrollToMentionNodeId={pendingMentionScrollNodeId}
+						restoreDocumentId={restoreDocumentId}
+						onRestoreDocumentHandled={clearRestoreDocumentId}
 						quickCreateCollectionOption={selectedQuickCreateCollectionOption}
 						onClose={closeNoteEditor}
 						onSavePendingNew={selectedNoteIsPendingNew ? savePendingNewNoteAndClose : undefined}

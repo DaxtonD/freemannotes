@@ -30,6 +30,9 @@ type DocumentTextViewerProps = {
 export function DocumentTextViewer(props: DocumentTextViewerProps): React.JSX.Element {
 	const { t } = useI18n();
 	const { document: noteDocument } = props;
+	// Read by the mount-only viewer-state effect below, same reasoning as PdfViewer.
+	const documentIdRef = React.useRef(noteDocument.id);
+	documentIdRef.current = noteDocument.id;
 	const onCloseRef = React.useRef(props.onClose);
 	onCloseRef.current = props.onClose;
 	const historyTokenRef = React.useRef(`note-text-viewer:${Math.random().toString(36).slice(2, 10)}`);
@@ -41,7 +44,7 @@ export function DocumentTextViewer(props: DocumentTextViewerProps): React.JSX.El
 	React.useEffect(() => {
 		if (typeof document === 'undefined') return;
 		document.body.dataset[VIEWER_BODY_FLAG] = 'true';
-		window.dispatchEvent(new CustomEvent(DOCUMENT_VIEWER_STATE_EVENT, { detail: { open: true } }));
+		window.dispatchEvent(new CustomEvent(DOCUMENT_VIEWER_STATE_EVENT, { detail: { open: true, documentId: documentIdRef.current } }));
 		return () => {
 			delete document.body.dataset[VIEWER_BODY_FLAG];
 			window.dispatchEvent(new CustomEvent(DOCUMENT_VIEWER_STATE_EVENT, { detail: { open: false } }));
