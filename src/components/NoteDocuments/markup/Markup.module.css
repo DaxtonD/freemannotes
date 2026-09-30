@@ -816,3 +816,27 @@
 	opacity: 0.5;
 	cursor: default;
 }
+
+/* Marquee rubber band. Lighter than a selection outline: it's transient, and a heavy box over the
+   drawing makes it hard to see what you're actually catching. */
+.marquee {
+	fill: rgba(37, 99, 235, 0.08);
+	stroke: #2563eb;
+	stroke-width: 1;
+	stroke-dasharray: 4 3;
+}
+
+/* Multi-selection: one firm box round the group, and a fainter one per member. The group box is
+   solid so it reads as the thing you'd grab; the members are dashed so they read as contents. */
+.groupOutline {
+	fill: none;
+	stroke: #2563eb;
+	stroke-width: 1.5;
+}
+
+.groupMemberOutline {
+	fill: none;
+	stroke: rgba(37, 99, 235, 0.55);
+	stroke-width: 1;
+	stroke-dasharray: 3 3;
+}

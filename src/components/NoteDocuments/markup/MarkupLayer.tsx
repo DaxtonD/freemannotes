@@ -7,6 +7,7 @@ import {
 	markupBounds,
 	markupFooterText,
 	markupHandles,
+	markupsBounds,
 	moveMarkerRadius,
 	roundUnit,
 	STAMP_LAYOUT,
@@ -22,7 +23,7 @@ import {
 	pointsPath,
 	type MeasureContext,
 } from './markupMeasure';
-import type { MarkupDraftStore } from './markupStore';
+import type { MarkupDraftStore, MarkupGroupDraftStore } from './markupStore';
 import { SymbolParts, symbolById } from './markupSymbols';
 import {
 	HIGHLIGHTER_OPACITY,
@@ -643,4 +644,73 @@ export function MarkupTextEditor(props: EditorProps<TypedMarkup>): React.JSX.Ele
 	if (markup.kind === 'callout') return <CalloutEditor {...props} markup={markup} />;
 	if (markup.kind === 'stamp') return <StampEditor {...props} markup={markup} />;
 	return <TextNoteEditor {...props} markup={markup} />;
+}
+
+/**
+ * The rubber band while a marquee is being dragged out. One rect, on the page it started on —
+ * a marquee doesn't span pages, because nothing you'd select across a page break shares a
+ * coordinate system anyway.
+ */
+export function MarkupMarqueeLayer(props: { rect: { x: number; y: number; w: number; h: number }; pageWidth: number; pageHeight: number }): React.JSX.Element {
+	return (
+		<svg className={`${styles.layer} ${styles.layerSelection}`} viewBox={`0 0 ${props.pageWidth} ${props.pageHeight}`} preserveAspectRatio="none" aria-hidden="true">
+			<rect x={props.rect.x} y={props.rect.y} width={props.rect.w} height={props.rect.h} className={styles.marquee} vectorEffect="non-scaling-stroke" />
+		</svg>
+	);
+}
+
+/**
+ * The outline round a multi-selection: one box for the group, plus a light box per member so you
+ * can see exactly what you caught. No handles — there is no single box to resize, and offering one
+ * would imply a group resize that doesn't exist.
+ */
+export function MarkupGroupSelectionLayer(props: { items: readonly Markup[]; pageWidth: number; pageHeight: number; cssWidth: number }): React.JSX.Element | null {
+	const outer = markupsBounds(props.items);
+	if (!outer) return null;
+	const unitsPerPx = props.pageWidth / Math.max(1, props.cssWidth);
+	const pad = 4 * unitsPerPx;
+	return (
+		<svg className={`${styles.layer} ${styles.layerSelection}`} viewBox={`0 0 ${props.pageWidth} ${props.pageHeight}`} preserveAspectRatio="none" aria-hidden="true">
+			{props.items.map((item) => {
+				const bounds = markupBounds(item);
+				return (
+					<rect
+						key={item.id}
+						x={bounds.x - pad / 2}
+						y={bounds.y - pad / 2}
+						width={bounds.w + pad}
+						height={bounds.h + pad}
+						className={styles.groupMemberOutline}
+						vectorEffect="non-scaling-stroke"
+					/>
+				);
+			})}
+			<rect
+				x={outer.x - pad * 2}
+				y={outer.y - pad * 2}
+				width={outer.w + pad * 4}
+				height={outer.h + pad * 4}
+				className={styles.groupOutline}
+				vectorEffect="non-scaling-stroke"
+			/>
+		</svg>
+	);
+}
+
+/**
+ * A group following the pointer mid-move. The real markups are hidden while this is up.
+ *
+ * Reads the group straight out of its store rather than taking it as a prop, so dragging twelve
+ * markups repaints this one SVG instead of re-rendering the whole page component every frame —
+ * the same reason MarkupDraftLayer works this way.
+ */
+export function MarkupGroupPreviewLayer(props: { store: MarkupGroupDraftStore; page: number; pageWidth: number; pageHeight: number; measure?: MeasureContext }): React.JSX.Element | null {
+	const items = React.useSyncExternalStore(props.store.subscribe, props.store.get, props.store.get);
+	const onThisPage = items.length > 0 && items[0].page === props.page;
+	if (!onThisPage) return null;
+	return (
+		<svg className={`${styles.layer} ${styles.layerDraft}`} viewBox={`0 0 ${props.pageWidth} ${props.pageHeight}`} preserveAspectRatio="none" aria-hidden="true">
+			{items.map((item) => <MarkupShape key={item.id} markup={item} measure={props.measure} />)}
+		</svg>
+	);
 }

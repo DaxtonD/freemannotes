@@ -466,3 +466,15 @@
 	bottom: auto;
 	z-index: 1;
 }
+
+/* The one transient message the viewer has: a paste that couldn't bring measurements across
+   because the target page is scaled differently. Sits under the toolbar, fades itself out. */
+.markupNotice {
+	margin: 0;
+	padding: 8px 14px;
+	text-align: center;
+	font-size: var(--font-size-sm);
+	color: var(--color-text);
+	background: color-mix(in srgb, var(--color-accent) 14%, var(--color-surface));
+	border-bottom: 1px solid var(--color-border);
+}

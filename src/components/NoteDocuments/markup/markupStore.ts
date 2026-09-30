@@ -381,6 +381,8 @@ export type PdfMarkup = {
 	setPageName: (page: number, name: string) => void;
 	/** Adds a markup, or replaces the one with the same id (moves, resizes, recolours, text edits). */
 	add: (markup: Markup) => void;
+	/** Adds or replaces several at once as a single undo step. Group moves and paste use this. */
+	addMany: (markups: readonly Markup[]) => void;
 	/** Saves a new comment with the next number. Returns it as saved. */
 	addComment: (comment: CommentMarkup) => CommentMarkup | null;
 	/** The number the next new comment will get. */
@@ -465,6 +467,18 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		handle.doc.transact(() => handle.items.set(markup.id, markup), LOCAL_ORIGIN);
 	}, []);
 
+	const addMany = React.useCallback((markups: readonly Markup[]): void => {
+		const handle = handleRef.current;
+		if (!handle || handle.destroyed || markups.length === 0) return;
+		// One transaction, same reason removeMany is one: moving twelve selected markups is a
+		// single thing the user did, so Ctrl+Z has to put all twelve back at once. With
+		// captureTimeout 0 on the UndoManager, twelve separate add() calls would be twelve
+		// separate undo steps, which is maddening.
+		handle.doc.transact(() => {
+			for (const markup of markups) handle.items.set(markup.id, markup);
+		}, LOCAL_ORIGIN);
+	}, []);
+
 	const addComment = React.useCallback((comment: CommentMarkup): CommentMarkup | null => {
 		const handle = handleRef.current;
 		if (!handle || handle.destroyed) return null;
@@ -535,7 +549,7 @@ export function usePdfMarkup(versionId: string | null, options: { websocketUrl: 
 		if (handle && !handle.destroyed) handle.undo.redo();
 	}, []);
 
-	return { ...snapshot, add, addComment, peekCommentNumber, addReply, removeReply, removeMany, setPageScale, setPageName, undo, redo };
+	return { ...snapshot, add, addMany, addComment, peekCommentNumber, addReply, removeReply, removeMany, setPageScale, setPageName, undo, redo };
 }
 
 /** The shape being drawn right now. Kept out of React state so a stroke doesn't re-render the viewer. */
@@ -553,6 +567,44 @@ export function createMarkupDraftStore(): MarkupDraftStore {
 		set: (next) => {
 			if (next === current) return;
 			current = next;
+			for (const listener of listeners) listener();
+		},
+		subscribe: (listener) => {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+	};
+}
+
+export type MarkupGroupDraftStore = {
+	get: () => readonly Markup[];
+	set: (next: readonly Markup[]) => void;
+	subscribe: (listener: () => void) => () => void;
+};
+
+/**
+ * The same escape hatch as createMarkupDraftStore, for a whole group being dragged. A group move
+ * repaints on every pointermove, and routing that through React state re-renders the page
+ * component each frame — which is exactly why the single-item draft store exists.
+ *
+ * `get` must return a stable reference while nothing has changed: useSyncExternalStore compares
+ * snapshots by identity and a fresh array every call is an infinite render loop. That bug cost a
+ * release to find once already (see the 1.15.1 blank-screen note), so the empty case is a shared
+ * frozen constant rather than a new [].
+ */
+const NO_DRAFT_MARKUPS: readonly Markup[] = Object.freeze([]);
+
+export function createMarkupGroupDraftStore(): MarkupGroupDraftStore {
+	let current: readonly Markup[] = NO_DRAFT_MARKUPS;
+	const listeners = new Set<() => void>();
+	return {
+		get: () => current,
+		set: (next) => {
+			const resolved = next.length === 0 ? NO_DRAFT_MARKUPS : next;
+			if (resolved === current) return;
+			current = resolved;
 			for (const listener of listeners) listener();
 		},
 		subscribe: (listener) => {

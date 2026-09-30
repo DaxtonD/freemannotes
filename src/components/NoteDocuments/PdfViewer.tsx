@@ -24,7 +24,10 @@ import {
 import {
 	MarkupCalibrationLayer,
 	MarkupDraftLayer,
+	MarkupGroupPreviewLayer,
+	MarkupGroupSelectionLayer,
 	MarkupLayer,
+	MarkupMarqueeLayer,
 	MarkupPinLayer,
 	MarkupSelectionLayer,
 	MarkupTextEditor,
@@ -34,12 +37,13 @@ import {
 import { scaleLabel, type MeasureContext } from './markup/markupMeasure';
 import { MarkupScalePanel } from './markup/MarkupScalePanel';
 import { MarkupToolbar, type MarkupStyleControls } from './markup/MarkupToolbar';
-import { calloutStrokeWidth, fitStampWidth, markupBounds, rotateSymbol, roundUnit, translateMarkup } from './markup/markupGeometry';
+import { calloutStrokeWidth, clampMoveToPage, fitStampWidth, markupBounds, markupsBounds, rotateSymbol, roundUnit, translateMarkup } from './markup/markupGeometry';
+import { copyableMarkups, prepareMarkupPaste, readMarkupClipboard, writeMarkupClipboard } from './markup/markupClipboard';
 import { MarkupPanel, type MarkupPanelTab } from './markup/MarkupPanel';
 import { MAX_RECENT_SYMBOLS, styleForTool, useMarkupPrefs } from './markup/markupPrefs';
-import { createMarkupDraftStore, usePdfMarkup, type MarkupDraftStore } from './markup/markupStore';
+import { createMarkupDraftStore, createMarkupGroupDraftStore, usePdfMarkup, type MarkupDraftStore, type MarkupGroupDraftStore } from './markup/markupStore';
 import { createMarkupId, stampDefinition, type CommentMarkup, type Markup, type MarkupAuthor, type MarkupTool, type TypedMarkup } from './markup/markupTypes';
-import { useMarkupDrawing, type MarkupStampChoice, type PolyControls } from './markup/useMarkupDrawing';
+import { useMarkupDrawing, type MarkupStampChoice, type MarqueeRect, type PolyControls } from './markup/useMarkupDrawing';
 import { resolveKnownUserById } from '../../core/userIdentityCache';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import styles from './PdfViewer.module.css';
@@ -121,6 +125,7 @@ type SearchState = {
 };
 
 const EMPTY_SEARCH: SearchState = { needle: '', matches: [], searchedPages: 0, hasText: false };
+
 const NO_MARKUP_IDS: ReadonlySet<string> = new Set();
 const NO_MARKUPS: readonly Markup[] = [];
 const NO_PAGE_SIZES: readonly PageSize[] = [];
@@ -173,8 +178,14 @@ type PdfPageProps = {
 	pageHeight: number;
 	markups: readonly Markup[];
 	draftStore: MarkupDraftStore;
-	/** The selected markup, when it's on this page. */
+	/** The selected markup, when it's on this page and it's the only one selected. */
 	selectedMarkup: Markup | null;
+	/** Several selected on this page: outlined as a group, with no resize handles. */
+	groupSelection: readonly Markup[];
+	/** Holds a group mid-move; the layer reads it directly so a drag doesn't re-render the page. */
+	groupDraftStore: MarkupGroupDraftStore;
+	/** The marquee rubber band, when it's being dragged on this page. */
+	marquee: { x: number; y: number; w: number; h: number } | null;
 	/** The text note, callout or stamp being typed, when it's on this page. */
 	textEdit: TypedMarkup | null;
 	textEditor: MarkupTextEditorHandlers;
@@ -401,8 +412,17 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 			{shouldRender ? (
 				<MarkupCalibrationLayer store={props.calibrationStore} page={pageNumber} pageWidth={props.pageWidth} pageHeight={props.pageHeight} cssWidth={props.cssWidth} />
 			) : null}
+			{shouldRender ? (
+				<MarkupGroupPreviewLayer store={props.groupDraftStore} page={pageNumber} pageWidth={props.pageWidth} pageHeight={props.pageHeight} measure={measure} />
+			) : null}
 			{shouldRender && props.selectedMarkup ? (
 				<MarkupSelectionLayer markup={props.selectedMarkup} pageWidth={props.pageWidth} pageHeight={props.pageHeight} cssWidth={props.cssWidth} />
+			) : null}
+			{shouldRender && props.groupSelection.length > 0 ? (
+				<MarkupGroupSelectionLayer items={props.groupSelection} pageWidth={props.pageWidth} pageHeight={props.pageHeight} cssWidth={props.cssWidth} />
+			) : null}
+			{shouldRender && props.marquee ? (
+				<MarkupMarqueeLayer rect={props.marquee} pageWidth={props.pageWidth} pageHeight={props.pageHeight} />
 			) : null}
 			{props.textEdit ? (
 				<MarkupTextEditor key={props.textEdit.id} markup={props.textEdit} pageWidth={props.pageWidth} pageHeight={props.pageHeight} handlers={props.textEditor} />
@@ -481,6 +501,9 @@ function scrollTopForAnchor(layout: PageLayout, anchor: PageAnchor): number {
 export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const { t } = useI18n();
 	const { document: noteDocument, authUserId } = props;
+	// Read by the mount-only viewer-state effect below, which must not take noteDocument as a dep.
+	const documentIdRef = React.useRef(noteDocument.id);
+	documentIdRef.current = noteDocument.id;
 	const [load, setLoad] = React.useState<LoadState>({ status: 'loading' });
 	const [containerWidth, setContainerWidth] = React.useState(0);
 	const [scroll, setScroll] = React.useState({ top: 0, height: 0 });
@@ -517,9 +540,60 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const spaceHeldRef = React.useRef(false);
 	const [markupDraftStore] = React.useState(createMarkupDraftStore);
 	const [erasingMarkupIds, setErasingMarkupIds] = React.useState<ReadonlySet<string>>(NO_MARKUP_IDS);
-	const [selectedMarkupId, setSelectedMarkupId] = React.useState<string | null>(null);
+	// One source of truth for what's picked. A single selection is a set of one, so everything that
+	// only makes sense for one item (resize handles, editing text, opening a comment) reads
+	// selectedMarkupId below and goes quiet the moment a second thing joins the selection.
+	const [selectedMarkupIds, setSelectedMarkupIds] = React.useState<ReadonlySet<string>>(NO_MARKUP_IDS);
+	const selectedMarkupIdsRef = React.useRef(selectedMarkupIds);
+	selectedMarkupIdsRef.current = selectedMarkupIds;
+	const selectedMarkupId = React.useMemo(
+		() => (selectedMarkupIds.size === 1 ? selectedMarkupIds.values().next().value ?? null : null),
+		[selectedMarkupIds],
+	);
 	const selectedMarkupIdRef = React.useRef(selectedMarkupId);
 	selectedMarkupIdRef.current = selectedMarkupId;
+	/** Pick exactly one thing, or nothing. Every single-selection path goes through here. */
+	const selectOnlyMarkup = React.useCallback((id: string | null): void => {
+		setSelectedMarkupIds(id ? new Set([id]) : NO_MARKUP_IDS);
+	}, []);
+	const selectManyMarkups = React.useCallback((ids: readonly string[]): void => {
+		setSelectedMarkupIds(ids.length === 0 ? NO_MARKUP_IDS : new Set(ids));
+	}, []);
+	/** The rubber band while it's being dragged. */
+	const [marqueeRect, setMarqueeRect] = React.useState<MarqueeRect | null>(null);
+	/** Touch: whether a blank-page drag marquees instead of scrolling. Toolbar toggle. */
+	const [marqueeEnabled, setMarqueeEnabled] = React.useState(false);
+	/**
+	 * A group mid-move. The geometry goes through a store so dragging doesn't re-render the page
+	 * each frame; only the set of hidden ids lives in React state, because hiding the originals
+	 * genuinely does need a render — and it changes twice per drag, not sixty times a second.
+	 */
+	const [groupDraftStore] = React.useState(createMarkupGroupDraftStore);
+	const [groupPreviewIds, setGroupPreviewIds] = React.useState<ReadonlySet<string>>(NO_MARKUP_IDS);
+	const handleGroupPreview = React.useCallback((items: readonly Markup[]): void => {
+		groupDraftStore.set(items);
+		setGroupPreviewIds((current) => {
+			if (items.length === 0) return current.size === 0 ? current : NO_MARKUP_IDS;
+			if (current.size === items.length && items.every((item) => current.has(item.id))) return current;
+			return new Set(items.map((item) => item.id));
+		});
+	}, [groupDraftStore]);
+	/** Set when there is something on the clipboard, so Paste can be shown as available. */
+	const [clipboardReady, setClipboardReady] = React.useState(() => readMarkupClipboard() !== null);
+	/** A short-lived line over the page, for the one case where a paste can't do what you asked. */
+	const [markupNotice, setMarkupNotice] = React.useState<string | null>(null);
+	const markupNoticeTimerRef = React.useRef<number | null>(null);
+	const showMarkupNotice = React.useCallback((text: string): void => {
+		setMarkupNotice(text);
+		if (markupNoticeTimerRef.current !== null) window.clearTimeout(markupNoticeTimerRef.current);
+		markupNoticeTimerRef.current = window.setTimeout(() => {
+			markupNoticeTimerRef.current = null;
+			setMarkupNotice(null);
+		}, 4000);
+	}, []);
+	React.useEffect(() => () => {
+		if (markupNoticeTimerRef.current !== null) window.clearTimeout(markupNoticeTimerRef.current);
+	}, []);
 	// The markup being dragged: hidden on its page while its preview follows the pointer.
 	const [previewMarkupId, setPreviewMarkupId] = React.useState<string | null>(null);
 	const [textEdit, setTextEdit] = React.useState<{ markup: TypedMarkup; isNew: boolean } | null>(null);
@@ -670,7 +744,11 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		if (typeof document === 'undefined') return;
 		const thumbnailCache = thumbnailCacheRef.current;
 		document.body.dataset[VIEWER_BODY_FLAG] = 'true';
-		window.dispatchEvent(new CustomEvent(DOCUMENT_VIEWER_STATE_EVENT, { detail: { open: true } }));
+		// documentId rides along so the app can put you back in this exact file after the OS
+		// kills the PWA out from under you. Deliberately not in the deps: this effect is the
+		// viewer's open/close lifecycle, and re-firing it on a document swap would report a
+		// close the viewer never did.
+		window.dispatchEvent(new CustomEvent(DOCUMENT_VIEWER_STATE_EVENT, { detail: { open: true, documentId: documentIdRef.current } }));
 		return () => {
 			delete document.body.dataset[VIEWER_BODY_FLAG];
 			window.dispatchEvent(new CustomEvent(DOCUMENT_VIEWER_STATE_EVENT, { detail: { open: false } }));
@@ -875,7 +953,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const closeScalePanelRef = React.useRef(closeScalePanel);
 	closeScalePanelRef.current = closeScalePanel;
 
-	const { removeMany: removeMarkups, add: putMarkup, setPageScale } = markup;
+	const { removeMany: removeMarkups, add: putMarkup, addMany: putMarkups, setPageScale } = markup;
 	const handleEraseCommit = React.useCallback((ids: readonly string[]): void => {
 		removeMarkups(ids);
 		setErasingMarkupIds(NO_MARKUP_IDS);
@@ -885,6 +963,9 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	pageSizesRef.current = load.status === 'ready' ? load.pageSizes : NO_PAGE_SIZES;
 	const markupItemsRef = React.useRef(markup.items);
 	markupItemsRef.current = markup.items;
+	// Read by the clipboard actions, which need a page's scale without depending on a render.
+	const markupPageScalesRef = React.useRef(markup.pageScales);
+	markupPageScalesRef.current = markup.pageScales;
 
 	const commitTextEdit = React.useCallback((): void => {
 		const current = textEditRef.current;
@@ -920,7 +1001,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 
 	const startTextEdit = React.useCallback((target: TypedMarkup, isNew: boolean): void => {
 		commitTextEditRef.current();
-		setSelectedMarkupId(null);
+		selectOnlyMarkup(null);
 		const next = { markup: target, isNew };
 		textEditRef.current = next;
 		setTextEdit(next);
@@ -960,18 +1041,92 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	}), [t]);
 
 	const deleteSelectedMarkup = React.useCallback((): void => {
-		const id = selectedMarkupIdRef.current;
-		if (!id) return;
-		removeMarkups([id]);
-		setSelectedMarkupId(null);
-	}, [removeMarkups]);
+		const ids = Array.from(selectedMarkupIdsRef.current);
+		if (ids.length === 0) return;
+		// removeMany is already one transaction, so deleting a whole marquee's worth is one undo.
+		removeMarkups(ids);
+		selectOnlyMarkup(null);
+	}, [removeMarkups, selectOnlyMarkup]);
+
+	/** Everything currently selected, in page order, comments excluded. */
+	const collectSelectedForClipboard = React.useCallback((): readonly Markup[] => {
+		const ids = selectedMarkupIdsRef.current;
+		if (ids.size === 0) return NO_MARKUPS;
+		return copyableMarkups(markupItemsRef.current.filter((item) => ids.has(item.id)));
+	}, []);
+
+	const copySelectedMarkup = React.useCallback((): number => {
+		const picked = collectSelectedForClipboard();
+		if (picked.length === 0) return 0;
+		const sourcePage = picked[0].page;
+		writeMarkupClipboard({
+			markups: picked,
+			sourcePage,
+			sourceScale: markupPageScalesRef.current.get(sourcePage) ?? null,
+			sourceVersionId: props.document.id,
+			copiedAt: Date.now(),
+		});
+		setClipboardReady(true);
+		return picked.length;
+	}, [collectSelectedForClipboard, props.document.id]);
+
+	const cutSelectedMarkup = React.useCallback((): void => {
+		if (!canMarkup) return;
+		const picked = collectSelectedForClipboard();
+		if (copySelectedMarkup() === 0) return;
+		removeMarkups(picked.map((item) => item.id));
+		selectOnlyMarkup(null);
+	}, [canMarkup, collectSelectedForClipboard, copySelectedMarkup, removeMarkups, selectOnlyMarkup]);
+
+	/** Ctrl+A picks up everything on the page you're looking at, not the whole document — a plan set
+	 *  can carry thousands of markups, and "select all" across 200 sheets is never what anyone meant. */
+	const selectAllOnCurrentPage = React.useCallback((): void => {
+		const page = currentPageRef.current;
+		const ids = markupItemsRef.current
+			.filter((item) => item.page === page && item.kind !== 'comment')
+			.map((item) => item.id);
+		selectManyMarkups(ids);
+	}, [selectManyMarkups]);
+
+	const pasteMarkup = React.useCallback((): void => {
+		if (!canMarkup) return;
+		const clipboard = readMarkupClipboard();
+		if (!clipboard) return;
+		// Onto the page you're looking at, which is where you expect it. Pasting back onto the page
+		// it came from nudges it so the copy doesn't sit invisibly on top of the original.
+		const targetPage = currentPageRef.current;
+		const { markups, skippedMeasurements } = prepareMarkupPaste({
+			clipboard,
+			targetPage,
+			targetScale: markupPageScalesRef.current.get(targetPage) ?? null,
+			targetSize: pageSizesRef.current[targetPage - 1] ?? null,
+		});
+		if (markups.length > 0) {
+			putMarkups(markups);
+			selectManyMarkups(markups.map((item) => item.id));
+		}
+		if (skippedMeasurements > 0) {
+			showMarkupNotice(t('documents.markupPasteScaleMismatch').replace('{n}', String(skippedMeasurements)));
+		}
+	}, [canMarkup, putMarkups, selectManyMarkups, showMarkupNotice, t]);
 
 	const nudgeSelectedMarkup = React.useCallback((dx: number, dy: number): void => {
-		const id = selectedMarkupIdRef.current;
-		const target = id ? markupItemsRef.current.find((item) => item.id === id) : undefined;
-		if (!target) return;
-		putMarkup({ ...translateMarkup(target, dx, dy), updatedAt: Date.now() });
-	}, [putMarkup]);
+		const ids = selectedMarkupIdsRef.current;
+		if (ids.size === 0) return;
+		const targets = markupItemsRef.current.filter((item) => ids.has(item.id));
+		if (targets.length === 0) return;
+		const size = pageSizesRef.current[targets[0].page - 1];
+		const box = markupsBounds(targets);
+		// Clamped like a drag is, and as a group so the arrangement holds. Arrow keys are also the
+		// way back for anything already sitting off-page from before this was enforced: select it in
+		// the markup list, tap an arrow, and it lands back on the sheet.
+		const moved = size && box
+			? clampMoveToPage(box, dx, dy, size.width, size.height)
+			: { dx, dy };
+		if (moved.dx === 0 && moved.dy === 0) return;
+		const updatedAt = Date.now();
+		putMarkups(targets.map((item) => ({ ...translateMarkup(item, moved.dx, moved.dy), updatedAt })));
+	}, [putMarkups]);
 
 	const rotateSelectedMarkup = React.useCallback((): void => {
 		const id = selectedMarkupIdRef.current;
@@ -1072,7 +1227,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		const now = Date.now();
 		setOpenComment(null);
 		setCommentBuffer('');
-		setSelectedMarkupId(null);
+		selectOnlyMarkup(null);
 		setPendingComment({
 			id: createMarkupId(),
 			kind: 'comment',
@@ -1149,7 +1304,12 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		if (!id || !canMarkup) return;
 		removeMarkups([id]);
 		setOpenComment(null);
-		setSelectedMarkupId((current) => (current === id ? null : current));
+		setSelectedMarkupIds((current) => {
+			if (!current.has(id)) return current;
+			const next = new Set(current);
+			next.delete(id);
+			return next.size === 0 ? NO_MARKUP_IDS : next;
+		});
 	}, [canMarkup, removeMarkups, setOpenComment]);
 
 	const addReplyToOpenComment = React.useCallback((text: string): void => {
@@ -1187,7 +1347,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		}
 		if (markupToolRef.current) {
 			setMarkupTool('select');
-			setSelectedMarkupId(target.id);
+			selectOnlyMarkup(target.id);
 		}
 		// On a phone the sheet would cover it.
 		if (isCoarsePointer) closeMarkupPanel();
@@ -1243,7 +1403,11 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	// Switching away from the select tool drops the selection. Switching to anything other than select
 	// or the tool that made the thing being typed (another tool, Done, Escape, Back) saves it.
 	React.useEffect(() => {
-		if (markupTool !== 'select') setSelectedMarkupId(null);
+		if (markupTool !== 'select') selectOnlyMarkup(null);
+		// Marquee mode is a select-tool thing. Leaving it armed while you draw would mean coming
+		// back to a viewer that no longer scrolls on a one-finger drag, with nothing on screen
+		// saying why.
+		if (markupTool !== 'select') setMarqueeEnabled(false);
 		const typingKind = textEditRef.current?.markup.kind;
 		if (markupTool !== 'select' && markupTool !== typingKind) commitTextEditRef.current();
 	}, [markupTool]);
@@ -1586,15 +1750,21 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		pageSizes: load.status === 'ready' ? load.pageSizes : NO_PAGE_SIZES,
 		items: markup.items,
 		selectedId: selectedMarkupId,
+		selectedIds: selectedMarkupIds,
+		marqueeEnabled,
 		editingText: textEdit !== null,
 		draftStore: markupDraftStore,
 		spaceHeldRef,
 		onCommit: putMarkup,
 		onEraseProgress: setErasingMarkupIds,
 		onEraseCommit: handleEraseCommit,
-		onSelect: setSelectedMarkupId,
+		onSelect: selectOnlyMarkup,
+		onSelectMany: selectManyMarkups,
+		onMarquee: setMarqueeRect,
 		onPreview: setPreviewMarkupId,
+		onPreviewMany: handleGroupPreview,
 		onUpdate: putMarkup,
+		onUpdateMany: putMarkups,
 		onStartText: startTextEdit,
 		onCommitText: commitTextEdit,
 		onCalibrate: handleCalibrate,
@@ -1607,12 +1777,14 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	// and a text note being edited (the editor shows it).
 	const editingMarkupId = textEdit && !textEdit.isNew ? textEdit.markup.id : null;
 	const hiddenMarkupIds = React.useMemo<ReadonlySet<string>>(() => {
-		if (!previewMarkupId && !editingMarkupId) return erasingMarkupIds;
+		if (!previewMarkupId && !editingMarkupId && groupPreviewIds.size === 0) return erasingMarkupIds;
 		const hidden = new Set(erasingMarkupIds);
 		if (previewMarkupId) hidden.add(previewMarkupId);
 		if (editingMarkupId) hidden.add(editingMarkupId);
+		// A group mid-move is drawn by the preview layer instead, all of it following the pointer.
+		for (const id of groupPreviewIds) hidden.add(id);
 		return hidden;
-	}, [editingMarkupId, erasingMarkupIds, previewMarkupId]);
+	}, [editingMarkupId, erasingMarkupIds, groupPreviewIds, previewMarkupId]);
 
 	// Per-page markup lists. A page whose markup didn't change keeps the same array, so drawing on
 	// page 3 doesn't re-render every other page.
@@ -1634,6 +1806,30 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		markupsByPageRef.current = stable;
 		return stable;
 	}, [hiddenMarkupIds, markup.items]);
+
+	// A multi-selection and a group mid-move are both page-local, so they're grouped the same way.
+	// Pages not involved get NO_MARKUPS at the call site — the same array every time, so they don't
+	// re-render while a group is dragged around on some other page.
+	const groupSelectionByPage = React.useMemo(() => {
+		const grouped = new Map<number, Markup[]>();
+		if (selectedMarkupIds.size > 1) {
+			for (const item of markup.items) {
+				if (!selectedMarkupIds.has(item.id)) continue;
+				const list = grouped.get(item.page);
+				if (list) list.push(item);
+				else grouped.set(item.page, [item]);
+			}
+		}
+		return grouped;
+	}, [markup.items, selectedMarkupIds]);
+
+	/** Is anything in the selection actually copyable? (A comment pin on its own isn't.) */
+	const selectionHasCopyable = React.useMemo(
+		() => selectedMarkupIds.size > 0 && markup.items.some((item) => selectedMarkupIds.has(item.id) && item.kind !== 'comment'),
+		[markup.items, selectedMarkupIds],
+	);
+
+
 
 	// ── Layout ──────────────────────────────────────────────────────────────
 
@@ -1894,7 +2090,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 				if (event.key === 'Escape') {
 					event.preventDefault();
 					if (textEditRef.current) commitTextEditRef.current();
-					else if (selectedMarkupIdRef.current) setSelectedMarkupId(null);
+					else if (selectedMarkupIdsRef.current.size > 0) selectOnlyMarkup(null);
 					else if (markupPanelOpenRef.current) closeMarkupPanelRef.current();
 					else setMarkupTool(null);
 					return;
@@ -1904,6 +2100,31 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 					if (key === 'y' || event.shiftKey) markupRedo();
 					else markupUndo();
 					return;
+				}
+				if (!typing && (event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+					// Cut/copy/paste only mean the markup clipboard while the select tool is active and
+					// nothing is being typed — otherwise they stay the browser's, so copying text out of
+					// a comment still works.
+					if (key === 'a' && markupToolRef.current === 'select') {
+						event.preventDefault();
+						selectAllOnCurrentPage();
+						return;
+					}
+					if (key === 'c' && selectedMarkupIdsRef.current.size > 0) {
+						event.preventDefault();
+						copySelectedMarkup();
+						return;
+					}
+					if (key === 'x' && selectedMarkupIdsRef.current.size > 0) {
+						event.preventDefault();
+						cutSelectedMarkup();
+						return;
+					}
+					if (key === 'v' && markupToolRef.current === 'select') {
+						event.preventDefault();
+						pasteMarkup();
+						return;
+					}
 				}
 				if (!typing && !event.ctrlKey && !event.metaKey && !event.altKey) {
 					if ((event.key === 'Delete' || event.key === 'Backspace') && selectedMarkupIdRef.current) {
@@ -1980,7 +2201,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		};
 		window.addEventListener('keydown', onKeyDown);
 		return () => window.removeEventListener('keydown', onKeyDown);
-	}, [closeNavigator, closeSearch, deleteSelectedMarkup, goToPage, markupRedo, markupUndo, nudgeSelectedMarkup, openSearch, requestClose, selectMarkupTool, stepMatch]);
+	}, [closeNavigator, closeSearch, copySelectedMarkup, cutSelectedMarkup, deleteSelectedMarkup, goToPage, markupRedo, markupUndo, nudgeSelectedMarkup, openSearch, pasteMarkup, requestClose, selectAllOnCurrentPage, selectMarkupTool, selectOnlyMarkup, stepMatch]);
 
 	const searchTotal = search.matches.length;
 	const readingText = textWanted && pageTextsRead < pageCount;
@@ -2230,7 +2451,10 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			})}
 			canRotate={markupTool === 'select' && selectedMarkup?.kind === 'symbol'}
 			onRotateSelection={rotateSelectedMarkup}
-			hasSelection={markupTool === 'select' && Boolean(selectedMarkup)}
+			hasSelection={markupTool === 'select' && selectedMarkupIds.size > 0}
+			// A lone comment pin is selectable but not copyable, so Cut and Copy stay hidden rather
+			// than sitting there doing nothing when you tap them.
+			canCopy={markupTool === 'select' && selectionHasCopyable}
 			canUndo={markup.canUndo}
 			canRedo={markup.canRedo}
 			isCoarsePointer={isCoarsePointer}
@@ -2238,6 +2462,12 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 			onToolChange={selectMarkupTool}
 			onStyleChange={handleMarkupStyleChange}
 			onDeleteSelection={deleteSelectedMarkup}
+			marqueeEnabled={marqueeEnabled}
+			onMarqueeEnabledChange={setMarqueeEnabled}
+			canPaste={clipboardReady}
+			onCut={cutSelectedMarkup}
+			onCopy={copySelectedMarkup}
+			onPaste={pasteMarkup}
 			onUndo={markupUndo}
 			onRedo={markupRedo}
 			onDone={() => setMarkupTool(null)}
@@ -2383,6 +2613,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 					</div>
 				</header>
 				{!isCoarsePointer ? markupBar : null}
+				{markupNotice ? <p className={styles.markupNotice} role="status">{markupNotice}</p> : null}
 				{searchOpen && load.status === 'ready' ? (
 					<div className={styles.searchBar} role="search">
 						<div className={styles.searchField}>
@@ -2461,6 +2692,9 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 										markups={markupsByPage.get(index + 1) ?? NO_MARKUPS}
 										draftStore={markupDraftStore}
 										selectedMarkup={selectedMarkup && selectedMarkup.page === index + 1 && previewMarkupId !== selectedMarkup.id ? selectedMarkup : null}
+										groupSelection={groupSelectionByPage.get(index + 1) ?? NO_MARKUPS}
+										groupDraftStore={groupDraftStore}
+										marquee={marqueeRect && marqueeRect.page === index + 1 ? marqueeRect : null}
 										textEdit={textEdit && textEdit.markup.page === index + 1 ? textEdit.markup : null}
 										textEditor={textEditorHandlers}
 										pendingComment={pendingComment && pendingComment.page === index + 1 ? pendingComment : null}

@@ -3,7 +3,11 @@ import {
 	calloutStrokeWidth,
 	hitTestMarkup,
 	markupFooterText,
+	clampMoveToPage,
+	markupBounds,
 	markupHandles,
+	markupIntersectsRect,
+	markupsBounds,
 	moveCalloutBox,
 	normalizeBox,
 	pickMarkup,
@@ -140,7 +144,36 @@ type EditDrag = {
 	/** Where a whole-markup move would land: the page under the pointer (or the last one it crossed). */
 	dropTarget: PageTarget;
 	preview: Markup | null;
+	/**
+	 * Every markup being moved together, when the drag started on one of several selected items.
+	 * A group move stays on its own page, unlike a single-item drag: dragging a dozen markups onto
+	 * another sheet is what cut and paste is for, and half a group landing off the edge of a
+	 * differently-sized page is worse than refusing to cross.
+	 */
+	group: readonly Markup[] | null;
+	groupPreview: readonly Markup[] | null;
 };
+
+/** A rubber-band selection being dragged out over blank page. */
+type Marquee = {
+	pointerId: number;
+	host: HTMLElement;
+	page: number;
+	size: PageSize;
+	startX: number;
+	startY: number;
+	x: number;
+	y: number;
+	startClientX: number;
+	startClientY: number;
+	/** Cleared the slop threshold, so this is a marquee rather than a click that missed. */
+	moved: boolean;
+	/** What the band caught last time, so an unchanged sweep doesn't re-render the page. */
+	caught: readonly string[];
+};
+
+/** The marquee as the viewer draws it. */
+export type MarqueeRect = { page: number; x: number; y: number; w: number; h: number };
 
 /**
  * Dragging one end of the calibration line. The pointer keeps the offset it grabbed at, so a finger
@@ -182,6 +215,18 @@ type UseMarkupDrawingOptions = {
 	pageSizes: readonly PageSize[];
 	items: readonly Markup[];
 	selectedId: string | null;
+	/**
+	 * Everything selected. Holds exactly selectedId when one thing is picked, so the single-item
+	 * paths below (handles, resize, double-tap to edit) are unchanged; more than one switches the
+	 * gesture to a group move and hides the handles.
+	 */
+	selectedIds: ReadonlySet<string>;
+	/**
+	 * Touch only: a drag over blank page pulls out a marquee instead of scrolling. Off by default
+	 * because scrolling a plan set with one finger is not negotiable — the toolbar turns it on for
+	 * as long as you need it. Mouse and pen always marquee (space-drag still pans, as before).
+	 */
+	marqueeEnabled: boolean;
 	editingText: boolean;
 	draftStore: MarkupDraftStore;
 	spaceHeldRef: React.MutableRefObject<boolean>;
@@ -189,9 +234,17 @@ type UseMarkupDrawingOptions = {
 	onEraseProgress: (ids: ReadonlySet<string>) => void;
 	onEraseCommit: (ids: readonly string[]) => void;
 	onSelect: (id: string | null) => void;
+	/** A marquee finished, or a group was re-picked: the whole selection, replacing whatever was set. */
+	onSelectMany: (ids: readonly string[]) => void;
+	/** The marquee as it's dragged, for the viewer to draw. null clears it. */
+	onMarquee: (rect: MarqueeRect | null) => void;
 	/** The markup being dragged (hidden from its page while its preview follows the pointer), or null. */
 	onPreview: (id: string | null) => void;
+	/** Everything hidden mid-group-move, drawn instead as a preview. Empty array clears it. */
+	onPreviewMany: (markups: readonly Markup[]) => void;
 	onUpdate: (markup: Markup) => void;
+	/** A finished group move: all of them at once, so it's one undo step. */
+	onUpdateMany: (markups: readonly Markup[]) => void;
 	onStartText: (markup: TypedMarkup, isNew: boolean) => void;
 	onCommitText: () => void;
 	/** Comment tool: where the new pin goes. The viewer opens the comment for writing. */
@@ -418,6 +471,7 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 
 		let stroke: Stroke | null = null;
 		let edit: EditDrag | null = null;
+		let marquee: Marquee | null = null;
 		let pan: Pan | null = null;
 		let placeTap: PlaceTap | null = null;
 		let calibrationDrag: CalibrationDrag | null = null;
@@ -501,7 +555,13 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 			if (edit) {
 				release(edit.pointerId);
 				if (edit.preview) latest.current.onPreview(null);
+				if (edit.groupPreview) latest.current.onPreviewMany([]);
 				edit = null;
+			}
+			if (marquee) {
+				release(marquee.pointerId);
+				marquee = null;
+				latest.current.onMarquee(null);
 			}
 			if (pan) {
 				release(pan.pointerId);
@@ -683,15 +743,73 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 			return { host, page, size, ...toPage(host, size, event.clientX, event.clientY) };
 		};
 
-		const onSelectPointerDown = (event: PointerEvent, point: PagePoint | null): void => {
-			if (!point) {
-				latest.current.onSelect(null);
+		/** Blank page with the select tool: rubber-band a selection, or scroll. */
+		const startMarqueeOrPan = (event: PointerEvent, point: PagePoint | null): void => {
+			const canMarquee = point !== null
+				&& (event.pointerType !== 'touch' || latest.current.marqueeEnabled);
+			if (!canMarquee) {
 				startPan(event);
 				return;
 			}
-			const { items, selectedId } = latest.current;
+			event.preventDefault();
+			scroller.setPointerCapture(event.pointerId);
+			marquee = {
+				pointerId: event.pointerId,
+				host: point.host,
+				page: point.page,
+				size: point.size,
+				startX: point.x,
+				startY: point.y,
+				x: point.x,
+				y: point.y,
+				startClientX: event.clientX,
+				startClientY: event.clientY,
+				moved: false,
+				caught: [],
+			};
+		};
+
+		const onSelectPointerDown = (event: PointerEvent, point: PagePoint | null): void => {
+			if (!point) {
+				latest.current.onSelectMany([]);
+				startPan(event);
+				return;
+			}
+			const { items, selectedId, selectedIds } = latest.current;
 			const pageItems = items.filter((item) => item.page === point.page);
 			const selected = selectedId ? pageItems.find((item) => item.id === selectedId) : undefined;
+			// Handles belong to a single pick. With several selected there is no one box to resize,
+			// so a press either grabs the group to move it or starts a fresh marquee.
+			if (selectedIds.size > 1) {
+				const grabbed = pickMarkup(pageItems, point.x, point.y, SELECT_TOLERANCE_PX * point.unitsPerPx);
+				if (grabbed && selectedIds.has(grabbed.id)) {
+					event.preventDefault();
+					scroller.setPointerCapture(event.pointerId);
+					const group = pageItems.filter((item) => selectedIds.has(item.id));
+					edit = {
+						pointerId: event.pointerId,
+						host: point.host,
+						size: point.size,
+						original: grabbed,
+						handle: null,
+						startX: point.x,
+						startY: point.y,
+						startClientX: event.clientX,
+						startClientY: event.clientY,
+						unitsPerPx: point.unitsPerPx,
+						dropTarget: { host: point.host, page: point.page, size: point.size },
+						preview: null,
+						group,
+						groupPreview: null,
+					};
+					return;
+				}
+				// Pressing anywhere else drops the group and starts over, which is what every other
+				// canvas does and what people expect from a stray click.
+				latest.current.onSelectMany([]);
+				startMarqueeOrPan(event, point);
+				return;
+			}
 			if (selected) {
 				const reach = (event.pointerType === 'mouse' ? HANDLE_HIT_MOUSE_PX : HANDLE_HIT_TOUCH_PX) * point.unitsPerPx;
 				const handle = markupHandles(selected, point.unitsPerPx).find((candidate) => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= reach);
@@ -711,14 +829,16 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 						unitsPerPx: point.unitsPerPx,
 						dropTarget: { host: point.host, page: point.page, size: point.size },
 						preview: null,
+						group: null,
+						groupPreview: null,
 					};
 					return;
 				}
 			}
 			const target = pickMarkup(pageItems, point.x, point.y, SELECT_TOLERANCE_PX * point.unitsPerPx);
 			if (!target) {
-				latest.current.onSelect(null);
-				startPan(event);
+				latest.current.onSelectMany([]);
+				startMarqueeOrPan(event, point);
 				return;
 			}
 			const now = performance.now();
@@ -761,6 +881,8 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				unitsPerPx: point.unitsPerPx,
 				dropTarget: { host: point.host, page: point.page, size: point.size },
 				preview: null,
+				group: null,
+				groupPreview: null,
 			};
 		};
 
@@ -857,6 +979,35 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 		};
 
 		const onPointerMove = (event: PointerEvent): void => {
+			if (marquee && event.pointerId === marquee.pointerId) {
+				const band = marquee;
+				if (!band.moved && Math.hypot(event.clientX - band.startClientX, event.clientY - band.startClientY) < DRAG_SLOP_PX) return;
+				band.moved = true;
+				const point = toPage(band.host, band.size, event.clientX, event.clientY);
+				band.x = point.x;
+				band.y = point.y;
+				const rect = {
+					page: band.page,
+					x: Math.min(band.startX, band.x),
+					y: Math.min(band.startY, band.y),
+					w: Math.abs(band.x - band.startX),
+					h: Math.abs(band.y - band.startY),
+				};
+				latest.current.onMarquee(rect);
+				// Selection updates live rather than on release, so you can see what you're catching
+				// and adjust before letting go. Only when it actually changed, though: a plan sheet can
+				// carry hundreds of markups and re-selecting the same twelve on every pointermove would
+				// rebuild a Set and re-render the page for nothing.
+				const caught = latest.current.items
+					.filter((item) => item.page === band.page && item.kind !== 'comment' && markupIntersectsRect(item, rect))
+					.map((item) => item.id);
+				const unchanged = caught.length === band.caught.length && caught.every((id, index) => id === band.caught[index]);
+				if (!unchanged) {
+					band.caught = caught;
+					latest.current.onSelectMany(caught);
+				}
+				return;
+			}
 			if (pan && event.pointerId === pan.pointerId) {
 				scroller.scrollLeft = pan.left - (event.clientX - pan.x);
 				scroller.scrollTop = pan.top - (event.clientY - pan.y);
@@ -880,7 +1031,24 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 			}
 			if (edit && event.pointerId === edit.pointerId) {
 				const moving = edit.handle === null || edit.handle === 'box';
-				if (!edit.preview && moving && Math.hypot(event.clientX - edit.startClientX, event.clientY - edit.startClientY) < DRAG_SLOP_PX) return;
+				if (!edit.preview && !edit.groupPreview && moving && Math.hypot(event.clientX - edit.startClientX, event.clientY - edit.startClientY) < DRAG_SLOP_PX) return;
+				if (edit.group) {
+					// Group move: one delta, applied to every member, all on their own page. The whole
+					// group is hidden and redrawn as a preview so it follows the pointer together.
+					const group = edit.group;
+					const point = toPage(edit.host, edit.size, event.clientX, event.clientY);
+					const box = markupsBounds(group);
+					const moved = clampMoveToPage(
+						box ?? { x: 0, y: 0, w: 0, h: 0 },
+						point.x - edit.startX,
+						point.y - edit.startY,
+						edit.size.width,
+						edit.size.height,
+					);
+					edit.groupPreview = group.map((item) => translateMarkup(item, moved.dx, moved.dy));
+					latest.current.onPreviewMany(edit.groupPreview);
+					return;
+				}
 				if (!edit.preview) latest.current.onPreview(edit.original.id);
 				if (edit.handle === null) {
 					// A whole markup can move onto another page: it follows whichever page is under the
@@ -888,14 +1056,25 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 					// units are PDF points on every page, so the grab offset carries straight across.
 					edit.dropTarget = pageAt(event.clientX, event.clientY) ?? edit.dropTarget;
 					const point = toPage(edit.dropTarget.host, edit.dropTarget.size, event.clientX, event.clientY);
-					edit.preview = { ...translateMarkup(edit.original, point.x - edit.startX, point.y - edit.startY), page: edit.dropTarget.page };
+					// Clamped against the page it's landing on, not the one it started from: pages in a
+					// set aren't all the same size, and the whole point of following the pointer across a
+					// boundary is that it ends up somewhere visible on the new sheet.
+					const moved = clampMoveToPage(
+						markupBounds(edit.original),
+						point.x - edit.startX,
+						point.y - edit.startY,
+						edit.dropTarget.size.width,
+						edit.dropTarget.size.height,
+					);
+					edit.preview = { ...translateMarkup(edit.original, moved.dx, moved.dy), page: edit.dropTarget.page };
 				} else {
 					// Resizing, and moving a callout's box, stay on the markup's own page.
 					const point = toPage(edit.host, edit.size, event.clientX, event.clientY);
 					if (edit.handle === 'box') {
+						const moved = clampMoveToPage(markupBounds(edit.original), point.x - edit.startX, point.y - edit.startY, edit.size.width, edit.size.height);
 						edit.preview = edit.original.kind === 'callout'
-							? moveCalloutBox(edit.original, point.x - edit.startX, point.y - edit.startY)
-							: translateMarkup(edit.original, point.x - edit.startX, point.y - edit.startY);
+							? moveCalloutBox(edit.original, moved.dx, moved.dy)
+							: translateMarkup(edit.original, moved.dx, moved.dy);
 					} else {
 						edit.preview = resizeMarkup(edit.original, edit.handle, point.x, point.y, event.shiftKey);
 					}
@@ -966,11 +1145,30 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				placeAt(tap.tool, tap.point);
 				return;
 			}
+			if (marquee && event.pointerId === marquee.pointerId) {
+				const band = marquee;
+				marquee = null;
+				release(event.pointerId);
+				latest.current.onMarquee(null);
+				// A press that never travelled is a click on blank page: clear the selection rather
+				// than leaving whatever a zero-size marquee happened to graze.
+				if (!band.moved) latest.current.onSelectMany([]);
+				else if (event.pointerType === 'touch') suppressGhostClick();
+				return;
+			}
 			if (edit && event.pointerId === edit.pointerId) {
 				const finished = edit;
 				edit = null;
 				release(event.pointerId);
 				clearDraft();
+				if (finished.group) {
+					if (finished.groupPreview) {
+						const moved = Date.now();
+						latest.current.onUpdateMany(finished.groupPreview.map((item) => ({ ...item, updatedAt: moved })));
+					}
+					latest.current.onPreviewMany([]);
+					return;
+				}
 				if (finished.preview) {
 					latest.current.onUpdate({ ...finished.preview, updatedAt: Date.now() });
 					latest.current.onPreview(null);
@@ -1019,6 +1217,7 @@ export function useMarkupDrawing(options: UseMarkupDrawingOptions): void {
 				|| (edit && edit.pointerId === event.pointerId)
 				|| (pan && pan.pointerId === event.pointerId)
 				|| (placeTap && placeTap.pointerId === event.pointerId)
+				|| (marquee && marquee.pointerId === event.pointerId)
 				|| (calibrationDrag && calibrationDrag.pointerId === event.pointerId);
 			if (owns) cancelGesture();
 		};

@@ -489,6 +489,76 @@ function cornerHandles(box: MarkupBounds): Array<{ handle: MarkupHandle; x: numb
  * rotate handle's offset from the box so it sits a constant distance away on screen at any zoom
  * — the same reasoning MarkupSelectionLayer already applies to the handle circles themselves.
  */
+/**
+ * Trim a move so what's being moved stays on the page.
+ *
+ * Markup outside the page box is gone in every sense that matters: the SVG layer clips it, so it's
+ * invisible; the page navigator can't show it; and exportMarkupPdf draws it outside the media box,
+ * so it never prints. Dragging something off the left edge used to lose it with no way to know it
+ * was ever there. Placement has always clamped new text, stamps, callouts and symbols into the
+ * page — this is the same rule for moving them.
+ *
+ * Takes the bounding box of everything being moved, so a group is trimmed as a unit and keeps its
+ * internal arrangement instead of every member piling up against the edge separately.
+ *
+ * A box BIGGER than the page in an axis can't sit inside it, so the rule inverts for that axis: it
+ * may slide within its own overhang, but never far enough to uncover an edge of the page. That case
+ * is real, not theoretical — markupBounds pads an ink stroke by half its width, so a thick
+ * highlighter drawn margin to margin is already a hair wider than the sheet, and pinning it to the
+ * left on every nudge would be its own bug report.
+ */
+export function clampMoveToPage(
+	bounds: MarkupBounds,
+	dx: number,
+	dy: number,
+	pageWidth: number,
+	pageHeight: number,
+): { dx: number; dy: number } {
+	// When the box fits, these are (min, max) and the move is held inside the page. When it doesn't,
+	// they come back swapped, and ordering them turns the same two numbers into "keep covering the
+	// page" instead. Same arithmetic, both cases, no branch.
+	const edgeDx = [-bounds.x, pageWidth - (bounds.x + bounds.w)];
+	const edgeDy = [-bounds.y, pageHeight - (bounds.y + bounds.h)];
+	const lowDx = Math.min(edgeDx[0], edgeDx[1]);
+	const highDx = Math.max(edgeDx[0], edgeDx[1]);
+	const lowDy = Math.min(edgeDy[0], edgeDy[1]);
+	const highDy = Math.max(edgeDy[0], edgeDy[1]);
+	return {
+		dx: Math.max(lowDx, Math.min(highDx, dx)),
+		dy: Math.max(lowDy, Math.min(highDy, dy)),
+	};
+}
+
+/**
+ * Does this markup fall inside a marquee? Tested against its bounding box, and touching counts —
+ * you should not have to fully enclose a long diagonal arrow to catch it, and requiring full
+ * containment makes selecting anything ink-shaped a game of patience.
+ */
+export function markupIntersectsRect(markup: Markup, rect: MarkupBounds): boolean {
+	const bounds = markupBounds(markup);
+	return bounds.x <= rect.x + rect.w
+		&& bounds.x + bounds.w >= rect.x
+		&& bounds.y <= rect.y + rect.h
+		&& bounds.y + bounds.h >= rect.y;
+}
+
+/** The box enclosing several markups, for drawing one outline round a multi-selection. */
+export function markupsBounds(markups: readonly Markup[]): MarkupBounds | null {
+	if (markups.length === 0) return null;
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	for (const markup of markups) {
+		const bounds = markupBounds(markup);
+		minX = Math.min(minX, bounds.x);
+		minY = Math.min(minY, bounds.y);
+		maxX = Math.max(maxX, bounds.x + bounds.w);
+		maxY = Math.max(maxY, bounds.y + bounds.h);
+	}
+	return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
 export function markupHandles(markup: Markup, unitsPerPx = 1): Array<{ handle: MarkupHandle; x: number; y: number }> {
 	switch (markup.kind) {
 		case 'symbol': {

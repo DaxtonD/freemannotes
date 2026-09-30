@@ -16,6 +16,10 @@ import {
 	faShapes,
 	faStamp,
 	faTrashCan,
+	faCopy,
+	faObjectGroup,
+	faPaste,
+	faScissors,
 } from '@fortawesome/free-solid-svg-icons';
 import { cloudPath, rectCloudPoints } from './markupGeometry';
 import type { CloudShape } from './markupPrefs';
@@ -182,6 +186,16 @@ type MarkupToolbarProps = {
 	/** A floating panel shown next to the bar (the scale settings). */
 	panel?: React.ReactNode;
 	onDeleteSelection: () => void;
+	/** Touch only: blank-page drags marquee instead of scrolling while this is on. */
+	marqueeEnabled: boolean;
+	onMarqueeEnabledChange: (enabled: boolean) => void;
+	/** Something is on the markup clipboard, so Paste is worth offering. */
+	canPaste: boolean;
+	/** The selection holds something that can be cut or copied (a lone comment pin can't). */
+	canCopy: boolean;
+	onCut: () => void;
+	onCopy: () => void;
+	onPaste: () => void;
 	onUndo: () => void;
 	onRedo: () => void;
 	onDone: () => void;
@@ -404,13 +418,43 @@ export function MarkupToolbar(props: MarkupToolbarProps): React.JSX.Element {
 					})
 					: TOOLS.map((entry) => toolButton(entry, entry.tool === groupTool))}
 			</div>
+			{tool === 'select' && isCoarsePointer ? (
+				<>
+					<span className={styles.divider} aria-hidden="true" />
+					<button
+						type="button"
+						className={`${styles.tool}${props.marqueeEnabled ? ` ${styles.toolActive}` : ''}`}
+						onClick={() => props.onMarqueeEnabledChange(!props.marqueeEnabled)}
+						aria-pressed={props.marqueeEnabled}
+						aria-label={t('documents.markupMarquee')}
+						title={t('documents.markupMarquee')}
+					>
+						<FontAwesomeIcon icon={faObjectGroup} />
+					</button>
+				</>
+			) : null}
 			{props.hasSelection ? (
 				<>
 					<span className={styles.divider} aria-hidden="true" />
+					{props.canCopy ? (
+						<>
+							<button type="button" className={styles.tool} onClick={props.onCut} aria-label={t('documents.markupCut')} title={label('documents.markupCut', 'Ctrl+X')}>
+								<FontAwesomeIcon icon={faScissors} />
+							</button>
+							<button type="button" className={styles.tool} onClick={props.onCopy} aria-label={t('documents.markupCopy')} title={label('documents.markupCopy', 'Ctrl+C')}>
+								<FontAwesomeIcon icon={faCopy} />
+							</button>
+						</>
+					) : null}
 					<button type="button" className={styles.tool} onClick={props.onDeleteSelection} aria-label={t('documents.markupDelete')} title={label('documents.markupDelete', 'Del')}>
 						<FontAwesomeIcon icon={faTrashCan} />
 					</button>
 				</>
+			) : null}
+			{tool === 'select' && props.canPaste ? (
+				<button type="button" className={styles.tool} onClick={props.onPaste} aria-label={t('documents.markupPaste')} title={label('documents.markupPaste', 'Ctrl+V')}>
+					<FontAwesomeIcon icon={faPaste} />
+				</button>
 			) : null}
 			{props.canRotate ? (
 				<button type="button" className={styles.tool} onClick={props.onRotateSelection} aria-label={t('documents.markupRotate')} title={t('documents.markupRotate')}>
