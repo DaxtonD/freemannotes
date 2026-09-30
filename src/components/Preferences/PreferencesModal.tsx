@@ -173,7 +173,7 @@ function AboutSectionContent(props: {
 	isLightTheme: boolean;
 	connectionState: ConnectionState;
 	deviceId: string;
-	/** Whole-instance telemetry (the Half-Life HUD) is operator information: total users,
+	/** Whole-instance telemetry (the About HUD) is operator information: total users,
 	 *  disk and database usage, process memory, uptime. Admins only. The server enforces
 	 *  this too — /api/system/hud-stats 403s for everyone else — so this flag is about not
 	 *  showing a panel of dashes to people who can't have the numbers, not about secrecy. */

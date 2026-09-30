@@ -735,7 +735,7 @@ const tokyoNightThemes: ThemeDefinition[] = [
 	...TOKYONIGHT_ACCENTS.map((a) => makeAccentVariantTheme('tokyoNight', 'day', 'Day', a, tokyoNightDay)),
 ];
 
-// ── Freeman: Half-Life location & character themes ──────────────────────────
+// ── Built-ins, each named for its own palette ──────────────────────────
 const freemanThemes: ThemeDefinition[] = [
 	{
 		id: 'freeman-black-mesa',
@@ -1300,7 +1300,7 @@ export const THEMES: readonly ThemeDefinition[] = [
 	),
 	// ── Catppuccin (4 flavors × 14 accents = 56 themes) ────────────────────
 	...catppuccinThemes,
-	// ── Freeman: Half-Life location & character themes ──────────────────────
+	// ── Built-ins, each named for its own palette ──────────────────────
 	...freemanThemes,
 ];
 

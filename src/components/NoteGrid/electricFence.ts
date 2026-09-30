@@ -1,15 +1,15 @@
 ﻿/**
- * Half-Life 2 Combine electric fence / force-field animation engine.
+ * Electrified force-field animation engine.
  *
- * Visual replication of ElectricFence2.png (in-game crackle field):
+ * Procedural crackle field, drawn entirely from scratch — no source artwork:
  *   Nodes placed on a JITTERED GRID (cell size ~28 px) so the pattern fills
  *    the entire canvas with uniform Voronoi-like cell density.
- *   K-NEAREST-NEIGHBOR edges (K = 5) triangulate the jitter grid, reproducing
- *    the HL2 cell pattern without any explicit Delaunay pass.
+ *   K-NEAREST-NEIGHBOR edges (K = 5) triangulate the jitter grid, giving the
+ *    cell pattern without any explicit Delaunay pass.
  *   THREE-PASS BATCHED edge rendering (bloom / glow / core) using 4
  *    brightness-bucketed stroke calls per pass.  Wide bloom from adjacent edges
- *    overlaps inside each cell, creating the filled-glow look from the game.
- *   LEFT / RIGHT POLE GLOW: pulsing gradient strips represent HL2 fence posts.
+ *    overlaps inside each cell, creating the filled-glow look.
+ *   LEFT / RIGHT POLE GLOW: pulsing gradient strips standing in for fence posts.
  *   LOCAL ARC CRACKLE: occasional zigzag bolts along existing edges.
  *   Light-theme variant uses a pale arctic-blue palette.
  *

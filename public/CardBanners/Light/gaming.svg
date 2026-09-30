@@ -85,9 +85,6 @@
   <circle cx="33" cy="1" r="4.5" fill="#785898" opacity="0.55"/>
   <circle cx="15" cy="1" r="4.5" fill="#785898" opacity="0.55"/>
   <circle cx="24" cy="10" r="4.5" fill="#785898" opacity="0.9"/>
-  <!-- lambda symbol (HL2 easter egg) -->
-  <path d="M-6.5,-11 L6.5,11" fill="none" stroke="#785898" stroke-width="3.5" stroke-linecap="round" opacity="0.9"/>
-  <path d="M-0.65,-1.1 L-6.5,11" fill="none" stroke="#785898" stroke-width="3.5" stroke-linecap="round" opacity="0.9"/>
   </g>
 
   <!-- border -->

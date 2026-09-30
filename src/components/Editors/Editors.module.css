@@ -3924,7 +3924,7 @@ Drag ghost:
 	white-space: nowrap;
 }
 
-/* Half-Life 2 pulse-rifle energy orb, not a whole-bar flash: on a "checking"
+/* A travelling energy orb, not a whole-bar flash: on a "checking"
    shot this travels the FULL 0→target distance alone (through whatever's
    already filled) at a constant rate, while .checklistProgressFill above
    stays put until the orb reaches its old edge, then bursts once it arrives.

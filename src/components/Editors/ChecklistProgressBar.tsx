@@ -33,8 +33,8 @@ const OPEN_SETTLE_GRACE_MS = 800;
 
 /**
  * Discrete "N of M completed" indicator + animated fill bar for checklist
- * notes. Modeled on two opposing Half-Life 2 pulse-rifle-style energy orbs
- * rather than a whole-bar flash — completed and incomplete items pushing
+ * notes. Modeled on two opposing energy orbs travelling the bar rather than a
+ * whole-bar flash — completed and incomplete items pushing
  * back against each other, not one neutral indicator:
  *
  * - Checking an item fires an accent-colored orb from the very START of the

@@ -4,7 +4,7 @@ import type { ThemeId } from '../../core/theme';
 import type { NoteCardBannerTitlePosition } from '../../core/deviceAppearancePreferences';
 import styles from './PreferencesModal.module.css';
 
-type ThemeCategory = 'built-in' | 'earth' | 'nord' | 'catppuccin' | 'gruvbox' | 'everforest' | 'rose-pine' | 'tokyo-night' | 'freeman';
+type ThemeCategory = 'built-in' | 'earth' | 'nord' | 'catppuccin' | 'gruvbox' | 'everforest' | 'rose-pine' | 'tokyo-night';
 type AppearancePane = 'theme' | 'language' | 'display-size';
 
 type ThemeOption = { id: ThemeId; label: string };
@@ -30,7 +30,8 @@ function getThemeCategory(themeId: ThemeId): ThemeCategory {
 	if (themeId.startsWith('everforest-')) return 'everforest';
 	if (themeId.startsWith('rosePine-')) return 'rose-pine';
 	if (themeId.startsWith('tokyoNight-')) return 'tokyo-night';
-	if (themeId.startsWith('freeman-')) return 'freeman';
+	// freeman-* ids deliberately fall through to Built In. The ids are historical; their labels
+	// carry no family prefix, so there's nothing to group them under any more.
 	return 'built-in';
 }
 
@@ -62,10 +63,6 @@ function stripThemePrefixForDisplay(theme: ThemeOption): string {
 	}
 	if (theme.id.startsWith('tokyoNight-')) {
 		const stripped = label.replace(/^Tokyo\s*Night\s*/i, '').trim();
-		return stripped || label;
-	}
-	if (theme.id.startsWith('freeman-')) {
-		const stripped = label.replace(/^Freeman[:\s]*/i, '').trim();
 		return stripped || label;
 	}
 	return label;
@@ -301,7 +298,6 @@ export function AppearanceModal(props: AppearanceModalProps): React.JSX.Element 
 											<option value="everforest">{props.t('prefs.themeCategoryEverforest')}</option>
 											<option value="rose-pine">{props.t('prefs.themeCategoryRosePine')}</option>
 											<option value="tokyo-night">{props.t('prefs.themeCategoryTokyoNight')}</option>
-											<option value="freeman">{props.t('prefs.themeCategoryFreeman')}</option>
 										</select>
 									</label>
 

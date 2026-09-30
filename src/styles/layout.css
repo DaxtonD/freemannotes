@@ -666,22 +666,16 @@
 	content: '';
 	position: absolute;
 	inset: 4% 6% 6% 6%;
-	/* Use the crowbar PNG as a theme-colored mask so the backdrop stays in the
-	   current palette instead of hard-coding the source image's orange tone. */
+	/* A soft diagonal wash in the current palette. This used to be masked through a
+	   masked PNG; the mask is gone but the hook is still here, so dropping in
+	   replacement art is just a mask-image away. */
 	background: linear-gradient(
 		135deg,
 		color-mix(in srgb, var(--color-accent) 40%, transparent) 0%,
 		color-mix(in srgb, var(--color-text) 22%, transparent) 100%
 	);
-	mask-image: url('/icons/crowbar.png');
-	mask-repeat: no-repeat;
-	mask-position: center;
-	mask-size: 88% auto;
-	-webkit-mask-image: url('/icons/crowbar.png');
-	-webkit-mask-repeat: no-repeat;
-	-webkit-mask-position: center;
-	-webkit-mask-size: 88% auto;
-	opacity: 0.28;
+	border-radius: inherit;
+	opacity: 0.12;
 	transform: rotate(-6deg);
 	filter: drop-shadow(0 0 24px color-mix(in srgb, var(--color-accent) 24%, transparent));
 	pointer-events: none;
@@ -726,7 +720,7 @@
 
 .auth-form input,
 .auth-form button:not(.auth-link) {
-	/* Keep the auth controls legible while letting the crowbar art tint show
+	/* Keep the auth controls legible while letting the backdrop tint show
 	   through a little instead of sitting behind fully opaque blocks. */
 	background: color-mix(in srgb, var(--color-surface) 84%, transparent);
 	backdrop-filter: blur(6px);
