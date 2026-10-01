@@ -60,7 +60,7 @@ export function otsuThreshold(gray: GrayImage): number {
 	return best;
 }
 
-const fullFrameQuad = (width: number, height: number): Quad => ([
+export const fullFrameQuad = (width: number, height: number): Quad => ([
 	{ x: 0, y: 0 },
 	{ x: width, y: 0 },
 	{ x: width, y: height },
@@ -310,6 +310,13 @@ export type ScanAdjustments = {
 };
 
 export const DEFAULT_SCAN_ADJUSTMENTS: ScanAdjustments = { filter: 'bw', brightness: 0, contrast: 0 };
+
+/**
+ * Photo mode starts in colour and leaves the picture alone. Black and white is right for a sheet
+ * of paper and ruinous for a photo of a site — the whole reason anyone takes one is the colour of
+ * the thing they're pointing at.
+ */
+export const PHOTO_ADJUSTMENTS: ScanAdjustments = { filter: 'colour', brightness: 0, contrast: 0 };
 
 /**
  * A blurred copy of the image, used as the local "what counts as paper here" reference. Two

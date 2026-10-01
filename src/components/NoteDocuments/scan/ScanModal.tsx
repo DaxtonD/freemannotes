@@ -6,11 +6,13 @@ import { useI18n } from '../../../core/i18n';
 import {
 	applyScanFilter,
 	detectDocumentQuad,
+	fullFrameQuad,
 	quadOutputSize,
 	scaleQuad,
 	toGrayscale,
 	warpQuadToRectangle,
 	DEFAULT_SCAN_ADJUSTMENTS,
+	PHOTO_ADJUSTMENTS,
 	type Point,
 	type Quad,
 	type RgbaImage,
@@ -77,6 +79,13 @@ type ScanModalProps = {
 	onClose: () => void;
 	onSave: (file: File) => Promise<void> | void;
 	defaultTitle?: string;
+	/**
+	 * 'document' straightens and cleans up a photographed page. 'photo' keeps the picture as it
+	 * was taken — a snap of a wall or a bit of plant has no edges to find and no page to flatten,
+	 * and running it through the document pipeline would wreck it. Everything after that is shared:
+	 * several photos go into one PDF, which then gets the full markup toolset.
+	 */
+	mode?: 'document' | 'photo';
 };
 
 function canvasFor(width: number, height: number): HTMLCanvasElement {
@@ -165,6 +174,7 @@ const stopEvent = (event: React.SyntheticEvent): void => event.stopPropagation()
 
 export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 	const { t } = useI18n();
+	const isPhotoMode = props.mode === 'photo';
 	const [pages, setPages] = React.useState<readonly ScanPage[]>([]);
 	const [draft, setDraft] = React.useState<Draft | null>(null);
 	const [step, setStep] = React.useState<ScanStep>('capture');
@@ -242,6 +252,16 @@ export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 		try {
 			const bitmap = await decodePhoto(file, maxWorkingSide());
 			const image = drawToImageData(bitmap, bitmap.width, bitmap.height);
+			if (isPhotoMode) {
+				// Whole frame, in colour, no detection pass at all. Brightness and contrast are still
+				// on the next step, which is the one adjustment a dark site photo genuinely wants.
+				bitmap.close?.();
+				const fullFrame = fullFrameQuad(image.width, image.height);
+				const photoBlob = await imageDataToBlob(image, 0.9);
+				setDraft({ image, previewUrl: URL.createObjectURL(photoBlob), quad: fullFrame, detected: false, adjustments: PHOTO_ADJUSTMENTS });
+				setStep('clean');
+				return;
+			}
 			// Edges are found on a small copy, drawn from the same decoded photo rather than by
 			// copying the working image again: faster, and one fewer picture in memory at once.
 			const detectScale = Math.min(1, DETECTION_SIDE / Math.max(bitmap.width, bitmap.height));
@@ -418,7 +438,7 @@ export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 		setBusy('saving');
 		setError(null);
 		try {
-			const file = await buildScanPdf(pages, title || t('scan.defaultTitle'));
+			const file = await buildScanPdf(pages, title || t(isPhotoMode ? 'scan.photoDefaultTitle' : 'scan.defaultTitle'));
 			await props.onSave(file);
 			props.onClose();
 		} catch (saveError) {
@@ -438,13 +458,16 @@ export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 		</button>
 	);
 
-	const stepNumber = step === 'capture' ? 1 : step === 'crop' ? 2 : step === 'clean' ? 3 : 4;
+	const stepNumber = isPhotoMode
+		? (step === 'capture' ? 1 : step === 'clean' ? 2 : 3)
+		: (step === 'capture' ? 1 : step === 'crop' ? 2 : step === 'clean' ? 3 : 4);
+	const stepTotal = isPhotoMode ? '3' : '4';
 	const stepTitle = step === 'capture'
-		? t('scan.stepCapture')
+		? t(isPhotoMode ? 'scan.photoStepCapture' : 'scan.stepCapture')
 		: step === 'crop'
 			? t('scan.stepCrop')
 			: step === 'clean'
-				? t('scan.stepClean')
+				? t(isPhotoMode ? 'scan.photoStepClean' : 'scan.stepClean')
 				: t('scan.stepPages');
 
 	const body = ((): React.ReactNode => {
@@ -540,7 +563,7 @@ export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 				<ul className={styles.pages}>
 					{pages.map((page, index) => (
 						<li key={page.id} className={styles.pageCard}>
-							<img className={styles.pageThumb} src={page.previewUrl} alt="" />
+							<img className={`${styles.pageThumb}${isPhotoMode ? ` ${styles.pageThumbPhoto}` : ''}`} src={page.previewUrl} alt="" />
 							<span className={styles.pageNumber}>{index + 1}</span>
 							<div className={styles.pageActions}>
 								<button type="button" className={styles.iconButton} onClick={() => movePage(index, -1)} disabled={index === 0} aria-label={t('scan.movePageBack')}>
@@ -663,7 +686,22 @@ export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 		if (step === 'clean') {
 			return (
 				<>
-					<button type="button" className={styles.secondaryButton} onClick={() => setStep('crop')} disabled={busy !== null}>
+					{/* Document mode steps back to the crop, which still holds the draft. Photo mode has
+					    no step in between, so Back means "use a different photo" — and it has to drop
+					    the draft on the way out, or its preview blob URL is leaked. */}
+					<button
+						type="button"
+						className={styles.secondaryButton}
+						onClick={() => {
+							if (!isPhotoMode) {
+								setStep('crop');
+								return;
+							}
+							discardDraft();
+							setStep(pages.length > 0 ? 'pages' : 'capture');
+						}}
+						disabled={busy !== null}
+					>
 						<FontAwesomeIcon icon={faChevronLeft} />
 						<span>{t('scan.back')}</span>
 					</button>
@@ -678,7 +716,7 @@ export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 			<>
 				<label className={styles.titleField}>
 					<span>{t('scan.titleLabel')}</span>
-					<input type="text" value={title} placeholder={t('scan.defaultTitle')} onChange={(event) => setTitle(event.target.value)} />
+					<input type="text" value={title} placeholder={t(isPhotoMode ? 'scan.photoDefaultTitle' : 'scan.defaultTitle')} onChange={(event) => setTitle(event.target.value)} />
 				</label>
 				<button type="button" className={styles.secondaryButton} onClick={() => setStep('capture')} disabled={busy !== null}>
 					<FontAwesomeIcon icon={faPlus} />
@@ -707,12 +745,12 @@ export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 			onWheel={stopEvent}
 			onScroll={stopEvent}
 		>
-			<section className={styles.dialog} role="dialog" aria-modal="true" aria-label={t('scan.title')}>
+			<section className={styles.dialog} role="dialog" aria-modal="true" aria-label={t(isPhotoMode ? 'scan.photoTitle' : 'scan.title')}>
 				<header className={styles.header}>
 					<div className={styles.headerCopy}>
-						<p className={styles.stepLine}>{t('scan.stepOf').replace('{n}', String(stepNumber)).replace('{total}', '4')}</p>
+						<p className={styles.stepLine}>{t('scan.stepOf').replace('{n}', String(stepNumber)).replace('{total}', stepTotal)}</p>
 						<h2 className={styles.title}>{stepTitle}</h2>
-						<p className={styles.subtitle}>{pages.length > 0 ? t('scan.pageCount').replace('{n}', String(pages.length)) : t('scan.subtitle')}</p>
+						<p className={styles.subtitle}>{pages.length > 0 ? t('scan.pageCount').replace('{n}', String(pages.length)) : t(isPhotoMode ? 'scan.photoSubtitle' : 'scan.subtitle')}</p>
 					</div>
 					<button type="button" className={styles.iconButton} onClick={props.onClose} aria-label={t('common.close')} title={t('common.close')}>
 						<FontAwesomeIcon icon={faXmark} />
@@ -729,7 +767,7 @@ export function ScanModal(props: ScanModalProps): React.JSX.Element | null {
 					ref={inputRef}
 					type="file"
 					accept="image/*"
-					{...(isCoarsePointer ? { capture: 'environment' as const } : {})}
+					{...(isCoarsePointer && !isPhotoMode ? { capture: 'environment' as const } : {})}
 					className={styles.hiddenInput}
 					onChange={(event) => void handlePhotoChosen(event)}
 					tabIndex={-1}

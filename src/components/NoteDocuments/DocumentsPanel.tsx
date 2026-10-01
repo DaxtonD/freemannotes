@@ -1,7 +1,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
-import { faArrowLeft, faCamera, faClockRotateLeft, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
+import { faArrowLeft, faCamera, faClockRotateLeft, faImage, faListUl, faPlus, faRotateRight, faTableCellsLarge, faTrash } from '@fortawesome/free-solid-svg-icons';
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
 import { useDocumentManager } from '../../core/DocumentManagerContext';
 import { useI18n } from '../../core/i18n';
@@ -347,7 +347,7 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 	const [busyId, setBusyId] = React.useState<string | null>(null);
 	const [viewerDocument, setViewerDocument] = React.useState<NoteDocumentRecord | null>(null);
 	const [versionsDocument, setVersionsDocument] = React.useState<NoteDocumentRecord | null>(null);
-	const [scanOpen, setScanOpen] = React.useState(false);
+	const [scanOpen, setScanOpen] = React.useState<'document' | 'photo' | null>(null);
 	const [textViewerDocument, setTextViewerDocument] = React.useState<NoteDocumentRecord | null>(null);
 	// Documents open as a list by default: for files, name/type/size reads better than a preview.
 	const [viewMode, toggleViewMode] = usePanelViewMode(PANEL_VIEW_MODE_STORAGE_KEYS.documents, 'list');
@@ -562,11 +562,20 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 							<button
 								type="button"
 								className={styles.iconButton}
-								onClick={() => setScanOpen(true)}
+								onClick={() => setScanOpen('document')}
 								aria-label={t('scan.title')}
 								title={t('scan.title')}
 							>
 								<FontAwesomeIcon icon={faCamera} />
+							</button>
+							<button
+								type="button"
+								className={styles.iconButton}
+								onClick={() => setScanOpen('photo')}
+								aria-label={t('scan.photoTitle')}
+								title={t('scan.photoTitle')}
+							>
+								<FontAwesomeIcon icon={faImage} />
 							</button>
 							<button
 								type="button"
@@ -619,7 +628,8 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 			{scanOpen ? (
 				<React.Suspense fallback={null}>
 					<ScanModal
-						onClose={() => setScanOpen(false)}
+						mode={scanOpen}
+						onClose={() => setScanOpen(null)}
 						onSave={async (file) => {
 							if (!authUserId || !docId) return;
 							// Straight into the same upload queue as any other document, so a scan taken
