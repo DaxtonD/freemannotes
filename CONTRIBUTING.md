@@ -786,6 +786,28 @@ Rows are looked up by the id in the path, never the uploader folder, because mov
 
 ---
 
+## PDF Markup: Selection and the Clipboard
+
+Selection is one `ReadonlySet<string>`, not an id plus a set. A single selection is a set of one, and everything that only makes sense for one item — resize handles, editing text, opening a comment — reads the derived `selectedMarkupId` and goes quiet as soon as a second thing joins. Keep it that way; two sources of truth for "what's picked" is how the handles end up disagreeing with the outline.
+
+**Markup cannot leave its page.** Anything dropped past an edge is invisible three times over: the SVG layer clips it, the page panel can't list it, and `exportMarkupPdf` draws it outside the media box so it never prints. Off to the left or right there isn't even a scrollbar to hint that something is out there. `clampMoveToPage` (`markupGeometry.ts`) trims every move — drags, group drags, callout-box drags, arrow-key nudges and pastes. Groups are trimmed as one bounding box so the arrangement survives; clamping members individually piles them against the margin. A markup *wider* than the page inverts the rule and may slide within its own overhang without uncovering an edge, which is a real case rather than a theoretical one, because `markupBounds` pads an ink stroke by half its stroke width. Placement has always clamped; moving simply never did.
+
+**Group work is one undo step.** `addMany` writes in a single Yjs transaction. The undo manager runs with `captureTimeout: 0`, so twelve separate `add()` calls would be twelve separate undos.
+
+**A group mid-drag goes through a store, not React state.** `createMarkupGroupDraftStore` mirrors the single-item draft store so a drag repaints one SVG instead of re-rendering the page component every frame. Its empty snapshot is a shared frozen array on purpose: `useSyncExternalStore` compares snapshots by identity, and returning a fresh `[]` each call is an infinite render loop — that exact mistake cost a release to find once already.
+
+**Group moves stay on their own page.** A single markup can still be dragged across a page boundary, clamped against the page it lands on rather than the one it left, because pages in a set aren't all the same size. Cut and paste is the route between sheets for a group.
+
+**Comments never go on the clipboard**, and **measurements refuse to paste onto a differently-scaled page**. A comment carries a sequential number and its replies live in a separate map keyed by comment id, so a copy would either duplicate a number or drop a conversation. A measurement is raw geometry read against its page's scale, so the identical line means four metres on a 1:100 site plan and twelve feet on a quarter-inch floor plan — silently changing what a dimension claims, on drawings somebody builds from, is worse than refusing. The viewer says how many it left behind.
+
+Marquee selection is mouse and pen by default; on touch it is behind an explicit toolbar toggle, because a one-finger drag has to keep scrolling a plan set. The toggle disarms itself when the select tool is left, so nobody is stranded with a viewer that won't scroll and no explanation.
+
+## Photos as Documents
+
+A photo becomes a real `NoteDocument` rather than a new kind of attachment: `buildScanPdf` embeds it in a single-page PDF, which then inherits markup, versions, page naming, export and offline sync for free. `ScanModal`'s `mode` prop is the whole difference — `'photo'` skips edge detection and the crop step, uses the full frame, and starts in colour instead of black and white, which is right for paper and ruinous for a photo of a site. It also drops `capture="environment"` from the file input, because that attribute forces the camera and hides the gallery on Android, and "one I took earlier" is the entire point.
+
+Previews fit their stage in both axes (`object-fit: contain` against a viewport-unit `max-height`), following `.cameraVideo`. Two things to know if you lay out anything else in that modal: a percentage `max-height` resolves to nothing there because `.dialog` is `max-height`, not `height`, so a tall photo will grow until it shoves the controls aside; and a flex item's `min-width` defaults to its intrinsic width, so `max-width: 100%` alone will not make a wide photo shrink.
+
 ## Notifications, the Inbox and the Bell
 
 There are three places a user can be told something, and each one has exactly one job. An event that lands in two of them reads as duplicate notifications, which is the bug this split exists to prevent.
@@ -807,6 +829,8 @@ Rules that follow from that, all load-bearing:
 **`ActivityTarget.visible`** is how a pending invitation stays out of the inbox without losing the row. An `@mention` that has to create an invitation to grant access writes its `Activity` immediately — that's the only moment the ProseMirror `nodeId` for "scroll to the chip" is known — but the target row is created `visible: false`. `revealInvitationActivity()` (`server/activityEmitter.js`) flips it true on accept, and *that revealed card is the recipient's card*; they get no separate "you accepted" entry. A decline leaves it hidden forever and emits `note_share_declined` instead, because un-hiding "Alice mentioned you" with a link into a note you just refused is worse than showing nothing.
 
 `GET /api/inbox`, `/api/inbox/count` and `/api/inbox/archive-all` must all filter on `visible: true` identically, or the badge promises unread items the list then refuses to show.
+
+**Opening an inbox card is local-first, and must stay that way.** The note is already on the device; the only thing the server can add is "actually, it's gone", which is rare. So `onOpenNote` calls `openNoteEditor` from the local Yjs doc straight away and verifies behind it — if the check comes back 404 or trashed, the editor closes itself with a toast and the note id joins `unavailableNoteIds` so the card stops offering to open. Do not reintroduce an `await` in front of the open: it used to await an access-check first, and on a slow mobile link that was ten seconds of a card that looked broken. Two traps if you touch this path: `getDocWithSync` already returns on IndexedDB hydration rather than waiting for the socket, so awaiting it buys nothing (the editor's own load effect calls it anyway); and every outbound request here goes through `fetchWithTimeout`, because the original was a bare `fetch` with no deadline and a stalled request held the open hostage indefinitely. The one branch that still waits on purpose is a cross-workspace note reached by *membership* — the workspace switch has to land before the room is opened, or the Yjs WS handler rejects the namespace.
 
 **Access-change events** (`note_share_declined`, `note_share_revoked`, `note_share_left`) are one `Activity` row with two targets. The wording is written per viewer from `actor.id === authUserId` ("You left" vs "Bob left"), and whether the card opens the note is decided per viewer in `isActivityOpenable()` — the person who lost access has nothing to open, the owner still does, and one server-side deep link can't express both. The actor's own copy is created pre-read via `readUserIds`.
 
