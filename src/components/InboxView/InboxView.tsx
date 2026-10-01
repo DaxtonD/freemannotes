@@ -59,6 +59,13 @@ interface Props {
 	 * card so it doesn't keep coming back for a note that no longer exists.
 	 */
 	onOpenNote: (noteId: string, workspaceId: string, roomId?: string, scrollToNodeId?: string) => void | Promise<{ noteMissing?: boolean } | void>;
+	/**
+	 * Notes that turned out to be permanently gone. A card opens from local data straight away and
+	 * the server confirms behind it, so this answer arrives after the click rather than during it.
+	 * The card stays — "Alice mentioned you" is still true after the note dies — it just stops
+	 * offering to open something that isn't there.
+	 */
+	unavailableNoteIds?: ReadonlySet<string>;
 	onAllArchived?: () => void;
 	/** Called whenever an activity is read or archived so the badge count re-fetches. */
 	onActivityChanged?: () => void;
@@ -247,7 +254,7 @@ interface FilterCache {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal }: Props) {
+export function InboxView({ authUserId, onOpenNote, unavailableNoteIds, iconSrc, refreshToken = 0, onAllArchived, onActivityChanged, pendingSelfMentions, onPendingDismissed, onServerNodeIdsLoaded, onMarkReminderDone, onOpenReminderModal }: Props) {
 	const { t } = useI18n();
 	const liveAvatarLookup = useLiveAvatarUrlLookup();
 	const [filter, setFilter] = useState<FilterTab>('all');
@@ -824,7 +831,8 @@ export function InboxView({ authUserId, onOpenNote, iconSrc, refreshToken = 0, o
 							// something you owe an answer to, so it lives in the notification bell
 							// and only there; this view is the log of what already happened. The
 							// card for a share you accepted is created at that moment instead.
-							const isUnavailable = unavailableIds.has(activity.id);
+							const isUnavailable = unavailableIds.has(activity.id)
+								|| (unavailableNoteIds?.has(activity.subject.noteId) ?? false);
 							const isOpenable = !isUnavailable && isActivityOpenable(activity, authUserId);
 							const swipeOffset = swipeOffsets[activity.id] ?? 0;
 							const isSwiping = swipeOffset !== 0;

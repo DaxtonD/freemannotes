@@ -776,6 +776,15 @@ type OverlayHistoryState = {
 	kind?: 'overlay' | 'root';
 };
 
+/**
+ * How long the inbox waits for the server to confirm a note still exists. Nothing is blocked on
+ * this — the note is already open — so a slow answer is worth no more than no answer at all.
+ */
+const INBOX_ACCESS_CHECK_TIMEOUT_MS = 6000;
+
+/** Shared empty set, so "nothing unavailable" is always the same object and never re-renders. */
+const NO_NOTE_IDS: ReadonlySet<string> = new Set();
+
 const EMPTY_OVERLAY_SNAPSHOT: OverlaySnapshot = {
 	sidebarView: 'notes',
 	editorMode: 'none',
@@ -1842,6 +1851,19 @@ export function App(): React.JSX.Element {
 	// state because the only readers are the session-restore writes, which run from event
 	// handlers and must not drag a re-render along with them.
 	const openDocumentIdRef = React.useRef<string | null>(null);
+	/**
+	 * Notes an inbox card points at that turned out to be permanently gone. The inbox opens a card
+	 * from local data immediately and confirms with the server afterwards, so "this note no longer
+	 * exists" arrives after the click rather than during it — this is how that answer gets back to
+	 * the card. Session-scoped on purpose: the card itself is never removed (the record of a mention
+	 * stays true after the note dies), it just stops pretending it can be opened.
+	 */
+	const [unavailableNoteIds, setUnavailableNoteIds] = React.useState<ReadonlySet<string>>(NO_NOTE_IDS);
+	const unavailableNoteIdsRef = React.useRef(unavailableNoteIds);
+	unavailableNoteIdsRef.current = unavailableNoteIds;
+	const markNoteUnavailable = React.useCallback((noteId: string): void => {
+		setUnavailableNoteIds((current) => (current.has(noteId) ? current : new Set(current).add(noteId)));
+	}, []);
 	// A document the restore effect wants reopened once its note's panel has loaded. Cleared by
 	// the panel the moment it acts on it, so reopening the note later doesn't re-trigger it.
 	const [restoreDocumentId, setRestoreDocumentId] = React.useState<string | null>(null);
@@ -11938,15 +11960,19 @@ export function App(): React.JSX.Element {
 							const superseded = (): boolean => openNoteFromActivityCallIdRef.current !== callId;
 							setPendingMentionScrollNodeId(scrollToNodeId ?? null);
 							if (noteId.startsWith('shared-placement:')) {
-								// Pre-register the alias so DocumentManager can route before
-								// refreshNoteShareState completes its API calls.
+								// Pre-register the alias so DocumentManager can route immediately.
 								if (roomId) ensureManualRoomAlias(noteId, roomId);
-								// Must refresh sharedPlacements so the guard effect
-								// (selectedNoteSharedPlacement == null → close) doesn't fire.
-								await refreshNoteShareStateRef.current();
+								// The refresh used to be awaited here so the access-lost guard effect
+								// wouldn't mistake a not-yet-loaded placement for a revoke. It no longer
+								// has to be: that effect returns early for any note we hold a manual room
+								// alias for (set on the line above), waits out an in-flight refresh, and
+								// only fires after a confirmation delay. So the reconciliation can happen
+								// behind the open instead of in front of it — on a slow link that await was
+								// several seconds of staring at the inbox.
+								void refreshNoteShareStateRef.current();
 								if (superseded()) return;
-								try { await manager.getDocWithSync(noteId); } catch {}
-								if (superseded()) return;
+								// No getDocWithSync here either: the editor's own load effect calls it, and
+								// it returns on IndexedDB hydration rather than waiting for the socket.
 								openNoteEditor(noteId);
 								return;
 							}
@@ -11958,8 +11984,7 @@ export function App(): React.JSX.Element {
 									(p) => p.sourceNoteId === noteId && p.sourceWorkspaceId === workspaceId
 								);
 								if (placement) {
-									try { await manager.getDocWithSync(placement.aliasId); } catch {}
-									if (superseded()) return;
+									// The editor's load effect fetches the doc itself, offline-first.
 									openNoteEditor(placement.aliasId);
 									return;
 								}
@@ -12050,9 +12075,7 @@ export function App(): React.JSX.Element {
 									// land the placement in state so the access-lost guard effect
 									// doesn't mistake it for a revoke.
 									ensureManualRoomAlias(placementForNote.aliasId, placementForNote.roomId);
-									await refreshNoteShareStateRef.current();
-									if (superseded()) return;
-									try { await manager.getDocWithSync(placementForNote.aliasId); } catch {}
+									void refreshNoteShareStateRef.current();
 									if (superseded()) return;
 									openNoteEditor(placementForNote.aliasId);
 									return;
@@ -12063,46 +12086,71 @@ export function App(): React.JSX.Element {
 									showTrashedNoteLinkToast(noteId);
 									return;
 								}
-								try { await manager.getDocWithSync(noteId); } catch {}
-								if (superseded()) return;
 								openNoteEditor(noteId);
 								return;
 							}
-							// Same-workspace mention (the common case): the target note may have
-							// been trashed or permanently deleted since the mention was created.
-							// Gate on the same access-check openLinkedNote uses for note-link chip
-							// clicks so a stale inbox card behaves the same way — trashed shows a
-							// restore toast, permanently-deleted reports back to InboxView so the
-							// dead card can be auto-archived instead of opening stale content.
+							// Same-workspace mention — the common case, and the one every self-mention,
+							// "X accepted your share" and assignment card goes through.
+							//
+							// This used to await an access-check before opening anything, which made
+							// clicking a card network-FIRST in an offline-first app: on a slow mobile
+							// link it was several seconds of nothing happening, and because that was a
+							// bare fetch with no timeout or AbortController, a stalled request could
+							// hold the open hostage far longer than that. The note is already on this
+							// device. The only thing the server can add is "actually, it's gone", which
+							// is rare and can be said afterwards.
+							//
+							// So: open from the local doc now, verify behind it, and correct if the
+							// answer comes back bad. A trashed or deleted note briefly opens and then
+							// closes itself with a toast, which is a far better trade than making
+							// everyone wait for the common case to be confirmed fine.
 							if (isNoteDenied(noteId)) return;
-							try {
-								const res = await fetch(`/api/notes/${encodeURIComponent(noteId)}/access-check`);
-								if (superseded()) return;
-								if (res.status === 404) {
-									showBriefDialog(t('links.noteMissingToast'));
-									return { noteMissing: true };
-								}
-								if (!res.ok) {
-									markNoteDenied(noteId);
-									return;
-								}
-								const body: { access?: boolean; trashed?: boolean } = await res.json();
-								if (body?.trashed) {
-									showTrashedNoteLinkToast(noteId);
-									return;
-								}
-							} catch {
-								// Offline / network error: fall back to the local Yjs doc when
-								// it's already loaded this session, same as openLinkedNote.
-								const localDoc = manager.peekDoc(noteId);
-								if (localDoc && Boolean(localDoc.getMap('metadata').get('trashed'))) {
-									showTrashedNoteLinkToast(noteId);
-									return;
-								}
+							if (unavailableNoteIdsRef.current.has(noteId)) {
+								showBriefDialog(t('links.noteMissingToast'));
+								return;
 							}
 							if (superseded()) return;
 							openNoteEditor(noteId);
+							void (async () => {
+								const closeIfStillOpen = (): void => {
+									setSelectedNoteId((current) => (current === noteId ? null : current));
+								};
+								try {
+									const res = await fetchWithTimeout(`/api/notes/${encodeURIComponent(noteId)}/access-check`, {
+										timeoutMs: INBOX_ACCESS_CHECK_TIMEOUT_MS,
+										requestName: 'inbox-note-access-check',
+									});
+									if (superseded()) return;
+									if (res.status === 404) {
+										markNoteUnavailable(noteId);
+										closeIfStillOpen();
+										showBriefDialog(t('links.noteMissingToast'));
+										return;
+									}
+									if (!res.ok) {
+										markNoteDenied(noteId);
+										return;
+									}
+									const body: { access?: boolean; trashed?: boolean } = await res.json();
+									if (superseded()) return;
+									if (body?.trashed) {
+										closeIfStillOpen();
+										showTrashedNoteLinkToast(noteId);
+									}
+								} catch {
+									// Offline, or slower than the deadline: the local doc is the answer,
+									// which is the entire point. Only act on what's knowable here — if
+									// the cached copy says trashed, say so; otherwise leave it open.
+									if (superseded()) return;
+									const localDoc = manager.peekDoc(noteId);
+									if (localDoc && Boolean(localDoc.getMap('metadata').get('trashed'))) {
+										closeIfStillOpen();
+										showTrashedNoteLinkToast(noteId);
+									}
+								}
+							})();
 						}}
+						unavailableNoteIds={unavailableNoteIds}
 						onAllArchived={bumpInboxRefreshToken}
 						onActivityChanged={bumpInboxRefreshToken}
 						pendingSelfMentions={pendingSelfMentions}
