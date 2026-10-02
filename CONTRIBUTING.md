@@ -889,6 +889,40 @@ When reporting a masonry layout issue (cards in the wrong column, column imbalan
 
 ---
 
+## Diagnosing an Unexpected Reload
+
+The app can restart for three reasons, and before the boot forensics existed they were
+indistinguishable in the log — which is how a session-restore fix once got built on an assumption
+instead of evidence. Turn the service-worker debug toggle on in Preferences, reproduce, then use
+**Copy log**. Every boot writes an `init` entry; what sits immediately *before* it is the answer:
+
+| Preceding entry | Cause |
+|---|---|
+| `RELOAD_controllerchange` | A new service worker claimed the page and reloaded it. App's fault. |
+| `RELOAD_network` | A version mismatch forced a navigation. App's fault. |
+| `applyPwaUpdate-manual` | The user accepted the update banner. Working as intended. |
+| nothing, plus a gap in `msSinceLastSeen` | Something outside the app killed the process. OS, not us. |
+
+Each `init` carries the signals needed to tell those apart without guessing:
+
+- **`wasDiscarded`** — Chrome's own answer to "did the browser drop this page to reclaim memory and
+  is now restoring it". `null` where unimplemented (Safari), which is itself informative.
+- **`sessionSurvived`** — a tab discard keeps `sessionStorage`; a full process kill does not. This is
+  what separates the two.
+- **`msSinceLastSeen`** — `markPwaAlive()` stamps localStorage every 15s while visible, and on
+  `pagehide` and on backgrounding. The gap is how long the app was away before it booted.
+- **`navigationType`** and **`buildTag`** — reload versus fresh navigation, and whether the running
+  code is the deployed code.
+
+The heartbeat writes unconditionally rather than behind the debug flag, deliberately: a few bytes
+every 15 seconds costs nothing, and the point is to have the evidence already when a report arrives
+rather than needing to reproduce it first. It only runs while visible — a backgrounded page should
+not be writing storage, and the gap while hidden is the thing being measured.
+
+**Don't conclude "the OS killed it" from a bare `init` alone** without checking `msSinceLastSeen`
+and `sessionSurvived`. An ordinary cold start looks identical otherwise, and that ambiguity is
+exactly what previously sent a diagnosis the wrong way.
+
 ## PWA Version Changes
 
 The web app manifest (`public/manifest.json`) and the service worker both embed a version number. This version drives Android's "App info" display and is how the browser detects that a new service worker should be installed.

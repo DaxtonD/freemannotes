@@ -2,6 +2,11 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.18.0 - 2026-10-01
+
+### Added
+- **Every app start now explains itself.** There are three reasons Freeman Notes can restart — the service worker reloaded it, you accepted an update, or the operating system killed it in the background — and until now they looked identical in the logs. Which is embarrassing, because a session-restore fix got built on the assumption it was the third one without that ever being properly established. Turn on the service-worker debug toggle in Preferences and every boot now records whether the browser discarded the page, whether the process actually died (`sessionStorage` survives a tab discard and dies with a real kill, which is how you tell), how long the app was away beforehand, and which build is running. **Copy log** hands the whole thing over. A heartbeat writes a timestamp every fifteen seconds while the app is on screen so that "how long was it gone" is a measurement rather than a shrug — unconditionally, not behind the flag, because the entire point is to already have the evidence when something gets reported instead of trying to make it happen again on demand.
+
 ## 1.17.0 - 2026-09-30
 
 ### Added
