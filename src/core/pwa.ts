@@ -31,9 +31,22 @@ const SW_UPDATE_IDLE_MS = 90_000;
 const PWA_VERSION_STORAGE_KEY = 'freemannotes.pwa.current-version.v1';
 const PWA_UPDATED_NOTICE_KEY = 'freemannotes.pwa.updated-notice.v1';
 const PWA_DEBUG_ENABLED_KEY = 'freemannotes.pwa.debug-enabled.v1';
+/**
+ * Boot forensics. These two survive a process kill (localStorage does; sessionStorage does not,
+ * which is itself one of the signals below), so a boot can be explained after the fact instead of
+ * guessed at. Written unconditionally, not behind the debug flag — a few bytes per heartbeat is
+ * cheap, and the whole point is to have the evidence already when someone reports a flash.
+ */
+const PWA_LAST_SEEN_KEY = 'freemannotes.pwa.last-seen.v1';
+const PWA_SESSION_MARKER_KEY = 'freemannotes.pwa.session-marker.v1';
+/** How often the heartbeat records "still alive" while the app is on screen. */
+const PWA_HEARTBEAT_MS = 15000;
 const PWA_DEBUG_LOG_KEY = 'freemannotes.pwa.debug-log.v1';
 const PWA_DEBUG_MAX_ENTRIES = 150;
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
+// Logged on every boot: package.json's version barely moves between builds, so the build tag is
+// what actually answers "is the thing that just started the thing I deployed".
+const BUILD_TAG = typeof __BUILD_TAG__ === 'string' ? __BUILD_TAG__ : 'dev';
 const DEFAULT_VIEWPORT_CONTENT = 'width=device-width, initial-scale=1, viewport-fit=cover';
 const IOS_VIEWPORT_LOCKED_CONTENT = `${DEFAULT_VIEWPORT_CONTENT}, minimum-scale=1, maximum-scale=1, user-scalable=no`;
 
@@ -500,13 +513,78 @@ export async function clearPrivateServiceWorkerCaches(): Promise<void> {
 	}
 }
 
+/**
+ * Why did this boot happen?
+ *
+ * There are three ways the app can start, and before this they were indistinguishable in the log —
+ * which meant "the app hard-refreshed itself" and "Android killed it" looked identical, and a fix
+ * got built on the assumption rather than the evidence.
+ *
+ *  - The service worker reloaded us      -> a RELOAD_* entry sits just before this boot
+ *  - The user accepted an update         -> applyPwaUpdate-manual sits just before it
+ *  - Something outside the app killed us -> neither, plus a gap since the last heartbeat
+ *
+ * `wasDiscarded` is the direct answer where it exists (Chrome: the browser dropped this page to
+ * reclaim memory and is now restoring it). `sessionSurvived` separates a tab discard from a full
+ * process kill: sessionStorage lives through the former and dies with the latter.
+ */
+function readBootForensics(): Record<string, unknown> {
+	const now = Date.now();
+	let lastSeenAt: number | null = null;
+	let sessionSurvived = false;
+	try {
+		const raw = window.localStorage.getItem(PWA_LAST_SEEN_KEY);
+		const parsed = raw ? Number(raw) : NaN;
+		if (Number.isFinite(parsed)) lastSeenAt = parsed;
+	} catch { /* storage blocked */ }
+	try {
+		sessionSurvived = window.sessionStorage.getItem(PWA_SESSION_MARKER_KEY) === '1';
+		window.sessionStorage.setItem(PWA_SESSION_MARKER_KEY, '1');
+	} catch { /* storage blocked */ }
+	let navigationType: string | null = null;
+	try {
+		const entry = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined;
+		navigationType = entry?.type ?? null;
+	} catch { /* not supported */ }
+	return {
+		// Chrome only; undefined elsewhere, which is itself worth seeing in the log.
+		wasDiscarded: (document as Document & { wasDiscarded?: boolean }).wasDiscarded ?? null,
+		navigationType,
+		sessionSurvived,
+		msSinceLastSeen: lastSeenAt === null ? null : Math.max(0, now - lastSeenAt),
+	};
+}
+
+/** Records "still alive, at this moment" so the next boot can measure the gap. */
+function markPwaAlive(): void {
+	try {
+		window.localStorage.setItem(PWA_LAST_SEEN_KEY, String(Date.now()));
+	} catch { /* storage blocked */ }
+}
+
 export function initPwa(): void {
 	if (initialized || typeof window === 'undefined') return;
 	initialized = true;
+	const forensics = readBootForensics();
 	pwaLog('init', {
 		appVersion: APP_VERSION,
+		buildTag: BUILD_TAG,
 		hadController: Boolean(navigator.serviceWorker?.controller),
 		vis: document.visibilityState,
+		standalone: isStandalonePwa(),
+		...forensics,
+	});
+	markPwaAlive();
+	// Heartbeat only while visible: a backgrounded page shouldn't be writing storage, and a gap
+	// while hidden is exactly the thing being measured.
+	window.setInterval(() => {
+		if (document.visibilityState === 'visible') markPwaAlive();
+	}, PWA_HEARTBEAT_MS);
+	// Last write before we lose the chance. pagehide is the one that fires on mobile teardown;
+	// beforeunload is unreliable there and visibilitychange:hidden covers backgrounding.
+	window.addEventListener('pagehide', markPwaAlive);
+	document.addEventListener('visibilitychange', () => {
+		if (document.visibilityState === 'hidden') markPwaAlive();
 	});
 	reconcileVersionNotifications();
 	refreshMobileViewportBehavior();
