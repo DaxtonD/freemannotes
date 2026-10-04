@@ -889,6 +889,25 @@ When reporting a masonry layout issue (cards in the wrong column, column imbalan
 
 ---
 
+## Canvases Don't Survive Backgrounding
+
+Anything drawn to a `<canvas>` can come back empty after the app has been in the background.
+Android reclaims canvas memory from a backgrounded tab: the element stays in the DOM at the right
+size, `drawn` is still true, and the pixels are gone. This was observed in the field on a PDF at
+high zoom — the SVG markup layer rendered perfectly over a blank page, which is the signature to
+look for. **Anything DOM-based survives; anything canvas-based does not.**
+
+A render effect keyed only on content will never notice, because nothing it depends on changes
+when the app resumes. `PdfViewer` handles it with a `redrawToken` bumped on
+`visibilitychange → visible` and passed down as a render dependency, plus a `contextlost` listener
+on each canvas — that's Chrome's precise signal for this reclamation, with visibility as the
+portable fallback. It is deliberately unconditional rather than threshold-based: "was it hidden
+long enough to lose the pixels" is a guess, and guessing wrong leaves a blank page with no route
+back to it. Only in-range pages redraw, so the cost is bounded.
+
+**If you add a new canvas-backed surface, it needs the same treatment.** The drawing editor
+(Excalidraw) has the same exposure and has not been done yet.
+
 ## Diagnosing an Unexpected Reload
 
 The app can restart for three reasons, and before the boot forensics existed they were

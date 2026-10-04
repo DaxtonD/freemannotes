@@ -206,7 +206,7 @@ Optional:
 
 Works as a standard custom container:
 
-* Repository: `ghcr.io/daxtond/freemannotes:latest` (or pin a release, e.g. `ghcr.io/daxtond/freemannotes:1.18.0`)
+* Repository: `ghcr.io/daxtond/freemannotes:latest` (or pin a release, e.g. `ghcr.io/daxtond/freemannotes:1.18.1`)
 * Port: `27015`
 * AppData: `/app/uploads`
 * Set:

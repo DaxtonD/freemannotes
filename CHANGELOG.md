@@ -2,6 +2,14 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.18.1 - 2026-10-03
+
+### Fixed
+- **Your PDF came back blank after the app had been in the background.** The markup was still there — measurements, clouds, the lot — floating over a white page, which is a strange and slightly upsetting sight. Markup is SVG and survives anything; the page underneath is a canvas, and Android quietly reclaims canvas memory from a backgrounded app. The element stays in the DOM at the right size and the pixels are simply gone, and nothing ever redrew them. Confirmed from the field rather than guessed at: the debug log showed the app alive and well across forty-minute backgrounds while the page came back empty. Visible pages now redraw when you return, and both canvases are covered — the page and the high-resolution detail layer, which would otherwise have given you a beautifully sharp blank. Drawings have the same underlying cause and are still to come.
+- **Every note opened with its attachment sheet up and the editor dimmed behind it.** Our fault, and new in 1.17.0. Restoring a session asks the documents panel to reopen the file you had open, and the panel only cleared that request when it actually found the document — so a note with no documents, or a list that hadn't loaded, left the request set forever, and every editor opened afterwards saw it and obediently opened its media dock. The request is now tied to the note it belongs to and expires if it can't be honoured.
+- **Deleting a checklist item no longer throws you to the bottom of the list.** Tap a completed item, scroll up, add a new one, change your mind and hit the x — and you'd be sent back down to whatever completed item you'd touched earlier. Deleting a row hands the cursor to its neighbour so you can carry on typing, and completed items live at the bottom, so "the neighbour" was sometimes a long scroll away. It won't hand the cursor to a completed row now, which is not somewhere anyone wanted it anyway.
+- **Pressing back after scanning a share QR code asked if you wanted to exit the app.** The share screen was never part of the in-app history, so the first back press fell straight through to the exit guard — a rough welcome for someone who had just scanned a code to accept a note. Back now closes the share screen and puts you in the app.
+
 ## 1.18.0 - 2026-10-01
 
 ### Added
