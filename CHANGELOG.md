@@ -2,6 +2,21 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.19.0 - 2026-10-03
+
+> **This release needs a database migration.** It also clears every existing share link — see below.
+
+### Added
+- **Share links are visible from every device, and you can revoke them.** Make a QR code on your phone and it's there on your laptop, because the server now has an endpoint that lists them. Previously the only record of a link was a cache on the device that made it, so a link created anywhere was invisible everywhere else — and since nothing could list them, nothing could revoke them either. Each link now shows its role, its expiry and a Revoke button that kills it for everyone immediately. You only ever see your own links: somebody else's link to the same note isn't yours to manage, even if you can both open the note.
+- **Accepting a shared note asks where it should go**, the same way an invitation always has — your own notes, or Shared with me. Scanning a QR code used to grant access the instant the link opened, before any of the interface existed, which is precisely why it never asked and always chose Shared with me for you. The two ways of accepting a note now run through the same placement code rather than two lookalike copies.
+
+### Changed
+- **Asking for a share link you already have gives you the one you already have.** Creating was unconditional, so requesting a link for the same note from a second device — or after clearing site data — quietly minted another valid token. Notes were accumulating links that nobody could see, count or cancel. One live link per note, role and creator now.
+- **Every existing share link has been cleared.** The accumulated duplicates are unknowable by definition — there was never a way to enumerate them — so starting from nothing is the only honest option. Anyone holding an old link will be told it doesn't exist and needs a fresh one. No schema change; the data simply goes.
+
+### Fixed
+- Offline, the share-link list falls back to what this device has cached rather than claiming you have no links, because "I can't reach the server" and "there's nothing there" are very different answers and only one of them is true. Cached entries say so and don't offer a Revoke button, since there's nothing for it to revoke against.
+
 ## 1.18.1 - 2026-10-03
 
 ### Fixed

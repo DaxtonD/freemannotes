@@ -808,6 +808,44 @@ A photo becomes a real `NoteDocument` rather than a new kind of attachment: `bui
 
 Previews fit their stage in both axes (`object-fit: contain` against a viewport-unit `max-height`), following `.cameraVideo`. Two things to know if you lay out anything else in that modal: a percentage `max-height` resolves to nothing there because `.dialog` is `max-height`, not `height`, so a tall photo will grow until it shoves the controls aside; and a flex item's `min-width` defaults to its intrinsic width, so `max-width: 100%` alone will not make a wide photo shrink.
 
+## Share Links
+
+**The server is the record of which links exist.** It briefly wasn't: the only list was a
+localStorage cache, which is per-device by construction, so a link created on one device was
+invisible on every other and could not be revoked from anywhere. `GET /api/share-links` lists a
+note's live links for the calling user; `DELETE /api/share-links/:id` revokes one. Scoped to the
+caller's own links on purpose — someone else's link to the same note is not yours to manage, even
+if you can both open the note.
+
+**Creating reuses a live link** for the same (creator, entity, permission) rather than minting
+another. Without that, a second device — or a cleared cache — silently produced a second valid
+token, and notes accumulated links nobody could enumerate or cancel.
+
+**Revocation is a soft `revokedAt`, not a delete**, so an accepted share keeps its provenance.
+`readShareMetadata` already refuses a revoked token, so revoking kills lookup and acceptance
+together.
+
+**Offline, the list falls back to the device cache** rather than returning empty. An empty list is
+a confident lie when the real answer is "I couldn't ask" — the same mistake the shared-note
+placement reconciliation had to be taught not to make. Cached entries are flagged `fromCache`,
+have no server id, and must not offer Revoke.
+
+**Both ways of accepting a note share one placement implementation.** `normalizePlacementTarget`
+and `resolveTargetWorkspaceId` live in `server/systemWorkspaces.js` and are imported by both
+`shareRouter` (link accept) and `noteShareRouter` (invitation accept). They used to differ — the
+link accept hardcoded Shared With Me and never offered a choice — and two copies of one rule is
+how the Enter-versus-click mention bug happened. Don't reintroduce a local copy.
+
+**A link accept reads the token first and accepts second.** It used to do both in one
+`Promise.all` when the route opened, which is why there was no opportunity to ask where the note
+should go: access was already granted before any interface existed. Workspace shares still accept
+immediately, because membership has nothing to choose between.
+
+**Testing acceptance needs a workspace the recipient doesn't belong to.** `acceptNoteShare`
+short-circuits to `already-has-access` when the recipient is a member of the note's workspace,
+which is correct and silently makes any placement assertion meaningless. Assert
+`status === 'accepted'`, not just a 200 — "already has access" is also a 200.
+
 ## Notifications, the Inbox and the Bell
 
 There are three places a user can be told something, and each one has exactly one job. An event that lands in two of them reads as duplicate notifications, which is the bug this split exists to prevent.
