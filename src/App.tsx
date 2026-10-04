@@ -1240,7 +1240,10 @@ export function App(): React.JSX.Element {
 		message: null,
 	});
 	const [shareRouteState, setShareRouteState] = React.useState<{
-		status: 'idle' | 'loading' | 'ready' | 'error';
+		// 'choose' is where a note share waits for you to say where it should go. Accepting used to
+		// happen the instant the link opened, which is why a link accept never asked and an
+		// invitation accept always did.
+		status: 'idle' | 'loading' | 'choose' | 'accepting' | 'ready' | 'error';
 		message: string | null;
 		label: string | null;
 		entityType: 'note' | 'workspace' | null;
@@ -2649,6 +2652,8 @@ export function App(): React.JSX.Element {
 
 	const externalRouteRef = React.useRef(externalRoute);
 	externalRouteRef.current = externalRoute;
+	const shareRouteStateRef = React.useRef(shareRouteState);
+	shareRouteStateRef.current = shareRouteState;
 	const handleExitExternalRoute = React.useCallback(() => {
 		clearExternalRoute();
 		setExternalRoute(null);
@@ -7069,10 +7074,24 @@ export function App(): React.JSX.Element {
 
 		void (async () => {
 			try {
-				const [metadata, accepted] = await Promise.all([
-					getShareTokenMetadata(externalRoute.token),
-					acceptShareToken(externalRoute.token),
-				]);
+				// Read the link first and accept second. A note share now stops here and asks where
+				// it should go, the same question an invitation asks. A workspace share has nowhere
+				// to choose between — accepting one makes you a member — so it still goes straight
+				// through.
+				const metadata = await getShareTokenMetadata(externalRoute.token);
+				if (cancelled) return;
+				if (metadata.entityType === 'note') {
+					setShareRouteState({
+						status: 'choose',
+						message: null,
+						label: metadata.label || 'Note',
+						entityType: 'note',
+						openWorkspaceId: null,
+						openNoteId: null,
+					});
+					return;
+				}
+				const accepted = await acceptShareToken(externalRoute.token);
 				if (cancelled) return;
 				const entityType = accepted.entityType;
 				const label = metadata.label || accepted.title || accepted.workspaceName || (entityType === 'workspace' ? 'Workspace' : 'Note');
@@ -8561,6 +8580,36 @@ export function App(): React.JSX.Element {
 		handleExitExternalRoute();
 	}, [activateWorkspaceFromSidebar, activeWorkspaceSystemKind, authWorkspaceId, handleExitExternalRoute, persistSharedWorkspaceSelection, shareRouteState.openNoteId, shareRouteState.openWorkspaceId]);
 
+	/** Accepts the share link into the chosen workspace. Mirrors the invitation accept's targets. */
+	const acceptSharedNoteInto = React.useCallback(async (target: 'personal' | 'shared'): Promise<void> => {
+		const route = externalRouteRef.current;
+		if (!route || route.kind !== 'share') return;
+		setShareRouteState((current) => ({ ...current, status: 'accepting', message: null }));
+		try {
+			const accepted = await acceptShareToken(route.token, target);
+			const label = shareRouteStateRef.current.label || accepted.title || 'Note';
+			setShareRouteState({
+				status: 'ready',
+				message: accepted.status === 'already-has-access'
+					? t('share.alreadyHaveAccess').replace('{label}', label)
+					: t('share.accessGranted').replace('{label}', label),
+				label,
+				entityType: 'note',
+				openWorkspaceId: accepted.targetWorkspaceId ?? null,
+				openNoteId: accepted.placementAliasId || accepted.sourceNoteId || null,
+			});
+			void loadSidebarWorkspacesRef.current();
+			void refreshNoteShareStateRef.current();
+			setCollaborationRefreshToken((value) => value + 1);
+		} catch (err) {
+			setShareRouteState((current) => ({
+				...current,
+				status: 'error',
+				message: err instanceof Error ? err.message : t('share.unableToOpen'),
+			}));
+		}
+	}, [t]);
+
 	const shareRouteView = (
 		<div className="auth-shell">
 			<div className="auth-card">
@@ -8568,6 +8617,10 @@ export function App(): React.JSX.Element {
 				<div className="auth-subtitle">
 					{shareRouteState.status === 'loading'
 						? 'Verifying share link…'
+						: shareRouteState.status === 'choose'
+							? t('share.whereShouldItGo')
+						: shareRouteState.status === 'accepting'
+							? t('share.accepting')
 						: shareRouteState.entityType === 'workspace'
 							? 'Workspace sharing'
 							: 'Note sharing'}
@@ -8591,6 +8644,16 @@ export function App(): React.JSX.Element {
 						>
 							{t('share.refresh')}
 						</button>
+					) : null}
+					{shareRouteState.status === 'choose' ? (
+						<>
+							<button type="button" onClick={() => void acceptSharedNoteInto('personal')}>
+								{t('share.placeInPersonal')}
+							</button>
+							<button type="button" onClick={() => void acceptSharedNoteInto('shared')}>
+								{t('share.placeInSharedWithMe')}
+							</button>
+						</>
 					) : null}
 					{shareRouteState.status === 'ready' ? (
 						<button type="button" onClick={() => void handleOpenSharedEntity()}>

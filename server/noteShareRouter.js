@@ -3,7 +3,11 @@
 const Y = require('yjs');
 const { enforceSameOrigin } = require('./auth');
 const { findLiveWorkspaceMembership, resolveLiveWorkspaceId } = require('./workspaceAccess');
-const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
+const {
+	ensureSharedWithMeWorkspace,
+	normalizePlacementTarget,
+	resolveTargetWorkspaceId: resolvePlacementTargetWorkspaceId,
+} = require('./systemWorkspaces');
 const { normalizeWorkspaceRole, canEditWorkspaceContent, canManageWorkspace, canViewWorkspace } = require('./workspaceRoles');
 const { normalizeMoveDebugTraceId, recordMoveDebugTrace } = require('./moveDebugTrace');
 
@@ -47,9 +51,6 @@ function normalizeRole(input) {
 	return String(input || '').trim().toUpperCase() === 'VIEWER' ? 'VIEWER' : 'EDITOR';
 }
 
-function normalizePlacementTarget(input) {
-	return String(input || '').trim().toLowerCase() === 'shared' ? 'shared' : 'personal';
-}
 
 function normalizeOptionalId(input) {
 	const normalized = String(input || '').trim();
@@ -103,30 +104,9 @@ function readDocumentTitle(state) {
 	}
 }
 
+/** Thin wrapper so call sites keep their existing shape; the rule itself lives in systemWorkspaces. */
 async function resolveTargetWorkspaceId(prisma, userId, targetKind) {
-	// Shared accepts always land in the user's system Shared With Me workspace.
-	// Personal accepts prefer the owner-style personal workspace and only fall back
-	// to the current live workspace if the personal row cannot be resolved.
-	if (targetKind === 'shared') {
-		const shared = await ensureSharedWithMeWorkspace(prisma, userId);
-		return shared ? String(shared.id) : null;
-	}
-
-	// The PERSONAL workspace cannot be deleted (only renamed), so this query always
-	// finds exactly one result. The schema also enforces @@unique([systemKind, ownerUserId])
-	// so there is no ambiguity and no ordering is needed.
-	const systemPersonal = await prisma.workspaceMember.findFirst({
-		where: {
-			userId,
-			role: 'OWNER',
-			workspace: { is: { deletedAt: null, ownerUserId: userId, systemKind: 'PERSONAL' } },
-		},
-		select: { workspaceId: true },
-	});
-	if (systemPersonal) return String(systemPersonal.workspaceId);
-
-	// Should never be reached, but guard against unexpected data corruption.
-	return resolveLiveWorkspaceId(prisma, userId, null);
+	return resolvePlacementTargetWorkspaceId(prisma, userId, targetKind, resolveLiveWorkspaceId);
 }
 
 async function resolveInvitee(prisma, identifier) {

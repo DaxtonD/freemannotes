@@ -3,8 +3,12 @@
 const crypto = require('crypto');
 const Y = require('yjs');
 const { enforceSameOrigin } = require('./auth');
-const { ensureSharedWithMeWorkspace } = require('./systemWorkspaces');
-const { findLiveWorkspace, findLiveWorkspaceMembership } = require('./workspaceAccess');
+const {
+	ensureSharedWithMeWorkspace,
+	normalizePlacementTarget,
+	resolveTargetWorkspaceId,
+} = require('./systemWorkspaces');
+const { findLiveWorkspace, findLiveWorkspaceMembership, resolveLiveWorkspaceId } = require('./workspaceAccess');
 const { normalizeWorkspaceRole, canManageWorkspace } = require('./workspaceRoles');
 
 function jsonResponse(res, status, body) {
@@ -237,7 +241,7 @@ async function acceptWorkspaceShare(prisma, session, metadata) {
 	};
 }
 
-async function acceptNoteShare(prisma, session, metadata) {
+async function acceptNoteShare(prisma, session, metadata, targetKind) {
 	const room = splitDocRoomId(metadata.docId);
 	if (!room) {
 		return { statusCode: 410, body: { error: 'Shared note no longer exists' } };
@@ -294,7 +298,13 @@ async function acceptNoteShare(prisma, session, metadata) {
 	}
 
 	const accepted = await prisma.$transaction(async (tx) => {
-		const targetWorkspace = await ensureSharedWithMeWorkspace(tx, user.id);
+		// Was hardcoded to Shared With Me, which is why a link accept never asked where the note
+		// should go while an invitation accept always did. Same helper as the invitation path now,
+		// so the two can't answer the question differently.
+		const targetWorkspaceId = await resolveTargetWorkspaceId(tx, user.id, targetKind, resolveLiveWorkspaceId);
+		const targetWorkspace = targetWorkspaceId
+			? { id: targetWorkspaceId }
+			: await ensureSharedWithMeWorkspace(tx, user.id);
 		const invitation = await tx.noteShareInvitation.create({
 			data: {
 				docId: metadata.docId,
@@ -408,6 +418,35 @@ function createShareRouter({ prisma }) {
 			label = workspace.name;
 		}
 
+		// Reuse a live link rather than minting another. Creation used to be unconditional, so the
+		// same person asking for the same link from a second device — or after clearing site data —
+		// silently created a second token for the same note. The list below could then show links
+		// nobody remembered making, and each had to be revoked separately. One live link per
+		// (creator, entity, permission) is what people assume they already have.
+		const existing = await prisma.shareAccessToken.findFirst({
+			where: {
+				entityType,
+				entityId,
+				permission,
+				createdByUserId: session.userId,
+				revokedAt: null,
+				expiresAt: { gt: new Date() },
+			},
+			orderBy: { expiresAt: 'desc' },
+		});
+		if (existing) {
+			jsonResponse(res, 200, {
+				ok: true,
+				entityType: entityType.toLowerCase(),
+				permission,
+				shareUrl: buildShareUrl(req, existing.token),
+				expiresAt: existing.expiresAt.toISOString(),
+				label,
+				reused: true,
+			});
+			return;
+		}
+
 		await prisma.shareAccessToken.create({
 			data: {
 				token,
@@ -446,6 +485,76 @@ function createShareRouter({ prisma }) {
 					permission: body && typeof body === 'object' ? body.permission : null,
 					expiresInDays: body && typeof body === 'object' ? body.expiresInDays : null,
 				});
+			})();
+			return true;
+		}
+
+		// The server is the record of which links exist. It wasn't: the only list anyone had was a
+		// localStorage cache, so a link made on one device was invisible on every other, and there
+		// was no way to see — let alone revoke — a link you'd made and forgotten.
+		if (pathname === '/api/share-links' && method === 'GET') {
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const entityType = normalizeEntityType(url.searchParams.get('entityType'));
+					const entityId = String(url.searchParams.get('entityId') || '').trim();
+					if (!entityType || !entityId) {
+						jsonResponse(res, 400, { error: 'entityType and entityId are required' });
+						return;
+					}
+					// Scoped to the caller's own links on purpose: someone else's link to the same
+					// note is not yours to see or revoke, even if you can both reach the note.
+					const links = await prisma.shareAccessToken.findMany({
+						where: {
+							entityType,
+							entityId,
+							createdByUserId: session.userId,
+							revokedAt: null,
+							expiresAt: { gt: new Date() },
+						},
+						orderBy: { createdAt: 'desc' },
+					});
+					jsonResponse(res, 200, {
+						links: links.map((link) => ({
+							id: link.id,
+							entityType: link.entityType.toLowerCase(),
+							permission: link.permission,
+							shareUrl: buildShareUrl(req, link.token),
+							expiresAt: link.expiresAt.toISOString(),
+							createdAt: link.createdAt.toISOString(),
+						})),
+					});
+				} catch (err) {
+					console.error('[share] list links error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
+		const revokeMatch = pathname.match(/^\/api\/share-links\/([^/]+)$/);
+		if (revokeMatch && method === 'DELETE') {
+			if (!enforceSameOrigin(req, res)) return true;
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const id = decodeURIComponent(revokeMatch[1]);
+					// Soft revoke rather than delete, so an accepted share keeps its provenance.
+					const result = await prisma.shareAccessToken.updateMany({
+						where: { id, createdByUserId: session.userId, revokedAt: null },
+						data: { revokedAt: new Date() },
+					});
+					if (result.count === 0) {
+						jsonResponse(res, 404, { error: 'Share link not found' });
+						return;
+					}
+					jsonResponse(res, 200, { ok: true });
+				} catch (err) {
+					console.error('[share] revoke link error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
 			})();
 			return true;
 		}
@@ -529,9 +638,11 @@ function createShareRouter({ prisma }) {
 						return;
 					}
 
+					// 'personal' unless asked otherwise, matching the invitation accept's default.
+					const targetKind = normalizePlacementTarget(body && typeof body === 'object' ? body.target : null);
 					const result = metadata.entityType === 'WORKSPACE'
 						? await acceptWorkspaceShare(prisma, session, metadata)
-						: await acceptNoteShare(prisma, session, metadata);
+						: await acceptNoteShare(prisma, session, metadata, targetKind);
 					jsonResponse(res, result.statusCode, result.body);
 				} catch (err) {
 					console.error('[share] accept error:', err.message);

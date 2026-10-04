@@ -1,0 +1,14 @@
+-- Clear every existing share link.
+--
+-- Until now the server created a new token on every request with no deduplication, and there was
+-- no endpoint to list what existed — the only record was a per-device localStorage cache. So a
+-- note could accumulate any number of live links, invisible from every device except the one that
+-- happened to create each of them, and therefore impossible to revoke.
+--
+-- Creation now reuses a live link and the links are listed from the server, but that only fixes
+-- things going forward. The accumulated tokens are unknowable by definition, so they go. Anyone
+-- holding an old link gets a "share not found" and needs a fresh one, which is the correct
+-- outcome for a link nobody could see or revoke.
+--
+-- No schema change: revoked_at already exists. This is data only.
+DELETE FROM "share_access_token";

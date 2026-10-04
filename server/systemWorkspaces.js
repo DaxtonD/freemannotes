@@ -90,9 +90,56 @@ async function findPreferredWorkspaceMembership(prisma, userId, select = { works
 	});
 }
 
+
+/**
+ * Where an accepted share lands. 'shared' means the system Shared With Me workspace; anything
+ * else means the user's own Personal workspace.
+ *
+ * This lives here rather than in a router because BOTH ways of accepting a note need it — the
+ * emailed/in-app invitation and the share link — and they must agree. They didn't: the share link
+ * hardcoded Shared With Me and never offered a choice at all, which is the bug this fixes. Two
+ * copies of the same rule is how they drift apart again.
+ */
+function normalizePlacementTarget(input) {
+	return String(input || '').trim().toLowerCase() === 'shared' ? 'shared' : 'personal';
+}
+
+/**
+ * Resolves a placement target to a real workspace id for this user.
+ *
+ * `resolveFallbackWorkspaceId` is injected rather than imported to keep this module free of a
+ * dependency on workspaceAccess (which already depends on things that depend on this).
+ */
+async function resolveTargetWorkspaceId(prismaOrTx, userId, targetKind, resolveFallbackWorkspaceId) {
+	if (targetKind === 'shared') {
+		const shared = await ensureSharedWithMeWorkspace(prismaOrTx, userId);
+		return shared ? String(shared.id) : null;
+	}
+
+	// The PERSONAL workspace cannot be deleted (only renamed), so this query always finds exactly
+	// one result. The schema enforces @@unique([systemKind, ownerUserId]), so there's no ambiguity
+	// and no ordering is needed.
+	const systemPersonal = await prismaOrTx.workspaceMember.findFirst({
+		where: {
+			userId,
+			role: 'OWNER',
+			workspace: { is: { deletedAt: null, ownerUserId: userId, systemKind: 'PERSONAL' } },
+		},
+		select: { workspaceId: true },
+	});
+	if (systemPersonal) return String(systemPersonal.workspaceId);
+
+	// Should never be reached, but guard against unexpected data corruption.
+	return typeof resolveFallbackWorkspaceId === 'function'
+		? resolveFallbackWorkspaceId(prismaOrTx, userId, null)
+		: null;
+}
+
 module.exports = {
 	SHARED_WITH_ME_KIND,
 	ensureSharedWithMeWorkspace,
 	findPreferredWorkspaceMembership,
 	getSharedWithMeWorkspaceName,
+	normalizePlacementTarget,
+	resolveTargetWorkspaceId,
 };

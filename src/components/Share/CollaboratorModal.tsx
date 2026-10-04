@@ -22,7 +22,10 @@ import {
 	copyTextToClipboard,
 	ensureNoteShareLink,
 	getShareLinkReadyEventName,
+	listNoteShareLinks,
 	readAllCachedNoteShareLinks,
+	revokeShareLink,
+	type ServerShareLink,
 	readCachedNoteShareLink,
 	type CachedNoteShareLink,
 	type NoteShareLink,
@@ -159,7 +162,8 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	// All non-expired share links for this note across every role/expiry combo.
 	// Populated from localStorage on open so previously generated links are
 	// immediately visible without a server round-trip.
-	const [cachedLinks, setCachedLinks] = React.useState<CachedNoteShareLink[]>([]);
+	const [serverLinks, setServerLinks] = React.useState<ServerShareLink[]>([]);
+	const [linkRefreshToken, setLinkRefreshToken] = React.useState(0);
 	// navigator.onLine lies. Or rather, it tells the truth about the wrong question —
 	// "is a network interface up" isn't "can I actually talk to our server right now,"
 	// and a degraded connection sits in exactly that gap for a while. The Yjs WS
@@ -202,14 +206,50 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 		};
 	}, [shareLink]);
 
-	// Reload cached share links before paint so the link section does not grow in after open.
+	// Seed from this device's cache before paint so the section doesn't grow in after open, then
+	// replace it with the server's answer — which is the actual record of what exists. The cache
+	// alone is per-device, so a link made on your phone was invisible on your laptop, and a link
+	// you'd forgotten couldn't be found or revoked from anywhere.
 	React.useLayoutEffect(() => {
 		if (!props.isOpen || !props.docId) {
-			setCachedLinks([]);
+			setServerLinks([]);
 			return;
 		}
-		setCachedLinks(readAllCachedNoteShareLinks(props.docId));
+		setServerLinks(readAllCachedNoteShareLinks(props.docId)
+			.filter((link): link is CachedNoteShareLink & { shareUrl: string } => typeof link.shareUrl === 'string' && link.shareUrl.length > 0)
+			.map((link) => ({
+				id: null,
+				entityType: 'note' as const,
+				permission: link.permission,
+				shareUrl: link.shareUrl,
+				expiresAt: link.expiresAt,
+				createdAt: null,
+				fromCache: true,
+			})));
 	}, [props.isOpen, props.docId]);
+
+	React.useEffect(() => {
+		if (!props.isOpen || !props.docId) return undefined;
+		let cancelled = false;
+		void listNoteShareLinks(props.docId)
+			.then((links) => {
+				if (!cancelled) setServerLinks(links);
+			})
+			.catch(() => {
+				// listNoteShareLinks already falls back to the cache; nothing further to do.
+			});
+		return () => { cancelled = true; };
+	}, [props.isOpen, props.docId, linkRefreshToken]);
+
+	const handleRevokeLink = React.useCallback(async (linkId: string): Promise<void> => {
+		try {
+			await revokeShareLink(linkId);
+			setServerLinks((current) => current.filter((link) => link.id !== linkId));
+			setSuccess(t('share.linkRevoked'));
+		} catch (err) {
+			setError(err instanceof Error ? err.message : t('share.copyFailed'));
+		}
+	}, [t]);
 
 	// Seed an optimistic manager snapshot before paint for owned notes so accordion
 	// sections and controls are stable on the first frame (IDB hydrate follows).
@@ -455,7 +495,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			if (next.shareUrl) setShareQrModalOpen(true);
 			setSuccess(next.pending ? t('share.linkQueued') : t('share.linkReady'));
 			// Refresh the active-links list so the new token appears immediately.
-			if (props.docId) setCachedLinks(readAllCachedNoteShareLinks(props.docId));
+			if (props.docId) setLinkRefreshToken((value) => value + 1);
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t('share.createFailed'));
 		} finally {
@@ -705,26 +745,34 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 								<div className={`${styles.sectionDisclosure} ${openPanel === 'link' ? styles.sectionDisclosureExpanded : ''}`}>
 									<button type="button" className={`${styles.sectionSummaryButton} ${openPanel === 'link' ? styles.sectionSummaryButtonExpanded : ''}`} onClick={() => setOpenPanel('link')} aria-expanded={openPanel === 'link'}>
 										<span className={styles.sectionSummaryLabel}>{t('share.linkSectionTitle')}</span>
-										{cachedLinks.length > 0 ? <span className={styles.summaryCount}>{cachedLinks.length}</span> : null}
+										{serverLinks.length > 0 ? <span className={styles.summaryCount}>{serverLinks.length}</span> : null}
 										<span className={styles.disclosureArrow} aria-hidden="true" />
 									</button>
 									<div className={`${styles.sectionPanel} ${openPanel === 'link' ? styles.sectionPanelExpanded : ''}`} aria-hidden={openPanel !== 'link'}>
 										<div className={styles.sectionPanelInner}>
-											{cachedLinks.length > 0 ? (
+											{serverLinks.length > 0 ? (
 												<div className={styles.activeLinkList}>
-													{cachedLinks.map((link) => (
-														<div key={`${link.permission}::${link.expiresInDays}`} className={styles.activeLinkRow}>
+													{serverLinks.map((link) => (
+														<div key={link.id ?? `cached::${link.permission}::${link.shareUrl}`} className={styles.activeLinkRow}>
 															<div className={styles.activeLinkMeta}>
-																<span className={styles.badge}>{renderNoteRole(link.permission, t)}</span>
+																<span className={styles.badge}>{renderNoteRole(link.permission as NoteShareRole, t)}</span>
 																{link.expiresAt ? <span className={styles.rowMeta}>{t('share.expiresAt')}: {formatExpiry(link.expiresAt)}</span> : null}
+																{/* A cached entry has no server id, so there is nothing to revoke — say so rather
+																    than offering a button that can't work. */}
+																{link.fromCache ? <span className={styles.rowMeta}>{t('share.linkFromThisDeviceOnly')}</span> : null}
 															</div>
 															<div className={styles.activeLinkActions}>
-																<button type="button" className={styles.secondaryButton} onClick={() => void copyTextToClipboard(link.shareUrl!).then(() => setSuccess(t('share.copied'))).catch(() => setError(t('share.copyFailed')))} disabled={!link.shareUrl || busy}>
+																<button type="button" className={styles.secondaryButton} onClick={() => void copyTextToClipboard(link.shareUrl).then(() => setSuccess(t('share.copied'))).catch(() => setError(t('share.copyFailed')))} disabled={!link.shareUrl || busy}>
 																	{t('share.copy')}
 																</button>
-																<button type="button" className={styles.secondaryButton} onClick={() => { setShareLink(link); setShareRole(link.permission); setExpiryDays(link.expiresInDays); setShareQrModalOpen(true); }} disabled={!link.shareUrl || busy}>
+																<button type="button" className={styles.secondaryButton} onClick={() => { setShareLink({ entityType: 'note', permission: link.permission as NoteShareRole, shareUrl: link.shareUrl, expiresAt: link.expiresAt }); setShareRole(link.permission as NoteShareRole); setShareQrModalOpen(true); }} disabled={!link.shareUrl || busy}>
 																	{t('share.viewQrCode')}
 																</button>
+																{link.id ? (
+																	<button type="button" className={styles.secondaryButton} onClick={() => void handleRevokeLink(link.id as string)} disabled={busy}>
+																		{t('share.revokeLink')}
+																	</button>
+																) : null}
 															</div>
 														</div>
 													))}

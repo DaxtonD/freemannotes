@@ -484,6 +484,60 @@ export function readAllCachedWorkspaceShareLinks(workspaceId: string): CachedWor
 	return readAllCachedShareLinks<WorkspaceShareLink>(WORKSPACE_SHARE_CACHE_KEY, workspaceId);
 }
 
+/** A share link as the server knows it. `id` is what revoke needs; the cache has no equivalent. */
+export type ServerShareLink = {
+	id: string | null;
+	entityType: ShareEntityType;
+	permission: string;
+	shareUrl: string;
+	expiresAt: string | null;
+	createdAt: string | null;
+	/** Came from this device's cache because the server couldn't be reached, so it can't be revoked. */
+	fromCache?: boolean;
+};
+
+/**
+ * Every live share link for a note, as the SERVER sees them — which is the whole point. The list
+ * used to come from this device's localStorage, so a link created on your phone was invisible on
+ * your laptop, and a link you'd forgotten about could not be found, let alone revoked.
+ *
+ * Offline it falls back to the cache, because being unable to reach the server should degrade to
+ * "here's what I know about" rather than "you have no share links" — the latter is a confident
+ * lie, and it's exactly the mistake the shared-note placement code already had to be taught not
+ * to make. Cached entries come back flagged so the UI can decline to offer Revoke on something it
+ * cannot actually revoke.
+ */
+export async function listNoteShareLinks(docId: string): Promise<ServerShareLink[]> {
+	const id = normalizeId(docId);
+	if (!id) return [];
+	const fromCache = (): ServerShareLink[] => readAllCachedNoteShareLinks(id)
+		.filter((link): link is CachedNoteShareLink & { shareUrl: string } => typeof link.shareUrl === 'string' && link.shareUrl.length > 0)
+		.map((link) => ({
+			id: null,
+			entityType: 'note' as const,
+			permission: link.permission,
+			shareUrl: link.shareUrl,
+			expiresAt: link.expiresAt,
+			createdAt: null,
+			fromCache: true,
+		}));
+	if (isOffline()) return fromCache();
+	try {
+		const response = await fetchJson<{ links?: ServerShareLink[] }>(
+			`/api/share-links?entityType=note&entityId=${encodeURIComponent(id)}`,
+		);
+		return Array.isArray(response?.links) ? response.links : [];
+	} catch {
+		// Unreachable or slow: say what we know rather than claiming there are none.
+		return fromCache();
+	}
+}
+
+/** Revokes a link for everyone, immediately. Needs the server — there is no offline equivalent. */
+export async function revokeShareLink(linkId: string): Promise<void> {
+	await fetchJson(`/api/share-links/${encodeURIComponent(linkId)}`, { method: 'DELETE' });
+}
+
 export async function ensureDocShareLink(docId: string, opts?: { forceRefresh?: boolean }): Promise<NoteShareLink> {
 	return ensureNoteShareLink({ userId: null, docId, permission: 'VIEWER', expiresInDays: 7, forceRefresh: opts?.forceRefresh });
 }
@@ -585,11 +639,17 @@ export async function getShareTokenMetadata(token: string): Promise<ShareTokenMe
 	return fetchJson<ShareTokenMetadata>(`/api/share/${encodeURIComponent(token)}`);
 }
 
-export async function acceptShareToken(token: string): Promise<ShareAcceptResult> {
+/**
+ * Accepts a share link. `target` says where an accepted note should land — 'personal' or 'shared'
+ * — exactly as the invitation accept does. It used to take no target at all and the server always
+ * chose Shared With Me, which is why one way of accepting a note asked you where it should go and
+ * the other silently decided for you.
+ */
+export async function acceptShareToken(token: string, target?: 'personal' | 'shared'): Promise<ShareAcceptResult> {
 	return fetchJson<ShareAcceptResult>('/api/share/accept', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ token }),
+		body: JSON.stringify(target ? { token, target } : { token }),
 	});
 }
 
