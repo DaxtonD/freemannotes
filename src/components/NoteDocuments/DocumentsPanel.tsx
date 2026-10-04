@@ -14,6 +14,9 @@ import { DocumentVersionsModal } from './DocumentVersionsModal';
 
 // The scanner brings its own image processing along, so it only loads when someone scans something.
 const ScanModal = React.lazy(() => import('./scan/ScanModal').then((module) => ({ default: module.ScanModal })));
+
+/** How long a session-restore request waits for its document to show up before giving up on it. */
+const RESTORE_DOCUMENT_GIVE_UP_MS = 8000;
 import {
 	NOTE_DOCUMENT_ACCEPT,
 	getCachedNoteDocuments,
@@ -491,10 +494,22 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 	React.useEffect(() => {
 		if (!restoreDocumentId || restoreHandledRef.current) return;
 		const match = documents.find((document) => document.id === restoreDocumentId);
-		if (!match) return;
+		if (!match) {
+			// Give the list a moment to arrive, then give up and SAY SO. Bailing silently here is
+			// what let the request outlive its note: the caller only cleared on success, so a note
+			// whose document had been deleted — or whose list never loaded — left the flag set, and
+			// every editor opened afterwards saw it and came up with its media dock open.
+			const timer = window.setTimeout(() => {
+				if (restoreHandledRef.current) return;
+				restoreHandledRef.current = true;
+				onRestoreDocumentHandled?.();
+			}, RESTORE_DOCUMENT_GIVE_UP_MS);
+			return () => window.clearTimeout(timer);
+		}
 		restoreHandledRef.current = true;
 		handleOpen(match);
 		onRestoreDocumentHandled?.();
+		return undefined;
 	}, [restoreDocumentId, documents, handleOpen, onRestoreDocumentHandled]);
 
 	// The text view shows the list's current copy of the document, so "preparing PDF" clears

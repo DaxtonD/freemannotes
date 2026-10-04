@@ -169,6 +169,14 @@ type PdfPageProps = {
 	cssWidth: number;
 	cssHeight: number;
 	shouldRender: boolean;
+	/**
+	 * Bumped when the app comes back to the foreground. A backgrounded tab can have its canvas
+	 * backing stores reclaimed by the OS — the element stays in the DOM at the right size and the
+	 * pixels are simply gone, which is how you come back to a blank page with your markup still
+	 * drawn on top of it (markup is SVG, so it survives). Nothing in this effect's other
+	 * dependencies changes on resume, so without this the page would never redraw itself.
+	 */
+	redrawToken: number;
 	/** Search hits on this page, in page fractions, so they stay put at any zoom. */
 	highlights?: readonly PdfPageHighlight[];
 	/** Index of the current hit if it's on this page, otherwise -1. */
@@ -203,12 +211,15 @@ type PdfPageProps = {
 };
 
 const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Element {
-	const { pdf, pageNumber, cssWidth, shouldRender } = props;
+	const { pdf, pageNumber, cssWidth, shouldRender, redrawToken } = props;
 	const hostRef = React.useRef<HTMLDivElement | null>(null);
 	const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
 	const [drawn, setDrawn] = React.useState(false);
 	const measure = React.useMemo<MeasureContext>(() => ({ scale: props.pageScale, noScale: props.noScaleLabel }), [props.noScaleLabel, props.pageScale]);
 
+	// Chrome fires contextlost on a 2D canvas when it reclaims the backing store, which is the
+	// precise signal where it exists. The resume token above is the portable fallback.
+	const [contextLostToken, setContextLostToken] = React.useState(0);
 	const releaseCanvas = React.useCallback((): void => {
 		const canvas = canvasRef.current;
 		if (!canvas) return;
@@ -249,6 +260,7 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 				nextCanvas = document.createElement('canvas');
 				nextCanvas.className = styles.canvas;
 				nextCanvas.setAttribute('aria-hidden', 'true');
+				nextCanvas.addEventListener('contextlost', () => setContextLostToken((value) => value + 1));
 				nextCanvas.width = Math.floor(viewport.width);
 				nextCanvas.height = Math.floor(viewport.height);
 				task = page.render({ canvas: nextCanvas, viewport });
@@ -276,7 +288,7 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 				nextCanvas.height = 0;
 			}
 		};
-	}, [cssWidth, pageNumber, pdf, releaseCanvas, shouldRender]);
+	}, [contextLostToken, cssWidth, pageNumber, pdf, redrawToken, releaseCanvas, shouldRender]);
 
 	React.useEffect(() => releaseCanvas, [releaseCanvas]);
 
@@ -382,7 +394,7 @@ const PdfPage = React.memo(function PdfPage(props: PdfPageProps): React.JSX.Elem
 			task?.cancel();
 			scroller.removeEventListener('scroll', schedule);
 		};
-	}, [cssWidth, pageHeight, pageNumber, pageWidth, pdf, releaseDetail, scrollerRef, shouldRender]);
+	}, [contextLostToken, cssWidth, pageHeight, pageNumber, pageWidth, pdf, redrawToken, releaseDetail, scrollerRef, shouldRender]);
 
 	React.useEffect(() => releaseDetail, [releaseDetail]);
 
@@ -559,6 +571,29 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const selectManyMarkups = React.useCallback((ids: readonly string[]): void => {
 		setSelectedMarkupIds(ids.length === 0 ? NO_MARKUP_IDS : new Set(ids));
 	}, []);
+	/**
+	 * Bumped whenever the viewer comes back to the foreground, to force visible pages to redraw.
+	 *
+	 * Android reclaims canvas memory from a backgrounded app — confirmed from the field, with the
+	 * debug log showing the process very much alive across 40+ minute backgrounds while the page
+	 * came back blank with its markup still drawn on top of it (markup is SVG, so it survives
+	 * where the canvas doesn't). A large plan sheet at high zoom is exactly the sort of allocation
+	 * that gets reclaimed first. Only visible pages redraw — shouldRender already gates that — so
+	 * this is a handful of pages, not the whole document.
+	 *
+	 * Deliberately unconditional rather than threshold-based: "was it hidden long enough to lose
+	 * the pixels" is a guess, and guessing wrong leaves a blank page with no way back to it.
+	 */
+	const [pageRedrawToken, setPageRedrawToken] = React.useState(0);
+	React.useEffect(() => {
+		if (typeof document === 'undefined') return undefined;
+		const onVisible = (): void => {
+			if (document.visibilityState === 'visible') setPageRedrawToken((value) => value + 1);
+		};
+		document.addEventListener('visibilitychange', onVisible);
+		return () => document.removeEventListener('visibilitychange', onVisible);
+	}, []);
+
 	/** The rubber band while it's being dragged. */
 	const [marqueeRect, setMarqueeRect] = React.useState<MarqueeRect | null>(null);
 	/** Touch: whether a blank-page drag marquees instead of scrolling. Toolbar toggle. */
@@ -2685,6 +2720,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 										cssWidth={pageCssWidth}
 										cssHeight={layout.heights[index]}
 										shouldRender={index >= renderFrom && index <= renderTo}
+										redrawToken={pageRedrawToken}
 										highlights={highlightsByPage.get(index)}
 										activeHighlight={index === activeMatchPageIndex ? activeMatch : -1}
 										pageWidth={pageSizes[index].width}

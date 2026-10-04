@@ -1864,10 +1864,23 @@ export function App(): React.JSX.Element {
 	const markNoteUnavailable = React.useCallback((noteId: string): void => {
 		setUnavailableNoteIds((current) => (current.has(noteId) ? current : new Set(current).add(noteId)));
 	}, []);
-	// A document the restore effect wants reopened once its note's panel has loaded. Cleared by
-	// the panel the moment it acts on it, so reopening the note later doesn't re-trigger it.
-	const [restoreDocumentId, setRestoreDocumentId] = React.useState<string | null>(null);
-	const clearRestoreDocumentId = React.useCallback((): void => setRestoreDocumentId(null), []);
+	// A document the restore effect wants reopened once its note's panel has loaded.
+	//
+	// Bound to the note it belongs to, which it wasn't originally — and that leaked badly. The
+	// panel only cleared this when it actually FOUND the document in its list, so a note with no
+	// documents, a list that hadn't loaded yet, or simply navigating away left it set forever.
+	// NoteEditor force-opens its media dock whenever it sees this, so every note opened afterwards
+	// came up with the dock open and the editor dimmed behind it. Now it only ever applies to the
+	// note it was recorded for, and the moment the selection moves on it clears itself.
+	const [restoreDocumentRequest, setRestoreDocumentRequest] = React.useState<{ noteId: string; documentId: string } | null>(null);
+	const clearRestoreDocumentId = React.useCallback((): void => setRestoreDocumentRequest(null), []);
+	React.useEffect(() => {
+		if (!restoreDocumentRequest) return;
+		if (selectedNoteId !== restoreDocumentRequest.noteId) setRestoreDocumentRequest(null);
+	}, [restoreDocumentRequest, selectedNoteId]);
+	const restoreDocumentId = restoreDocumentRequest && selectedNoteId === restoreDocumentRequest.noteId
+		? restoreDocumentRequest.documentId
+		: null;
 	// Note-link navigation history for the current editor session. Index 0 = root note opened
 	// from a grid/inbox/search; each subsequent entry is a note followed via an inline chip.
 	// On mobile, each entry corresponds to a browser history push so system Back unwinds the
@@ -2634,6 +2647,8 @@ export function App(): React.JSX.Element {
 		);
 	}, [commitOverlaySnapshot, getOverlaySnapshot, isMobileSidebarOpen, isMobileViewport]);
 
+	const externalRouteRef = React.useRef(externalRoute);
+	externalRouteRef.current = externalRoute;
 	const handleExitExternalRoute = React.useCallback(() => {
 		clearExternalRoute();
 		setExternalRoute(null);
@@ -2647,6 +2662,10 @@ export function App(): React.JSX.Element {
 			openNoteId: null,
 		});
 	}, []);
+	// The popstate listener is registered once, so it reads this rather than closing over a stale
+	// copy of the callback.
+	const handleExitExternalRouteRef = React.useRef(handleExitExternalRoute);
+	handleExitExternalRouteRef.current = handleExitExternalRoute;
 
 	const openPreferences = React.useCallback(() => {
 		const current = getOverlaySnapshot();
@@ -3545,7 +3564,8 @@ export function App(): React.JSX.Element {
 		if (!entry) return;
 		// The document is handed to the panel as a one-shot request rather than opened from
 		// here: only DocumentsPanel knows when that note's document list has actually loaded.
-		setRestoreDocumentId(entry.documentId);
+		// Tagged with its note so it can't survive into a different one.
+		if (entry.documentId) setRestoreDocumentRequest({ noteId: entry.noteId, documentId: entry.documentId });
 		openNoteEditor(entry.noteId);
 	}, [authStatus, authWorkspaceId, openNoteEditor, selectedNoteId]);
 
@@ -9515,6 +9535,17 @@ export function App(): React.JSX.Element {
 				return;
 			}
 
+			// Arrived from outside — a share QR, an invite link, a deep link — and the share screen
+			// is what's on display. Back means "I'm done with this, take me into the app", not
+			// "quit". Without this the share screen isn't part of the overlay history at all, so
+			// the first back press fell straight through to the exit guard and asked someone who
+			// had just scanned a QR code whether they wanted to leave.
+			if (externalRouteRef.current) {
+				exitBackPressRef.current.count = 0;
+				handleExitExternalRouteRef.current();
+				ensureRootGuard();
+				return;
+			}
 			// If we popped to a non-overlay history entry, collapse to base.
 			applyOverlaySnapshot(EMPTY_OVERLAY_SNAPSHOT);
 			if (hadActiveOverlay) {

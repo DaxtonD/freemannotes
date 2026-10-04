@@ -1599,11 +1599,17 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		(id: string): void => {
 			if (activeItems[0]?.id === id) return;
 			const currentIndex = normalizedItems.findIndex((row) => row.id === id);
-			const previousId = currentIndex > 0 ? normalizedItems[currentIndex - 1]?.id ?? null : null;
-			const nextId = normalizedItems[currentIndex + 1]?.id ?? null;
+			const previous = currentIndex > 0 ? normalizedItems[currentIndex - 1] ?? null : null;
+			const next = normalizedItems[currentIndex + 1] ?? null;
 			removeItem(id);
-			const focusTarget = previousId ?? nextId;
-			if (focusTarget) activateRow(focusTarget);
+			// Hand the cursor to a neighbour so you can keep typing — but never into a COMPLETED
+			// row. Completed items live at the bottom of the list, so focusing one scrolls the
+			// whole editor down there: add an item while a completed row happens to be selected,
+			// change your mind, hit the x, and you get thrown to the bottom of your shopping list.
+			// A completed row is not somewhere anyone wants their cursor to land anyway.
+			const focusTarget = (previous && !previous.completed ? previous : null)
+				?? (next && !next.completed ? next : null);
+			if (focusTarget) activateRow(focusTarget.id);
 		},
 		[activeItems, normalizedItems, removeItem, activateRow]
 	);
