@@ -1107,6 +1107,7 @@
     "publicTitle": "Shared note",
     "backToApp": "Back to app",
     "linkFromThisDeviceOnly": "Saved on this device — reconnect to manage it",
+    "linkWaitingForConnection": "Waiting for a connection — it will be created when you reconnect",
     "linkRevoked": "Share link revoked.",
     "revokeLink": "Revoke",
     "linksOnThisNote": "Share links",

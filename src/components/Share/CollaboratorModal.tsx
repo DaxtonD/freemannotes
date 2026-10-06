@@ -21,10 +21,13 @@ import { useConnectionStatus } from '../../core/useConnectionStatus';
 import {
 	copyTextToClipboard,
 	ensureNoteShareLink,
+	flushPendingShareLinkRequests,
 	getShareLinkReadyEventName,
 	listNoteShareLinks,
+	readPendingNoteShareLinkRequests,
 	readAllCachedNoteShareLinks,
 	revokeShareLink,
+	type PendingNoteShareLinkRequest,
 	type ServerShareLink,
 	readCachedNoteShareLink,
 	type CachedNoteShareLink,
@@ -164,6 +167,7 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 	// immediately visible without a server round-trip.
 	const [serverLinks, setServerLinks] = React.useState<ServerShareLink[]>([]);
 	const [linkRefreshToken, setLinkRefreshToken] = React.useState(0);
+	const [pendingLinkRequests, setPendingLinkRequests] = React.useState<PendingNoteShareLinkRequest[]>([]);
 	// navigator.onLine lies. Or rather, it tells the truth about the wrong question —
 	// "is a network interface up" isn't "can I actually talk to our server right now,"
 	// and a degraded connection sits in exactly that gap for a while. The Yjs WS
@@ -240,6 +244,36 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			});
 		return () => { cancelled = true; };
 	}, [props.isOpen, props.docId, linkRefreshToken]);
+
+	// A link generated while offline is queued in localStorage, not created, and until now nothing
+	// ever said so — the section just read as "no links", which is the same confident lie about
+	// state this device is actually holding that listNoteShareLinks refuses to tell. Opening the
+	// modal is also the right moment to try the queue again: the reconnect that was meant to drain
+	// it fires when the network interface comes up, which is reliably earlier than the network
+	// being usable, and before this the only thing that ever retried was an app restart.
+	React.useEffect(() => {
+		if (!props.isOpen || !props.docId) {
+			setPendingLinkRequests([]);
+			return undefined;
+		}
+		let cancelled = false;
+		const docId = props.docId;
+		const queued = readPendingNoteShareLinkRequests(docId);
+		setPendingLinkRequests(queued);
+		const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+		if (queued.length > 0 && !offline && props.authUserId) {
+			void flushPendingShareLinkRequests(props.authUserId)
+				.then(() => {
+					if (cancelled) return;
+					const remaining = readPendingNoteShareLinkRequests(docId);
+					setPendingLinkRequests(remaining);
+					// Only refetch if the flush actually settled something, so this can't loop.
+					if (remaining.length !== queued.length) setLinkRefreshToken((value) => value + 1);
+				})
+				.catch(() => undefined);
+		}
+		return () => { cancelled = true; };
+	}, [props.isOpen, props.docId, props.authUserId]);
 
 	const handleRevokeLink = React.useCallback(async (linkId: string): Promise<void> => {
 		try {
@@ -362,6 +396,9 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 				setShareLink(cached);
 				if (cached.shareUrl) setShareQrModalOpen(true);
 			}
+			// It exists on the server now, so it stops being a queued request and starts being a link.
+			setPendingLinkRequests(readPendingNoteShareLinkRequests(detail.entityId));
+			setLinkRefreshToken((value) => value + 1);
 		};
 		const onMetadataChanged = (event: Event) => {
 			const detail = (event as CustomEvent<{ reason?: string; workspaceId?: string | null; docId?: string | null }>).detail;
@@ -496,6 +533,9 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 			setSuccess(next.pending ? t('share.linkQueued') : t('share.linkReady'));
 			// Refresh the active-links list so the new token appears immediately.
 			if (props.docId) setLinkRefreshToken((value) => value + 1);
+			// A queued request belongs in the list too, otherwise the only trace of it is a toast
+			// that vanishes, and the section goes back to claiming there are no links at all.
+			if (next.pending && props.docId) setPendingLinkRequests(readPendingNoteShareLinkRequests(props.docId));
 		} catch (err) {
 			setError(err instanceof Error ? err.message : t('share.createFailed'));
 		} finally {
@@ -745,12 +785,12 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 								<div className={`${styles.sectionDisclosure} ${openPanel === 'link' ? styles.sectionDisclosureExpanded : ''}`}>
 									<button type="button" className={`${styles.sectionSummaryButton} ${openPanel === 'link' ? styles.sectionSummaryButtonExpanded : ''}`} onClick={() => setOpenPanel('link')} aria-expanded={openPanel === 'link'}>
 										<span className={styles.sectionSummaryLabel}>{t('share.linkSectionTitle')}</span>
-										{serverLinks.length > 0 ? <span className={styles.summaryCount}>{serverLinks.length}</span> : null}
+										{serverLinks.length + pendingLinkRequests.length > 0 ? <span className={styles.summaryCount}>{serverLinks.length + pendingLinkRequests.length}</span> : null}
 										<span className={styles.disclosureArrow} aria-hidden="true" />
 									</button>
 									<div className={`${styles.sectionPanel} ${openPanel === 'link' ? styles.sectionPanelExpanded : ''}`} aria-hidden={openPanel !== 'link'}>
 										<div className={styles.sectionPanelInner}>
-											{serverLinks.length > 0 ? (
+											{serverLinks.length + pendingLinkRequests.length > 0 ? (
 												<div className={styles.activeLinkList}>
 													{serverLinks.map((link) => (
 														<div key={link.id ?? `cached::${link.permission}::${link.shareUrl}`} className={styles.activeLinkRow}>
@@ -773,6 +813,16 @@ export function CollaboratorModal(props: Props): React.JSX.Element | null {
 																		{t('share.revokeLink')}
 																	</button>
 																) : null}
+															</div>
+														</div>
+													))}
+													{/* No URL exists yet, so there is nothing to copy, show as a QR code, or
+													    revoke — only something to tell the user about. */}
+													{pendingLinkRequests.map((request) => (
+														<div key={`pending::${request.id}`} className={styles.activeLinkRow}>
+															<div className={styles.activeLinkMeta}>
+																<span className={styles.badge}>{renderNoteRole(request.permission, t)}</span>
+																<span className={styles.rowMeta}>{t('share.linkWaitingForConnection')}</span>
 															</div>
 														</div>
 													))}

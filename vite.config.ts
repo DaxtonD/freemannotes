@@ -168,6 +168,33 @@ function yjsWebsocketPlugin(): Plugin {
 	};
 }
 
+/**
+ * Removes Vite's dev client <script> when HMR is off.
+ *
+ * Vite injects `<script type="module" src="/@vite/client">` into head-prepend whenever it is
+ * serving, regardless of `server.hmr`. That script opens the HMR WebSocket, and the client
+ * hard-reloads the page whenever that socket closes — see the long note next to `hmrEnabled`.
+ * With HMR disabled nothing else pulls the client in (no module carries `import.meta.hot`, since
+ * plugin-react skips Fast Refresh and this codebase never uses the API directly), so dropping
+ * the tag means no socket at all, and therefore no surprise refreshes.
+ *
+ * The cost, stated plainly: no hot reload and no error overlay. Changes need a manual refresh.
+ * That is the right trade for on-device debugging, where an unannounced reload destroys the
+ * state you were trying to look at.
+ */
+function stripViteHmrClientPlugin(): Plugin {
+	return {
+		name: 'freemannotes:strip-vite-hmr-client',
+		apply: 'serve',
+		transformIndexHtml: {
+			order: 'post',
+			handler(html: string): string {
+				return html.replace(/\s*<script[^>]*src="[^"]*@vite\/client"[^>]*><\/script>/g, '');
+			},
+		},
+	};
+}
+
 export default defineConfig(({ mode, command }) => {
 	const isDevServer = command === 'serve';
 	const envDir = './env.vite';
@@ -189,6 +216,39 @@ export default defineConfig(({ mode, command }) => {
 				: (publicDevOrigin.protocol === 'https:' ? 443 : 80),
 		}
 		: undefined;
+	// HMR is OFF by default through a reverse-proxied dev origin, and on for plain localhost.
+	//
+	// Why: Vite's dev client hard-reloads the page every time its WebSocket closes, and there is
+	// no option to turn that off. From node_modules/vite/dist/client/client.mjs — the disconnect
+	// event is synthesised locally by the socket's own 'close' handler, so the server cannot
+	// prevent it:
+	//
+	//     if (payload.event === "vite:ws:disconnect") {
+	//         console.log(`[vite] server connection lost. Polling for restart...`);
+	//         await waitForSuccessfulPing(url.href); location.reload();
+	//     }
+	//
+	// Through NPM/Cloudflare on a phone that socket closes constantly — proxy idle timeouts,
+	// and every single time Android suspends a backgrounded tab or PWA. Each close means a hard
+	// refresh on return, which is what made editors, Preferences and any on-device debugging
+	// session unusable for a very long time. Six reloads in five minutes in the 2026-10-06
+	// checklist logs, all `navigationType: "reload"` with no RELOAD_* entry, which is exactly
+	// this and not the service worker (that was separately cleared over two days of logs).
+	//
+	// Setting `hmr: false` alone is NOT enough. It stops the server sending update/full-reload,
+	// and it makes @vitejs/plugin-react skip Fast Refresh (its `skipFastRefresh` reads
+	// `config.server.hmr === false`), so no module gets `import.meta.hot` and nothing imports
+	// the client that way. But Vite still injects `<script type="module" src="/@vite/client">`
+	// into head-prepend, and that alone opens the socket. Both halves are needed: the flag here
+	// and the tag-stripping plugin below.
+	//
+	// VITE_DEV_HMR=1 forces it back on, VITE_DEV_HMR=0 forces it off.
+	const hmrOverride = String(env.VITE_DEV_HMR || '').trim().toLowerCase();
+	const hmrEnabled = hmrOverride === '1' || hmrOverride === 'true' || hmrOverride === 'on'
+		? true
+		: (hmrOverride === '0' || hmrOverride === 'false' || hmrOverride === 'off'
+			? false
+			: !publicDevOrigin);
 	// Branch policy for Yjs transport in Vite:
 	// - Development branch: proxy /yjs to server.js, same as production, so dev
 	//   testing actually proves prod behavior. The embedded in-Vite-process
@@ -216,6 +276,9 @@ export default defineConfig(({ mode, command }) => {
 		plugins: [
 			excalidrawFontsPlugin(),
 			react(),
+			// Only when HMR is off — otherwise this would break hot reload by removing the
+			// very client that implements it.
+			...(isDevServer && !hmrEnabled ? [stripViteHmrClientPlugin()] : []),
 			VitePWA({
 				strategies: 'injectManifest',
 				srcDir: 'src',
@@ -288,7 +351,7 @@ export default defineConfig(({ mode, command }) => {
 			// still opt into fallback ports by leaving VITE_DEV_PUBLIC_ORIGIN unset.
 			strictPort: strictDevPort,
 			origin: publicDevOrigin?.origin,
-			hmr: hmrConfig,
+			hmr: hmrEnabled ? hmrConfig : false,
 			allowedHosts: true,
 			proxy: {
 				// Proxy API + uploads to the Node server so cookie-based auth remains same-origin.

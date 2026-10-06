@@ -262,41 +262,108 @@ function removePendingShareLinkRequest(requestId: string): void {
 	writePendingQueue(readPendingQueue().filter((item) => item.id !== requestId));
 }
 
+/** A queued link the user asked for while offline, waiting for a usable connection. */
+export type PendingNoteShareLinkRequest = {
+	id: string;
+	permission: NoteShareRole;
+	expiresInDays: ShareExpiryDays;
+	createdAt: string;
+};
+
+/**
+ * What this device still owes the server for a note. The modal needs this because a queued
+ * request is real state the device is holding, and showing nothing instead reads as "you have
+ * no share links" — the same confident lie listNoteShareLinks goes out of its way to avoid.
+ */
+export function readPendingNoteShareLinkRequests(docId: string): PendingNoteShareLinkRequest[] {
+	const id = normalizeId(docId);
+	if (!id) return [];
+	return readPendingQueue()
+		.filter((item) => item.entityType === 'note' && item.entityId === id)
+		.map((item) => ({
+			id: item.id,
+			permission: item.permission === 'EDITOR' ? 'EDITOR' : 'VIEWER',
+			expiresInDays: normalizeExpiryDays(item.expiresInDays),
+			createdAt: item.createdAt,
+		}));
+}
+
+// The 'online' event fires when the network interface comes up, not when the network is actually
+// usable — so the one flush attempt it triggers routinely dies on DNS or a half-open route, and
+// before this the queue then sat there until the app was next started. A user who generates a QR
+// code offline, reconnects, and finds nothing has no way to know a restart is the magic word.
+const FLUSH_RETRY_DELAYS_MS = [2_000, 8_000, 30_000, 120_000];
+let flushRetryTimer: number | null = null;
+let flushRetryAttempt = 0;
+let flushInFlight = false;
+
+function cancelShareLinkFlushRetry(): void {
+	if (flushRetryTimer === null || typeof window === 'undefined') return;
+	window.clearTimeout(flushRetryTimer);
+	flushRetryTimer = null;
+}
+
+function scheduleShareLinkFlushRetry(userId: string): void {
+	if (typeof window === 'undefined' || flushRetryTimer !== null) return;
+	const delay = FLUSH_RETRY_DELAYS_MS[Math.min(flushRetryAttempt, FLUSH_RETRY_DELAYS_MS.length - 1)];
+	flushRetryAttempt += 1;
+	flushRetryTimer = window.setTimeout(() => {
+		flushRetryTimer = null;
+		void flushPendingShareLinkRequests(userId);
+	}, delay);
+}
+
 export async function flushPendingShareLinkRequests(userId: string): Promise<void> {
 	if (!userId || isOffline()) return;
+	if (flushInFlight) return;
+	// A caller is doing the work now, so a timer armed for later is redundant.
+	cancelShareLinkFlushRetry();
 	const queued = readPendingQueue().filter((item) => item.userId === userId);
-	for (const request of queued) {
-		try {
-			// Replay queued link generation one item at a time so a transient failure does
-			// not discard the rest of the offline request queue.
-			if (request.entityType === 'note') {
-				const link = await requestSecureShareLink<NoteShareLink>({
-					entityType: 'note',
-					entityId: request.entityId,
-					permission: request.permission,
-					expiresInDays: request.expiresInDays,
-				});
-				writeCachedSecureLink(NOTE_SHARE_CACHE_KEY, request.entityId, request.permission, request.expiresInDays, link);
-			} else {
-				const link = await requestSecureShareLink<WorkspaceShareLink>({
-					entityType: 'workspace',
-					entityId: request.entityId,
-					permission: request.permission,
-					expiresInDays: request.expiresInDays,
-				});
-				writeCachedSecureLink(WORKSPACE_SHARE_CACHE_KEY, request.entityId, request.permission, request.expiresInDays, link);
-			}
-			removePendingShareLinkRequest(request.id);
-			emitShareLinkReady({
-				entityType: request.entityType,
-				entityId: request.entityId,
-				permission: request.permission,
-				expiresInDays: request.expiresInDays,
-			});
-		} catch {
-			break;
-		}
+	if (queued.length === 0) {
+		flushRetryAttempt = 0;
+		return;
 	}
+	flushInFlight = true;
+	let failed = false;
+	try {
+		for (const request of queued) {
+			try {
+				// Replay queued link generation one item at a time so a transient failure does
+				// not discard the rest of the offline request queue.
+				if (request.entityType === 'note') {
+					const link = await requestSecureShareLink<NoteShareLink>({
+						entityType: 'note',
+						entityId: request.entityId,
+						permission: request.permission,
+						expiresInDays: request.expiresInDays,
+					});
+					writeCachedSecureLink(NOTE_SHARE_CACHE_KEY, request.entityId, request.permission, request.expiresInDays, link);
+				} else {
+					const link = await requestSecureShareLink<WorkspaceShareLink>({
+						entityType: 'workspace',
+						entityId: request.entityId,
+						permission: request.permission,
+						expiresInDays: request.expiresInDays,
+					});
+					writeCachedSecureLink(WORKSPACE_SHARE_CACHE_KEY, request.entityId, request.permission, request.expiresInDays, link);
+				}
+				removePendingShareLinkRequest(request.id);
+				emitShareLinkReady({
+					entityType: request.entityType,
+					entityId: request.entityId,
+					permission: request.permission,
+					expiresInDays: request.expiresInDays,
+				});
+			} catch {
+				failed = true;
+				break;
+			}
+		}
+	} finally {
+		flushInFlight = false;
+	}
+	if (failed) scheduleShareLinkFlushRetry(userId);
+	else flushRetryAttempt = 0;
 }
 
 export async function ensureNoteShareLink(args: {

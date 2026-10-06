@@ -1218,6 +1218,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		revokeLink: 'Revoke',
 		linkRevoked: 'Share link revoked.',
 		linkFromThisDeviceOnly: 'Saved on this device — reconnect to manage it',
+		linkWaitingForConnection: 'Waiting for a connection — it will be created when you reconnect',
 	},
 	theme: {
 		light: 'Light',

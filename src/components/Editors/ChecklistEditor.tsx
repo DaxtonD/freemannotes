@@ -40,6 +40,7 @@ import { immediateChecklistSensors } from '../../core/dndSensors';
 import { useChecklistFlip } from '../../core/useChecklistFlip';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { useI18n } from '../../core/i18n';
+import { debugLog, describeActiveElement, findScrollParent, isDebugLogEnabled } from '../../core/debugLog';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
 import { useKeyboardHeight } from '../../core/useKeyboardHeight';
 import { useIsMobileLandscape } from '../../core/useIsMobileLandscape';
@@ -647,6 +648,9 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const checklistScrollRef = React.useRef<HTMLDivElement | null>(null);
 	const [focusRowId, setFocusRowId] = React.useState<string | null>(null);
 	const [activeRowId, setActiveRowId] = React.useState<string | null>(null);
+	// Read after the delete has rendered, to see where the selection actually ended up.
+	const activeRowIdRef = React.useRef(activeRowId);
+	activeRowIdRef.current = activeRowId;
 	const [activeRowAutocompleteText, setActiveRowAutocompleteText] = React.useState('');
 	const [activeRowEditor, setActiveRowEditor] = React.useState<Editor | null>(null);
 	const [activeRowHistoryState, setActiveRowHistoryState] = React.useState({ canUndo: false, canRedo: false });
@@ -692,13 +696,17 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		ignoreKeyboardCloseUntilRef.current = Date.now() + 450;
 		focusProxyRef.current?.focus();
 	}, [isCoarsePointer, keyboard.isOpen]);
-	const clearRowSelection = React.useCallback((): void => {
+	const clearRowSelection = React.useCallback((options?: { keepKeyboard?: boolean }): void => {
 		// Clear both React selection state and DOM focus so quick delete truly exits the
 		// row instead of letting another row auto-focus and reopen the keyboard.
 		suppressAutoActivateAfterDeleteRef.current = true;
 		setActiveRowId(null);
 		setFocusRowId(null);
 		setActiveRowEditor(null);
+		// keepKeyboard leaves the focus proxy holding the keyboard up — see the same option on
+		// clearChecklistSelection in NoteEditor.tsx. Deleting the row you're typing in should
+		// not dismiss the keyboard.
+		if (options?.keepKeyboard) return;
 		if (document.activeElement instanceof HTMLElement) {
 			document.activeElement.blur();
 		}
@@ -711,6 +719,30 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 	const activateRow = React.useCallback(
 		(id: string): void => {
 			if (activeRowId === id) return;
+			if (isDebugLogEnabled()) {
+				// The browser scrolls a newly focused element into view, so if the view jumps
+				// because the cursor moved somewhere unexpected, the move is logged right here.
+				const row = latestItemsRef.current.find((candidate) => candidate.id === id) ?? null;
+				const anyRow = rowInputsRef.current.values().next().value ?? null;
+				const scroller = findScrollParent(anyRow instanceof HTMLElement ? anyRow : null);
+				const scrollTopBefore = scroller ? scroller.scrollTop : null;
+				debugLog('checklist-activate-row', {
+					to: id,
+					toText: row ? `${(row.text || '').trim().slice(0, 24) || '(empty)'}${row.completed ? ' [done]' : ''}` : null,
+					from: activeRowId,
+					scrollTopBefore,
+				});
+				if (typeof window !== 'undefined') {
+					window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+						debugLog('checklist-activate-row-after', {
+							to: id,
+							scrollTopAfter: scroller ? scroller.scrollTop : null,
+							scrollDelta: scroller && scrollTopBefore !== null ? scroller.scrollTop - scrollTopBefore : null,
+							focusedAfter: describeActiveElement(),
+						});
+					}));
+				}
+			}
 			allowAutomaticRowFocusRef.current = true;
 			suppressAutoActivateAfterDeleteRef.current = false;
 			prepareRowFocusHandoff();
@@ -1230,7 +1262,92 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		return () => document.removeEventListener('keydown', handleKeyDown);
 	}, [undoCheckboxChange, redoCheckboxChange]);
 
+	/**
+	 * Records what a delete actually did, because reading this file has produced three wrong
+	 * answers about it. Writes nothing unless the debug toggle in Preferences is on.
+	 *
+	 * The questions it answers, which static reading could not: which of the several delete paths
+	 * ran, whether the row was the active one, what the current code picks as a focus target out
+	 * of storage order versus what that row is in the list you can SEE, and — the one that
+	 * matters — what ends up focused two frames later and how far the scroller moved.
+	 */
+	const logChecklistDelete = React.useCallback((handler: string, id: string): void => {
+		if (!isDebugLogEnabled()) return;
+		const item = normalizedItems.find((row) => row.id === id) ?? null;
+		const rawIndex = normalizedItems.findIndex((row) => row.id === id);
+		const scroller = findScrollParent(rowInputsRef.current.get(id) ?? null);
+		const scrollTopBefore = scroller ? scroller.scrollTop : null;
+		// Ids are meaningless in a bug report. The row's own text is what the person testing
+		// actually saw, so log that too and correlation stops being index arithmetic.
+		const label = (rowId: string | null): string | null => {
+			if (!rowId) return null;
+			const row = normalizedItems.find((candidate) => candidate.id === rowId);
+			if (!row) return null;
+			const text = (row.text || '').trim().slice(0, 24);
+			return `${text || '(empty)'}${row.completed ? ' [done]' : ''}`;
+		};
+		debugLog('checklist-delete', {
+			handler,
+			id,
+			text: label(id),
+			completed: item ? Boolean(item.completed) : null,
+			activeRowIdBefore: activeRowIdRef.current,
+			activeRowTextBefore: label(activeRowIdRef.current),
+			wasActiveRow: activeRowIdRef.current === id,
+			quickDeleteVisible,
+			keyboardOpen: keyboard.isOpen,
+			coarsePointer: isCoarsePointer,
+			// Storage order — what removeItemAndFocus currently indexes into.
+			rawIndex,
+			rawPrevId: rawIndex > 0 ? normalizedItems[rawIndex - 1]?.id ?? null : null,
+			rawPrevText: label(rawIndex > 0 ? normalizedItems[rawIndex - 1]?.id ?? null : null),
+			rawNextId: normalizedItems[rawIndex + 1]?.id ?? null,
+			rawNextText: label(normalizedItems[rawIndex + 1]?.id ?? null),
+			// Rendered order — what the reader sees. The completed section is recency-sorted, so
+			// these two disagree, and knowing which one the focus follows is the whole question.
+			activeIndex: activeItems.findIndex((row) => row.id === id),
+			completedIndex: completedItems.findIndex((row) => row.id === id),
+			activeCount: activeItems.length,
+			completedCount: completedItems.length,
+			scrollTopBefore,
+			focusedBefore: describeActiveElement(),
+		});
+		if (typeof window === 'undefined') return;
+		// Two frames: one for React to commit the removal, one for any focus/scroll that follows it.
+		window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+			debugLog('checklist-delete-after', {
+				id,
+				activeRowIdAfter: activeRowIdRef.current,
+				activeRowTextAfter: label(activeRowIdRef.current),
+				scrollTopAfter: scroller ? scroller.scrollTop : null,
+				scrollDelta: scroller && scrollTopBefore !== null ? scroller.scrollTop - scrollTopBefore : null,
+				focusedAfter: describeActiveElement(),
+			});
+		}));
+	}, [activeItems, completedItems, isCoarsePointer, keyboard.isOpen, normalizedItems, quickDeleteVisible]);
+
+	// Opening a checklist writes one line. If the log is empty after opening a note, the problem
+	// is that this code isn't running at all (stale bundle, service worker, wrong origin) rather
+	// than anything about deleting — which cost us a full round of testing to work out once.
+	React.useEffect(() => {
+		debugLog('checklist-editor-mounted', {
+			buildTag: typeof __BUILD_TAG__ === 'string' ? __BUILD_TAG__ : 'unknown',
+			devBuild: typeof __IS_DEV_BUILD__ === 'boolean' ? __IS_DEV_BUILD__ : null,
+			itemCount: normalizedItems.length,
+			activeCount: activeItems.length,
+			completedCount: completedItems.length,
+			coarsePointer: isCoarsePointer,
+			quickDeleteVisible,
+		});
+	// Deliberately mount-only: this is a "did my code load" marker, not a state tracker.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	const removeItem = React.useCallback((id: string, options?: { preserveKeyboard?: boolean }): void => {
+		// Instrumenting the five ×/backspace handlers was not enough — a delete came through with
+		// none of them logging, which means a path I never found. Everything reaches this function,
+		// so log here and stop guessing which control the person actually tapped.
+		logChecklistDelete('removeItem', id);
 		if (options?.preserveKeyboard !== false) {
 			prepareRowFocusHandoff();
 		}
@@ -1244,7 +1361,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 			pushChecklistUndoSnapshot(prev);
 			return next;
 		});
-	}, [prepareRowFocusHandoff, pushChecklistUndoSnapshot]);
+	}, [logChecklistDelete, prepareRowFocusHandoff, pushChecklistUndoSnapshot]);
 
 	const onDragEnd = React.useCallback((event: DropResult): void => {
 		const destination = event.destination;
@@ -1599,19 +1716,37 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 		(id: string): void => {
 			if (activeItems[0]?.id === id) return;
 			const currentIndex = normalizedItems.findIndex((row) => row.id === id);
-			const previous = currentIndex > 0 ? normalizedItems[currentIndex - 1] ?? null : null;
-			const next = normalizedItems[currentIndex + 1] ?? null;
+			const previousId = currentIndex > 0 ? normalizedItems[currentIndex - 1]?.id ?? null : null;
+			const nextId = normalizedItems[currentIndex + 1]?.id ?? null;
+			// Same guard as removeChecklistItem in NoteEditor.tsx, where this was measured: the
+			// next cursor home must come from the deleted row's own section. Storage order is not
+			// display order, so the stored neighbour of a newly added row is the last COMPLETED
+			// item and the cursor used to land down there. This file is the new-note composer, so
+			// the bug is reachable here too even though the on-device captures came from the
+			// existing-note editor.
+			const deletedIsCompleted = Boolean(normalizedItems[currentIndex]?.completed);
+			const usableFocusTarget = (candidateId: string | null): string | null => {
+				if (!candidateId) return null;
+				const candidate = normalizedItems.find((row) => row.id === candidateId);
+				if (!candidate) return null;
+				if (candidate.parentId === id) return null;
+				return Boolean(candidate.completed) === deletedIsCompleted ? candidateId : null;
+			};
+			const focusTarget = usableFocusTarget(previousId) ?? usableFocusTarget(nextId);
+			if (!focusTarget) {
+				// Same trap as NoteEditor's removeChecklistItem: "no active row" is not the same
+				// as "selection cleared". Without the suppression flag that clearRowSelection
+				// sets, the auto-activate effect picks normalizedItems[0] and scrolls to the top
+				// of the list. removeItem still runs the handoff, which parks focus on the proxy
+				// textarea, so passing keepKeyboard leaves the keyboard up with no row selected.
+				removeItem(id);
+				clearRowSelection({ keepKeyboard: isCoarsePointer && keyboard.isOpen });
+				return;
+			}
 			removeItem(id);
-			// Hand the cursor to a neighbour so you can keep typing — but never into a COMPLETED
-			// row. Completed items live at the bottom of the list, so focusing one scrolls the
-			// whole editor down there: add an item while a completed row happens to be selected,
-			// change your mind, hit the x, and you get thrown to the bottom of your shopping list.
-			// A completed row is not somewhere anyone wants their cursor to land anyway.
-			const focusTarget = (previous && !previous.completed ? previous : null)
-				?? (next && !next.completed ? next : null);
-			if (focusTarget) activateRow(focusTarget.id);
+			activateRow(focusTarget);
 		},
-		[activeItems, normalizedItems, removeItem, activateRow]
+		[activeItems, clearRowSelection, isCoarsePointer, keyboard.isOpen, normalizedItems, removeItem, activateRow]
 	);
 
 	const removeItemByButton = React.useCallback(
@@ -1941,7 +2076,8 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	rowContainersRef.current.set(item.id, node);
 																}}
 													{...dragProvided.draggableProps}
-														className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}${animatingCompletionById.get(item.id) === 'completing' ? ` ${styles.checklistItemCompleting}` : ''}${animatingCompletionById.get(item.id) === 'uncompleting' ? ` ${styles.checklistItemUncompleting}` : ''}`}
+														data-checklist-row-id={item.id}
+												className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${snapshot.isDragging || (draggingParentId !== null && item.parentId === draggingParentId) ? ` ${styles.rowDragging}` : ''}${draggingParentId !== null && item.parentId === draggingParentId ? ` ${styles.childDraggingWithParent} ${styles.childHiddenDuringParentDrag}` : ''}${animatingCompletionById.get(item.id) === 'completing' ? ` ${styles.checklistItemCompleting}` : ''}${animatingCompletionById.get(item.id) === 'uncompleting' ? ` ${styles.checklistItemUncompleting}` : ''}`}
 													aria-label={t('editors.dragHandle')}
 													style={{
 														...dragStyle,
@@ -2011,6 +2147,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																	onShiftEnter={() => undefined}
 																	onBackspaceWhenEmpty={() => {
 																		if (activeItems[0]?.id === item.id) return;
+																		logChecklistDelete('backspace-active', item.id);
 																		removeItemAndFocus(item.id);
 																	}}
 																	onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
@@ -2072,9 +2209,11 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 														onPointerDown={preventHandleFocusSteal}
 														onClick={() => {
 															if (quickDeleteVisible) {
+																logChecklistDelete('x-active-quickdelete', item.id);
 																removeItemByButton(item.id);
 																return;
 															}
+															logChecklistDelete('x-active-plain', item.id);
 															removeItem(item.id);
 														}}
 														aria-label={t('editors.remove')}
@@ -2148,6 +2287,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 											<li
 												key={item.id}
 												ref={(node) => { rowContainersRef.current.set(item.id, node); }}
+												data-checklist-row-id={item.id}
 												className={`${styles.checklistItem}${item.completed ? ` ${styles.checklistItemCompleted}` : ''}${activeRowId === item.id ? ` ${styles.checklistItemActive}` : ''}${quickDeleteVisible ? ` ${styles.checklistItemQuickDelete}` : ''}${item.parentId ? ` ${styles.childRow}` : ''}${animatingCompletionById.get(item.id) === 'completing' ? ` ${styles.checklistItemCompleting}` : ''}${animatingCompletionById.get(item.id) === 'uncompleting' ? ` ${styles.checklistItemUncompleting}` : ''}`}
 											>
 											<div className={`${styles.dragHandle} ${styles.dragHandleNonDraggable}`} aria-hidden="true">
@@ -2198,6 +2338,7 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 																			onShiftEnter={() => undefined}
 																			onBackspaceWhenEmpty={() => {
 																				if (activeItems[0]?.id === item.id) return;
+																				logChecklistDelete('backspace-completed', item.id);
 																				removeItem(item.id);
 																			}}
 																			onArrowUpAtBoundary={isCoarsePointer ? undefined : () => moveFocusToAdjacentRow(item.id, 'previous')}
@@ -2228,7 +2369,10 @@ export function ChecklistEditor(props: ChecklistEditorProps): React.JSX.Element 
 										<button
 											type="button"
 											className={styles.rowRemoveButton}
-											onClick={() => removeItemByButton(item.id)}
+											onClick={() => {
+												logChecklistDelete('x-completed', item.id);
+												removeItemByButton(item.id);
+											}}
 											aria-label={t('editors.remove')}
 											title={t('editors.remove')}
 										>

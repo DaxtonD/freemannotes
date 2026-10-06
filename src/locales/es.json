@@ -1103,6 +1103,7 @@
     "publicTitle": "Nota compartida",
     "backToApp": "Volver a la app",
     "linkFromThisDeviceOnly": "Guardado en este dispositivo: reconéctate para gestionarlo",
+    "linkWaitingForConnection": "Esperando conexión: se creará cuando vuelvas a conectarte",
     "linkRevoked": "Enlace revocado.",
     "revokeLink": "Revocar",
     "linksOnThisNote": "Enlaces compartidos",

@@ -30,6 +30,7 @@ import type { ChecklistItem } from '../../core/bindings';
 import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem, normalizeChecklistCountValue } from '../../core/checklistCounts';
 import { applyChecklistDragToItems, buildChecklistCompletedRows, moveChecklistItemToEdge, normalizeChecklistHierarchy, sortCompletedChecklistItemsByRecency, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
+import { debugLog, describeActiveElement, describeScroller, findScrollParent, isDebugLogEnabled, snapshotScrollState } from '../../core/debugLog';
 import { getDeviceId } from '../../core/deviceId';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { immediateChecklistSensors } from '../../core/dndSensors';
@@ -1780,12 +1781,16 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		ignoreKeyboardCloseUntilRef.current = Date.now() + 450;
 		focusProxyRef.current?.focus();
 	}, [isCoarsePointer, keyboard.isOpen]);
-	const clearChecklistSelection = React.useCallback((): void => {
+	const clearChecklistSelection = React.useCallback((options?: { keepKeyboard?: boolean }): void => {
 		// Quick delete wants a true blur state, not a refocus onto the next surviving row.
 		suppressAutoActivateAfterDeleteRef.current = true;
 		setActiveChecklistRowId(null);
 		setFocusRowId(null);
 		setActiveChecklistRowEditor(null);
+		// keepKeyboard leaves the focus proxy holding the mobile keyboard up. Deleting the row
+		// you were in the middle of typing shouldn't dismiss the keyboard — you almost always
+		// have more to type, and blurring here made it close and reopen.
+		if (options?.keepKeyboard) return;
 		if (document.activeElement instanceof HTMLElement) {
 			document.activeElement.blur();
 		}
@@ -2981,6 +2986,21 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		return () => document.removeEventListener('keydown', onKey);
 	}, [readOnly, redoCheckboxChange, type, undoCheckboxChange]);
 
+	// One line on open, so "did my code load" never again costs a round of testing.
+	React.useEffect(() => {
+		if (type !== 'checklist') return;
+		debugLog('note-checklist-opened', {
+			buildTag: typeof __BUILD_TAG__ === 'string' ? __BUILD_TAG__ : 'unknown',
+			devBuild: typeof __IS_DEV_BUILD__ === 'boolean' ? __IS_DEV_BUILD__ : null,
+			activeCount: activeItems.length,
+			completedCount: completedItems.length,
+			coarsePointer: isCoarsePointer,
+			quickDeleteVisible,
+		});
+	// Mount-only marker, not a state tracker.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [type]);
+
 	const removeChecklistItem = React.useCallback(
 		(id: string, options?: { clearSelection?: boolean }): void => {
 			if (type !== 'checklist') return;
@@ -2989,6 +3009,83 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 			const wasActive = activeChecklistRowId === id;
 			const previousId = index > 0 ? normalizedItems[index - 1]?.id ?? null : null;
 			const nextId = normalizedItems[index + 1]?.id ?? null;
+			// Where the cursor goes next has to come from the same SECTION the deleted row lived
+			// in. It used to be whichever row sat next in the Y.Array, and storage order is not
+			// display order: "add item" appends to the very END of the array while the new row
+			// displays as the last ACTIVE row, so its stored neighbour is the last COMPLETED
+			// item. Deleting it threw the cursor and the keyboard down into the completed
+			// section. Measured on-device 2026-10-06 rather than reasoned about, after three
+			// fixes that were aimed at the twin of this function in ChecklistEditor.tsx (which
+			// only serves the new-note composer and was never running during any of the tests):
+			// rawIndex 20, rawPrevText "20 [done]", activeIndex 15, focusTarget "20 [done]".
+			const deletedIsCompleted = Boolean(normalizedItems[index]?.completed);
+			const usableFocusTarget = (candidateId: string | null): string | null => {
+				if (!candidateId) return null;
+				const candidate = normalizedItems.find((row) => row.id === candidateId);
+				if (!candidate) return null;
+				// A child of the row being deleted goes with it, so it is not somewhere to land.
+				if (candidate.parentId === id) return null;
+				return Boolean(candidate.completed) === deletedIsCompleted ? candidateId : null;
+			};
+			// null is a legitimate answer. A section with nothing left in it should take no
+			// cursor at all; handing it to the other section is the same bug in another costume.
+			const focusTargetId = usableFocusTarget(previousId) ?? usableFocusTarget(nextId);
+			// This is the delete that runs when you open an existing checklist note. The twin of
+			// it in ChecklistEditor.tsx only serves the new-note composer, which is why three
+			// fixes aimed at that file changed nothing here. Measure, don't infer, this time.
+			if (isDebugLogEnabled()) {
+				const label = (rowId: string | null): string | null => {
+					if (!rowId) return null;
+					const row = normalizedItems.find((candidate) => candidate.id === rowId);
+					if (!row) return null;
+					return `${(row.text || '').trim().slice(0, 24) || '(empty)'}${row.completed ? ' [done]' : ''}`;
+				};
+				const scroller = findScrollParent(rowInputsRef.current.get(id) ?? null);
+				const scrollBefore = snapshotScrollState(scroller);
+				debugLog('note-checklist-delete', {
+					id,
+					text: label(id),
+					completed: Boolean(normalizedItems[index]?.completed),
+					wasActive,
+					activeRowTextBefore: label(activeChecklistRowId),
+					clearSelection: options?.clearSelection === true,
+					quickDeleteVisible,
+					keyboardOpen: keyboard.isOpen,
+					coarsePointer: isCoarsePointer,
+					// Storage order — what this function indexes into to pick the next focus.
+					rawIndex: index,
+					rawPrevText: label(previousId),
+					rawNextText: label(nextId),
+					// Displayed order — what the reader actually sees.
+					activeIndex: activeItems.findIndex((row) => row.id === id),
+					completedIndex: completedItems.findIndex((row) => row.id === id),
+					activeCount: activeItems.length,
+					completedCount: completedItems.length,
+					// Where the cursor is about to go, if anywhere.
+					focusTargetText: wasActive && options?.clearSelection !== true ? label(focusTargetId) : null,
+					// Measured on every candidate, because picking the wrong one makes a real jump
+					// read as zero. scrollerName says which container the row actually sits in.
+					scrollerName: describeScroller(scroller),
+					scrollBefore,
+					focusedBefore: describeActiveElement(),
+				});
+				if (typeof window !== 'undefined') {
+					window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+						const scrollAfter = snapshotScrollState(scroller);
+						debugLog('note-checklist-delete-after', {
+							id,
+							scrollAfter,
+							scrollDelta: {
+								scroller: typeof scrollAfter.scroller === 'number' && typeof scrollBefore.scroller === 'number' ? scrollAfter.scroller - scrollBefore.scroller : null,
+								doc: typeof scrollAfter.doc === 'number' && typeof scrollBefore.doc === 'number' ? scrollAfter.doc - scrollBefore.doc : null,
+								win: typeof scrollAfter.win === 'number' && typeof scrollBefore.win === 'number' ? scrollAfter.win - scrollBefore.win : null,
+								vvTop: typeof scrollAfter.vvTop === 'number' && typeof scrollBefore.vvTop === 'number' ? scrollAfter.vvTop - scrollBefore.vvTop : null,
+							},
+							focusedAfter: describeActiveElement(),
+						});
+					}));
+				}
+			}
 			// `clearSelection=true` is used by quick delete to close editing entirely.
 			// Normal delete keeps the keyboard alive and hands focus to a neighbor.
 			if (options?.clearSelection !== true && wasActive) {
@@ -3027,11 +3124,24 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 				return;
 			}
 
+			if (!focusTargetId) {
+				// Nothing in this row's own section to land on, so clear the selection. Simply
+				// leaving activeChecklistRowId null is NOT the same thing: the auto-activate
+				// effect above ignores a null selection unless the suppression flag is set, so
+				// it would helpfully select normalizedItems[0] — storage index 0, the first row
+				// in the whole list — and scroll the checklist to the very top. Which is exactly
+				// what the first version of this fix did.
+				//
+				// The handoff above has already moved focus to the proxy textarea, so when the
+				// keyboard is up we deliberately do NOT blur: no selected row, keyboard intact.
+				clearChecklistSelection({ keepKeyboard: isCoarsePointer && keyboard.isOpen });
+				return;
+			}
 			suppressAutoActivateAfterDeleteRef.current = false;
-			setActiveChecklistRowId(previousId ?? nextId);
-			setFocusRowId(previousId ?? nextId);
+			setActiveChecklistRowId(focusTargetId);
+			setFocusRowId(focusTargetId);
 		},
-		[activeChecklistRowId, checklistArray, clearChecklistSelection, normalizedItems, prepareChecklistRowFocusHandoff, pushChecklistUndoSnapshot, quickDeleteVisible, type]
+		[activeChecklistRowId, checklistArray, clearChecklistSelection, isCoarsePointer, keyboard.isOpen, normalizedItems, prepareChecklistRowFocusHandoff, pushChecklistUndoSnapshot, quickDeleteVisible, type]
 	);
 
 	const onChecklistDragEnd = React.useCallback(

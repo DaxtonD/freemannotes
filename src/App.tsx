@@ -150,6 +150,7 @@ import {
 	readCachedSharedNotePlacementsForWorkspace,
 } from './core/noteSharePlacementStore';
 import { addNotePreviewLinkToDoc, extractNoteLinksFromDoc, getNotePreviewLinksFromDoc, removeNotePreviewLinkFromDoc } from './core/noteLinks';
+import { debugLog } from './core/debugLog';
 import { acceptShareToken, flushPendingShareLinkRequests, getShareTokenMetadata } from './core/shareLinks';
 import { listFailedNoteLinks, type FailedNoteLinkRecord } from './core/noteLinkApi';
 import { searchNotes, type NoteSearchDocumentMatch, type NoteSearchMatchKind, type NoteSearchResult } from './core/noteMediaApi';
@@ -5091,14 +5092,28 @@ export function App(): React.JSX.Element {
 	React.useEffect(() => {
 		if (authStatus !== 'authed' || !authUserId || typeof window === 'undefined') return;
 		let running = false;
+		// Each step is awaited in order on purpose (probeSession has to follow the workspace
+		// activation above it), but one throw used to abandon every step after it — the whole tail
+		// of the reconnect, session probe and preference flushes included, silently skipped because
+		// an IndexedDB read hiccuped (readPendingWorkspaceMutations and readCachedWorkspaceSnapshot
+		// both sit outside their own function's try block, so this was not hypothetical). Isolate each
+		// step instead: a failure costs that one thing, and whatever retry it already has, nothing else.
+		const step = async (label: string, run: () => Promise<unknown> | unknown): Promise<void> => {
+			try {
+				await run();
+			} catch (error) {
+				debugLog('reconnect-step-failed', { label, message: error instanceof Error ? error.message : String(error) });
+			}
+		};
 		const onOnline = () => {
 			if (running) return;
 			running = true;
 			void (async () => {
 				try {
 					// Flush a pending avatar upload queued while offline.
-					const pendingAvatarUrl = await attemptPendingAvatarUpload(authUserId);
-					if (pendingAvatarUrl) {
+					await step('avatar', async () => {
+						const pendingAvatarUrl = await attemptPendingAvatarUpload(authUserId);
+						if (!pendingAvatarUrl) return;
 						setAuthProfileImage(pendingAvatarUrl);
 						setLiveUserAvatar(authUserId, pendingAvatarUrl);
 						const cached = readAuthCache();
@@ -5109,20 +5124,20 @@ export function App(): React.JSX.Element {
 							profileImage: pendingAvatarUrl,
 							role: cached?.role ?? null,
 						});
-					}
-					await syncPendingWorkspaceMutationsRef.current();
-					await flushPendingShareLinkRequests(authUserId);
-					await loadSidebarWorkspacesRef.current();
-					await refreshActiveWorkspaceRef.current();
+					});
+					await step('workspace-mutations', () => syncPendingWorkspaceMutationsRef.current());
+					await step('share-links', () => flushPendingShareLinkRequests(authUserId));
+					await step('sidebar-workspaces', () => loadSidebarWorkspacesRef.current());
+					await step('active-workspace', () => refreshActiveWorkspaceRef.current());
 					// Always probe the session when going back online to ensure the server JWT
 					// is aligned with the locally-selected workspace. Workspace switches made
 					// while offline need server-side activation regardless of whether authOfflineMode
 					// is true (started offline) or false (was online, went offline, switched workspace).
 					// probeSession only enables WebSocket AFTER activation completes.
-					await probeSession({ allowOfflineRestore: true });
-					await flushUserPreferences(deviceId);
-					await syncPendingAppearancePreferencesRef.current();
-					await flushPendingReminderMutationsRef.current();
+					await step('session-probe', () => probeSession({ allowOfflineRestore: true }));
+					await step('user-preferences', () => flushUserPreferences(deviceId));
+					await step('appearance-preferences', () => syncPendingAppearancePreferencesRef.current());
+					await step('reminders', () => flushPendingReminderMutationsRef.current());
 					// After the session is fully established, kick off a background preload
 					// so any workspaces the user has not visited on this device are pulled
 					// into IndexedDB and available offline. Fire-and-forget — errors are
