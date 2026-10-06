@@ -99,9 +99,24 @@ For development, `npm run dev` is the right command. It starts both the backend 
 If you're reaching the app through a reverse proxy (Nginx Proxy Manager, Cloudflare Tunnel, etc.) instead of `localhost` — e.g. testing on a phone over a domain name — **the proxy's target port determines which build you're actually testing, and the two builds do not update the same way:**
 
 - Proxy pointed at **27015** (or wherever `npm start`/the production server binds): you're hitting the static `dist/` build. Source edits have zero effect until you run `npm run build` and restart the server.
-- Proxy pointed at **5173** (Vite's dev server): you're hitting the live dev server, which hot-reloads automatically via Vite Fast Refresh — most edits apply within a second or two, no restart needed.
+- Proxy pointed at **5173** (Vite's dev server): you're hitting the live dev server. **Hot reload is deliberately disabled on a proxied origin** (see below), so edits apply on your next manual refresh rather than automatically.
+
+**Why hot reload is off behind a proxy.** Vite's dev client calls `location.reload()` every time its HMR WebSocket closes, and there is no option to disable that — the disconnect is synthesised in the browser by the socket's own `close` handler, so the dev server can't suppress it. Behind a proxy that has an idle timeout, and on a phone that closes the socket every time the tab or PWA is backgrounded, this means the page hard-refreshes constantly. It makes debugging anything stateful on a real device effectively impossible.
+
+So when `VITE_DEV_PUBLIC_ORIGIN` is set, `vite.config.ts` sets `server.hmr: false` **and** strips the injected `<script src="/@vite/client">` tag. Both halves are required: `hmr: false` alone stops update messages and makes `@vitejs/plugin-react` skip Fast Refresh (so no module gets `import.meta.hot`), but Vite still injects the client script, and that script opens the socket on its own.
+
+Plain `localhost` development is unaffected and keeps hot reload. Set `VITE_DEV_HMR=1` to force it back on for a proxied origin, or `VITE_DEV_HMR=0` to turn it off for localhost too. The trade-off: no hot reload and no Vite error overlay in that mode.
 
 Mixing these up produces "my fix isn't showing up" reports that have nothing to do with the fix itself. The tell: a completely silent console for a log line you just added — that means the JS actually running predates your change. You can also tell from the served bundle shape: Vite dev serves many small, unminified per-module files under `/src/...`; a production build serves one or a few minified, content-hashed files like `index-[hash].js`.
+
+**The other reason "my fix isn't showing up":** some features are implemented more than once, and you may be editing the copy that isn't running. The worst offender is checklists:
+
+| File | When it runs |
+|---|---|
+| `src/components/Editors/ChecklistEditor.tsx` | **Only** the new-note composer (`editorMode === 'checklist'`). Not imported by `NoteEditor`. |
+| `src/components/Editors/NoteEditor.tsx` | Every **existing** checklist note opened from the grid. Has its own inline rows, × buttons and delete/focus logic. |
+
+The two contain near-identical twins of the same functions (`removeItemAndFocus` ⇄ `removeChecklistItem`), which is exactly what makes it dangerous: reading one and reasoning carefully about it feels completely sound while the other is the code under test. Three consecutive fixes for one checklist bug went into the composer while all the testing happened on saved notes, so none of them could work. Before changing checklist behaviour, confirm which component actually renders the case you're reproducing — and if a fix appears to have no effect, add a one-line log on mount to prove your code is executing *before* theorising about why the behaviour didn't change.
 
 One more wrinkle: `npm run dev`'s backend binds to `PORT` from `.env` if it's set there, not necessarily the documented default of 27016 below — check your own `.env` before assuming which port the dev backend is actually listening on, especially if you've pointed a proxy at a specific port from memory.
 
