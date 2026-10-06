@@ -127,9 +127,9 @@ Freeman Notes now keeps note banner artwork in theme-specific folders with separ
 Required banner files:
 
 - `public/CardBanners/Dark/title.svg` for the dark card banner at `520x240`
-- `public/CardBanners/Dark/titleW.svg` for the dark list/strip banner at `1000x520`
+- `public/CardBanners/Dark/titleW.svg` for the dark list/strip banner at `1000x240`
 - `public/CardBanners/Light/title.svg` for the light card banner at `520x240`
-- `public/CardBanners/Light/titleW.svg` for the light list/strip banner at `1000x520`
+- `public/CardBanners/Light/titleW.svg` for the light list/strip banner at `1000x240`
 
 Naming rules:
 
@@ -167,6 +167,8 @@ npm run build
 ```
 
 If a banner appears unchanged after updating the SVGs, refresh the app or clear any cached service worker assets before retesting.
+
+Visual recipe (as of 1.19.2): every banner follows the same layered structure — a flat base fill, a faint vertical vignette, a soft diagonal gradient sheen using the icon's own accent color (easing in toward the icon rather than spanning the whole card), a horizontal fade (`hfade_<stem>_<theme>[_w]`) that keeps a clean zone directly behind the icon, a very faint paper-grain filter, the icon itself, and a 1px border. There's no generator script for these — copy the `<defs>`/layer structure from an existing file (e.g. `public/CardBanners/Light/calendar.svg`) and swap the accent color and icon. Don't reintroduce a repeated-line hatch texture for the diagonal layer; it reads as noisy at small sizes and was replaced for exactly that reason.
 
 ---
 

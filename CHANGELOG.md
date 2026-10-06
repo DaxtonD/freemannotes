@@ -2,6 +2,11 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.19.2 - 2026-10-07
+
+### Changed
+- **Note banner artwork lost its hatching.** Every card banner — all 80 SVGs, light and dark, card and list/strip sizes — had a diagonal texture built from 40-60 individual overlapping lines, and at opacity high enough to read as intentional it mostly just read as noisy, especially on the lighter themes where the lines sit close to the paper color. A user said so plainly: it looks bad. Replaced with one smooth diagonal gradient per banner, same accent color each icon already had, easing in toward the icon rather than striping across the whole card. Everything else about the artwork — the grain, the vignette, the clean zone directly behind the icon — is untouched.
+
 ## 1.19.1 - 2026-10-06
 
 ### Fixed
