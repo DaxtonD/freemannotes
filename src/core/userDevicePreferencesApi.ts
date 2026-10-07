@@ -22,6 +22,7 @@ export type UserDevicePreferences = {
 	activeSharedFolder: string | null;
 	checklistShowCompleted: boolean;
 	quickDeleteChecklist: boolean;
+	showMarkdownToggle: boolean;
 	noteCardClickOpens: boolean;
 	noteCardCheckboxInteractions: boolean;
 	noteCardLinkInteractions: boolean;
@@ -139,6 +140,7 @@ export async function fetchUserPreferences(deviceId: string): Promise<UserDevice
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
+			showMarkdownToggle: Boolean((body as any).showMarkdownToggle),
 			noteCardClickOpens: legacyNoteCardInteractions,
 			noteCardCheckboxInteractions: (body as any).noteCardCheckboxInteractions !== false && legacyNoteCardInteractions,
 			noteCardLinkInteractions: (body as any).noteCardLinkInteractions !== false && legacyNoteCardInteractions,
@@ -177,6 +179,7 @@ type PreferencePatch = {
 	activeSharedFolder?: string | null;
 	checklistShowCompleted?: boolean;
 	quickDeleteChecklist?: boolean;
+	showMarkdownToggle?: boolean;
 	noteCardClickOpens?: boolean;
 	noteCardCheckboxInteractions?: boolean;
 	noteCardLinkInteractions?: boolean;
@@ -256,6 +259,7 @@ function applyPendingPatchToPreferences(pref: UserDevicePreferences, patch: Pref
 	if ('activeSharedFolder' in patch) next.activeSharedFolder = patch.activeSharedFolder ?? null;
 	if ('checklistShowCompleted' in patch && typeof patch.checklistShowCompleted === 'boolean') next.checklistShowCompleted = patch.checklistShowCompleted;
 	if ('quickDeleteChecklist' in patch && typeof patch.quickDeleteChecklist === 'boolean') next.quickDeleteChecklist = patch.quickDeleteChecklist;
+	if ('showMarkdownToggle' in patch && typeof patch.showMarkdownToggle === 'boolean') next.showMarkdownToggle = patch.showMarkdownToggle;
 	if ('noteCardClickOpens' in patch && typeof patch.noteCardClickOpens === 'boolean') next.noteCardClickOpens = patch.noteCardClickOpens;
 	if ('noteCardCheckboxInteractions' in patch && typeof patch.noteCardCheckboxInteractions === 'boolean') next.noteCardCheckboxInteractions = patch.noteCardCheckboxInteractions;
 	if ('noteCardLinkInteractions' in patch && typeof patch.noteCardLinkInteractions === 'boolean') next.noteCardLinkInteractions = patch.noteCardLinkInteractions;
@@ -345,6 +349,7 @@ async function _sendPreferences(
 			activeSharedFolder: (body as any).activeSharedFolder ? String((body as any).activeSharedFolder) : null,
 			checklistShowCompleted: Boolean((body as any).checklistShowCompleted),
 			quickDeleteChecklist: Boolean((body as any).quickDeleteChecklist),
+			showMarkdownToggle: Boolean((body as any).showMarkdownToggle),
 			noteCardClickOpens: legacyNoteCardInteractions,
 			noteCardCheckboxInteractions: (body as any).noteCardCheckboxInteractions !== false && legacyNoteCardInteractions,
 			noteCardLinkInteractions: (body as any).noteCardLinkInteractions !== false && legacyNoteCardInteractions,

@@ -316,6 +316,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							noteCardBannerTitlePosition: 'above',
 							checklistShowCompleted: false,
 							quickDeleteChecklist: false,
+							showMarkdownToggle: false,
 							noteCardClickOpens: true,
 							noteCardCheckboxInteractions: true,
 							noteCardLinkInteractions: true,
@@ -353,6 +354,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
 						quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
+						showMarkdownToggle: Boolean(devicePref.showMarkdownToggle),
 						noteCardClickOpens: devicePref.noteCardClickOpens !== false,
 						noteCardCheckboxInteractions: devicePref.noteCardCheckboxInteractions !== false,
 						noteCardLinkInteractions: devicePref.noteCardLinkInteractions !== false,
@@ -666,6 +668,10 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						deviceUpdateData.quickDeleteChecklist = Boolean(body.quickDeleteChecklist);
 					}
 
+					if ('showMarkdownToggle' in body) {
+						deviceUpdateData.showMarkdownToggle = Boolean(body.showMarkdownToggle);
+					}
+
 					// noteCardClickOpens is a MASTER TOGGLE that overrides all three sub-prefs.
 					// If you add a new noteCard*Interactions pref, add it here too so the
 					// Preferences toggle correctly enables/disables the whole group at once.
@@ -746,6 +752,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 								editorToolbarMode: 'condensed',
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
+								showMarkdownToggle: false,
 								noteCardClickOpens: true,
 								noteCardCheckboxInteractions: true,
 								noteCardLinkInteractions: true,
@@ -782,6 +789,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 							activeSharedFolder: normalizeActiveSharedFolder(devicePref.activeSharedFolder),
 							checklistShowCompleted: Boolean(devicePref.checklistShowCompleted),
 							quickDeleteChecklist: Boolean(devicePref.quickDeleteChecklist),
+							showMarkdownToggle: Boolean(devicePref.showMarkdownToggle),
 							noteCardClickOpens: devicePref.noteCardClickOpens !== false,
 							noteCardCheckboxInteractions: devicePref.noteCardCheckboxInteractions !== false,
 							noteCardLinkInteractions: devicePref.noteCardLinkInteractions !== false,
@@ -868,6 +876,10 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 										typeof deviceData.quickDeleteChecklist === 'boolean'
 											? deviceData.quickDeleteChecklist
 											: false,
+									showMarkdownToggle:
+										typeof deviceData.showMarkdownToggle === 'boolean'
+											? deviceData.showMarkdownToggle
+											: false,
 									noteCardClickOpens:
 										typeof deviceData.noteCardClickOpens === 'boolean'
 											? deviceData.noteCardClickOpens
@@ -903,6 +915,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 									noteCardBannerTitlePosition: 'above',
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
+									showMarkdownToggle: false,
 									noteCardClickOpens: true,
 									noteCardCheckboxInteractions: true,
 									noteCardLinkInteractions: true,
@@ -953,6 +966,7 @@ function createPreferencesRouter({ prisma, timezone = null, onUserPreferencesCha
 						activeSharedFolder: normalizeActiveSharedFolder(pref.devicePref.activeSharedFolder),
 						checklistShowCompleted: Boolean(pref.devicePref.checklistShowCompleted),
 						quickDeleteChecklist: Boolean(pref.devicePref.quickDeleteChecklist),
+						showMarkdownToggle: Boolean(pref.devicePref.showMarkdownToggle),
 						noteCardClickOpens: pref.devicePref.noteCardClickOpens !== false,
 						noteCardCheckboxInteractions: pref.devicePref.noteCardCheckboxInteractions !== false,
 						noteCardLinkInteractions: pref.devicePref.noteCardLinkInteractions !== false,

@@ -20,6 +20,7 @@ export type CachedDeviceAppearancePreferences = {
 	noteCardBannerTitlePosition: NoteCardBannerTitlePosition;
 	checklistShowCompleted: boolean;
 	quickDeleteChecklist: boolean;
+	showMarkdownToggle: boolean;
 	noteCardClickOpens: boolean;
 	noteCardCheckboxInteractions: boolean;
 	noteCardLinkInteractions: boolean;
@@ -88,6 +89,7 @@ function normalizeSnapshot(value: Partial<CachedDeviceAppearancePreferences> | n
 		noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition(value.noteCardBannerTitlePosition),
 		checklistShowCompleted: normalizeBoolean(value.checklistShowCompleted, false),
 		quickDeleteChecklist: normalizeBoolean(value.quickDeleteChecklist, false),
+		showMarkdownToggle: normalizeBoolean(value.showMarkdownToggle, false),
 		noteCardClickOpens: normalizeBoolean(value.noteCardClickOpens, true),
 		noteCardCheckboxInteractions: normalizeBoolean(value.noteCardCheckboxInteractions, normalizeBoolean(value.noteCardClickOpens, true)),
 		noteCardLinkInteractions: normalizeBoolean(value.noteCardLinkInteractions, normalizeBoolean(value.noteCardClickOpens, true)),
@@ -139,6 +141,7 @@ function readLegacySnapshot(deviceId: string): CachedDeviceAppearancePreferences
 			noteCardBannerTitlePosition: getDefaultNoteCardBannerTitlePosition(),
 			checklistShowCompleted: false,
 			quickDeleteChecklist: false,
+			showMarkdownToggle: false,
 			noteCardClickOpens: true,
 			noteCardCheckboxInteractions: true,
 			noteCardLinkInteractions: true,

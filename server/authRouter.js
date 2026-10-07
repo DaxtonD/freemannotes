@@ -660,6 +660,7 @@ function createApiAuthRouter({ prisma }) {
 									editorToolbarMode: 'condensed',
 									checklistShowCompleted: false,
 									quickDeleteChecklist: false,
+									showMarkdownToggle: false,
 									noteCardCompletedExpandedByNoteId: {},
 								},
 							});

@@ -1272,51 +1272,6 @@
 	color: var(--color-accent);
 }
 
-.copyModeToggleGroup {
-	display: inline-flex;
-	align-items: center;
-	flex: 0 0 auto;
-	border: 1px solid var(--color-border);
-	border-radius: calc(var(--radius-sm) + 2px);
-	overflow: hidden;
-	background: color-mix(in srgb, var(--color-surface) 88%, var(--color-surface-2));
-	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-}
-
-.copyModeToggleButton {
-	border: 0;
-	background: transparent;
-	color: var(--color-text-muted);
-	cursor: pointer;
-	flex: 0 0 auto;
-	height: 30px;
-	padding: 0 10px;
-	font-size: var(--font-size-xs);
-	font-weight: 700;
-	white-space: nowrap;
-	transition: background-color 120ms ease, color 120ms ease;
-}
-
-.copyModeToggleButton + .copyModeToggleButton {
-	border-left: 1px solid var(--color-border);
-}
-
-.copyModeToggleButtonCompact {
-	height: 26px;
-	padding: 0 8px;
-}
-
-.copyModeToggleButton:hover,
-.copyModeToggleButton:focus-visible {
-	background: color-mix(in srgb, var(--color-surface-2) 90%, transparent);
-	color: var(--color-text);
-}
-
-.copyModeToggleButtonActive {
-	background: color-mix(in srgb, var(--color-accent) 16%, var(--color-surface));
-	color: var(--color-accent);
-}
-
 .formatMenuAnchor {
 	position: relative;
 	flex: 0 0 auto;
@@ -1675,14 +1630,6 @@
 
 	.formatToolbarScrollButton {
 		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-text) 10%, transparent);
-	}
-
-	.copyModeToggleGroup {
-		border-radius: 8px;
-	}
-
-	.copyModeToggleButtonActive {
-		box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent);
 	}
 
 	/* Small caret so the "Headings" label reads as a dropdown trigger rather
@@ -2488,6 +2435,35 @@
 	/* `scroll-padding-bottom` mirrors the visual padding so browser/programmatic scroll
 	   targets stop above the floating toolbar instead of under it. */
 	scroll-padding-bottom: 88px;
+}
+
+.richEditorViewportHidden {
+	/* Markdown-source view hides the real editor with CSS rather than unmounting it — see
+	   the comment above markdownSourceText in RichTextEditor.tsx for why that distinction
+	   matters here. display:none also means it can't be focused, scrolled into, or receive
+	   a stray click while hidden, which is most of why that's safe to do. */
+	display: none;
+}
+
+.richMarkdownSource {
+	flex: 1;
+	min-height: 0;
+	width: 100%;
+	resize: none;
+	border: 0;
+	outline: none;
+	padding: 8px 12px 24px;
+	background: transparent;
+	color: var(--note-editor-text, var(--color-text));
+	font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+	font-size: calc(0.9rem * var(--note-editor-font-scale, 1));
+	line-height: 1.55;
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow-y: auto;
+	overflow-x: hidden;
+	overscroll-behavior: contain;
+	-webkit-overflow-scrolling: touch;
 }
 
 .richEditorContent {

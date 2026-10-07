@@ -123,6 +123,36 @@ export function convertToRichText(input: string | ClipboardConversionInput): str
 	return normalized.html || plainTextToHtml(normalized.text);
 }
 
+// Structure or marks that Markdown can represent and plain text cannot. If a selection has
+// none of these, its Markdown and its plain text are the same string anyway.
+const FORMATTED_HTML_PATTERN = /<(h[1-6]|ul|ol|li|blockquote|pre|code|table|thead|tbody|tr|th|td|hr|strong|b|em|i|u|s|del|mark|a)\b/i;
+
+/**
+ * What goes on the clipboard when you copy out of a note.
+ *
+ * Both formats, every time: `text/html` for anything that understands rich text (Word, Docs,
+ * Outlook, email) and `text/plain` for anything that doesn't (editors, terminals, GitHub,
+ * chat). The destination picks, so nobody has to choose a mode up front — and "paste as plain
+ * text" (Ctrl+Shift+V in most apps) forces the Markdown even into a rich destination.
+ *
+ * The one subtlety: `text/plain` is Markdown **only when the selection actually has formatting
+ * worth preserving**. Turndown escapes Markdown-significant characters, so running plain prose
+ * through it turns "50% * 2" into "50% \\* 2" — noise, in a search box or a chat message, in
+ * exchange for nothing. Unformatted text has identical Markdown and plain text, so skipping the
+ * conversion there costs nothing and avoids the escaping entirely.
+ */
+export function prepareEditorCopyPayload(input: string | ClipboardConversionInput): ClipboardPayload {
+	const normalized = typeof input === 'string'
+		? { text: normalizeText(input), html: '' }
+		: { text: normalizeText(input.text), html: normalizeHtml(input.html ?? '') };
+	const html = convertToRichText(normalized);
+	const plain = html ? getVisibleClipboardTextFromHtml(html) || normalized.text : normalized.text;
+	const text = html && FORMATTED_HTML_PATTERN.test(html)
+		? (convertToMarkdown(normalized) || plain)
+		: plain;
+	return { text, html: html ? wrapClipboardHtmlDocument(html) : undefined };
+}
+
 export function prepareConvertedClipboardPayload(
 	input: string | ClipboardConversionInput,
 	target: ClipboardConversionTarget,

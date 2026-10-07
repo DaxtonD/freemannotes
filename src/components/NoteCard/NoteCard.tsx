@@ -644,8 +644,17 @@ function renderBlockNode(block: JSONContent, key: string, options: RichPreviewRe
 	if (block.type === 'bulletList' || block.type === 'orderedList') {
 		const items = (block.content ?? []).map((item, index) => renderBlockNode(item, `${key}:${index}`, { inTableCell, allowLinkInteraction, onToggleTaskItem, noteId, deniedNoteIds, liveAvatarLookup })).filter(Boolean);
 		if (items.length === 0) return null;
-		const ListTag = block.type === 'orderedList' ? 'ol' : 'ul';
-		return <ListTag key={key} className={block.type === 'orderedList' ? styles.richOrderedList : styles.richList}>{items}</ListTag>;
+		if (block.type === 'bulletList') {
+			return <ul key={key} className={styles.richList}>{items}</ul>;
+		}
+		// Splitting a numbered list with a blank line doesn't give you one list with a gap in
+		// it — it gives you several orderedList nodes, and every one after the first carries a
+		// `start` saying which number to resume from. The editor honours that attribute. The
+		// card dropped it, so each fragment began again at 1 and the card cheerfully disagreed
+		// with the note you had just finished writing.
+		const rawStart = block.attrs?.start;
+		const start = typeof rawStart === 'number' && Number.isFinite(rawStart) ? Math.trunc(rawStart) : 1;
+		return <ol key={key} className={styles.richOrderedList} start={start === 1 ? undefined : start}>{items}</ol>;
 	}
 
 	if (block.type === 'taskList') {

@@ -14,6 +14,7 @@ import {
 	faAlignRight,
 	faBold,
 	faCode,
+	faFileCode,
 	faCopy,
 	faFaceSmile,
 	faFont,
@@ -42,7 +43,8 @@ import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollaps
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import { createRichTextExtensions, getMarkdownPasteHtml, TASK_ITEM_CHECKBOX_TOGGLE_META, type RichTextVariant } from '../../core/richText';
 import { ReferenceSuggestionKey } from '../../core/extensions/ReferenceExtension';
-import { prepareConvertedClipboardPayload, type ClipboardConversionTarget } from '../../core/clipboardConversion';
+import { convertToMarkdown, prepareEditorCopyPayload } from '../../core/clipboardConversion';
+import { looksLikeWordProcessorHtml, sanitizePastedHtml } from '../../core/pastedHtml';
 import { useI18n } from '../../core/i18n';
 import { useBubbleMenuEnabled } from '../../core/useBubbleMenuPreference';
 import styles from './Editors.module.css';
@@ -80,8 +82,15 @@ type RichTextEditorProps = {
 	onCreateUrlPreview?: () => void;
 	noteAutoScrollEnabled?: boolean;
 	onToggleNoteAutoScroll?: () => void;
-	copyMode?: ClipboardConversionTarget;
-	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
+	// Preferences → Editor → "Show Markdown toggle". Off by default; when on, a button in
+	// the toolbar swaps this editor between its normal rendered view and a read-only view of
+	// the equivalent Markdown source. Controlled from the parent (NoteEditor/TextEditor) rather
+	// than owned here, because the toolbar that drives it is sometimes a SEPARATE component
+	// instance — the floating mobile toolbar — bound to the same editor. Same pattern as
+	// noteAutoScrollEnabled just above.
+	showMarkdownToggleEnabled?: boolean;
+	isMarkdownSourceView?: boolean;
+	onToggleMarkdownSourceView?: () => void;
 	onClipboardStatusChange?: (message: string) => void;
 	collapsibleHeadingNoteId?: string | null;
 	onNoteClick?: (noteId: string) => void;
@@ -103,8 +112,9 @@ type RichTextToolbarProps = {
 	onCreateUrlPreview?: () => void;
 	noteAutoScrollEnabled?: boolean;
 	onToggleNoteAutoScroll?: () => void;
-	copyMode?: ClipboardConversionTarget;
-	onCopyModeChange?: (target: ClipboardConversionTarget) => void;
+	showMarkdownToggleEnabled?: boolean;
+	isMarkdownSourceView?: boolean;
+	onToggleMarkdownSourceView?: () => void;
 	/** Checkbox undo / redo — only wired up when the toolbar is used in checklist mode */
 	onUndoCheckbox?: () => void;
 	onRedoCheckbox?: () => void;
@@ -117,7 +127,7 @@ type RichTextToolbarProps = {
 	collapsibleHeadingNoteId?: string | null;
 };
 
-type CondensedToolbarSection = 'formatting' | 'headings' | 'lists' | 'insert' | 'layout' | 'copy' | null;
+type CondensedToolbarSection = 'formatting' | 'headings' | 'lists' | 'insert' | 'layout' | null;
 
 function getScrollContainer(node: HTMLElement | null): HTMLElement | null {
 	let current = node?.parentElement ?? null;
@@ -549,7 +559,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		getCollapsedRichHeadingPrefsSnapshot,
 		getCollapsedRichHeadingPrefsSnapshot,
 	);
-	const resolvedCopyMode = props.copyMode ?? 'rich-text';
 	// Toolbar touch tracking:
 	// We record the initial touch point so we can distinguish between two very different
 	// gestures that both begin on the toolbar on mobile:
@@ -1421,35 +1430,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 							</button>
 						</>
 					);
-				case 'copy':
-					return (
-						<div className={styles.copyModeToggleGroup} role="group" aria-label={t('editors.copyMode')}>
-							<button
-								type="button"
-								className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'markdown' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
-								aria-label={t('editors.copyModeMarkdownToast')}
-								aria-pressed={resolvedCopyMode === 'markdown'}
-								title={t('editors.copyModeMarkdownToast')}
-								onMouseDown={preventToolbarFocusSteal}
-								onPointerDown={preventToolbarFocusSteal}
-								onClick={() => props.onCopyModeChange?.('markdown')}
-							>
-								{t('editors.copyMarkdown')}
-							</button>
-							<button
-								type="button"
-								className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'rich-text' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
-								aria-label={t('editors.copyModeRichTextToast')}
-								aria-pressed={resolvedCopyMode === 'rich-text'}
-								title={t('editors.copyModeRichTextToast')}
-								onMouseDown={preventToolbarFocusSteal}
-								onPointerDown={preventToolbarFocusSteal}
-								onClick={() => props.onCopyModeChange?.('rich-text')}
-							>
-								{t('editors.copyRichText')}
-							</button>
-						</div>
-					);
 				default:
 					return null;
 			}
@@ -1472,15 +1452,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 			setHighlightMenuOpen(false);
 		}
 	}, [condensedSection, isCondensedToolbar]);
-	React.useEffect(() => {
-		// The Copy section's toggle button only renders while there's a
-		// selection (see render below) — if the selection is lost while this
-		// section happens to be open, close it too so its expanded content
-		// doesn't linger with no corresponding toggle button.
-		if (condensedSection === 'copy' && !resolvedToolbarState.hasSelection) {
-			setCondensedSection(null);
-		}
-	}, [condensedSection, resolvedToolbarState.hasSelection]);
 
 	return (
 		<div className={styles.formatToolbarStack}>
@@ -1624,6 +1595,20 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								onClick={props.onToggleNoteAutoScroll}
 							>
 								{renderToolbarImageIcon('autoscroll.png')}
+							</button>
+						) : null}
+						{props.showMarkdownToggleEnabled && props.onToggleMarkdownSourceView ? (
+							<button
+								type="button"
+								className={`${styles.formatButton}${primaryToolbarButtonClass}${props.isMarkdownSourceView ? ` ${styles.formatButtonActive}` : ''}`}
+								aria-label={props.isMarkdownSourceView ? t('editors.backToFormatted') : t('editors.viewMarkdownSource')}
+								aria-pressed={props.isMarkdownSourceView}
+								title={props.isMarkdownSourceView ? t('editors.backToFormatted') : t('editors.viewMarkdownSource')}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={props.onToggleMarkdownSourceView}
+							>
+								<FontAwesomeIcon icon={faFileCode} />
 							</button>
 						) : null}
 					</>
@@ -1781,37 +1766,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						<button type="button" className={`${styles.formatButton}${compactButtonClass}${resolvedToolbarState.isAlignRight ? ` ${styles.formatButtonActive}` : ''}`} aria-label={t('editors.alignRight')} title={t('editors.alignRight')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={() => props.editor?.chain().focus().setTextAlign('right').run()}>
 							<FontAwesomeIcon icon={faAlignRight} />
 						</button>
-						{resolvedToolbarState.hasSelection ? (
-							<>
-								<div className={styles.formatDivider} aria-hidden="true" />
-								<div className={styles.copyModeToggleGroup} role="group" aria-label={t('editors.copyMode')}>
-									<button
-										type="button"
-										className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'markdown' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
-										aria-label={t('editors.copyModeMarkdownToast')}
-										aria-pressed={resolvedCopyMode === 'markdown'}
-										title={t('editors.copyModeMarkdownToast')}
-										onMouseDown={preventToolbarFocusSteal}
-										onPointerDown={preventToolbarFocusSteal}
-										onClick={() => props.onCopyModeChange?.('markdown')}
-									>
-										{t('editors.copyMarkdown')}
-									</button>
-									<button
-										type="button"
-										className={`${styles.copyModeToggleButton}${props.compact ? ` ${styles.copyModeToggleButtonCompact}` : ''}${resolvedCopyMode === 'rich-text' ? ` ${styles.copyModeToggleButtonActive}` : ''}`}
-										aria-label={t('editors.copyModeRichTextToast')}
-										aria-pressed={resolvedCopyMode === 'rich-text'}
-										title={t('editors.copyModeRichTextToast')}
-										onMouseDown={preventToolbarFocusSteal}
-										onPointerDown={preventToolbarFocusSteal}
-										onClick={() => props.onCopyModeChange?.('rich-text')}
-									>
-										{t('editors.copyRichText')}
-									</button>
-								</div>
-							</>
-						) : null}
 					</>
 				) : null}
 				{isCondensedToolbar ? (
@@ -1876,20 +1830,6 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 						>
 							<FontAwesomeIcon icon={faAlignLeft} />
 						</button>
-						{resolvedToolbarState.hasSelection ? (
-							<button
-								type="button"
-								className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${condensedSection === 'copy' ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
-								aria-label={t('editors.condensedCopy')}
-								title={t('editors.condensedCopy')}
-								aria-pressed={condensedSection === 'copy'}
-								onMouseDown={preventToolbarFocusSteal}
-								onPointerDown={preventToolbarFocusSteal}
-								onClick={() => toggleCondensedSection('copy')}
-							>
-								<FontAwesomeIcon icon={faCopy} />
-							</button>
-						) : null}
 						{props.onToggleNoteAutoScroll ? (
 							<>
 							<div className={styles.formatDivider} aria-hidden="true" />
@@ -1904,6 +1844,23 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								onClick={props.onToggleNoteAutoScroll}
 							>
 								<span className={`${styles.formatButtonMaskIcon} ${styles.formatButtonMaskIconAutoScroll}`} aria-hidden="true" />
+							</button>
+							</>
+						) : null}
+						{props.showMarkdownToggleEnabled && props.onToggleMarkdownSourceView ? (
+							<>
+							<div className={styles.formatDivider} aria-hidden="true" />
+							<button
+								type="button"
+								className={`${styles.condensedToolbarToggle}${props.compact ? ` ${styles.condensedToolbarToggleCompact}` : ''}${props.isMarkdownSourceView ? ` ${styles.condensedToolbarToggleActive}` : ''}`}
+								aria-label={props.isMarkdownSourceView ? t('editors.backToFormatted') : t('editors.viewMarkdownSource')}
+								aria-pressed={props.isMarkdownSourceView}
+								title={props.isMarkdownSourceView ? t('editors.backToFormatted') : t('editors.viewMarkdownSource')}
+								onMouseDown={preventToolbarFocusSteal}
+								onPointerDown={preventToolbarFocusSteal}
+								onClick={props.onToggleMarkdownSourceView}
+							>
+								<FontAwesomeIcon icon={faFileCode} />
 							</button>
 							</>
 						) : null}
@@ -2203,9 +2160,6 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	};
 	const editorRef = React.useRef<Editor | null>(null);
 	const [hasSelection, setHasSelection] = React.useState(false);
-	const [internalCopyMode, setInternalCopyMode] = React.useState<ClipboardConversionTarget>('rich-text');
-	const effectiveCopyMode = props.copyMode ?? internalCopyMode;
-	const copyModeRef = React.useRef<ClipboardConversionTarget>('rich-text');
 	const [clipboardStatusMessage, setClipboardStatusMessage] = React.useState('');
 	const clipboardMessageTimeoutRef = React.useRef<number | null>(null);
 	const pendingTaskCheckboxRef = React.useRef<HTMLInputElement | null>(null);
@@ -2223,12 +2177,6 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 			props.onClipboardStatusChange?.('');
 		}, 1800);
 	}, [props]);
-	const handleCopyModeChange = React.useCallback((target: ClipboardConversionTarget): void => {
-		copyModeRef.current = target;
-		if (props.onCopyModeChange) props.onCopyModeChange(target);
-		else setInternalCopyMode(target);
-		publishClipboardStatus(target === 'markdown' ? t('editors.copyModeMarkdownToast') : t('editors.copyModeRichTextToast'));
-	}, [props, publishClipboardStatus, t]);
 	const ensureSelectionVisible = React.useCallback((): void => {
 		const bottomInset = caretVisibilityBottomInsetRef.current;
 		if (bottomInset <= 0) return;
@@ -2317,6 +2265,30 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 		(nodeId) => onSelfMentionInsertedRef.current?.(nodeId),
 	).current;
 
+	// Copy and cut both put rich HTML *and* Markdown on the clipboard, so the destination
+	// decides which it wants rather than the writer choosing a mode beforehand. This replaced a
+	// Markdown/Rich-text toggle in the toolbar: a setting you had to remember to change before
+	// pressing Ctrl+C, which is a strange thing to ask of someone who just wants to copy.
+	const writeSelectionToClipboard = React.useCallback((event: ClipboardEvent, isCut: boolean): boolean => {
+		const ed = editorRef.current;
+		if (!ed || variant !== 'full') return false;
+		const input = getEditorSelectionClipboardInput(ed);
+		if (!input || !event.clipboardData) return false;
+		try {
+			const payload = prepareEditorCopyPayload(input);
+			if (!payload.text && !payload.html) return false;
+			event.preventDefault();
+			event.clipboardData.setData('text/plain', payload.text);
+			if (payload.html) event.clipboardData.setData('text/html', payload.html);
+			// preventDefault stops the browser removing the selection too, so a cut has to do
+			// its own half of the job.
+			if (isCut && ed.isEditable) ed.chain().focus().deleteSelection().run();
+			return true;
+		} catch {
+			return false;
+		}
+	}, [variant]);
+
 	const editor = useEditor(
 		{
 			immediatelyRender: false,
@@ -2377,25 +2349,8 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 						}
 						return handleTaskCheckboxInteractionEnd(view, event);
 					},
-					copy: (_view, event) => {
-						const ed = editorRef.current;
-						if (!ed || variant !== 'full') return false;
-						const input = getEditorSelectionClipboardInput(ed);
-						if (!input || !event.clipboardData) return false;
-						try {
-							// Intercept the native copy event so keyboard shortcuts and browser copy
-							// actions respect the selected Markdown vs rich-text export mode.
-							const payload = prepareConvertedClipboardPayload(input, copyModeRef.current);
-							event.preventDefault();
-							event.clipboardData.setData('text/plain', payload.text);
-							if (payload.html) {
-								event.clipboardData.setData('text/html', payload.html);
-							}
-							return true;
-						} catch {
-							return false;
-						}
-					},
+					copy: (_view, event) => writeSelectionToClipboard(event, false),
+					cut: (_view, event) => writeSelectionToClipboard(event, true),
 					click: (view, event) => {
 						// Hash-anchor interception: scroll to the heading instead of letting
 						// TipTap's Link openOnClick call window.open (which navigates in PWA).
@@ -2460,17 +2415,25 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 					if (!clipboardData) return false;
 					const hasFiles = Array.from(clipboardData.items ?? []).some((item) => item.kind === 'file');
 					if (hasFiles) return false;
+					const plainText = clipboardData.getData('text/plain');
+					const clipboardHtml = clipboardData.getData('text/html');
 					// Prefer markdown expansion only when the clipboard does not already contain
 					// meaningful rich HTML. This also covers minimal editors so checklist rows
 					// can accept inline markdown like ==highlight==.
-					const markdownHtml = getMarkdownPasteHtml({
-						text: clipboardData.getData('text/plain'),
-						html: clipboardData.getData('text/html'),
-						variant,
-					});
-					if (!markdownHtml) return false;
+					const markdownHtml = getMarkdownPasteHtml({ text: plainText, html: clipboardHtml, variant });
+					if (markdownHtml) {
+						event.preventDefault();
+						return ed.chain().focus().insertContent(markdownHtml).run();
+					}
+					// Not markdown, so it's rich HTML — but if it came out of a word processor it
+					// needs cleaning before TipTap sees it. Word in particular doesn't emit <ul>
+					// or <ol> at all; its lists are ordinary paragraphs with the bullet glyph
+					// baked in as text, which parse as exactly that unless we rebuild them.
+					if (!clipboardHtml || !looksLikeWordProcessorHtml(clipboardHtml)) return false;
+					const cleanedHtml = sanitizePastedHtml(clipboardHtml);
+					if (!cleanedHtml) return false;
 					event.preventDefault();
-					return ed.chain().focus().insertContent(markdownHtml).run();
+					return ed.chain().focus().insertContent(cleanedHtml).run();
 				},
 				handleKeyDown: (_view, event) => {
 					const ed = editorRef.current;
@@ -2604,10 +2567,6 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 	);
 
 	React.useEffect(() => {
-		copyModeRef.current = effectiveCopyMode;
-	}, [effectiveCopyMode]);
-
-	React.useEffect(() => {
 		editorRef.current = editor;
 		props.onEditorChange?.(editor);
 		return () => {
@@ -2618,6 +2577,48 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 			props.onEditorChange?.(null);
 		};
 	}, [editor, props.onEditorChange]);
+
+	// Markdown-source view: read-only, computed on demand, never a separate editor state.
+	//
+	// The EditorContent below stays MOUNTED the entire time this is active — only hidden with
+	// CSS. Unmounting it instead would be the obvious-looking alternative, and it's the wrong
+	// one: EditorContent is what attaches the ProseMirror view that this editor's Yjs binding,
+	// undo manager and collaboration awareness all depend on. Tearing that down and rebuilding
+	// it on every toggle risks exactly the kind of subtle collaborative-editing regression this
+	// file is flagged for in CLAUDE.md, for a feature that doesn't need it — a CSS swap does
+	// the whole job with no risk to any of that.
+	const [markdownSourceText, setMarkdownSourceText] = React.useState('');
+	React.useEffect(() => {
+		if (!editor || !props.isMarkdownSourceView) return undefined;
+		const recompute = (): void => {
+			try {
+				setMarkdownSourceText(convertToMarkdown({ text: '', html: editor.getHTML() }));
+			} catch {
+				setMarkdownSourceText('');
+			}
+		};
+		recompute();
+		// Keeps the source view live if a collaborator edits the note while you're looking at
+		// it — cheap (Turndown over one note's HTML) and only runs while this view is open.
+		editor.on('update', recompute);
+		return () => { editor.off('update', recompute); };
+	}, [editor, props.isMarkdownSourceView]);
+
+	// Belt-and-suspenders alongside the CSS hiding above: the hidden editor can't be clicked
+	// or scrolled into, so it can't normally take focus, but nothing stops some OTHER effect
+	// (mention-insert, mobile keyboard handoff, a focus-on-mount) from calling
+	// editor.commands.focus() regardless of visibility and quietly typing into a note whose
+	// editing surface isn't the one on screen. setEditable is cheap and fully reversible —
+	// unlike the `editable` option up in useEditor's own deps array above, it does NOT
+	// recreate the ProseMirror view, so toggling this can never trigger the costly/risky
+	// teardown this whole effect exists to avoid.
+	React.useEffect(() => {
+		if (!editor) return;
+		const shouldBeEditable = props.editable !== false && !props.isMarkdownSourceView;
+		if (editor.isEditable !== shouldBeEditable) {
+			editor.setEditable(shouldBeEditable);
+		}
+	}, [editor, props.editable, props.isMarkdownSourceView]);
 
 	React.useEffect(() => {
 		if (!props.scrollToMentionNodeId || !editor) return;
@@ -2714,9 +2715,22 @@ export function RichTextEditor(props: RichTextEditorProps): React.JSX.Element {
 
 	return (
 		<div className={`${styles.richEditorStack}${props.containerClassName ? ` ${props.containerClassName}` : ''}`} onClick={handleReferenceClick}>
-			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} toolbarMode={props.toolbarMode} onCreateUrlPreview={props.onCreateUrlPreview} noteAutoScrollEnabled={props.noteAutoScrollEnabled} onToggleNoteAutoScroll={props.onToggleNoteAutoScroll} copyMode={effectiveCopyMode} onCopyModeChange={handleCopyModeChange} collapsibleHeadingNoteId={props.collapsibleHeadingNoteId} />}
+			{props.hideToolbar ? null : <RichTextToolbar editor={editor} variant={variant} compact={props.compactToolbar} toolbarMode={props.toolbarMode} onCreateUrlPreview={props.onCreateUrlPreview} noteAutoScrollEnabled={props.noteAutoScrollEnabled} onToggleNoteAutoScroll={props.onToggleNoteAutoScroll} showMarkdownToggleEnabled={props.showMarkdownToggleEnabled} isMarkdownSourceView={props.isMarkdownSourceView} onToggleMarkdownSourceView={props.onToggleMarkdownSourceView} collapsibleHeadingNoteId={props.collapsibleHeadingNoteId} />}
 			{clipboardStatusMessage && !(props.hideToolbar && props.onClipboardStatusChange) ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
-			<EditorContent editor={editor} className={`${styles.richEditorViewport}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}`} />
+			<EditorContent editor={editor} className={`${styles.richEditorViewport}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}${props.isMarkdownSourceView ? ` ${styles.richEditorViewportHidden}` : ''}`} />
+			{props.isMarkdownSourceView ? (
+				// Read-only on purpose — see the note above the markdownSourceText effect. A textarea
+				// rather than a <pre> so it gets native text selection, copy and (on mobile) the long-
+				// press menu for free, without reaching for the three-way clipboard machinery the real
+				// editor uses — there's no formatting here for that machinery to disagree about.
+				<textarea
+					readOnly
+					className={`${styles.richMarkdownSource}${props.viewportClassName ? ` ${props.viewportClassName}` : ''}`}
+					value={markdownSourceText}
+					aria-label={t('editors.markdownSourceLabel')}
+					spellCheck={false}
+				/>
+			) : null}
 			{/*
 				Bubble menu branch:
 				`minimal` editors are used heavily inside checklist rows where users rapidly

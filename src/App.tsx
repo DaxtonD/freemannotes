@@ -1984,6 +1984,9 @@ export function App(): React.JSX.Element {
 	const [quickDeleteChecklistPref, setQuickDeleteChecklistPref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.quickDeleteChecklist ?? false
 	);
+	const [showMarkdownTogglePref, setShowMarkdownTogglePref] = React.useState(
+		() => cachedDeviceAppearancePrefs?.showMarkdownToggle ?? false
+	);
 	const [noteCardClickOpensPref, setNoteCardClickOpensPref] = React.useState(
 		() => cachedDeviceAppearancePrefs?.noteCardClickOpens ?? true
 	);
@@ -4054,6 +4057,7 @@ export function App(): React.JSX.Element {
 		noteCardBannerTitlePosition?: NoteCardBannerTitlePosition | null;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
+		showMarkdownToggle?: boolean;
 		noteCardClickOpens?: boolean;
 		noteCardCheckboxInteractions?: boolean;
 		noteCardLinkInteractions?: boolean;
@@ -4067,6 +4071,7 @@ export function App(): React.JSX.Element {
 		setNoteCardBannerTitlePositionPref(normalizeNoteCardBannerTitlePosition(next.noteCardBannerTitlePosition));
 		setChecklistShowCompletedPref(Boolean(next.checklistShowCompleted));
 		setQuickDeleteChecklistPref(Boolean(next.quickDeleteChecklist));
+		setShowMarkdownTogglePref(Boolean(next.showMarkdownToggle));
 		setNoteCardClickOpensPref(legacyNoteCardInteractions);
 		setNoteCardCheckboxInteractionsPref(next.noteCardCheckboxInteractions !== false && legacyNoteCardInteractions);
 		setNoteCardLinkInteractionsPref(next.noteCardLinkInteractions !== false && legacyNoteCardInteractions);
@@ -4081,6 +4086,7 @@ export function App(): React.JSX.Element {
 		noteCardBannerTitlePosition?: NoteCardBannerTitlePosition;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
+		showMarkdownToggle?: boolean;
 		noteCardClickOpens?: boolean;
 		noteCardCheckboxInteractions?: boolean;
 		noteCardLinkInteractions?: boolean;
@@ -4097,13 +4103,14 @@ export function App(): React.JSX.Element {
 			noteCardBannerTitlePosition: normalizeNoteCardBannerTitlePosition(next.noteCardBannerTitlePosition ?? noteCardBannerTitlePositionPref),
 			checklistShowCompleted: next.checklistShowCompleted ?? checklistShowCompletedPref,
 			quickDeleteChecklist: next.quickDeleteChecklist ?? quickDeleteChecklistPref,
+			showMarkdownToggle: next.showMarkdownToggle ?? showMarkdownTogglePref,
 			noteCardClickOpens: next.noteCardClickOpens ?? noteCardClickOpensPref,
 			noteCardCheckboxInteractions: next.noteCardCheckboxInteractions ?? noteCardCheckboxInteractionsPref,
 			noteCardLinkInteractions: next.noteCardLinkInteractions ?? noteCardLinkInteractionsPref,
 			noteCardCompletedInteractions: next.noteCardCompletedInteractions ?? noteCardCompletedInteractionsPref,
 			updatedAt: next.updatedAt ?? new Date().toISOString(),
 		});
-	}, [authUserId, checklistShowCompletedPref, deviceId, editorToolbarModePref, noteCardBannerTitlePositionPref, noteCardCheckboxInteractionsPref, noteCardClickOpensPref, noteCardCompletedInteractionsPref, noteCardFontScalePref, noteCardLinkInteractionsPref, noteCardMaxHeightPref, noteEditorFontScalePref, quickDeleteChecklistPref]);
+	}, [authUserId, checklistShowCompletedPref, deviceId, editorToolbarModePref, noteCardBannerTitlePositionPref, noteCardCheckboxInteractionsPref, noteCardClickOpensPref, noteCardCompletedInteractionsPref, noteCardFontScalePref, noteCardLinkInteractionsPref, noteCardMaxHeightPref, noteEditorFontScalePref, quickDeleteChecklistPref, showMarkdownTogglePref]);
 
 	const syncLocalDevicePrefsFromServer = React.useCallback((pref: UserDevicePreferences): void => {
 		applyDevicePreferenceState(pref);
@@ -4115,6 +4122,7 @@ export function App(): React.JSX.Element {
 			noteCardBannerTitlePosition: pref.noteCardBannerTitlePosition,
 			checklistShowCompleted: pref.checklistShowCompleted,
 			quickDeleteChecklist: pref.quickDeleteChecklist,
+			showMarkdownToggle: pref.showMarkdownToggle,
 			noteCardClickOpens: pref.noteCardClickOpens,
 			noteCardCheckboxInteractions: pref.noteCardCheckboxInteractions,
 			noteCardLinkInteractions: pref.noteCardLinkInteractions,
@@ -4193,6 +4201,7 @@ export function App(): React.JSX.Element {
 			noteCardBannerTitlePosition: localAppearanceSnapshot.noteCardBannerTitlePosition,
 			checklistShowCompleted: localAppearanceSnapshot.checklistShowCompleted,
 			quickDeleteChecklist: localAppearanceSnapshot.quickDeleteChecklist,
+			showMarkdownToggle: localAppearanceSnapshot.showMarkdownToggle,
 			noteCardClickOpens: localAppearanceSnapshot.noteCardClickOpens,
 			noteCardCheckboxInteractions: localAppearanceSnapshot.noteCardCheckboxInteractions,
 			noteCardLinkInteractions: localAppearanceSnapshot.noteCardLinkInteractions,
@@ -4211,6 +4220,7 @@ export function App(): React.JSX.Element {
 		noteCardBannerTitlePosition?: NoteCardBannerTitlePosition;
 		checklistShowCompleted?: boolean;
 		quickDeleteChecklist?: boolean;
+		showMarkdownToggle?: boolean;
 		noteCardClickOpens?: boolean;
 		noteCardCheckboxInteractions?: boolean;
 		noteCardLinkInteractions?: boolean;
@@ -4290,6 +4300,11 @@ export function App(): React.JSX.Element {
 	const commitQuickDeleteChecklistPref = React.useCallback((next: boolean) => {
 		setQuickDeleteChecklistPref(next);
 		commitAppearancePreferencePatch({ quickDeleteChecklist: next });
+	}, [commitAppearancePreferencePatch]);
+
+	const commitShowMarkdownTogglePref = React.useCallback((next: boolean) => {
+		setShowMarkdownTogglePref(next);
+		commitAppearancePreferencePatch({ showMarkdownToggle: next });
 	}, [commitAppearancePreferencePatch]);
 
 	const commitEditorToolbarModePref = React.useCallback((next: EditorToolbarMode) => {
@@ -4959,6 +4974,7 @@ export function App(): React.JSX.Element {
 						noteCardBannerTitlePosition: localAppearanceSnapshot.noteCardBannerTitlePosition,
 						checklistShowCompleted: localAppearanceSnapshot.checklistShowCompleted,
 						quickDeleteChecklist: localAppearanceSnapshot.quickDeleteChecklist,
+						showMarkdownToggle: localAppearanceSnapshot.showMarkdownToggle,
 						noteCardClickOpens: localAppearanceSnapshot.noteCardClickOpens,
 						noteCardCheckboxInteractions: localAppearanceSnapshot.noteCardCheckboxInteractions,
 						noteCardLinkInteractions: localAppearanceSnapshot.noteCardLinkInteractions,
@@ -4986,6 +5002,7 @@ export function App(): React.JSX.Element {
 						noteCardBannerTitlePosition: freshDefaults.noteCardBannerTitlePosition,
 						checklistShowCompleted: pref.checklistShowCompleted ?? false,
 						quickDeleteChecklist: pref.quickDeleteChecklist ?? false,
+						showMarkdownToggle: pref.showMarkdownToggle ?? false,
 						noteCardClickOpens: pref.noteCardClickOpens ?? true,
 						noteCardCheckboxInteractions: pref.noteCardCheckboxInteractions ?? true,
 						noteCardLinkInteractions: pref.noteCardLinkInteractions ?? true,
@@ -11880,7 +11897,7 @@ export function App(): React.JSX.Element {
 
 					<section className="editor-panel">
 						{/* Branch: text editor open. */}
-						{editorMode === 'text' ? <TextEditor onSave={onSaveText} onCancel={closeCreateEditor} toolbarMode={editorToolbarModePref} /> : null}
+						{editorMode === 'text' ? <TextEditor onSave={onSaveText} onCancel={closeCreateEditor} toolbarMode={editorToolbarModePref} showMarkdownToggleEnabled={showMarkdownTogglePref} /> : null}
 						{/* Branch: checklist editor open. */}
 						{editorMode === 'checklist' ? (
 							<ChecklistEditor
@@ -12610,6 +12627,7 @@ export function App(): React.JSX.Element {
 						initialShowCompleted={checklistShowCompletedPref}
 						allowQuickDelete={quickDeleteChecklistPref}
 						toolbarMode={editorToolbarModePref}
+						showMarkdownToggleEnabled={showMarkdownTogglePref}
 						hideFormattingToolbar={Boolean(noteImageModalState)}
 						onShowCompletedChange={(next) => {
 							commitChecklistShowCompletedPref(next);
@@ -12641,6 +12659,7 @@ export function App(): React.JSX.Element {
 				t={t}
 				isLightTheme={isLightTheme(themeId)}
 				quickDeleteChecklist={quickDeleteChecklistPref}
+				showMarkdownToggle={showMarkdownTogglePref}
 				editorToolbarMode={editorToolbarModePref}
 				noteCardCheckboxInteractions={noteCardCheckboxInteractionsPref}
 				noteCardLinkInteractions={noteCardLinkInteractionsPref}
@@ -12662,6 +12681,9 @@ export function App(): React.JSX.Element {
 				}}
 				onQuickDeleteChecklistChange={(next) => {
 					commitQuickDeleteChecklistPref(next);
+				}}
+				onShowMarkdownToggleChange={(next) => {
+					commitShowMarkdownTogglePref(next);
 				}}
 				onEditorToolbarModeChange={(next) => {
 					commitEditorToolbarModePref(next);

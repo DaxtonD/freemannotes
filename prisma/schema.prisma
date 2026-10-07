@@ -273,6 +273,11 @@ model UserDevicePreference {
   /// Per-device mobile editor preference: show checklist row delete affordances at all times.
   quickDeleteChecklist Boolean @default(false) @map("quick_delete_checklist")
 
+  /// Per-device editor preference: show the Markdown-source toggle button in the rich text
+  /// toolbar. Off by default — most people never want to see raw Markdown, and the ones who
+  /// do can turn it on in Preferences. See showMarkdownToggle in deviceAppearancePreferences.ts.
+  showMarkdownToggle Boolean @default(false) @map("show_markdown_toggle")
+
   /// Per-device note-grid preference: clicking/tapping a note card opens the note.
   noteCardClickOpens Boolean @default(true) @map("note_card_click_opens")
 

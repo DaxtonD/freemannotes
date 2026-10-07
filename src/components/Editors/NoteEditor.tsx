@@ -62,7 +62,6 @@ import {
 	RICHTEXT_INTERNAL_ORIGIN,
 	syncTextNotePlainText,
 } from '../../core/richText';
-import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
 import type { ThemeId } from '../../core/theme';
 import { useIsCoarsePointer } from '../../core/useIsCoarsePointer';
@@ -152,6 +151,8 @@ export type NoteEditorProps = {
 	onShowCompletedChange?: (next: boolean) => void;
 	allowQuickDelete?: boolean;
 	toolbarMode?: EditorToolbarMode;
+	/** Preferences → Editor → "Show Markdown toggle". Gates the toolbar button; off by default. */
+	showMarkdownToggleEnabled?: boolean;
 	/** When true, the close button always shows an X (discard) regardless of modification state. */
 	isPendingNew?: boolean;
 	/** When true, suppresses the floating keyboard toolbar (e.g. while the image upload modal is open). */
@@ -1742,7 +1743,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	const [checkboxRedoAvail, setCheckboxRedoAvail] = React.useState(false);
 	// Text-note copy mode is lifted here so the coarse-pointer floating toolbar can
 	// reflect and update the same selection-copy mode as the inline desktop toolbar.
-	const [copyMode, setCopyMode] = React.useState<ClipboardConversionTarget>('rich-text');
 	const [clipboardStatusMessage, setClipboardStatusMessage] = React.useState('');
 	// ── Mobile keyboard focus proxy ──────────────────────────────────────────────
 	// Problem: when the DnD library starts a drag it clones the grabbed element
@@ -1798,6 +1798,20 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 	// Tracks keyboard open->closed transitions for de-selection.
 	const lastMobileKeyboardOpenRef = React.useRef(mobileKeyboardOpen);
 	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
+
+	// Markdown-source view state. Ephemeral and per-note-open, not a preference — it's not
+	// persisted, and it resets to the normal rendered view whenever the open note changes.
+	// NoteEditor itself persists across notes (see the key={props.noteId} comment on
+	// ChecklistProgressBar below for the same fact affecting a different piece of state), so
+	// without this reset, switching from a note you'd toggled to source view straight into a
+	// different note would silently carry that view over into a note you never toggled it on.
+	const [isMarkdownSourceView, setIsMarkdownSourceView] = React.useState(false);
+	React.useEffect(() => {
+		setIsMarkdownSourceView(false);
+	}, [props.noteId]);
+	const handleToggleMarkdownSourceView = React.useCallback(() => {
+		setIsMarkdownSourceView((current) => !current);
+	}, []);
 
 	// Close the @ mention dropdown when the media panel opens so it doesn't
 	// float over the panel. Uses closeReferenceSuggestion (synchronous hide +
@@ -4090,8 +4104,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						<RichTextEditor
 							variant="full"
 							fragment={richContentFragment}
-							copyMode={copyMode}
-							onCopyModeChange={setCopyMode}
 							onClipboardStatusChange={setClipboardStatusMessage}
 							toolbarMode={props.toolbarMode}
 							placeholder={t('editors.startTyping')}
@@ -4100,6 +4112,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 							collapsibleHeadingNoteId={props.noteId}
 							noteAutoScrollEnabled={noteAutoScrollEnabled}
 							onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
+							showMarkdownToggleEnabled={props.showMarkdownToggleEnabled}
+							isMarkdownSourceView={isMarkdownSourceView}
+							onToggleMarkdownSourceView={handleToggleMarkdownSourceView}
 							caretVisibilityBottomInset={mobileKeyboardOpen ? keyboardVisibilityPaddingPx : 0}
 							// Keyboard-open branch:
 							// Reserve just enough space at the bottom of the scrolling viewport for the
@@ -4795,6 +4810,9 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						onCreateUrlPreview={handleCreateUrlPreview}
 						noteAutoScrollEnabled={noteAutoScrollEnabled}
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
+						showMarkdownToggleEnabled={type === 'text' ? props.showMarkdownToggleEnabled : undefined}
+						isMarkdownSourceView={isMarkdownSourceView}
+						onToggleMarkdownSourceView={handleToggleMarkdownSourceView}
 						onUndoCheckbox={type === 'checklist' && !readOnly ? undoCheckboxChange : undefined}
 						onRedoCheckbox={type === 'checklist' && !readOnly ? redoCheckboxChange : undefined}
 						checkboxUndoAvail={type === 'checklist' ? checkboxUndoAvail : undefined}
@@ -4803,8 +4821,6 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 						onIncrementChecklistCount={type === 'checklist' && activeChecklistCountItem ? incrementActiveChecklistCount : undefined}
 						onDecrementChecklistCount={type === 'checklist' && activeChecklistCountItem ? decrementActiveChecklistCount : undefined}
 						onRemoveChecklistCount={type === 'checklist' && activeChecklistCountItem ? removeActiveChecklistCount : undefined}
-						copyMode={type === 'text' ? copyMode : undefined}
-						onCopyModeChange={type === 'text' ? setCopyMode : undefined}
 						collapsibleHeadingNoteId={type === 'text' ? props.noteId : undefined}
 					/>
 				</div>

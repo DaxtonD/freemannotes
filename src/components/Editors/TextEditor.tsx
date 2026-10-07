@@ -10,7 +10,6 @@ import {
 	faUserPlus,
 } from '@fortawesome/free-solid-svg-icons';
 import { byPrefixAndName } from '../../core/byPrefixAndName';
-import type { ClipboardConversionTarget } from '../../core/clipboardConversion';
 import { mergeNotePreviewLinkInputs } from '../../core/noteLinks';
 import { autoLinkifyRichContentJson } from '../../core/noteLinkAutoLink';
 import { getUserNoteAutoScrollEnabled, setUserNoteAutoScrollEnabled, subscribeNoteAutoScrollPrefs } from '../../core/noteAutoScrollPreferences';
@@ -31,6 +30,8 @@ export type TextEditorProps = {
 	onSave: (args: { title: string; body: string; richContent: JSONContent; previewLinks: string[] }) => void | Promise<void>;
 	onCancel: () => void;
 	toolbarMode?: EditorToolbarMode;
+	/** Preferences → Editor → "Show Markdown toggle". Gates the toolbar button; off by default. */
+	showMarkdownToggleEnabled?: boolean;
 };
 
 const DRAFT_TEXT_AUTOSCROLL_ID = '__draft_text_editor__';
@@ -118,6 +119,13 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const isMobileLandscape = useIsMobileLandscape();
 	const isMobileLandscapeRef = React.useRef(isMobileLandscape);
 	const [textEditor, setTextEditor] = React.useState<Editor | null>(null);
+	// Ephemeral, not a preference — see the identical state in NoteEditor.tsx for the fuller
+	// explanation. No reset effect needed here: this whole component unmounts when the
+	// in-progress note is saved or discarded, so a fresh mount always starts at false.
+	const [isMarkdownSourceView, setIsMarkdownSourceView] = React.useState(false);
+	const handleToggleMarkdownSourceView = React.useCallback(() => {
+		setIsMarkdownSourceView((current) => !current);
+	}, []);
 	const noteAutoScrollEnabled = useSyncExternalStore(
 		(onStoreChange) => subscribeNoteAutoScrollPrefs(onStoreChange),
 		() => getUserNoteAutoScrollEnabled(DRAFT_TEXT_AUTOSCROLL_ID),
@@ -126,7 +134,6 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 	const activeScrollCancelRef = React.useRef<(() => void) | null>(null);
 	// Parent-owned copy state keeps the hidden inline editor toolbar and the visible
 	// floating mobile toolbar in sync.
-	const [copyMode, setCopyMode] = React.useState<ClipboardConversionTarget>('rich-text');
 	const [clipboardStatusMessage, setClipboardStatusMessage] = React.useState('');
 	React.useEffect(() => {
 		isMobileLandscapeRef.current = isMobileLandscape;
@@ -531,12 +538,13 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						variant="full"
 						placeholder={t('editors.bodyPlaceholder')}
 						content={bodyRichContent}
-						copyMode={copyMode}
-						onCopyModeChange={setCopyMode}
 						onClipboardStatusChange={setClipboardStatusMessage}
 						noteAutoScrollEnabled={noteAutoScrollEnabled}
 						onToggleNoteAutoScroll={handleToggleNoteAutoScroll}
 						toolbarMode={props.toolbarMode}
+						showMarkdownToggleEnabled={props.showMarkdownToggleEnabled}
+						isMarkdownSourceView={isMarkdownSourceView}
+						onToggleMarkdownSourceView={handleToggleMarkdownSourceView}
 						// Hide the inline toolbar on coarse pointers because it is re-mounted as a
 						// portal above the keyboard while the keyboard is open.
 						hideToolbar={isCoarsePointer}
@@ -798,7 +806,7 @@ export function TextEditor(props: TextEditorProps): React.JSX.Element {
 						style={{ top: `${keyboard.visibleBottom}px`, transform: 'translateY(-100%)' }}
 					>
 						{clipboardStatusMessage ? <div className={styles.selectionCopyToast} role="status" aria-live="polite">{clipboardStatusMessage}</div> : null}
-						<RichTextToolbar editor={textEditor} variant="full" compact toolbarMode={props.toolbarMode} onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} copyMode={copyMode} onCopyModeChange={setCopyMode} />
+						<RichTextToolbar editor={textEditor} variant="full" compact toolbarMode={props.toolbarMode} onCreateUrlPreview={handleCreateUrlPreview} noteAutoScrollEnabled={noteAutoScrollEnabled} onToggleNoteAutoScroll={handleToggleNoteAutoScroll} showMarkdownToggleEnabled={props.showMarkdownToggleEnabled} isMarkdownSourceView={isMarkdownSourceView} onToggleMarkdownSourceView={handleToggleMarkdownSourceView} />
 					</div>
 				</>,
 				document.body

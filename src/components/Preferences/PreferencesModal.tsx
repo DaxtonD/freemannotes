@@ -53,6 +53,8 @@ export type PreferencesModalProps = {
 	isLightTheme?: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	showMarkdownToggle: boolean;
+	onShowMarkdownToggleChange: (next: boolean) => void;
 	editorToolbarMode: EditorToolbarMode;
 	onEditorToolbarModeChange: (next: EditorToolbarMode) => void;
 	noteCardCheckboxInteractions: boolean;
@@ -106,6 +108,8 @@ type SectionModalProps = {
 	isLightTheme: boolean;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	showMarkdownToggle: boolean;
+	onShowMarkdownToggleChange: (next: boolean) => void;
 	editorToolbarMode: EditorToolbarMode;
 	onEditorToolbarModeChange: (next: EditorToolbarMode) => void;
 	noteCardCheckboxInteractions: boolean;
@@ -539,6 +543,8 @@ function EditorSectionContent(props: {
 	t: (key: string) => string;
 	quickDeleteChecklist: boolean;
 	onQuickDeleteChecklistChange: (next: boolean) => void;
+	showMarkdownToggle: boolean;
+	onShowMarkdownToggleChange: (next: boolean) => void;
 	editorToolbarMode: EditorToolbarMode;
 	onEditorToolbarModeChange: (next: EditorToolbarMode) => void;
 	noteCardCheckboxInteractions: boolean;
@@ -622,6 +628,18 @@ function EditorSectionContent(props: {
 					type="checkbox"
 					checked={props.quickDeleteChecklist}
 					onChange={(e) => props.onQuickDeleteChecklistChange(e.target.checked)}
+					className={styles.toggleCheckbox}
+				/>
+			</label>
+			<label className={styles.toggleRow}>
+				<span className={styles.toggleLabel}>
+					<span className={styles.toggleTitle}>{props.t('prefs.showMarkdownToggle')}</span>
+					<span className={styles.toggleDescription}>{props.t('prefs.showMarkdownToggleDescription')}</span>
+				</span>
+				<input
+					type="checkbox"
+					checked={props.showMarkdownToggle}
+					onChange={(e) => props.onShowMarkdownToggleChange(e.target.checked)}
 					className={styles.toggleCheckbox}
 				/>
 			</label>
@@ -737,6 +755,8 @@ function SectionModal(props: SectionModalProps): React.JSX.Element {
 							t={props.t}
 							quickDeleteChecklist={props.quickDeleteChecklist}
 							onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+							showMarkdownToggle={props.showMarkdownToggle}
+							onShowMarkdownToggleChange={props.onShowMarkdownToggleChange}
 							editorToolbarMode={props.editorToolbarMode}
 							onEditorToolbarModeChange={props.onEditorToolbarModeChange}
 							noteCardCheckboxInteractions={props.noteCardCheckboxInteractions}
@@ -891,6 +911,8 @@ export function PreferencesModal(props: PreferencesModalProps): React.JSX.Elemen
 					isLightTheme={props.isLightTheme !== false}
 					quickDeleteChecklist={props.quickDeleteChecklist}
 					onQuickDeleteChecklistChange={props.onQuickDeleteChecklistChange}
+					showMarkdownToggle={props.showMarkdownToggle}
+					onShowMarkdownToggleChange={props.onShowMarkdownToggleChange}
 					editorToolbarMode={props.editorToolbarMode}
 					onEditorToolbarModeChange={props.onEditorToolbarModeChange}
 					noteCardCheckboxInteractions={props.noteCardCheckboxInteractions}

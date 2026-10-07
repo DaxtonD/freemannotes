@@ -166,6 +166,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								editorToolbarMode: 'condensed',
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
+								showMarkdownToggle: false,
 								noteCardCompletedExpandedByNoteId: {},
 							},
 						});
@@ -485,6 +486,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								activeWorkspaceId: nextActiveWorkspaceId,
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
+								showMarkdownToggle: false,
 								noteCardCompletedExpandedByNoteId: {},
 							},
 						});
@@ -573,6 +575,7 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 								activeSharedFolder: null,
 								checklistShowCompleted: false,
 								quickDeleteChecklist: false,
+								showMarkdownToggle: false,
 								noteCardCompletedExpandedByNoteId: {},
 							},
 						});

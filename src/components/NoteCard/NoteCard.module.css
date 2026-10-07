@@ -705,7 +705,14 @@
 
 .richTaskList {
 	--note-card-checkbox-size: 18px;
-	--note-card-checkbox-top-offset: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
+	/* Centres the checkbox on the first line of its text. The checkbox is a fixed 18px while
+	   the text scales with --note-card-font-scale (0.6–1.5), so below about 0.83 scale the line
+	   is shorter than the checkbox and this calc goes negative. On the first row of a card that
+	   negative margin lifts the checkbox above .contentPreview's content box, where its
+	   overflow:hidden slices the top off it. Clamped — at small scales the checkbox aligns to
+	   the top of the line instead of its middle, which beats a checkbox with its lid cut off.
+	   Same clamp as .cardFooterGuarded further down, for the same reason. */
+	--note-card-checkbox-top-offset: max(0px, calc(var(--note-card-font-scale, 1) * 0.675rem - 9px));
 	list-style: none;
 	margin: 0;
 	padding: 0;
@@ -820,7 +827,14 @@
 
 .checklist {
 	--note-card-checkbox-size: 18px;
-	--note-card-checkbox-top-offset: calc(var(--note-card-font-scale, 1) * 0.675rem - 9px);
+	/* Centres the checkbox on the first line of its text. The checkbox is a fixed 18px while
+	   the text scales with --note-card-font-scale (0.6–1.5), so below about 0.83 scale the line
+	   is shorter than the checkbox and this calc goes negative. On the first row of a card that
+	   negative margin lifts the checkbox above .contentPreview's content box, where its
+	   overflow:hidden slices the top off it. Clamped — at small scales the checkbox aligns to
+	   the top of the line instead of its middle, which beats a checkbox with its lid cut off.
+	   Same clamp as .cardFooterGuarded further down, for the same reason. */
+	--note-card-checkbox-top-offset: max(0px, calc(var(--note-card-font-scale, 1) * 0.675rem - 9px));
 	list-style: none;
 	padding: 0;
 	margin: 0;
