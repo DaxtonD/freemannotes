@@ -177,6 +177,13 @@ export type NoteGridProps = {
 	onAddReminder?: (noteId: string, docId: string, title?: string) => void;
 	onAddToCollection?: (noteId: string, title?: string) => void;
 	onAddLabels?: (noteId: string, title?: string) => void;
+	/**
+	 * Reports whether the banner picker is on screen, because App can't see it otherwise: the
+	 * picker's open state lives down here, while the thing that needs to know is App's
+	 * isFabBlockedByOverlay list. The mobile FAB stack sits at z-index 981 and this modal at
+	 * 260, so without this the FAB floats cheerfully on top of the banner you're trying to pick.
+	 */
+	onBannerPickerOpenChange?: (open: boolean) => void;
 	onTrashNote?: (noteId: string) => void;
 	// A shared-with-me note has no owned "trash" of its own — revoking your own
 	// access (the same mechanism as CollaboratorModal's "Leave Note") is the
@@ -1705,6 +1712,16 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 	const [moreMenuAnchorRect, setMoreMenuAnchorRect] = React.useState<{ top: number; left: number; width: number; height: number } | null>(null);
 	const [moreMenuOpenedByLongPress, setMoreMenuOpenedByLongPress] = React.useState(false);
 	const [bannerPickerNoteId, setBannerPickerNoteId] = React.useState<string | null>(null);
+	// Tell App when the banner picker opens or closes so it can hide the mobile FAB — see
+	// onBannerPickerOpenChange in the props type. The cleanup reporting false matters as much as
+	// the open case: if this grid unmounts while the picker is up (workspace switch, view change)
+	// nothing else would ever send the closing signal, and the FAB would stay hidden for good.
+	const reportBannerPickerOpen = props.onBannerPickerOpenChange;
+	React.useEffect(() => {
+		if (!reportBannerPickerOpen) return undefined;
+		reportBannerPickerOpen(bannerPickerNoteId !== null);
+		return () => reportBannerPickerOpen(false);
+	}, [bannerPickerNoteId, reportBannerPickerOpen]);
 	const isTrashView = Boolean(props.showTrashed);
 	const isGridVisible = props.isVisible !== false;
 	const previousGridVisibleRef = React.useRef(isGridVisible);

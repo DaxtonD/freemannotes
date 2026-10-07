@@ -15,6 +15,7 @@ Every notable change to this project, logged here in more or less chronological 
 - The welcome note now describes all of that, instead of a copy toggle that no longer exists.
 
 ### Fixed
+- **The mobile + button no longer hovers over the banner picker.** The picker's open state lives inside the note grid while the thing that decides whether to show the FAB lives up in App, and App keeps an explicit list of "a modal is up, sit this one out" states that this picker was never added to. The FAB stack sits at z-index 981 and the modal at 260, so it wasn't subtle about it.
 - **Numbered lists on note cards start where they are supposed to.** Split a numbered list with a blank line and you don't get one list with a gap in it — you get several lists, each carrying a note of which number to resume from. The editor has always honoured that. The card threw it away, so every fragment began again at 1 and your card sat there confidently disagreeing with the note you had just finished writing.
 - **Checkboxes stop having their lids sliced off at small card text sizes.** The checkbox is a fixed 18px while card text scales between 0.6 and 1.5, and the sum that centres one on the other goes negative somewhere below 0.83 — at which point the top checkbox on a card gets lifted clean out of its container and cropped by that container's own overflow rule. Clamped at zero, so at small sizes the checkbox sits level with the top of the line instead. Slightly less pretty than true centring; considerably less upsetting than a checkbox with the top cut off.
 

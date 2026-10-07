@@ -2275,6 +2275,11 @@ export function App(): React.JSX.Element {
 	const [emptyTrashBusy, setEmptyTrashBusy] = React.useState(false);
 	const [isMobileSearchOpen, setIsMobileSearchOpen] = React.useState(_restoredOverlay?.isMobileSearchOpen ?? false);
 	const [isFabOpen, setIsFabOpen] = React.useState(_restoredOverlay?.isFabOpen ?? false);
+	// Lives here rather than in NoteGrid (where the picker itself lives) purely so
+	// isFabBlockedByOverlay below can see it. Deliberately NOT part of the overlay history
+	// snapshot: the picker manages its own {__noteBannerPicker} dismiss-layer entry, and this is
+	// only a mirror of whether it's currently mounted.
+	const [isNoteBannerPickerOpen, setIsNoteBannerPickerOpen] = React.useState(false);
 	const [viewMode, setViewMode] = React.useState<ViewMode>(() => loadViewMode());
 	const [viewTransitionTraceId, setViewTransitionTraceId] = React.useState<string | null>(null);
 	const [isViewModePickerOpen, setIsViewModePickerOpen] = React.useState(false);
@@ -3177,6 +3182,7 @@ export function App(): React.JSX.Element {
 		Boolean(noteLabelsModalState) ||
 		Boolean(labelManagementModalState) ||
 		Boolean(noteReminderModalState) ||
+		isNoteBannerPickerOpen ||
 		isQuickReminderOpen ||
 		Boolean(moveNoteModalState) ||
 		isCollectionManagementOpen ||
@@ -11955,6 +11961,7 @@ export function App(): React.JSX.Element {
 						onAddReminder={openNoteReminderModal}
 						onAddToCollection={openNoteCollectionModal}
 						onAddLabels={openNoteLabelsModal}
+						onBannerPickerOpenChange={setIsNoteBannerPickerOpen}
 						onTrashNote={(noteId) => {
 							void onDeleteSelectedNote(noteId);
 						}}
