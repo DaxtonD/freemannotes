@@ -2,6 +2,22 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.19.3 - 2026-10-07
+
+> **This release needs a database migration.** One new column on `user_device_preference`.
+
+### Added
+- **You can look at a note's raw Markdown.** Off by default; switch on **Show Markdown toggle** in Preferences → Editor and a button appears in the text toolbar that swaps the formatted note for its Markdown source. It is read-only, and that is a decision rather than a half-finished job. Letting you *edit* in there sounds like one more small step and isn't: Markdown is a flat projection of the document, so there is no way to map a cursor sitting in a textarea back onto the real structure, and the only honest way to save would be to throw the entire document away and rebuild it from the text. In a note two people have open, that means collapsing the other person's cursor, fighting with whatever they just typed instead of merging with it, and regenerating the internal IDs that collapsible headings and @mention deep-links hang off — so every collapsed heading pops open and every "jump to the mention" link sitting in somebody's inbox quietly stops working. There is a proper way to do it, which is to compare the two structures and only touch what actually changed, and it is written down for when we do. For now you can read it, select it and copy it, which is what we wanted it for in the first place.
+- **Pasting from Word, Google Docs and LibreOffice keeps its lists.** Word does not emit `<ul>`. At all. A bulleted list leaves Word as a stack of ordinary paragraphs with the bullet glyph sitting in the text and the actual list structure buried in an `mso-list` style, so parsing it literally — which is precisely what we were doing — handed you a pile of paragraphs beginning with a stray "·" that looked nearly right and behaved nothing like a list. Real lists now get rebuilt, nesting included. Anything that does the normal thing and sends proper HTML is left well alone.
+
+### Changed
+- **Copy puts both formats on the clipboard at once, so the Markdown/Rich-text toggle is gone.** It was a mode you had to remember to set *before* pressing Ctrl+C, which is a strange thing to ask of somebody who just wants to copy something. Every copy now carries rich text and Markdown together and the destination decides: Word and email take the formatting, a code editor or a chat box takes the Markdown, and Ctrl+Shift+V (Cmd+Shift+V) forces the Markdown even somewhere that would rather have the formatting. Cut does it too now, which it didn't before — it simply did whatever the browser fancied. One subtlety worth knowing: the plain-text half is only Markdown when the selection actually has formatting in it, because the converter escapes Markdown-significant characters, and turning "50% * 2" into "50% \* 2" on its way into a search box helps nobody.
+- The welcome note now describes all of that, instead of a copy toggle that no longer exists.
+
+### Fixed
+- **Numbered lists on note cards start where they are supposed to.** Split a numbered list with a blank line and you don't get one list with a gap in it — you get several lists, each carrying a note of which number to resume from. The editor has always honoured that. The card threw it away, so every fragment began again at 1 and your card sat there confidently disagreeing with the note you had just finished writing.
+- **Checkboxes stop having their lids sliced off at small card text sizes.** The checkbox is a fixed 18px while card text scales between 0.6 and 1.5, and the sum that centres one on the other goes negative somewhere below 0.83 — at which point the top checkbox on a card gets lifted clean out of its container and cropped by that container's own overflow rule. Clamped at zero, so at small sizes the checkbox sits level with the top of the line instead. Slightly less pretty than true centring; considerably less upsetting than a checkbox with the top cut off.
+
 ## 1.19.2 - 2026-10-07
 
 ### Changed
