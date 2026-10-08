@@ -2,6 +2,11 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## Unreleased
+
+### Fixed
+- **Unraid's Docker page can tell whether there's an update again.** It had been stuck on "not available" rather than ever saying up-to-date or update ready. Unraid works that out by comparing the digest of your installed image against the one in the registry, and it only speaks Docker's manifest format — while buildx has been publishing ours as OCI, which it can't parse, so it got no digest and gave up. Nothing to do with the package being private or multi-arch; both were checked first, and an anonymous request to the registry returns the manifest perfectly happily. The image now publishes with Docker media types. You'll need to pull once after this build for Unraid to have something comparable on both ends, and it should behave from then on. If you've noticed a few other apps doing the same thing, this is almost certainly why — Docker Hub images are the old format and check fine, images built this way on GHCR are not.
+
 ## 1.19.5 - 2026-10-08
 
 ### Fixed

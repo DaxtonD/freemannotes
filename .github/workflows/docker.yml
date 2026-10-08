@@ -113,7 +113,6 @@ jobs:
         with:
           context: ${{ github.workspace }}
           file: ${{ github.workspace }}/Dockerfile
-          push: true
           tags: ${{ steps.prepare.outputs.tags }}
           labels: |
             org.opencontainers.image.title=freemannotes
@@ -129,4 +128,17 @@ jobs:
           # Publish a plain runtime image manifest for maximum compatibility with
           # conservative Docker environments such as Unraid deployments.
           provenance: false
+          # ...and publish it with DOCKER media types rather than OCI ones.
+          #
+          # buildx defaults to application/vnd.oci.image.manifest.v1+json. Unraid's Docker
+          # manager only understands application/vnd.docker.distribution.manifest.v2+json, so
+          # when it asks GHCR for our manifest it cannot extract a digest to compare against the
+          # locally installed one, and the update column reads "not available" forever rather
+          # than "up-to-date" or "update ready". Verified against the live registry: an anonymous
+          # pull token works and the manifest returns HTTP 200, so this was never an access
+          # problem — the Content-Type was simply one Unraid does not parse.
+          #
+          # `push: true` is replaced by push=true inside outputs because the action treats the
+          # two as mutually exclusive; this is the documented way to set media types.
+          outputs: type=image,push=true,oci-mediatypes=false
           sbom: false
