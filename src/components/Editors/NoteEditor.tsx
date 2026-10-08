@@ -31,6 +31,7 @@ import { getChecklistCountPrefix, getChecklistCountValue, isChecklistCountItem, 
 import { applyChecklistDragToItems, buildChecklistCompletedRows, moveChecklistItemToEdge, normalizeChecklistHierarchy, sortCompletedChecklistItemsByRecency, toggleChecklistItemCompleted } from '../../core/checklistHierarchy';
 import { getChecklistDragAxis, getChecklistHorizontalDirection, registerHorizontalSnapHandler, resetChecklistDragAxis } from '../../core/checklistDragState';
 import { debugLog, describeActiveElement, describeScroller, findScrollParent, isDebugLogEnabled, snapshotScrollState } from '../../core/debugLog';
+import { installMediaSheetTapDiagnostic } from '../../core/mediaSheetTapDiagnostic';
 import { getDeviceId } from '../../core/deviceId';
 import { getExternalLinkRel, getExternalLinkTarget } from '../../core/externalLinks';
 import { immediateChecklistSensors } from '../../core/dndSensors';
@@ -1498,6 +1499,35 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (shouldOpen) setMediaSheetProgress(1);
 		setMediaDockOpen(shouldOpen);
 	}, [isMediaSheetGestureSuppressed, mediaDockOpen, mediaSheetProgress]);
+	// Mirrors of the sheet's live state, read by the diagnostic below. Refs rather than deps so
+	// the capture listeners are installed once per open instead of being torn down and re-added on
+	// every progress tick — which would itself change the timing we're trying to measure.
+	const mediaSheetProgressRef = React.useRef(mediaSheetProgress);
+	const mediaDockOpenRef = React.useRef(mediaDockOpen);
+	const isMediaSheetDraggingRef = React.useRef(isMediaSheetDragging);
+	const mediaDockTabRef = React.useRef(mediaDockTab);
+	mediaSheetProgressRef.current = mediaSheetProgress;
+	mediaDockOpenRef.current = mediaDockOpen;
+	isMediaSheetDraggingRef.current = isMediaSheetDragging;
+	mediaDockTabRef.current = mediaDockTab;
+
+	// Diagnostic for the "first tap in the open media sheet does nothing" bug. Inert unless the
+	// service-worker debug toggle in Preferences is on; see mediaSheetTapDiagnostic.ts for how to
+	// read what it writes. Kept after the fix as a regression detector — this bug has come back
+	// every time the sheet gained new controls, and measuring it takes a minute where reasoning
+	// about it has repeatedly taken days.
+	React.useEffect(() => {
+		if (!isCoarsePointer || !mediaDockOpen) return undefined;
+		return installMediaSheetTapDiagnostic(
+			() => mediaSheetRef.current,
+			() => ({
+				progress: Number(mediaSheetProgressRef.current.toFixed(3)),
+				dockOpen: mediaDockOpenRef.current,
+				dragging: isMediaSheetDraggingRef.current,
+				tab: mediaDockTabRef.current,
+			}),
+		);
+	}, [isCoarsePointer, mediaDockOpen]);
 	const handleMediaSheetTransitionEnd = React.useCallback((event: React.TransitionEvent<HTMLElement>): void => {
 		if (event.target !== event.currentTarget) return;
 		if (event.propertyName !== 'transform') return;
@@ -1581,6 +1611,49 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 		if (event.cancelable) event.preventDefault();
 		setMediaDockTab(tab);
 	}, []);
+	// ── Media sheet: deliver taps that the browser refuses to turn into clicks ──────────────────
+	//
+	// Measured, not deduced (see mediaSheetTapDiagnostic.ts and the logs that came out of it): on
+	// a coarse pointer the first tap on a control inside the open sheet produces touchstart and
+	// touchend on the correct element, with the element unmoved, the sheet settled, and
+	// `defaultPrevented: false` in the bubble phase — and then no click event is ever dispatched.
+	// Nothing in this codebase suppresses it; the browser declines to synthesise it. The tap lands
+	// in a horizontally scrollable region (the tab strip scrolls, the panel body scrolls), and
+	// Chrome withholds the synthetic click from a touch it may still need to treat as the start of
+	// a scroll. A second tap, or waiting for the scroller to settle, produces the click normally —
+	// which is exactly the "press it twice" symptom.
+	//
+	// Two controls already worked around this individually: the tab buttons
+	// (handleSelectMediaDockTabFromTouch) and the panel's Add-image button, both of which act on
+	// touchend and treat onClick as the mouse fallback. That is why those two always worked while
+	// everything else needed two taps. Rather than paste that onto every button in four panels,
+	// this delegates once for the whole sheet.
+	//
+	// Bubble phase on purpose: every control that already handles its own touchend calls
+	// stopPropagation (the tabs, Add-image, and the drag handle via handleMediaDockDragEnd), so
+	// they never reach this and cannot double-fire. Only click-only controls get here.
+	const sheetTapStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const handleMediaSheetTapStart = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		const touch = event.touches[0];
+		sheetTapStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+	}, []);
+	const handleMediaSheetTapEnd = React.useCallback((event: React.TouchEvent<HTMLElement>): void => {
+		const start = sheetTapStartRef.current;
+		sheetTapStartRef.current = null;
+		if (!isCoarsePointer || !start) return;
+		// A finger that travelled was scrolling, not pressing. Same threshold the tab strip
+		// already uses, so the two surfaces can't disagree about what counts as a tap.
+		if (!isMediaDockTabTap(start, event.changedTouches[0])) return;
+		const target = event.target;
+		if (!(target instanceof Element)) return;
+		const button = target.closest('button');
+		if (!(button instanceof HTMLButtonElement) || button.disabled) return;
+		if (!event.currentTarget.contains(button)) return;
+		// preventDefault stops the browser from later deciding to emit its own click after all,
+		// which would run the handler a second time.
+		if (event.cancelable) event.preventDefault();
+		button.click();
+	}, [isCoarsePointer]);
 	const handleOpenImageFromMediaDock = React.useCallback((): void => {
 		// Bottom-dock Add Image should match the in-panel flow: expand the media sheet
 		// first so the upload modal stacks above it and the sheet stays open afterward.
@@ -3737,6 +3810,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									aria-label={t('editors.mediaDock')}
 									style={mediaSheetStyle}
 									onTransitionEnd={handleMediaSheetTransitionEnd}
+									onTouchStart={handleMediaSheetTapStart}
+									onTouchEnd={handleMediaSheetTapEnd}
 									onClick={(e) => e.stopPropagation()}
 								>
 									<button
@@ -4434,6 +4509,8 @@ export function NoteEditor(props: NoteEditorProps): React.JSX.Element {
 									aria-label={t('editors.mediaDock')}
 									style={mediaSheetStyle}
 									onTransitionEnd={handleMediaSheetTransitionEnd}
+									onTouchStart={handleMediaSheetTapStart}
+									onTouchEnd={handleMediaSheetTapEnd}
 									onClick={(e) => e.stopPropagation()}
 								>
 									<button

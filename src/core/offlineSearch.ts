@@ -1,6 +1,6 @@
 import type * as Y from 'yjs';
 import type { DocumentManager } from './DocumentManager';
-import type { NoteSearchGroup, NoteSearchMatchKind, NoteSearchResult } from './noteMediaApi';
+import type { NoteSearchGroup, NoteSearchMatchKind, NoteSearchNoteType, NoteSearchResult } from './noteMediaApi';
 import { buildCollectionPathMap, type CollectionRecord } from '../services/collectionService';
 import type { LabelRecord } from '../services/labelService';
 import { readArchiveState, readTrashState } from './noteModel';
@@ -112,7 +112,10 @@ export async function searchLoadedNotes(args: SearchOfflineNotesArgs): Promise<r
 
 		const title = normalizeText(doc.getText('title').toString());
 		const metadata = doc.getMap<any>('metadata');
-		const type = metadata.get('type') === 'checklist' ? 'checklist' : 'text';
+		const rawType = String(metadata.get('type') ?? 'text');
+		const noteType: NoteSearchNoteType = rawType === 'checklist' ? 'checklist' : rawType === 'drawing' ? 'drawing' : 'text';
+		// Text extraction below only cares whether this is a checklist, as it always has.
+		const type = noteType === 'checklist' ? 'checklist' : 'text';
 		const collectionPath = typeof metadata.get('collectionId') === 'string'
 			? collectionPathById.get(String(metadata.get('collectionId')).trim()) ?? ''
 			: '';
@@ -144,6 +147,7 @@ export async function searchLoadedNotes(args: SearchOfflineNotesArgs): Promise<r
 			noteId,
 			title: title || 'Untitled',
 			archived: readArchiveState(doc).archived,
+			type: noteType,
 			group,
 			matchKinds,
 			collaboratorMatches: [],
@@ -194,7 +198,10 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 
 		const title = normalizeText(doc.getText('title').toString());
 		const metadata = doc.getMap<any>('metadata');
-		const type = metadata.get('type') === 'checklist' ? 'checklist' : 'text';
+		const rawType = String(metadata.get('type') ?? 'text');
+		const noteType: NoteSearchNoteType = rawType === 'checklist' ? 'checklist' : rawType === 'drawing' ? 'drawing' : 'text';
+		// Text extraction below only cares whether this is a checklist, as it always has.
+		const type = noteType === 'checklist' ? 'checklist' : 'text';
 		const collectionPath = typeof metadata.get('collectionId') === 'string'
 			? collectionPathById.get(String(metadata.get('collectionId')).trim()) ?? ''
 			: '';
@@ -262,6 +269,7 @@ export async function searchOfflineNotes(args: SearchOfflineNotesArgs): Promise<
 			noteId,
 			title: title || 'Untitled',
 			archived: readArchiveState(doc).archived,
+			type: noteType,
 			group,
 			matchKinds,
 			collaboratorMatches,

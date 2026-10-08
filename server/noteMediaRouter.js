@@ -1991,6 +1991,9 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							noteId,
 							title: snapshot.title || '(untitled)',
 							archived: snapshot.archived,
+							// buildNoteSnapshot has always worked this out; it just never left the server.
+							// The search filter chips need it to offer "drawings only" and friends.
+							type: snapshot.type || 'text',
 							group: {
 								kind: context.kind,
 								label: context.label,

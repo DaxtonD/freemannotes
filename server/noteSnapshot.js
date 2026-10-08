@@ -67,9 +67,14 @@ function buildSearchSnippet(haystack, query) {
 		const space = normalizedHaystack.lastIndexOf(' ', sliceEnd);
 		if (space > idx + normalizedQuery.length) sliceEnd = space;
 	}
+	// Leading ellipsis only. The trailing one used to be added here as well, and then the client
+	// clamped the snippet to two lines — which makes the browser add its OWN ellipsis at the clamp
+	// point. Every snippet that was long enough to clamp therefore ended in two of them, and with
+	// the attachment rows truncating two more fields beside each other, a single result could show
+	// five. CSS owns the end of the string now; we only mark that text exists before the start,
+	// which nothing downstream can know.
 	const prefix = sliceStart > 0 ? '…' : '';
-	const suffix = sliceEnd < normalizedHaystack.length ? '…' : '';
-	return `${prefix}${normalizedHaystack.slice(sliceStart, sliceEnd).trim()}${suffix}`;
+	return `${prefix}${normalizedHaystack.slice(sliceStart, sliceEnd).trim()}`;
 }
 
 module.exports = {

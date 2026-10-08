@@ -1,78 +1,150 @@
-/* The square at the left of a search result: a real picture, or a tile saying what the result is. */
+/* The tile at the left of a search result. See SearchResultThumb.tsx for the fallback ladder —
+   real picture, then the note's banner, then its colour, then neutral. Every rung is the same
+   fixed square so a column of results reads as a column and not a staircase. */
 
-.thumb {
-	width: 66px;
-	height: 66px;
-	border-radius: 14px;
-	object-fit: cover;
-	background: color-mix(in srgb, var(--color-surface-2) 70%, transparent);
+.tile {
+	/* One source of truth for the square, because the banner crop below is computed from it. */
+	--search-thumb-size: 52px;
+	position: relative;
+	display: block;
+	flex: 0 0 auto;
+	width: var(--search-thumb-size);
+	height: var(--search-thumb-size);
+	border-radius: 12px;
+	overflow: hidden;
+	background: var(--search-thumb-fill, color-mix(in srgb, var(--color-surface-2) 70%, transparent));
+	border: 1px solid var(--search-thumb-edge, color-mix(in srgb, var(--color-border) 60%, transparent));
 }
 
-.fallback {
-	position: relative;
-	width: 66px;
-	height: 66px;
-	border-radius: 14px;
+/* Banner art, cropped to its icon.
+   Showing the whole banner in a square means object-fit:cover takes the middle — the one region
+   of this artwork guaranteed to hold no icon at all, because the icon sits far to the right on a
+   clean zone the horizontal fade lays down for it. So we crop a window around the icon instead.
+
+   The two variants are NOT the same picture at two sizes; their geometry differs completely, so
+   each gets its own numbers and the crop is computed from them rather than hardcoded:
+     card  520x240,  icon at (420,120) in a 96x96 box
+     wide  1000x240, icon at (880,120) scaled to 0.6, so a ~58px box
+   Everything scales off --search-thumb-size, so the mobile size needs no second set of numbers. */
+.banner {
+	--banner-src-w: 520;
+	--banner-src-h: 240;
+	--banner-crop: 132;
+	--banner-crop-x: 354;
+	--banner-crop-y: 54;
+	background-repeat: no-repeat;
+	background-size:
+		calc(var(--search-thumb-size) * var(--banner-src-w) / var(--banner-crop))
+		calc(var(--search-thumb-size) * var(--banner-src-h) / var(--banner-crop));
+	background-position:
+		calc(var(--search-thumb-size) * -1 * var(--banner-crop-x) / var(--banner-crop))
+		calc(var(--search-thumb-size) * -1 * var(--banner-crop-y) / var(--banner-crop));
+}
+
+/* Only reached if something hands us the wide file despite the normalisation in the component. */
+.banner[data-variant='wide'] {
+	--banner-src-w: 1000;
+	--banner-crop: 86;
+	--banner-crop-x: 837;
+	--banner-crop-y: 77;
+}
+
+/* A guessed banner is a guess, so it sits very slightly back from one the user actually chose.
+   Subtle on purpose — enough to not misrepresent, not so much that it looks broken. */
+.banner[data-guessed='true'] {
+	opacity: 0.88;
+}
+
+.image {
+	display: block;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+/* On a real picture or a banner the glyph needs its own backing to stay legible, because it can
+   land on anything. A small scrim in the corner is enough and keeps the picture the thing you see. */
+.glyphScrim {
+	position: absolute;
+	right: 3px;
+	bottom: 3px;
+	width: 18px;
+	height: 18px;
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	overflow: hidden;
-	background:
-		linear-gradient(140deg, color-mix(in srgb, var(--color-accent) 22%, transparent), transparent 62%),
-		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
-	border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+	border-radius: 7px;
+	background: color-mix(in srgb, #000000 58%, transparent);
+	color: #ffffff;
 }
 
-.initial {
-	font-size: 26px;
-	font-weight: 700;
-	line-height: 1;
-	color: color-mix(in srgb, var(--color-text) 72%, transparent);
-	font-variant-numeric: tabular-nums;
-}
-
-/* The kind badge sits in the corner so the letter stays the thing you read first. */
-.kindIcon {
+/* With no picture the glyph is the whole content, so it gets centred and sized up — it is now
+   carrying the "what is this" job on its own rather than hiding in a corner behind a letter. */
+.glyphOnly {
 	position: absolute;
-	right: 6px;
-	bottom: 5px;
-	font-size: 11px;
-	color: color-mix(in srgb, var(--color-text) 54%, transparent);
+	inset: 0;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	color: var(--search-thumb-ink, color-mix(in srgb, var(--color-text) 46%, transparent));
 }
 
-.fallback[data-kind='document'] {
-	background:
-		linear-gradient(140deg, color-mix(in srgb, #2563eb 24%, transparent), transparent 62%),
-		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+.glyphOnly .kindIcon {
+	font-size: 19px;
 }
 
-.fallback[data-kind='image'] {
-	background:
-		linear-gradient(140deg, color-mix(in srgb, #0e9f6e 24%, transparent), transparent 62%),
-		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+.kindIcon {
+	font-size: 10px;
 }
 
-.fallback[data-kind='link'] {
+/* Neutral tiles get a faint wash keyed to what the result is, so an untinted, unbannered list
+   still has some rhythm to it. Kept deliberately quiet: this is the least informative rung of
+   the ladder and it should not out-shout the title.
+
+   `[data-kind]` in these selectors is NOT decoration — do not simplify it away. Only the glyph
+   rungs carry data-kind; banner rungs don't. Without it these rules also matched banner tiles,
+   and because they use the `background` SHORTHAND they reset background-size and
+   background-position to auto/0% 0% — silently undoing the icon crop above (they win on
+   specificity, 0,2,0 against .banner's 0,1,0, and come later in the file). The inline
+   background-image survived, so the banner still appeared, just showing the top-left corner of a
+   520px-wide image: pure background texture and no icon. */
+.tile[data-kind]:not([data-tinted]) {
 	background:
-		linear-gradient(140deg, color-mix(in srgb, #7c3aed 24%, transparent), transparent 62%),
-		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+		linear-gradient(145deg, color-mix(in srgb, var(--color-accent) 13%, transparent), transparent 64%),
+		color-mix(in srgb, var(--color-surface-2) 78%, transparent);
 }
 
-.fallback[data-kind='collaborator'] {
+.tile:not([data-tinted])[data-kind='document'] {
 	background:
-		linear-gradient(140deg, color-mix(in srgb, #ea580c 24%, transparent), transparent 62%),
-		color-mix(in srgb, var(--color-surface-2) 82%, transparent);
+		linear-gradient(145deg, color-mix(in srgb, #2563eb 17%, transparent), transparent 64%),
+		color-mix(in srgb, var(--color-surface-2) 78%, transparent);
+}
+
+.tile:not([data-tinted])[data-kind='image'] {
+	background:
+		linear-gradient(145deg, color-mix(in srgb, #0e9f6e 17%, transparent), transparent 64%),
+		color-mix(in srgb, var(--color-surface-2) 78%, transparent);
+}
+
+.tile:not([data-tinted])[data-kind='link'] {
+	background:
+		linear-gradient(145deg, color-mix(in srgb, #7c3aed 17%, transparent), transparent 64%),
+		color-mix(in srgb, var(--color-surface-2) 78%, transparent);
+}
+
+.tile:not([data-tinted])[data-kind='collaborator'] {
+	background:
+		linear-gradient(145deg, color-mix(in srgb, #ea580c 17%, transparent), transparent 64%),
+		color-mix(in srgb, var(--color-surface-2) 78%, transparent);
 }
 
 @media (max-width: 767px) {
-	.thumb,
-	.fallback {
-		width: 54px;
-		height: 54px;
-		border-radius: 12px;
+	.tile {
+		--search-thumb-size: 46px;
+		border-radius: 11px;
 	}
 
-	.initial {
-		font-size: 21px;
+	.glyphOnly .kindIcon {
+		font-size: 17px;
 	}
 }

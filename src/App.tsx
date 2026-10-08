@@ -70,6 +70,9 @@ import { WorkspaceImagesGallery } from './components/NoteMedia/WorkspaceImagesGa
 import { WorkspaceDocumentsGallery } from './components/NoteDocuments/WorkspaceDocumentsGallery';
 import { DocumentTextViewer } from './components/NoteDocuments/DocumentTextViewer';
 import { SearchResultThumb } from './components/Search/SearchResultThumb';
+import { SearchHighlight } from './components/Search/SearchHighlight';
+import { SearchFacetRow } from './components/Search/SearchFacetRow';
+import { formatRelativeReminderDate } from './core/relativeDate';
 import { saveBlobToDevice } from './components/NoteDocuments/saveBlobToDevice';
 import type { NoteDocumentRecord } from './core/noteDocumentApi';
 import { getNoteDocumentExtension, resolveNoteDocumentBlob } from './core/noteDocumentStore';
@@ -1226,6 +1229,40 @@ function clearAuthCache(): void {
 	}
 }
 
+/**
+ * Workspaces that have local IndexedDB data AND that this user still actually belongs to.
+ *
+ * `discoverLocalWorkspaceIds()` reports a workspace for every room this device has ever cached,
+ * including ones the user has since left, been removed from, or deleted — the note data stays
+ * resident on disk afterwards. The reconnect flush loop would then activate those on the server
+ * every single time, get a 403/404 every single time, and never stop, because nothing prunes them.
+ * Intersecting with the cached workspace list is the guard CLAUDE.md already prescribes for this;
+ * it just was not applied on this path.
+ *
+ * Both fallbacks matter and they fail in opposite directions:
+ *
+ *  - no scan results: `indexedDB.databases()` is not implemented everywhere (Firefox, Safari), so
+ *    an empty scan means "cannot tell", not "nothing cached". Use the cached list instead.
+ *
+ *  - no cached list: a cold device, cleared site data, or a first run while offline all leave the
+ *    workspace cache empty. Filtering against an empty set would drop EVERY workspace and quietly
+ *    strand the user's offline edits with no flush and no error — far worse than the wasted
+ *    activate call this function exists to avoid. So when we have nothing to check against, we
+ *    trust the scan and accept the noise.
+ */
+async function resolveFlushableWorkspaceIds(
+	manager: { discoverLocalWorkspaceIds: () => Promise<string[]> },
+	userId: string,
+	deviceId: string,
+): Promise<string[]> {
+	const scanned = await manager.discoverLocalWorkspaceIds();
+	const snapshot = await readCachedWorkspaceSnapshot(userId, deviceId);
+	const known = new Set(snapshot.workspaces.map((w) => w.id));
+	if (scanned.length === 0) return Array.from(known);
+	if (known.size === 0) return scanned;
+	return scanned.filter((id) => known.has(id));
+}
+
 export function App(): React.JSX.Element {
 	const manager = useDocumentManager();
 	// Stable ref so the popstate handler (a long-lived effect closure) always has
@@ -2062,6 +2099,9 @@ export function App(): React.JSX.Element {
 	const [searchDocumentView, setSearchDocumentView] = React.useState<SearchDocumentView | null>(null);
 	const previousMobileSearchOpenRef = React.useRef(false);
 	const [searchResultsError, setSearchResultsError] = React.useState<string | null>(null);
+	/** Selected filter chips, as `axis:value` keys. Cleared whenever the query changes — a filter
+	 *  held over from the previous search silently hides results for the new one. */
+	const [searchFacetSelection, setSearchFacetSelection] = React.useState<readonly string[]>([]);
 	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
 	const [workspaceCollaborators, setWorkspaceCollaborators] = React.useState<SidebarCollaboratorEntry[]>([]);
 	const [workspaceCollaboratorsBusy, setWorkspaceCollaboratorsBusy] = React.useState(false);
@@ -4588,12 +4628,7 @@ export function App(): React.JSX.Element {
 					// between many workspaces and edited notes in each. The WS auth is tied to the
 					// server session, so we must activate each workspace in turn, flush its edits,
 					// then move on — and finally activate the desired target workspace.
-					let localWorkspaceIds = await manager.discoverLocalWorkspaceIds();
-					if (localWorkspaceIds.length === 0) {
-						// Fallback: indexedDB.databases() not available — use the cached workspace list.
-						const snapshot = await readCachedWorkspaceSnapshot(userId, deviceId);
-						localWorkspaceIds = snapshot.workspaces.map((w) => w.id);
-					}
+					const localWorkspaceIds = await resolveFlushableWorkspaceIds(manager, userId, deviceId);
 					// Exclude the target workspace — it will sync normally once its session is active.
 					const idsToFlush = localWorkspaceIds.filter((id) => id !== effectiveWorkspaceId);
 
@@ -4681,11 +4716,7 @@ export function App(): React.JSX.Element {
 					// narrow case and reconcile it the same way the branch above does for a
 					// genuine workspace switch; the common single-workspace case below skips
 					// straight to enabling WS exactly as before, with no extra cost.
-					let localWorkspaceIds = await manager.discoverLocalWorkspaceIds();
-					if (localWorkspaceIds.length === 0) {
-						const snapshot = await readCachedWorkspaceSnapshot(userId, deviceId);
-						localWorkspaceIds = snapshot.workspaces.map((w) => w.id);
-					}
+					const localWorkspaceIds = await resolveFlushableWorkspaceIds(manager, userId, deviceId);
 					const targetWorkspaceId: string | null = effectiveWorkspaceId;
 					const idsToFlush = targetWorkspaceId
 						? localWorkspaceIds.filter((id) => id !== targetWorkspaceId)
@@ -10356,6 +10387,10 @@ export function App(): React.JSX.Element {
 			setSearchResultsError(null);
 			return;
 		}
+		// A new query gets a clean slate. Keeping chips selected across queries means typing a new
+		// search and being told there are no results, when really there are and a filter from the
+		// last one is hiding them.
+		setSearchFacetSelection([]);
 		if (!deferredSearchQuery) {
 			setSearchResults([]);
 			setSearchResultsBusy(false);
@@ -10453,23 +10488,47 @@ export function App(): React.JSX.Element {
 		clearSearch();
 		closeMobileSearch();
 	}, [clearSearch, closeMobileSearch]);
-	const groupedSearchResults = React.useMemo(() => {
-		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
-		for (const result of searchResults) {
-			const key = `${result.group.kind}:${result.group.label}`;
-			const existing = groups.get(key);
-			if (existing) {
-				existing.items.push(result);
-				continue;
-			}
-			groups.set(key, { label: result.group.label, items: [result] });
-		}
-		return Array.from(groups.values());
-	}, [searchResults]);
-	const formatSearchGroupLabel = React.useCallback((group: NoteSearchResult['group']): string => {
-		if (group.kind === 'shared') return `${t('search.sharedPrefix')} ${group.label}`;
-		return `${t('search.workspacePrefix')} ${group.label}`;
-	}, [t]);
+
+	// Picking a filter in the sidebar ends the search.
+	//
+	// These two things look like they compose and they don't. Global search is exactly that —
+	// every workspace you can reach, plus notes shared with you — while the sidebar's filters are
+	// scoped to the active workspace, and `searchArgs`/`searchNotes` never receive them. So
+	// selecting a collaborator while results were up changed nothing about the results; it
+	// quietly re-filtered the grid hidden behind the overlay. You would then close the search and
+	// land in a filtered workspace you had no memory of choosing, with chips you never saw appear.
+	//
+	// Feeding the sidebar's filters into search instead was the other option, and it can't be made
+	// to mean anything: a collection that exists in Personal has no bearing on a result in Work or
+	// on a note someone shared with you. Narrowing *within* search already has a proper home — the
+	// facet chips, which include a Collaborator chip computed from the results themselves.
+	//
+	// A signature string rather than the raw values as effect deps: the collaborator filter gets
+	// re-set to a fresh object whenever the workspace collaborator list reloads, and comparing by
+	// identity would read that as a selection and wipe an in-progress search for no reason.
+	const sidebarFilterSignature = [
+		noteGridCollaboratorFilter?.key ?? '',
+		activeCollectionId ?? '',
+		[...activeLabelIds].sort().join(','),
+		activeReminderFilter,
+		sidebarView,
+	].join('|');
+	const lastSidebarFilterSignatureRef = React.useRef(sidebarFilterSignature);
+	React.useEffect(() => {
+		const previous = lastSidebarFilterSignatureRef.current;
+		lastSidebarFilterSignatureRef.current = sidebarFilterSignature;
+		if (previous === sidebarFilterSignature) return;
+		// Only when something is actually on screen to dismiss, so this can't fight the search box
+		// while it's empty.
+		if (searchQuery) clearSearch();
+	}, [sidebarFilterSignature, searchQuery, clearSearch]);
+	// Module-level ordering would be tidier, but this reads better next to the label formatter it
+	// feeds. Most specific first: a result that matched both a document's text and the note body
+	// is more usefully described as a document hit, because that's the part you didn't already see.
+	const pickPrimarySearchMatchKind = (kinds: readonly NoteSearchMatchKind[]): NoteSearchMatchKind => {
+		const priority: NoteSearchMatchKind[] = ['document', 'ocr', 'imageName', 'link', 'collaborator', 'collection', 'label', 'note'];
+		return priority.find((kind) => kinds.includes(kind)) ?? 'note';
+	};
 	const formatSearchMatchLabel = React.useCallback((kind: NoteSearchMatchKind): string => {
 		if (kind === 'ocr') return t('search.matchOcr');
 		if (kind === 'imageName') return t('search.matchImageName');
@@ -10479,6 +10538,126 @@ export function App(): React.JSX.Element {
 		if (kind === 'collection') return t('search.matchCollection');
 		if (kind === 'label') return t('search.matchLabel');
 		return t('search.matchNote');
+	}, [t]);
+
+	// ── Search filter chips ────────────────────────────────────────────────────────────────────
+	//
+	// Three axes, because the obvious single row of chips conflates three different questions:
+	// where a result lives, what kind of note it is, and why it matched. A drawing found via a
+	// link is legitimately both "drawing" and "link", so one flat OR over everything gives
+	// answers nobody asked for. The rule is OR within an axis, AND across axes — pick Drawings
+	// and Links and you get drawings that matched a link.
+	//
+	// All of this is client-side, which is honest here specifically because the search endpoint
+	// applies no result cap (it returns `results.length` whole). Filtering what's in memory is
+	// therefore filtering everything that matched, not just the page we happened to be shown.
+	type SearchFacetAxis = 'where' | 'what' | 'why';
+
+	const searchFacetKeyForGroup = (group: NoteSearchResult['group']): string =>
+		`where:${group.kind}:${group.workspaceId ?? group.label}`;
+
+	/** Does `result` satisfy the chips selected on one axis? Within an axis, selections are OR. */
+	const matchesSearchFacetAxis = (result: NoteSearchResult, axis: SearchFacetAxis, selected: ReadonlySet<string>): boolean => {
+		if (axis === 'where') return selected.has(searchFacetKeyForGroup(result.group));
+		if (axis === 'what') return selected.has(`what:${result.type}`);
+		return result.matchKinds.some((kind) => selected.has(`why:${kind}`));
+	};
+
+	const searchFacetSelectionByAxis = React.useMemo(() => {
+		const byAxis = new Map<SearchFacetAxis, Set<string>>();
+		for (const key of searchFacetSelection) {
+			const axis = key.slice(0, key.indexOf(':')) as SearchFacetAxis;
+			if (!byAxis.has(axis)) byAxis.set(axis, new Set());
+			byAxis.get(axis)!.add(key);
+		}
+		return byAxis;
+	}, [searchFacetSelection]);
+
+	const filteredSearchResults = React.useMemo(() => {
+		if (searchFacetSelectionByAxis.size === 0) return searchResults;
+		return searchResults.filter((result) => {
+			for (const [axis, selected] of searchFacetSelectionByAxis) {
+				if (!matchesSearchFacetAxis(result, axis, selected)) return false;
+			}
+			return true;
+		});
+	}, [searchResults, searchFacetSelectionByAxis]);
+
+	const searchFacets = React.useMemo(() => {
+		// Counts are live: they answer "how many results would I have if I picked this, given what
+		// is already picked". The critical part is that a chip is counted against every selected
+		// axis EXCEPT ITS OWN. Count it against its own axis too and picking "Personal" drops
+		// "Work" to zero, which would make the workspace you are not currently looking at
+		// impossible to switch to — the chip would be telling you there is nothing there when
+		// really you just have the other one selected. This is the standard disjunctive-facet
+		// rule and the whole reason the per-axis split exists.
+		const subsetForAxis = (axis: SearchFacetAxis): readonly NoteSearchResult[] => {
+			let subset = searchResults;
+			for (const [otherAxis, selected] of searchFacetSelectionByAxis) {
+				if (otherAxis === axis) continue;
+				subset = subset.filter((result) => matchesSearchFacetAxis(result, otherAxis, selected));
+			}
+			return subset;
+		};
+		const subsets: Record<SearchFacetAxis, readonly NoteSearchResult[]> = {
+			where: subsetForAxis('where'),
+			what: subsetForAxis('what'),
+			why: subsetForAxis('why'),
+		};
+
+		// The chip SET and its ORDER both come from the unfiltered results, and deliberately so.
+		// If chips appeared and vanished, or re-sorted by live count, the row would reshuffle
+		// under the finger that just tapped it and the next tap would land on something else.
+		// Positions stay put; only the numbers move.
+		const facets = new Map<string, { axis: SearchFacetAxis; label: string; total: number }>();
+		const bump = (key: string, axis: SearchFacetAxis, label: string): void => {
+			const existing = facets.get(key);
+			if (existing) existing.total += 1;
+			else facets.set(key, { axis, label, total: 1 });
+		};
+		for (const result of searchResults) {
+			bump(searchFacetKeyForGroup(result.group), 'where', result.group.label);
+			bump(`what:${result.type}`, 'what', t(`search.noteType.${result.type}`));
+			// A result carries every kind it matched, so it counts once per chip it belongs to.
+			// These are overlapping sets, not a partition of the total.
+			for (const kind of new Set(result.matchKinds)) {
+				bump(`why:${kind}`, 'why', formatSearchMatchLabel(kind));
+			}
+		}
+
+		const countIn = (subset: readonly NoteSearchResult[], key: string, axis: SearchFacetAxis): number => {
+			const single = new Set([key]);
+			return subset.reduce((total, result) => total + (matchesSearchFacetAxis(result, axis, single) ? 1 : 0), 0);
+		};
+
+		const axisOrder: Record<SearchFacetAxis, number> = { where: 0, what: 1, why: 2 };
+		return Array.from(facets.entries())
+			.map(([key, value]) => ({
+				key,
+				axis: value.axis,
+				label: value.label,
+				count: countIn(subsets[value.axis], key, value.axis),
+				selected: searchFacetSelection.includes(key),
+			}))
+			.sort((a, b) => (axisOrder[a.axis] - axisOrder[b.axis]) || (b.label < a.label ? 1 : b.label > a.label ? -1 : 0));
+	}, [searchResults, searchFacetSelection, searchFacetSelectionByAxis, formatSearchMatchLabel, t]);
+
+	const groupedSearchResults = React.useMemo(() => {
+		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
+		for (const result of filteredSearchResults) {
+			const key = `${result.group.kind}:${result.group.label}`;
+			const existing = groups.get(key);
+			if (existing) {
+				existing.items.push(result);
+				continue;
+			}
+			groups.set(key, { label: result.group.label, items: [result] });
+		}
+		return Array.from(groups.values());
+	}, [filteredSearchResults]);
+	const formatSearchGroupLabel = React.useCallback((group: NoteSearchResult['group']): string => {
+		if (group.kind === 'shared') return `${t('search.sharedPrefix')} ${group.label}`;
+		return `${t('search.workspacePrefix')} ${group.label}`;
 	}, [t]);
 	const canShowGlobalSearchResults = viewMode !== 'bubble' && sidebarView !== 'images' && sidebarView !== 'documents';
 	const hasGlobalSearchResults = canShowGlobalSearchResults && Boolean(deferredSearchQuery);
@@ -10491,7 +10670,7 @@ export function App(): React.JSX.Element {
 					<h2 className="global-search-results-title">{deferredSearchQuery}</h2>
 				</div>
 				<div className="global-search-results-meta">
-					{searchResultsBusy ? t('common.loading') : `${searchResults.length} ${searchResults.length === 1 ? t('search.resultSingular') : t('search.resultPlural')}`}
+					{searchResultsBusy ? t('common.loading') : `${filteredSearchResults.length} ${filteredSearchResults.length === 1 ? t('search.resultSingular') : t('search.resultPlural')}`}
 					<button
 						type="button"
 						className="global-search-results-close"
@@ -10503,9 +10682,56 @@ export function App(): React.JSX.Element {
 					</button>
 				</div>
 			</div>
+			{searchFacets.length > 1 ? (
+				// One chip is never a filter — it would match everything and do nothing, so the row
+				// only earns its space from two up. Grouped into labelled rows per axis: a divider
+				// between groups was doing the grouping job before, and it scrolled away with the
+				// content, taking the only explanation of the OR/AND rule with it.
+				<div className="global-search-facets" role="group" aria-label={t('search.filterLabel')}>
+					{(['where', 'what', 'why'] as const).map((axis) => {
+						const axisFacets = searchFacets.filter((facet) => facet.axis === axis);
+						// A row with a single chip can't filter anything within its own axis — picking
+						// it selects everything the row describes — so it isn't worth a line.
+						if (axisFacets.length < 2) return null;
+						return (
+							<SearchFacetRow key={axis} label={t(`search.axis.${axis}`)}>
+								{axisFacets.map((facet) => (
+									<button
+										key={facet.key}
+										type="button"
+										className={`global-search-facet${facet.selected ? ' global-search-facet--on' : ''}${facet.count === 0 && !facet.selected ? ' global-search-facet--empty' : ''}`}
+										aria-pressed={facet.selected}
+										// Zero-count chips stay in place, dimmed, rather than disappearing — a
+										// row that reflows as you tap moves the next chip under your finger. A
+										// SELECTED chip is never disabled even at zero, or you could select a
+										// combination with no results and then be unable to undo it.
+										disabled={facet.count === 0 && !facet.selected}
+										onClick={() => setSearchFacetSelection((current) => (
+											current.includes(facet.key) ? current.filter((key) => key !== facet.key) : [...current, facet.key]
+										))}
+									>
+										{facet.label}
+										<span className="global-search-facet-count">{facet.count}</span>
+									</button>
+								))}
+							</SearchFacetRow>
+						);
+					})}
+					{searchFacetSelection.length > 0 ? (
+						<button type="button" className="global-search-facet global-search-facet--clear" onClick={() => setSearchFacetSelection([])}>
+							{t('search.clearFilters')}
+						</button>
+					) : null}
+				</div>
+			) : null}
 			{searchResultsError ? <p className="global-search-results-error">{searchResultsError}</p> : null}
 			{!searchResultsBusy && !searchResultsError && groupedSearchResults.length === 0 ? (
-				<p className="global-search-results-empty">{t('search.noResults')}</p>
+				// "Nothing matched" and "your filters hid everything" are different problems with
+				// different fixes, and telling someone their search found nothing when it found
+				// eleven things they've filtered out is just a lie.
+				<p className="global-search-results-empty">
+					{searchFacetSelection.length > 0 ? t('search.noResultsForFilters') : t('search.noResults')}
+				</p>
 			) : null}
 			<div className="global-search-results-groups">
 				{groupedSearchResults.map((group) => (
@@ -10524,23 +10750,38 @@ export function App(): React.JSX.Element {
 									className="global-search-result-card"
 									onClick={() => void handleSearchResultSelect(result)}
 								>
-									<SearchResultThumb thumbnailUrl={result.thumbnailUrl} title={result.title} matchKinds={result.matchKinds} />
-									<div className="global-search-result-copy">
-										<div className="global-search-result-topline">
-											<span className="global-search-result-title">{result.title}</span>
-											{result.matchKinds.map((kind) => <span key={`${result.docId}:${kind}`} className="global-search-result-badge">{formatSearchMatchLabel(kind)}</span>)}
-											{result.archived ? <span className="global-search-result-badge">{t('search.archivedBadge')}</span> : null}
-										</div>
-										<p className="global-search-result-snippet">{result.snippet}</p>
+									<SearchResultThumb
+										thumbnailUrl={result.thumbnailUrl}
+										title={result.title}
+										matchKinds={result.matchKinds}
+										noteId={result.openNoteId || result.noteId}
+										themeId={themeId}
+									/>
+									{/* Spans rather than div/p because this all lives inside a <button>, whose content
+									    model is phrasing content — the previous markup nested block elements in it. */}
+									<span className="global-search-result-copy">
+										<span className="global-search-result-title">{result.title}</span>
+										<span className="global-search-result-snippet">
+											<SearchHighlight text={result.snippet} query={deferredSearchQuery} />
+										</span>
 										{result.collaboratorMatches.length > 0 || result.collectionMatches.length > 0 || result.labelMatches.length > 0 ? (
-											<div className="global-search-result-contexts">
+											<span className="global-search-result-contexts">
 												{result.collaboratorMatches.map((label) => <span key={`${result.docId}:${label}`} className="global-search-result-context">{t('search.collaboratorPrefix')} {label}</span>)}
 												{result.collectionMatches.map((label) => <span key={`${result.docId}:collection:${label}`} className="global-search-result-context">{t('search.collectionPrefix')} {label}</span>)}
 												{result.labelMatches.map((label) => <span key={`${result.docId}:label:${label}`} className="global-search-result-context">{t('search.labelPrefix')} {label}</span>)}
-											</div>
+											</span>
 										) : null}
-										<div className="global-search-result-meta">{result.imageCount > 0 ? `${result.imageCount} ${result.imageCount === 1 ? t('media.imageSingular') : t('media.imagePlural')} · ` : ''}{new Date(result.updatedAt).toLocaleString(locale)}</div>
-									</div>
+									</span>
+									{/* The right rail exists so these land at the same x on every row. They used to be
+									    inline siblings of the title, which put them wherever the title happened to end —
+									    with one to three of them per result, no two rows lined up. Only the most
+									    specific match kind is shown now: the rest are already visible as the child rows
+									    below and the context chips above, so the extra badges were just noise. */}
+									<span className="global-search-result-rail">
+										<span className="global-search-result-badge">{formatSearchMatchLabel(pickPrimarySearchMatchKind(result.matchKinds))}</span>
+										{result.archived ? <span className="global-search-result-badge global-search-result-badge--quiet">{t('search.archivedBadge')}</span> : null}
+										<span className="global-search-result-age">{formatRelativeReminderDate(result.updatedAt, t, { includeTime: false })}</span>
+									</span>
 								</button>
 								{hasOpenableMatches ? (
 									<div className="global-search-result-matches">
@@ -10551,9 +10792,14 @@ export function App(): React.JSX.Element {
 												className="global-search-result-match"
 												onClick={() => openSearchDocumentMatch(match, deferredSearchQuery)}
 											>
-												<FontAwesomeIcon icon={faFileLines} />
-												<span className="global-search-result-match-name">{match.document.fileName}</span>
-												<span className="global-search-result-match-snippet">{match.snippet}</span>
+												<FontAwesomeIcon className="global-search-result-match-icon" icon={faFileLines} />
+												{/* Name and snippet stack instead of sharing one nowrap line. Side by side they
+												    both truncated, and the snippet — the only part that says WHY this matched —
+												    lost hardest, because it was the one with flex-grow. */}
+												<span className="global-search-result-match-body">
+													<span className="global-search-result-match-name">{match.document.fileName}</span>
+													<span className="global-search-result-match-snippet"><SearchHighlight text={match.snippet} query={deferredSearchQuery} /></span>
+												</span>
 											</button>
 										))}
 										{imageMatches.map((match) => (
@@ -10566,9 +10812,11 @@ export function App(): React.JSX.Element {
 													openNoteAttachmentBrowser('images', result.openNoteId || result.noteId, result.docId, result.title, false);
 												}}
 											>
-												<FontAwesomeIcon icon={faImage} />
-												<span className="global-search-result-match-name">{match.fileName || t('media.imageLabel')}</span>
-												<span className="global-search-result-match-snippet">{match.snippet}</span>
+												<FontAwesomeIcon className="global-search-result-match-icon" icon={faImage} />
+												<span className="global-search-result-match-body">
+													<span className="global-search-result-match-name">{match.fileName || t('media.imageLabel')}</span>
+													<span className="global-search-result-match-snippet"><SearchHighlight text={match.snippet} query={deferredSearchQuery} /></span>
+												</span>
 											</button>
 										))}
 										{linkMatches.map((match) => (
@@ -10581,9 +10829,11 @@ export function App(): React.JSX.Element {
 													window.open(match.url, '_blank', 'noopener,noreferrer');
 												}}
 											>
-												<FontAwesomeIcon icon={faArrowUpRightFromSquare} />
-												<span className="global-search-result-match-name">{match.title}</span>
-												<span className="global-search-result-match-snippet">{match.hostname}</span>
+												<FontAwesomeIcon className="global-search-result-match-icon" icon={faArrowUpRightFromSquare} />
+												<span className="global-search-result-match-body">
+													<span className="global-search-result-match-name">{match.title}</span>
+													<span className="global-search-result-match-snippet"><SearchHighlight text={match.hostname} query={deferredSearchQuery} /></span>
+												</span>
 											</button>
 										))}
 									</div>

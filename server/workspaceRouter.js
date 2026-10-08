@@ -556,6 +556,18 @@ function createWorkspaceRouter({ prisma, onWorkspaceMetadataChanged = null }) {
 					const session = requireAuth(req, res);
 					if (!session) return;
 
+					// The path segment went straight into a @db.Uuid field, so anything that wasn't a
+					// UUID surfaced as a Prisma "Inconsistent column data: Error creating UUID" throw
+					// and a 500 — which reads like a database fault when it is simply a bad request.
+					// Reject it here instead, and say what was asked for so the offending caller can
+					// actually be found rather than inferred from the character offset in a UUID
+					// parser error.
+					if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(workspaceId)) {
+						console.warn(`[workspace] activate: ignoring non-UUID workspace id ${JSON.stringify(workspaceId)} (ua=${JSON.stringify(req.headers['user-agent'] || '')})`);
+						jsonResponse(res, 400, { error: 'Invalid workspace id' });
+						return;
+					}
+
 					const member = await findLiveWorkspaceMembership(prisma, session.userId, workspaceId, { role: true });
 					if (!member) {
 						jsonResponse(res, 403, { error: 'Forbidden' });

@@ -875,6 +875,19 @@
     "offlineUnavailable": "La búsqueda no está disponible sin conexión",
     "failed": "La búsqueda falló",
     "noResults": "No se encontraron resultados en notas ni texto OCR.",
+    "noResultsForFilters": "Ningún resultado coincide con los filtros seleccionados.",
+    "filterLabel": "Filtrar resultados",
+    "axis": {
+      "where": "Espacio",
+      "what": "Tipo",
+      "why": "Coincide"
+    },
+    "clearFilters": "Quitar filtros",
+    "noteType": {
+      "text": "Notas",
+      "checklist": "Listas",
+      "drawing": "Dibujos"
+    },
     "resultSingular": "resultado",
     "resultPlural": "resultados",
     "matchNote": "nota",

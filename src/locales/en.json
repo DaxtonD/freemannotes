@@ -875,6 +875,19 @@
     "offlineUnavailable": "Search is unavailable while offline",
     "failed": "Search failed",
     "noResults": "No results found across notes and OCR text.",
+    "noResultsForFilters": "No results match the filters you've selected.",
+    "filterLabel": "Filter results",
+    "axis": {
+      "where": "Workspace",
+      "what": "Type",
+      "why": "Matched"
+    },
+    "clearFilters": "Clear filters",
+    "noteType": {
+      "text": "Notes",
+      "checklist": "Checklists",
+      "drawing": "Drawings"
+    },
     "resultSingular": "result",
     "resultPlural": "results",
     "matchNote": "note",

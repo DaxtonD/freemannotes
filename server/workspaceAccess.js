@@ -65,14 +65,26 @@ async function findLiveWorkspaceMembership(prisma, userId, workspaceId, select =
 		if (cached !== undefined) return cached;
 	}
 
-	const result = await prisma.workspaceMember.findFirst({
-		where: {
-			userId,
-			workspaceId,
-			workspace: { is: { deletedAt: null } },
-		},
-		select,
-	});
+	// Both columns are @db.Uuid, so a non-UUID argument surfaces as Prisma's
+	// "Inconsistent column data: Error creating UUID" — which reads like a corrupt database and
+	// isn't: it names a character offset but never the value or which of the two arguments it
+	// came from. Say both, once, so the caller can be found instead of inferred.
+	let result;
+	try {
+		result = await prisma.workspaceMember.findFirst({
+			where: {
+				userId,
+				workspaceId,
+				workspace: { is: { deletedAt: null } },
+			},
+			select,
+		});
+	} catch (err) {
+		if (/Error creating UUID|invalid character/i.test(err.message || '')) {
+			console.error(`[workspaceAccess] non-UUID argument: userId=${JSON.stringify(userId)} workspaceId=${JSON.stringify(workspaceId)}`);
+		}
+		throw err;
+	}
 
 	if (isRoleSelect) {
 		_setCachedMembership(userId, workspaceId, result);

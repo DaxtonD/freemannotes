@@ -50,6 +50,8 @@ export type NoteSearchGroup = {
 
 export type NoteSearchMatchKind = 'note' | 'ocr' | 'imageName' | 'collaborator' | 'link' | 'document' | 'collection' | 'label';
 
+export type NoteSearchNoteType = 'text' | 'checklist' | 'drawing';
+
 /** A document a search matched, with enough of it to open on the spot. */
 import type { NoteDocumentRecord } from './noteDocumentApi';
 
@@ -80,6 +82,8 @@ export type NoteSearchResult = {
 	noteId: string;
 	title: string;
 	archived: boolean;
+	/** 'text' when an older server build doesn't send it — the filter chips treat it as a note. */
+	type: NoteSearchNoteType;
 	group: NoteSearchGroup;
 	matchKinds: NoteSearchMatchKind[];
 	collaboratorMatches: string[];
