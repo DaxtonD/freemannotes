@@ -390,18 +390,23 @@ export async function createProgressiveNoteImageThumbnail(blob: Blob): Promise<B
 		// Keep source proportions while downscaling so offline previews preserve
 		// the original composition instead of stretching/cropping unexpectedly.
 		//
-		// 400px/50KB (the previous ceiling here) kept thousands of these cheap to
-		// store, but made text in any photographed document/label/whiteboard
-		// illegible — the exact case this offline cache exists for, since search
-		// itself doesn't depend on this blob at all (OCR runs server-side against
-		// the full-resolution original and is indexed separately; this is purely
-		// what you *see* while offline). 1024px/~200KB is a deliberate step up in
-		// per-image budget (roughly 4x worst case) to make that text readable,
-		// while still being small enough that a genuinely large library — low
-		// thousands of images — stays in the hundreds-of-MB range rather than GBs.
-		// If a user's library grows large enough for that to matter in practice,
-		// the next lever is a storage-aware eviction policy, not a smaller image.
-		const maxDimension = 1024;
+		// This ceiling has now been raised twice for the same reason, so the reasoning is worth
+		// stating plainly: this blob is the ONLY thing you see while offline, and the thing people
+		// photograph most is text — a document, a label, a whiteboard, a screenshot. 400px/50KB
+		// made that unreadable. 1024px/200KB was better and still not enough: a 1080x2400
+		// screenshot came out 460x1024, shrinking its text to 43%, and the quality ladder could
+		// drop as far as 0.36, which smears glyph edges on top of that.
+		//
+		// 1600px with a 0.52 floor keeps that screenshot legible. Search does not depend on this
+		// at all (OCR runs server-side against the full-resolution original and is indexed
+		// separately), so the only cost is disk.
+		//
+		// The budget honestly: ~350KB worst case against ~200KB before. A low-thousands library
+		// moves from roughly 400MB to roughly 700MB — still sub-GB, still the right trade for an
+		// offline cache you can actually read. If a library ever grows big enough for that to
+		// hurt, the lever is storage-aware eviction, not another round of shrinking the images
+		// until they are useless again.
+		const maxDimension = 1600;
 		const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
 		const width = Math.max(1, Math.round((image.naturalWidth || 1) * scale));
 		const height = Math.max(1, Math.round((image.naturalHeight || 1) * scale));
@@ -414,13 +419,13 @@ export async function createProgressiveNoteImageThumbnail(blob: Blob): Promise<B
 
 		// Progressive quality fallback keeps tiles sharp enough for note scanning
 		// while staying small enough for reliable offline cache + sync behavior.
-		const qualities = [0.72, 0.6, 0.48, 0.36];
+		const qualities = [0.82, 0.72, 0.62, 0.52];
 		let fallbackBlob: Blob | null = null;
 		for (const quality of qualities) {
 			const nextBlob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/webp', quality));
 			if (!nextBlob) continue;
 			fallbackBlob = nextBlob;
-			if (nextBlob.size <= 200 * 1024) return nextBlob;
+			if (nextBlob.size <= 350 * 1024) return nextBlob;
 		}
 		return fallbackBlob;
 	} catch {

@@ -358,35 +358,76 @@ async function decodeImageSource(file: Blob): Promise<DecodedImageSource> {
 	});
 }
 
+/**
+ * Every upload used to be redrawn onto a canvas and re-encoded as JPEG, unconditionally, and the
+ * server then re-encoded that to WebP. Two lossy passes on every image, both tuned for
+ * photographs.
+ *
+ * Photographs survive that fine, which is why they always looked good. Screenshots did not:
+ * JPEG is close to the worst available codec for sharp text and flat colour, putting ringing
+ * artifacts around every glyph, and the server's WebP pass then re-encoded those artifacts. A
+ * PNG screenshot — a lossless source — was being pushed through two photo codecs to arrive
+ * barely readable. The white `fillRect` below also flattened any transparency.
+ *
+ * So this now does nothing at all unless it has to. An image already within the dimension cap and
+ * under the size budget is uploaded as-is, leaving the server's single pass as the only lossy
+ * step. When a re-encode IS needed (a 12MP camera file, say), it uses WebP rather than JPEG:
+ * better text, better flat colour, smaller at equal quality, and it keeps alpha.
+ */
+const CLIENT_REENCODE_SIZE_BUDGET_BYTES = 4 * 1024 * 1024;
+
 async function createOptimizedImageFile(file: File): Promise<File> {
 	if (typeof document === 'undefined') return file;
 	const decoded = await decodeImageSource(file);
 	let canvas: HTMLCanvasElement | null = null;
 	try {
 		const maxDimensionPx = getImageCaptureMaxDimensionPx();
-		const scale = Math.min(1, maxDimensionPx / Math.max(decoded.width, decoded.height, 1));
+		const longestEdge = Math.max(decoded.width, decoded.height, 1);
+		// The whole point: if there is nothing to fix, do not touch the bytes. Re-encoding an
+		// image that is already small and clean can only ever make it worse.
+		if (longestEdge <= maxDimensionPx && file.size <= CLIENT_REENCODE_SIZE_BUDGET_BYTES) {
+			return file;
+		}
+
+		const scale = Math.min(1, maxDimensionPx / longestEdge);
 		const targetWidth = Math.max(1, Math.round(decoded.width * scale));
 		const targetHeight = Math.max(1, Math.round(decoded.height * scale));
 		canvas = document.createElement('canvas');
 		canvas.width = targetWidth;
 		canvas.height = targetHeight;
-		const context = canvas.getContext('2d', { alpha: false });
+		// alpha:true now — WebP keeps transparency, so there is no reason to flatten it onto
+		// white the way the JPEG path had to.
+		const context = canvas.getContext('2d', { alpha: true });
 		if (!context) {
 			throw new Error('Canvas context unavailable');
 		}
 		context.imageSmoothingEnabled = true;
 		context.imageSmoothingQuality = 'high';
-		context.fillStyle = '#ffffff';
-		context.fillRect(0, 0, targetWidth, targetHeight);
 		decoded.draw(context, targetWidth, targetHeight);
-		const compressedBlob = await new Promise<Blob | null>((resolve) => {
-			canvas?.toBlob(resolve, 'image/jpeg', getImageCaptureJpegQuality());
-		});
-		if (!compressedBlob) {
+
+		const quality = getImageCaptureJpegQuality();
+		const encode = (type: string): Promise<Blob | null> =>
+			new Promise<Blob | null>((resolve) => { canvas?.toBlob(resolve, type, quality); });
+
+		// toBlob silently falls back to PNG when a type is unsupported, and a PNG of a photo is
+		// enormous — so check what actually came back rather than trusting the request.
+		let encoded = await encode('image/webp');
+		let extension = '.webp';
+		let mimeType = 'image/webp';
+		if (!encoded || encoded.type !== 'image/webp') {
+			encoded = await encode('image/jpeg');
+			extension = '.jpg';
+			mimeType = 'image/jpeg';
+		}
+		if (!encoded) {
 			throw new Error('Image compression failed');
 		}
-		return new File([compressedBlob], replaceExtension(file.name || 'image', '.jpg'), {
-			type: 'image/jpeg',
+		// A re-encode that came out bigger than the original has achieved nothing but damage.
+		if (encoded.size >= file.size && longestEdge <= maxDimensionPx) {
+			return file;
+		}
+		return new File([encoded], replaceExtension(file.name || 'image', extension), {
+			type: mimeType,
 			lastModified: Date.now(),
 		});
 	} finally {
@@ -423,8 +464,12 @@ async function createCapturedPhotoFileViaImageCapture(stream: MediaStream | null
 		// image path so capture size/quality stays consistent regardless of how
 		// wildly the sensor's native still-photo resolution varies by device.
 		const optimized = await createOptimizedImageFile(sourceFile);
-		return new File([optimized], `photo-${photoIndex}.jpg`, {
-			type: optimized.type || 'image/jpeg',
+		// Name has to follow the actual encoding — the optimizer returns WebP when the browser
+		// supports it, and a .jpg called image/webp confuses anything that trusts the extension.
+		const optimizedType = optimized.type || 'image/jpeg';
+		const optimizedExtension = optimizedType === 'image/webp' ? '.webp' : '.jpg';
+		return new File([optimized], `photo-${photoIndex}${optimizedExtension}`, {
+			type: optimizedType,
 			lastModified: Date.now(),
 		});
 	} catch {
