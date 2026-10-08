@@ -23,10 +23,11 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [6. Heading Collapse Debug](#6-heading-collapse-debug)
   - [7. Global Debug Flag (window.DEBUG)](#7-global-debug-flag-windowdebug)
   - [8. View Transition Trace](#8-view-transition-trace)
-  - [9. Always-On Diagnostic Logs](#9-always-on-diagnostic-logs)
-  - [10. Force Grid Virtualization](#10-force-grid-virtualization)
-  - [11. Note-Card Height Diagnostics](#11-note-card-height-diagnostics)
-  - [12. Grid Scroll Recorder](#12-grid-scroll-recorder)
+  - [9. Media Sheet Tap Diagnostic](#9-media-sheet-tap-diagnostic)
+  - [10. Always-On Diagnostic Logs](#10-always-on-diagnostic-logs)
+  - [11. Force Grid Virtualization](#11-force-grid-virtualization)
+  - [12. Note-Card Height Diagnostics](#12-note-card-height-diagnostics)
+  - [13. Grid Scroll Recorder](#13-grid-scroll-recorder)
 - [Documents and Uploaded Files](#documents-and-uploaded-files)
 - [Notifications, the Inbox and the Bell](#notifications-the-inbox-and-the-bell)
 - [Custom Drawing Libraries](#custom-drawing-libraries)
@@ -628,7 +629,26 @@ prints a table of the buffered events (last 300) for the most recent trace, or p
 
 ---
 
-### 9. Always-On Diagnostic Logs
+### 9. Media Sheet Tap Diagnostic
+
+`src/core/mediaSheetTapDiagnostic.ts`, wired up in `NoteEditor.tsx`. Shares the service-worker debug toggle (Preferences → tap the icon 10x to unlock Dev Tools → enable SW debug logging), writes to the same buffer, and is picked up by the same "Copy log" button. Completely inert with the toggle off.
+
+It exists for one recurring bug: on a coarse pointer the browser sometimes does not dispatch a `click` for the first tap on a control inside the open media sheet, so the control appears dead until you tap a second time. That was fixed in 1.19.4 with a delegated touchend handler on the sheet, but the failure returns whenever the delegate is bypassed or a control is added that swallows its own touch events — so the instrument was kept rather than deleted.
+
+Attaches in the **capture** phase on `document`, because the sheet's own drag handlers call `stopPropagation()` and anything listening lower would be told a different story than the browser is acting on.
+
+| Entry | Means |
+|---|---|
+| `media-tap-start` / `media-tap-end` | element under the finger at touchdown and liftoff, how far it moved, and the sheet's transform at both moments (`settled: false` means the open animation was still running) |
+| `media-tap-click` with `sameAsStart: true` | the click reached the right element — the fault is above this, in a handler that didn't run |
+| `media-tap-click` with `sameAsStart: false` | the click landed elsewhere; the element moved out from under the finger |
+| `media-tap-noclick` | **the signature of this bug** — no click within 500ms of touchend |
+| `media-tap-end-bubble` | `defaultPrevented` measured after every handler has run: `true` means our own code suppressed the click, `false` means the browser declined to synthesise one. Opposite fixes. |
+| `media-tap-CANCELLED` | the browser cancelled the touch outright, so no click was ever coming |
+
+**Use it rather than reasoning about the source.** Five consecutive source-reading diagnoses of this bug were wrong; one capture settled it in about a minute.
+
+### 10. Always-On Diagnostic Logs
 
 A few `console.debug` / `console.log` calls in the codebase have no enable/disable flag at all — either temporary scaffolding tied to an active bug investigation, or low-frequency enough (only fires on one specific, rare user action) that no toggle was ever added. Listed here so they aren't mistaken for one of the systems above, and so the temporary one actually gets removed once its investigation closes rather than lingering indefinitely.
 
@@ -640,7 +660,7 @@ A few `console.debug` / `console.log` calls in the codebase have no enable/disab
 
 ---
 
-### 10. Force Grid Virtualization
+### 11. Force Grid Virtualization
 
 **What it covers:** Forces the note-grid's windowed virtualization ON with only a handful of notes, so a small dev dataset reproduces production behavior.
 
@@ -675,7 +695,7 @@ There is also a build-time env var, `VITE_FORCE_VIRTUALIZATION=1` in `env.vite/.
 
 ---
 
-### 11. Note-Card Height Diagnostics
+### 12. Note-Card Height Diagnostics
 
 **What it covers:** Captures every number that decides a note card's height — each term of the formula, what was computed, what actually rendered, and exactly how many pixels are being clipped off which element.
 
@@ -719,7 +739,7 @@ Non-checklist cards (text/drawing) are listed separately as context only — the
 
 ---
 
-### 12. Grid Scroll Recorder
+### 13. Grid Scroll Recorder
 
 **What it covers:** Cards shifting, oscillating, or jumping columns while you scroll the note grid. It records what every mounted card does, frame by frame, and says why each movement happened.
 
