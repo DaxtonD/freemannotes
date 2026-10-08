@@ -2,6 +2,17 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.19.5 - 2026-10-08
+
+### Fixed
+- **Screenshots and other non-photographic images stop arriving mangled.** Every image you attached was being redrawn onto a canvas and re-encoded as JPEG before it even left the device, and the server then re-encoded that to WebP. Two lossy passes, both tuned for photographs. Photos sail through that, which is exactly why they always looked fine and why this went unnoticed for so long — but JPEG is close to the worst codec there is for sharp text and flat colour, so a screenshot picked up ringing around every letter on the way out and had those artifacts re-encoded on the way in. A lossless PNG, pushed through two photo codecs, arriving barely readable. The client pass now does **nothing at all** unless there is something to fix: if the image is already within the size cap it is uploaded exactly as you gave it to us, and the server's single pass is the only lossy step. When a re-encode genuinely is needed — a 12MP camera file — it uses WebP, which is better on text, better on flat colour, smaller at the same quality, and keeps transparency instead of flattening it onto white.
+- **Offline images are legible again.** The cached copy you see with no connection was capped at 1024px and could have its quality driven down to 0.36 to fit a 200KB budget, which turned a phone screenshot into 460x1024 of smeared glyphs. It is now 1600px with a 0.52 floor and a 350KB budget. This is the second time this ceiling has been raised for the same complaint, so the reasoning is written down next to the numbers this time: this blob is the only thing you see offline, the thing people photograph most is text, and the honest cost is a low-thousands library going from roughly 400MB to roughly 700MB. Still under a gigabyte, and the next lever is evicting old previews rather than shrinking them until they are useless again.
+
+### Changed
+- `IMAGE_CAPTURE_JPEG_QUALITY` now sets **WebP** quality (JPEG survives only as a fallback for browsers that cannot encode WebP), and both it and `IMAGE_CAPTURE_MAX_DIMENSION_PX` now apply *only* when an image actually needs resizing. The variable keeps its old name on purpose — renaming it would break every existing deployment to fix a word. The Compose example and the Unraid template both say so now.
+
+> Existing images are stored as they were and are not reprocessed; re-upload anything that already looks bad.
+
 ## 1.19.4 - 2026-10-08
 
 ### Added

@@ -126,12 +126,12 @@
     Required="false"
     Mask="false">2560</Config>
 
-  <!-- JPEG quality (0.1-1.0) paired with the dimension setting above. -->
+  <!-- Encode quality (0.1-1.0) paired with the dimension setting above. WebP, despite the name. -->
   <Config
     Name="Image JPEG Quality"
     Target="IMAGE_CAPTURE_JPEG_QUALITY"
     Default="0.82"
-    Description="JPEG quality (0.1-1.0) for uploaded/captured images. Higher = sharper but larger files. Paired with Image Max Dimension above for the storage estimate."
+    Description="Encode quality (0.1-1.0) for uploaded/captured images. Higher = sharper but larger files. Paired with Image Max Dimension above for the storage estimate. Despite the variable name the encoder is WebP (JPEG only as a fallback); the name is kept for compatibility. Applies only when an image actually needs resizing - anything already within the dimension cap and under 4MB is stored untouched."
     Type="Variable"
     Display="always"
     Required="false"
