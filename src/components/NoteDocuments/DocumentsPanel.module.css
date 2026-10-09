@@ -182,6 +182,42 @@
 	color: #b91c1c;
 }
 
+/*
+ * A scan whose pages are being read by OCR. The spinner is doing more work here than the words:
+ * the page counter only moves every few seconds (the server batches its progress events on
+ * purpose), and without something turning, a label that sits still reads as stuck.
+ *
+ * The attribute selector outranks the bare `.status { display: block }` further down, so this
+ * stays a flex row in the list layout too.
+ */
+.status[data-state='reading'] {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	color: var(--color-accent);
+}
+
+.status[data-state='reading']::before {
+	content: '';
+	width: 9px;
+	height: 9px;
+	flex-shrink: 0;
+	border: 1.5px solid currentColor;
+	border-top-color: transparent;
+	border-radius: 50%;
+	/* `spin` is defined once globally, in styles/globals.css. */
+	animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.status[data-state='reading']::before {
+		animation: none;
+		/* Still a dot rather than a gap, so the row doesn't reflow for these users. */
+		border-top-color: currentColor;
+		opacity: 0.6;
+	}
+}
+
 .actions {
 	display: inline-flex;
 	align-items: center;

@@ -84,6 +84,33 @@ services:
       OCR_LOG_OUTPUT: ${OCR_LOG_OUTPUT:-0}
       PADDLE_HOME: ${PADDLE_HOME:-/app/.paddleocr}
       PADDLE_PDX_MODEL_SOURCE: ${PADDLE_PDX_MODEL_SOURCE:-BOS}
+      # How much of the machine OCR may use. The defaults are deliberately timid so a
+      # small VPS still works — if you have cores sitting idle, raise them.
+      #
+      # WATCH YOUR MEMORY: every concurrent OCR process loads its own copy of the
+      # PaddleOCR model (~0.5-1.5 GB resident). These multiply RAM, not just CPU.
+      # Budget ~1.5 GB per concurrent job. If you've pinned this container to a core
+      # set (cpuset) or capped it with `cpus:`, keep the two concurrency values at or
+      # under that many cores or they'll just fight each other for the same time slice.
+      #
+      # Example for a 16-thread box with 2 cores pinned to this container:
+      #   OCR_MAX_CONCURRENT_JOBS=1  OCR_DOCUMENT_MAX_CONCURRENT=1
+      # Example for a 32 GB host with 8 cores to spare:
+      #   OCR_MAX_CONCURRENT_JOBS=2  OCR_DOCUMENT_MAX_CONCURRENT=4  OCR_DOCUMENT_PAGE_BATCH=8
+      #
+      # Uploaded images.
+      OCR_MAX_CONCURRENT_JOBS: ${OCR_MAX_CONCURRENT_JOBS:-1}
+      # Scanned PDFs, read page by page. A separate lane from images, so a 200-page
+      # scan doesn't hold up the text of a photo somebody just took.
+      OCR_DOCUMENT_MAX_CONCURRENT: ${OCR_DOCUMENT_MAX_CONCURRENT:-1}
+      # Pages per OCR process. Higher spreads the model-loading cost over more pages;
+      # it also sets peak memory, since that many rendered pages are held at once.
+      OCR_DOCUMENT_PAGE_BATCH: ${OCR_DOCUMENT_PAGE_BATCH:-4}
+      # Width each page is rendered at before recognition. Under ~1200 small print
+      # starts failing; over ~2400 costs a lot of memory and time for little gain.
+      OCR_DOCUMENT_RENDER_WIDTH_PX: ${OCR_DOCUMENT_RENDER_WIDTH_PX:-1600}
+      # 1 keeps image OCR but stops reading scanned PDFs (the expensive half).
+      OCR_DOCUMENTS_DISABLED: ${OCR_DOCUMENTS_DISABLED:-0}
       # Push notifications — VAPID (Web / Android PWA)
       # Generate keys with: npx web-push generate-vapid-keys
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}

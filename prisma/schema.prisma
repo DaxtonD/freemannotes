@@ -646,6 +646,19 @@ model NoteDocumentVersion {
   ocrStatus NoteDocumentOcrStatus @default(PENDING) @map("ocr_status")
   ocrText String? @map("ocr_text")
   ocrError String? @map("ocr_error")
+  /// Progress for the page-by-page OCR a scanned PDF needs (server/documentOcrQueue.js).
+  /// `ocrPagesTotal` counts only the pages that actually need recognising — a mixed PDF
+  /// keeps the text layer it already has — so it is not the same as `pageCount`.
+  /// `ocrStartedAt` is what tells "queued" apart from "running" while the status is
+  /// still PENDING, and it's the clock the client's time-remaining estimate works from.
+  ocrPagesTotal Int? @map("ocr_pages_total")
+  ocrPagesDone Int? @map("ocr_pages_done")
+  ocrStartedAt DateTime? @map("ocr_started_at")
+  /// When OCR last finished on this version, whatever it found. This is the only way to tell
+  /// "nothing has read this yet" from "it was read and there genuinely was no text on it" —
+  /// both leave an empty ocrText — and without it the startup sweep would re-render and
+  /// re-recognise every blank scan on every single restart, forever.
+  ocrCompletedAt DateTime? @map("ocr_completed_at")
 
   /// Office files get a PDF copy made through Gotenberg (optional, GOTENBERG_URL) so they open
   /// in the same viewer and can be marked up. PDFs never need one. The original is
@@ -664,6 +677,9 @@ model NoteDocumentVersion {
   @@unique([noteDocumentId, versionNumber])
   @@index([noteDocumentId, deletedAt])
   @@index([uploadedByUserId])
+  /// The OCR queue asks "what's next?" after every document it finishes; without this
+  /// that's a full scan of every version ever uploaded, every time.
+  @@index([ocrStatus, deletedAt])
   @@map("note_document_version")
 }
 

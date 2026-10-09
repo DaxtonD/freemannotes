@@ -95,6 +95,19 @@ def self_check() -> int:
         return 4
 
 
+def ocr_one(ocr, image_path: str) -> str:
+    result = run_ocr(ocr, image_path)
+    lines = normalize_text(result)
+    return "\n".join(line for line in lines if line)
+
+
+def emit(payload) -> None:
+    # One JSON object per line, flushed as it happens. Node reads these back as they arrive to
+    # move a scanned document's page counter along (server/documentOcrQueue.js). The LAST line
+    # is always the summary, which is the only line the single-image caller looks at.
+    print(json.dumps(payload), flush=True)
+
+
 def main() -> int:
 
     if len(sys.argv) >= 2 and sys.argv[1] == "--self-check":
@@ -104,7 +117,10 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": "missing-image-path"}))
         return 1
 
-    image_path = sys.argv[1]
+    # Every argument is an image to read. Handing over several at once is how a scanned PDF gets
+    # done: building a PaddleOCR instance loads a few hundred MB of model and takes seconds, and
+    # paying that per page would cost far more than the actual recognising.
+    image_paths = sys.argv[1:]
 
     try:
         ocr = create_ocr_instance()
@@ -112,15 +128,25 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": f"paddleocr-import-failed: {exc}"}))
         return 2
 
-    try:
-        result = run_ocr(ocr, image_path)
-        lines = normalize_text(result)
-        text = "\n".join(line for line in lines if line)
-        print(json.dumps({"ok": True, "text": text}))
-        return 0
-    except Exception as exc:
-        print(json.dumps({"ok": False, "error": f"paddleocr-run-failed: {exc}"}))
+    results = []
+    for index, image_path in enumerate(image_paths):
+        try:
+            entry = {"index": index, "ok": True, "text": ocr_one(ocr, image_path)}
+        except Exception as exc:
+            # One unreadable page shouldn't throw away the pages that did come out; the caller
+            # decides what a partly-failed batch is worth.
+            entry = {"index": index, "ok": False, "error": f"paddleocr-run-failed: {exc}"}
+        results.append(entry)
+        emit({"type": "page", **entry})
+
+    # Every page failing is a failed batch. One bad page among good ones isn't.
+    if not any(entry["ok"] for entry in results):
+        first_error = next((entry.get("error") for entry in results if not entry["ok"]), None)
+        emit({"ok": False, "error": first_error or "paddleocr-run-failed", "results": results})
         return 3
+    # `text` is what keeps the single-image path working unchanged: it's just the first result.
+    emit({"ok": True, "text": results[0].get("text", "") if results else "", "results": results})
+    return 0
 
 
 if __name__ == "__main__":

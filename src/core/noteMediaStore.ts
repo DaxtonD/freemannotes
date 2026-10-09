@@ -34,7 +34,12 @@ const NOTE_MEDIA_CHANGED_EVENT = 'freemannotes:note-media-changed';
 // bump, previously-cached offline thumbnails sit at their old quality forever;
 // they were generated once and are never touched again just because the
 // generation code changed.
-const NOTE_MEDIA_PREVIEW_VERSION = 3;
+// 4: previews for images this device didn't upload were being generated from the server's 360px
+// thumbnail instead of the original, so every shared note's images were stuck at 360px. Bumping
+// this is what actually repairs them — the blobs already in IndexedDB are never revisited just
+// because the generating code changed, and that includes your own older images, whose previews
+// were rebuilt from that same thumbnail by the previous bump.
+const NOTE_MEDIA_PREVIEW_VERSION = 4;
 
 // Upload retry / backoff constants
 const FLUSH_DEBOUNCE_MS = 400;
@@ -483,7 +488,27 @@ async function syncRemotePreviewRows(docId: string, images: readonly NoteImageRe
 	let storedThumbnail = false;
 	const resolvedRows: StoredNoteImagePreviewRecord[] = [];
 	for (const image of pendingThumbnailImages) {
-		const sourceBlob = (await fetchBlob(image.thumbnailUrl)) || (await fetchBlob(image.originalUrl));
+		// Build from the ORIGINAL, falling back to the thumbnail only if that fails. The order
+		// used to be the other way round, and it quietly capped this preview at the server
+		// thumbnail's 360px — createProgressiveNoteImageThumbnail only ever downscales, so a
+		// 360px source comes out 360px no matter how high the ceiling above is set.
+		//
+		// That was invisible to whoever uploaded the image, because their preview is made at
+		// upload time from the full-resolution local file (storeQueuedPreviewRow) and kept
+		// afterwards. It was NOT invisible to anyone they shared the note with: a recipient has
+		// no local file, so this is their only path, and every image on a note shared with them
+		// fell back to a 360px/10KB upscale the moment the connection read poor, a load ran past
+		// the timeout, or the full image 403'd once. Hence "looks great for me, terrible for
+		// them" — and hence why raising the ceiling 1024 → 1600 in 1.19.5 did nothing for them.
+		//
+		// This does cost real bandwidth: the original rather than a ~10KB thumbnail, per image,
+		// once. fetchBlob already refuses to run at all on a poor connection or with data-saver
+		// on (isOffline() is shouldTreatConnectionAsOffline()), so the metered case is covered;
+		// on a good connection it's the same trade already made for disk — an offline copy you
+		// can't read isn't worth having. If this ever needs to be cheaper, the fix is a
+		// mid-sized variant from the server (NoteImage only stores original + 360px thumb
+		// today), not shrinking this one again.
+		const sourceBlob = (await fetchBlob(image.originalUrl)) || (await fetchBlob(image.thumbnailUrl));
 		if (!sourceBlob) continue;
 		const thumbnailBlob = await createProgressiveNoteImageThumbnail(sourceBlob);
 		if (!thumbnailBlob) continue;

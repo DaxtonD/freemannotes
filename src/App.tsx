@@ -7490,8 +7490,21 @@ export function App(): React.JSX.Element {
 							if (existingTimer) {
 								window.clearTimeout(existingTimer);
 							}
+							// A scan just finished being OCR'd, so that note's extracted text has
+							// changed. Pull the per-note list, which is the only endpoint that
+							// carries ocrText — the manifest strips it (it can be 100k chars a
+							// file) and preserves whatever was cached, which for a scan is the
+							// empty string it was uploaded with. Without this, offline search
+							// would never find a scan until someone happened to open its
+							// documents panel, while online search found it immediately.
+							const ocrFinished = payload.reason === 'note-documents-ocr';
 							const timer = window.setTimeout(() => {
 								pendingNoteDocumentTimers.delete(payload.docId as string);
+								if (ocrFinished) {
+									void refreshRemoteNoteDocuments(payload.docId as string, { userId: authUserId || undefined })
+										.then(() => emitNoteDocumentsChanged(payload.docId as string))
+										.catch(() => undefined);
+								}
 								emitNoteDocumentsChanged(payload.docId as string);
 								// A note that isn't open anywhere on this device still needs its new file.
 								requestNoteDocumentBackgroundSync();

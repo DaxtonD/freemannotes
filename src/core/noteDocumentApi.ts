@@ -59,6 +59,16 @@ export type NoteDocumentRecord = {
 	ocrStatus: 'PENDING' | 'COMPLETE' | 'FAILED';
 	ocrText: string;
 	ocrError: string | null;
+	/**
+	 * Set only while a scanned PDF is actually being read (server/documentOcrQueue.js). Together
+	 * these are what the "page 4 of 37, about 2 min left" label is built from — `ocrPagesTotal`
+	 * counts the pages that need recognising, which on a mixed PDF is fewer than `pageCount`.
+	 * `ocrStartedAt` is also what tells a queued document apart from one in progress, since both
+	 * sit at ocrStatus PENDING.
+	 */
+	ocrPagesTotal?: number | null;
+	ocrPagesDone?: number | null;
+	ocrStartedAt?: string | null;
 	createdAt: string;
 	updatedAt: string;
 	originalUrl: string;

@@ -11,6 +11,7 @@ import { PANEL_VIEW_MODE_STORAGE_KEYS, usePanelViewMode } from '../../core/panel
 import { DocumentShareMenu } from './DocumentShareMenu';
 import { DocumentTextViewer } from './DocumentTextViewer';
 import { DocumentVersionsModal } from './DocumentVersionsModal';
+import { anyDocumentIsReading, formatDocumentOcrStatus, readDocumentOcrProgress } from './documentOcrStatus';
 
 // The scanner brings its own image processing along, so it only loads when someone scans something.
 const ScanModal = React.lazy(() => import('./scan/ScanModal').then((module) => ({ default: module.ScanModal })));
@@ -133,7 +134,7 @@ type DocumentDisplay = {
 	badgeLabel: string;
 	meta: string;
 	statusLabel: string | null;
-	statusState: 'waiting' | 'uploading' | 'failed' | null;
+	statusState: 'waiting' | 'uploading' | 'failed' | 'reading' | null;
 };
 
 function describeDocument(document: NoteDocumentRecord, isOnline: boolean, t: Translate): DocumentDisplay {
@@ -165,6 +166,21 @@ function describeDocument(document: NoteDocumentRecord, isOnline: boolean, t: Tr
 		// Uploaded fine; Gotenberg is still making the PDF copy. It opens as text until then.
 		statusLabel = t('documents.preparingPdf');
 		statusState = 'waiting';
+	} else {
+		// A scan has no text layer, so the server is reading its pages with OCR. That can take
+		// minutes on a long document, so say which page it's on rather than nothing at all.
+		const progress = readDocumentOcrProgress(document);
+		const ocrLabel = formatDocumentOcrStatus(progress, t);
+		if (ocrLabel) {
+			statusLabel = ocrLabel;
+			statusState = progress.state === 'failed'
+				? 'failed'
+				: progress.state === 'reading'
+					? 'reading'
+					: progress.state === 'queued'
+						? 'waiting'
+						: null;
+		}
 	}
 	return {
 		kind: documentKind(extension),
@@ -472,6 +488,19 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 		if (!authUserId) return;
 		void retryQueuedNoteDocument(authUserId, document.id);
 	}, [authUserId]);
+
+	// The "about 3 min left" on a scan being read is worked out from the clock, so it has to be
+	// recomputed as time passes and not only when the server pushes a new page count (it batches
+	// those, deliberately — one fan-out per page would be a refetch per page on every tab). Five
+	// seconds is plenty given the estimate is rounded to the minute, and the interval only exists
+	// while something is actually being read.
+	const [, setOcrClockTick] = React.useState(0);
+	const documentsAreReading = anyDocumentIsReading(documents);
+	React.useEffect(() => {
+		if (!documentsAreReading) return undefined;
+		const timer = window.setInterval(() => setOcrClockTick((tick) => tick + 1), 5000);
+		return () => window.clearInterval(timer);
+	}, [documentsAreReading]);
 
 	const handleOpen = React.useCallback((document: NoteDocumentRecord): void => {
 		if (hasPdfView(document)) {

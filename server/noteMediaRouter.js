@@ -20,6 +20,7 @@ const { resolveDocAccess } = require('./noteShareRouter');
 const { listManifestDocuments } = require('./noteDocumentManifest');
 const { createGotenbergConverter, describeConverterHealth, isConvertibleDocumentExtension } = require('./documentConverter');
 const { createDocumentConversionQueue } = require('./documentConversionQueue');
+const { canOcrDocumentExtension, createDocumentOcrQueue } = require('./documentOcrQueue');
 const { createDocumentThumbnailQueue } = require('./documentThumbnails');
 const { listVersionsWithMarkup } = require('./markupRooms');
 const { MAX_AUTOMATIC_VERSIONS, describeVersionDeletion, isSameStoredFile, liveVersionsNewestFirst, planVersionRetention } = require('./noteDocumentVersions');
@@ -417,6 +418,11 @@ function mapNoteDocument(document) {
 		ocrStatus: latest.ocrStatus,
 		ocrText: latest.ocrText || '',
 		ocrError: latest.ocrError || null,
+		// Only set while a scan is actually being read, so the client can show which page it's on
+		// and work out how much longer it has (see server/documentOcrQueue.js).
+		ocrPagesTotal: latest.ocrPagesTotal ?? null,
+		ocrPagesDone: latest.ocrPagesDone ?? null,
+		ocrStartedAt: latest.ocrStartedAt ? latest.ocrStartedAt.toISOString() : null,
 		createdAt: document.createdAt.toISOString(),
 		updatedAt: document.updatedAt.toISOString(),
 		versionCreatedAt: latest.createdAt.toISOString(),
@@ -630,7 +636,7 @@ async function hydrateNoteLinkRows(prisma, rows) {
 // Writes one version's files and fills in its row. Files live in their own folder per
 // version (users/<uploader>/documents/<versionId>/), which is also how /uploads/ access
 // checks find the row again (see server/uploadAccess.js).
-async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versionNumber, userId, sourcePath, byteSize, fileName, mimeType, convertOffice = false }) {
+async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versionNumber, userId, sourcePath, byteSize, fileName, mimeType, convertOffice = false, ocrDocuments = false }) {
 	const fileExtension = getNormalizedDocumentExtension(fileName, mimeType);
 	const version = await prisma.noteDocumentVersion.create({
 		data: {
@@ -677,6 +683,20 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 			fs.promises.writeFile(path.join(uploadDir, thumbnailRelativePath), preview.thumbnailBuffer),
 		]);
 
+		// A scan has no text layer, so extraction legitimately returns nothing and throws no
+		// error. Calling that COMPLETE is what made scanned PDFs look processed while holding no
+		// text at all and never showing up in search — leave it PENDING and let the OCR queue
+		// read the pages instead. Only files we can actually render qualify; a .txt that really
+		// is empty is finished, not waiting.
+		//
+		// `ocrDocuments` is load-bearing, not a nicety: on a deployment with OCR switched off
+		// there is nothing to come and pick a PENDING row up, so marking one would leave every
+		// scan reading "waiting to read text" forever.
+		const awaitsOcr = ocrDocuments
+			&& !extracted.errorMessage
+			&& !String(extracted.text || '').trim()
+			&& canOcrDocumentExtension(fileExtension);
+
 		return await prisma.noteDocumentVersion.update({
 			where: { id: version.id },
 			data: {
@@ -688,7 +708,7 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 				previewHeight: preview.previewHeight,
 				thumbnailWidth: preview.thumbnailWidth,
 				thumbnailHeight: preview.thumbnailHeight,
-				ocrStatus: extracted.errorMessage ? 'FAILED' : 'COMPLETE',
+				ocrStatus: extracted.errorMessage ? 'FAILED' : (awaitsOcr ? 'PENDING' : 'COMPLETE'),
 				ocrText: extracted.text || '',
 				ocrError: extracted.errorMessage ? String(extracted.errorMessage).slice(0, 2000) : null,
 			},
@@ -702,7 +722,7 @@ async function createDocumentVersion({ prisma, uploadDir, noteDocumentId, versio
 	}
 }
 
-async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourcePath, byteSize, fileName, mimeType, convertOffice = false }) {
+async function persistDocumentRecord({ prisma, uploadDir, access, userId, sourcePath, byteSize, fileName, mimeType, convertOffice = false, ocrDocuments = false }) {
 	if (!isSupportedNoteDocument(fileName, mimeType)) {
 		throw new Error('Unsupported document type');
 	}
@@ -727,6 +747,7 @@ async function persistDocumentRecord({ prisma, uploadDir, access, userId, source
 			fileName,
 			mimeType,
 			convertOffice,
+			ocrDocuments,
 		});
 	} catch (error) {
 		await prisma.noteDocument.delete({ where: { id: noteDocument.id } }).catch(() => undefined);
@@ -914,6 +935,18 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 		uploadDir,
 		onUpdated: (target) => publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, target, 'note-documents-previewed'),
 	});
+	// Scanned PDFs — anything with no text layer of its own — get read page by page by PaddleOCR.
+	// Declared before the conversion queue because that queue pokes it when an office file
+	// finally has a PDF copy worth reading.
+	const ocrQueue = createDocumentOcrQueue({
+		prisma,
+		uploadDir,
+		// Progress and completion are the same kind of event as an upload: every device refreshes
+		// that note's documents, which is how the page counter moves on the other tabs and how the
+		// finished text reaches the offline search cache.
+		onProgress: (target) => publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, target, 'note-documents-ocr-progress'),
+		onComplete: (target) => publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, target, 'note-documents-ocr'),
+	});
 	const conversionQueue = createDocumentConversionQueue({
 		prisma,
 		uploadDir,
@@ -924,6 +957,8 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 		// background download fetches the new PDF copy. A finished copy also has a first page to show.
 		onConverted: (target) => {
 			thumbnailQueue.scanSoon();
+			// A scanned page inside a .docx only becomes readable once there's a PDF to render.
+			ocrQueue.scanSoon();
 			return publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, target, 'note-documents-converted');
 		},
 	});
@@ -1474,6 +1509,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							byteSize: entry.byteSize,
 							fileName: entry.fileName,
 							convertOffice: conversionQueue.enabled,
+							ocrDocuments: ocrQueue.enabled,
 							mimeType: entry.mimeType,
 						});
 						const mapped = mapNoteDocument(documentRecord);
@@ -1482,6 +1518,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-created');
 					conversionQueue.notify();
 					thumbnailQueue.scanSoon();
+					ocrQueue.scanSoon();
 					jsonResponse(res, 201, { documents, count: documents.length });
 				} catch (err) {
 					console.error('[note-documents] upload error:', err.message);
@@ -1607,6 +1644,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 						byteSize: entry.byteSize,
 						fileName: entry.fileName,
 						convertOffice: conversionQueue.enabled,
+						ocrDocuments: ocrQueue.enabled,
 						mimeType: entry.mimeType,
 					});
 					await prisma.noteDocument.update({ where: { id: noteDocument.id }, data: { latestVersionNumber: versionNumber } });
@@ -1625,6 +1663,7 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 					await publishNoteMediaMetadataChange(onWorkspaceMetadataChanged, accessResult.access, 'note-documents-version-added');
 					conversionQueue.notify();
 					thumbnailQueue.scanSoon();
+					ocrQueue.scanSoon();
 					jsonResponse(res, 201, { document: mapNoteDocument(withLatest), ...listed, prunedVersionIds: Array.from(pruneIds) });
 				} catch (err) {
 					console.error('[note-documents] new version error:', err.message);
@@ -2078,10 +2117,11 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 		return false;
 	};
 	// Started by server.js once the database is ready, and stopped on shutdown.
-	handleRequest.startBackgroundWork = () => Promise.all([conversionQueue.start(), thumbnailQueue.start()]);
+	handleRequest.startBackgroundWork = () => Promise.all([conversionQueue.start(), thumbnailQueue.start(), ocrQueue.start()]);
 	handleRequest.stop = () => {
 		conversionQueue.stop();
 		thumbnailQueue.stop();
+		ocrQueue.stop();
 	};
 	return handleRequest;
 }

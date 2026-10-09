@@ -304,6 +304,11 @@ function toQueuedDocumentRecord(row: QueuedNoteDocumentRow): NoteDocumentRecord 
 		ocrStatus: 'PENDING',
 		ocrText: '',
 		ocrError: null,
+		// A local record hasn't reached the server yet, so nothing has started reading it. The
+		// "Uploading"/"Waiting" badge covers this state; OCR progress only begins after upload.
+		ocrPagesTotal: null,
+		ocrPagesDone: null,
+		ocrStartedAt: null,
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
 		originalUrl,

@@ -5,6 +5,7 @@ import { faArrowLeft, faDownload, faXmark } from '@fortawesome/free-solid-svg-ic
 import type { NoteDocumentRecord } from '../../core/noteDocumentApi';
 import { useI18n } from '../../core/i18n';
 import { useBodyScrollLock } from '../../core/useBodyScrollLock';
+import { formatDocumentOcrStatus, readDocumentOcrProgress } from './documentOcrStatus';
 import viewerStyles from './PdfViewer.module.css';
 import styles from './DocumentTextViewer.module.css';
 
@@ -108,6 +109,15 @@ export function DocumentTextViewer(props: DocumentTextViewerProps): React.JSX.El
 	if (isOfficeFile && !noteDocument.isLocal && props.conversionEnabled) {
 		if (noteDocument.conversionStatus === 'PENDING') notice = t('documents.textViewPreparing');
 		else if (noteDocument.conversionStatus === 'FAILED') notice = t('documents.textViewConversionFailed');
+	}
+	// This is exactly where someone goes looking for a scan's text, so it's the worst possible
+	// place to show an empty page with no explanation. Say that it's being read, and how far in.
+	if (!notice) {
+		const progress = readDocumentOcrProgress(noteDocument);
+		if (progress.state === 'queued') notice = t('documents.ocrQueued');
+		else if (progress.state === 'reading') notice = formatDocumentOcrStatus(progress, t);
+		else if (progress.state === 'failed') notice = t('documents.ocrFailed');
+		else if (progress.state === 'partial') notice = t('documents.ocrPartial');
 	}
 	const text = String(noteDocument.ocrText || '').trim();
 	const stopPropagation = (event: React.SyntheticEvent): void => event.stopPropagation();

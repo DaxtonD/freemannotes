@@ -146,6 +146,13 @@ function createDocumentConversionQueue({
 					data.ocrText = extracted.text;
 					data.ocrStatus = 'COMPLETE';
 					data.ocrError = null;
+				} else if (!version.ocrText) {
+					// A PDF copy with no text in it: someone put photographed pages in a Word file,
+					// or scanned straight to .doc. Now that there IS a PDF, the OCR queue can render
+					// it — this is the only point where that becomes true, so hand it over. (The
+					// queue is woken by onConverted below.)
+					data.ocrStatus = 'PENDING';
+					data.ocrError = null;
 				}
 				if (version.pageCount == null && extracted && extracted.pageCount) data.pageCount = extracted.pageCount;
 			} catch {

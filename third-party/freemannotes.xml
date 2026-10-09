@@ -521,8 +521,14 @@
 
   <!-- ═══════════════════════════════════════════════════════════════════════
        OCR
-       PaddleOCR extracts text from uploaded images. Runs inside the container.
-       Set OCR_DISABLED=1 to skip OCR entirely (faster builds, less CPU on uploads).
+       PaddleOCR extracts text from uploaded images AND from scanned PDFs (anything
+       with no text layer of its own, e.g. taken with the built-in camera scanner).
+       Runs inside the container. Set OCR_DISABLED=1 to skip OCR entirely.
+
+       Scanned PDFs are read page by page with no page limit, so a long document is
+       minutes of CPU. The concurrency settings below are how you give OCR more of
+       the machine. Mind the memory: each concurrent OCR process loads its own copy
+       of the PaddleOCR model, roughly 0.5-1.5 GB resident.
        ═══════════════════════════════════════════════════════════════════════ -->
 
   <!-- Set to 1 to disable OCR completely (images still upload, just no text extraction). -->
@@ -530,11 +536,61 @@
     Name="Disable OCR"
     Target="OCR_DISABLED"
     Default="0"
-    Description="Set to '1' to disable PaddleOCR text extraction from uploaded images. Images will still upload and display; only text search of image content is disabled. Reduces CPU usage on image uploads."
+    Description="Set to '1' to disable all PaddleOCR text extraction — from uploaded images and from scanned PDFs. Files still upload and display; only text search of their contents is disabled. Reduces CPU usage on uploads."
     Type="Variable"
     Display="always"
     Required="false"
     Mask="false">0</Config>
+
+  <Config
+    Name="Disable Scanned PDF OCR"
+    Target="OCR_DOCUMENTS_DISABLED"
+    Default="0"
+    Description="Set to '1' to keep OCR for uploaded images but stop reading scanned PDFs. Reading a scan is the expensive half (every page is rendered and recognised, with no page limit), so this is the setting to use on a CPU-constrained server that still wants image OCR. Scanned PDFs will upload and open normally but their text won't be searchable."
+    Type="Variable"
+    Display="always"
+    Required="false"
+    Mask="false">0</Config>
+
+  <Config
+    Name="OCR Concurrent Jobs (Images)"
+    Target="OCR_MAX_CONCURRENT_JOBS"
+    Default="1"
+    Description="How many uploaded images may be recognised at the same time. Default 1. Each concurrent job is a separate Python process that loads its own ~0.5-1.5 GB copy of the PaddleOCR model, so this multiplies MEMORY as well as CPU — budget about 1.5 GB per job. If you have pinned this container to a CPU set, keep this plus 'OCR Concurrent Documents' at or below the number of cores you pinned."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">1</Config>
+
+  <Config
+    Name="OCR Concurrent Documents (Scanned PDFs)"
+    Target="OCR_DOCUMENT_MAX_CONCURRENT"
+    Default="1"
+    Description="How many scanned PDFs may be read at the same time. Default 1. This is a separate queue from image OCR on purpose, so a 200-page scan does not hold up the text of a photo somebody just took. Raise it on a multi-core server with RAM to spare; each document in flight is a page renderer plus its own OCR process (budget about 1.5 GB each)."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">1</Config>
+
+  <Config
+    Name="OCR Pages Per Batch"
+    Target="OCR_DOCUMENT_PAGE_BATCH"
+    Default="4"
+    Description="How many pages of a scanned PDF are handed to one OCR process per round. Default 4. Loading the PaddleOCR model takes seconds and happens once per batch, so a higher value spreads that cost over more pages and finishes a long document faster. It also sets peak memory, because that many rendered pages are held at once. 4-8 is a sensible range."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">4</Config>
+
+  <Config
+    Name="OCR Page Render Width (px)"
+    Target="OCR_DOCUMENT_RENDER_WIDTH_PX"
+    Default="1600"
+    Description="Pixel width each PDF page is rendered at before recognition. Default 1600, which keeps ordinary body text legible. Below about 1200, small print starts to be missed; above about 2400 you pay a lot of memory and time for very little extra accuracy. Raise it only if scans of small or dense print are coming back with missing text."
+    Type="Variable"
+    Display="advanced"
+    Required="false"
+    Mask="false">1600</Config>
 
   <Config
     Name="OCR Python Binary"
