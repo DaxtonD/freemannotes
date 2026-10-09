@@ -2,6 +2,18 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.19.8 - 2026-10-09
+
+### Fixed
+- **Search stops falling over on a bad connection.** On a weak signal you'd sometimes get results and sometimes get the words "signal is aborted without reason" where the results should be. That string is the browser's own, and it was being printed verbatim — but the real fault was underneath it. The server request and the search of what's already on your device ran as a single combined promise, so the moment the network one gave up it took the local one down with it: results that had already arrived, correct and sitting right there, were thrown away, the list was blanked, and you got a DOMException instead. The two now run independently. Whichever answers first is shown, the other merges in when it lands, and the network failing is a non-event — you keep the local results and a small "offline results" note explaining that anything only the server knows about is missing. The underlying timeout also reports itself as "timed out after 4000 ms" now, everywhere in the app, rather than that sentence.
+- **Search no longer says "0 notes" and then changes its mind.** Your device's own index can legitimately come back empty for something only the server knows about, and announcing that while the server was still being asked flashed an answer that was about to be contradicted a few seconds later. An empty result is now held until there is genuinely nothing else coming.
+- **The filter chip counts look like counts.** A quiet grey number next to a chip label read as part of the label — "note 1" — rather than as "1 note matches". They're now the same accent circle as the count on the Filters button, sharing one rule so the two can't drift apart.
+- **Four pieces of UI text were missing from the Spanish translation** (`invite.joinWorkspaceLabel`, `share.joinNoteLabel`, `share.fromLabel`, `share.sharedAt`) and quietly fell back to English. Translated, and there's now a test that fails if the English, Spanish and built-in fallback copies ever drift apart again — including if a translation loses a `{placeholder}`, which silently drops the number out of a string like "about {n} min left".
+
+### Changed
+- **Search waits longer for the server, and gives up on searches you've moved on from.** The old four seconds was never chosen for search; it was the default shared by every other call. It's twelve now — which costs nothing you can see, because your own results are already on screen before that request settles. All it buys is more chance for the server to add what only it has. Two things made that safe rather than merely slower: typing another character now actually cancels the previous search instead of leaving it to run to completion and compete for the same bad connection, and the header stops claiming "Loading…" over results that are already visible. The twelve is reasoned rather than measured, and the latencies needed to measure it properly are already being recorded.
+- **Attachment rows in search results show the real thing instead of a generic icon** — a document's first page, the photo itself, a link's preview image. Four attachments on one note used to give you four identical glyphs with the filename as the only distinguishing feature. The pictures were already in the response and simply weren't being used. Anything that won't load falls back to the icon it would have shown anyway, in the same space, so a missing preview can't knock the row out of line.
+
 ## 1.19.7 - 2026-10-09
 
 ### Added

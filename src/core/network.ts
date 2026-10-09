@@ -55,6 +55,18 @@ export async function fetchWithTimeout(input: RequestInfo | URL, init: TimedFetc
 				timeoutMs,
 				latencyMs: Date.now() - startedAt,
 			});
+			// Rethrow as something a person can read. The browser's own DOMException says
+			// "signal is aborted without reason" — true, useless, and it has been shown to
+			// users verbatim when a search timed out on a slow connection.
+			//
+			// The NAME stays 'AbortError' deliberately. Several callers key "was this just a
+			// flaky network?" off exactly that string (noteShareApi's isTransientNetworkError,
+			// shareLinks, InboxView), and renaming it here would quietly reclassify every
+			// timeout as a hard failure in all of them.
+			const timeoutError = new Error(`${requestName} timed out after ${Math.round(timeoutMs)} ms`) as Error & { isTimeout?: boolean };
+			timeoutError.name = 'AbortError';
+			timeoutError.isTimeout = true;
+			throw timeoutError;
 		}
 		throw error;
 	} finally {

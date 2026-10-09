@@ -24,6 +24,9 @@ import {
 	faTag,
 	faTrash,
 	faXmark,
+	faFilter,
+	faChevronDown,
+	faCloudArrowDown,
 } from '@fortawesome/free-solid-svg-icons';
 import { ChecklistEditor } from './components/Editors/ChecklistEditor';
 import { NoteEditor } from './components/Editors/NoteEditor';
@@ -71,6 +74,7 @@ import { WorkspaceDocumentsGallery } from './components/NoteDocuments/WorkspaceD
 import { DocumentTextViewer } from './components/NoteDocuments/DocumentTextViewer';
 import { SearchResultThumb } from './components/Search/SearchResultThumb';
 import { SearchHighlight } from './components/Search/SearchHighlight';
+import { SearchMatchThumb } from './components/Search/SearchMatchThumb';
 import { SearchFacetRow } from './components/Search/SearchFacetRow';
 import { formatRelativeReminderDate } from './core/relativeDate';
 import { saveBlobToDevice } from './components/NoteDocuments/saveBlobToDevice';
@@ -201,6 +205,7 @@ import {
 	stopMarkupBackgroundSync,
 } from './core/markupSync';
 import { searchOfflineNotes, searchLoadedNotes } from './core/offlineSearch';
+import { mergeSearchResults } from './core/searchResultMerge';
 import { acknowledgePwaUpdated, applyPwaUpdate, clearPrivateServiceWorkerCaches, deferPwaUpdate, promptInstallApp, PWA_SYNC_REQUEST_EVENT, setPwaUpdateBlocked, usePwaState } from './core/pwa';
 import { clearSessionRestoreNote, readSessionRestoreNote, setSessionRestoreNote } from './core/sessionRestore';
 import { onPushReceived } from './core/pushManager';
@@ -316,6 +321,22 @@ type MoveNoteModalState = {
 type SidebarCollaboratorEntry = NoteGridCollaboratorFilter & {
 	noteCount: number;
 };
+
+/**
+ * How long global search waits on the server before letting the device's own results stand alone.
+ *
+ * It used to inherit the 4 s default shared by every note-media call, which was far too short
+ * here for a reason that is easy to miss: this request is not the thing you are waiting for.
+ * Local results are already on screen before it even settles, so a longer deadline costs nothing
+ * visible — it only decides how long the server gets to add what it alone knows (another
+ * device's OCR text, collaborator names). At 4 s on a weak connection the server essentially
+ * never got to contribute, and search quietly degraded to local-only on every query.
+ *
+ * Being this patient is only safe because the request is now aborted the moment the query
+ * changes. Without that, a long deadline would just pile abandoned searches onto the same bad
+ * connection as the one whose answer is actually wanted.
+ */
+const SEARCH_REMOTE_TIMEOUT_MS = 12000;
 
 const FAB_LIGHT_ICON_SRC = '/icons/FAB-light.png';
 const FAB_DARK_ICON_SRC = '/icons/FAB-dark.png';
@@ -2099,9 +2120,17 @@ export function App(): React.JSX.Element {
 	const [searchDocumentView, setSearchDocumentView] = React.useState<SearchDocumentView | null>(null);
 	const previousMobileSearchOpenRef = React.useRef(false);
 	const [searchResultsError, setSearchResultsError] = React.useState<string | null>(null);
+	/** The network side of the search didn't come back, so what's listed is only what this
+	 *  device holds. Shown, not hidden: results that exist only on the server are missing. */
+	const [searchResultsDegraded, setSearchResultsDegraded] = React.useState(false);
 	/** Selected filter chips, as `axis:value` keys. Cleared whenever the query changes — a filter
 	 *  held over from the previous search silently hides results for the new one. */
 	const [searchFacetSelection, setSearchFacetSelection] = React.useState<readonly string[]>([]);
+	/** Whether the filter chips are showing. Collapsed by default: three labelled rows of chips
+	 *  above every result is a lot of furniture for something most searches never touch, and the
+	 *  toggle carries a count so an active filter is never hidden. */
+	const [searchFacetsOpen, setSearchFacetsOpen] = React.useState(false);
+	const searchFacetsPanelId = React.useId();
 	const [noteGridCollaboratorFilter, setNoteGridCollaboratorFilter] = React.useState<NoteGridCollaboratorFilter | null>(null);
 	const [workspaceCollaborators, setWorkspaceCollaborators] = React.useState<SidebarCollaboratorEntry[]>([]);
 	const [workspaceCollaboratorsBusy, setWorkspaceCollaboratorsBusy] = React.useState(false);
@@ -10398,6 +10427,7 @@ export function App(): React.JSX.Element {
 			setSearchResults([]);
 			setSearchResultsBusy(false);
 			setSearchResultsError(null);
+			setSearchResultsDegraded(false);
 			return;
 		}
 		// A new query gets a clean slate. Keeping chips selected across queries means typing a new
@@ -10408,6 +10438,7 @@ export function App(): React.JSX.Element {
 			setSearchResults([]);
 			setSearchResultsBusy(false);
 			setSearchResultsError(null);
+			setSearchResultsDegraded(false);
 			return;
 		}
 
@@ -10432,62 +10463,88 @@ export function App(): React.JSX.Element {
 			}
 		});
 
-		// Phase 2: full search (server + IDB auxiliary data) with a short debounce
-		// so rapid keystrokes don't fan out unnecessary work.
+		// Phase 2: the device's own index, and the server, as two INDEPENDENT requests.
+		//
+		// These used to be a single Promise.all, which quietly made the local results hostage to
+		// the network: one rejected fetch threw away a perfectly good offline result set that had
+		// already resolved, blanked the list (including the Phase 1 hits already on screen), and
+		// printed the raw DOMException — "signal is aborted without reason" — where the results
+		// should be. On a weak connection that is most searches, and it is the opposite of what
+		// an offline-first app should do with a slow network.
+		//
+		// Now whichever arrives first is shown, the other is merged in when it lands, and the
+		// network failing is a non-event: you keep the local results and a quiet note saying so.
+		const remoteAbort = new AbortController();
 		const timer = window.setTimeout(() => {
 			setSearchResultsBusy(true);
 			setSearchResultsError(null);
-			const isOfflineSearch = authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false);
-			const offlineRequest = searchOfflineNotes(searchArgs);
-			const request = isOfflineSearch
-				? offlineRequest.then((results) => ({ results }))
-				: Promise.all([searchNotes(deferredSearchQuery), offlineRequest]).then(([remoteResponse, offlineResults]) => {
-					const merged = new Map<string, NoteSearchResult>();
-					for (const result of remoteResponse.results) {
-						merged.set(`${result.docId}:${result.openNoteId || result.noteId}`, result);
-					}
-					for (const result of offlineResults) {
-						const key = `${result.docId}:${result.openNoteId || result.noteId}`;
-						const current = merged.get(key);
-						if (!current) {
-							merged.set(key, result);
-							continue;
-						}
-						merged.set(key, {
-							...current,
-							matchKinds: Array.from(new Set([...current.matchKinds, ...result.matchKinds])),
-							collaboratorMatches: Array.from(new Set([...current.collaboratorMatches, ...result.collaboratorMatches])).slice(0, 3),
-							collectionMatches: Array.from(new Set([...current.collectionMatches, ...result.collectionMatches])).slice(0, 3),
-							labelMatches: Array.from(new Set([...current.labelMatches, ...result.labelMatches])).slice(0, 4),
-							snippet: current.snippet || result.snippet,
-							thumbnailUrl: current.thumbnailUrl || result.thumbnailUrl,
-							imageCount: Math.max(current.imageCount, result.imageCount),
-							updatedAt: Date.parse(current.updatedAt) >= Date.parse(result.updatedAt) ? current.updatedAt : result.updatedAt,
-						});
-					}
-					return {
-						results: Array.from(merged.values()).sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)),
-					};
-				});
-			void request
-				.then((response) => {
-					if (cancelled) return;
-					setSearchResults(response.results);
-				})
-				.catch((error) => {
-					if (cancelled) return;
-					setSearchResults([]);
-					setSearchResultsError(error instanceof Error ? error.message : t('search.failed'));
-				})
-				.finally(() => {
-					if (cancelled) return;
+			setSearchResultsDegraded(false);
+			const skipRemote = authOfflineMode || (typeof navigator !== 'undefined' && navigator.onLine === false);
+
+			let offlineResults: readonly NoteSearchResult[] | null = null;
+			let remoteResults: readonly NoteSearchResult[] | null = null;
+			let remoteSettled = skipRemote;
+			let remoteFailed = false;
+			let offlineFailed = false;
+
+			const publish = (): void => {
+				if (cancelled) return;
+				const offlineDone = offlineResults !== null || offlineFailed;
+				const everythingSettled = remoteSettled && offlineDone;
+				const merged = mergeSearchResults(remoteResults ?? [], offlineResults ?? []);
+
+				// Nothing to show YET is not the same as nothing to show. The device's index can
+				// legitimately come back empty for a note only the server knows about, and
+				// announcing "0 notes" while the server is still being asked would flash an
+				// answer that is about to be contradicted.
+				if (merged.length === 0 && !everythingSettled) return;
+
+				if (merged.length === 0 && offlineFailed && remoteFailed) {
+					// Both sides are genuinely gone. This is the only case that earns an error,
+					// and it still doesn't wipe whatever Phase 1 already put on screen.
+					setSearchResultsError(t('search.failed'));
 					setSearchResultsBusy(false);
-				});
+					return;
+				}
+
+				setSearchResults(merged);
+				setSearchResultsError(null);
+				// There is something on screen, so stop saying "Loading…" over the top of it.
+				// Busy means "nothing to show yet", not "a request is still open" — otherwise the
+				// header contradicts the results beneath it for as long as the server has left to
+				// run, and every second of the deadline would be a second of that.
+				setSearchResultsBusy(false);
+				// Said plainly rather than silently: these results are this device's, so a note
+				// that only the server could have matched (another device's OCR text) is missing.
+				setSearchResultsDegraded(remoteSettled && remoteFailed);
+			};
+
+			const offlineRequest = searchOfflineNotes(searchArgs)
+				.then((results) => { offlineResults = results; })
+				.catch(() => { offlineFailed = true; })
+				.finally(publish);
+
+			const remoteRequest = skipRemote
+				? Promise.resolve()
+				: searchNotes(deferredSearchQuery, { signal: remoteAbort.signal, timeoutMs: SEARCH_REMOTE_TIMEOUT_MS })
+					.then((response) => { remoteResults = response.results; })
+					.catch(() => { remoteFailed = true; })
+					.finally(() => { remoteSettled = true; publish(); });
+
+			void Promise.all([offlineRequest, remoteRequest]).finally(() => {
+				if (cancelled) return;
+				setSearchResultsBusy(false);
+			});
 		}, 50);
 
 		return () => {
 			cancelled = true;
 			window.clearTimeout(timer);
+			// Typing another character supersedes this search. Without this the old request runs
+			// to completion, and on the slow connection that made the long deadline worth having
+			// in the first place, several abandoned searches would be competing for the same
+			// bandwidth as the one whose answer is actually wanted.
+			remoteAbort.abort();
 		};
 	}, [activeWorkspaceName, authOfflineMode, authStatus, authUserId, authWorkspaceId, collections, deferredSearchQuery, labels, manager, sharedPlacements, sidebarView, t, viewMode]);
 
@@ -10495,6 +10552,7 @@ export function App(): React.JSX.Element {
 		setSearchQuery('');
 		setSearchResults([]);
 		setSearchResultsError(null);
+		setSearchResultsDegraded(false);
 		setSearchResultsBusy(false);
 	}, []);
 	const clearSearchAndClose = React.useCallback(() => {
@@ -10655,6 +10713,14 @@ export function App(): React.JSX.Element {
 			.sort((a, b) => (axisOrder[a.axis] - axisOrder[b.axis]) || (b.label < a.label ? 1 : b.label > a.label ? -1 : 0));
 	}, [searchResults, searchFacetSelection, searchFacetSelectionByAxis, formatSearchMatchLabel, t]);
 
+	// Which axes actually have a row worth drawing. A row with one chip can't filter anything
+	// within its own axis (picking it selects everything the row describes), so it isn't worth a
+	// line — and if no axis clears that bar there is nothing to disclose at all. The old gate
+	// counted chips across all axes, so three axes with one chip each opened an empty panel.
+	const searchFacetAxesWithRows = React.useMemo(() => (
+		(['where', 'what', 'why'] as const).filter((axis) => searchFacets.filter((facet) => facet.axis === axis).length >= 2)
+	), [searchFacets]);
+
 	const groupedSearchResults = React.useMemo(() => {
 		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
 		for (const result of filteredSearchResults) {
@@ -10677,66 +10743,93 @@ export function App(): React.JSX.Element {
 	function renderGlobalSearchResults(variantClassName: string): React.ReactNode {
 		return (
 		<section className={`global-search-results ${variantClassName}`} aria-live="polite">
-			<div className="global-search-results-header">
-				<div>
-					<p className="global-search-results-eyebrow">{t('search.title')}</p>
-					<h2 className="global-search-results-title">{deferredSearchQuery}</h2>
+			{/* The query, the count and the filter toggle stay put while the results scroll under
+			    them — they are the things you re-read as you go. The panel's own top padding moved
+			    in here, because a scroll container's padding is a strip its sticky child cannot
+			    cover and results would scroll through it in full view. */}
+			<div className="global-search-results-sticky">
+				<div className="global-search-results-header">
+					<div>
+						<p className="global-search-results-eyebrow">{t('search.title')}</p>
+						<h2 className="global-search-results-title">{deferredSearchQuery}</h2>
+					</div>
+					{/* "Notes", not "results". Every number here counts notes — one note can match
+					    through two of its documents, so counting the document rows on screen gives a
+					    bigger number than the header and it looked like the count was wrong. Saying
+					    what is being counted makes it checkable: this is the number of cards below. */}
+					<div className="global-search-results-meta">
+						{searchResultsBusy ? t('common.loading') : `${filteredSearchResults.length} ${filteredSearchResults.length === 1 ? t('search.noteSingular') : t('search.notePlural')}`}
+						{/* The network side didn't answer, so this list is only what this device
+						    holds. Saying so beats both lying by omission and throwing the local
+						    results away, which is what used to happen. */}
+						{!searchResultsBusy && searchResultsDegraded ? (
+							<span className="global-search-results-degraded" title={t('search.offlineResultsHint')}>
+								<FontAwesomeIcon icon={faCloudArrowDown} />
+								{t('search.offlineResults')}
+							</span>
+						) : null}
+					</div>
 				</div>
-				<div className="global-search-results-meta">
-					{searchResultsBusy ? t('common.loading') : `${filteredSearchResults.length} ${filteredSearchResults.length === 1 ? t('search.resultSingular') : t('search.resultPlural')}`}
-					<button
-						type="button"
-						className="global-search-results-close"
-						onClick={clearSearch}
-						aria-label={t('common.close')}
-						title={t('common.close')}
-					>
-						<FontAwesomeIcon icon={faXmark} />
-					</button>
-				</div>
-			</div>
-			{searchFacets.length > 1 ? (
-				// One chip is never a filter — it would match everything and do nothing, so the row
-				// only earns its space from two up. Grouped into labelled rows per axis: a divider
-				// between groups was doing the grouping job before, and it scrolled away with the
-				// content, taking the only explanation of the OR/AND rule with it.
-				<div className="global-search-facets" role="group" aria-label={t('search.filterLabel')}>
-					{(['where', 'what', 'why'] as const).map((axis) => {
-						const axisFacets = searchFacets.filter((facet) => facet.axis === axis);
-						// A row with a single chip can't filter anything within its own axis — picking
-						// it selects everything the row describes — so it isn't worth a line.
-						if (axisFacets.length < 2) return null;
-						return (
-							<SearchFacetRow key={axis} label={t(`search.axis.${axis}`)}>
-								{axisFacets.map((facet) => (
-									<button
-										key={facet.key}
-										type="button"
-										className={`global-search-facet${facet.selected ? ' global-search-facet--on' : ''}${facet.count === 0 && !facet.selected ? ' global-search-facet--empty' : ''}`}
-										aria-pressed={facet.selected}
-										// Zero-count chips stay in place, dimmed, rather than disappearing — a
-										// row that reflows as you tap moves the next chip under your finger. A
-										// SELECTED chip is never disabled even at zero, or you could select a
-										// combination with no results and then be unable to undo it.
-										disabled={facet.count === 0 && !facet.selected}
-										onClick={() => setSearchFacetSelection((current) => (
-											current.includes(facet.key) ? current.filter((key) => key !== facet.key) : [...current, facet.key]
-										))}
-									>
-										{facet.label}
-										<span className="global-search-facet-count">{facet.count}</span>
-									</button>
-								))}
-							</SearchFacetRow>
-						);
-					})}
-					{searchFacetSelection.length > 0 ? (
-						<button type="button" className="global-search-facet global-search-facet--clear" onClick={() => setSearchFacetSelection([])}>
-							{t('search.clearFilters')}
+				{searchFacetAxesWithRows.length > 0 ? (
+					<div className="global-search-facets-bar">
+						<button
+							type="button"
+							className={`global-search-facets-toggle${searchFacetsOpen ? ' global-search-facets-toggle--open' : ''}`}
+							aria-expanded={searchFacetsOpen}
+							aria-controls={searchFacetsPanelId}
+							onClick={() => setSearchFacetsOpen((open) => !open)}
+						>
+							<FontAwesomeIcon icon={faFilter} className="global-search-facets-toggle-icon" />
+							<span>{t('search.filtersToggle')}</span>
+							{searchFacetSelection.length > 0 ? (
+								<span className="global-search-facets-toggle-count">{searchFacetSelection.length}</span>
+							) : null}
+							<FontAwesomeIcon icon={faChevronDown} className="global-search-facets-toggle-chevron" />
 						</button>
-					) : null}
-				</div>
-			) : null}
+						{/* Reachable without expanding: having to open the panel to undo a filter you can
+						    already see the count of is a step for nothing. */}
+						{searchFacetSelection.length > 0 ? (
+							<button type="button" className="global-search-facet global-search-facet--clear" onClick={() => setSearchFacetSelection([])}>
+								{t('search.clearFilters')}
+							</button>
+						) : null}
+					</div>
+				) : null}
+				{searchFacetAxesWithRows.length > 0 && searchFacetsOpen ? (
+					// One chip is never a filter — it would match everything and do nothing, so the row
+					// only earns its space from two up. Grouped into labelled rows per axis: a divider
+					// between groups was doing the grouping job before, and it scrolled away with the
+					// content, taking the only explanation of the OR/AND rule with it.
+					<div id={searchFacetsPanelId} className="global-search-facets" role="group" aria-label={t('search.filterLabel')}>
+						{searchFacetAxesWithRows.map((axis) => {
+							const axisFacets = searchFacets.filter((facet) => facet.axis === axis);
+							return (
+								<SearchFacetRow key={axis} label={t(`search.axis.${axis}`)}>
+									{axisFacets.map((facet) => (
+										<button
+											key={facet.key}
+											type="button"
+											className={`global-search-facet${facet.selected ? ' global-search-facet--on' : ''}${facet.count === 0 && !facet.selected ? ' global-search-facet--empty' : ''}`}
+											aria-pressed={facet.selected}
+											// Zero-count chips stay in place, dimmed, rather than disappearing — a
+											// row that reflows as you tap moves the next chip under your finger. A
+											// SELECTED chip is never disabled even at zero, or you could select a
+											// combination with no results and then be unable to undo it.
+											disabled={facet.count === 0 && !facet.selected}
+											onClick={() => setSearchFacetSelection((current) => (
+												current.includes(facet.key) ? current.filter((key) => key !== facet.key) : [...current, facet.key]
+											))}
+										>
+											{facet.label}
+											<span className="global-search-facet-count">{facet.count}</span>
+										</button>
+									))}
+								</SearchFacetRow>
+							);
+						})}
+					</div>
+				) : null}
+			</div>
 			{searchResultsError ? <p className="global-search-results-error">{searchResultsError}</p> : null}
 			{!searchResultsBusy && !searchResultsError && groupedSearchResults.length === 0 ? (
 				// "Nothing matched" and "your filters hid everything" are different problems with
@@ -10811,7 +10904,7 @@ export function App(): React.JSX.Element {
 												className="global-search-result-match"
 												onClick={() => openSearchDocumentMatch(match, deferredSearchQuery)}
 											>
-												<FontAwesomeIcon className="global-search-result-match-icon" icon={faFileLines} />
+												<SearchMatchThumb url={match.document.thumbnailUrl} icon={faFileLines} />
 												{/* Name and snippet stack instead of sharing one nowrap line. Side by side they
 												    both truncated, and the snippet — the only part that says WHY this matched —
 												    lost hardest, because it was the one with flex-grow. */}
@@ -10831,7 +10924,7 @@ export function App(): React.JSX.Element {
 													openNoteAttachmentBrowser('images', result.openNoteId || result.noteId, result.docId, result.title, false);
 												}}
 											>
-												<FontAwesomeIcon className="global-search-result-match-icon" icon={faImage} />
+												<SearchMatchThumb url={match.thumbnailUrl} icon={faImage} />
 												<span className="global-search-result-match-body">
 													<span className="global-search-result-match-name">{match.fileName || t('media.imageLabel')}</span>
 													<span className="global-search-result-match-snippet"><SearchHighlight text={match.snippet} query={deferredSearchQuery} /></span>
@@ -10848,7 +10941,7 @@ export function App(): React.JSX.Element {
 													window.open(match.url, '_blank', 'noopener,noreferrer');
 												}}
 											>
-												<FontAwesomeIcon className="global-search-result-match-icon" icon={faArrowUpRightFromSquare} />
+												<SearchMatchThumb url={match.imageUrl} icon={faArrowUpRightFromSquare} />
 												<span className="global-search-result-match-body">
 													<span className="global-search-result-match-name">{match.title}</span>
 													<span className="global-search-result-match-snippet"><SearchHighlight text={match.hostname} query={deferredSearchQuery} /></span>
@@ -10871,6 +10964,7 @@ export function App(): React.JSX.Element {
 		setSearchQuery('');
 		setSearchResults([]);
 		setSearchResultsError(null);
+		setSearchResultsDegraded(false);
 	}, []);
 
 	// Back closes the mobile search bar. The results it produced used to stay on screen behind it,
@@ -10897,6 +10991,7 @@ export function App(): React.JSX.Element {
 		setSearchQuery('');
 		setSearchResults([]);
 		setSearchResultsError(null);
+		setSearchResultsDegraded(false);
 		setNoteGridCollaboratorFilter(null);
 		if (isMobileViewport) {
 			replaceActiveOverlaySnapshot({

@@ -2619,7 +2619,10 @@
 	display: flex;
 	flex-direction: column;
 	gap: 12px;
-	padding: 14px;
+	/* No top or side padding: a scroll container's padding is a strip its own `position: sticky`
+	   child cannot cover, so results would scroll through it in full view above the header. The
+	   padding lives on the children instead (see .global-search-results-sticky). */
+	padding: 0 0 14px;
 	border: 1px solid color-mix(in srgb, var(--color-border) 78%, transparent);
 	border-radius: 22px;
 	background:
@@ -2639,6 +2642,38 @@
 	overflow-y: auto;
 	overscroll-behavior: contain;
 	scrollbar-gutter: stable;
+}
+
+/*
+ * The query, the count and the filter toggle stay put while results scroll under them. This
+ * carries the panel's top and side padding (see .global-search-results) and needs an OPAQUE
+ * background: the panel itself is deliberately translucent, and text sliding under a translucent
+ * header is worse than no header at all.
+ */
+.global-search-results-sticky {
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	/* Same trap as .global-search-facets below, which now lives in here: this holds scroll
+	   containers, whose automatic minimum size is 0 rather than their content height, so as a
+	   flex item in the height-capped panel the default flex-shrink would crush it to a sliver. */
+	flex: 0 0 auto;
+	padding: 14px 14px 10px;
+	background: var(--color-surface);
+	/* 1px inside the panel's own 22px border-radius, so the corners stay concentric. */
+	border-radius: 21px 21px 0 0;
+	border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.global-search-results-error,
+.global-search-results-empty,
+.global-search-results-groups {
+	/* The side padding the panel used to provide. */
+	padding-left: 14px;
+	padding-right: 14px;
 }
 
 .global-search-results-header {
@@ -2678,23 +2713,99 @@
 	flex-shrink: 0;
 }
 
-.global-search-results-close {
-	width: 32px;
-	height: 32px;
+/* "These results are this device's." Deliberately quiet — it is a caveat, not a failure. */
+.global-search-results-degraded {
 	display: inline-flex;
 	align-items: center;
-	justify-content: center;
-	border: 1px solid var(--color-border);
-	border-radius: var(--radius-sm);
-	background: var(--color-surface-2);
+	gap: 5px;
+	padding: 2px 8px;
+	font-size: 11px;
+	font-weight: 700;
 	color: var(--color-text-muted);
+	background: var(--color-surface-2);
+	border: 1px solid var(--color-border);
+	border-radius: 999px;
+}
+
+/*
+ * The filter disclosure. Three labelled rows of chips above every result is a lot of furniture
+ * for something most searches never touch, so they fold away behind this. The count badge is
+ * what keeps that honest — a collapsed panel must never hide the fact that a filter is on.
+ */
+.global-search-facets-bar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+
+.global-search-facets-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	padding: 5px 10px;
+	font-size: 12px;
+	font-weight: 700;
+	color: var(--color-text-muted);
+	background: var(--color-surface-2);
+	border: 1px solid var(--color-border);
+	border-radius: 999px;
 	cursor: pointer;
 }
 
-.global-search-results-close:hover,
-.global-search-results-close:focus-visible {
+.global-search-facets-toggle:hover,
+.global-search-facets-toggle:focus-visible {
 	color: var(--color-text);
 	border-color: color-mix(in srgb, var(--color-accent) 22%, var(--color-border));
+}
+
+.global-search-facets-toggle--open {
+	color: var(--color-text);
+	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+}
+
+.global-search-facets-toggle-icon {
+	font-size: 10px;
+	opacity: 0.8;
+}
+
+/*
+ * The two count badges: how many filters are on (next to the Filters toggle), and how many notes
+ * each chip would leave. One rule for both on purpose — a plain muted number beside a chip label
+ * read as part of the label ("note 1") rather than as a count, and the fix was to make it look
+ * like the badge that already reads correctly. Defining that twice invites them to drift.
+ */
+.global-search-facets-toggle-count,
+.global-search-facet-count {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 17px;
+	height: 17px;
+	padding: 0 5px;
+	font-size: 10px;
+	font-weight: 800;
+	font-variant-numeric: tabular-nums;
+	/* Same reasoning as .app-inbox-badge: a theme is free to pick a pale accent, and white on
+	   that is unreadable at this size, so darken whatever the accent happens to be. */
+	background: color-mix(in srgb, var(--color-accent) 76%, #16181d);
+	color: #fff;
+	border-radius: 999px;
+}
+
+.global-search-facets-toggle-chevron {
+	font-size: 9px;
+	transition: transform 160ms ease;
+}
+
+.global-search-facets-toggle--open .global-search-facets-toggle-chevron {
+	transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.global-search-facets-toggle-chevron {
+		transition: none;
+	}
 }
 
 /* Filter chips, grouped into one labelled row per axis (where / what / why). */
@@ -2807,17 +2918,6 @@
 	color: var(--color-accent);
 }
 
-.global-search-facet-count {
-	font-size: 11px;
-	font-weight: 700;
-	color: var(--color-text-muted);
-	font-variant-numeric: tabular-nums;
-}
-
-.global-search-facet--on .global-search-facet-count {
-	color: inherit;
-	opacity: 0.8;
-}
 
 /* Counted down to nothing by the other axes. Kept in place rather than removed so the row never
    reflows mid-tap, but clearly not a thing you can usefully press. */
@@ -3731,8 +3831,22 @@
 	}
 
 	.global-search-results {
-		padding: 12px;
+		/* Tighter than desktop, but the top and sides still belong to the children — see the
+		   sticky header's note about a scroll container's padding. */
+		padding: 0 0 12px;
 		border-radius: 18px;
+	}
+
+	.global-search-results-sticky {
+		padding: 12px 12px 8px;
+		border-radius: 17px 17px 0 0;
+	}
+
+	.global-search-results-error,
+	.global-search-results-empty,
+	.global-search-results-groups {
+		padding-left: 12px;
+		padding-right: 12px;
 	}
 
 	.global-search-results-header {
@@ -4051,6 +4165,29 @@
 	margin-top: 2px;
 	font-size: 12px;
 	color: var(--color-text-muted);
+	/* Occupies the same box as the thumbnail it stands in for, so a row whose picture failed to
+	   load doesn't sit a few pixels off from the rows either side of it. */
+	width: 28px;
+	flex: 0 0 auto;
+	text-align: center;
+}
+
+/*
+ * The actual preview — a document's first page, a photo, a link's OG image. Fixed square so a
+ * column of them lines up regardless of the source aspect ratio; `cover` because these are
+ * recognition aids, and seeing the middle of the right picture beats seeing all of a letterboxed
+ * one. Falls back to .global-search-result-match-icon when the image won't load.
+ */
+.global-search-result-match-thumb {
+	width: 28px;
+	height: 28px;
+	flex: 0 0 auto;
+	margin-top: 1px;
+	object-fit: cover;
+	border-radius: 6px;
+	border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+	/* Visible while a lazy image is still coming, instead of a transparent gap. */
+	background: var(--color-surface-2);
 }
 
 /* Name over snippet, not name beside snippet. Side by side in one nowrap row they both truncated,

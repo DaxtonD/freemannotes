@@ -154,6 +154,19 @@ export async function deleteNoteImage(imageId: string): Promise<{ ok: true; imag
 	});
 }
 
-export async function searchNotes(query: string): Promise<NoteSearchResponse> {
-	return fetchJson(`/api/search?q=${encodeURIComponent(query)}`);
+/**
+ * Global search across every workspace. The caller owns cancellation and the deadline, because
+ * search is the one call where neither has a sensible shared default: results arrive beside
+ * locally-computed ones that are already on screen, so a slow server costs nothing to wait for,
+ * and a superseded query must stop consuming a bad connection rather than run to completion.
+ */
+export async function searchNotes(
+	query: string,
+	options: { signal?: AbortSignal; timeoutMs?: number } = {}
+): Promise<NoteSearchResponse> {
+	return fetchJson(
+		`/api/search?q=${encodeURIComponent(query)}`,
+		options.signal ? { signal: options.signal } : {},
+		{ requestName: 'global-search', timeoutMs: options.timeoutMs }
+	);
 }

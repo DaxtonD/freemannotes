@@ -897,6 +897,11 @@
     },
     "resultSingular": "resultado",
     "resultPlural": "resultados",
+    "filtersToggle": "Filtros",
+    "offlineResults": "resultados sin conexión",
+    "offlineResultsHint": "No se pudo conectar con el servidor, así que estas son las notas guardadas en este dispositivo. Falta todo lo que solo el servidor conoce.",
+    "noteSingular": "nota",
+    "notePlural": "notas",
     "matchNote": "nota",
     "matchOcr": "OCR",
     "matchImageName": "Nombre de imagen",
@@ -973,6 +978,7 @@
     "memberSince": "Miembro desde"
   },
   "invite": {
+    "joinWorkspaceLabel": "Unirse al espacio",
     "title": "Compartir espacio de trabajo",
     "notifications": "Invitaciones al espacio de trabajo",
     "notificationsSubtitle": "Revisa las invitaciones pendientes al espacio de trabajo y únete a los espacios a los que quieras acceder.",
@@ -1045,6 +1051,9 @@
     "contributorsEmpty": "¡Sé el primero en apoyar Freeman Notes!"
   },
   "share": {
+    "joinNoteLabel": "Unirse a la nota",
+    "fromLabel": "De",
+    "sharedAt": "Compartido",
     "share": "Compartir",
     "title": "Compartir nota",
     "collaborators": "Colaboradores",
