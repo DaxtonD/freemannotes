@@ -2,6 +2,20 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.19.7 - 2026-10-09
+
+### Added
+- **Find-in-document highlights hits inside a scan now, the same as any other PDF.** Searching a scanned document already worked — that was last release — but clicking the result opened the file and then just sat there, with the viewer reporting "no searchable text" about a document whose text we had demonstrably read. The reason is that highlighting and searching are not the same trick: the viewer finds a word by asking pdf.js which text run it came from and turning that run back into a rectangle. A scanned page has no text runs, so there was a word, and nowhere to draw. PaddleOCR has been handing us a box for every line it reads this whole time and we were throwing it away one line after using the text out of it. We keep them now, as fractions of the page rather than pixels, so a highlight lands correctly at any zoom and stays correct if you ever change the resolution pages are recognised at.
+  
+  The nice part is how little the viewer had to change: its search already works off a plain data structure describing a page's text and where it sits, so a scanned page now builds one of those out of OCR lines and goes through exactly the same matching and drawing code as a digital one. A mixed PDF uses whichever source each page actually has, and a page with a real text layer is never second-guessed by OCR — the text layer is exact, OCR is a guess.
+  
+  Boxes only exist if they were captured while OCR was running, so this applies to anything scanned from here on. Nothing goes back and re-reads what came before — there is no released version of this to have a backlog from.
+
+### Fixed
+- **A search result stops telling you the same thing twice.** When a note turned up because of a document attached to it, the matched sentence appeared once on the note and then again on the indented row for the document — in two slightly different crops, which read as the two rows having matched different text. They had always matched the same text; the indented row was clamped to one line and the window around a match starts about 48 characters early, so it reliably cut off just before the word you searched for and never got as far as highlighting it. Now the note shows its own opening text and the attachment row shows the match, at two lines like the row above it. Each piece of information in exactly one place.
+- **The search overlay actually looks like it is on top of something.** It sits over the note grid, which is dense and full of text, and at 92% opaque with a shadow of `rgba(0,0,0,0.08)` — which is to say no shadow at all on a dark theme — note titles read straight through the snippets. There's a proper dimmed backdrop behind it now and the panel is 97%, so it still reads as translucent without competing with what's underneath.
+- **Extracted text from a long scan stops riding along in every document list.** Every other path that pulls text out of a file caps it at 100,000 characters, for the good reason that this field is returned in full with a note's document list every time that list refreshes. The new OCR queue wrote its text straight in, uncapped, which nobody would notice on a ten-page scan and which is a couple of million characters on a seven-hundred-page one. Same ceiling as everything else now.
+
 ## 1.19.6 - 2026-10-08
 
 ### Fixed

@@ -145,6 +145,94 @@ export async function readPdfPageText(pdf: PDFDocumentProxy, pageNumber: number)
 	};
 }
 
+/** One OCR'd line: its text, and its box as page fractions [left, top, width, height]. */
+export type OcrLayoutLine = { t: string; b: [number, number, number, number] };
+
+// rectForRunSlice builds its box from the baseline outwards: 0.9 of the font height above and
+// 0.25 below, so a run's drawn height is 1.15x fontHeight. An OCR box is the whole line's
+// extent, top to bottom, so to land exactly on it we work backwards through those constants
+// rather than guessing a font size.
+const RUN_ASCENT_RATIO = 0.9;
+const RUN_DESCENT_RATIO = 0.25;
+const RUN_TOTAL_RATIO = RUN_ASCENT_RATIO + RUN_DESCENT_RATIO;
+
+/**
+ * Builds the same structure `readPdfPageText` returns, from OCR'd lines instead of a pdf.js text
+ * layer — so a scanned page goes through `findMatchesOnPage` and `rectsForRange` unchanged and
+ * highlights exactly like a digital one.
+ *
+ * Geometry is kept in page fractions by setting pageWidth/pageHeight to 1: the boxes arrive as
+ * fractions and the rect maths divides by those at the end, so it passes straight through.
+ *
+ * PaddleOCR gives one box per *line*, not per word, so a match inside a line is positioned by
+ * character share along that box. That is the same approximation pdf.js already forces on us
+ * for a partial run, and it reads correctly for a highlight.
+ */
+export function buildOcrPageText(lines: readonly OcrLayoutLine[]): PdfPageText {
+	const characters: string[] = [];
+	const runOfChar: number[] = [];
+	const offsetOfChar: number[] = [];
+	const runs: TextRun[] = [];
+	let hasText = false;
+	for (const line of lines) {
+		const source = String(line?.t || '');
+		const box = line?.b;
+		if (!source || !Array.isArray(box) || box.length < 4) continue;
+		const [left, top, width, height] = box.map(Number);
+		if (![left, top, width, height].every((value) => Number.isFinite(value)) || width <= 0 || height <= 0) continue;
+		const run = runs.length;
+		const fontHeight = height / RUN_TOTAL_RATIO;
+		runs.push({
+			originX: left,
+			// The baseline that makes the drawn box come out as exactly this line's box.
+			originY: top + fontHeight * RUN_ASCENT_RATIO,
+			alongX: 1,
+			alongY: 0,
+			upX: 0,
+			// Viewport coordinates run downwards, so "up" is negative Y — same as pdf.js's.
+			upY: -1,
+			advance: width,
+			fontHeight,
+			length: source.length,
+		});
+		for (let offset = 0; offset < source.length;) {
+			const character = String.fromCodePoint(source.codePointAt(offset) ?? 32);
+			if (WHITESPACE.test(character)) {
+				if (characters.length > 0 && characters[characters.length - 1] !== ' ') {
+					characters.push(' ');
+					runOfChar.push(run);
+					offsetOfChar.push(offset);
+				}
+			} else {
+				hasText = true;
+				const folded = foldCharacter(character);
+				for (let unit = 0; unit < folded.length; unit += 1) {
+					characters.push(folded[unit]);
+					runOfChar.push(run);
+					offsetOfChar.push(offset);
+				}
+			}
+			offset += character.length;
+		}
+		// Each OCR line is its own run, so a phrase spanning two lines needs the gap to exist.
+		if (characters.length > 0 && characters[characters.length - 1] !== ' ') {
+			characters.push(' ');
+			runOfChar.push(run);
+			offsetOfChar.push(-1);
+		}
+	}
+	return {
+		text: characters.join(''),
+		hasText,
+		runOfChar: Int32Array.from(runOfChar),
+		offsetOfChar: Int32Array.from(offsetOfChar),
+		runs,
+		// Already fractions; dividing by 1 leaves them alone.
+		pageWidth: 1,
+		pageHeight: 1,
+	};
+}
+
 function rectForRunSlice(run: TextRun, from: number, to: number, pageWidth: number, pageHeight: number): PdfHighlightRect {
 	// pdf.js doesn't give per-letter positions, so a partial run is cut by character share.
 	// Close enough for proportional fonts that nobody notices; exact for monospace.

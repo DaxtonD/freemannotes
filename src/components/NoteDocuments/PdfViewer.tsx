@@ -14,6 +14,7 @@ import { useBodyScrollLock } from '../../core/useBodyScrollLock';
 import { PdfPageNavigator, type PdfThumbnailCache } from './PdfPageNavigator';
 import {
 	EMPTY_PDF_PAGE_TEXT,
+	buildOcrPageText,
 	findMatchesOnPage,
 	foldSearchQuery,
 	readPdfPageText,
@@ -21,6 +22,7 @@ import {
 	type PdfPageText,
 	type PdfSearchMatch,
 } from './pdfTextSearch';
+import { fetchNoteDocumentOcrLayout, type NoteDocumentOcrLayout } from '../../core/noteDocumentApi';
 import {
 	MarkupCalibrationLayer,
 	MarkupDraftLayer,
@@ -1941,6 +1943,27 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 	const searchRef = React.useRef(search);
 	searchRef.current = search;
 
+	// A scanned page has no text layer at all, so pdf.js finds nothing to search and nothing to
+	// draw a box on. The server OCR'd those pages and kept where each line sits; fetch that the
+	// first time someone searches, alongside the text read below. Only for a real server-side
+	// version (a local upload hasn't been OCR'd yet), and failure is silent — the viewer then
+	// behaves exactly as it did before, saying the document has no searchable text.
+	const [ocrLayout, setOcrLayout] = React.useState<NoteDocumentOcrLayout | null>(null);
+	React.useEffect(() => {
+		if (!textWanted || !markupVersionId) return undefined;
+		let cancelled = false;
+		void fetchNoteDocumentOcrLayout(markupVersionId)
+			.then((layout) => {
+				if (!cancelled) setOcrLayout(layout);
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, [markupVersionId, textWanted]);
+	const ocrLayoutRef = React.useRef<NoteDocumentOcrLayout | null>(null);
+	ocrLayoutRef.current = ocrLayout;
+
 	// Read page text one page at a time, in order, the first time anyone searches. Matches
 	// show up as pages come in, so a long document is useful before it's fully read.
 	React.useEffect(() => {
@@ -1960,6 +1983,13 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 					if (cancelled) return;
 					console.error(`[pdf-viewer] failed while reading text on page ${index + 1}`, error);
 					pageText = EMPTY_PDF_PAGE_TEXT;
+				}
+				// Only where the page itself has nothing: a text layer is exact and OCR is a
+				// guess, so a digital page is never second-guessed, and a mixed PDF uses each
+				// source on the pages it actually applies to.
+				if (!pageText.hasText) {
+					const ocrLines = ocrLayoutRef.current?.pages?.[String(index + 1)];
+					if (ocrLines && ocrLines.length > 0) pageText = buildOcrPageText(ocrLines);
 				}
 				if (cancelled || pageTextsRef.current !== texts) return;
 				texts.push(pageText);

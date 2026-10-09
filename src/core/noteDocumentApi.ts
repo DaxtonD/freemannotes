@@ -96,6 +96,26 @@ export async function listNoteDocuments(docId: string): Promise<NoteDocumentList
 	return fetchJson(`/api/note-documents?docId=${encodeURIComponent(docId)}`);
 }
 
+/**
+ * Where each OCR'd line sits on a scanned page, as page fractions `[left, top, width, height]`.
+ * A scanned page has no pdf.js text layer, so this is the only thing find-in-document can turn
+ * a match into a highlight box with. Fetched on its own, never as part of a document list: on a
+ * long scan it runs to megabytes.
+ */
+export type NoteDocumentOcrLayout = {
+	v: number;
+	truncated?: boolean;
+	/** Keyed by 1-based page number, as a string (it came from JSON). */
+	pages: Record<string, { t: string; b: [number, number, number, number] }[]>;
+};
+
+export async function fetchNoteDocumentOcrLayout(versionId: string): Promise<NoteDocumentOcrLayout | null> {
+	const response = await fetchJson<{ layout: NoteDocumentOcrLayout | null }>(
+		`/api/note-documents/ocr-layout?versionId=${encodeURIComponent(versionId)}`
+	);
+	return response.layout ?? null;
+}
+
 /** A document as the manifest lists it: the same record minus the (possibly huge) extracted text. */
 export type NoteDocumentManifestEntry = Omit<NoteDocumentRecord, 'ocrText' | 'isLocal' | 'syncStatus' | 'lastSyncError' | 'syncPermanentFailure'>;
 

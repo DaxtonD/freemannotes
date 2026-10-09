@@ -24,6 +24,11 @@ freeman-debug.log
 # Local diagnostic dumps (NoteGrid card-height captures, etc.)
 card-diag-*.json
 
+# Python bytecode. server/ocrRunner.py is the only Python we ship, but importing it to test
+# its parsing leaves a __pycache__ next to it.
+__pycache__/
+*.py[cod]
+
 # Working notes kept in the repo root: plans, verification scripts, scratch diagnostics.
 # They live here so they're next to the code while being worked on, but they're personal
 # working material rather than part of the project, and `git add -A` would otherwise sweep

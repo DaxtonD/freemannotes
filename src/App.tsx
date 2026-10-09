@@ -10774,9 +10774,15 @@ export function App(): React.JSX.Element {
 									    model is phrasing content — the previous markup nested block elements in it. */}
 									<span className="global-search-result-copy">
 										<span className="global-search-result-title">{result.title}</span>
-										<span className="global-search-result-snippet">
-											<SearchHighlight text={result.snippet} query={deferredSearchQuery} />
-										</span>
+										{/* A note that matched only through an attachment, and has no text of its
+										    own, sends an empty snippet on purpose — the indented attachment row
+										    below carries the matched text. Rendering the span regardless left a
+										    gap under the title where a line used to be. */}
+										{result.snippet ? (
+											<span className="global-search-result-snippet">
+												<SearchHighlight text={result.snippet} query={deferredSearchQuery} />
+											</span>
+										) : null}
 										{result.collaboratorMatches.length > 0 || result.collectionMatches.length > 0 || result.labelMatches.length > 0 ? (
 											<span className="global-search-result-contexts">
 												{result.collaboratorMatches.map((label) => <span key={`${result.docId}:${label}`} className="global-search-result-context">{t('search.collaboratorPrefix')} {label}</span>)}
@@ -11387,7 +11393,16 @@ export function App(): React.JSX.Element {
 			</header>
 
 			{hasGlobalSearchResults && isMobileViewport ? (
-				<div className="mobile-search-results-surface">{renderGlobalSearchResults('global-search-results--mobile')}</div>
+				<>
+					{/* Dims the grid so the results read as a layer above it rather than text sitting
+					    on top of other text. It has to be its own element rather than a pseudo-element
+					    on the surface: the surface is z-index 121 and so makes a stacking context, so
+					    anything inside it — even at z-index -1 — still paints above the search input
+					    row at 120 and would dim the field you are typing into. Inert on purpose;
+					    dismissal stays with the X button, which is the behaviour that already exists. */}
+					<div className="mobile-search-results-backdrop" aria-hidden="true" />
+					<div className="mobile-search-results-surface">{renderGlobalSearchResults('global-search-results--mobile')}</div>
+				</>
 			) : null}
 
 			{isMobileViewport && isMobileSidebarActive ? (

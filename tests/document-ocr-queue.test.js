@@ -87,7 +87,7 @@ function fakeRenderer(pages) {
 			pageTexts: pages.map((text, index) => ({ num: index + 1, text })),
 			renderPages: async (pageNumbers) => {
 				renderedPages.push(...pageNumbers);
-				return pageNumbers.map((pageNumber) => ({ pageNumber, png: Buffer.from(`png-${pageNumber}`) }));
+				return pageNumbers.map((pageNumber) => ({ pageNumber, png: Buffer.from(`png-${pageNumber}`), width: 1000, height: 2000 }));
 			},
 			close: async () => { closed = true; },
 		}),
@@ -117,6 +117,7 @@ function setup(t, rows, { pages = [], ocr = null, renderer = null } = {}) {
 			ocrPagesDone: null,
 			ocrStartedAt: null,
 			ocrCompletedAt: null,
+			ocrLayout: null,
 			pageCount: null,
 			viewPdfPath: null,
 			deletedAt: null,
@@ -144,7 +145,13 @@ function setup(t, rows, { pages = [], ocr = null, renderer = null } = {}) {
 			const results = paths.map((imagePath, index) => {
 				if (options && typeof options.onPage === 'function') options.onPage({ type: 'page', index });
 				const pageNumber = fs.readFileSync(imagePath, 'utf8').replace('png-', '');
-				return { index, ok: true, text: `ocr:${pageNumber}` };
+				// Boxes in the rendered page's pixel space, as the Python runner reports them.
+				return {
+					index,
+					ok: true,
+					text: `ocr:${pageNumber}`,
+					lines: [{ text: `ocr:${pageNumber}`, box: [100, 200, 500, 240] }],
+				};
 			});
 			return { ok: true, text: results[0] ? results[0].text : '', results };
 		}),
@@ -410,4 +417,65 @@ test('a restart resets the page counters of whatever was mid-read', async (t) =>
 	assert.equal(versions[0].ocrText, 'ocr:1\n\nocr:2');
 	assert.equal(versions[0].ocrPagesTotal, null);
 	assert.equal(versions[0].ocrPagesDone, null);
+});
+
+test('extracted text is capped, so a 700-page scan does not ride along in every list response', async (t) => {
+	// Every other extraction path caps at MAX_EXTRACTED_TEXT_CHARS (100k). This queue wrote the
+	// merged text raw, which only shows up on a genuinely long document: ocrText is returned in
+	// full by /api/note-documents for that note, every refresh.
+	const { MAX_EXTRACTED_TEXT_CHARS } = require('../server/noteDocumentPreview');
+	const pageText = 'x'.repeat(5000);
+	const pageCount = Math.ceil((MAX_EXTRACTED_TEXT_CHARS * 2) / pageText.length);
+	const { versions, queue } = setup(t, [{ id: 'huge' }], {
+		pages: Array(pageCount).fill(''),
+		ocr: async (paths) => ({
+			ok: true,
+			text: pageText,
+			results: paths.map((_, index) => ({ index, ok: true, text: pageText })),
+		}),
+	});
+
+	await queue.start();
+	await queue.whenIdle();
+
+	assert.equal(versions[0].ocrStatus, 'COMPLETE');
+	assert.ok(
+		versions[0].ocrText.length <= MAX_EXTRACTED_TEXT_CHARS,
+		`ocrText is ${versions[0].ocrText.length} chars, over the ${MAX_EXTRACTED_TEXT_CHARS} cap`
+	);
+	// The cap must not be mistaken for "nothing was read".
+	assert.ok(versions[0].ocrText.length > MAX_EXTRACTED_TEXT_CHARS / 2);
+});
+
+test('OCR boxes are stored as page fractions, keyed by page number', async (t) => {
+	const { versions, queue } = setup(t, [{ id: 'boxes' }], { pages: ['', ''] });
+	await queue.start();
+	await queue.whenIdle();
+
+	const layout = versions[0].ocrLayout;
+	assert.ok(layout, 'no layout was stored for a scanned document');
+	assert.equal(layout.v, 1);
+	assert.deepEqual(Object.keys(layout.pages).sort(), ['1', '2']);
+	// 1000x2000 page, box [100,200,500,240] -> left .1, top .1, width .4, height .02
+	assert.deepEqual(layout.pages['1'][0].b, [0.1, 0.1, 0.4, 0.02]);
+	assert.equal(layout.pages['1'][0].t, 'ocr:1');
+	// Fractions, not pixels: nothing may exceed the page.
+	for (const lines of Object.values(layout.pages)) {
+		for (const line of lines) {
+			const [left, top, width, height] = line.b;
+			assert.ok(left >= 0 && top >= 0 && left + width <= 1 && top + height <= 1, `box outside page: ${line.b}`);
+		}
+	}
+});
+
+test('a digital PDF stores no layout at all', async (t) => {
+	// pdf.js has its own text layer for these pages and never consults ours, so there is nothing
+	// worth storing. Keeping it null also keeps the column meaningful: non-null means "scanned".
+	const { versions, queue, render, ocrCalls } = setup(t, [{ id: 'digital2' }], { pages: [REAL_TEXT, REAL_TEXT] });
+	await queue.start();
+	await queue.whenIdle();
+
+	assert.equal(versions[0].ocrLayout, null);
+	assert.deepEqual(render.renderedPages, []);
+	assert.deepEqual(ocrCalls, []);
 });

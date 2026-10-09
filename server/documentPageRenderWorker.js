@@ -29,7 +29,9 @@ async function renderPages(pages) {
 	for (const page of Array.isArray(result.pages) ? result.pages : []) {
 		if (!page || !page.data || page.data.length === 0) continue;
 		const png = new Uint8Array(page.data);
-		rendered.push({ pageNumber: page.pageNumber, png });
+		// Width/height come back with the screenshot, so OCR's pixel coordinates can be turned
+		// into page fractions without measuring the PNG again.
+		rendered.push({ pageNumber: page.pageNumber, png, width: page.width, height: page.height });
 		transfers.push(png.buffer);
 	}
 	parentPort.postMessage({ ok: true, pages: rendered }, transfers);

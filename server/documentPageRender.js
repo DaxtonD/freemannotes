@@ -117,6 +117,9 @@ async function openPdfPageRenderer(pdfBuffer, { width = DEFAULT_RENDER_WIDTH_PX 
 			return (Array.isArray(message.pages) ? message.pages : []).map((page) => ({
 				pageNumber: Number(page.pageNumber),
 				png: Buffer.from(page.png),
+				// The rendered pixel size, so OCR boxes can be normalised to page fractions.
+				width: Number(page.width) || 0,
+				height: Number(page.height) || 0,
 			}));
 		},
 		close,

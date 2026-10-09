@@ -659,6 +659,14 @@ model NoteDocumentVersion {
   /// both leave an empty ocrText — and without it the startup sweep would re-render and
   /// re-recognise every blank scan on every single restart, forever.
   ocrCompletedAt DateTime? @map("ocr_completed_at")
+  /// Where the recognised text sits on each page, so find-in-document can highlight a hit in a
+  /// scanned PDF the same way it does in a digital one. A scanned page has no text layer, so
+  /// pdf.js has nothing to turn a match back into a box with; these are PaddleOCR's own line
+  /// boxes, stored as page fractions (0-1) so they hold at any zoom. Shape is
+  /// `{ v, truncated, pages: { "<pageNumber>": [{ t, b: [x, y, w, h] }] } }`.
+  /// Deliberately NOT part of any document list response — it is fetched on its own when the
+  /// viewer opens, because on a long scan it is megabytes.
+  ocrLayout Json? @map("ocr_layout")
 
   /// Office files get a PDF copy made through Gotenberg (optional, GOTENBERG_URL) so they open
   /// in the same viewer and can be marked up. PDFs never need one. The original is

@@ -2624,8 +2624,13 @@
 	border-radius: 22px;
 	background:
 		radial-gradient(circle at top right, color-mix(in srgb, var(--color-accent) 11%, transparent), transparent 42%),
-		color-mix(in srgb, var(--color-surface) 92%, transparent);
-	box-shadow: 0 16px 40px rgba(0, 0, 0, 0.08);
+		/* 92% let note titles read straight through the snippets on a dense grid. 97% keeps the
+		   panel obviously translucent — you can still see the grid move behind it — while leaving
+		   the text on it the highest-contrast thing on screen, which is the whole job. */
+		color-mix(in srgb, var(--color-surface) 97%, transparent);
+	/* 0.08 is invisible against a dark app background, so the panel had no edge at all beyond its
+	   1px border. This is what actually lifts it off the grid. */
+	box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
 }
 
 .global-search-results--sticky,
@@ -3662,6 +3667,33 @@
 		pointer-events: auto;
 	}
 
+	/*
+	 * Sits below the search input row (120) and the results surface (121), above the grid. The
+	 * grid is dense, high-contrast and full of text, and the results panel is deliberately a
+	 * little translucent — without this, note titles read straight through the snippets.
+	 * pointer-events: none keeps dismissal exactly where it was (the X button); making this
+	 * tappable would be a behaviour change nobody asked for.
+	 */
+	.mobile-search-results-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 119;
+		pointer-events: none;
+		background: rgba(2, 6, 23, 0.58);
+		animation: mobile-search-backdrop-in 160ms ease both;
+	}
+
+	@keyframes mobile-search-backdrop-in {
+		from { opacity: 0; }
+		to { opacity: 1; }
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.mobile-search-results-backdrop {
+			animation: none;
+		}
+	}
+
 	.global-search-results--mobile {
 		max-height: calc(100dvh - var(--app-header-total-height) - 72px - var(--space-4) - var(--app-safe-bottom-visual));
 	}
@@ -4039,9 +4071,17 @@
 	text-overflow: ellipsis;
 }
 
+/*
+ * Two lines, matching the result's own snippet above it. At one line this clamped BEFORE the
+ * match: buildSearchSnippet centres the window on the hit with up to 48 characters of lead-in,
+ * and one line at 12px on a phone fits about 40 — so an attachment row showed the run-up to the
+ * match and then cut off, with the highlight never rendering. Side by side with the note's
+ * two-line snippet of the same text, that read as the document having matched something
+ * different, which is exactly what it was reported as.
+ */
 .global-search-result-match-snippet {
 	display: -webkit-box;
-	-webkit-line-clamp: 1;
+	-webkit-line-clamp: 2;
 	-webkit-box-orient: vertical;
 	overflow: hidden;
 	font-size: 12px;

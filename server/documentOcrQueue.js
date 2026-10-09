@@ -4,6 +4,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { openPdfPageRenderer, DEFAULT_RENDER_WIDTH_PX } = require('./documentPageRender');
+const { MAX_EXTRACTED_TEXT_CHARS } = require('./noteDocumentPreview');
 const { runPythonOcrBatch, isOcrDisabled, readIntEnv } = require('./ocr');
 
 // Reads the text off scanned PDFs, page by page, in the background.
@@ -44,6 +45,15 @@ const MAX_ATTEMPTS_PER_VERSION = 2;
  * websocket fan-out and one document-list refetch per page on every connected tab.
  */
 const PROGRESS_ANNOUNCE_INTERVAL_MS = 4000;
+/**
+ * Ceiling on stored highlight boxes. A dense 700-page scan is tens of thousands of lines, and
+ * this column is JSON in one row; past this the later pages simply aren't highlightable, which
+ * is a far better failure than a multi-megabyte row. The recognised *text* is unaffected and
+ * keeps its own cap, so search still finds those pages.
+ */
+const MAX_LAYOUT_LINES = 40000;
+/** Bumped when the stored shape changes, so a client can refuse to read one it doesn't know. */
+const OCR_LAYOUT_VERSION = 1;
 
 function documentOcrEnabled() {
 	if (isOcrDisabled()) return false;
@@ -60,6 +70,46 @@ function documentConcurrency() {
 
 function renderWidthPx() {
 	return readIntEnv('OCR_DOCUMENT_RENDER_WIDTH_PX', DEFAULT_RENDER_WIDTH_PX, 600, 5000);
+}
+
+/**
+ * Turns PaddleOCR's pixel boxes into page fractions, which is what the viewer highlights with:
+ * a fraction holds at any zoom and does not depend on OCR_DOCUMENT_RENDER_WIDTH_PX, so changing
+ * the render resolution later doesn't invalidate everything already stored. Lines whose box is
+ * missing or degenerate are dropped rather than stored as a zero-size rect that would silently
+ * highlight nothing.
+ */
+function toPageFractionLines(lines, pageWidth, pageHeight) {
+	if (!Array.isArray(lines) || !(pageWidth > 0) || !(pageHeight > 0)) return [];
+	const out = [];
+	for (const line of lines) {
+		const text = String((line && line.text) || '').trim();
+		const box = line && Array.isArray(line.box) ? line.box : null;
+		if (!text || !box || box.length < 4) continue;
+		const [x0, y0, x1, y1] = box.map(Number);
+		if (![x0, y0, x1, y1].every((value) => Number.isFinite(value))) continue;
+		// Clamped: a detection can sit a pixel or two outside the page it was rendered from.
+		const left = Math.max(0, Math.min(1, Math.min(x0, x1) / pageWidth));
+		const top = Math.max(0, Math.min(1, Math.min(y0, y1) / pageHeight));
+		const right = Math.max(0, Math.min(1, Math.max(x0, x1) / pageWidth));
+		const bottom = Math.max(0, Math.min(1, Math.max(y0, y1) / pageHeight));
+		const width = right - left;
+		const height = bottom - top;
+		if (!(width > 0) || !(height > 0)) continue;
+		out.push({ t: text, b: [round4(left), round4(top), round4(width), round4(height)] });
+	}
+	return out;
+}
+
+/** Four decimals is ~0.3px on a 3000px page, and keeps the stored JSON a third of the size. */
+function round4(value) {
+	return Math.round(value * 10000) / 10000;
+}
+
+/** The searchable-text ceiling, shared with every other extraction path. */
+function capExtractedText(text) {
+	const value = String(text || '');
+	return value.length > MAX_EXTRACTED_TEXT_CHARS ? value.slice(0, MAX_EXTRACTED_TEXT_CHARS) : value;
 }
 
 function normalizeWhitespace(value) {
@@ -249,7 +299,7 @@ function createDocumentOcrQueue({
 
 			if (pagesToOcr.length === 0) {
 				// Nothing to recognise — a normal digital PDF. Keep the text layer and be done.
-				await finish(version, textByPage, pageCount, new Map(), null);
+				await finish(version, textByPage, pageCount, new Map(), null, null);
 				return;
 			}
 
@@ -262,6 +312,10 @@ function createDocumentOcrQueue({
 			logger.info(`[document-ocr] Reading ${pagesToOcr.length} page(s) of ${version.fileName} (version ${version.id})`);
 
 			const ocrByPage = new Map();
+			// Page number -> recognised lines with their boxes, for highlighting (see finish()).
+			const layoutByPage = new Map();
+			let layoutLineCount = 0;
+			let layoutTruncated = false;
 			let done = 0;
 			let failedPages = 0;
 			let lastAnnouncedAt = Date.now();
@@ -319,8 +373,20 @@ function createDocumentOcrQueue({
 					for (const entry of result.results) {
 						const page = rendered[Number(entry.index)];
 						if (!page) continue;
-						if (entry.ok) ocrByPage.set(page.pageNumber, String(entry.text || ''));
-						else failedPages += 1;
+						if (!entry.ok) {
+							failedPages += 1;
+							continue;
+						}
+						ocrByPage.set(page.pageNumber, String(entry.text || ''));
+						const pageLines = toPageFractionLines(entry.lines, page.width, page.height);
+						if (pageLines.length > 0 && layoutLineCount < MAX_LAYOUT_LINES) {
+							const room = MAX_LAYOUT_LINES - layoutLineCount;
+							layoutByPage.set(page.pageNumber, pageLines.slice(0, room));
+							layoutLineCount += Math.min(room, pageLines.length);
+							if (layoutLineCount >= MAX_LAYOUT_LINES) layoutTruncated = true;
+						} else if (pageLines.length > 0) {
+							layoutTruncated = true;
+						}
 					}
 					done += rendered.length;
 				} finally {
@@ -338,14 +404,26 @@ function createDocumentOcrQueue({
 			const error = failedPages > 0
 				? `${failedPages} of ${pagesToOcr.length} page(s) couldn't be read`
 				: null;
-			await finish(version, textByPage, pageCount, ocrByPage, error);
+			await finish(version, textByPage, pageCount, ocrByPage, error, buildLayout(layoutByPage, layoutTruncated));
 		} finally {
 			await renderer.close();
 		}
 	}
 
+	/**
+	 * `{ v, truncated, pages }` for storage, or null when there is nothing to highlight — which
+	 * is every ordinary digital PDF, since pdf.js has its own text layer for those and never
+	 * consults this. The `v` rides inside the blob so a later change of shape can be recognised.
+	 */
+	function buildLayout(layoutByPage, truncated) {
+		if (layoutByPage.size === 0) return null;
+		const pages = {};
+		for (const [pageNumber, lines] of layoutByPage) pages[String(pageNumber)] = lines;
+		return { v: OCR_LAYOUT_VERSION, truncated: Boolean(truncated), pages };
+	}
+
 	/** Merges text-layer text and recognised text back into one document, in page order. */
-	async function finish(version, textByPage, pageCount, ocrByPage, partialError) {
+	async function finish(version, textByPage, pageCount, ocrByPage, partialError, layout) {
 		const parts = [];
 		for (let pageNumber = 1; pageNumber <= pageCount; pageNumber += 1) {
 			// Recognised text wins only where the page had none of its own: the text layer is
@@ -354,7 +432,12 @@ function createDocumentOcrQueue({
 			const text = pageNeedsOcr(own) ? (ocrByPage.get(pageNumber) || '') : own;
 			if (String(text || '').trim()) parts.push(String(text).trim());
 		}
-		const merged = parts.join('\n\n');
+		// Same ceiling every other extraction path goes through (extractDocumentText applies it
+		// via noteDocumentPreview). This queue wrote the merged text raw, which was fine for a
+		// ten-page scan and wrong for a long one: a 700-page document is a couple of million
+		// characters, and `ocrText` rides along in full in every /api/note-documents response
+		// for that note. Capping here rather than at the read keeps one rule in one place.
+		const merged = capExtractedText(parts.join('\n\n'));
 		const updated = await prisma.noteDocumentVersion.updateMany({
 			where: { id: version.id, ocrStatus: 'PENDING' },
 			data: {
@@ -369,6 +452,9 @@ function createDocumentOcrQueue({
 				// Stamped even when nothing was found, so the startup sweep knows this one has
 				// had its turn and doesn't queue it again on every boot.
 				ocrCompletedAt: new Date(),
+				// null for a document that needed no OCR, so a digital PDF never carries an empty
+				// layout blob around; pdf.js's own text layer highlights those already.
+				ocrLayout: layout,
 				...(version.pageCount == null && pageCount > 0 ? { pageCount } : {}),
 			},
 		});

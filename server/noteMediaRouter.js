@@ -1109,6 +1109,48 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 			return true;
 		}
 
+		// Where the OCR'd words sit on each page of a scan, so find-in-document can highlight a
+		// hit the way it does in a digital PDF. Its own endpoint rather than a field on the
+		// document list: on a long scan this is megabytes, and the list is refetched constantly.
+		// Only the viewer asks for it, and only for the version it has open.
+		if (pathname === '/api/note-documents/ocr-layout' && method === 'GET') {
+			(async () => {
+				try {
+					const session = requireAuth(req, res);
+					if (!session) return;
+					const versionId = String(url.searchParams.get('versionId') || '').trim();
+					if (!versionId) {
+						jsonResponse(res, 400, { error: 'versionId is required' });
+						return;
+					}
+					const version = await prisma.noteDocumentVersion.findUnique({
+						where: { id: versionId },
+						select: {
+							deletedAt: true,
+							ocrLayout: true,
+							noteDocument: { select: { docId: true, deletedAt: true } },
+						},
+					});
+					// Same shape of refusal for "gone" and "not yours": a 404 either way tells a
+					// caller nothing about what exists, matching uploadAccess.js.
+					if (!version || version.deletedAt || !version.noteDocument || version.noteDocument.deletedAt) {
+						jsonResponse(res, 404, { error: 'Not found' });
+						return;
+					}
+					const accessResult = await ensureMediaAccess(prisma, session, version.noteDocument.docId);
+					if (accessResult.error) {
+						jsonResponse(res, accessResult.error.status, accessResult.error.body);
+						return;
+					}
+					jsonResponse(res, 200, { layout: version.ocrLayout || null });
+				} catch (err) {
+					console.error('[note-documents] ocr layout error:', err.message);
+					jsonResponse(res, 500, { error: 'Internal server error' });
+				}
+			})();
+			return true;
+		}
+
 		// Every document this user can see, so each device can keep a copy (plan D3).
 		if (pathname === '/api/note-documents/manifest' && method === 'GET') {
 			(async () => {
@@ -2021,10 +2063,13 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							link.rootDomain,
 							link.originalUrl,
 						].filter(Boolean).join(' ')).join(' ');
-						const documentSnippetSource = documentRows.map((document) => [
-							document.fileName,
-							document.ocrText,
-						].filter(Boolean).join(' ')).join(' ');
+						// What the note itself says, with no match centring — used when the thing that
+						// actually matched was an attachment. The indented row for that document or
+						// image already shows the matching text in full, and showing it up here too
+						// printed the same sentence twice in two slightly different crops, which
+						// read as the two rows having matched different things. An empty query is
+						// how buildSearchSnippet is asked for a plain opening preview.
+						const noteOwnPreview = buildSearchSnippet(snapshot.plainText, '');
 						results.push({
 							docId: row.docId,
 							noteId,
@@ -2042,21 +2087,20 @@ function createNoteMediaRouter({ prisma, uploadDir, onWorkspaceMetadataChanged =
 							collaboratorMatches: collaboratorMatches.slice(0, 3),
 							collectionMatches: collectionMatch ? [collectionPath] : [],
 							labelMatches: labelMatches.slice(0, 4),
+							// Attachment matches (document text, image OCR, image file name) deliberately
+							// fall through to the note's own preview: they each get their own indented
+							// row below, and that row is where their matching text belongs.
 							snippet: noteMatch
 								? buildSearchSnippet(snapshot.plainText, query)
-								: ocrMatch
-									? buildSearchSnippet(ocrText, query)
-									: imageNameMatch
-										? buildSearchSnippet(imageNameText, query)
-										: collaboratorMatch
-											? buildSearchSnippet(collaboratorText, query)
-											: linkMatch
-												? buildSearchSnippet(linkSnippetSource, query)
-												: collectionMatch
-													? buildSearchSnippet(collectionPath, query)
-													: labelMatch
-														? buildSearchSnippet(labelMatches.join(' '), query)
-												: buildSearchSnippet(documentSnippetSource, query),
+								: collaboratorMatch
+									? buildSearchSnippet(collaboratorText, query)
+									: linkMatch
+										? buildSearchSnippet(linkSnippetSource, query)
+										: collectionMatch
+											? buildSearchSnippet(collectionPath, query)
+											: labelMatch
+												? buildSearchSnippet(labelMatches.join(' '), query)
+												: noteOwnPreview,
 							// What actually matched, so the result can open the document, image or link
 							// itself instead of only the note it hangs off.
 							documentMatches: documentMatch
