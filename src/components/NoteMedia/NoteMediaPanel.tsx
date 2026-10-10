@@ -272,8 +272,12 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 		};
 	}, [props.authUserId, props.docId, refresh]);
 
+	// Newest first. The stores and the upload queue stay oldest-first on purpose — the queue is
+	// FIFO, and the server takes imageRows[0] as the note's thumbnail — so this is a display
+	// ordering only, applied where the list is rendered rather than where it is kept.
 	const visibleRemoteImages = React.useMemo(
-		() => filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletions),
+		() => [...filterRemoteNoteImagesByPendingDeletes(remoteImages, queuedDeletions)]
+			.sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
 		[queuedDeletions, remoteImages]
 	);
 	const storedPreviewByRemoteId = React.useMemo(() => {
@@ -409,7 +413,7 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 			fallbackThumbnailBlob: storedPreviewByRemoteId.get(image.id)?.thumbnailBlob || null,
 			thumbnailUrl: image.thumbnailUrl,
 			title: image.fileName ? image.fileName.replace(/\.[^.]+$/, '') : `${t('media.imageLabel')} ${index + 1}`,
-			subtitle: image.ocrStatus === 'READY' ? t('media.ocrReady') : `${image.width || '?'} × ${image.height || '?'}`,
+			subtitle: image.ocrStatus === 'COMPLETE' && image.ocrText ? t('media.ocrReady') : `${image.width || '?'} × ${image.height || '?'}`,
 		})),
 		...localPreviewItems.map((item, index) => ({
 			src: item.previewUrl || item.sourceUrl || '',
@@ -572,6 +576,12 @@ export function NoteMediaPanel(props: NoteMediaPanelProps): React.JSX.Element {
 									<div className={styles.meta}>
 										<span className={styles.title}>{getDisplayImageTitle(image.fileName, `${t('media.imageLabel')} ${index + 1}`)}</span>
 										<span className={styles.caption}>{formatRelativeDate(image.createdAt, locale)} · {image.width || '?'} × {image.height || '?'}</span>
+										{/* Images get the same "we are reading this" signal scanned documents got.
+										    PENDING is genuinely in-flight: the server queues OCR on upload and the
+										    row flips to COMPLETE when it finishes, so this clears itself. */}
+										{image.ocrStatus === 'PENDING' ? (
+											<span className={styles.ocrStatus}>{t('media.ocrReading')}</span>
+										) : null}
 									</div>
 								</button>
 							</div>

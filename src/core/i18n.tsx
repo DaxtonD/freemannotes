@@ -823,6 +823,7 @@ const FALLBACK_MESSAGES: Dictionary = {
 		queuedBadge: 'Queued',
 		failedBadge: 'Failed',
 		ocrBadge: 'OCR',
+		ocrReading: 'Reading text…',
 		ocrReady: 'OCR ready',
 		queuedImageLabel: 'Queued image',
 		imageLabel: 'Image',

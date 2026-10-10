@@ -570,6 +570,13 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 		: documents.length === 1
 			? `1 ${t('documents.itemSingular')}`
 			: `${documents.length} ${t('documents.itemPlural')}`;
+	// Newest first. The stores stay oldest-first on purpose — the upload queue is FIFO — so this
+	// is a display ordering only, applied where the list is rendered rather than where it is kept.
+	const orderedDocuments = React.useMemo(
+		() => [...documents].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+		[documents]
+	);
+
 	const itemProps = (document: NoteDocumentRecord): DocumentItemProps => ({
 		document,
 		canEdit,
@@ -651,11 +658,11 @@ export function DocumentsPanel(props: DocumentsPanelProps): React.JSX.Element {
 				</div>
 			) : viewMode === 'card' ? (
 				<ul className={styles.grid}>
-					{documents.map((document) => <DocumentCard key={document.id} {...itemProps(document)} />)}
+					{orderedDocuments.map((document) => <DocumentCard key={document.id} {...itemProps(document)} />)}
 				</ul>
 			) : (
 				<ul className={styles.list}>
-					{documents.map((document) => <DocumentRow key={document.id} {...itemProps(document)} />)}
+					{orderedDocuments.map((document) => <DocumentRow key={document.id} {...itemProps(document)} />)}
 				</ul>
 			)}
 			{viewerDocument ? (

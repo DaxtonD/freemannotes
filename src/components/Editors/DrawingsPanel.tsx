@@ -104,6 +104,12 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 	const [drawings, setDrawings] = React.useState<readonly DrawingSummary[]>(
 		() => drawingIds.map((id) => drawingSummaryCache.get(id)).filter((d): d is DrawingSummary => Boolean(d))
 	);
+	// Newest first, like the other attachment panels. Display ordering only — `drawingIds` on the
+	// note keeps its own append order, which is what links a drawing to its place in the content.
+	const orderedDrawings = React.useMemo(
+		() => [...drawings].sort((left, right) => right.createdAt.localeCompare(left.createdAt)),
+		[drawings]
+	);
 	const [error, setError] = React.useState<string | null>(null);
 	const [deletingId, setDeletingId] = React.useState<string | null>(null);
 	const [viewMode, toggleViewMode] = usePanelViewMode(PANEL_VIEW_MODE_STORAGE_KEYS.drawings, 'card');
@@ -202,7 +208,7 @@ export function DrawingsPanel(props: DrawingsPanelProps): React.JSX.Element {
 				null
 			) : (
 				<div className={viewMode === 'list' ? styles.listView : styles.list}>
-					{drawings.map((drawing) => (
+					{orderedDrawings.map((drawing) => (
 						<div key={drawing.id} className={`${styles.card}${viewMode === 'list' ? ` ${styles.cardListRow}` : ''}`}>
 							{canEdit && props.onDeleteDrawing ? (
 								<button

@@ -2,6 +2,15 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.20.0 - 2026-10-09
+
+### Changed
+- **Attachments are listed newest first.** Images, documents and drawings all came back oldest-first, which is the order they were uploaded in and almost never the order you want — the thing you added ten seconds ago sat at the bottom of the list, underneath everything you added months ago. Only the display order moved. The upload queue is still oldest-first, because it's a queue and that's what queues are, and the server still takes the first image as the note's card thumbnail — so flipping the stores themselves would have quietly changed which photo represents a note, which is not a thing anyone asked for. Links are deliberately left as they were: they're ordered by where they appear in the note's text, not by when they showed up, and "newest first" is meaningless for them.
+
+### Fixed
+- **Images tell you when they're being read.** Scanned documents got a "Reading text…" spinner when the page-by-page OCR work landed; images went through exactly the same recognition on upload and said nothing at all about it, so a photo with text in it looked identical to one we'd never looked at. Same badge, same spinner, and it clears itself when the text arrives.
+- **"OCR ready" has never appeared on an image. Not once, in any version.** The viewer compared the OCR status against `READY` — which is not a value that status has ever held. It has three: pending, complete, failed. `READY` belongs to *link previews*, and at some point it wandered across into the image code and settled in, where TypeScript couldn't help because the field is typed as a bare `string` and so every spelling of it typechecks fine. The label was simply unreachable, and a photo full of perfectly good recognised text sat there with nothing to say about it. It now checks for complete *and* for there being some actual text, because a photo of a brick wall is legitimately complete with nothing to show.
+
 ## 1.19.9 - 2026-10-09
 
 ### Fixed

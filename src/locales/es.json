@@ -817,6 +817,7 @@
     "queuedBadge": "En cola",
     "failedBadge": "Fallida",
     "ocrBadge": "OCR",
+    "ocrReading": "Leyendo el texto…",
     "ocrReady": "OCR listo",
     "queuedImageLabel": "Imagen en cola",
     "imageLabel": "Imagen",

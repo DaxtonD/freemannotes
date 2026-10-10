@@ -308,3 +308,37 @@
 		grid-template-columns: repeat(2, minmax(0, 1fr));
 	}
 }
+
+/*
+ * "Reading text…" on an image whose OCR has not finished, matching the badge scanned documents
+ * show. The spinner carries most of the meaning: OCR can take a while on a busy server and a
+ * static label reads as stuck. `spin` is defined once globally in styles/globals.css.
+ */
+.ocrStatus {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	margin-top: 2px;
+	font-size: 11px;
+	font-weight: 600;
+	color: var(--color-accent);
+}
+
+.ocrStatus::before {
+	content: '';
+	width: 9px;
+	height: 9px;
+	flex-shrink: 0;
+	border: 1.5px solid currentColor;
+	border-top-color: transparent;
+	border-radius: 50%;
+	animation: spin 0.8s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.ocrStatus::before {
+		animation: none;
+		border-top-color: currentColor;
+		opacity: 0.6;
+	}
+}
