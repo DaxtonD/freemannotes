@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!--
+    Detailed list view. Deliberately the same three bars as Font Awesome's "bars" (used for the
+    plain list view right beside it), drawn heavier: the two views are siblings, so the icons
+    should differ in weight rather than in idea.
+
+    Painted as a CSS mask over currentColor, so the fill below is only for previewing the file on
+    its own — the colour is discarded at runtime and only the alpha channel is used.
+  -->
+  <g fill="currentColor">
+    <rect x="2" y="2" width="20" height="5" rx="1.5" />
+    <rect x="2" y="9.5" width="20" height="5" rx="1.5" />
+    <rect x="2" y="17" width="20" height="5" rx="1.5" />
+  </g>
+</svg>

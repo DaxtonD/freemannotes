@@ -1962,6 +1962,8 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		};
 	}, [markupVersionId, textWanted]);
 	const ocrLayoutRef = React.useRef<NoteDocumentOcrLayout | null>(null);
+	/** Which layout the page texts currently in pageTextsRef were built from. */
+	const textsOcrLayoutRef = React.useRef<NoteDocumentOcrLayout | null>(null);
 	ocrLayoutRef.current = ocrLayout;
 
 	// Read page text one page at a time, in order, the first time anyone searches. Matches
@@ -1972,6 +1974,25 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		const total = load.pageSizes.length;
 		let cancelled = false;
 		void (async () => {
+			// The OCR boxes come over the network; reading the text layer is local. On a scan
+			// every page's text layer is EMPTY, so the read finishes in milliseconds and always
+			// won that race — and this loop never revisits a page it has already read. The
+			// result was a scanned document that searched correctly, highlighted nothing, and
+			// told you it had no searchable text, because every page had been recorded as empty
+			// before the thing that fills them arrived.
+			//
+			// So the pages are re-read when the layout lands. Only a scan has a layout at all (a
+			// digital PDF stores none), and a scan's text layer is empty, so re-reading one
+			// costs essentially nothing. The search is reset too, or it would keep the matches
+			// it found before — which is to say none.
+			if (textsOcrLayoutRef.current !== ocrLayout) {
+				textsOcrLayoutRef.current = ocrLayout;
+				if (pageTextsRef.current.length > 0) {
+					pageTextsRef.current = [];
+					setPageTextsRead(0);
+					setSearch(EMPTY_SEARCH);
+				}
+			}
 			const texts = pageTextsRef.current;
 			let lastFlush = performance.now();
 			for (let index = texts.length; index < total; index += 1) {
@@ -2003,7 +2024,7 @@ export function PdfViewer(props: PdfViewerProps): React.JSX.Element {
 		return () => {
 			cancelled = true;
 		};
-	}, [load, textWanted]);
+	}, [load, ocrLayout, textWanted]);
 
 	// Wait for typing to settle; re-scanning a long PDF on every keystroke is just heat.
 	React.useEffect(() => {

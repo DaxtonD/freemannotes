@@ -101,3 +101,47 @@ test('a page with real text is still left to pdf.js, not OCR', () => {
 	assert.equal(pageNeedsOcr('This page has a genuine text layer on it.'), false);
 	assert.equal(pageNeedsOcr(''), true);
 });
+
+// ── The wiring, not just the arithmetic ──────────────────────────────────────────────────────
+//
+// Correct geometry is useless if the boxes never reach the page. They did not, at first: the
+// OCR layout arrives over the network while the page text is read locally, and on a scan every
+// text layer is empty and reads in milliseconds — so the pages were always recorded as empty
+// before the boxes landed, and the read loop never revisits a page. A scanned PDF searched
+// correctly, highlighted nothing, and reported "no searchable text" about text it had found.
+
+const viewerSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'NoteDocuments', 'PdfViewer.tsx'), 'utf8');
+const viewerCss = fs.readFileSync(path.join(__dirname, '..', 'src', 'components', 'NoteDocuments', 'PdfViewer.module.css'), 'utf8');
+
+test('the page-text read re-runs when the OCR layout arrives', () => {
+	// Without ocrLayout in the dependency array the effect never re-runs, and pages read before
+	// the fetch resolved keep their empty text forever.
+	assert.match(
+		viewerSource,
+		/\}, \[load, ocrLayout, textWanted\]\);/,
+		'the page-text effect no longer depends on ocrLayout — scanned pages will never pick up their boxes'
+	);
+	// And it has to actually discard what it read without them.
+	assert.match(viewerSource, /textsOcrLayoutRef\.current !== ocrLayout/);
+	assert.match(viewerSource, /pageTextsRef\.current = \[\];/);
+});
+
+test('the sharpening canvas sits below the highlights, not over them', () => {
+	// .canvasDetail is appended to the host after React's children, so an equal z-index is
+	// decided by DOM order and this always wins — which hid every highlight past the zoom
+	// threshold that creates it.
+	const detail = /\.canvasDetail \{[^}]*\}/.exec(viewerCss);
+	assert.ok(detail, '.canvasDetail rule not found');
+	const detailZ = /z-index:\s*(-?\d+)/.exec(detail[0]);
+	assert.ok(detailZ, '.canvasDetail has no z-index');
+
+	const highlight = /\.highlight \{[^}]*\}/.exec(viewerCss);
+	assert.ok(highlight, '.highlight rule not found');
+	const highlightZ = /z-index:\s*(-?\d+)/.exec(highlight[0]);
+	assert.ok(highlightZ, '.highlight has no z-index');
+
+	assert.ok(
+		Number(highlightZ[1]) > Number(detailZ[1]),
+		`.highlight (${highlightZ[1]}) must stack above .canvasDetail (${detailZ[1]}), or zooming in hides every match`
+	);
+});

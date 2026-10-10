@@ -3,9 +3,12 @@ import * as ReactDOM from 'react-dom';
 import type * as Y from 'yjs';
 import Cropper from 'react-easy-crop';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import type { IconDefinition } from '@fortawesome/fontawesome-svg-core';
 import {
 	faArrowDownWideShort,
 	faBars,
+	faDesktop,
+	faTableColumns,
 	faBarsStaggered,
 	faBell,
 	faCircleDot,
@@ -337,6 +340,29 @@ type SidebarCollaboratorEntry = NoteGridCollaboratorFilter & {
  * connection as the one whose answer is actually wanted.
  */
 const SEARCH_REMOTE_TIMEOUT_MS = 12000;
+
+/**
+ * How long typing has to pause before the full search runs.
+ *
+ * This was 50 ms, which is not a debounce so much as a formality: every keystroke fired its own
+ * search, and each one returned a different set, so the list grew and shrank on every letter and
+ * the filter row appeared and disappeared underneath it. "elevators" is nine searches, eight of
+ * which nobody wanted to see the answer to.
+ *
+ * Fast in-memory results (phase 1) are deliberately NOT debounced — they are what keeps typing
+ * feeling live. This only delays the expensive pass: the IndexedDB scan and the network.
+ */
+const SEARCH_DEBOUNCE_MS = 250;
+
+/**
+ * How long the results have to hold still before the filter chips are rebuilt from them.
+ *
+ * Longer than the search debounce on purpose. The chips are a *control surface*: you reach for
+ * them after you have finished typing, so they are allowed to lag the results they describe, and
+ * it is far better that they lag than that they move while you are aiming at one. Their counts
+ * are not subject to this — a number changing in place costs nothing.
+ */
+const SEARCH_FACET_SETTLE_MS = 600;
 
 const FAB_LIGHT_ICON_SRC = '/icons/FAB-light.png';
 const FAB_DARK_ICON_SRC = '/icons/FAB-dark.png';
@@ -2123,6 +2149,9 @@ export function App(): React.JSX.Element {
 	/** The network side of the search didn't come back, so what's listed is only what this
 	 *  device holds. Shown, not hidden: results that exist only on the server are missing. */
 	const [searchResultsDegraded, setSearchResultsDegraded] = React.useState(false);
+	/** The result set the filter chips are drawn from. Updated only when typing settles — see
+	 *  the effect below and the note on the chip SET inside the searchFacets memo. */
+	const [settledFacetSource, setSettledFacetSource] = React.useState<readonly NoteSearchResult[]>([]);
 	/** Selected filter chips, as `axis:value` keys. Cleared whenever the query changes — a filter
 	 *  held over from the previous search silently hides results for the new one. */
 	const [searchFacetSelection, setSearchFacetSelection] = React.useState<readonly string[]>([]);
@@ -2357,9 +2386,13 @@ export function App(): React.JSX.Element {
 	const viewModeOptions = React.useMemo(
 		() => [
 			{ mode: 'inbox' as ViewMode, icon: faInbox, imgSrc: inboxIconSrc, label: t('app.viewInbox') },
-			{ mode: 'card' as ViewMode, icon: faGrip, label: t('app.viewCard') },
-			{ mode: 'list' as ViewMode, icon: faList, label: t('app.viewList') },
-			{ mode: 'strip' as ViewMode, icon: faBarsStaggered, label: t('app.viewDetailedList') },
+			// maskSrc, not imgSrc: these buttons recolour to the accent on hover and when
+			// selected, and an <img> cannot follow `color`. Drawn as a mask over currentColor
+			// instead, so a replacement asset inherits every state for free and needs no
+			// light/dark pair. See public/icons/README-view-icons.md for the shape of the file.
+			{ mode: 'card' as ViewMode, icon: faGrip, maskSrc: '/icons/view-card.svg', label: t('app.viewCard') },
+			{ mode: 'list' as ViewMode, icon: faBars, label: t('app.viewList') },
+			{ mode: 'strip' as ViewMode, icon: faBarsStaggered, maskSrc: '/icons/view-detailed.svg', label: t('app.viewDetailedList') },
 			{ mode: 'bubble' as ViewMode, icon: faCircleDot, label: t('app.viewBubble') },
 		],
 		[inboxIconSrc, t]
@@ -2370,7 +2403,33 @@ export function App(): React.JSX.Element {
 		}
 		return { mode: 'card' as ViewMode, icon: faGrip, label: t('app.viewCard') };
 	}, [t, viewMode, viewModeOptions]);
-	const viewModeIcon = selectedViewModeOption.icon;
+	/**
+	 * The glyph for one view-mode entry, wherever it appears — the picker list and both trigger
+	 * buttons. Written once because it was already duplicated across the triggers, and adding a
+	 * third case there meant the trigger would go on showing the Font Awesome icon for a mode
+	 * whose picker entry had been given a custom one.
+	 *
+	 * maskSrc wins over imgSrc: a mask inherits the button's colour through every hover and
+	 * selected state, which an <img> cannot.
+	 */
+	const renderViewModeOptionIcon = (option: { icon: IconDefinition; imgSrc?: string; maskSrc?: string }): React.ReactNode => {
+		if (option.maskSrc) {
+			return (
+				<span
+					className="app-view-mode-mask-icon"
+					aria-hidden="true"
+					style={{
+						WebkitMaskImage: `url("${option.maskSrc}")`,
+						maskImage: `url("${option.maskSrc}")`,
+					}}
+				/>
+			);
+		}
+		if (option.imgSrc) {
+			return <img src={option.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />;
+		}
+		return <FontAwesomeIcon icon={option.icon} />;
+	};
 	const listScrollAnchorRef = React.useRef<ListScrollAnchor | null>(null);
 	const [listScrollAnchor, setListScrollAnchor] = React.useState<ListScrollAnchor | null>(null);
 	const clearListScrollAnchor = React.useCallback(() => {
@@ -8867,7 +8926,7 @@ export function App(): React.JSX.Element {
 	const sidebarEntries: SidebarEntry[] = React.useMemo(
 		() => ([
 			{ id: 'notes', label: viewMode === 'bubble' ? 'All Notes' : (resolvedActiveWorkspaceName || t('workspace.unnamed')), sublabel: viewMode === 'bubble' ? undefined : t('workspace.sidebarTitle'), icon: faFileLines, kind: 'link' },
-			{ id: 'workspaces', label: viewMode === 'bubble' ? 'Workspaces' : t('workspace.sidebarTitle'), icon: faGrip, kind: 'group' },
+			{ id: 'workspaces', label: viewMode === 'bubble' ? 'Workspaces' : t('workspace.sidebarTitle'), icon: faDesktop, kind: 'group' },
 			{ id: 'collections', label: viewMode === 'bubble' ? 'All Collections' : t('app.sidebarCollections'), icon: faFolder, kind: 'group' },
 			{ id: 'labels', label: viewMode === 'bubble' ? 'All Labels' : t('app.sidebarLabels'), icon: faTag, kind: 'group' },
 			{ id: 'collaborators', label: t('prefs.collaborators'), icon: faShareNodes, kind: 'group' },
@@ -10459,7 +10518,10 @@ export function App(): React.JSX.Element {
 		// the warm case (user has been using the app and docs are resident).
 		void searchLoadedNotes(searchArgs).then((fastResults) => {
 			if (!cancelled && fastResults.length > 0) {
-				setSearchResults(fastResults);
+				// Through the same ordering as everything else, or the instant results arrive in
+				// recency order and then visibly reshuffle when the real search lands a moment
+				// later. Merging against an empty remote side is just "sort these".
+				setSearchResults(mergeSearchResults([], fastResults, deferredSearchQuery));
 			}
 		});
 
@@ -10491,7 +10553,7 @@ export function App(): React.JSX.Element {
 				if (cancelled) return;
 				const offlineDone = offlineResults !== null || offlineFailed;
 				const everythingSettled = remoteSettled && offlineDone;
-				const merged = mergeSearchResults(remoteResults ?? [], offlineResults ?? []);
+				const merged = mergeSearchResults(remoteResults ?? [], offlineResults ?? [], deferredSearchQuery);
 
 				// Nothing to show YET is not the same as nothing to show. The device's index can
 				// legitimately come back empty for a note only the server knows about, and
@@ -10535,7 +10597,7 @@ export function App(): React.JSX.Element {
 				if (cancelled) return;
 				setSearchResultsBusy(false);
 			});
-		}, 50);
+		}, SEARCH_DEBOUNCE_MS);
 
 		return () => {
 			cancelled = true;
@@ -10654,6 +10716,30 @@ export function App(): React.JSX.Element {
 		});
 	}, [searchResults, searchFacetSelectionByAxis]);
 
+	// When the filter chips are allowed to change.
+	//
+	// Every keystroke produces a different result set, so chips derived straight from it came
+	// and went on every letter — and with the panel open that reflowed it continuously. The
+	// chips are only ever reached for once you have stopped typing, so they are rebuilt from the
+	// results as they stand once those have been quiet for a beat, and left alone until then.
+	//
+	// The first fill is immediate. Waiting would mean opening Filters just after results land
+	// and finding it empty, which is a worse trade than one settle at the start.
+	const settledFacetSourceRef = React.useRef<readonly NoteSearchResult[]>([]);
+	settledFacetSourceRef.current = settledFacetSource;
+	React.useEffect(() => {
+		if (!deferredSearchQuery) {
+			if (settledFacetSourceRef.current.length > 0) setSettledFacetSource([]);
+			return undefined;
+		}
+		// Still working: whatever is on screen is about to change, so there is nothing to settle.
+		if (searchResultsBusy) return undefined;
+		const delay = settledFacetSourceRef.current.length === 0 ? 0 : SEARCH_FACET_SETTLE_MS;
+		const timer = window.setTimeout(() => setSettledFacetSource(searchResults), delay);
+		// Each new result set restarts the clock, so this only fires once typing actually stops.
+		return () => window.clearTimeout(timer);
+	}, [deferredSearchQuery, searchResults, searchResultsBusy]);
+
 	const searchFacets = React.useMemo(() => {
 		// Counts are live: they answer "how many results would I have if I picked this, given what
 		// is already picked". The critical part is that a chip is counted against every selected
@@ -10676,17 +10762,25 @@ export function App(): React.JSX.Element {
 			why: subsetForAxis('why'),
 		};
 
-		// The chip SET and its ORDER both come from the unfiltered results, and deliberately so.
-		// If chips appeared and vanished, or re-sorted by live count, the row would reshuffle
-		// under the finger that just tapped it and the next tap would land on something else.
-		// Positions stay put; only the numbers move.
+		// The chip SET and its ORDER come from a SETTLED snapshot of the results — not the live
+		// ones — and deliberately so. If chips appeared and vanished, or re-sorted by live count,
+		// the row would reshuffle under the finger that just tapped it and the next tap would
+		// land on something else. Positions stay put; only the numbers move.
+		//
+		// That rule originally held only within one result set. Typing broke it from the outside:
+		// every keystroke is a new result set, so chips and whole rows came and went on each
+		// letter and the expanded panel reflowed continuously. Extending the same rule across
+		// keystrokes is what `settledFacetSource` is — the chips describe the search you have
+		// stopped typing, while the counts beside them stay live. A chip whose count falls to
+		// zero needs no special handling here: it is already drawn dimmed, disabled and in place,
+		// which is exactly the right thing for "this no longer matches anything".
 		const facets = new Map<string, { axis: SearchFacetAxis; label: string; total: number }>();
 		const bump = (key: string, axis: SearchFacetAxis, label: string): void => {
 			const existing = facets.get(key);
 			if (existing) existing.total += 1;
 			else facets.set(key, { axis, label, total: 1 });
 		};
-		for (const result of searchResults) {
+		for (const result of settledFacetSource) {
 			bump(searchFacetKeyForGroup(result.group), 'where', result.group.label);
 			bump(`what:${result.type}`, 'what', t(`search.noteType.${result.type}`));
 			// A result carries every kind it matched, so it counts once per chip it belongs to.
@@ -10711,7 +10805,7 @@ export function App(): React.JSX.Element {
 				selected: searchFacetSelection.includes(key),
 			}))
 			.sort((a, b) => (axisOrder[a.axis] - axisOrder[b.axis]) || (b.label < a.label ? 1 : b.label > a.label ? -1 : 0));
-	}, [searchResults, searchFacetSelection, searchFacetSelectionByAxis, formatSearchMatchLabel, t]);
+	}, [searchResults, settledFacetSource, searchFacetSelection, searchFacetSelectionByAxis, formatSearchMatchLabel, t]);
 
 	// Which axes actually have a row worth drawing. A row with one chip can't filter anything
 	// within its own axis (picking it selects everything the row describes), so it isn't worth a
@@ -10720,6 +10814,22 @@ export function App(): React.JSX.Element {
 	const searchFacetAxesWithRows = React.useMemo(() => (
 		(['where', 'what', 'why'] as const).filter((axis) => searchFacets.filter((facet) => facet.axis === axis).length >= 2)
 	), [searchFacets]);
+
+	// Whether the Filters bar exists, and separately whether it can be opened.
+	//
+	// These have to be two different questions. Tying the bar's existence to the chip arithmetic
+	// made it unmount mid-search: narrowing from 84 notes to 12 can drop every axis below the
+	// two-chip threshold, so the bar vanished, the results jumped up to fill the gap, and the
+	// next keystroke put it back. A control that disappears while you are typing at it is worse
+	// than one that is present and says it has nothing to offer.
+	//
+	// So the bar is here whenever there is anything to filter, full stop, and holds its height.
+	// When no axis has enough chips to be a filter, the toggle simply disables.
+	const showSearchFacetBar = filteredSearchResults.length > 0;
+	const canExpandSearchFacets = searchFacetAxesWithRows.length > 0;
+	// Collapse when there is nothing to show, so that an open panel can't spring back into
+	// existence a keystroke later and shift everything again.
+	const searchFacetsExpanded = searchFacetsOpen && canExpandSearchFacets;
 
 	const groupedSearchResults = React.useMemo(() => {
 		const groups = new Map<string, { label: string; items: NoteSearchResult[] }>();
@@ -10740,6 +10850,62 @@ export function App(): React.JSX.Element {
 	}, [t]);
 	const canShowGlobalSearchResults = viewMode !== 'bubble' && sidebarView !== 'images' && sidebarView !== 'documents';
 	const hasGlobalSearchResults = canShowGlobalSearchResults && Boolean(deferredSearchQuery);
+
+	// Publishes where the desktop search panel starts, so CSS can size it against the window.
+	//
+	// The panel is absolutely positioned at the bottom of .app-main-sticky, and CSS has no way
+	// to ask how tall that bar is — so without this the only option was a fixed max-height, and
+	// it was capped at a little over half the window for no reason other than not knowing. The
+	// bar is sticky, so its bottom edge also moves until it docks, which is why this listens to
+	// scroll as well as resize (the editor-offset effect above does the same for the same reason).
+	React.useEffect(() => {
+		if (isMobileViewport || !hasGlobalSearchResults) return undefined;
+		let raf = 0;
+		const compute = (): void => {
+			cancelAnimationFrame(raf);
+			raf = requestAnimationFrame(() => {
+				const bar = topControlsRef.current;
+				if (!bar) return;
+				const bottom = Math.max(0, Math.round(bar.getBoundingClientRect().bottom));
+				document.documentElement.style.setProperty('--app-search-results-top', `${bottom}px`);
+			});
+		};
+		compute();
+		window.addEventListener('resize', compute, { passive: true });
+		window.addEventListener('scroll', compute, { passive: true });
+		return () => {
+			cancelAnimationFrame(raf);
+			window.removeEventListener('resize', compute);
+			window.removeEventListener('scroll', compute);
+			document.documentElement.style.removeProperty('--app-search-results-top');
+		};
+	}, [hasGlobalSearchResults, isMobileViewport]);
+
+	// Clicking anywhere that isn't the search closes it.
+	//
+	// Asked for because picking something in the sidebar left the results panel sitting over the
+	// grid: the sidebar's own filters already end a search, but its view buttons and everything
+	// else did not, so the overlay hung around on top of whatever you had just navigated to.
+	// Rather than enumerate every control that ought to dismiss it, anything outside does.
+	//
+	// Desktop only, deliberately. On a phone the search is a full-screen affair with its own
+	// close button and its own entry on the history stack, and "outside" is mostly the dimmed
+	// backdrop — wiring a second dismissal path into that is how the mobile overlay history gets
+	// out of step with itself.
+	React.useEffect(() => {
+		if (isMobileViewport || !hasGlobalSearchResults) return undefined;
+		const handlePointerDown = (event: PointerEvent): void => {
+			const node = event.target as Node | null;
+			const element = node instanceof Element ? node : node?.parentElement ?? null;
+			if (!element) return;
+			// The results themselves, and the field that produced them, are not "outside".
+			if (element.closest('.global-search-results')) return;
+			if (element.closest('.app-header-search')) return;
+			clearSearch();
+		};
+		window.addEventListener('pointerdown', handlePointerDown);
+		return () => window.removeEventListener('pointerdown', handlePointerDown);
+	}, [clearSearch, hasGlobalSearchResults, isMobileViewport]);
 	function renderGlobalSearchResults(variantClassName: string): React.ReactNode {
 		return (
 		<section className={`global-search-results ${variantClassName}`} aria-live="polite">
@@ -10770,13 +10936,15 @@ export function App(): React.JSX.Element {
 						) : null}
 					</div>
 				</div>
-				{searchFacetAxesWithRows.length > 0 ? (
+				{showSearchFacetBar ? (
 					<div className="global-search-facets-bar">
 						<button
 							type="button"
-							className={`global-search-facets-toggle${searchFacetsOpen ? ' global-search-facets-toggle--open' : ''}`}
-							aria-expanded={searchFacetsOpen}
+							className={`global-search-facets-toggle${searchFacetsExpanded ? ' global-search-facets-toggle--open' : ''}`}
+							aria-expanded={searchFacetsExpanded}
 							aria-controls={searchFacetsPanelId}
+							// Present but inert when this result set has nothing worth filtering by.
+							disabled={!canExpandSearchFacets}
 							onClick={() => setSearchFacetsOpen((open) => !open)}
 						>
 							<FontAwesomeIcon icon={faFilter} className="global-search-facets-toggle-icon" />
@@ -10795,7 +10963,7 @@ export function App(): React.JSX.Element {
 						) : null}
 					</div>
 				) : null}
-				{searchFacetAxesWithRows.length > 0 && searchFacetsOpen ? (
+				{searchFacetsExpanded ? (
 					// One chip is never a filter — it would match everything and do nothing, so the row
 					// only earns its space from two up. Grouped into labelled rows per axis: a divider
 					// between groups was doing the grouping job before, and it scrolled away with the
@@ -11277,7 +11445,7 @@ export function App(): React.JSX.Element {
 								aria-label={isMobileSidebarOpen ? t('common.close') : t('app.expandSidebar')}
 								title={isMobileSidebarOpen ? t('common.close') : t('app.expandSidebar')}
 							>
-								<FontAwesomeIcon icon={faBars} />
+								<FontAwesomeIcon icon={faTableColumns} />
 							</button>
 								<span className={`app-header-logo-stack mobile-app-icon is-${headerConnectionState}`} aria-hidden="true">
 									<img className="app-header-logo" src={headerIconSrc} alt="" />
@@ -11322,9 +11490,7 @@ export function App(): React.JSX.Element {
 								aria-pressed={isViewModePickerOpen}
 								title={selectedViewModeOption.label}
 							>
-								{selectedViewModeOption.imgSrc
-									? <img src={selectedViewModeOption.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
-									: <FontAwesomeIcon icon={viewModeIcon} />}
+								{renderViewModeOptionIcon(selectedViewModeOption)}
 								{renderInboxBadge()}
 							</button>
 							<button
@@ -11382,7 +11548,7 @@ export function App(): React.JSX.Element {
 								aria-label={sidebarIsCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')}
 								title={sidebarIsCollapsed ? t('app.expandSidebar') : t('app.collapseSidebar')}
 							>
-								<FontAwesomeIcon icon={faBars} />
+								<FontAwesomeIcon icon={faTableColumns} />
 							</button>
 								<span className={`app-header-logo-stack is-${headerConnectionState}`} aria-hidden="true">
 									<img className="app-header-logo" src={headerIconSrc} alt="" />
@@ -11447,9 +11613,7 @@ export function App(): React.JSX.Element {
 								aria-pressed={isViewModePickerOpen}
 								title={selectedViewModeOption.label}
 							>
-								{selectedViewModeOption.imgSrc
-									? <img src={selectedViewModeOption.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
-									: <FontAwesomeIcon icon={viewModeIcon} />}
+								{renderViewModeOptionIcon(selectedViewModeOption)}
 								{renderInboxBadge()}
 							</button>
 							<button
@@ -11477,9 +11641,7 @@ export function App(): React.JSX.Element {
 								aria-label={option.label}
 								title={option.label}
 							>
-								{option.imgSrc
-									? <img src={option.imgSrc} alt="" aria-hidden="true" style={{ width: 18, height: 18, objectFit: 'contain' }} />
-									: <FontAwesomeIcon icon={option.icon} />}
+								{renderViewModeOptionIcon(option)}
 								{option.mode === 'inbox' ? renderInboxBadge() : null}
 							</button>
 						))}
@@ -11543,7 +11705,7 @@ export function App(): React.JSX.Element {
 								(entry.id === 'documents' && sidebarView === 'documents') ||
 								(entry.id === 'notes' && sidebarView === 'notes');
 							return (
-								<div key={entry.id}>
+								<div key={entry.id} data-sidebar-entry={entry.id}>
 									<button
 										ref={(node) => {
 											sidebarEntryButtonRefs.current[entry.id] = node;
@@ -11551,7 +11713,15 @@ export function App(): React.JSX.Element {
 										type="button"
 										className={`app-sidebar-link${isGroup && isOpen ? ' is-open' : ''}${isEntryActive ? ' is-active' : ''}`}
 										onClick={() => {
-											if (!isMobileViewport && sidebarIsCollapsed) {
+											// Expanding the rail is only the right response for a GROUP, whose
+											// point is the list of children you can't see while collapsed.
+											// A leaf — Notes, Trash, Images, Documents — has nothing to
+											// expand into, so swallowing the click to open the sidebar made
+											// you click twice to reach a view that was one click away, and
+											// left you with a rail you hadn't asked to open. Leaves now fall
+											// through to their own handlers below, which already do the
+											// right thing on desktop.
+											if (!isMobileViewport && sidebarIsCollapsed && isGroup) {
 												if ((entry.id === 'collections' || entry.id === 'labels') && sidebarUsesBubbleSummaryMenus) {
 													return;
 												}

@@ -2789,6 +2789,11 @@ export function NoteCard(props: NoteCardProps): React.JSX.Element {
 					</button>
 					</div>
 				) : null}
+			{/* A trashed card gets no dock — see .trashCard in the stylesheet, which hides this and
+			    reclaims the space it reserved. Hidden in CSS rather than with the `hidden`
+			    attribute or by not rendering: .cardFooter sets `display: block`, which beats the
+			    UA rule for [hidden], and the element is left in place so the measurement refs
+			    hanging off it behave exactly as they always have. */}
 			<div ref={footerRef} className={`${styles.cardFooter}${suppressContentInteractions ? ` ${styles.cardFooterGuarded}` : ''}`}>
 				{/* Desktop-only footer dock mirrors the editor action strip so note
 				    cards and editors share the same action vocabulary. */}

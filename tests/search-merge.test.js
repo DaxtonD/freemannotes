@@ -78,7 +78,7 @@ describe('mergeSearchResults', () => {
 		assert.equal(merged[0].imageCount, 4);
 	});
 
-	it('sorts newest first regardless of which side supplied each note', () => {
+	it('sorts newest first when relevance is equal, whichever side supplied each note', () => {
 		const remote = [result({ noteId: 'old', docId: 'ws-1:old', updatedAt: '2026-01-01T00:00:00.000Z' })];
 		const offline = [result({ noteId: 'new', docId: 'ws-1:new', updatedAt: '2026-10-09T00:00:00.000Z' })];
 		assert.deepEqual(mergeSearchResults(remote, offline).map((r) => r.noteId), ['new', 'old']);
@@ -99,5 +99,72 @@ describe('mergeSearchResults', () => {
 		);
 		assert.ok(merged[0].collaboratorMatches.length <= 3, 'collaborators uncapped');
 		assert.ok(merged[0].labelMatches.length <= 4, 'labels uncapped');
+	});
+});
+
+describe('mergeSearchResults relevance ordering', () => {
+	// Results used to be ordered by updatedAt alone, so searching "elevators" put anything edited
+	// today above a note actually titled "Elevator inspection". Every result matches the query;
+	// what separates them is where the match landed.
+	const olderButBetter = (title, extra) => result({
+		noteId: title, docId: `ws-1:${title}`, title, updatedAt: '2020-01-01T00:00:00.000Z', ...extra,
+	});
+	const newerButWorse = (title, extra) => result({
+		noteId: title, docId: `ws-1:${title}`, title, updatedAt: '2026-10-09T00:00:00.000Z', ...extra,
+	});
+
+	it('a title match beats a more recent note that only matched elsewhere', () => {
+		const ranked = mergeSearchResults([
+			newerButWorse('Site diary', { matchKinds: ['document'] }),
+			olderButBetter('Elevator inspection', { matchKinds: ['note'] }),
+		], [], 'elevator');
+		assert.equal(ranked[0].title, 'Elevator inspection');
+	});
+
+	it('an exact title beats a prefix, which beats a word start, which beats mid-word', () => {
+		const ranked = mergeSearchResults([
+			olderButBetter('Stairwell and elevator'),
+			olderButBetter('Elevators'),
+			olderButBetter('Elevator'),
+			olderButBetter('Televator panel'),
+		], [], 'elevator');
+		assert.deepEqual(ranked.map((r) => r.title), [
+			'Elevator',             // exact
+			'Elevators',            // prefix
+			'Stairwell and elevator', // starts a word
+			'Televator panel',      // buried mid-word — the "el inside well" case
+		]);
+	});
+
+	it('a note matching in its own text outranks an attachment-only match, titles being equal', () => {
+		const ranked = mergeSearchResults([
+			olderButBetter('Notes A', { matchKinds: ['document'] }),
+			olderButBetter('Notes B', { matchKinds: ['note'] }),
+		], [], 'elevator');
+		assert.equal(ranked[0].title, 'Notes B');
+	});
+
+	it('recency still decides between two equally relevant results', () => {
+		const ranked = mergeSearchResults([
+			olderButBetter('Elevator', { noteId: 'old', docId: 'ws-1:old' }),
+			newerButWorse('Elevator', { noteId: 'new', docId: 'ws-1:new' }),
+		], [], 'elevator');
+		assert.deepEqual(ranked.map((r) => r.noteId), ['new', 'old']);
+	});
+
+	it('falls back to pure recency when no query is supplied', () => {
+		const ranked = mergeSearchResults([
+			olderButBetter('Elevator'),
+			newerButWorse('Something else'),
+		], []);
+		assert.equal(ranked[0].title, 'Something else');
+	});
+
+	it('a query with regex characters in it does not throw', () => {
+		// The word-boundary test builds a RegExp from the query; an unescaped "(" would throw
+		// and take the whole search down with it.
+		for (const query of ['c++', 'a(b', 'what?', '[draft]', 'a|b', 'back\\slash', '^start', 'end$']) {
+			assert.doesNotThrow(() => mergeSearchResults([result({ title: query })], [], query), `query: ${query}`);
+		}
 	});
 });

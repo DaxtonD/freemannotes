@@ -464,7 +464,17 @@
 .canvasDetail {
 	right: auto;
 	bottom: auto;
-	z-index: 1;
+	/*
+	 * 0, not 1. This is a sharper redraw of the piece of the page you are looking at, so it
+	 * belongs at the same depth as the page canvas it covers — and DOM order already puts it
+	 * there, because it is appended to the host after React's children.
+	 *
+	 * At 1 it tied with .highlight, and a tie is decided by DOM order, which this always wins
+	 * for the same reason. So search highlights vanished the moment you zoomed past
+	 * MAX_CANVAS_PIXELS and this canvas appeared over the top of them, and came back when you
+	 * zoomed out again and it was thrown away.
+	 */
+	z-index: 0;
 }
 
 /* The one transient message the viewer has: a paste that couldn't bring measurements across

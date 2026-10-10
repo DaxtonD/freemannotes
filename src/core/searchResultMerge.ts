@@ -9,6 +9,37 @@ import type { NoteSearchResult } from './noteMediaApi';
 // able to test directly, so it lives where a test can require it in isolation. Type imports are
 // erased at compile time, so this module has no runtime dependencies at all.
 
+/**
+ * How well a result answers the query, independent of when it was last touched.
+ *
+ * Results used to be ordered by `updatedAt` alone, which meant relevance never entered into it:
+ * search "elevators" and a note titled "Elevator inspection" edited last year sat below anything
+ * edited today that merely contained the letters somewhere. Every result does match the query —
+ * the server and the local pass both filter on it — so what separates them is *where* the match
+ * landed and how completely.
+ *
+ * Kept deliberately coarse. These are buckets, not a tuned ranking function: a title hit beats a
+ * body hit beats an attachment-only hit, and recency still breaks ties within a bucket. Anything
+ * finer would need real relevance data (term frequency, field weights) that this search doesn't
+ * collect, and a clever score nobody can predict is worse than a blunt one everybody can.
+ */
+function relevanceScore(result: NoteSearchResult, foldedQuery: string): number {
+	if (!foldedQuery) return 0;
+	const title = String(result.title || '').toLowerCase();
+	let score = 0;
+	if (title === foldedQuery) score = 1000;
+	else if (title.startsWith(foldedQuery)) score = 800;
+	// A match that begins a word reads as intentional; one buried mid-word is usually incidental
+	// ("el" inside "well"), which is exactly the case that looked wrong while typing.
+	else if (new RegExp(`\\b${foldedQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`).test(title)) score = 600;
+	else if (title.includes(foldedQuery)) score = 400;
+
+	// The note's own text matched, rather than only something attached to it. Added rather than
+	// substituted so a title hit still outranks a body hit on the same note.
+	if (result.matchKinds.includes('note')) score += 150;
+	return score;
+}
+
 /** The same note can arrive from both sides; this is what counts as "the same note". */
 function resultKey(result: NoteSearchResult): string {
 	// openNoteId is part of the identity on purpose: one underlying doc legitimately appears
@@ -32,7 +63,8 @@ function resultKey(result: NoteSearchResult): string {
  */
 export function mergeSearchResults(
 	remote: readonly NoteSearchResult[],
-	offline: readonly NoteSearchResult[]
+	offline: readonly NoteSearchResult[],
+	query = ''
 ): NoteSearchResult[] {
 	const merged = new Map<string, NoteSearchResult>();
 	for (const result of remote) merged.set(resultKey(result), result);
@@ -55,5 +87,14 @@ export function mergeSearchResults(
 			updatedAt: Date.parse(current.updatedAt) >= Date.parse(result.updatedAt) ? current.updatedAt : result.updatedAt,
 		});
 	}
-	return Array.from(merged.values()).sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt));
+	// Relevance first, recency as the tie-break within a bucket. Scores are computed once per
+	// result rather than inside the comparator, which would recompute them O(n log n) times.
+	const foldedQuery = query.trim().toLowerCase();
+	const scored = Array.from(merged.values()).map((result) => ({
+		result,
+		score: relevanceScore(result, foldedQuery),
+		updatedAt: Date.parse(result.updatedAt) || 0,
+	}));
+	scored.sort((left, right) => (right.score - left.score) || (right.updatedAt - left.updatedAt));
+	return scored.map((entry) => entry.result);
 }

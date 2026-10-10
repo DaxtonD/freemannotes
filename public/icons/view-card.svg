@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <!--
+    Card view. Two columns of cards with uneven heights, because that is literally what this view
+    is — a masonry grid, not an even one. The icon it replaced was Font Awesome's "grip", six
+    evenly spaced dots, which reads as a drag handle: the thing you grab to move something,
+    sitting in a row of buttons that change what you are looking at.
+
+    Painted as a CSS mask over currentColor, so the fill below is only for previewing the file on
+    its own — the colour is discarded at runtime and only the alpha channel is used.
+  -->
+  <g fill="currentColor">
+    <rect x="2" y="2" width="8.75" height="11.5" rx="1.2" />
+    <rect x="2" y="16" width="8.75" height="6" rx="1.2" />
+    <rect x="13.25" y="2" width="8.75" height="6" rx="1.2" />
+    <rect x="13.25" y="10.5" width="8.75" height="11.5" rx="1.2" />
+  </g>
+</svg>

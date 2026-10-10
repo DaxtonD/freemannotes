@@ -324,6 +324,32 @@
 	transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
+/*
+ * A custom view-mode icon supplied as an SVG file, painted as a MASK over currentColor rather
+ * than drawn as an image.
+ *
+ * These buttons turn accent-coloured on hover and while selected, and an <img> cannot follow
+ * `color` — it would sit there in its authored colour while the border and everything else
+ * changed around it. A mask takes only the alpha channel of the file and fills it with the
+ * button's current colour, so one file covers every state and every theme with no light/dark
+ * pair (which is what the older imgSrc path needs).
+ *
+ * Consequence worth knowing when authoring: the colours in the SVG are discarded. Only opacity
+ * matters — solid where you want ink, transparent where you don't.
+ */
+.app-view-mode-mask-icon {
+	display: inline-block;
+	width: 18px;
+	height: 18px;
+	background-color: currentColor;
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+	-webkit-mask-position: center;
+	mask-position: center;
+	-webkit-mask-size: contain;
+	mask-size: contain;
+}
+
 .app-view-mode-option:hover,
 .app-view-mode-option:focus-visible {
 	background: color-mix(in srgb, var(--color-accent) 10%, var(--color-surface-2));
@@ -2438,6 +2464,26 @@
 	display: inline-flex;
 }
 
+/*
+ * The current workspace's name is not a destination.
+ *
+ * Expanded, that top entry reads as a heading — "Workspace" above the workspace's name — and
+ * both expanded states already hide every entry icon anyway, so the collapsed rail is the only
+ * place this ever showed. There it was reduced to a lone document glyph standing in for a line
+ * of text, sitting above Trash and Images as though it were the same kind of thing.
+ *
+ * The whole row goes, not just the glyph: collapsed, `.sidebar-label` is `display: none`, so
+ * hiding the icon alone would leave an invisible but clickable row at the top of the rail. It
+ * is the wrapper rather than the button for the same reason — an empty wrapper still takes its
+ * share of the column's gap.
+ *
+ * Nothing is stranded by this: the way back to Notes from Trash or Images is the scope chip's
+ * clear button in the main area, which is where you are already looking.
+ */
+.app-sidebar.is-collapsed [data-sidebar-entry='notes'] {
+	display: none;
+}
+
 .app-sidebar:not(.is-collapsed) .sidebar-icon {
 	display: none;
 }
@@ -2645,6 +2691,40 @@
 }
 
 /*
+ * On desktop the results float OVER the grid instead of taking part in the layout.
+ *
+ * This panel is the last child of .app-main-sticky, and in normal flow it added its own height
+ * to that bar — so opening a search shoved the whole grid down the page, and every keystroke
+ * that changed the result count shoved it again. The grid heaving up and down underneath was
+ * most of why typing felt so unsteady.
+ *
+ * .app-main-sticky is already `position: sticky`, which makes it a containing block, so the
+ * panel anchors to the bottom of the bar and stays with it while the grid scrolls underneath.
+ * Nothing in the chain to .app-main sets overflow, so there is nothing to clip it.
+ */
+.global-search-results--sticky {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	right: 0;
+	/* Above .app-main-sticky's own z-index of 60 and anything in the grid below it. */
+	z-index: 70;
+	/*
+	 * Run most of the way down the window rather than stopping at half of it.
+	 *
+	 * Overrides the shared `min(52dvh, 560px)` further up, which was never a design decision —
+	 * it was the only safe number available before anything knew where this panel starts.
+	 * `--app-search-results-top` is the sticky bar's bottom edge in viewport pixels, published
+	 * by an effect in App.tsx precisely because CSS cannot measure that bar. The fallback keeps
+	 * the old conservative cap for the frame or two before it is first written.
+	 *
+	 * 24px of breathing room at the bottom so the panel reads as floating over the grid rather
+	 * than wedged against the edge of the window.
+	 */
+	max-height: calc(100dvh - var(--app-search-results-top, 46dvh) - 24px);
+}
+
+/*
  * The query, the count and the filter toggle stay put while results scroll under them. This
  * carries the panel's top and side padding (see .global-search-results) and needs an OPAQUE
  * background: the panel itself is deliberately translucent, and text sliding under a translucent
@@ -2762,6 +2842,22 @@
 .global-search-facets-toggle--open {
 	color: var(--color-text);
 	border-color: color-mix(in srgb, var(--color-accent) 30%, var(--color-border));
+}
+
+/*
+ * This result set has nothing worth filtering by. The button stays, dimmed, rather than the bar
+ * unmounting — the whole point is that it holds its height while you type, so the results below
+ * don't jump up and back down on every keystroke. Same reasoning as the zero-count chips, which
+ * also stay in place rather than reflowing the row under your finger.
+ */
+.global-search-facets-toggle:disabled {
+	opacity: 0.45;
+	cursor: default;
+}
+
+.global-search-facets-toggle:disabled:hover {
+	color: var(--color-text-muted);
+	border-color: var(--color-border);
 }
 
 .global-search-facets-toggle-icon {

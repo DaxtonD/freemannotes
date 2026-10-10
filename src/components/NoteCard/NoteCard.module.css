@@ -1198,6 +1198,23 @@
 		padding-bottom: 50px;
 	}
 
+	/*
+	 * No dock on a trashed card. Its actions — colour, labels, reminders — are for a note you
+	 * are working on, not one awaiting deletion, and a trash card already carries its own
+	 * Restore control. All the dock did there was slide up under the pointer on the way past.
+	 *
+	 * The footer is also what reserves the 50px the dock sits in, so both go together: leave the
+	 * padding and every card in trash carries a strip of nothing; leave the footer visible and
+	 * its absolutely-positioned 50px would sit over the content instead.
+	 */
+	.card.trashCard {
+		padding-bottom: 0;
+	}
+
+	.trashCard .cardFooter {
+		display: none;
+	}
+
 	.cardFooter {
 		display: block;
 		position: absolute;

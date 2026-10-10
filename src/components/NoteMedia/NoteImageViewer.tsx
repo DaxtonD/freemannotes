@@ -216,6 +216,18 @@ export function NoteImageViewer(props: NoteImageViewerProps): React.JSX.Element 
 	}, [scale, updateScale]);
 
 	const handlePointerDown = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+		// A press that lands on a control is a button press, not the start of a pan.
+		//
+		// Bail before anything else, because what follows calls setPointerCapture on the STAGE.
+		// Capture retargets every later pointer event to the stage, so the pointerup never
+		// reaches the button under the finger and the browser never produces a click from it.
+		// That is why Back, Close and the next/previous arrows went dead the moment the image
+		// was zoomed even slightly: below scale 1 the drag path returns before capturing, so
+		// they worked, and above it every press was swallowed by a pan that had already begun.
+		const origin = event.target as Element | null;
+		if (origin && typeof origin.closest === 'function' && origin.closest('button, a, [role="button"], input, textarea, select')) {
+			return;
+		}
 		activePointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
 		swipeStartRef.current = { x: event.clientX, y: event.clientY };
 		if (event.pointerType === 'touch') {
