@@ -2905,25 +2905,6 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		);
 	}, [notesList, noteOrder, storeVersion, docsById, props.showTrashed, visibleIds]);
 
-	// Bumped when DocumentManager tears down a room, to re-run the loading effect below.
-	//
-	// Without this, a doc destroyed underneath us is never noticed: we keep the dead Y.Doc in
-	// docsById and the effect only re-runs when its deps change, which a teardown does not
-	// cause. Measured cost of that: consistently three notes of ninety-five with no server
-	// connection at all, no error and nothing on screen to show it, until something incidental
-	// re-ran this effect — scrolling the grid, for instance, which is how it was finally spotted.
-	//
-	// Deliberately a counter rather than pruning docsById: the effect's own guard below already
-	// detects the stale doc (`manager.peekDoc(id) !== currentDoc`) and re-requests it, and
-	// leaving the old doc in place until the replacement arrives means the card keeps rendering
-	// instead of flashing back to a snapshot shell.
-	const [destroyedRoomTick, setDestroyedRoomTick] = React.useState(0);
-	React.useEffect(() => {
-		return manager.subscribeRoomDestroyed(() => {
-			setDestroyedRoomTick((current) => current + 1);
-		});
-	}, [manager]);
-
 	React.useEffect(() => {
 		if (!noteOrder) return;
 		for (const id of orderedIds) {
@@ -2957,7 +2938,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					pendingDocLoadsRef.current.delete(id);
 				});
 		}
-	}, [destroyedRoomTick, manager, noteOrder, orderedIds, sharedAliasSignature, sharedNoteIdSet]);
+	}, [manager, noteOrder, orderedIds, sharedAliasSignature, sharedNoteIdSet]);
 
 	// ── Track when all docs are loaded (drives shimmer + layout animations) ─
 	//

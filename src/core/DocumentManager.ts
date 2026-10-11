@@ -568,7 +568,25 @@ export class DocumentManager {
 	 * watchdog could rescue them, since it sweeps live docs. A user noticing that scrolling the
 	 * grid fixed the count is what identified it.
 	 *
-	 * Anything holding a Y.Doc from this manager should subscribe and re-request on teardown.
+	 * **Nothing subscribes to this today, and subscribing naively is a trap — read this first.**
+	 *
+	 * NoteGrid did subscribe, in 1.21.4, re-requesting any note whose room had been torn down.
+	 * That shipped and broke image loading across the app, because `setExternalRoomAliases`
+	 * destroys rooms *every time it runs* (and it runs on every `refreshNoteShareState`): the
+	 * grid re-requested the destroyed room, recreated it — under the wrong name, if the alias
+	 * that justified it was gone — and the next alias refresh destroyed it again. An unbounded
+	 * create/destroy loop, each cycle opening another WebSocket, which saturated the socket
+	 * budget and starved `/uploads/` image requests behind ~90 pending handshakes.
+	 *
+	 * So a subscriber has to be bounded (at most one re-request per room per session) AND has
+	 * to distinguish "torn down because the workspace changed, and the note is still wanted"
+	 * from "torn down because this room should not exist any more". Teardown alone does not
+	 * tell you which, and guessing produced the loop above.
+	 *
+	 * Kept because the hard-won fact is worth more than the ten lines: the manager destroys
+	 * rooms silently and callers are left holding a dead Y.Doc, which is how a handful of notes
+	 * ended up with no server connection at all. Whatever fixes that properly will need this
+	 * signal — just not the way it was used the first time.
 	 */
 	/**
 	 * Coalesced on purpose. `teardownAllRooms()` destroys every room in one go, and notifying

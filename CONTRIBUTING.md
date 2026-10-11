@@ -1229,18 +1229,28 @@ pass (unconnected beyond `WATCHDOG_STUCK_MS`) is second, for the other shape.
 TOO)`. So the room is torn down entirely, which is why a watchdog sweeping live docs could never
 rescue it: there is no doc to sweep.
 
-**The fix is `DocumentManager.subscribeRoomDestroyed()`.** Teardown is no longer silent, and
-NoteGrid subscribes and re-requests. Three choices in that wiring worth keeping:
+**This is still unfixed, and the obvious fix is a trap.** `DocumentManager.subscribeRoomDestroyed()`
+exists so teardown is no longer silent. NoteGrid subscribed to it in 1.21.4 and re-requested any
+note whose room had gone. That shipped, and **it broke image loading across the whole app.**
 
-- **A counter, not pruning `docsById`.** The loading effect's own guard already spots the stale
-  doc (`peekDoc(id) !== currentDoc`, and `peekDoc` returns null for a destroyed room) and
-  re-requests it. Leaving the dead doc in state until its replacement lands means the card keeps
-  rendering rather than flashing back to a snapshot shell.
-- **Coalesced to one flush per macrotask.** `teardownAllRooms()` destroys every room at once;
-  notifying per room would hand NoteGrid ~98 events, i.e. ~98 state updates and effect passes to
-  do one re-request. It also stops a mass teardown becoming a notification storm.
-- **Deferred, not synchronous.** `destroyRoom` still has cleanup below the call site, and a
-  listener re-requesting immediately could race it.
+`setExternalRoomAliases` destroys rooms *every time it runs*, and it runs on every
+`refreshNoteShareState`. So: the alias refresh destroyed a room, the grid re-requested it, the
+room was recreated (under the wrong name, if the alias that justified it was gone), the next
+alias refresh destroyed it again, and round it went. An unbounded create/destroy loop, each turn
+opening another WebSocket, which saturated the socket budget and left `/uploads/` image requests
+queued behind ~90 pending handshakes. Reverted in 1.21.5.
+
+A correct subscriber has to be **bounded** (at most one re-request per room per session) *and*
+has to distinguish "torn down because the workspace changed, and this note is still wanted" from
+"torn down because this room should not exist any more". Teardown alone does not tell you which,
+and guessing is what produced the loop.
+
+**Better still, do not fix this at all — delete the code path.** These rooms only exist because
+the grid eagerly opens a doc and a socket for *every note in the workspace* during startup, which
+is also the single largest remaining cost of a cold boot (~20 s to open ~96 sockets at the ~7/s
+the proxy serves). Load docs and sockets for what is actually on screen and the early-startup
+teardown has nothing to catch. The bug goes away as a consequence rather than needing a fourth
+attempt at a patch.
 
 **The watchdog was cut back to one case, because the other one did harm.** It originally also
 cycled providers that existed but looked stuck - built on a "wedged socket" theory that the

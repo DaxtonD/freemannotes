@@ -2,6 +2,17 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.21.5 - 2026-10-11
+
+### Fixed
+- **Images load again.** We broke them in 1.21.4 and this undoes it. Worth describing honestly because the cause was a change that looked completely safe.
+
+  1.21.4 taught the note grid to ask for a note again if its connection had been torn down - aimed at a handful of notes that were silently never syncing. What it missed is that the routine housekeeping which tidies up shared-note bookkeeping tears rooms down *every time it runs*, which is often. So the grid asked for the note back, it was recreated, the next tidy-up tore it down again, and round it went - unbounded, opening a new connection every lap. With around ninety connections already queued on a cold start, that was enough to starve image requests of a slot entirely. Hence a lot of pictures that would not appear.
+
+  The grid no longer does that. The two genuinely good fixes from 1.21.4 stay: connections are no longer stranded half-closed when the network blips, and the watchdog that was cycling healthy connections on every resume is still gone.
+
+- **Those few notes that silently never sync are, for now, still doing it.** Three attempts at this have produced one fix that could not have worked, one that made resuming the app considerably worse, and one that broke images. It is an annoyance - a couple of notes out of ninety-odd do not receive other people's edits until you scroll the grid - and it is not worth a fourth swing while the swings keep landing on something else. The honest plan is to delete the thing that creates the problem rather than keep patching around it: the grid currently opens a connection for *every* note you own the moment the app starts, which is both why those notes get caught in startup crossfire and why a cold start spends twenty seconds opening connections nobody asked for. Fix that and this stops existing.
+
 ## 1.21.4 - 2026-10-11
 
 ### Fixed
