@@ -750,7 +750,8 @@ type GridNoteCardProps = {
 	onRestoreNote?: () => void;
 	onAddCollaborator?: () => void;
 	onAddImage?: () => void;
-	onMoreMenu: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
+	/** Omitted in trash view, which is what drops the touch-only ellipsis and the long-press menu. */
+	onMoreMenu?: (anchorRect?: { top: number; left: number; width: number; height: number } | null) => void;
 	canEdit: boolean;
 	allowChecklistItemInteractions?: boolean;
 	allowLinkInteractions?: boolean;
@@ -4367,11 +4368,20 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					if (Date.now() < suppressGridOpenUntilRef.current) return;
 					props.onSelectNote(note.id);
 				} : undefined}
-				allowChecklistItemInteractions={props.noteCardCheckboxInteractions !== false}
-				allowLinkInteractions={props.noteCardLinkInteractions !== false}
-				allowCompletedItemInteractions={!isSnapshotCard && props.noteCardCompletedInteractions !== false}
+				// Nothing on a trashed card is live except Restore. The desktop footer dock was
+				// already hidden for trash in CSS, which is why this only ever looked broken on
+				// a phone: the touch-only corner ellipsis, the completed-items chevron, the
+				// checklist checkboxes and the URL previews all stayed tappable, so you could
+				// quietly edit — and write to the Yjs doc of — a note sitting in the bin.
+				allowChecklistItemInteractions={!isTrashView && props.noteCardCheckboxInteractions !== false}
+				allowLinkInteractions={!isTrashView && props.noteCardLinkInteractions !== false}
+				allowCompletedItemInteractions={!isTrashView && !isSnapshotCard && props.noteCardCompletedInteractions !== false}
 				bannerTitlePosition={props.noteCardBannerTitlePosition}
-				suppressContentInteractions={isChipInteractionGuardActive}
+				// The three flags above remove the affordances they own; this covers whatever
+				// else lives in the content region (media previews, link rail, long-press) with
+				// the guard overlay that already exists for the chip-interaction case. The
+				// restore row is rendered OUTSIDE contentRegion, so it stays reachable.
+				suppressContentInteractions={isChipInteractionGuardActive || isTrashView}
 				onAddReminder={props.onAddReminder ? () => props.onAddReminder?.(note.id, docId, doc.getText('title').toString()) : undefined}
 				// Caught this one because the user asked "did we consider the restore
 				// case?" while we were mid-implementation of shared-note trash below —
@@ -4392,7 +4402,11 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 					const noteType = rawNoteType === 'checklist' ? 'checklist' : rawNoteType === 'drawing' ? 'drawing' : 'text' as const;
 					props.onAddImage?.(note.id, docId, doc.getText('title').toString(), noteType);
 				} : undefined}
-				onMoreMenu={(anchorRect) => {
+				// Withheld in trash, which drops both the touch-only corner ellipsis
+				// (hasMenuButton is gated on this prop) and the long-press gesture. Every entry
+				// in that menu was already disabled for a trashed note apart from Restore —
+				// which the card's own button does better — so the menu was a dead end anyway.
+				onMoreMenu={isTrashView ? undefined : (anchorRect) => {
 					const cardEl = gridRef.current?.querySelector(`[data-note-id="${note.id}"]`);
 					setMoreMenuOpenedByLongPress(typeof anchorRect === 'undefined');
 					setMoreMenuAnchorRect(anchorRect ?? (cardEl ? cardEl.getBoundingClientRect().toJSON() : null));

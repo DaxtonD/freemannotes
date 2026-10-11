@@ -412,6 +412,8 @@
     "highlightRose": "Resaltado rosa intenso",
     "highlightClear": "Quitar resaltado",
     "emojiPicker": "Insertar emoji",
+    "insertTodayDate": "Insertar la fecha de hoy",
+    "insertSpecificDate": "Insertar una fecha concreta",
     "undoCheckbox": "Deshacer cambio de casilla",
     "redoCheckbox": "Rehacer cambio de casilla"
   },

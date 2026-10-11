@@ -13,6 +13,8 @@ import {
 	faAlignLeft,
 	faAlignRight,
 	faBold,
+	faCalendarDays,
+	faCaretDown,
 	faCode,
 	faFileCode,
 	faCopy,
@@ -41,6 +43,9 @@ import * as Y from 'yjs';
 import { getCollapsedRichHeadingPrefsSnapshot, getRichHeadingCollapsed, subscribeCollapsedRichHeadingPrefs } from '../../core/collapsibleHeadingPreferences';
 import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollapseDebug';
 import type { EditorToolbarMode } from '../../core/deviceAppearancePreferences';
+import { formatInsertableDate } from '../../core/editorDateInsert';
+import { promptForDateToInsert } from '../../core/editorDatePicker';
+import { isMediaDockTabTap } from './mediaDockTabs';
 import { createRichTextExtensions, getMarkdownPasteHtml, TASK_ITEM_CHECKBOX_TOGGLE_META, type RichTextVariant } from '../../core/richText';
 import { ReferenceSuggestionKey } from '../../core/extensions/ReferenceExtension';
 import { convertToMarkdown, prepareEditorCopyPayload } from '../../core/clipboardConversion';
@@ -895,6 +900,106 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 		setLinkMenuOpen(false);
 	}, [props.editor, props.applyInlineFormattingToWholeEditor]);
 
+	// Date insertion is a split button: the calendar face drops today's date in one press, the
+	// caret beside it opens the browser's own date picker for any other day. No long-press
+	// anywhere, on purpose — a desktop mouse has no such gesture, and on touch this row
+	// already owns touchstart/touchmove for horizontal toolbar scrolling, which is not a thing
+	// to go wedging a press-and-hold detector into.
+	//
+	// The picker itself lives in core/editorDatePicker, outside React, because on a phone THIS
+	// WHOLE TOOLBAR is unmounted the moment the picker opens — every render site is gated on
+	// the soft keyboard being open, and a native picker closes the keyboard. Anything we own
+	// here (a hidden input, a popover) is destroyed mid-pick. Read that module before changing
+	// this; it cost three attempts to find.
+	const insertDateText = React.useCallback((value: Date): void => {
+		const text = formatInsertableDate(value);
+		if (!text || !props.editor) return;
+		// An explicit text node rather than a bare string: insertContent parses a string as
+		// HTML, and a localized date has no business being run through an HTML parser.
+		props.editor.chain().focus().insertContent({ type: 'text', text }).run();
+	}, [props.editor]);
+	const insertTodayDate = React.useCallback((): void => {
+		insertDateText(new Date());
+	}, [insertDateText]);
+	const openDatePicker = React.useCallback((): void => {
+		const editor = props.editor;
+		if (!editor) return;
+		// Closes over the editor rather than reading props later: by the time this resolves,
+		// the component that owns these props may well be gone. The editor itself survives —
+		// it belongs to the editor component, not to the toolbar.
+		promptForDateToInsert((picked) => {
+			if (editor.isDestroyed) return;
+			const text = formatInsertableDate(picked);
+			if (!text) return;
+			editor.chain().focus().insertContent({ type: 'text', text }).run();
+		});
+	}, [props.editor]);
+
+	// These two controls must not depend on `click`, for the reason documented at length under
+	// "Media Sheet: Controls Must Not Depend on `click`" — the first tap on a control inside a
+	// horizontally scrollable region gets its synthetic click WITHHELD by Chrome until the
+	// scroller settles, and this toolbar row is exactly such a region (see toolbarRowRef and
+	// the scroll-hint state). That is the "it failed the first time I pressed it, then worked
+	// every time after, and failed again the first time in the next note" symptom to the
+	// letter: a freshly mounted toolbar has an unsettled scroller.
+	//
+	// So act on touchend, with `click` left as the mouse path. Ghost-click suppression is a
+	// short TIME WINDOW and not a boolean, per the other standing rule in this codebase — a
+	// plain "swallow whatever comes next" flag eats a genuine later tap instead of the ghost.
+	const dateTouchStartRef = React.useRef<{ x: number; y: number } | null>(null);
+	const suppressDateClickUntilRef = React.useRef(0);
+	const handleDateTouchStart = React.useCallback((event: React.TouchEvent): void => {
+		const touch = event.touches[0];
+		dateTouchStartRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+	}, []);
+	const handleDateTouchEnd = React.useCallback((event: React.TouchEvent, action: () => void): void => {
+		const start = dateTouchStartRef.current;
+		dateTouchStartRef.current = null;
+		// Shared with the attachment sheet's tab strip so the two can't drift on what counts
+		// as a tap versus a scroll.
+		if (!isMediaDockTabTap(start, event.changedTouches[0])) return;
+		// Stops a late browser-emitted click from running the action a second time.
+		event.preventDefault();
+		suppressDateClickUntilRef.current = Date.now() + 400;
+		action();
+	}, []);
+	const handleDateClick = React.useCallback((action: () => void): void => {
+		if (Date.now() < suppressDateClickUntilRef.current) return;
+		action();
+	}, []);
+
+	/** Both toolbars render the identical control; only the button sizing class differs. */
+	const renderDateInsertControl = (buttonClass: string): React.JSX.Element => (
+		<div className={styles.dateInsertGroup}>
+			<button
+				type="button"
+				className={`${styles.formatButton}${buttonClass} ${styles.dateInsertPrimary}`}
+				aria-label={t('editors.insertTodayDate')}
+				title={t('editors.insertTodayDate')}
+				onMouseDown={preventToolbarFocusSteal}
+				onPointerDown={preventToolbarFocusSteal}
+				onTouchStart={handleDateTouchStart}
+				onTouchEnd={(event) => handleDateTouchEnd(event, insertTodayDate)}
+				onClick={() => handleDateClick(insertTodayDate)}
+			>
+				<FontAwesomeIcon icon={faCalendarDays} />
+			</button>
+			<button
+				type="button"
+				className={`${styles.formatButton}${buttonClass} ${styles.dateInsertCaret}`}
+				aria-label={t('editors.insertSpecificDate')}
+				title={t('editors.insertSpecificDate')}
+				onMouseDown={preventToolbarFocusSteal}
+				onPointerDown={preventToolbarFocusSteal}
+				onTouchStart={handleDateTouchStart}
+				onTouchEnd={(event) => handleDateTouchEnd(event, openDatePicker)}
+				onClick={() => handleDateClick(openDatePicker)}
+			>
+				<FontAwesomeIcon icon={faCaretDown} />
+			</button>
+		</div>
+	);
+
 	const setLink = React.useCallback((e: React.MouseEvent<HTMLButtonElement>): void => {
 		if (!props.editor) return;
 		if (props.editor.isActive('link')) {
@@ -1409,6 +1514,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 									<FontAwesomeIcon icon={faFaceSmile} />
 								</button>
 							</div>
+							{renderDateInsertControl(condensedSubButtonClass)}
 							{props.onCreateUrlPreview ? (
 								<button type="button" className={`${styles.formatButton}${condensedSubButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
 									{renderToolbarImageIcon('URL-Preview.png')}
@@ -1578,6 +1684,7 @@ export function RichTextToolbar(props: RichTextToolbarProps): React.JSX.Element 
 								<FontAwesomeIcon icon={faFaceSmile} />
 							</button>
 						</div>
+						{renderDateInsertControl(primaryToolbarButtonClass)}
 						{props.onCreateUrlPreview ? (
 							<button type="button" className={`${styles.formatButton}${primaryToolbarButtonClass}`} aria-label={t('editors.urlPreview')} title={t('editors.urlPreview')} onMouseDown={preventToolbarFocusSteal} onPointerDown={preventToolbarFocusSteal} onClick={props.onCreateUrlPreview}>
 								{renderToolbarImageIcon('URL-Preview.png')}

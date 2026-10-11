@@ -288,6 +288,18 @@ export async function renderDrawingThumbnail(
 		return cached;
 	}
 
+	// A placeholder is what we show when we couldn't render the real thing — it is not a
+	// thumbnail and it must never be filed as one. Writing it to the store also made it the
+	// "latest known good" thumbnail for this drawing (updateLatestThumbnailSnapshot), so a
+	// drawing whose room we hadn't synced yet got a placeholder cached against it and then
+	// served that placeholder as the warm-start image on every later boot. Keep it in memory
+	// so a card doesn't re-render the same SVG on every pass, and no further than that: the
+	// moment the doc has real elements the version key changes and we render properly.
+	const cacheInMemoryOnly = (dataUrl: string): string => {
+		resolvedThumbnailCache.set(cacheKey, dataUrl);
+		return dataUrl;
+	};
+
 	const persistThumbnail = (dataUrl: string): string => {
 		resolvedThumbnailCache.set(cacheKey, dataUrl);
 		void writeStoredDrawingThumbnail({
@@ -318,7 +330,7 @@ export async function renderDrawingThumbnail(
 				if (latestCachedThumbnail) {
 					return persistThumbnail(latestCachedThumbnail);
 				}
-				return persistThumbnail(await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: placeholderOptions?.seed || drawingId }));
+				return cacheInMemoryOnly(await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: placeholderOptions?.seed || drawingId }));
 			}
 			const files = Object.fromEntries(drawingDoc.getMap<any>('assets').entries());
 			const canvas = await exportToCanvas({
@@ -333,7 +345,7 @@ export async function renderDrawingThumbnail(
 			});
 			return persistThumbnail(canvas.toDataURL('image/png'));
 		} catch {
-			return persistThumbnail(await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: placeholderOptions?.seed || drawingId }));
+			return cacheInMemoryOnly(await buildDrawingPlaceholderDataUrl(fallbackTitle, { ...placeholderOptions, seed: placeholderOptions?.seed || drawingId }));
 		}
 	})();
 

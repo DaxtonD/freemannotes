@@ -1153,6 +1153,49 @@
 	cursor: default;
 }
 
+/* Date insert: calendar face inserts today, caret opens the native picker. Two real buttons
+   joined into one control, rather than a gesture — long-press doesn't exist on a desktop
+   mouse, and this toolbar's touch handlers are already busy with horizontal scrolling. */
+.dateInsertGroup {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	flex: 0 0 auto;
+}
+
+.dateInsertPrimary {
+	position: relative;
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+	padding-right: 5px;
+}
+
+.dateInsertCaret {
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+	min-width: 0;
+	padding: 0 5px;
+	font-size: var(--font-size-xs);
+	opacity: 0.72;
+}
+
+.dateInsertCaret:hover,
+.dateInsertCaret:focus-visible {
+	opacity: 1;
+}
+
+/* Separates the two halves so the control reads as a split button and not one wide icon. */
+.dateInsertPrimary::after {
+	content: '';
+	position: absolute;
+	top: 6px;
+	bottom: 6px;
+	right: 0;
+	width: 1px;
+	background: color-mix(in srgb, var(--color-text) 16%, transparent);
+	pointer-events: none;
+}
+
 .formatToolbarStack {
 	display: flex;
 	flex-direction: column;

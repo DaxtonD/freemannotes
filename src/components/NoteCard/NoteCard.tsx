@@ -38,6 +38,7 @@ import {
 	renderDrawingThumbnail,
 	type DrawingPlaceholderOptions,
 } from '../../core/drawingThumbnails';
+import { subscribeAttachedDrawingAccessRecovered } from '../../core/attachedDrawingAccessRecovery';
 import {
 	filterRemoteNoteImagesByPendingDeletes,
 	getCachedRemoteNoteImages,
@@ -911,6 +912,19 @@ function useLinkedDrawingThumbnail(
 	const [thumbnailUrl, setThumbnailUrl] = React.useState<string | null>(
 		() => (firstDrawingId ? peekLatestDrawingThumbnail(firstDrawingId) : null)
 	);
+	// Bumped when App reconciles access to a drawing room we were previously refused. The
+	// drawing's own websocket comes back 1008 when nobody ever wrote its collaborator rows
+	// (attached offline, or we joined the note afterwards), and DocumentManager retires the
+	// room on a 1008 rather than retrying — so without this the card keeps the placeholder
+	// for the whole session even once the grant lands. It's a dep of the render effect below,
+	// which is the entire job: re-run it and the doc gets loaded again, for real this time.
+	const [accessRecoveryNonce, setAccessRecoveryNonce] = React.useState(0);
+	React.useEffect(() => {
+		if (!firstDrawingId) return;
+		return subscribeAttachedDrawingAccessRecovered(firstDrawingId, () => {
+			setAccessRecoveryNonce((current) => current + 1);
+		});
+	}, [firstDrawingId]);
 	// Stable-ref for the debounce timer so we can cancel it in cleanup.
 	const debounceTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 	// The effect below needs both of these, but neither can be a dependency: NoteGrid builds a
@@ -1014,7 +1028,7 @@ function useLinkedDrawingThumbnail(
 			}
 			if (unsubscribeDoc) unsubscribeDoc();
 		};
-	}, [applyThumbnailUrl, fallbackTitle, firstDrawingId, placeholderThemeKey]);
+	}, [accessRecoveryNonce, applyThumbnailUrl, fallbackTitle, firstDrawingId, placeholderThemeKey]);
 
 	return thumbnailUrl;
 }

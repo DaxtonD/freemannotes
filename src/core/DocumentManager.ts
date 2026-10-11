@@ -101,6 +101,10 @@ export class DocumentManager {
 	private readonly websocketProviders = new Map<string, WebsocketProvider>();
 	private readonly externalRoomAliases = new Map<string, string>();
 	private readonly connectionSubscribers = new Set<() => void>();
+	// Notified when the server slams a room shut with 1008. Normally that means access was
+	// revoked and there is nothing to do, but an attached drawing can be refused simply
+	// because nobody ever wrote its collaborator rows — see attachedDrawingAccessRecovery.
+	private readonly accessDeniedSubscribers = new Set<(roomName: string) => void>();
 	// Internal room-level pending tracker. This includes all rooms, then emitConnectionStatus
 	// filters out non-user rooms (such as the notes registry) before exposing snapshot data.
 	private readonly pendingSyncRooms = new Set<string>();
@@ -470,6 +474,17 @@ export class DocumentManager {
 		this.connectionSubscribers.add(listener);
 		return () => {
 			this.connectionSubscribers.delete(listener);
+		};
+	}
+
+	/**
+	 * Fires with the room name whenever the server refuses a websocket with 1008. The room is
+	 * torn down right afterwards, so a listener that wants the room back has to re-open it.
+	 */
+	public subscribeRoomAccessDenied(listener: (roomName: string) => void): () => void {
+		this.accessDeniedSubscribers.add(listener);
+		return () => {
+			this.accessDeniedSubscribers.delete(listener);
 		};
 	}
 
@@ -1349,6 +1364,15 @@ export class DocumentManager {
 			if ((event as any)?.code === 1008) {
 				// Server explicitly denied access (share revoked or note deleted).
 				// Stop retrying — schedule room destruction to unwind after this handler.
+				// Announce it first, though: an attached drawing can be refused purely because
+				// its collaborator rows were never written, and that is recoverable.
+				for (const listener of this.accessDeniedSubscribers) {
+					try {
+						listener(roomName);
+					} catch {
+						// A listener throwing must not block the teardown below.
+					}
+				}
 				setTimeout(() => { if (this.docs.has(roomName)) this.destroyRoom(roomName); }, 0);
 				return;
 			}

@@ -412,6 +412,8 @@
     "highlightRose": "Rose highlight",
     "highlightClear": "Remove highlight",
     "emojiPicker": "Insert emoji",
+    "insertTodayDate": "Insert today's date",
+    "insertSpecificDate": "Insert a specific date",
     "undoCheckbox": "Undo checkbox change",
     "redoCheckbox": "Redo checkbox change"
   },

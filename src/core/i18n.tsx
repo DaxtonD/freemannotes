@@ -355,6 +355,8 @@ const FALLBACK_MESSAGES: Dictionary = {
 		// Fallback branch for newly introduced editor dock/formatting labels.
 		// These keys ensure old or failed locale payloads still render readable UI
 		// instead of showing raw i18n keys during startup or offline conditions.
+		insertTodayDate: "Insert today's date",
+		insertSpecificDate: 'Insert a specific date',
 		newText: 'New Text Note',
 		newChecklist: 'New Checklist Note',
 		titlePlaceholder: 'Title',

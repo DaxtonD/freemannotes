@@ -573,6 +573,120 @@ export async function flushPendingPlacementMetadataActions(userId: string): Prom
 	await task;
 }
 
+// An attached drawing lives in its own Yjs room, and that room's access is gated by its
+// OWN NoteCollaborator rows — it does not inherit anything from the note it hangs off.
+// Those rows only ever got written by one fire-and-forget POST at drawing-save time, so
+// attaching a drawing while offline dropped the grant on the floor and never looked back:
+// the drawing's content synced later like everything else (CRDT, durable, fine), but every
+// collaborator's websocket to the drawing room got slammed shut with a 1008, their doc
+// stayed empty, and their note card fell back to the generic placeholder until somebody
+// opened the drawing and accidentally re-granted themselves access. Same shape as the
+// placement-metadata queue above: a server-side row, not CRDT state, therefore its own
+// honest-to-god queue.
+export type PendingAttachedDrawingAccessAction = {
+	id: string;
+	userId: string;
+	parentDocId: string;
+	drawingDocId: string;
+	createdAt: string;
+};
+
+const ATTACHED_DRAWING_ACCESS_QUEUE_PREFIX = 'freemannotes.attachedDrawingAccessQueue.v1:';
+
+function attachedDrawingAccessQueueKey(userId: string): string {
+	return `${ATTACHED_DRAWING_ACCESS_QUEUE_PREFIX}${String(userId || '').trim()}`;
+}
+
+function readAttachedDrawingAccessQueue(userId: string): PendingAttachedDrawingAccessAction[] {
+	if (typeof localStorage === 'undefined') return [];
+	try {
+		const raw = localStorage.getItem(attachedDrawingAccessQueueKey(userId));
+		if (!raw) return [];
+		const parsed = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter((item): item is PendingAttachedDrawingAccessAction => Boolean(
+			item && typeof item === 'object' && item.parentDocId && item.drawingDocId
+		));
+	} catch {
+		return [];
+	}
+}
+
+function writeAttachedDrawingAccessQueue(userId: string, actions: readonly PendingAttachedDrawingAccessAction[]): void {
+	if (typeof localStorage === 'undefined') return;
+	try {
+		localStorage.setItem(attachedDrawingAccessQueueKey(userId), JSON.stringify(actions));
+	} catch {
+		// Ignore persistent queue write failures.
+	}
+}
+
+export function readPendingAttachedDrawingAccessActions(userId: string): PendingAttachedDrawingAccessAction[] {
+	return readAttachedDrawingAccessQueue(userId);
+}
+
+export function queueAttachedDrawingAccessAction(action: PendingAttachedDrawingAccessAction): void {
+	if (!action.userId || !action.parentDocId || !action.drawingDocId) return;
+	const existing = readAttachedDrawingAccessQueue(action.userId);
+	// The call is idempotent server-side (it upserts, and skips the upsert entirely when the
+	// rows already match), so one entry per parent+drawing pair is all we ever need.
+	if (existing.some((item) => item.parentDocId === action.parentDocId && item.drawingDocId === action.drawingDocId)) {
+		return;
+	}
+	existing.push(action);
+	writeAttachedDrawingAccessQueue(action.userId, existing);
+	void requestPwaBackgroundSync();
+}
+
+export function removePendingAttachedDrawingAccessAction(userId: string, parentDocId: string, drawingDocId: string): void {
+	if (!userId || !parentDocId || !drawingDocId) return;
+	writeAttachedDrawingAccessQueue(
+		userId,
+		readAttachedDrawingAccessQueue(userId).filter(
+			(item) => !(item.parentDocId === parentDocId && item.drawingDocId === drawingDocId)
+		)
+	);
+}
+
+const pendingAttachedDrawingAccessFlushes = new Map<string, Promise<void>>();
+
+export async function flushPendingAttachedDrawingAccessActions(userId: string): Promise<void> {
+	if (!userId) return;
+	const existing = pendingAttachedDrawingAccessFlushes.get(userId);
+	if (existing) {
+		await existing;
+		return;
+	}
+	const task = (async () => {
+		const pending = readAttachedDrawingAccessQueue(userId);
+		for (const action of pending) {
+			try {
+				await requestSyncAttachedDrawingCollaborators({
+					parentDocId: action.parentDocId,
+					drawingDocId: action.drawingDocId,
+				});
+				removePendingAttachedDrawingAccessAction(userId, action.parentDocId, action.drawingDocId);
+			} catch (error) {
+				// A 403/404 means the parent note is gone or we are not allowed to speak for it
+				// any more. Retrying that forever would just be a permanent entry in the queue
+				// re-failing on every reconnect, so drop it and move on.
+				if (isMissingAccessError(error)) {
+					removePendingAttachedDrawingAccessAction(userId, action.parentDocId, action.drawingDocId);
+					continue;
+				}
+				// Still unreachable — leave the rest queued for whatever triggers the next flush.
+				break;
+			}
+		}
+	})().finally(() => {
+		if (pendingAttachedDrawingAccessFlushes.get(userId) === task) {
+			pendingAttachedDrawingAccessFlushes.delete(userId);
+		}
+	});
+	pendingAttachedDrawingAccessFlushes.set(userId, task);
+	await task;
+}
+
 export async function declineNoteShareInvitation(invitationId: string): Promise<{ invitation: NoteShareInvitation }> {
 	return fetchJson(`/api/note-shares/invitations/${encodeURIComponent(invitationId)}/decline`, {
 		method: 'POST',

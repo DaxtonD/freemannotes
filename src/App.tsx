@@ -133,6 +133,7 @@ import { assignNoteBannerFile, assignNoteLabels, assignNoteToCollection, markNot
 import type { NoteGroupingMode, NoteSortMode, ReminderFilterMode, SortDirection } from './utilities/getVisibleNotes';
 import {
 	clearPendingCollaboratorActions,
+	flushPendingAttachedDrawingAccessActions,
 	flushPendingCollaboratorActions,
 	flushPendingNoteShareActions,
 	flushPendingPlacementMetadataActions,
@@ -141,6 +142,7 @@ import {
 	listAllSharedNotePlacements,
 	listSharedNotePlacements,
 	moveCachedNoteShareCollaborators,
+	queueAttachedDrawingAccessAction,
 	queueNoteShareCollaboratorRevokeAction,
 	queuePlacementMetadataAction,
 	readCachedNoteShareCollaborators,
@@ -152,6 +154,12 @@ import {
 	updateSharedNotePlacementMetadata,
 	type SharedNotePlacement,
 } from './core/noteShareApi';
+import {
+	armAttachedDrawingAccessRecovery,
+	notifyAttachedDrawingAccessRecovered,
+	resetAttachedDrawingAccessRecovery,
+	takeAttachedDrawingAccessRecovery,
+} from './core/attachedDrawingAccessRecovery';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
 	cacheSharedNotePlacements,
@@ -3164,20 +3172,74 @@ export function App(): React.JSX.Element {
 		const parentDocId = manager.resolveRoomName(parentNoteId);
 		const drawingDocId = resolveRelatedNoteRoomId(parentNoteId, drawingId);
 		if (!parentDocId || !drawingDocId || parentDocId === drawingDocId) return;
-		await syncAttachedDrawingCollaborators({ parentDocId, drawingDocId }).catch(() => undefined);
-	}, [canSyncAttachedDrawingAccess, manager, resolveRelatedNoteRoomId]);
+		// This grant is the ONLY thing that lets a collaborator read the drawing's own Yjs
+		// room, and it used to be a bare fire-and-forget POST — so attaching a drawing while
+		// offline silently dropped it and every collaborator got a placeholder card forever
+		// (until one of them opened the drawing, which re-granted them access by accident).
+		// Queue it on failure like any other server-side write that has no CRDT to fall back
+		// on; the endpoint is idempotent, so replaying a grant that already landed is free.
+		try {
+			await syncAttachedDrawingCollaborators({ parentDocId, drawingDocId });
+		} catch {
+			if (authUserId) {
+				queueAttachedDrawingAccessAction({
+					id: `attached-drawing-access:${parentDocId}:${drawingDocId}`,
+					userId: authUserId,
+					parentDocId,
+					drawingDocId,
+					createdAt: new Date().toISOString(),
+				});
+			}
+		}
+	}, [authUserId, canSyncAttachedDrawingAccess, manager, resolveRelatedNoteRoomId]);
 
 	const loadDrawingDoc = React.useCallback(async (parentNoteId: string, drawingId: string): Promise<Y.Doc | null> => {
 		const normalizedDrawingId = ensureRelatedNoteAlias(parentNoteId, drawingId);
 		if (!normalizedDrawingId) return null;
+		// Arm (don't call) the access reconciliation. If the websocket for this drawing comes
+		// back 1008, the subscription below gets to ask the server once whether we should have
+		// had access all along — which is what a collaborator needed before, except they had to
+		// do it by hand by opening the drawing.
+		armAttachedDrawingAccessRecovery(
+			resolveRelatedNoteRoomId(parentNoteId, normalizedDrawingId),
+			parentNoteId,
+			normalizedDrawingId
+		);
 		// Access sync is intentionally NOT called here — thumbnail loading should never
 		// trigger the collaborator-sync API, which would fire a metadata event on every
 		// thumbnail render and create an infinite refresh loop (metadata event →
 		// refreshNoteShareState → re-render → new loadDrawingDoc reference → effect
 		// re-runs → API call → metadata event → …).  Access sync happens once in
-		// openAttachedDrawing, just before the editor is opened.
+		// openAttachedDrawing, just before the editor is opened — and now also, at most once
+		// per room per session, from the denial subscription below, which only ever fires when
+		// the server has actually refused us.
 		return manager.getDocWithSync(normalizedDrawingId);
-	}, [ensureRelatedNoteAlias, manager]);
+	}, [ensureRelatedNoteAlias, manager, resolveRelatedNoteRoomId]);
+
+	// The other half of the attached-drawing access fix. A collaborator who was never granted
+	// access to a drawing's own room gets a 1008 and DocumentManager gives up on the room for
+	// good, which is why the card sat on the generic placeholder until somebody opened the
+	// drawing by hand (which re-granted them access as a side effect). Ask the server to
+	// reconcile it once instead, then put the room back and nudge the card to re-render.
+	React.useEffect(() => {
+		if (authStatus !== 'authed') return;
+		return manager.subscribeRoomAccessDenied((roomName) => {
+			const recovery = takeAttachedDrawingAccessRecovery(roomName);
+			if (!recovery) return;
+			void (async () => {
+				try {
+					await syncAttachedDrawingAccess(recovery.parentNoteId, recovery.drawingId);
+					// destroyRoom is scheduled on a timeout from the close handler, so let that
+					// land before re-opening or we just hand the teardown a brand new doc.
+					await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+					await manager.getDocWithSync(recovery.drawingId);
+				} catch {
+					// Nothing to recover — fall through and let the card keep its placeholder.
+				}
+				notifyAttachedDrawingAccessRecovered(recovery.drawingId);
+			})();
+		});
+	}, [authStatus, manager, syncAttachedDrawingAccess]);
 
 	const deleteAttachedDrawing = React.useCallback(async (noteId: string, drawingId: string) => {
 		const normalizedNoteId = String(noteId || '').trim();
@@ -5479,6 +5541,7 @@ export function App(): React.JSX.Element {
 		clearUserIdentityCache();
 		clearUserAvatarCache();
 		clearDrawingThumbnailLocalCache();
+		resetAttachedDrawingAccessRecovery();
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
 		clearPdfViewerPositions();
@@ -6945,6 +7008,15 @@ export function App(): React.JSX.Element {
 			} catch {
 				// Keep the queue intact if a replay request fails.
 			}
+			try {
+				// Attached-drawing access grants that were dropped while offline. Same reasoning
+				// as the placement queue right above: flush here so every caller of
+				// refreshNoteShareState benefits, not just the Background Sync path that iOS
+				// Safari and some desktop browsers never fire.
+				await flushPendingAttachedDrawingAccessActions(authUserId);
+			} catch {
+				// Keep the queue intact if a replay request fails.
+			}
 		}
 		try {
 			let activePlacementFetchFailed = false;
@@ -7178,6 +7250,7 @@ export function App(): React.JSX.Element {
 		await flushPendingCollaboratorActions(authUserId).catch(() => undefined);
 		await flushPendingNoteShareActions(authUserId).catch(() => undefined);
 		await flushPendingPlacementMetadataActions(authUserId).catch(() => undefined);
+		await flushPendingAttachedDrawingAccessActions(authUserId).catch(() => undefined);
 		await loadSidebarWorkspacesRef.current().catch(() => undefined);
 		await refreshActiveWorkspaceRef.current().catch(() => undefined);
 		await refreshNoteShareState().catch(() => undefined);

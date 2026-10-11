@@ -1003,6 +1003,44 @@ back to it. Only in-range pages redraw, so the cost is bounded.
 **If you add a new canvas-backed surface, it needs the same treatment.** The drawing editor
 (Excalidraw) has the same exposure and has not been done yet.
 
+## The Mobile Toolbar Is Gone While a Native Picker Is Open
+
+Every `RichTextToolbar` render site on a phone is gated on the soft keyboard being open —
+`isCoarsePointer && keyboard.isOpen` in `TextEditor`, `mobileKeyboardOpen` in `NoteEditor`. The
+toolbar is a portal that exists only while the keyboard does. So anything that closes the
+keyboard unmounts the entire toolbar, **including the control the user just pressed.**
+
+Opening a native picker (`<input type="date">`, a file chooser, anything the OS draws over the
+page) closes the keyboard. The control is therefore destroyed *while its own picker is still on
+screen*, which means:
+
+- a hidden input owned by the toolbar loses its event listeners before the value is committed —
+  the picker works, the user picks, and nothing happens, with no error anywhere
+- a popover rendered from the toolbar simply vanishes before it can be used
+- a handler that completes synchronously inside the click works fine, which is what makes this
+  so confusing to diagnose: half the buttons are unaffected
+
+The desktop toolbar is a different render (inside `RichTextEditor` itself) and is not
+keyboard-gated, so the whole class of bug is invisible on a desktop and reproduces every time on
+a phone.
+
+**If a toolbar control needs to outlive its own press, it cannot own state or DOM in the
+toolbar's React tree.** `src/core/editorDatePicker.ts` is the worked example: one `<input
+type="date">` created once, parented to `document.body`, never unmounted, with the commit handler
+closing over the `Editor` instance (which survives — it belongs to the editor component, not the
+toolbar). Three attempts that kept the mechanism inside the toolbar all failed before the mount
+condition was read rather than the event plumbing.
+
+Two smaller traps in the same file, both load-bearing:
+
+- **Listen for `change` *and* `input`.** Browsers disagree about which a picker commit fires.
+  Make the handler self-deduping by consuming the value — read it, blank it, then act — so
+  whichever event lands second reads an empty string and no-ops.
+- **Never seed the input with today's date before `showPicker()`.** Picking today then changes
+  nothing, so no event fires at all. An empty date input already opens on the current month.
+- The input must stay *rendered* (1px, `opacity: 0`, out of the way). `showPicker()` throws on an
+  input that isn't being rendered, so `display: none` is not an option.
+
 ## Diagnosing an Unexpected Reload
 
 The app can restart for three reasons, and before the boot forensics existed they were

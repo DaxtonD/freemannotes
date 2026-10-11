@@ -313,16 +313,23 @@ const NoteRow = React.memo(function NoteRow(props: NoteRowProps): React.JSX.Elem
 				</div>
 			</div>
 
-			<button
-				type="button"
-				className={styles.moreBtn}
-				data-more-btn="true"
-				onClick={handleMoreMenuClick}
-				tabIndex={-1}
-				aria-label="More options"
-			>
-				<FontAwesomeIcon icon={faEllipsisVertical} />
-			</button>
+			{/* Same rule as the grid card: a trashed note's only live control is Restore. Every
+			    entry in this menu is disabled for a trashed note except Restore itself, so it
+			    led nowhere — and a shared note in trash has no Restore either (it was never the
+			    recipient's to restore), which is why this keys off isTrashView rather than off
+			    whether the restore button happens to be showing. */}
+			{props.isTrashView ? null : (
+				<button
+					type="button"
+					className={styles.moreBtn}
+					data-more-btn="true"
+					onClick={handleMoreMenuClick}
+					tabIndex={-1}
+					aria-label="More options"
+				>
+					<FontAwesomeIcon icon={faEllipsisVertical} />
+				</button>
+			)}
 		</div>
 	);
 });
