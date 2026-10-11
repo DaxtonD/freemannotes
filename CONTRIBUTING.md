@@ -834,8 +834,13 @@ numbers for that path are different and worth having separately.
   `grid-revealed-GAVE-UP`. The second one means you were shown empty cards
 - **SLOWEST 20 ROOMS** — per-room phase breakdown, including `idb?` (whether the room had any
   local content, i.e. whether this device had ever seen that note)
-- **NEVER SYNCED** and **RECONNECTS / CLOSES / ERRORS** — with close codes; a `1008` is the
-  server refusing access
+- **NEVER SYNCED**, **STUCK ROOM FORENSICS** and **RECONNECTS / CLOSES / ERRORS** — with close
+  codes; a `1008` is the server refusing access. The forensics block prints, for each room that
+  never synced, its provider construction count, teardown count, what `connect:` it was built
+  with, and a **live read of the provider's flags** — or `NO PROVIDER (doc alive / GONE TOO)`.
+  That block exists because `connects=0 closes=0 errors=0` cannot be diagnosed from event
+  counts: there were no events
+- **WATCHDOG RESCUES** — rooms the connection watchdog had to attach or cycle
 
 > Room names contain note ids, not titles or content. Still worth a glance before pasting a
 > report somewhere public.
@@ -1172,6 +1177,44 @@ is the point. A fixed per-socket delay makes the cost scale with workspace size:
 96-room workspace behind a slow proxy, and a real regression on a LAN deployment with a fast path
 where firing everything at once genuinely is quickest. Spreading across a fixed window caps what
 staggering can ever cost, at 98 rooms or 10,000. Do not convert it back to a per-item delay.
+
+## A Room With No Provider Syncs Nothing, Forever
+
+Three note rooms turned up unconnected in every single sync-timing report across two devices
+and three releases: slowest on the phone (50 s), then **never connected at all** on desktop
+after 230 seconds of sitting still, then 145 s on the phone once startup had been sped up, at
+which point they were the entire remaining cost of a cold boot.
+
+Their event counts were `connects=0 disconnects=0 closes=0 errors=0`. That is worth dwelling on,
+because it was misread for three rounds as "a socket that failed and gave up". It is not. It is
+a socket that was **never opened** - a provider that existed and never made one attempt. Event
+counts cannot diagnose an absence of events, and the mistake was reading zeros as evidence for a
+theory instead of as a contradiction of it.
+
+What actually identified it was a user observation: *scrolling the notes grid moves the sync
+count past those rooms*. Scrolling re-runs NoteGrid's doc-loading effect, which re-requests every
+note. If re-requesting a room makes it connect, then re-requesting is what **creates** its
+provider - so there wasn't one.
+
+The sequence: a doc created early enough to be caught by a teardown (bootstrap reaches
+`setActiveWorkspaceId`, which calls `teardownAllRooms()`, deleting the doc and its provider), and
+then nothing re-requests it. NoteGrid's loading effect only re-runs when its dependencies change,
+and a room being destroyed underneath it changes none of them. So the note has no connection
+until something incidentally re-triggers that effect. That also explains why phones recovered and
+desktop did not: a phone fires `visibilitychange` constantly, and plenty of things re-render a
+grid you are touching.
+
+**`sweepStuckProviders` handles two distinct failure shapes, and the order matters.** It sweeps
+`this.docs` *first*, attaching a provider to any live doc that has none - the first version of
+the watchdog only iterated `websocketProviders`, which cannot by construction contain a room with
+no provider, so it would have shipped and done nothing for the actual bug. The stuck-provider
+pass (unconnected beyond `WATCHDOG_STUCK_MS`) is second, for the other shape.
+
+**Known remaining gap:** if the *doc* is destroyed too, not just its provider, the manager has no
+record the note was ever wanted and the watchdog cannot rescue what it does not know about. The
+`destroys` counter and the `doc GONE TOO` marker in the probe's STUCK ROOM FORENSICS block exist
+to tell those two cases apart. If it turns out to be the doc, DocumentManager needs to notify
+subscribers when it tears a room down rather than leaving callers holding a dead reference.
 
 ## Diagnosing an Unexpected Reload
 

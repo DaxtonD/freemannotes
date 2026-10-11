@@ -46,6 +46,24 @@ type RoomRecord = {
 	closes: number;
 	lastCloseCode: number | null;
 	errors: number;
+	watchdogRescues: number;
+	/** How many times a provider has been constructed for this room (destroy/recreate shows up here). */
+	providerCreations: number;
+	/** How many times the room has been torn down. */
+	destroys: number;
+	/** `connect:` passed to the FIRST provider constructed for this room. */
+	createdWithConnect: boolean | null;
+	/**
+	 * Whether this room is currently counted in `connectingCount`.
+	 *
+	 * The first version incremented on `connecting` and decremented on
+	 * `connected`/`disconnected`, which leaked badly: the 1.21.1 resume report showed 494
+	 * "connecting" across 98 rooms, because y-websocket fires `connection-close` without
+	 * always following it with a `disconnected` status (the same report proves it — rooms with
+	 * `closes=5` and `disconnects=1`). Pairing the gauge to a per-room flag makes the number
+	 * mean what it says.
+	 */
+	countedConnecting: boolean;
 };
 
 type Mark = { name: string; at: number; detail?: string };
@@ -89,6 +107,11 @@ function ensureRoom(room: string): RoomRecord | null {
 		closes: 0,
 		lastCloseCode: null,
 		errors: 0,
+		watchdogRescues: 0,
+		providerCreations: 0,
+		destroys: 0,
+		createdWithConnect: null,
+		countedConnecting: false,
 	};
 	rooms.set(room, record);
 	return record;
@@ -136,10 +159,37 @@ export function recordSyncDiagIdbReady(room: string): void {
 	if (record && record.idbReadyAt === null) record.idbReadyAt = Math.round(now());
 }
 
-export function recordSyncDiagWsCreated(room: string): void {
+export function recordSyncDiagWsCreated(room: string, connectRequested?: boolean): void {
 	if (!SYNC_DIAG_ENABLED) return;
 	const record = ensureRoom(room);
-	if (record && record.wsCreatedAt === null) record.wsCreatedAt = Math.round(now());
+	if (!record) return;
+	if (record.wsCreatedAt === null) record.wsCreatedAt = Math.round(now());
+	record.providerCreations += 1;
+	if (typeof connectRequested === 'boolean' && record.createdWithConnect === null) {
+		record.createdWithConnect = connectRequested;
+	}
+}
+
+export function recordSyncDiagRoomDestroyed(room: string): void {
+	if (!SYNC_DIAG_ENABLED) return;
+	const record = ensureRoom(room);
+	if (record) record.destroys += 1;
+}
+
+/**
+ * Lets the report read a provider's LIVE state at capture time.
+ *
+ * Needed because three rooms have now come back, on two devices and across four releases, with
+ * `connects=0 disconnects=0 closes=0 errors=0` — a provider that was constructed and then never
+ * attempted anything. Event counts cannot explain that by definition: there were no events.
+ * Only the provider's current flags can say whether it thinks it should be connecting.
+ */
+type ProviderStateReader = (room: string) => string | null;
+let providerStateReader: ProviderStateReader | null = null;
+
+export function setSyncDiagProviderStateReader(reader: ProviderStateReader | null): void {
+	if (!SYNC_DIAG_ENABLED) return;
+	providerStateReader = reader;
 }
 
 export function recordSyncDiagStatus(room: string, status: string): void {
@@ -148,12 +198,15 @@ export function recordSyncDiagStatus(room: string, status: string): void {
 	if (!record) return;
 	if (status === 'connecting') {
 		if (record.connectingAt === null) record.connectingAt = Math.round(now());
-		connectingCount += 1;
-		if (connectingCount > maxConnecting) maxConnecting = connectingCount;
+		if (!record.countedConnecting) {
+			record.countedConnecting = true;
+			connectingCount += 1;
+			if (connectingCount > maxConnecting) maxConnecting = connectingCount;
+		}
 		return;
 	}
 	if (status === 'connected') {
-		if (connectingCount > 0) connectingCount -= 1;
+		releaseConnecting(record);
 		record.connects += 1;
 		if (record.connectedAt === null) record.connectedAt = Math.round(now());
 		openCount += 1;
@@ -162,11 +215,17 @@ export function recordSyncDiagStatus(room: string, status: string): void {
 	}
 	if (status === 'disconnected') {
 		// A disconnect can end either an open socket or one that never finished connecting;
-		// decrement whichever this room was actually occupying.
+		// release whichever this room was actually occupying.
 		if (record.connects > record.disconnects) openCount = Math.max(0, openCount - 1);
-		else if (connectingCount > 0) connectingCount -= 1;
+		releaseConnecting(record);
 		record.disconnects += 1;
 	}
+}
+
+function releaseConnecting(record: RoomRecord): void {
+	if (!record.countedConnecting) return;
+	record.countedConnecting = false;
+	connectingCount = Math.max(0, connectingCount - 1);
 }
 
 export function recordSyncDiagSynced(room: string): void {
@@ -181,12 +240,24 @@ export function recordSyncDiagClose(room: string, code: number | null): void {
 	if (!record) return;
 	record.closes += 1;
 	record.lastCloseCode = code;
+	// A close ends the attempt whether or not a `disconnected` status follows it — which is
+	// exactly the case the old gauge missed.
+	releaseConnecting(record);
 }
 
 export function recordSyncDiagError(room: string): void {
 	if (!SYNC_DIAG_ENABLED) return;
 	const record = ensureRoom(room);
-	if (record) record.errors += 1;
+	if (!record) return;
+	record.errors += 1;
+	releaseConnecting(record);
+}
+
+/** The watchdog found this room wedged — not connected, not trying — and cycled it. */
+export function recordSyncDiagWatchdogRescue(room: string): void {
+	if (!SYNC_DIAG_ENABLED) return;
+	const record = ensureRoom(room);
+	if (record) record.watchdogRescues += 1;
 }
 
 export function getSyncDiagStatus(): { rooms: number; synced: number; pending: number; elapsedMs: number } {
@@ -331,6 +402,27 @@ export function formatSyncDiagReport(): string {
 		lines.push('--- NEVER SYNCED ---');
 		for (const record of never.slice(0, 40)) {
 			lines.push(`  ${roomKind(record.room).padEnd(15)} connects=${record.connects} disconnects=${record.disconnects} closes=${record.closes} lastCode=${fmt(record.lastCloseCode)} errors=${record.errors}  ${record.room}`);
+		}
+		lines.push('');
+
+		lines.push('--- STUCK ROOM FORENSICS ---');
+		lines.push('  A provider with no events at all cannot be explained by event counts. These are');
+		lines.push('  its construction history and its live flags, read at capture time.');
+		for (const record of never.slice(0, 10)) {
+			lines.push(`  ${record.room}`);
+			lines.push(`    providerCreations=${record.providerCreations} destroys=${record.destroys} createdWithConnect=${record.createdWithConnect === null ? '?' : record.createdWithConnect}`);
+			lines.push(`    requestedAt=${fmt(record.requestedAt)}ms idbReadyAt=${fmt(record.idbReadyAt)}ms wsCreatedAt=${fmt(record.wsCreatedAt)}ms connectingAt=${fmt(record.connectingAt)}ms`);
+			const live = providerStateReader ? providerStateReader(record.room) : null;
+			lines.push(`    live: ${live ?? '(no reader registered)'}`);
+		}
+		lines.push('');
+	}
+
+	const rescued = all.filter((record) => record.watchdogRescues > 0);
+	if (rescued.length > 0) {
+		lines.push('--- WATCHDOG RESCUES (a room was wedged: not connected, not trying) ---');
+		for (const record of rescued.slice(0, 40)) {
+			lines.push(`  rescues=${record.watchdogRescues} connects=${record.connects} closes=${record.closes} errors=${record.errors}  ${record.room}`);
 		}
 		lines.push('');
 	}

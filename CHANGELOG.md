@@ -2,6 +2,19 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.21.3 - 2026-10-10
+
+### Fixed
+- **A few notes would quietly never sync at all, and the app looked completely fine about it.** On this author's setup it was consistently three notes out of ninety-five, the same three every time. They had no connection to the server, so edits from anyone else never arrived and the card just sat there showing whatever it last knew. There was nothing to see - no error, no spinner, no pending badge - because from the app's point of view nothing had gone wrong. Nothing had *happened*.
+
+  The cause is dull and the diagnosis was not. A note's document can be created early enough in startup to be caught by the teardown that runs when the workspace is set, which removes it and its connection. Nothing then re-requests it, because the grid only re-checks its notes when something it is watching changes, and a note being destroyed underneath it is not something it watches. So that note has no connection until something happens to make the grid re-check - which is why scrolling the note grid "fixed" it, and why phones recovered on their own (they fire a visibility change every time the screen blinks) while a desktop window left alone never did.
+
+  There is now a watchdog that notices a note with no connection and attaches one. It checks for notes with no connection at all first, which is the actual bug, and separately for connections that exist but have stopped trying.
+
+  Confessional note, since it is the useful part: those notes reported zero connects, zero closes and zero errors, and that was read for three rounds as "a connection that failed and gave up" when it plainly says "a connection that was never opened". Three fixes were aimed at the wrong thing. A user noticing that scrolling the grid changed the count is what actually solved it, and the first version of this watchdog would have shipped and done nothing, because it only inspected connections that existed - and the broken notes had none.
+
+- **The sync timing report stopped exaggerating.** Its "simultaneous connecting" figure leaked - it reported 494 across 98 rooms - because it counted a connection starting but missed some of the ways one can end. Only ever a problem with the diagnostic, never with the app, but it made the resume numbers useless. It also now prints, for any room that never synced, that room's real live state rather than leaving us to infer it from counters that cannot describe an absence.
+
 ## 1.21.2 - 2026-10-10
 
 ### Fixed

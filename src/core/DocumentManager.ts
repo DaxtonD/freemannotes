@@ -17,12 +17,15 @@ import { EMPTY_MOVE_NOTE_METADATA_MAPPING, type MoveNoteMetadataIdPair, type Mov
 import { clearWorkspaceOfflineEdit, markWorkspaceOfflineEdit } from './workspaceOfflineEditMarkers';
 import {
 	recordSyncDiagClose,
+	recordSyncDiagRoomDestroyed,
+	recordSyncDiagWatchdogRescue,
 	recordSyncDiagError,
 	recordSyncDiagIdbReady,
 	recordSyncDiagRequested,
 	recordSyncDiagStatus,
 	recordSyncDiagSynced,
 	recordSyncDiagWsCreated,
+	setSyncDiagProviderStateReader,
 } from './syncTimingDiagnostics';
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
@@ -134,6 +137,14 @@ export class DocumentManager {
 	 * number, for 98 rooms or 10,000.
 	 */
 	private static readonly CONNECT_STAGGER_WINDOW_MS = 1_500;
+	/** How often the connection watchdog sweeps. */
+	private static readonly WATCHDOG_INTERVAL_MS = 10_000;
+	/**
+	 * How long a room may sit unconnected before the watchdog cycles it. Generously above the
+	 * measured cold-boot drain (95 rooms all connected within ~19 s through Cloudflare) so a
+	 * normal startup never trips it.
+	 */
+	private static readonly WATCHDOG_STUCK_MS = 30_000;
 	private readonly pendingSyncQueuedAt = new Map<string, number>();
 	private readonly pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Tracks rooms whose WS provider has completed at least one sync in this session.
@@ -287,6 +298,12 @@ export class DocumentManager {
 
 			this.lifecycleCleanup = () => {
 				clearOnlineReconnectTimer();
+				if (this.watchdogTimer !== null) {
+					clearInterval(this.watchdogTimer);
+					this.watchdogTimer = null;
+				}
+				for (const timer of this.staggeredConnectTimers) clearTimeout(timer);
+				this.staggeredConnectTimers.clear();
 				window.removeEventListener('online', onOnline);
 				window.removeEventListener('offline', onOffline);
 				if (typeof document !== 'undefined') {
@@ -560,6 +577,7 @@ export class DocumentManager {
 		this.ensureStructure(doc);
 		this.ensureProvider(key, doc);
 		this.ensureUpdatedAtTracking(key, doc);
+		this.ensureConnectionWatchdog();
 		return { key, doc };
 	}
 
@@ -1068,6 +1086,7 @@ export class DocumentManager {
 		if (!doc) return;
 
 		logClientEvent('DOC_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'doc-destroy' });
+		recordSyncDiagRoomDestroyed(roomName);
 		clearNoteDebugSession(roomName);
 
 		const wsProvider = this.websocketProviders.get(roomName);
@@ -1388,7 +1407,7 @@ export class DocumentManager {
 			maxBackoffTime: 5_000,
 		});
 
-		recordSyncDiagWsCreated(roomName);
+		recordSyncDiagWsCreated(roomName, this.websocketEnabled);
 		logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-provider-create' });
 
 		const onStatus = (event: { status: string }): void => {
@@ -1536,6 +1555,7 @@ export class DocumentManager {
 		doc.on('afterTransaction', onAfterTransaction);
 
 		this.websocketProviders.set(roomName, wsProvider);
+		this.ensureConnectionWatchdog();
 		this.wsCleanup.set(roomName, () => {
 			(wsProvider as any).off?.('status', onStatus);
 			(wsProvider as any).off?.('connection-close', onConnectionClose);
@@ -1582,6 +1602,131 @@ export class DocumentManager {
 	private lastReconnectAt = 0;
 	/** Pending staggered connect timers, so a second reconnect pass can cancel the first. */
 	private staggeredConnectTimers = new Set<ReturnType<typeof setTimeout>>();
+	private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+	/** roomName -> when we first noticed it unconnected while sync was supposed to be on. */
+	private readonly unconnectedSince = new Map<string, number>();
+
+	/**
+	 * Make sure every room that is supposed to be connected actually is.
+	 *
+	 * Measured across four reports on two devices, the same three rooms misbehaved every
+	 * single time: slowest on the phone (50.9 s / 50.8 s / 50.4 s), then **never connected at
+	 * all** on desktop (connects=0, closes=0, errors=0 — a provider that was created and never
+	 * made a single attempt), then 145 s on the phone once everything else had been sped up, at
+	 * which point they were the entire remaining cost of a cold boot. On the phone they were
+	 * eventually rescued by a `visibilitychange` firing reconnectAllProviders; on desktop, where
+	 * the tab stayed visible, nothing ever rescued them.
+	 *
+	 * The precise mechanism is still unidentified and this does not pretend to fix it. What it
+	 * fixes is the class: a provider that silently stops trying, with nothing in the system
+	 * responsible for noticing. y-websocket's own retry logic is third-party and we already
+	 * know it gives up in at least one place by design (the 1008 path tears the room down), so
+	 * something has to supervise it. A room that is simply mid-handshake or mid-backoff is left
+	 * alone unless it has been unconnected for WATCHDOG_STUCK_MS, and the recovery is the same
+	 * disconnect-then-staggered-connect cycle that already rescues these rooms by accident on
+	 * foreground.
+	 */
+	private sweepStuckProviders(): void {
+		if (!this.websocketEnabled || !this.browserOnline) {
+			this.unconnectedSince.clear();
+			return;
+		}
+		const now = Date.now();
+
+		// First: a live doc with NO websocket provider at all.
+		//
+		// This is the case the first version of this watchdog would have walked straight past,
+		// because it only iterated websocketProviders — and a room with no provider is not in
+		// there. The user found it: scrolling the grid moved the sync count past the three
+		// stuck rooms, which only makes sense if re-requesting the doc *creates* a provider,
+		// which means there wasn't one. Their event counts said the same thing and I misread
+		// it: connects=0 AND closes=0 AND errors=0 is not a socket that failed, it is a socket
+		// that was never opened. A room gets into this state when its doc is created early
+		// enough to be caught by a teardown (bootstrap calls teardownAllRooms via
+		// setActiveWorkspaceId) and nothing happens to re-request it afterwards — NoteGrid's
+		// loading effect only re-runs when its deps change, which a destroyed room does not
+		// cause. Hence: scroll the grid, the effect re-runs, the room finally connects.
+		for (const [roomName, doc] of this.docs.entries()) {
+			if (this.websocketProviders.has(roomName)) continue;
+			console.warn(`[yjs-ws] watchdog: room has no websocket provider, attaching — ${roomName}`);
+			recordSyncDiagWatchdogRescue(roomName);
+			logClientEvent('WS_LIFECYCLE', {
+				...peekNoteDebugContext(roomName),
+				event: 'ws-watchdog-attach-missing-provider',
+			});
+			try {
+				this.ensureWebsocketProvider(roomName, doc);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				console.warn(`[yjs-ws] watchdog attach failed for room=${roomName}: ${msg}`);
+			}
+		}
+
+		// Then: a provider that exists but has stopped trying.
+		const stuck: WebsocketProvider[] = [];
+		for (const [roomName, provider] of this.websocketProviders.entries()) {
+			if ((provider as any).wsconnected === true) {
+				this.unconnectedSince.delete(roomName);
+				continue;
+			}
+			const since = this.unconnectedSince.get(roomName);
+			if (since === undefined) {
+				this.unconnectedSince.set(roomName, now);
+				continue;
+			}
+			if (now - since < DocumentManager.WATCHDOG_STUCK_MS) continue;
+			this.unconnectedSince.set(roomName, now);
+			stuck.push(provider);
+			recordSyncDiagWatchdogRescue(roomName);
+			logClientEvent('WS_LIFECYCLE', {
+				...peekNoteDebugContext(roomName),
+				event: 'ws-watchdog-rescue',
+				unconnectedForMs: now - since,
+			});
+		}
+		if (stuck.length === 0) return;
+		console.warn(`[yjs-ws] watchdog cycling ${stuck.length} stuck room(s)`);
+		for (const provider of stuck) {
+			try {
+				provider.disconnect();
+			} catch {
+				// ignore
+			}
+		}
+		this.connectProvidersStaggered(stuck, DocumentManager.CONNECT_STAGGER_WINDOW_MS);
+	}
+
+	private ensureConnectionWatchdog(): void {
+		if (this.watchdogTimer !== null || typeof setInterval === 'undefined') return;
+		// Let the sync-timing report read live provider flags for a room that produced no
+		// events at all. Event counts cannot explain a socket that was never opened; only the
+		// flags can say whether anything still intends to open it. No-op unless ?syncDiag=1.
+		setSyncDiagProviderStateReader((room) => {
+			const hasDoc = this.docs.has(room);
+			const provider = this.websocketProviders.get(room) as any;
+			if (!provider) {
+				return `NO PROVIDER (doc ${hasDoc ? 'alive' : 'GONE TOO'}), wsEnabled=${this.websocketEnabled}, online=${this.browserOnline}`;
+			}
+			return [
+				`doc=${hasDoc ? 'alive' : 'GONE'}`,
+				`shouldConnect=${provider.shouldConnect}`,
+				`wsconnecting=${provider.wsconnecting}`,
+				`wsconnected=${provider.wsconnected}`,
+				`socket=${provider.ws === null || provider.ws === undefined ? 'null' : 'present'}`,
+				`unsuccessfulReconnects=${provider.wsUnsuccessfulReconnects}`,
+				`synced=${provider.synced}`,
+				`wsEnabled=${this.websocketEnabled}`,
+			].join(' ');
+		});
+		this.watchdogTimer = setInterval(() => {
+			try {
+				this.sweepStuckProviders();
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				console.warn(`[yjs-ws] watchdog sweep failed: ${msg}`);
+			}
+		}, DocumentManager.WATCHDOG_INTERVAL_MS);
+	}
 
 	/**
 	 * Issue `connect()` across providers spread over a short window instead of all at once.
