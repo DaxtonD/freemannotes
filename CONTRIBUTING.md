@@ -28,6 +28,7 @@ Thanks for your interest in helping with Freeman Notes. This document covers how
   - [11. Force Grid Virtualization](#11-force-grid-virtualization)
   - [12. Note-Card Height Diagnostics](#12-note-card-height-diagnostics)
   - [13. Grid Scroll Recorder](#13-grid-scroll-recorder)
+  - [14. Sync Timing Probe](#14-sync-timing-probe)
 - [Documents and Uploaded Files](#documents-and-uploaded-files)
 - [Notifications, the Inbox and the Bell](#notifications-the-inbox-and-the-bell)
 - [Custom Drawing Libraries](#custom-drawing-libraries)
@@ -775,6 +776,76 @@ To disable: `?scrollDiag=0`.
 > Titles are included (first 28 characters) so you can tell which card is which. Keep that in mind before pasting a report somewhere public.
 
 > **Safety:** Runtime opt-in. Every hook bails on its first line unless a recording is running, and sampling only reads geometry, so it can't cause the movement it's recording.
+
+---
+
+### 14. Sync Timing Probe
+
+**What it covers:** how long the app takes to actually become current after you open it, and
+**where** that time goes. Use it for "I opened the app and my changes from the other device
+weren't there for twenty seconds", "the cards came up blank and then resized", and anything
+else about sync feeling late.
+
+**Why it exists:** the grid opens a Y.Doc — and therefore an IndexedDB provider *and its own
+WebSocket* — for every note in the workspace, not just the ones on screen (the loading effect
+iterates `orderedIds`). Each socket costs a permission check and a workspace-scoped Postgres
+read on the server. At 86 notes through Cloudflare that is 86 handshakes and 86 queries on
+every open, and the grid only waits `SHIMMER_STALL_TIMEOUT_MS` (5 s) before giving up and
+painting whatever it has — which for a note this device has never seen is an empty card. All
+of that is read off the code. This measures it, because the fix depends on which part is
+actually slow and those point at completely different work:
+
+| phase | if it dominates, the cost is |
+|---|---|
+| `requested -> wsCreated` | our own client-side queuing |
+| `wsCreated -> connected` | the handshake — browser socket ceiling, Cloudflare, nginx |
+| `connected -> synced` | the server — auth query + Postgres state read + sync step 1/2 |
+
+**How to enable** — URL query parameter (persists in localStorage), same mechanism as the
+others. Works on production builds:
+
+```
+https://your-host/?syncDiag=1
+```
+
+To disable: `?syncDiag=0`.
+
+**How to use it:** there is deliberately **no record button** — the probe starts itself on page
+load, because the window of interest is the boot and you cannot press Record before the thing
+you want to record. A `… sync diag · 12/87 · 4s` button appears bottom-left and counts up as
+rooms sync; it turns green with a `✓` once nothing is outstanding. Wait for it to settle (or
+don't — the report is valid at any point), tap it, and the report opens in a selectable
+textarea with a `copy` button, same clipboard fallback as the other two.
+
+To measure a *resume* rather than a cold boot, background the app, wait, come back, then take
+a second report — `visibilitychange` tears down and reopens every provider at once, so the
+numbers for that path are different and worth having separately.
+
+**What it reports:**
+
+- **HEADLINE** — rooms opened (notes vs registries), how many ever synced, and `last room
+  synced`, which is the number that corresponds to "when the app actually became current"
+- **WHERE THE TIME GOES** — n / p50 / p90 / max / sum for each phase in the table above
+- **CONCURRENCY** — max simultaneous connecting and open sockets, plus a sample every 250 ms.
+  A `connecting` count that sits at a ceiling while `open` climbs slowly is the browser
+  queuing sockets, which is the signature worth looking for
+- **MARKS** — boot milestones, the important two being `shimmer-stall-timeout-fired` (the grid
+  stopped waiting) and whether the reveal was `grid-revealed-ALL-LOADED` or
+  `grid-revealed-GAVE-UP`. The second one means you were shown empty cards
+- **SLOWEST 20 ROOMS** — per-room phase breakdown, including `idb?` (whether the room had any
+  local content, i.e. whether this device had ever seen that note)
+- **NEVER SYNCED** and **RECONNECTS / CLOSES / ERRORS** — with close codes; a `1008` is the
+  server refusing access
+
+> Room names contain note ids, not titles or content. Still worth a glance before pasting a
+> report somewhere public.
+
+**Safety:** runtime opt-in, and every hook returns on its first line when the flag is off.
+Everything is accumulated in memory and formatted only when you ask — deliberately **not**
+built on `DEBUG_LOGGING`, which POSTs client events to the server and appends them to a file
+that gets dramatically slower as it grows (~115x was measured once). Using that here would
+manufacture the very latency we are trying to measure. The overlay polls for its counter
+rather than subscribing, so nothing the probe records can trigger a React render.
 
 ---
 

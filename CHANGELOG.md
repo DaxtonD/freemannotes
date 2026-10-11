@@ -2,6 +2,17 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.21.1 - 2026-10-10
+
+### Added
+- **A sync timing probe, `?syncDiag=1`.** Purely a diagnostic — it changes nothing and does nothing at all unless you turn it on. It exists because of a complaint we have had for a while and have only ever answered with guesses: you open the app and a note your partner edited an hour ago isn't there yet, or five notes you made on the desktop come up as blank cards and then resize themselves.
+
+  Reading the code says why. The grid opens a document — and therefore a database handle *and its own WebSocket* — for **every note in the workspace**, not just the ones on screen, and each of those sockets costs the server a permission check and a database read. With 86 notes through a reverse proxy that is 86 handshakes on every open, and the grid only waits five seconds before giving up and painting whatever it has, which for a note this device has never seen is an empty rectangle. The note you actually opened is one of 86 waiting its turn.
+
+  That's a tidy story and we are not going to rebuild anything around a tidy story. The probe measures it instead, and specifically splits the time three ways — our own queuing, the handshake, and the server — because those three answers point at completely different work and we would rather not fix the wrong one. It reports where the time went, how many sockets were in flight at once, and the single most useful line: whether the grid finished loading or gave up and showed you empty cards.
+
+  No record button, deliberately: it starts itself on page load, because the thing we want to watch is the boot and you cannot press Record before it. Tap the button bottom-left for a report with a copy button, same as the card and scroll recorders. Documented as Debug Tool 14 in CONTRIBUTING, including why it is pointedly *not* built on `DEBUG_LOGGING` — that writes every event to a file which gets about 115 times slower as it fills up, so using it here would have manufactured the very latency we are trying to measure.
+
 ## 1.21.0 - 2026-10-10
 
 ### Added

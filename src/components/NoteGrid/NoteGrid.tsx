@@ -123,6 +123,8 @@ import { recordHeadingCollapseDebug } from '../../core/collapsibleHeadingCollaps
 import { NoteGridDebugOverlay } from './NoteGridDebugOverlay';
 import { NoteCardDiagnosticsOverlay } from './NoteCardDiagnosticsOverlay';
 import { GridScrollDiagnosticsOverlay } from './GridScrollDiagnosticsOverlay';
+import { SyncTimingDiagnosticsOverlay } from './SyncTimingDiagnosticsOverlay';
+import { recordSyncDiagMark } from '../../core/syncTimingDiagnostics';
 import {
 	SCROLL_DIAG_ENABLED,
 	recordScrollDiagEstimate,
@@ -1367,7 +1369,13 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			setShimmerStalled(false);
 			return;
 		}
-		const id = setTimeout(() => setShimmerStalled(true), SHIMMER_STALL_TIMEOUT_MS);
+		const id = setTimeout(() => {
+			// The single most important line in a sync timing report: the grid has stopped
+			// waiting for documents and is about to paint whatever it has, which for a note
+			// this device has never seen is an empty card.
+			recordSyncDiagMark('shimmer-stall-timeout-fired', `${SHIMMER_STALL_TIMEOUT_MS}ms budget exhausted`);
+			setShimmerStalled(true);
+		}, SHIMMER_STALL_TIMEOUT_MS);
 		return () => clearTimeout(id);
 	}, [allDocsLoaded, SHIMMER_STALL_TIMEOUT_MS]);
 	React.useEffect(() => {
@@ -2962,7 +2970,10 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 		// the user never sees an infinite spinner on a broken connection.
 		if (shimmerStalled) {
 			initialLoadCompleteRef.current = true;
-			if (!allDocsLoaded) setAllDocsLoaded(true);
+			if (!allDocsLoaded) {
+				recordSyncDiagMark('grid-revealed-GAVE-UP', `${unresolvedOrderedIds.length} of ${orderedIds.length} notes still unresolved`);
+				setAllDocsLoaded(true);
+			}
 			return;
 		}
 		// All present notes have loaded docs (or the workspace is genuinely empty).
@@ -3049,6 +3060,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			initialLoadCompleteRef.current = true;
 		}
 		if (!allDocsLoaded) {
+			recordSyncDiagMark('grid-revealed-ALL-LOADED', `${orderedIds.length} notes`);
 			setAllDocsLoaded(true);
 		}
 	}, [noteOrder, orderedIds, unresolvedOrderedIds.length, allDocsLoaded, connection.registryWsSynced, connection.state, wsSyncJustFired, shimmerStalled, connection.pendingNoteWsSync]);
@@ -5292,6 +5304,7 @@ export function NoteGrid(props: NoteGridProps): React.JSX.Element {
 			) : null}
 			<NoteCardDiagnosticsOverlay />
 			<GridScrollDiagnosticsOverlay />
+			<SyncTimingDiagnosticsOverlay />
 		</section>
 	);
 }

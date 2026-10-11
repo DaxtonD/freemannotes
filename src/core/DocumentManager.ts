@@ -14,6 +14,15 @@ import {
 	initIndexedDbDebugLogging,
 } from './debugLogger';
 import { EMPTY_MOVE_NOTE_METADATA_MAPPING, type MoveNoteMetadataIdPair, type MoveNoteMetadataMapping } from './noteMoveMetadata';
+import {
+	recordSyncDiagClose,
+	recordSyncDiagError,
+	recordSyncDiagIdbReady,
+	recordSyncDiagRequested,
+	recordSyncDiagStatus,
+	recordSyncDiagSynced,
+	recordSyncDiagWsCreated,
+} from './syncTimingDiagnostics';
 
 const NOTES_REGISTRY_ID = '__notes_registry__';
 const NOTES_LIST_KEY = 'notesList';
@@ -563,6 +572,7 @@ export class DocumentManager {
 		// holds the shimmer until pendingNoteWsSync reaches zero.
 		if (!this.isNotesRegistryRoom(roomName) && !this.noIdbContentRooms.has(roomName) && !this.wsEverSynced.has(roomName)) {
 			const hasIdbContent = this.hasPersistedNoteContent(doc);
+			recordSyncDiagRequested(roomName, hasIdbContent);
 			if (!hasIdbContent) {
 				this.noIdbContentRooms.add(roomName);
 				this.emitConnectionStatus();
@@ -1300,6 +1310,7 @@ export class DocumentManager {
 		// One IndexedDB room per Yjs room name.
 		const provider = new IndexeddbPersistence(roomName, doc);
 		this.providers.set(roomName, provider);
+		recordSyncDiagRequested(roomName);
 		logClientEvent('IDB_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'hydration-start' });
 
 		if (!this.readyPromises.has(roomName)) {
@@ -1344,9 +1355,11 @@ export class DocumentManager {
 			maxBackoffTime: 5_000,
 		});
 
+		recordSyncDiagWsCreated(roomName);
 		logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-provider-create' });
 
 		const onStatus = (event: { status: string }): void => {
+			recordSyncDiagStatus(roomName, event.status);
 			logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-status', status: event.status });
 			if (this.wsDebug) {
 				console.info(`[yjs-ws] room=${roomName} status=${event.status} url=${this.websocketUrl}`);
@@ -1355,6 +1368,7 @@ export class DocumentManager {
 			this.emitConnectionStatus();
 		};
 		const onConnectionClose = (event?: CloseEvent): void => {
+			recordSyncDiagClose(roomName, (event as any)?.code ?? null);
 			logClientEvent('WS_LIFECYCLE', {
 				...peekNoteDebugContext(roomName),
 				event: 'ws-connection-close',
@@ -1383,6 +1397,7 @@ export class DocumentManager {
 			this.emitConnectionStatus();
 		};
 		const onConnectionError = (err: unknown): void => {
+			recordSyncDiagError(roomName);
 			const msg = err instanceof Error ? err.message : String(err);
 			logClientEvent('WS_LIFECYCLE', {
 				...peekNoteDebugContext(roomName),
@@ -1399,6 +1414,7 @@ export class DocumentManager {
 			this.emitConnectionStatus();
 		};
 		const onSync = (isSynced: boolean): void => {
+			if (isSynced) recordSyncDiagSynced(roomName);
 			logClientEvent('WS_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'ws-sync', isSynced });
 			if (isSynced) {
 				this.wsEverSynced.add(roomName);
@@ -1679,6 +1695,7 @@ export class DocumentManager {
 	private waitForSynced(roomName: string, provider: IndexeddbPersistence): Promise<void> {
 		const alreadySynced = (provider as any).synced === true;
 		if (alreadySynced) {
+			recordSyncDiagIdbReady(roomName);
 			return Promise.resolve();
 		}
 
@@ -1689,6 +1706,7 @@ export class DocumentManager {
 			});
 
 			const onSynced = (): void => {
+				recordSyncDiagIdbReady(roomName);
 				logClientEvent('IDB_LIFECYCLE', { ...peekNoteDebugContext(roomName), event: 'hydration-end' });
 				cleanup();
 				resolve();
