@@ -1112,6 +1112,67 @@ Two smaller traps in the same file, both load-bearing:
 - The input must stay *rendered* (1px, `opacity: 0`, out of the way). `showPicker()` throws on an
   input that isn't being rendered, so `display: none` is not an option.
 
+## Startup Only Flushes Workspaces That Owe the Server Something
+
+`probeSession` has always flushed offline edits from workspaces other than the one you are
+opening - that is what stops an edit made offline in workspace B from sitting on one device
+forever if you never open workspace B again. It used to do that for **every** workspace with any
+local IndexedDB data, on every boot, sequentially: a `POST /activate` each, then
+`flushPreviousWorkspaceEdits`, which opens an IndexedDB provider *and a WebSocket for every room
+in that workspace*, waits up to five seconds, and tears it all down. The active workspace's own
+sync was held off for the whole chain.
+
+Measured with `?syncDiag=1` on a phone through Cloudflare, 4 workspaces / 95 notes: **23 seconds
+before the first note socket was even allowed to start connecting**, roughly 15 s of it this
+chain. 10.5 s on desktop. Meanwhile the grid revealed cached content at 347 ms and looked
+entirely settled - so you could sit reading a stale note for 24 seconds with nothing on screen
+suggesting anything was outstanding. That is the "I opened the app and my partner's edit wasn't
+there" report, and it was almost all self-inflicted.
+
+`src/core/workspaceOfflineEditMarkers.ts` now records a workspace the moment a genuine local
+edit lands on one of its rooms **with no live connection to push it**, and startup flushes only
+the workspaces that have a marker. In the common case - nothing edited offline anywhere - the
+entire chain is skipped.
+
+Three invariants to preserve if you touch this:
+
+- **The marker is written above the registry and `wsEverSynced` guards** in
+  `ensureWebsocketProvider`'s transaction handler. Both of those guards exclude exactly the cases
+  the flush exists for: a note created offline lives in the registry, and a room that has never
+  synced is the whole point.
+- **A marker clears only on a fully-confirmed flush** (every room reported back), or when the
+  workspace is the *active* one and a room syncs - because an active workspace's rooms all
+  connect as a matter of course, so there is nothing left to rescue. A flush that timed out has
+  not confirmed anything; re-flushing next boot is far cheaper than stranding someone's note.
+- **An uninitialised marker store means "flush everything, the old way", once.** On the first
+  boot after this shipped nobody has written a marker, and an empty set would be
+  indistinguishable from "nothing to send". `clearWorkspaceOfflineEditMarkers()` on logout resets
+  that flag too, so the next user on the device gets the same one-time fallback rather than
+  inheriting a clean bill of health from someone else.
+
+Covered by `tests/workspace-offline-edit-markers.test.js`.
+
+## Connections Are Staggered, and the Window Is Fixed on Purpose
+
+`setWebsocketEnabled(true)` and `reconnectAllProviders` both used to call `connect()` on every
+provider in one tight loop. The measured server path serves about **7 handshakes per second**
+(13.5 s for 95 sockets on desktop, 13.8 s on a phone - near-identical, so that rate is
+Cloudflare/nginx/Node, not the client), so firing 98 at once was never served any faster; it just
+turned a queue into a herd. On a resume it was worse: every socket dies with 1006 when the OS
+suspends the tab, and reopening all 98 with every backoff counter reset in the same instant made
+them retry in lockstep - roughly 500 failed attempts and **nothing connected for over two
+minutes**.
+
+Registries connect first and unstaggered (there are three, and the grid's note list comes from
+them). Everything else is spread with per-provider jitter, which is as load-bearing as the
+spacing - without it, providers that fail together retry together and the herd reforms.
+
+`CONNECT_STAGGER_WINDOW_MS` is a **total window, not a per-socket spacing**, and that distinction
+is the point. A fixed per-socket delay makes the cost scale with workspace size: free on a
+96-room workspace behind a slow proxy, and a real regression on a LAN deployment with a fast path
+where firing everything at once genuinely is quickest. Spreading across a fixed window caps what
+staggering can ever cost, at 98 rooms or 10,000. Do not convert it back to a per-item delay.
+
 ## Diagnosing an Unexpected Reload
 
 The app can restart for three reasons, and before the boot forensics existed they were

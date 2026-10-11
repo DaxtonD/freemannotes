@@ -160,6 +160,13 @@ import {
 	resetAttachedDrawingAccessRecovery,
 	takeAttachedDrawingAccessRecovery,
 } from './core/attachedDrawingAccessRecovery';
+import {
+	clearWorkspaceOfflineEdit,
+	clearWorkspaceOfflineEditMarkers,
+	isWorkspaceOfflineEditTrackingInitialised,
+	markWorkspaceOfflineEditTrackingInitialised,
+	readWorkspacesWithOfflineEdits,
+} from './core/workspaceOfflineEditMarkers';
 import { holdCollaboratorInvitesForDoc, releaseCollaboratorInvitesForDoc } from './core/pendingCollaboratorInviteHold';
 import {
 	cacheSharedNotePlacements,
@@ -1313,9 +1320,31 @@ async function resolveFlushableWorkspaceIds(
 	const scanned = await manager.discoverLocalWorkspaceIds();
 	const snapshot = await readCachedWorkspaceSnapshot(userId, deviceId);
 	const known = new Set(snapshot.workspaces.map((w) => w.id));
-	if (scanned.length === 0) return Array.from(known);
-	if (known.size === 0) return scanned;
-	return scanned.filter((id) => known.has(id));
+	const present = scanned.length === 0
+		? Array.from(known)
+		: known.size === 0
+			? scanned
+			: scanned.filter((id) => known.has(id));
+
+	// Having local data is not the same as owing the server anything, and the difference is
+	// most of the app's startup time. Each workspace returned here costs a POST /activate plus
+	// a flush that opens an IndexedDB provider AND a WebSocket for every room in it and waits
+	// up to five seconds — all sequentially, all with the active workspace's own sync held off.
+	// Measured on a phone over Cloudflare: 23 s before the first note socket was allowed to
+	// start connecting, ~15 s of it this, while the grid sat there showing cached content and
+	// looking perfectly settled. Desktop: 10.5 s.
+	//
+	// So flush only the workspaces that have actually recorded an offline edit. The markers are
+	// written by DocumentManager the moment a local edit lands on a room with no live
+	// connection, which is exactly the condition this flush exists to rescue.
+	if (!isWorkspaceOfflineEditTrackingInitialised()) {
+		// First boot after this shipped: nobody has written a marker yet, so an empty set is
+		// indistinguishable from "nothing to send". Do it the old way once, then trust markers.
+		markWorkspaceOfflineEditTrackingInitialised();
+		return present;
+	}
+	const owing = new Set(readWorkspacesWithOfflineEdits());
+	return present.filter((id) => owing.has(id));
 }
 
 export function App(): React.JSX.Element {
@@ -5542,6 +5571,7 @@ export function App(): React.JSX.Element {
 		clearUserAvatarCache();
 		clearDrawingThumbnailLocalCache();
 		resetAttachedDrawingAccessRecovery();
+		clearWorkspaceOfflineEditMarkers();
 		clearAdminUserCache();
 		void clearPrivateServiceWorkerCaches();
 		clearPdfViewerPositions();

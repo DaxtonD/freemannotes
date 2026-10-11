@@ -2,6 +2,22 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.21.2 - 2026-10-10
+
+### Fixed
+- **The app stops spending the first twenty seconds after you open it doing something you didn't ask for.** This is the "I open a note and my wife's changes from an hour ago aren't there yet" complaint, and 1.21.1's timing probe found it, so we can finally stop guessing about it.
+
+  Every single time you opened the app, it walked **every workspace you have any local data for** and, one at a time, told the server to switch to that workspace, opened a database handle *and a WebSocket for every note in it*, waited up to five seconds, and threw it all away - all before the workspace you were actually looking at was allowed to connect at all. Measured on a phone over Cloudflare with four workspaces: **23 seconds before the first note was even permitted to start syncing.** On a desktop, 10.5 seconds. And the grid had already drawn itself from its local cache at 347 ms and looked completely settled the whole time, so there was nothing on screen to suggest anything was still outstanding. You were reading a stale note and the app looked perfectly happy about it.
+
+  That walk exists for a real reason - it is what stops a note you edited offline in another workspace from sitting on one device forever - but it had no idea whether there was anything to send, and nearly always there isn't. It now remembers which workspaces actually have an edit the server hasn't seen, and skips the rest. On the first launch after this update it does the old thorough thing once, so nothing written before today gets missed; after that it's skipped.
+
+- **Reconnecting after the app has been in the background no longer takes minutes.** When your phone suspends the app every socket dies silently, and we reopened all 98 of them in the same instant with every retry counter reset together - so they all failed together, and then retried together, forever. The probe caught around 500 failed attempts with **nothing connected for over two minutes**. They now come back spread out and slightly randomised, which sounds like a trivial change and is the difference between a queue and a stampede.
+
+- **The note list connects before the notes do.** It is where the grid gets its contents and ordering from, and it used to take its chances in the queue alongside everything else.
+
+### Changed
+- **We measured the thing instead of theorising about it, and we were wrong about where the time went.** Worth writing down: the server was the prime suspect and it is completely innocent - 80 ms per note to check permissions, read from Postgres and hand over the data, on both a phone and a desktop. If we had built the big architectural fix we had convinced ourselves was needed, we would have shipped a large, risky change and still had a twenty-second wait, because the twenty seconds was our own startup sequence standing in its own way. There is still real work to do on how many connections this thing opens - 98 sockets for 95 notes is not a sensible number and it does not scale - but it is second in the queue now, behind arithmetic.
+
 ## 1.21.1 - 2026-10-10
 
 ### Added

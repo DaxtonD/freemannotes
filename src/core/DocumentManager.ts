@@ -14,6 +14,7 @@ import {
 	initIndexedDbDebugLogging,
 } from './debugLogger';
 import { EMPTY_MOVE_NOTE_METADATA_MAPPING, type MoveNoteMetadataIdPair, type MoveNoteMetadataMapping } from './noteMoveMetadata';
+import { clearWorkspaceOfflineEdit, markWorkspaceOfflineEdit } from './workspaceOfflineEditMarkers';
 import {
 	recordSyncDiagClose,
 	recordSyncDiagError,
@@ -122,6 +123,17 @@ export class DocumentManager {
 	// prevents brief reconnect windows (e.g. force-reconnect on foreground-resume)
 	// from flashing the pending-sync badge for edits that will sync within seconds.
 	private static readonly PENDING_DISPLAY_DEBOUNCE_MS = 3_000;
+	/**
+	 * Total window the staggered `connect()` calls are spread across, whatever the room count.
+	 *
+	 * A fixed per-socket spacing was the obvious thing and it is wrong: it makes the delay
+	 * scale with workspace size, so it would be free on this author's 98-room workspace through
+	 * Cloudflare (which only serves ~7 handshakes/second anyway) and a real regression on a
+	 * LAN deployment with a fast path, where firing everything at once genuinely is quickest.
+	 * Spreading across a fixed window instead caps what staggering can ever cost at this
+	 * number, for 98 rooms or 10,000.
+	 */
+	private static readonly CONNECT_STAGGER_WINDOW_MS = 1_500;
 	private readonly pendingSyncQueuedAt = new Map<string, number>();
 	private readonly pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Tracks rooms whose WS provider has completed at least one sync in this session.
@@ -391,23 +403,44 @@ export class DocumentManager {
 			this.onlineReconnectTimer = null;
 		}
 
-		for (const [rName, provider] of this.websocketProviders.entries()) {
-			try {
-				if (next) {
-					// Reset internal reconnect counters so a previously-disconnected
-					// provider doesn't stay in a "give up" state.
-					(provider as any).wsUnsuccessfulReconnects = 0;
-					provider.connect();
-				} else {
+		if (!next) {
+			for (const provider of this.websocketProviders.values()) {
+				try {
 					// Hard disconnect and prevent reconnect attempts.
 					provider.disconnect();
+				} catch {
+					// ignore
 				}
+			}
+			for (const timer of this.staggeredConnectTimers) clearTimeout(timer);
+			this.staggeredConnectTimers.clear();
+			this.updateConnectionState();
+			this.emitConnectionStatus();
+			return;
+		}
+
+		// Registries before notes, then the notes spread out.
+		//
+		// This is the moment startup has been waiting for, and until now it fired every
+		// provider at once — 98 sockets into a path measured at roughly 7 handshakes per
+		// second, so the note you actually opened could be 50 s down the queue with no way to
+		// jump it. The registries are what the grid's note list and ordering come from, so
+		// they go first and unstaggered (there are three of them); everything else follows at
+		// a spacing the server can actually keep up with.
+		const registries: WebsocketProvider[] = [];
+		const notes: WebsocketProvider[] = [];
+		for (const [roomName, provider] of this.websocketProviders.entries()) {
+			(this.isRegistryRoom(roomName) ? registries : notes).push(provider);
+		}
+		for (const provider of registries) {
+			try {
+				(provider as any).wsUnsuccessfulReconnects = 0;
+				provider.connect();
 			} catch {
 				// ignore
 			}
-			if (rName.includes('__notes_registry__')) {
-			}
 		}
+		this.connectProvidersStaggered(notes, DocumentManager.CONNECT_STAGGER_WINDOW_MS);
 
 		this.updateConnectionState();
 		this.emitConnectionStatus();
@@ -1424,6 +1457,12 @@ export class DocumentManager {
 				if (this.isNotesRegistryRoom(roomName) && !this.registryWsSynced) {
 					this.registryWsSynced = true;
 				}
+				const syncedWorkspaceId = this.workspaceIdForRoom(roomName);
+				if (syncedWorkspaceId && syncedWorkspaceId === this.activeWorkspaceId) {
+					// Only for the active workspace. A non-active one stays marked until a real
+					// flush confirms its edits went out, because nothing else will open its rooms.
+					clearWorkspaceOfflineEdit(syncedWorkspaceId);
+				}
 				// If this room had no IDB content at load time, it now has content from
 				// the server — remove it from the pending set so NoteGrid can lift the shimmer.
 				this.noIdbContentRooms.delete(roomName);
@@ -1444,6 +1483,15 @@ export class DocumentManager {
 			if (tx.origin === this.accessOrigin) return;
 			if (tx.origin === this.updatedAtOrigin) return;
 			if (tx.origin === RICHTEXT_INTERNAL_ORIGIN) return;
+			if (tx.changed.size > 0 && (wsProvider as any).wsconnected !== true) {
+				// Remember that this workspace owes the server something, so startup can flush
+				// only the workspaces that actually need it instead of all of them. Marked
+				// ABOVE the two guards below on purpose: the registry matters (a note created
+				// offline lives there) and so does a room that has never synced, which is the
+				// precise case the startup flush exists to rescue.
+				const editedWorkspaceId = this.workspaceIdForRoom(roomName);
+				if (editedWorkspaceId) markWorkspaceOfflineEdit(editedWorkspaceId);
+			}
 			// Registry room writes (order/title metadata) should not produce per-note pending badges.
 			// Without this filter, routine registry mutations could produce false-positive sync indicators
 			// after refresh/startup even when no actual note content edits occurred offline.
@@ -1532,6 +1580,57 @@ export class DocumentManager {
 	 * @param reason — Human-readable tag for log output (e.g. "visibilitychange").
 	 */
 	private lastReconnectAt = 0;
+	/** Pending staggered connect timers, so a second reconnect pass can cancel the first. */
+	private staggeredConnectTimers = new Set<ReturnType<typeof setTimeout>>();
+
+	/**
+	 * Issue `connect()` across providers spread over a short window instead of all at once.
+	 *
+	 * Measured, on a resume with 98 rooms: every socket died with 1006 when the OS suspended
+	 * the tab, then `reconnectAllProviders` reopened all 98 simultaneously with every backoff
+	 * counter reset to zero in the same instant — so they retried in lockstep. Result was
+	 * ~500 failed attempts and **nothing connected at all for over two minutes**. Even a cold
+	 * boot only drains about 7 handshakes per second through Cloudflare and nginx (13.5 s for
+	 * 95 sockets on desktop, 13.8 s on a phone — near-identical, so that rate is the server
+	 * path, not the client's radio), which means firing 98 at once was never going to be
+	 * served any faster. It just turned a queue into a thundering herd.
+	 */
+	private connectProvidersStaggered(providers: WebsocketProvider[], windowMs: number): void {
+		for (const timer of this.staggeredConnectTimers) clearTimeout(timer);
+		this.staggeredConnectTimers.clear();
+
+		// Derived, not fixed — see CONNECT_STAGGER_WINDOW_MS. One room connects immediately
+		// either way.
+		const spacingMs = providers.length > 1 ? windowMs / (providers.length - 1) : 0;
+		providers.forEach((provider, index) => {
+			const connectNow = (): void => {
+				try {
+					// Reset backoff so a previously-disconnected provider doesn't sit in a
+					// "give up" state waiting out an accumulated exponential delay.
+					(provider as any).wsUnsuccessfulReconnects = 0;
+					provider.connect();
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					console.warn(`[yjs-ws] connect failed for room=${provider.roomname}: ${msg}`);
+				}
+			};
+			if (index === 0) {
+				// Whatever is first goes immediately — staggering must never add latency to
+				// the first connection, only spread out the ones behind it.
+				connectNow();
+				return;
+			}
+			// Jitter is as load-bearing as the spacing: without it, providers that failed
+			// together just retry together on the next pass and the herd reforms.
+			const jitter = Math.random() * spacingMs;
+			const timer = setTimeout(() => {
+				this.staggeredConnectTimers.delete(timer);
+				if (!this.browserOnline || !this.websocketEnabled) return;
+				connectNow();
+			}, index * spacingMs + jitter);
+			this.staggeredConnectTimers.add(timer);
+		});
+	}
 
 	public reconnectAllProviders(reason: string): void {
 		if (!this.websocketEnabled) return;
@@ -1551,21 +1650,18 @@ export class DocumentManager {
 			);
 		}
 
+		// Tear every dead socket down immediately — that part is local and free.
 		for (const provider of providers) {
 			try {
 				// disconnect() closes the WS, sets shouldConnect=false, clears timers.
 				provider.disconnect();
-				// Reset backoff so the next connect() fires immediately instead of
-				// waiting for the accumulated exponential delay.
-				(provider as any).wsUnsuccessfulReconnects = 0;
-				// connect() sets shouldConnect=true and calls setupWS() which opens
-				// a new WebSocket + runs Sync Step 1 on open.
-				provider.connect();
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				console.warn(`[yjs-ws] reconnect failed for room=${provider.roomname}: ${msg}`);
+				console.warn(`[yjs-ws] disconnect failed for room=${provider.roomname}: ${msg}`);
 			}
 		}
+		// ...then bring them back spread out. See connectProvidersStaggered for why.
+		this.connectProvidersStaggered(providers, DocumentManager.CONNECT_STAGGER_WINDOW_MS);
 
 		this.updateConnectionState();
 		this.emitConnectionStatus();
@@ -1773,6 +1869,27 @@ export class DocumentManager {
 		return roomName === NOTES_REGISTRY_ID || roomName.endsWith(`:${NOTES_REGISTRY_ID}`);
 	}
 
+	/** Any of the three registry rooms — notes, collections or labels. */
+	private isRegistryRoom(roomName: string): boolean {
+		return this.isNotesRegistryRoom(roomName)
+			|| roomName === COLLECTIONS_REGISTRY_DOC_ID
+			|| roomName.endsWith(`:${COLLECTIONS_REGISTRY_DOC_ID}`)
+			|| roomName === LABELS_REGISTRY_DOC_ID
+			|| roomName.endsWith(`:${LABELS_REGISTRY_DOC_ID}`);
+	}
+
+	/**
+	 * The workspace a room belongs to, from `<workspaceId>:<docId>`. Null for an unprefixed
+	 * room name (a `markup:*` room, or a stub created before a workspace was known) — callers
+	 * treat that as "not attributable to a workspace" rather than guessing at the active one.
+	 */
+	private workspaceIdForRoom(roomName: string): string | null {
+		const separator = roomName.indexOf(':');
+		if (separator <= 0) return null;
+		if (roomName.startsWith('markup:')) return null;
+		return roomName.slice(0, separator);
+	}
+
 	/**
 	 * Attach an afterTransaction listener on a note doc that automatically
 	 * stamps `metadata.updatedAt` with the current epoch-ms on every local
@@ -1951,10 +2068,15 @@ export class DocumentManager {
 			}
 
 			// Wait for all WS syncs to report back, or bail after timeoutMs.
+			let allSynced = false;
 			await Promise.race([
-				Promise.all(wsReadyPromises),
+				Promise.all(wsReadyPromises).then(() => { allSynced = true; }),
 				new Promise<void>((resolve) => { window.setTimeout(resolve, timeoutMs); }),
 			]);
+			// Only clear the marker when every room reported back. Timing out means we do not
+			// know whether the edits landed, and re-flushing next boot is much cheaper than
+			// leaving someone's offline note stranded on one device.
+			if (allSynced) clearWorkspaceOfflineEdit(previousWorkspaceId);
 		} finally {
 			cleanup();
 		}
