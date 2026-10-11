@@ -118,6 +118,12 @@ export class DocumentManager {
 	// revoked and there is nothing to do, but an attached drawing can be refused simply
 	// because nobody ever wrote its collaborator rows — see attachedDrawingAccessRecovery.
 	private readonly accessDeniedSubscribers = new Set<(roomName: string) => void>();
+	// Notified whenever a room is torn down. Consumers holding a reference to that Y.Doc are
+	// otherwise left holding a corpse: see subscribeRoomDestroyed.
+	private readonly roomDestroyedSubscribers = new Set<(roomName: string) => void>();
+	/** Rooms torn down since the last notification flush, so a mass teardown notifies once. */
+	private readonly pendingDestroyedRooms = new Set<string>();
+	private destroyedNotifyTimer: ReturnType<typeof setTimeout> | null = null;
 	// Internal room-level pending tracker. This includes all rooms, then emitConnectionStatus
 	// filters out non-user rooms (such as the notes registry) before exposing snapshot data.
 	private readonly pendingSyncRooms = new Set<string>();
@@ -139,12 +145,6 @@ export class DocumentManager {
 	private static readonly CONNECT_STAGGER_WINDOW_MS = 1_500;
 	/** How often the connection watchdog sweeps. */
 	private static readonly WATCHDOG_INTERVAL_MS = 10_000;
-	/**
-	 * How long a room may sit unconnected before the watchdog cycles it. Generously above the
-	 * measured cold-boot drain (95 rooms all connected within ~19 s through Cloudflare) so a
-	 * normal startup never trips it.
-	 */
-	private static readonly WATCHDOG_STUCK_MS = 30_000;
 	private readonly pendingSyncQueuedAt = new Map<string, number>();
 	private readonly pendingSyncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	// Tracks rooms whose WS provider has completed at least one sync in this session.
@@ -302,7 +302,11 @@ export class DocumentManager {
 					clearInterval(this.watchdogTimer);
 					this.watchdogTimer = null;
 				}
-				for (const timer of this.staggeredConnectTimers) clearTimeout(timer);
+				if (this.destroyedNotifyTimer !== null) {
+					clearTimeout(this.destroyedNotifyTimer);
+					this.destroyedNotifyTimer = null;
+				}
+				for (const timer of this.staggeredConnectTimers.values()) clearTimeout(timer);
 				this.staggeredConnectTimers.clear();
 				window.removeEventListener('online', onOnline);
 				window.removeEventListener('offline', onOffline);
@@ -429,7 +433,7 @@ export class DocumentManager {
 					// ignore
 				}
 			}
-			for (const timer of this.staggeredConnectTimers) clearTimeout(timer);
+			for (const timer of this.staggeredConnectTimers.values()) clearTimeout(timer);
 			this.staggeredConnectTimers.clear();
 			this.updateConnectionState();
 			this.emitConnectionStatus();
@@ -544,6 +548,61 @@ export class DocumentManager {
 		this.accessDeniedSubscribers.add(listener);
 		return () => {
 			this.accessDeniedSubscribers.delete(listener);
+		};
+	}
+
+	/**
+	 * Fires with the room name whenever a room is torn down, for any reason.
+	 *
+	 * This exists because destroying a room silently was costing people their sync. A doc
+	 * created early in startup can be caught by `teardownAllRooms()` (reached via
+	 * `setActiveWorkspaceId`) or by an alias set shrinking in `setExternalRoomAliases`, and the
+	 * caller that asked for it is never told. NoteGrid, for one, keeps the Y.Doc in React state
+	 * and only re-checks its notes when its effect dependencies change — which a room vanishing
+	 * underneath it does not cause. So the note simply had no connection to the server, with no
+	 * error and nothing to see, until something incidentally re-ran that effect.
+	 *
+	 * Measured across four reports on two devices: consistently three notes of ninety-five,
+	 * reporting `connects=0 closes=0 errors=0` (a socket never opened, not one that failed) and
+	 * `destroys=1`, with the doc gone from `this.docs` entirely — so not even the connection
+	 * watchdog could rescue them, since it sweeps live docs. A user noticing that scrolling the
+	 * grid fixed the count is what identified it.
+	 *
+	 * Anything holding a Y.Doc from this manager should subscribe and re-request on teardown.
+	 */
+	/**
+	 * Coalesced on purpose. `teardownAllRooms()` destroys every room in one go, and notifying
+	 * per room would hand subscribers ~98 separate events — which for NoteGrid means ~98 state
+	 * updates and effect runs to accomplish one re-request pass. One flush per macrotask
+	 * instead, which also means a mass teardown cannot turn into a notification storm.
+	 *
+	 * Deferred rather than synchronous because destroyRoom still has cleanup to run below the
+	 * call site, and a listener that re-requested the room immediately could race it.
+	 */
+	private queueRoomDestroyedNotification(roomName: string): void {
+		if (this.roomDestroyedSubscribers.size === 0) return;
+		this.pendingDestroyedRooms.add(roomName);
+		if (this.destroyedNotifyTimer !== null) return;
+		this.destroyedNotifyTimer = setTimeout(() => {
+			this.destroyedNotifyTimer = null;
+			const rooms = Array.from(this.pendingDestroyedRooms);
+			this.pendingDestroyedRooms.clear();
+			for (const listener of this.roomDestroyedSubscribers) {
+				for (const room of rooms) {
+					try {
+						listener(room);
+					} catch {
+						// One bad listener must not stop the others being told.
+					}
+				}
+			}
+		}, 0);
+	}
+
+	public subscribeRoomDestroyed(listener: (roomName: string) => void): () => void {
+		this.roomDestroyedSubscribers.add(listener);
+		return () => {
+			this.roomDestroyedSubscribers.delete(listener);
 		};
 	}
 
@@ -1095,6 +1154,7 @@ export class DocumentManager {
 		this.docs.delete(roomName);
 		this.providers.delete(roomName);
 		this.websocketProviders.delete(roomName);
+		this.queueRoomDestroyedNotification(roomName);
 		this.readyPromiseResolvers.get(roomName)?.();
 		this.readyPromiseResolvers.delete(roomName);
 		this.readyPromises.delete(roomName);
@@ -1600,38 +1660,27 @@ export class DocumentManager {
 	 * @param reason — Human-readable tag for log output (e.g. "visibilitychange").
 	 */
 	private lastReconnectAt = 0;
-	/** Pending staggered connect timers, so a second reconnect pass can cancel the first. */
-	private staggeredConnectTimers = new Set<ReturnType<typeof setTimeout>>();
+	/**
+	 * Pending staggered connect timers, keyed by room.
+	 *
+	 * Was a flat Set, which meant a second pass cancelled EVERY pending connect including ones
+	 * belonging to rooms it wasn't being asked about. Keyed per room, a pass can only cancel
+	 * the work it is itself replacing.
+	 */
+	private staggeredConnectTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private watchdogTimer: ReturnType<typeof setInterval> | null = null;
-	/** roomName -> when we first noticed it unconnected while sync was supposed to be on. */
-	private readonly unconnectedSince = new Map<string, number>();
 
 	/**
-	 * Make sure every room that is supposed to be connected actually is.
+	 * Attach a websocket provider to any live doc that somehow has none.
 	 *
-	 * Measured across four reports on two devices, the same three rooms misbehaved every
-	 * single time: slowest on the phone (50.9 s / 50.8 s / 50.4 s), then **never connected at
-	 * all** on desktop (connects=0, closes=0, errors=0 — a provider that was created and never
-	 * made a single attempt), then 145 s on the phone once everything else had been sped up, at
-	 * which point they were the entire remaining cost of a cold boot. On the phone they were
-	 * eventually rescued by a `visibilitychange` firing reconnectAllProviders; on desktop, where
-	 * the tab stayed visible, nothing ever rescued them.
-	 *
-	 * The precise mechanism is still unidentified and this does not pretend to fix it. What it
-	 * fixes is the class: a provider that silently stops trying, with nothing in the system
-	 * responsible for noticing. y-websocket's own retry logic is third-party and we already
-	 * know it gives up in at least one place by design (the 1008 path tears the room down), so
-	 * something has to supervise it. A room that is simply mid-handshake or mid-backoff is left
-	 * alone unless it has been unconnected for WATCHDOG_STUCK_MS, and the recovery is the same
-	 * disconnect-then-staggered-connect cycle that already rescues these rooms by accident on
-	 * foreground.
+	 * Narrow on purpose. An earlier version of this also cycled providers that existed but
+	 * looked stuck, on the theory that the three chronically-unsynced rooms held a wedged
+	 * socket. The forensics disproved that theory and the shipped version then made things
+	 * measurably worse — see the comment in the body where that pass used to be. What is left
+	 * is the one non-destructive case: creating a provider where none exists.
 	 */
 	private sweepStuckProviders(): void {
-		if (!this.websocketEnabled || !this.browserOnline) {
-			this.unconnectedSince.clear();
-			return;
-		}
-		const now = Date.now();
+		if (!this.websocketEnabled || !this.browserOnline) return;
 
 		// First: a live doc with NO websocket provider at all.
 		//
@@ -1662,38 +1711,21 @@ export class DocumentManager {
 			}
 		}
 
-		// Then: a provider that exists but has stopped trying.
-		const stuck: WebsocketProvider[] = [];
-		for (const [roomName, provider] of this.websocketProviders.entries()) {
-			if ((provider as any).wsconnected === true) {
-				this.unconnectedSince.delete(roomName);
-				continue;
-			}
-			const since = this.unconnectedSince.get(roomName);
-			if (since === undefined) {
-				this.unconnectedSince.set(roomName, now);
-				continue;
-			}
-			if (now - since < DocumentManager.WATCHDOG_STUCK_MS) continue;
-			this.unconnectedSince.set(roomName, now);
-			stuck.push(provider);
-			recordSyncDiagWatchdogRescue(roomName);
-			logClientEvent('WS_LIFECYCLE', {
-				...peekNoteDebugContext(roomName),
-				event: 'ws-watchdog-rescue',
-				unconnectedForMs: now - since,
-			});
-		}
-		if (stuck.length === 0) return;
-		console.warn(`[yjs-ws] watchdog cycling ${stuck.length} stuck room(s)`);
-		for (const provider of stuck) {
-			try {
-				provider.disconnect();
-			} catch {
-				// ignore
-			}
-		}
-		this.connectProvidersStaggered(stuck, DocumentManager.CONNECT_STAGGER_WINDOW_MS);
+		// There is deliberately NO second pass here cycling providers that exist but look
+		// stuck.
+		//
+		// There was one, and the measurement says it did harm. It was built on the theory that
+		// these rooms held a wedged socket — a theory the forensics then disproved
+		// (connects=0 closes=0 errors=0 means a socket that was never opened, not one that
+		// failed). Shipped anyway, it cycled ~40 rooms four or five times each on a resume,
+		// contributed 10-15 closes and 9-11 errors per room, and the resume ended with 0 of 96
+		// rooms connected. It was speculative machinery that made the thing it was guarding
+		// worse.
+		//
+		// The one case worth acting on is the one above: a doc that exists with no provider at
+		// all. That is non-destructive — it only creates something where nothing was. Anything
+		// that tears down a working connection in the hope of getting a better one needs
+		// evidence first, and the evidence pointed the other way.
 	}
 
 	private ensureConnectionWatchdog(): void {
@@ -1740,40 +1772,62 @@ export class DocumentManager {
 	 * path, not the client's radio), which means firing 98 at once was never going to be
 	 * served any faster. It just turned a queue into a thundering herd.
 	 */
-	private connectProvidersStaggered(providers: WebsocketProvider[], windowMs: number): void {
-		for (const timer of this.staggeredConnectTimers) clearTimeout(timer);
-		this.staggeredConnectTimers.clear();
-
+	private connectProvidersStaggered(
+		providers: WebsocketProvider[],
+		windowMs: number,
+		options?: { cycle?: boolean }
+	): void {
 		// Derived, not fixed — see CONNECT_STAGGER_WINDOW_MS. One room connects immediately
 		// either way.
 		const spacingMs = providers.length > 1 ? windowMs / (providers.length - 1) : 0;
+		const cycle = options?.cycle === true;
 		providers.forEach((provider, index) => {
-			const connectNow = (): void => {
+			const roomName = provider.roomname;
+			const existingTimer = this.staggeredConnectTimers.get(roomName);
+			if (existingTimer !== undefined) {
+				clearTimeout(existingTimer);
+				this.staggeredConnectTimers.delete(roomName);
+			}
+			const run = (): void => {
 				try {
+					if (cycle) {
+						// Tear down and bring back in ONE step. Doing the disconnect up front and
+						// the connect from a timer opened a window where a provider could be
+						// left disconnected with `shouldConnect === false` and no pending
+						// callback — which y-websocket will never retry out of, because it only
+						// retries when it still intends to be connected. That is a one-way door,
+						// and it is how a resume ended with 0 of 96 rooms connected and nothing
+						// even trying. Cancelling a callback now leaves the provider exactly as
+						// it was instead of orphaning it.
+						provider.disconnect();
+					}
 					// Reset backoff so a previously-disconnected provider doesn't sit in a
 					// "give up" state waiting out an accumulated exponential delay.
 					(provider as any).wsUnsuccessfulReconnects = 0;
 					provider.connect();
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
-					console.warn(`[yjs-ws] connect failed for room=${provider.roomname}: ${msg}`);
+					console.warn(`[yjs-ws] connect failed for room=${roomName}: ${msg}`);
 				}
 			};
 			if (index === 0) {
 				// Whatever is first goes immediately — staggering must never add latency to
 				// the first connection, only spread out the ones behind it.
-				connectNow();
+				run();
 				return;
 			}
 			// Jitter is as load-bearing as the spacing: without it, providers that failed
 			// together just retry together on the next pass and the herd reforms.
 			const jitter = Math.random() * spacingMs;
 			const timer = setTimeout(() => {
-				this.staggeredConnectTimers.delete(timer);
-				if (!this.browserOnline || !this.websocketEnabled) return;
-				connectNow();
+				this.staggeredConnectTimers.delete(roomName);
+				// Only the app-level switch is honoured here. `browserOnline` deliberately is
+				// not: the offline handler disconnects providers itself, and skipping on a
+				// transient `navigator.onLine` reading is what used to orphan them.
+				if (!this.websocketEnabled) return;
+				run();
 			}, index * spacingMs + jitter);
-			this.staggeredConnectTimers.add(timer);
+			this.staggeredConnectTimers.set(roomName, timer);
 		});
 	}
 
@@ -1795,18 +1849,9 @@ export class DocumentManager {
 			);
 		}
 
-		// Tear every dead socket down immediately — that part is local and free.
-		for (const provider of providers) {
-			try {
-				// disconnect() closes the WS, sets shouldConnect=false, clears timers.
-				provider.disconnect();
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				console.warn(`[yjs-ws] disconnect failed for room=${provider.roomname}: ${msg}`);
-			}
-		}
-		// ...then bring them back spread out. See connectProvidersStaggered for why.
-		this.connectProvidersStaggered(providers, DocumentManager.CONNECT_STAGGER_WINDOW_MS);
+		// Each provider is torn down and brought back in a single step, spread out. See
+		// connectProvidersStaggered: separating the two halves orphaned providers.
+		this.connectProvidersStaggered(providers, DocumentManager.CONNECT_STAGGER_WINDOW_MS, { cycle: true });
 
 		this.updateConnectionState();
 		this.emitConnectionStatus();

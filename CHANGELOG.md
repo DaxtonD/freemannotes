@@ -2,6 +2,19 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.21.4 - 2026-10-11
+
+### Fixed
+- **Notes that silently had no connection to the server now get one.** Confirmed with measurements from two devices rather than guessed at this time: when a note's document is torn down during startup, the thing that asked for it was never told, so it sat there with no connection, no error and nothing on screen to suggest a problem. Teardown now announces itself and the note grid asks for the note again. This is the actual fix for the handful of notes that would never receive anyone else's edits - the previous attempt was aimed a layer too low and could not have worked, which the forensics said plainly: the document was gone, not just its connection.
+
+- **Coming back to the app after it has been in the background no longer leaves it disconnected from everything.** This one was our own doing, introduced two versions ago, and it is worth describing properly because the failure was total rather than partial.
+
+  Reconnecting involved closing every connection up front and reopening them on staggered timers. Closing one tells the underlying library "stop trying to be connected". The timer that reopened it then checked whether the browser thought it was online and gave up if not - and a phone that has just woken up reports itself offline for a moment as a matter of routine. So the connection was closed, told not to reconnect, and the thing that would have reconnected it declined to. Nothing retries out of that state, ever. A measured resume ended with **none of ninety-six notes connected and not one of them even trying**.
+
+  Each connection is now closed and reopened in a single step, so an interrupted attempt leaves things exactly as they were rather than stranded. And we no longer second-guess the browser's online reading there, because the part of the app that handles going offline already does that properly.
+
+- **Removed a watchdog that was making things worse.** Added last version to cycle connections that looked stuck, on a theory about what was wrong with them. The theory was already contradicted by the evidence at the time - a connection reporting zero successes, zero closures and zero errors has not failed, it has never been attempted - and shipping it anyway cost about forty notes four or five forced reconnection cycles each on every resume, roughly a thousand dropped connections, and made the problem it was guarding against considerably worse. What remains is the one case that cannot do harm: attaching a connection to a note that has none. Tearing down a working connection in the hope of a better one needs evidence first, and there wasn't any.
+
 ## 1.21.3 - 2026-10-10
 
 ### Fixed

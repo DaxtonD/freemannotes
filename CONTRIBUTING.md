@@ -1178,6 +1178,20 @@ is the point. A fixed per-socket delay makes the cost scale with workspace size:
 where firing everything at once genuinely is quickest. Spreading across a fixed window caps what
 staggering can ever cost, at 98 rooms or 10,000. Do not convert it back to a per-item delay.
 
+**Never split the disconnect from the connect.** The first version disconnected every provider up
+front and scheduled the connects from timers, and the timer callback bailed out on
+`!browserOnline`. `disconnect()` sets `shouldConnect = false`, so a provider whose callback bailed
+was left disconnected, not intending to connect, with nothing pending - and y-websocket only
+retries while it still intends to be connected. That is a one-way door, and on a phone waking up
+(where `navigator.onLine` reading false for a moment is routine) it is how a resume ended with 0
+of 96 rooms connected and nothing even trying. Each provider is now torn down and brought back in
+**one callback**, so cancelling it leaves the provider exactly as it was instead of stranding it,
+and only the app-level `websocketEnabled` switch is honoured - the offline handler disconnects
+providers itself, and second-guessing it on a transient reading is what caused this.
+
+Pending timers are keyed **per room**. They were a flat set, so any new pass cancelled every
+pending connect including rooms it was not being asked about.
+
 ## A Room With No Provider Syncs Nothing, Forever
 
 Three note rooms turned up unconnected in every single sync-timing report across two devices
@@ -1210,11 +1224,32 @@ the watchdog only iterated `websocketProviders`, which cannot by construction co
 no provider, so it would have shipped and done nothing for the actual bug. The stuck-provider
 pass (unconnected beyond `WATCHDOG_STUCK_MS`) is second, for the other shape.
 
-**Known remaining gap:** if the *doc* is destroyed too, not just its provider, the manager has no
-record the note was ever wanted and the watchdog cannot rescue what it does not know about. The
-`destroys` counter and the `doc GONE TOO` marker in the probe's STUCK ROOM FORENSICS block exist
-to tell those two cases apart. If it turns out to be the doc, DocumentManager needs to notify
-subscribers when it tears a room down rather than leaving callers holding a dead reference.
+**Confirmed: it is the doc.** Identical forensics on both a phone and a desktop -
+`providerCreations=1 destroys=1 createdWithConnect=false`, and `live: NO PROVIDER (doc GONE
+TOO)`. So the room is torn down entirely, which is why a watchdog sweeping live docs could never
+rescue it: there is no doc to sweep.
+
+**The fix is `DocumentManager.subscribeRoomDestroyed()`.** Teardown is no longer silent, and
+NoteGrid subscribes and re-requests. Three choices in that wiring worth keeping:
+
+- **A counter, not pruning `docsById`.** The loading effect's own guard already spots the stale
+  doc (`peekDoc(id) !== currentDoc`, and `peekDoc` returns null for a destroyed room) and
+  re-requests it. Leaving the dead doc in state until its replacement lands means the card keeps
+  rendering rather than flashing back to a snapshot shell.
+- **Coalesced to one flush per macrotask.** `teardownAllRooms()` destroys every room at once;
+  notifying per room would hand NoteGrid ~98 events, i.e. ~98 state updates and effect passes to
+  do one re-request. It also stops a mass teardown becoming a notification storm.
+- **Deferred, not synchronous.** `destroyRoom` still has cleanup below the call site, and a
+  listener re-requesting immediately could race it.
+
+**The watchdog was cut back to one case, because the other one did harm.** It originally also
+cycled providers that existed but looked stuck - built on a "wedged socket" theory that the
+forensics had already disproved (`connects=0 closes=0 errors=0` is a socket never opened, not one
+that failed). Shipped anyway, it cycled ~40 rooms four or five times each on a resume,
+contributed 10-15 closes and 9-11 errors per room, and that resume ended with **0 of 96 rooms
+connected**. What remains is the non-destructive case only: attach a provider to a live doc that
+has none. Anything that tears down a working connection in the hope of a better one needs
+evidence first.
 
 ## Diagnosing an Unexpected Reload
 
