@@ -1388,7 +1388,14 @@ const SCROLL_IDLE_PUBLISH_MS = 250;
 // viewport height. Connecting slightly ahead of arrival means a note is already
 // synced by the time you can read it, instead of visibly updating once you get
 // there.
-const VIEWPORT_CONNECT_OVERSCAN_RATIO = 1;
+//
+// Smaller on a phone. A whole extra screen of overscan roughly DOUBLES the batch
+// there, and the first prod measurement put the real handshake rate at ~4.3
+// sockets a second — so every room in the batch is about 230 ms of queue for
+// whatever is behind it. Desktop keeps the full screen: the window is taller, the
+// cards are smaller, and the handshake budget is not the constraint.
+const VIEWPORT_CONNECT_OVERSCAN_RATIO_COARSE = 0.5;
+const VIEWPORT_CONNECT_OVERSCAN_RATIO_FINE = 1;
 
 // How many of your most recently opened notes stay connected wherever they are.
 //
@@ -1399,7 +1406,11 @@ const VIEWPORT_CONNECT_OVERSCAN_RATIO = 1;
 // and documents are still loaded eagerly from IndexedDB, so it is known at ~390 ms
 // before any socket decision is made) and makes the behaviour identical on every
 // launch rather than depending on what you happened to scroll past.
-const RECENT_CONNECTION_SEED_COUNT = 8;
+//
+// These sort BEHIND everything on screen (see connectionRank in DocumentManager),
+// so they cost the visible notes nothing in queue position — only in total batch
+// size, which is why this is 5 rather than 8.
+const RECENT_CONNECTION_SEED_COUNT = 5;
 	const [shimmerStalled, setShimmerStalled] = React.useState(false);
 	React.useEffect(() => {
 		if (allDocsLoaded) {
@@ -3031,7 +3042,26 @@ const RECENT_CONNECTION_SEED_COUNT = 8;
 		// for everything the viewport sweeps across on the way to where the user is
 		// actually going is the whole failure this guards.
 		if (isScrollingRef.current) return;
-		const visible = Array.from(visibleNoteIdsRef.current).sort();
+		// ORDER MATTERS, and it is the fix for the thing that did not improve. This used to
+		// `.sort()` alphabetically — stable for the signature comparison below, and meaningless
+		// as a priority. DocumentManager now connects this list front to back, and the first
+		// entry pays a single handshake while everything behind it queues at ~4.3 a second. So
+		// hand it the reading order of the grid, top first, which is the order the user's
+		// attention is in. renderedIdsRef is read at call time (this runs from an observer
+		// callback, never during render) because renderedIds is computed further down.
+		const displayOrder = renderedIdsRef.current;
+		const positionById = new Map<string, number>();
+		for (let index = 0; index < displayOrder.length; index++) positionById.set(displayOrder[index], index);
+		const visible = Array.from(visibleNoteIdsRef.current).sort((left, right) => {
+			const leftPosition = positionById.get(left);
+			const rightPosition = positionById.get(right);
+			// Anything the display order does not know about goes last, alphabetically, so the
+			// signature stays stable instead of depending on Set iteration order.
+			if (leftPosition === undefined && rightPosition === undefined) return left < right ? -1 : left > right ? 1 : 0;
+			if (leftPosition === undefined) return 1;
+			if (rightPosition === undefined) return -1;
+			return leftPosition - rightPosition;
+		});
 		const signature = `${visible.join('\u001f')}||${recentNoteIdsRef.current.join('\u001f')}`;
 		if (signature === publishedViewportSignatureRef.current) return;
 		publishedViewportSignatureRef.current = signature;
@@ -3075,7 +3105,11 @@ const RECENT_CONNECTION_SEED_COUNT = 8;
 				}
 				if (changed) publishViewportRooms();
 			},
-			{ rootMargin: `${Math.round(window.innerHeight * VIEWPORT_CONNECT_OVERSCAN_RATIO)}px 0px` }
+			{
+				rootMargin: `${Math.round(window.innerHeight * (isCoarsePointer
+					? VIEWPORT_CONNECT_OVERSCAN_RATIO_COARSE
+					: VIEWPORT_CONNECT_OVERSCAN_RATIO_FINE))}px 0px`,
+			}
 		);
 
 		const onScroll = (): void => {
@@ -3128,7 +3162,7 @@ const RECENT_CONNECTION_SEED_COUNT = 8;
 			observer.disconnect();
 			observed.clear();
 		};
-	}, [isGridVisible, props.activeWorkspaceId, props.viewMode, publishViewportRooms]);
+	}, [isCoarsePointer, isGridVisible, props.activeWorkspaceId, props.viewMode, publishViewportRooms]);
 
 
 	// ── Track when all docs are loaded (drives shimmer + layout animations) ─

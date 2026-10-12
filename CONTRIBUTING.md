@@ -1263,6 +1263,54 @@ sort-by-recency and bubble scores) and would have been an edit-losing one for th
 - **Squeezed out is not expired.** A room that did not fit keeps its interest entry and returns
   as warmer rooms age out.
 
+### Queue POSITION, not queue length, is what the user experiences
+
+**This is the least intuitive part of the whole change, and it was measured the hard way.** 1.21.6
+cut sockets from ~96 to 16 and dropped `last room synced` from ~22 s to 6.0 s — and the number
+that actually matters, how long until a collaborator's edit to the note you just opened appears,
+went from "6-17 s, random" to "6-8 s, consistent" and no further.
+
+The prod concurrency trace says why: open count went 2 -> 16 between 2648 ms and 6398 ms, so the
+real handshake rate is **~4.3 sockets/second** (not the ~7/s measured earlier). Sixteen sockets
+take ~3.7 s to drain, and the queue was **unordered** — `connectProvidersStaggered` iterated
+`websocketProviders.values()` in insertion order. The note the user was waiting on sat at a
+random position in that batch. Same bug as before, one sixth the size.
+
+`connectProvidersStaggered` fires index 0 immediately and spreads the rest, so **sort order is
+the entire lever.** `connectionRank` (in `roomConnectionPool.ts`, pure and tested) gives:
+
+| tier | rooms |
+|---|---|
+| 0 | the pinned room — whatever is open in the editor |
+| 1 | on screen, in reading order from the top |
+| 2 | warm rooms, most recently wanted first (the recent-notes seed lands here) |
+| 3 | anything else |
+
+Three things that are easy to get wrong here, two of which were:
+
+- **Recency must be a separate sort key, not folded into the tier number.** The first version did
+  `100_000 - (lastWantedAt / 1000) % 99_999`. Epoch milliseconds do not survive being squeezed
+  into an arbitrary range; the ordering would have gone wrong whenever the modulo rolled over.
+  Hence a `{ tier, within }` tuple and a two-key comparison, with a test using real
+  ~1.79e12 timestamps.
+- **The visible set must be published in VISUAL order.** `publishViewportRooms` used `.sort()`,
+  which is stable (good for the signature check) and meaningless as a priority. It now orders by
+  position in `renderedIdsRef.current`, read at call time because `renderedIds` is computed
+  further down the component.
+- **`reconcileRoomConnections` must create providers in priority order too.** A provider connects
+  the moment it is constructed (`connect: this.websocketEnabled`), so creation order *is* queue
+  order for anything attached after sync is enabled. It used to iterate `this.docs` directly,
+  which is arbitrary.
+
+`setPinnedRoom` also calls `connectRoomNow`, which cancels any pending staggered timer for that
+room and connects it. Opening a note is the one moment someone is unambiguously waiting on one
+specific room. It never disconnects first — see the stranding trap above.
+
+**Known floor, so nobody promises better again without doing the arithmetic:** ~1 s before
+`websocket-ENABLED` (visible in the report's LIFECYCLE block), plus the better part of 2 s for a
+single mobile TLS handshake, plus ~100 ms of server. **About 2.5-3 s is the ceiling** until the
+pre-enable gate is attacked, which is separate work.
+
 NoteGrid supplies the viewport via **one IntersectionObserver** over `[data-note-id]`, plus a
 MutationObserver to hand it nodes as the virtualizer mounts them. Deriving visibility from what
 is *rendered* instead would have been wrong in the least obvious place: a column is only
@@ -1280,10 +1328,16 @@ change would have silently done nothing there.
 - **`publishViewportRooms` does nothing while the grid is not the visible view.** An open editor
   makes every card report itself off-screen, and acting on that would close the socket for the
   note being read.
-- **`RECENT_CONNECTION_SEED_COUNT` (8)** seeds the pool from `lastAccessedAt`, which costs no new
+- **`RECENT_CONNECTION_SEED_COUNT` (5)** seeds the pool from `lastAccessedAt`, which costs no new
   tracking (documents are eager, so it is known at ~390 ms). This exists because people arrange
   their most-used notes at the **top and the bottom** of the grid, and a purely viewport-driven
-  pool would leave the bottom ones cold until you arrived there.
+  pool would leave the bottom ones cold until you arrived there. They sort into tier 2, behind
+  everything visible, so they cost on-screen notes no queue position — only batch size, which is
+  why 8 became 5.
+- **`VIEWPORT_CONNECT_OVERSCAN_RATIO_COARSE` (0.5) vs `_FINE` (1).** A full extra screen of
+  overscan roughly doubles the batch on a phone, and at ~4.3 handshakes/second every extra room
+  is ~230 ms of queue for whatever is behind it. Desktop keeps the full screen: taller window,
+  smaller cards, and the handshake budget is not the constraint there.
 
 ### Two traps specific to this
 

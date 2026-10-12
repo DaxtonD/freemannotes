@@ -15,7 +15,7 @@ import {
 } from './debugLogger';
 import { EMPTY_MOVE_NOTE_METADATA_MAPPING, type MoveNoteMetadataIdPair, type MoveNoteMetadataMapping } from './noteMoveMetadata';
 import { clearWorkspaceOfflineEdit, markWorkspaceOfflineEdit } from './workspaceOfflineEditMarkers';
-import { computeConnectionPool } from './roomConnectionPool';
+import { compareConnectionRank, computeConnectionPool } from './roomConnectionPool';
 import {
 	clearRoomOfflineEdit,
 	hasRoomOfflineEdit,
@@ -266,6 +266,18 @@ export class DocumentManager {
 	private websocketFirstEnabledAt: number | null = null;
 	/** Rooms on screen right now. Never evicted by the cap — you are looking at them. */
 	private viewportRooms: ReadonlySet<string> = new Set<string>();
+	/**
+	 * Room -> its position on screen, top first.
+	 *
+	 * Exists because the first prod measurement of this work showed the socket count drop from
+	 * ~96 to 16 and the thing the user actually waits for — a collaborator's edit to the note
+	 * they opened — barely move: 6-17 s became a consistent 6-8 s. The handshake path serves
+	 * about 4.3 sockets a second, so a batch of 16 takes ~3.7 s to drain, and the pool was
+	 * UNORDERED. Their note sat at a random position in that queue, which is the original bug
+	 * at one sixth the scale. Queue length sets when the LAST room syncs; queue position sets
+	 * when YOURS does, and position was being left to chance.
+	 */
+	private viewportOrder: ReadonlyMap<string, number> = new Map<string, number>();
 	/** The computed outcome: rooms the pool says should hold a socket. */
 	private pooledRooms: ReadonlySet<string> = new Set<string>();
 	private connectionState: ConnectionState = 'connecting';
@@ -480,6 +492,7 @@ export class DocumentManager {
 			// The viewport belonged to the workspace we just left.
 			this.roomInterest.clear();
 			this.viewportRooms = new Set<string>();
+			this.viewportOrder = new Map<string, number>();
 			this.pinnedRoom = null;
 			this.pooledRooms = new Set<string>();
 			this.registryHydrated = false;
@@ -557,7 +570,10 @@ export class DocumentManager {
 				// ignore
 			}
 		}
-		this.connectProvidersStaggered(notes, DocumentManager.CONNECT_STAGGER_WINDOW_MS);
+		this.connectProvidersStaggered(
+			this.sortByConnectionPriority(notes),
+			DocumentManager.CONNECT_STAGGER_WINDOW_MS
+		);
 
 		this.updateConnectionState();
 		this.emitConnectionStatus();
@@ -1361,6 +1377,7 @@ export class DocumentManager {
 		this.localEditTrackedRooms.clear();
 		this.roomInterest.clear();
 		this.viewportRooms = new Set<string>();
+		this.viewportOrder = new Map<string, number>();
 		this.pinnedRoom = null;
 		this.pooledRooms = new Set<string>();
 		this.registryHydrated = false;
@@ -1590,6 +1607,39 @@ export class DocumentManager {
 		}
 	}
 
+	/**
+	 * Lower connects sooner. The whole point is that position in the connect queue stops being
+	 * arbitrary: the note you have open, then what is on screen from the top down, then the
+	 * rooms kept warm for other reasons.
+	 *
+	 * `connectProvidersStaggered` fires index 0 immediately and spreads the rest, so whatever
+	 * sorts first here pays one handshake and nothing else.
+	 */
+	/**
+	 * Where this room sits in the connect queue. The rules live in roomConnectionPool.ts as a
+	 * pure function, where they are tested — see the note there on why queue POSITION, not
+	 * queue length, is what the user actually experiences.
+	 */
+	private compareConnectionRank(left: string, right: string): number {
+		return compareConnectionRank(left, right, {
+			pinnedRoom: this.pinnedRoom,
+			viewportOrder: this.viewportOrder,
+			interest: this.roomInterest,
+		});
+	}
+
+	/** Order providers so the ones the user is waiting on are at the front of the queue. */
+	private sortByConnectionPriority(providers: WebsocketProvider[]): WebsocketProvider[] {
+		return providers
+			.map((provider, index) => ({ provider, index }))
+			// Index as a final tiebreaker keeps this stable regardless of the engine's sort.
+			.sort((left, right) =>
+				this.compareConnectionRank(left.provider.roomname, right.provider.roomname)
+				|| (left.index - right.index)
+			)
+			.map((entry) => entry.provider);
+	}
+
 	/** Something wants this room connected, now. Recomputes the pool and acts on it. */
 	private noteRoomInterest(roomName: string): void {
 		this.roomInterest.set(roomName, Date.now());
@@ -1626,23 +1676,34 @@ export class DocumentManager {
 	private reconcileRoomConnections(): void {
 		this.recomputeConnectionPool();
 		let detached = false;
-		for (const [roomName, doc] of this.docs.entries()) {
+		// Collected rather than acted on inline, because a provider connects the moment it is
+		// constructed (`connect: this.websocketEnabled`) — so the order these are CREATED in is
+		// the order they hit the handshake queue. Iterating `this.docs` directly meant that
+		// order was whatever the Map happened to hold.
+		const toAttach: string[] = [];
+		for (const roomName of this.docs.keys()) {
 			const wanted = this.shouldRoomConnect(roomName);
 			recordSyncDiagConnectionIntent(roomName, wanted);
 			const hasProvider = this.websocketProviders.has(roomName);
 			if (wanted === hasProvider) continue;
 			if (wanted) {
-				try {
-					this.ensureWebsocketProvider(roomName, doc);
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					console.warn(`[yjs-ws] could not attach provider for room=${roomName}: ${msg}`);
-				}
+				toAttach.push(roomName);
 			} else {
 				// deferEmit: a scroll can retire a dozen rooms' grace windows in one pass, and
 				// emitting per room would be a dozen React state updates to say one thing.
 				this.detachWebsocketProvider(roomName, { deferEmit: true });
 				detached = true;
+			}
+		}
+		toAttach.sort((left, right) => this.compareConnectionRank(left, right));
+		for (const roomName of toAttach) {
+			const doc = this.docs.get(roomName);
+			if (!doc) continue;
+			try {
+				this.ensureWebsocketProvider(roomName, doc);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				console.warn(`[yjs-ws] could not attach provider for room=${roomName}: ${msg}`);
 			}
 		}
 		if (detached) {
@@ -1703,6 +1764,38 @@ export class DocumentManager {
 		if (previous) this.roomInterest.set(previous, Date.now());
 		if (next) this.roomInterest.set(next, Date.now());
 		this.reconcileRoomConnections();
+		if (next) this.connectRoomNow(next);
+	}
+
+	/**
+	 * Skip this room to the front of the queue.
+	 *
+	 * Opening a note is the one moment the user is unambiguously waiting on one specific room.
+	 * Its provider may already exist and be sitting on a staggered timer behind a dozen others,
+	 * which measured as 6-8 s before a collaborator's edit appeared. Cancelling that timer and
+	 * connecting costs one handshake.
+	 *
+	 * Note what this does NOT do: disconnect first. A provider that is already connected is
+	 * left alone, and a provider mid-attempt is only told to connect, never torn down — see the
+	 * stranding trap in connectProvidersStaggered.
+	 */
+	private connectRoomNow(roomName: string): void {
+		if (!this.websocketEnabled) return;
+		const provider = this.websocketProviders.get(roomName) as any;
+		if (!provider) return;
+		if (provider.wsconnected === true) return;
+		const timer = this.staggeredConnectTimers.get(roomName);
+		if (timer !== undefined) {
+			clearTimeout(timer);
+			this.staggeredConnectTimers.delete(roomName);
+		}
+		try {
+			provider.wsUnsuccessfulReconnects = 0;
+			provider.connect();
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.warn(`[yjs-ws] priority connect failed for room=${roomName}: ${msg}`);
+		}
 	}
 
 	/**
@@ -1737,6 +1830,12 @@ export class DocumentManager {
 			// age out like anything else, or the seed would pin it for the whole session.
 			if (!this.roomInterest.has(roomName)) this.roomInterest.set(roomName, now);
 		}
+		// Order is preserved from the caller's array (NoteGrid sends them top-first) and is
+		// what connectionRank reads. A Set keeps insertion order, so `next` carries it too.
+		const order = new Map<string, number>();
+		let position = 0;
+		for (const roomName of next) order.set(roomName, position++);
+		this.viewportOrder = order;
 		this.viewportRooms = next;
 		this.reconcileRoomConnections();
 	}
@@ -2188,7 +2287,11 @@ export class DocumentManager {
 
 		// Each provider is torn down and brought back in a single step, spread out. See
 		// connectProvidersStaggered: separating the two halves orphaned providers.
-		this.connectProvidersStaggered(providers, DocumentManager.CONNECT_STAGGER_WINDOW_MS, { cycle: true });
+		this.connectProvidersStaggered(
+			this.sortByConnectionPriority(providers),
+			DocumentManager.CONNECT_STAGGER_WINDOW_MS,
+			{ cycle: true }
+		);
 
 		this.updateConnectionState();
 		this.emitConnectionStatus();

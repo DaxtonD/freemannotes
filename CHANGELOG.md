@@ -2,6 +2,19 @@
 
 Every notable change to this project, logged here in more or less chronological order. Some of these fixes we're proud of. Some of them are here because we broke something first and then had to go fix it, and honesty seemed better than pretending it never happened.
 
+## 1.21.7 - 2026-10-12
+
+### Changed
+- **Connections now go out in the order you care about, instead of whatever order they happened to be in.** Last version cut the number of connections opened on startup from about ninety-six down to sixteen, and the twenty-second wait to become current dropped to six. The number that actually matters — how long until you see the edit somebody else made to the note you just opened — went from "six to seventeen seconds, pick a card" to a consistent six to eight. Better, and not nearly good enough.
+
+  Measuring it explained why, and it is slightly embarrassing: the path serves about four and a half connections a second, so sixteen of them take nearly four seconds to all get going, and nothing decided which went first. Your shopping list was somewhere in that queue, and where exactly was pure luck. The same problem as before, at a sixth of the size.
+
+  So the queue has an order now: the note you have open goes first, then what is on your screen reading top to bottom, then everything being kept warm for other reasons. The first one out pays a single handshake and waits for nothing. Opening a note also pushes it to the front rather than leaving it to wait its turn.
+
+- **Phones look slightly less far ahead.** We connect notes a bit beyond the edges of the screen so they are ready by the time you scroll to them, and "a bit beyond" was a whole extra screenful — which on a phone roughly doubles the batch. Halved it there, left desktop alone, and trimmed the "most recently opened" list from eight notes to five. Those five sort behind everything on screen anyway, so they cost your visible notes nothing.
+
+  Expect somewhere around three seconds rather than six to eight. Not one to two: there is about a second before syncing is switched on at all, plus the better part of two seconds for a single handshake over mobile, and no amount of queue ordering touches either of those. They are the next thing to look at.
+
 ## 1.21.6 - 2026-10-11
 
 ### Changed

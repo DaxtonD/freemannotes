@@ -76,3 +76,55 @@ export function computeConnectionPool(input: ConnectionPoolInput): ConnectionPoo
 
 	return { pooled, expired };
 }
+
+/**
+ * Where a room sits in the connect queue. Lower goes first.
+ *
+ * This is the load-bearing half of the whole change, and that is not obvious, so: the first
+ * prod measurement showed sockets drop from ~96 to 16 while the number the user actually
+ * experiences — how long until a collaborator's edit to the note they just opened appears —
+ * barely moved, from "6-17 s, random" to "6-8 s, consistent". The handshake path serves about
+ * 4.3 sockets a second, so a batch of 16 takes ~3.7 s to drain, and the queue was in arbitrary
+ * order. **Queue LENGTH decides when the last room syncs. Queue POSITION decides when yours
+ * does.** Only the second one is what somebody is sitting there waiting for.
+ *
+ * `connectProvidersStaggered` fires the first entry immediately and spreads the rest, so
+ * whatever sorts first here pays one handshake and nothing else.
+ *
+ * Tiers, in order:
+ *   0. the pinned room — the note open in the editor, the one unambiguous "waiting on this"
+ *   1. what is on screen, in reading order from the top
+ *   2. warm rooms, most recently wanted first (the recently-opened seed lands here, which is
+ *      exactly where it belongs: worth having, never worth delaying a visible note for)
+ *   3. anything else
+ *
+ * Recency is a SEPARATE sort key, not folded into the tier number. The first version of this
+ * computed `100_000 - (lastWantedAt / 1000) % 99_999`, which wraps — epoch milliseconds do not
+ * survive being squeezed into an arbitrary range, and the order it produced would have gone
+ * wrong whenever the modulo rolled over. Hence a tuple and a two-key comparison.
+ */
+export type ConnectionRankInput = {
+	pinnedRoom?: string | null;
+	/** Room -> position on screen, top first. */
+	viewportOrder: ReadonlyMap<string, number>;
+	/** Room -> last time anything wanted it connected, epoch ms. */
+	interest: ReadonlyMap<string, number>;
+};
+
+export type ConnectionRank = { tier: number; within: number };
+
+export function connectionRank(roomName: string, input: ConnectionRankInput): ConnectionRank {
+	if (input.pinnedRoom === roomName) return { tier: 0, within: 0 };
+	const viewportIndex = input.viewportOrder.get(roomName);
+	if (viewportIndex !== undefined) return { tier: 1, within: viewportIndex };
+	const lastWantedAt = input.interest.get(roomName);
+	if (lastWantedAt !== undefined) return { tier: 2, within: -lastWantedAt };
+	return { tier: 3, within: 0 };
+}
+
+/** Negative when `left` should connect before `right`. Suitable for Array.prototype.sort. */
+export function compareConnectionRank(left: string, right: string, input: ConnectionRankInput): number {
+	const a = connectionRank(left, input);
+	const b = connectionRank(right, input);
+	return (a.tier - b.tier) || (a.within - b.within);
+}

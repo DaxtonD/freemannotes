@@ -156,3 +156,128 @@ describe('room connection pool', () => {
 		assert.deepEqual(expired, ['ws:stale'], 'stale entries are reported regardless of the cap');
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ordering. This is the half that decides what the user experiences, and it is
+// not intuitive: shrinking the batch from 96 to 16 moved "how long until I see
+// my wife's edit" from 6-17s to 6-8s and no further, because the queue was in
+// arbitrary order and her note landed wherever. Queue LENGTH sets when the last
+// room syncs; queue POSITION sets when yours does.
+//
+// Also: the first implementation folded an epoch timestamp into
+// `100_000 - (t / 1000) % 99_999`, which wraps. Caught before shipping, hence
+// the explicit recency assertions below.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const { compareConnectionRank, connectionRank } = require('../src/core/roomConnectionPool.ts');
+
+function rankInput(overrides) {
+	return {
+		pinnedRoom: null,
+		viewportOrder: new Map(),
+		interest: new Map(),
+		...overrides,
+	};
+}
+
+const order = (rooms, input) => rooms.slice().sort((left, right) => compareConnectionRank(left, right, input));
+
+describe('connect queue ordering', () => {
+	it('puts the open editor first, ahead of everything on screen', () => {
+		const input = rankInput({
+			pinnedRoom: 'ws:open',
+			viewportOrder: new Map([['ws:a', 0], ['ws:b', 1]]),
+			interest: new Map([['ws:open', NOW], ['ws:a', NOW], ['ws:b', NOW]]),
+		});
+		assert.deepEqual(order(['ws:b', 'ws:a', 'ws:open'], input), ['ws:open', 'ws:a', 'ws:b']);
+	});
+
+	it('orders on-screen rooms top-first, not alphabetically', () => {
+		// The bug this replaces: the visible set was published with .sort(), which is
+		// stable and completely meaningless as a priority.
+		const input = rankInput({ viewportOrder: new Map([['ws:zebra', 0], ['ws:apple', 1]]) });
+		assert.deepEqual(order(['ws:apple', 'ws:zebra'], input), ['ws:zebra', 'ws:apple']);
+	});
+
+	it('puts every on-screen room ahead of every warm one', () => {
+		const input = rankInput({
+			viewportOrder: new Map([['ws:visible', 5]]),
+			// Warm and very recently wanted - still loses to anything visible.
+			interest: new Map([['ws:warm', NOW]]),
+		});
+		assert.deepEqual(order(['ws:warm', 'ws:visible'], input), ['ws:visible', 'ws:warm']);
+	});
+
+	it('orders warm rooms most-recently-wanted first', () => {
+		const input = rankInput({
+			interest: new Map([
+				['ws:old', NOW - 20_000],
+				['ws:new', NOW - 1_000],
+				['ws:mid', NOW - 10_000],
+			]),
+		});
+		assert.deepEqual(order(['ws:old', 'ws:new', 'ws:mid'], input), ['ws:new', 'ws:mid', 'ws:old']);
+	});
+
+	it('orders warm rooms correctly for real epoch-millisecond values', () => {
+		// The regression guard. Real timestamps are ~1.7e12; the first implementation
+		// squeezed them through a modulo and the ordering stopped meaning anything
+		// whenever it rolled over.
+		const realNow = 1_791_657_942_016;
+		const input = rankInput({
+			interest: new Map([
+				['ws:a', realNow - 1],
+				['ws:b', realNow],
+				['ws:c', realNow - 100_000],
+			]),
+		});
+		assert.deepEqual(order(['ws:c', 'ws:a', 'ws:b'], input), ['ws:b', 'ws:a', 'ws:c']);
+	});
+
+	it('puts rooms nothing has asked for last', () => {
+		const input = rankInput({ interest: new Map([['ws:warm', NOW - 29_000]]) });
+		assert.deepEqual(order(['ws:unknown', 'ws:warm'], input), ['ws:warm', 'ws:unknown']);
+	});
+
+	it('ranks a full realistic queue the way a person would expect', () => {
+		const input = rankInput({
+			pinnedRoom: 'ws:grocery-list',
+			viewportOrder: new Map([['ws:card0', 0], ['ws:card1', 1], ['ws:card2', 2]]),
+			interest: new Map([
+				['ws:grocery-list', NOW],
+				['ws:card0', NOW], ['ws:card1', NOW], ['ws:card2', NOW],
+				['ws:favourite-at-bottom', NOW - 500],
+				['ws:seen-a-while-ago', NOW - 25_000],
+			]),
+		});
+		assert.deepEqual(
+			order(
+				['ws:seen-a-while-ago', 'ws:card2', 'ws:favourite-at-bottom', 'ws:card0', 'ws:grocery-list', 'ws:card1'],
+				input
+			),
+			[
+				'ws:grocery-list',        // open in the editor: one handshake, nothing ahead of it
+				'ws:card0', 'ws:card1', 'ws:card2',
+				'ws:favourite-at-bottom', // recently-opened seed, behind everything visible
+				'ws:seen-a-while-ago',
+			]
+		);
+	});
+
+	it('is a usable comparator: equal rooms compare to zero', () => {
+		const input = rankInput({ viewportOrder: new Map([['ws:a', 0]]) });
+		assert.equal(compareConnectionRank('ws:a', 'ws:a', input), 0);
+	});
+
+	it('reports tiers explicitly, so a caller can reason about them', () => {
+		const input = rankInput({
+			pinnedRoom: 'ws:pinned',
+			viewportOrder: new Map([['ws:visible', 3]]),
+			interest: new Map([['ws:warm', NOW]]),
+		});
+		assert.deepEqual(connectionRank('ws:pinned', input), { tier: 0, within: 0 });
+		assert.deepEqual(connectionRank('ws:visible', input), { tier: 1, within: 3 });
+		assert.equal(connectionRank('ws:warm', input).tier, 2);
+		assert.deepEqual(connectionRank('ws:nobody-asked', input), { tier: 3, within: 0 });
+	});
+});
